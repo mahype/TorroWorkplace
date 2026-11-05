@@ -5933,7 +5933,7 @@ mod tests {
             Request::GetContact { id: CONTACT.into() },
             Request::GetContactPhoto { id: CONTACT.into(), size: torro_contacts::PhotoSize::Small },
             Request::ListContactGroups { book: None },
-            Request::SuggestRecipients { query: "jo".into(), limit: Some(8) },
+            Request::SuggestRecipients { query: "jo".into(), limit: Some(8), contacts_only: false },
             Request::UpcomingBirthdays { days: Some(7) },
             Request::CreateContact { book: BOOK.into(), fields: contact_fields() },
             Request::AddToContact { id: CONTACT.into(), fields: contact_fields() },

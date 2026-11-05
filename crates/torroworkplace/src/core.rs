@@ -6045,7 +6045,9 @@ impl Core {
                 Err(err) => Response::Error { code: "error".into(), message: err.to_string() },
             },
             // Recipient suggestions (issue #460): contacts and the mail of the accounts `reach` may read.
-            Request::SuggestRecipients { query, limit } => self.suggest_recipients(query, limit, reach).await,
+            Request::SuggestRecipients { query, limit, contacts_only } => {
+                self.suggest_recipients(query, limit, contacts_only, reach).await
+            }
             // Contacts (`docs/kontakte.md`, issue #351); a client's reach was checked before
             // (`Core::out_of_reach`).
             request @ (Request::ListAddressBooks { .. }
@@ -8138,34 +8140,56 @@ impl Core {
         &'a self,
         query: String,
         limit: Option<u32>,
+        contacts_only: bool,
         reach: Reach<'a>,
     ) -> torro_core::ai::BoxFuture<'a, Response> {
-        Box::pin(async move { self.suggest_ranked(&query, limit, reach).await })
+        Box::pin(async move { self.suggest_ranked(&query, limit, contacts_only, reach).await })
     }
 
-    async fn suggest_ranked(&self, query: &str, limit: Option<u32>, reach: Reach<'_>) -> Response {
+    async fn suggest_ranked(&self, query: &str, limit: Option<u32>, contacts_only: bool, reach: Reach<'_>) -> Response {
         use torro_contacts::suggest;
         if query.chars().count() > suggest::MAX_QUERY_CHARS {
             return refusal("error", format!("query may hold at most {} characters", suggest::MAX_QUERY_CHARS));
         }
         let words = suggest::search_words(query);
-        let Some(first) = words.first() else { return Response::RecipientSuggestions { suggestions: Vec::new() } };
+        if words.is_empty() {
+            return Response::RecipientSuggestions { suggestions: Vec::new() };
+        }
         let show_hidden = self.settings.current().contacts_show_hidden_books;
-        let (contacts, groups) = match self.contacts.suggest_candidates(reach, query, show_hidden) {
+        let (mut contacts, groups) = match self.contacts.suggest_candidates(reach, query, show_hidden) {
             Ok(found) => found,
             Err(err) => return crate::contacts::service::error_response(&err),
         };
-        let history = self.correspondents(reach, first).await;
+        let history = if contacts_only { Vec::new() } else { self.correspondents(reach).await };
+        // The people of the mail that match, written to most first: their contacts belong among the
+        // candidates whatever the search found first, so they rank and are never "seen" twice.
+        let mut matching: Vec<&suggest::Correspondent> = history
+            .iter()
+            .filter(|person| suggest::matches(&words, person.name.as_deref().unwrap_or_default(), &person.address))
+            .collect();
+        matching.sort_by(|a, b| b.score.total_cmp(&a.score).then(b.last_sent.cmp(&a.last_sent)));
+        let addresses: Vec<String> =
+            matching.iter().take(suggest::KNOWN_ADDRESSES).map(|person| person.address.clone()).collect();
+        match self.contacts.contacts_with(reach, &addresses, show_hidden) {
+            Ok(known) => {
+                for contact in known {
+                    if !contacts.iter().any(|held| held.id == contact.id) {
+                        contacts.push(contact);
+                    }
+                }
+            }
+            Err(err) => return crate::contacts::service::error_response(&err),
+        }
         let suggestions = suggest::rank(query, &contacts, &groups, &history, limit);
         Response::RecipientSuggestions { suggestions }
     }
 
     /// The people of the mail `reach` may read ([`reads_mail`]) in the last year, for the recipient
-    /// suggestions (issue #460, [`crate::mail::store::MailStore::correspondents`] with the first word typed): merged over
+    /// suggestions (issue #460, [`crate::mail::store::MailStore::correspondents`]): merged over
     /// the accounts, without the accounts' own addresses – for a client those of the accounts it
     /// reaches, for the suite those of every one. An account without a store, or whose store fails,
     /// adds nobody.
-    async fn correspondents(&self, reach: Reach<'_>, word: &str) -> Vec<torro_contacts::suggest::Correspondent> {
+    async fn correspondents(&self, reach: Reach<'_>) -> Vec<torro_contacts::suggest::Correspondent> {
         let accounts = self.mail.stored_accounts().await.unwrap_or_default();
         let mut own: Vec<String> = Vec::new();
         let mut people = Vec::new();
@@ -8179,11 +8203,13 @@ impl Core {
             if !reads_mail(reach, &id) {
                 continue;
             }
-            let sent_path = account
-                .and_then(|account| account.mail_settings.as_ref())
-                .and_then(|settings| settings.folder_roles.get(&torro_mail::Role::Sent).cloned());
-            let word = word.to_string();
-            match store.read(move |store| store.correspondents(&word, since, now, sent_path.as_deref())).await {
+            let picked = account.and_then(|account| account.mail_settings.as_ref()).map(|s| &s.folder_roles);
+            let sent_path = picked.and_then(|roles| roles.get(&torro_mail::Role::Sent).cloned());
+            let skipped: Vec<String> = [torro_mail::Role::Drafts, torro_mail::Role::Junk, torro_mail::Role::Trash]
+                .iter()
+                .filter_map(|role| picked.and_then(|roles| roles.get(role).cloned()))
+                .collect();
+            match store.read(move |store| store.correspondents(since, now, sent_path.as_deref(), &skipped)).await {
                 Ok(found) => people.extend(found),
                 Err(err) => eprintln!("torroworkplace: contacts: cannot read the people of a mail account: {err}"),
             }
@@ -30475,6 +30501,9 @@ mod tests {
             &["\\Seen"],
         );
         first.add("Sent", &mail("anna@example.org", "jo.sent@posteo.de, bob@example.org", 3), &["\\Seen"]);
+        // Johanna by her address only, twice: she matches "jo" by the name in the address book.
+        first.add("Sent", &mail("anna@example.org", "j.kraft@werke.de", 5), &["\\Seen"]);
+        first.add("Sent", &mail("anna@example.org", "j.kraft@werke.de", 6), &["\\Seen"]);
         let second = FakeImap::start(MAIL_PASSWORD).await;
         second.add("INBOX", &mail("Jo Second <jo.second@posteo.de>", "bob@example.org", 4), &[]);
         let secrets = MemoryTokens::default();
@@ -30498,14 +30527,15 @@ mod tests {
         contacts.sync_all().await;
         let core = audited(dir.path()).with_mail(mail_service).with_contacts(contacts);
         let app_key = crate::clients::tests::app_key(dir.path());
-        let suggest = |query: &str| Request::SuggestRecipients { query: query.into(), limit: None };
+        let suggest =
+            |query: &str| Request::SuggestRecipients { query: query.into(), limit: None, contacts_only: false };
         let addresses = |answer: Response| -> Vec<String> {
             let Response::RecipientSuggestions { suggestions } = answer else { panic!("suggestions: {answer:?}") };
             suggestions.into_iter().map(|s| s.address).collect()
         };
 
         let all = addresses(ask(&core, Some(&app_key), suggest("jo")).await);
-        assert_eq!(&all[..2], ["jonas@berger.de", "j.kraft@werke.de"], "written to first, then by name");
+        assert_eq!(&all[..2], ["j.kraft@werke.de", "jonas@berger.de"], "written to most first, also without a name");
         let mut seen = all[2..].to_vec();
         seen.sort();
         assert_eq!(seen, ["jo.meyer@posteo.de", "jo.second@posteo.de", "jo.sent@posteo.de"]);
@@ -30514,6 +30544,12 @@ mod tests {
         }
         assert_eq!(code(&ask(&core, Some(&app_key), suggest(&"j".repeat(501))).await), "error");
         assert!(addresses(ask(&core, Some(&app_key), suggest(" ")).await).is_empty());
+        let only = Request::SuggestRecipients { query: "jo".into(), limit: None, contacts_only: true };
+        assert_eq!(addresses(ask(&core, Some(&app_key), only).await), ["j.kraft@werke.de", "jonas@berger.de"]);
+        let Response::RecipientSuggestions { suggestions } = ask(&core, Some(&app_key), suggest("jo")).await else {
+            panic!("suggestions")
+        };
+        assert!(suggestions[0].last_sent.is_some());
 
         // Contacts only, by name, without read access to mail.
         let mut no_mail = RightsTemplate::ReadOnly.rights();

@@ -651,7 +651,7 @@ mod tests {
             untrusted: true,
             ..RecipientSuggestion::default()
         };
-        let asked = Request::SuggestRecipients { query: "jo".into(), limit: None };
+        let asked = Request::SuggestRecipients { query: "jo".into(), limit: None, contacts_only: false };
         let answer = Response::RecipientSuggestions {
             suggestions: vec![
                 line(SuggestionKind::Contact, "Jonas", "jonas@x.de"),

@@ -354,15 +354,7 @@ impl ContactsService {
         show_hidden: bool,
     ) -> Result<(Vec<Contact>, Vec<GroupCandidate>), ContactsError> {
         let words = torro_contacts::suggest::search_words(query);
-        let mut books: Vec<BookRow> = self
-            .books_within(reach, None)?
-            .into_iter()
-            .filter(|book| match reach {
-                Reach::Suite => show_hidden || !(book.hidden && book.name == SYSTEM_BOOK),
-                Reach::Client(_) => true,
-            })
-            .collect();
-        books.sort_by_key(|book| book.hidden);
+        let books = self.suggest_books(reach, show_hidden)?;
         if words.is_empty() || books.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
@@ -398,6 +390,53 @@ impl ContactsService {
                 groups.push(GroupCandidate { name, members: contacts_of(s, s.query(&members)?.0) });
             }
             Ok((contacts, groups))
+        })
+    }
+
+    /// The books of the suggestions ([`ContactsService::suggest_candidates`]): not hidden ones first.
+    fn suggest_books(&self, reach: Reach<'_>, show_hidden: bool) -> Result<Vec<BookRow>, ContactsError> {
+        let mut books: Vec<BookRow> = self
+            .books_within(reach, None)?
+            .into_iter()
+            .filter(|book| match reach {
+                Reach::Suite => show_hidden || !(book.hidden && book.name == SYSTEM_BOOK),
+                Reach::Client(_) => true,
+            })
+            .collect();
+        books.sort_by_key(|book| book.hidden);
+        Ok(books)
+    }
+
+    /// The contacts of the suggestions' books (as [`ContactsService::suggest_candidates`] has them)
+    /// that hold one of `addresses` as a mail address, whatever its case (issue #460): the people of
+    /// the mail, so a contact written to often ranks even when the search found others first, and
+    /// its address is never offered as one "known only from mail".
+    pub fn contacts_with(
+        &self,
+        reach: Reach<'_>,
+        addresses: &[String],
+        show_hidden: bool,
+    ) -> Result<Vec<Contact>, ContactsError> {
+        let books = self.suggest_books(reach, show_hidden)?;
+        if addresses.is_empty() || books.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<String> = books.iter().map(|b| b.id.clone()).collect();
+        with(self.store()?, |s| {
+            let mut found: Vec<Contact> = Vec::new();
+            for address in addresses {
+                let wanted = address.trim().to_lowercase();
+                let query = Query { books: ids.clone(), text: Some(wanted.clone()), limit: 5, ..Query::default() };
+                for row in s.query(&query)?.0 {
+                    let Some(book) = books.iter().find(|b| b.id == row.book) else { continue };
+                    let contact = contact_of(s, &row, book);
+                    let holds = contact.emails.iter().any(|email| email.value.trim().to_lowercase() == wanted);
+                    if holds && !found.iter().any(|known| known.id == contact.id) {
+                        found.push(contact);
+                    }
+                }
+            }
+            Ok(found)
         })
     }
 

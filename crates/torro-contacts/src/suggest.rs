@@ -27,6 +27,9 @@ pub const DEFAULT_LIMIT: u32 = 8;
 pub const MAX_LIMIT: u32 = 20;
 /// The longest search a caller may send; longer ones are refused (`error`).
 pub const MAX_QUERY_CHARS: usize = 500;
+/// How many of the people of the mail that match a search the caller looks up in the address books
+/// ([`rank`] needs their contacts among the candidates): the ones written to most.
+pub const KNOWN_ADDRESSES: usize = 50;
 /// While addresses known only from mail match, the contacts leave room for this many of them.
 pub const SEEN_ROOM: usize = 2;
 

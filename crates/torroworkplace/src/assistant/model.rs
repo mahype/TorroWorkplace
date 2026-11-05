@@ -961,6 +961,16 @@ impl Answering {
                 replaces,
                 local_only: local_only || (place == Place::Local && self.read_mail),
             },
+            // Suggestions ranked by the mail would tell whom the person writes to (issue #460): only
+            // the address books where mail may not go – a model elsewhere without the mail rule, or
+            // mail switched off in this conversation.
+            Request::SuggestRecipients { query, limit, contacts_only } => Request::SuggestRecipients {
+                query,
+                limit,
+                contacts_only: contacts_only
+                    || (place == Place::Remote && !self.rule.mail_to_cloud)
+                    || self.job.without.contains(&Area::Mail),
+            },
             other => other,
         }
     }

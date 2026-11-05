@@ -585,6 +585,7 @@ Suggests who to send a mail to for what was typed (`query`, every word the start
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
+| `contacts_only` | boolean | nein | Only what the address books know: no address known from mail, no order by the mail written. The assistant sets it where mail may not go (a model elsewhere, mail switched off). |
 | `limit` | integer | nein | The most suggestions: 1 to 20 (held within), 8 when left out. |
 | `query` | string | ja | What was typed: every word must start a word of the name or the address. At most 500 characters. |
 

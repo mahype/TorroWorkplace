@@ -1379,8 +1379,9 @@ pub enum Request {
     /// mail from them; never lists, newsletters or automatic mail), the latest first. Contacts only
     /// from the books the client reaches; mail only from the accounts it may read (read access to
     /// `mail` and the account), else none and the contacts by name. Never the addresses of the
-    /// accounts themselves. An empty `query` gives an empty list. Codes: `error` for a `query` over
-    /// 500 characters or when the address books cannot be read. Every field is `untrusted`.
+    /// accounts themselves. With `contacts_only` nothing from mail, the contacts by name. An empty
+    /// `query` gives an empty list. Codes: `error` for a `query` over 500 characters or when the
+    /// address books cannot be read. Every field is `untrusted`.
     #[serde(rename = "contacts.suggest_recipients")]
     SuggestRecipients {
         /// What was typed: every word must start a word of the name or the address. At most 500
@@ -1391,6 +1392,10 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(range(min = 1, max = 20))]
         limit: Option<u32>,
+        /// Only what the address books know: no address known from mail, no order by the mail written.
+        /// The assistant sets it where mail may not go (a model elsewhere, mail switched off).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        contacts_only: bool,
     },
     /// Birthdays within `days` days from today (14 when left out, at most 366), the soonest
     /// first ([`Response::Birthdays`]), of the books the client reaches.

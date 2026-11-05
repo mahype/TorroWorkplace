@@ -920,7 +920,9 @@ auch Mail: Kontakte nur aus den Büchern der Auswahl, Adressen aus Mails (Empfä
 persönlicher Mails; nie Listen, Newsletter oder automatische Mails) nur aus den Konten, die der Client lesen darf
 (Lesezugriff auf `mail` und das Konto, wie `mail.search_messages`). Ohne dieses Recht kommen nur Kontakte, nach Name.
 Die eigenen Adressen der Konten kommen nie vor. Ins Protokoll kommt je gelesenem Mail-Konto `account:<id>`, nie der
-Suchtext. Alle Felder sind `untrusted`.
+Suchtext. Alle Felder sind `untrusted`. Mit `contacts_only` kommt nichts aus Mails; der Assistent setzt es, wo Mail nicht hin
+darf (ein Modell anderswo ohne `mail_to_cloud`, Mail im Gespräch ausgeschaltet), damit auch die Auswahl der Kontakte
+nicht verrät, wem der Mensch oft schreibt.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als
