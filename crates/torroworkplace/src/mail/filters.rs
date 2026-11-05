@@ -853,16 +853,15 @@ fn note_failed(failed: &mut HashSet<String>, piece: &[String], done: &Response) 
 
 // ----- new mail (issue #339, step 3) -----
 
-/// Which of the messages `new` (ids `m:…` of `account`, in its inbox) the `filters` find, each with
-/// what they do together ([`FilterActions::of`], in the order of `filters`); messages no filter
-/// finds are left out. For the core's handling of arriving mail: pass
-/// [`MailFilters::running_in`]. A filter whose search no longer reads is skipped (and logged by its
-/// id). Nothing is changed here.
-pub async fn matching(
+/// Which of the messages `new` (ids `m:…` of the store's account, in its inbox) the `filters`
+/// find, each with the filters that found it, in the order of `filters`; messages no filter finds
+/// are left out. A filter whose search no longer reads is skipped (and logged by its id). Nothing
+/// is changed here.
+pub async fn hits(
     store: &SharedStore,
     filters: &[MailFilter],
     new: &[String],
-) -> Result<Vec<(String, FilterActions)>, super::MailStoreError> {
+) -> Result<Vec<(String, Vec<MailFilter>)>, super::MailStoreError> {
     if filters.is_empty() || new.is_empty() {
         return Ok(Vec::new());
     }
@@ -876,32 +875,63 @@ pub async fn matching(
     let new = new.to_vec();
     store
         .run(move |store| {
-            let mut found: Vec<(String, Vec<&MailFilter>)> = Vec::new();
+            let mut found: Vec<(String, Vec<MailFilter>)> = Vec::new();
             for (filter, query) in &searches {
                 let search = SearchQuery { only: Some(new.clone()), ..in_inbox(query.clone()) };
                 for message in store.search(&search, new.len() as u32, 0)? {
                     match found.iter_mut().find(|(id, _)| *id == message.id) {
-                        Some((_, filters)) => filters.push(filter),
-                        None => found.push((message.id, vec![filter])),
+                        Some((_, filters)) => filters.push(filter.clone()),
+                        None => found.push((message.id, vec![filter.clone()])),
                     }
                 }
             }
-            Ok(found.into_iter().map(|(id, filters)| (id, FilterActions::of(filters))).collect())
+            Ok(found)
         })
         .await
 }
 
+/// Which of the messages `new` the `filters` find ([`hits`]), each with what they do together
+/// ([`FilterActions::of`], in the order of `filters`). For the core's handling of arriving mail:
+/// pass [`MailFilters::running_in`].
+pub async fn matching(
+    store: &SharedStore,
+    filters: &[MailFilter],
+    new: &[String],
+) -> Result<Vec<(String, FilterActions)>, super::MailStoreError> {
+    let found = hits(store, filters, new).await?;
+    Ok(found.into_iter().map(|(id, filters)| (id, FilterActions::of(&filters))).collect())
+}
+
+/// The filters of `found` that set a category of `categories`, as [`torro_inbox::rules::first_category`]
+/// takes them: their ids with their categories.
+pub fn category_hits<'a>(found: &'a [MailFilter], categories: &[Category]) -> Vec<(&'a str, Category)> {
+    found
+        .iter()
+        .filter_map(|filter| {
+            filter.category.filter(|category| categories.contains(category)).map(|c| (filter.id.as_str(), c))
+        })
+        .collect()
+}
+
+/// The order of the sorting steps and the sorting rules (issue #454), as the inbox keeps them
+/// (`crate::inbox::Inbox::sorting`): which rule or filter decides the category of a mail.
+pub type Sorting = (Vec<torro_inbox::SortingStep>, Vec<torro_inbox::SortRule>);
+
 /// Runs the enabled filters of `account` ([`MailFilters::running_in`]) on its new mail `new` (ids
 /// `m:…` that just arrived in its inbox folder; the mail feed calls it, never on a folder's first
-/// sync nor on a catch-up) and gives back the mails that got a filter's category, with it, so their
-/// inbox entries carry it too (decision 4: before the sorting rules, without asking a model).
+/// sync nor on a catch-up) and gives back the mails that got a category, with it, so their inbox
+/// entries carry it too (without asking a model).
 ///
 /// - Mail whose `Message-ID` the account holds in another folder already is left alone
 ///   ([`delivered`]): it was moved or copied into the inbox, not delivered, and a filter must not
 ///   take it out again. Copies in the archive (Gmail's "All Mail") and in sent mail do not count.
-/// - What several filters do together follows their order ([`matching`], [`FilterActions::of`],
-///   decision 3); a category that is no longer in `categories` (the catalogue) is skipped.
-/// - Read, then the category, then the move ([`carry_out`]). Mail read or moved by a filter gets no
+/// - Reading and the trash: what the filters that found a mail do together ([`FilterActions::of`]).
+/// - The category of a mail a filter found (issue #454): the first step of `sorting` from the top
+///   that decides ([`torro_inbox::rules::first_category`]) – a rule above the filter wins over it,
+///   and so does a filter above a rule. A category that is no longer in `categories` (the
+///   catalogue) is skipped; without one the rules and headers have their say when the mail is
+///   filed, as for any mail.
+/// - Read, then the category, then the trash ([`carry_out`]). Mail read or moved by a filter gets no
 ///   entry: the feed files only what is still unread in the inbox folder, as the store says.
 /// - A failure goes to the log (the account and a code, never a search or a subject); the mail
 ///   stays as it came, and gets an entry as any other.
@@ -911,6 +941,7 @@ pub async fn on_arrival(
     account: &str,
     new: &[String],
     categories: &[Category],
+    sorting: &Sorting,
 ) -> Vec<(String, MailCategory)> {
     let filters = match mail.filters().running_in(account) {
         Ok(filters) => filters,
@@ -931,16 +962,33 @@ pub async fn on_arrival(
         }
     };
     let arrived_ids: Vec<String> = arrived.iter().map(|message| message.id.clone()).collect();
-    let found = match matching(store, &filters, &arrived_ids).await {
+    let found = match hits(store, &filters, &arrived_ids).await {
         Ok(found) => found,
         Err(err) => {
             eprintln!("torroworkplace: mail: cannot run the mail filters on new mail of {account}: {err}");
             return Vec::new();
         }
     };
+    let (order, rules) = sorting;
     // Mails that get the same actions go together, so each action runs once per kind.
     let mut groups: Vec<(FilterActions, Vec<&MessageSummary>)> = Vec::new();
-    for (id, mut actions) in found {
+    for (id, by) in found {
+        let mut actions = FilterActions::of(&by);
+        actions.category = match mail.sorting_facts(account, &id).await {
+            Ok(Some(facts)) => {
+                let input = torro_inbox::rules::SortInput {
+                    sender: facts.sender.as_deref(),
+                    subject: &facts.content.subject,
+                    text: &facts.content.text,
+                    account: Some(account),
+                    list_id: facts.content.list.as_deref(),
+                    facts: Some(&facts.sort_facts),
+                };
+                torro_inbox::rules::first_category(order, rules, &input, &category_hits(&by, categories))
+            }
+            // Without what the rules look at, the filters decide in their own order.
+            _ => actions.category,
+        };
         actions.category = actions.category.filter(|category| categories.contains(category));
         let Some(message) = arrived.iter().find(|message| message.id == id) else { continue };
         if actions.is_empty() {

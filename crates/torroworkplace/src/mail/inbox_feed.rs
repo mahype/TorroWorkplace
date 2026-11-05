@@ -793,18 +793,30 @@ impl Feed {
     }
 
     /// Runs the mail filters of `account` on its new mail `new` of the inbox folder
-    /// ([`super::filters::on_arrival`], issue #339) and gives back the mails that got a filter's
-    /// category, with it. Without the catalogue of categories no category is set; reading and
-    /// moving still happen.
+    /// ([`super::filters::on_arrival`], issue #339) and gives back the mails a filter found that got
+    /// a category, with it: the first rule or filter of the sorting order that decides (issue #454).
+    /// Without the catalogue of categories, or while the categories are being removed, no category
+    /// is set; reading and the trash still happen.
     async fn filter(&self, store: &SharedStore, account: &str, new: &[String]) -> Vec<(String, MailCategory)> {
+        let clearing = self.inbox.category_clear_blocked().unwrap_or(true);
         let categories: Vec<torro_mail::Category> = match self.inbox.catalogue() {
+            Ok(_) if clearing => Vec::new(),
             Ok(catalogue) => catalogue.into_iter().map(|def| def.category).collect(),
             Err(err) => {
                 eprintln!("torroworkplace: inbox: cannot read the categories to filter mail of {account}: {err}");
                 Vec::new()
             }
         };
-        super::filters::on_arrival(&self.mail, store, account, new, &categories).await
+        let filters: Vec<String> =
+            self.mail.filters().list().unwrap_or_default().into_iter().map(|filter| filter.id).collect();
+        let sorting = match self.inbox.sorting(&filters) {
+            Ok(sorting) => sorting,
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot read the sorting order to filter mail of {account}: {err}");
+                (filters.into_iter().map(torro_inbox::SortingStep::filter).collect(), Vec::new())
+            }
+        };
+        super::filters::on_arrival(&self.mail, store, account, new, &categories, &sorting).await
     }
 
     /// Files those of `ids` (messages of `folder`, the inbox folder of `account`) that are still
@@ -2355,6 +2367,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(PASSWORD).await;
         server.add("INBOX", &bernd("Bill", 0), &[]);
+        server.add("INBOX", &bernd("Later bill", 0), &[]);
         server.add("INBOX", &from("Carla", "Hello"), &[]);
         let (inbox, mail, feed) = quiet(dir.path(), &server).await;
         let rule = Request::CreateSortRule {
@@ -2380,6 +2393,19 @@ pub(crate) mod tests {
         assert_eq!(kept["Bill"].category, Some(MailCategory::by_rule(Category::Invoice)), "kept with the mail");
         assert_eq!(kept["Bill"].folder, all["Bill"].folder, "a category alone moves nothing");
         assert!(!kept["Bill"].flags.contains(&Flag::Seen));
+
+        // Issue #454: with the rule moved above the filter, the rule decides for what both find.
+        let Response::SortRules { rules } = inbox.handle(Request::ListSortRules, None, Utc::now()) else {
+            panic!("the rules")
+        };
+        let filters: Vec<String> = mail.filters().list().expect("read").into_iter().map(|filter| filter.id).collect();
+        let first =
+            Request::MoveSortingStep { kind: torro_inbox::SortingKind::Rule, id: rules[0].id.clone(), position: 0 };
+        let plan = inbox.plan_sorting_move(&first, None, &filters, &filters).expect("planned");
+        inbox.apply_sorting_move(&plan).expect("moved");
+        feed.take(arrived(&[&all["Later bill"]]), Utc::now()).await;
+        let later = by_subject(&mail).await;
+        assert_eq!(later["Later bill"].category, Some(MailCategory::by_rule(Category::Newsletter)), "the rule's now");
     }
 
     /// The one move left (issue #454): to the trash (a move, nothing is deleted for good). Moved
@@ -2563,7 +2589,7 @@ pub(crate) mod tests {
         assert_eq!(kept["Re Offer"].category, Some(MailCategory::by_rule(Category::Invoice)), "a new mail gets it");
 
         let ids = vec![all["Offer"].id.clone()];
-        let none = super::super::filters::on_arrival(&mail, &store, ANNA, &ids, &[]).await;
+        let none = super::super::filters::on_arrival(&mail, &store, ANNA, &ids, &[], &Default::default()).await;
         assert!(none.is_empty(), "not in the catalogue: skipped");
         assert_eq!(by_subject(&mail).await["Offer"].category, None, "nothing set");
     }
