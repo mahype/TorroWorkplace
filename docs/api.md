@@ -80,7 +80,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `calendar` | `list_calendars`, `list_events` ¹⁹, `list_reminders` ²⁰, `search_places`, `map_preview` (Termin-Editor, TE.1) | `save_event` ¹⁹ ²⁴, `snooze_reminder`, `dismiss_reminder`, `pause_reminders`, `preview_reminder` ²⁰ | `delete_event` ²⁴ | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `contacts` ²⁸ | `list_address_books`, `list_contacts`, `get_contact`, `get_photo`, `list_groups`, `upcoming_birthdays` | `create_contact`, `add_to_contact`, `set_favorite`, `add_to_group`, `mark_used`, `move_contact`, `resolve_conflict` mit `both` | `update_contact`, `remove_from_group`, `set_photo`, `delete_contact`, `resolve_conflict` mit `mine`/`theirs` | |
-| `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
+| `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵, `list_sorting_order` ²⁹ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ², `move_sorting_step` ²⁹ |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
 | `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
@@ -458,8 +458,8 @@ wählen geht über die Befehle oben.
 ¹⁰ **Mail wird nicht ausgeblendet** (Issue #339, [mail.md](mail.md#filter)). `inbox.hide_sender` (E3.10, E3.11:
 eine Unterhaltung, einen Absender oder eine Domain aus dem Eingang ausblenden) und `inbox.set_mail_shown` („Show
 again“, E18.2) sind entfallen, ebenso das Feld `hidden` von `mail.search_messages` und die Wirkung `hide` von
-`mute_item` für Mail ([Versionen](#versionen)). Statt Mail unsichtbar zu machen, verschiebt, liest oder ordnet sie ein
-Filter (`mail.create_filter` …, Fußnote 27). Beim Update entfernt der Kern die Regeln, die Mail ausblendeten (Regeln
+`mute_item` für Mail ([Versionen](#versionen)). Statt Mail unsichtbar zu machen, ordnet, liest oder legt sie ein
+Filter in den Papierkorb (`mail.create_filter` …, Fußnote 27). Beim Update entfernt der Kern die Regeln, die Mail ausblendeten (Regeln
 eines Mail-Kontos mit Wirkung `muted` für einen Absender, eine Domain oder ein Merkmal), was sie ferngehalten hatten,
 die Markierungen ausgeblendeter Mail-Einträge und „Show again“ (`inbox.sqlite` Schema 17). Ein stummgeschaltetes
 Konto (`mute_source`), gemerkte Spuren und die Regeln anderer Quellen bleiben; nichts wird zu einem Filter.
@@ -867,10 +867,11 @@ Was gebaut ist und dabei genauer wurde als oben (Details: [erweiterungen.md › 
 
 ²⁷ **Mail-Filter** (Issue #339, Konzept [mail.md](mail.md#filter)): eine Suche in der Sprache von `search_messages`
 (ohne `in:` und `filename:`, höchstens 500 Zeichen) mit Konto (`account`, fehlt: alle Konten) und mindestens einer
-Aktion – `file` (`{"to": "archive"}`, `{"to": "folder", "id": "f:…"}` nur mit Konto, `{"to": "trash"}`), `mark_read`,
-`category`. Der Dienst hält höchstens 200 Filter in `<data>/mail/filters.json`, Kennung `f<n>`, und lässt die
-eingeschalteten auf neue Mail im Posteingang laufen; jeder passende wirkt, beim Verschieben und bei der Kategorie der
-erste. `list_filters` und `preview_filter { query, account? }` (Anzahl und die fünf neuesten Treffer im Posteingang)
+Aktion – `file` (seit Issue #454 nur `{"to": "trash"}`; Archiv und Ordner ergeben `error` „file only takes {"to":
+"trash"}“, [Versionen](#versionen)), `mark_read`, `category`. Der Dienst hält höchstens 200 Filter in
+`<data>/mail/filters.json`, Kennung `f<n>`, und lässt die eingeschalteten auf neue Mail im Posteingang laufen; jeder
+passende wirkt. Welche Kategorie eine Mail bekommt, entscheidet die gemeinsame Reihenfolge von Sortierregeln und Filtern
+(`inbox.list_sorting_order`, `inbox.move_sorting_step`, beide Bereich `inbox`, Lesen bzw. `Admin`; Fußnote 29). `list_filters` und `preview_filter { query, account? }` (Anzahl und die fünf neuesten Treffer im Posteingang)
 sind `Read`; `create_filter` (hängt an), `update_filter` (Platz und Kennung bleiben, `enabled` fehlt = bleibt),
 `remove_filter` und `apply_filter { id }` sind `Admin`, weil ein Filter dauerhaft auf die Mail des Menschen wirkt: Bei
 Agenten wartet jede Änderung und jedes Anwenden auf eine Freigabe, nicht nur das Löschen. `apply_filter` wendet einen
@@ -880,15 +881,24 @@ von Hand gesetzte Kategorie bleibt. **Reichweite:** Ein Client sieht Filter der 
 alle Konten nur mit Zugriff auf alle Mail-Konten; jeder andere ist `not-found`. Einen Filter für alle Konten ohne diesen
 Zugriff anzulegen oder zu ändern ist `forbidden`, ebenso eine Kategorie (auch beim Anwenden) ohne `Admin` in `inbox`,
 denn sie wirkt wie eine Sortierregel. Neben `Admin` braucht ein Client in `mail` die Rechte, die die Aktionen einzeln
-bräuchten, denn der Dienst führt sie selbst aus: `Write` für `mark_read`, Archiv und Ordner (wie `set_flags` und
-`move_messages`), `Delete` für den Papierkorb (wie `delete_messages`, auch für einen Ordner mit der Rolle Papierkorb);
-sonst ist Anlegen, Ändern und Anwenden `forbidden`. Suche, Aktionen, Ordner (muss zum Konto gehören, nicht der Posteingang) und
-Kategorie (aus dem Katalog) prüft der Dienst vor der Freigabe (`error`) und noch einmal bei der Ausführung. Die
-Freigabe nennt den gespeicherten Filter mit Adresse und Ordnernamen aus dem Speicher des Dienstes, beim Ändern alt und
+bräuchten, denn der Dienst führt sie selbst aus: `Write` für `mark_read` (wie `set_flags`), `Delete` für den
+Papierkorb (wie `delete_messages`); sonst ist Anlegen, Ändern und Anwenden `forbidden`. Suche, Aktionen und Kategorie
+(aus dem Katalog) prüft der Dienst vor der Freigabe (`error`) und noch einmal bei der Ausführung. Die
+Freigabe nennt den gespeicherten Filter mit der Adresse des Kontos aus dem Speicher des Dienstes, beim Ändern alt und
 neu, beim Anwenden „up to n“ Mails; sie ist an den gespeicherten Filter gebunden, beim Anwenden auch an die n Mails, die
 er da fand: eine Änderung des Filters oder andere Treffer dazwischen ergeben `conflict`. Ins Protokoll kommen Kennung und Konto, nie die Suche. Die Suchen sind Worte des Menschen, Absender,
 Betreffe und Texte der Vorschau `untrusted`. `update_filter` und `remove_filter` sind als idempotent gekennzeichnet,
 alle außer `apply_filter` als lokal (sie ändern nichts auf einem Server).
+
+²⁹ **Reihenfolge von Regeln und Filtern** (Issue #454, Konzept [kategorien.md](kategorien.md#vorrang)):
+`inbox.list_sorting_order` liefert die Schritte (`kind` `rule` oder `filter`, `id`), die der Client sieht: Regeln wie
+`list_sort_rules`, Filter nur mit `Read` auf Mail und ihrem Konto in Reichweite. `inbox.move_sorting_step { kind, id,
+position }` setzt einen Schritt an einen Platz unter diesen Schritten (über dem Ende: zuletzt), `Admin` in `inbox` mit
+Freigabe. Wer einen Filter verschiebt oder einen Schritt an einem Filter vorbei, braucht die Rechte, diesen Filter zu
+ändern (wie `mail.update_filter`, Fußnote 27), auch bei `inbox.move_sort_rule`; sonst `forbidden`, geprüft vor der
+Freigabe und bei der Ausführung. Die Freigabe nennt den Schritt und die Filter, an denen er vorbeigeht, wie
+gespeichert. Ein Sortierlauf (`inbox.start_category_job`) wendet mit `scope.apply_rules` Regeln und Filter in dieser
+Reihenfolge an; ein Filter setzt dabei nur seine Kategorie und nur für Mail im Posteingang.
 
 ²⁸ **Kontakte** (Issue #351, Konzept [kontakte.md](kontakte.md)): Rechte gelten je Adressbuch,
 `Rights.address_books` mit Kennungen `<konto-id>/<name>`; fehlt das Feld in alten Rechten, ist kein Buch frei. Die
@@ -1320,6 +1330,12 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
   „unknown method“, ein altes MCP-Tool gibt es nicht mehr. Ein mitgeschicktes `hidden` ignoriert die API (die Suche
   läuft wie ohne), über MCP lehnt `mail_search_messages` es als unbekanntes Argument ab. `inbox.mute_item` mit `hide`
   antwortet für Mail `unsupported` (Fußnote 11), für alle anderen Quellen wie bisher.
+- **Ausnahme Verschieben durch Filter (Issue #454):** `file` von `mail.create_filter` und `mail.update_filter` nimmt nur
+  noch `{"to": "trash"}`; `{"to": "archive"}` und `{"to": "folder", …}` ergeben `error` („file only takes {"to":
+  "trash"}“), **ohne** `v: 2`, wie bei Issue #339. Grund: Mail arbeitet nur noch mit Kategorien, ein Dienst, der das
+  Verschieben weiter annähme, müsste es vortäuschen. Gespeicherte Filter verlieren das Verschieben beim Lesen (ohne
+  übrige Aktion ausgeschaltet), offene Freigaben dafür enden als `conflict`. Die MCP-Tools `mail_create_filter`,
+  `mail_update_filter`, `mail_preview_filter` und `mail_apply_filter` bleiben, ihr Schema nennt nur den Papierkorb.
 - MCP-Toolnamen sind stabil wie API-Namen. Im MCP wird `pending` nach 60 Sekunden Warten als
   Tool-Fehler mit Code `pending` und der Kennung der Freigabe gemeldet (siehe „Freigaben“).
 

@@ -117,11 +117,13 @@ Modell, zuletzt `other`. Passt keine Regel und ist das Modell nicht sicher genug
    ausdrückliches `inbox.classify_item` überschreibt auch sie – wer den Knopf drückt, will genau
    das.
 
-Vor Schritt 1 steht seit Issue #339 die Kategorie eines Mail-Filters (siehe [Vorrang](#vorrang)).
+Vor Schritt 1 stehen seit Issue #454 Sortierregeln und Mail-Filter in **einer** Reihenfolge: Von oben
+entscheidet die erste Regel, die gilt, oder der erste Filter, der die Mail findet und eine Kategorie setzt
+(siehe [Vorrang](#vorrang)).
 
-**Wann:** beim Eintreffen jeder neuen Mail. Zusätzlich rechnet der Kern den **Altbestand** einmal
-nach, begrenzt auf 30 Tage oder 500 Nachrichten je Konto, im Hintergrund, mit Fortschritt und
-Abbrechen auf der Einstellungsseite.
+**Wann:** beim Eintreffen jeder neuen Mail. Was unter Einstellungen › Categorization steht, gilt immer
+für jede neue Mail; **vorhandene Mail wird nur sortiert, wenn der Mensch das ausdrücklich anstößt**
+(„Sort existing mail…“, siehe [Vorhandene Mail sortieren](#vorhandene-mail-sortieren), Issue #454).
 
 **Tempo (Issue #420):** Altbestand und Sortieraufträge fragen ein **Decision-Modell** ohne Pause:
 Jev 8 Mails gleichzeitig, ein Cloud-Modell von Ollama 4, jedes andere eine Mail nach der anderen
@@ -294,15 +296,19 @@ weiter erreichbar.
 
 1. **Von Hand** gesetzt (`person`): bleibt, bis der Mensch selbst etwas anderes wählt oder
    ausdrücklich `inbox.classify_item` drückt.
-2. **Mail-Filter** (Issue #339, [mail.md](mail.md#filter)): Setzt ein Filter beim Eintreffen eine
-   Kategorie, gilt sie vor allem Folgenden, und das Modell wird nicht gefragt (`rule`). Gibt es mehrere
-   passende Filter, entscheidet der erste in der Liste, der eine Kategorie setzt. Eine Kategorie, die nicht
-   mehr im Katalog steht, überspringt der Filter. Eine von Hand gesetzte Kategorie überschreibt er nie,
-   auch nicht beim Anwenden auf vorhandene Mail (`mail.apply_filter`).
-3. **Sortierregeln** in ihrer Reihenfolge (`rule`).
-4. **Feste Merkmale**: Einladung, Abwesenheit, Junk-Ordner (`rule`).
-5. **Kontakte** (Issue #390, Schalter „Mail from contacts is personal“ unter Einstellungen ›
-   Categorization, anfangs an): Mail, deren Absenderadresse ein Kontakt hat, wird `personal` (`rule`).
+2. **Regeln und Filter in einer Reihenfolge** (Issue #454, `inbox.list_sorting_order`): Von oben
+   entscheidet die erste Sortierregel, die gilt, oder der erste Mail-Filter ([mail.md](mail.md#filter)),
+   der die Mail findet und eine Kategorie setzt; das Modell wird nicht gefragt (`rule`). Ein Filter, der
+   nur liest oder in den Papierkorb legt, entscheidet nichts. Steht eine Regel über einem Filter, gewinnt
+   die Regel, und umgekehrt. Solange niemand etwas verschoben hat, stehen die Filter über den Regeln, wie
+   vor #454. Ein neuer Filter kommt unter den letzten Filter (ohne Filter ganz oben), eine neue Regel
+   direkt vor die Regel, die in der Liste der Regeln nach ihr kommt; `inbox.create_sort_rule` und
+   `inbox.move_sort_rule` zählen ihre Plätze weiter nur unter den Regeln. Eine Kategorie, die nicht mehr
+   im Katalog steht, überspringt der Filter. Eine von Hand gesetzte Kategorie überschreibt er nie, auch
+   nicht beim Anwenden auf vorhandene Mail (`mail.apply_filter`).
+3. **Feste Merkmale**: Einladung, Abwesenheit, Junk-Ordner (`rule`).
+4. **Kontakte** (Issue #390, die eingebaute Zeile „From someone in your address books“ am Ende der
+   Liste „Rules & filters“ unter Einstellungen › Categorization, anfangs an): Mail, deren Absenderadresse ein Kontakt hat, wird `personal` (`rule`).
    Es zählen alle Adressen eines Kontakts, Groß- und Kleinschreibung egal, keine Aliase, und nur
    Adressbücher, die nicht ausgeblendet sind („Kürzlich kontaktiert“ zählt nicht). Mail an Listen oder
    von Maschinen (`List-Id`, `Precedence`, `Auto-Submitted`) bleibt außen vor: Der Newsletter eines
@@ -312,13 +318,21 @@ weiter erreichbar.
    dort weiterhin, wie vor Issue #390). Mail von der Adresse des Kontos selbst (eine eigene Karte im
    Adressbuch, etwa im Ordner „Gesendet“ eines Sortierauftrags) zählt nicht als Mail eines Kontakts;
    andere Adressen und Aliase der Person erkennt die Stufe nicht.
-6. **Modell** (`model`), nur für Kategorien, die es wählen darf. Bei Mail eines Kontakts bietet der
+5. **Modell** (`model`), nur für Kategorien, die es wählen darf. Bei Mail eines Kontakts bietet der
    Dienst nur die Kategorien der Gruppe von `personal` und `phishing` an, damit ein gefälschter
    Absender erkennbar bleibt; ist sich das Modell unsicher oder nennt es etwas anderes, bleibt
    `personal`.
 
 Ein Filter mit Kategorie wirkt wie eine Sortierregel: Ihn anzulegen, zu ändern oder anzuwenden braucht
 außer Admin im Bereich `mail` auch Admin im Bereich `inbox`.
+
+**Rechte beim Verschieben** (Issue #454): `inbox.move_sorting_step` braucht Admin im Bereich `inbox`.
+Wer einen Filter verschiebt oder einen Schritt an einem Filter vorbei, ändert, was dieser Filter
+entscheidet, und braucht dazu, was `mail.update_filter` für ihn verlangt (Admin für `mail`, sein Konto
+bzw. alle Konten, für seine Kategorie Admin für `inbox`, für seine Aktionen Schreib- bzw. Löschzugriff);
+sonst `forbidden`, vor jeder Freigabe und noch einmal, wenn sie läuft. Das gilt auch für
+`inbox.move_sort_rule`. Ein Agent sieht Filter nur mit Lesezugriff auf Mail und ihrem Konto in Reichweite;
+die Plätze zählen unter den Schritten, die er sieht.
 
 ### Mehr als 20 Kategorien fürs Modell
 
@@ -334,9 +348,32 @@ Schwelle 0,6 gilt für beide Antworten.
   **Ersatzkategorie**: Der Dienst merkt sie sich, stellt Regeln, Mail und Einträge um und entfernt
   die Kategorie zuletzt. Bricht das ab, setzt der nächste Start es fort; die Herkunft der
   Kategorie bleibt dabei erhalten.
-- Neue Regeln und geänderte Beschreibungen wirken auf **neue** Mail. Bestehende Mail ordnet
-  „Sort again“ neu (`inbox.catch_up_categories` mit `again`), über dasselbe Fenster wie der
-  Altbestand, mit Fortschritt und Abbrechen. Von Hand gesetzte Kategorien bleiben.
+- Neue Regeln und geänderte Beschreibungen wirken auf **neue** Mail. Bestehende Mail ordnet nur
+  „Sort existing mail…“ neu (siehe unten). Von Hand gesetzte Kategorien bleiben.
+- „Remove categories from all mail…“ unten im Tab „Categories“ nimmt nur die Zuordnungen von den Mails
+  (`inbox.clear_categories` mit `disable_automatic: false`). Es schaltet das Modell nicht aus und sortiert
+  nicht neu.
+
+### Vorhandene Mail sortieren
+
+Der Dialog „Sort existing mail“ (Issue #454) startet einen Lauf (`inbox.start_category_job`) über
+Konten, Ordner und Zeitraum. **Was er anwendet**, sagt `scope.apply_rules` und `scope.apply_model`
+(beide ohne Angabe an, mindestens eines, ein Modell nur mit `apply_model`):
+
+- `apply_rules`: Regeln und Filter in ihrer Reihenfolge, die festen Merkmale und die Kontakte. Ein Filter
+  zählt nur für Mail im Posteingang (wie beim Eintreffen) und setzt hier nur seine Kategorie (`rule`, also
+  geschützt); als gelesen markieren und in den Papierkorb legen gibt es bei vorhandener Mail nur über
+  „Apply to existing mail“ am Filter (`mail.apply_filter`).
+- `apply_model`: das Modell für das, was die Regeln offen lassen.
+- **Mail mit Kategorie**: „Leave as it is“ oder „Ask the AI again“ (`again`: auch Kategorien des Modells
+  neu, eigene Entscheidungen und Kategorien aus Regeln bleiben).
+
+„Apply to existing mail“ an einer Regel öffnet denselben Dialog nur mit Regeln und Filtern: Die Regel
+allein anzuwenden würde Regeln darüber übergehen. Vorschau und Lauf schätzen die Dauer (`seconds`,
+`left_seconds`) nach dem Tempo des laufenden oder letzten Laufs, der genauso sortierte (dasselbe Modell
+oder nur Regeln; `sorted_with`, gemessen ohne Pausen in `run_millis`). Läuft, pausiert oder scheiterte ein
+Lauf oder ein Entfernen, steht unter dem Kopf der Seite eine Zeile mit Fortschritt, „Pause“/„Resume“ und
+„Cancel“.
 
 ### Die drei Wege
 
@@ -348,10 +385,13 @@ Schwelle 0,6 gilt für beide Antworten.
 | Kategorie anlegen | Einstellungen › Categorization | `inbox.create_category` · Admin | `inbox_create_category` |
 | Kategorie ändern | Einstellungen › Categorization | `inbox.update_category` · Admin | `inbox_update_category` |
 | Kategorie entfernen | Einstellungen › Categorization | `inbox.remove_category` · Admin | `inbox_remove_category` |
-| Regeln lesen | Einstellungen › Categorization | `inbox.list_sort_rules` · Read | `inbox_list_sort_rules` |
-| Regel anlegen, ändern, entfernen | Einstellungen › Categorization | `inbox.create_sort_rule`, `inbox.update_sort_rule`, `inbox.remove_sort_rule` · Admin | gleichnamig |
-| Reihenfolge ändern | Einstellungen › Categorization | `inbox.move_sort_rule` · Admin | `inbox_move_sort_rule` |
-| Neu einordnen | Einstellungen › Categorization | `inbox.catch_up_categories { again }` · Admin | `inbox_catch_up_categories` |
+| Regeln lesen | Einstellungen › Categorization › Rules & filters | `inbox.list_sort_rules` · Read | `inbox_list_sort_rules` |
+| Regel anlegen, ändern, entfernen | Einstellungen › Categorization › Rules & filters | `inbox.create_sort_rule`, `inbox.update_sort_rule`, `inbox.remove_sort_rule` · Admin | gleichnamig |
+| Reihenfolge von Regeln und Filtern lesen (#454) | Einstellungen › Categorization › Rules & filters | `inbox.list_sorting_order` · Read | `inbox_list_sorting_order` |
+| Regel oder Filter verschieben (#454) | Ziehen am Griff, „Move up“/„Move down“ | `inbox.move_sorting_step` · Admin | `inbox_move_sorting_step` |
+| Regel unter den Regeln verschieben | Seite der Regel („Move up“/„Move down“) | `inbox.move_sort_rule` · Admin | `inbox_move_sort_rule` |
+| Vorhandene Mail sortieren (#454) | „Sort existing mail…“ | `inbox.preview_category_job`, `inbox.start_category_job { apply_rules, apply_model, again }` · Read/Write | gleichnamig |
+| Kategorien von allen Mails entfernen | Tab Categories, unten | `inbox.clear_categories` · Delete | `inbox_clear_categories` |
 
 Admin, weil jede dieser Änderungen dauerhaft bestimmt, wie alle Mail eingeordnet wird – wie
 „Always for this sender?“. Ein Agent braucht dafür die Freigabe eines Menschen.
