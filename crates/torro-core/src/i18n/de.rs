@@ -3884,6 +3884,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Down", "Runter"),
     ("Favorite", "Favorit"),
     ("From mail, not in contacts", "Aus E-Mails, nicht in Kontakten"),
+    ("Group · 1 person", "Gruppe · 1 Person"),
     ("Group · {n} people", "Gruppe · {n} Personen"),
     ("Last mail {date}", "Letzte E-Mail {date}"),
     ("Last {date}", "Zuletzt {date}"),

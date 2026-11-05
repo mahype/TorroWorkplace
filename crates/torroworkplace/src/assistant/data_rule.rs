@@ -203,9 +203,13 @@ pub fn without_mail(response: Response) -> Response {
 
 /// Whether the command `name` (a catalogue name) reads mail content or may: every `mail.*` and
 /// `inbox.*` command, and asking a bot (task B.2: the bot may have read mail, and the assistant's
-/// tool line does not keep what it read). An answer after one in the same turn may retell a mail.
+/// tool line does not keep what it read), and the recipient suggestions (issue #460: whom the person
+/// writes to). An answer after one in the same turn may retell a mail.
 pub fn reads_mail(name: &str) -> bool {
-    name.starts_with("mail.") || name.starts_with("inbox.") || name == "bots.ask_bot"
+    name.starts_with("mail.")
+        || name.starts_with("inbox.")
+        || name == "bots.ask_bot"
+        || name == "contacts.suggest_recipients"
 }
 
 /// Whether the command `name` reads what `rule` keeps from models elsewhere ([`reads_mail`]): with

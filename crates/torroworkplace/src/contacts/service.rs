@@ -375,7 +375,14 @@ impl ContactsService {
                 limit: SUGGEST_CANDIDATES,
                 ..Query::default()
             };
-            let contacts = contacts_of(s, s.query(&query)?.0);
+            let mut contacts = contacts_of(s, s.query(&query)?.0);
+            // Favourites come before every other contact: never cut off by the names before them.
+            let favourites = Query { favorites: true, ..query.clone() };
+            for contact in contacts_of(s, s.query(&favourites)?.0) {
+                if !contacts.iter().any(|held| held.id == contact.id) {
+                    contacts.push(contact);
+                }
+            }
             let mut groups = Vec::new();
             for (book, name, _) in s.groups(&ids)? {
                 if groups.len() >= SUGGEST_CANDIDATES || !torro_contacts::suggest::matches(&words, &name, "") {
@@ -426,7 +433,7 @@ impl ContactsService {
             let mut found: Vec<Contact> = Vec::new();
             for address in addresses {
                 let wanted = address.trim().to_lowercase();
-                let query = Query { books: ids.clone(), text: Some(wanted.clone()), limit: 5, ..Query::default() };
+                let query = Query { books: ids.clone(), text: Some(wanted.clone()), limit: 50, ..Query::default() };
                 for row in s.query(&query)?.0 {
                     let Some(book) = books.iter().find(|b| b.id == row.book) else { continue };
                     let contact = contact_of(s, &row, book);

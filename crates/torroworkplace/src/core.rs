@@ -3455,7 +3455,8 @@ impl Core {
             }
         }
         let read = match &admitted {
-            Ok((_, rights)) if matches!(request, Request::SuggestRecipients { .. }) => {
+            // Only a search that may read mail names accounts (`contacts_only` reads none).
+            Ok((_, rights)) if matches!(request, Request::SuggestRecipients { contacts_only: false, .. }) => {
                 Box::pin(self.read_mail_ids(rights)).await
             }
             _ => Vec::new(),
@@ -4133,6 +4134,7 @@ impl Core {
         mode: Mode,
         web: Option<crate::approvals::WebConsent>,
     ) -> Response {
+        let reads_mail_too = matches!(request, Request::SuggestRecipients { contacts_only: false, .. });
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
         ids.extend(self.holder_ids(&request));
         ids.push(crate::audit::engine_id(engine));
@@ -4186,7 +4188,7 @@ impl Core {
             None => Err(Refused::Forbidden { command }),
         };
         let response = answer.unwrap_or_else(Refused::response);
-        if let (Response::RecipientSuggestions { .. }, Some(info)) = (&response, &client) {
+        if let (Response::RecipientSuggestions { .. }, Some(info), true) = (&response, &client, reads_mail_too) {
             ids.extend(Box::pin(self.read_mail_ids(&info.rights)).await);
         }
         let line = crate::audit::entry(client.map(|info| info.id), command, ids, &response, Utc::now());
@@ -8163,13 +8165,23 @@ impl Core {
         let history = if contacts_only { Vec::new() } else { self.correspondents(reach).await };
         // The people of the mail that match, written to most first: their contacts belong among the
         // candidates whatever the search found first, so they rank and are never "seen" twice.
+        // Those written to most, matching or not: a contact may match by the name in its book only.
+        let mut written: Vec<&suggest::Correspondent> = history.iter().filter(|person| person.score > 0.0).collect();
+        written.sort_by(|a, b| b.score.total_cmp(&a.score).then(b.last_sent.cmp(&a.last_sent)));
+        // And the latest that match, as the section of addresses known only from mail shows them.
         let mut matching: Vec<&suggest::Correspondent> = history
             .iter()
             .filter(|person| suggest::matches(&words, person.name.as_deref().unwrap_or_default(), &person.address))
             .collect();
-        matching.sort_by(|a, b| b.score.total_cmp(&a.score).then(b.last_sent.cmp(&a.last_sent)));
-        let addresses: Vec<String> =
-            matching.iter().take(suggest::KNOWN_ADDRESSES).map(|person| person.address.clone()).collect();
+        matching.sort_by_key(|person| std::cmp::Reverse(person.last_sent.max(person.last_received)));
+        let mut addresses: Vec<String> = Vec::new();
+        for person in
+            written.iter().take(suggest::KNOWN_ADDRESSES).chain(matching.iter().take(suggest::KNOWN_ADDRESSES))
+        {
+            if !addresses.iter().any(|known| known.eq_ignore_ascii_case(&person.address)) {
+                addresses.push(person.address.clone());
+            }
+        }
         match self.contacts.contacts_with(reach, &addresses, show_hidden) {
             Ok(known) => {
                 for contact in known {
