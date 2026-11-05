@@ -564,8 +564,9 @@ Regeln:
     wächst höchstens bis `size::content_max()` (`widgets::reading_cell`), das Bedienelement steht am Zeilenende in
     seiner eigenen Breite – Schalter, Auswahl und kurze Felder werden nie gestreckt, lange Felder und Editoren
     füllen ihre Spalte.
-  - **Listen und Tabellen** (`widgets::data_table`, Konten): volle Breite, die Namensspalte bekommt den Zuwachs, die
-    Wertspalten bleiben so breit wie bei `size::content_max()`.
+  - **Listen und Tabellen** (`widgets::settings_table`, Konten): volle Breite, die Namensspalte bekommt den Zuwachs,
+    die Wertspalten bleiben so breit wie bei `size::content_max()`; `widgets::data_table` außerhalb der Einstellungen
+    (Insights, Übersicht) behält seine Anteile.
   - **Karten, Kennzahlen, Kacheln** (`stat_grid`): ein Raster, das mit der Breite mehr Spalten bekommt.
   - **Unabhängige Blöcke** einer Seite (`widgets::page_columns`): ab 2 × `size::form_max()` + `layout::section_gap()`
     zwei Spalten, ab 3 × `form_max()` + 2 × `section_gap()` drei, nie mehr Spalten als Blöcke; die Blöcke der Reihe

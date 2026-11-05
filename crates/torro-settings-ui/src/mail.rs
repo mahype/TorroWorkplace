@@ -1569,7 +1569,7 @@ pub mod accounts {
                     }
                     cells.into_iter().enumerate().filter(|(i, _)| SYNC_NARROW.contains(i)).map(|(_, c)| c).collect()
                 };
-                widgets::data_table(keep(head), rows.into_iter().map(keep).collect(), Some(keep(total)))
+                widgets::settings_table(keep(head), rows.into_iter().map(keep).collect(), Some(keep(total)))
             })
             .height(Length::Shrink);
             page = page.push(grid);
@@ -2186,7 +2186,7 @@ pub mod accounts {
                 }
                 cells.into_iter().enumerate().filter(|(i, _)| NARROW_COLUMNS.contains(i)).map(|(_, c)| c).collect()
             };
-            widgets::data_table(keep(head), rows.into_iter().map(keep).collect(), Some(keep(total)))
+            widgets::settings_table(keep(head), rows.into_iter().map(keep).collect(), Some(keep(total)))
         })
         .height(iced::Length::Shrink);
         let mut table = column![grid].spacing(space::s());

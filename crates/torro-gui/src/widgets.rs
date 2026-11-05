@@ -6252,10 +6252,30 @@ pub fn share_bar<'a, M: 'a>(part: u32, whole: u32) -> Element<'a, M> {
 /// `text_3`), then one row per entry of `rows`, and – with `total` – a last row in `BODY_STRONG`.
 /// The first column is the name (`BODY`, wider), the others are numbers, right-aligned with
 /// tabular figures. Rows are [`size::control`] high with a `line` between them; every row should
-/// have as many cells as `head`. Up to [`size::content_max()`] the name takes two parts of the row and
-/// each number one; wider, the numbers keep the width they had there and the name gets the rest
-/// (issue #464, [`table_value_width`]).
+/// have as many cells as `head`. The name takes two parts of the row and each number one.
 pub fn data_table<'a, M: 'a>(head: Vec<String>, rows: Vec<Vec<String>>, total: Option<Vec<String>>) -> Element<'a, M> {
+    table(head, rows, total, false)
+}
+
+/// A [`data_table`] on a settings page (issue #464): up to [`size::content_max()`] the same parts;
+/// wider, the numbers keep the width they had there and the name gets the rest
+/// ([`table_value_width`]), so a page without a cap does not spread the figures across the window.
+pub fn settings_table<'a, M: 'a>(
+    head: Vec<String>,
+    rows: Vec<Vec<String>>,
+    total: Option<Vec<String>>,
+) -> Element<'a, M> {
+    table(head, rows, total, true)
+}
+
+/// The table behind [`data_table`] and [`settings_table`]; `capped` keeps the numbers at their width
+/// at the reading width.
+fn table<'a, M: 'a>(
+    head: Vec<String>,
+    rows: Vec<Vec<String>>,
+    total: Option<Vec<String>>,
+    capped: bool,
+) -> Element<'a, M> {
     let values = head.len().saturating_sub(1);
     let mut lines: Vec<(Vec<String>, typo::Level, TextColour)> = vec![(head, typo::caption(), theme::text_3)];
     lines.extend(rows.into_iter().map(|row| (row, typo::body(), theme::text as TextColour)));
@@ -6263,7 +6283,10 @@ pub fn data_table<'a, M: 'a>(head: Vec<String>, rows: Vec<Vec<String>>, total: O
         lines.push((total, typo::body_strong(), theme::text));
     }
     responsive(move |room| {
-        let value = table_value_width(room.width, values);
+        let value = match capped {
+            true => table_value_width(room.width, values),
+            false => table_value_share(room.width, values),
+        };
         let line = |cells: &[String], level: typo::Level, colour: TextColour| {
             let cells = cells.iter().enumerate().map(move |(i, cell)| -> Element<'a, M> {
                 if i == 0 {
@@ -6300,11 +6323,14 @@ type TextColour = fn(&Theme) -> iced::widget::text::Style;
 /// row beside the padding and the gaps, where the name takes two – but no more than at
 /// [`size::content_max()`], so in a wide page only the name column grows (issue #464).
 pub fn table_value_width(width: f32, values: usize) -> f32 {
-    let share = |width: f32| {
-        let room = width - 2.0 * space::s() - space::s() * values as f32;
-        (room / (values as f32 + 2.0)).max(0.0)
-    };
-    share(width).min(share(size::content_max()))
+    table_value_share(width, values).min(table_value_share(size::content_max(), values))
+}
+
+/// The width of each of the `values` number columns of a [`data_table`] `width` wide: one part of the
+/// row beside the padding and the gaps, where the name takes two.
+fn table_value_share(width: f32, values: usize) -> f32 {
+    let room = width - 2.0 * space::s() - space::s() * values as f32;
+    (room / (values as f32 + 2.0)).max(0.0)
 }
 
 /// The widget behind [`badged`]: Iced has no layer that may reach past its parent's bounds, so the
@@ -6494,6 +6520,7 @@ mod tests {
             }
             let at_max = table_value_width(size::content_max(), values);
             assert_eq!(table_value_width(3840.0, values), at_max, "{values} values in a wide page");
+            assert!(table_value_share(3840.0, values) > at_max, "the other apps' tables keep their parts");
         }
         assert_eq!(table_value_width(0.0, 3), 0.0);
     }
