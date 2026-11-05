@@ -3455,7 +3455,9 @@ impl Core {
             }
         }
         let read = match &admitted {
-            Ok((_, rights)) if matches!(request, Request::SuggestRecipients { .. }) => self.read_mail_ids(rights).await,
+            Ok((_, rights)) if matches!(request, Request::SuggestRecipients { .. }) => {
+                Box::pin(self.read_mail_ids(rights)).await
+            }
             _ => Vec::new(),
         };
         let answer = match admitted {
@@ -4185,7 +4187,7 @@ impl Core {
         };
         let response = answer.unwrap_or_else(Refused::response);
         if let (Response::RecipientSuggestions { .. }, Some(info)) = (&response, &client) {
-            ids.extend(self.read_mail_ids(&info.rights).await);
+            ids.extend(Box::pin(self.read_mail_ids(&info.rights)).await);
         }
         let line = crate::audit::entry(client.map(|info| info.id), command, ids, &response, Utc::now());
         self.audit.record(&line);
@@ -6043,7 +6045,7 @@ impl Core {
                 Err(err) => Response::Error { code: "error".into(), message: err.to_string() },
             },
             // Recipient suggestions (issue #460): contacts and the mail of the accounts `reach` may read.
-            Request::SuggestRecipients { query, limit } => self.suggest_recipients(&query, limit, reach).await,
+            Request::SuggestRecipients { query, limit } => self.suggest_recipients(query, limit, reach).await,
             // Contacts (`docs/kontakte.md`, issue #351); a client's reach was checked before
             // (`Core::out_of_reach`).
             request @ (Request::ListAddressBooks { .. }
@@ -8129,7 +8131,19 @@ impl Core {
     /// ([`Core::correspondents`]), ranked by [`torro_contacts::suggest::rank`]. `error` for a search
     /// over [`torro_contacts::suggest::MAX_QUERY_CHARS`] characters and when the address books cannot
     /// be read; a blank one is an empty list.
-    async fn suggest_recipients(&self, query: &str, limit: Option<u32>, reach: Reach<'_>) -> Response {
+    ///
+    /// Like [`Core::apply_mail_filter`] it hands back its future boxed, built in a frame of its own: the
+    /// dispatch every request passes through stays small.
+    fn suggest_recipients<'a>(
+        &'a self,
+        query: String,
+        limit: Option<u32>,
+        reach: Reach<'a>,
+    ) -> torro_core::ai::BoxFuture<'a, Response> {
+        Box::pin(async move { self.suggest_ranked(&query, limit, reach).await })
+    }
+
+    async fn suggest_ranked(&self, query: &str, limit: Option<u32>, reach: Reach<'_>) -> Response {
         use torro_contacts::suggest;
         if query.chars().count() > suggest::MAX_QUERY_CHARS {
             return refusal("error", format!("query may hold at most {} characters", suggest::MAX_QUERY_CHARS));
