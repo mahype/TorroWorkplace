@@ -4349,6 +4349,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if self.side.dragging {
             subscriptions.push(split::release().map(|()| Message::SidebarWidth(SplitEvent::Release)));
         }
+        // A drag of Settings › Categorization ends wherever the button is let go (issue #454).
+        if let Some(SettingsPane { sections: SettingsState::Mail(state), .. }) = &self.settings {
+            use settings_mail::categorization::{Dragging, Message as Categorization};
+            let page =
+                |message| Message::SettingsPage(SettingsMessage::Mail(settings_mail::Message::Categorization(message)));
+            match settings_mail::categorization_dragging(state) {
+                Some(Dragging::Step) => subscriptions.push(split::release().map(move |()| page(Categorization::Drop))),
+                Some(Dragging::Category) => {
+                    subscriptions.push(split::release().map(move |()| page(Categorization::DropCategory)))
+                }
+                None => {}
+            }
+        }
         // A download under Settings › AI asks how far it is (issue #410).
         if let Some(pane) = &self.settings {
             subscriptions.push(pane.host.subscription().map(Message::SettingsHost));

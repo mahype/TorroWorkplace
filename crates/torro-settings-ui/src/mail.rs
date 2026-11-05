@@ -55,6 +55,12 @@ pub fn new_filter(query: String, account: Option<String>) -> Message {
     Message::Categorization(categorization::Message::Filters(filters::Message::New { query, account }))
 }
 
+/// The drag going on in "Categorization" (issue #454): the window ends it wherever the button is
+/// let go, with [`categorization::Message::Drop`] or [`categorization::Message::DropCategory`].
+pub fn categorization_dragging(state: &State) -> Option<categorization::Dragging> {
+    categorization::dragging(&state.categorization)
+}
+
 /// The messages that put "Categorization" into the demo state `name` (`--demo --open
 /// categorization-<name>` of torroinbox, issue #454); `None` for a name it does not know.
 pub fn categorization_scene(name: &str) -> Option<Vec<Message>> {

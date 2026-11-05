@@ -231,8 +231,8 @@ pub enum Message {
     GroupMenu(Option<CategoryGroup>),
     /// The grip of a category was pressed.
     CategoryGrip(Category),
-    /// The pointer of a category's drag left a group's card.
-    LeaveGroup,
+    /// The pointer of a category's drag left this group's card.
+    LeaveGroup(CategoryGroup),
     /// The pointer of a category's drag is over this group's card.
     OverGroup(CategoryGroup),
     /// The pointer was let go: the dragged category goes into the group it is over.
@@ -349,8 +349,11 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             state.category_drag = None;
             Action::None
         }
-        Message::LeaveGroup => {
-            if let Some((_, over)) = &mut state.category_drag {
+        // Only the card it is over lets go: moving fast, the next card may say "over" first.
+        Message::LeaveGroup(group) => {
+            if let Some((_, over)) = &mut state.category_drag
+                && *over == Some(group)
+            {
                 *over = None;
             }
             Action::None
@@ -671,6 +674,25 @@ pub fn escape(state: &State) -> Option<Message> {
         return Some(Message::GroupMenu(None));
     }
     editor::escape(&state.editor).map(Message::Editor)
+}
+
+/// What a drag of the page is (review of #454): the window hears the button let go anywhere and
+/// sends [`Message::Drop`] or [`Message::DropCategory`]; over its list it moves, elsewhere it ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dragging {
+    /// A rule or filter by its grip.
+    Step,
+    /// A category by its grip.
+    Category,
+}
+
+/// The drag going on, for the window to end it wherever the button is let go.
+pub fn dragging(state: &State) -> Option<Dragging> {
+    match (&state.drag, &state.category_drag) {
+        (Some(_), _) => Some(Dragging::Step),
+        (None, Some(_)) => Some(Dragging::Category),
+        (None, None) => None,
+    }
 }
 
 /// The question before a model in the cloud sorts mail is open (issue #424).
@@ -994,14 +1016,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Tab::Rules => reading(rules_tab(state, data)),
         Tab::Categories => categories_tab(state, data),
     };
-    let page = page.push(tab);
-    // A drag ends wherever the pointer is let go: over its list it moves (the list knows where),
-    // anywhere else it ends without a move (review of #454).
-    match (&state.drag, &state.category_drag) {
-        (Some(_), _) => mouse_area(page).on_release(Message::Drop).into(),
-        (None, Some(_)) => mouse_area(page).on_release(Message::DropCategory).into(),
-        (None, None) => page.into(),
-    }
+    page.push(tab).into()
 }
 
 /// "Sorting existing mail · 412 of 1,284 · about 4 min left" with its line and Pause/Resume and
@@ -1033,9 +1048,13 @@ fn progress<'a>(data: &'a Data) -> Option<Element<'a, Message>> {
                 | CategoryJobState::Cancelled
         )
     };
-    let (words, done, total, buttons, errors) = if let Some(job) =
-        data.categorization.clear_job.as_ref().filter(|job| unfinished(job.state))
-    {
+    // What goes on wins over what was cancelled: a removal that runs, is paused or failed first,
+    // then the run of "Sort existing mail", then a removal that was cancelled (review of #454).
+    let going = |state: CategoryJobState| unfinished(state) && state != CategoryJobState::Cancelled;
+    let clear = data.categorization.clear_job.as_ref();
+    let job = data.category_job.as_ref().filter(|job| unfinished(job.state));
+    let clear = clear.filter(|held| going(held.state) || (job.is_none() && unfinished(held.state)));
+    let (words, done, total, buttons, errors) = if let Some(job) = clear {
         let removed: u64 = job.accounts.iter().map(|account| account.removed).sum();
         let selected: u64 = job.accounts.iter().map(|account| account.categorized).sum();
         let words = trf(
@@ -1051,7 +1070,7 @@ fn progress<'a>(data: &'a Data) -> Option<Element<'a, Message>> {
             &job.errors,
         )
     } else {
-        let job = data.category_job.as_ref().filter(|job| unfinished(job.state))?;
+        let job = job?;
         let (done, total) = (job.processed(), job.left() + job.processed());
         let mut words = trf(
             "Sorting existing mail · {done} of {total}",
@@ -1059,7 +1078,10 @@ fn progress<'a>(data: &'a Data) -> Option<Element<'a, Message>> {
         );
         match (job.state, job.left_seconds) {
             (CategoryJobState::Running, Some(seconds)) => {
-                words = trf("{progress} · about {time} left", &[("progress", &words), ("time", &rough_time(seconds))]);
+                words = match rough_minutes(seconds) {
+                    Some(time) => trf("{progress} · about {time} left", &[("progress", &words), ("time", &time)]),
+                    None => trf("{progress} · less than a minute left", &[("progress", &words)]),
+                };
             }
             (CategoryJobState::Running, None) => {}
             (state, _) => words = trf("{progress} · {state}", &[("progress", &words), ("state", &state_word(state))]),
@@ -1092,13 +1114,10 @@ fn count_words(n: u64, one: &str, many: &'static str) -> String {
     }
 }
 
-/// About how long `seconds` take, as the person reads it: under a minute, else in whole minutes
-/// ("13 min", "1 h 3 min") – a run's time is a guess, and seconds would tick for nothing.
-fn rough_time(seconds: u64) -> String {
-    match seconds {
-        0..60 => tr("under a minute").to_string(),
-        seconds => format_duration((seconds + 30) / 60 * 60_000),
-    }
+/// About how long `seconds` take, in whole minutes ("13 min", "1 h 3 min") – a run's time is a
+/// guess, and seconds would tick for nothing; `None` under a minute, which its sentence says.
+fn rough_minutes(seconds: u64) -> Option<String> {
+    (seconds >= 60).then(|| format_duration((seconds + 30) / 60 * 60_000))
 }
 
 /// What a person reads for the state of a run.
@@ -1525,7 +1544,7 @@ fn group_card<'a>(
             };
             mouse_area(card)
                 .on_enter(Message::OverGroup(id))
-                .on_exit(Message::LeaveGroup)
+                .on_exit(Message::LeaveGroup(id))
                 .interaction(mouse::Interaction::Grabbing)
                 .into()
         }
@@ -1669,10 +1688,12 @@ fn sort_dialog<'a>(
         (_, _, false) => tr("Choose rules and filters, the model or both.").to_string(),
         (_, Some(problem), _) => problem.clone(),
         (Some(preview), None, _) => match preview.seconds {
-            Some(seconds) => trf(
-                "{n} mails · about {time}",
-                &[("n", &format_count(preview.eligible)), ("time", &rough_time(seconds))],
-            ),
+            Some(seconds) => match rough_minutes(seconds) {
+                Some(time) => {
+                    trf("{n} mails · about {time}", &[("n", &format_count(preview.eligible)), ("time", &time)])
+                }
+                None => trf("{n} mails · less than a minute", &[("n", &format_count(preview.eligible))]),
+            },
             None => trf("{n} mails", &[("n", &format_count(preview.eligible))]),
         },
         (None, None, _) => tr("Counting…").to_string(),
@@ -2023,7 +2044,9 @@ mod tests {
         // A drag let go outside every card ends without a move.
         let _ = update::<()>(&mut state, Message::CategoryGrip(category), &data);
         let _ = update::<()>(&mut state, Message::OverGroup(other), &data);
-        let _ = update::<()>(&mut state, Message::LeaveGroup, &data);
+        let _ = update::<()>(&mut state, Message::LeaveGroup(group), &data);
+        assert!(state.category_drag.is_some_and(|(_, over)| over == Some(other)), "another card's leave");
+        let _ = update::<()>(&mut state, Message::LeaveGroup(other), &data);
         assert!(sent(update::<()>(&mut state, Message::DropCategory, &data)).is_empty());
         assert!(state.category_drag.is_none());
         let _ = view(&state, &data);

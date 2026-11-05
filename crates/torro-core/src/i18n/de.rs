@@ -4996,7 +4996,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("1 category", "1 Kategorie"),
     ("1 mail", "1 Mail"),
     ("Manage models", "Modelle verwalten"),
-    ("under a minute", "weniger als eine Minute"),
+    ("{progress} · less than a minute left", "{progress} · noch weniger als eine Minute"),
+    ("{n} mails · less than a minute", "{n} Mails · weniger als eine Minute"),
     (
         "The order of rules and filters changed meanwhile. Try again.",
         "Die Reihenfolge der Regeln und Filter hat sich inzwischen geändert. Versuch es noch einmal.",
