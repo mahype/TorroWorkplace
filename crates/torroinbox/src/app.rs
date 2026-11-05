@@ -7681,7 +7681,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// under it here – none while there is nothing to say.
     fn search_bar(&self, filters: &Anchor) -> Option<Element<'_, Message>> {
         let bar = self.search_bar_parts(filters);
-        if self.launch.kind == Kind::Mail && !self.mail_only {
+        // A narrow mail window has no room for the field in the top row: it stands over the list.
+        if self.launch.kind == Kind::Mail && !self.mail_only && self.class() != SizeClass::Narrow {
             return search::below(bar);
         }
         Some(search::bar(bar))
@@ -10077,7 +10078,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Menu::Snooze | Menu::Pick | Menu::Lane | Menu::SaveAll { rail: true } => tr("File"),
             Menu::Task | Menu::Event | Menu::Category | Menu::CategoryAlways => tr("Torro"),
             Menu::Hide | Menu::Mute | Menu::Move | Menu::Unsubscribe => tr("Mute"),
-            Menu::MailDisplay => tr("Display"),
+            Menu::MailDisplay => trc("mail", "Display"),
             _ => return None,
         };
         if !self.menu_from_panel() {
@@ -10240,6 +10241,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .settings(Message::OpenSettings)
             .settings_open(self.settings.is_some())
             .cover(self.cover())
+            .panel_width(self.panel_width(class))
     }
 
     /// What lies over the top of the window, which the top row repeats: a dialog of the settings, the
@@ -10847,18 +10849,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             list = list.push(widgets::menu_button(nav, icon, self.view_label(), Message::ToggleNav));
         }
         if class != SizeClass::Wide {
-            let overview = widgets::crumb_button(
+            // A quiet icon as its neighbours, lit while the overview shows.
+            let overview = widgets::icon_toggle(
                 Icon::ChartColumn,
-                None,
                 tr("Show overview"),
-                // Esc shows the overview only beside the mail (wide); here it closes it.
-                None,
                 self.mail_overview_shown(),
                 Some(Message::ShowMailOverview),
             );
             list = list.push(overview);
         }
-        if self.shows_search() {
+        if self.shows_search() && class != SizeClass::Narrow {
             list = list.push(search::field(&self.search_bar_parts(filters)));
         } else {
             list = list.push(Space::new().width(Fill));
@@ -11750,7 +11750,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn mail_accounts_menu(&self) -> Element<'_, Message> {
         let groups = self.mail_groups();
         let mut list = column![menu_caption(tr("Show accounts"))];
-        let colour = palette(&self.theme()).accent;
+        // A tick is a choice, never red (design skill: red is for the accent's one action), as in the
+        // tasks app's menus.
+        let colour = palette(&self.theme()).text_2;
         let count_of = |account: &str| self.unread_each.iter().find(|(held, _)| held == account).and_then(|(_, n)| *n);
         let sum: Option<u64> = groups.iter().map(|group| count_of(&group.account)).sum();
         let number = |count: Option<u64>| -> Element<'_, Message> {
@@ -11852,17 +11854,22 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             let off = [(tr("Light"), None), (tr("Dark"), None), (tr("As app"), None)];
             widgets::segmented_maybe(off, chosen)
         };
+        // Title, the two switches with their names and the note on one axis (the card's padding).
+        let label = |words: &'static str| typo::text(typo::body(), words).style(theme::text_2);
         let content = column![
-            typo::text(typo::caption(), tr("Display")).style(theme::text_3),
-            widgets::segment_row(tr("View"), None, view, None),
-            widgets::segment_row(tr("Mail colors"), None, colors, None),
+            typo::text(typo::caption(), trc("mail", "Display")).style(theme::text_3),
+            column![label(tr("View")), view].spacing(space::xs()),
+            column![label(tr("Mail colors")), colors].spacing(space::xs()),
             typo::text(typo::meta(), tr("Colors exist only for HTML; text shows the app's colors."))
                 .style(theme::text_3)
                 .wrapping(Wrapping::WordOrGlyph),
         ]
-        .spacing(space::s());
+        .spacing(space::m());
+        // Wide enough for the three colours with their words, never narrower than a popover.
+        let words = [tr("Light"), tr("Dark"), tr("As app")];
+        let need = widgets::icon_segmented_width(&words, true) + 2.0 * layout::panel_padding().left;
         container(content)
-            .width(widgets::POPOVER_WIDTH)
+            .width(widgets::POPOVER_WIDTH.max(need))
             .padding(layout::panel_padding())
             .style(style::container::popover)
             .into()
@@ -11872,7 +11879,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// read from the field's text, in groups that exclude each other; "Clear filters" while one is set.
     /// A tick keeps the menu open, so several can be set one after the other.
     fn search_filters_menu(&self) -> Element<'_, Message> {
-        let colour = palette(&self.theme()).accent;
+        // A tick is a choice, never red (design skill: red is for the accent's one action), as in the
+        // tasks app's menus.
+        let colour = palette(&self.theme()).text_2;
         let today = today();
         let set = search::active(&self.search, today);
         let mut list = column![menu_caption(tr("Quick filters"))];
@@ -19798,9 +19807,9 @@ mod tests {
         let groups = app.rail_groups(SizeClass::Wide, &anchors).expect("the reader has the rail");
         let labels: Vec<String> = groups.iter().map(|group| group.label.to_string()).collect();
         let at = |label: &str| labels.iter().position(|held| held == label);
-        assert!(at(tr("Display")).is_some() && at(tr("Display")) < at(tr("More")), "{labels:?}");
-        assert!(at(tr("Mute")) < at(tr("Display")), "Mute, Display, More at the foot: {labels:?}");
-        let display = groups.iter().find(|group| group.label == tr("Display")).expect("Display");
+        assert!(at(trc("mail", "Display")).is_some() && at(trc("mail", "Display")) < at(tr("More")), "{labels:?}");
+        assert!(at(tr("Mute")) < at(trc("mail", "Display")), "Mute, Display, More at the foot: {labels:?}");
+        let display = groups.iter().find(|group| group.label == trc("mail", "Display")).expect("Display");
         assert!(display.foot && display.card, "a click opens its card, the pointer nothing");
         assert_eq!(display.icon, Icon::Contrast);
         assert_eq!(app.split_limits().total, app.content_width(), "the rail takes no width");
@@ -19894,7 +19903,7 @@ mod tests {
         let anchors = detail::Anchors::default().with_rail();
         assert_eq!(app.menu, Some(Menu::MailDisplay), "the card is still open");
         let groups = app.rail_groups(SizeClass::Wide, &anchors).expect("the rail");
-        let at = groups.iter().position(|group| group.label == tr("Display"));
+        let at = groups.iter().position(|group| group.label == trc("mail", "Display"));
         assert_eq!(app.rail_active(&groups), at, "Display stands chosen while its card is open");
         let _ = app.update(Message::CloseMenu);
         let _ = app.update(Message::CloseMenu);

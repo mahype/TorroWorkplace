@@ -7210,4 +7210,5 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Warning", "Warnschild"),
     ("{n} attachments", "{n} Anhänge"),
     ("{n} of {total}+", "{n} von {total}+"),
+    ("mail|Display", "Darstellung"),
 ];

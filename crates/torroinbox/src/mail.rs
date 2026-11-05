@@ -3187,13 +3187,14 @@ fn sender_block<'a>(
         to = format!("{to} · {}", trf("cc {names}", &[("names", &names(&mail.cc))]));
     }
     let files = attachments_control(reading, anchors);
-    let files_room = if files.is_some() { (words_room / 3.0).min(220.0) } else { 0.0 };
-    let to = typo::ellipsize(&to, typo::meta(), (words_room - files_room - space::m()).max(0.0));
-    let mut second = row![
-        container(typo::text(typo::meta(), to).style(theme::text_3).wrapping(Wrapping::None)).width(Fill).clip(true)
-    ]
-    .spacing(space::m())
-    .align_y(Alignment::Center);
+    // Cut with "…" to the room the line really has beside the attachments, whole in the tooltip.
+    let line = to.clone();
+    let fitted = responsive(move |size| {
+        let shown = typo::ellipsize(&line, typo::meta(), size.width);
+        typo::text(typo::meta(), shown).style(theme::text_3).wrapping(Wrapping::None).into()
+    });
+    let fitted = container(fitted).width(Fill).height(typo::line_height(typo::meta()));
+    let mut second = row![widgets::with_tooltip(fitted, to)].spacing(space::m()).align_y(Alignment::Center);
     if let Some(files) = files {
         second = second.push(files);
     }
@@ -3328,7 +3329,7 @@ pub fn action_groups<'a>(
         if flagged { mark.tinted(reading.attention) } else { mark },
         RailGroup::new(Icon::BellOff, tr("Mute"), mute_items(reading, entry, anchors)).foot().at(&rail.mute),
         // Issue #456: a click opens the card "Display" (HTML or text, the mail's colours), not a list.
-        RailGroup::new(Icon::Contrast, tr("Display"), display_items(reading)).card().foot().at(&rail.display),
+        RailGroup::new(Icon::Contrast, trc("mail", "Display"), display_items(reading)).card().foot().at(&rail.display),
         RailGroup::new(Icon::Ellipsis, tr("More"), more_items(reading.view_tools(), filter_sender(reading), close))
             .foot()
             .at(&rail.more),
@@ -3547,7 +3548,7 @@ fn display_items<'a>(reading: &Reading<'_>) -> Vec<RailItem<'a, Message>> {
     if !matches!(reading.loaded, Some(Ok(_))) {
         return Vec::new();
     }
-    vec![RailItem::new(Icon::Contrast, tr("Display"), "", Some(Message::ToggleMailDisplay))]
+    vec![RailItem::new(Icon::Contrast, trc("mail", "Display"), "", Some(Message::ToggleMailDisplay))]
 }
 
 /// The attachments of the loaded mail that are not `inline`, in its order – what the block, the rows
@@ -5297,7 +5298,7 @@ mod tests {
                     (tr("Torro").to_owned(), strings(&[tr("Task"), tr("Event"), tr("Category…")])),
                     (tr("Mark").to_owned(), mark_words(reading)),
                     (tr("Mute").to_owned(), strings(&[tr("Mute…")])),
-                    (tr("Display").to_owned(), strings(&[tr("Display")])),
+                    (trc("mail", "Display").to_owned(), strings(&[trc("mail", "Display")])),
                     (tr("More").to_owned(), strings(&[tr("Copy text"), tr("Create filter…"), tr("Close")])),
                 ]
             );
@@ -5454,7 +5455,15 @@ mod tests {
             let titles: Vec<String> = rail_words(&groups).into_iter().map(|(title, _)| title).collect();
             assert_eq!(
                 titles,
-                strings(&[tr("Reply"), tr("File"), tr("Torro"), tr("Mark"), tr("Mute"), tr("Display"), tr("More")])
+                strings(&[
+                    tr("Reply"),
+                    tr("File"),
+                    tr("Torro"),
+                    tr("Mark"),
+                    tr("Mute"),
+                    trc("mail", "Display"),
+                    tr("More")
+                ])
             );
             let file = &group(&groups, tr("File")).items;
             let save = trf("Save attachments ({n})", &[("n", &1)]);
@@ -5628,7 +5637,7 @@ mod tests {
                 ])
             );
             let groups = action_groups(reading, None, &folders, false, &detail::Anchors::default());
-            let display = groups.iter().find(|group| group.label == tr("Display")).expect("Display");
+            let display = groups.iter().find(|group| group.label == trc("mail", "Display")).expect("Display");
             assert!(matches!(display.first_press(), Some(Message::ToggleMailDisplay)), "a click opens its card");
         });
         reading_of("m:p2", MailFormat::Text, true, |reading| {
