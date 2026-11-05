@@ -555,6 +555,13 @@ pub mod container {
         Style { border: outline(palette(theme).line_strong, radius::lg()), ..menu(theme) }
     }
 
+    /// A field that holds more than an input (issue #460, a recipient field with its chips): no
+    /// surface, 1-px `line_strong` border, radius [`radius::sm()`], like [`super::text_input`]; the input
+    /// inside is a [`super::text_input_flat`], whose focus ring shows.
+    pub fn field(theme: &Theme) -> Style {
+        Style { border: outline(palette(theme).line_strong, radius::sm()), ..Style::default() }
+    }
+
     /// The paper of the compose window (issue #460): `panel` with a 1-px `line_strong` border, radius
     /// [`radius::md()`]. Drawn inside `themed::in_paper`, so `panel` is the light or the dark one the
     /// person chose, whatever the window's mode; the text on it is a [`super::text_editor_paper`].

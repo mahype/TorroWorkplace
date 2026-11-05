@@ -2442,7 +2442,7 @@ impl<S: ComposeSource + 'static> Window<S> {
         } else if self.tools {
             Some(self.tools_menu(&anchors.tools, narrow))
         } else {
-            self.suggestions.as_ref().map(|open| self.suggestion_list(open, &anchors))
+            self.suggestions.as_ref().map(|open| self.suggestion_list(open, &anchors, narrow))
         };
         let window: Element<'_, Message> =
             shell::shell(frame, Space::new(), self.header(narrow), body, None).overlay(overlay).into();
@@ -2454,7 +2454,11 @@ impl<S: ComposeSource + 'static> Window<S> {
     fn header(&self, narrow: bool) -> Element<'_, Message> {
         let kind = &self.start.kind;
         let note = if narrow { None } else { self.status().map(str::to_owned) };
-        let title = shell::header_title(Some(kind.icon()), kind.title(), note);
+        let mut title = shell::header_title(Some(kind.icon()), kind.title(), note);
+        // Narrow has no room for the state of the draft beside the title: it is the title's tooltip.
+        if let Some(status) = self.status().filter(|_| narrow) {
+            title = widgets::with_tooltip(title, status);
+        }
         let editable = self.editable();
         let attach = widgets::icon_button(Icon::Paperclip, tr("Attach files"), editable.then_some(Message::Attach));
         let close = widgets::icon_button(Icon::X, tr("Close"), (!self.sending).then_some(Message::Close));
@@ -2478,22 +2482,29 @@ impl<S: ComposeSource + 'static> Window<S> {
             fields = fields.push(notice_line(notice, Some(Message::DismissNotice)));
         }
         fields = fields.push(field(tr("From"), self.sender_control(&anchors.from)));
-        let mut folds = row![].spacing(space::xs());
+        let mut folds = Vec::new();
         if !self.show_cc {
             let press = editable.then_some(Message::ShowCc);
-            folds = folds.push(widgets::text_button(None, tr("Cc"), style::button::ghost, press));
+            folds.push(widgets::text_button(None, tr("Cc"), style::button::ghost, press));
         }
         if !self.show_bcc {
             let press = editable.then_some(Message::ShowBcc);
-            folds = folds.push(widgets::text_button(None, tr("Bcc"), style::button::ghost, press));
+            folds.push(widgets::text_button(None, tr("Bcc"), style::button::ghost, press));
         }
-        let to = row![self.recipients(Field::To, anchors), folds].spacing(space::s()).align_y(Alignment::Start);
+        let folds_width = [(!self.show_cc, tr("Cc")), (!self.show_bcc, tr("Bcc"))]
+            .into_iter()
+            .filter(|(shown, _)| *shown)
+            .map(|(_, label)| widgets::text_button_width(false, label) + space::xs())
+            .sum::<f32>();
+        let to = self.recipients(Field::To, anchors, narrow, folds, folds_width);
         fields = fields.push(field(Field::To.label(), to));
         if self.show_cc {
-            fields = fields.push(field(Field::Cc.label(), self.recipients(Field::Cc, anchors)));
+            fields =
+                fields.push(field(Field::Cc.label(), self.recipients(Field::Cc, anchors, narrow, Vec::new(), 0.0)));
         }
         if self.show_bcc {
-            fields = fields.push(field(Field::Bcc.label(), self.recipients(Field::Bcc, anchors)));
+            fields =
+                fields.push(field(Field::Bcc.label(), self.recipients(Field::Bcc, anchors, narrow, Vec::new(), 0.0)));
         }
         fields = fields.push(field(tr("Subject"), self.input(SUBJECT, &self.subject, Message::Subject, None)));
 
@@ -2503,7 +2514,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             .size(typo::body().size)
             .line_height(typo::body().line_height)
             .font(typo::body().font)
-            .padding(style::INPUT_PADDING)
+            .padding(space::m())
             .height(Fill)
             .wrapping(Wrapping::WordOrGlyph)
             .style(style::text_editor_paper)
@@ -2518,7 +2529,7 @@ impl<S: ComposeSource + 'static> Window<S> {
         };
         let mut page = column![text].height(Fill);
         if let Some(signature) = self.sender().and_then(|sender| sender.signature.as_deref()) {
-            page = page.push(container(signature_block(signature)).padding(style::INPUT_PADDING));
+            page = page.push(container(signature_block(signature)).padding(Padding::new(space::m()).top(0.0)));
         }
         let paper = container(page).width(Fill).height(Fill).style(style::container::paper);
         let mut form =
@@ -2598,35 +2609,67 @@ impl<S: ComposeSource + 'static> Window<S> {
         )
     }
 
-    /// A recipient field (issue #460): its chips, then the input for the next one.
-    fn recipients(&self, which: Field, anchors: &Anchors) -> Element<'_, Message> {
+    /// The width a recipient field has beside its label.
+    fn field_room(&self, narrow: bool) -> f32 {
+        self.toolbar_room(narrow) - label_width() - space::s()
+    }
+
+    /// A recipient field (issue #460): one frame with its chips, the input for the next one under them
+    /// and `folds` (Cc, Bcc, `folds_width` wide) at the top right. The suggestions hang under it.
+    fn recipients<'a>(
+        &'a self,
+        which: Field,
+        anchors: &Anchors,
+        narrow: bool,
+        folds: Vec<Element<'a, Message>>,
+        folds_width: f32,
+    ) -> Element<'a, Message> {
         let held = self.field(which);
         let on_input: fn(String) -> Message = match which {
             Field::To => Message::To,
             Field::Cc => Message::Cc,
             Field::Bcc => Message::Bcc,
         };
-        let input = widgets::anchored(anchors.of(which), self.input(which.id(), &held.typed, on_input, Some(which)));
-        if held.chips.is_empty() {
-            return input;
-        }
-        let chips = held.chips.iter().enumerate().map(|(i, chip)| self.recipient_chip(which, i, chip)).collect();
-        column![widgets::chip_row(chips), input].spacing(space::xs()).width(Fill).into()
+        let editable = self.editable();
+        let input: Element<'_, Message> = text_input("", &held.typed)
+            .id(which.id())
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
+            .font(typo::body().font)
+            .padding(style::INPUT_PADDING)
+            .width(Fill)
+            .style(style::text_input_flat)
+            .on_input_maybe(editable.then_some(on_input))
+            .on_submit_maybe(editable.then_some(Message::Submit(which)))
+            .into();
+        let folds = row(folds).spacing(space::xs()).align_y(Alignment::Center);
+        let body: Element<'_, Message> = if held.chips.is_empty() {
+            row![input, folds].align_y(Alignment::Center).into()
+        } else {
+            // A chip's name gives way before the field is full: the ✕ and the folds keep their room.
+            let room = (self.field_room(narrow) - folds_width - size::control_sm() - 4.0 * space::s())
+                .clamp(size::control_sm(), size::props());
+            let chips =
+                held.chips.iter().enumerate().map(|(i, chip)| self.recipient_chip(which, i, chip, room)).collect();
+            let top = row![container(widgets::chip_row(chips)).width(Fill), folds].align_y(Alignment::Start);
+            column![container(top).padding(Padding::new(space::xs()).bottom(0.0)), input].into()
+        };
+        widgets::anchored(anchors.of(which), container(body).width(Fill).style(style::container::field))
     }
 
     /// A recipient as a chip with its ✕: a person by name (the address in the tooltip), a word that is
     /// no address with the alert icon and a tooltip that says so.
-    fn recipient_chip<'a>(&self, which: Field, index: usize, chip: &'a Chip) -> Element<'a, Message> {
+    fn recipient_chip<'a>(&self, which: Field, index: usize, chip: &'a Chip, room: f32) -> Element<'a, Message> {
         let (chip, tip): (Element<'a, Message>, String) = match chip {
             Chip::Person(who) => {
                 let name = who.name.as_deref().map(list::one_line).filter(|name| !name.is_empty());
-                let label = typo::ellipsize(name.as_deref().unwrap_or(&who.address), typo::meta(), size::props());
+                let label = typo::ellipsize(name.as_deref().unwrap_or(&who.address), typo::meta(), room);
                 (widgets::chip(Some(Mark::Icon(Icon::User)), label, None), format_address(who))
             }
             Chip::Broken(word) => {
                 let alert = icon::icon(Icon::CircleAlert, icon::SIZE_SM)
                     .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
-                let label = typo::ellipsize(&list::one_line(word), typo::meta(), size::props());
+                let label = typo::ellipsize(&list::one_line(word), typo::meta(), room);
                 (widgets::chip_led(alert, label, None), tr("This isn't a valid address.").to_owned())
             }
         };
@@ -2637,7 +2680,9 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     /// The suggestions under their field (issue #460): contacts and groups, then apart the addresses
     /// known only from mail, then the keys.
-    fn suggestion_list<'a>(&'a self, open: &'a Suggestions, anchors: &Anchors) -> Element<'a, Message> {
+    fn suggestion_list<'a>(&'a self, open: &'a Suggestions, anchors: &Anchors, narrow: bool) -> Element<'a, Message> {
+        // Never wider than its field: a narrow window keeps the card inside.
+        let width = size::panel().min(self.field_room(narrow));
         let mut list = column![];
         let title = |words: &'static str| {
             container(typo::text(typo::caption(), words).style(theme::text_3))
@@ -2652,7 +2697,7 @@ impl<S: ComposeSource + 'static> Window<S> {
                 seen_title = true;
                 list = list.push(title(tr("From mail, not in contacts")));
             }
-            list = list.push(self.suggestion_row(i, item, i == open.highlight));
+            list = list.push(self.suggestion_row(i, item, i == open.highlight, width));
         }
         if let Some(problem) = &open.problem {
             let line = typo::text(typo::meta(), problem.as_str())
@@ -2664,7 +2709,6 @@ impl<S: ComposeSource + 'static> Window<S> {
             widgets::kbd(tr("Down")),
             typo::text(typo::meta(), tr("choose")).style(theme::text_3),
             widgets::kbd("Enter"),
-            widgets::kbd("Tab"),
             typo::text(typo::meta(), tr("take")).style(theme::text_3),
             widgets::kbd("Esc"),
             typo::text(typo::meta(), tr("close")).style(theme::text_3),
@@ -2676,13 +2720,19 @@ impl<S: ComposeSource + 'static> Window<S> {
         let line =
             container(iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]);
         list = list.push(line).push(container(keys).padding(Padding::new(space::xs()).left(space::s())));
-        let card = container(list).width(size::panel()).padding(style::MENU_INSET).style(style::container::menu);
+        let card = container(list).width(width).padding(style::MENU_INSET).style(style::container::menu);
         widgets::floating(anchors.of(open.field), Placement::Below(Align::Start), card, Message::CloseSuggestions)
     }
 
     /// One suggestion: picture or mark, name, address, and at the end when mail last went there, the
     /// favourite, the size of a group, or "+ Contact".
-    fn suggestion_row<'a>(&'a self, index: usize, item: &'a RecipientSuggestion, lit: bool) -> Element<'a, Message> {
+    fn suggestion_row<'a>(
+        &'a self,
+        index: usize,
+        item: &'a RecipientSuggestion,
+        lit: bool,
+        width: f32,
+    ) -> Element<'a, Message> {
         let edge = size::tile_sm();
         let lead: Element<'a, Message> = match item.kind {
             SuggestionKind::Contact => {
@@ -2698,26 +2748,46 @@ impl<S: ComposeSource + 'static> Window<S> {
             _ if item.name.trim().is_empty() => (item.address.clone(), String::new()),
             _ => (item.name.clone(), item.address.clone()),
         };
-        let name = typo::ellipsize(&list::one_line(&name), typo::body(), size::props() / 2.0);
-        let detail = typo::ellipsize(&list::one_line(&detail), typo::meta(), size::props() / 3.0);
         let day = |at: DateTime<Utc>| datetime::format_day_month(datetime::to_local(at).date());
-        let trail: Element<'a, Message> = match item.kind {
-            SuggestionKind::Group => quiet(tr("Add all").to_owned()).into(),
-            SuggestionKind::Seen if self.writable_book.is_some() => widgets::text_button(
-                Some(Icon::UserPlus),
-                tr("Contact"),
-                style::button::ghost,
-                self.editable().then_some(Message::AddContact(index)),
-            ),
-            SuggestionKind::Seen => match item.last_seen.max(item.last_sent) {
-                Some(at) => quiet(trf("Last mail {date}", &[("date", &day(at))])).into(),
-                None => Space::new().into(),
-            },
-            SuggestionKind::Contact => match (item.last_sent, item.favorite) {
-                (Some(at), _) => quiet(trf("Last {date}", &[("date", &day(at))])).into(),
-                (None, true) => quiet(tr("Favorite").to_owned()).into(),
-                (None, false) => Space::new().into(),
-            },
+        let (trail, trail_width): (Element<'a, Message>, f32) = {
+            let words = |text: String| {
+                let wide = typo::text_width(&text, typo::meta());
+                (quiet(text).into(), wide)
+            };
+            match item.kind {
+                SuggestionKind::Group => words(tr("Add all").to_owned()),
+                SuggestionKind::Seen if self.writable_book.is_some() => (
+                    widgets::text_button(
+                        Some(Icon::UserPlus),
+                        tr("Contact"),
+                        style::button::ghost,
+                        self.editable().then_some(Message::AddContact(index)),
+                    ),
+                    widgets::text_button_width(true, tr("Contact")),
+                ),
+                SuggestionKind::Seen => match item.last_seen.max(item.last_sent) {
+                    Some(at) => words(trf("Last mail {date}", &[("date", &day(at))])),
+                    None => (Space::new().into(), 0.0),
+                },
+                SuggestionKind::Contact => match (item.last_sent, item.favorite) {
+                    (Some(at), _) => words(trf("Last {date}", &[("date", &day(at))])),
+                    (None, true) => words(tr("Favorite").to_owned()),
+                    (None, false) => (Space::new().into(), 0.0),
+                },
+            }
+        };
+        // The room between the face and the end: the name takes at most half, the address the rest;
+        // the size of a group is never cut.
+        let room = width - 2.0 * style::MENU_INSET - 2.0 * space::s() - edge - 3.0 * space::s() - trail_width;
+        let name_room = match item.kind {
+            SuggestionKind::Group => room - typo::text_width(&detail, typo::meta()) - space::s(),
+            _ => room / 2.0,
+        };
+        let name = typo::ellipsize(&list::one_line(&name), typo::body(), name_room.max(edge));
+        let detail_room = room - typo::text_width(&name, typo::body()) - space::s();
+        let detail = match item.kind {
+            SuggestionKind::Group => detail,
+            _ => typo::ellipsize(&list::one_line(&detail), typo::meta(), detail_room.max(0.0)),
         };
         // Name and address give way to the end of the row: cut with "…", never past the card.
         let words = row![typo::text(typo::body(), name).wrapping(Wrapping::None), quiet(detail)]
@@ -2725,9 +2795,10 @@ impl<S: ComposeSource + 'static> Window<S> {
             .align_y(Alignment::Center);
         let content =
             row![lead, container(words).width(Fill).clip(true), trail].spacing(space::s()).align_y(Alignment::Center);
+        // As high as the button "+ Contact" in it.
         button(container(content).center_y(Fill))
             .width(Fill)
-            .height(size::row_sidebar())
+            .height(size::control_sm())
             .padding(style::ITEM_PADDING)
             .style(style::button::menu_item(lit))
             .on_press(Message::Take(index))
@@ -2786,7 +2857,13 @@ impl<S: ComposeSource + 'static> Window<S> {
             .iter()
             .enumerate()
             .map(|(i, sender)| {
-                MenuItem::new(Icon::Mail, sender.address.clone(), Message::PickFrom(i)).current(i == self.from)
+                let name = list::one_line(&sender.name);
+                let item = if name.is_empty() {
+                    MenuItem::new(Icon::Mail, sender.address.clone(), Message::PickFrom(i))
+                } else {
+                    MenuItem::new(Icon::Mail, name, Message::PickFrom(i)).detail(sender.address.clone())
+                };
+                item.current(i == self.from)
             })
             .collect();
         widgets::floating(
@@ -3288,13 +3365,16 @@ fn face<'a>(name: &str, photo: Option<&image::Handle>, edge: f32) -> Element<'a,
     if let Some(photo) = photo {
         return image(photo.clone()).width(edge).height(edge).border_radius(edge / 2.0).into();
     }
-    let letters = typo::text(typo::micro(), list::initials(name)).style(theme::text).wrapping(Wrapping::None);
+    let letters = typo::text(typo::caption(), list::initials(name)).style(theme::text).wrapping(Wrapping::None);
     container(letters)
         .center(edge)
-        .style(move |t: &Theme| container::Style {
-            background: Some(iced::Background::Color(palette(t).raised)),
-            border: iced::border::rounded(edge / 2.0),
-            ..container::Style::default()
+        .style(move |t: &Theme| {
+            let p = palette(t);
+            container::Style {
+                background: Some(iced::Background::Color(p.selected)),
+                border: iced::border::rounded(edge / 2.0).color(p.line_strong).width(size::HAIRLINE),
+                ..container::Style::default()
+            }
         })
         .into()
 }
@@ -3308,16 +3388,13 @@ fn field<'a>(label: &'static str, control: impl Into<Element<'a, Message>>) -> E
     row![label, control.into()].spacing(space::s()).align_y(Alignment::Start).into()
 }
 
-/// The account's signature under the text: read-only, because the core adds it to the message.
+/// The account's signature under the text: read-only, because the core adds it to the message. Its
+/// label sets it apart; no line, which would double the focus ring of the text above it (#460).
 fn signature_block(signature: &str) -> Element<'_, Message> {
     let label = container(typo::text(typo::meta(), tr("Signature")).style(theme::text_3).wrapping(Wrapping::None));
-    column![
-        iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule),
-        row![label.width(label_width()), typo::text(typo::meta(), list::plain(signature)).style(theme::text_2)]
-            .spacing(space::s()),
-    ]
-    .spacing(space::s())
-    .into()
+    row![label.width(label_width()), typo::text(typo::meta(), list::plain(signature)).style(theme::text_2)]
+        .spacing(space::s())
+        .into()
 }
 
 /// A sentence that something did not work, in a line of the form: the alert icon (the colour only
@@ -3325,6 +3402,9 @@ fn signature_block(signature: &str) -> Element<'_, Message> {
 fn notice_line(notice: &Notice, dismiss: Option<Message>) -> Element<'_, Message> {
     let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
+    // On the middle of the sentence's first line.
+    let line = typo::body().line_height.to_absolute(typo::body().size).0;
+    let alert = container(alert).center_y(line);
     let mut words = column![typo::text(typo::body(), notice.what.as_str())].spacing(space::xs());
     if let Some(why) = &notice.why {
         words = words.push(typo::text(typo::meta(), why.as_str()).style(theme::text_3));
