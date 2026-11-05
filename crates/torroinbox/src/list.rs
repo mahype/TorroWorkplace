@@ -1407,10 +1407,16 @@ pub(crate) struct SlimLines<'a> {
     pub hits: Option<Hits<'a>>,
 }
 
-/// The height of a row of the mail window's slim list (issue #458): two lines of `BODY`, [`space::m()`]
+/// The air above and below the two lines of a slim row (issue #458): [`space::m()`] and a hairline,
+/// 13 in the standard design as in the draft.
+pub fn slim_air() -> f32 {
+    space::m() + size::HAIRLINE
+}
+
+/// The height of a row of the mail window's slim list (issue #458): two lines of `BODY`, [`slim_air`]
 /// above and below them, and the hairline under the row.
 pub fn slim_message_height() -> f32 {
-    2.0 * typo::line_height(typo::body()) + 2.0 * space::m() + size::HAIRLINE
+    2.0 * typo::line_height(typo::body()) + 2.0 * slim_air() + size::HAIRLINE
 }
 
 /// The height of a day's head over the slim list's rows (issue #458, [`day_head`]): a line of
