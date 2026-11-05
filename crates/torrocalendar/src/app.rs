@@ -60,7 +60,7 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::links;
 use torro_gui::panel::{self, PanelMode};
-use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons, TopRow};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
@@ -609,7 +609,8 @@ pub struct App {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
+    /// The free top row (or the band of a window without it) was pressed: drag the window (see
+    /// [`shell::TopRow`], [`shell::titlebar`]).
     DragWindow,
     /// Another start of the calendar asked for this window (issue #279, [`torro_gui::instance`]):
     /// bring it to the front.
@@ -657,7 +658,7 @@ pub enum Message {
     /// The ‹ › of the radar's "Coming days": browse its mini radars by this many weeks, the radar
     /// staying on its day.
     ComingPage(i64),
-    /// The gear in the band or "Settings" in the sidebar: the settings take the content area, or
+    /// The settings button in the top row (issue #459): the settings take the content area, or
     /// give it back to the calendar (task S.19).
     ToggleSettings,
     /// One of the settings' own messages ([`Host`]).
@@ -1129,6 +1130,8 @@ impl App {
                 }
             }
             Message::Refresh => {
+                // From the menu of a narrow window's "Day ▾" ([`App::view_menu`]).
+                self.close_menus();
                 let source = self.source.clone();
                 let sync =
                     Task::perform(async move { source.sync().await.map_err(|e| e.to_string()) }, |_| Message::Tick);
@@ -1390,28 +1393,40 @@ impl App {
         )
     }
 
-    /// The window with the zoom badge over it.
+    /// The window with the zoom badge over it. The shell brings its top row (issue #459); the views
+    /// without it (signing in, loading, the glance) keep the band.
     pub fn view(&self) -> Element<'_, Message> {
         let content = self.zoom.view(self.content());
-        let (surface, cover, buttons) = (self.surface(), self.cover(), self.title_buttons());
+        if self.has_top_row() {
+            return widgets::ctrl_guard(content);
+        }
+        let (surface, cover) = (self.surface(), self.cover());
+        let buttons = TitleButtons::none();
         widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, buttons, Message::DragWindow))
     }
 
-    /// The panel button and "Settings" in the band above the window (U.10). Signing in and the
-    /// glance have no sidebar to toggle, nor room for the buttons.
-    fn title_buttons(&self) -> TitleButtons<Message> {
-        let class = self.class();
-        if !self.connected() || is_glance(class) {
-            return TitleButtons::none();
+    /// Whether [`App::content`] is the shell with its top row: not before the account is known, not
+    /// while signing in (unless the settings are open), and not as a glance.
+    fn has_top_row(&self) -> bool {
+        match &self.account {
+            None => false,
+            Some(AccountState::NotConnected | AccountState::SigningIn { .. }) if self.settings.is_none() => false,
+            Some(_) => !is_glance(self.class()),
         }
+    }
+
+    /// The window's top row (issue #459): the switcher, the panel button, the settings, and what lies
+    /// over the top of the window.
+    fn top_row(&self, class: SizeClass, switcher: &Anchor) -> TopRow<Message> {
         let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
-        TitleButtons::none()
+        TopRow::new(AppId::CALENDAR, switcher, Message::Switcher, self.zoom.factor(), Message::DragWindow)
             .sidebar(label, Message::ToggleSidebar)
             .settings(Message::ToggleSettings)
             .settings_open(self.settings.is_some())
+            .cover(self.cover())
     }
 
-    /// What lies over the top of the window, which the title band repeats: the editor's panel over
+    /// What lies over the top of the window, which the top row repeats: the editor's panel over
     /// the view, else the drawer. Nothing while signing in or in a glance, which have neither.
     fn cover(&self) -> Cover {
         let class = self.class();
@@ -1523,12 +1538,13 @@ impl App {
             }
         };
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
-            .then(|| self.sidebar(SidebarMode::Rail, class, &switcher));
-        let sidebar = self.sidebar(SidebarMode::Expanded, class, &switcher);
+            .then(|| self.sidebar(SidebarMode::Rail, class));
+        let sidebar = self.sidebar(SidebarMode::Expanded, class);
         shell::shell(class, sidebar, header, body, props)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(overlay)
+            .top_row(self.top_row(class, &switcher))
             .into()
     }
 
@@ -1546,7 +1562,9 @@ impl App {
     ///   The timeline's "Nights" is the moon alone.
     /// - **Narrow:** without the note and "Today" (the small month in the drawer and the T key go
     ///   to today), the day as "Wed, 7 Oct", and "New event" reduced to "+". "Day ▾" names the
-    ///   view shown ([`App::shown`]).
+    ///   view shown ([`App::shown`]). The top row leaves no room for ‹ › and refresh (issue #459):
+    ///   the arrow keys, the week strip and the small month in the drawer browse the days, and
+    ///   "Refresh" stands in the menu of "Day ▾" ([`App::view_menu`]).
     fn header<'a>(&'a self, class: SizeClass, views: &Anchor, night_button: &Anchor) -> Element<'a, Message> {
         let (title, note) = self.title_parts();
         let prev = widgets::icon_button(Icon::ChevronLeft, tr("Previous"), Some(Message::Prev));
@@ -1595,25 +1613,20 @@ impl App {
                 CalView::Radar => short_date(self.radar_start().date()),
                 _ => title,
             };
-            let title = row![shell::header_title(None, title, None), row![prev, next].spacing(space::xs())]
-                .spacing(space::s())
-                .align_y(Alignment::Center);
             let primary = widgets::compact_button(Icon::Plus, tr("New event"), style::button::primary, Some(new_event));
-            // Where the band has the panel button (macOS), the header leaves it out.
-            let toggle = (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ToggleDrawer));
-            shell::header_bar(toggle, title, [select(), refresh, primary])
+            shell::header_bar([], shell::header_title(None, title, None), [select(), primary])
         }
     }
 
     /// The sidebar (`calendar.html`, `.sidebar`): app switcher, small month, the views with their
     /// keys, the calendars with their colour, visibility and number of loaded events, and at the
-    /// bottom "Open Tasks ↗" and "Settings" (the latter in the band on macOS).
+    /// bottom "Open Tasks ↗"; the switcher and "Settings" lie in the top row (issue #459).
     ///
     /// As a drawer (medium, narrow) it leaves out the views: they are in the header's "Week ▾"
     /// menu already. As the rail (`mode`, U.2) it leaves out the small month, which has no icon
     /// form, and keeps the views as icons. What does not fit the window's height scrolls between
     /// the switcher and the footer ([`shell::sidebar`], U.12).
-    fn sidebar<'a>(&'a self, mode: SidebarMode, class: SizeClass, switcher: &Anchor) -> Element<'a, Message> {
+    fn sidebar<'a>(&'a self, mode: SidebarMode, class: SizeClass) -> Element<'a, Message> {
         let mut items = Vec::new();
         if mode == SidebarMode::Expanded {
             let shown = match self.shown() {
@@ -1684,23 +1697,14 @@ impl App {
                 open,
             ));
         }
-        // Where the band has it (macOS, U.10), "Settings" sits in its top right corner.
-        if !shell::has_band() {
-            footer.push(widgets::sidebar_item_in(
-                mode,
-                Icon::Settings,
-                tr("Settings"),
-                Trail::None,
-                self.settings.is_some(),
-                Message::ToggleSettings,
-            ));
-        }
-        let head = shell::sidebar_head(mode, AppId::CALENDAR, switcher, Message::Switcher, Message::ToggleSidebar);
+        // "Settings" sits in the top row's right corner (issue #459), the switcher at its left.
+        let head = shell::sidebar_tools(mode, true, Message::Switcher);
         shell::sidebar(head, items, footer)
     }
 
     /// The menu under "Week ▾": the views with their keys, then the calendars with a check box
-    /// that shows and hides them (the menu stays open for that).
+    /// that shows and hides them (the menu stays open for that). In a narrow window, whose header
+    /// has no room for the refresh button (issue #459), "Refresh" follows at the end.
     fn view_menu(&self) -> Element<'_, Message> {
         let views = CalView::ALL
             .map(|view| {
@@ -1726,6 +1730,9 @@ impl App {
                     MenuSection::titled(title, group.items.into_iter().map(item).collect())
                 }))
             }
+        }
+        if self.class() == SizeClass::Narrow {
+            sections.push(MenuSection::new(vec![MenuItem::new(Icon::RefreshCw, tr("Refresh"), Message::Refresh)]));
         }
         widgets::menu(sections)
     }
@@ -1988,9 +1995,14 @@ impl App {
         layout::of(self.size)
     }
 
-    /// The room under the title band, which the glances fill ([`shell::below_titlebar`]).
+    /// The room under the top row or the title band, which the glances fill ([`shell::below_top_row`],
+    /// [`shell::below_titlebar`]).
     fn content_size(&self) -> Size {
-        shell::below_titlebar(self.size, self.zoom.factor())
+        if self.has_top_row() {
+            shell::below_top_row(self.size, self.zoom.factor())
+        } else {
+            shell::below_titlebar(self.size, self.zoom.factor())
+        }
     }
 
     /// The view on screen: the chosen one, or what the narrow layout shows for it ([`shown_in`]).
@@ -2918,6 +2930,45 @@ mod tests {
         let _ = app.update(Message::Map(app.edits, geo, dark, Some(editor::demo_map(&app.theme()))));
         let _ = app.update(Message::Places(app.edits, "Hafenstr".into(), Ok(editor::demo_places())));
         let _ = app.view();
+    }
+
+    /// Issue #459: the window shows the shell with its top row – switcher, panel button and the
+    /// settings in one row – in every layout with a sidebar or drawer; signing in and the glance keep
+    /// the band.
+    #[test]
+    fn the_window_has_the_top_row_where_it_shows_the_shell() {
+        let mut app = launched(&["--demo"]);
+        for size in [WIDE, Size::new(800.0, 600.0), NARROW] {
+            let _ = app.update(Message::Resized(size));
+            assert!(app.has_top_row(), "{size:?}");
+            let _ = app.view();
+            let _ = app.update(Message::ToggleSettings);
+            assert!(app.has_top_row(), "{size:?}: the settings stand under it too");
+            let _ = app.view();
+            let _ = app.update(Message::ToggleSettings);
+        }
+        let _ = app.update(Message::Resized(MINI));
+        assert!(!app.has_top_row(), "a glance has no top row");
+        let _ = app.view();
+        let mut start = demo_app();
+        let _ = start.update(Message::Resized(WIDE));
+        assert!(!start.has_top_row(), "before the account is known");
+        let _ = start.update(Message::AccountLoaded(Ok(Vec::new())));
+        assert!(!start.has_top_row(), "signing in fills the window");
+        let _ = start.view();
+    }
+
+    /// Issue #459: a narrow header has no room for refresh beside the top row's pieces; its "Day ▾"
+    /// menu carries it, and a refresh closes the menu.
+    #[test]
+    fn a_narrow_window_refreshes_from_the_view_menu() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::Resized(NARROW));
+        let _ = app.update(Message::ToggleMenu(Menu::View));
+        assert_eq!(app.menu, Some(Menu::View));
+        let _ = app.view();
+        let _ = app.update(Message::Refresh);
+        assert_eq!(app.menu, None, "the refresh closes the menu");
     }
 
     #[test]

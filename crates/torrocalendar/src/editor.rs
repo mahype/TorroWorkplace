@@ -1570,7 +1570,7 @@ impl Editor {
                 text_item(repeat::pattern(&choice, start), Message::PickRepeat(Some(Box::new(pick)))).current(on),
             );
         }
-        let custom = MenuItem::new(Icon::SlidersHorizontal, tr("Custom…"), Message::OpenCustom).current(!matched);
+        let custom = MenuItem::new(Icon::CalendarRange, tr("Custom…"), Message::OpenCustom).current(!matched);
         widgets::menu(vec![MenuSection::titled(tr("Repeat"), items), MenuSection::new(vec![custom])])
     }
 
