@@ -636,7 +636,7 @@ fn band_buttons<'a, M: Clone + 'a>(buttons: TitleButtons<M>, cover: Cover, zoom:
     }
     buttons = buttons.push(blank::horizontal());
     if let Some(on_press) = settings {
-        buttons = buttons.push(button_of(Icon::Settings, tr("Settings"), on_press, settings_open));
+        buttons = buttons.push(button_of(SETTINGS_ICON, tr("Settings"), on_press, settings_open));
     }
     // Centred on the line of the traffic lights, not in the band: the line sits lower (see `LIGHTS`).
     let row = buttons.push(blank().width(BAND_TRAILING / zoom)).height(BAND_BUTTON / zoom).align_y(Alignment::Center);
@@ -833,8 +833,9 @@ fn lights_room(zoom: f32) -> f32 {
 /// room, the logo (`logo`, with the rail) and the panel button, [`SIDEBAR_GAP`] apart, and the gap
 /// before the header.
 fn compact_lead_width(logo: bool, zoom: f32) -> f32 {
+    // The pieces of `compact_lead` and the gap of its row between each two of them.
     let logo = if logo { switcher_height() + SIDEBAR_GAP } else { 0.0 };
-    lights_room(zoom) + logo + size::control_sm() + space::s()
+    lights_room(zoom) + SIDEBAR_GAP + logo + size::control_sm() + SIDEBAR_GAP + space::s()
 }
 
 /// The window `window` under its top row ([`Shell::top_row`]): `header` in the row, the row as wide as

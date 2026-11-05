@@ -1829,7 +1829,7 @@ pub mod accounts {
         }
         let items = vec![
             MenuItem::new(Icon::Archive, tr("Storage & search"), Message::OpenStorage),
-            MenuItem::new(Icon::Settings, tr("Server settings"), Message::ServerSettings),
+            MenuItem::new(torro_gui::shell::SETTINGS_ICON, tr("Server settings"), Message::ServerSettings),
         ];
         let remove = vec![MenuItem::new(Icon::Trash2, tr("Remove account…"), Message::AskRemove)];
         let menu = widgets::menu(vec![MenuSection::new(items), MenuSection::new(remove)]);
