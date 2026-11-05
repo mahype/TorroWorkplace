@@ -1710,6 +1710,8 @@ impl Request {
             Request::UpdateSortRule { .. } => &UPDATE_SORT_RULE,
             Request::RemoveSortRule { .. } => &REMOVE_SORT_RULE,
             Request::MoveSortRule { .. } => &MOVE_SORT_RULE,
+            Request::ListSortingOrder => &LIST_SORTING_ORDER,
+            Request::MoveSortingStep { .. } => &MOVE_SORTING_STEP,
             Request::ListMuteOptions { .. } => &LIST_MUTE_OPTIONS,
             Request::MuteItem { .. } => &MUTE_ITEM,
             Request::SetMailPile { .. } => &SET_MAIL_PILE,
@@ -2033,6 +2035,8 @@ pub static CATALOGUE: &[&Command] = &[
     &UPDATE_SORT_RULE,
     &REMOVE_SORT_RULE,
     &MOVE_SORT_RULE,
+    &LIST_SORTING_ORDER,
+    &MOVE_SORTING_STEP,
     &LIST_MUTE_OPTIONS,
     &MUTE_ITEM,
     &SET_MAIL_PILE,
@@ -4017,8 +4021,34 @@ static MOVE_SORT_RULE: Command = Command {
     mcp: Mcp::Tool,
     description: "Moves one sorting rule to `position` (0 first, past the end: last); the others keep their order \
                   around it. Returns all rules in their new order. The first rule that holds decides, so the order \
-                  is what makes a narrow rule win over a broad one. Places count in the list this key sees. \
-                  `not-found` for a rule that is not there or out of reach. Needs the person's approval.",
+                  is what makes a narrow rule win over a broad one. Places count in the list this key sees; mail \
+                  filters keep theirs (inbox_move_sorting_step moves rules and filters in one list). Passing a \
+                  filter needs the rights to change it, else `forbidden`. `not-found` for a rule that is not \
+                  there or out of reach. Needs the person's approval.",
+};
+
+static LIST_SORTING_ORDER: Command = Command {
+    name: "inbox.list_sorting_order",
+    area: Area::Inbox,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists the sorting rules and mail filters in their one order, as `kind` (`rule` or `filter`) and \
+                  `id`. New mail gets the category of the first step from the top that decides: a rule that holds \
+                  or a filter that finds it and sets a category (inbox_list_sort_rules and mail_list_filters say \
+                  what each does). Only the steps you can see; filters only with read access to mail.",
+};
+
+static MOVE_SORTING_STEP: Command = Command {
+    name: "inbox.move_sorting_step",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Moves one sorting rule or mail filter (`kind`, `id`) to `position` (0 first, past the end: last) \
+                  among the steps you see; the others keep their order around it. Returns the order. The first \
+                  step that decides wins, so the order makes a narrow rule or filter win over a broad one. Moving \
+                  a filter, or a step past a filter, needs the rights to change that filter (as \
+                  mail_update_filter), else `forbidden`. `not-found` for a step that is not there or out of \
+                  reach. Needs the person's approval.",
 };
 
 static LIST_MUTE_OPTIONS: Command = Command {
@@ -5565,6 +5595,8 @@ mod tests {
             },
             Request::RemoveSortRule { id: "r1".into() },
             Request::MoveSortRule { id: "r1".into(), position: 0 },
+            Request::ListSortingOrder,
+            Request::MoveSortingStep { kind: torro_inbox::SortingKind::Filter, id: "f1".into(), position: 2 },
             Request::ListMuteOptions { id: "i1".into() },
             Request::MuteItem {
                 id: "i1".into(),
@@ -7439,6 +7471,8 @@ mod tests {
                 "inbox.update_sort_rule",
                 "inbox.remove_sort_rule",
                 "inbox.move_sort_rule",
+                "inbox.list_sorting_order",
+                "inbox.move_sorting_step",
                 "inbox.list_mute_options",
                 "inbox.mute_item",
                 "inbox.set_mail_pile",

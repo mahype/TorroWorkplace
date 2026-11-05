@@ -1709,6 +1709,22 @@ mod tests {
         assert_eq!(request_for("extensions_list_tools", JsonObject::new(), &Utc), Ok(Request::ListExtensionTools));
     }
 
+    /// Issue #454: the order of rules and filters as two tools; a step names its `kind`.
+    #[test]
+    fn the_sorting_order_tools_take_the_kind_of_a_step() {
+        let names: Vec<String> = tools().iter().map(|tool| tool.name.to_string()).collect();
+        assert!(names.iter().any(|name| name == "inbox_list_sorting_order"));
+        let moved =
+            request_for("inbox_move_sorting_step", args(json!({"kind": "filter", "id": "f3", "position": 0})), &Utc);
+        let expected =
+            Request::MoveSortingStep { kind: torro_inbox::SortingKind::Filter, id: "f3".into(), position: 0 };
+        assert_eq!(moved, Ok(expected));
+        let wrong =
+            request_for("inbox_move_sorting_step", args(json!({"kind": "folder", "id": "f3", "position": 0})), &Utc);
+        assert!(wrong.is_err(), "{wrong:?}");
+        assert_eq!(request_for("inbox_list_sorting_order", JsonObject::new(), &Utc), Ok(Request::ListSortingOrder));
+    }
+
     /// A tool of the server `time` ("Time") with `access` in `state`.
     fn time_tool(access: Access, state: ToolState) -> ExtensionTool {
         ExtensionTool {

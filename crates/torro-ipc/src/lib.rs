@@ -2400,6 +2400,25 @@ pub enum Request {
         /// Its new place, 0 first.
         position: u32,
     },
+    /// The sorting rules and mail filters in one order ([`Response::SortingOrder`], issue #454):
+    /// from the top, the first rule that holds or filter that finds a new mail and sets a category
+    /// decides its category. Only the steps the caller sees: rules as `inbox.list_sort_rules`,
+    /// filters only with read access to mail and as `mail.list_filters`.
+    #[serde(rename = "inbox.list_sorting_order")]
+    ListSortingOrder,
+    /// Moves one sorting rule or mail filter to `position` among the steps the caller sees, 0 first
+    /// ([`Response::SortingOrder`], issue #454); the others keep their order around it. A position
+    /// past the end puts it last. `not-found` for a step that is not there or that the caller does
+    /// not see; `forbidden` when the move passes a filter (or moves one) the caller may not change.
+    #[serde(rename = "inbox.move_sorting_step")]
+    MoveSortingStep {
+        /// A rule or a filter.
+        kind: torro_inbox::SortingKind,
+        /// Its id, as `inbox.list_sorting_order` gives it.
+        id: String,
+        /// Its new place among the steps the caller sees, 0 first.
+        position: u32,
+    },
     /// The ways to mute the entry `id` (task E8.6a), for the bell's menu: its conversation, then each
     /// of its traits (sender, domain, list, agent, project, …) with the value the stored entry has,
     /// the words for the menu and whether every choice needs admin access
@@ -4473,6 +4492,11 @@ pub enum Response {
     /// [`Request::RemoveSortRule`], [`Request::MoveSortRule`]).
     SortRules {
         rules: Vec<torro_inbox::SortRule>,
+    },
+    /// The sorting rules and mail filters in their one order ([`Request::ListSortingOrder`],
+    /// [`Request::MoveSortingStep`], issue #454).
+    SortingOrder {
+        steps: Vec<torro_inbox::SortingStep>,
     },
     /// One sorting rule as stored ([`Request::CreateSortRule`], [`Request::UpdateSortRule`]),
     /// with where it stands, 0 first.

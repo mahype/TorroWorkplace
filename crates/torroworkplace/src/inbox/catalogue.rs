@@ -581,21 +581,8 @@ pub(super) fn remove_rule(db: &mut Connection, id: &str) -> Result<(), Failure> 
     if tx.execute("DELETE FROM sort_rules WHERE id = ?1", [id])? == 0 {
         return Err(no_rule(id));
     }
+    tx.execute("DELETE FROM sorting_order WHERE kind = 'rule' AND id = ?1", [id])?;
     let order = order_of(&tx)?;
-    renumber(&tx, &order)?;
-    tx.commit()?;
-    Ok(())
-}
-
-/// Moves the sorting rule `id` to `position` (past the end: last); the others keep their order
-/// around it.
-pub(super) fn move_rule(db: &mut Connection, id: &str, position: u32) -> Result<(), Failure> {
-    let tx = db.transaction()?;
-    let mut order = order_of(&tx)?;
-    let from = order.iter().position(|held| held == id).ok_or_else(|| no_rule(id))?;
-    let moved = order.remove(from);
-    let at = (position as usize).min(order.len());
-    order.insert(at, moved);
     renumber(&tx, &order)?;
     tx.commit()?;
     Ok(())
@@ -725,7 +712,7 @@ fn order_of(db: &Connection) -> Result<Vec<String>, Failure> {
 }
 
 /// Gives the rules of `order` the places 0, 1, 2 …: no gaps, no two in one place.
-fn renumber(db: &Connection, order: &[String]) -> Result<(), Failure> {
+pub(super) fn renumber(db: &Connection, order: &[String]) -> Result<(), Failure> {
     for (position, id) in order.iter().enumerate() {
         db.execute("UPDATE sort_rules SET position = ?2 WHERE id = ?1", params![id, position as i64])?;
     }

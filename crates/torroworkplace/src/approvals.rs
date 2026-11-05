@@ -2729,6 +2729,12 @@ pub struct InboxFacts {
     /// `inbox.move_sort_rule` would change, as stored; `None` when unknown. Boxed: the facts are
     /// held across the awaits of asking for an approval, deep in the stack.
     pub sort_rule: Option<Box<torro_inbox::SortRule>>,
+    /// The mail filter `inbox.move_sorting_step` would move, as the core stores it (issue #454);
+    /// `None` when unknown or for a rule. Filled in by the core, which keeps the filters.
+    pub sort_filter: Option<Box<MailFilter>>,
+    /// The mail filters `inbox.move_sorting_step` or `inbox.move_sort_rule` would pass, as stored
+    /// (issue #454): moving past them changes what they decide, so the summary names them.
+    pub passed: Vec<MailFilter>,
     /// For `inbox.set_mail_pile` (task E19.2): the messages
     /// as the mail store holds them, looked up by the ids the command runs with
     /// (`crate::mail::write::facts`), as for `mail.set_flags`.
@@ -2853,6 +2859,17 @@ fn with_rule_extras(
 
 /// A stored sorting rule in words, for the summaries that change one: "the sorting rule that
 /// files mail from … as \"Invoice\"". From the stored rule, never from the request.
+/// `sentence` with the mail filters a move passes ([`InboxFacts::passed`]), as stored: what they
+/// decide changes with the move (issue #454).
+fn passing(sentence: String, facts: &InboxFacts) -> String {
+    if facts.passed.is_empty() {
+        return sentence;
+    }
+    let filters: Vec<String> =
+        facts.passed.iter().map(|filter| filter_words(filter, None, &facts.categories)).collect();
+    trf("{move}, past the mail filters {filters}", &[("move", &sentence), ("filters", &filters.join("; "))])
+}
+
 fn sort_rule_words(facts: &InboxFacts) -> String {
     match &facts.sort_rule {
         Some(rule) => trf(
@@ -3157,10 +3174,27 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             sentence
         }
         Request::RemoveSortRule { .. } => trf("Remove {rule}", &[("rule", &sort_rule_words(facts))]),
-        Request::MoveSortRule { position, .. } => trf(
-            "Move {rule} to place {n}",
-            &[("rule", &sort_rule_words(facts)), ("n", &(u64::from(*position) + 1).to_string())],
+        Request::MoveSortRule { position, .. } => passing(
+            trf(
+                "Move {rule} to place {n}",
+                &[("rule", &sort_rule_words(facts)), ("n", &(u64::from(*position) + 1).to_string())],
+            ),
+            facts,
         ),
+        // Issue #454: a rule or a filter, by what is stored, and the filters it passes.
+        Request::MoveSortingStep { kind, position, .. } => {
+            let step = match kind {
+                torro_inbox::SortingKind::Rule => sort_rule_words(facts),
+                torro_inbox::SortingKind::Filter => match &facts.sort_filter {
+                    Some(filter) => {
+                        trf("the mail filter {filter}", &[("filter", &filter_words(filter, None, &facts.categories))])
+                    }
+                    None => tr("an unknown mail filter").to_string(),
+                },
+            };
+            let n = (u64::from(*position) + 1).to_string();
+            passing(trf("Move {step} to place {n} of the sorting order", &[("step", &step), ("n", &n)]), facts)
+        }
         Request::SetItemLane { lane, remember: false, .. } => {
             trf("Move {entry} to {lane}", &[("entry", &entry()), ("lane", &lane_name(*lane))])
         }
@@ -6656,6 +6690,28 @@ pub(crate) mod tests {
         assert!(words.contains(torro_core::category::group_label(CategoryGroup::Junk)), "{words}");
         let moved = Request::MoveSortRule { id: "r1".into(), position: 0 };
         assert_eq!(inbox_summary(&moved, &facts), trf("Move {rule} to place {n}", &[("rule", &stored), ("n", &"1")]));
+        // Issue #454: a step of the order of rules and filters, with the filters it passes.
+        let spam = MailFilter {
+            id: "f2".into(),
+            query: "from:spam.example".into(),
+            account: None,
+            file: Some(FilterFile::Trash),
+            mark_read: false,
+            category: None,
+            enabled: true,
+            created: DateTime::<Utc>::UNIX_EPOCH,
+        };
+        let step = Request::MoveSortingStep { kind: torro_inbox::SortingKind::Rule, id: "r1".into(), position: 2 };
+        let passing = InboxFacts { passed: vec![spam.clone()], ..facts.clone() };
+        let words = inbox_summary(&step, &passing);
+        assert!(
+            words.starts_with(&trf("Move {step} to place {n} of the sorting order", &[("step", &stored), ("n", &"3")]))
+        );
+        assert!(words.contains("from:spam.example") && words.contains(tr("move to the trash")), "{words}");
+        let filter = Request::MoveSortingStep { kind: torro_inbox::SortingKind::Filter, id: "f2".into(), position: 0 };
+        let moving = InboxFacts { sort_filter: Some(Box::new(spam)), ..InboxFacts::default() };
+        assert!(inbox_summary(&filter, &moving).contains("from:spam.example"));
+        assert!(inbox_summary(&filter, &InboxFacts::default()).contains(tr("an unknown mail filter")));
         // Without the rule in the inbox nothing is made up.
         let unknown = InboxFacts::default();
         assert_eq!(

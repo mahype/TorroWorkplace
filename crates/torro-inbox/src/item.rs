@@ -878,6 +878,40 @@ pub struct SortRule {
     pub created: DateTime<Utc>,
 }
 
+/// What a step of the sorting order is (issue #454): a sorting rule of the inbox or a mail filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SortingKind {
+    /// A sorting rule, by its id from `inbox.list_sort_rules`.
+    Rule,
+    /// A mail filter, by its id from `mail.list_filters` (`f<n>`).
+    Filter,
+}
+
+/// One step of the order in which sorting rules and mail filters file new mail (issue #454): from
+/// the top, the first rule that holds or filter that finds the mail and sets a category decides
+/// ([`crate::rules::first_category`]). Rules and filters stand in one list; the person moves them
+/// with `inbox.move_sorting_step`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct SortingStep {
+    /// A sorting rule or a mail filter.
+    pub kind: SortingKind,
+    /// Its id: of `inbox.list_sort_rules` for a rule, of `mail.list_filters` for a filter.
+    pub id: String,
+}
+
+impl SortingStep {
+    /// The step of the sorting rule `id`.
+    pub fn rule(id: impl Into<String>) -> SortingStep {
+        SortingStep { kind: SortingKind::Rule, id: id.into() }
+    }
+
+    /// The step of the mail filter `id`.
+    pub fn filter(id: impl Into<String>) -> SortingStep {
+        SortingStep { kind: SortingKind::Filter, id: id.into() }
+    }
+}
+
 /// The most conditions of one [`SortRule`], and the most exceptions (task E15.3).
 pub const SORT_CONDITIONS_MAX: usize = 10;
 

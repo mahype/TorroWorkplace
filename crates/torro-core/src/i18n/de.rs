@@ -4981,6 +4981,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Change {rule}", "Ändern: {rule}"),
     ("Remove {rule}", "Entfernen: {rule}"),
     ("Move {rule} to place {n}", "An Stelle {n} verschieben: {rule}"),
+    ("Move {step} to place {n} of the sorting order", "An Stelle {n} der Sortierreihenfolge verschieben: {step}"),
+    ("{move}, past the mail filters {filters}", "{move}, vorbei an den Mail-Filtern {filters}"),
+    ("the mail filter {filter}", "den Mail-Filter {filter}"),
+    ("an unknown mail filter", "einen unbekannten Mail-Filter"),
+    (
+        "Moving a sorting step past a mail filter, or the filter itself, needs the rights to change that filter.",
+        "Einen Sortierschritt an einem Mail-Filter vorbei oder den Filter selbst zu verschieben braucht das Recht, diesen Filter zu ändern.",
+    ),
     (
         "There are {most} sorting rules already; remove one first.",
         "Es gibt schon {most} Sortierregeln; entfern zuerst eine.",

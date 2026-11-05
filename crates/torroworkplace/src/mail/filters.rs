@@ -463,6 +463,31 @@ fn actions_refusal(rights: &Rights, mark_read: bool, file: Option<&FilterFile>) 
     Ok(())
 }
 
+/// `forbidden` unless a client with `rights` may change `filter` (issue #454): moving a sorting step
+/// past a filter, or the filter itself, changes what it decides, so it needs what
+/// `mail.update_filter` of it would need – admin access to mail, the filter's account in reach (every
+/// account for a filter of every account), admin access to `inbox` for its category and the rights
+/// its actions need ([`actions_refusal`]).
+pub fn passing_refusal(rights: &Rights, filter: &MailFilter) -> Option<Response> {
+    let reach = Reach::Client(rights);
+    let change = Request::UpdateMailFilter {
+        id: filter.id.clone(),
+        query: filter.query.clone(),
+        account: filter.account.clone(),
+        file: filter.file.clone(),
+        mark_read: filter.mark_read,
+        category: filter.category,
+        enabled: None,
+    };
+    let may = rights.allows_request(&change)
+        && visible(reach, filter.account.as_deref())
+        && (filter.category.is_none() || sets_category(reach))
+        && actions_refusal(rights, filter.mark_read, filter.file.as_ref()).is_ok();
+    let why =
+        tr("Moving a sorting step past a mail filter, or the filter itself, needs the rights to change that filter.");
+    (!may).then(|| FilterError::Forbidden(why.to_string()).response())
+}
+
 /// `forbidden`, `not-found` or `error` for a filter `spec` from `reach` (see [`client_refusal`]).
 /// `stored` is the filter a change replaces (`None` for a new one): its category passes unchanged
 /// ([`with_kept`]); everything else is checked as for a new filter.

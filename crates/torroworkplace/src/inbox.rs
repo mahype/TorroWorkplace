@@ -153,8 +153,8 @@ use torro_core::paths::AppPaths;
 use torro_inbox::item::{Facet, FacetKey, ItemTask, MuteEffect, MuteScope, Muted, SourceHealth, TaskDue};
 use torro_inbox::rules::{self, KEEP_DONE_DAYS, MutedEntry, Poster};
 use torro_inbox::{
-    Action, AgentInfo, AgentKind, Item, ItemFilter, Kind, Lane, LaneReason, Link, Rule, RuleEffect, Sender, SourceInfo,
-    SourceKind, SourceRef, State, StateFilter,
+    Action, AgentInfo, AgentKind, Item, ItemFilter, Kind, Lane, LaneReason, Link, Rule, RuleEffect, Sender,
+    SortingKind, SortingStep, SourceInfo, SourceKind, SourceRef, State, StateFilter,
 };
 use torro_ipc::api::{self, Access, Area, HOOK_CLIENT, InboxForbidden, Rights, Selection};
 use torro_ipc::{
@@ -179,7 +179,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 18;
+pub const SCHEMA_VERSION: i64 = 19;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -618,6 +618,22 @@ DELETE FROM rules WHERE effect = 'muted' AND instr(source, 'mail:') = 1 AND (sen
 DELETE FROM muted_mail WHERE rule IS NOT NULL AND rule NOT IN (SELECT id FROM rules);
 UPDATE items SET hidden = NULL WHERE instr(source, 'mail:') = 1;
 DROP TABLE IF EXISTS shown_mail;
+";
+
+/// From schema version 18 to 19 (issue #454): one order for the sorting rules and the mail filters.
+///
+/// - `sorting_order`: one row per step, `kind` `rule` or `filter`, `id` the rule's or the filter's,
+///   `position` its place (0 first). Empty until the person first moves a step: then the filters
+///   stand above the rules, as before. The order is brought in line with the rules and filters there
+///   are whenever it is read ([`torro_inbox::rules::sorting_order`]); the rules keep their own
+///   `sort_rules.position` in the same order.
+const SCHEMA_V19: &str = "
+CREATE TABLE IF NOT EXISTS sorting_order (
+    kind TEXT NOT NULL,
+    id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (kind, id)
+);
 ";
 
 /// How many months the statistics keep the day sums of a source (task E8.8a).
@@ -1232,11 +1248,16 @@ impl Inbox {
                 }
                 Request::UpdateSortRule { id, .. }
                 | Request::RemoveSortRule { id }
-                | Request::MoveSortRule { id, .. } => InboxFacts {
+                | Request::MoveSortRule { id, .. }
+                | Request::MoveSortingStep { kind: SortingKind::Rule, id, .. } => InboxFacts {
                     sort_rule: catalogue::sort_rule_in(db, id)?.map(Box::new),
                     categories: catalogue::catalogue_in(db)?,
                     ..InboxFacts::default()
                 },
+                // The filter and the filters passed come from the core (issue #454).
+                Request::MoveSortingStep { .. } => {
+                    InboxFacts { categories: catalogue::catalogue_in(db)?, ..InboxFacts::default() }
+                }
                 _ => InboxFacts::default(),
             })
         });
@@ -1549,6 +1570,74 @@ impl Inbox {
     ) -> Result<Option<MailCategory>, String> {
         self.work(false, |db| rule_category_in(db, input, invite, auto_submitted, false))
             .map_err(|failure| failure.to_string())
+    }
+
+    /// The order of the sorting steps and the sorting rules (issue #454), for filing new mail and
+    /// for a sorting run: `filters` are the ids of the mail filters there are, in their file's order.
+    pub fn sorting(&self, filters: &[String]) -> Result<(Vec<SortingStep>, Vec<torro_inbox::SortRule>), String> {
+        self.work(false, |db| Ok((sorting_in(db, Some(filters))?, catalogue::sort_rules_in(db)?)))
+            .map_err(|failure| failure.to_string())
+    }
+
+    /// `inbox.list_sorting_order` for `client` ([`Response::SortingOrder`]): the steps it sees, in
+    /// order. `filters` are the ids of the filters there are, `seen_filters` those `client` sees.
+    pub fn sorting_order(&self, client: Option<&ClientInfo>, filters: &[String], seen_filters: &[String]) -> Response {
+        self.work(false, |db| {
+            let order = sorting_in(db, Some(filters))?;
+            Ok(Response::SortingOrder { steps: seen_steps(db, &order, client, seen_filters)? })
+        })
+        .unwrap_or_else(Failure::response)
+    }
+
+    /// What `inbox.move_sorting_step` or `inbox.move_sort_rule` (`request`) of `client` would make of
+    /// the order, without writing it ([`plan_sorting_move`]). `Err` is the answer for the client.
+    pub fn plan_sorting_move(
+        &self,
+        request: &Request,
+        client: Option<&ClientInfo>,
+        filters: &[String],
+        seen_filters: &[String],
+    ) -> Result<SortingMove, Response> {
+        self.work(false, |db| plan_sorting_move(db, request, client, Some(filters), seen_filters))
+            .map_err(Failure::response)
+    }
+
+    /// Writes the order a move planned ([`Inbox::plan_sorting_move`]); the rules take the places it
+    /// gives them. `Err` is the answer for the client.
+    pub fn apply_sorting_move(&self, plan: &SortingMove) -> Result<(), Response> {
+        self.with(|db| {
+            let tx = db.transaction()?;
+            write_sorting(&tx, &plan.new)?;
+            tx.commit()?;
+            Ok(())
+        })
+        .map_err(Failure::response)
+    }
+
+    /// The order of the steps the client sees after a move, as `inbox.move_sorting_step` answers
+    /// ([`Response::SortingOrder`]), or the rules as `inbox.move_sort_rule` answers.
+    pub fn moved_answer(
+        &self,
+        request: &Request,
+        client: Option<&ClientInfo>,
+        filters: &[String],
+        seen_filters: &[String],
+    ) -> Response {
+        match request {
+            Request::MoveSortRule { .. } => self.handle(Request::ListSortRules, client, Utc::now()),
+            _ => self.sorting_order(client, filters, seen_filters),
+        }
+    }
+
+    /// Takes the mail filter `id` out of the order of the sorting steps, when it was removed.
+    pub fn forget_sorting_filter(&self, id: &str) {
+        let removed = self.with(|db| {
+            db.execute("DELETE FROM sorting_order WHERE kind = 'filter' AND id = ?1", [id])?;
+            Ok(())
+        });
+        if let Err(err) = removed {
+            eprintln!("torroworkplace: inbox: cannot take a removed mail filter out of the sorting order: {err}");
+        }
     }
 
     /// Makes a category of the person's own (`inbox.create_category`, task E15.2). `Err` is the
@@ -2505,12 +2594,18 @@ fn answer(
             catalogue::remove_rule(db, &id)?;
             Ok(Response::SortRules { rules: sort_rules_for(db, client)? })
         }
-        Request::MoveSortRule { id, position } => {
-            visible_sort_rule(db, &id, client)?;
-            // A place in the list the client sees, as the full order knows it.
-            let position = full_position(db, client, Some(position))?.unwrap_or(u32::MAX);
-            catalogue::move_rule(db, &id, position)?;
+        request @ Request::MoveSortRule { .. } => {
+            // The filters as the order holds them: the core moves with the filters it knows
+            // (`Inbox::plan_sorting_move`); here only the rules count.
+            let plan = plan_sorting_move(db, &request, client, None, &[])?;
+            let tx = db.transaction()?;
+            write_sorting(&tx, &plan.new)?;
+            tx.commit()?;
             Ok(Response::SortRules { rules: sort_rules_for(db, client)? })
+        }
+        // The order of rules and filters names the filters, which the core keeps (issue #454).
+        other @ (Request::ListSortingOrder | Request::MoveSortingStep { .. }) => {
+            Err(Failure::Invalid(format!("{} is answered by the core", other.operation().name())))
         }
         other => Err(Failure::Invalid(format!("{} is no inbox command", other.operation().name()))),
     }
@@ -4030,6 +4125,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     if version < 18 {
         tx.execute_batch(SCHEMA_V18)?;
     }
+    if version < 19 {
+        tx.execute_batch(SCHEMA_V19)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -4825,6 +4923,133 @@ fn visible_position(db: &Connection, client: Option<&ClientInfo>, id: &str) -> R
 /// it is there, so nothing tells a hidden rule from a missing one.
 fn visible_sort_rule(db: &Connection, id: &str, client: Option<&ClientInfo>) -> Result<torro_inbox::SortRule, Failure> {
     sort_rules_for(db, client)?.into_iter().find(|rule| rule.id == id).ok_or_else(|| catalogue::no_rule(id))
+}
+
+// ----- the order of rules and filters (issue #454) -----
+
+/// A move in the order of the sorting steps, planned before it is done: the order before and after,
+/// and the step that moves. The core checks the filters it passes ([`rules::passed_filters`]) before
+/// it writes `new` ([`Inbox::apply_sorting_move`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SortingMove {
+    pub old: Vec<SortingStep>,
+    pub new: Vec<SortingStep>,
+    pub moved: SortingStep,
+}
+
+/// The column `kind` of `sorting_order` ([`SCHEMA_V19`]).
+fn kind_column(kind: SortingKind) -> &'static str {
+    match kind {
+        SortingKind::Rule => "rule",
+        SortingKind::Filter => "filter",
+    }
+}
+
+/// The order of the steps as stored, first first; rows of a kind this version does not know are
+/// left out.
+fn stored_sorting(db: &Connection) -> Result<Vec<SortingStep>, Failure> {
+    let mut statement = db.prepare("SELECT kind, id FROM sorting_order ORDER BY position, kind, id")?;
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let mut steps = Vec::new();
+    for row in rows {
+        let (kind, id) = row?;
+        match kind.as_str() {
+            "rule" => steps.push(SortingStep::rule(id)),
+            "filter" => steps.push(SortingStep::filter(id)),
+            _ => {}
+        }
+    }
+    Ok(steps)
+}
+
+/// The whole order of the steps, brought in line with the rules there are and the filters `filters`
+/// (their ids in the order of their file; `None`: as stored) – [`rules::sorting_order`].
+fn sorting_in(db: &Connection, filters: Option<&[String]>) -> Result<Vec<SortingStep>, Failure> {
+    let rules: Vec<String> = catalogue::list_rules(db)?.into_iter().map(|rule| rule.id).collect();
+    Ok(rules::sorting_order(&stored_sorting(db)?, &rules, filters))
+}
+
+/// Writes `order` as the order of the steps, and gives the rules their places in the same order.
+fn write_sorting(db: &Connection, order: &[SortingStep]) -> Result<(), Failure> {
+    db.execute("DELETE FROM sorting_order", [])?;
+    for (position, step) in order.iter().enumerate() {
+        db.execute(
+            "INSERT OR IGNORE INTO sorting_order (kind, id, position) VALUES (?1, ?2, ?3)",
+            params![kind_column(step.kind), step.id, position as i64],
+        )?;
+    }
+    let rules: Vec<String> =
+        order.iter().filter(|step| step.kind == SortingKind::Rule).map(|step| step.id.clone()).collect();
+    catalogue::renumber(db, &rules)
+}
+
+/// The steps of `order` that `client` sees: the rules of [`sort_rules_for`], the filters of
+/// `seen_filters` (the core's word: read access to mail and the filter's account in reach). The app
+/// key sees every step.
+fn seen_steps(
+    db: &Connection,
+    order: &[SortingStep],
+    client: Option<&ClientInfo>,
+    seen_filters: &[String],
+) -> Result<Vec<SortingStep>, Failure> {
+    if client.is_none() {
+        return Ok(order.to_vec());
+    }
+    let rules: Vec<String> = sort_rules_for(db, client)?.into_iter().map(|rule| rule.id).collect();
+    Ok(order
+        .iter()
+        .filter(|step| match step.kind {
+            SortingKind::Rule => rules.contains(&step.id),
+            SortingKind::Filter => seen_filters.contains(&step.id),
+        })
+        .cloned()
+        .collect())
+}
+
+/// What `inbox.move_sorting_step` or `inbox.move_sort_rule` of `client` would make of the order
+/// (issue #454), without writing it. `filters`: the ids of the filters there are, in their file's
+/// order (`None`: as stored); `seen_filters`: those `client` sees.
+///
+/// - `inbox.move_sorting_step`: the step goes right before the step `client` sees at `position`
+///   among the others it sees (past the end: last of all). `not-found` for a step it does not see.
+/// - `inbox.move_sort_rule`: the place counts among the rules `client` sees ([`full_position`]);
+///   the rule goes right before the rule that follows it then, else below the last rule
+///   ([`rules::place_rule`]). The filters stay where they are.
+fn plan_sorting_move(
+    db: &Connection,
+    request: &Request,
+    client: Option<&ClientInfo>,
+    filters: Option<&[String]>,
+    seen_filters: &[String],
+) -> Result<SortingMove, Failure> {
+    let old = sorting_in(db, filters)?;
+    match request {
+        Request::MoveSortingStep { kind, id, position } => {
+            let moved = SortingStep { kind: *kind, id: id.clone() };
+            let seen = seen_steps(db, &old, client, seen_filters)?;
+            if !seen.contains(&moved) {
+                return Err(match kind {
+                    SortingKind::Rule => catalogue::no_rule(id),
+                    SortingKind::Filter => Failure::NotFound(tr("No such mail filter.").into()),
+                });
+            }
+            let others: Vec<&SortingStep> = seen.iter().filter(|step| **step != moved).collect();
+            let before = others.get(*position as usize).copied();
+            let new = rules::move_step(&old, &moved, before);
+            Ok(SortingMove { old, new, moved })
+        }
+        Request::MoveSortRule { id, position } => {
+            visible_sort_rule(db, id, client)?;
+            let at = full_position(db, client, Some(*position))?.unwrap_or(u32::MAX) as usize;
+            let mut rules: Vec<String> = catalogue::list_rules(db)?.into_iter().map(|rule| rule.id).collect();
+            rules.retain(|held| held != id);
+            let at = at.min(rules.len());
+            let next = rules.get(at).cloned();
+            let new = rules::place_rule(&old, id, next.as_deref());
+            Ok(SortingMove { old, new, moved: SortingStep::rule(id.clone()) })
+        }
+        other => Err(Failure::Invalid(format!("{} moves no sorting step", other.operation().name()))),
+    }
 }
 
 /// A sorting rule of the mail account `source` (`None`: a rule of the editor, for every account)
@@ -7434,6 +7659,64 @@ pub(crate) mod tests {
         let version: i64 =
             inbox.with(|db| Ok(db.query_row("PRAGMA user_version", [], |row| row.get(0))?)).expect("version");
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    /// Issue #454: the places of `inbox.create_sort_rule` and `inbox.move_sort_rule` still count
+    /// among the rules – a new rule goes right before the rule at its place, a moved one too, else
+    /// below the last rule – and a filter between two rules keeps its place. Removing a rule takes it
+    /// out of the order.
+    #[test]
+    fn rule_places_count_among_the_rules_with_a_filter_between() {
+        use torro_inbox::{SortField, SortingStep};
+        use torro_mail::Category;
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let create = |value: &str, position| Request::CreateSortRule {
+            category: Category::Invoice,
+            conditions: vec![torro_inbox::SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: SortField::Domain,
+                value: value.into(),
+            }],
+            exceptions: Vec::new(),
+            position,
+            enabled: true,
+        };
+        let id = |answer: Response| match answer {
+            Response::SortRule { rule, .. } => rule.id,
+            other => panic!("a sorting rule, got {other:?}"),
+        };
+        let one = id(inbox.handle(create("one.example", None), None, at(8, 0)));
+        let two = id(inbox.handle(create("two.example", None), None, at(8, 1)));
+        let filters = ["f1".to_string()];
+        let order = |inbox: &Inbox| inbox.sorting(&filters).expect("read").0;
+        let (r, f) = (SortingStep::rule, SortingStep::filter);
+        // The filter between the two rules.
+        let between = Request::MoveSortingStep { kind: torro_inbox::SortingKind::Filter, id: "f1".into(), position: 1 };
+        let plan = inbox.plan_sorting_move(&between, None, &filters, &filters).expect("planned");
+        inbox.apply_sorting_move(&plan).expect("written");
+        assert_eq!(order(&inbox), [r(&one), f("f1"), r(&two)]);
+        // At place 1 of the rules: right before the second rule, below the filter.
+        let three = id(inbox.handle(create("three.example", Some(1)), None, at(8, 2)));
+        assert_eq!(order(&inbox), [r(&one), f("f1"), r(&three), r(&two)]);
+        // Moved to place 0: right before the first rule; past the end: below the last rule.
+        let first = Request::MoveSortRule { id: three.clone(), position: 0 };
+        let plan = inbox.plan_sorting_move(&first, None, &filters, &filters).expect("planned");
+        inbox.apply_sorting_move(&plan).expect("written");
+        assert_eq!(order(&inbox), [r(&three), r(&one), f("f1"), r(&two)]);
+        let last = Request::MoveSortRule { id: one.clone(), position: 9 };
+        assert!(matches!(inbox.handle(last, None, at(8, 3)), Response::SortRules { .. }));
+        assert_eq!(order(&inbox), [r(&three), f("f1"), r(&two), r(&one)]);
+        let rules = |inbox: &Inbox| match inbox.handle(Request::ListSortRules, None, at(9, 0)) {
+            Response::SortRules { rules } => rules.into_iter().map(|rule| rule.id).collect::<Vec<_>>(),
+            other => panic!("the sorting rules, got {other:?}"),
+        };
+        assert_eq!(rules(&inbox), [three.clone(), two.clone(), one.clone()], "the rules' own order follows");
+        inbox.handle(Request::RemoveSortRule { id: two.clone() }, None, at(8, 4));
+        assert_eq!(order(&inbox), [r(&three), f("f1"), r(&one)]);
+        inbox.forget_sorting_filter("f1");
+        assert_eq!(inbox.sorting(&[]).expect("read").0, [r(&three), r(&one)]);
     }
 
     /// Task E15.3: sorting rules are made, changed, moved and removed in an order without gaps,
