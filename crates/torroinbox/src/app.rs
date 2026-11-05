@@ -208,7 +208,7 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel;
 use torro_gui::selectable::Selectable;
-use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons, TopRow};
 use torro_gui::source::Source;
 use torro_gui::split::{self, Limits, Split, SplitEvent};
 use torro_gui::theme::{self, Appearance, palette, size, space};
@@ -3154,8 +3154,6 @@ pub enum Message {
     Switcher(Switcher),
     /// Open or close the navigation menu ("For me ▾").
     ToggleNav,
-    /// Open the sidebar drawer (narrow layout).
-    ShowDrawer,
     /// The panel button at the top of the sidebar, or `[`: collapses or expands the sidebar (wide),
     /// opens or closes the drawer (medium, narrow).
     ToggleSidebar,
@@ -4968,10 +4966,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::Switcher(Switcher::New | Switcher::Search) => self.close_menus(),
             Message::ToggleNav => self.toggle_menu(Menu::Nav),
-            Message::ShowDrawer => {
-                self.menu = None;
-                self.drawer = true;
-            }
             Message::ToggleSidebar => return self.toggle_sidebar(),
             Message::UiState(state) => self.sidebar = state.sidebar,
             Message::ToggleOrder => return self.set_order(self.order.toggled()),
@@ -7547,22 +7541,32 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
     }
 
-    /// The bar over the list: field, suggestions, scope and order, the line on the results.
-    fn search_bar(&self, filters: &Anchor) -> Element<'_, Message> {
+    /// The bar over the list: field, suggestions, scope and order, the line on the results. The mail
+    /// window has its field in the top row (issue #459, [`App::mail_head`]) and keeps only the lines
+    /// under it here – none while there is nothing to say.
+    fn search_bar(&self, filters: &Anchor) -> Option<Element<'_, Message>> {
+        let bar = self.search_bar_parts(filters);
+        if self.launch.kind == Kind::Mail && !self.mail_only {
+            return search::below(bar);
+        }
+        Some(search::bar(bar))
+    }
+
+    /// What the search bar shows ([`App::search_bar`], [`App::mail_head`]).
+    fn search_bar_parts(&self, filters: &Anchor) -> search::Bar<'_> {
         let search = self.view.search();
         let status = search
             .filter(|search| !search.query.is_empty() && self.listed == self.view.listing() && self.loaded)
             .map(|_| search::status_line(self.messages.len(), self.more.is_some(), &self.found));
-        search::bar(search::Bar {
+        search::Bar {
             input: &self.search,
             search,
             scopes: self.search_scopes(),
             suggestions: self.search_suggestions(),
             status,
-            full: self.launch.kind == Kind::Mail,
             filters: filters.clone(),
             today: today(),
-        })
+        }
     }
 
     /// "Load more": the next page of the folder or the search.
@@ -10148,28 +10152,33 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         // Always three layers, so the window keeps its state when the hint or the question comes and
         // goes.
+        // The window draws its top row itself (issue #459): the switcher, the panel button and the
+        // settings in one row with the header; the question lies over all of it.
         let window = stack![self.window(class), self.hint_layer(), self.question_layer()].width(Fill).height(Fill);
-        let (surface, cover) = (Surface::of(class), self.cover());
-        let content = self.zoom.view(window);
-        // The panel button and "Settings" in the band above the window (U.10).
-        let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
-        let buttons = TitleButtons::none()
-            .sidebar(label, Message::ToggleSidebar)
-            .settings(Message::OpenSettings)
-            .settings_open(self.settings.is_some());
-        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, buttons, Message::DragWindow))
+        widgets::ctrl_guard(self.zoom.view(window))
     }
 
-    /// What lies over the top of the window, which the title band repeats: the panel of an entry
-    /// over the list, else the drawer. A glance has neither.
+    /// The window's top row (issue #459): the switcher, the panel button, the settings, and what lies
+    /// over the top of the window below the question ([`App::cover`]).
+    fn top_row(&self, class: SizeClass, switcher: &Anchor) -> TopRow<Message> {
+        let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
+        TopRow::new(self.launch.kind.app(), switcher, Message::Switcher, self.zoom.factor(), Message::DragWindow)
+            .sidebar(label, Message::ToggleSidebar)
+            .settings(Message::OpenSettings)
+            .settings_open(self.settings.is_some())
+            .cover(self.cover())
+    }
+
+    /// What lies over the top of the window, which the top row repeats: a dialog of the settings, the
+    /// panel of an entry over the list, else the drawer. A glance has neither. The window's own
+    /// questions ([`App::question_layer`]) lie over the top row and dim it themselves.
     fn cover(&self) -> Cover {
         let class = self.class();
         if self.is_glance() {
             return Cover::Nothing;
         }
-        // A dialog of the settings (the save target's editor) covers the band like the window's own.
-        let question =
-            matches!(self.menu, Some(Menu::DeleteForGood | Menu::Unsubscribe)) || self.settings_dialog(class).is_some();
+        // A dialog of the settings (the save target's editor) lies in the window, under the top row.
+        let question = self.settings_dialog(class).is_some();
         // The overview's panel covers the band like a mail's (issue #409).
         let panel = self.panel_open() || (class == SizeClass::Medium && self.mail_overview_shown());
         Cover::dialog(question).or(Cover::panel(class, panel)).or(Cover::drawer(class, self.drawer))
@@ -10333,13 +10342,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let filters = Anchor::new();
         // Where the overview's "Mute" menu hangs (issue #409).
         let overview_at = Anchor::new();
-        let sidebar = self.sidebar(SidebarMode::Expanded, &switcher, &folders);
+        let sidebar = self.sidebar(SidebarMode::Expanded, &accounts, &folders);
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
-            .then(|| self.sidebar(SidebarMode::Rail, &switcher, &folders));
+            .then(|| self.sidebar(SidebarMode::Rail, &accounts, &folders));
         if let Some(pane) = &self.settings {
             let frame = self.settings_frame(pane, class);
             let settings_rail = matches!(class, SizeClass::Wide | SizeClass::Medium)
-                .then(|| self.sidebar(SidebarMode::Rail, &switcher, &folders));
+                .then(|| self.sidebar(SidebarMode::Rail, &accounts, &folders));
             // The one layer here is the host's own section menu (the medium layout's "Sources ▾").
             // The app switcher cannot be open at the same time: every `Message::Switcher` shows
             // entries again ([`shows_entries`]), so pressing it closes the settings first – as in
@@ -10352,12 +10361,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(overlay)
+                .top_row(self.top_row(class, &switcher))
                 .into();
         }
         // "Focus & reply" (task E19.5) has its own header: the way back, where it is, ↑ ↓.
         let header = match self.focusing() {
             Some(focus) => self.focus_header(class, focus),
-            None => self.header(class, &nav, &accounts),
+            None => self.header(class, &nav, &filters),
         };
         // Two sets (issue #122): the buttons of the panel or the reader (`anchors`), and the row or
         // card under the cursor with its buttons (`rows`). A menu hangs at the button that opened it.
@@ -10498,6 +10508,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(placed.overlay)
+                .top_row(self.top_row(class, &switcher))
                 .into();
         }
         // The wide mail window reads beside the list (task E8.3), without the panel; while nothing is
@@ -10515,6 +10526,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(placed.overlay)
+                .top_row(self.top_row(class, &switcher))
                 .into();
         }
         let side = |panel| self.with_rail(class, &anchors, panel);
@@ -10576,15 +10588,20 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(placed.overlay)
+            .top_row(self.top_row(class, &switcher))
             .into()
     }
 
     /// The header: the view's title (wide with the full sidebar) or the navigation menu (with the
     /// rail, medium, narrow), its count, and the view controls. A mail selection replaces those
     /// controls with its count, Delete and Clear selection without adding a row above the list.
-    fn header<'a>(&'a self, class: SizeClass, nav: &Anchor, accounts: &Anchor) -> Element<'a, Message> {
+    fn header<'a>(&'a self, class: SizeClass, nav: &Anchor, filters: &Anchor) -> Element<'a, Message> {
         if self.is_insights() {
             return self.insights_header(class, nav);
+        }
+        // The mail window's own header over its list (issue #459).
+        if self.launch.kind == Kind::Mail && !self.mail_only && !self.mail_overview_replaces_list(class) {
+            return self.mail_head(class, nav, filters);
         }
         let kind = self.launch.kind;
         let icon = if self.is_hub() && self.sorting { Icon::Inbox } else { kind.view_icon(&self.view) };
@@ -10655,39 +10672,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             if self.orderable() {
                 trailing.push(order_button(self.order, order_words(class, choose_column, arrange)));
             }
-            if kind == Kind::Mail && !self.folders.is_empty() {
-                let fixed_account = self.view.folder().map(|folder| folder.account.as_str()).or_else(|| {
-                    self.view.search().and_then(|search| match &search.scope {
-                        Scope::All => None,
-                        Scope::Account(account) => Some(account.as_str()),
-                        Scope::Folder(folder) => Some(folder.account.as_str()),
-                    })
-                });
-                if let Some(account) = fixed_account {
-                    if matches!(class, SizeClass::Wide | SizeClass::Medium) {
-                        trailing.push(widgets::text_button(
-                            Some(Icon::Folder),
-                            mail::address(account).to_owned(),
-                            style::button::ghost,
-                            None,
-                        ));
-                    }
-                } else {
-                    let label = self.mail_accounts_label();
-                    trailing.push(if class == SizeClass::Wide {
-                        widgets::menu_button(accounts, Some(Icon::ListFilter), label, Message::ToggleMailAccounts)
-                    } else {
-                        widgets::anchored(
-                            accounts,
-                            widgets::icon_button(
-                                if self.mail_accounts.is_some() { Icon::ListFilter } else { Icon::List },
-                                label,
-                                Some(Message::ToggleMailAccounts),
-                            ),
-                        )
-                    });
-                }
-            }
             // "Dismiss all" in "New" of the notifications window (task E8.4), with its word in the wide
             // layout; off while nothing can be dismissed.
             if self.is_board() && self.view == View::Overview {
@@ -10715,9 +10699,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // as in the medium layout, and every view stays one click away.
         let rail = shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail);
         match class {
-            SizeClass::Wide if !rail => {
-                shell::header_bar([], self.mail_path(class, shell::header_title(Some(icon), name, note)), trailing)
-            }
+            SizeClass::Wide if !rail => shell::header_bar([], shell::header_title(Some(icon), name, note), trailing),
             SizeClass::Wide | SizeClass::Medium => {
                 // The count right at the button, as at the title in the wide header: the button's
                 // own padding is the gap.
@@ -10726,8 +10708,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if let Some(note) = note {
                     title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
                 }
-                // The rail at the left has the panel button and the window's mark (issue #127).
-                shell::header_bar([], self.mail_path(class, title.into()), trailing)
+                // The top row has the panel button and the window's mark (issue #459).
+                shell::header_bar([], title, trailing)
             }
             // The overview in place of the list (issue #409): "‹ {view} › Overview", the way back.
             SizeClass::Narrow if self.mail_overview_shown() => {
@@ -10743,7 +10725,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let refresh = widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh));
                 shell::header_bar(self.narrow_leading(), title, [refresh])
             }
-            // Where the band has the panel button (macOS), the header leaves it out.
             SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
                 let mut title =
                     row![widgets::menu_button(nav, Some(icon), name, Message::ToggleNav)].align_y(Alignment::Center);
@@ -10752,31 +10733,96 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if let Some(note) = note.filter(|_| narrow_count(self.launch.kind)) {
                     title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
                 }
-                shell::header_bar(self.narrow_leading(), self.mail_path(class, title.into()), trailing)
+                shell::header_bar(self.narrow_leading(), title, trailing)
             }
         }
     }
 
-    /// The path over the mail window's list (issue #409): "Overview" as a small framed button – chosen
-    /// while the overview shows, its icon alone where it is narrow –, a chevron, then `title`. Every
-    /// other window keeps `title` alone.
-    fn mail_path<'a>(&self, class: SizeClass, title: Element<'a, Message>) -> Element<'a, Message> {
-        if self.launch.kind != Kind::Mail || self.mail_only {
-            return title;
+    /// Whether the narrow mail window shows its overview in place of the list (issue #409): its header
+    /// then is the way back ("‹ {view} › Overview"), not the list's.
+    fn mail_overview_replaces_list(&self, class: SizeClass) -> bool {
+        class == SizeClass::Narrow && self.mail_overview_shown()
+    }
+
+    /// The mail window's header in the top row (issue #459), as the draft
+    /// (`docs/prototypes/mail-layout/`) has it: over the list the search field with its filters, the
+    /// order, "Refresh" and – in "Reply later" – "Focus & reply"; a selection of mail puts its count,
+    /// Delete and Clear selection in place of order and Refresh. Where the sidebar is not expanded the
+    /// navigation menu leads, and medium and narrow windows have "Show overview" (Esc), the overview's
+    /// way in now that no path stands over the list. Beside the reader of the wide window its own head
+    /// ([`App::reader_head`]) follows behind the line of the split.
+    fn mail_head<'a>(&'a self, class: SizeClass, nav: &Anchor, filters: &Anchor) -> Element<'a, Message> {
+        let mut list = row![].spacing(space::xs()).align_y(Alignment::Center);
+        if shell::sidebar_mode(class, self.sidebar) != Some(SidebarMode::Expanded) {
+            let icon = Some(self.launch.kind.view_icon(&self.view));
+            list = list.push(widgets::menu_button(nav, icon, self.view_label(), Message::ToggleNav));
         }
-        let label = matches!(class, SizeClass::Wide | SizeClass::Medium).then(|| tr("Overview"));
-        let here = self.mail_overview_shown();
-        // Escape shows it only where it stands beside the mail (wide); medium and narrow close it.
-        let key = (class == SizeClass::Wide).then_some("Esc");
-        let crumb = widgets::crumb_button(
-            Icon::ChartColumn,
-            label,
-            tr("Show overview"),
-            key,
-            here,
-            Some(Message::ShowMailOverview),
-        );
-        row![crumb, path_chevron(), title].spacing(space::s()).align_y(Alignment::Center).into()
+        if class != SizeClass::Wide {
+            let overview = widgets::crumb_button(
+                Icon::ChartColumn,
+                None,
+                tr("Show overview"),
+                Some("Esc"),
+                self.mail_overview_shown(),
+                Some(Message::ShowMailOverview),
+            );
+            list = list.push(overview);
+        }
+        if self.shows_search() {
+            list = list.push(search::field(&self.search_bar_parts(filters)));
+        } else {
+            list = list.push(Space::new().width(Fill));
+        }
+        if !self.selected_mail.is_empty() {
+            let count = self.selected_mail.len().to_string();
+            let selected = trf("{n} messages selected", &[("n", &count)]);
+            list = list
+                .push(widgets::with_tooltip(
+                    typo::text(typo::caption(), count).style(theme::text_2).wrapping(Wrapping::None),
+                    selected,
+                ))
+                .push(widgets::compact_button(
+                    Icon::Trash2,
+                    tr("Delete"),
+                    style::button::danger,
+                    Some(Message::DeleteSelectedMail),
+                ))
+                .push(widgets::icon_button(Icon::X, tr("Clear selection"), Some(Message::ClearMailSelection)));
+        } else {
+            list = list.push(order_button(self.order, false)).push(widgets::icon_button(
+                Icon::RefreshCw,
+                tr("Refresh"),
+                Some(Message::Refresh),
+            ));
+            // "Focus & reply" (task E19.5): the one primary button of "Reply later", off while the pile
+            // lists nothing; an icon here, where the field takes the room.
+            if self.view == View::ReplyLater {
+                let start = (!self.messages.is_empty()).then_some(Message::FocusReply);
+                let words = tr("Focus & reply");
+                list =
+                    list.push(widgets::compact_button(Icon::MessageSquareReply, words, style::button::primary, start));
+            }
+        }
+        // Medium and narrow windows show the mail over the list: no reader's head beside it.
+        if class != SizeClass::Wide {
+            return list.into();
+        }
+        // Over the split of the wide window: the list's part ends at the split's line.
+        let inset = shell::head_inset(class, self.sidebar, self.zoom.factor());
+        let width = self.split.width(self.split_limits()) + split::handle_width() / 2.0 - space::l() - inset;
+        row![
+            container(list.padding(Padding::new(0.0).right(space::s()))).width(width.max(0.0)),
+            rule::vertical(size::HAIRLINE).style(style::rule),
+            container(self.reader_head()).width(Fill).padding(Padding::new(0.0).left(space::l())),
+        ]
+        .height(Fill)
+        .align_y(Alignment::Center)
+        .into()
+    }
+
+    /// The head over the reader of the wide mail window (issue #457), in the top row beside the list's.
+    fn reader_head<'a>(&'a self) -> Element<'a, Message> {
+        Space::new().into()
     }
 
     /// The header of Insights (task E8.8b): its title with the span counted ("7 Oct – 13 Oct"), then
@@ -10842,12 +10888,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         shell::header_bar(leading, title, trailing)
     }
 
-    /// The start of the narrow header: the drawer button where the window has no band (the band has
-    /// it on macOS), then the window's mark (issue #127, [`shell::app_mark`]): without sidebar or rail
-    /// nothing else says whether this is the hub, mail or the app feed.
+    /// The start of the narrow header: the window's mark (issue #127, [`shell::app_mark`]): without
+    /// sidebar or rail nothing else says whether this is the hub, mail or the app feed. The panel
+    /// button that opens the drawer stands in the top row (issue #459).
     fn narrow_leading<'a>(&self) -> Vec<Element<'a, Message>> {
-        let toggle = (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ShowDrawer));
-        toggle.into_iter().chain([shell::app_mark(self.launch.kind.app())]).collect()
+        vec![shell::app_mark(self.launch.kind.app())]
     }
 
     /// The quiet number after the title: how many entries the view lists. The title already says
@@ -10976,7 +11021,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let mut content = column![];
         // The search stands above the error line: it belongs to the mail, the error to the list.
         if self.shows_search() {
-            content = content.push(self.search_bar(filters));
+            content = content.extend(self.search_bar(filters));
         }
         // Another folder's messages are still held until this one's come: show loading – or, when
         // they could not be loaded, why, with "Retry" (issue #396), not a loading without end.
@@ -11668,7 +11713,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// The sidebar in `mode`: expanded (wide, drawer) or as the rail of icons. Account folders
     /// are available through "Pin folders"; only chosen pins remain in this navigation.
-    fn sidebar<'a>(&'a self, mode: SidebarMode, switcher: &Anchor, folders: &Anchor) -> Element<'a, Message> {
+    fn sidebar<'a>(&'a self, mode: SidebarMode, accounts: &Anchor, folders: &Anchor) -> Element<'a, Message> {
         let (views, sources) = self.nav_entries();
         let row = |e: NavEntry| {
             let trail = e.trail();
@@ -11738,23 +11783,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 items.extend(sources.into_iter().map(row));
             }
         }
-        // Where the band has it (macOS, U.10), "Settings" sits in its top right corner.
-        let footer = (!shell::has_band())
-            .then(|| {
-                widgets::sidebar_item_in(
-                    mode,
-                    Icon::Settings,
-                    tr("Settings"),
-                    Trail::None,
-                    self.settings.is_some(),
-                    Message::OpenSettings,
-                )
-            })
-            .into_iter()
-            .collect();
-        let (app, search) = (self.launch.kind.app(), self.sidebar_search());
-        let head = shell::sidebar_head_in(mode, app, switcher, Message::Switcher, Message::ToggleSidebar, search);
-        shell::sidebar(head, items, footer)
+        // "Settings" sits in the top row's right corner, the switcher at its left (issue #459).
+        let _ = accounts;
+        let head = shell::sidebar_tools(mode, self.sidebar_search(), Message::Switcher);
+        shell::sidebar(head, items, Vec::new())
     }
 
     /// The rows of one group of "Categories" in the sidebar in `mode` (issue #300): the group as a
@@ -11837,7 +11869,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             sections.push(MenuSection::titled(tr("Sources"), sources.into_iter().map(item).collect()));
         }
         let settings =
-            MenuItem::new(Icon::Settings, tr("Settings"), Message::OpenSettings).current(self.settings.is_some());
+            MenuItem::new(shell::SETTINGS_ICON, tr("Settings"), Message::OpenSettings).current(self.settings.is_some());
         sections.push(MenuSection::new(vec![settings]));
         widgets::menu(sections)
     }
@@ -12610,7 +12642,7 @@ fn segmented_width(labels: &[&str]) -> f32 {
 /// section, it brings the Notification Hub's window forward, and its word says so
 /// ([`rules_word`]) with the arrow of a way out of this window (`leaves`).
 fn rules_entry<'a>(leaves: bool) -> MenuItem<'a, Message> {
-    let entry = MenuItem::new(Icon::Settings, rules_word(leaves), Message::OpenRules);
+    let entry = MenuItem::new(shell::SETTINGS_ICON, rules_word(leaves), Message::OpenRules);
     if leaves { entry.trail(Trail::Icon(Icon::ArrowUpRight)) } else { entry }
 }
 
@@ -13559,7 +13591,7 @@ mod tests {
         let _ = app.update(Message::ToggleNav);
         let _ = app.update(Message::Escape);
         assert!(app.menu.is_none() && app.detail.is_some(), "the menu first");
-        let _ = app.update(Message::ShowDrawer);
+        app.drawer = true;
         let _ = app.update(Message::Escape);
         assert!(!app.drawer && app.detail.is_some(), "then the drawer");
         let _ = app.update(Message::Escape);
@@ -13706,7 +13738,9 @@ mod tests {
         assert_eq!(app.menu, None, "a second click closes the menu");
         let _ = app.update(Message::Switcher(Switcher::Toggle));
         assert_eq!(app.menu, Some(Menu::Switcher));
-        let _ = app.update(Message::ShowDrawer);
+        // The top row's panel button opens the drawer where the sidebar is not beside the content.
+        let _ = app.update(Message::Resized(MEDIUM));
+        let _ = app.update(Message::ToggleSidebar);
         assert!(app.drawer && app.menu.is_none(), "the drawer replaces an open menu");
         let _ = app.update(Message::Show(View::Done));
         assert!(!app.drawer && app.menu.is_none());
@@ -13741,7 +13775,7 @@ mod tests {
                     let _ = app.view();
                     let _ = app.update(Message::ToggleNav);
                     let _ = app.view();
-                    let _ = app.update(Message::ShowDrawer);
+                    app.drawer = true;
                     let _ = app.view();
                     let _ = app.update(Message::CloseMenu);
                     // The triage layers: snooze menu, picker, lane question, mute (a hint), hint.
@@ -14551,7 +14585,7 @@ mod tests {
             let _ = press(&mut app, key);
         }
         assert_eq!((cursor(&app), app.menu, app.sent.len()), (Some("demo-1"), Some(Menu::Nav), 0));
-        let _ = app.update(Message::ShowDrawer);
+        app.drawer = true;
         let _ = press(&mut app, Key::E);
         assert!(app.sent.is_empty());
         let _ = press(&mut app, Key::Sidebar);
@@ -15416,7 +15450,8 @@ mod tests {
         };
         let _ = app.update(Message::AskUnsubscribe(ask.clone()));
         assert_eq!(app.menu, Some(Menu::Unsubscribe));
-        assert_eq!(app.cover(), Cover::Dialog);
+        // The question lies over the top row and dims it itself (issue #459).
+        assert_eq!(app.cover(), Cover::Nothing);
         draw_everywhere(&mut app);
         let _ = app.update(Message::Resized(WIDE));
         let _ = app.update(Message::Escape);
@@ -15497,7 +15532,8 @@ mod tests {
         let _ = press(&mut app, Key::DeleteForGood);
         assert_eq!((app.menu, app.mail_subject.as_deref()), (Some(Menu::DeleteForGood), Some("m:w1")));
         assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Mail(..))), "nothing before the answer");
-        assert_eq!(app.cover(), Cover::Dialog);
+        // The question lies over the top row and dims it itself (issue #459).
+        assert_eq!(app.cover(), Cover::Nothing);
         draw_everywhere(&mut app);
         let _ = app.update(Message::Resized(WIDE));
         for key in [Key::Down, Key::E, Key::Delete, Key::Hash] {
@@ -16858,7 +16894,7 @@ mod tests {
                     let _ = app.update(Message::Act("demo-6".into(), Command::Snooze));
                     let _ = app.view();
                     let _ = app.update(Message::CloseMenu);
-                    let _ = app.update(Message::ShowDrawer);
+                    app.drawer = true;
                     let _ = app.view();
                     let _ = app.update(Message::CloseMenu);
                     let _ = app.update(Message::Select("demo-3".into()));
@@ -19174,10 +19210,11 @@ mod tests {
         let _ = app.update(Message::MailOverviewPeople(key.account, people));
     }
 
-    /// Issue #409: "Overview" in the path and Escape close the mail and show the overview; the view
-    /// and the list's place stay.
+    /// Issue #409: Escape and "Show overview" close the mail and show the overview; the view and the
+    /// list's place stay. Since issue #459 no path stands over the list: the button sits in the top
+    /// row of medium and narrow windows, and the wide one has Escape.
     #[test]
-    fn escape_and_the_path_show_the_overview_and_keep_the_list() {
+    fn escape_and_the_overview_button_show_the_overview_and_keep_the_list() {
         let mut app = mail_window(Density::Compact, &[]);
         let _ = app.update(Message::Resized(WIDE));
         deliver_overview(&mut app);
@@ -19191,7 +19228,7 @@ mod tests {
         assert_eq!((app.view.clone(), app.scroll), (view.clone(), Some((120.0, 600.0))));
         let _ = app.update(Message::SelectMail(first));
         let _ = app.update(Message::ShowMailOverview);
-        assert!(app.mail_overview_shown(), "the path shows the overview");
+        assert!(app.mail_overview_shown(), "the button shows the overview");
         assert_eq!((app.view.clone(), app.scroll), (view, Some((120.0, 600.0))));
         let _ = app.view();
     }
@@ -20802,7 +20839,7 @@ mod tests {
                             let _ = press(&mut app, Key::S);
                             let _ = app.view();
                             let _ = app.update(Message::CloseMenu);
-                            let _ = app.update(Message::ShowDrawer);
+                            app.drawer = true;
                             let _ = app.view();
                             let _ = app.update(Message::CloseMenu);
                             if let Some(id) = app.cursor.clone() {

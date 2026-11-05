@@ -4006,7 +4006,7 @@ pub fn file_menu<'a>(menu: FileMenu<'_>) -> Vec<MenuSection<'a, Message>> {
             .collect();
         sections.push(MenuSection::titled(tr("Save to"), items));
     }
-    let manage = MenuItem::new(Icon::Settings, tr("Manage save targets…"), Message::ManageSaveTargets);
+    let manage = MenuItem::new(torro_gui::shell::SETTINGS_ICON, tr("Manage save targets…"), Message::ManageSaveTargets);
     sections.push(MenuSection::new(vec![manage]));
     sections
 }
