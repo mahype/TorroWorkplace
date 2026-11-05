@@ -194,6 +194,10 @@ pub enum Message {
     ContactsPersonal(bool),
     /// The grip of a step was pressed: it follows the pointer until it is let go.
     Grip(SortingStep),
+    /// The pointer of a drag left the list: let go now, the step stays where it is.
+    Leave,
+    /// Escape during a drag: it ends, nothing moves.
+    CancelDrag,
     /// The pointer of a drag is over the shown step at this place.
     Over(usize),
     /// The pointer was let go: the dragged step goes where it is.
@@ -227,6 +231,8 @@ pub enum Message {
     GroupMenu(Option<CategoryGroup>),
     /// The grip of a category was pressed.
     CategoryGrip(Category),
+    /// The pointer of a category's drag left a group's card.
+    LeaveGroup,
     /// The pointer of a category's drag is over this group's card.
     OverGroup(CategoryGroup),
     /// The pointer was let go: the dragged category goes into the group it is over.
@@ -332,6 +338,23 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             state.drag = Some((step, None));
             Action::None
         }
+        Message::Leave => {
+            if let Some((_, over)) = &mut state.drag {
+                *over = None;
+            }
+            Action::None
+        }
+        Message::CancelDrag => {
+            state.drag = None;
+            state.category_drag = None;
+            Action::None
+        }
+        Message::LeaveGroup => {
+            if let Some((_, over)) = &mut state.category_drag {
+                *over = None;
+            }
+            Action::None
+        }
         Message::Over(at) => {
             if let Some((_, over)) = &mut state.drag {
                 *over = Some(at);
@@ -416,7 +439,12 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             }
             filters::update(&mut state.filters, message, data)
         }
-        Message::Editor(message) => editor::update(&mut state.editor, message, data),
+        // "Edit group…" and "New category…" of a group's menu: the menu goes with the click.
+        Message::Editor(message) => {
+            state.group_menu = None;
+            state.step_menu = None;
+            editor::update(&mut state.editor, message, data)
+        }
         Message::Fold(group) => {
             if !state.folded.remove(&group) {
                 state.folded.insert(group);
@@ -633,7 +661,10 @@ pub fn escape(state: &State) -> Option<Message> {
     if state.model_menu {
         return Some(Message::ModelMenu(false));
     }
-    if state.step_menu.is_some() || state.drag.is_some() {
+    if state.drag.is_some() || state.category_drag.is_some() {
+        return Some(Message::CancelDrag);
+    }
+    if state.step_menu.is_some() {
         return Some(Message::StepMenu(None));
     }
     if state.group_menu.is_some() {
@@ -963,7 +994,14 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Tab::Rules => reading(rules_tab(state, data)),
         Tab::Categories => categories_tab(state, data),
     };
-    page.push(tab).into()
+    let page = page.push(tab);
+    // A drag ends wherever the pointer is let go: over its list it moves (the list knows where),
+    // anywhere else it ends without a move (review of #454).
+    match (&state.drag, &state.category_drag) {
+        (Some(_), _) => mouse_area(page).on_release(Message::Drop).into(),
+        (None, Some(_)) => mouse_area(page).on_release(Message::DropCategory).into(),
+        (None, None) => page.into(),
+    }
 }
 
 /// "Sorting existing mail · 412 of 1,284 · about 4 min left" with its line and Pause/Resume and
@@ -975,16 +1013,25 @@ fn progress<'a>(data: &'a Data) -> Option<Element<'a, Message>> {
             CategoryJobState::Running => (tr("Pause"), CategoryJobControl::Pause),
             _ => (tr("Resume"), CategoryJobControl::Resume),
         };
-        row![
-            widgets::text_button(None, first, style::button::secondary, Some(send(control))),
-            widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(send(CategoryJobControl::Cancel))),
-        ]
-        .spacing(space::s())
-        .align_y(Alignment::Center)
-        .into()
+        // Cancelled already: only "Resume" is left.
+        let cancel = (state != CategoryJobState::Cancelled).then(|| {
+            widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(send(CategoryJobControl::Cancel)))
+        });
+        row![widgets::text_button(None, first, style::button::secondary, Some(send(control)))]
+            .push(cancel)
+            .spacing(space::s())
+            .align_y(Alignment::Center)
+            .into()
     };
+    // A cancelled run or removal stays too, with "Resume", as on the page before (review of #454).
     let unfinished = |state: CategoryJobState| {
-        matches!(state, CategoryJobState::Running | CategoryJobState::Paused | CategoryJobState::Failed)
+        matches!(
+            state,
+            CategoryJobState::Running
+                | CategoryJobState::Paused
+                | CategoryJobState::Failed
+                | CategoryJobState::Cancelled
+        )
     };
     let (words, done, total, buttons, errors) = if let Some(job) =
         data.categorization.clear_job.as_ref().filter(|job| unfinished(job.state))
@@ -1238,7 +1285,7 @@ fn rules_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Some(tr("Top to bottom, the first rule or filter that matches a new mail sets its category. Drag a row by its grip to change the order.").to_string()),
     );
     let list: Element<'a, Message> = match dragging {
-        Some(_) => mouse_area(list).on_release(Message::Drop).interaction(mouse::Interaction::Grabbing).into(),
+        Some(_) => mouse_area(list).on_exit(Message::Leave).interaction(mouse::Interaction::Grabbing).into(),
         None => list,
     };
     let model = match chosen(data) {
@@ -1478,7 +1525,7 @@ fn group_card<'a>(
             };
             mouse_area(card)
                 .on_enter(Message::OverGroup(id))
-                .on_release(Message::DropCategory)
+                .on_exit(Message::LeaveGroup)
                 .interaction(mouse::Interaction::Grabbing)
                 .into()
         }
@@ -1899,6 +1946,17 @@ mod tests {
         let _ = update::<()>(&mut state, Message::Grip(f1.clone()), &data);
         let _ = update::<()>(&mut state, Message::Over(1), &data);
         assert!(sent(update::<()>(&mut state, Message::Drop, &data)).is_empty());
+        // Let go outside the list, or Escape: the drag ends, nothing moves, no later click moves.
+        let _ = update::<()>(&mut state, Message::Grip(f1.clone()), &data);
+        let _ = update::<()>(&mut state, Message::Over(4), &data);
+        let _ = update::<()>(&mut state, Message::Leave, &data);
+        assert!(sent(update::<()>(&mut state, Message::Drop, &data)).is_empty());
+        assert!(state.drag.is_none(), "ended");
+        let _ = update::<()>(&mut state, Message::Grip(f1.clone()), &data);
+        let _ = update::<()>(&mut state, Message::Over(4), &data);
+        let Some(cancel) = escape(&state) else { panic!("Escape ends the drag") };
+        let _ = update::<()>(&mut state, cancel, &data);
+        assert!(state.drag.is_none() && sent(update::<()>(&mut state, Message::Drop, &data)).is_empty());
 
         let _ = update::<()>(&mut state, Message::StepMenu(Some(f1.clone())), &data);
         assert!(overlay(&state, &data).is_some(), "the step's menu");
@@ -1961,6 +2019,13 @@ mod tests {
         let _ = update::<()>(&mut state, Message::GroupMenu(Some(other)), &data);
         assert!(overlay(&state, &data).is_some());
         let _ = update::<()>(&mut state, Message::Editor(editor::Message::EditGroup(other)), &data);
+        assert!(overlay(&state, &data).is_none(), "the menu goes with its click");
+        // A drag let go outside every card ends without a move.
+        let _ = update::<()>(&mut state, Message::CategoryGrip(category), &data);
+        let _ = update::<()>(&mut state, Message::OverGroup(other), &data);
+        let _ = update::<()>(&mut state, Message::LeaveGroup, &data);
+        assert!(sent(update::<()>(&mut state, Message::DropCategory, &data)).is_empty());
+        assert!(state.category_drag.is_none());
         let _ = view(&state, &data);
 
         let _ = update::<()>(&mut state, Message::AskClear, &data);
@@ -1970,7 +2035,8 @@ mod tests {
     }
 
     /// Issue #454: the line of a run or a removal stands under the head while it is unfinished, with
-    /// Pause or Resume and Cancel – a failed removal too ("Reset progress") –, and not when done.
+    /// Pause or Resume and Cancel – a failed removal too ("Reset progress"), a cancelled run with
+    /// Resume –, and not when done.
     #[test]
     fn unfinished_runs_show_their_progress() {
         let job = |state| CategoryJob {
@@ -1999,6 +2065,8 @@ mod tests {
             let data = Data { category_job: Some(job(state)), ..Data::default() };
             assert!(progress(&data).is_some(), "{state:?}");
         }
+        let cancelled = Data { category_job: Some(job(CategoryJobState::Cancelled)), ..Data::default() };
+        assert!(progress(&cancelled).is_some(), "a cancelled run can be resumed, as before");
         let done = Data { category_job: Some(job(CategoryJobState::Complete)), ..Data::default() };
         assert!(progress(&done).is_none());
         let clearing = CategoryClearJob {
