@@ -547,7 +547,7 @@ impl ComposeSource for InboxClient {
     }
 
     async fn suggest(&self, query: String) -> Result<Vec<RecipientSuggestion>, ComposeError> {
-        match ask(self, Request::SuggestRecipients { query, limit: None }).await? {
+        match ask(self, Request::SuggestRecipients { query, limit: None, contacts_only: false }).await? {
             Response::RecipientSuggestions { suggestions } => Ok(suggestions),
             other => Err(unexpected(other)),
         }
@@ -2944,6 +2944,11 @@ fn editor_binding(press: text_editor::KeyPress) -> Option<Binding<Message>> {
 /// The formatting of `Cmd`/`Ctrl` and B, I, U or K (no Shift, no Alt); `None` for other keys.
 fn format_key(key: &Key, modifiers: keyboard::Modifiers) -> Option<Format> {
     let Key::Character(letter) = key.as_ref() else { return None };
+    // `\` takes Option (macOS) or AltGr on a German keyboard, and Shift with them: only the command
+    // key counts for it (issue #460).
+    if letter == "\\" && modifiers.command() {
+        return Some(Format::Clear);
+    }
     if !modifiers.command() || modifiers.shift() || modifiers.alt() {
         return None;
     }
@@ -4576,6 +4581,9 @@ mod tests {
         apply_format(&mut content, Format::Clear);
         assert_eq!(text_of(&content), "Bold and a link\nitem");
         assert_eq!(format_key(&Key::Character("\\".into()), keyboard::Modifiers::COMMAND), Some(Format::Clear));
+        // A German keyboard types `\\` with Option (AltGr) and Shift.
+        let german = keyboard::Modifiers::COMMAND | keyboard::Modifiers::ALT | keyboard::Modifiers::SHIFT;
+        assert_eq!(format_key(&Key::Character("\\".into()), german), Some(Format::Clear));
     }
 
     #[test]
