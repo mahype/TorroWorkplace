@@ -1411,6 +1411,8 @@ pub struct Window<S> {
 #[derive(Debug, Clone, PartialEq)]
 struct Suggestions {
     field: Field,
+    /// What was typed when they came: Enter and Tab take one only while it still is.
+    query: String,
     items: Vec<RecipientSuggestion>,
     /// The line under the keyboard cursor (↑↓); Enter and Tab take it.
     highlight: usize,
@@ -1594,7 +1596,10 @@ impl<S: ComposeSource + 'static> Window<S> {
                 self.edited(|window| window.subject = text);
             }
             Message::Body(action) => {
-                self.leave(None);
+                // Writing or clicking in the text leaves the recipient fields; scrolling does not.
+                if !matches!(action, text_editor::Action::Scroll { .. }) {
+                    self.leave(None);
+                }
                 // Enter in a list item starts the next one (an empty one ends the list).
                 let enter = matches!(action, text_editor::Action::Edit(Edit::Enter));
                 if enter && self.formatted() && continue_list(&mut self.body) {
@@ -1694,7 +1699,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             }
             Message::DismissNotice => self.notice = None,
             Message::Focus(forward) => {
-                if let Some(open) = &self.suggestions {
+                if let Some(open) = self.current_suggestions() {
                     return self.take(open.highlight);
                 }
                 if self.ready() && !self.asking && !self.is_glance() {
@@ -1781,7 +1786,13 @@ impl<S: ComposeSource + 'static> Window<S> {
         }
         match result {
             Ok(items) if !items.is_empty() => {
-                self.suggestions = Some(Suggestions { field, items, highlight: 0, problem: None });
+                self.suggestions = Some(Suggestions {
+                    field,
+                    query: self.field(field).typed.trim().to_owned(),
+                    items,
+                    highlight: 0,
+                    problem: None,
+                });
                 self.fetch_photos()
             }
             _ => {
@@ -1812,6 +1823,12 @@ impl<S: ComposeSource + 'static> Window<S> {
         Task::batch(tasks)
     }
 
+    /// The open suggestions while they belong to what is typed: letters typed after them make them
+    /// out of date until the next answer, and Enter or Tab then must not take an older person.
+    fn current_suggestions(&self) -> Option<&Suggestions> {
+        self.suggestions.as_ref().filter(|open| self.field(open.field).typed.trim() == open.query)
+    }
+
     /// Closes the suggestions; an answer still on its way is dropped.
     fn close_suggestions(&mut self) {
         self.suggestions = None;
@@ -1820,7 +1837,7 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     /// Enter in `field`: the suggestion under the cursor, else chips of what was typed.
     fn submit(&mut self, field: Field) -> Task<Message> {
-        if let Some(open) = self.suggestions.as_ref().filter(|open| open.field == field) {
+        if let Some(open) = self.current_suggestions().filter(|open| open.field == field) {
             return self.take(open.highlight);
         }
         if self.editable() {
@@ -2005,7 +2022,8 @@ impl<S: ComposeSource + 'static> Window<S> {
                     "Hi Maria, hi Jonas,\n\nthe floor plan is attached. **Please reply by Friday.**\n\nAnna",
                 );
                 let items = demo_suggestions("jo", Utc::now());
-                self.suggestions = Some(Suggestions { field: Field::To, items, highlight: 0, problem: None });
+                let query = "jo".to_owned();
+                self.suggestions = Some(Suggestions { field: Field::To, query, items, highlight: 0, problem: None });
                 self.writable_book.get_or_insert_with(|| torro_contacts::demo::CONTACTS.to_owned());
             }
             Some(Open::PaperDark) => {
@@ -2223,8 +2241,10 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     /// Esc: closes what is open, else asks to close the window.
     fn escape(&mut self) -> Task<Message> {
-        if self.suggestions.is_some() {
+        if let Some(field) = self.suggestions.as_ref().map(|open| open.field) {
             self.close_suggestions();
+            // Escape also takes the focus from the field (Iced's input); typing goes on there.
+            return operation::focus(field.id());
         } else if self.tools {
             self.tools = false;
         } else if self.menu {
@@ -2744,6 +2764,7 @@ impl<S: ComposeSource + 'static> Window<S> {
         };
         let quiet = |words: String| typo::text(typo::meta(), words).style(theme::text_3).wrapping(Wrapping::None);
         let (name, detail) = match item.kind {
+            SuggestionKind::Group if item.members.len() == 1 => (item.name.clone(), tr("Group · 1 person").to_owned()),
             SuggestionKind::Group => (item.name.clone(), trf("Group · {n} people", &[("n", &item.members.len())])),
             _ if item.name.trim().is_empty() => (item.address.clone(), String::new()),
             _ => (item.name.clone(), item.address.clone()),
@@ -2756,15 +2777,23 @@ impl<S: ComposeSource + 'static> Window<S> {
             };
             match item.kind {
                 SuggestionKind::Group => words(tr("Add all").to_owned()),
-                SuggestionKind::Seen if self.writable_book.is_some() => (
-                    widgets::text_button(
+                SuggestionKind::Seen if self.writable_book.is_some() => {
+                    let add = widgets::text_button(
                         Some(Icon::UserPlus),
                         tr("Contact"),
                         style::button::ghost,
                         self.editable().then_some(Message::AddContact(index)),
-                    ),
-                    widgets::text_button_width(true, tr("Contact")),
-                ),
+                    );
+                    let add_width = widgets::text_button_width(true, tr("Contact"));
+                    match item.last_seen.max(item.last_sent) {
+                        Some(at) => {
+                            let when = trf("Last mail {date}", &[("date", &day(at))]);
+                            let wide = typo::text_width(&when, typo::meta()) + space::s() + add_width;
+                            (row![quiet(when), add].spacing(space::s()).align_y(Alignment::Center).into(), wide)
+                        }
+                        None => (add, add_width),
+                    }
+                }
                 SuggestionKind::Seen => match item.last_seen.max(item.last_sent) {
                     Some(at) => words(trf("Last mail {date}", &[("date", &day(at))])),
                     None => (Space::new().into(), 0.0),
@@ -2935,7 +2964,9 @@ fn editor_binding(press: text_editor::KeyPress) -> Option<Binding<Message>> {
     if is_send(System::current(), &press.key, press.physical_key, press.modifiers) {
         return Some(Binding::Custom(Message::Send));
     }
-    if let Some(format) = format_key(&press.key, press.modifiers) {
+    if let Some(format) =
+        format_key(&press.key, press.modifiers).or_else(|| clear_key(&press.modified_key, press.modifiers))
+    {
         return Some(Binding::Custom(Message::Format(format)));
     }
     Binding::from_key_press(press)
@@ -2953,6 +2984,12 @@ fn format_key(key: &Key, modifiers: keyboard::Modifiers) -> Option<Format> {
         return None;
     }
     Format::ALL.into_iter().find(|format| format.key().is_some_and(|key| key.eq_ignore_ascii_case(letter)))
+}
+
+/// [`Format::Clear`] by the key as typed (`modified_key`): on a Mac with a German layout Cmd+Option+
+/// Shift+7 reports `/` as the key and `\\` only with the modifiers applied.
+fn clear_key(modified: &Key, modifiers: keyboard::Modifiers) -> Option<Format> {
+    matches!(modified.as_ref(), Key::Character("\\")).then_some(Format::Clear).filter(|_| modifiers.command())
 }
 
 /// `Cmd+B` on macOS, `Ctrl+B` elsewhere, for tooltips.
@@ -3087,7 +3124,8 @@ fn clear(content: &mut Content) {
     if plain == line {
         return;
     }
-    let end = Position { line: at, column: line.chars().count() };
+    // A column is a byte index of the line.
+    let end = Position { line: at, column: line.len() };
     content.move_to(Cursor { position: Position { line: at, column: 0 }, selection: Some(end) });
     paste(content, &plain);
 }
@@ -4528,6 +4566,25 @@ mod tests {
     }
 
     #[test]
+    fn letters_typed_after_the_suggestions_make_enter_keep_what_was_typed() {
+        let mut window = ready(&[]);
+        let _ = window.update(Message::To("jonas".into()));
+        let found = block_on(ComposeSource::suggest(window.source.as_ref(), "jonas".into()));
+        let _ = window.update(Message::Suggested(window.asked, Field::To, found));
+        assert!(window.suggestions.is_some());
+        // Typed on faster than the next answer: Enter takes the address, not the older suggestion.
+        let _ = window.update(Message::To("jonas@neu.example.org".into()));
+        let _ = window.update(Message::Submit(Field::To));
+        assert_eq!(window.to.chips, [Chip::Person(who("", "jonas@neu.example.org"))]);
+        // Scrolling the text keeps what is typed and the list.
+        let _ = window.update(Message::To("emma".into()));
+        let found = block_on(ComposeSource::suggest(window.source.as_ref(), "emma".into()));
+        let _ = window.update(Message::Suggested(window.asked, Field::To, found));
+        let _ = window.update(Message::Body(text_editor::Action::Scroll { lines: 1 }));
+        assert!(window.suggestions.is_some() && window.to.typed == "emma");
+    }
+
+    #[test]
     fn a_group_adds_every_member_that_is_in_no_field_yet() {
         let mut window = ready(&[]);
         let members = demo_suggestions("jour", Utc::now());
@@ -4580,6 +4637,9 @@ mod tests {
         select_all(&mut content);
         apply_format(&mut content, Format::Clear);
         assert_eq!(text_of(&content), "Bold and a link\nitem");
+        let mut umlauts = editor("> äää\n**Grüße**");
+        apply_format(&mut umlauts, Format::Clear);
+        assert_eq!(text_of(&umlauts), "> äää\nGrüße", "a column is a byte index");
         assert_eq!(format_key(&Key::Character("\\".into()), keyboard::Modifiers::COMMAND), Some(Format::Clear));
         // A German keyboard types `\\` with Option (AltGr) and Shift.
         let german = keyboard::Modifiers::COMMAND | keyboard::Modifiers::ALT | keyboard::Modifiers::SHIFT;
