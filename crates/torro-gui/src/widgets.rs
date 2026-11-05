@@ -4277,6 +4277,69 @@ pub fn progress_bar<'a, M: 'a>(done: usize, total: usize) -> Element<'a, M> {
         .into()
 }
 
+/// A progress line across the whole width (issue #454): the track of [`progress_bar`] – 4 high,
+/// round, `line_strong` – with `done` of `total` filled in `ok` from the left. For a long run under
+/// a page's head; put the words ("412 of 1,284") next to or above it, the line alone says nothing
+/// exact. An empty run (`total` 0) shows an empty track.
+pub fn progress_line<'a, M: 'a>(done: u64, total: u64) -> Element<'a, M> {
+    let share = progress_share(done, total);
+    let filled = |portion: u16| {
+        container(blank().width(Fill).height(PROGRESS_HEIGHT)).width(Length::FillPortion(portion)).style(|t| {
+            container::Style {
+                background: Some(Background::Color(palette(t).ok)),
+                border: border::rounded(PROGRESS_HEIGHT / 2.0),
+                ..container::Style::default()
+            }
+        })
+    };
+    let inner: Element<'a, M> = match share {
+        0 => blank().width(Fill).height(PROGRESS_HEIGHT).into(),
+        1000 => filled(1).into(),
+        share => row![filled(share), blank().width(Length::FillPortion(1000 - share)).height(PROGRESS_HEIGHT)].into(),
+    };
+    container(inner)
+        .width(Fill)
+        .height(PROGRESS_HEIGHT)
+        .style(|t| container::Style {
+            background: Some(Background::Color(palette(t).line_strong)),
+            border: border::rounded(PROGRESS_HEIGHT / 2.0),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// The share of `done` in `total` for [`progress_line`], in thousandths – enough for any width a
+/// window has: 0 for an empty run, never above 1000.
+fn progress_share(done: u64, total: u64) -> u16 {
+    if total == 0 { 0 } else { (u128::from(done.min(total)) * 1000 / u128::from(total)) as u16 }
+}
+
+/// The grip of a row that can be dragged into another place (issue #454, after the rows of
+/// torrotasks): `GripVertical` in `text_3`, 14, with `hint` as its tooltip and the hand that grabs.
+/// Pressing it sends `on_press`; the list then follows the pointer over its rows and drops on
+/// release, and shows a [`drop_line`] where the row would go.
+pub fn grip<'a, M: Clone + 'a>(on_press: M, hint: &'a str) -> Element<'a, M> {
+    let mark =
+        container(toned(Icon::GripVertical, icon::SIZE_SM, Tone::Text3)).center_x(icon::SIZE).center_y(icon::SIZE);
+    mouse_area(with_tooltip(mark, hint)).on_press(on_press).interaction(mouse::Interaction::Grab).into()
+}
+
+/// Thickness of a [`drop_line`].
+const DROP_LINE: f32 = 2.0 * size::HAIRLINE;
+
+/// Where a dragged row would go (issue #454, the drop marker of torrotasks): a 2-px line in
+/// `text_2` across the width, round ends. Put it between the rows, at the place.
+pub fn drop_line<'a, M: 'a>() -> Element<'a, M> {
+    container(blank().width(Fill).height(DROP_LINE))
+        .width(Fill)
+        .style(|t: &Theme| container::Style {
+            background: Some(Background::Color(palette(t).text_2)),
+            border: border::rounded(DROP_LINE / 2.0),
+            ..container::Style::default()
+        })
+        .into()
+}
+
 /// A small muted heading over a group of rows: `CAPTION` in `text_3`, in sentence case as written
 /// (Linear uses no capitals for titles).
 pub fn section_title<'a, M: 'a>(title: &str) -> Element<'a, M> {
@@ -6819,6 +6882,7 @@ mod tests {
         assert_eq!(progress_fraction(2, 4), 0.5);
         assert_eq!(progress_fraction(4, 4), 1.0);
         assert_eq!(progress_fraction(5, 4), 1.0, "more done than total stays inside 64 px");
+        assert_eq!((progress_share(0, 0), progress_share(412, 1284), progress_share(9, 4)), (0, 320, 1000));
         assert_eq!((PROGRESS_WIDTH, PROGRESS_HEIGHT), (64.0, 4.0));
     }
 
