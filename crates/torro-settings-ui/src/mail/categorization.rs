@@ -1263,7 +1263,7 @@ fn model_menu<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         sections
             .push(MenuSection::titled(tr("In the cloud · mail leaves this computer"), items(cloud, tr("Cloud"), true)));
     }
-    let more = MenuItem::new(Icon::Settings, tr("More models: Settings › AI"), Message::ManageModels);
+    let more = MenuItem::new(torro_gui::shell::SETTINGS_ICON, tr("More models: Settings › AI"), Message::ManageModels);
     sections.push(MenuSection::new(vec![more]));
     let menu = iced::widget::scrollable(widgets::menu_wide(sections, size::panel()))
         .direction(iced::widget::scrollable::Direction::Vertical(style::scrollbar()))

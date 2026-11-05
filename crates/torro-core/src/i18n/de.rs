@@ -4349,27 +4349,24 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Wähle „Programm verbinden“, um Claude Code, Codex, Gemini CLI, Claude Desktop oder Cursor einzurichten oder einen Schlüssel für ein Skript zu erstellen.",
     ),
     ("Take access away…", "Zugriff entziehen…"),
+    ("Its settings are in its window, at the top right.", "Seine Einstellungen stehen in seinem Fenster, oben rechts."),
     (
-        "Its settings are behind the gear in its window.",
-        "Seine Einstellungen stehen hinter dem Zahnrad in seinem Fenster.",
+        "Calendars and lists are chosen in Calendar and Tasks, in their settings.",
+        "Kalender und Listen wählst du in Kalender und Aufgaben, in deren Einstellungen.",
     ),
     (
-        "Calendars and lists are chosen in Calendar and Tasks, under the gear.",
-        "Kalender und Listen wählst du in Kalender und Aufgaben, unter dem Zahnrad.",
-    ),
-    (
-        "What this account sends to the Notification Hub is switched on there, under the gear.",
-        "Was dieses Konto an die Mitteilungszentrale schickt, schaltest du dort unter dem Zahnrad an.",
+        "What this account sends to the Notification Hub is switched on there, in its settings.",
+        "Was dieses Konto an die Mitteilungszentrale schickt, schaltest du dort in den Einstellungen an.",
     ),
     ("Sender name and signature", "Absendername und Signatur"),
     (
-        "Sender name, signature, how new mail is written and which folder holds what are set in Mail, under the gear.",
-        "Absendername, Signatur, wie neue E-Mails geschrieben werden und welcher Ordner was enthält, stellst du in E-Mail unter dem Zahnrad ein.",
+        "Sender name, signature, how new mail is written and which folder holds what are set in Mail, in its settings.",
+        "Absendername, Signatur, wie neue E-Mails geschrieben werden und welcher Ordner was enthält, stellst du in E-Mail in den Einstellungen ein.",
     ),
     ("New mail", "Neue E-Mails"),
     (
-        "Whether new mail of this account shows up there is set in the Notification Hub, under the gear.",
-        "Ob neue E-Mails dieses Kontos dort auftauchen, stellst du in der Mitteilungszentrale unter dem Zahnrad ein.",
+        "Whether new mail of this account shows up there is set in the Notification Hub, in its settings.",
+        "Ob neue E-Mails dieses Kontos dort auftauchen, stellst du in der Mitteilungszentrale in den Einstellungen ein.",
     ),
     ("Open Mail", "E-Mail öffnen"),
     // Categories of incoming mail (E12.1, docs/kategorien.md). All under the context
