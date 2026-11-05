@@ -145,6 +145,8 @@ pub struct Panel<'a, M> {
     bar: Option<Element<'a, M>>,
     /// A column fixed at the right of title and body ([`Panel::side`]), and how wide it is.
     side: Option<(Element<'a, M>, f32)>,
+    /// A card floating over title and body at the right ([`Panel::floating`]), and the room kept for it.
+    floating: Option<(Element<'a, M>, f32)>,
     on_close: M,
 }
 
@@ -175,6 +177,7 @@ pub fn panel<'a, M: Clone + 'a>(
         footer: Vec::new(),
         bar: None,
         side: None,
+        floating: None,
         on_close,
     }
 }
@@ -215,19 +218,29 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
         self
     }
 
+    /// A card floating over title and body at the right edge, in the middle of their height (issue
+    /// #456: the mail's action rail, `widgets::floating_rail`), [`space::s()`] in from the edge. Title
+    /// and body keep `room` clear of the edge for it, and the panel grows by `room` where it is not as
+    /// wide as the window, so they keep [`size::panel()`].
+    pub fn floating(mut self, card: impl Into<Element<'a, M>>, room: f32) -> Self {
+        self.floating = Some((card.into(), room));
+        self
+    }
+
     /// How wide the panel is in `class` ([`width_for`]), grown by its [`Panel::side`] and the gap
     /// before it where it has a width of its own, so title and body keep theirs.
     fn width(&self, class: SizeClass) -> Length {
-        match (width_for(class), &self.side) {
-            (Length::Fixed(width), Some((_, side))) => Length::Fixed(width + space::xs() + side),
-            (width, _) => width,
+        match (width_for(class), &self.side, &self.floating) {
+            (Length::Fixed(width), Some((_, side)), _) => Length::Fixed(width + space::xs() + side),
+            (Length::Fixed(width), None, Some((_, room))) => Length::Fixed(width + room),
+            (width, _, _) => width,
         }
     }
 
     /// The panel as a column for `class`: the head, the scrolling title and body, the footer, on
     /// the `panel` surface; with the left line unless it fills the window (narrow).
     fn view(self, class: SizeClass) -> Element<'a, M> {
-        let Panel { path, actions, title, body, footer, bar, side, on_close } = self;
+        let Panel { path, actions, title, body, footer, bar, side, floating, on_close } = self;
         let close = widgets::icon_button(Icon::X, tr("Close"), Some(on_close));
         // The head pads like the header bar (16 left, 12 right), so ✕ lines up with its buttons.
         let head = container(
@@ -240,18 +253,25 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
         .width(Fill)
         .center_y(size::header())
         .padding(Padding::new(0.0).left(space::l()).right(space::m()));
+        let room = floating.as_ref().map_or(0.0, |(_, room)| *room);
         let content =
             column![container(title).width(Fill).padding(Padding::new(0.0).left(space::s()).right(space::s())), body]
                 .spacing(space::l())
-                .padding(Padding { top: space::xs(), right: body_inset(), bottom: space::xl(), left: body_inset() });
+                .padding(Padding {
+                    top: space::xs(),
+                    right: body_inset() + room,
+                    bottom: space::xl(),
+                    left: body_inset(),
+                });
         let scroll = scrollable(content)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)
             .width(Fill)
             .height(Fill);
-        let middle: Element<'a, M> = match side {
-            Some((side, _)) => row![scroll, side].spacing(space::xs()).height(Fill).into(),
-            None => scroll.into(),
+        let middle: Element<'a, M> = match (side, floating) {
+            (Some((side, _)), _) => row![scroll, side].spacing(space::xs()).height(Fill).into(),
+            (None, Some((card, _))) => widgets::with_floating_rail(scroll, card),
+            (None, None) => scroll.into(),
         };
         let mut inner = column![head].push(bar).push(middle);
         if !footer.is_empty() {

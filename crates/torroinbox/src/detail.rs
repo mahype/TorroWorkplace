@@ -132,7 +132,9 @@ pub struct RailAnchors {
     pub mark: Anchor,
     /// Mute…: the bell's menu falls back to it.
     pub mute: Anchor,
-    /// Show as text or HTML · Light or Dark colours · Copy text · Close.
+    /// "Display" (issue #456): its card – HTML or text, the mail's colours – hangs here.
+    pub display: Anchor,
+    /// Copy text · Create filter… · Close.
     pub more: Anchor,
 }
 

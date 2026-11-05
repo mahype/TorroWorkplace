@@ -2745,12 +2745,30 @@ pub struct RailGroup<'a, M> {
     /// Registered by the group's icon in the collapsed rail, set with [`RailGroup::at`]: pass the
     /// same anchor to [`rail_flyout`], and use it for the dialogs of the group's items.
     pub anchor: Option<Anchor>,
+    /// The group opens a card of its own on a click (issue #456: "Display"), set with
+    /// [`RailGroup::card`]: the pointer resting on its icon opens nothing, the click sends its
+    /// [`RailGroup::first_press`].
+    pub card: bool,
 }
 
 impl<'a, M> RailGroup<'a, M> {
     /// A group with `icon`, `label` and `items`; at the top, not in the accent, no tint, no anchor.
     pub fn new(icon: Icon, label: impl IntoFragment<'a>, items: Vec<RailItem<'a, M>>) -> Self {
-        Self { icon, label: label.into_fragment(), items, accent: false, tint: None, foot: false, anchor: None }
+        Self {
+            icon,
+            label: label.into_fragment(),
+            items,
+            accent: false,
+            tint: None,
+            foot: false,
+            anchor: None,
+            card: false,
+        }
+    }
+
+    /// The same group opening a card of its own on a click ([`RailGroup::card`]).
+    pub fn card(self) -> Self {
+        Self { card: true, ..self }
     }
 
     /// The same group as the mail's main one ([`RailGroup::accent`]).
@@ -2967,6 +2985,71 @@ pub fn action_rail_toggle<'a, M: Clone + 'a>(
         .height(Fill)
         .style(style::container::panel_flush)
         .into()
+}
+
+/// The mail's action rail as a card floating over the mail (issue #456, `docs/prototypes/mail-layout/`):
+/// one icon per group as in the collapsed [`action_rail`] ([`size::control_lg()`] square, [`space::xs()`]
+/// apart), the [`RailGroup::foot`] groups under a line, on the menu's surface with its frame and
+/// shadow, radius `lg`, [`space::xs()`] inside. A click sends the group's [`RailGroup::first_press`],
+/// else `on_event(RailEvent::Open(index))`; the pointer coming onto an icon and leaving it sends
+/// [`RailEvent::Enter`] and [`RailEvent::Leave`] – not for a [`RailGroup::card`], which opens its own
+/// card on the click. The group at `active` stands `selected`. Its groups open beside it
+/// ([`rail_flyout`]), to the left where it floats at the right edge.
+///
+/// The app lays it over the mail at the right edge, in the middle of the height, [`space::s()`] in from
+/// the edge, and keeps the mail's text [`floating_rail_room`] clear of the edge.
+pub fn floating_rail<'a, M: Clone + 'a>(
+    groups: Vec<RailGroup<'a, M>>,
+    active: Option<usize>,
+    on_event: fn(RailEvent) -> M,
+) -> Element<'a, M> {
+    let (foot, top): (Vec<_>, Vec<_>) = groups.into_iter().enumerate().partition(|(_, group)| group.foot);
+    let icons = |groups: Vec<(usize, RailGroup<'a, M>)>| -> Element<'a, M> {
+        let faces = groups.into_iter().map(|(at, group)| {
+            let press = group.first_press().unwrap_or_else(|| on_event(RailEvent::Open(at)));
+            let face = rail_face(&group, active == Some(at), press);
+            let face: Element<'a, M> = if group.card {
+                face
+            } else {
+                mouse_area(face).on_enter(on_event(RailEvent::Enter(at))).on_exit(on_event(RailEvent::Leave(at))).into()
+            };
+            anchored_if(group.anchor.as_ref(), face)
+        });
+        column(faces).spacing(space::xs()).align_x(Alignment::Center).into()
+    };
+    let mut card = column![icons(top)].spacing(space::xs()).align_x(Alignment::Center);
+    if !foot.is_empty() {
+        let line = container(rule::horizontal(LINE).style(style::rule)).width(size::control_lg());
+        card = card.push(line).push(icons(foot));
+    }
+    container(card)
+        .padding(space::xs())
+        .style(|t: &Theme| {
+            let look = style::container::menu(t);
+            container::Style { border: iced::Border { radius: radius::lg().into(), ..look.border }, ..look }
+        })
+        .into()
+}
+
+/// How far the text of a mail keeps from the right edge for the [`floating_rail`] over it: the card
+/// ([`size::control_lg()`], its padding and frame) and [`space::s()`] at both sides of it.
+pub fn floating_rail_room() -> f32 {
+    size::control_lg() + 2.0 * space::xs() + 2.0 * LINE + 2.0 * space::s()
+}
+
+/// `content` with the [`floating_rail`] `rail` over it at its right edge, in the middle of its height,
+/// [`space::s()`] in from the edge (issue #456). The rail takes the pointer only where it is.
+pub fn with_floating_rail<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+    rail: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
+    let place = container(rail)
+        .width(Fill)
+        .height(Fill)
+        .align_right(Fill)
+        .center_y(Fill)
+        .padding(Padding::new(0.0).right(space::s()));
+    stack![content.into(), place].width(Fill).height(Fill).into()
 }
 
 /// How far the toggle of the action rail stands from the rail's right edge: centred in the collapsed

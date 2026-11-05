@@ -2679,8 +2679,8 @@ fn formats() -> [(String, Message); 2] {
 /// The segments of "Light | Dark" (task M9.7), light first.
 fn schemes() -> [(String, Message); 2] {
     [
-        (tr("Light").to_owned(), Message::MailColors(Scheme::Light)),
-        (tr("Dark").to_owned(), Message::MailColors(Scheme::Dark)),
+        (tr("Light").to_owned(), Message::MailColors(MailAppearance::Light)),
+        (tr("Dark").to_owned(), Message::MailColors(MailAppearance::Dark)),
     ]
 }
 
@@ -2860,7 +2860,12 @@ pub fn reader<'a>(
         let widths = reader_widths(bounds.width);
         let side = layout::reading_padding().left;
         let head = container(head(&reading, entry, widths.head)).width(Fill).padding(head_padding());
-        let page = column![head, rule::horizontal(size::HAIRLINE).style(style::rule), reader_mail(&reading, widths)];
+        // Issue #456: the rail floats at the right edge; the head runs on under it, the mail's text
+        // keeps clear of it.
+        let room = widgets::floating_rail_room();
+        let mail = container(reader_mail(&reading, reader_widths((bounds.width - room).max(0.0))))
+            .padding(Padding::new(0.0).right(room));
+        let page = column![head, rule::horizontal(size::HAIRLINE).style(style::rule), mail];
         let page = scrollable(page)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)
@@ -2868,8 +2873,7 @@ pub fn reader<'a>(
             .height(Fill);
         column![page].push(attachment_line(&reading, &anchors, widths.head, side)).into()
     });
-    // The reader's scrollbar keeps clear of the rail's line (decision B).
-    row![page, rail].spacing(space::xs()).height(Fill).into()
+    widgets::with_floating_rail(page, rail)
 }
 
 /// The padding around the reader's head: the page's above, a little less below, where the line under
@@ -3117,6 +3121,8 @@ pub fn action_groups<'a>(
         RailGroup::new(Icon::ListTodo, tr("Torro"), torro_items(reading, entry, anchors)).at(&rail.torro),
         if flagged { mark.tinted(reading.attention) } else { mark },
         RailGroup::new(Icon::BellOff, tr("Mute"), mute_items(reading, entry, anchors)).foot().at(&rail.mute),
+        // Issue #456: a click opens the card "Display" (HTML or text, the mail's colours), not a list.
+        RailGroup::new(Icon::Contrast, tr("Display"), display_items(reading)).card().foot().at(&rail.display),
         RailGroup::new(Icon::Ellipsis, tr("More"), more_items(reading.view_tools(), filter_sender(reading), close))
             .foot()
             .at(&rail.more),
@@ -3313,32 +3319,10 @@ fn filter_sender<'r>(reading: &Reading<'r>) -> Option<&'r str> {
 /// `sender` (issue #339: Settings › Categorization › Rules & filters with `from:<address>`, issue #454), and with `close` Close.
 fn more_items<'a>(tools: ViewTools, sender: Option<&str>, close: bool) -> Vec<RailItem<'a, Message>> {
     let mut items = Vec::new();
-    // First, so a click on "…" copies the text (decision D): the safest of the group.
+    // First, so a click on "…" copies the text (decision D): the safest of the group. HTML or text
+    // and the mail's colours stand in "Display" since issue #456.
     if tools.copy {
         items.push(RailItem::new(Icon::Copy, tr("Copy text"), "", Some(Message::CopyText)));
-    }
-    match tools.format {
-        Some(MailFormat::Html) => {
-            items.push(RailItem::new(
-                Icon::AlignLeft,
-                tr("Show as text"),
-                "V",
-                Some(Message::ShowMailAs(MailFormat::Text)),
-            ));
-        }
-        Some(MailFormat::Text) => {
-            items.push(RailItem::new(Icon::Code, tr("Show as HTML"), "V", Some(Message::ShowMailAs(MailFormat::Html))));
-        }
-        None => {}
-    }
-    match tools.scheme {
-        Some(Scheme::Light) => {
-            items.push(RailItem::new(Icon::Moon, tr("Dark colours"), "", Some(Message::MailColors(Scheme::Dark))));
-        }
-        Some(Scheme::Dark) => {
-            items.push(RailItem::new(Icon::Sun, tr("Light colours"), "", Some(Message::MailColors(Scheme::Light))));
-        }
-        None => {}
     }
     if let Some(address) = sender {
         let create = Message::CreateFilter { query: format!("from:{address}"), account: None };
@@ -3348,6 +3332,16 @@ fn more_items<'a>(tools: ViewTools, sender: Option<&str>, close: bool) -> Vec<Ra
         items.push(RailItem::new(Icon::X, tr("Close"), "Esc", Some(Message::CloseDetail)));
     }
     items
+}
+
+/// The one item of the rail's group "Display" (issue #456): a click on the group's icon opens its card
+/// ([`Message::ToggleMailDisplay`]); `v` switches HTML and text also while the card is closed. There
+/// once the mail is loaded.
+fn display_items<'a>(reading: &Reading<'_>) -> Vec<RailItem<'a, Message>> {
+    if !matches!(reading.loaded, Some(Ok(_))) {
+        return Vec::new();
+    }
+    vec![RailItem::new(Icon::Contrast, tr("Display"), "V", Some(Message::ToggleMailDisplay))]
 }
 
 /// The mail's attachments at the reader's bottom (task M12.6, design A of
@@ -5173,11 +5167,12 @@ mod tests {
                     (tr("Torro").to_owned(), strings(&[tr("Task"), tr("Event"), tr("Category…")])),
                     (tr("Mark").to_owned(), mark_words(reading)),
                     (tr("Mute").to_owned(), strings(&[tr("Mute…")])),
+                    (tr("Display").to_owned(), strings(&[tr("Display")])),
                     (tr("More").to_owned(), strings(&[tr("Copy text"), tr("Create filter…"), tr("Close")])),
                 ]
             );
             let feet: Vec<bool> = groups.iter().map(|group| group.foot).collect();
-            assert_eq!(feet, [false, false, false, false, true, true], "Mute and More at the foot");
+            assert_eq!(feet, [false, false, false, false, true, true, true], "Mute, Display and More at the foot");
             assert!(groups[0].accent && groups[0].items[0].lead, "Reply the main group, its row strong");
             assert!(groups[1..].iter().all(|group| !group.accent));
             let mail = |sent: Option<Message>, action: MailAction| matches!(sent, Some(Message::Mail(sent, id)) if sent == action && id == "m:w1");
@@ -5231,6 +5226,7 @@ mod tests {
                     vec!["T", "C", ""],
                     vec!["", ""],
                     vec!["M"],
+                    vec!["V"],
                     vec!["", "", "Esc"]
                 ]
             );
@@ -5241,7 +5237,9 @@ mod tests {
             }
             // Fixed icons, whatever the first item (finding 8).
             let icons: Vec<Icon> = groups.iter().map(|group| group.icon).collect();
-            assert_eq!(icons, [Icon::Reply, Icon::Check, Icon::ListTodo, Icon::Flag, Icon::BellOff, Icon::Ellipsis]);
+            let fixed =
+                [Icon::Reply, Icon::Check, Icon::ListTodo, Icon::Flag, Icon::BellOff, Icon::Contrast, Icon::Ellipsis];
+            assert_eq!(icons, fixed);
             assert!(group(&groups, tr("File")).items.iter().filter(|i| i.danger).all(|i| i.label == tr("Delete")));
             let flagged = reading.summary().expect("headers").flags.contains(&Flag::Flagged);
             assert_eq!(group(&groups, tr("Mark")).tint.is_some(), flagged, "a flagged mail shows at Mark");
@@ -5264,12 +5262,9 @@ mod tests {
                     tr("Mute…").to_owned()
                 ]
             );
-            // Expanded and collapsed, with and without its button, a group open or none.
-            for mode in [widgets::RailMode::Collapsed, widgets::RailMode::Expanded] {
-                for open in [None, Some(1), Some(5)] {
-                    let _ =
-                        widgets::action_rail(groups.clone(), mode, open, Message::Rail, Some(Message::ToggleActions));
-                }
+            // Floating over the mail (issue #456), a group open or none.
+            for open in [None, Some(1), Some(5)] {
+                let _ = widgets::floating_rail(groups.clone(), open, Message::Rail);
             }
         });
     }
@@ -5327,7 +5322,10 @@ mod tests {
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             let groups = action_groups(reading, None, &folders, true, &detail::Anchors::default());
             let titles: Vec<String> = rail_words(&groups).into_iter().map(|(title, _)| title).collect();
-            assert_eq!(titles, strings(&[tr("Reply"), tr("File"), tr("Torro"), tr("Mark"), tr("Mute"), tr("More")]));
+            assert_eq!(
+                titles,
+                strings(&[tr("Reply"), tr("File"), tr("Torro"), tr("Mark"), tr("Mute"), tr("Display"), tr("More")])
+            );
             let file = &group(&groups, tr("File")).items;
             let save = trf("Save attachments ({n})", &[("n", &1)]);
             assert_eq!(
@@ -5467,9 +5465,9 @@ mod tests {
         }
     }
 
-    /// Task E14.3: "More" offers the other view of a mail with HTML (`v`), the other colours while the
-    /// HTML shows, "Copy text" and – in the reader – Close; a mail without HTML only the last two.
-    /// While the mail loads Mark and More wait for it.
+    /// Task E14.3: "More" offers "Copy text", "Create filter…" and – in the reader – Close; the view of
+    /// the mail and its colours stand in "Display" since issue #456. While the mail loads Mark, Display
+    /// and More wait for it.
     #[test]
     fn more_offers_the_view_of_the_mail_as_it_stands() {
         let folders = folders();
@@ -5495,25 +5493,18 @@ mod tests {
                 more(reading, true),
                 Some(vec![
                     item(tr("Copy text"), "", Message::CopyText),
-                    item(tr("Show as text"), "V", Message::ShowMailAs(MailFormat::Text)),
-                    item(tr("Dark colours"), "", Message::MailColors(Scheme::Dark)),
                     create(reading),
                     item(tr("Close"), "Esc", Message::CloseDetail),
                 ])
             );
-            let dark = HtmlReading { scheme: Scheme::Dark, ..reading.html.expect("its HTML") };
-            let dark = Reading { html: Some(dark), ..*reading };
-            let light = more(&dark, false).expect("More");
-            assert_eq!(light[2], item(tr("Light colours"), "", Message::MailColors(Scheme::Light)));
+            let groups = action_groups(reading, None, &folders, false, &detail::Anchors::default());
+            let display = groups.iter().find(|group| group.label == tr("Display")).expect("Display");
+            assert!(matches!(display.first_press(), Some(Message::ToggleMailDisplay)), "a click opens its card");
         });
         reading_of("m:p2", MailFormat::Text, true, |reading| {
             assert_eq!(
                 more(reading, false),
-                Some(vec![
-                    item(tr("Copy text"), "", Message::CopyText),
-                    item(tr("Show as HTML"), "V", Message::ShowMailAs(MailFormat::Html)),
-                    create(reading),
-                ]),
+                Some(vec![item(tr("Copy text"), "", Message::CopyText), create(reading)]),
                 "no colours for the text"
             );
         });
@@ -5786,7 +5777,7 @@ mod tests {
     fn the_mail_windows_reader_and_panel_leave_the_actions_to_the_rail() {
         let source = include_str!("mail.rs");
         let reader = function_source(source, "reader");
-        assert!(reader.contains("row![page, rail]"), "the rail at the reader's right, over its whole height");
+        assert!(reader.contains("with_floating_rail(page, rail)"), "the rail floats at the reader's right (#456)");
         for name in ["reader", "head_with", "command_body", "panel", "entry_panel", "panel_foot"] {
             let body = function_source(source, name);
             for part in [".bar(", "_button(", "segmented(", "view_controls("] {

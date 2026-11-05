@@ -25,12 +25,13 @@ torro-settings-ui.workspace = true
 chrono.workspace = true
 iced.workspace = true
 rfd.workspace = true
+# The value of `settings.set_setting`, which "Display" sends (issue #456).
+serde_json.workspace = true
 # `cid:` pictures are asked of the core on the picture fetcher's worker thread, which blocks on it.
 tokio.workspace = true
 webbrowser.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile.workspace = true
 
 # Not under `[target.'cfg(windows)'.build-dependencies]`: Cargo checks that `cfg` against the host that runs the build
