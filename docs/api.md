@@ -915,6 +915,12 @@ mit `both` `Write` (`Request::operation()`). Alle Kontaktfelder, Buch- und Grupp
 steht nicht in `NEVER_TO_AGENTS`:** Anders als Mail regelt bei Kontakten allein die Auswahl der Bücher, was ein Agent
 sieht; wer ein Buch nicht bei einem KI-Anbieter haben will, lässt es dort weg (Entscheidung 5 in
 [kontakte.md](kontakte.md)).
+**Empfänger-Vorschläge** (`contacts.suggest_recipients`, Issue #460) sind `Read` im Bereich `contacts`, lesen aber
+auch Mail: Kontakte nur aus den Büchern der Auswahl, Adressen aus Mails (Empfänger im Ordner Gesendet, Absender
+persönlicher Mails; nie Listen, Newsletter oder automatische Mails) nur aus den Konten, die der Client lesen darf
+(Lesezugriff auf `mail` und das Konto, wie `mail.search_messages`). Ohne dieses Recht kommen nur Kontakte, nach Name.
+Die eigenen Adressen der Konten kommen nie vor. Ins Protokoll kommt je gelesenem Mail-Konto `account:<id>`, nie der
+Suchtext. Alle Felder sind `untrusted`.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als

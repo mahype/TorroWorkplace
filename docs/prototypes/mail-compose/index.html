@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Schreibfenster · Fassung A</title>
+<!--
+  Entwurf des Schreibfensters der Mail (Issue #460), übernommen aus dem Artifact
+  https://claude.ai/artifact/2nnMKvVZx42GEQDXdnKwYW. Dort standen drei Fassungen zur Wahl:
+    A · Leiste oben                        gewählt, umgesetzt in #460
+    B · Ruhig, Werkzeuge bei Bedarf        verworfen
+    C · Leiste unten                       verworfen
+  Hier steht nur noch A. Entschieden in der Planung (2026-11-05): keine Schriftgröße und keine Textfarbe
+  in der Leiste (das Textfeld kann keine Größen zeigen), ein eigenes Papier nur fürs Schreiben (Start hell),
+  "+ Kontakt" legt den Kontakt im ersten beschreibbaren Adressbuch an. Die Zustände "Bild gewählt" und
+  "Eingefügt" gehören zu #461 (Bilder im Text) und #462 (Einfügen mit Formatierung).
+  Werte aus dem Standard-Design (torro-design), Beispieldaten erfunden.
+-->
+<style>
+  @font-face { font-family: Inter; src: url("../../../crates/torro-gui/assets/fonts/Inter-Regular.ttf"); font-weight: 400; }
+  @font-face { font-family: Inter; src: url("../../../crates/torro-gui/assets/fonts/Inter-Medium.ttf"); font-weight: 500; }
+  @font-face { font-family: Inter; src: url("../../../crates/torro-gui/assets/fonts/Inter-SemiBold.ttf"); font-weight: 600; }
+
+  :root { --bg:#f3f3f1; --fg:#1d1e21; --muted:#5f6168; --line:#dcdcd7; --card:#ffffff; --pick:#2f6bc9; --note:#a77a05; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#121315; --fg:#ececee; --muted:#9a9ca3; --line:#2b2d31; --card:#1a1b1e; --pick:#6ea0ff; --note:#e8b931; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.55 Inter, system-ui, sans-serif; }
+  .wrap { max-width:1080px; margin:0 auto; padding:40px 16px 80px; }
+  h1 { font-size:34px; line-height:1.15; margin:0 0 12px; }
+  h2 { font-size:22px; margin:0 0 10px; }
+  h3 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:0 0 8px; font-weight:600; }
+  p { margin:0 0 12px; max-width:72ch; }
+  .lead { font-size:18px; color:var(--muted); }
+  section { margin-top:48px; }
+  .controls { display:flex; flex-direction:column; gap:10px; margin:22px 0 0; }
+  .crow { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+  .crow .olbl { font-size:14px; color:var(--muted); min-width:92px; }
+  .crow button { font:600 14px Inter, sans-serif; color:var(--fg); background:var(--card); border:1px solid var(--line); border-radius:999px; padding:6px 14px; cursor:pointer; }
+  .crow button[aria-pressed="true"] { border-color:var(--pick); color:var(--pick); }
+  .gone { font-size:14px; color:var(--muted); }
+  .stage { display:flex; justify-content:center; margin:18px 0 22px; }
+  .frame { border-radius:12px; overflow:hidden; box-shadow:0 1px 0 var(--line), 0 22px 60px -26px rgba(0,0,0,.5); }
+  .scaler { width:780px; transform-origin:0 0; }
+  .all { border-left:3px solid var(--note); padding:2px 0 2px 18px; margin:0; }
+  .all li { margin:8px 0; max-width:78ch; }
+  .src { font-size:14px; color:var(--muted); }
+  .src a { color:var(--pick); }
+
+  /* ---------- Das Schreibfenster (Torro-Tokens) ---------- */
+  .app { --w-panel:#0F1011; --w-raised:#141518; --w-hover:#16171A; --w-sel:#1C1E22; --w-menu:#17181B;
+    --w-text:#EDEEF0; --w-text2:#B4B8BF; --w-text3:#8A8F98; --w-line:rgba(255,255,255,.06); --w-line2:rgba(255,255,255,.10); --w-line3:rgba(255,255,255,.28);
+    --w-acc:#D50C0C; --w-blue:#5B8CFF; --w-err:#ff6b5e; --w-shadow:0 18px 44px -10px rgba(0,0,0,.85);
+    --p-bg:#FFFFFF; --p-text:#18191B; --p-text2:#4F535A; --p-line:rgba(0,0,0,.11); --p-quote:#62666D;
+    width:780px; height:800px; background:var(--w-panel); color:var(--w-text); font:14px/1.45 Inter, sans-serif;
+    position:relative; overflow:hidden; display:flex; flex-direction:column; user-select:none; }
+  .app.win-light { --w-panel:#FFFFFF; --w-raised:#F8F9FA; --w-hover:#F0F1F3; --w-sel:#E9EAED; --w-menu:#FFFFFF;
+    --w-text:#18191B; --w-text2:#4F535A; --w-text3:#62666D; --w-line:rgba(0,0,0,.07); --w-line2:rgba(0,0,0,.11); --w-line3:rgba(0,0,0,.32);
+    --w-blue:#3B6EF0; --w-err:#c4321f; --w-shadow:0 14px 36px -12px rgba(0,0,0,.28); }
+  .app.paper-dark { --p-bg:#0F1011; --p-text:#EDEEF0; --p-text2:#B4B8BF; --p-line:rgba(255,255,255,.10); --p-quote:#8A8F98; }
+  .app * { box-sizing:border-box; }
+  .app svg { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:1.75; stroke-linecap:round; stroke-linejoin:round; }
+  .app button { font:inherit; color:inherit; background:none; border:0; padding:0; cursor:pointer; }
+  .top { height:64px; flex:none; display:flex; align-items:center; gap:8px; padding:0 16px; border-bottom:1px solid var(--w-line); }
+  .lights { display:flex; gap:8px; margin-right:8px; }
+  .lights i { width:12px; height:12px; border-radius:50%; display:block; }
+  .ttl { display:flex; align-items:baseline; gap:10px; min-width:0; flex:1; }
+  .ttl b { font-weight:500; }
+  .ttl span { color:var(--w-text3); font-size:13px; white-space:nowrap; }
+  .ib { width:36px; height:36px; border-radius:4px; display:grid; place-items:center; color:var(--w-text2); flex:none; }
+  .ib:hover { background:var(--w-hover); color:var(--w-text); }
+  .sep { width:1px; height:16px; background:var(--w-line2); margin:0 4px; flex:none; }
+  .send { height:36px; border-radius:4px; background:var(--w-acc); color:#fff; font-weight:500; font-size:12px; display:flex; align-items:center; gap:8px; padding:0 12px; }
+  .fields { flex:none; padding:16px 16px 0; display:flex; flex-direction:column; gap:8px; }
+  .fld { display:flex; align-items:flex-start; gap:8px; position:relative; }
+  .fld > label { width:64px; color:var(--w-text3); font-size:13px; flex:none; line-height:38px; }
+  .val { flex:1; min-width:0; display:flex; flex-wrap:wrap; gap:6px; align-items:center; min-height:38px; }
+  .muted { color:var(--w-text3); font-size:13px; }
+  .input { flex:1; min-width:120px; height:38px; border:1px solid var(--w-line2); border-radius:4px; display:flex; align-items:center; padding:0 10px; }
+  .fold { display:flex; gap:2px; }
+  .fold button { color:var(--w-text2); font-size:12px; font-weight:500; padding:0 12px; height:36px; border-radius:4px; }
+  .select { height:36px; display:flex; align-items:center; gap:6px; padding:0 12px; border:1px solid var(--w-line2); border-radius:4px; background:var(--w-raised); font-size:12px; font-weight:500; }
+  .chip { display:inline-flex; align-items:center; gap:6px; height:26px; padding:0 8px; border-radius:4px; background:var(--w-raised); border:1px solid var(--w-line2); font-size:13px; white-space:nowrap; }
+  .chip .x { color:var(--w-text3); }
+  .chip.bad svg.alert { color:var(--w-err); }
+  .caret { width:1.5px; height:17px; background:var(--w-text); margin-left:1px; display:inline-block; vertical-align:middle; }
+  .av { width:20px; height:20px; border-radius:50%; flex:none; display:grid; place-items:center; font-size:11px; background:var(--w-raised); }
+  .av.photo { background:linear-gradient(160deg,#9bb6cf,#5f7e9c); }
+  .tile { width:20px; height:20px; border-radius:4px; display:grid; place-items:center; background:var(--w-sel); border:1px solid var(--w-line2); color:var(--w-text2); }
+  .tile svg { width:13px; height:13px; }
+
+  .suggest { position:absolute; left:72px; top:40px; width:400px; background:var(--w-menu); border:1px solid var(--w-line2); border-radius:4px; padding:4px; box-shadow:var(--w-shadow); z-index:40; display:none; }
+  .app.s-suggest .suggest { display:block; }
+  .sg-h { font-size:12px; font-weight:500; color:var(--w-text3); padding:8px 8px 4px; }
+  .sg { display:flex; align-items:center; gap:8px; height:32px; padding:0 8px; border-radius:4px; }
+  .sg.first { background:var(--w-sel); }
+  .sg .who { flex:1; min-width:0; display:flex; gap:8px; white-space:nowrap; overflow:hidden; }
+  .sg .who span { color:var(--w-text3); font-size:13px; overflow:hidden; text-overflow:ellipsis; }
+  .sg em { font-style:normal; color:var(--w-text3); font-size:13px; white-space:nowrap; }
+  .sg .add { display:flex; align-items:center; gap:6px; font-size:12px; font-weight:500; color:var(--w-text2); }
+  .sg-f { display:flex; flex-wrap:wrap; gap:4px; align-items:center; padding:8px; border-top:1px solid var(--w-line); margin-top:4px; color:var(--w-text3); font-size:13px; }
+  kbd { font:500 12px Inter, sans-serif; border:1px solid var(--w-line2); border-radius:4px; padding:0 4px; color:var(--w-text3); }
+
+  .tools { flex:none; display:flex; align-items:center; gap:4px; padding:8px 16px 0; }
+  .tools .spacer { flex:1; }
+  .tools .for461 { opacity:.45; }
+
+  .body { flex:1; min-height:0; display:flex; flex-direction:column; padding:8px 16px 16px; gap:8px; position:relative; }
+  .paperbox { flex:1; min-height:0; background:var(--p-bg); color:var(--p-text); border:1px solid var(--w-line2); border-radius:4px; padding:12px 14px; overflow:hidden; position:relative; font-size:14px; line-height:22px; }
+  .paperbox p { margin:0 0 12px; max-width:none; }
+  .paperbox .mark { color:var(--p-quote); }
+  .paperbox .q { color:var(--p-text2); }
+  .paperbox .sig { color:var(--p-text2); font-size:13px; margin-top:14px; padding-top:10px; border-top:1px solid var(--p-line); display:flex; gap:12px; }
+  .paperbox .sig small { color:var(--p-quote); width:64px; }
+  .img { display:none; position:relative; margin:2px 0 12px; border-radius:4px; width:280px; height:150px; background:repeating-linear-gradient(90deg,#e9e4da 0 28px,#ece7de 28px 29px); outline:2px solid var(--w-blue); outline-offset:2px; }
+  .app.s-image .img { display:block; }
+  .img span { position:absolute; left:0; top:calc(100% + 8px); background:var(--w-menu); color:var(--w-text); border:1px solid var(--w-line2); border-radius:4px; padding:4px 8px; font-size:13px; white-space:nowrap; }
+  .paste { display:none; position:absolute; right:16px; bottom:12px; background:var(--w-menu); color:var(--w-text); border:1px solid var(--w-line2); border-radius:4px; padding:6px 6px 6px 12px; box-shadow:var(--w-shadow); align-items:center; gap:8px; font-size:13px; }
+  .app.s-paste .paste { display:flex; }
+  .atts { flex:none; display:flex; gap:6px; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h3>TorroWorkplace · Mail · Schreibfenster</h3>
+  <h1>Schreibfenster · Fassung A „Leiste oben“</h1>
+  <p class="lead">Kopfzeile mit Anhängen, Schließen und Senden rechts wie in den anderen Torro-Fenstern. Darunter Von, An mit Cc und Bcc, Betreff, eine feste Werkzeugleiste und das Papier mit Text und Signatur; Anhänge als Chips unter dem Papier.</p>
+
+  <div class="controls" role="group" aria-label="Ansicht wählen">
+    <div class="crow"><span class="olbl">Fassung</span><button aria-pressed="true">A · Leiste oben</button>
+      <span class="gone">B (ruhig, Werkzeuge bei Bedarf) und C (Leiste unten) sind verworfen.</span></div>
+    <div class="crow"><span class="olbl">Zustand</span>
+      <button data-s="none" aria-pressed="false">Schreiben</button>
+      <button data-s="suggest" aria-pressed="true">Empfänger vorschlagen</button>
+      <button data-s="image" aria-pressed="false">Bild gewählt (#461)</button>
+      <button data-s="paste" aria-pressed="false">Eingefügt (#462)</button>
+    </div>
+    <div class="crow"><span class="olbl">Papier</span>
+      <button data-p="light" aria-pressed="true">Hell</button>
+      <button data-p="dark" aria-pressed="false">Dunkel</button>
+      <span class="olbl" style="min-width:0;margin-left:14px">Fenster</span>
+      <button data-w="dark" aria-pressed="true">Dunkel</button>
+      <button data-w="light" aria-pressed="false">Hell</button>
+    </div>
+  </div>
+
+  <div class="stage"><div class="frame" id="frame"><div class="scaler" id="scaler">
+  <div class="app s-suggest paper-light win-dark" id="app">
+    <div class="top">
+      <div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+      <div class="ttl"><b>Neue E-Mail</b><span>Entwurf gespeichert</span></div>
+      <button class="ib" title="Dateien anhängen"><svg viewBox="0 0 24 24"><path d="M21 11.5 12.6 20a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4L15.8 7.4"/></svg></button>
+      <button class="ib" title="Schließen"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      <span class="sep"></span>
+      <button class="send" title="Senden"><svg viewBox="0 0 24 24"><path d="M4 12 20 4l-5 16-3-7z"/></svg>Senden</button>
+    </div>
+
+    <div class="fields">
+      <div class="fld"><label>Von</label><div class="val"><span class="select">Sven · Büro <svg viewBox="0 0 24 24" style="width:12px;height:12px"><path d="m6 9 6 6 6-6"/></svg></span><span class="muted">sven@torro-buero.de</span></div></div>
+      <div class="fld"><label>An</label>
+        <div class="val">
+          <span class="chip"><span class="av photo"></span>Mira Schulte</span><span class="x muted">✕</span>
+          <span class="chip bad" title="Das ist keine gültige Adresse."><svg class="alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>jonas@berger</span><span class="x muted">✕</span>
+          <span class="input">jo<span class="caret"></span></span>
+        </div>
+        <div class="fold"><button>Cc</button><button>Bcc</button></div>
+        <div class="suggest" role="listbox" aria-label="Vorschläge" style="top:86px">
+          <div class="sg-h">Kontakte</div>
+          <div class="sg first"><span class="av photo"></span><div class="who">Jonas Berger<span>jonas@berger-arch.de</span></div><em>Zuletzt 3. Nov.</em></div>
+          <div class="sg"><span class="av">JK</span><div class="who">Johanna Kraft<span>j.kraft@stadtwerke.de</span></div><em>Favorit</em></div>
+          <div class="sg"><span class="tile"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M16 3.1a4 4 0 0 1 0 7.8M22 21a7 7 0 0 0-4-6.3"/></svg></span><div class="who">Jour fixe Planung<span>Gruppe · 5 Personen</span></div><em>Alle hinzufügen</em></div>
+          <div class="sg-h">Aus E-Mails, nicht in Kontakten</div>
+          <div class="sg"><span class="tile"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg></span><div class="who">Jo Meyer<span>jo.meyer@posteo.de</span></div><span class="add">+ Kontakt</span></div>
+          <div class="sg-f"><kbd>Hoch</kbd><kbd>Runter</kbd> wählen <kbd>Enter</kbd><kbd>Tab</kbd> übernehmen <kbd>Esc</kbd> schließen</div>
+        </div>
+      </div>
+      <div class="fld"><label>Betreff</label><div class="val"><span class="input">Grundriss fürs neue Büro</span></div></div>
+    </div>
+
+    <div class="tools">
+      <button class="ib" title="Fett (⌘B)"><svg viewBox="0 0 24 24"><path d="M7 5h6a3.5 3.5 0 0 1 0 7H7zM7 12h7a3.5 3.5 0 0 1 0 7H7z"/></svg></button>
+      <button class="ib" title="Kursiv (⌘I)"><svg viewBox="0 0 24 24"><path d="M14 5h-4M14 19h-4M14 5l-4 14"/></svg></button>
+      <button class="ib" title="Unterstrichen (⌘U)"><svg viewBox="0 0 24 24"><path d="M7 4v7a5 5 0 0 0 10 0V4M5 20h14"/></svg></button>
+      <span class="sep"></span>
+      <button class="ib" title="Aufzählung"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/></svg></button>
+      <button class="ib" title="Nummerierte Liste"><svg viewBox="0 0 24 24"><path d="M10 6h10M10 12h10M10 18h10M4 5l1.5-1v5M4 14h3l-3 4h3"/></svg></button>
+      <button class="ib" title="Zitat"><svg viewBox="0 0 24 24"><path d="M5 6v12M10 8h9M10 12h9M10 16h6"/></svg></button>
+      <span class="sep"></span>
+      <button class="ib" title="Link (⌘K)"><svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg></button>
+      <button class="ib for461" title="Bild einfügen (#461)"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 17-5-5-9 8"/></svg></button>
+      <button class="ib" title="Formatierung entfernen (⌘\)"><svg viewBox="0 0 24 24"><path d="M4 7V4h16v3M5 20h6M13 4 8 20M15 15l5 5M20 15l-5 5"/></svg></button>
+      <span class="spacer"></span>
+      <button class="ib js-paper" title="Papier hell oder dunkel"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 18a6 6 0 0 0 0-12v12z"/></svg></button>
+    </div>
+
+    <div class="body">
+      <div class="paperbox">
+        <p>Hallo Mira, hallo Jonas,</p>
+        <p>anbei der Grundriss fürs neue Büro. <span class="mark">**</span><b>Bitte bis Freitag</b><span class="mark">**</span> kurz sagen, ob die Küche so passt.</p>
+        <div class="img"><span>Klein · Mittel · Groß · Original · Als Anhang · Entfernen (#461)</span></div>
+        <p class="q"><span class="mark">&gt;</span> Können wir die Küche nach hinten legen?</p>
+        <p>Viele Grüße<br>Sven</p>
+        <div class="sig"><small>Signatur</small>Sven Wagener · Torro Büro · 0261 123 456</div>
+        <div class="paste">Mit Formatierung eingefügt (#462) <kbd>Nur Text behalten</kbd></div>
+      </div>
+      <div class="atts">
+        <span class="chip">Grundriss_EG.pdf · 2,4 MB</span><span class="x muted">✕</span>
+        <span class="chip">Kosten_Umzug.xlsx · 86 KB</span><span class="x muted">✕</span>
+      </div>
+    </div>
+  </div>
+  </div></div></div>
+
+  <section>
+    <h2>Was gilt</h2>
+    <ul class="all">
+      <li><b>Empfänger aus dem Adressbuch:</b> ab dem ersten Buchstaben eine Liste unter dem Feld mit Foto, Name und Adresse; zuerst die zuletzt und oft Angeschriebenen, dann Favoriten und Gruppen (eine Gruppe fügt alle ein, die noch in keinem Feld stehen), dann die übrigen Kontakte; darunter Adressen, die nur aus Mails bekannt sind, mit „+ Kontakt“. Pfeiltasten wählen, Enter oder Tab übernehmen, Esc schließt nur die Liste. Übernommene Empfänger werden Chips, eine kaputte Adresse ist markiert. Gleiches für Cc und Bcc.</li>
+      <li><b>Papier hell oder dunkel:</b> ◐ am Ende der Leiste schaltet nur den Hintergrund des Textes um, unabhängig vom Fenster. Die Wahl bleibt erhalten (Einstellung <code>compose_paper</code>); gesendet wird immer dieselbe Mail.</li>
+      <li><b>Schmale Kacheln:</b> Was in der Leiste nicht passt, steht von hinten im Menü „…“; ◐ bleibt immer. Konten mit reinem Text zeigen nur ◐.</li>
+      <li><b>Später:</b> Bilder im Text (#461), Einfügen mit Formatierung (#462). Schriftgröße und Textfarbe sind nicht geplant, solange der Text ein Textfeld mit leisen Zeichen ist.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h3>Vorbilder</h3>
+    <ul class="src">
+      <li>Apple Mail: Werkzeugleiste oben, Empfänger als Pillen. <a href="https://support.apple.com/guide/mail/mlhlp1098/mac">support.apple.com</a></li>
+      <li>Outlook (neu): Senden und Formatleiste oben; Sonne/Mond schaltet nur den Hintergrund des Entwurfs um. <a href="https://support.microsoft.com/outlook/mail/dark-mode-in-outlook">support.microsoft.com</a></li>
+      <li>Thunderbird: Pillen für Empfänger seit Version 73. <a href="https://bugzilla.mozilla.org/show_bug.cgi?id=1666463">bugzilla.mozilla.org</a></li>
+      <li>Fastmail: Cc und Bcc erst bei Bedarf. <a href="https://www.fastmail.com/help/send/richtext.html">fastmail.com</a></li>
+    </ul>
+  </section>
+</div>
+
+<script>
+const app = document.getElementById('app');
+const state = { s: 'suggest', p: 'light', w: 'dark' };
+function render() {
+  app.className = `app s-${state.s} paper-${state.p} win-${state.w}`;
+  for (const key of ['s', 'p', 'w']) {
+    document.querySelectorAll(`[data-${key}]`).forEach(b => b.setAttribute('aria-pressed', b.dataset[key] === state[key]));
+  }
+}
+for (const key of ['s', 'p', 'w']) {
+  document.querySelectorAll(`[data-${key}]`).forEach(b => b.onclick = () => { state[key] = b.dataset[key]; render(); });
+}
+document.querySelectorAll('.js-paper').forEach(b => b.onclick = () => { state.p = state.p === 'light' ? 'dark' : 'light'; render(); });
+const scaler = document.getElementById('scaler'), frame = document.getElementById('frame');
+function fit() {
+  const k = Math.min(780, frame.parentElement.clientWidth) / 780;
+  scaler.style.transform = `scale(${k})`;
+  frame.style.width = (780 * k) + 'px';
+  frame.style.height = (800 * k) + 'px';
+}
+addEventListener('resize', fit); fit(); render();
+</script>
+</body>
+</html>
