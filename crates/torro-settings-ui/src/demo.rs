@@ -904,7 +904,15 @@ impl Demo {
                 icon: torro_mail::CategoryIcon::Tag,
             });
         }
-        defs.iter().map(|def| torro_ipc::inbox::CategoryInfo::of(def, 0, 0)).collect()
+        // Mail in each category (issue #454): the tab Categories shows its numbers, four digits too.
+        const MAILS: [u32; 12] = [214, 96, 42, 18, 1046, 7, 3, 1318, 402, 77, 2140, 0];
+        defs.iter()
+            .enumerate()
+            .map(|(at, def)| {
+                let messages = MAILS[at % MAILS.len()];
+                torro_ipc::inbox::CategoryInfo::of(def, messages / 10, messages)
+            })
+            .collect()
     }
 
     /// The sorting rules (`inbox.list_sort_rules`, task E15.5): a kept sender, a domain with an

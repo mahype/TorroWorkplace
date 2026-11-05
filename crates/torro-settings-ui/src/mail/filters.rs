@@ -533,7 +533,7 @@ pub fn actions_line(filter: &MailFilter, data: &Data) -> String {
         parts.push(tr("Mark as read").to_string());
     }
     if let Some(FilterFile::Trash) = &filter.file {
-        parts.push(tr("Move to Trash").to_string());
+        parts.push(tr("Move to trash").to_string());
     }
     parts.join(" · ")
 }
@@ -613,7 +613,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
     };
     let search = widgets::group(
         tr("Search"),
-        vec![row_frame(query, false), setting_row(None, tr("Account"), None, account_picker(form, data))],
+        vec![row_frame(query, false), setting_row(None, tr("Account"), None, super::categorization::choice_box(account_picker(form, data)))],
         Some(
             tr("Written like a search: from:, to:, subject:, has:attachment … On new mail, plain words are looked for in the subject and the addresses.")
                 .to_string(),
@@ -626,7 +626,12 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
         Some(Message::SetCategory(form.category.is_none())),
     )];
     if form.category.is_some() {
-        then.push(setting_row(None, tr("Category"), None, category_picker(form, data)));
+        then.push(setting_row(
+            None,
+            tr("Category"),
+            None,
+            super::categorization::choice_box(category_picker(form, data)),
+        ));
     }
     then.push(super::categorization::check_row(
         tr("Mark as read"),
@@ -782,6 +787,7 @@ fn choose<'a, T: Clone + PartialEq + 'a>(
 ) -> Element<'a, Message> {
     let chosen = chosen.and_then(|wanted| choices.iter().find(|held| held.value == wanted).cloned());
     iced::widget::pick_list(choices, chosen, move |choice: Choice<T>| on_pick(choice.value))
+        .width(iced::Fill)
         .padding(style::pick_list_padding())
         .text_size(typo::caption().size)
         .text_line_height(typo::caption().line_height)
@@ -1047,7 +1053,7 @@ mod tests {
         let data = data();
         assert_eq!(
             actions_line(&data.mail_filters[0], &data),
-            format!("{} · {}", tr("Mark as read"), tr("Move to Trash"))
+            format!("{} · {}", tr("Mark as read"), tr("Move to trash"))
         );
         let second = actions_line(&data.mail_filters[1], &data);
         assert_eq!(second, format!("anna@mailbox.org · {}", tr("Unknown category")));

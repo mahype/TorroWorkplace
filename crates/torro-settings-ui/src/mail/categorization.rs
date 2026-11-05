@@ -920,18 +920,28 @@ pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
         let back = Message::Editor(editor::Message::Back);
         return Page::new(body.map(Message::Editor)).sub_page(name, back).actions(vec![save.map(Message::Editor)]);
     }
+    // A run at a time: while one goes or categories are being removed, it waits.
+    let busy = data.category_job.as_ref().is_some_and(|job| job.state == CategoryJobState::Running)
+        || data.categorization.clear_job.as_ref().is_some_and(|job| job.state == CategoryJobState::Running);
     let sort = widgets::text_button(
         None,
         tr("Sort existing mail…"),
         style::button::secondary,
-        Some(Message::OpenSort { rules_only: false }),
+        (!busy).then_some(Message::OpenSort { rules_only: false }),
     );
-    let page = Page::new(view(state, data)).actions(vec![sort]);
-    // The categories stand in two columns where the window has room for them.
-    match state.tab {
-        Tab::Categories => page.max_width(2.0 * size::form_max() + space::l()),
-        _ => page,
-    }
+    // One width for every tab, so head and tabs never move: the categories take two columns where
+    // the window has room, the other tabs keep the reading width at the left (design review #454).
+    Page::new(view(state, data)).actions(vec![sort]).max_width(page_width())
+}
+
+/// The width of the page in every tab: two columns of categories.
+fn page_width() -> f32 {
+    2.0 * size::form_max() + space::l()
+}
+
+/// A tab's content at the reading width of lists, at the left of the page.
+fn reading<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content).max_width(size::content_max()).width(Fill).into()
 }
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
@@ -949,8 +959,8 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     ];
     page = page.push(widgets::tabs(labels, state.tab.index(), Message::Tab));
     let tab = match state.tab {
-        Tab::Ai => ai_tab(state, data),
-        Tab::Rules => rules_tab(state, data),
+        Tab::Ai => reading(ai_tab(state, data)),
+        Tab::Rules => reading(rules_tab(state, data)),
         Tab::Categories => categories_tab(state, data),
     };
     page.push(tab).into()
@@ -1002,10 +1012,7 @@ fn progress<'a>(data: &'a Data) -> Option<Element<'a, Message>> {
         );
         match (job.state, job.left_seconds) {
             (CategoryJobState::Running, Some(seconds)) => {
-                words = trf(
-                    "{progress} · about {time} left",
-                    &[("progress", &words), ("time", &format_duration(seconds * 1000))],
-                );
+                words = trf("{progress} · about {time} left", &[("progress", &words), ("time", &rough_time(seconds))]);
             }
             (CategoryJobState::Running, None) => {}
             (state, _) => words = trf("{progress} · {state}", &[("progress", &words), ("state", &state_word(state))]),
@@ -1028,6 +1035,23 @@ fn progress<'a>(data: &'a Data) -> Option<Element<'a, Message>> {
         lines = lines.push(crate::parts::notice(error.clone()));
     }
     Some(lines.into())
+}
+
+/// `n` in words, with the words for one and for many: "1 category", "24 categories".
+fn count_words(n: u64, one: &str, many: &'static str) -> String {
+    match n {
+        1 => one.to_string(),
+        n => trf(many, &[("n", &format_count(n))]),
+    }
+}
+
+/// About how long `seconds` take, as the person reads it: under a minute, else in whole minutes
+/// ("13 min", "1 h 3 min") – a run's time is a guess, and seconds would tick for nothing.
+fn rough_time(seconds: u64) -> String {
+    match seconds {
+        0..60 => tr("under a minute").to_string(),
+        seconds => format_duration((seconds + 30) / 60 * 60_000),
+    }
 }
 
 /// What a person reads for the state of a run.
@@ -1101,8 +1125,10 @@ fn ai_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         ),
         Some(Message::Tab(2)),
     );
-    let manage =
-        pressable(setting_row(None, tr("Manage models…"), None, crate::parts::chevron()), Some(Message::ManageModels));
+    // A jump to Settings › AI, as "Appearance ↗" in the sidebar: no "…", nothing opens here.
+    let arrow =
+        icon::icon(Icon::ArrowUpRight, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
+    let manage = pressable(setting_row(None, tr("Manage models"), None, arrow), Some(Message::ManageModels));
     column![sorting, widgets::group(tr("Model"), vec![may, manage], None)].spacing(layout::section_gap()).into()
 }
 
@@ -1145,11 +1171,11 @@ fn model_menu<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     }
     let more = MenuItem::new(Icon::Settings, tr("More models: Settings › AI"), Message::ManageModels);
     sections.push(MenuSection::new(vec![more]));
-    let menu = iced::widget::scrollable(widgets::menu(sections))
+    let menu = iced::widget::scrollable(widgets::menu_wide(sections, size::panel()))
         .direction(iced::widget::scrollable::Direction::Vertical(style::scrollbar()))
         .style(style::scrollable)
         .height(Length::Shrink);
-    let menu = container(menu).max_height(size::panel()).width(size::panel());
+    let menu = container(menu).max_height(size::panel() * 2.0);
     widgets::floating(&state.model_anchor, Placement::Below(Align::End), menu, Message::ModelMenu(false))
 }
 
@@ -1158,14 +1184,11 @@ fn model_menu<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 /// The rules and filters in their one order, the built-in rule of the contacts last, then
 /// "Everything else › AI"; "New rule…" and "New filter…" above them.
 fn rules_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let buttons = row![
-        blank::horizontal(),
+    let buttons = vec![
         widgets::text_button(Some(Icon::Plus), tr("New rule…"), style::button::secondary, Some(Message::NewRule)),
         widgets::text_button(Some(Icon::Plus), tr("New filter…"), style::button::secondary, Some(Message::NewFilter)),
-    ]
-    .spacing(space::s())
-    .align_y(Alignment::Center);
-    let mut page = column![buttons].spacing(layout::section_gap());
+    ];
+    let mut page = column![].spacing(layout::section_gap());
     if let Some(result) = filters::apply_view(&state.filters) {
         page = page.push(result.map(Message::Filters));
     }
@@ -1187,14 +1210,15 @@ fn rules_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         rows.push(container(widgets::drop_line()).padding([0.0, space::l()]).into());
     }
     // The built-in rule of issue #390: always last, it cannot be moved – below it the drop goes last.
-    let contacts = setting_row(
-        Some(grip_space()),
-        tr("From someone in your address books"),
-        Some(format!(
+    let contacts = step_line(
+        grip_space(),
+        tr("From someone in your address books").to_string(),
+        format!(
             "{} · {}",
             tr("Built-in"),
             trf("Category · {category}", &[("category", &data.category_name(Category::Personal))])
-        )),
+        ),
+        data.settings.mail_contacts_personal,
         // Where the other rows have their "…": the switches stand on one axis.
         row![
             switch(data.settings.mail_contacts_personal, Message::ContactsPersonal),
@@ -1208,8 +1232,8 @@ fn rules_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         None => contacts,
     };
     rows.push(contacts);
-    let list = widgets::group(
-        tr("In this order"),
+    let list = widgets::group_with(
+        Some(widgets::group_title(tr("In this order"), buttons)),
         rows,
         Some(tr("Top to bottom, the first rule or filter that matches a new mail sets its category. Drag a row by its grip to change the order.").to_string()),
     );
@@ -1221,11 +1245,15 @@ fn rules_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Chosen::Off => tr("Off").to_string(),
         Chosen::Here(name) | Chosen::Cloud { name, .. } => name,
     };
-    let rest = setting_row(
-        None,
-        tr("Everything else"),
-        Some(trf("AI · {model}", &[("model", &model)])),
-        widgets::text_button(None, tr("Change in AI"), style::button::ghost, Some(Message::Tab(0))),
+    // The way to the model, as "Categories the model may choose" leads the other way.
+    let rest = pressable(
+        setting_row(
+            None,
+            tr("Everything else"),
+            Some(trf("AI · {model}", &[("model", &model)])),
+            crate::parts::chevron(),
+        ),
+        Some(Message::Tab(0)),
     );
     page.push(list).push(widgets::group(tr("Then"), vec![rest], None)).into()
 }
@@ -1260,7 +1288,6 @@ fn step_row<'a>(state: &'a State, data: &'a Data, step: &SortingStep) -> Option<
             )
         }
     };
-    let then = if enabled { then } else { trf("Off · {rule}", &[("rule", &then)]) };
     let grip = widgets::grip(Message::Grip(step.clone()), tr("Drag to change the order"));
     let open = state.step_menu.as_ref() == Some(step);
     let more = widgets::icon_button(Icon::Ellipsis, tr("More"), Some(Message::StepMenu((!open).then(|| step.clone()))));
@@ -1269,7 +1296,27 @@ fn step_row<'a>(state: &'a State, data: &'a Data, step: &SortingStep) -> Option<
     let control = row![switch(enabled, move |on| Message::StepEnabled(step.clone(), on)), more]
         .spacing(space::s())
         .align_y(Alignment::Center);
-    Some(setting_row(Some(grip), when, Some(then), control))
+    Some(step_line(grip, when, then, enabled, control))
+}
+
+/// A row of the list of rules and filters: `lead` (the grip), what it looks at, what it does, and
+/// `control`. Switched off, it says so in its second line and its first is quieter, so off rows
+/// stand out by word and colour.
+fn step_line<'a>(
+    lead: Element<'a, Message>,
+    when: String,
+    then: String,
+    enabled: bool,
+    control: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let (then, title): (String, fn(&Theme) -> iced::widget::text::Style) = match enabled {
+        true => (then, theme::text),
+        false => (trf("Off · {rule}", &[("rule", &then)]), theme::text_2),
+    };
+    let lines =
+        column![widgets::ellipsized(typo::body(), when, title), widgets::ellipsized(typo::meta(), then, theme::text_2)];
+    let text = row![lead, lines.width(Fill)].spacing(space::m()).align_y(Alignment::Center);
+    row_frame(row![text.width(Fill), control.into()].spacing(space::l()).align_y(Alignment::Center), true)
 }
 
 /// The "…" menu of the step whose menu is open: Edit, Apply to existing mail, Move up, Move down,
@@ -1327,7 +1374,8 @@ fn categories_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> 
         style::button::secondary,
         Some(Message::Editor(editor::Message::NewGroup)),
     );
-    let mut page = column![row![blank::horizontal(), new].align_y(Alignment::Center)].spacing(layout::section_gap());
+    // "New group…" belongs to the groups: at the right of their title line.
+    let mut page = column![widgets::group_title(tr("Groups"), vec![new])].spacing(layout::section_gap());
     if let Some(form) = editor::group_form_view(&state.editor, None) {
         page = page.push(widgets::group(tr("New group"), vec![form.map(Message::Editor)], None));
     }
@@ -1351,11 +1399,14 @@ fn categories_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> 
     );
     let detail = match data.updating(&Request::PreviewClearCategories) && data.category_clear_preview.is_none() {
         true => tr("Updating…").to_string(),
-        false => trf("{n} mails in every folder", &[("n", &format_count(count))]),
+        false => match count {
+            1 => tr("1 mail in every folder").to_string(),
+            n => trf("{n} mails in every folder", &[("n", &format_count(n))]),
+        },
     };
     let on_mail = widgets::group(
         tr("Categories on mail"),
-        vec![setting_row(None, tr("Categories on mail"), Some(detail), remove)],
+        vec![setting_row(None, tr("Mail with a category"), Some(detail), remove)],
         Some(
             tr("Removing takes only the categories off the mail. Sorting stays as it is, and nothing is sorted again.")
                 .to_string(),
@@ -1376,7 +1427,7 @@ fn group_card<'a>(
     let children: Vec<&'a CategoryInfo> = data.categories.iter().filter(|info| info.group == id).collect();
     let folded = state.folded.contains(&id);
     let mails: u64 = children.iter().map(|info| u64::from(info.messages)).sum();
-    let mut head_words = trf("{n} categories", &[("n", &children.len())]);
+    let mut head_words = count_words(children.len() as u64, tr("1 category"), tr("{n} categories"));
     if folded && !children.is_empty() {
         let names: Vec<&str> = children.iter().take(3).map(|info| info.label.as_str()).collect();
         let more = if children.len() > 3 { ", …" } else { "" };
@@ -1388,11 +1439,13 @@ fn group_card<'a>(
     let open = state.group_menu == Some(id);
     let more = widgets::icon_button(Icon::Ellipsis, tr("More"), Some(Message::GroupMenu((!open).then_some(id))));
     let more = widgets::anchored_if(open.then_some(&state.group_anchor), more);
+    // The group's name leads its card; how many categories and mails follow, quieter.
     let head = row![
         icon::icon(chevron, icon::SIZE_SM).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) }),
         mark,
-        container(widgets::ellipsized(typo::body(), head_words, theme::text_2)).width(Fill),
-        typo::text(typo::meta().tabular(), trf("{n} mails", &[("n", &format_count(mails))])).style(theme::text_3),
+        typo::text(typo::body_strong(), group.label.clone()).wrapping(Wrapping::None),
+        container(widgets::ellipsized(typo::meta(), head_words, theme::text_3)).width(Fill),
+        typo::text(typo::meta().tabular(), count_words(mails, tr("1 mail"), tr("{n} mails"))).style(theme::text_3),
     ]
     .spacing(space::s())
     .align_y(Alignment::Center);
@@ -1414,7 +1467,7 @@ fn group_card<'a>(
             Some(Message::Editor(editor::Message::NewCategoryInGroup(id))),
         ));
     }
-    let card = widgets::group(group.label.clone(), rows, None);
+    let card = widgets::group_with(None, rows, None);
     match state.category_drag {
         Some((_, over)) => {
             let card = column![card];
@@ -1532,15 +1585,20 @@ fn sort_dialog<'a>(
             None,
             tr("Accounts"),
             None,
-            widgets::select_button(&anchors.accounts, accounts, toggle(SortMenu::Accounts)),
+            choice_box(widgets::select_button_fill(&anchors.accounts, accounts, toggle(SortMenu::Accounts))),
         ),
         setting_row(
             None,
             tr("Folders"),
             None,
-            widgets::select_button(&anchors.folders, folders, toggle(SortMenu::Folders)),
+            choice_box(widgets::select_button_fill(&anchors.folders, folders, toggle(SortMenu::Folders))),
         ),
-        setting_row(None, tr("Time span"), None, crate::parts::picker(&Period::ALL[..], form.period, Message::Period)),
+        setting_row(
+            None,
+            tr("Time span"),
+            None,
+            choice_box(crate::parts::picker_fill(&Period::ALL[..], form.period, Message::Period)),
+        ),
     ];
     let model_detail = match chosen(data) {
         Chosen::Off => tr("No model sorts mail now").to_string(),
@@ -1566,7 +1624,7 @@ fn sort_dialog<'a>(
         (Some(preview), None, _) => match preview.seconds {
             Some(seconds) => trf(
                 "{n} mails · about {time}",
-                &[("n", &format_count(preview.eligible)), ("time", &format_duration(seconds * 1000))],
+                &[("n", &format_count(preview.eligible)), ("time", &rough_time(seconds))],
             ),
             None => trf("{n} mails", &[("n", &format_count(preview.eligible))]),
         },
@@ -1605,6 +1663,12 @@ fn sort_dialog<'a>(
         size::form_max(),
         Message::CloseSort,
     )
+}
+
+/// A choice of a dialog's row, as wide as the others: the fields of a dialog line up (design review
+/// of #454).
+pub(super) fn choice_box<'a, M: 'a>(choice: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    container(choice).width(size::sidebar()).into()
 }
 
 /// The anchors of the dialog's two menus, made in [`overlay`] and shared with them.

@@ -2353,6 +2353,13 @@ fn tag_view<'a, M: 'a>(tag: MenuTag<'a>) -> Element<'a, M> {
 /// A menu card: `menu` surface, `line_strong` border, radius 8, shadow, 4 inside, [`menu_width()`]
 /// wide; `sections` top to bottom with a line between them. Show it with [`floating`].
 pub fn menu<'a, M: Clone + 'a>(sections: Vec<MenuSection<'a, M>>) -> Element<'a, M> {
+    menu_wide(sections, menu_width())
+}
+
+/// A [`menu`] `width` wide, for entries with a second line that says more than a word (the models
+/// of Settings › Categorization, issue #454: account, size, where it computes). Never narrower than
+/// [`menu_width`].
+pub fn menu_wide<'a, M: Clone + 'a>(sections: Vec<MenuSection<'a, M>>, width: f32) -> Element<'a, M> {
     let mut list = column![];
     for (i, section) in sections.into_iter().enumerate() {
         if i > 0 {
@@ -2364,7 +2371,7 @@ pub fn menu<'a, M: Clone + 'a>(sections: Vec<MenuSection<'a, M>>) -> Element<'a,
         }
         list = list.extend(section.items.into_iter().map(menu_entry));
     }
-    container(list).width(menu_width()).padding(style::MENU_INSET).style(style::container::menu).into()
+    container(list).width(width.max(menu_width())).padding(style::MENU_INSET).style(style::container::menu).into()
 }
 
 /// A long choice in a floating menu (issue #299, the fonts of Appearance): a search field at the top
@@ -4357,6 +4364,17 @@ pub fn group<'a, M: 'a>(
     rows: Vec<Element<'a, M>>,
     footer: Option<String>,
 ) -> Element<'a, M> {
+    group_with(Some(typo::text(typo::caption(), title).style(theme::text_3).into()), rows, footer)
+}
+
+/// A [`group`] whose head is `head` instead of a title: a title with the group's buttons at its
+/// right ([`group_title`]), or none (`None`) for a card whose first row names it (the groups of
+/// categories, issue #454).
+pub fn group_with<'a, M: 'a>(
+    head: Option<Element<'a, M>>,
+    rows: Vec<Element<'a, M>>,
+    footer: Option<String>,
+) -> Element<'a, M> {
     let mut card = column![];
     for (i, r) in rows.into_iter().enumerate() {
         if i > 0 {
@@ -4364,15 +4382,24 @@ pub fn group<'a, M: 'a>(
         }
         card = card.push(r);
     }
-    let mut block = column![
-        typo::text(typo::caption(), title).style(theme::text_3),
-        container(card).width(Fill).style(style::container::group)
-    ]
-    .spacing(layout::item_gap());
+    let mut block = column![]
+        .push(head)
+        .push(container(card).width(Fill).style(style::container::group))
+        .spacing(layout::item_gap());
     if let Some(footer) = footer {
         block = block.push(typo::text(typo::meta(), footer).style(theme::text_2));
     }
     block.into()
+}
+
+/// The head of a [`group_with`]: `title` as a group's title, `buttons` at its right on the same line,
+/// `space::s()` apart – so a list's "New …" belongs to the list (issue #454).
+pub fn group_title<'a, M: 'a>(title: impl IntoFragment<'a>, buttons: Vec<Element<'a, M>>) -> Element<'a, M> {
+    row![typo::text(typo::caption(), title).style(theme::text_3).width(Fill)]
+        .extend(buttons)
+        .spacing(space::s())
+        .align_y(Alignment::Center)
+        .into()
 }
 
 /// A row of a settings [`group`]: `label` in `BODY`, an optional `detail` below it in `META`
