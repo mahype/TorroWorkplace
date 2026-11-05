@@ -1640,6 +1640,28 @@ impl Inbox {
         }
     }
 
+    /// What the rules and filters make of a mail in a sorting run (issue #454): the first step of
+    /// `sorting` that decides ([`rules::first_category`], `hits` the filters that found it with their
+    /// categories), else the headers ([`rules::mail_category`]); nothing while the categories are
+    /// being removed.
+    pub fn sorted_category(
+        &self,
+        sorting: &(Vec<SortingStep>, Vec<torro_inbox::SortRule>),
+        input: &rules::SortInput<'_>,
+        hits: &[(&str, torro_mail::Category)],
+        invite: bool,
+        auto_submitted: Option<&str>,
+    ) -> Result<Option<MailCategory>, String> {
+        self.work(false, |db| {
+            if clear_blocks_categories(db)? {
+                return Ok(None);
+            }
+            let kept = rules::first_category(&sorting.0, &sorting.1, input, hits);
+            Ok(rules::mail_category(kept, invite, auto_submitted, false))
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
     /// Makes a category of the person's own (`inbox.create_category`, task E15.2). `Err` is the
     /// answer for the client.
     pub fn create_category(

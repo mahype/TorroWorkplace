@@ -572,12 +572,15 @@ impl Demo {
         let all = scope.since.is_none() && scope.folders.is_empty();
         let (total, unclassified, automatic, protected) =
             if all { (24_813, 3_012, 19_516, 2_285) } else { (153, 53, 88, 12) };
+        let eligible = unclassified + if scope.again { automatic } else { 0 };
         CategoryJobPreview {
             total,
             unclassified,
             automatic,
             protected,
-            eligible: unclassified + if scope.again { automatic } else { 0 },
+            eligible,
+            // About four mails a second with the model, the rules alone at once (issue #454).
+            seconds: Some(if scope.apply_model { eligible.div_ceil(4) } else { eligible.div_ceil(400) }),
             request_scope: Some(scope.clone()),
         }
     }
@@ -1182,7 +1185,11 @@ impl Backend for Demo {
                     updated_at: now,
                     generation: 1,
                     model_in_cloud: Some(false),
-                };
+                    sorted_with: Some("demo/qwen3-4b-decide".into()),
+                    run_millis: 2_750,
+                    left_seconds: None,
+                }
+                .with_estimate();
                 *self.category_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job.clone());
                 self.note(request);
                 Response::CategoryJob { job: Some(job) }

@@ -4981,6 +4981,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Change {rule}", "Ändern: {rule}"),
     ("Remove {rule}", "Entfernen: {rule}"),
     ("Move {rule} to place {n}", "An Stelle {n} verschieben: {rule}"),
+    (
+        "Choose what to apply: rules and filters, the model or both.",
+        "Wähle, was angewendet wird: Regeln und Filter, das Modell oder beides.",
+    ),
+    (
+        "A model is named only when the model is applied.",
+        "Ein Modell wird nur genannt, wenn das Modell angewendet wird.",
+    ),
     ("Move {step} to place {n} of the sorting order", "An Stelle {n} der Sortierreihenfolge verschieben: {step}"),
     ("{move}, past the mail filters {filters}", "{move}, vorbei an den Mail-Filtern {filters}"),
     ("the mail filter {filter}", "den Mail-Filter {filter}"),

@@ -5256,8 +5256,7 @@ pub mod categorization {
             since: days.map(|days| chrono::Utc::now() - chrono::Duration::days(days)),
             before: None,
             again: state.again,
-            engine: None,
-            model: None,
+            ..CategoryJobScope::default()
         }
     }
 

@@ -1487,6 +1487,7 @@ impl MailStore {
             automatic: automatic.max(0) as u64,
             protected: protected.max(0) as u64,
             eligible: (unclassified + if scope.again { automatic } else { 0 }).max(0) as u64,
+            seconds: None,
             request_scope: None,
         };
         Ok((preview, max_sequence))

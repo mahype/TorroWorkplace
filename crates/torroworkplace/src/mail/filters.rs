@@ -893,6 +893,7 @@ pub async fn hits(
 /// Which of the messages `new` the `filters` find ([`hits`]), each with what they do together
 /// ([`FilterActions::of`], in the order of `filters`). For the core's handling of arriving mail:
 /// pass [`MailFilters::running_in`].
+#[cfg(test)]
 pub async fn matching(
     store: &SharedStore,
     filters: &[MailFilter],

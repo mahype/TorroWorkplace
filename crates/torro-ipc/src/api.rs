@@ -3870,7 +3870,7 @@ static PREVIEW_CATEGORY_JOB: Command = Command {
     area: Area::Inbox,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Counts locally known mail in selected accounts, folders and date range before sorting. Empty account and folder lists mean all accessible accounts and all folders. Reports unclassified, model categorized, protected person/rule and eligible mail without a 30-day or 500-message limit. Sidebar badges count unread mail only. `scope.accounts` and `scope.folders` are lists of ids; `scope.since` is inclusive and `scope.before` exclusive (RFC 3339), and without a date there is no time limit. `scope.again` also counts mail a model categorized earlier as `eligible`. The answer separates `total`, `unclassified`, `automatic`, `protected` (manual or by rule) and `eligible`; the counts cover read and unread mail.",
+    description: "Counts locally known mail in selected accounts, folders and date range before sorting. Empty account and folder lists mean all accessible accounts and all folders. Reports unclassified, model categorized, protected person/rule and eligible mail without a 30-day or 500-message limit. Sidebar badges count unread mail only. `scope.accounts` and `scope.folders` are lists of ids; `scope.since` is inclusive and `scope.before` exclusive (RFC 3339), and without a date there is no time limit. `scope.again` also counts mail a model categorized earlier as `eligible`. `scope.apply_rules` and `scope.apply_model` (both true when left out) say what a run would apply. The answer separates `total`, `unclassified`, `automatic`, `protected` (manual or by rule) and `eligible`; the counts cover read and unread mail. `seconds` estimates how long sorting the eligible mail takes, at the pace of the running or last run that sorted the same way; left out without one.",
 };
 
 static START_CATEGORY_JOB: Command = Command {
@@ -3878,7 +3878,7 @@ static START_CATEGORY_JOB: Command = Command {
     area: Area::Inbox,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress. Use the same `scope` as the preview. `scope.engine` and `scope.model` together choose a decision model, otherwise the current `inbox.categorize` assignment applies; the mail cloud setting is enforced even for an explicit model. An agent may name a model that runs elsewhere only when it is the one sorting uses now (ai_list_assignments), otherwise it gets `forbidden`: which model elsewhere reads the mail is for a person. The answer holds `job.id`, the frozen account cursors, `eligible`, `processed`, `changed`, errors, the model location and the state. Only one run goes at a time; new mail still gets the normal incoming sorting.",
+    description: "Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress. Use the same `scope` as the preview. `scope.apply_rules` applies the sorting rules and mail filters in their order (inbox_list_sorting_order), the headers and mail from contacts; a filter's category counts for mail in the inbox folder only, and reading or the trash never run here (mail_apply_filter does that). `scope.apply_model` asks the decision model where they leave a mail open; at least one of the two, and a model only with `apply_model`, else `error`. `scope.engine` and `scope.model` together choose a decision model, otherwise the current `inbox.categorize` assignment applies; the mail cloud setting is enforced even for an explicit model. An agent may name a model that runs elsewhere only when it is the one sorting uses now (ai_list_assignments), otherwise it gets `forbidden`: which model elsewhere reads the mail is for a person. The answer holds `job.id`, the frozen account cursors, `eligible`, `processed`, `changed`, errors, the model location, `left_seconds` (an estimate once mail was sorted) and the state. Only one run goes at a time; new mail still gets the normal incoming sorting.",
 };
 
 static GET_CATEGORY_JOB: Command = Command {
@@ -3974,7 +3974,9 @@ static LIST_SORT_RULES: Command = Command {
                   its `conditions` holds and none of its `exceptions`; fields are `sender` (the whole address), \
                   `domain` (the domain or one below it), `subject` and `text` (contain the value), upper and lower \
                   case never count. The first rule that holds decides, after a category the person set by hand \
-                  and before the headers and the decision model; rules with `enabled: false` hold for nothing. \
+                  and before the headers and the decision model; rules and mail filters stand in one order \
+                  (inbox_list_sorting_order), so a filter above a rule decides first. Rules with \
+                  `enabled: false` hold for nothing. \
                   \"Always for this sender\" keeps one of these too. The values are the person's own words.",
 };
 

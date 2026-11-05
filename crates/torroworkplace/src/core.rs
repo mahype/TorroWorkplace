@@ -1214,6 +1214,29 @@ async fn category_job_decider(
     Ok((selected, cloud))
 }
 
+/// The model a sorting run of `scope` asks and whether it computes elsewhere (issue #454): none for a
+/// run that does not apply the model, and none for a run that sorts `again` with the rules while no
+/// model sorts; else the model of [`category_job_decider`], or why there is none.
+async fn job_decider(
+    settings: &SettingsStore,
+    ai: &AiAccounts,
+    scope: &torro_ipc::inbox::CategoryJobScope,
+) -> Result<(Option<(String, String)>, Option<bool>), categorize::Refusal> {
+    if !scope.apply_model {
+        return Ok((None, None));
+    }
+    match category_job_decider(settings, ai, scope).await {
+        Ok((decider, cloud)) => Ok((Some(decider), Some(cloud))),
+        Err(_) if scope.again && scope.apply_rules => Ok((None, None)),
+        Err(refusal) => Err(refusal),
+    }
+}
+
+/// How a run that asks `decider` sorts, as [`torro_ipc::inbox::CategoryJob::sorted_with`] keeps it.
+fn sorted_with((engine, model): &(String, String)) -> String {
+    format!("{engine}/{model}")
+}
+
 /// Asks the decision model what the mail `message` of `account` is and keeps the answer with it
 /// (task E12.6): the category, and the two answers the same call brings along. The options are
 /// the person's catalogue (task E15.4), asked in one call or two ([`categorize::decide`]).
@@ -1770,11 +1793,16 @@ impl JobRun<'_> {
     /// where the rules leave it open (issue #420): everything of [`category_job_run`] before it
     /// writes, so that several mails can be asked at once. "Keep mail here" and a change of the model
     /// for sorting are looked at right before each mail goes out.
+    ///
+    /// With `apply_rules` (issue #454) the rules and filters decide first, in their order
+    /// (`sorting`); `found` are the enabled filters of the account that found this mail in its inbox
+    /// folder. Without it neither they, the headers nor the contacts sort.
     async fn prepare(
         &self,
         job: &torro_ipc::inbox::CategoryJob,
         account: &str,
-        catalogue: &[torro_mail::CategoryDef],
+        (catalogue, sorting): (&[torro_mail::CategoryDef], &crate::mail::filters::Sorting),
+        found: &[torro_mail::MailFilter],
         message: &str,
     ) -> JobMail {
         if self.current().is_none() {
@@ -1797,13 +1825,21 @@ impl JobRun<'_> {
             list_id: facts.content.list.as_deref(),
             facts: Some(&facts.sort_facts),
         };
-        let ruled = match self.inbox.rule_category(&input, facts.invite, facts.auto_submitted.as_deref()) {
-            Ok(category) => category,
-            Err(err) => return JobMail::Stop(err),
+        let ruled = match job.scope.apply_rules {
+            true => {
+                let categories: Vec<torro_mail::Category> = catalogue.iter().map(|def| def.category).collect();
+                let hits = crate::mail::filters::category_hits(found, &categories);
+                match self.inbox.sorted_category(sorting, &input, &hits, facts.invite, facts.auto_submitted.as_deref())
+                {
+                    Ok(category) => category,
+                    Err(err) => return JobMail::Stop(err),
+                }
+            }
+            false => None,
         };
         // Mail of a contact goes to Personal when no rule spoke (issue #390); a model only chooses
         // within that group.
-        let contact = ruled.is_none() && from_contact(self.known, account, &facts);
+        let contact = job.scope.apply_rules && ruled.is_none() && from_contact(self.known, account, &facts);
         let personal = contact.then(|| (by_contact(), None));
         let (decided, asked) = match (ruled, self.decider) {
             (Some(category), _) => (Some((category, None)), false),
@@ -1882,6 +1918,8 @@ async fn category_job_run(
         None => CategoryPace::CAREFUL,
     };
     let mut fails = 0;
+    // The time the run works, without its pauses (issue #454): a pause ends this worker.
+    let mut tick = std::time::Instant::now();
     while let Some(job) = run.current() {
         let Some(account) = job.accounts.iter().find(|account| account.cursor < account.max_sequence).cloned() else {
             let _ = inbox.change_category_job(&id, |job| {
@@ -1918,21 +1956,28 @@ async fn category_job_run(
             });
             continue;
         }
-        // Without a model the rules alone sort, and they need no catalogue.
-        let catalogue = match &decider {
-            Some(_) => match inbox.catalogue() {
+        // The model and the filters' categories need the catalogue; the rules alone do not.
+        let catalogue = match decider.is_some() || job.scope.apply_rules {
+            true => match inbox.catalogue() {
                 Ok(catalogue) => catalogue,
                 Err(err) => {
                     category_job_error(&inbox, &id, generation, &account.account, &err);
                     break;
                 }
             },
-            None => Vec::new(),
+            false => Vec::new(),
         };
-        let (asking, held_job, name, offered) = (&run, &job, account.account.as_str(), catalogue.as_slice());
+        // The rules and filters in their order, and what the filters find of this batch (#454).
+        let (sorting, found) = match job.scope.apply_rules {
+            true => job_filters(&mail, &inbox, &account.account, &batch).await,
+            false => Default::default(),
+        };
+        let (asking, held_job, name) = (&run, &job, account.account.as_str());
+        let (offered, found) = ((catalogue.as_slice(), &sorting), &found);
         let steps = futures_util::stream::iter(batch)
             .map(move |(seq, message)| async move {
-                let step = asking.prepare(held_job, name, offered, &message).await;
+                let by = found.iter().find(|(id, _)| *id == message).map_or(&[][..], |(_, by)| by.as_slice());
+                let step = asking.prepare(held_job, name, offered, by, &message).await;
                 (seq, message, step)
             })
             .buffered(pace.parallel);
@@ -2010,6 +2055,8 @@ async fn category_job_run(
             // Counted also when a pause or cancel came while this mail was written (review of #420):
             // it ran when the answer was taken, and a resumed job would not find a sorted mail again.
             // A resume counts on under the next generation, after this worker let go.
+            let spent = u64::try_from(tick.elapsed().as_millis()).unwrap_or(u64::MAX);
+            tick = std::time::Instant::now();
             let _ = inbox.change_category_job(&id, |job| {
                 if job.generation == generation
                     && matches!(
@@ -2022,6 +2069,7 @@ async fn category_job_run(
                     progress.processed += 1;
                     progress.changed += u64::from(changed);
                     progress.failed += u64::from(unread);
+                    job.run_millis = job.run_millis.saturating_add(spent);
                 }
             });
             if asked && pace.pause {
@@ -2036,6 +2084,33 @@ async fn category_job_run(
     if active.as_ref() == Some(&(id, generation)) {
         *active = None;
     }
+}
+
+/// The order of rules and filters, and which enabled filters of `account` find the mails of
+/// `batch` in its inbox folder (issue #454), for a sorting run that applies the rules. What cannot be
+/// read goes to the log and leaves the filters out: the rules still sort.
+async fn job_filters(
+    mail: &MailService,
+    inbox: &Inbox,
+    account: &str,
+    batch: &[(i64, String)],
+) -> (crate::mail::filters::Sorting, Vec<(String, Vec<torro_mail::MailFilter>)>) {
+    let all = mail.filters().list().unwrap_or_default();
+    let ids: Vec<String> = all.iter().map(|filter| filter.id.clone()).collect();
+    let sorting = inbox.sorting(&ids).unwrap_or_else(|err| {
+        eprintln!("torroworkplace: inbox: a sorting run cannot read the sorting order: {err}");
+        Default::default()
+    });
+    let running: Vec<torro_mail::MailFilter> = all.into_iter().filter(|filter| filter.runs_in(account)).collect();
+    let messages: Vec<String> = batch.iter().map(|(_, message)| message.clone()).collect();
+    let found = match mail.store(account).await {
+        Ok(store) => crate::mail::filters::hits(&store, &running, &messages).await.unwrap_or_else(|err| {
+            eprintln!("torroworkplace: mail: a sorting run cannot run the mail filters of {account}: {err}");
+            Vec::new()
+        }),
+        Err(_) => Vec::new(),
+    };
+    (sorting, found)
 }
 
 /// Whether the person chose another model for sorting while a run without a model of its own goes
@@ -6905,6 +6980,19 @@ impl Core {
                 message: tr("The end must be after the start.").into(),
             });
         }
+        // What the run applies (issue #454): at least one of the two, a model only with the model.
+        if !scope.apply_rules && !scope.apply_model {
+            return Err(Response::Error {
+                code: "error".into(),
+                message: tr("Choose what to apply: rules and filters, the model or both.").into(),
+            });
+        }
+        if !scope.apply_model && (scope.engine.is_some() || scope.model.is_some()) {
+            return Err(Response::Error {
+                code: "error".into(),
+                message: tr("A model is named only when the model is applied.").into(),
+            });
+        }
         let available = self.mail.accounts_in(reach).await;
         if scope.accounts.is_empty() {
             scope.accounts = available;
@@ -6937,8 +7025,23 @@ impl Core {
             preview.protected += current.protected;
             preview.eligible += current.eligible;
         }
+        preview.seconds = self.category_pace_of(&scope).await.and_then(|run| run.seconds_for(preview.eligible));
         preview.request_scope = Some(asked);
         Response::CategoryJobPreview { preview }
+    }
+
+    /// The run whose pace a preview of `scope` is estimated at (issue #454): the running or last run,
+    /// when it sorted the same way – with the model `scope` would ask now, or with the rules alone.
+    async fn category_pace_of(
+        &self,
+        scope: &torro_ipc::inbox::CategoryJobScope,
+    ) -> Option<torro_ipc::inbox::CategoryJob> {
+        let last = self.inbox.category_job(None).ok().flatten()?;
+        let now = match scope.apply_model {
+            true => category_job_decider(&self.settings, &self.ai, scope).await.ok().map(|(decider, _)| decider),
+            false => None,
+        };
+        (last.sorted_with == now.as_ref().map(sorted_with)).then_some(last)
     }
 
     /// The latest or named durable job, scoped to accounts this client can read.
@@ -6966,7 +7069,7 @@ impl Core {
                 }
             }
         }
-        Response::CategoryJob { job }
+        Response::CategoryJob { job: job.map(torro_ipc::inbox::CategoryJob::with_estimate) }
     }
 
     /// Start one deliberately selected, durable sorting run. The old catch-up command retains
@@ -6990,12 +7093,10 @@ impl Core {
         {
             return Response::Error { code: "busy".into(), message: tr("Categories are being removed.").into() };
         }
-        let (decider, model_in_cloud) =
-            match (category_job_decider(&self.settings, &self.ai, &scope).await, scope.again) {
-                (Ok((decider, cloud)), _) => (Some(decider), Some(cloud)),
-                (Err(_), true) => (None, None),
-                (Err(refusal), false) => return refused_decider(refusal),
-            };
+        let (decider, model_in_cloud) = match job_decider(&self.settings, &self.ai, &scope).await {
+            Ok(chosen) => chosen,
+            Err(refusal) => return refused_decider(refusal),
+        };
         if matches!(reach, Reach::Client(_))
             && scope.model.is_some()
             && model_in_cloud == Some(true)
@@ -7035,6 +7136,9 @@ impl Core {
             updated_at: now,
             generation: 1,
             model_in_cloud,
+            sorted_with: decider.as_ref().map(sorted_with),
+            run_millis: 0,
+            left_seconds: None,
         };
         let mut active = self.category_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if active.is_some() || self.catch_up.running.load(std::sync::atomic::Ordering::Acquire) {
@@ -7046,7 +7150,7 @@ impl Core {
         *active = Some((id.clone(), job.generation));
         drop(active);
         self.spawn_category_worker(id, job.generation, decider);
-        Response::CategoryJob { job: Some(job) }
+        Response::CategoryJob { job: Some(job.with_estimate()) }
     }
 
     /// Pause, resume or cancel an existing job without discarding its scope or cursor.
@@ -7067,8 +7171,8 @@ impl Core {
             };
         }
         let (decider, model_in_cloud) = if action == CategoryJobControl::Resume {
-            match (category_job_decider(&self.settings, &self.ai, &existing.scope).await, existing.scope.again) {
-                (Ok((decider, cloud)), _) => {
+            match job_decider(&self.settings, &self.ai, &existing.scope).await {
+                Ok((Some(decider), Some(cloud))) => {
                     // As at the start: a client resumes a run naming a model elsewhere only while it
                     // is what sorting uses now (PR review of #325), the last guard an approval runs on to.
                     if matches!(reach, Reach::Client(_))
@@ -7081,8 +7185,8 @@ impl Core {
                     }
                     (Some(decider), Some(cloud))
                 }
-                (Err(_), true) => (None, None),
-                (Err(refusal), false) => return refused_decider(refusal),
+                Ok(_) => (None, None),
+                Err(refusal) => return refused_decider(refusal),
             }
         } else {
             (None, None)
@@ -7107,6 +7211,7 @@ impl Core {
                 // Where the model of now computes (PR review of #325): a run without a fixed model may
                 // resume with another, and "Keep mail here" stops a run by this mark.
                 job.model_in_cloud = model_in_cloud;
+                job.sorted_with = decider.as_ref().map(sorted_with);
             }
             _ => {}
         });
@@ -7127,7 +7232,7 @@ impl Core {
         } else {
             drop(active);
         }
-        Response::CategoryJob { job: Some(job) }
+        Response::CategoryJob { job: Some(job.with_estimate()) }
     }
 
     fn spawn_category_worker(&self, id: String, generation: u64, decider: Option<(String, String)>) {
@@ -21473,6 +21578,113 @@ mod tests {
         assert_eq!(category_of("Re: Lunch"), None, "one's own sent mail is no contact's");
     }
 
+    /// Issue #454: a run applies the rules and filters, the model or both. With the rules alone, a
+    /// rule and a filter sort in their order; a filter only mail of the inbox folder, and reading or
+    /// the trash never happen here. Applying nothing, or naming a model without applying it, is
+    /// `error`; the run knows how it sorted and how long it worked.
+    #[tokio::test]
+    async fn a_sorting_run_applies_rules_and_filters_without_the_model() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use torro_ipc::inbox::{CategoryJobScope, CategoryJobState};
+        use torro_mail::{Category, MailCategory};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let date = Utc::now().to_rfc2822();
+        for (n, folder, from, subject) in [
+            (1, "INBOX", "tickets@rail.example", "Your ticket"),
+            (2, "INBOX", "news@shop.example", "Autumn sale"),
+            (3, "Archive", "news@shop.example", "Summer sale"),
+        ] {
+            let raw = format!(
+                "From: <{from}>\r\nTo: anna@example.org\r\nSubject: {subject}\r\nDate: {date}\r\n\
+                 Message-ID: <apply{n}@example>\r\nContent-Type: text/plain\r\n\r\nText {n}\r\n"
+            );
+            server.add(folder, &raw, &[]);
+        }
+        let secrets = MemoryTokens::default();
+        let anna = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&anna, MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let core = core(dir.path()).with_mail(mail);
+        let rule = Request::CreateSortRule {
+            category: Category::Booking,
+            conditions: vec![torro_inbox::SortCondition {
+                comparison: torro_inbox::SortComparison::Auto,
+                field: torro_inbox::SortField::Domain,
+                value: "rail.example".into(),
+            }],
+            exceptions: Vec::new(),
+            position: None,
+            enabled: true,
+        };
+        assert!(matches!(core.handle(rule).await, Response::SortRule { .. }));
+        let filter = Request::CreateMailFilter {
+            query: "from:shop.example".into(),
+            account: None,
+            file: None,
+            mark_read: true,
+            category: Some(Category::Promotion),
+            enabled: true,
+        };
+        assert!(matches!(core.handle(filter).await, Response::MailFilter { .. }));
+
+        let scope =
+            |apply_rules, apply_model| CategoryJobScope { apply_rules, apply_model, ..CategoryJobScope::default() };
+        let nothing = core.handle(Request::StartCategoryJob { scope: scope(false, false) }).await;
+        assert_eq!(code(&nothing), "error");
+        let named = CategoryJobScope { model: Some("qwen3:4b".into()), engine: Some("x".into()), ..scope(true, false) };
+        assert_eq!(code(&core.handle(Request::StartCategoryJob { scope: named }).await), "error");
+        assert_eq!(code(&core.handle(Request::StartCategoryJob { scope: scope(false, true) }).await), "not-connected");
+
+        let answer = core.handle(Request::StartCategoryJob { scope: scope(true, false) }).await;
+        assert!(matches!(&answer, Response::CategoryJob { job: Some(job) } if job.sorted_with.is_none()), "{answer:?}");
+        let mut ended = None;
+        for _ in 0..200 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let Response::CategoryJob { job: Some(job) } = core.handle(Request::GetCategoryJob { id: None }).await
+            else {
+                panic!("the run")
+            };
+            if job.state != CategoryJobState::Running {
+                ended = Some(job);
+                break;
+            }
+        }
+        let job = ended.expect("the run ends");
+        assert_eq!(job.state, CategoryJobState::Complete, "{:?}", job.errors);
+        assert_eq!(job.left_seconds.is_some(), job.run_millis > 0, "an estimate only with a measured time");
+
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            categories: Vec::new(),
+            pile: None,
+        };
+        let Response::MailMessages { messages, .. } = core.handle(search).await else { panic!("a page") };
+        let of = |subject: &str| messages.iter().find(|m| m.subject == subject).expect("the mail");
+        assert_eq!(of("Your ticket").category, Some(MailCategory::by_rule(Category::Booking)), "the rule's");
+        assert_eq!(of("Autumn sale").category, Some(MailCategory::by_rule(Category::Promotion)), "the filter's");
+        assert!(!of("Autumn sale").flags.contains(&torro_mail::Flag::Seen), "reading is the filter's own run");
+        assert_eq!(of("Summer sale").category, None, "a filter sorts the inbox folder only");
+
+        // The preview of the same kind of run is estimated at this run's pace.
+        let preview = core.handle(Request::PreviewCategoryJob { scope: scope(true, false) }).await;
+        let Response::CategoryJobPreview { preview } = preview else { panic!("a preview: {preview:?}") };
+        assert_eq!(preview.seconds.is_some(), job.run_millis > 0);
+    }
+
     /// Issue #123: a folder's message without an entry is muted by its id – its traits only, from
     /// the mail store; a client needs the account, the admin switch and the person, who sees the
     /// sender as the store holds it.""
@@ -26434,6 +26646,9 @@ mod tests {
             updated_at: now,
             generation: 1,
             model_in_cloud: Some(true),
+            sorted_with: None,
+            run_millis: 0,
+            left_seconds: None,
         };
         core.inbox.save_category_job(&job).expect("saved");
         core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble"))).await;
