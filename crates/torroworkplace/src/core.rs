@@ -26588,6 +26588,27 @@ mod tests {
         }
     }
 
+    /// Issue #406: a category chosen by hand while the backlog run waits for the model stays; the
+    /// late answer is dropped.
+    #[tokio::test]
+    async fn the_backlog_run_keeps_a_hand_choice_made_while_the_model_thinks() {
+        use torro_mail::{Category, MailCategory};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        mock_jev_after(&jev, std::time::Duration::from_millis(600), None).await;
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Hello 1".to_string()]).await;
+        let (account, message, _) = the_one_mail(&core).await;
+
+        let backlog = Request::CatchUpCategories { cancel: false, again: false };
+        assert!(matches!(core.handle(backlog).await, Response::Categorization { .. }));
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let chosen = MailCategory::by_person(Category::Newsletter);
+        core.mail.set_category(&account, &[message], Some(chosen)).await.expect("chosen");
+        backlog_ended(&core, std::time::Duration::from_secs(10)).await;
+        let (_, _, held) = the_one_mail(&core).await;
+        assert_eq!(held, Some(chosen), "the choice by hand stays");
+    }
+
     /// Issue #420 (PR review): ten mails in a row without an answer stop the backlog run; the mail
     /// keeps no category.
     #[tokio::test]

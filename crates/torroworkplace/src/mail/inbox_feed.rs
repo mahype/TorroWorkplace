@@ -2674,6 +2674,37 @@ pub(crate) mod tests {
         assert_eq!(by_subject(&mail).await["Hello"].category, personal, "no answer leaves Personal");
     }
 
+    /// Issue #406: the model's late answer does not replace what a person chose on the entry while
+    /// the model thought.
+    #[tokio::test]
+    async fn a_late_answer_leaves_a_choice_on_the_entry() {
+        use torro_mail::Category;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &bernd("Offer", 0), &[]);
+        let (inbox, mail, feed) = quiet(dir.path(), &server).await;
+        let chosen = MailCategory::by_person(Category::Newsletter);
+        let by_hand = Arc::clone(&inbox);
+        let decide: Decider = Arc::new(move |account: String, message: String, _contact: bool| {
+            let inbox = Arc::clone(&by_hand);
+            Box::pin(async move {
+                let entry = inbox.entry_of_message(&account, &message).expect("an entry");
+                inbox.set_category(&entry, Some(chosen)).expect("chosen");
+                Some(MailCategory::by_model(Category::Invoice, 0.9))
+            })
+        });
+        let feed = Feed { decide: Some(decide), ..feed };
+        let all = by_subject(&mail).await;
+
+        feed.take(arrived(&[&all["Offer"]]), Utc::now()).await;
+        eventually("the entry keeps the choice", || async {
+            entry(&entries(&inbox), "Offer").category == Some(chosen)
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(entry(&entries(&inbox), "Offer").category, Some(chosen), "the late answer did not replace it");
+    }
+
     /// Issue #390: knowing nobody – the setting off, or no contacts – new mail is sorted as before;
     /// a filter's category comes before the contacts.
     #[tokio::test]
