@@ -53,7 +53,7 @@ use iced::time::Instant;
 use iced::widget::text::Wrapping;
 use iced::widget::{Column, Space, button, column, container, operation, row, rule, scrollable, text, text_input};
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Size, Subscription, Task, Theme};
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::source::Source;
@@ -1680,7 +1680,7 @@ impl Editor {
         let kind = Kind::of(query);
         let kind_at = kinds.iter().position(|(_, k)| *k == kind).unwrap_or_default();
         let kind = widgets::segmented(kinds.map(|(label, k)| (label, Message::Kind(k))), kind_at);
-        let states = [(tr("Open"), State::Open), (tr("Closed"), State::Closed), (tr("Any"), State::Any)];
+        let states = [(trc("state", "Open"), State::Open), (tr("Closed"), State::Closed), (tr("Any"), State::Any)];
         let state = State::of(query);
         let state_at = states.iter().position(|(_, s)| *s == state).unwrap_or_default();
         let state = widgets::segmented(states.map(|(label, s)| (label, Message::State(s))), state_at);
