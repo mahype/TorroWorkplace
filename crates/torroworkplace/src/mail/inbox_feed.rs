@@ -189,9 +189,10 @@ async fn decide_later(decide: Decider, inbox: Arc<Inbox>, account: String, messa
             }
         };
         // The entry of that mail reads alike; the decider already kept the category with the mail.
+        // A person's choice made on the entry meanwhile stands (issue #406).
         if let Some(category) = category
             && let Some(entry) = inbox.entry_of_message(&account, &message)
-            && let Err(err) = inbox.set_category(&entry, Some(category))
+            && let Err(err) = inbox.set_category_unless_person(&entry, category)
         {
             eprintln!("torroworkplace: inbox: cannot put a category on an entry of {account}: {err}");
         }
