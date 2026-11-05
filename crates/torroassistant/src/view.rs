@@ -26,7 +26,7 @@ use iced::{Alignment, Background, Element, Fill, Padding, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::SizeClass;
-use torro_gui::shell::{self, Cover, SidebarMode, Surface, TitleButtons};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, TitleButtons, TopRow};
 use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::{layout, markdown, style, typo};
@@ -141,7 +141,7 @@ fn area_icon(area: Option<Area>) -> Icon {
         Some(Area::Mail) => Icon::Mail,
         Some(Area::Workspaces) => Icon::LayoutGrid,
         Some(Area::Accounts) => Icon::Users,
-        Some(Area::Settings) => Icon::Settings,
+        Some(Area::Settings) => shell::SETTINGS_ICON,
         Some(Area::Apps) => Icon::AppWindow,
         Some(Area::Ai) => Icon::Sparkles,
         Some(Area::Bots) => Icon::Users,
@@ -157,7 +157,7 @@ impl App {
     /// The window with the zoom badge and the notice over it; in mini and strip the glance.
     pub fn view(&self) -> Element<'_, Message> {
         let class = self.class();
-        if self.is_glance() {
+        if !self.has_top_row() {
             let surface = if self.listed || self.chat_only { Surface::of(class) } else { Surface::Window };
             return widgets::ctrl_guard(shell::titlebar(
                 self.zoom.view(self.glance(class)),
@@ -168,31 +168,37 @@ impl App {
                 Message::DragWindow,
             ));
         }
-        // Always two layers, so the window keeps its state when the notice comes and goes.
+        // Always two layers, so the window keeps its state when the notice comes and goes. The shell
+        // brings its top row (issue #459), so the window needs no band.
         let window = stack![self.window(class), self.notice_layer()].width(Fill).height(Fill);
-        let surface = if self.chat_only { Surface::Panel } else { Surface::of(class) };
-        // The gear is marked while the settings fill the content area and leads back out of them.
-        let mut buttons = TitleButtons::none().settings(Message::ToggleSettings).settings_open(self.settings.is_some());
-        if !self.chat_only {
-            let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
-            buttons = buttons.sidebar(label, Message::ToggleSidebar);
-        }
-        let content = self.zoom.view(window);
-        widgets::ctrl_guard(shell::titlebar(
-            content,
-            self.zoom.factor(),
-            surface,
-            self.cover(),
-            buttons,
-            Message::DragWindow,
-        ))
+        widgets::ctrl_guard(self.zoom.view(window))
     }
 
-    /// What lies over the top of the window, which the title band repeats.
+    /// Whether the window is the shell with its top row: every window but the glance of a tile, which
+    /// keeps the band.
+    pub(crate) fn has_top_row(&self) -> bool {
+        !self.is_glance()
+    }
+
+    /// The window's top row (issue #459): the switcher and the panel button (not in a chat window,
+    /// which has no sidebar), the settings – marked while they fill the content area, and the way
+    /// back out of them – and what lies over the top of the window.
+    fn top_row(&self, class: SizeClass, switcher: &Anchor) -> TopRow<Message> {
+        let mut top = TopRow::new(MAIN, switcher, Message::Switcher, self.zoom.factor(), Message::DragWindow)
+            .settings(Message::ToggleSettings)
+            .settings_open(self.settings.is_some())
+            .cover(self.cover());
+        if !self.chat_only {
+            top = top.sidebar(shell::sidebar_button_label(class, self.sidebar, self.drawer), Message::ToggleSidebar);
+        }
+        top
+    }
+
+    /// What lies over the top of the window, which the top row repeats: the drawer. A dialog – the
+    /// window's own or one of an open settings section – lies over the whole window, the top row
+    /// included ([`App::window`]), so the row does not dim it a second time.
     fn cover(&self) -> Cover {
-        let drawer = if self.chat_only { Cover::Nothing } else { Cover::drawer(self.class(), self.drawer) };
-        // A dialog of an open settings section covers the band like the window's own.
-        Cover::dialog(self.dialog.is_some() || self.settings_dialog().is_some()).or(drawer)
+        if self.chat_only { Cover::Nothing } else { Cover::drawer(self.class(), self.drawer) }
     }
 
     /// The dialog of the open settings section ("Forget this note?"), while one is open.
@@ -236,7 +242,10 @@ impl App {
         };
         let window: Element<'_, Message> = if self.chat_only {
             // A chat window has no sidebar: the flush frame of the narrow layout in every size.
-            shell::shell(SizeClass::Narrow, Space::new(), header, body, None).overlay(layer).into()
+            shell::shell(SizeClass::Narrow, Space::new(), header, body, None)
+                .overlay(layer)
+                .top_row(self.top_row(SizeClass::Narrow, &anchors.switcher))
+                .into()
         } else {
             let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
                 .then(|| self.sidebar(SidebarMode::Rail, &anchors));
@@ -244,6 +253,7 @@ impl App {
                 .rail(rail)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(layer)
+                .top_row(self.top_row(class, &anchors.switcher))
                 .into()
         };
         let window = match &self.dialog {
@@ -314,7 +324,9 @@ impl App {
     /// sidebar; the rail has the head alone (the conversations have no icons to tell them apart,
     /// and the drawer lists them).
     fn sidebar<'a>(&'a self, mode: SidebarMode, anchors: &Anchors) -> Element<'a, Message> {
-        let head = shell::sidebar_head(mode, MAIN, &anchors.switcher, Message::Switcher, Message::ToggleSidebar);
+        // The switcher lies in the top row (issue #459), the sidebar begins with its tools.
+        // No magnifier: the field "Search conversations" stands right below (design review of #459).
+        let head = shell::sidebar_tools(mode, false, Message::Switcher);
         let mut items: Vec<Element<'a, Message>> = Vec::new();
         // Before the conversations came there is nothing to search.
         if mode == SidebarMode::Expanded && self.listed {
@@ -358,21 +370,8 @@ impl App {
                 items.push(sidebar_note(tr("No conversation matches")));
             }
         }
-        // Where the band has it (macOS), "Settings" sits in its top right corner.
-        let footer = (!shell::has_band())
-            .then(|| {
-                widgets::sidebar_item_in(
-                    mode,
-                    Icon::Settings,
-                    tr("Settings"),
-                    Trail::None,
-                    self.settings.is_some(),
-                    Message::ToggleSettings,
-                )
-            })
-            .into_iter()
-            .collect();
-        shell::sidebar(head, items, footer)
+        // "Settings" sits in the top row's right corner (issue #459).
+        shell::sidebar(head, items, Vec::new())
     }
 
     /// How many conversations the search leaves.
@@ -438,44 +437,65 @@ impl App {
     // -- Header ---------------------------------------------------------------------------------
 
     /// The header: the conversation's title with its engine and model quietly beside it, and its
-    /// "…" menu; in the narrow main window the drawer button and "New chat".
+    /// "…" menu; in the narrow main window "New chat" (the panel button that opens the drawer lies in
+    /// the top row, issue #459).
     fn header<'a>(&'a self, class: SizeClass, anchors: &Anchors) -> Element<'a, Message> {
         let mut leading = Vec::new();
         // Narrow has neither sidebar nor rail, whose head holds "New".
         let narrow_main = !self.chat_only && class == SizeClass::Narrow;
-        if narrow_main && !shell::has_band() {
-            leading.push(shell::sidebar_toggle(Message::ToggleSidebar));
-        }
         if let Some(draft) = &self.bot_draft {
-            return self.editor_header(draft, leading);
+            return self.editor_header(draft, class, leading);
         }
         // Who answers: the assistant's or the bot's picture, and its name before the engine (task
         // C.10, B.3).
         let (name, picture) = self.speaker();
         leading.push(avatar(&name, &picture, header_avatar()));
-        // A new chat has no engine yet: its picture says who answers, the welcome says the name.
-        // Narrow keeps who answers when it is a bot, and drops the engine; a deleted bot has none.
+        // A new chat has no engine yet: its picture says who answers, the welcome says the name. A
+        // deleted bot has no engine. Narrow drops the note: beside the top row's pieces (issue #459)
+        // the title needs the room, and the picture says who answers.
         let note = match (class == SizeClass::Narrow, self.chat_bot().is_some(), self.bot_gone()) {
-            (_, true, true) => Some(name.clone()),
-            (true, true, false) => Some(name.clone()),
-            (true, false, _) => None,
+            (true, _, _) => None,
+            (false, true, true) => Some(name.clone()),
             (false, _, _) => self.engine_note().map(|engine| format!("{name} · {engine}")),
         };
-        let title = shell::header_title(None, self.conversation_title(), note);
         let mut trailing = Vec::new();
         if narrow_main {
             trailing.push(widgets::icon_button(Icon::SquarePen, tr("New chat"), Some(Message::NewChat)));
         }
         if let Some(id) = self.chat_bot().filter(|_| !self.bot_gone()) {
             let edit = Message::EditBot(id.to_owned());
-            trailing.push(widgets::icon_button(Icon::SlidersHorizontal, tr("Edit bot"), Some(edit)));
+            trailing.push(widgets::icon_button(Icon::SquarePen, tr("Edit bot"), Some(edit)));
         }
         if let Some(id) = self.current.clone().filter(|_| self.transcript.summary.is_some()) {
             let menu = Menu::Conversation { id, at: MenuAt::Header };
             let more = widgets::icon_button(Icon::Ellipsis, tr("More"), Some(Message::ToggleMenu(menu)));
             trailing.push(widgets::anchored(&anchors.header, more));
         }
+        let title = match class {
+            SizeClass::Narrow => self.narrow_title(self.conversation_title(), trailing.len()),
+            _ => shell::header_title(None, self.conversation_title(), note),
+        };
         shell::header_bar(leading, title, trailing)
+    }
+
+    /// The title of a narrow header, cut with "…" to the room it has (issue #459) and then shown whole
+    /// as tooltip: the window less the top row's lead and settings, the header's padding, the picture
+    /// before the title and `buttons` icon buttons after it.
+    fn narrow_title<'a>(&self, title: String, buttons: usize) -> Element<'a, Message> {
+        let class = SizeClass::Narrow;
+        let button = size::control_sm() + space::s();
+        let fixed = shell::head_inset(class, self.sidebar, self.zoom.factor())
+            + 2.0 * space::s()
+            + button
+            + header_avatar()
+            + space::s()
+            + space::s();
+        let room = (self.size.width - fixed - buttons as f32 * button).max(0.0);
+        let shown = typo::ellipsize(&title, typo::body_strong(), room);
+        if shown == title {
+            return shell::header_title(None, title, None);
+        }
+        widgets::with_tooltip(shell::header_title(None, shown, None), title)
     }
 
     /// "Ollama · qwen3:14b": who answered the open conversation last.
@@ -1007,7 +1027,7 @@ impl App {
             .collect();
         // Which models are offered is set under Settings › AI (task S.26, issue #410), not here.
         if self.engines.iter().any(|engine| engine.kind == EngineKind::Ai) {
-            let manage = MenuItem::new(Icon::SlidersHorizontal, tr("Manage models…"), Message::ManageModels);
+            let manage = MenuItem::new(Icon::Layers, tr("Manage models…"), Message::ManageModels);
             sections.push(MenuSection::new(vec![manage]));
         }
         widgets::menu(sections)
@@ -1358,4 +1378,50 @@ fn prompt_state<'a>(title: &'a str, hint: &'a str, action: Option<(&'a str, Mess
         content = content.push(widgets::text_button(None, label, style::button::secondary, Some(message)));
     }
     container(content).center(Fill).padding(space::xl()).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use iced::Size;
+    use torro_gui::source::Source;
+
+    use super::*;
+    use crate::backend::Backend;
+    use crate::demo;
+    use crate::launch::Launch;
+
+    /// A demo window started with `words` (`--demo` added), after the core answered.
+    fn launched(words: &[&str]) -> App {
+        let all: Vec<String> = ["--demo"].iter().chain(words).map(|word| word.to_string()).collect();
+        let launch = Launch::parse(&all).expect("valid parameters");
+        let backend = Backend::Demo(Arc::new(demo::Demo::new(chrono::Utc::now(), demo::Setup::default())));
+        let mut app = App::new(backend, Source::from_args(vec!["--demo".to_string()]), launch).0;
+        let _ = app.update(Message::CoreReady);
+        app
+    }
+
+    /// Issue #459: the main window and a chat window show the shell with its top row – switcher,
+    /// panel button (not in a chat window) and the settings in one row – in every layout; the glance
+    /// of a tile keeps the band.
+    #[test]
+    fn the_window_has_the_top_row_where_it_shows_the_shell() {
+        for words in [&[][..], &["--chat", "new"][..]] {
+            let mut app = launched(words);
+            for size in [Size::new(1600.0, 1000.0), Size::new(800.0, 600.0), Size::new(480.0, 900.0)] {
+                let _ = app.update(Message::Resized(size));
+                assert!(app.has_top_row(), "{words:?} {size:?}");
+                let _ = app.view();
+                let _ = app.update(Message::ToggleSettings);
+                let _ = app.view();
+                let _ = app.update(Message::ToggleSettings);
+            }
+            for size in [Size::new(240.0, 160.0), Size::new(1200.0, 200.0)] {
+                let _ = app.update(Message::Resized(size));
+                assert!(!app.has_top_row(), "{words:?} {size:?}: a glance has no top row");
+                let _ = app.view();
+            }
+        }
+    }
 }

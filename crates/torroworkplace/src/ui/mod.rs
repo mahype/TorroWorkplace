@@ -81,7 +81,7 @@ use torro_core::timing;
 use torro_gui::design::{self, Chosen, Follow, Forced};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons, TopRow};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
@@ -178,7 +178,8 @@ impl Section {
             Section::Workspaces => Icon::Layers,
             // Light and dark: the suite has no palette icon; the sun stands for how it looks.
             Section::Appearance => Icon::Sun,
-            Section::General => Icon::Settings,
+            // The settings of the suite: the sliders, as every app's settings button (issue #459).
+            Section::General => shell::SETTINGS_ICON,
         }
     }
 
@@ -434,7 +435,8 @@ pub struct Ui {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
+    /// The free top row (or the band of a window without it) was pressed: drag the window (see
+    /// [`shell::TopRow`], [`shell::titlebar`]).
     DragWindow,
     /// Another `torroworkplace ui` asked for this window (issue #279, [`torro_gui::instance`]): bring
     /// it to the front.
@@ -1733,25 +1735,35 @@ impl Ui {
             SizeClass::Strip => glance::strip(&self.data, self.loaded, size),
             class => self.window(class),
         });
+        let content = self.zoom.view(window);
+        // The shell brings its top row (issue #459); the glances and the setup keep the band.
+        if self.has_top_row() {
+            return widgets::ctrl_guard(content);
+        }
         // The glances lie on the panel even while loading, so the layout alone decides the band.
         let surface = Surface::of(layout::of(self.size));
-        let content = self.zoom.view(window);
-        let (cover, buttons) = (self.cover(), self.title_buttons());
+        let (cover, buttons) = (self.cover(), TitleButtons::none());
         widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, buttons, Message::DragWindow))
     }
 
-    /// The panel button and "General" in the band above the window (U.10); a glance has neither.
-    fn title_buttons(&self) -> TitleButtons<Message> {
-        let class = layout::of(self.size);
-        // The setup keeps its list of steps and has no settings to go to.
-        if matches!(class, SizeClass::Mini | SizeClass::Strip) || self.setup.is_some() {
-            return TitleButtons::none();
-        }
-        let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
-        TitleButtons::none().sidebar(label, Message::ToggleSidebar).settings(Message::Select(Section::General))
+    /// Whether the window is the shell with its top row: not as a glance, and not during the setup,
+    /// which keeps its list of steps and has no settings to go to.
+    fn has_top_row(&self) -> bool {
+        !matches!(layout::of(self.size), SizeClass::Mini | SizeClass::Strip) && self.setup.is_none()
     }
 
-    /// What lies over the top of the window, which the title band repeats: the page's dialog, else
+    /// The window's top row (issue #459): the switcher, the panel button, "General" as the settings,
+    /// and what lies over the top of the window.
+    fn top_row(&self, class: SizeClass, switcher: &Anchor) -> TopRow<Message> {
+        let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
+        TopRow::new(AppId::WORKPLACE, switcher, Message::Switcher, self.zoom.factor(), Message::DragWindow)
+            .sidebar(label, Message::ToggleSidebar)
+            .settings(Message::Select(Section::General))
+            .settings_open(self.section == Section::General)
+            .cover(self.cover())
+    }
+
+    /// What lies over the top of the window, which the top row repeats: the page's dialog, else
     /// the drawer. A glance has neither.
     fn cover(&self) -> Cover {
         let class = layout::of(self.size);
@@ -1785,18 +1797,13 @@ impl Ui {
             (dialog, menu) => dialog.or(menu),
         };
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
-            .then(|| self.sidebar(SidebarMode::Rail, &switcher));
-        shell::shell(
-            class,
-            self.sidebar(SidebarMode::Expanded, &switcher),
-            self.header(class, &nav),
-            self.body(class),
-            None,
-        )
-        .rail(rail)
-        .drawer(self.drawer, Message::CloseMenu)
-        .overlay(layer)
-        .into()
+            .then(|| self.sidebar(SidebarMode::Rail));
+        shell::shell(class, self.sidebar(SidebarMode::Expanded), self.header(class, &nav), self.body(class), None)
+            .rail(rail)
+            .drawer(self.drawer, Message::CloseMenu)
+            .overlay(layer)
+            .top_row(self.top_row(class, &switcher))
+            .into()
     }
 
     /// The first-run setup in the window's frame: the steps where the sections are (wide: the
@@ -1836,10 +1843,10 @@ impl Ui {
         if count > 0 { Trail::Count(count) } else { Trail::None }
     }
 
-    /// The sidebar in `mode`: app switcher, the sections, and "General" with the version at the
-    /// foot. The rail (U.2) has no room for the version line. Where the window has the band (macOS),
-    /// "General" sits there in the top right corner instead (U.10).
-    fn sidebar(&self, mode: SidebarMode, switcher: &Anchor) -> Element<'_, Message> {
+    /// The sidebar in `mode`: search and "New", the sections, and the version at the foot. The rail
+    /// (U.2) has no room for the version line. The switcher and "General" lie in the top row (issue
+    /// #459).
+    fn sidebar(&self, mode: SidebarMode) -> Element<'_, Message> {
         // The sidebar may draw in a theme of its own (a design pack's sidebar colours).
         let palette = palette(&theme::sidebar_theme(&self.theme()));
         let item = |section: Section| {
@@ -1858,17 +1865,10 @@ impl Ui {
             .padding(style::ITEM_PADDING)
             .clip(true);
         let mut footer = Vec::new();
-        if !shell::has_band() {
-            footer.push(item(Section::General));
-        }
         if mode == SidebarMode::Expanded {
             footer.push(version.into());
         }
-        shell::sidebar(
-            shell::sidebar_head(mode, AppId::WORKPLACE, switcher, Message::Switcher, Message::ToggleSidebar),
-            Section::nav().map(item).collect(),
-            footer,
-        )
+        shell::sidebar(shell::sidebar_tools(mode, true, Message::Switcher), Section::nav().map(item).collect(), footer)
     }
 
     /// What stands in front of a section in the sidebar and the section menu: its icon, for MCP
@@ -1932,9 +1932,9 @@ impl Ui {
         }
     }
 
-    /// The header bar: the title (wide) or the section menu (medium, narrow; with the drawer button
-    /// in narrow, where no rail has it, unless the band has it); on a page below the section a back button and its name; the
-    /// page's actions right.
+    /// The header in the top row: the title (wide) or the section menu (medium, narrow; the panel
+    /// button that opens the drawer lies in the top row, issue #459); on a page below the section a
+    /// back button and its name; the page's actions right.
     fn header(&self, class: SizeClass, nav: &Anchor) -> Element<'_, Message> {
         let Header { sub_page, actions } = self.page_header(class);
         let section = self.section;
@@ -1947,10 +1947,7 @@ impl Ui {
             }
             None if wide => (vec![], shell::header_title(Some(section.icon()), section.label(), None)),
             None => (
-                (shell::sidebar_mode(class, self.sidebar).is_none() && !shell::has_band())
-                    .then(|| shell::sidebar_toggle(Message::ToggleDrawer))
-                    .into_iter()
-                    .collect(),
+                vec![],
                 widgets::menu_button(nav, Some(section.icon()), section.label(), Message::ToggleMenu(Menu::Nav)),
             ),
         };
@@ -2402,10 +2399,33 @@ mod tests {
         assert!(!setup::web_waits(setup, &ui.data), "Continue goes on");
     }
 
+    /// Issue #459: the window shows the shell with its top row – switcher, panel button and "General"
+    /// in one row – in every layout with a sidebar or drawer; the glance and the setup keep the band.
+    #[test]
+    fn the_window_has_the_top_row_where_it_shows_the_shell() {
+        let mut ui = started(&["--demo"]);
+        for size in [Size::new(1600.0, 1000.0), Size::new(800.0, 600.0), Size::new(420.0, 780.0)] {
+            let _ = ui.update(Message::Resized(size));
+            assert!(ui.has_top_row(), "{size:?}");
+            let _ = ui.view();
+        }
+        let _ = ui.update(Message::Resized(Size::new(240.0, 160.0)));
+        assert!(!ui.has_top_row(), "a glance has no top row");
+        let _ = ui.view();
+        let mut setup = started(&["--demo", "--open", "setup-web"]);
+        for size in [Size::new(1600.0, 1000.0), Size::new(420.0, 780.0)] {
+            let _ = setup.update(Message::Resized(size));
+            assert!(!setup.has_top_row(), "{size:?}: the setup keeps its band");
+            let _ = setup.view();
+        }
+    }
+
+    /// The top row (issue #459), like the band before it, repeats what lies over the window.
     #[test]
     fn the_title_band_repeats_what_lies_over_the_window() {
         let mut ui = started(&["--demo"]);
         let _ = ui.update(Message::Resized(Size::new(800.0, 600.0)));
+        assert!(ui.has_top_row(), "the row that repeats it");
         assert_eq!(ui.cover(), Cover::Nothing);
         ui.drawer = true;
         assert_eq!(ui.cover(), Cover::Drawer, "the drawer over a medium window");
@@ -2417,6 +2437,8 @@ mod tests {
         for size in [Size::new(1600.0, 1000.0), Size::new(800.0, 600.0), Size::new(420.0, 780.0)] {
             let _ = remove.update(Message::Resized(size));
             assert_eq!(remove.cover(), Cover::Dialog, "{size:?}: the dialog dims the whole window");
+            assert!(remove.has_top_row(), "{size:?}: the dialog lies over the top row");
+            let _ = remove.view();
         }
     }
 

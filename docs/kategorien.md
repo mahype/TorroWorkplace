@@ -277,6 +277,13 @@ Die Darstellung mit Gruppenfarben und individuellen Kategorie-Icons gehört zu
   mitgelieferten Kategorien haben feste Standard-Icons; bei eigenen Kategorien kann das Icon
   gewählt werden. Die Icon-Auswahl ist auch für mitgelieferte Kategorien verfügbar. Gruppenname
   und Einrückung zeigen die Hierarchie zusätzlich zur Farbe.
+- **Zeichen im Kreis der Mail-Liste** (#458): Die Liste des Mail-Fensters zeigt vor jeder Mail einen Kreis in der Farbe
+  des Absenders (fest aus seiner Adresse, zehn Farben ohne Rot). Darin steht das Zeichen der Kategorie, bei Kategorien
+  mit dem Personen-Zeichen ein gezeichnetes Porträt, ohne Kategorie ein Umschlag; die Gruppe „Unerwünscht“ hat immer
+  einen dunkelroten Kreis mit Totenkopf. Seit #458 hat die Auswahl neun Zeichen mehr (Megafon, Roboter, Quittung, Paket,
+  Totenkopf, Zeitung, Gebäude, Bank, Warnschild). Die mitgelieferten Kategorien zeigen davon: Newsletter Zeitung, Werbung
+  Megafon, Belege Quittung, Versand Paket, Automatische Antwort Roboter, Kontoauszug Bank, Spam Totenkopf, Phishing
+  Warnschild – solange der Mensch ihr Zeichen nicht selbst geändert hat (gespeichert wird nur eine eigene Wahl).
 - Die **Beschreibung** ist das, was das Modell über die Kategorie liest – mit Beispielen und
   Ausnahmen in den Worten des Menschen. Sie lenkt das Modell, garantiert aber nichts: Eine harte
   Ausnahme ist eine Sortierregel.

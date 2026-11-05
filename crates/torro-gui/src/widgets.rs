@@ -2495,6 +2495,144 @@ pub fn menu_button<'a, M: Clone + 'a>(
     anchored(anchor, b)
 }
 
+/// What the circle of a mail shows ([`sender_circle`], issue #458).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Face {
+    /// The drawn portrait – head and shoulders – of a person (`assets/faces/portrait.svg`).
+    Portrait,
+    /// An icon in white: the mark of the mail's category, the envelope without one.
+    Icon(Icon),
+    /// Unwanted mail: the skull on deep red, never the sender's colour.
+    Junk,
+}
+
+/// The portrait of [`Face::Portrait`], its colours still to be filled in.
+const PORTRAIT: &str = include_str!("../assets/faces/portrait.svg");
+
+/// The index of the sender colour (`Palette::sender`) of `address` (issue #458): FNV-1a over the
+/// address in lower case, modulo the ten colours – the same sender has the same colour everywhere.
+pub fn sender_hue(address: &str) -> usize {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in address.trim().to_lowercase().bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    (hash % 10) as usize
+}
+
+/// The round mark in front of a mail (issue #458, the draft's list "A + Bild"), `edge` wide: `face` in
+/// white on a gradient of the sender colour at `hue` (`Palette::sender`, see [`sender_hue`]) – lighter
+/// at the top left, darker at the bottom right –, the portrait in two tones of it; [`Face::Junk`] the
+/// skull on `TORRO_RED_DEEP` whatever the hue. Without a hue the neutral `raised` surface. Room for
+/// a contact's photo (#358) and a sender's logo (#453) stays: they take the circle's place.
+pub fn sender_circle<'a, M: 'a>(face: Face, hue: Option<usize>, edge: f32) -> Element<'a, M> {
+    let mark: Element<'a, M> = match face {
+        Face::Portrait => portrait(hue, edge),
+        Face::Icon(which) => white_icon(which, edge),
+        Face::Junk => white_icon(Icon::Skull, edge),
+    };
+    container(mark)
+        .center(edge)
+        .style(move |t: &Theme| {
+            let p = palette(t);
+            let background = match (face, hue) {
+                (Face::Junk, _) => {
+                    let deep = torro_core::theme::TORRO_RED_DEEP;
+                    Background::Color(Color::from_rgb8(deep.0, deep.1, deep.2))
+                }
+                (_, Some(hue)) => {
+                    let base = p.sender[hue % p.sender.len()];
+                    let light = mix(base, Color::WHITE, 0.22);
+                    let dark = mix(base, Color::BLACK, 0.28);
+                    let gradient = iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI * 0.75))
+                        .add_stop(0.0, light)
+                        .add_stop(1.0, dark);
+                    Background::Gradient(gradient.into())
+                }
+                (_, None) => Background::Color(p.raised),
+            };
+            container::Style {
+                background: Some(background),
+                border: iced::border::rounded(edge / 2.0),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// `which` in white at about half the circle's `edge`.
+fn white_icon<'a, M: 'a>(which: Icon, edge: f32) -> Element<'a, M> {
+    icon(which, (edge * 0.5).round()).style(|_, _| svg::Style { color: Some(Color::WHITE) }).into()
+}
+
+/// The portrait in the tones of `hue` (the sender colours are the same in both modes), as wide as
+/// the circle; a grey without a hue.
+fn portrait<'a, M: 'a>(hue: Option<usize>, edge: f32) -> Element<'a, M> {
+    let colours = crate::theme::Palette::dark();
+    let base = hue.map_or(colours.text_3, |hue| colours.sender[hue % colours.sender.len()]);
+    let hex = |c: Color| {
+        let [r, g, b, _] = c.into_rgba8();
+        format!("#{r:02X}{g:02X}{b:02X}")
+    };
+    let svg_text = PORTRAIT
+        .replace("#HEAD00", &hex(mix(base, Color::WHITE, 0.78)))
+        .replace("#BODY00", &hex(mix(base, Color::from_rgb8(0x10, 0x13, 0x1A), 0.5)));
+    iced::widget::svg(svg::Handle::from_memory(svg_text.into_bytes())).width(edge).height(edge).into()
+}
+
+/// `a` moved towards `b` by `t` (0: `a`, 1: `b`), alpha from `a`.
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    Color { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: a.a }
+}
+
+/// The large field at the top of the mail window's sidebar that chooses the accounts shown (issue
+/// #455, `docs/prototypes/mail-layout/`): two lines without avatars – `title` in `BODY_STRONG`
+/// ("All accounts", "2 accounts", the account's domain) and `detail` in `META`, `text_3` (the names,
+/// the address) –, both cut with "…" to the width there is, and the up-down chevron at the end. As
+/// wide as the sidebar, on `raised` with a `line_strong` frame and radius `sm`; hover lightens it.
+/// Registers `anchor` for its menu; `None` disables it.
+///
+/// ```ignore
+/// widgets::account_select(tr("All accounts"), "mailbox.org · firma.de", &anchor, Some(Message::ToggleMailAccounts))
+/// ```
+pub fn account_select<'a, M: Clone + 'a>(
+    title: impl IntoFragment<'a>,
+    detail: impl IntoFragment<'a>,
+    anchor: &Anchor,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let (title, detail) = (title.into_fragment().to_string(), detail.into_fragment().to_string());
+    let title = measured_line(typo::body_strong(), move |size| {
+        let shown = typo::ellipsize(&title, typo::body_strong(), size.width);
+        typo::text(typo::body_strong(), shown).style(theme::text).wrapping(Wrapping::None).into()
+    });
+    let detail = measured_line(typo::meta(), move |size| {
+        let shown = typo::ellipsize(&detail, typo::meta(), size.width);
+        typo::text(typo::meta(), shown).style(theme::text_3).wrapping(Wrapping::None).into()
+    });
+    let content = row![column![title, detail].width(Fill), toned(Icon::ChevronsUpDown, icon::SIZE, Tone::Text3)]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    let b = button(content)
+        .width(Fill)
+        .padding(Padding::new(space::s()).left(space::m()))
+        .style(|t: &Theme, status: button::Status| {
+            let p = palette(t);
+            let background = match status {
+                button::Status::Hovered | button::Status::Pressed => p.hover,
+                button::Status::Active | button::Status::Disabled => p.raised,
+            };
+            button::Style {
+                background: Some(Background::Color(background)),
+                text_color: p.text,
+                border: iced::Border { color: p.line_strong, width: LINE, radius: radius::sm().into() },
+                ..button::Style::default()
+            }
+        })
+        .on_press_maybe(on_press);
+    anchored(anchor, b)
+}
+
 /// A framed button that opens a menu of choices, with a chevron: "Week ▾". Secondary, label
 /// `CAPTION`. Registers `anchor`; its menu usually opens with [`Align::End`].
 pub fn select_button<'a, M: Clone + 'a>(anchor: &Anchor, label: impl IntoFragment<'a>, on_press: M) -> Element<'a, M> {
@@ -2697,12 +2835,30 @@ pub struct RailGroup<'a, M> {
     /// Registered by the group's icon in the collapsed rail, set with [`RailGroup::at`]: pass the
     /// same anchor to [`rail_flyout`], and use it for the dialogs of the group's items.
     pub anchor: Option<Anchor>,
+    /// The group opens a card of its own on a click (issue #456: "Display"), set with
+    /// [`RailGroup::card`]: the pointer resting on its icon opens nothing, the click sends its
+    /// [`RailGroup::first_press`].
+    pub card: bool,
 }
 
 impl<'a, M> RailGroup<'a, M> {
     /// A group with `icon`, `label` and `items`; at the top, not in the accent, no tint, no anchor.
     pub fn new(icon: Icon, label: impl IntoFragment<'a>, items: Vec<RailItem<'a, M>>) -> Self {
-        Self { icon, label: label.into_fragment(), items, accent: false, tint: None, foot: false, anchor: None }
+        Self {
+            icon,
+            label: label.into_fragment(),
+            items,
+            accent: false,
+            tint: None,
+            foot: false,
+            anchor: None,
+            card: false,
+        }
+    }
+
+    /// The same group opening a card of its own on a click ([`RailGroup::card`]).
+    pub fn card(self) -> Self {
+        Self { card: true, ..self }
     }
 
     /// The same group as the mail's main one ([`RailGroup::accent`]).
@@ -2919,6 +3075,76 @@ pub fn action_rail_toggle<'a, M: Clone + 'a>(
         .height(Fill)
         .style(style::container::panel_flush)
         .into()
+}
+
+/// The mail's action rail as a card floating over the mail (issue #456, `docs/prototypes/mail-layout/`):
+/// one icon per group as in the collapsed [`action_rail`] ([`size::control_lg()`] square, [`space::xs()`]
+/// apart), the [`RailGroup::foot`] groups under a line, on the menu's surface with its frame and
+/// shadow, radius `lg`, [`space::xs()`] inside. A click sends the group's [`RailGroup::first_press`],
+/// else `on_event(RailEvent::Open(index))`; the pointer coming onto an icon and leaving it sends
+/// [`RailEvent::Enter`] and [`RailEvent::Leave`] – not for a [`RailGroup::card`], which opens its own
+/// card on the click. The group at `active` stands `selected`. Its groups open beside it
+/// ([`rail_flyout`]), to the left where it floats at the right edge.
+///
+/// The app lays it over the mail at the right edge, in the middle of the height, [`space::s()`] in from
+/// the edge, and keeps the mail's text [`floating_rail_room`] clear of the edge.
+pub fn floating_rail<'a, M: Clone + 'a>(
+    groups: Vec<RailGroup<'a, M>>,
+    active: Option<usize>,
+    on_event: fn(RailEvent) -> M,
+) -> Element<'a, M> {
+    let (foot, top): (Vec<_>, Vec<_>) = groups.into_iter().enumerate().partition(|(_, group)| group.foot);
+    let icons = |groups: Vec<(usize, RailGroup<'a, M>)>| -> Element<'a, M> {
+        let faces = groups.into_iter().map(|(at, group)| {
+            let press = group.first_press().unwrap_or_else(|| on_event(RailEvent::Open(at)));
+            let face = rail_face(&group, active == Some(at), press);
+            // A card group opens nothing under the pointer, so its name stands in a tooltip.
+            // Not while its card is open: the tooltip would lie on it.
+            let face: Element<'a, M> = if group.card && active == Some(at) {
+                face
+            } else if group.card {
+                let name = typo::text(typo::caption(), group.label.clone()).style(theme::text_2);
+                tip(face, name, tooltip::Position::Left)
+            } else {
+                mouse_area(face).on_enter(on_event(RailEvent::Enter(at))).on_exit(on_event(RailEvent::Leave(at))).into()
+            };
+            anchored_if(group.anchor.as_ref(), face)
+        });
+        column(faces).spacing(space::xs()).align_x(Alignment::Center).into()
+    };
+    let mut card = column![icons(top)].spacing(space::xs()).align_x(Alignment::Center);
+    if !foot.is_empty() {
+        let line = container(rule::horizontal(LINE).style(style::rule)).width(size::control_lg());
+        card = card.push(line).push(icons(foot));
+    }
+    container(card)
+        .padding(space::xs())
+        .style(|t: &Theme| {
+            let look = style::container::menu(t);
+            container::Style { border: iced::Border { radius: radius::lg().into(), ..look.border }, ..look }
+        })
+        .into()
+}
+
+/// How far the text of a mail keeps from the right edge for the [`floating_rail`] over it: the card
+/// ([`size::control_lg()`], its padding and frame) and [`space::s()`] at both sides of it.
+pub fn floating_rail_room() -> f32 {
+    size::control_lg() + 2.0 * space::xs() + 2.0 * LINE + 2.0 * space::s()
+}
+
+/// `content` with the [`floating_rail`] `rail` over it at its right edge, in the middle of its height,
+/// [`space::s()`] in from the edge (issue #456). The rail takes the pointer only where it is.
+pub fn with_floating_rail<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+    rail: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
+    let place = container(rail)
+        .width(Fill)
+        .height(Fill)
+        .align_right(Fill)
+        .center_y(Fill)
+        .padding(Padding::new(0.0).right(space::s()));
+    stack![content.into(), place].width(Fill).height(Fill).into()
 }
 
 /// How far the toggle of the action rail stands from the rail's right edge: centred in the collapsed
@@ -6491,6 +6717,24 @@ mod tests {
         }
     }
     use super::*;
+
+    /// Issue #458: a sender keeps its colour – by its address, whatever its case –, every index is one
+    /// of the ten, and the circle builds for a portrait, an icon and unwanted mail.
+    #[test]
+    fn the_sender_circle_takes_a_fixed_colour_by_address() {
+        assert_eq!(sender_hue("Anna@Example.org"), sender_hue("anna@example.org"));
+        let hues: Vec<usize> = (0..200).map(|i| sender_hue(&format!("person{i}@example.org"))).collect();
+        assert!(hues.iter().all(|&hue| hue < 10));
+        for hue in 0..10 {
+            assert!(hues.contains(&hue), "{hue} is used");
+        }
+        for face in [Face::Portrait, Face::Icon(Icon::Megaphone), Face::Junk] {
+            for hue in [None, Some(3)] {
+                let _: Element<'_, ()> = sender_circle(face, hue, 34.0);
+            }
+        }
+        assert!(PORTRAIT.contains("#HEAD00") && PORTRAIT.contains("#BODY00"), "the portrait's colours to fill in");
+    }
 
     #[derive(Debug, Clone, PartialEq)]
     enum Msg {

@@ -1,0 +1,13 @@
+<!-- The drawn portrait in the circle of a person's mail (issue #458): head and shoulders, cut to the
+     circle. HEAD and BODY are replaced with the colours of the sender's hue when drawn. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <defs>
+    <clipPath id="circle">
+      <circle cx="12" cy="12" r="12" />
+    </clipPath>
+  </defs>
+  <g clip-path="url(#circle)">
+    <circle cx="12" cy="9.6" r="4.4" fill="#HEAD00" />
+    <path d="M2.4 25.5c0-5.6 4.3-9.6 9.6-9.6s9.6 4 9.6 9.6z" fill="#BODY00" />
+  </g>
+</svg>

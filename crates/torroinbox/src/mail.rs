@@ -1787,6 +1787,7 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
             View::All => (Icon::Mail, tr("No mail in your inboxes."), tr("New mail shows up here.")),
             View::Sent => (Icon::Send, tr("No sent mail."), tr("Mail you send shows up here.")),
             View::Archive => (Icon::Archive, tr("No archived mail."), tr("Mail you archive shows up here.")),
+            View::Trash => (Icon::Trash2, tr("The trash is empty."), tr("Mail you delete shows up here.")),
             // The piles (task E19.4): the hint names the key that fills them (`w`, `b`).
             View::ReplyLater => (
                 Icon::MessageSquareReply,
@@ -1808,6 +1809,18 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
         let inner = width - list::cards_side();
         let cards = data.messages.iter().map(|message| message_card(data, message, inner));
         rows = rows.push(container(column(cards).spacing(size::card_gap())).padding(list::cards_inset()));
+    } else if slim(data.bare) {
+        // The mail window's slim list (issue #458): two lines a mail, under the head of its day.
+        let heads = day_heads(data.view);
+        let mut day = None;
+        for message in data.messages {
+            let this = local_day(message.date);
+            if heads && day != Some(this) {
+                rows = rows.push(list::day_head(day_label(this, local_day(data.now))));
+                day = Some(this);
+            }
+            rows = rows.push(slim_row(data, message, width));
+        }
     } else {
         rows = rows.extend(data.messages.iter().map(|message| message_row(data, message, width)));
     }
@@ -1883,6 +1896,120 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     if data.selected == Some(message.id.as_str()) { widgets::anchored(&data.anchors.row, row) } else { row }
 }
 
+/// Whether a list of mail is the slim one of issue #458: the mail window's (`bare`), in a design that
+/// draws its lists as rows – Console's single lines (`style = "line"`) and cards stay as they are.
+pub fn slim(bare: bool) -> bool {
+    bare && layout::list().style == torro_core::design::ListStyle::Rows
+}
+
+/// Whether the slim list shows the heads of the days (issue #458): wherever the mail stands by date –
+/// not in a search ordered by relevance.
+pub fn day_heads(view: &View) -> bool {
+    view.search().is_none_or(|search| search.sort == torro_ipc::mail::MailSort::Date)
+}
+
+/// The day of `at` in local time.
+pub fn local_day(at: DateTime<Utc>) -> NaiveDate {
+    at.with_timezone(&Local).date_naive()
+}
+
+/// The head of `day` seen on `today` (issue #458): "Today", "Yesterday", the weekday within the last
+/// six days, else the date – with its year only when it is not this one's.
+pub fn day_label(day: NaiveDate, today: NaiveDate) -> String {
+    let ago = (today - day).num_days();
+    match ago {
+        0 => tr("Today").to_owned(),
+        1 => tr("Yesterday").to_owned(),
+        2..=6 => datetime::weekday_name(day, false).to_owned(),
+        _ if chrono::Datelike::year(&day) == chrono::Datelike::year(&today) => datetime::format_day_month(day),
+        _ => datetime::format_short_date(day, today),
+    }
+}
+
+/// Where row `index` of the slim list lies as `(top, bottom)` (issue #458): the rows above, each
+/// [`list::slim_message_height`] high, and the heads of their days (with `heads`) – the row's own day's
+/// head counts to the row when it is its day's first, so scrolling up to it shows the head too.
+pub fn slim_span(messages: &[MessageSummary], index: usize, heads: bool) -> Option<(f32, f32)> {
+    messages.get(index)?;
+    let (row, head) = (list::slim_message_height(), list::day_head_height());
+    let mut top = 0.0;
+    let mut day = None;
+    for (at, message) in messages.iter().enumerate() {
+        let this = local_day(message.date);
+        let starts = heads && day != Some(this);
+        day = Some(this);
+        if at == index {
+            let first = if starts { top + head } else { top };
+            return Some((top, first + row));
+        }
+        top += row + if starts { head } else { 0.0 };
+    }
+    None
+}
+
+/// What the circle of `message` shows (issue #458): the skull for the group "Unwanted", the portrait
+/// for a category with the person's mark, the category's own mark otherwise, the envelope without a
+/// category. The match with the contacts (#358) and senders' logos (#453) come later.
+pub fn face_of(message: &MessageSummary, categories: &[CategoryInfo]) -> widgets::Face {
+    let Some(held) = message.category else { return widgets::Face::Icon(Icon::Mail) };
+    let (_, group) = category_look(categories, held.category);
+    if group == CategoryGroup::Junk {
+        return widgets::Face::Junk;
+    }
+    let icon = categories
+        .iter()
+        .find(|info| info.category == held.category)
+        .map(|info| info.icon)
+        .unwrap_or_else(|| held.category.default_icon());
+    match icon {
+        torro_mail::CategoryIcon::User => widgets::Face::Portrait,
+        icon => widgets::Face::Icon(category_symbol(icon)),
+    }
+}
+
+/// One mail of the slim list `width` wide (issue #458, [`list::slim_mail_content`]): the sender's
+/// circle in the colour its address picks, sender and paperclip and time, subject and the flag.
+fn slim_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
+    let (name, _, _) = row_names(data.view, message);
+    // In "Sent" the row names the recipient, and the circle takes the recipient's colour.
+    let address = match (data.view, message.to.first()) {
+        (View::Sent, Some(to)) => to.address.as_str(),
+        _ => message.from.as_ref().map(|from| from.address.as_str()).unwrap_or_default(),
+    };
+    let edge = layout::list().avatar;
+    let circle = (edge > 0.0)
+        .then(|| widgets::sender_circle(face_of(message, data.categories), Some(widgets::sender_hue(address)), edge));
+    let mut marks = Vec::new();
+    // An invitation (task E8.3b) keeps its mark; its time and answers stand in the reader.
+    marks.extend(message.invite.as_ref().map(|invite| invite_mark(invite, data.now)));
+    if message.flags.contains(&Flag::Flagged) {
+        marks.push(list::flag_field());
+    }
+    let lines = list::SlimLines {
+        name,
+        time: list::stamp(message.date, data.now),
+        subject: subject(message),
+        new: !message.flags.contains(&Flag::Seen),
+        attachment: message.has_attachments,
+        marks,
+        circle,
+        hits: data.hits(&message.id),
+    };
+    let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
+        || data.selected_ids.contains(&message.id);
+    let content = list::slim_mail_content(lines, width, selected);
+    let row: Element<'a, Message> = mouse_area(list::sized_row(
+        content,
+        selected,
+        Some(!message.flags.contains(&Flag::Seen)),
+        Message::SelectMail(message.id.clone()),
+        list::slim_message_height(),
+    ))
+    .on_right_press(Message::ContextMail(message.id.clone()))
+    .into();
+    if data.selected == Some(message.id.as_str()) { widgets::anchored(&data.anchors.row, row) } else { row }
+}
+
 /// What the strip of `message`'s row holds ([`message_row`]): under the cursor its buttons
 /// with the bell last ([`message_buttons`]); nothing for the other rows and for every bare row
 /// ([`MailList::bare`], the mail window, task E14.2).
@@ -1914,7 +2041,8 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     }
     let (name, domain, face) = row_names(data.view, message);
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
-    let several = matches!(data.view, View::Search(_) | View::All | View::Archive) && data.accounts.len() > 1;
+    let several =
+        matches!(data.view, View::Search(_) | View::All | View::Archive | View::Trash) && data.accounts.len() > 1;
     let lines = list::MailLines {
         name,
         domain,
@@ -2208,6 +2336,15 @@ pub(crate) fn category_symbol(icon: torro_mail::CategoryIcon) -> Icon {
         torro_mail::CategoryIcon::Ellipsis => Icon::Ellipsis,
         torro_mail::CategoryIcon::CircleDashed => Icon::CircleDashed,
         torro_mail::CategoryIcon::Tag => Icon::Tag,
+        torro_mail::CategoryIcon::Megaphone => Icon::Megaphone,
+        torro_mail::CategoryIcon::Bot => Icon::Bot,
+        torro_mail::CategoryIcon::Receipt => Icon::Receipt,
+        torro_mail::CategoryIcon::Package => Icon::Package,
+        torro_mail::CategoryIcon::Skull => Icon::Skull,
+        torro_mail::CategoryIcon::Newspaper => Icon::Newspaper,
+        torro_mail::CategoryIcon::Building2 => Icon::Building2,
+        torro_mail::CategoryIcon::Landmark => Icon::Landmark,
+        torro_mail::CategoryIcon::TriangleAlert => Icon::TriangleAlert,
     }
 }
 
@@ -2463,9 +2600,6 @@ pub struct Reading<'a> {
     /// The text in the reading level (`typo::read()`, task E8.3): the comfortable density of the
     /// mail window; `BODY` otherwise.
     pub read: bool,
-    /// The account's place among the mail accounts, for the colour of the reader's avatar
-    /// (`list::account_index`).
-    pub account: Option<usize>,
     /// The task made of this mail (task E8.7b): the one its entry carries ([`Item::task`]), or the
     /// one "Task" just made of a folder's message. Shown as a card over the text ([`task_card`]).
     pub task: Option<&'a ItemTask>,
@@ -2576,14 +2710,21 @@ pub fn panel<'a>(
     folder: Option<&'a FolderView>,
     anchors: &detail::Anchors,
     bars: Bars<'a>,
+    head: Option<Element<'a, Message>>,
 ) -> panel::Panel<'a, Message> {
+    let body = body(reading, bars, anchors);
+    // The mail window (issue #457): the mail's row – subject, "n of m", ⌃ ⌄, ↗ – is the panel's head,
+    // no path and no big title over the mail.
+    if let Some(head) = head {
+        return panel::panel(head, iced::widget::Space::new(), body, Message::CloseDetail);
+    }
     let mark = Some(Mark::Icon(folder_icon(folder.and_then(|folder| folder.role))));
     let parts: Vec<String> = folder.map(|f| vec![address(&f.account).to_owned(), f.name.clone()]).unwrap_or_default();
     let footer = match bars {
         Bars::Split => folder_footer(reading, anchors),
-        Bars::Command { .. } => panel_foot(reading, anchors),
+        // The attachments stand in the head (issue #457): no footer.
+        Bars::Command { .. } => Vec::new(),
     };
-    let body = body(reading, bars, anchors);
     panel::panel(panel::path(mark, parts), panel::title(reading.title()), body, Message::CloseDetail).footer(footer)
 }
 
@@ -2599,20 +2740,15 @@ pub fn entry_panel<'a>(
     view_name: String,
     width: f32,
     anchors: &detail::Anchors,
+    head: Option<Element<'a, Message>>,
 ) -> panel::Panel<'a, Message> {
     let body = body(reading, Bars::Command { entry: Some(entry), width }, anchors);
+    // As [`panel`]: the mail's row as the head once the mail's headers are in (issue #457).
+    if let Some(head) = head {
+        return panel::panel(head, iced::widget::Space::new(), body, Message::CloseDetail);
+    }
     let (path, title) = (detail::path(entry.item, view_name), detail::heading(entry.item));
-    panel::panel(path, title, body, Message::CloseDetail).footer(panel_foot(reading, anchors))
-}
-
-/// The fixed footer of a mail's panel in the mail window (task E11.4, [`Bars::Command`]): the mail's
-/// attachments as rows with their triangles and "Save all ▾" from two on (task M12.6, design B,
-/// [`attachment_rows`]), in the panel's padding – the panel draws the line above it. The view's
-/// switches and "Copy text" stand in the rail's group "More" (task E14.3). Empty – no footer – while
-/// the mail loads, after an error and for a mail without attachments. `anchors` are the window's, for
-/// the menus of the triangles.
-pub fn panel_foot<'a>(reading: &Reading<'_>, anchors: &detail::Anchors) -> Vec<Element<'a, Message>> {
-    attachment_rows(reading, anchors).into_iter().collect()
+    panel::panel(path, title, body, Message::CloseDetail)
 }
 
 /// The footer of a folder's message in the panel (task E9.4), in the panel's style and in the
@@ -2677,8 +2813,8 @@ fn formats() -> [(String, Message); 2] {
 /// The segments of "Light | Dark" (task M9.7), light first.
 fn schemes() -> [(String, Message); 2] {
     [
-        (tr("Light").to_owned(), Message::MailColors(Scheme::Light)),
-        (tr("Dark").to_owned(), Message::MailColors(Scheme::Dark)),
+        (tr("Light").to_owned(), Message::FooterMailColors(MailAppearance::Light)),
+        (tr("Dark").to_owned(), Message::FooterMailColors(MailAppearance::Dark)),
     ]
 }
 
@@ -2695,7 +2831,7 @@ fn schemes() -> [(String, Message); 2] {
 pub fn body<'a>(reading: &Reading<'a>, bars: Bars<'a>, anchors: &detail::Anchors) -> Element<'a, Message> {
     match bars {
         Bars::Split => split_body(reading, anchors),
-        Bars::Command { entry, width } => command_body(reading, entry, width),
+        Bars::Command { entry, width } => command_body(reading, entry, width, anchors),
     }
 }
 
@@ -2704,22 +2840,30 @@ pub fn body<'a>(reading: &Reading<'a>, bars: Bars<'a>, anchors: &detail::Anchors
 /// ([`head_with`]: sender, why a rule put the entry in its lane, invitation and task) lined up with
 /// the title, an entry's properties, a line from edge to edge and the mail ([`panel_letter`]). The
 /// collapsed rail beside it (task E14.3) takes its width from the body.
-fn command_body<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, width: f32) -> Element<'a, Message> {
+fn command_body<'a>(
+    reading: &Reading<'a>,
+    entry: Option<ReaderEntry<'a>>,
+    width: f32,
+    anchors: &detail::Anchors,
+) -> Element<'a, Message> {
     let line = || rule::horizontal(size::HAIRLINE).style(style::rule);
-    // The head lines up with the title: 16 from the panel's edges (`panel::inset`), the rail beside.
-    // The rail stands `space::xs()` apart from the body (`Panel::side`).
-    let room = (width - widgets::RailMode::Collapsed.width() - space::xs() - 2.0 * space::l()).max(0.0);
-    let head = head_with(reading, entry, room, false);
+    // The head lines up with the title, 16 from the panel's edges (`panel::inset`), and runs to the
+    // panel's right edge under the floating rail (issue #457); the mail keeps clear of the rail.
+    let room = (width - 2.0 * space::l()).max(0.0);
+    let head = head(reading, entry, room, anchors);
     let mut body = column![panel::inset(head)];
     // An entry keeps its properties (status, lane, source, time), as `detail::panel` shows them.
     if let Some(entry) = entry {
         // "Follow up" in the mail window's words (task E19.4).
         let properties = detail::properties(entry.item, reading.now, true);
-        body = body.push(widgets::prop_section(tr("Properties"), properties));
+        // Clear of the floating rail, as the mail (review of #467): only the head runs on under it.
+        let section = widgets::prop_section(tr("Properties"), properties);
+        body = body.push(container(section).padding(Padding::new(0.0).right(widgets::floating_rail_room())));
     }
     // A HTML mail starts right under the line, so its background meets it (issue #377).
     let gap = if html_filling(reading).is_some() { 0.0 } else { space::l() };
-    let letter = column(panel_letter(reading));
+    let letter =
+        container(column(panel_letter(reading))).padding(Padding::new(0.0).right(widgets::floating_rail_room()));
     body.spacing(space::l()).push(column![panel::bleed(line()), letter].spacing(gap)).into()
 }
 
@@ -2856,18 +3000,21 @@ pub fn reader<'a>(
     let anchors = anchors.clone();
     let page = responsive(move |bounds| {
         let widths = reader_widths(bounds.width);
-        let side = layout::reading_padding().left;
-        let head = container(head(&reading, entry, widths.head)).width(Fill).padding(head_padding());
-        let page = column![head, rule::horizontal(size::HAIRLINE).style(style::rule), reader_mail(&reading, widths)];
+        let head = container(head(&reading, entry, widths.head, &anchors)).width(Fill).padding(head_padding());
+        // Issue #456: the rail floats at the right edge; the head runs on under it, the mail's text
+        // keeps clear of it.
+        let room = widgets::floating_rail_room();
+        let mail = container(reader_mail(&reading, reader_widths((bounds.width - room).max(0.0))))
+            .padding(Padding::new(0.0).right(room));
+        let page = column![head, rule::horizontal(size::HAIRLINE).style(style::rule), mail];
         let page = scrollable(page)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)
             .width(Fill)
             .height(Fill);
-        column![page].push(attachment_line(&reading, &anchors, widths.head, side)).into()
+        page.into()
     });
-    // The reader's scrollbar keeps clear of the rail's line (decision B).
-    row![page, rail].spacing(space::xs()).height(Fill).into()
+    widgets::with_floating_rail(page, rail)
 }
 
 /// The padding around the reader's head: the page's above, a little less below, where the line under
@@ -2936,32 +3083,22 @@ fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, M
     }
 }
 
-/// The head of a mail in the reader (task E11.3), `room` wide: the subject (`typo::headline()`), the
-/// sender ([`sender_block`]), for an entry why a rule put it in its lane (issue #128), what the mail
-/// is (task E12.8) and under it the invitation's card (task E8.3b) and the task's (task E8.7b).
-/// Everything stands left-aligned, one under the other; no buttons – they stand in the rail (task
-/// E14.3). The panel of the mail window takes the same head without the subject (task E11.4,
-/// [`head_with`]).
-pub fn head<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, room: f32) -> Element<'a, Message> {
-    head_with(reading, entry, room, true)
-}
-
-/// The [`head`], with the subject on top only with `subject`: the panel of the mail window (task
-/// E11.4) has it as its title already and leaves it out here.
-fn head_with<'a>(
+/// The head of a mail in the reader and the mail window's panel (task E11.3, issue #457), `room`
+/// wide: the sender in two quiet lines ([`sender_block`]: circle, name, category, date; address to
+/// recipients and the attachments), for an entry why a rule put it in its lane (issue #128), the
+/// phishing band, and under it the invitation's card (task E8.3b) and the task's (task E8.7b). The
+/// subject stands in the top row over the reader, or as the panel's title. No buttons but the
+/// attachments' – the actions stand in the rail (task E14.3). Their menus hang at `anchors`.
+pub fn head<'a>(
     reading: &Reading<'a>,
     entry: Option<ReaderEntry<'a>>,
     room: f32,
-    subject: bool,
+    anchors: &detail::Anchors,
 ) -> Element<'a, Message> {
     let mut head = column![].spacing(space::l()).width(Fill);
     let summary = reading.summary();
     if let Some(summary) = summary {
-        if subject {
-            let line = typo::text(typo::headline(), self::subject(summary));
-            head = head.push(line.style(theme::text).wrapping(Wrapping::WordOrGlyph));
-        }
-        let sender = sender_block(reading, summary, room);
+        let sender = sender_block(reading, summary, room, anchors);
         // Why a rule put the mail's entry in its lane (issue #128), quietly right under who sent it.
         head = head.push(match entry.map(|entry| entry.item).filter(|item| item.reason.is_some()) {
             Some(item) => {
@@ -2974,7 +3111,6 @@ fn head_with<'a>(
         // suggestion mark when a model guessed it (`docs/ki.md`, principle 5). Also in the panel,
         // which draws this head without the subject.
         if let Some(held) = summary.category {
-            head = head.push(widgets::chip_row(vec![category_pill(held, reading.categories)]));
             // Phishing (task E12.9): a band over the message, and its links ask before they open.
             // Nothing is hidden, moved or deleted – the one change is the extra click.
             if held.category == torro_mail::Category::Phishing {
@@ -2999,49 +3135,140 @@ fn head_with<'a>(
     head.into()
 }
 
-/// Who wrote the mail, in the reader's head `room` wide (task E11.3): the avatar ([`size::pill()`];
-/// none in a design without avatars, `[list] avatar = 0`, issue #291 – its place goes to the words)
-/// and beside it the name – with the flag of a flagged mail – and the address quietly after it, under
-/// them "to … · account · when" and, once the mail is loaded, "cc …" in `typo::meta()`/`text_2` –
-/// left-aligned, no date at the right. What does not fit ends in "…".
-fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f32) -> Element<'a, Message> {
+/// Who wrote the mail, in the reader's head `room` wide (issue #457, the draft's head B): two quiet
+/// lines beside the circle of the sender (`list::avatar`; none in a design without avatars, `[list]
+/// avatar = 0`, issue #291):
+///
+/// 1. the name in `BODY_STRONG` – with the flag of a flagged mail –, what the mail is (its category's
+///    pill, task E12.8, with the mark of a guess) and at the right the date (`format_moment`);
+/// 2. in `META`, `text_3`, the address to the recipients ("anna@… → Anna Berg, Paul"), the copies once
+///    loaded, and at the right the attachments ([`attachments_control`]).
+///
+/// What does not fit ends in "…".
+fn sender_block<'a>(
+    reading: &Reading<'a>,
+    summary: &'a MessageSummary,
+    room: f32,
+    anchors: &detail::Anchors,
+) -> Element<'a, Message> {
     let name = sender_name(summary.from.as_ref());
     let edge = head_avatar_in(layout::list());
-    let face = (edge > 0.0).then(|| list::avatar(&name, reading.account, edge));
+    // The circle of the list's row (issue #458): the same colour and mark for the same mail.
+    let address = summary.from.as_ref().map(|from| from.address.as_str()).unwrap_or_default();
+    let circle =
+        |edge| widgets::sender_circle(face_of(summary, reading.categories), Some(widgets::sender_hue(address)), edge);
+    let face = (edge > 0.0).then(|| circle(edge));
     let words_room = (room - face.as_ref().map_or(0.0, |_| edge + space::m())).max(0.0);
-    // A flagged mail says so at its sender, as the panel's head of task E9.4 did: the name leaves
-    // room for the flag, so a long one never pushes it out.
+    let date = torro_gui::datetime::format_moment(summary.date, reading.now);
+    let date_room = typo::text_width(&date, typo::meta()) + space::m();
+    // A flagged mail says so at its sender: the name leaves room for the flag.
     let flagged = summary.flags.contains(&Flag::Flagged);
     let flag_room = if flagged { icon::SIZE_SM + space::s() } else { 0.0 };
-    let name = typo::ellipsize(&name, typo::body_strong(), (words_room - flag_room).max(0.0));
-    let left = words_room - flag_room - typo::text_width(&name, typo::body_strong()) - space::s();
-    let mut who = row![typo::text(typo::body_strong(), name).style(theme::text).wrapping(Wrapping::None)]
+    // The pill takes what it needs – its word, its marks and its padding –, the name the rest; where
+    // both do not fit, the name goes first and the pill stays out.
+    let pill_room = summary.category.map_or(0.0, |held| {
+        let (label, _) = category_look(reading.categories, held.category);
+        typo::text_width(&label, typo::caption()) + 3.0 * icon::SIZE_SM + 2.0 * space::m()
+    });
+    let free = (words_room - date_room - flag_room).max(0.0);
+    let fits = typo::text_width(&name, typo::body_strong()) + pill_room <= free;
+    let pill = summary.category.filter(|_| fits).map(|held| category_pill(held, reading.categories));
+    let name_room = if fits { free - pill_room } else { free };
+    let name = typo::ellipsize(&name, typo::body_strong(), name_room);
+    let mut first = row![typo::text(typo::body_strong(), name).style(theme::text).wrapping(Wrapping::None)]
         .spacing(space::s())
         .align_y(Alignment::Center);
     if flagged {
-        who = who.push(widgets::with_tooltip(small_icon(Icon::Flag, Some(reading.attention)), tr("Flagged")));
+        first = first.push(widgets::with_tooltip(small_icon(Icon::Flag, Some(reading.attention)), tr("Flagged")));
     }
-    if let Some(from) = &summary.from {
-        let address = typo::ellipsize(&list::one_line(&from.address), typo::meta(), left);
-        who = who.push(typo::text(typo::meta(), address).style(theme::text_3).wrapping(Wrapping::None));
+    if let Some(pill) = pill {
+        first = first.push(pill);
     }
-    let mut to = Vec::new();
+    let first = row![
+        container(first).width(Fill).clip(true),
+        typo::text(typo::meta().tabular(), date).style(theme::text_3).wrapping(Wrapping::None),
+    ]
+    .spacing(space::m())
+    .align_y(Alignment::Center);
+    // Who wrote to whom: the address, an arrow, the recipients – and the copies once loaded.
+    let mut to = summary.from.as_ref().map(|from| list::one_line(&from.address)).unwrap_or_default();
     if !summary.to.is_empty() {
-        to.push(trf("to {names}", &[("names", &names(&summary.to))]));
+        to = format!("{to} → {}", names(&summary.to));
     }
-    to.push(address(&summary.account).to_owned());
-    to.push(when(summary.date, reading.now));
-    let to = typo::ellipsize(&to.join(" · "), typo::meta(), words_room);
-    let to = typo::text(typo::meta(), to).style(theme::text_2).wrapping(Wrapping::None);
-    let mut words = column![container(who).clip(true), container(to).clip(true)].width(Fill);
-    // Who else got it, once the mail is loaded (its summary has no cc).
     if let Some(Ok(mail)) = reading.loaded
         && !mail.cc.is_empty()
     {
-        let cc = typo::ellipsize(&trf("cc {names}", &[("names", &names(&mail.cc))]), typo::meta(), words_room);
-        words = words.push(typo::text(typo::meta(), cc).style(theme::text_2).wrapping(Wrapping::None));
+        to = format!("{to} · {}", trf("cc {names}", &[("names", &names(&mail.cc))]));
     }
+    let files = attachments_control(reading, anchors);
+    // Cut with "…" to the room the line really has beside the attachments, whole in the tooltip.
+    let line = to.clone();
+    let fitted = responsive(move |size| {
+        let shown = typo::ellipsize(&line, typo::meta(), size.width);
+        typo::text(typo::meta(), shown).style(theme::text_3).wrapping(Wrapping::None).into()
+    });
+    let fitted = container(fitted).width(Fill).height(typo::line_height(typo::meta()));
+    let mut second = row![widgets::with_tooltip(fitted, to)].spacing(space::m()).align_y(Alignment::Center);
+    if let Some(files) = files {
+        second = second.push(files);
+    }
+    let words = column![first, second].spacing(space::xs()).width(Fill);
     row(face).push(words).spacing(space::m()).align_y(Alignment::Center).into()
+}
+
+/// The attachments at the right of the head's second line (issue #457): one with its name – a click
+/// does what the setting says ([`Message::OpenAttachment`]) –, from two on "{n} attachments ▾",
+/// whose menu ([`attachments_menu`]) opens at `anchors.files`. `None` while the mail loads, after an
+/// error and for a mail without attachments (inline pictures are none).
+fn attachments_control<'a>(reading: &Reading<'_>, anchors: &detail::Anchors) -> Option<Element<'a, Message>> {
+    let files = files_of(reading)?;
+    if let [file] = files.as_slice() {
+        let name = typo::ellipsize(&attachment_name(file), typo::caption(), 200.0);
+        let open = Some(Message::OpenAttachment(reading.id.to_owned(), file.part.clone()));
+        let button = widgets::text_button(Some(Icon::Paperclip), name, style::button::ghost, open);
+        return Some(widgets::with_tooltip(button, click_tooltip(reading, file)));
+    }
+    let words = trf("{n} attachments", &[("n", &files.len())]);
+    Some(widgets::menu_button(
+        &anchors.files,
+        Some(Icon::Paperclip),
+        words,
+        Message::AskAttachments(reading.id.to_owned()),
+    ))
+}
+
+/// The menu of "{n} attachments ▾" (issue #457, the draft's menu): each attachment with its size –
+/// a click does what the setting says –, at its right the ways to save it (its menu, `file_menu`),
+/// and at the end "Save all…" (the menu of all of them). `None` without attachments.
+pub fn attachments_menu<'a>(reading: &Reading<'_>, width: f32) -> Option<Element<'a, Message>> {
+    let files = files_of(reading)?;
+    let id = reading.id.to_owned();
+    let mut list = column![crate::app::menu_caption(&files_meta(&files))];
+    for (at, file) in files.iter().enumerate() {
+        let item = MenuItem::new(
+            Icon::Paperclip,
+            attachment_name(file),
+            Message::OpenAttachment(id.clone(), file.part.clone()),
+        )
+        .detail(size_text(file.size));
+        let save =
+            widgets::icon_button(Icon::Download, tr("More ways to save"), Some(Message::AskAttachment(id.clone(), at)));
+        list = list.push(row![widgets::menu_item(item), save].spacing(space::xs()).align_y(Alignment::Center));
+    }
+    let all = MenuItem::new(Icon::Download, tr("Save all…"), Message::AskSaveAll(id));
+    list = list.push(crate::app::menu_line()).push(widgets::menu_item(all));
+    Some(container(list).width(width).padding(style::MENU_INSET).style(style::container::menu).into())
+}
+
+/// The command that opens the mail `id` in a mail window of its own (issue #457, "Open in new window"):
+/// `torroinbox --view mail --message=<id>`, with `--demo` in the demo.
+pub fn window_command(id: &str, demo: bool) -> Command {
+    let mut command = Command::new(source::sibling(INBOX.binary));
+    command.args(["--view", "mail"]).arg(format!("--message={id}"));
+    if demo {
+        command.arg("--demo");
+    }
+    command
 }
 
 /// The edge of the sender's avatar in the reader's head in the list look `look`: [`size::pill()`],
@@ -3115,6 +3342,8 @@ pub fn action_groups<'a>(
         RailGroup::new(Icon::ListTodo, tr("Torro"), torro_items(reading, entry, anchors)).at(&rail.torro),
         if flagged { mark.tinted(reading.attention) } else { mark },
         RailGroup::new(Icon::BellOff, tr("Mute"), mute_items(reading, entry, anchors)).foot().at(&rail.mute),
+        // Issue #456: a click opens the card "Display" (HTML or text, the mail's colours), not a list.
+        RailGroup::new(Icon::Contrast, trc("mail", "Display"), display_items(reading)).card().foot().at(&rail.display),
         RailGroup::new(Icon::Ellipsis, tr("More"), more_items(reading.view_tools(), filter_sender(reading), close))
             .foot()
             .at(&rail.more),
@@ -3311,32 +3540,10 @@ fn filter_sender<'r>(reading: &Reading<'r>) -> Option<&'r str> {
 /// `sender` (issue #339: Settings › Categorization › Rules & filters with `from:<address>`, issue #454), and with `close` Close.
 fn more_items<'a>(tools: ViewTools, sender: Option<&str>, close: bool) -> Vec<RailItem<'a, Message>> {
     let mut items = Vec::new();
-    // First, so a click on "…" copies the text (decision D): the safest of the group.
+    // First, so a click on "…" copies the text (decision D): the safest of the group. HTML or text
+    // and the mail's colours stand in "Display" since issue #456.
     if tools.copy {
         items.push(RailItem::new(Icon::Copy, tr("Copy text"), "", Some(Message::CopyText)));
-    }
-    match tools.format {
-        Some(MailFormat::Html) => {
-            items.push(RailItem::new(
-                Icon::AlignLeft,
-                tr("Show as text"),
-                "V",
-                Some(Message::ShowMailAs(MailFormat::Text)),
-            ));
-        }
-        Some(MailFormat::Text) => {
-            items.push(RailItem::new(Icon::Code, tr("Show as HTML"), "V", Some(Message::ShowMailAs(MailFormat::Html))));
-        }
-        None => {}
-    }
-    match tools.scheme {
-        Some(Scheme::Light) => {
-            items.push(RailItem::new(Icon::Moon, tr("Dark colours"), "", Some(Message::MailColors(Scheme::Dark))));
-        }
-        Some(Scheme::Dark) => {
-            items.push(RailItem::new(Icon::Sun, tr("Light colours"), "", Some(Message::MailColors(Scheme::Light))));
-        }
-        None => {}
     }
     if let Some(address) = sender {
         let create = Message::CreateFilter { query: format!("from:{address}"), account: None };
@@ -3348,33 +3555,14 @@ fn more_items<'a>(tools: ViewTools, sender: Option<&str>, close: bool) -> Vec<Ra
     items
 }
 
-/// The mail's attachments at the reader's bottom (task M12.6, design A of
-/// `docs/prototypes/inbox/mail-anhaenge.html`): a framed block (`widgets::file_block`) whose head
-/// says "Attachments" and "{n} files · {size}" ([`files_meta`]), with "Save all ▾" at its right
-/// from two attachments on ([`save_all_control`]), and under it each attachment as a split chip
-/// ([`attachment_chips`]), which scroll inside the block beyond two lines. [`space::s()`] above it,
-/// [`space::l()`] below and `side` at the sides; the chips wrap on a line `room` wide. The
-/// triangles' menus hang at `anchors`. `None` while the mail loads, after an error and for a mail
-/// without attachments (inline pictures are none).
-pub fn attachment_line<'a>(
-    reading: &Reading<'_>,
-    anchors: &detail::Anchors,
-    room: f32,
-    side: f32,
-) -> Option<Element<'a, Message>> {
-    let files = files_of(reading)?;
-    let action = save_all_control(reading, &files, anchors, false);
-    let head = widgets::file_block_head(tr("Attachments"), files_meta(&files), action);
-    // The block's frame and its inner padding at the sides (`widgets::file_block`) take from the
-    // chips' line.
-    let inner = (room - 2.0 * (space::m() + size::HAIRLINE)).max(0.0);
-    let block = widgets::file_block(head, attachment_chips(reading, &files, anchors, inner));
-    Some(
-        container(block)
-            .width(Fill)
-            .padding(Padding { top: space::s(), bottom: space::l(), left: side, right: side })
-            .into(),
-    )
+/// The one item of the rail's group "Display" (issue #456): a click on the group's icon opens its card
+/// ([`Message::ToggleMailDisplay`]); `v` switches HTML and text also while the card is closed. There
+/// once the mail is loaded.
+fn display_items<'a>(reading: &Reading<'_>) -> Vec<RailItem<'a, Message>> {
+    if !matches!(reading.loaded, Some(Ok(_))) {
+        return Vec::new();
+    }
+    vec![RailItem::new(Icon::Contrast, trc("mail", "Display"), "", Some(Message::ToggleMailDisplay))]
 }
 
 /// The attachments of the loaded mail that are not `inline`, in its order – what the block, the rows
@@ -3421,30 +3609,8 @@ fn save_all_control<'a>(
     })
 }
 
-/// The chips of the attachments `files`, wrapping on a line `room` wide, [`space::s()`] apart
-/// ([`attachment_chip`]). At most [`FILE_LINES`] lines show; more scroll inside the block (scroll bar
-/// beside the chips only then), so a mail with many attachments keeps its text in a low window.
-fn attachment_chips<'a>(
-    reading: &Reading<'_>,
-    files: &[&AttachmentInfo],
-    anchors: &detail::Anchors,
-    room: f32,
-) -> Element<'a, Message> {
-    let chips = files.iter().enumerate().map(|(at, file)| attachment_chip(reading, at, file, anchors, room));
-    let chips = row(chips).spacing(space::s()).wrap().vertical_spacing(space::s());
-    container(bounded_scroll(chips)).max_height(chips_max_height()).into()
-}
-
-/// How many lines of chips the reader's attachment block shows before it scrolls.
-const FILE_LINES: f32 = 2.0;
-
 /// How many attachment rows the panel shows before they scroll.
 const FILE_ROWS: f32 = 4.0;
-
-/// The most the chips of the reader's block take: [`FILE_LINES`] chips and the gaps between them.
-fn chips_max_height() -> f32 {
-    FILE_LINES * size::control() + (FILE_LINES - 1.0) * space::s()
-}
 
 /// The most the panel's attachment rows take: [`FILE_ROWS`] rows of `size::control()`.
 fn rows_max_height() -> f32 {
@@ -3462,28 +3628,6 @@ fn bounded_scroll<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, M
         .into()
 }
 
-/// The attachment `file`, the `at`-th of the mail's, as a split chip (`widgets::split_file_chip`) on
-/// a line `room` wide: its name – cut with "…" where it would take more than half the line
-/// ([`chip_name_room`]) – and its size. A click on it does what the setting says
-/// ([`Message::OpenAttachment`], [`click_act`]), the tooltip says what and the whole name ("Open:
-/// invoice.pdf", [`click_tooltip`]); the triangle opens its menu ([`Message::AskAttachment`]) and,
-/// while that menu is open, carries its anchor (`anchors.attachment`).
-fn attachment_chip<'a>(
-    reading: &Reading<'_>,
-    at: usize,
-    file: &AttachmentInfo,
-    anchors: &detail::Anchors,
-    room: f32,
-) -> Element<'a, Message> {
-    let name = attachment_name(file);
-    let weight = size_text(file.size);
-    let shown = typo::ellipsize(&name, typo::body(), chip_name_room(&weight, room));
-    let open = Some(Message::OpenAttachment(reading.id.to_owned(), file.part.clone()));
-    let menu = Some(Message::AskAttachment(reading.id.to_owned(), at));
-    let anchor = (reading.file_menu == Some(at)).then_some(&anchors.attachment);
-    widgets::split_file_chip(shown, weight, click_tooltip(reading, file), open, menu, anchor)
-}
-
 /// The name of an attachment on one line, else "Attachment".
 fn attachment_name(file: &AttachmentInfo) -> String {
     let name = file.filename.as_deref().map(list::one_line).filter(|name| !name.is_empty());
@@ -3495,15 +3639,6 @@ fn attachment_name(file: &AttachmentInfo) -> String {
 fn click_tooltip(reading: &Reading<'_>, file: &AttachmentInfo) -> String {
     let act = click_act(reading.click, reading.saving, &file.part);
     trf("{action}: {name}", &[("action", &act_words(&act, reading.saving, false)), ("name", &attachment_name(file))])
-}
-
-/// How wide the name on an attachment's chip may be ([`attachment_chip`]): half the line's `room`,
-/// less what the chip needs beside the name – its padding, the paperclip, the gaps, its size `weight`
-/// and the triangle after its line – so one long name never takes a line of its own.
-fn chip_name_room(weight: &str, room: f32) -> f32 {
-    let triangle = icon::SIZE_SM + 2.0 * space::s() + size::HAIRLINE;
-    let frame = 2.0 * space::m() + icon::SIZE_SM + 2.0 * space::s() + typo::text_width(weight, typo::meta()) + triangle;
-    (room / 2.0 - frame).max(0.0)
 }
 
 /// One button of the panel's mail standards ([`panel_standards`]).
@@ -4006,7 +4141,7 @@ pub fn file_menu<'a>(menu: FileMenu<'_>) -> Vec<MenuSection<'a, Message>> {
             .collect();
         sections.push(MenuSection::titled(tr("Save to"), items));
     }
-    let manage = MenuItem::new(Icon::Settings, tr("Manage save targets…"), Message::ManageSaveTargets);
+    let manage = MenuItem::new(torro_gui::shell::SETTINGS_ICON, tr("Manage save targets…"), Message::ManageSaveTargets);
     sections.push(MenuSection::new(vec![manage]));
     sections
 }
@@ -4544,7 +4679,7 @@ impl FocusReply {
 }
 
 /// What [`focus_page`] draws.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FocusPage<'a> {
     /// The round.
     pub focus: &'a FocusReply,
@@ -4554,6 +4689,8 @@ pub struct FocusPage<'a> {
     /// A narrow window: the page's padding at the sides instead of the reading padding, which would
     /// leave the mail a strip there.
     pub narrow: bool,
+    /// The window's anchors, for the menu of the mail's attachments in its head (issue #457).
+    pub anchors: detail::Anchors,
 }
 
 /// "Focus & reply" (task E19.5) in place of list and reader, in every layout from narrow to wide
@@ -4589,7 +4726,12 @@ pub fn focus_page<'a>(page: FocusPage<'a>) -> Element<'a, Message> {
         let line = || rule::horizontal(size::HAIRLINE).style(style::rule);
         let mut mail = column![].spacing(layout::section_gap()).width(width);
         if let Some(reading) = &page.reading {
-            mail = mail.push(head(reading, None, width)).push(line());
+            // "Focus & reply" has no reader's head in the top row: the subject stands over the mail.
+            if let Some(summary) = reading.summary() {
+                let title = typo::text(typo::headline(), subject(summary)).style(theme::text);
+                mail = mail.push(title.wrapping(Wrapping::WordOrGlyph));
+            }
+            mail = mail.push(head(reading, None, width, &page.anchors)).push(line());
         }
         mail = mail.push(focus_letter(page.reading, width));
         let mail = scrollable(container(mail).padding(Padding { bottom: layout::section_gap(), ..pad }))
@@ -5033,7 +5175,6 @@ mod tests {
             deciding: false,
             dated: true,
             read: true,
-            account: Some(0),
             task: None,
             answering: false,
             invite: InviteSide::default(),
@@ -5171,11 +5312,12 @@ mod tests {
                     (tr("Torro").to_owned(), strings(&[tr("Task"), tr("Event"), tr("Category…")])),
                     (tr("Mark").to_owned(), mark_words(reading)),
                     (tr("Mute").to_owned(), strings(&[tr("Mute…")])),
+                    (trc("mail", "Display").to_owned(), strings(&[trc("mail", "Display")])),
                     (tr("More").to_owned(), strings(&[tr("Copy text"), tr("Create filter…"), tr("Close")])),
                 ]
             );
             let feet: Vec<bool> = groups.iter().map(|group| group.foot).collect();
-            assert_eq!(feet, [false, false, false, false, true, true], "Mute and More at the foot");
+            assert_eq!(feet, [false, false, false, false, true, true, true], "Mute, Display and More at the foot");
             assert!(groups[0].accent && groups[0].items[0].lead, "Reply the main group, its row strong");
             assert!(groups[1..].iter().all(|group| !group.accent));
             let mail = |sent: Option<Message>, action: MailAction| matches!(sent, Some(Message::Mail(sent, id)) if sent == action && id == "m:w1");
@@ -5229,6 +5371,7 @@ mod tests {
                     vec!["T", "C", ""],
                     vec!["", ""],
                     vec!["M"],
+                    vec![""],
                     vec!["", "", "Esc"]
                 ]
             );
@@ -5239,7 +5382,9 @@ mod tests {
             }
             // Fixed icons, whatever the first item (finding 8).
             let icons: Vec<Icon> = groups.iter().map(|group| group.icon).collect();
-            assert_eq!(icons, [Icon::Reply, Icon::Check, Icon::ListTodo, Icon::Flag, Icon::BellOff, Icon::Ellipsis]);
+            let fixed =
+                [Icon::Reply, Icon::Check, Icon::ListTodo, Icon::Flag, Icon::BellOff, Icon::Contrast, Icon::Ellipsis];
+            assert_eq!(icons, fixed);
             assert!(group(&groups, tr("File")).items.iter().filter(|i| i.danger).all(|i| i.label == tr("Delete")));
             let flagged = reading.summary().expect("headers").flags.contains(&Flag::Flagged);
             assert_eq!(group(&groups, tr("Mark")).tint.is_some(), flagged, "a flagged mail shows at Mark");
@@ -5262,12 +5407,9 @@ mod tests {
                     tr("Mute…").to_owned()
                 ]
             );
-            // Expanded and collapsed, with and without its button, a group open or none.
-            for mode in [widgets::RailMode::Collapsed, widgets::RailMode::Expanded] {
-                for open in [None, Some(1), Some(5)] {
-                    let _ =
-                        widgets::action_rail(groups.clone(), mode, open, Message::Rail, Some(Message::ToggleActions));
-                }
+            // Floating over the mail (issue #456), a group open or none.
+            for open in [None, Some(1), Some(5)] {
+                let _ = widgets::floating_rail(groups.clone(), open, Message::Rail);
             }
         });
     }
@@ -5325,7 +5467,18 @@ mod tests {
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             let groups = action_groups(reading, None, &folders, true, &detail::Anchors::default());
             let titles: Vec<String> = rail_words(&groups).into_iter().map(|(title, _)| title).collect();
-            assert_eq!(titles, strings(&[tr("Reply"), tr("File"), tr("Torro"), tr("Mark"), tr("Mute"), tr("More")]));
+            assert_eq!(
+                titles,
+                strings(&[
+                    tr("Reply"),
+                    tr("File"),
+                    tr("Torro"),
+                    tr("Mark"),
+                    tr("Mute"),
+                    trc("mail", "Display"),
+                    tr("More")
+                ])
+            );
             let file = &group(&groups, tr("File")).items;
             let save = trf("Save attachments ({n})", &[("n", &1)]);
             assert_eq!(
@@ -5465,9 +5618,9 @@ mod tests {
         }
     }
 
-    /// Task E14.3: "More" offers the other view of a mail with HTML (`v`), the other colours while the
-    /// HTML shows, "Copy text" and – in the reader – Close; a mail without HTML only the last two.
-    /// While the mail loads Mark and More wait for it.
+    /// Task E14.3: "More" offers "Copy text", "Create filter…" and – in the reader – Close; the view of
+    /// the mail and its colours stand in "Display" since issue #456. While the mail loads Mark, Display
+    /// and More wait for it.
     #[test]
     fn more_offers_the_view_of_the_mail_as_it_stands() {
         let folders = folders();
@@ -5493,25 +5646,18 @@ mod tests {
                 more(reading, true),
                 Some(vec![
                     item(tr("Copy text"), "", Message::CopyText),
-                    item(tr("Show as text"), "V", Message::ShowMailAs(MailFormat::Text)),
-                    item(tr("Dark colours"), "", Message::MailColors(Scheme::Dark)),
                     create(reading),
                     item(tr("Close"), "Esc", Message::CloseDetail),
                 ])
             );
-            let dark = HtmlReading { scheme: Scheme::Dark, ..reading.html.expect("its HTML") };
-            let dark = Reading { html: Some(dark), ..*reading };
-            let light = more(&dark, false).expect("More");
-            assert_eq!(light[2], item(tr("Light colours"), "", Message::MailColors(Scheme::Light)));
+            let groups = action_groups(reading, None, &folders, false, &detail::Anchors::default());
+            let display = groups.iter().find(|group| group.label == trc("mail", "Display")).expect("Display");
+            assert!(matches!(display.first_press(), Some(Message::ToggleMailDisplay)), "a click opens its card");
         });
         reading_of("m:p2", MailFormat::Text, true, |reading| {
             assert_eq!(
                 more(reading, false),
-                Some(vec![
-                    item(tr("Copy text"), "", Message::CopyText),
-                    item(tr("Show as HTML"), "V", Message::ShowMailAs(MailFormat::Html)),
-                    create(reading),
-                ]),
+                Some(vec![item(tr("Copy text"), "", Message::CopyText), create(reading)]),
                 "no colours for the text"
             );
         });
@@ -5538,43 +5684,42 @@ mod tests {
         });
     }
 
-    /// Task E11.3: the attachments stand as chips at the reader's bottom once the mail is in – none
-    /// while it loads, none for inline pictures –, and a long name ends in "…" before it takes half
-    /// the line.
+    /// Issue #457: the attachments stand at the right of the head's second line once the mail is in –
+    /// none while it loads, none for inline pictures –: one with its name, from two on "{n}
+    /// attachments ▾" with its menu, each to open or to save, and "Save all…" at its end.
     #[test]
-    fn attachments_are_chips_at_the_bottom() {
+    fn the_attachments_stand_in_the_head() {
         let anchors = detail::Anchors::default();
         reading_of("m:w1", MailFormat::Html, true, |reading| {
-            assert!(attachment_line(reading, &anchors, 800.0, 24.0).is_some(), "the budget's sheet");
+            assert!(attachments_control(reading, &anchors).is_some(), "the budget's sheet");
+            assert!(attachments_menu(reading, 300.0).is_some());
+            let _ = head(reading, None, 600.0, &anchors);
         });
         reading_of("m:w1", MailFormat::Html, false, |reading| {
-            assert!(attachment_line(reading, &anchors, 800.0, 24.0).is_none(), "nothing while it loads");
+            assert!(attachments_control(reading, &anchors).is_none(), "nothing while it loads");
         });
         reading_of("m:p2", MailFormat::Html, true, |reading| {
-            assert!(attachment_line(reading, &anchors, 800.0, 24.0).is_none(), "the newsletter's pictures are inline");
+            assert!(attachments_control(reading, &anchors).is_none(), "the newsletter's pictures are inline");
         });
-        let room = chip_name_room("3 KB", 800.0);
-        assert!(room > 0.0 && room < 400.0, "{room}");
-        let long = "quarterly-budget-review-with-all-departments-and-travel-costs-final-v7.xlsx";
-        let shown = typo::ellipsize(long, typo::body(), room);
-        assert!(shown != long && shown.ends_with('…'), "{shown}");
-        assert_eq!(typo::ellipsize("budget-q4.csv", typo::body(), room), "budget-q4.csv", "a short name whole");
-        assert_eq!(chip_name_room("3 KB", 0.0), 0.0, "never below nothing");
+        reading_of("m:w6", MailFormat::Text, true, |reading| {
+            assert!(files_of(reading).expect("the minutes and the slides").len() > 2);
+            assert!(attachments_control(reading, &anchors).is_some() && attachments_menu(reading, 300.0).is_some());
+        });
+        let window = window_command("m:w1", true);
+        let words: Vec<String> = window.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(words, ["--view", "mail", "--message=m:w1", "--demo"], "its own mail window");
     }
 
     /// Design review of #290 (state "full"): a mail with many attachments (the demo's minutes,
-    /// `m:w6`) keeps its block to two lines of chips and the panel's footer to four rows; the rest
-    /// scrolls inside them, so the mail keeps its room in a low window.
+    /// `m:w6`) keeps the hub's panel rows to four; the rest scrolls inside them.
     #[test]
-    fn many_attachments_scroll_inside_their_block_and_rows() {
+    fn many_attachments_scroll_inside_their_rows() {
         let anchors = detail::Anchors::default();
-        assert_eq!(chips_max_height(), 2.0 * size::control() + space::s());
         assert_eq!(rows_max_height(), 4.0 * size::control());
         reading_of("m:w6", MailFormat::Text, true, |reading| {
             let files = files_of(reading).expect("the minutes and the slides");
             assert!(files.len() > 2 * FILE_ROWS as usize, "more than fit: {}", files.len());
             assert!(files.len() as f32 * size::control() > rows_max_height(), "the rows would not fit");
-            assert!(attachment_line(reading, &anchors, 800.0, 24.0).is_some());
             assert!(attachment_rows(reading, &anchors).is_some());
         });
     }
@@ -5602,7 +5747,7 @@ mod tests {
             assert!(save_all_control(reading, &files, &anchors, true).is_some(), "two: Save all");
             assert!(file_words(reading).contains(&two));
             assert_eq!(files_meta(&files), format!("{} · {}", trf("{n} files", &[("n", &2)]), size_text(144_690)));
-            assert!(attachment_rows(reading, &anchors).is_some() && !panel_foot(reading, &anchors).is_empty());
+            assert!(attachment_rows(reading, &anchors).is_some());
         });
         reading_of("m:w1", MailFormat::Text, true, |reading| {
             let files = files_of(reading).expect("one file");
@@ -5738,6 +5883,64 @@ mod tests {
         assert_eq!(saved_folder(&SavedAttachments::default()), None);
     }
 
+    /// Some of the demo's mail, newest first, for the tests of the slim list.
+    fn demo_messages() -> Vec<MessageSummary> {
+        let demo = DemoSource::new(now());
+        ["m:w1", "m:w2", "m:p1"]
+            .into_iter()
+            .map(|id| DemoSource::get_mail(&demo, id).expect("a demo mail").summary)
+            .collect()
+    }
+
+    /// Issue #458: the slim list's rows are two lines of `BODY` with `space::m()` above and below and
+    /// the hairline, its days head it ("Today", "Yesterday", the weekday, then the date), only where it
+    /// stands by date, and the span of a row counts the heads above it and its own day's.
+    #[test]
+    fn the_slim_list_has_two_lines_a_mail_under_the_heads_of_its_days() {
+        assert_eq!(list::slim_air(), space::m() + size::HAIRLINE, "13 in the standard, as #458 asks");
+        assert_eq!(
+            list::slim_message_height(),
+            2.0 * typo::line_height(typo::body()) + 2.0 * list::slim_air() + size::HAIRLINE
+        );
+        let today = NaiveDate::from_ymd_opt(2026, 11, 5).expect("a day");
+        let day = |back: u64| today - chrono::Days::new(back);
+        assert_eq!(day_label(today, today), tr("Today"));
+        assert_eq!(day_label(day(1), today), tr("Yesterday"));
+        assert_eq!(day_label(day(3), today), datetime::weekday_name(day(3), false));
+        assert_eq!(day_label(day(7), today), datetime::format_day_month(day(7)));
+        let old = NaiveDate::from_ymd_opt(2025, 12, 24).expect("a day");
+        assert!(day_label(old, today).contains("2025") || day_label(old, today).contains("25"), "the year");
+        assert!(day_heads(&View::All), "All stands by date");
+        let relevance =
+            View::Search(crate::search::SearchView::new("x", crate::search::Scope::All, MailSort::Relevance));
+        assert!(!day_heads(&relevance), "no heads by relevance");
+        let mut messages = demo_messages();
+        messages.truncate(3);
+        let (row, head) = (list::slim_message_height(), list::day_head_height());
+        let first = slim_span(&messages, 0, true).expect("a row");
+        assert_eq!(first, (0.0, head + row), "the first row with its day's head");
+        let flat = slim_span(&messages, 2, false).expect("a row");
+        assert_eq!(flat, (2.0 * row, 3.0 * row), "without heads every row as high as the next");
+        assert!(slim_span(&messages, 3, true).is_none());
+    }
+
+    /// Issue #458: the circle shows the skull for unwanted mail, the portrait for a person's category,
+    /// the category's own mark otherwise and the envelope without one.
+    #[test]
+    fn the_circle_shows_who_or_what_wrote() {
+        use torro_mail::Category;
+        let message = |category: Option<Category>| MessageSummary {
+            category: category.map(MailCategory::by_rule),
+            ..demo_messages().remove(0)
+        };
+        assert_eq!(face_of(&message(None), &[]), widgets::Face::Icon(Icon::Mail));
+        assert_eq!(face_of(&message(Some(Category::Spam)), &[]), widgets::Face::Junk);
+        assert_eq!(face_of(&message(Some(Category::Phishing)), &[]), widgets::Face::Junk);
+        assert_eq!(face_of(&message(Some(Category::Personal)), &[]), widgets::Face::Portrait);
+        assert_eq!(face_of(&message(Some(Category::Newsletter)), &[]), widgets::Face::Icon(Icon::Newspaper));
+        assert_eq!(face_of(&message(Some(Category::Receipt)), &[]), widgets::Face::Icon(Icon::Receipt));
+    }
+
     /// The source of the function `name` in this file, up to its closing brace.
     fn function_source<'s>(source: &'s str, name: &str) -> &'s str {
         let start = [format!("fn {name}<"), format!("fn {name}(")]
@@ -5758,16 +5961,14 @@ mod tests {
             "reader_mail",
             "head",
             "sender_block",
-            "attachment_line",
-            "attachment_chip",
+            "attachments_menu",
             "action_groups",
             // The mail window's panel (task E11.4).
             "entry_panel",
             "command_body",
-            "head_with",
+            "sender_block",
             "panel_letter",
-            "panel_foot",
-            "attachment_chips",
+            "attachments_control",
         ];
         for name in parts {
             assert!(!function_source(source, name).contains(concat!("button::", "primary")), "{name}");
@@ -5784,39 +5985,33 @@ mod tests {
     fn the_mail_windows_reader_and_panel_leave_the_actions_to_the_rail() {
         let source = include_str!("mail.rs");
         let reader = function_source(source, "reader");
-        assert!(reader.contains("row![page, rail]"), "the rail at the reader's right, over its whole height");
-        for name in ["reader", "head_with", "command_body", "panel", "entry_panel", "panel_foot"] {
+        assert!(reader.contains("with_floating_rail(page, rail)"), "the rail floats at the reader's right (#456)");
+        for name in ["reader", "sender_block", "command_body", "panel", "entry_panel"] {
             let body = function_source(source, name);
             for part in [".bar(", "_button(", "segmented(", "view_controls("] {
                 assert!(!body.contains(part), "{name}: {part}");
             }
         }
         let command = function_source(source, "command_body");
-        for part in ["head_with(", "detail::properties(", "panel_letter(", "RailMode::Collapsed.width()"] {
+        for part in ["head(", "detail::properties(", "panel_letter(", "floating_rail_room()"] {
             assert!(command.contains(part), "{part}");
         }
-        assert!(command.contains("room, false)"), "the head without the subject");
+        assert!(command.contains("head(reading, entry, room, anchors)"), "the head, which has no subject (#457)");
         assert!(!command.contains("panel_standards") && !command.contains("header("), "none of the split");
         let split = function_source(source, "split_body");
         assert!(split.contains("panel_standards(") && split.contains("header("), "the hub's panel as in E9.4");
         let width = size::panel();
-        let anchors = detail::Anchors::default();
-        reading_of("m:w1", MailFormat::Html, true, |reading| {
-            assert_eq!(panel_foot(reading, &anchors).len(), 1, "the sheet's row");
-        });
-        reading_of("m:p2", MailFormat::Html, true, |reading| {
-            assert!(panel_foot(reading, &anchors).is_empty(), "no attachments, no footer: the switches are in More");
-        });
-        reading_of("m:w1", MailFormat::Html, false, |reading| {
-            assert!(panel_foot(reading, &anchors).is_empty(), "no footer while the mail loads");
-        });
         let item = mail_entry();
         let entry = ReaderEntry { item: &item, hide: true };
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             let anchors = detail::Anchors::default();
             for width in [width, 480.0, 0.0] {
-                let _ = entry_panel(reading, entry, tr("For me").to_owned(), width, &anchors);
-                let _ = panel(reading, None, &anchors, Bars::Command { entry: None, width });
+                let _ = entry_panel(reading, entry, tr("For me").to_owned(), width, &anchors, None);
+                let _ = panel(reading, None, &anchors, Bars::Command { entry: None, width }, None);
+                // The mail window's panels take the mail's row as their head (issue #457).
+                let head = || Some(iced::widget::Space::new().into());
+                let _ = entry_panel(reading, entry, tr("For me").to_owned(), width, &anchors, head());
+                let _ = panel(reading, None, &anchors, Bars::Command { entry: None, width }, head());
             }
         });
     }
@@ -5945,7 +6140,6 @@ mod tests {
                         deciding: false,
                         dated: true,
                         read,
-                        account: Some(0),
                         answering: false,
                         invite: InviteSide::default(),
                         html,
@@ -5955,27 +6149,26 @@ mod tests {
                         unsubscribed: &none_left,
                     };
                     let anchors = detail::Anchors::default();
-                    let _ = panel(&reading, Some(&folder), &anchors, Bars::Split);
+                    let _ = panel(&reading, Some(&folder), &anchors, Bars::Split, None);
                     for entry in [None, Some(ReaderEntry { item: &entry, hide: true })] {
                         // The mail window's panel (task E11.4), over the medium window and filling a
                         // narrow one.
                         for width in [size::panel(), 480.0] {
-                            let _ = panel(&reading, Some(&folder), &anchors, Bars::Command { entry, width });
+                            let _ = panel(&reading, Some(&folder), &anchors, Bars::Command { entry, width }, None);
                             let _ = body(&reading, Bars::Command { entry, width }, &anchors);
                             if let Some(entry) = entry {
-                                let _ = entry_panel(&reading, entry, tr("For me").to_owned(), width, &anchors);
+                                let _ = entry_panel(&reading, entry, tr("For me").to_owned(), width, &anchors, None);
                             }
                         }
                         let _ = body(&reading, Bars::Split, &anchors);
                         let groups = action_groups(&reading, entry, &folders, true, &anchors);
-                        let rail =
-                            widgets::action_rail(groups, widgets::RailMode::Collapsed, None, Message::Rail, None);
+                        let rail = widgets::floating_rail(groups, None, Message::Rail);
                         let _ = reader(reading, entry, rail, &anchors);
                         // The reader's head, which it lays out only once it knows its width.
-                        let _ = head(&reading, entry, 900.0);
+                        let _ = head(&reading, entry, 900.0, &anchors);
                     }
                     let _ = reader_mail(&reading, reader_widths(900.0));
-                    let _ = attachment_line(&reading, &anchors, 900.0, layout::page_padding().left);
+                    let _ = attachments_control(&reading, &anchors);
                 }
             }
         }

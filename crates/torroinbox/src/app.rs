@@ -13,16 +13,16 @@
 //! [`App::density`], `torro_gui::layout::density`), so all three windows agree.
 //!
 //! The mail window (task E8.3, `docs/eingang.md` "Drei Fenster") holds mail only ([`Kind::keeps`]).
-//! Its sidebar (issues #337 and #445) starts with "All" (the mail of every inbox, with the unread
-//! mail it holds) and "Sent" ([`App::top_entries`]), then lists the groups of categories without a
-//! title; after a gap Reply later and Set aside (the piles, with the mail they hold) and Follow up (tasks E18.4 and E19.4,
+//! Its sidebar (issues #337, #445 and #455) starts with the account field and "New email", then "All"
+//! (the mail of every inbox, with the unread mail it holds, [`App::top_entries`]) right above the groups
+//! of categories without a title; after a gap Reply later and Set aside (the piles, with the mail they hold) and Follow up (tasks E18.4 and E19.4,
 //! [`App::nav_entries`]); then "Folders" with Archive, pinned folders and an on-demand
-//! folder browser grouped by account ([`App::folder_entries`]); no sources. The mail header filters combined views by account. In the
+//! folder browser grouped by account ([`App::folder_entries`]); no sources. The account field at the top of the sidebar chooses the accounts shown (issue #455). In the
 //! comfortable density mail shows as cards with their buttons always shown ([`App::look`],
 //! `list::Look`); in the wide layout an open mail stands in the reader beside the list
 //! ([`App::wide_reader`], `mail::reader`) instead of in the panel; every action on it stands in the
-//! mail's action rail at its right (task E14.3, [`App::rail_groups`]), collapsed or expanded as the
-//! window remembers ([`App::actions`], `]`). The narrow layout opens the same grouped folder
+//! mail's action rail, which floats over the mail at its right edge (task E14.3, issue #456,
+//! [`App::rail_groups`]). The narrow layout opens the same grouped folder
 //! browser on demand. Nothing is dismissed in the mail window: mail is archived, followed up or put
 //! on a pile. Nothing is hidden either (issue #339): a filter moves mail instead.
 //!
@@ -208,14 +208,13 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel;
 use torro_gui::selectable::Selectable;
-use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons, TopRow};
 use torro_gui::source::Source;
 use torro_gui::split::{self, Limits, Split, SplitEvent};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{
-    self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, RailEvent, RailGroup, RailMode, RailToggle,
-    ToastAction, Trail,
+    self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, RailEvent, RailGroup, ToastAction, Trail,
 };
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
@@ -313,7 +312,6 @@ const RAIL_DELAY: Duration = Duration::from_millis(150);
 #[derive(Debug, Clone, PartialEq)]
 struct RailShape {
     class: SizeClass,
-    mode: RailMode,
     icons: Vec<Icon>,
     /// The open and the waiting group.
     held: [Option<usize>; 2],
@@ -321,11 +319,11 @@ struct RailShape {
 
 impl RailShape {
     /// Whether the rail moved from `self` to `after` under a group held in both: another size class
-    /// or mode, or another group at its index. Groups added or gone elsewhere (a mail that loaded
+    /// or another group at its index. Groups added or gone elsewhere (a mail that loaded
     /// adds "Mark" after "Torro") leave an open "File" where it is; a group the pointer just went to
     /// is no move.
     fn moved(&self, after: &RailShape) -> bool {
-        if (self.class, self.mode) != (after.class, after.mode) {
+        if self.class != after.class {
             return true;
         }
         let kept = self.held.iter().flatten().filter(|at| after.held.contains(&Some(**at)));
@@ -1032,6 +1030,10 @@ pub fn wake_short(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sent {
     Edit(Edit, Option<After>),
+    /// `settings.set_setting` with the key and the value (issue #456: "Display" stores its choice).
+    Setting(torro_ipc::SettingKey, String),
+    /// A mail window of its own started for this mail (issue #457).
+    Window(String),
     /// The source, muted or not, and whether the hint with its undo follows (not after an undo).
     Mute(SourceRef, bool, bool),
     Link(String),
@@ -1123,8 +1125,6 @@ pub enum Sent {
     Unmute(Option<String>, Vec<String>, Vec<String>),
     /// `accounts.sync` (task E10.1, the shortcut "fetch").
     Fetch,
-    /// `ui.json`: the action rail of the window with this key, expanded or collapsed (task E14.3).
-    Actions(String, RailMode),
     /// `mail.list_save_targets` for the message with this id (task M12.6).
     SaveTargets(String),
     /// `mail.save_attachments`: message, parts (none: all) and where to.
@@ -1179,6 +1179,10 @@ pub enum View {
     /// "Archive" under "Folders" of the mail window (task E18.4): the mail in the archive folders
     /// of every account shown ([`Role::Archive`]). `mail.*` only.
     Archive,
+    /// "Trash" under "Folders" of the mail window (issue #455): the mail in the trash folders of every
+    /// account shown ([`Role::Trash`]), as "Archive" lists its role, without a number. Deleting there
+    /// is refused as for any mail in the trash. `mail.*` only.
+    Trash,
     /// The pile "Reply later" of the mail window (task E19.4, decisions 1 and 3 of E19): the mail put
     /// there, from every folder but the trash and spam of every account shown, newest first, a page
     /// at a time (`MailSource::mail_in_pile`). `mail.*` only.
@@ -1205,6 +1209,7 @@ impl View {
             | View::All
             | View::Sent
             | View::Archive
+            | View::Trash
             | View::ReplyLater
             | View::SetAside => return None,
         };
@@ -1231,6 +1236,7 @@ impl View {
             View::Sent => tr("Sent").into(),
             // The word of the folder (`mail::folder_name`), not the button's (`trc("action", …)`).
             View::Archive => tr("Archive").into(),
+            View::Trash => tr("Trash").into(),
             View::ReplyLater => tr("Reply later").into(),
             // The pile, not the action (decision 11 of E19): "Beiseitegelegt", not "Beiseitelegen".
             View::SetAside => trc("pile", "Set aside").into(),
@@ -1252,6 +1258,7 @@ impl View {
             View::All => Icon::Mail,
             View::Sent => Icon::Send,
             View::Archive => Icon::Archive,
+            View::Trash => Icon::Trash2,
             View::ReplyLater => Icon::MessageSquareReply,
             View::SetAside => Icon::Bookmark,
         }
@@ -1277,6 +1284,7 @@ impl View {
                 | View::All
                 | View::Sent
                 | View::Archive
+                | View::Trash
                 | View::ReplyLater
                 | View::SetAside
         )
@@ -1318,6 +1326,7 @@ impl View {
             View::All => Some("all".to_owned()),
             View::Sent => Some("sent".to_owned()),
             View::Archive => Some("archive".to_owned()),
+            View::Trash => Some("trash".to_owned()),
             View::ReplyLater => Some("reply-later".to_owned()),
             View::SetAside => Some("set-aside".to_owned()),
             _ => None,
@@ -1331,6 +1340,7 @@ impl View {
             View::All => Some((Role::Inbox, Some(false))),
             View::Sent => Some((Role::Sent, None)),
             View::Archive => Some((Role::Archive, None)),
+            View::Trash => Some((Role::Trash, None)),
             _ => None,
         }
     }
@@ -1347,6 +1357,10 @@ pub enum Menu {
     MailContext,
     /// The account checkboxes beside the mail list's sorting control.
     MailAccounts,
+    /// The card "Display" at the mail's action rail (issue #456): HTML or text, the mail's colours.
+    MailDisplay,
+    /// The menu of "{n} attachments ▾" in the mail's head (issue #457).
+    Attachments,
     /// The quick filters at the end of the search field (issue #336).
     SearchFilters,
     /// The on-demand folder browser, grouped by mail account.
@@ -1604,10 +1618,14 @@ pub enum Open {
     CategorizationRunning,
     /// … with the menu of "Sort with model" open.
     CategorizationModel,
+    /// "All" of the mail window with the menu of the account field open (issue #455).
+    MailAccounts,
+    /// "Trash" of the mail window (issue #455): the mail in the trash of every account.
+    Trash,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 81] = [
+    const ALL: [(&'static str, Open); 83] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1689,6 +1707,8 @@ impl Open {
         ("categorization-filter", Open::CategorizationFilter),
         ("categorization-running", Open::CategorizationRunning),
         ("categorization-model", Open::CategorizationModel),
+        ("mail-accounts", Open::MailAccounts),
+        ("trash", Open::Trash),
     ];
 
     /// The demo page of the backup states, which open the mail window's settings at the first
@@ -2277,6 +2297,9 @@ pub struct Loaded {
     /// `MailSource::unread_in_all` counts, summed over the accounts shown. `None` in the other
     /// windows, without a mail account, and when one count failed – the list still shows then.
     pub unread_all: Option<u64>,
+    /// The unread mail of "All" of each mail account (issue #455), hidden ones too, for the menu of the
+    /// account field; `None` where its count failed. Empty outside the mail window.
+    pub unread_each: Vec<(String, Option<u64>)>,
     /// How much mail lies on "Reply later" in the mail window (task E19.4, `MailSource::count_in_pile`),
     /// summed over the accounts shown; `None` in the other windows, without a mail account and when a
     /// count failed – the sidebar then shows no number.
@@ -2639,6 +2662,8 @@ pub struct App<S> {
     /// The unread mail of "All" (task E18.4, [`Loaded::unread_all`]): the number on its row; `None`
     /// outside the mail window and when the core could not count.
     unread_all: Option<u64>,
+    /// The unread mail of "All" of each account (issue #455, [`Loaded::unread_each`]).
+    unread_each: Vec<(String, Option<u64>)>,
     /// How much mail lies on "Reply later" and "Set aside" (task E19.4, [`Loaded::reply_later`]): the
     /// numbers on their rows; `None` outside the mail window and when the core could not count.
     reply_later: Option<u64>,
@@ -2849,12 +2874,12 @@ pub struct App<S> {
     /// The settings `mail_view` and `mail_appearance` as last read, with `--mail-view` and
     /// `--mail-colors` over them ([`App::take_look`]).
     look: MailLook,
+    /// "Display" chose the view or the colours in the demo (issue #456), which stores no setting: its
+    /// choice holds over the demo's settings read every tick.
+    display_chosen: bool,
     /// HTML or text, as the switch "HTML | Text" (or `v`) stands: [`App::look`] until it is used,
     /// and again whenever the setting changes.
     mail_format: MailFormat,
-    /// Light or dark, as the switch "Light | Dark" set it for the mail's content; `None` takes
-    /// [`App::look`] (with `app` the window's appearance). Reset when the setting changes.
-    mail_scheme: Option<Scheme>,
     /// The window's scale factor (device pixels per logical pixel, without the zoom), so the HTML
     /// is drawn sharp ([`App::html_scale`]).
     window_scale: f32,
@@ -2901,13 +2926,6 @@ pub struct App<S> {
     /// The right edge of the expanded sidebar beside the content (issue #376): the width the person
     /// dragged it to, remembered in `ui.json` for every window of the app ([`SIDEBAR_SPLIT`]).
     side: Split,
-    /// The mail's action rail in the wide mail window (task E14.3, `widgets::action_rail`): collapsed
-    /// or expanded as the person chose with its button or `]`, remembered in `ui.json` under the
-    /// window's key ([`Launch::window_key`]). Medium and narrow windows always draw it collapsed.
-    actions: RailMode,
-    /// The rail was switched in this window (or by a start state) before `ui.json` answered: what it
-    /// remembers is late.
-    actions_chosen: bool,
     /// The group of the collapsed rail whose card is open beside its icon (hover, an index into
     /// [`App::rail_groups`]); closed by every item clicked, a menu opening, another mail and Escape.
     rail_open: Option<usize>,
@@ -3154,8 +3172,6 @@ pub enum Message {
     Switcher(Switcher),
     /// Open or close the navigation menu ("For me ▾").
     ToggleNav,
-    /// Open the sidebar drawer (narrow layout).
-    ShowDrawer,
     /// The panel button at the top of the sidebar, or `[`: collapses or expands the sidebar (wide),
     /// opens or closes the drawer (medium, narrow).
     ToggleSidebar,
@@ -3174,17 +3190,23 @@ pub enum Message {
     SidebarWidth(SplitEvent),
     /// The sidebar's width remembered in `ui.json`, loaded at start (none: the default).
     StoredSidebarWidth(Option<f32>),
-    /// The button at the top of the mail's action rail, or `]` (task E14.3): expand or collapse the
-    /// rail of the wide mail window and remember it.
-    ToggleActions,
     /// The pointer on the icons of the collapsed rail and its open card, or a click on an icon
     /// without a click of its own (task E14.3, `widgets::RailEvent`; indices into
     /// [`App::rail_groups`]): a group opens after [`RAIL_DELAY`], closes as the pointer leaves.
     Rail(RailEvent),
     /// The timer of a group waiting to open ([`App::rail_pending`]).
     RailTick(Instant),
-    /// The rail remembered for this window in `ui.json`, loaded at start (none: not chosen yet).
-    StoredActions(Option<RailMode>),
+    /// "Display" of the mail's action rail (issue #456): open or close its card.
+    ToggleMailDisplay,
+    /// "{n} attachments ▾" in the head of the mail with this id (issue #457): open or close its menu.
+    AskAttachments(String),
+    /// ⌃ / ⌄ over the reader (issue #457): the previous (`false`) or next mail of the list, as `k`/`j`.
+    StepMail(bool),
+    /// "Open in new window" over the reader (issue #457): the mail with this id in a mail window of its
+    /// own.
+    OpenMailWindow(String),
+    /// The answer to storing the display chosen there (`settings.set_setting`); an error is said.
+    DisplaySaved(Result<(), String>),
     /// Close the open menu and the drawer (click beside them).
     CloseMenu,
     /// Escape: closes the innermost open thing – menu or drawer, then the panel.
@@ -3360,9 +3382,15 @@ pub enum Message {
     CopyText,
     /// The title of an account's browser group: fold its folders away or show them this session.
     ToggleAccount(String),
+    /// The account field at the top of the mail window's sidebar (issue #455): opens or closes its menu.
     ToggleMailAccounts,
     SelectAllMailAccounts,
     ToggleMailAccount(String),
+    /// "Only this" in the account field's menu (issue #455): show this account alone, kept like any
+    /// choice of accounts.
+    OnlyMailAccount(String),
+    /// "Manage accounts…" in the account field's menu (issue #455): the settings at Accounts.
+    ManageMailAccounts,
     StoredMailAccounts(Option<Vec<String>>),
     OpenFolders,
     ToggleFolderPin(String),
@@ -3371,10 +3399,16 @@ pub enum Message {
     ToggleSources,
     /// The compose window could not be started.
     ComposeStarted(Result<(), String>),
-    /// The switch "HTML | Text" over a mail with HTML (task M9.7), as `v` does.
+    /// "HTML | Text" (task M9.7) in the card "Display" and the panel's footer, as `v` does: the
+    /// setting `mail_view` changes, at once in this window, and is stored (issue #456).
     ShowMailAs(MailFormat),
-    /// The switch "Light | Dark" (task M9.7): the colours of the mail's content, not the window's.
-    MailColors(Scheme),
+    /// The colours of the mail's content (task M9.7) in the card "Display" and the panel's footer –
+    /// light, dark or as the app –: the setting `mail_appearance` changes, at once in this window, and
+    /// is stored (issue #456). Never the window's colours.
+    MailColors(MailAppearance),
+    /// "Light | Dark" of the hub's panel footer (task E9.4): as [`Message::MailColors`], but a click on
+    /// the colours shown while they follow the app changes nothing – the switch has no "As app".
+    FooterMailColors(MailAppearance),
     /// A link in a mail's HTML was clicked (task M9.7): `http`, `https` and `mailto` open in the
     /// browser, anything else is dropped.
     HtmlLink(String),
@@ -3539,6 +3573,7 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
             for_me: Vec::new(),
             info: Vec::new(),
             unread_all: None,
+            unread_each: Vec::new(),
             reply_later: None,
             set_aside: None,
             sources: Vec::new(),
@@ -3625,10 +3660,11 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
     // Whether a decision model is set up, so the reader offers "Re-categorize" only then.
     let model_ready = !folders.is_empty() && inbox.categorization_ready().await.unwrap_or(false);
     // The number on "All" (task E18.4): only the mail window has the view.
-    let unread_all = if kind == Kind::Mail && !folders.is_empty() {
-        count_unread_all(&*inbox, mail_accounts.as_deref()).await
+    let (unread_all, unread_each) = if kind == Kind::Mail && !folders.is_empty() {
+        let every: Vec<String> = mail::by_account(&folders).into_iter().map(|group| group.account.to_owned()).collect();
+        count_unread_all(&*inbox, mail_accounts.as_deref(), &every).await
     } else {
-        None
+        (None, Vec::new())
     };
     // The numbers on the piles (task E19.4): the mail window's alone, as "All".
     let (reply_later, set_aside) = if kind == Kind::Mail && !folders.is_empty() {
@@ -3684,7 +3720,7 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
         }
         // "All", "Sent" and "Archive" (task E18.4, issue #445): the mail of one folder role of every
         // account shown, as the core leaves out what is snoozed.
-        View::All | View::Sent | View::Archive => {
+        View::All | View::Sent | View::Archive | View::Trash => {
             Some(role_selected(&*inbox, &view, limit, None, order, mail_accounts.as_deref()).await?)
         }
         // A pile (task E19.4): its mail from every folder of the accounts shown.
@@ -3708,6 +3744,7 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
         for_me,
         info,
         unread_all,
+        unread_each,
         reply_later,
         set_aside,
         sources,
@@ -3937,13 +3974,29 @@ async fn count_piled<S: MailSource>(inbox: &S, pile: MailPile, accounts: Option<
 /// The number on "All" (task E18.4): `MailSource::unread_in_all` once for every account
 /// (`accounts` `None`), else for each account chosen, summed. `None` when one count failed, so the
 /// row shows no number rather than a wrong one.
-async fn count_unread_all<S: MailSource>(inbox: &S, accounts: Option<&[String]>) -> Option<u64> {
-    let Some(accounts) = accounts else { return inbox.unread_in_all(None).await.ok() };
-    let mut total = 0_u64;
-    for account in accounts {
-        total = total.saturating_add(inbox.unread_in_all(Some(account.clone())).await.ok()?);
+async fn count_unread_all<S: MailSource>(
+    inbox: &S,
+    accounts: Option<&[String]>,
+    every: &[String],
+) -> (Option<u64>, Vec<(String, Option<u64>)>) {
+    // Each account's own number for the menu of the account field (issue #455), the hidden ones too;
+    // one that fails leaves out only its own number.
+    let mut each = Vec::new();
+    for account in every {
+        each.push((account.clone(), inbox.unread_in_all(Some(account.clone())).await.ok()));
     }
-    Some(total)
+    // Every account: the sum of their numbers, none where one could not be counted.
+    let Some(accounts) = accounts else { return (each.iter().map(|(_, count)| *count).sum(), each) };
+    let mut total = Some(0_u64);
+    for account in accounts {
+        let known = each.iter().find(|(held, _)| held == account).map(|(_, count)| *count);
+        let count = match known {
+            Some(count) => count,
+            None => inbox.unread_in_all(Some(account.clone())).await.ok(),
+        };
+        total = total.zip(count).map(|(total, count)| total.saturating_add(count));
+    }
+    (total, each)
 }
 
 /// The same cursor walk for a search whose scope is "All mail". Explicit account and folder
@@ -4036,6 +4089,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Some(Open::Done) => View::Done,
                 Some(Open::Sent) => View::Sent,
                 Some(Open::Archive) => View::Archive,
+                Some(Open::Trash) => View::Trash,
                 Some(Open::ReplyLater | Open::Focus) => View::ReplyLater,
                 Some(Open::SetAside) => View::SetAside,
                 // The first inbox, once the folders are in.
@@ -4078,6 +4132,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             for_me: Vec::new(),
             info: Vec::new(),
             unread_all: None,
+            unread_each: Vec::new(),
             reply_later: None,
             set_aside: None,
             sources: Vec::new(),
@@ -4157,8 +4212,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             html: None,
             saving: None,
             look: launch.look(MailLook::default()),
+            display_chosen: false,
             mail_format: launch.look(MailLook::default()).format,
-            mail_scheme: None,
             window_scale: 1.0,
             filter: None,
             sorting: open == Some(Open::ToSort),
@@ -4178,6 +4233,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             menu: match open {
                 Some(Open::Menu | Open::CategoryMenu) => Some(Menu::Nav),
                 Some(Open::Switcher) => Some(Menu::Switcher),
+                Some(Open::MailAccounts) => Some(Menu::MailAccounts),
                 _ => None,
             },
             menu_at: MenuAt::default(),
@@ -4189,8 +4245,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             order_chosen: false,
             split: Split::default(),
             side: Split::default(),
-            actions: RailMode::default(),
-            actions_chosen: false,
             rail_open: None,
             rail_pending: None,
             rail_left: None,
@@ -4204,10 +4258,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let order = ui_state::load_order_task(INBOX, app.launch.window_key()).map(Message::StoredOrder);
         // Only the mail window has a divider (issue #130) and the action rail (task E14.3).
         let split = match app.launch.kind {
-            Kind::Mail => Task::batch([
-                ui_state::load_split_task(INBOX, app.launch.window_key()).map(Message::StoredSplit),
-                ui_state::load_actions_task(INBOX, app.launch.window_key()).map(Message::StoredActions),
-            ]),
+            Kind::Mail => ui_state::load_split_task(INBOX, app.launch.window_key()).map(Message::StoredSplit),
             _ => Task::none(),
         };
         let task = Task::batch([
@@ -4427,11 +4478,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.html.as_ref().filter(|html| html.id == letter.id).map(|html| &html.content)
     }
 
-    /// The colours of the mail's content (task M9.7): the switch's, else the setting's – with `app`
-    /// those of the window, so "System" follows the desktop as the window does.
+    /// The colours of the mail's content (task M9.7): the setting's, as "Display" chose it (issue
+    /// #456) – with `app` those of the window, so "System" follows the desktop as the window does.
     fn mail_scheme(&self) -> Scheme {
         let dark = self.theme().extended_palette().is_dark;
-        self.mail_scheme.unwrap_or_else(|| mail::scheme_for(self.look.colors, dark))
+        mail::scheme_for(self.look.colors, dark)
     }
 
     /// Device pixels per logical pixel for the HTML: the window's scale factor times the zoom, so
@@ -4444,16 +4495,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// `--mail-colors` over them. When they changed, both switches go back to them; the same answer
     /// again (every tick) leaves the switches as the person set them.
     fn take_look(&mut self, stored: MailLook) -> Task<Message> {
-        let look = self.launch.look(stored);
+        let mut look = self.launch.look(stored.clone());
+        if self.display_chosen {
+            // A choice in "Display" is the setting from then on: it wins over `--mail-view` and
+            // `--mail-colors`, which only give the start. The demo stores none and holds its own.
+            (look.format, look.colors) =
+                if self.launch.demo { (self.look.format, self.look.colors) } else { (stored.format, stored.colors) };
+        }
         if look == self.look {
             return Task::none();
         }
         let hidden_changed = look.hidden_categories != self.look.hidden_categories;
         // Only the mail's view resets the switches: another click on attachments (task M12.6) or
         // other hidden categories leave them as the person set them.
-        if (look.format, look.colors) != (self.look.format, self.look.colors) {
+        if look.format != self.look.format {
             self.mail_format = look.format;
-            self.mail_scheme = None;
         }
         self.look = look;
         // A shown group lists the categories it had when it was shown; one switched off since
@@ -4968,10 +5024,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::Switcher(Switcher::New | Switcher::Search) => self.close_menus(),
             Message::ToggleNav => self.toggle_menu(Menu::Nav),
-            Message::ShowDrawer => {
-                self.menu = None;
-                self.drawer = true;
-            }
             Message::ToggleSidebar => return self.toggle_sidebar(),
             Message::UiState(state) => self.sidebar = state.sidebar,
             Message::ToggleOrder => return self.set_order(self.order.toggled()),
@@ -4980,7 +5032,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     return ui_state::save_split_task(INBOX, self.launch.window_key(), self.split.chosen);
                 }
             }
-            Message::ToggleActions => return self.toggle_actions(),
             Message::Rail(event) => self.rail_event(event, Instant::now()),
             Message::RailTick(now) => {
                 if let Some((at, since)) = self.rail_pending
@@ -4990,12 +5041,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     self.rail_open = Some(at);
                 }
             }
-            Message::StoredActions(stored) => {
-                // A switch made before the file answered wins.
-                if let Some(stored) = stored.filter(|_| !self.actions_chosen) {
-                    self.actions = stored;
-                }
+            Message::ToggleMailDisplay => {
+                // At the rail: its group "Display" stands chosen while the card is open.
+                self.menu_at = MenuAt::Panel;
+                self.toggle_menu(Menu::MailDisplay);
             }
+            Message::AskAttachments(id) => self.ask_file_menu(&id, Menu::Attachments),
+            Message::StepMail(forward) => return self.step(forward),
+            Message::OpenMailWindow(id) => {
+                #[cfg(test)]
+                self.sent.push(Sent::Window(id.clone()));
+                let command = mail::window_command(&id, self.launch.demo);
+                return Task::perform(async move { mail::start(command) }, Message::AppOpened);
+            }
+            Message::DisplaySaved(Ok(())) => {}
+            Message::DisplaySaved(Err(_)) => self.note(tr("Couldn't save the display.").to_owned()),
             Message::StoredSplit(stored) => {
                 // A width dragged before the file answered wins.
                 if self.split == Split::default() {
@@ -5545,6 +5605,22 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let save = ui_state::save_mail_accounts_task(INBOX, self.launch.window_key(), None);
                 return Task::batch([save, self.load()]);
             }
+            Message::OnlyMailAccount(account) => {
+                let all = mail::by_account(&self.folders).len();
+                self.mail_accounts = (all != 1).then(|| vec![account]);
+                self.accounts_chosen = true;
+                self.more = None;
+                if self.launch.demo {
+                    return self.load();
+                }
+                let save =
+                    ui_state::save_mail_accounts_task(INBOX, self.launch.window_key(), self.mail_accounts.clone());
+                return Task::batch([save, self.load()]);
+            }
+            Message::ManageMailAccounts => {
+                self.close_menus();
+                return self.open_settings(Some(settings_mail::ACCOUNTS_SECTION));
+            }
             Message::ToggleMailAccount(account) => {
                 let all: Vec<String> =
                     mail::by_account(&self.folders).into_iter().map(|group| group.account.to_owned()).collect();
@@ -5601,8 +5677,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::ComposeStarted(Err(err)) => {
                 self.error = Some(Failure::new(tr("Couldn't open the compose window."), err));
             }
-            Message::ShowMailAs(format) => self.mail_format = format,
-            Message::MailColors(scheme) => self.mail_scheme = Some(scheme),
+            Message::ShowMailAs(format) => return self.choose_display(Some(format), None),
+            Message::MailColors(colors) => return self.choose_display(None, Some(colors)),
+            Message::FooterMailColors(colors) => {
+                // "Light | Dark" of the hub's footer shows the colours as they come out: a click on the one
+                // shown while they follow the app changes nothing to see, so it stores nothing either.
+                let dark = self.theme().extended_palette().is_dark;
+                let shown = mail::scheme_for(self.look.colors, dark);
+                let same = self.look.colors == MailAppearance::App && mail::scheme_for(colors, dark) == shown;
+                if !same {
+                    return self.choose_display(None, Some(colors));
+                }
+            }
             Message::HtmlLink(url) if mail::opens_in_browser(&url) => return self.open_link(url),
             Message::HtmlLink(_) => {}
             Message::MailLook(Ok(look)) => return self.take_look(look),
@@ -6965,13 +7051,59 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// `v` (task M9.7): the mail in the panel or reader switches between HTML and text – only a
     /// mail with HTML; nothing otherwise.
     fn switch_view(&mut self) -> Task<Message> {
-        if self.html_for_letter().is_some() {
-            self.mail_format = match self.mail_format {
-                MailFormat::Html => MailFormat::Text,
-                MailFormat::Text => MailFormat::Html,
-            };
+        if self.html_for_letter().is_none() {
+            return Task::none();
         }
-        Task::none()
+        let other = match self.mail_format {
+            MailFormat::Html => MailFormat::Text,
+            MailFormat::Text => MailFormat::Html,
+        };
+        self.choose_display(Some(other), None)
+    }
+
+    /// A choice of the card "Display", of `v` or of the panel's footer (issue #456): HTML or text and
+    /// the mail's colours change at once and stay – the settings `mail_view` and `mail_appearance`
+    /// take them, so the next start and the other windows show the mail the same way. The demo keeps
+    /// them in the window only.
+    fn choose_display(&mut self, format: Option<MailFormat>, colors: Option<MailAppearance>) -> Task<Message> {
+        let mut changes = Vec::new();
+        if let Some(format) = format.filter(|&format| format != self.mail_format || format != self.look.format) {
+            self.mail_format = format;
+            self.look.format = format;
+            let value = match format {
+                MailFormat::Html => "html",
+                MailFormat::Text => "text",
+            };
+            changes.push((torro_ipc::SettingKey::MailView, value));
+        }
+        if let Some(colors) = colors.filter(|&colors| colors != self.look.colors) {
+            self.look.colors = colors;
+            let value = match colors {
+                MailAppearance::App => "app",
+                MailAppearance::Light => "light",
+                MailAppearance::Dark => "dark",
+            };
+            changes.push((torro_ipc::SettingKey::MailAppearance, value));
+        }
+        self.display_chosen |= !changes.is_empty();
+        #[cfg(test)]
+        self.sent.extend(changes.iter().map(|(key, value)| Sent::Setting(*key, (*value).to_owned())));
+        let Source::Core(client) = &self.suite else { return Task::none() };
+        let tasks = changes.into_iter().map(|(key, value)| {
+            let socket = client.socket.clone();
+            let request = torro_ipc::Request::SetSetting { key, value: serde_json::Value::from(value) };
+            Task::perform(
+                async move {
+                    match torro_ipc::client::call(&socket, &request).await {
+                        Ok(torro_ipc::Response::Ok) => Ok(()),
+                        Ok(other) => Err(format!("{other:?}")),
+                        Err(err) => Err(err.to_string()),
+                    }
+                },
+                Message::DisplaySaved,
+            )
+        });
+        Task::batch(tasks)
     }
 
     /// The entry `id` under the cursor and in the panel; "Coming back" opens snoozed entries, which
@@ -7547,22 +7679,33 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
     }
 
-    /// The bar over the list: field, suggestions, scope and order, the line on the results.
-    fn search_bar(&self, filters: &Anchor) -> Element<'_, Message> {
+    /// The bar over the list: field, suggestions, scope and order, the line on the results. The mail
+    /// window has its field in the top row (issue #459, [`App::mail_head`]) and keeps only the lines
+    /// under it here – none while there is nothing to say.
+    fn search_bar(&self, filters: &Anchor) -> Option<Element<'_, Message>> {
+        let bar = self.search_bar_parts(filters);
+        // A narrow mail window has no room for the field in the top row: it stands over the list.
+        if self.launch.kind == Kind::Mail && !self.mail_only && self.class() != SizeClass::Narrow {
+            return search::below(bar);
+        }
+        Some(search::bar(bar))
+    }
+
+    /// What the search bar shows ([`App::search_bar`], [`App::mail_head`]).
+    fn search_bar_parts(&self, filters: &Anchor) -> search::Bar<'_> {
         let search = self.view.search();
         let status = search
             .filter(|search| !search.query.is_empty() && self.listed == self.view.listing() && self.loaded)
             .map(|_| search::status_line(self.messages.len(), self.more.is_some(), &self.found));
-        search::bar(search::Bar {
+        search::Bar {
             input: &self.search,
             search,
             scopes: self.search_scopes(),
             suggestions: self.search_suggestions(),
             status,
-            full: self.launch.kind == Kind::Mail,
             filters: filters.clone(),
             today: today(),
-        })
+        }
     }
 
     /// "Load more": the next page of the folder or the search.
@@ -7601,7 +7744,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 })
             }
             // "All", "Sent" and "Archive" (task E18.4): the next page of the same role and fields.
-            View::All | View::Sent | View::Archive => {
+            View::All | View::Sent | View::Archive | View::Trash => {
                 let (shown, selected, cursor) = (view.clone(), accounts.clone(), cursor.clone());
                 Box::pin(async move {
                     role_selected(&*inbox, &shown, mail::PAGE, Some(cursor), order, selected.as_deref()).await
@@ -7975,6 +8118,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.for_me.sort_by_key(|item| !list::is_waiting(item));
         self.info = loaded.info;
         self.unread_all = loaded.unread_all;
+        self.unread_each = loaded.unread_each;
         self.reply_later = loaded.reply_later;
         self.set_aside = loaded.set_aside;
         self.sources = loaded.sources;
@@ -8256,6 +8400,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 | Menu::Switcher
                 | Menu::MailContext
                 | Menu::MailAccounts
+                | Menu::MailDisplay
+                | Menu::Attachments
                 | Menu::SearchFilters
                 | Menu::Folders
                 | Menu::Attachment(_)
@@ -8434,7 +8580,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Command::Confirm if self.menu == Some(Menu::PhishingLink) => self.update(Message::OpenLinkAnyway),
             Command::Confirm => self.update(Message::PickConfirm),
             Command::Sidebar => self.toggle_sidebar(),
-            Command::Actions => self.toggle_actions(),
         }
     }
 
@@ -8509,6 +8654,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Look::Cards => {
                     let above = self.messages[..index].iter().map(|message| mail::message_card_height(message, width));
                     list::card_span(above, mail::message_card_height(message, width))
+                }
+                // The mail window's slim list (issue #458): its rows and the heads of their days.
+                Look::Rows if mail::slim(self.bare_rows()) => {
+                    mail::slim_span(&self.messages, index, mail::day_heads(&self.view)).unwrap_or_default()
                 }
                 Look::Rows => {
                     // The cursor's row carries the hub's strip below it; the mail window's rows are bare
@@ -9775,29 +9924,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         ui_state::save_task(INBOX, UiState { sidebar: self.sidebar })
     }
 
-    /// The rail's button or `]` (task E14.3): expands or collapses the mail's action rail – only in
-    /// the wide mail window, the one that can expand it (decision 5 of E14) – and remembers it for this
-    /// window's key ([`Launch::window_key`]); not in the demo, which stores nothing.
-    fn toggle_actions(&mut self) -> Task<Message> {
-        // Drawn collapsed for want of room, the rail cannot expand: `]` keeps the choice as it is
-        // rather than switching it unseen.
-        // Without a mail open there is no rail to switch: `]` would change the next mail's unseen.
-        let no_rail = self.rail_groups(SizeClass::Wide, &detail::Anchors::default()).is_none();
-        if self.launch.kind != Kind::Mail || self.class() != SizeClass::Wide || !self.rail_can_expand() || no_rail {
-            return Task::none();
-        }
-        self.actions = self.actions.toggled();
-        self.actions_chosen = true;
-        self.rail_open = None;
-        self.rail_pending = None;
-        if self.launch.demo {
-            return Task::none();
-        }
-        #[cfg(test)]
-        self.sent.push(Sent::Actions(self.launch.window_key(), self.actions));
-        ui_state::save_actions_task(INBOX, self.launch.window_key(), self.actions)
-    }
-
     /// "Newest first | Oldest first" (task E8.15): the window lists in `order` from now on – asked
     /// anew, since a folder's next pages and an entry list's `limit` follow the order –, and
     /// remembers it for its key ([`Launch::window_key`]) – not in the demo, which stores nothing.
@@ -9882,7 +10008,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// them and the mail's collapsed action rail with its gap (`mail::reader`), so the widest sidebar
     /// still leaves the wide mail window usable.
     fn sidebar_limits(&self) -> Limits {
-        let rest = 2.0 * split::min_pane() + split::handle_width() + space::xs() + RailMode::Collapsed.width();
+        let rest = 2.0 * split::min_pane() + split::handle_width();
         shell::sidebar_limits(self.size.width, rest)
     }
 
@@ -9894,42 +10020,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// What the divider between the wide mail window's list and reader moves in (issue #130): the
     /// list [`size::list()`] wide by default, in the content's width ([`App::content_width`]); the
-    /// split keeps both at least `split::min_pane()`. The reader's pane also holds the action rail
-    /// (task E14.3), so its width – collapsed or expanded as chosen – is left out: the mail itself
-    /// keeps at least `split::min_pane()`, also with the rail expanded.
+    /// split keeps both at least `split::min_pane()`. The mail's action rail floats over the reader
+    /// (issue #456) and takes none of the width.
     fn split_limits(&self) -> Limits {
-        // The rail stands `space::xs()` apart from the mail (`mail::reader`).
-        let rail =
-            if self.launch.kind == Kind::Mail { space::xs() + self.rail_mode(SizeClass::Wide).width() } else { 0.0 };
-        Limits::new(size::list(), self.content_width() - rail)
-    }
-
-    /// The mode the mail's action rail is drawn in, in `class` (task E14.3): medium and narrow always
-    /// collapsed (decision 5); wide the one the person chose ([`App::actions`]) – but collapsed while an
-    /// expanded rail would leave the reader less than [`size::form_max()`] (finding 1 of the review),
-    /// so the mail never gets squeezed. The choice stays as it is: `]` and the button switch it, and
-    /// with more room it shows expanded again.
-    fn rail_mode(&self, class: SizeClass) -> RailMode {
-        let expanded = self.actions == RailMode::Expanded;
-        if class != SizeClass::Wide || (expanded && !self.rail_can_expand()) {
-            return RailMode::Collapsed;
-        }
-        self.actions
-    }
-
-    /// Whether an expanded rail leaves the reader at least [`size::form_max()`] – without, the
-    /// rail draws collapsed ([`App::rail_mode`]) with its toggle off ([`App::rail_toggle`]).
-    fn rail_can_expand(&self) -> bool {
-        self.reader_room(RailMode::Expanded) >= size::form_max()
-    }
-
-    /// How wide the reader's mail is beside a `rail` of that mode and the gap before it
-    /// (`mail::reader`), the divider placed as with the collapsed rail – an expanded one only
-    /// narrows the list's room further, never the reader's.
-    fn reader_room(&self, rail: RailMode) -> f32 {
-        let beside = |rail: RailMode| space::xs() + rail.width();
-        let limits = Limits::new(size::list(), self.content_width() - beside(RailMode::Collapsed));
-        self.content_width() - self.split.width(limits) - split::handle_width() - beside(rail)
+        Limits::new(size::list(), self.content_width())
     }
 
     /// The reader beside the list (task E8.3): in the wide mail window, for the mail open in the
@@ -9944,7 +10038,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if !self.view.is_mail() && entry.is_none() {
             return None;
         }
-        let rail = self.rail(class, self.rail_groups(class, anchors)?);
+        let rail = self.rail(self.rail_groups(class, anchors)?);
         Some(mail::reader(reading, entry, rail, anchors))
     }
 
@@ -9967,25 +10061,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         Some(mail::action_groups(&reading, entry, &self.folders, close, anchors))
     }
 
-    /// The mail's action rail of `groups` in `class` (`widgets::action_rail_toggle`): in the wide window
-    /// in the mode [`App::rail_mode`] draws, with its toggle ([`App::rail_toggle`]); in medium and narrow
-    /// always collapsed and without the toggle (decision 5 of E14). The group open beside its icon, or
-    /// whose menu or dialog is open, stands selected ([`App::rail_active`]).
-    fn rail<'a>(&self, class: SizeClass, groups: Vec<RailGroup<'a, Message>>) -> Element<'a, Message> {
+    /// The mail's action rail of `groups` (issue #456, `widgets::floating_rail`): a card floating over
+    /// the mail at its right edge, in every size class. The group open beside its icon, or whose menu,
+    /// dialog or card is open, stands selected ([`App::rail_active`]).
+    fn rail<'a>(&self, groups: Vec<RailGroup<'a, Message>>) -> Element<'a, Message> {
         let active = self.rail_active(&groups);
-        widgets::action_rail_toggle(groups, self.rail_mode(class), active, Message::Rail, self.rail_toggle(class))
-    }
-
-    /// The toggle of the mail's action rail in `class`: none in medium and narrow windows; in the wide
-    /// window a working one while the rail can expand ([`App::rail_can_expand`]), else off with the reason
-    /// as its tooltip – the head stays, so the rail's icons do not move between designs and widths (issue
-    /// #291: Console's wider rail could not expand at 1600, and Reply jumped up without the head).
-    fn rail_toggle(&self, class: SizeClass) -> RailToggle<Message> {
-        match (class, self.rail_can_expand()) {
-            (SizeClass::Wide, true) => RailToggle::On(Message::ToggleActions),
-            (SizeClass::Wide, false) => RailToggle::Off(tr("Widen the window to expand actions")),
-            _ => RailToggle::Hidden,
-        }
+        widgets::floating_rail(groups, active, Message::Rail)
     }
 
     /// The group of `groups` that stands selected in the collapsed rail (finding 14): the one open
@@ -10000,6 +10081,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Menu::Snooze | Menu::Pick | Menu::Lane | Menu::SaveAll { rail: true } => tr("File"),
             Menu::Task | Menu::Event | Menu::Category | Menu::CategoryAlways => tr("Torro"),
             Menu::Hide | Menu::Mute | Menu::Move | Menu::Unsubscribe => tr("Mute"),
+            Menu::MailDisplay => trc("mail", "Display"),
             _ => return None,
         };
         if !self.menu_from_panel() {
@@ -10020,7 +10102,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let groups = self.rail_groups(class, &detail::Anchors::default()).unwrap_or_default();
         Some(RailShape {
             class,
-            mode: self.rail_mode(class),
             icons: groups.iter().map(|group| group.icon).collect(),
             held: [self.rail_open, self.rail_pending.map(|(at, _)| at)],
         })
@@ -10070,7 +10151,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         panel: panel::Panel<'a, Message>,
     ) -> panel::Panel<'a, Message> {
         match self.rail_groups(class, anchors) {
-            Some(groups) => panel.side(self.rail(class, groups), RailMode::Collapsed.width()),
+            Some(groups) => panel.floating(self.rail(groups), widgets::floating_rail_room()),
             None => panel,
         }
     }
@@ -10080,7 +10161,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// same `anchors` as the rail's ([`App::rail_groups`]). `None` while no group is open, while the
     /// rail is expanded (its groups stand open in it) and once the group is gone.
     fn rail_layer<'a>(&'a self, class: SizeClass, anchors: &detail::Anchors) -> Option<Element<'a, Message>> {
-        let open = self.rail_open.filter(|_| self.rail_mode(class) == RailMode::Collapsed)?;
+        let open = self.rail_open?;
         let group = self.rail_groups(class, anchors)?.into_iter().nth(open)?;
         let anchor = group.anchor.clone().unwrap_or_default();
         Some(widgets::rail_flyout(group, &anchor, Message::Rail(RailEvent::Close)))
@@ -10109,7 +10190,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// `Panel::side`), the whole window in a narrow one.
     fn panel_width(&self, class: SizeClass) -> f32 {
         match class {
-            SizeClass::Wide | SizeClass::Medium => size::panel() + space::xs() + RailMode::Collapsed.width(),
+            SizeClass::Wide | SizeClass::Medium => size::panel() + widgets::floating_rail_room(),
             SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => self.size.width,
         }
     }
@@ -10148,28 +10229,34 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         // Always three layers, so the window keeps its state when the hint or the question comes and
         // goes.
+        // The window draws its top row itself (issue #459): the switcher, the panel button and the
+        // settings in one row with the header; the question lies over all of it.
         let window = stack![self.window(class), self.hint_layer(), self.question_layer()].width(Fill).height(Fill);
-        let (surface, cover) = (Surface::of(class), self.cover());
-        let content = self.zoom.view(window);
-        // The panel button and "Settings" in the band above the window (U.10).
-        let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
-        let buttons = TitleButtons::none()
-            .sidebar(label, Message::ToggleSidebar)
-            .settings(Message::OpenSettings)
-            .settings_open(self.settings.is_some());
-        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, buttons, Message::DragWindow))
+        widgets::ctrl_guard(self.zoom.view(window))
     }
 
-    /// What lies over the top of the window, which the title band repeats: the panel of an entry
-    /// over the list, else the drawer. A glance has neither.
+    /// The window's top row (issue #459): the switcher, the panel button, the settings, and what lies
+    /// over the top of the window below the question ([`App::cover`]).
+    fn top_row(&self, class: SizeClass, switcher: &Anchor) -> TopRow<Message> {
+        let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
+        TopRow::new(self.launch.kind.app(), switcher, Message::Switcher, self.zoom.factor(), Message::DragWindow)
+            .sidebar(label, Message::ToggleSidebar)
+            .settings(Message::OpenSettings)
+            .settings_open(self.settings.is_some())
+            .cover(self.cover())
+            .panel_width(self.panel_width(class))
+    }
+
+    /// What lies over the top of the window, which the top row repeats: a dialog of the settings, the
+    /// panel of an entry over the list, else the drawer. A glance has neither. The window's own
+    /// questions ([`App::question_layer`]) lie over the top row and dim it themselves.
     fn cover(&self) -> Cover {
         let class = self.class();
         if self.is_glance() {
             return Cover::Nothing;
         }
-        // A dialog of the settings (the save target's editor) covers the band like the window's own.
-        let question =
-            matches!(self.menu, Some(Menu::DeleteForGood | Menu::Unsubscribe)) || self.settings_dialog(class).is_some();
+        // A dialog of the settings (the save target's editor) lies in the window, under the top row.
+        let question = self.settings_dialog(class).is_some();
         // The overview's panel covers the band like a mail's (issue #409).
         let panel = self.panel_open() || (class == SizeClass::Medium && self.mail_overview_shown());
         Cover::dialog(question).or(Cover::panel(class, panel)).or(Cover::drawer(class, self.drawer))
@@ -10333,13 +10420,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let filters = Anchor::new();
         // Where the overview's "Mute" menu hangs (issue #409).
         let overview_at = Anchor::new();
-        let sidebar = self.sidebar(SidebarMode::Expanded, &switcher, &folders);
+        let sidebar = self.sidebar(SidebarMode::Expanded, &accounts, &folders);
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
-            .then(|| self.sidebar(SidebarMode::Rail, &switcher, &folders));
+            .then(|| self.sidebar(SidebarMode::Rail, &accounts, &folders));
         if let Some(pane) = &self.settings {
             let frame = self.settings_frame(pane, class);
             let settings_rail = matches!(class, SizeClass::Wide | SizeClass::Medium)
-                .then(|| self.sidebar(SidebarMode::Rail, &switcher, &folders));
+                .then(|| self.sidebar(SidebarMode::Rail, &accounts, &folders));
             // The one layer here is the host's own section menu (the medium layout's "Sources ▾").
             // The app switcher cannot be open at the same time: every `Message::Switcher` shows
             // entries again ([`shows_entries`]), so pressing it closes the settings first – as in
@@ -10352,12 +10439,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(overlay)
+                .top_row(self.top_row(class, &switcher))
                 .into();
         }
         // "Focus & reply" (task E19.5) has its own header: the way back, where it is, ↑ ↓.
         let header = match self.focusing() {
             Some(focus) => self.focus_header(class, focus),
-            None => self.header(class, &nav, &accounts),
+            None => self.header(class, &nav, &filters),
         };
         // Two sets (issue #122): the buttons of the panel or the reader (`anchors`), and the row or
         // card under the cursor with its buttons (`rows`). A menu hangs at the button that opened it.
@@ -10402,8 +10490,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Some(Menu::MailAccounts) => Some(widgets::floating(
                 &accounts,
-                Placement::Below(Align::End),
+                Placement::Below(Align::Start),
                 self.mail_accounts_menu(),
+                Message::CloseMenu,
+            )),
+            // Issue #456: the card of "Display", beside the rail – to its left at the window's edge.
+            Some(Menu::MailDisplay) => Some(widgets::floating(
+                &anchors.rail.display,
+                Placement::Beside,
+                self.display_card(),
                 Message::CloseMenu,
             )),
             Some(Menu::SearchFilters) => Some(widgets::floating(
@@ -10470,11 +10565,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Some(Menu::DeleteForGood | Menu::Unsubscribe | Menu::PhishingLink) => None,
             // At the triangle that opened it (task M12.6), its right edge in line, under it while
             // there is room – the reader's block stands at the bottom, so mostly over it.
+            // From the attachments' menu in the head (issue #457) at "{n} attachments ▾", which it replaced.
             Some(Menu::Attachment(at)) => self.file_menu(Some(at)).map(|card| {
-                widgets::floating(&anchors.attachment, Placement::Below(Align::End), card, Message::CloseMenu)
+                let at = anchors.attachment.or(&anchors.files);
+                widgets::floating(&at, Placement::Below(Align::End), card, Message::CloseMenu)
             }),
             Some(Menu::SaveAll { rail: false }) => self.file_menu(None).map(|card| {
-                widgets::floating(&anchors.save_all, Placement::Below(Align::End), card, Message::CloseMenu)
+                let at = anchors.save_all.or(&anchors.files);
+                widgets::floating(&at, Placement::Below(Align::End), card, Message::CloseMenu)
+            }),
+            Some(Menu::Attachments) => self.reading().and_then(|reading| {
+                let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
+                let card = mail::attachments_menu(&reading, width)?;
+                Some(widgets::floating(&anchors.files, Placement::Below(Align::End), card, Message::CloseMenu))
             }),
             // From the rail beside it, as Later…; from the list's context menu at the row.
             Some(Menu::SaveAll { rail: true }) => {
@@ -10491,6 +10594,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 focus,
                 reading: self.reading(),
                 narrow: !matches!(class, SizeClass::Wide | SizeClass::Medium),
+                anchors: anchors.clone(),
             });
             let placed = panel::place(class, page, None, layer);
             return shell::shell(class, sidebar, header, placed.body, None)
@@ -10498,6 +10602,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(placed.overlay)
+                .top_row(self.top_row(class, &switcher))
                 .into();
         }
         // The wide mail window reads beside the list (task E8.3), without the panel; while nothing is
@@ -10515,14 +10620,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(placed.overlay)
+                .top_row(self.top_row(class, &switcher))
                 .into();
         }
         let side = |panel| self.with_rail(class, &anchors, panel);
         let detail = if self.view.is_mail() {
             // A folder's message: the mail alone, no entry around it.
-            self.reading()
-                .filter(|_| self.reading)
-                .map(|reading| side(mail::panel(&reading, self.view.folder(), &anchors, self.panel_bars(class))))
+            self.reading().filter(|_| self.reading).map(|reading| {
+                let head = (self.launch.kind == Kind::Mail).then(|| self.mail_head_row()).flatten();
+                side(mail::panel(&reading, self.view.folder(), &anchors, self.panel_bars(class), head))
+            })
         } else {
             self.detail.as_ref().map(|item| {
                 // The mail window's panel of a mail entry has the reader's head and the rail (tasks
@@ -10530,7 +10637,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if let (Some(reading), mail::Bars::Command { entry: Some(entry), width }) =
                     (self.reading(), self.panel_bars(class))
                 {
-                    return side(mail::entry_panel(&reading, entry, self.view_label(), width, &anchors));
+                    let head = self.mail_head_row();
+                    return side(mail::entry_panel(&reading, entry, self.view_label(), width, &anchors, head));
                 }
                 // The notifications window's panel and mail have the bell where the others have "…"
                 // (task E8.6b, issue #123).
@@ -10576,15 +10684,20 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(placed.overlay)
+            .top_row(self.top_row(class, &switcher))
             .into()
     }
 
     /// The header: the view's title (wide with the full sidebar) or the navigation menu (with the
     /// rail, medium, narrow), its count, and the view controls. A mail selection replaces those
     /// controls with its count, Delete and Clear selection without adding a row above the list.
-    fn header<'a>(&'a self, class: SizeClass, nav: &Anchor, accounts: &Anchor) -> Element<'a, Message> {
+    fn header<'a>(&'a self, class: SizeClass, nav: &Anchor, filters: &Anchor) -> Element<'a, Message> {
         if self.is_insights() {
             return self.insights_header(class, nav);
+        }
+        // The mail window's own header over its list (issue #459).
+        if self.launch.kind == Kind::Mail && !self.mail_only && !self.mail_overview_replaces_list(class) {
+            return self.mail_head(class, nav, filters);
         }
         let kind = self.launch.kind;
         let icon = if self.is_hub() && self.sorting { Icon::Inbox } else { kind.view_icon(&self.view) };
@@ -10655,39 +10768,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             if self.orderable() {
                 trailing.push(order_button(self.order, order_words(class, choose_column, arrange)));
             }
-            if kind == Kind::Mail && !self.folders.is_empty() {
-                let fixed_account = self.view.folder().map(|folder| folder.account.as_str()).or_else(|| {
-                    self.view.search().and_then(|search| match &search.scope {
-                        Scope::All => None,
-                        Scope::Account(account) => Some(account.as_str()),
-                        Scope::Folder(folder) => Some(folder.account.as_str()),
-                    })
-                });
-                if let Some(account) = fixed_account {
-                    if matches!(class, SizeClass::Wide | SizeClass::Medium) {
-                        trailing.push(widgets::text_button(
-                            Some(Icon::Folder),
-                            mail::address(account).to_owned(),
-                            style::button::ghost,
-                            None,
-                        ));
-                    }
-                } else {
-                    let label = self.mail_accounts_label();
-                    trailing.push(if class == SizeClass::Wide {
-                        widgets::menu_button(accounts, Some(Icon::ListFilter), label, Message::ToggleMailAccounts)
-                    } else {
-                        widgets::anchored(
-                            accounts,
-                            widgets::icon_button(
-                                if self.mail_accounts.is_some() { Icon::ListFilter } else { Icon::List },
-                                label,
-                                Some(Message::ToggleMailAccounts),
-                            ),
-                        )
-                    });
-                }
-            }
             // "Dismiss all" in "New" of the notifications window (task E8.4), with its word in the wide
             // layout; off while nothing can be dismissed.
             if self.is_board() && self.view == View::Overview {
@@ -10715,9 +10795,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // as in the medium layout, and every view stays one click away.
         let rail = shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail);
         match class {
-            SizeClass::Wide if !rail => {
-                shell::header_bar([], self.mail_path(class, shell::header_title(Some(icon), name, note)), trailing)
-            }
+            SizeClass::Wide if !rail => shell::header_bar([], shell::header_title(Some(icon), name, note), trailing),
             SizeClass::Wide | SizeClass::Medium => {
                 // The count right at the button, as at the title in the wide header: the button's
                 // own padding is the gap.
@@ -10726,8 +10804,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if let Some(note) = note {
                     title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
                 }
-                // The rail at the left has the panel button and the window's mark (issue #127).
-                shell::header_bar([], self.mail_path(class, title.into()), trailing)
+                // The top row has the panel button and the window's mark (issue #459).
+                shell::header_bar([], title, trailing)
             }
             // The overview in place of the list (issue #409): "‹ {view} › Overview", the way back.
             SizeClass::Narrow if self.mail_overview_shown() => {
@@ -10743,7 +10821,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let refresh = widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh));
                 shell::header_bar(self.narrow_leading(), title, [refresh])
             }
-            // Where the band has the panel button (macOS), the header leaves it out.
             SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
                 let mut title =
                     row![widgets::menu_button(nav, Some(icon), name, Message::ToggleNav)].align_y(Alignment::Center);
@@ -10752,31 +10829,148 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if let Some(note) = note.filter(|_| narrow_count(self.launch.kind)) {
                     title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
                 }
-                shell::header_bar(self.narrow_leading(), self.mail_path(class, title.into()), trailing)
+                shell::header_bar(self.narrow_leading(), title, trailing)
             }
         }
     }
 
-    /// The path over the mail window's list (issue #409): "Overview" as a small framed button – chosen
-    /// while the overview shows, its icon alone where it is narrow –, a chevron, then `title`. Every
-    /// other window keeps `title` alone.
-    fn mail_path<'a>(&self, class: SizeClass, title: Element<'a, Message>) -> Element<'a, Message> {
-        if self.launch.kind != Kind::Mail || self.mail_only {
-            return title;
+    /// Whether the narrow mail window shows its overview in place of the list (issue #409): its header
+    /// then is the way back ("‹ {view} › Overview"), not the list's.
+    fn mail_overview_replaces_list(&self, class: SizeClass) -> bool {
+        class == SizeClass::Narrow && self.mail_overview_shown()
+    }
+
+    /// The mail window's header in the top row (issue #459), as the draft
+    /// (`docs/prototypes/mail-layout/`) has it: over the list the search field with its filters, the
+    /// order, "Refresh" and – in "Reply later" – "Focus & reply"; a selection of mail puts its count,
+    /// Delete and Clear selection in place of order and Refresh. Where the sidebar is not expanded the
+    /// navigation menu leads, and medium and narrow windows have "Show overview", the overview's
+    /// way in now that no path stands over the list. Beside the reader of the wide window its own head
+    /// ([`App::reader_head`]) follows behind the line of the split.
+    fn mail_head<'a>(&'a self, class: SizeClass, nav: &Anchor, filters: &Anchor) -> Element<'a, Message> {
+        let mut list = row![].spacing(space::xs()).align_y(Alignment::Center);
+        if shell::sidebar_mode(class, self.sidebar) != Some(SidebarMode::Expanded) {
+            let icon = Some(self.launch.kind.view_icon(&self.view));
+            list = list.push(widgets::menu_button(nav, icon, self.view_label(), Message::ToggleNav));
         }
-        let label = matches!(class, SizeClass::Wide | SizeClass::Medium).then(|| tr("Overview"));
-        let here = self.mail_overview_shown();
-        // Escape shows it only where it stands beside the mail (wide); medium and narrow close it.
-        let key = (class == SizeClass::Wide).then_some("Esc");
-        let crumb = widgets::crumb_button(
-            Icon::ChartColumn,
-            label,
-            tr("Show overview"),
-            key,
-            here,
-            Some(Message::ShowMailOverview),
-        );
-        row![crumb, path_chevron(), title].spacing(space::s()).align_y(Alignment::Center).into()
+        if class != SizeClass::Wide {
+            // A quiet icon as its neighbours, lit while the overview shows.
+            let overview = widgets::icon_toggle(
+                Icon::ChartColumn,
+                tr("Show overview"),
+                self.mail_overview_shown(),
+                Some(Message::ShowMailOverview),
+            );
+            list = list.push(overview);
+        }
+        if self.shows_search() && class != SizeClass::Narrow {
+            list = list.push(search::field(&self.search_bar_parts(filters)));
+        } else {
+            list = list.push(Space::new().width(Fill));
+        }
+        if !self.selected_mail.is_empty() {
+            let count = self.selected_mail.len().to_string();
+            let selected = trf("{n} messages selected", &[("n", &count)]);
+            list = list
+                .push(widgets::with_tooltip(
+                    typo::text(typo::caption(), count).style(theme::text_2).wrapping(Wrapping::None),
+                    selected,
+                ))
+                .push(widgets::compact_button(
+                    Icon::Trash2,
+                    tr("Delete"),
+                    style::button::danger,
+                    Some(Message::DeleteSelectedMail),
+                ))
+                .push(widgets::icon_button(Icon::X, tr("Clear selection"), Some(Message::ClearMailSelection)));
+        } else {
+            list = list.push(order_button(self.order, false)).push(widgets::icon_button(
+                Icon::RefreshCw,
+                tr("Refresh"),
+                Some(Message::Refresh),
+            ));
+            // "Focus & reply" (task E19.5): the one primary button of "Reply later", off while the pile
+            // lists nothing; an icon here, where the field takes the room.
+            if self.view == View::ReplyLater {
+                let start = (!self.messages.is_empty()).then_some(Message::FocusReply);
+                let words = tr("Focus & reply");
+                list =
+                    list.push(widgets::compact_button(Icon::MessageSquareReply, words, style::button::primary, start));
+            }
+        }
+        // Medium and narrow windows show the mail over the list: no reader's head beside it.
+        if class != SizeClass::Wide {
+            return list.into();
+        }
+        // Over the split of the wide window: the list's part ends at the split's line.
+        let inset = shell::head_inset(class, self.sidebar, self.zoom.factor());
+        let width = self.split.width(self.split_limits()) + split::handle_width() / 2.0 - space::l() - inset;
+        row![
+            container(list.padding(Padding::new(0.0).right(space::s()))).width(width.max(0.0)),
+            rule::vertical(size::HAIRLINE).style(style::rule),
+            container(self.reader_head()).width(Fill).padding(Padding::new(0.0).left(space::l())),
+        ]
+        .height(Fill)
+        .align_y(Alignment::Center)
+        .into()
+    }
+
+    /// The head over the reader of the wide mail window (issue #457), in the top row beside the list's:
+    /// the subject (cut with "…", whole in its tooltip), where the mail stands in the list ("6 of 9",
+    /// "6 of 50+" while more pages wait; left out for a mail the list does not hold, as in a window of
+    /// its own), the previous and the next mail (`k`, `j`; off at the ends) and "Open in new window".
+    /// While no mail is open the reader's column holds the overview, and the head says so.
+    fn reader_head<'a>(&'a self) -> Element<'a, Message> {
+        self.mail_head_row()
+            .unwrap_or_else(|| typo::text(typo::body_strong(), tr("Overview")).wrapping(Wrapping::None).into())
+    }
+
+    /// The row of the open mail (issue #457): subject, "n of m", previous and next mail, "Open in new
+    /// window" – over the wide reader in the top row, in medium and narrow windows as the head of the
+    /// mail's panel. `None` while no mail with headers is open.
+    fn mail_head_row<'a>(&'a self) -> Option<Element<'a, Message>> {
+        let open = self.reading().filter(|_| self.panel_open()).and_then(|reading| {
+            let summary = reading.summary()?;
+            Some((reading.id.to_owned(), mail::subject(summary)))
+        });
+        let (id, subject) = open?;
+        let place = self.messages.iter().position(|message| message.id == id);
+        let shown = subject.clone();
+        let title = iced::widget::responsive(move |room| {
+            let cut = typo::ellipsize(&shown, typo::body_strong(), room.width);
+            typo::text(typo::body_strong(), cut).wrapping(Wrapping::None).into()
+        });
+        let title = container(title).width(Fill).height(typo::line_height(typo::body_strong()));
+        let mut head = row![widgets::with_tooltip(title, subject)].spacing(space::xs()).align_y(Alignment::Center);
+        if let Some(at) = place {
+            head = head.push(
+                typo::text(typo::meta().tabular(), self.place_text(at)).style(theme::text_3).wrapping(Wrapping::None),
+            );
+        }
+        let last = self.messages.len().saturating_sub(1);
+        let back = place.filter(|&at| at > 0).map(|_| Message::StepMail(false));
+        let next = place.filter(|&at| at < last).map(|_| Message::StepMail(true));
+        let row = head
+            .push(Space::new().width(space::s()))
+            .push(widgets::icon_button(Icon::ChevronUp, tr("Previous mail"), back))
+            .push(widgets::icon_button(Icon::ChevronDown, tr("Next mail"), next))
+            .push(widgets::icon_button(
+                Icon::ExternalLink,
+                tr("Open in new window"),
+                Some(Message::OpenMailWindow(id)),
+            ));
+        Some(row.into())
+    }
+
+    /// "6 of 9" for the mail at index `at` of the list held (issue #457), "6 of 9+" while further
+    /// pages wait.
+    fn place_text(&self, at: usize) -> String {
+        let (n, total) = ((at + 1).to_string(), self.messages.len().to_string());
+        if self.more.is_some() {
+            trf("{n} of {total}+", &[("n", &n), ("total", &total)])
+        } else {
+            trf("{n} of {total}", &[("n", &n), ("total", &total)])
+        }
     }
 
     /// The header of Insights (task E8.8b): its title with the span counted ("7 Oct – 13 Oct"), then
@@ -10842,12 +11036,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         shell::header_bar(leading, title, trailing)
     }
 
-    /// The start of the narrow header: the drawer button where the window has no band (the band has
-    /// it on macOS), then the window's mark (issue #127, [`shell::app_mark`]): without sidebar or rail
-    /// nothing else says whether this is the hub, mail or the app feed.
+    /// The start of the narrow header: the window's mark (issue #127, [`shell::app_mark`]): without
+    /// sidebar or rail nothing else says whether this is the hub, mail or the app feed. The panel
+    /// button that opens the drawer stands in the top row (issue #459).
     fn narrow_leading<'a>(&self) -> Vec<Element<'a, Message>> {
-        let toggle = (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ShowDrawer));
-        toggle.into_iter().chain([shell::app_mark(self.launch.kind.app())]).collect()
+        vec![shell::app_mark(self.launch.kind.app())]
     }
 
     /// The quiet number after the title: how many entries the view lists. The title already says
@@ -10898,11 +11091,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let letter = self.letter.as_ref()?;
         let colours = palette(&self.theme());
         let summary = self.messages.iter().find(|message| message.id == letter.id);
-        let account = match &letter.loaded {
-            Some(Ok(mail)) => Some(mail.summary.account.as_str()),
-            _ => summary.map(|summary| summary.account.as_str()),
-        };
-        let accounts = mail::by_account(&self.folders);
         Some(Reading {
             id: &letter.id,
             categories: &self.categories,
@@ -10915,7 +11103,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             deciding: self.model_ready,
             dated: self.view.is_mail(),
             read: self.look().cards(),
-            account: account.and_then(|account| accounts.iter().position(|group| group.account == account)),
             task: self.task_of(&letter.id),
             answering: self.answering.as_deref() == Some(letter.id.as_str()),
             invite: mail::InviteSide {
@@ -10976,7 +11163,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let mut content = column![];
         // The search stands above the error line: it belongs to the mail, the error to the list.
         if self.shows_search() {
-            content = content.push(self.search_bar(filters));
+            content = content.extend(self.search_bar(filters));
         }
         // Another folder's messages are still held until this one's come: show loading – or, when
         // they could not be loaded, why, with "Retry" (issue #396), not a loading without end.
@@ -11235,11 +11422,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         (views, sources)
     }
 
-    /// The two rows on top of the mail window's sidebar (issue #445): "All" – the mail of every inbox
-    /// with the unread mail it holds (decision 4 of E18), chosen while its list shows – and "Sent",
-    /// the sent mail of every account, without a number. The overview has no row: it opens beside
-    /// "All" and from the path over the list ([`App::mail_path`]). Empty in the other windows and in
-    /// a window of mail only.
+    /// The row on top of the mail window's sidebar (issue #445): "All" – the mail of every inbox with
+    /// the unread mail it holds (decision 4 of E18), chosen while its list shows –, right above the
+    /// categories (issue #455; "Sent" moved under "Folders"). The overview has no row: it opens beside
+    /// "All" and from "Show overview" in the top row (issue #459). Empty in the other windows and in a
+    /// window of mail only.
     fn top_entries(&self) -> Vec<NavEntry> {
         if self.launch.kind != Kind::Mail || self.mail_only {
             return Vec::new();
@@ -11253,7 +11440,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             target: Target::View,
             detail: None,
         };
-        vec![entry(View::All, number(self.unread_all)), entry(View::Sent, None)]
+        vec![entry(View::All, number(self.unread_all))]
     }
 
     /// The group "Categories" of the mail window's sidebar (task E12.8, `docs/kategorien.md`):
@@ -11484,10 +11671,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .collect()
     }
 
-    /// The rows of "Folders" in the mail window (task E18.4), in this order: "Archive" – the mail of
-    /// every archive folder ([`View::Archive`]) – while an account shown has a folder of the role
-    /// Archive, the pinned folders, and "Pin folders" ([`Target::OpenFolders`], with its chevron)
-    /// while there is a mail account. Empty in the other windows (but one of mail only).
+    /// The rows of "Folders" in the mail window (task E18.4, issue #455), in this order: "Sent" – the
+    /// sent mail of every account ([`View::Sent`]), always –, "Archive" ([`View::Archive`]) and "Trash"
+    /// ([`View::Trash`]) while an account shown has a folder of that role, the pinned folders, and
+    /// "Pin folders" ([`Target::OpenFolders`], with its chevron) while there is a mail account. Empty
+    /// in the other windows; a window of mail only has no "Sent" and no "Trash".
     fn folder_entries(&self) -> Vec<NavEntry> {
         if self.launch.kind != Kind::Mail && !self.mail_only {
             return Vec::new();
@@ -11504,19 +11692,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         });
         let shown =
             |folder: &&Folder| self.mail_accounts.as_ref().is_none_or(|accounts| accounts.contains(&folder.account));
-        let archive = self.folders.iter().filter(shown).any(|folder| folder.role == Some(Role::Archive)).then(|| {
-            let view = View::Archive;
-            NavEntry {
-                mark: Mark::Icon(view.icon()),
-                label: view.name(),
-                count: None,
-                active: self.view == view,
-                view,
-                target: Target::View,
-                detail: None,
-            }
-        });
-        archive.into_iter().chain(self.pinned_entries()).chain(browse).collect()
+        let has_role = |role: Role| self.folders.iter().filter(shown).any(|folder| folder.role == Some(role));
+        let entry = |view: View| NavEntry {
+            mark: Mark::Icon(view.icon()),
+            label: view.name(),
+            count: None,
+            active: self.view == view && !self.sorting && !self.is_insights(),
+            view,
+            target: Target::View,
+            detail: None,
+        };
+        let whole = self.launch.kind == Kind::Mail && !self.mail_only;
+        let sent = whole.then(|| entry(View::Sent));
+        let archive = has_role(Role::Archive).then(|| entry(View::Archive));
+        let trash = (whole && has_role(Role::Trash)).then(|| entry(View::Trash));
+        sent.into_iter().chain(archive).chain(trash).chain(self.pinned_entries()).chain(browse).collect()
     }
 
     /// The pinned folders of "Folders" (task E18.4): the folder's name, and under it the address of
@@ -11547,31 +11737,71 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .collect()
     }
 
-    fn mail_accounts_label(&self) -> String {
+    /// The two lines of the account field (issue #455): "All accounts" over the domains of every
+    /// account, "{count} accounts" over the domains chosen, or one account's domain over its address;
+    /// the domains apart by " · ".
+    fn account_field_text(&self) -> (String, String) {
+        let domains =
+            |accounts: &mut dyn Iterator<Item = &str>| accounts.map(mail_domain).collect::<Vec<_>>().join(" · ");
         match &self.mail_accounts {
-            None => tr("All accounts").to_owned(),
-            Some(accounts) if accounts.is_empty() => tr("No accounts").to_owned(),
-            Some(accounts) if accounts.len() == 1 => mail::address(&accounts[0]).to_owned(),
-            Some(accounts) => trf("{count} accounts", &[("count", &accounts.len().to_string())]),
+            None => {
+                let every = mail::by_account(&self.folders);
+                (tr("All accounts").to_owned(), domains(&mut every.iter().map(|group| group.account)))
+            }
+            Some(chosen) if chosen.is_empty() => (tr("No accounts").to_owned(), String::new()),
+            Some(chosen) if chosen.len() == 1 => {
+                (mail_domain(&chosen[0]).to_owned(), mail::address(&chosen[0]).to_owned())
+            }
+            Some(chosen) => (
+                trf("{count} accounts", &[("count", &chosen.len().to_string())]),
+                domains(&mut chosen.iter().map(String::as_str)),
+            ),
         }
     }
 
+    /// The menu of the account field (issue #455, as the draft): "Show accounts", "All accounts" with
+    /// the unread mail of all of them, then each account with its tick, its domain over its address,
+    /// its unread mail of "All" and "Only this", and at the end "Manage accounts…". A number that
+    /// could not be counted is left out, and the sum with it.
     fn mail_accounts_menu(&self) -> Element<'_, Message> {
         let groups = self.mail_groups();
-        let mut list = column![menu_caption(tr("Shown mail accounts"))];
-        let colour = palette(&self.theme()).accent;
+        let mut list = column![menu_caption(tr("Show accounts"))];
+        // A tick is a choice, never red (design skill: red is for the accent's one action), as in the
+        // tasks app's menus.
+        let colour = palette(&self.theme()).text_2;
+        let count_of = |account: &str| self.unread_each.iter().find(|(held, _)| held == account).and_then(|(_, n)| *n);
+        let sum: Option<u64> = groups.iter().map(|group| count_of(&group.account)).sum();
+        let number = |count: Option<u64>| -> Element<'_, Message> {
+            let shown = count.filter(|&n| n > 0).map(|n| n.to_string()).unwrap_or_default();
+            typo::text(typo::meta().tabular(), shown).style(theme::text_3).wrapping(Wrapping::None).into()
+        };
         let all = MenuItem::new(
             Mark::Check(colour, self.mail_accounts.is_none()),
             tr("All accounts"),
             Message::SelectAllMailAccounts,
         );
-        list = list.push(widgets::menu_item(all)).push(menu_line());
+        let all_row = row![widgets::menu_item(all), number(sum), Space::new().width(space::s())];
+        list = list.push(all_row.spacing(space::s()).align_y(Alignment::Center)).push(menu_line());
         for group in groups {
             let selected = self.mail_accounts.as_ref().is_none_or(|accounts| accounts.contains(&group.account));
-            let item =
-                MenuItem::new(Mark::Check(colour, selected), group.title, Message::ToggleMailAccount(group.account));
-            list = list.push(widgets::menu_item(item));
+            let address = mail::address(&group.account).to_owned();
+            let item = MenuItem::new(
+                Mark::Check(colour, selected),
+                mail_domain(&group.account).to_owned(),
+                Message::ToggleMailAccount(group.account.clone()),
+            )
+            .detail(address);
+            let only = widgets::text_button(
+                None,
+                tr("Only this"),
+                style::button::ghost,
+                Some(Message::OnlyMailAccount(group.account.clone())),
+            );
+            let line = row![widgets::menu_item(item), number(count_of(&group.account)), only];
+            list = list.push(line.spacing(space::s()).align_y(Alignment::Center));
         }
+        let manage = MenuItem::new(shell::SETTINGS_ICON, tr("Manage accounts…"), Message::ManageMailAccounts);
+        list = list.push(menu_line()).push(widgets::menu_item(manage));
         let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
         let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::list_medium());
         let body = iced::widget::scrollable(list).height(iced::Length::Shrink).width(Fill);
@@ -11582,11 +11812,92 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .into()
     }
 
+    /// The head of the mail window's sidebar (issue #455): the account field – in the rail its icon,
+    /// the field's words as tooltip – and under it "New email" with its key. Without a mail account
+    /// the field is left out and "New email" is off.
+    fn mail_sidebar_head<'a>(&'a self, mode: SidebarMode, accounts: &Anchor) -> Element<'a, Message> {
+        let has_account = !self.folders.is_empty();
+        let compose = has_account.then_some(Message::Switcher(Switcher::New));
+        let (title, detail) = self.account_field_text();
+        match mode {
+            SidebarMode::Expanded => {
+                let mut head = column![].spacing(space::s());
+                if has_account {
+                    head =
+                        head.push(widgets::account_select(title, detail, accounts, Some(Message::ToggleMailAccounts)));
+                }
+                head.push(new_mail_button(compose)).into()
+            }
+            SidebarMode::Rail => {
+                let mut head = column![].spacing(shell_gap()).align_x(Alignment::Center).width(Fill);
+                if has_account {
+                    let words = if detail.is_empty() { title } else { format!("{title} · {detail}") };
+                    let field = widgets::icon_button(Icon::Users, words, Some(Message::ToggleMailAccounts));
+                    head = head.push(widgets::anchored(accounts, field));
+                }
+                head.push(widgets::boxed_button(Icon::SquarePen, tr("New email"), compose)).into()
+            }
+        }
+    }
+
+    /// The card "Display" of the mail's action rail (issue #456, as the draft has it): "View" HTML or
+    /// Text (`v`) and "Mail colors" Light, Dark or As app, each as a switch with its words; under them
+    /// that the colours are only the HTML's. With Text the colours are off. A choice takes at once and
+    /// stays ([`App::choose_display`]).
+    fn display_card(&self) -> Element<'_, Message> {
+        let format = self.mail_format;
+        let views = [
+            (Icon::Code, tr("HTML"), Message::ShowMailAs(MailFormat::Html)),
+            (Icon::FileText, tr("Text"), Message::ShowMailAs(MailFormat::Text)),
+        ];
+        let view =
+            row![widgets::icon_segmented(views, usize::from(format == MailFormat::Text), true), widgets::kbd("V"),]
+                .spacing(space::s())
+                .align_y(Alignment::Center);
+        let chosen = match self.look.colors {
+            MailAppearance::Light => 0,
+            MailAppearance::Dark => 1,
+            MailAppearance::App => 2,
+        };
+        let colors: Element<'_, Message> = if format == MailFormat::Html {
+            let options = [
+                (Icon::Sun, tr("Light"), Message::MailColors(MailAppearance::Light)),
+                (Icon::Moon, tr("Dark"), Message::MailColors(MailAppearance::Dark)),
+                (Icon::Monitor, tr("As app"), Message::MailColors(MailAppearance::App)),
+            ];
+            widgets::icon_segmented(options, chosen, true)
+        } else {
+            let off = [(tr("Light"), None), (tr("Dark"), None), (tr("As app"), None)];
+            widgets::segmented_maybe(off, chosen)
+        };
+        // Title, the two switches with their names and the note on one axis (the card's padding).
+        let label = |words: &'static str| typo::text(typo::body(), words).style(theme::text_2);
+        let content = column![
+            typo::text(typo::caption(), trc("mail", "Display")).style(theme::text_3),
+            column![label(tr("View")), view].spacing(space::xs()),
+            column![label(tr("Mail colors")), colors].spacing(space::xs()),
+            typo::text(typo::meta(), tr("Colors exist only for HTML; text shows the app's colors."))
+                .style(theme::text_3)
+                .wrapping(Wrapping::WordOrGlyph),
+        ]
+        .spacing(space::m());
+        // Wide enough for the three colours with their words, never narrower than a popover.
+        let words = [tr("Light"), tr("Dark"), tr("As app")];
+        let need = widgets::icon_segmented_width(&words, true) + 2.0 * layout::panel_padding().left;
+        container(content)
+            .width(widgets::POPOVER_WIDTH.max(need))
+            .padding(layout::panel_padding())
+            .style(style::container::popover)
+            .into()
+    }
+
     /// The menu at the filter icon of the search field (issue #336): a tick for each quick filter,
     /// read from the field's text, in groups that exclude each other; "Clear filters" while one is set.
     /// A tick keeps the menu open, so several can be set one after the other.
     fn search_filters_menu(&self) -> Element<'_, Message> {
-        let colour = palette(&self.theme()).accent;
+        // A tick is a choice, never red (design skill: red is for the accent's one action), as in the
+        // tasks app's menus.
+        let colour = palette(&self.theme()).text_2;
         let today = today();
         let set = search::active(&self.search, today);
         let mut list = column![menu_caption(tr("Quick filters"))];
@@ -11668,7 +11979,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// The sidebar in `mode`: expanded (wide, drawer) or as the rail of icons. Account folders
     /// are available through "Pin folders"; only chosen pins remain in this navigation.
-    fn sidebar<'a>(&'a self, mode: SidebarMode, switcher: &Anchor, folders: &Anchor) -> Element<'a, Message> {
+    fn sidebar<'a>(&'a self, mode: SidebarMode, accounts: &Anchor, folders: &Anchor) -> Element<'a, Message> {
         let (views, sources) = self.nav_entries();
         let row = |e: NavEntry| {
             let trail = e.trail();
@@ -11683,16 +11994,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         };
         // What the mail is (task E12.8), on top and without a title (issue #337): the five groups,
         // with the categories of an open one indented under it (issue #300), once at least one mail
-        // has a category. On top of them "All" and "Sent", which the mail window always has (issue #445).
+        // has a category. Right on top of them "All", which the mail window always has (issue #455).
         let mut items: Vec<Element<'a, Message>> = Vec::new();
-        let top = self.top_entries();
-        let categories = self.category_entries();
-        let gap = !top.is_empty() && !categories.is_empty();
-        items.extend(top.into_iter().map(row));
-        if gap {
-            items.push(widgets::sidebar_gap_in(mode));
-        }
-        for branch in categories {
+        items.extend(self.top_entries().into_iter().map(row));
+        for branch in self.category_entries() {
             items.extend(self.category_rows(mode, branch));
         }
         // The views: in the mail window the piles, Follow up and Hidden, set apart from the
@@ -11738,23 +12043,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 items.extend(sources.into_iter().map(row));
             }
         }
-        // Where the band has it (macOS, U.10), "Settings" sits in its top right corner.
-        let footer = (!shell::has_band())
-            .then(|| {
-                widgets::sidebar_item_in(
-                    mode,
-                    Icon::Settings,
-                    tr("Settings"),
-                    Trail::None,
-                    self.settings.is_some(),
-                    Message::OpenSettings,
-                )
-            })
-            .into_iter()
-            .collect();
-        let (app, search) = (self.launch.kind.app(), self.sidebar_search());
-        let head = shell::sidebar_head_in(mode, app, switcher, Message::Switcher, Message::ToggleSidebar, search);
-        shell::sidebar(head, items, footer)
+        // "Settings" sits in the top row's right corner, the switcher at its left (issue #459).
+        let head = if self.launch.kind == Kind::Mail && !self.mail_only {
+            self.mail_sidebar_head(mode, accounts)
+        } else {
+            shell::sidebar_tools(mode, self.sidebar_search(), Message::Switcher)
+        };
+        shell::sidebar(head, items, Vec::new())
     }
 
     /// The rows of one group of "Categories" in the sidebar in `mode` (issue #300): the group as a
@@ -11801,16 +12096,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
         };
         let mut sections = Vec::new();
-        // As in the sidebar (issue #445): "All" and "Sent" in a section of their own, then the groups,
-        // and the categories of an open one nested under them (issue #300), in one without a title.
-        let first: Vec<_> = self.top_entries().into_iter().map(item).collect();
-        if !first.is_empty() {
-            sections.push(MenuSection::new(first));
-        }
-        let top: Vec<_> = self
-            .category_entries()
-            .into_iter()
-            .flat_map(|branch| {
+        // As in the sidebar (issue #455): "All" right above the groups, and the categories of an open
+        // one nested under them (issue #300), in one section without a title.
+        let first = self.top_entries().into_iter().map(item);
+        let top: Vec<_> = first
+            .chain(self.category_entries().into_iter().flat_map(|branch| {
                 // Folding shows nothing in the menu: its group only shows and opens. "Unsorted"
                 // (`Target::Show`, issue #398) only shows already.
                 let target = branch.group.target;
@@ -11820,7 +12110,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     group.on_press = Message::ShowCategoryGroup(of);
                 }
                 std::iter::once(group).chain(children).collect::<Vec<_>>()
-            })
+            }))
             .collect();
         if !top.is_empty() {
             sections.push(MenuSection::new(top));
@@ -11837,7 +12127,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             sections.push(MenuSection::titled(tr("Sources"), sources.into_iter().map(item).collect()));
         }
         let settings =
-            MenuItem::new(Icon::Settings, tr("Settings"), Message::OpenSettings).current(self.settings.is_some());
+            MenuItem::new(shell::SETTINGS_ICON, tr("Settings"), Message::OpenSettings).current(self.settings.is_some());
         sections.push(MenuSection::new(vec![settings]));
         widgets::menu(sections)
     }
@@ -12309,14 +12599,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     // Its row is the cursor's, as after a click on it: the pictures show the selection.
                     self.cursor = self.detail.as_ref().map(|item| item.id.clone());
                 }
-                // The rail as the picture needs it, over what `ui.json` remembers (task E14.3): expanded,
-                // or collapsed with "File" open – the second group, after Reply, for every entry.
+                // The rail as the picture needs it (task E14.3): "File" open – the second group, after
+                // Reply, for every entry –, or the card "Display" (issue #456).
                 match open {
-                    Open::MailActions => (self.actions, self.actions_chosen) = (RailMode::Expanded, true),
-                    Open::MailGroup => {
-                        (self.actions, self.actions_chosen) = (RailMode::Collapsed, true);
-                        self.rail_open = Some(1);
-                    }
+                    Open::MailActions => self.menu = Some(Menu::MailDisplay),
+                    Open::MailGroup => self.rail_open = Some(1),
                     _ => {}
                 }
             }
@@ -12578,9 +12865,10 @@ fn closes_rail(message: &Message) -> bool {
             | Message::AskSaveAttachments(_)
             | Message::ShowMailAs(_)
             | Message::MailColors(_)
+            | Message::FooterMailColors(_)
             | Message::CopyText
             | Message::CloseDetail
-            | Message::ToggleActions
+            | Message::ToggleMailDisplay
     )
 }
 
@@ -12610,7 +12898,7 @@ fn segmented_width(labels: &[&str]) -> f32 {
 /// section, it brings the Notification Hub's window forward, and its word says so
 /// ([`rules_word`]) with the arrow of a way out of this window (`leaves`).
 fn rules_entry<'a>(leaves: bool) -> MenuItem<'a, Message> {
-    let entry = MenuItem::new(Icon::Settings, rules_word(leaves), Message::OpenRules);
+    let entry = MenuItem::new(shell::SETTINGS_ICON, rules_word(leaves), Message::OpenRules);
     if leaves { entry.trail(Trail::Icon(Icon::ArrowUpRight)) } else { entry }
 }
 
@@ -12664,6 +12952,44 @@ fn path_chevron<'a>() -> Element<'a, Message> {
     icon::icon(Icon::ChevronRight, icon::SIZE_SM)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) })
         .into()
+}
+
+/// The domain of a mail account (`mail:<address>`, issue #455): what follows the "@" of its address,
+/// the address itself where it has none.
+fn mail_domain(account: &str) -> &str {
+    let address = mail::address(account);
+    address.rsplit_once('@').map_or(address, |(_, domain)| domain)
+}
+
+/// "New email" under the account field (issue #455): framed, as wide as the sidebar, with the pen and
+/// the key of the system's preset at its end; off without a mail account.
+fn new_mail_button<'a>(on_press: Option<Message>) -> Element<'a, Message> {
+    let key = shortcuts::Preset::default()
+        .hint(shortcuts::Command::NewMail, shortcuts::System::current())
+        .unwrap_or_default();
+    let mut content = row![
+        icon::icon(Icon::SquarePen, icon::SIZE_SM)
+            .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text) }),
+        typo::text(typo::body_strong(), tr("New email")).wrapping(Wrapping::None),
+        Space::new().width(Fill),
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
+    if !key.is_empty() {
+        content = content.push(widgets::kbd(key));
+    }
+    let button = iced::widget::button(container(content).center_y(Fill))
+        .width(Fill)
+        .height(size::control())
+        .padding(Padding::new(0.0).left(space::m()).right(space::s()))
+        .style(style::button::boxed)
+        .on_press_maybe(on_press);
+    button.into()
+}
+
+/// The gap between the rows of a sidebar, as `shell::sidebar` sets it.
+fn shell_gap() -> f32 {
+    2.0
 }
 
 /// The header's button that turns the order (task E8.15): the icon and word of the order shown
@@ -13559,7 +13885,7 @@ mod tests {
         let _ = app.update(Message::ToggleNav);
         let _ = app.update(Message::Escape);
         assert!(app.menu.is_none() && app.detail.is_some(), "the menu first");
-        let _ = app.update(Message::ShowDrawer);
+        app.drawer = true;
         let _ = app.update(Message::Escape);
         assert!(!app.drawer && app.detail.is_some(), "then the drawer");
         let _ = app.update(Message::Escape);
@@ -13706,7 +14032,9 @@ mod tests {
         assert_eq!(app.menu, None, "a second click closes the menu");
         let _ = app.update(Message::Switcher(Switcher::Toggle));
         assert_eq!(app.menu, Some(Menu::Switcher));
-        let _ = app.update(Message::ShowDrawer);
+        // The top row's panel button opens the drawer where the sidebar is not beside the content.
+        let _ = app.update(Message::Resized(MEDIUM));
+        let _ = app.update(Message::ToggleSidebar);
         assert!(app.drawer && app.menu.is_none(), "the drawer replaces an open menu");
         let _ = app.update(Message::Show(View::Done));
         assert!(!app.drawer && app.menu.is_none());
@@ -13741,7 +14069,7 @@ mod tests {
                     let _ = app.view();
                     let _ = app.update(Message::ToggleNav);
                     let _ = app.view();
-                    let _ = app.update(Message::ShowDrawer);
+                    app.drawer = true;
                     let _ = app.view();
                     let _ = app.update(Message::CloseMenu);
                     // The triage layers: snooze menu, picker, lane question, mute (a hint), hint.
@@ -14551,7 +14879,7 @@ mod tests {
             let _ = press(&mut app, key);
         }
         assert_eq!((cursor(&app), app.menu, app.sent.len()), (Some("demo-1"), Some(Menu::Nav), 0));
-        let _ = app.update(Message::ShowDrawer);
+        app.drawer = true;
         let _ = press(&mut app, Key::E);
         assert!(app.sent.is_empty());
         let _ = press(&mut app, Key::Sidebar);
@@ -15416,7 +15744,8 @@ mod tests {
         };
         let _ = app.update(Message::AskUnsubscribe(ask.clone()));
         assert_eq!(app.menu, Some(Menu::Unsubscribe));
-        assert_eq!(app.cover(), Cover::Dialog);
+        // The question lies over the top row and dims it itself (issue #459).
+        assert_eq!(app.cover(), Cover::Nothing);
         draw_everywhere(&mut app);
         let _ = app.update(Message::Resized(WIDE));
         let _ = app.update(Message::Escape);
@@ -15497,7 +15826,8 @@ mod tests {
         let _ = press(&mut app, Key::DeleteForGood);
         assert_eq!((app.menu, app.mail_subject.as_deref()), (Some(Menu::DeleteForGood), Some("m:w1")));
         assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Mail(..))), "nothing before the answer");
-        assert_eq!(app.cover(), Cover::Dialog);
+        // The question lies over the top row and dims it itself (issue #459).
+        assert_eq!(app.cover(), Cover::Nothing);
         draw_everywhere(&mut app);
         let _ = app.update(Message::Resized(WIDE));
         for key in [Key::Down, Key::E, Key::Delete, Key::Hash] {
@@ -15637,11 +15967,11 @@ mod tests {
         let _ = app.update(Message::Appearance(Ok(Appearance::Light)));
         let window = app.theme();
         assert_eq!(shown(&app).map(|(_, scheme)| scheme), Some(Scheme::Light));
-        let _ = app.update(Message::MailColors(Scheme::Dark));
+        let _ = app.update(Message::MailColors(MailAppearance::Dark));
         assert_eq!(shown(&app).map(|(_, scheme)| scheme), Some(Scheme::Dark));
         assert_eq!(app.theme(), window, "the window keeps its colours");
         draw_everywhere(&mut app);
-        let _ = app.update(Message::MailColors(Scheme::Light));
+        let _ = app.update(Message::MailColors(MailAppearance::Light));
         assert_eq!(shown(&app).map(|(_, scheme)| scheme), Some(Scheme::Light));
     }
 
@@ -15660,19 +15990,45 @@ mod tests {
         assert_eq!(shown(&app).map(|(_, scheme)| scheme), Some(Scheme::Dark), "dark though the app is light");
     }
 
-    /// The switches hold for the window while the setting stays as it was (it is read every tick);
-    /// a changed setting sets both back to it. `--mail-view` and `--mail-colors` win over it.
+    /// Review of #467: `--mail-view` and `--mail-colors` give the start; once "Display" chose, the
+    /// setting it stored counts, and the next tick does not set the window back to the start options.
     #[test]
-    fn the_switches_hold_until_the_setting_changes() {
+    fn a_choice_in_display_wins_over_the_start_options() {
         let mut app = reading_mail("f:private-inbox", "m:p2");
+        app.launch = Launch::parse(&args(&["--mail-view", "text", "--mail-colors", "dark"])).expect("valid");
+        let _ = app.update(look(MailFormat::Html, MailAppearance::App));
+        assert_eq!((app.look.format, app.look.colors), (MailFormat::Text, MailAppearance::Dark), "the start");
+        let _ = app.update(Message::ShowMailAs(MailFormat::Html));
+        let _ = app.update(Message::MailColors(MailAppearance::Light));
+        // The core answers with what was stored.
+        let _ = app.update(look(MailFormat::Html, MailAppearance::Light));
+        assert_eq!((app.look.format, app.look.colors), (MailFormat::Html, MailAppearance::Light), "the choice holds");
+    }
+
+    /// Issue #456: a switch is the setting – it takes at once, is stored, and the setting read back
+    /// (every tick) holds it; a setting changed elsewhere (in the settings, by an agent) shows at once.
+    /// `--mail-view` and `--mail-colors` win over it.
+    #[test]
+    fn the_switches_are_the_setting() {
+        let mut app = reading_mail("f:private-inbox", "m:p2");
+        // As with the core: what the settings say counts (the demo holds its own choice instead).
+        app.launch.demo = false;
         let _ = app.update(Message::Appearance(Ok(Appearance::Light)));
         let _ = app.update(Message::ShowMailAs(MailFormat::Text));
-        let _ = app.update(Message::MailColors(Scheme::Dark));
-        let _ = app.update(look(MailFormat::Html, MailAppearance::App));
+        let _ = app.update(Message::MailColors(MailAppearance::Dark));
+        let stored: Vec<_> = app.sent.iter().filter(|sent| matches!(sent, Sent::Setting(..))).cloned().collect();
+        assert_eq!(
+            stored,
+            [
+                Sent::Setting(torro_ipc::SettingKey::MailView, "text".into()),
+                Sent::Setting(torro_ipc::SettingKey::MailAppearance, "dark".into())
+            ]
+        );
+        let _ = app.update(look(MailFormat::Text, MailAppearance::Dark));
         let _ = app.update(Message::MailLook(Err("core is not running".into())));
-        assert_eq!(shown(&app), Some((MailFormat::Text, Scheme::Dark)), "the same setting: the switches hold");
+        assert_eq!(shown(&app), Some((MailFormat::Text, Scheme::Dark)), "read back, they hold");
         let _ = app.update(look(MailFormat::Html, MailAppearance::Light));
-        assert_eq!(shown(&app), Some((MailFormat::Html, Scheme::Light)), "a new setting: back to it");
+        assert_eq!(shown(&app), Some((MailFormat::Html, Scheme::Light)), "changed elsewhere: shown at once");
 
         let launch = Launch::parse(&args(&["--mail-view", "text", "--mail-colors", "dark"])).expect("valid");
         assert_eq!((launch.mail_view, launch.mail_colors), (Some(MailFormat::Text), Some(MailAppearance::Dark)));
@@ -16858,7 +17214,7 @@ mod tests {
                     let _ = app.update(Message::Act("demo-6".into(), Command::Snooze));
                     let _ = app.view();
                     let _ = app.update(Message::CloseMenu);
-                    let _ = app.update(Message::ShowDrawer);
+                    app.drawer = true;
                     let _ = app.view();
                     let _ = app.update(Message::CloseMenu);
                     let _ = app.update(Message::Select("demo-3".into()));
@@ -16966,7 +17322,7 @@ mod tests {
     /// "All") with the unread mail of every inbox at the end of the categories, the start view; no
     /// "Smart views". Issue #339: no "Hidden".
     #[test]
-    fn the_mail_windows_sidebar_lists_all_sent_its_piles_and_folders() {
+    fn the_mail_windows_sidebar_lists_all_its_piles_and_folders() {
         let mut app = mail_window(Density::Comfortable, &[]);
         let (views, sources) = app.nav_entries();
         let labels: Vec<String> = views.iter().map(|entry| entry.label.clone()).collect();
@@ -16991,15 +17347,15 @@ mod tests {
         let counts: Vec<Option<usize>> = views.iter().map(|entry| entry.count).collect();
         assert_eq!(counts, [Some(2), Some(1), None], "the piles have numbers");
         assert!(views.iter().all(|entry| !entry.active), "no pile is the start view");
-        // Issue #445: "All" and "Sent" on top; the overview and "Unfiltered" have no row.
+        // Issue #455: "All" on top, right above the categories; the overview and "Unfiltered" have no
+        // row, "Sent" stands under "Folders".
         let top = app.top_entries();
-        assert_eq!(top.iter().map(|entry| entry.label.clone()).collect::<Vec<_>>(), [tr("All"), tr("Sent")]);
-        let (all, sent) = (&top[0], &top[1]);
+        assert_eq!(top.iter().map(|entry| entry.label.clone()).collect::<Vec<_>>(), [tr("All")]);
+        let all = &top[0];
         assert_eq!((all.view.clone(), all.mark), (View::All, Mark::Icon(Icon::Mail)));
         assert_eq!(all.count, Some(unread as usize), "the unread mail of every inbox");
-        assert!(all.active && !sent.active, "All is the start view");
-        assert_eq!(app.count_note(), unread.to_string(), "the path reads \"Overview › All 60\"");
-        assert_eq!((sent.view.clone(), sent.mark, sent.count), (View::Sent, Mark::Icon(Icon::Send), None));
+        assert!(all.active, "All is the start view");
+        assert_eq!(app.count_note(), unread.to_string());
         assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("All"))]));
         assert!(sources.is_empty(), "every source is a mail account, listed by its folders");
         assert!(!app.mail_groups().is_empty(), "the folders of every account");
@@ -17011,16 +17367,23 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let browse = (tr("Pin folders").to_owned(), Target::OpenFolders, Trail::Icon(Icon::ChevronRight));
+        let sent = (tr("Sent").to_owned(), Target::View, Trail::None);
         let archive = (tr("Archive").to_owned(), Target::View, Trail::None);
-        assert_eq!(folders(&app), [archive.clone(), browse.clone()], "nothing pinned yet");
-        assert_eq!(app.folder_entries()[0].view, View::Archive);
+        let trash = (tr("Trash").to_owned(), Target::View, Trail::None);
+        let roles = [sent.clone(), archive.clone(), trash.clone()];
+        assert_eq!(folders(&app), [roles.to_vec(), vec![browse.clone()]].concat(), "nothing pinned yet");
+        let views: Vec<View> = app.folder_entries().into_iter().take(3).map(|entry| entry.view).collect();
+        assert_eq!(views, [View::Sent, View::Archive, View::Trash]);
+        let marks: Vec<Mark> = app.folder_entries().into_iter().take(3).map(|entry| entry.mark).collect();
+        assert_eq!(marks, [Icon::Send, Icon::Archive, Icon::Trash2].map(Mark::Icon));
         let pin = app.folders.iter().find(|folder| folder.role == Some(Role::Sent)).expect("a sent folder").clone();
         let _ = app.update(Message::ToggleFolderPin(pin.id.clone()));
         // Issue #398: the folder's name, and its account's address as the second line – the demo
         // has two accounts.
         let pinned = mail::folder_name(&pin);
-        assert_eq!(folders(&app), [archive, (pinned.clone(), Target::View, Trail::None), browse.clone()]);
-        assert_eq!(app.folder_entries()[1].detail.as_deref(), Some(mail::address(&pin.account)));
+        let pinned_row = (pinned.clone(), Target::View, Trail::None);
+        assert_eq!(folders(&app), [roles.to_vec(), vec![pinned_row, browse.clone()]].concat());
+        assert_eq!(app.folder_entries()[3].detail.as_deref(), Some(mail::address(&pin.account)));
         assert!(
             app.folder_entries()
                 .iter()
@@ -17028,15 +17391,16 @@ mod tests {
                 .all(|entry| entry.detail.is_none())
         );
         assert_eq!(app.folder_entries()[0].detail, None, "only a pinned folder has a second line");
-        assert!(matches!(app.folder_entries()[2].message(), Message::OpenFolders), "the browser opens beside it");
-        // No account with an archive folder: no Archive.
-        app.folders.retain(|folder| folder.role != Some(Role::Archive));
-        assert_eq!(folders(&app).first().map(|row| row.0.clone()), Some(pinned.clone()));
+        assert!(matches!(app.folder_entries()[4].message(), Message::OpenFolders), "the browser opens beside it");
+        // No account with an archive or a trash folder: neither row; Sent always stands.
+        app.folders.retain(|folder| !matches!(folder.role, Some(Role::Archive | Role::Trash)));
+        let labels: Vec<String> = folders(&app).into_iter().map(|row| row.0).collect();
+        assert_eq!(labels[..2], [tr("Sent").to_owned(), pinned.clone()]);
         // Folders of one account only: the address says nothing, the row keeps one line.
         app.folders.retain(|folder| folder.account == pin.account);
-        let first = app.folder_entries().into_iter().next().expect("the pinned folder");
+        let first = app.folder_entries().into_iter().nth(1).expect("the pinned folder");
         assert_eq!((first.label, first.detail), (pinned, None));
-        assert!(overview_at(&["--view", "hub"]).top_entries().is_empty(), "All and Sent are the mail window's");
+        assert!(overview_at(&["--view", "hub"]).top_entries().is_empty(), "All is the mail window's");
         assert!(overview_at(&["--view", "hub"]).folder_entries().is_empty(), "folders are the mail window's");
         for open in ["menu", "drawer"] {
             for size in SIZES {
@@ -17060,12 +17424,70 @@ mod tests {
         assert_eq!(app.unread_all, Some(unread));
         assert!(app.messages.iter().all(|message| message.account == private), "All of that account only");
         let archived = app.folders.iter().any(|folder| folder.account == private && folder.role == Some(Role::Archive));
-        let first = app.folder_entries().first().map(|entry| entry.view.clone());
-        assert_eq!(first == Some(View::Archive), archived, "Archive only with an archive folder of an account shown");
+        let has = |app: &App<DemoSource>, view: View| app.folder_entries().iter().any(|entry| entry.view == view);
+        assert_eq!(has(&app, View::Archive), archived, "Archive only with an archive folder of an account shown");
         app.mail_accounts = Some(Vec::new());
         load(&mut app);
         assert!(app.messages.is_empty() && app.unread_all == Some(0), "no account shown");
-        assert!(app.folder_entries().first().is_none_or(|entry| entry.view != View::Archive));
+        assert!(!has(&app, View::Archive) && !has(&app, View::Trash), "neither without an account shown");
+        assert!(has(&app, View::Sent), "Sent always stands");
+    }
+
+    /// Issue #455: the account field says what is shown – every account's domains, the domains chosen
+    /// or the one account's domain over its address –, its menu counts each account's unread mail of
+    /// "All", and "Only this" keeps one account; "Manage accounts…" opens the settings at Accounts.
+    #[test]
+    fn the_account_field_names_the_accounts_shown_and_chooses_them() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let [work, private] = [0, 1].map(|i| torro_inbox::demo::MAIL_ACCOUNTS[i].to_owned());
+        let domains = format!("{} · {}", mail_domain(&work), mail_domain(&private));
+        assert_eq!(app.account_field_text(), (tr("All accounts").to_owned(), domains.clone()));
+        assert_eq!(mail_domain(&work), "work.example.org");
+        assert_eq!(app.unread_each.len(), 2, "every account, counted");
+        for (account, count) in &app.unread_each {
+            let want = block_on(app.inbox.unread_in_all(Some(account.clone()))).expect("the demo counts");
+            assert_eq!(*count, Some(want), "{account}");
+        }
+        let _ = app.update(Message::ToggleMailAccounts);
+        assert_eq!(app.menu, Some(Menu::MailAccounts));
+        let _ = app.view();
+        let _ = app.update(Message::OnlyMailAccount(private.clone()));
+        load(&mut app);
+        assert_eq!(app.mail_accounts, Some(vec![private.clone()]), "this one alone");
+        assert!(app.messages.iter().all(|message| message.account == private));
+        assert_eq!(app.account_field_text(), (mail_domain(&private).to_owned(), mail::address(&private).to_owned()));
+        assert_eq!(app.unread_each.len(), 2, "the hidden account keeps its number in the menu");
+        app.mail_accounts = Some(vec![work.clone(), private.clone(), "mail:third@example.net".into()]);
+        assert_eq!(app.account_field_text().0, trf("{count} accounts", &[("count", &"3")]));
+        let _ = app.update(Message::SelectAllMailAccounts);
+        assert_eq!(app.account_field_text(), (tr("All accounts").to_owned(), domains));
+        let _ = app.update(Message::ManageMailAccounts);
+        assert!(app.settings.is_some() && app.menu.is_none(), "the settings, at Accounts");
+        // Without a mail account there is no field, and "New email" is off.
+        let mut bare = mail_window(Density::Compact, &[]);
+        bare.folders.clear();
+        let _ = bare.mail_sidebar_head(SidebarMode::Expanded, &Anchor::new());
+        let _ = bare.mail_sidebar_head(SidebarMode::Rail, &Anchor::new());
+    }
+
+    /// Issue #455: "Trash" lists the mail in the trash folders of every account shown, as "Archive"
+    /// lists its role, without a number; the demo has two mails there.
+    #[test]
+    fn the_trash_lists_the_mail_of_every_trash_folder() {
+        assert_eq!(View::Trash.by_role(), Some((Role::Trash, None)));
+        assert!(View::Trash.is_mail() && View::Trash.filter().is_none());
+        assert_eq!((View::Trash.name(), View::Trash.icon()), (tr("Trash").to_owned(), Icon::Trash2));
+        let mut app = mail_window(Density::Compact, &["--open", "trash"]);
+        load(&mut app);
+        assert_eq!(app.view, View::Trash);
+        assert_eq!(app.messages.len(), 2, "the demo's trash");
+        let trash: Vec<&str> =
+            app.folders.iter().filter(|folder| folder.role == Some(Role::Trash)).map(|f| f.id.as_str()).collect();
+        assert!(app.messages.iter().all(|message| trash.contains(&message.folder.as_str())));
+        assert!(app.in_trash(&app.messages[0].id.clone()), "deleting there is refused, as in a trash folder");
+        let entry = app.folder_entries().into_iter().find(|entry| entry.view == View::Trash).expect("a row");
+        assert_eq!(entry.count, None, "no number");
+        assert!(entry.active, "chosen while it shows");
     }
 
     /// Task E18.4: "All" and "Archive" ask for the mail of their role with the fields of decision 1
@@ -19061,8 +19483,7 @@ mod tests {
         let _ = app.update(Message::SidebarWidth(SplitEvent::Release));
         assert_eq!((app.side.chosen, app.side.dragging), (Some(360.0), false));
         assert_eq!(app.content_width(), WIDE.width - 360.0 - layout::inset(), "the content follows");
-        let rail = space::xs() + app.rail_mode(SizeClass::Wide).width();
-        assert_eq!(app.split_limits().total, app.content_width() - rail, "and the list's divider with it");
+        assert_eq!(app.split_limits().total, app.content_width(), "and the list's divider with it");
         let _ = app.update(Message::StoredSidebarWidth(Some(280.0)));
         assert_eq!(app.side.chosen, Some(360.0), "a late answer of the file loses");
 
@@ -19075,9 +19496,9 @@ mod tests {
         let _ = app.update(Message::SidebarWidth(SplitEvent::Release));
         assert_eq!(app.side.chosen, Some(limits.clamp(WIDE.width)));
         // A narrower wide window clamps the width chosen, so list and reader keep their least.
-        let _ = app.update(Message::Resized(Size::new(1100.0, 900.0)));
+        let _ = app.update(Message::Resized(Size::new(1024.0, 900.0)));
         assert_eq!(app.class(), SizeClass::Wide);
-        let least = 2.0 * split::min_pane() + split::handle_width() + rail;
+        let least = 2.0 * split::min_pane() + split::handle_width();
         assert!(app.content_width() >= least, "{} leaves list and reader {least}", app.content_width());
         assert!(app.sidebar_room() < 2.0 * size::sidebar(), "the window clamps the sidebar");
         let _ = app.view();
@@ -19132,9 +19553,8 @@ mod tests {
         for id in torro_core::design::BUILT_IN_IDS {
             let d = torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design");
             let (least, most) = (0.75 * d.size.sidebar, 2.0 * d.size.sidebar);
-            // As `App::sidebar_limits`: list and reader, the divider, the collapsed rail with its line
-            // (`RailMode::width`) and its gap.
-            let rest = 2.0 * d.size.props + d.space.s + d.space.xs + d.size.rail + size::HAIRLINE;
+            // As `App::sidebar_limits`: list and reader and the divider; the rail floats (issue #456).
+            let rest = 2.0 * d.size.props + d.space.s;
             let room = |window: f32| window - d.layout.inset - d.space.s - rest;
             assert!(least > d.size.rail, "{id}: the narrowest sidebar is no rail");
             assert!(room(layout::MEDIUM_MAX_WIDTH) > least, "{id}: the narrowest wide window still drags");
@@ -19174,10 +19594,11 @@ mod tests {
         let _ = app.update(Message::MailOverviewPeople(key.account, people));
     }
 
-    /// Issue #409: "Overview" in the path and Escape close the mail and show the overview; the view
-    /// and the list's place stay.
+    /// Issue #409: Escape and "Show overview" close the mail and show the overview; the view and the
+    /// list's place stay. Since issue #459 no path stands over the list: the button sits in the top
+    /// row of medium and narrow windows, and the wide one has Escape.
     #[test]
-    fn escape_and_the_path_show_the_overview_and_keep_the_list() {
+    fn escape_and_the_overview_button_show_the_overview_and_keep_the_list() {
         let mut app = mail_window(Density::Compact, &[]);
         let _ = app.update(Message::Resized(WIDE));
         deliver_overview(&mut app);
@@ -19191,7 +19612,7 @@ mod tests {
         assert_eq!((app.view.clone(), app.scroll), (view.clone(), Some((120.0, 600.0))));
         let _ = app.update(Message::SelectMail(first));
         let _ = app.update(Message::ShowMailOverview);
-        assert!(app.mail_overview_shown(), "the path shows the overview");
+        assert!(app.mail_overview_shown(), "the button shows the overview");
         assert_eq!((app.view.clone(), app.scroll), (view, Some((120.0, 600.0))));
         let _ = app.view();
     }
@@ -19404,60 +19825,131 @@ mod tests {
         let _ = overview.view();
     }
 
-    /// Task E14.3: `]` and the rail's button expand and collapse the rail of the wide mail window and
-    /// remember it for the window's key (not in the demo, which stores nothing); in medium and narrow
-    /// the rail stays collapsed and `]` does nothing, nor in the hub. What `ui.json` remembers counts
-    /// only until the person switches.
+    /// Issue #456: the rail floats over the mail in every size of the mail window – the same groups,
+    /// "Display" before "More" –, `]` and the button that expanded it are gone (no stored mode, no key),
+    /// its groups open beside it, and the divider of the list leaves no room for it: it takes none.
     #[test]
-    fn the_rail_expands_in_the_wide_mail_window_and_is_remembered() {
-        let mut app = mail_window(Density::Compact, &["--open", "mail-entry"]);
+    fn the_rail_floats_over_the_mail_in_every_size_and_has_no_expanded_form() {
+        let mut app = mail_entry_open(Density::Compact);
+        let id = app.wanted_letter().expect("its mail");
+        deliver_letter(&mut app, &id);
         let _ = app.update(Message::Resized(WIDE));
-        assert_eq!(app.actions, RailMode::Collapsed, "collapsed until chosen");
-        let _ = app.update(Message::StoredActions(Some(RailMode::Expanded)));
-        assert_eq!(app.actions, RailMode::Expanded, "as remembered");
-        let _ = app.update(Message::StoredActions(None));
-        assert_eq!(app.actions, RailMode::Expanded, "nothing remembered changes nothing");
-        // The demo stores nothing.
-        let _ = press(&mut app, Key::Actions);
-        assert_eq!(app.actions, RailMode::Collapsed);
-        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Actions(..))), "the demo stores nothing");
-        app.launch.demo = false;
-        let key = app.launch.window_key();
-        let _ = press(&mut app, Key::Actions);
-        assert_eq!(app.actions, RailMode::Expanded);
-        assert_eq!(app.sent.last(), Some(&Sent::Actions(key.clone(), RailMode::Expanded)), "remembered for the window");
-        let _ = app.view();
-        let _ = app.update(Message::ToggleActions);
-        assert_eq!(app.sent.last(), Some(&Sent::Actions(key, RailMode::Collapsed)), "the button does the same");
-        let _ = app.update(Message::StoredActions(Some(RailMode::Expanded)));
-        assert_eq!(app.actions, RailMode::Collapsed, "a late answer of the file loses");
-        // Expanded, the groups stand open in the rail: no card beside it. The divider leaves the rail
-        // out, so the mail keeps its least beside it.
-        let _ = press(&mut app, Key::Actions);
-        assert_eq!(app.split_limits().total, app.content_width() - space::xs() - RailMode::Expanded.width());
-        let _ = app.update(Message::Rail(RailEvent::Open(1)));
         let anchors = detail::Anchors::default().with_rail();
-        assert!(app.rail_layer(SizeClass::Wide, &anchors).is_none(), "no card beside the expanded rail");
-        // Medium and narrow: the rail in the panel, collapsed, `]` does nothing.
-        let saved = app.sent.len();
-        for size in [MEDIUM, NARROW] {
+        let groups = app.rail_groups(SizeClass::Wide, &anchors).expect("the reader has the rail");
+        let labels: Vec<String> = groups.iter().map(|group| group.label.to_string()).collect();
+        let at = |label: &str| labels.iter().position(|held| held == label);
+        assert!(at(trc("mail", "Display")).is_some() && at(trc("mail", "Display")) < at(tr("More")), "{labels:?}");
+        assert!(at(tr("Mute")) < at(trc("mail", "Display")), "Mute, Display, More at the foot: {labels:?}");
+        let display = groups.iter().find(|group| group.label == trc("mail", "Display")).expect("Display");
+        assert!(display.foot && display.card, "a click opens its card, the pointer nothing");
+        assert_eq!(display.icon, Icon::Contrast);
+        assert_eq!(app.split_limits().total, app.content_width(), "the rail takes no width");
+        for size in [WIDE, MEDIUM, NARROW] {
             let _ = app.update(Message::Resized(size));
             let class = app.class();
-            let _ = press(&mut app, Key::Actions);
-            assert_eq!((app.actions, app.sent.len()), (RailMode::Expanded, saved), "{class:?}: `]` does nothing");
-            assert!(app.rail_groups(class, &anchors).is_some(), "{class:?}: the panel has the rail");
+            assert!(app.rail_groups(class, &anchors).is_some(), "{class:?}: the rail");
             let _ = app.update(Message::Rail(RailEvent::Open(1)));
-            assert!(app.rail_layer(class, &anchors).is_some(), "{class:?}: collapsed, its group opens beside it");
+            assert!(app.rail_layer(class, &anchors).is_some(), "{class:?}: its group opens beside it");
             let _ = app.view();
+            let _ = app.update(Message::Rail(RailEvent::Close));
         }
-        // The hub has no rail; `]` changes nothing there.
+        // The hub has no rail.
         let mut hub = overview_at(&["--view", "hub", "--open", "mail-entry"]);
-        hub.launch.demo = false;
         let _ = hub.update(Message::Resized(WIDE));
-        let _ = press(&mut hub, Key::Actions);
-        assert_eq!(hub.actions, RailMode::Collapsed);
-        assert!(!hub.sent.iter().any(|sent| matches!(sent, Sent::Actions(..))));
         assert!(hub.rail_groups(SizeClass::Wide, &anchors).is_none(), "the hub keeps its panel");
+    }
+
+    /// Issue #457: over the reader the top row says where the mail stands in the list ("1 of 8", with
+    /// "+" while more pages wait), steps to the previous and next mail as `k` and `j` do, opens it in a
+    /// mail window of its own, and its attachments' menu opens from the head.
+    #[test]
+    fn the_reader_head_counts_steps_and_opens_its_own_window() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        let id = app.messages.first().expect("demo mail").id.clone();
+        let _ = app.update(Message::SelectMail(id.clone()));
+        deliver_letter(&mut app, &id);
+        let at = 0;
+        let total = app.messages.len().to_string();
+        let more = app.more.is_some();
+        let n = (at + 1).to_string();
+        let want = if more {
+            trf("{n} of {total}+", &[("n", &n), ("total", &total)])
+        } else {
+            trf("{n} of {total}", &[("n", &n), ("total", &total)])
+        };
+        assert_eq!(app.place_text(at), want);
+        let _ = app.reader_head();
+        let _ = app.update(Message::StepMail(true));
+        assert_eq!(app.cursor.as_deref(), app.messages.get(at + 1).map(|message| message.id.as_str()), "the next mail");
+        let _ = app.update(Message::StepMail(false));
+        assert_eq!(app.cursor.as_deref(), Some(id.as_str()), "and back");
+        let _ = app.update(Message::OpenMailWindow(id.clone()));
+        assert_eq!(app.sent.last(), Some(&Sent::Window(id.clone())));
+        let _ = app.update(Message::AskAttachments(id));
+        let _ = app.view();
+        // Without a mail open the reader's column holds the overview, and its head says so.
+        let bare = mail_window(Density::Compact, &[]);
+        let _ = bare.reader_head();
+    }
+
+    /// Issue #456: "Display" opens its card – no group under the pointer –, Escape and a click beside
+    /// it close it, every choice in it takes at once and is stored as the setting, and `v` switches
+    /// with the card closed as well. "More" no longer has HTML, text or the colours.
+    #[test]
+    fn display_opens_its_card_and_every_choice_is_stored() {
+        let mut app = mail_entry_open(Density::Compact);
+        let id = app.wanted_letter().expect("its mail");
+        deliver_letter(&mut app, &id);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::ToggleMailDisplay);
+        assert_eq!(app.menu, Some(Menu::MailDisplay));
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::Escape);
+        assert_eq!(app.menu, None, "Escape closes it");
+        let _ = app.update(Message::ToggleMailDisplay);
+        let _ = app.update(Message::CloseMenu);
+        assert_eq!(app.menu, None, "so does a click beside it");
+        let _ = app.update(Message::ShowMailAs(MailFormat::Text));
+        assert_eq!((app.mail_format, app.look.format), (MailFormat::Text, MailFormat::Text));
+        assert_eq!(app.sent.last(), Some(&Sent::Setting(torro_ipc::SettingKey::MailView, "text".into())));
+        let _ = app.update(Message::ToggleMailDisplay);
+        let _ = app.view();
+        // The hub's footer has no "As app": its colour shown while they follow the app stores nothing.
+        let dark = app.theme().extended_palette().is_dark;
+        let shown = if dark { MailAppearance::Dark } else { MailAppearance::Light };
+        let before = app.sent.len();
+        let _ = app.update(Message::FooterMailColors(shown));
+        assert_eq!((app.look.colors, app.sent.len()), (MailAppearance::App, before), "nothing changes to see");
+        // The card has: the same colour, chosen there, holds when the app changes its colours.
+        let _ = app.update(Message::MailColors(shown));
+        assert_eq!(app.look.colors, shown);
+        let value = if dark { "dark" } else { "light" };
+        assert_eq!(app.sent.last(), Some(&Sent::Setting(torro_ipc::SettingKey::MailAppearance, value.into())));
+        let _ = app.update(Message::MailColors(MailAppearance::Light));
+        // The demo stores no setting and reads its defaults every tick: the choice holds over them.
+        let _ = app.update(look(MailFormat::Html, MailAppearance::App));
+        assert_eq!((app.mail_format, app.look.colors), (MailFormat::Text, MailAppearance::Light), "the demo holds it");
+        let anchors = detail::Anchors::default().with_rail();
+        assert_eq!(app.menu, Some(Menu::MailDisplay), "the card is still open");
+        let groups = app.rail_groups(SizeClass::Wide, &anchors).expect("the rail");
+        let at = groups.iter().position(|group| group.label == trc("mail", "Display"));
+        assert_eq!(app.rail_active(&groups), at, "Display stands chosen while its card is open");
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::CloseMenu);
+        if app.html_for_letter().is_some() {
+            let _ = press(&mut app, Key::V);
+            assert_eq!(app.mail_format, MailFormat::Html, "`v` with the card closed");
+            assert_eq!(app.sent.last(), Some(&Sent::Setting(torro_ipc::SettingKey::MailView, "html".into())));
+        }
+        let anchors = detail::Anchors::default().with_rail();
+        let groups = app.rail_groups(SizeClass::Wide, &anchors).expect("the rail");
+        let more = groups.iter().find(|group| group.label == tr("More")).expect("More");
+        let words = [tr("Show as text"), tr("Show as HTML"), tr("Dark colours"), tr("Light colours")];
+        assert!(more.items.iter().all(|item| !words.contains(&item.label.as_ref())), "More lost them");
+        let _ = app.update(Message::DisplaySaved(Err("refused".into())));
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Couldn't save the display.")));
     }
 
     /// Task E14.3: hovering an icon of the collapsed rail opens its group beside it; a click on an
@@ -19533,7 +20025,7 @@ mod tests {
                 }
             }
         }
-        assert!(closes_rail(&Message::ToggleActions) && !closes_rail(&Message::Rail(RailEvent::Open(1))));
+        assert!(closes_rail(&Message::ToggleMailDisplay) && !closes_rail(&Message::Rail(RailEvent::Open(1))));
         assert!(!closes_rail(&Message::Tick) && !closes_rail(&Message::HintTick(Instant::now())), "timers keep it");
     }
 
@@ -19578,45 +20070,25 @@ mod tests {
         let _ = app.view();
     }
 
-    /// Task E14.3 (finding 1): an expanded rail that would leave the reader less than a form's width
-    /// draws collapsed – in the wide window at 1024 – while the choice stays expanded, and expands
-    /// again with room; the divider reckons with the rail as drawn.
+    /// Task E14.3 (finding 1) and issue #456: the reader is never squeezed by the rail – it floats over
+    /// the mail at every width, its groups open beside it, and the divider reckons without it.
     #[test]
-    fn the_rail_draws_collapsed_where_the_reader_would_be_squeezed() {
-        let mut app = mail_window(Density::Compact, &["--open", "mail-actions"]);
+    fn the_floating_rail_leaves_the_reader_its_width() {
+        let mut app = mail_window(Density::Compact, &["--open", "mail-group"]);
         let _ = app.update(Message::Resized(Size::new(1024.0, 760.0)));
         assert_eq!(app.class(), SizeClass::Wide);
-        assert_eq!((app.actions, app.rail_mode(SizeClass::Wide)), (RailMode::Expanded, RailMode::Collapsed));
-        assert_eq!(app.split_limits().total, app.content_width() - space::xs() - RailMode::Collapsed.width());
+        assert_eq!(app.split_limits().total, app.content_width());
         let anchors = detail::Anchors::default().with_rail();
         let _ = app.update(Message::Rail(RailEvent::Open(1)));
-        assert!(app.rail_layer(SizeClass::Wide, &anchors).is_some(), "drawn collapsed, its groups open beside it");
+        assert!(app.rail_layer(SizeClass::Wide, &anchors).is_some(), "its groups open beside it");
         let _ = app.view();
-        assert!(!app.rail_can_expand(), "no button to expand where it cannot");
-        // Issue #291: but the head stays with the toggle off, so Reply and the rest do not move.
-        let off = app.rail_toggle(SizeClass::Wide);
-        assert!(matches!(off, RailToggle::Off(why) if why == tr("Widen the window to expand actions")), "{off:?}");
-        assert!(off.has_head());
-        let _ = app.update(Message::ToggleActions);
-        assert_eq!(app.actions, RailMode::Expanded, "`]` keeps the choice while the rail cannot expand");
-        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Actions(..))));
-        let _ = app.update(Message::Resized(WIDE));
-        assert_eq!(app.rail_mode(SizeClass::Wide), RailMode::Expanded, "with room it shows expanded");
-        assert!(app.reader_room(RailMode::Expanded) >= size::form_max());
-        assert!(
-            matches!(app.rail_toggle(SizeClass::Wide), RailToggle::On(Message::ToggleActions)),
-            "with room it works"
-        );
-        assert!(matches!(app.rail_toggle(SizeClass::Medium), RailToggle::Hidden), "medium and narrow draw no head");
-        assert!(matches!(app.rail_toggle(SizeClass::Narrow), RailToggle::Hidden));
-        let _ = app.view();
+        assert!(widgets::floating_rail_room() > size::control_lg(), "the text keeps clear of the card");
     }
 
     /// Review of #241: the open group is an index into the rail's groups, so it goes once the rail
-    /// changes under it – here the window's size class; and `]` switches nothing while no mail is
-    /// open, so the next mail does not show a rail switched unseen.
+    /// changes under it – here the window's size class; without a mail open there is no rail.
     #[test]
-    fn the_open_group_goes_with_a_changed_rail_and_brackets_need_a_mail() {
+    fn the_open_group_goes_with_a_changed_rail_and_no_mail_has_none() {
         let mut app = mail_window(Density::Compact, &["--open", "mail-group"]);
         let _ = app.update(Message::Resized(WIDE));
         let _ = app.update(Message::Rail(RailEvent::Open(1)));
@@ -19629,8 +20101,6 @@ mod tests {
         let mut bare = mail_window(Density::Compact, &[]);
         let _ = bare.update(Message::Resized(WIDE));
         assert!(bare.rail_groups(SizeClass::Wide, &detail::Anchors::default()).is_none());
-        let _ = press(&mut bare, Key::Actions);
-        assert_eq!(bare.actions, RailMode::Collapsed, "no mail, no switch");
     }
 
     /// Review of #241: a mail that loads adds "Mark" after "Torro" – an open "File" stays, a group
@@ -19639,8 +20109,7 @@ mod tests {
     fn a_group_goes_only_when_the_rail_moves_under_it() {
         let loading = vec![Icon::Reply, Icon::Check, Icon::ListTodo, Icon::BellOff, Icon::Ellipsis];
         let loaded = vec![Icon::Reply, Icon::Check, Icon::ListTodo, Icon::Flag, Icon::BellOff, Icon::Ellipsis];
-        let shape =
-            |icons: &[Icon], held, class| RailShape { class, mode: RailMode::Collapsed, icons: icons.to_vec(), held };
+        let shape = |icons: &[Icon], held, class| RailShape { class, icons: icons.to_vec(), held };
         let file = [Some(1), None];
         let medium = SizeClass::Medium;
         assert!(!shape(&loading, file, medium).moved(&shape(&loaded, file, medium)), "File stays");
@@ -19650,19 +20119,18 @@ mod tests {
         assert!(shape(&loaded, file, medium).moved(&shape(&loaded, file, SizeClass::Wide)), "another size class");
     }
 
-    /// Task E14.3: the demo's states for pictures – the rail expanded, and collapsed with "File" open.
+    /// Task E14.3: the demo's states for pictures – the card "Display" open (issue #456: where the
+    /// expanded rail was), and "File" open.
     #[test]
-    fn the_demo_opens_the_rail_expanded_or_with_a_group() {
-        let mut expanded = mail_window(Density::Compact, &["--open", "mail-actions"]);
+    fn the_demo_opens_display_or_a_group_of_the_rail() {
+        let mut display = mail_window(Density::Compact, &["--open", "mail-actions"]);
         // The first mail of All in the reader since task E18.4.
-        assert!(expanded.reading && expanded.wanted_letter().is_some() && expanded.actions_chosen);
-        assert_eq!(expanded.actions, RailMode::Expanded);
-        let _ = expanded.update(Message::StoredActions(Some(RailMode::Collapsed)));
-        assert_eq!(expanded.actions, RailMode::Expanded, "the state wins over `ui.json`");
-        draw_everywhere(&mut expanded);
+        assert!(display.reading && display.wanted_letter().is_some());
+        assert_eq!(display.menu, Some(Menu::MailDisplay));
+        draw_everywhere(&mut display);
         let mut group = mail_window(Density::Compact, &["--open", "mail-group"]);
         let _ = group.update(Message::Resized(WIDE));
-        assert_eq!((group.actions, group.rail_open), (RailMode::Collapsed, Some(1)));
+        assert_eq!(group.rail_open, Some(1));
         assert_eq!(group.cursor, group.wanted_letter(), "its row is the cursor's, as after a click");
         let anchors = detail::Anchors::default().with_rail();
         let groups = group.rail_groups(SizeClass::Wide, &anchors).expect("the rail");
@@ -19686,8 +20154,9 @@ mod tests {
             let groups = app.rail_groups(class, &anchors).expect("the rail");
             groups.iter().flat_map(|group| group.items.iter().map(|item| item.label.to_string())).collect()
         };
-        // Decision C: over the medium window the panel keeps 400 for the mail, the rail beside it.
-        let medium = size::panel() + space::xs() + RailMode::Collapsed.width();
+        // Decision C: over the medium window the panel keeps 400 for the mail, the rail floats over
+        // the room beside it (issue #456).
+        let medium = size::panel() + widgets::floating_rail_room();
         for (size, width) in [(MEDIUM, medium), (NARROW, NARROW.width)] {
             let _ = app.update(Message::Resized(size));
             let class = app.class();
@@ -20802,7 +21271,7 @@ mod tests {
                             let _ = press(&mut app, Key::S);
                             let _ = app.view();
                             let _ = app.update(Message::CloseMenu);
-                            let _ = app.update(Message::ShowDrawer);
+                            app.drawer = true;
                             let _ = app.view();
                             let _ = app.update(Message::CloseMenu);
                             if let Some(id) = app.cursor.clone() {
