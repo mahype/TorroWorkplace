@@ -20,11 +20,10 @@ use std::time::Duration;
 use chrono::{Days, NaiveDate};
 
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, row, rule, svg, text_input};
+use iced::widget::{column, container, row, rule, stack, svg, text_input};
 use iced::{Alignment, Element, Fill, Padding, Theme};
 use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
-use torro_gui::layout;
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::ui_state::SEARCHES_MAX;
 use torro_gui::widgets::{self, Anchor, Mark};
@@ -511,10 +510,6 @@ pub struct Bar<'a> {
     pub suggestions: Vec<Suggestion>,
     /// What the line under the bar says, while a search with words is shown ([`status_line`]).
     pub status: Option<Element<'a, Message>>,
-    /// The field over the whole width of the list (task E11.2, the mail window): flat
-    /// (`style::text_input_flat`), [`size::header()`] high with a line below it and no margin at
-    /// its sides; else framed inside the bar's margin, as in the hub.
-    pub full: bool,
     /// Where the menu of the quick filters hangs: at the filter icon at the end of the field.
     pub filters: Anchor,
     /// Today, for the dates of the period filters ([`QuickFilter::token`]).
@@ -539,21 +534,60 @@ fn placeholder(search: Option<&SearchView>, scopes: Option<&ScopeChoice>) -> Str
 /// first); while a search is shown, where it looks (all mail, this account, this folder) and the
 /// order (relevance or date), then the line on its results ([`status_line`]).
 ///
-/// With [`Bar::full`] (task E11.2, the mail window) the field spans the list from edge to edge,
-/// [`size::header()`] high and flat, its text in line with the rows' avatars, "Clear search" at its
-/// end and a line below; the rest follows under the line with the bar's margin.
+/// The mail window (issue #459) puts the field into the top row over its list ([`field`]) and only
+/// the lines under it into the list ([`below`]); the other windows show the whole bar here.
 pub fn bar<'a>(bar: Bar<'a>) -> Element<'a, Message> {
-    let field = text_input(&placeholder(bar.search, bar.scopes.as_ref()), bar.input)
+    let top = field_row(&bar, false);
+    let rest = rest(bar);
+    let margin = Padding::new(space::s()).left(space::l()).right(space::l());
+    let lines = column![top].extend(rest).spacing(space::s());
+    container(lines).width(Fill).padding(margin).into()
+}
+
+/// The field of the bar for the top row of the mail window (issue #459): framed, as high as a
+/// control, with the magnifier inside at its start, "Clear search" while there is something to clear
+/// and the filter icon of the quick filters.
+pub fn field<'a>(bar: &Bar<'a>) -> Element<'a, Message> {
+    field_row(bar, true)
+}
+
+/// The lines under the field – suggestions, where the search looks and its order, the line on its
+/// results – with the bar's margin, or `None` while there are none (issue #459: the mail window's
+/// field stands in the top row, these stay over its list).
+pub fn below<'a>(bar: Bar<'a>) -> Option<Element<'a, Message>> {
+    let rest = rest(bar);
+    if rest.is_empty() {
+        return None;
+    }
+    let margin = Padding::new(space::s()).left(space::l()).right(space::l());
+    let lines = column![column(rest).spacing(space::s()), rule::horizontal(size::HAIRLINE).style(style::rule)]
+        .spacing(space::s());
+    Some(container(lines).width(Fill).padding(margin.bottom(0.0)).into())
+}
+
+/// The field with "Clear search" and the filter icon; with the magnifier inside it while `icon`.
+fn field_row<'a>(bar: &Bar<'a>, icon: bool) -> Element<'a, Message> {
+    let padding = if icon { style::INPUT_PADDING.left(FIELD_ICON_ROOM) } else { style::INPUT_PADDING };
+    let input = text_input(&placeholder(bar.search, bar.scopes.as_ref()), bar.input)
         .id(FIELD)
         .size(typo::body().size)
         .line_height(typo::body().line_height)
         .font(typo::body().font)
-        .padding(if bar.full { full_field_padding() } else { style::INPUT_PADDING })
+        .padding(padding)
         .width(Fill)
-        .style(if bar.full { style::text_input_flat } else { style::text_input })
+        .style(style::text_input)
         .on_input(Message::SearchInput)
         .on_submit(Message::Search);
-    let mut top = row![field].spacing(space::s()).align_y(Alignment::Center);
+    let input: Element<'a, Message> = if icon {
+        // The magnifier lies on the field and takes no click: the field under it gets the press.
+        let glass =
+            icon::icon(Icon::Search, icon::SIZE_SM).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
+        let mark = container(glass).height(Fill).center_y(Fill).padding(Padding::new(0.0).left(space::s()));
+        stack![input, mark].width(Fill).into()
+    } else {
+        input.into()
+    };
+    let mut top = row![input].spacing(space::xs()).align_y(Alignment::Center);
     if bar.search.is_some() || !bar.input.is_empty() {
         top = top.push(widgets::icon_button(Icon::X, tr("Clear search"), Some(Message::ClearSearch)));
     }
@@ -566,7 +600,14 @@ pub fn bar<'a>(bar: Bar<'a>) -> Element<'a, Message> {
         trf("Filtered: {filters}", &[("filters", &names.join(", "))])
     };
     let toggle = widgets::icon_toggle(Icon::Filter, tip, !set.is_empty(), Some(Message::ToggleSearchFilters));
-    top = top.push(widgets::anchored(&bar.filters, toggle));
+    top.push(widgets::anchored(&bar.filters, toggle)).into()
+}
+
+/// Room for the magnifier at the start of the field ([`field`]): its icon and the gaps around it.
+const FIELD_ICON_ROOM: f32 = 30.0;
+
+/// The suggestions, the scopes and order of a shown search, and its status line, in this order.
+fn rest<'a>(bar: Bar<'a>) -> Vec<Element<'a, Message>> {
     let mut rest: Vec<Element<'a, Message>> = Vec::new();
     if !bar.suggestions.is_empty() {
         rest.push(suggestion_row(bar.suggestions, bar.input.trim().is_empty()));
@@ -577,27 +618,7 @@ pub fn bar<'a>(bar: Bar<'a>) -> Element<'a, Message> {
     if let Some(status) = bar.status {
         rest.push(status);
     }
-    let margin = Padding::new(space::s()).left(space::l()).right(space::l());
-    if !bar.full {
-        let lines = column![top].extend(rest).spacing(space::s());
-        return container(lines).width(Fill).padding(margin).into();
-    }
-    // The clear button keeps the gap of the bar's buttons from the list's right edge.
-    let top = container(top.padding(Padding::new(0.0).right(space::s()))).width(Fill).center_y(size::header());
-    let mut bar = column![top, rule::horizontal(size::HAIRLINE).style(style::rule)].width(Fill);
-    if !rest.is_empty() {
-        bar = bar.push(container(column(rest).spacing(space::s())).width(Fill).padding(margin));
-    }
-    bar.into()
-}
-
-/// The padding of the field over the whole width ([`Bar::full`]): as high as the header bar
-/// ([`size::header()`]) with a line of text, its text [`layout::row_padding()`] in from the left – where
-/// the rows' avatars start.
-fn full_field_padding() -> Padding {
-    let above = (size::header() - typo::line_height(typo::body())) / 2.0;
-    let side = layout::row_padding().left;
-    Padding::new(above).left(side).right(side)
+    rest
 }
 
 /// The suggestions as chips, the first with the `Tab` hint; the searches last made (`recent`, with

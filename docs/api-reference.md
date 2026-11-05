@@ -1112,7 +1112,7 @@ Creates a main mail category with a stable `custom_group_<n>` key, a name, an ic
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `color` | integer | ja | One of the five colours of the group palette of the active design, 0–4. |
-| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` | ja | Its monochrome icon. |
+| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` \| `"megaphone"` \| `"bot"` \| `"receipt"` \| `"package"` \| `"skull"` \| `"newspaper"` \| `"building2"` \| `"landmark"` \| `"triangle_alert"` | ja | Its monochrome icon. |
 | `name` | string | ja | What it is called: one line, at most 60 characters, no other main category's name. |
 
 ### `inbox.update_category_group`
@@ -1125,7 +1125,7 @@ Changes the name, icon and theme colour (`color` 0–4) of a main mail category,
 |---|---|---|---|
 | `color` | integer | ja | One of the five colours of the group palette of the active design, 0–4. |
 | `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` \| `"unsorted"` \| string | ja | Which main category: a built-in key (`waiting_for_me` … `unsorted`) or `custom_group_<n>`. |
-| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` | ja | Its monochrome icon. |
+| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` \| `"megaphone"` \| `"bot"` \| `"receipt"` \| `"package"` \| `"skull"` \| `"newspaper"` \| `"building2"` \| `"landmark"` \| `"triangle_alert"` | ja | Its monochrome icon. |
 | `name` | string | ja | What it is called from now on; empty puts back the suite's name of a built-in one. |
 
 ### `inbox.set_item_category`
@@ -1268,7 +1268,7 @@ Makes a mail category of the person's own in an existing main category and retur
 |---|---|---|---|
 | `description` | string | ja | What it means, with examples and exceptions: what a decision model reads. |
 | `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` \| `"unsorted"` \| string | ja | The group it stands in. |
-| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` | nein, Standard `"tag"` | The monochrome icon for the new category; its group supplies the colour. |
+| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` \| `"megaphone"` \| `"bot"` \| `"receipt"` \| `"package"` \| `"skull"` \| `"newspaper"` \| `"building2"` \| `"landmark"` \| `"triangle_alert"` | nein, Standard `"tag"` | The monochrome icon for the new category; its group supplies the colour. |
 | `model` | boolean | nein, Standard `false` | A decision model may choose it. |
 | `name` | string | ja | What it is called. |
 
@@ -1283,7 +1283,7 @@ Changes a mail category, one of the suite's or the person's own, and returns it:
 | `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"bounce"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | The category's key, as `inbox.list_categories` gives it. |
 | `description` | string | nein | What it means, as a model reads it; empty puts back the suite's description. Left out: as it is. |
 | `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` \| `"unsorted"` \| string | nein | The group to move it to. Left out: as it is. |
-| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` | nein | Its monochrome icon; its group supplies the colour. Left out to keep it as it is. |
+| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` \| `"megaphone"` \| `"bot"` \| `"receipt"` \| `"package"` \| `"skull"` \| `"newspaper"` \| `"building2"` \| `"landmark"` \| `"triangle_alert"` | nein | Its monochrome icon; its group supplies the colour. Left out to keep it as it is. |
 | `model` | boolean | nein | A decision model may choose it. Left out: as it is. |
 | `name` | string | nein | Its new name; empty puts back the suite's word. Left out: as it is. |
 

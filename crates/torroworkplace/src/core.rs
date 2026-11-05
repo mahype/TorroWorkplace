@@ -1247,16 +1247,17 @@ fn sorted_with((engine, model): &(String, String)) -> String {
 /// this, with the entry's id and nothing of its content (security rule 7); the call adds no line of
 /// its own.
 ///
-/// `contact`: the mail came from a contact and is in Personal already (issue #390); the model only
-/// chooses within that group ([`ask_model`]).
+/// `occasion`: what asked ([`Occasion`]). A mail that arrives keeps a category that changed while
+/// the model thought (issue #406): the late answer is dropped, `Ok(None)` with no other answers kept.
 async fn decide_mail_with(
     ai: &AiAccounts,
     mail: &MailService,
     inbox: &Inbox,
     decider: (&str, &str),
     (account, message): (&str, &str),
-    contact: bool,
+    occasion: Occasion,
 ) -> Result<Option<torro_mail::MailCategory>, DecideError> {
+    let contact = matches!(occasion, Occasion::Arrival { contact: true });
     let held = mail.content_for_category(account, message).await.map_err(|err| DecideError::Mail(err.to_string()))?;
     let Some(content) = held else { return Ok(None) };
     let catalogue = inbox.catalogue().map_err(DecideError::Mail)?;
@@ -1264,8 +1265,26 @@ async fn decide_mail_with(
     if inbox.category_clear_blocked().map_err(DecideError::Mail)? {
         return Ok(None);
     }
-    let one = [message.to_string()];
-    mail.set_category(account, &one, Some(decided.category)).await.map_err(|err| DecideError::Mail(err.to_string()))?;
+    match occasion {
+        // The person may have chosen, or a rule may have set the category, while the model thought.
+        Occasion::Arrival { .. } => {
+            let expected = contact.then(by_contact);
+            let kept = mail
+                .set_category_if_unchanged(account, message, expected, decided.category)
+                .await
+                .map_err(|err| DecideError::Mail(err.to_string()))?;
+            if !kept {
+                return Ok(None);
+            }
+        }
+        // The person asked again: the answer is what they wanted, whatever was there.
+        Occasion::Button => {
+            let one = [message.to_string()];
+            mail.set_category(account, &one, Some(decided.category))
+                .await
+                .map_err(|err| DecideError::Mail(err.to_string()))?;
+        }
+    }
     mail.set_model_answers(account, message, decided.needs_reply, decided.urgency)
         .await
         .map_err(|err| DecideError::Mail(err.to_string()))?;
@@ -1368,6 +1387,16 @@ async fn ask_decider(
 /// neither decides nor can use tools ([`torro_core::ai::AiModel::can_decide`]).
 fn cannot_decide() -> &'static str {
     tr("This model can neither decide nor use tools. Pick one that can, like nimble or qwen3 on Ollama.")
+}
+
+/// What asked the model about a mail ([`decide_mail_with`]).
+#[derive(Clone, Copy)]
+enum Occasion {
+    /// New mail: `contact` says it came from a contact and is in Personal already (issue #390); the
+    /// model only chooses within that group ([`ask_model`]).
+    Arrival { contact: bool },
+    /// The person asked again (`inbox.classify_item`).
+    Button,
 }
 
 /// Why one mail could not be sorted ([`decide_mail_with`]).
@@ -1637,7 +1666,7 @@ async fn catch_up_run(run: CatchUpRun, accounts: Vec<String>) {
                         if let Some((category, answers)) = decided
                             && held != Some(category)
                         {
-                            write_caught_up(&run, &account, &message, category, answers).await;
+                            write_caught_up(&run, &account, &message, held, category, answers).await;
                         }
                     }
                 }
@@ -1729,20 +1758,26 @@ async fn write_caught_up(
     run: &CatchUpRun,
     account: &str,
     message: &str,
+    held: Option<torro_mail::MailCategory>,
     category: torro_mail::MailCategory,
     answers: Option<categorize::Decided>,
 ) {
-    let one = [message.to_string()];
-    if let Err(err) = run.mail.set_category(account, &one, Some(category)).await {
-        eprintln!("torroworkplace: inbox: cannot keep a category of {account}: {err}");
-        return;
+    // The run read `held` before it asked the model; a category set meanwhile, by hand or by a
+    // rule, stays and the late answer is dropped with its other answers (issue #406).
+    match run.mail.set_category_if_unchanged(account, message, held, category).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(err) => {
+            eprintln!("torroworkplace: inbox: cannot keep a category of {account}: {err}");
+            return;
+        }
     }
     if let Some(answers) = answers {
         let _ = run.mail.set_model_answers(account, message, answers.needs_reply, answers.urgency).await;
     }
     // The entry of that mail, where there is one, reads alike.
     if let Some(entry) = run.inbox.entry_of_message(account, message) {
-        let _ = run.inbox.set_category(&entry, Some(category));
+        let _ = run.inbox.set_category_unless_person(&entry, category);
     }
 }
 
@@ -6273,7 +6308,16 @@ impl Core {
                 (settings.clone(), Arc::clone(&ai), Arc::clone(&mail), Arc::clone(&inbox));
             Box::pin(async move {
                 let (engine, model) = decider_of(&settings, &ai).await.ok()?;
-                match decide_mail_with(&ai, &mail, &inbox, (&engine, &model), (&account, &message), contact).await {
+                match decide_mail_with(
+                    &ai,
+                    &mail,
+                    &inbox,
+                    (&engine, &model),
+                    (&account, &message),
+                    Occasion::Arrival { contact },
+                )
+                .await
+                {
                     Ok(category) => category,
                     // The person's choice, not a failure: nothing to log for every mail.
                     Err(DecideError::NothingToChoose) => None,
@@ -6885,17 +6929,23 @@ impl Core {
         };
         // The newest mail of the conversation decides what the whole entry is.
         let newest = messages.last().cloned().unwrap_or_default();
-        let decided =
-            match decide_mail_with(&self.ai, &self.mail, &self.inbox, (&engine, &model), (&account, &newest), false)
-                .await
-            {
-                Ok(Some(category)) => category,
-                Ok(None) => {
-                    let message = tr("The AI's answer held no category. Try again or pick another model.");
-                    return Response::Error { code: "error".into(), message: message.to_string() };
-                }
-                Err(err) => return err.response(),
-            };
+        let decided = match decide_mail_with(
+            &self.ai,
+            &self.mail,
+            &self.inbox,
+            (&engine, &model),
+            (&account, &newest),
+            Occasion::Button,
+        )
+        .await
+        {
+            Ok(Some(category)) => category,
+            Ok(None) => {
+                let message = tr("The AI's answer held no category. Try again or pick another model.");
+                return Response::Error { code: "error".into(), message: message.to_string() };
+            }
+            Err(err) => return err.response(),
+        };
         // Every mail of the conversation reads alike, and so does the entry.
         if let Err(err) = self.mail.set_category(&account, &messages, Some(decided)).await {
             eprintln!("torroworkplace: inbox: cannot keep the category of {account}: {err}");
@@ -6915,8 +6965,15 @@ impl Core {
             Err(refusal) => return refused_decider(refusal),
         };
         let account = stand_in.source.key();
-        match decide_mail_with(&self.ai, &self.mail, &self.inbox, (&engine, &model), (&account, &stand_in.id), false)
-            .await
+        match decide_mail_with(
+            &self.ai,
+            &self.mail,
+            &self.inbox,
+            (&engine, &model),
+            (&account, &stand_in.id),
+            Occasion::Button,
+        )
+        .await
         {
             Ok(Some(category)) => {
                 let mut item = stand_in;
@@ -26237,6 +26294,113 @@ mod tests {
             .await
     }
 
+    /// Issue #406: Jev answering `choice` after `delay` – the category a model could give a contact's
+    /// mail, whose group Personal stands in.
+    async fn mock_jev_choosing<'a>(
+        server: &'a httpmock::MockServer,
+        delay: std::time::Duration,
+        choice: &str,
+    ) -> httpmock::Mock<'a> {
+        server
+            .mock_async(|when, then| {
+                when.method("POST")
+                    .path("/v1/systemone")
+                    .header("authorization", format!("Bearer {}", crate::account::ai::tests::KEY));
+                then.status(200).delay(delay).json_body(serde_json::json!({
+                    "model": "jev-latest",
+                    "answers": {
+                        "ok": {"type": "noul", "noul": 0.97},
+                        "category": {"type": "choice", "choice": choice,
+                                     "probabilities": {choice: 0.88, "other": 0.12}, "confidence": 0.88},
+                        "needs_reply": {"type": "noul", "noul": 0.1},
+                        "urgency": {"type": "score", "score": 0.4, "confidence": 0.7}
+                    },
+                    "usage": {"input_tokens": 1700, "output_tokens": 9}
+                }));
+            })
+            .await
+    }
+
+    /// Issue #406: the one mail of a core from [`core_sorting_with_jev`]: its account and id, and
+    /// the category it holds now.
+    async fn the_one_mail(core: &Core) -> (String, String, Option<torro_mail::MailCategory>) {
+        let listing = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            categories: Vec::new(),
+            pile: None,
+        };
+        let Response::MailMessages { messages, .. } = core.handle(listing).await else { panic!("a page") };
+        let [one] = messages.as_slice() else { panic!("one mail") };
+        (one.account.clone(), one.id.clone(), one.category)
+    }
+
+    /// Issue #406: a category chosen by hand while the model still thinks stays – for mail that
+    /// arrives with none and for a contact's mail in Personal –, and the model's other answers are
+    /// not kept with it.
+    #[tokio::test]
+    async fn a_hand_choice_during_the_model_question_stays() {
+        use torro_mail::{Category, MailCategory};
+        for contact in [false, true] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let jev = httpmock::MockServer::start_async().await;
+            let choice = if contact { "request" } else { "invoice" };
+            mock_jev_choosing(&jev, std::time::Duration::from_millis(400), choice).await;
+            let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Hello 1".to_string()]).await;
+            let (account, message, _) = the_one_mail(&core).await;
+            let one = [message.clone()];
+            if contact {
+                core.mail.set_category(&account, &one, Some(by_contact())).await.expect("filed for the contact");
+            }
+
+            let decide = core.new_mail_decider();
+            let chosen = MailCategory::by_person(Category::Newsletter);
+            let by_hand = async {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                core.mail.set_category(&account, &one, Some(chosen)).await.expect("chosen");
+            };
+            let (answer, ()) = tokio::join!(decide(account.clone(), message.clone(), contact), by_hand);
+            assert_eq!(answer, None, "the late answer is dropped (contact: {contact})");
+            let (_, _, held) = the_one_mail(&core).await;
+            assert_eq!(held, Some(chosen), "the choice by hand stays (contact: {contact})");
+        }
+    }
+
+    /// Issue #406: without a choice by hand the model's answer is kept as before – for mail that
+    /// arrives with no category and for a contact's mail in Personal.
+    #[tokio::test]
+    async fn the_model_s_answer_applies_without_a_hand_choice() {
+        use torro_mail::{Category, CategorySource};
+        for contact in [false, true] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let jev = httpmock::MockServer::start_async().await;
+            let (choice, expected) =
+                if contact { ("request", Category::Request) } else { ("invoice", Category::Invoice) };
+            mock_jev_choosing(&jev, std::time::Duration::ZERO, choice).await;
+            let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Hello 1".to_string()]).await;
+            let (account, message, _) = the_one_mail(&core).await;
+            if contact {
+                let one = [message.clone()];
+                core.mail.set_category(&account, &one, Some(by_contact())).await.expect("filed for the contact");
+            }
+
+            let answer = core.new_mail_decider()(account, message, contact).await.expect("an answer");
+            assert_eq!((answer.category, answer.source), (expected, CategorySource::Model), "contact: {contact}");
+            let (_, _, held) = the_one_mail(&core).await;
+            assert_eq!(held.map(|held| (held.category, held.source)), Some((expected, CategorySource::Model)));
+        }
+    }
+
     /// Starts a sorting job over all mail (issue #420) and waits up to `within` for it to end.
     async fn sort_all(core: &Core, within: std::time::Duration) -> torro_ipc::inbox::CategoryJob {
         let start = Request::StartCategoryJob { scope: torro_ipc::inbox::CategoryJobScope::default() };
@@ -26573,6 +26737,27 @@ mod tests {
         for (subject, sorted) in sorted_subjects(&core).await {
             assert_eq!(sorted, subject.starts_with("Hello"), "{subject}");
         }
+    }
+
+    /// Issue #406: a category chosen by hand while the backlog run waits for the model stays; the
+    /// late answer is dropped.
+    #[tokio::test]
+    async fn the_backlog_run_keeps_a_hand_choice_made_while_the_model_thinks() {
+        use torro_mail::{Category, MailCategory};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        mock_jev_after(&jev, std::time::Duration::from_millis(600), None).await;
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Hello 1".to_string()]).await;
+        let (account, message, _) = the_one_mail(&core).await;
+
+        let backlog = Request::CatchUpCategories { cancel: false, again: false };
+        assert!(matches!(core.handle(backlog).await, Response::Categorization { .. }));
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let chosen = MailCategory::by_person(Category::Newsletter);
+        core.mail.set_category(&account, &[message], Some(chosen)).await.expect("chosen");
+        backlog_ended(&core, std::time::Duration::from_secs(10)).await;
+        let (_, _, held) = the_one_mail(&core).await;
+        assert_eq!(held, Some(chosen), "the choice by hand stays");
     }
 
     /// Issue #420 (PR review): ten mails in a row without an answer stop the backlog run; the mail

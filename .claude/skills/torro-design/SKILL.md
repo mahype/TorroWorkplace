@@ -32,8 +32,9 @@ aus einem Guss wirkt:
 
 ```
 ┌ Seitenleiste 240 (Grund BG) ┐│ Inhalt: bündige Fläche PANEL, Linie zur Seitenleiste ──────────────┐
-│ [T] App ▾      🔍  [✎]      ││ Kopfleiste 64: Pfad/Titel · Navigation …… Ansicht · Filter · [+ Neu] │
-│ Navigation (Zeilen 32)      │├───────────────────────────────────────────┬───────────────────────┤
+│ ● ● ●  [T] App ▾       [▯]  ││ obere Zeile 40: Titel · Navigation … Ansicht · Filter · [+ Neu]  [☰] │
+│                🔍  [✎]      │├───────────────────────────────────────────┬───────────────────────┤
+│ Navigation (Zeilen 32)      ││                                           │                       │
 │ Gruppe ▾ (CAPTION, TEXT_3)  ││ Inhalt (Liste, Raster, Detail)            │ Eigenschaften 300     │
 │ Listen/Kalender mit Punkt   ││                                           │ (nur Breit)           │
 │ …                           ││                                           │                       │
@@ -41,8 +42,16 @@ aus einem Guss wirkt:
 └─────────────────────────────┘└───────────────────────────────────────────┴───────────────────────┘
 ```
 
-- **Oben links der App-Umschalter** („T Calendar ▾“, wie Linears Workspace-Menü): öffnet die
-  anderen Apps der Suite (Kern-Befehl `OpenApp`), daneben Suche und „Neu“ (Kasten-Knopf).
+- **Eine obere Zeile** (#459, `shell::TopRow` an `Shell::top_row`, Entwurf `docs/prototypes/mail-layout/`):
+  40 pt hoch (doppelte Höhe der Ampel-Mitte), auf allen Systemen. Links Platz für die Ampel (nur macOS),
+  der **App-Umschalter** („T Calendar ▾“, wie Linears Workspace-Menü, öffnet die anderen Apps, Kern-Befehl
+  `OpenApp`) und der Knopf `panel-left`; über der ausgeklappten Seitenleiste so breit wie sie, neben der
+  Leiste nur das Logo, schmal nur der Knopf (der Umschalter steht dann oben in der Schublade). Daneben die
+  **Kopfzeile der App** (`shell::header_bar`), ganz rechts die **Einstellungen** mit Schiebereglern
+  (`shell::SETTINGS_ICON`, nie das Zahnrad; markiert, solange sie offen sind). Die freie Fläche zieht das
+  Fenster, Dialoge und Schublade dimmen die Zeile (`Cover`). Wer seine Kopfzeile nach Spalten teilt, zieht
+  `shell::head_inset` vom ersten Teil ab. Suche und „Neu“ stehen als erste Zeile der Seitenleiste
+  (`shell::sidebar_tools`). Ohne Shell (Anmelden, Glance, Schreibfenster) bleibt `shell::titlebar`.
 - **Seitenleiste** auf dem Fenstergrund `BG`, **Inhalt bündig** (#291, `layout::inset()` = 0 in allen
   eingebauten Designs): die Fläche `PANEL` reicht bis an die Fensterränder, eine 1-px-`LINE` trennt sie von
   Seitenleiste bzw. Leiste – kein Rand, kein Radius. Ein eigenes Design mit `inset` > 0 bekommt die
@@ -64,18 +73,19 @@ aus einem Guss wirkt:
   `torro_gui::split` darüber (Doppelpfeil, Doppelklick = Standard, beim Ziehen die Linie in `LINE_SELECTED`),
   `shell::sidebar_limits` hält die Breite zwischen ¾ und 2 × `size::sidebar()` und lässt dem Inhalt seinen Rest.
   Leiste, Schublade und Titelband behalten `size::sidebar()` bzw. `shell::rail()`.
-- **Fensterknöpfe im Titelband** (macOS, U.10/U.11, wie Claude/Slack): der Knopf `panel-left` rechts
-  neben der Ampel, die Einstellungen (Zahnrad, „Settings“) in der Ecke oben rechts –
-  `shell::TitleButtons` an `shell::titlebar`. Alles auf einer Linie: Ampel (verschoben mit
-  `torro_gui::place_traffic_lights()` beim Start), Knöpfe und Zahnrad mit Mitte bei y = 20 (fest, kein
-  Token: mittig zwischen Oberkante und 8 unter dem Band, auch bei bündigem Inhalt); Schließen-Knopf und
-  Zahnrad je 20 vom Rand. Dort fehlen sie in Seitenleiste und Kopfleiste
-  (`shell::has_band()`); auf anderen Systemen (kein Band) bleibt der Knopf oben in der Seitenleiste
-  bzw. in der schmalen Kopfleiste und „Settings“ unten in der Seitenleiste. Eingeklappt rückt der Inhalt nach links, nichts überlagert. Zeilen einmal bauen, mit
-  dem Modus als Parameter: `widgets::sidebar_item_in`, `sidebar_group_in`, `shell::sidebar_head`,
+- **Ampel** (macOS, U.11): verschoben mit `torro_gui::place_traffic_lights()` beim Start, Mitte bei y = 20 (fest,
+  kein Token) – die Mitte der oberen Zeile. Eingeklappt rückt der Inhalt nach links, nichts überlagert. Zeilen einmal
+  bauen, mit dem Modus als Parameter: `widgets::sidebar_item_in`, `sidebar_group_in`, `shell::sidebar_tools`,
   `Shell::rail`.
-- **Kopfleiste** `size::header()` hoch im Inhalt (64 im Standard): links Pfad bzw. Titel (`typo::body_strong()`) mit leiser Ergänzung in
-  `TEXT_3`, dann Navigation; rechts Ansicht, Filter, genau ein Primärknopf.
+- **Kopfzeile** in der oberen Zeile: links Titel (`typo::body_strong()`) mit leiser Ergänzung in `TEXT_3`, dann
+  Navigation; rechts Ansicht, Filter, genau ein Primärknopf. Schmale Fenster haben neben Ampel und Knopf wenig Platz:
+  dort entfällt zuerst die leise Ergänzung. Andere Knöpfe als die Einstellungen zeigen keine Schieberegler
+  (Ansicht: `list-filter`).
+- **Mail-Fenster** (#451): über der Liste Suchfeld, Sortieren, Aktualisieren; über dem Leser Betreff, „6 von 9“, ⌃ ⌄
+  und „In neuem Fenster“. Die **Aktionsleiste schwebt** als Karte (Menü-Stil, Radius `lg`) senkrecht mittig am rechten
+  Rand über der Mail (`widgets::floating_rail`); der Text hält `widgets::floating_rail_room()` Abstand, der Kopf läuft
+  darunter durch. Die **Mail-Zeile** hat zwei Zeilen (Absender · Büroklammer · Zeit, Betreff · Markierungen), Tagesköpfe
+  und vorn den Kreis des Absenders (`widgets::sender_circle`, Farbe aus `Palette::sender` über die Adresse).
 - **Eigenschaften-Spalte** 300 breit rechts (Linear „Properties“): Gruppen mit `typo::caption()`-Titel in
   `TEXT_3`, Zeilen 32 mit Icon und Wert.
 - **Kleiner werden** in dieser Reihenfolge, nie etwas Funktion verlieren: (1) Seitenleiste ins Menü
@@ -171,7 +181,7 @@ aus einem Guss wirkt:
 | `size::command()` | 46 | Bleibt im Paket-Format (E14, Entscheidung 9), kein Baustein nutzt es mehr: die Befehlsleiste des Lesers (E11.1) ist mit #241 entfernt |
 | `size::pill()` | 40 | Avatar im Kopf des Lesers (E11.1); die Torro-Pillen, die so hoch waren, sind mit #241 entfernt, das Maß bleibt im Paket-Format |
 | `size::row()` | 48 | Listenzeile (Aufgaben, `widgets::list_row`) |
-| `size::row_message()` | 100 | Mail-Zeile im Eingang: Avatar (`[list] avatar`, 40), Absender · Domain · Zeit, Betreff, Vorschau – drei Zeilen à 22, über der Haarlinie zentriert mit je 16,5 Luft – die Zeile nimmt von `row_padding` nur die Seiten (E3.9, E11.1); in Console eine Zeile 24 |
+| `size::row_message()` | 100 | Mail-Zeile im Eingang: Avatar (`[list] avatar`, 40), Absender · Domain · Zeit, Betreff, Vorschau – drei Zeilen à 22, über der Haarlinie zentriert mit je 16,5 Luft – die Zeile nimmt von `row_padding` nur die Seiten (E3.9, E11.1); in Console eine Zeile 24. Das Mail-Fenster hat eigene, schlanke Zeilen (#458, `list::slim_message_height()`: zwei Zeilen `body` + 2 × `space::m()` + Haarlinie) |
 | `size::row_notice()` | 80 | Andere Zeile im Eingang: Kachel 28 mit Quell-Icon, Titel · Zeit, Text – zwei Zeilen à 22, über der Haarlinie zentriert mit je 17,5 Luft (E3.9) |
 | `size::card_gap()` | 12 | Abstand zwischen Karten und zwischen den Teilen einer Karte (`widgets::card`, E8.2) |
 | `size::avatar()` / `size::avatar_lg()` | 40 / 48 | Avatar einer Karte / Absender im Kopf des Lesers (E8.2); die Mail-Zeile hat ihren eigenen (`[list] avatar`) |
@@ -183,7 +193,7 @@ aus einem Guss wirkt:
 | `size::props()` | 300 | Eigenschaften-Spalte |
 | `size::panel()` | 400 | Seitenpaneel für Details (`torro_gui::panel`): Breit daneben, in Schmal darüber in voller Höhe (die Aufgaben-App zeigt ihr Detail auch in Mittel daneben, Abschnitt 6) |
 | `shell::rail()` = `size::rail()` | 60 | Eingeklappte Seitenleiste (Leiste, nur Icons) und eingeklappte Aktionsleiste der Mail; mindestens `control_lg()` |
-| `size::rail_wide()` | 248 | Ausgeklappte Aktionsleiste der Mail (`RailMode::Expanded`) |
+| `size::rail_wide()` | 248 | Ausgeklappte Aktionsleiste (`RailMode::Expanded`); das Mail-Fenster nutzt seit #456 die schwebende Leiste |
 | `size::reading_max()` | 600 | Lesespalte: so breit steht der Text einer Mail höchstens im Leser (Console 1200) |
 | `size::list()` / `size::list_medium()` | 440 / 364 | Liste neben dem Detail (Breit / Mittel) |
 | `size::hour()` | 48 | Stundenhöhe im Kalender, Zeitachse 52 (Schmal 44) |
@@ -330,9 +340,11 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   `cargo run -p torro-gui --example gallery -- --cards` (dazu `--light`, `--design console`, `--design compact`).
 - **Aktionsleiste der Mail** (E14, nur das Mail-Fenster, alle Größen; Entwurf
   `docs/prototypes/inbox/mail-aktionsleiste.html#d`): Alles, was man mit der geöffneten Mail tun kann, steht in
-  **einer Leiste am rechten Rand der Mail** (`widgets::action_rail`), über die ganze Höhe, Fläche `PANEL`, links eine
-  `LINE`, `space::xs()` Luft zur Scrollleiste davor; die Liste hat keine Knöpfe, über der Mail stehen keine. Gruppen
-  (`widgets::RailGroup`) in fester Reihenfolge Reply · File · Torro · Mark, unten abgesetzt Mute · More
+  **einer Leiste, die seit #456 über der Mail schwebt** (`widgets::floating_rail`, Entwurf
+  `docs/prototypes/mail-layout/`): eine Karte im Menü-Stil mit Schatten, Radius `lg`, senkrecht mittig, `space::s()`
+  vom rechten Rand des Lesers bzw. Paneels (`widgets::with_floating_rail`, `Panel::floating`); der Text der Mail hält
+  `widgets::floating_rail_room()` Abstand, der Kopf läuft darunter durch. Die Liste hat keine Knöpfe. Gruppen
+  (`widgets::RailGroup`) in fester Reihenfolge Reply · File · Torro · Mark, unten abgesetzt Mute · Display · More
   (`RailGroup::foot`), jede nur mit dem, was für die Mail geht; was gerade nicht geht, steht aus (`RailItem` ohne
   Nachricht, 40 %, ohne `kbd`). **Feste Gruppen-Icons** (Reply, Check, ListTodo, Flag, BellOff, Ellipsis), egal was
   das erste Item ist. **Reply** ist die Hauptgruppe (`RailGroup::accent`): eingeklappt eine gefüllte rote Fläche wie
@@ -341,31 +353,16 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   (`RailItem::accent`). Ein Klick aufs Gruppen-Icon tut das erste Item, das geht – **nie ein destruktives**
   (`RailItem::danger`, Delete): ist es das, öffnet der Klick das Klappfeld. Mark zeigt eine markierte Mail am Icon
   (`RailGroup::tinted`, `attention`). More beginnt mit Copy text (ein Klick auf „…“ kopiert).
-  **Eingeklappt** (`RailMode::Collapsed`, `shell::rail()` breit): oben der Umschalter `panel-right` als Icon-Knopf
-  (`size::control_lg()`, `style::button::icon`, Tooltip „Expand actions“ mit `kbd` „]“) `space::s()` vom Rand, darunter
-  `space::s()` und eine `LINE` von Rand zu Rand – in beiden Modi gleich, der Knopf springt beim Umschalten nicht. Ein
-  Icon je Gruppe; `SELECTED`, solange ihr Klappfeld oder ein Menü/Dialog ihrer Items offen ist. Das Klappfeld
-  (`widgets::rail_flyout`) öffnet erst, wenn der Zeiger **ca. 150 ms** auf dem Icon ruht (die App hält Zeitpunkt und
-  Timer, `widgets::RailEvent`); von einem offenen Feld zur Nachbargruppe sofort; Verlassen schließt sofort. Es liegt
-  links neben dem Icon und endet `space::xs()` vor der `LINE` der Leiste; für alle Gruppen gleich breit
+  Ein Icon je Gruppe (`size::control_lg()`, `space::xs()` Abstand); `SELECTED`, solange ihr Klappfeld, ein Menü/Dialog
+  ihrer Items oder ihre Karte offen ist. Das Klappfeld (`widgets::rail_flyout`) öffnet erst, wenn der Zeiger **ca.
+  150 ms** auf dem Icon ruht (die App hält Zeitpunkt und Timer, `widgets::RailEvent`); von einem offenen Feld zur
+  Nachbargruppe sofort; Verlassen schließt sofort. Es liegt links neben dem Icon, für alle Gruppen gleich breit
   (`size::sidebar()`), Fläche und Rand wie ein Menü, Gruppenname als Abschnittstitel, Zeilen 30 mit Icon, Wort und
-  `kbd`; die Zeile, die ein Klick aufs Icon auslöst, steht hervorgehoben. Obere Gruppen: erste Zeile auf Höhe des
-  Icons; untere Gruppen unten bündig; am Fensterrand begrenzt. Kein Scrim; es liegt als Ebene über dem ganzen Fenster
-  (`Shell::overlay`), nie in einem schmaleren Teil. **Ausgeklappt** (`RailMode::Expanded`, `size::sidebar()` breit, nur
-  in Breit): Umschalter an derselben Stelle (Tooltip „Collapse actions“), alle Gruppen offen im Rhythmus der linken
-  Seitenleiste – Zeilen `size::row_sidebar()` mit 2 Abstand, Titel wie `widgets::sidebar_group_in`; die erste Gruppe
-  und Gruppen mit nur einem Item ohne Titel (nur dessen Abstand darüber). Die Spalte gehört zum Layout, die Mail rückt
-  nach innen. Oben scrollt, wenn das Fenster zu niedrig ist (Scrollleiste im Rand, die `kbd` bleiben frei),
-  `space::s()` vor dem Fuß, der bleibt. Bekäme der Leser neben der ausgeklappten Leiste weniger als
-  `size::form_max()`, wird sie **nur eingeklappt dargestellt** (der gemerkte Modus bleibt, der Kopf mit dem
-  Umschalter bleibt, der Umschalter steht aus mit dem Tooltip „Widen the window to expand actions“ –
-  `widgets::RailToggle::Off`, `widgets::action_rail_toggle` –, damit Reply und die anderen Icons nicht springen;
-  `]` schaltet den gemerkten Modus). **Mittel und Schmal:** die Mail steht im Paneel
-  (`Panel::side(rail, RailMode::Collapsed.width())`), die Leiste immer eingeklappt und ohne Umschalter; in Mittel ist
-  das Paneel `size::panel()` + Leiste breit, die Mail behält 400. **Umschalten:** Knopf oder Taste `]`
-  (`shell::is_actions_key`, wie `[` für die Seitenleiste), gemerkt je Fensterart und Ausschnitt in `ui.json`
-  (`ui_state::actions_from`, `"collapsed"`/`"expanded"`). Einladungen (Accept, Maybe, Decline) bleiben als Karte im
-  Kopf der Mail. Anschauen: `cargo run -p torro-gui --example gallery -- --mailbar` (dazu `--light`, `--design console`).
+  `kbd`; die Zeile, die ein Klick aufs Icon auslöst, steht hervorgehoben. **Display** (`RailGroup::card`, Icon
+  `contrast`) öffnet kein Klappfeld, sondern per Klick die Karte „Display“ (HTML/Text, Light/Dark/As app; die Wahl ist
+  die Einstellung `mail_view` bzw. `mail_appearance`), sein Name steht im Tooltip. Die ausgeklappte Leiste
+  (`RailMode::Expanded`), ihr Umschalter und die Taste `]` gibt es im Mail-Fenster nicht mehr. Einladungen (Accept,
+  Maybe, Decline) bleiben als Karte im Kopf der Mail. Anschauen: `cargo run -p torro-gui --example gallery -- --mailbar` (dazu `--light`, `--design console`).
 - **Befehlsleiste und Leiste der Zeile** (E11.1, **mit #241 entfernt**): Die Befehlsleiste oben im Leser
   (`widgets::command_bar` mit `command_split`, `command_cell`, `command_more`, `command_words`), die Leiste der
   gewählten Zeile (`widgets::row_strip`, `row_strip_words`), die Torro-Pillen (`widgets::pill_button`) und der versenkte

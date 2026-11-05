@@ -1122,6 +1122,14 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             text: "Hi Clara,\n\nI can bring the cake on Saturday. Is seven o’clock still fine?\n\nAnna",
             ..Letter::new("m:p8", PRIVATE, "sent", "Saturday cake")
         },
+        // A second mail in the trash (issue #455), so "Trash" lists more than one.
+        Letter {
+            from: ("Lena Hoffmann", "lena@work.example.org"),
+            minutes: 3 * 24 * 60,
+            flags: READ,
+            text: "Never mind the slides from Monday, the new ones are in the shared folder.",
+            ..Letter::new("m:w17", WORK, "trash", "Old slides")
+        },
     ];
     letters.into_iter().map(|l| letter(now, l)).collect()
 }

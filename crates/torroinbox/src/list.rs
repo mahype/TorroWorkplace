@@ -1387,6 +1387,114 @@ fn preview_count(look: ListLook) -> usize {
     usize::from(look.preview_lines.clamp(1, 2))
 }
 
+/// The two lines of a mail in the mail window's slim list (issue #458, [`slim_mail_content`]).
+pub(crate) struct SlimLines<'a> {
+    /// The sender as shown.
+    pub name: String,
+    /// The time at the end of the first line ([`stamp`]).
+    pub time: String,
+    /// The subject.
+    pub subject: String,
+    /// Unread: the dot, and both lines strong.
+    pub new: bool,
+    /// The mail has attachments: the paperclip right after the name.
+    pub attachment: bool,
+    /// The marks at the end of the second line (the flag on its yellow field), each with its width.
+    pub marks: Vec<(Element<'a, Message>, f32)>,
+    /// The circle in front ([`torro_gui::widgets::sender_circle`]); `None` in a design without avatars.
+    pub circle: Option<Element<'a, Message>>,
+    /// The words a search matched (#136), stressed in the sender and the subject.
+    pub hits: Option<Hits<'a>>,
+}
+
+/// The air above and below the two lines of a slim row (issue #458): [`space::m()`] and a hairline,
+/// 13 in the standard design as in the draft.
+pub fn slim_air() -> f32 {
+    space::m() + size::HAIRLINE
+}
+
+/// The height of a row of the mail window's slim list (issue #458): two lines of `BODY`, [`slim_air`]
+/// above and below them, and the hairline under the row.
+pub fn slim_message_height() -> f32 {
+    2.0 * typo::line_height(typo::body()) + 2.0 * slim_air() + size::HAIRLINE
+}
+
+/// The height of a day's head over the slim list's rows (issue #458, [`day_head`]): a line of
+/// `CAPTION`, [`space::m()`] above and [`space::xs()`] below.
+pub fn day_head_height() -> f32 {
+    typo::line_height(typo::caption()) + space::m() + space::xs()
+}
+
+/// The head of a day over the mail window's slim list (issue #458): "Today", "Yesterday", the weekday
+/// or the date, in `CAPTION`, `text_3`, in line with the rows' text.
+pub(crate) fn day_head<'a>(label: String) -> Element<'a, Message> {
+    let pad = layout::row_padding();
+    container(typo::text(typo::caption(), label).style(theme::text_3).wrapping(Wrapping::None))
+        .width(Fill)
+        .height(day_head_height())
+        .padding(Padding { top: space::m(), bottom: space::xs(), left: mail_row_left(false), right: pad.right })
+        .into()
+}
+
+/// A mail of the mail window's slim list `width` wide (issue #458, the draft's list "A + Bild"): the
+/// unread slot, the circle, then two lines – the sender with the paperclip right after it and the time
+/// at the right; the subject with the marks at the right. No domain, no preview, no category pill.
+pub(crate) fn slim_mail_content<'a>(lines: SlimLines<'a>, width: f32, selected: bool) -> Element<'a, Message> {
+    let parts = RowLook::of(layout::list(), selected);
+    let SlimLines { name, time, subject, new, attachment, marks, circle, hits } = lines;
+    let words = hits.as_ref().map(Hits::words).unwrap_or_default();
+    let hit_colour = hits.map(|hits| hits.text).filter(|_| !parts.fill);
+    let lead = circle.as_ref().map_or(0.0, |_| layout::list().avatar + space::m());
+    let room = (width - mail_row_left(parts.bar) - layout::row_padding().right - lead).max(0.0);
+    let strong = |new: bool| if new { typo::body_strong() } else { typo::body() };
+    let clip = if attachment { icon::SIZE_SM + space::xs() } else { 0.0 };
+    let name_room = (room - end_width(&time, typo::meta()) - clip).max(0.0);
+    let name = typo::ellipsize(&name, strong(true), name_room);
+    let mut who = row![marked(name, strong(new), theme::text, &words, hit_colour)]
+        .spacing(space::xs())
+        .align_y(Alignment::Center);
+    if attachment {
+        let clip = icon::icon(Icon::Paperclip, icon::SIZE_SM)
+            .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) });
+        who = who.push(widgets::with_tooltip(clip, tr("Has attachments")));
+    }
+    let first = row![
+        container(who).width(Fill).clip(true),
+        typo::text(typo::meta().tabular(), time).style(theme::text_3).wrapping(Wrapping::None),
+    ]
+    .spacing(cell_gap())
+    .align_y(Alignment::Center);
+    let marks_width: f32 = marks.iter().map(|(_, width)| width + cell_gap()).sum();
+    let subject = typo::ellipsize(&subject, strong(true), (room - marks_width).max(0.0));
+    let tone = if new { theme::text } else { theme::text_2 };
+    let subject = marked(subject, strong(new), tone, &words, hit_colour);
+    let mut second = row![container(subject).width(Fill).clip(true)].spacing(cell_gap()).align_y(Alignment::Center);
+    for (mark, _) in marks {
+        second = second.push(mark);
+    }
+    let lines = column![first, second].width(Fill);
+    let height = slim_message_height() - size::HAIRLINE;
+    let mut content = row![marker_slot(new, parts.bar, height)];
+    if let Some(circle) = circle {
+        content = content.push(circle).push(blank().width(space::m()));
+    }
+    widgets::row_content(content.push(lines).align_y(Alignment::Center), selected)
+}
+
+/// The flag of a flagged mail at the end of the slim row's second line (issue #458): a dark flag –
+/// the dark design's ground, in light and dark alike – on a small field in `attention`, radius `xs`.
+pub(crate) fn flag_field<'a>() -> (Element<'a, Message>, f32) {
+    let edge = typo::line_height(typo::body());
+    let flag = icon::icon(Icon::Flag, icon::SIZE_SM)
+        .style(|_: &Theme, _| iced::widget::svg::Style { color: Some(theme::Palette::dark().bg) });
+    let field = container(flag).center(edge).style(|t: &Theme| container::Style {
+        background: Some(Background::Color(palette(t).attention)),
+        border: border::rounded(radius::xs()),
+        ..container::Style::default()
+    });
+    (widgets::with_tooltip(field, tr("Flagged")), edge)
+}
+
 /// The marker slot of a mail row ([`mail_row_left`] wide, `height` high): the unread dot centred in it
 /// while the mail is `new`. The selection's `bar` takes its width from this slot; the dot stays at the
 /// same x.
@@ -2007,6 +2115,7 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
         | View::All
         | View::Sent
         | View::Archive
+        | View::Trash
         | View::ReplyLater
         | View::SetAside => (tr("No messages here."), tr("Mail in this folder shows up here.")),
         // Task E12.8: a category the person filtered by holds nothing at the moment.

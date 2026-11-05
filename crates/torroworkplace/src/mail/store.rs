@@ -1433,9 +1433,10 @@ impl MailStore {
         Ok(self.db.execute(sql, params![id, key, source, confidence])? > 0)
     }
 
-    /// Commit a job's decision only if the category still matches the value read before the
-    /// model call. A person's or rule's concurrent change therefore wins, including when the
-    /// model took a long time to answer.
+    /// Commit a decision only if the category still matches the value read before the model
+    /// call. A person's or rule's concurrent change therefore wins, including when the model took
+    /// a long time to answer. What stands as `expected` may be a rule's category (a contact's
+    /// mail sits in Personal that way); a category set by a person is never replaced.
     pub fn set_category_if_unchanged(
         &self,
         id: &str,
@@ -1456,7 +1457,7 @@ impl MailStore {
         let changed = self.db.execute(
             "UPDATE messages SET category = ?2, category_source = ?3, category_confidence = ?4
              WHERE id = ?1 AND category IS ?5 AND category_source IS ?6
-             AND (category_source IS NULL OR category_source = 'model')",
+             AND (category_source IS NULL OR category_source <> 'person')",
             params![
                 id,
                 category.category.key(),
@@ -3459,6 +3460,30 @@ mod tests {
         assert_eq!(store.html(&html).expect("asked"), Some(Some("<p>Hello</p>".into())));
         assert_eq!(store.prune_bodies(day(3) + Duration::days(BODY_RETENTION_DAYS)).expect("pruned"), 2);
         assert_eq!(store.html(&html).expect("asked"), None, "pruned with the text");
+    }
+
+    /// Issue #406: a late answer replaces what the mail held before the question – a rule's
+    /// category included – and never a person's choice or a changed category.
+    #[test]
+    fn a_late_answer_replaces_only_what_it_was_asked_about() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let mail = add(&store, &inbox, &message(1, "Hello"));
+        let answer = MailCategory::by_model(Category::Invoice, 0.9);
+        let contact = MailCategory::by_rule(Category::Personal);
+        let kept = |store: &MailStore| store.summary(&mail).expect("summary").expect("there").category;
+
+        store.set_category(&mail, Some(contact)).expect("kept");
+        assert!(store.set_category_if_unchanged(&mail, Some(contact), answer).expect("asked"), "a rule's category");
+        assert_eq!(kept(&store).map(|held| held.source), Some(CategorySource::Model));
+
+        store.set_category(&mail, Some(MailCategory::by_person(Category::Newsletter))).expect("kept");
+        assert!(!store.set_category_if_unchanged(&mail, Some(contact), answer).expect("asked"), "a person's choice");
+        let held = kept(&store).expect("a category");
+        assert_eq!((held.category, held.source), (Category::Newsletter, CategorySource::Person));
+
+        store.set_category(&mail, Some(MailCategory::by_rule(Category::Shipping))).expect("kept");
+        assert!(!store.set_category_if_unchanged(&mail, Some(contact), answer).expect("asked"), "changed meanwhile");
     }
 
     /// Task E12.2: what a mail is is kept with it, filters the search and survives the migration

@@ -104,6 +104,9 @@ pub struct Anchors {
     /// The triangle of "Save all ▾" over the attachments (task M12.6): the menu of all of them opens
     /// here.
     pub save_all: Anchor,
+    /// "{n} attachments ▾" in the mail's head (issue #457): the menu of the attachments opens here,
+    /// and the menu of one of them or of all once that one replaced it.
+    pub files: Anchor,
     /// "Save attachments (n)" in the rail's group File (task M12.6): the menu of "Save all" opened
     /// from the rail – or, through [`Anchors::with_rail`], at the group's icon – and from the list's
     /// context menu at the row.
@@ -132,7 +135,9 @@ pub struct RailAnchors {
     pub mark: Anchor,
     /// Mute…: the bell's menu falls back to it.
     pub mute: Anchor,
-    /// Show as text or HTML · Light or Dark colours · Copy text · Close.
+    /// "Display" (issue #456): its card – HTML or text, the mail's colours – hangs here.
+    pub display: Anchor,
+    /// Copy text · Create filter… · Close.
     pub more: Anchor,
 }
 

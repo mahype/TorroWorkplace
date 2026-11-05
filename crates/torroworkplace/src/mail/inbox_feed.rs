@@ -189,9 +189,10 @@ async fn decide_later(decide: Decider, inbox: Arc<Inbox>, account: String, messa
             }
         };
         // The entry of that mail reads alike; the decider already kept the category with the mail.
+        // A person's choice made on the entry meanwhile stands (issue #406).
         if let Some(category) = category
             && let Some(entry) = inbox.entry_of_message(&account, &message)
-            && let Err(err) = inbox.set_category(&entry, Some(category))
+            && let Err(err) = inbox.set_category_unless_person(&entry, category)
         {
             eprintln!("torroworkplace: inbox: cannot put a category on an entry of {account}: {err}");
         }
@@ -2671,6 +2672,37 @@ pub(crate) mod tests {
         expected.sort();
         assert_eq!(asked, expected, "the model hears which mail is a contact's");
         assert_eq!(by_subject(&mail).await["Hello"].category, personal, "no answer leaves Personal");
+    }
+
+    /// Issue #406: the model's late answer does not replace what a person chose on the entry while
+    /// the model thought.
+    #[tokio::test]
+    async fn a_late_answer_leaves_a_choice_on_the_entry() {
+        use torro_mail::Category;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &bernd("Offer", 0), &[]);
+        let (inbox, mail, feed) = quiet(dir.path(), &server).await;
+        let chosen = MailCategory::by_person(Category::Newsletter);
+        let by_hand = Arc::clone(&inbox);
+        let decide: Decider = Arc::new(move |account: String, message: String, _contact: bool| {
+            let inbox = Arc::clone(&by_hand);
+            Box::pin(async move {
+                let entry = inbox.entry_of_message(&account, &message).expect("an entry");
+                inbox.set_category(&entry, Some(chosen)).expect("chosen");
+                Some(MailCategory::by_model(Category::Invoice, 0.9))
+            })
+        });
+        let feed = Feed { decide: Some(decide), ..feed };
+        let all = by_subject(&mail).await;
+
+        feed.take(arrived(&[&all["Offer"]]), Utc::now()).await;
+        eventually("the entry keeps the choice", || async {
+            entry(&entries(&inbox), "Offer").category == Some(chosen)
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(entry(&entries(&inbox), "Offer").category, Some(chosen), "the late answer did not replace it");
     }
 
     /// Issue #390: knowing nobody – the setting off, or no contacts – new mail is sorted as before;

@@ -3562,7 +3562,7 @@ fn collections_moved<'a>(state: &State, data: &dyn Seen) -> Option<Element<'a, M
             (tr("Calendars"), tr("Open Calendar"), AppId::CALENDAR.window_class),
             (tr("Task lists"), tr("Open Tasks"), AppId::TASKS.window_class),
         ],
-        tr("Calendars and lists are chosen in Calendar and Tasks, under the gear."),
+        tr("Calendars and lists are chosen in Calendar and Tasks, in their settings."),
     )
 }
 
@@ -3579,7 +3579,7 @@ fn sources_moved<'a>(state: &State, account: &AccountInfo, data: &dyn Seen) -> O
         data,
         tr("Notification Hub"),
         vec![(tr("Notifications"), tr("Open Notification Hub"), AppId::INBOX.window_class)],
-        tr("What this account sends to the Notification Hub is switched on there, under the gear."),
+        tr("What this account sends to the Notification Hub is switched on there, in its settings."),
     )
 }
 
@@ -3593,7 +3593,7 @@ fn mail_moved<'a>(state: &State, data: &dyn Seen) -> Vec<Element<'a, Message>> {
             tr("Mail"),
             vec![(tr("Sender name and signature"), tr("Open Mail"), AppId::INBOX_MAIL.window_class)],
             tr(
-                "Sender name, signature, how new mail is written and which folder holds what are set in Mail, under the gear.",
+                "Sender name, signature, how new mail is written and which folder holds what are set in Mail, in its settings.",
             ),
         ),
         moved_group(
@@ -3601,7 +3601,7 @@ fn mail_moved<'a>(state: &State, data: &dyn Seen) -> Vec<Element<'a, Message>> {
             data,
             tr("Notification Hub"),
             vec![(tr("New mail"), tr("Open Notification Hub"), AppId::INBOX.window_class)],
-            tr("Whether new mail of this account shows up there is set in the Notification Hub, under the gear."),
+            tr("Whether new mail of this account shows up there is set in the Notification Hub, in its settings."),
         ),
     ]
     .into_iter()

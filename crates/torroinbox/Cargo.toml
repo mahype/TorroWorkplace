@@ -32,7 +32,7 @@ iced = { workspace = true, features = ["image-without-codecs"] }
 # Not used in code: turns on the PNG decoder of the `image` crate Iced decodes the pictures with.
 image.workspace = true
 rfd.workspace = true
-# The value of `settings.set_setting compose_paper`.
+# The value of `settings.set_setting`: "Display" (issue #456) and the compose paper (issue #460).
 serde_json.workspace = true
 # `cid:` pictures are asked of the core on the picture fetcher's worker thread, which blocks on it.
 tokio.workspace = true

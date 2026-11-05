@@ -455,7 +455,7 @@ fn apps(data: &Data) -> Element<'_, Message> {
     }
     let footer = format!(
         "{} {}",
-        tr("Its settings are behind the gear in its window."),
+        tr("Its settings are in its window, at the top right."),
         tr(
             "Turned off, a part of the suite leaves the app switcher and the tray, and nothing runs for it in the background. Accounts and data stay."
         ),

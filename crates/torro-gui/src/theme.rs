@@ -189,6 +189,9 @@ pub struct Palette {
     /// `torro_mail::CategoryGroup`: waiting for me, paper trail, info, unwanted, unsorted. The dot and the
     /// border of a category pill ([`crate::widgets::category_pill`]), never text.
     pub category: [Color; 5],
+    /// The colours of the senders of mail (issue #458, `torro_core::design::Palette::sender`): the
+    /// circle of a mail ([`crate::widgets::sender_circle`]) takes the one its address picks.
+    pub sender: [Color; 10],
     /// The shadow under menus, floating cards and dialogs.
     pub shadow: Shadow,
     /// Dims the window behind a modal dialog.
@@ -283,6 +286,7 @@ impl Palette {
             tint: c.tint,
             chart: c.chart.map(rgba),
             category: c.category.map(rgba),
+            sender: c.sender.map(rgba),
             chart_other: rgba(c.chart_other),
             shadow: Shadow { color: rgba(c.shadow), offset: Vector::new(0.0, 12.0), blur_radius: 32.0 },
             scrim: rgba(c.scrim),

@@ -1,21 +1,23 @@
 //! The host of an app's settings: it shows the sections in the app's content area.
 //!
 //! ```text
-//! ┌ Sidebar of the app ──┐┌ Content ─────────────────────────────────────────────────────┐
-//! │ T Calendar ▾         ││ ← Settings › Reminders                                    ⚙  │
-//! │ Today                │├────────────────┬─────────────────────────────────────────────┤
-//! │ Week                 ││ Calendars      │ Reminders                                   │
-//! │ Calendars            ││ Reminders      │  Show reminders                      [on]   │
-//! │  ● Work              ││ Night          │  Default reminder         15 min before ▾   │
-//! │                      ││ ────────────── │ Which events                                │
-//! │                      ││ Appearance ↗   │  Only events I accepted              [on]   │
-//! │                      ││ All settings ↗ │                                             │
-//! └──────────────────────┘└────────────────┴─────────────────────────────────────────────┘
+//! ┌ Top row of the app ───────┬──────────────────────────────────────────────────────────────┐
+//! │ ● ● ●  T Calendar ▾    ▯  │ ← Settings › Reminders                                   ☰   │
+//! ├ Sidebar of the app ───────┤├────────────────┬─────────────────────────────────────────────┤
+//! │ Today                     ││ Calendars      │ Reminders                                   │
+//! │ Week                      ││ Reminders      │  Show reminders                      [on]   │
+//! │ Calendars                 ││ Night          │  Default reminder         15 min before ▾   │
+//! │  ● Work                   ││ ────────────── │ Which events                                │
+//! │                           ││ Appearance ↗   │  Only events I accepted              [on]   │
+//! │                           ││ All settings ↗ │                                             │
+//! └───────────────────────────┘└────────────────┴─────────────────────────────────────────────┘
 //! ```
 //!
-//! The gear turns the content area into the settings and back; the app's sidebar stays, and a
-//! click in it closes the settings (`docs/settings.md`, "Wie es aussieht"). No window of its own,
-//! no dimmed dialog.
+//! The settings button (sliders, `torro_gui::shell::SETTINGS_ICON`) at the right of the app's top row
+//! turns the content area into the settings and back; the app's sidebar stays, and a click in it
+//! closes the settings (`docs/settings.md`, "Wie es aussieht"). No window of its own, no dimmed
+//! dialog. The host's head – the arrow back, the path and the page's buttons ([`Frame::header`]) –
+//! stands in the top row as every app's header does (issue #459); it has no bar of its own.
 //!
 //! # What the app does
 //!
@@ -115,13 +117,13 @@ const LINE: f32 = 1.0;
 /// has a page of its own for them only while the main application is not installed
 /// ([`SUITE_SECTIONS`]).
 const LINKS: [(&str, Icon, &str); 2] =
-    [("appearance", Icon::Sun, "Appearance"), ("general", Icon::Settings, "All settings")];
+    [("appearance", Icon::Sun, "Appearance"), ("general", shell::SETTINGS_ICON, "All settings")];
 
 /// The suite's pages as sections of an app without the main application (issue #408), after its own:
 /// the same words, icons and names as the two [`LINKS`] they stand in for.
 pub const SUITE_SECTIONS: [Section; 2] = [
     Section { id: suite::APPEARANCE, icon: Icon::Sun, label: "Appearance" },
-    Section { id: suite::GENERAL, icon: Icon::Settings, label: "General" },
+    Section { id: suite::GENERAL, icon: shell::SETTINGS_ICON, label: "General" },
 ];
 
 /// The section Accounts of an app ([`Host::with_accounts`], issue #410): the word, the icon and the
@@ -150,7 +152,7 @@ pub fn account_sections(providers: &[Group], ai: bool) -> Vec<Section> {
 
 /// The suite's General where the app has a section "general" of its own (the assistant): its own
 /// word, and a name that tells the two apart.
-const SUITE_GENERAL_BESIDE: Section = Section { id: "suite-general", icon: Icon::Settings, label: "All apps" };
+const SUITE_GENERAL_BESIDE: Section = Section { id: "suite-general", icon: shell::SETTINGS_ICON, label: "All apps" };
 
 /// The suite's sections after the app's `own` ones ([`SUITE_SECTIONS`]): what [`Host::with_memory`]
 /// adds without the main application, and what `--settings` takes besides the app's own words. A
@@ -268,7 +270,9 @@ impl<'a, M> Page<'a, M> {
 
 /// What the host draws, in the three places `torro_gui::shell::shell` takes them.
 pub struct Frame<'a, M> {
-    /// The 44-high header bar of the content area: the arrow, the path, the page's buttons.
+    /// The head of the content area: the arrow, the path, the page's buttons – one row of controls
+    /// for the window's top row (`torro_gui::shell::Shell::top_row`, issue #459), which pads it and
+    /// draws the line below; the head has no bar of its own.
     pub header: Element<'a, M>,
     /// The content area: the section list and the page, as [`Form`] says.
     pub body: Element<'a, M>,
@@ -749,7 +753,11 @@ impl Host {
     /// The section on screen.
     pub fn current(&self) -> Section {
         // `new` refuses an empty list, so there is always one.
-        self.sections.get(self.current).copied().unwrap_or(Section { id: "", icon: Icon::Settings, label: "Settings" })
+        self.sections.get(self.current).copied().unwrap_or(Section {
+            id: "",
+            icon: shell::SETTINGS_ICON,
+            label: "Settings",
+        })
     }
 
     /// Its sections, in the order of the list.
@@ -1205,7 +1213,7 @@ impl Host {
         let leading = vec![widgets::icon_button(Icon::ChevronLeft, label, Some(back))];
         let title: Element<'a, M> = match (form, on_list) {
             // Narrow: the path has no room; the name of what is open is enough.
-            (Form::Steps, true) => shell::header_title(Some(Icon::Settings), tr("Settings"), None),
+            (Form::Steps, true) => shell::header_title(Some(shell::SETTINGS_ICON), tr("Settings"), None),
             (Form::Steps, false) => match sub_page {
                 Some((name, _)) => shell::header_title(None, name, None),
                 None => shell::header_title(Some(section.icon), section.name(), None),

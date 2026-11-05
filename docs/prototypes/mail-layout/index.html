@@ -1,0 +1,941 @@
+<title>Mail-Fenster neu geordnet</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: eine Lesespalte wie die übrigen Prototypen; das Mail-Fenster maßstabsgetreu (1320 × 820) auf Spaltenbreite verkleinert. Das Fenster ist immer dunkel, wie die App gerade läuft. */
+:root{
+  --bg:#f3f3f1; --fg:#1d1e21; --muted:#62646b; --line:#dcdcd7; --card:#ffffff; --accent:#c93b24; --note:#b98a0c;
+  --font-page:"Figtree",ui-sans-serif,system-ui,sans-serif;
+  --font-app:"Inter",ui-sans-serif,system-ui,sans-serif;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#121315; --fg:#ececee; --muted:#9a9ca3; --line:#2b2d31; --card:#1a1b1e; --accent:#ef5a40; --note:#e8b931; color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#121315; --fg:#ececee; --muted:#9a9ca3; --line:#2b2d31; --card:#1a1b1e; --accent:#ef5a40; --note:#e8b931; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-page);font-size:16px;line-height:1.55}
+.wrap{max-width:1240px;margin:0 auto;padding-block:40px 80px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1{font-size:clamp(28px,4vw,40px);line-height:1.15;margin:0 0 12px;text-wrap:balance;letter-spacing:-.01em}
+h2{font-size:26px;margin:0 0 10px;text-wrap:balance}
+h3{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 8px;font-weight:600}
+p{margin:0 0 12px;max-width:68ch}
+.lead{font-size:18px;color:var(--muted);max-width:72ch}
+section{margin-top:56px}
+.states{display:flex;flex-wrap:wrap;gap:6px;margin:22px 0 0;align-items:center}
+.states button{font:600 14px var(--font-page);color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:6px 14px;cursor:pointer}
+.states button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+.states button:focus-visible,.states label:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+.states .gap{width:10px}
+.states .olbl{font-size:14px;color:var(--muted);margin-right:4px;min-width:72px}
+.states label{display:inline-flex;gap:8px;align-items:center;font-size:14px;color:var(--muted);cursor:pointer;padding:6px 4px}
+.stage{width:100%;margin:14px 0 22px;border-radius:14px;overflow:hidden;box-shadow:0 1px 0 var(--line),0 18px 50px -24px rgba(0,0,0,.45)}
+.scaler{width:1320px;transform-origin:0 0}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.note{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;min-width:0}
+.note h3{display:flex;gap:10px;align-items:center;color:var(--fg);text-transform:none;letter-spacing:0;font-size:16px}
+.note p{font-size:15px;margin:0 0 8px}
+.note p:last-child{margin:0}
+.num{width:22px;height:22px;border-radius:50%;background:var(--note);color:#1b1500;font:700 12px/22px var(--font-page);text-align:center;flex:none}
+.keep{border-left:3px solid var(--note);padding:4px 0 4px 18px;margin:0}
+.keep li{margin:8px 0;max-width:75ch}
+.ask ol{padding-left:22px;max-width:78ch;margin:0}
+.ask li{margin:12px 0}
+.ask li b{display:block}
+.ask .rec{color:var(--muted)}
+figure{margin:0}
+.today{display:grid;grid-template-columns:minmax(0,420px) minmax(0,1fr);gap:28px;align-items:start}
+@media (max-width:760px){.today{grid-template-columns:1fr}}
+.today img{display:block;width:100%;height:auto;border-radius:10px;border:1px solid var(--line)}
+figcaption{font-size:14px;color:var(--muted);margin-top:8px}
+.today ul{margin:0;padding-left:20px}
+.today li{margin:6px 0}
+@media (prefers-reduced-motion: reduce){.app *{transition:none !important}}
+
+/* ---------- Das Mail-Fenster ---------- */
+.app{--a-bg:#0e0f11;--a-side:#121316;--a-panel:#15161a;--a-raise:#22242a;--a-raise2:#2b2e35;--a-card:#1b1d22;
+  --a-line:#26292f;--a-fg:#e8e8eb;--a-mut:#8d9098;--a-acc:#d9432b;--a-torro:#3fb8a5;--a-amber:#d99a26;--a-blue:#5aa2ff;--a-note:#e8b931;
+  width:1320px;height:820px;background:var(--a-bg);color:var(--a-fg);font-family:var(--font-app);font-size:14px;line-height:1.45;
+  user-select:none;position:relative;overflow:hidden}
+.app *{box-sizing:border-box}
+.app svg{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+:where(.app button){font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+.app button:focus-visible{outline:2px solid var(--a-blue);outline-offset:1px}
+.cols{display:grid;grid-template-columns:244px 440px minmax(0,1fr);height:100%}
+.top{height:46px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px}
+.ib{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;color:var(--a-mut)}
+.ib:hover{background:var(--a-raise);color:var(--a-fg)}
+.ib svg{width:17px;height:17px}
+.ib.off{opacity:.35}
+kbd{font:600 11px var(--font-app);color:var(--a-mut);border:1px solid #3a3d45;border-radius:5px;padding:1px 6px;flex:none}
+kbd:empty{display:none}
+.nb{position:absolute;top:-9px;left:-9px;width:20px;height:20px;border-radius:50%;background:var(--a-note);color:#1b1500;font:700 11px/20px var(--font-page);text-align:center;z-index:20;box-shadow:0 0 0 2px var(--a-bg);pointer-events:none}
+.nb.inl{position:static;box-shadow:none;flex:none}
+.app.nomarks .nb{display:none}
+
+/* Seitenleiste */
+.side{background:var(--a-side);display:flex;flex-direction:column;min-height:0;position:relative}
+.lights{display:flex;gap:8px;padding-left:2px}
+.lights i{width:12px;height:12px;border-radius:50%;display:block}
+.switch{display:flex;align-items:center;gap:8px;margin-left:8px;white-space:nowrap;flex:none;font-weight:600;font-size:14.5px;padding:4px 6px;border-radius:8px}
+.switch:hover{background:var(--a-raise)}
+.switch .tile{width:22px;height:22px;border-radius:6px;background:rgba(90,162,255,.16);color:var(--a-blue);display:grid;place-items:center}
+.switch .tile svg{width:14px;height:14px}
+.switch>svg{width:14px;height:14px;color:var(--a-mut)}
+.side .top .ib{margin-left:auto}
+.acct{position:relative;margin:4px 10px 10px;padding:0 12px 0 14px;height:56px;border:1px solid #2e3138;border-radius:11px;background:#1a1b20;display:flex;align-items:center;gap:10px;text-align:left;width:calc(100% - 20px)}
+.acct:hover,.app.st-konten .acct{border-color:#3a3d45;background:#1b1c21}
+.stack{display:flex;flex:none}
+.stack span{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:700;color:#0e0f11;box-shadow:0 0 0 2px #17181c}
+.stack span+span{margin-left:-8px}
+.acct .txt{min-width:0;flex:1}
+.acct .txt b{display:block;font-weight:600;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.acct .txt span{display:block;color:var(--a-mut);font-size:12.5px;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.acct>svg{width:17px;height:17px;color:var(--a-mut)}
+.newmail{position:relative;margin:0 10px 8px;height:36px;border-radius:9px;background:#1d1f24;border:1px solid #33363e;display:flex;align-items:center;gap:9px;padding:0 10px 0 12px;font-weight:600;width:calc(100% - 20px)}
+.newmail:hover{background:#24262c}
+.newmail svg{width:16px;height:16px;color:var(--a-blue)}
+.newmail kbd{margin-left:auto}
+.nav{display:flex;flex-direction:column;gap:1px;padding:4px 10px;overflow:hidden}
+.nav .it{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;color:#cfd0d4}
+.nav .it svg{width:16px;height:16px;color:var(--a-mut)}
+.nav .it.on{background:var(--a-raise);color:var(--a-fg)}
+.nav .it b{margin-left:auto;font-weight:500;color:var(--a-mut);font-size:13px;font-variant-numeric:tabular-nums}
+.nav .it .ch{width:13px;height:13px;margin-left:-4px}
+.nav .gap{height:12px;flex:none}
+.nav .grp{font-size:12.5px;color:var(--a-mut);padding:14px 10px 4px}
+
+/* Kontenwahl */
+.acfly{position:absolute;left:10px;top:110px;width:300px;background:var(--a-card);border:1px solid #33363e;border-radius:12px;padding:6px;
+  box-shadow:0 18px 44px -10px rgba(0,0,0,.85);display:none;flex-direction:column;gap:2px;z-index:30}
+.app.st-konten .acfly{display:flex}
+.app h5{margin:0;padding:6px 10px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--a-mut);font-weight:600}
+.ar{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;color:#d9dade;cursor:pointer;width:100%;text-align:left}
+.ar:hover{background:var(--a-raise)}
+.cb{width:16px;height:16px;border-radius:5px;border:1.6px solid #50535c;flex:none;display:grid;place-items:center}
+.cb svg{width:12px;height:12px;stroke-width:3;opacity:0;color:#0e0f11}
+.on>.cb,.cb.on{background:var(--a-blue);border-color:var(--a-blue)}
+.on>.cb svg,.cb.on svg{opacity:1}
+.cb.some{background:var(--a-blue);border-color:var(--a-blue)}
+.cb.some::after{content:"";width:8px;height:2px;border-radius:1px;background:#0e0f11}
+.ar .dot{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:10.5px;font-weight:700;color:#0e0f11;flex:none}
+.ar .who{min-width:0;flex:1}
+.ar .who b{display:block;font-weight:600}
+.ar .who span{display:block;color:var(--a-mut);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ar em{font-style:normal;color:var(--a-mut);font-size:12.5px;font-variant-numeric:tabular-nums}
+.ar .only{display:none;font-size:12px;color:var(--a-blue);padding:2px 6px;border-radius:6px}
+.ar:hover .only{display:block}
+.ar:hover em{display:none}
+.fsep{height:1px;background:var(--a-line);margin:4px 6px;flex:none}
+.fi{height:36px;display:flex;align-items:center;gap:10px;padding:0 10px;border-radius:8px;color:#d9dade;width:100%;text-align:left}
+.fi svg{width:16px;height:16px;color:var(--a-mut)}
+.fi .lbl{flex:1;white-space:nowrap}
+.fi:hover{background:var(--a-raise2)}
+.fi.first{background:var(--a-raise)}
+.fi.ai svg{color:var(--a-torro)}
+.fi.danger{color:#ff8a78}
+.fi.danger svg{color:#ff8a78}
+
+/* Liste */
+.list{background:var(--a-panel);border-left:1px solid var(--a-line);border-right:1px solid var(--a-line);display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.list .top{border-bottom:1px solid var(--a-line);padding:0 10px 0 12px;position:relative}
+.pill{display:flex;align-items:center;gap:6px;height:28px;padding:0 9px;border:1px solid var(--a-line);border-radius:8px;color:#cfd0d4;font-size:13px}
+.pill svg{width:14px;height:14px;color:var(--a-mut)}
+.crumbsep{width:14px;height:14px;color:var(--a-mut)}
+.here{display:flex;align-items:center;gap:7px;font-weight:600}
+.here svg{width:15px;height:15px;color:var(--a-mut)}
+.here span{color:var(--a-mut);font-weight:500}
+.sort{margin-left:auto;white-space:nowrap;display:flex;align-items:center;gap:6px;color:var(--a-mut);font-size:13px;padding:5px 8px;border-radius:8px}
+.sort svg{width:15px;height:15px}
+.search{display:flex;align-items:center;gap:10px;flex:1;min-width:0;margin:0;height:32px;padding:0 10px;border-radius:8px;background:#101114;border:1px solid var(--a-line);color:var(--a-mut)}
+.search svg{width:16px;height:16px}
+.search .f{margin-left:auto}
+.rows{overflow:hidden}
+.row{position:relative;padding:11px 16px 11px 18px;border-bottom:1px solid var(--a-line);display:grid;grid-template-columns:34px minmax(0,1fr);gap:12px}
+.row.sel{background:#1d2026}
+/* Fassungen der Liste: Tagesköpfe statt Datum an jeder Zeile */
+.day{padding:10px 16px 4px 18px;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--a-mut);font-weight:600;border-bottom:1px solid var(--a-line)}
+.ra{position:relative;padding:9px 16px 9px 22px;border-bottom:1px solid var(--a-line)}
+.ra.sel{background:#1d2026}
+.ra.sel::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--a-acc)}
+.ra.unread::after{content:"";position:absolute;left:9px;top:16px;width:6px;height:6px;border-radius:50%;background:var(--a-blue)}
+.ra .l{display:flex;align-items:center;gap:8px;min-width:0;white-space:nowrap}
+.ra .l b{font-weight:500;color:#d4d5d9;overflow:hidden;text-overflow:ellipsis}
+.ra.unread .l b,.ra.unread .sj{font-weight:600;color:var(--a-fg)}
+.ra time{margin-left:auto;color:var(--a-mut);font-size:12.5px;font-variant-numeric:tabular-nums;flex:none}
+.ra .sj{color:#c4c6cc;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ra .ic2{display:flex;gap:6px;color:var(--a-mut);flex:none;margin-left:auto}
+.ra .ic2 svg{width:14px;height:14px}
+.ra .ic2 .am{color:var(--a-amber)}
+.ra .ln2{font-size:13.5px;margin-top:2px}
+/* A + Bild: zwei Zeilen wie A, mit Kreis (Kürzel oder Foto aus den Kontakten) und mehr Luft */
+.ra.rd2{display:grid;grid-template-columns:34px minmax(0,1fr);gap:12px;align-items:center;padding:13px 18px 13px 22px}
+.ra.rd2 .ln2{margin-top:3px}
+.ra.rd2.unread::after{left:8px;top:50%;margin-top:-3px}
+.av.ph{background-size:cover;background-position:center}
+/* Farbe je Absender; das Kürzel bleibt, damit die Farbe nie das einzige Merkmal ist */
+.av.hue{background:linear-gradient(135deg,color-mix(in srgb,var(--h) 78%,#fff),color-mix(in srgb,var(--h) 72%,#000));color:#fff;font-weight:600;overflow:hidden}
+.av svg.pt{width:100%;height:100%}
+.pt .hd{fill:color-mix(in srgb,var(--h) 22%,#fff)}
+.pt .bd{fill:color-mix(in srgb,var(--h) 50%,#10131a)}
+.av.logo{background:#f4f5f7}
+.av.logo svg{width:22px;height:22px;color:#181b20}
+.av svg{width:18px;height:18px;color:#fff}
+.av.hue.bad{background:linear-gradient(135deg,#4a2026,#2a1418);color:#ff8a78;box-shadow:inset 0 0 0 1.5px #a8443a}
+.av.hue.bad svg{color:#ff8a78}
+.app.nohue .av.hue.bad{background:#262a33;box-shadow:none}
+.head.hb .av{background:linear-gradient(135deg,color-mix(in srgb,var(--h,#262a33) 78%,#fff),color-mix(in srgb,var(--h,#262a33) 72%,#000));color:#fff}
+.app.nohue .av.hue,.app.nohue .head.hb .av{background:#262a33;color:#c9ccd3}
+/* Anhang klein rechts neben dem Namen; die zweite Zeile rechts gehört den Markierungen, farbig hinterlegt */
+.ra.rd2 .clp{width:13px;height:13px;color:var(--a-mut);flex:none}
+.mk{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;flex:none;margin-left:auto}
+.mk svg{width:12px;height:12px;stroke-width:2.2}
+.mk.fl{background:var(--a-amber);color:#1f1600}
+.app.list-d .day{padding:14px 18px 6px 22px}
+/* B: kleines Bild, Betreff und Vorschau teilen sich eine Zeile */
+.ra.rb{display:grid;grid-template-columns:28px minmax(0,1fr);gap:10px;align-items:center;padding:9px 16px 9px 22px}
+.ra.rb .av{width:28px;height:28px;font-size:11px}
+.ra.rb .ln2 .sj{flex:0 1 auto}
+.ra.rb .pv{color:var(--a-mut);overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1 1 0}
+.ra.rb .pv::before{content:"– ";}
+/* C: eine Zeile mit Spalten */
+.ra.rc{display:flex;align-items:center;gap:10px;padding:8px 16px 8px 22px;white-space:nowrap}
+.ra.rc .unread::after{top:14px}
+.ra.rc b{width:118px;flex:none;font-weight:500;color:#d4d5d9;overflow:hidden;text-overflow:ellipsis}
+.ra.rc.unread b{font-weight:600;color:var(--a-fg)}
+.ra.rc .mid{display:flex;gap:6px;min-width:0;flex:1;font-size:13.5px}
+.ra.rc .mid .sj{flex:0 1 auto}
+.ra.rc .mid .pv{color:var(--a-mut);overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1 1 0}
+.ra.rc .ic2{margin-left:0}
+.ra.rc.unread::after{top:15px}
+.row.sel::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--a-acc)}
+.row.unread::after{content:"";position:absolute;left:7px;top:27px;width:6px;height:6px;border-radius:50%;background:var(--a-blue)}
+.av{width:34px;height:34px;border-radius:50%;background:#262a33;display:grid;place-items:center;font-size:12px;font-weight:600;color:#c9ccd3;flex:none}
+.av.g{background:#1f2a24}
+.rmain{min-width:0}
+.rtop{display:flex;gap:8px;align-items:baseline}
+.rtop b{font-weight:600;white-space:nowrap}
+.rtop em{font-style:normal;color:var(--a-mut);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rtop .meta{margin-left:auto;display:flex;gap:7px;align-items:center;color:var(--a-mut);font-size:12.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.rtop .meta svg{width:14px;height:14px}
+.rtop .meta .bl{color:var(--a-blue)}
+.rtop .meta .am{color:var(--a-amber)}
+.subj{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prev{color:var(--a-mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
+
+/* Lesebereich */
+.reader{display:flex;flex-direction:column;min-height:0;position:relative;background:var(--a-bg);overflow:hidden}
+.reader .top{border-bottom:1px solid var(--a-line);padding:0 10px 0 22px;position:relative}
+.rcrumb{display:flex;align-items:center;gap:7px;color:var(--a-mut);font-size:13px;min-width:0}
+.rcrumb svg{width:14px;height:14px}
+.rcrumb b{color:var(--a-fg);font-weight:600;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.count{margin-left:auto;color:var(--a-mut);font-size:12.5px;font-variant-numeric:tabular-nums;white-space:nowrap;padding-right:2px}
+.vsep{width:1px;height:18px;background:var(--a-line);margin:0 4px;flex:none}
+.rbody{padding:14px 34px 120px;overflow:hidden;flex:1;min-height:0}
+.rbody h4{font-size:23px;margin:0 0 16px;font-weight:600;letter-spacing:-.01em}
+.head{position:relative;border-bottom:1px solid var(--a-line);padding-bottom:12px;margin-bottom:16px}
+.head.ha,.head.hb{display:none}
+.app.hdr-a .head.hk,.app.hdr-b .head.hk{display:none}
+.app.hdr-a .head.ha,.app.hdr-b .head.hb{display:flex}
+.head.ha{align-items:center;gap:8px;padding:2px 0 12px;font-size:13.5px;white-space:nowrap}
+.ha .nm{font-weight:600;font-size:14px}
+.ha .ad,.ha .to,.ha time{color:var(--a-mut)}
+.ha .to::before{content:"·";margin-right:8px}
+.ha .sp{flex:1}
+.ha .more{width:15px;height:15px;color:var(--a-mut)}
+.tagc{display:inline-flex;align-items:center;gap:6px;color:#e3c27a;font-size:12.5px;font-weight:500}
+.tagc i{width:7px;height:7px;border-radius:50%;background:var(--a-amber)}
+.clip{display:inline-flex;gap:5px;align-items:center;color:var(--a-mut);font-size:12.5px}
+.clip svg{width:14px;height:14px}
+.head.hb{gap:12px;align-items:center;border-bottom:0;padding:4px 0 0;margin-bottom:20px}
+.hb .av{width:38px;height:38px;font-size:12.5px}
+.hbm{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.hbm .l1,.hbm .l2{display:flex;align-items:center;gap:10px;white-space:nowrap}
+.hbm .l1 b{font-size:15px;font-weight:600}
+.hbm .l1 time{margin-left:auto;color:var(--a-mut);font-size:13px;font-variant-numeric:tabular-nums}
+.hbm .l2{color:var(--a-mut);font-size:13px}
+.hbm .who2{display:inline-flex;align-items:center;gap:4px;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.hbm .who2 svg{width:13px;height:13px}
+.hbm .l2 .clip{margin-left:auto;color:#cfd0d4}
+/* Anhänge: eine Datei mit Namen; mehrere als Menü an der Büroklammer oder als Reihe unter dem Kopf */
+.attwrap{position:relative;margin-left:auto;display:none}
+.attbtn{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 8px 0 9px;border-radius:7px;border:1px solid var(--a-line);color:#d9dade;font-size:12.5px}
+.attbtn:hover,.app.att-open .attbtn{background:var(--a-raise);border-color:#3a3d45}
+.attbtn svg{width:14px;height:14px;color:var(--a-mut)}
+.attbtn .chev{width:13px;height:13px}
+.attfly{position:absolute;right:0;top:32px;width:320px;background:var(--a-card);border:1px solid #33363e;border-radius:12px;padding:6px;
+  box-shadow:0 18px 44px -10px rgba(0,0,0,.85);display:none;flex-direction:column;gap:2px;z-index:30;white-space:normal}
+.app.att-open.att-menu .attfly{display:flex}
+.af{display:flex;align-items:center;gap:10px;padding:6px 6px 6px 8px;border-radius:8px;color:#d9dade}
+.af:hover{background:var(--a-raise)}
+.fic{width:30px;height:30px;border-radius:7px;background:rgba(255,138,120,.12);color:#ff9b8a;display:grid;place-items:center;flex:none}
+.fic svg{width:16px;height:16px}
+.fn{min-width:0;flex:1}
+.fn b{display:block;font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fn span{display:block;color:var(--a-mut);font-size:12px}
+.af .ib{opacity:.0}
+.af:hover .ib,.af:first-of-type .ib{opacity:1}
+.attstrip{display:none;gap:8px;margin:-6px 0 18px 50px;align-items:center}
+.tile2{display:flex;align-items:center;gap:8px;border:1px solid var(--a-line);border-radius:9px;padding:5px 10px 5px 5px;min-width:0;max-width:168px;background:#121316}
+.tile2 .fic{width:26px;height:26px}
+.tile2 .fn b{font-size:12.5px}
+.tile2 .fn span{font-size:11.5px}
+.saveall{display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 10px;border-radius:9px;color:#cfd0d4;font-size:12.5px;white-space:nowrap}
+.saveall:hover{background:var(--a-raise)}
+.saveall svg{width:15px;height:15px;color:var(--a-mut)}
+.app.att-menu .clip.one,.app.att-strip .clip.one{display:none}
+.app.att-menu .attwrap{display:block}
+.app.att-strip .tile2{flex:1 1 0;max-width:200px}
+.app.att-strip .attstrip{display:flex}
+
+/* Leiste rechts: dieselben Gruppen senkrecht, schwebend am rechten Rand, Karten öffnen nach links */
+.fly.wr{right:-48px}
+.app.bar-right .bar{left:auto;right:14px;bottom:auto;top:50%;transform:translateY(-50%);flex-direction:column;padding:6px}
+.app.bar-right .bsep{width:20px;height:1px;margin:4px 0}
+.app.bar-right .b.pri{padding:0;width:36px}
+.app.bar-right .b.pri .bl,.app.bar-right .b.pri kbd{display:none}
+.app.bar-right .fly,.app.bar-right .fly.l,.app.bar-right .fly.r,.app.bar-right .fly.wr{bottom:auto;top:-6px;left:auto;right:50px;transform:none}
+.app.bar-right .fly::after{left:auto;right:-16px;top:0;bottom:0;width:16px;height:auto}
+.app.bar-right .rbody{padding:14px 84px 22px 34px}
+.app.bar-right .head{margin-right:-50px}
+.from{display:flex;gap:10px;align-items:center;margin-bottom:8px}
+.from .av{width:32px;height:32px;font-size:12px}
+.from .who b{font-weight:600}
+.from .who b span{color:var(--a-mut);font-weight:400;font-size:13px;margin-left:6px}
+.from .who>span{display:block;color:var(--a-mut);font-size:13px}
+.from time{margin-left:auto;color:var(--a-mut);font-size:13px;text-align:right;font-variant-numeric:tabular-nums}
+.chips{display:flex;gap:6px;flex-wrap:wrap;padding-left:42px}
+.chip{height:24px;display:inline-flex;align-items:center;gap:6px;padding:0 9px;border-radius:7px;border:1px solid #3a4a66;font-size:12.5px;color:#b9cdf2}
+.chip svg{width:13px;height:13px}
+.att{height:24px;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--a-line);border-radius:7px;padding:0 9px;font-size:12.5px;color:#d9dade}
+.att svg{width:13px;height:13px;color:var(--a-mut)}
+.att span{color:var(--a-mut);font-size:12.5px}
+
+/* Die Mail selbst: HTML hell, HTML dunkel oder Text */
+.hm{--m-bg:#ffffff;--m-fg:#24262b;--m-mut:#6b6e76;--m-line:#e6e6ea;--m-brand:#5b4cdb;--m-soft:#f3f2fd;
+  background:var(--m-bg);color:var(--m-fg);border-radius:10px;padding:26px 30px;max-width:600px;font-size:14px;line-height:1.55}
+.app.mail-dark .hm,.app.mail-app .hm{--m-bg:#1a1c21;--m-fg:#e3e4e7;--m-mut:#9a9da5;--m-line:#2e3138;--m-brand:#a99dff;--m-soft:#24233a}
+.hm .mtop{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px;color:var(--m-mut);font-size:12.5px}
+.hm .logo{font:700 19px var(--font-page);color:var(--m-brand);letter-spacing:-.02em}
+.hm h6{font:600 20px var(--font-app);margin:0 0 10px;color:var(--m-fg)}
+.hm p{margin:0 0 14px;max-width:none}
+.hm .amount{display:flex;justify-content:space-between;align-items:baseline;background:var(--m-soft);border-radius:8px;padding:12px 16px;margin:0 0 14px}
+.hm .amount b{font-size:22px;color:var(--m-fg);font-variant-numeric:tabular-nums}
+.hm table{width:100%;border-collapse:collapse;margin:0 0 18px;font-variant-numeric:tabular-nums}
+.hm td{color:var(--m-fg);font-size:14px;padding:7px 0;border-bottom:1px solid var(--m-line)}
+.hm td:last-child{text-align:right}
+.hm tr:last-child td{font-weight:600;border-bottom:0}
+.hm .btn{display:inline-block;background:var(--m-brand);color:#fff;border-radius:8px;padding:9px 18px;font-weight:600}
+.app.mail-dark .hm .btn,.app.mail-app .hm .btn{color:#15131f}
+.hm .fine{color:var(--m-mut);font-size:12.5px;margin:18px 0 0}
+.tm{display:none;max-width:600px;color:#d9dade}
+.tm p{margin:0 0 12px;max-width:none}
+.tm .src{color:var(--a-mut);font-size:12.5px;margin-top:16px}
+.tm .links{margin-top:10px;font-size:13px;color:var(--a-mut)}
+.tm .links div{display:flex;gap:8px;align-items:center;color:#cfd0d4;margin-top:6px}
+.tm .links svg{width:14px;height:14px;color:var(--a-mut)}
+.app.fmt-text .hm{display:none}
+.app.fmt-text .tm{display:block}
+
+/* Schwebende Aktionsleiste unter der Mail */
+.bar{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);display:flex;align-items:center;gap:3px;padding:6px;border-radius:16px;
+  background:rgba(29,31,36,.94);border:1px solid #363941;box-shadow:0 20px 44px -14px rgba(0,0,0,.9),0 1px 0 rgba(255,255,255,.04) inset;z-index:25}
+.grp{position:relative}
+.b{height:36px;min-width:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;gap:8px;color:#c9cbd1}
+.b:hover,.grp.pin>.b{background:var(--a-raise2);color:var(--a-fg)}
+.b.pri{padding:0 10px 0 11px;background:linear-gradient(#e24a31,#c93b24);color:#fff;font-weight:600;box-shadow:0 0 0 1px #e65a42 inset}
+.b.pri:hover,.grp.pin>.b.pri{background:linear-gradient(#ea5238,#cf3f27);color:#fff}
+.b.pri kbd{color:#ffd9d1;border-color:rgba(255,255,255,.35)}
+.b.torro{color:var(--a-torro)}
+.b svg{width:18px;height:18px}
+.bsep{width:1px;height:20px;background:#363941;margin:0 4px;flex:none}
+.fly{position:absolute;bottom:50px;left:50%;transform:translateX(-50%);width:256px;background:var(--a-card);border:1px solid #33363e;border-radius:12px;padding:6px;
+  box-shadow:0 18px 44px -10px rgba(0,0,0,.85);display:none;flex-direction:column;gap:2px;z-index:30}
+.fly::after{content:"";position:absolute;left:0;right:0;bottom:-16px;height:16px}
+.fly.l{left:0;transform:none}
+.fly.r{left:auto;right:0;transform:none}
+.grp:hover>.fly,.grp.pin>.fly{display:flex}
+.bar:hover .grp.pin:not(:hover)>.fly{display:none}
+.bar:hover .grp.pin:not(:hover)>.b{background:transparent;color:#c9cbd1}
+.bar:hover .grp.pin:not(:hover)>.b.pri{background:linear-gradient(#e24a31,#c93b24);color:#fff}
+.bar:hover .grp.pin:not(:hover)>.b.torro{color:var(--a-torro)}
+.app.st-konten .grp>.fly{display:none}
+.app.st-konten .grp.pin>.b:not(.pri){background:transparent}
+
+/* Karte „Darstellung“ */
+.fly.wide{width:344px;padding:8px}
+.dset{display:flex;flex-direction:column;gap:6px;padding:4px 8px 8px}
+.dset>span{font-size:12.5px;color:var(--a-mut)}
+.seg{display:flex;background:#121316;border:1px solid var(--a-line);border-radius:9px;padding:3px;gap:3px}
+.seg button{flex:1;white-space:nowrap;height:30px;border-radius:7px;display:flex;align-items:center;justify-content:center;gap:6px;color:#bfc1c7;font-size:13px;font-weight:500}
+.seg button svg{width:15px;height:15px}
+.seg button:hover{color:var(--a-fg)}
+.seg button[aria-pressed="true"]{background:var(--a-raise2);color:var(--a-fg);box-shadow:0 1px 0 rgba(255,255,255,.05) inset}
+.seg kbd{font-size:10px;padding:0 4px}
+.app.fmt-text .seg.scheme{opacity:.4;pointer-events:none}
+.dset .hint{font-size:12px;color:var(--a-mut);display:none}
+.app.fmt-text .dset .hint{display:block}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-mail" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 5L2 7"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M8 17V10M13 17V6M18 17v-4"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+  <symbol id="i-receipt" viewBox="0 0 24 24"><path d="M5 3h14v18l-3-2-2 2-2-2-2 2-2-2-3 2z"/><path d="M9 8h6M9 12h6"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
+  <symbol id="i-dashed" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-dasharray="3 3.1"/></symbol>
+  <symbol id="i-msgreply" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="m10 7-3 3 3 3"/><path d="M7 10h6a3 3 0 0 1 3 3"/></symbol>
+  <symbol id="i-bookmark" viewBox="0 0 24 24"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-calclock" viewBox="0 0 24 24"><path d="M21 10V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h6"/><path d="M16 2v4M8 2v4M3 10h7"/><circle cx="17" cy="17" r="5"/><path d="M17 15v2.2l1.5 1"/></symbol>
+  <symbol id="i-archive" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></symbol>
+  <symbol id="i-pen" viewBox="0 0 24 24"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M22 3H2l8 9.5V19l4 2v-8.5z"/></symbol>
+  <symbol id="i-sort" viewBox="0 0 24 24"><path d="m3 16 4 4 4-4M7 20V4M11 4h10M11 8h7M11 12h4"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-updown" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5M7 9l5-5 5 5"/></symbol>
+  <symbol id="i-reply" viewBox="0 0 24 24"><path d="M9 17 4 12l5-5"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></symbol>
+  <symbol id="i-replyall" viewBox="0 0 24 24"><path d="m7 17-5-5 5-5"/><path d="m12 17-5-5 5-5"/><path d="M22 18v-2a4 4 0 0 0-4-4H7"/></symbol>
+  <symbol id="i-forward" viewBox="0 0 24 24"><path d="m15 17 5-5-5-5"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+  <symbol id="i-todo" viewBox="0 0 24 24"><rect x="3" y="5" width="6" height="6" rx="1"/><path d="m3 17 2 2 4-4M13 6h8M13 12h8M13 18h8"/></symbol>
+  <symbol id="i-calplus" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M12 14v4M10 16h4"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7.5" cy="7.5" r="1"/></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M12 3l1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2z"/></symbol>
+  <symbol id="i-flag" viewBox="0 0 24 24"><path d="M4 22V4a1 1 0 0 1 .4-.8A6 6 0 0 1 8 2c3 0 5 2 7.3 2A6 6 0 0 0 20 3v12a6 6 0 0 1-4.7 1c-2.3 0-4.3-2-7.3-2a6 6 0 0 0-4 1.5"/></symbol>
+  <symbol id="i-mailopen" viewBox="0 0 24 24"><path d="M21.2 8.4c.5.4.8 1 .8 1.6v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V10a2 2 0 0 1 .8-1.6l8-6a2 2 0 0 1 2.4 0z"/><path d="m22 10-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 10"/></symbol>
+  <symbol id="i-belloff" viewBox="0 0 24 24"><path d="M8.7 3A6 6 0 0 1 18 8a21.3 21.3 0 0 0 .6 5M17 17H3s3-2 3-9a4.67 4.67 0 0 1 .3-1.7M10.3 21a1.94 1.94 0 0 0 3.4 0M2 2l20 20"/></symbol>
+  <symbol id="i-mailx" viewBox="0 0 24 24"><path d="M22 13V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h9"/><path d="m22 7-10 5L2 7M17 17l4 4M21 17l-4 4"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+  <symbol id="i-contrast" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v18a9 9 0 0 0 0-18z" fill="currentColor"/></symbol>
+  <symbol id="i-code" viewBox="0 0 24 24"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></symbol>
+  <symbol id="i-text" viewBox="0 0 24 24"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/></symbol>
+  <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-ext" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+  <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M14.5 21.5 22 2 2.5 9.5l8 3.5z"/><path d="m22 2-11.5 11"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h6M9 13h6M9 17h4"/></symbol>
+  <symbol id="i-person" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="4.3" fill="currentColor" stroke="none"/><path d="M4 21.5c.9-4.8 4.1-7.3 8-7.3s7.1 2.5 8 7.3z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-megaphone" viewBox="0 0 24 24"><path d="m3 11 18-5v12L3 14z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></symbol>
+  <symbol id="i-bot" viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 8V5"/><circle cx="12" cy="4" r="1"/><path d="M9 13.5v1M15 13.5v1"/></symbol>
+  <symbol id="i-package" viewBox="0 0 24 24"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></symbol>
+  <symbol id="i-skull" viewBox="0 0 24 24"><path d="M16 20a2 2 0 0 0 1.56-3.25 8 8 0 1 0-11.12 0A2 2 0 0 0 8 20"/><path d="M8 20v2h8v-2"/><circle cx="9" cy="12" r="1.3"/><circle cx="15" cy="12" r="1.3"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+  <symbol id="l-github" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 24 24"><path d="m21.4 11-8.8 8.8a5.5 5.5 0 0 1-7.8-7.8l8.8-8.8a3.7 3.7 0 0 1 5.2 5.2l-8.8 8.8a1.8 1.8 0 0 1-2.6-2.6l8.1-8.1"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+  <symbol id="i-move" viewBox="0 0 24 24"><path d="m16 3 4 4-4 4M20 7H4M8 21l-4-4 4-4M4 17h16"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M7 17 17 7M7 7h10v10"/></symbol>
+  <symbol id="i-save" viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z"/><path d="m9 12 2 2 4-4"/></symbol>
+</svg>
+
+<div class="wrap">
+  <h1>Mail-Fenster neu geordnet</h1>
+  <p class="lead">Entwurf auf dem heutigen Mail-Fenster, mit den Punkten aus den beiden Vorlagen: Kontenwahl oben links, Neue E-Mail darunter, die obere Zeile genutzt, die Aktionen als schwebende Leiste unter der Mail und ein eigener Knopf für die Darstellung. Farben, Schrift, Icons und Gruppen bleiben unsere.</p>
+
+  <div class="states" id="states">
+    <button type="button" data-st="" aria-pressed="true">Ruhig</button>
+    <button type="button" data-st="konten" aria-pressed="false">Konten wählen</button>
+    <button type="button" data-st="ablegen" aria-pressed="false">Gruppe „Ablegen“</button>
+    <button type="button" data-st="darst" aria-pressed="false">Darstellung</button>
+    <span class="gap"></span>
+    <label><input type="checkbox" id="marks" checked> Nummern zeigen</label>
+  </div>
+  <div class="states opt" data-opt="bar" style="margin-top:10px">
+    <span class="olbl">Leiste:</span>
+    <button type="button" data-v="" aria-pressed="false">Unten</button>
+    <button type="button" data-v="bar-right" aria-pressed="true">Rechts</button>
+  </div>
+  <div class="states opt" data-opt="list" style="margin-top:10px">
+    <span class="olbl">Liste:</span>
+    <button type="button" data-v="" aria-pressed="false">Heute</button>
+    <button type="button" data-v="list-d" aria-pressed="true">A + Bild · gewählt</button>
+    <label><input type="checkbox" id="hues" checked> Farbe je Absender</label>
+    <label><input type="checkbox" id="icons" checked> Symbol statt Kürzel</label>
+    <label><input type="checkbox" id="logos" checked> Logos bekannter Absender</label>
+    <button type="button" data-v="list-a" aria-pressed="false">A · Zwei Zeilen, ohne Vorschau</button>
+    <button type="button" data-v="list-b" aria-pressed="false">B · Betreff und Vorschau in einer Zeile</button>
+    <button type="button" data-v="list-c" aria-pressed="false">C · Eine Zeile</button>
+  </div>
+  <div class="states opt" data-opt="att" style="margin-top:10px">
+    <span class="olbl">Anhänge:</span>
+    <button type="button" data-v="att-one" aria-pressed="false">Eine Datei</button>
+    <button type="button" data-v="att-menu" aria-pressed="true">Drei, als Menü</button>
+  </div>
+  <p style="font-size:14px;color:var(--muted);margin-top:8px">Im Fenster lässt sich klicken: Konten an- und abwählen, in der Leiste über die Gruppen fahren, in „Darstellung“ HTML/Text und die Farben umschalten.</p>
+
+  <div class="stage"><div class="scaler">
+  <div class="app mail-light hdr-b att-menu bar-right list-d" id="app">
+    <div class="cols">
+      <!-- Seitenleiste -->
+      <aside class="side">
+        <div class="top">
+          <div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+          <button class="switch" type="button"><span class="tile"><svg><use href="#i-mail"/></svg></span>E-Mail<svg><use href="#i-down"/></svg></button>
+          <button class="ib" type="button" title="Seitenleiste ausblenden"><svg><use href="#i-panel"/></svg></button>
+        </div>
+        <button class="acct" type="button" id="acct" aria-haspopup="true">
+          <span class="nb">2</span>
+          <span class="txt"><b id="acct-name">Alle Konten</b><span id="acct-sub"></span></span>
+          <svg><use href="#i-updown"/></svg>
+        </button>
+        <button class="newmail" type="button"><span class="nb">3</span><svg><use href="#i-pen"/></svg>Neue E-Mail<kbd>⌘N</kbd></button>
+        <nav class="nav">
+          <div class="it on"><svg><use href="#i-mail"/></svg>Alle<b>9</b></div>
+          <div class="it"><svg style="color:#7aa7ff"><use href="#i-user"/></svg>Persönlich<svg class="ch"><use href="#i-right"/></svg><b>2</b></div>
+          <div class="it"><svg style="color:var(--a-amber)"><use href="#i-receipt"/></svg>Belege<svg class="ch"><use href="#i-right"/></svg><b>1</b></div>
+          <div class="it"><svg style="color:#5fd0a0"><use href="#i-bell"/></svg>Zur Info<svg class="ch"><use href="#i-right"/></svg><b>1</b></div>
+          <div class="it"><svg><use href="#i-shield"/></svg>Unerwünscht<svg class="ch"><use href="#i-right"/></svg><b>1</b></div>
+          <div class="it"><svg style="color:#e0707a"><use href="#i-dashed"/></svg>Unsortiert<b>1</b></div>
+          <div class="gap"></div>
+          <div class="it"><svg><use href="#i-msgreply"/></svg>Später beantworten<b>2</b></div>
+          <div class="it"><svg><use href="#i-bookmark"/></svg>Beiseitegelegt<b>1</b></div>
+          <div class="it"><svg><use href="#i-calclock"/></svg>Nachfassen</div>
+          <div class="grp">Ordner</div>
+          <div class="it"><svg><use href="#i-send"/></svg>Gesendet</div>
+          <div class="it"><svg><use href="#i-archive"/></svg>Archiv</div>
+          <div class="it"><svg><use href="#i-trash"/></svg>Papierkorb</div>
+          <div class="it"><svg><use href="#i-folder"/></svg>Ordner pinnen<svg class="ch" style="margin-left:auto"><use href="#i-right"/></svg></div>
+        </nav>
+
+        <div class="acfly" id="acfly" role="menu">
+          <h5>Konten zeigen</h5>
+          <button class="ar" type="button" id="acc-all"><span class="cb" id="cb-all"><svg><use href="#i-check"/></svg></span><span class="who"><b>Alle Konten</b></span><em>6</em></button>
+          <div class="fsep"></div>
+          <div id="acc-rows"></div>
+          <div class="fsep"></div>
+          <button class="fi" type="button"><svg><use href="#i-sliders"/></svg><span class="lbl">Konten verwalten …</span></button>
+        </div>
+      </aside>
+
+      <!-- Liste -->
+      <div class="list" role="region" aria-label="Liste">
+        <div class="top">
+          <div class="search"><svg><use href="#i-search"/></svg>Alle Mails durchsuchen<svg class="f"><use href="#i-filter"/></svg></div>
+          <button class="ib" type="button" title="Neueste zuerst"><svg><use href="#i-sort"/></svg></button>
+          <button class="ib" type="button" title="Aktualisieren"><svg><use href="#i-refresh"/></svg></button>
+        </div>
+        <div class="rows" id="rows"></div>
+      </div>
+
+      <!-- Lesebereich -->
+      <div class="reader" role="region" aria-label="Mail">
+        <div class="top">
+          <span class="nb inl">1</span><span class="rcrumb"><b>Deine Rechnung für September</b></span>
+          <span class="count">6 von 9</span>
+          <button class="ib" type="button" title="Vorige Mail (K)"><svg><use href="#i-up"/></svg></button>
+          <button class="ib" type="button" title="Nächste Mail (J)"><svg><use href="#i-down"/></svg></button>
+          <span class="vsep"></span>
+          <button class="ib" type="button" title="In eigenem Fenster öffnen"><svg><use href="#i-ext"/></svg></button>
+          <button class="ib" type="button" title="Einstellungen"><svg><use href="#i-sliders"/></svg></button>
+        </div>
+        <div class="rbody">
+          <div class="head hb"><span class="nb">6</span>
+            <span class="av">M</span>
+            <div class="hbm">
+              <div class="l1"><b>Mobile</b><span class="tagc"><i></i>Beleg</span><time>Di, 3. Nov, 16:20</time></div>
+              <div class="l2"><span class="who2">rechnung@mobile.example <svg><use href="#i-right"/></svg> Anna Berg</span><span class="clip one"><svg><use href="#i-clip"/></svg>Rechnung-2026-09.pdf</span><span class="attwrap"><span class="nb" style="left:-14px;top:-6px">7</span><button class="attbtn" type="button" id="attbtn"><svg><use href="#i-clip"/></svg>3 Anhänge<svg class="chev"><use href="#i-down"/></svg></button>
+                <div class="attfly"><h5>3 Anhänge · 1,4 MB</h5><div class="af"><span class="fic"><svg><use href="#i-file"/></svg></span><span class="fn"><b>Rechnung-2026-09.pdf</b><span>PDF · 84 KB</span></span><button class="ib" type="button" title="Speichern"><svg><use href="#i-download"/></svg></button></div><div class="af"><span class="fic"><svg><use href="#i-file"/></svg></span><span class="fn"><b>Einzelverbindungen-09.pdf</b><span>PDF · 212 KB</span></span><button class="ib" type="button" title="Speichern"><svg><use href="#i-download"/></svg></button></div><div class="af"><span class="fic"><svg><use href="#i-file"/></svg></span><span class="fn"><b>Preisliste-2027.pdf</b><span>PDF · 1,1 MB</span></span><button class="ib" type="button" title="Speichern"><svg><use href="#i-download"/></svg></button></div><div class="fsep"></div><button class="fi" type="button"><svg><use href="#i-download"/></svg><span class="lbl">Alle speichern …</span></button></div></span></div>
+            </div>
+          </div>
+          <div class="attstrip"><span class="tile2"><span class="fic"><svg><use href="#i-file"/></svg></span><span class="fn"><b>Rechnung-2026-09.pdf</b><span>84 KB</span></span></span><span class="tile2"><span class="fic"><svg><use href="#i-file"/></svg></span><span class="fn"><b>Einzelverbindungen-09.pdf</b><span>212 KB</span></span></span><span class="tile2"><span class="fic"><svg><use href="#i-file"/></svg></span><span class="fn"><b>Preisliste-2027.pdf</b><span>1,1 MB</span></span></span><button class="saveall" type="button"><svg><use href="#i-download"/></svg>Alle speichern</button></div>
+
+          <div class="hm">
+            <div class="mtop"><span class="logo">mobile</span><span>Kundennummer 4711 0815</span></div>
+            <h6>Deine Rechnung für September</h6>
+            <p>Hallo Anna, deine Rechnung ist da. Den Betrag buchen wir am 14. November von deinem Konto ab.</p>
+            <div class="amount"><span>Rechnungsbetrag</span><b>39,99 €</b></div>
+            <table>
+              <tr><td>Tarif Mobil M, 1.–30. September</td><td>29,99 €</td></tr>
+              <tr><td>Datenpass 10 GB</td><td>10,00 €</td></tr>
+              <tr><td>Summe inkl. 19 % MwSt.</td><td>39,99 €</td></tr>
+            </table>
+            <span class="btn">Rechnung ansehen</span>
+            <p class="fine">Die Rechnung liegt auch als PDF im Anhang. Fragen beantworten wir unter mobile.example/hilfe.</p>
+          </div>
+          <div class="tm">
+            <p>Hallo Anna,</p>
+            <p>deine Rechnung ist da. Den Betrag buchen wir am 14. November von deinem Konto ab.</p>
+            <p>Rechnungsbetrag: 39,99 €<br>Tarif Mobil M, 1.–30. September: 29,99 €<br>Datenpass 10 GB: 10,00 €</p>
+            <p>Die Rechnung liegt auch als PDF im Anhang.</p>
+            <div class="src">Text von außerhalb der Suite, als reiner Text gezeigt.</div>
+            <div class="links">Links<div><svg><use href="#i-link"/></svg>https://mobile.example/rechnung/2026-09</div><div><svg><use href="#i-link"/></svg>https://mobile.example/hilfe</div></div>
+          </div>
+        </div>
+
+        <!-- Schwebende Leiste: unsere Gruppen, in der Reihenfolge der heutigen Leiste -->
+        <div class="bar" id="bar">
+          <span class="nb">4</span>
+          <div class="grp" data-g="antworten">
+            <button class="b pri" type="button" title="Antworten (R)"><svg><use href="#i-reply"/></svg><span class="bl">Antworten</span><kbd>R</kbd></button>
+            <div class="fly l"><h5>Antworten</h5>
+              <button class="fi first" type="button"><svg><use href="#i-reply"/></svg><span class="lbl">Antworten</span><kbd>R</kbd></button>
+              <button class="fi" type="button"><svg><use href="#i-replyall"/></svg><span class="lbl">Allen antworten</span></button>
+              <button class="fi" type="button"><svg><use href="#i-forward"/></svg><span class="lbl">Weiterleiten</span><kbd>F</kbd></button>
+            </div>
+          </div>
+          <span class="bsep"></span>
+          <div class="grp" data-g="ablegen">
+            <button class="b" type="button" title="Ablegen"><svg><use href="#i-archive"/></svg></button>
+            <div class="fly"><h5>Ablegen</h5>
+              <button class="fi first" type="button"><svg><use href="#i-archive"/></svg><span class="lbl">Archivieren</span><kbd>E</kbd></button>
+              <button class="fi" type="button"><svg><use href="#i-msgreply"/></svg><span class="lbl">Später beantworten</span><kbd>W</kbd></button>
+              <button class="fi" type="button"><svg><use href="#i-bookmark"/></svg><span class="lbl">Beiseitelegen</span><kbd>B</kbd></button>
+              <button class="fi" type="button"><svg><use href="#i-calclock"/></svg><span class="lbl">Wiedervorlage …</span><kbd>S</kbd></button>
+              <button class="fi" type="button"><svg><use href="#i-move"/></svg><span class="lbl">Nach „Zur Info“</span><kbd>L</kbd></button>
+              <button class="fi" type="button"><svg><use href="#i-download"/></svg><span class="lbl">Anhänge speichern (1)</span></button>
+              <div class="fsep"></div>
+              <button class="fi danger" type="button"><svg><use href="#i-trash"/></svg><span class="lbl">Löschen</span><kbd>#</kbd></button>
+            </div>
+          </div>
+          <div class="grp" data-g="torro">
+            <button class="b torro" type="button" title="Torro"><svg><use href="#i-todo"/></svg></button>
+            <div class="fly"><h5>Torro</h5>
+              <button class="fi first ai" type="button"><svg><use href="#i-todo"/></svg><span class="lbl">Aufgabe</span><kbd>T</kbd></button>
+              <button class="fi" type="button"><svg><use href="#i-calplus"/></svg><span class="lbl">Termin</span><kbd>C</kbd></button>
+              <button class="fi" type="button"><svg><use href="#i-tag"/></svg><span class="lbl">Kategorie …</span></button>
+              <button class="fi ai" type="button"><svg><use href="#i-sparkles"/></svg><span class="lbl">Neu einordnen</span></button>
+            </div>
+          </div>
+          <div class="grp" data-g="kennz">
+            <button class="b" type="button" title="Kennzeichnen"><svg><use href="#i-flag"/></svg></button>
+            <div class="fly"><h5>Kennzeichnen</h5>
+              <button class="fi first" type="button"><svg><use href="#i-flag"/></svg><span class="lbl">Markieren</span></button>
+              <button class="fi" type="button"><svg><use href="#i-mail"/></svg><span class="lbl">Als ungelesen markieren</span></button>
+            </div>
+          </div>
+          <span class="bsep"></span>
+          <div class="grp" data-g="stumm">
+            <button class="b" type="button" title="Stummschalten"><svg><use href="#i-belloff"/></svg></button>
+            <div class="fly"><h5>Stumm</h5>
+              <button class="fi first" type="button"><svg><use href="#i-belloff"/></svg><span class="lbl">Stummschalten …</span><kbd>M</kbd></button>
+              <button class="fi danger" type="button"><svg><use href="#i-mailx"/></svg><span class="lbl">Abbestellen …</span></button>
+            </div>
+          </div>
+          <div class="grp" data-g="darst">
+            <span class="nb" style="left:-6px;top:-12px">5</span>
+            <button class="b" type="button" title="Darstellung"><svg><use href="#i-contrast"/></svg></button>
+            <div class="fly wide r wr"><h5>Darstellung</h5>
+              <div class="dset"><span>Ansicht</span>
+                <div class="seg" data-k="fmt">
+                  <button type="button" data-v="html" aria-pressed="true"><svg><use href="#i-code"/></svg>HTML</button>
+                  <button type="button" data-v="text" aria-pressed="false"><svg><use href="#i-text"/></svg>Text<kbd>V</kbd></button>
+                </div>
+              </div>
+              <div class="dset"><span>Farben der Mail</span>
+                <div class="seg scheme" data-k="scheme">
+                  <button type="button" data-v="light" aria-pressed="true"><svg><use href="#i-sun"/></svg>Hell</button>
+                  <button type="button" data-v="dark" aria-pressed="false"><svg><use href="#i-moon"/></svg>Dunkel</button>
+                  <button type="button" data-v="app" aria-pressed="false"><svg><use href="#i-monitor"/></svg>Wie die App</button>
+                </div>
+                <span class="hint">Farben gibt es nur für HTML; Text zeigt die Farben der App.</span>
+              </div>
+            </div>
+          </div>
+          <div class="grp" data-g="mehr">
+            <button class="b" type="button" title="Mehr"><svg><use href="#i-more"/></svg></button>
+            <div class="fly r"><h5>Mehr</h5>
+              <button class="fi first" type="button"><svg><use href="#i-copy"/></svg><span class="lbl">Text kopieren</span></button>
+              <button class="fi" type="button"><svg><use href="#i-filter"/></svg><span class="lbl">Filter erstellen …</span></button>
+              <div class="fsep"></div>
+              <button class="fi" type="button"><svg><use href="#i-x"/></svg><span class="lbl">Schließen</span><kbd>Esc</kbd></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  </div></div>
+
+  <section style="margin-top:28px">
+    <h2>Was sich ändert</h2>
+    <div class="notes">
+      <div class="note"><h3><span class="num">1</span>Die obere Zeile wird genutzt</h3>
+        <p>Die eigene Titelzeile fällt weg. Ampel, App-Wahl und die Köpfe der Spalten stehen in einer Zeile: über der Liste die Suche mit Sortierung und Aktualisieren, über der Mail ihr Betreff, Blättern, eigenes Fenster und Einstellungen.</p>
+        <p>Der Pfad „Übersicht › Alle“ fällt weg, wo man ist, zeigt die Seitenleiste. Sie ist neu geordnet: „Alle“ steht direkt über „Persönlich“, „Gesendet“, „Archiv“ und „Papierkorb“ stehen unter „Ordner“. Die Einstellungen bekommen die Schieberegler statt des Zahnrads. Die Icons der Vorlagen übernehmen wir nicht.</p></div>
+      <div class="note"><h3><span class="num">2</span>Konten oben links</h3>
+        <p>„Alle Konten“ wandert aus der Listenzeile in ein großes Auswahlfeld oben in der Seitenleiste, ohne Bildchen, über die volle Breite und mit zwei Zeilen: oben „Alle Konten“, „2 Konten“ oder der Name des einen, darunter die Namen der Konten oder die Adresse.</p>
+        <p>Im Menü wählst du eins, mehrere oder alle; „nur dieses“ an jeder Zeile wählt mit einem Klick genau eins. Liste, Zahlen und Suche folgen der Wahl.</p></div>
+      <div class="note"><h3><span class="num">3</span>Neue E-Mail darunter</h3>
+        <p>Ein breiter Knopf mit ⌘N statt des kleinen Stifts neben dem App-Namen. Er bleibt gerahmt, damit „Antworten“ der einzige farbige Knopf im Fenster ist.</p></div>
+      <div class="note"><h3><span class="num">4</span>Aktionen schweben unter der Mail</h3>
+        <p>Die Leiste am rechten Rand fällt weg, die Mail bekommt die Breite. Unten schwebt eine Leiste mit unseren Gruppen in der Reihenfolge von heute: Antworten, Ablegen, Torro, Kennzeichnen, Stumm, Mehr.</p>
+        <p>Wie heute: ein Klick löst die erste Aktion der Gruppe aus, Zeigen öffnet die ganze Gruppe, hier nach oben. Alle Tasten bleiben. Gewählt ist die Fassung rechts (Schalter „Leiste“), unten bleibt zum Vergleich.</p></div>
+      <div class="note"><h3><span class="num">5</span>Ein Knopf für die Darstellung</h3>
+        <p>HTML oder Text und die Farben der Mail (hell, dunkel, wie die App) stehen zusammen in einem Knopf, statt als zwei wechselnde Einträge unter „Mehr“.</p>
+        <p>Die Farben gelten nur für HTML, deshalb sind sie bei Text ausgegraut. Was man wählt, bleibt stehen, ohne dass man etwas dafür tun muss.</p></div>
+      <div class="note"><h3><span class="num">6</span>Der Kopf der Mail: zwei Zeilen, leise</h3>
+        <p>Gewählt. Der Betreff steht oben in der Zeile, darum nicht noch einmal über der Mail. Bild, oben Absender mit Kategorie und Datum, darunter Adresse → Empfänger und rechts die Anhänge. Ohne Trennlinie und ohne Rahmen, rund 50 px.</p></div>
+      <div class="note"><h3><span class="num">7</span>Mehrere Anhänge</h3>
+        <p>Eine Datei steht mit Namen rechts im Kopf. Ab zwei steht dort „3 Anhänge“. Zwei Wege zum Vergleich über „Anhänge“:</p>
+        <p><b>Als Menü:</b> Ein Klick öffnet die Liste mit Name, Art und Größe. Ein Klick auf eine Datei öffnet sie, der Pfeil speichert sie, unten „Alle speichern …“. Der Kopf bleibt immer gleich hoch.</p>
+        <p><b>Als Reihe:</b> Die Dateien stehen als kleine Kacheln unter dem Kopf, man sieht sie sofort. Kostet eine Zeile; bei vielen Dateien „+4“ am Ende.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Die Liste schlanker</h2>
+    <p>Heute trägt jede Zeile Bild, Absender, Domain, Kategorie-Icon, Datum, Betreff und eine Zeile Vorschau, rund 70 px. Alle drei Fassungen lassen die Domain weg (sie steht im Kopf der Mail), zeigen an der Zeile nur noch Markierung und Anhang und schreiben den Tag einmal als Kopf („Heute“, „Gestern“, „Sonntag“) statt an jede Zeile. Umschalten über „Liste“ über dem Fenster.</p>
+    <div class="notes">
+      <div class="note" style="border-color:var(--note)"><h3>A + Bild · gewählt</h3>
+        <p>Wie A, mit Absender und Uhrzeit, darunter der Betreff, ohne Vorschau. Dazu kommt vorn der Kreis wie heute: mit Kürzel oder, wenn der Kontakt ein Foto hat, mit dem Foto (im Entwurf Paul Berg und Lena Hoffmann).</p>
+        <p>Mehr Luft oben und unten (13 statt 9 px) und an den Seiten. Rund 62 px, immer noch weniger als heute mit 70 px, und deutlich ruhiger.</p>
+        <p>Die Büroklammer steht klein rechts neben dem Namen. Rechts in der zweiten Zeile ist der Platz für Markierungen: Die Fahne steht als dunkles Zeichen auf farbigem Feld, statt selbst bunt zu sein (im Entwurf Lena Hoffmann und Maria Schulz).</p>
+        <p>Jeder Absender ohne Foto bekommt eine eigene Farbe, aus seiner Adresse berechnet: Jonas Weber ist immer dieselbe Farbe, in der Liste, im Kopf der Mail und auf jedem Gerät. So erkennt man wiederkehrende Absender am Muster. Ein Foto aus den Kontakten geht vor.</p>
+        <p>Im Kreis steht statt des Kürzels das Symbol der Kategorie: Kopf und Schultern für Menschen, Megafon für Newsletter, Quittung für Belege, Roboter für automatische Mails, Paket, Gruppe. Unerwünschtes bekommt den Totenkopf auf dunklem Rot statt der Absenderfarbe, damit es sofort auffällt (im Entwurf „Konto-Sicherheit“).</p></div>
+      <div class="note"><h3>A · Zwei Zeilen, ohne Vorschau</h3>
+        <p>Absender und Uhrzeit, darunter der Betreff. Kein Bild, keine Vorschau. Rund 52 px, ein Drittel mehr Mails auf dem Schirm. Ungelesen: Punkt und fett.</p>
+        <p>Vorbild: Thunderbird in der Kartenansicht (Absender und Zeit, darunter Betreff) und Apple Mail mit Vorschau „Keine“.</p></div>
+      <div class="note"><h3>B · Betreff und Vorschau in einer Zeile</h3>
+        <p>Kleines Bild, Absender und Uhrzeit, darunter Betreff und Vorschau hintereinander in einer Zeile. Man behält einen Blick in den Text, die eigene Vorschauzeile fällt weg. Rund 54 px.</p>
+        <p>Vorbild: Outlook in der Dichte „Mittel“, Spark und HEY.</p></div>
+      <div class="note"><h3>C · Eine Zeile</h3>
+        <p>Absender als feste Spalte, dann Betreff und Vorschau, rechts Icons und Uhrzeit. Kein Bild. Rund 36 px, etwa doppelt so viele Mails wie heute. Am schnellsten zu überfliegen, im schmalen Fenster aber eng.</p>
+        <p>Vorbild: Gmail „Kompakt“, Superhuman, Outlook „Kompakt“.</p></div>
+    </div>
+    <p style="margin-top:14px">Gewählt ist die Mischung <b>A + Bild</b>. Die Fotos kommen aus den Kontakten, sobald dort eins hinterlegt ist; sonst bleibt das Kürzel. C bleibt eine mögliche spätere Einstellung „Dichte“.</p>
+  </section>
+
+  <section>
+    <h2>Symbole je Kategorie</h2>
+    <p>Jede Kategorie hat schon heute ein Symbol aus einem festen Satz von 26, gewählt im Editor der Kategorien unter Einstellungen › E-Mail. Neu wäre: Dieses Symbol steht auch im Kreis jeder Mail, weiß auf einem Verlauf in der Farbe des Absenders, im selben Stil wie die Fotos. Menschen ohne Foto bekommen ein gezeichnetes Porträt (Kopf und Schultern) in ihrer Farbe. Reihenfolge: Foto aus den Kontakten, dann Logo des Absenders, dann Porträt oder Symbol.</p>
+    <div class="notes">
+      <div class="note"><h3>Was dem Satz fehlt</h3>
+        <p>Für den Kreis braucht es ein paar Zeichen, die es heute nicht gibt: Kopf und Schultern (gefüllt), Megafon, Roboter, Quittung, Paket, Totenkopf, dazu wohl Zeitung, Gebäude (Firma), Bank und Warnschild.</p></div>
+      <div class="note"><h3>Welches Symbol gilt</h3>
+        <p>Das der Kategorie, in der die Mail liegt. Eine Mail ohne Kategorie (Unsortiert) bekommt den Kopf, wenn der Absender ein Kontakt ist, sonst den Umschlag.</p></div>
+      <div class="note"><h3>Unerwünschtes</h3>
+        <p>Die Gruppe „Unerwünscht“ färbt ihre Kreise nicht nach Absender, sondern immer dunkelrot mit hellem Zeichen. So sieht man Spam und Phishing sofort, auch wenn man die Liste nur überfliegt.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Logos bekannter Absender</h2>
+    <p>Im Entwurf zeigt GitHub sein Logo. Wo das Logo herkommt, entscheidet über Recht, Sicherheit und Datenschutz.</p>
+    <div class="notes">
+      <div class="note" style="border-color:var(--note)"><h3>1 · BIMI, das Logo vom Absender selbst</h3>
+        <p>Große Absender hinterlegen ihr Logo im DNS (<code>default._bimi.&lt;domain&gt;</code>), mit Zertifikat. Gmail, Apple Mail und Yahoo zeigen es so an. Es gilt nur, wenn die Mail nachweislich von der Domain kommt (DMARC). Heute geprüft: PayPal, Amazon.de und LinkedIn haben es, GitHub und Facebook nicht.</p>
+        <p>Rechtlich am saubersten: Die Firma stellt das Logo selbst für genau diesen Zweck bereit.</p></div>
+      <div class="note"><h3>2 · Symbol der Website</h3>
+        <p>Fehlt BIMI, das Symbol der Website des Absenders (apple-touch-icon, Favicon). So käme das GitHub-Logo. Nur, wenn die Mail die Prüfung (DKIM/DMARC) besteht. Sonst bekäme eine gefälschte Mail das echte Logo und wirkte echt.</p></div>
+      <div class="note"><h3>Nicht: Logos in der App mitliefern</h3>
+        <p>Eine eigene Sammlung (etwa Simple Icons) wäre einfach, aber Logos sind Marken. Zeigen, von wem eine Mail kommt, ist üblich. Eine fest eingebaute Sammlung müsste aber die Regeln jeder Marke einhalten und veraltet. Keine Rechtsberatung: Bei 1 und 2 liefert der Absender das Bild selbst.</p></div>
+      <div class="note"><h3>Datenschutz</h3>
+        <p>Der Dienst holt ein Logo einmal je Domain und hebt es auf, nicht beim Öffnen jeder Mail. Kein fremder Dienst wie Google oder DuckDuckGo dazwischen, der sonst erführe, wer einem schreibt.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Leiste unten oder rechts</h2>
+    <div class="notes">
+      <div class="note"><h3>Unten</h3>
+        <p>„Antworten“ steht mit Wort und Taste da, die häufigste Aktion ist ein großes Ziel. Die Leiste liegt dort, wo man nach dem Lesen ankommt.</p>
+        <p>Sie deckt das Ende der Mail ab, bis man scrollt; die Mail braucht unten Luft. Die Karten öffnen nach oben über den Text.</p></div>
+      <div class="note"><h3>Rechts</h3>
+        <p>Die Mail hat die volle Höhe, nichts liegt über ihrem Ende. Näher an der heutigen Leiste, schmale Fenster verlieren keine Höhe.</p>
+        <p>„Antworten“ ist nur noch ein rotes Icon. Die Mail verliert rechts rund 50 px Breite, und die Karten öffnen nach links über den Text.</p></div>
+      <div class="note"><h3>Gewählt: rechts</h3>
+        <p>Die Mail behält ihre volle Höhe, der Kopf läuft oben bis an den rechten Rand. Meine erste Empfehlung war: Unten. Die Mail ist meist schmaler als hoch, die Breite ist knapper als die Höhe, und „Antworten“ mit Wort ist klarer als ein Icon. Rechts lohnt sich nur bei sehr niedrigen Fenstern.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Festhalten für die Umsetzung</h2>
+    <ul class="keep">
+      <li><b>Die Darstellung wird gemerkt.</b> Heute gilt das Umschalten im Lesebereich nur, bis das Fenster neu startet; danach stehen wieder die Einstellungen (Ansicht, Farben der Mail) da, und man schaltet jedes Mal neu. Künftig bleibt die Wahl einfach stehen, auch nach dem Neustart, ohne eigene Option und ohne Hinweis im Knopf. Man merkt es, weil man nicht mehr umschalten muss.</li>
+      <li><b>Die obere Zeile bekommt Platz für Icons.</b> Welche, entscheiden wir noch; nicht die der Vorlagen.</li>
+      <li><b>Einstellungen zeigen die Schieberegler statt des Zahnrads.</b></li>
+      <li><b>Die App-Wahl in der Titelzeile betrifft alle Apps.</b> Die Seitenleiste ist für alle Torro-Apps dieselbe; wenn das Mail-Fenster die Zeile nutzt, ändern sich Kalender, Aufgaben und die anderen mit.</li>
+    </ul>
+  </section>
+
+  <section class="today">
+    <figure><img src="heute.jpg" alt="Das Mail-Fenster heute: eigene Titelzeile, „Alle Konten“ in der Listenzeile, Aktionsleiste am rechten Rand" width="1000" height="1098" loading="lazy"><figcaption>Heute, zum Vergleich (Demo, schmales Fenster)</figcaption></figure>
+    <div>
+      <h2>Heute</h2>
+      <ul>
+        <li>Über allem eine eigene Titelzeile, in der nur Seitenleisten-Knopf und Zahnrad stehen.</li>
+        <li>„Alle Konten“ sitzt rechts in der Listenzeile und kennt nur ein Konto oder alle.</li>
+        <li>Neue E-Mail ist der kleine Stift neben „E-Mail“.</li>
+        <li>Die Aktionen stehen als Icons am rechten Fensterrand und nehmen der Mail rund 56 px.</li>
+        <li>„Als Text zeigen“ und „Dunkle Farben“ liegen unter „Mehr“ und gelten nur bis zum Neustart.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="ask">
+    <h2>Offene Fragen</h2>
+    <ol>
+      <li><b>Darf die Suche in die obere Zeile?</b><span class="rec">Empfehlung: ja. Ohne den Pfad ist dort über der Liste Platz, und die Liste gewinnt eine ganze Zeile. Die Sortierung wird dafür ein Icon; „Neueste zuerst“ steht im Hinweis und im Menü.</span></li>
+      <li><b>Schieberegler statt Zahnrad überall?</b><span class="rec">Empfehlung: ja, in allen Apps und in der Steuerzentrale, sonst steht dasselbe unter zwei Zeichen.</span></li>
+      <li><b>Neue E-Mail farbig oder gerahmt?</b><span class="rec">Empfehlung: gerahmt. Farbig wären zwei rote Knöpfe im Fenster, und „Antworten“ wäre nicht mehr das, was ins Auge springt.</span></li>
+      <li><b>Soll sich auch die Kontenwahl merken?</b><span class="rec">Empfehlung: ja, genauso dauerhaft wie die Darstellung.</span></li>
+      <li><b>Ändern wir die obere Zeile gleich in allen Apps?</b><span class="rec">Empfehlung: ja. Sonst sieht das Mail-Fenster anders aus als Kalender und Aufgaben.</span></li>
+      <li><b>Was passiert in schmalen Fenstern?</b><span class="rec">Empfehlung: Wird die Mail schmaler als etwa 520 px, verliert „Antworten“ seine Beschriftung und die Leiste zeigt nur Icons. Ganz schmal (ohne Seitenleiste) wandert die Kontenwahl in die obere Zeile.</span></li>
+    </ol>
+  </section>
+</div>
+
+<script>
+// Fenster auf Stagebreite skalieren, Zustandsknöpfe, Kontenwahl und Darstellung verdrahten.
+const app=document.getElementById('app');
+function fit(){
+  const stage=document.querySelector('.stage'), scaler=stage.querySelector('.scaler');
+  const s=Math.min(1,stage.clientWidth/1320);
+  scaler.style.transform='scale('+s+')';
+  stage.style.height=(820*s)+'px';
+}
+fit();
+try{new ResizeObserver(fit).observe(document.querySelector('.wrap'));}catch(e){window.addEventListener('resize',fit);}
+
+const states=document.getElementById('states');
+function setState(st){
+  states.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.st===st?'true':'false'));
+  app.classList.toggle('st-konten',st==='konten');
+  app.querySelectorAll('.grp').forEach(g=>g.classList.toggle('pin',(st==='ablegen'&&g.dataset.g==='ablegen')||(st==='darst'&&g.dataset.g==='darst')));
+}
+states.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>setState(b.dataset.st)));
+// Varianten: Leiste unten oder rechts; eine Datei, drei als Menü oder drei als Reihe.
+document.querySelectorAll('.states.opt').forEach(g=>{
+  const all=[...g.querySelectorAll('button')].map(b=>b.dataset.v).filter(Boolean);
+  g.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+    g.querySelectorAll('button').forEach(o=>o.setAttribute('aria-pressed',o===b?'true':'false'));
+    all.forEach(v=>app.classList.remove(v)); if(b.dataset.v) app.classList.add(b.dataset.v);
+    if(g.dataset.opt==='att') app.classList.toggle('att-open',b.dataset.v==='att-menu');
+    renderList();
+  }));
+});
+document.getElementById('attbtn').addEventListener('click',()=>app.classList.toggle('att-open'));
+// Die Liste: dieselben Mails in vier Fassungen.
+const mails=[
+  {f:'Jonas Weber',d:'work.example.org',i:'JW',k:'person',s:'Budget für Q4 prüfen',p:'Hallo Anna, die Zahlen für Q4 sind da. Kannst du dir das Reisebudget vor Donnerstag ansehen?',day:'Heute',t:'14:21',att:1},
+  {f:'Paul Berg',ph:['#7aa6c9','#3f6d8f','#e9c3a6','#2d3b4a'],d:'example.org',i:'PB',k:'person',s:'Pläne fürs Wochenende',p:'Bleibt es bei der Wanderung am Samstag? Das Wetter sieht gut aus.',day:'Heute',t:'13:56',u:1,g:1},
+  {f:'Lena Hoffmann',ph:['#d9a66b','#9c5f3a','#f1d0b5','#6b2f3a'],d:'work.example.org',i:'LH',k:'person',s:'Re: Design-Review am Donnerstag',p:'Donnerstag um 14 Uhr passt. Ich bringe die neuen Entwürfe mit.',day:'Heute',t:'12:36',u:1,fl:1},
+  {f:'GitHub',d:'github.example',i:'G',k:'bot',logo:'github',s:'[torro/workplace] Seitenleiste flackert beim Ändern der Größe (#212)',p:'Neues Issue #212 in torro/workplace: Die Seitenleiste flackert, wenn man das Fenster zieht.',day:'Heute',t:'11:26',u:1},
+  {f:'Konto-Sicherheit',d:'paypa1-login.example',i:'KS',k:'skull',s:'Dein Konto wird gesperrt – jetzt bestätigen',p:'Wir haben ungewöhnliche Aktivitäten festgestellt. Bestätige deine Daten innerhalb von 24 Stunden.',day:'Heute',t:'10:58'},
+  {f:'Shop',d:'shop.example',i:'S',k:'megaphone',s:'Herbstaktion: 20 % auf alles',p:'Herbstaktion: 20 % auf alle Jacken bis Sonntag. Jetzt stöbern.',day:'Heute',t:'09:46',g:1},
+  {f:'Mobile',d:'mobile.example',i:'M',k:'receipt',s:'Deine Rechnung für September',p:'Hallo Anna, deine Rechnung ist da. Den Betrag buchen wir am 14. November ab.',day:'Gestern',t:'16:20',att:3,sel:1},
+  {f:'Maria Schulz',d:'work.example.org',i:'MS',k:'person',s:'Mittagessen nächste Woche?',p:'Dienstag oder Mittwoch würde mir passen, sag einfach Bescheid.',day:'Gestern',t:'12:46',fl:1},
+  {f:'Shop',d:'shop.example',i:'S',k:'megaphone',s:'Winterjacken sind da',p:'Mitglieder bekommen den Versand bis Monatsende geschenkt.',day:'Gestern',t:'08:46',u:1,g:1},
+  {f:'Jonas Weber',d:'work.example.org',i:'JW',k:'person',s:'Protokoll vom Montag',p:'Hier das Protokoll vom Montag und die Folien von Lena.',day:'Sonntag',t:'10:12',att:2},
+  {f:'Bank',d:'bank.example',i:'B',k:'receipt',s:'Dein Kontoauszug für Oktober',p:'Dein Kontoauszug für Oktober liegt im Postfach bereit.',day:'Sonntag',t:'07:00',g:1},
+  {f:'Lena Hoffmann',ph:['#d9a66b','#9c5f3a','#f1d0b5','#6b2f3a'],d:'work.example.org',i:'LH',k:'person',s:'Folien für die Präsentation',p:'Anbei die Folien, schau bitte auf Seite 4 und 5.',day:'Samstag',t:'18:31',att:1},
+  {f:'GitHub',d:'github.example',i:'G',k:'bot',logo:'github',s:'[torro/workplace] PR #213 zusammengeführt',p:'mahype hat #213 in main zusammengeführt.',day:'Samstag',t:'15:02'},
+  {f:'Paul Berg',ph:['#7aa6c9','#3f6d8f','#e9c3a6','#2d3b4a'],d:'example.org',i:'PB',k:'person',s:'Re: Pläne fürs Wochenende',p:'Super, dann um neun am Parkplatz.',day:'Samstag',t:'11:47',g:1},
+  {f:'Maria Schulz',d:'work.example.org',i:'MS',k:'person',s:'Raumplanung Dezember',p:'Kannst du bis Freitag sagen, welche Räume ihr braucht?',day:'Freitag',t:'16:05'},
+  {f:'Verein',d:'tsv.example',i:'TV',k:'users',s:'Einladung zur Jahresversammlung',p:'Liebe Mitglieder, am 21. November um 19 Uhr im Vereinsheim.',day:'Freitag',t:'09:30'},
+  {f:'Shop',d:'shop.example',i:'S',k:'package',s:'Deine Bestellung ist unterwegs',p:'Dein Paket kommt voraussichtlich am Dienstag.',day:'Freitag',t:'08:12',g:1},
+  {f:'Jonas Weber',d:'work.example.org',i:'JW',k:'person',s:'Kurz zum Budget',p:'Lass uns morgen fünf Minuten dazu sprechen.',day:'Donnerstag',t:'17:44'},
+  {f:'Mobile',d:'mobile.example',i:'M',k:'bell',s:'Dein Datenvolumen ist bald aufgebraucht',p:'Du hast 80 % deines Datenvolumens verbraucht.',day:'Donnerstag',t:'12:10'},
+  {f:'GitHub',d:'github.example',i:'G',k:'bot',logo:'github',s:'[torro/workplace] Neue Release 0.9.2',p:'Release 0.9.2 ist veröffentlicht.',day:'Donnerstag',t:'09:01'},
+  {f:'Paul Berg',ph:['#7aa6c9','#3f6d8f','#e9c3a6','#2d3b4a'],d:'example.org',i:'PB',k:'person',s:'Fotos vom Ausflug',p:'Hier die Fotos, das letzte ist das beste.',day:'Mittwoch',t:'20:15',att:6,g:1},
+];
+// Ein Foto aus den Kontakten, hier als gezeichnetes Porträt (Hintergrund, Kopf, Schultern).
+function photo(c){
+  const svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="'+c[0]+'"/><stop offset="1" stop-color="'+c[1]+'"/></linearGradient></defs><rect width="40" height="40" fill="url(#g)"/><circle cx="20" cy="16" r="7.5" fill="'+c[2]+'"/><path d="M5 40c1.5-9 7.5-13 15-13s13.5 4 15 13z" fill="'+c[3]+'"/></svg>';
+  return '&quot;data:image/svg+xml,'+encodeURIComponent(svg)+'&quot;';
+}
+// Jeder Absender bekommt aus seiner Adresse eine feste Farbe: überall dieselbe, ohne dass man etwas einstellt.
+const HUES=['#3b6fd1','#1f8a7d','#7a4fc4','#b5507a','#4f8a3a','#a8622f','#2a87b0','#9c3f9c','#5e7186','#7d7a2a','#c0503f'];
+function hue(m){
+  const key=(m.f+'@'+m.d).toLowerCase(); let h=2166136261;
+  for(const ch of key) h=Math.imul(h^ch.codePointAt(0),16777619)>>>0;
+  return HUES[h%HUES.length];
+}
+// Menschen bekommen ein Porträt im Stil der Fotos, alle anderen das Zeichen ihrer Kategorie.
+const PORTRAIT='<svg class="pt" viewBox="0 0 40 40"><circle class="hd" cx="20" cy="16" r="7.5"/><path class="bd" d="M5 40c1.5-9 7.5-13 15-13s13.5 4 15 13z"/></svg>';
+function glyph(m){
+  if(app.classList.contains('noicon')) return m.i;
+  return m.k==='person'?PORTRAIT:'<svg><use href="#i-'+m.k+'"/></svg>';
+}
+const esc=t=>t.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+const ic=(m)=>(m.fl?'<svg class="am"><use href="#i-flag"/></svg>':'')+(m.att?'<svg><use href="#i-clip"/></svg>':'');
+function renderList(){
+  const box=document.getElementById('rows');
+  const v=['list-a','list-b','list-c','list-d'].find(c=>app.classList.contains(c));
+  let h='', last='';
+  mails.forEach(m=>{
+    const cls=(m.u?' unread':'')+(m.sel?' sel':'');
+    if(!v){
+      if(mails.indexOf(m)>9) return;
+      const when=m.day==='Heute'?m.t:(m.day==='Gestern'?'Gestern '+m.t:m.day.slice(0,2)+', '+m.t);
+      h+='<div class="row'+cls+'"><span class="av'+(m.g?' g':'')+'">'+m.i+'</span><div class="rmain"><div class="rtop"><b>'+esc(m.f)+'</b><em>'+m.d+'</em><span class="meta">'+ic(m)+when+'</span></div><div class="subj">'+esc(m.s)+'</div><div class="prev">'+esc(m.p)+'</div></div></div>';
+      return;
+    }
+    if(m.day!==last){h+='<div class="day">'+m.day+'</div>';last=m.day;}
+    if(v==='list-a'){
+      h+='<div class="ra'+cls+'"><div class="l"><b>'+esc(m.f)+'</b><time>'+m.t+'</time></div><div class="l ln2"><span class="sj">'+esc(m.s)+'</span><span class="ic2">'+ic(m)+'</span></div></div>';
+    }else if(v==='list-d'){
+      const av=m.ph?'<span class="av ph" style="background-image:url('+photo(m.ph)+')"></span>'
+        :(m.logo&&!app.classList.contains('nologo'))?'<span class="av logo"><svg><use href="#l-'+m.logo+'"/></svg></span>'
+        :'<span class="av hue'+(m.k==='skull'?' bad':'')+'" style="--h:'+hue(m)+'">'+glyph(m)+'</span>';
+      h+='<div class="ra rd2'+cls+'">'+av+'<div style="min-width:0"><div class="l"><b>'+esc(m.f)+'</b>'+(m.att?'<svg class="clp" aria-label="Anhang"><use href="#i-clip"/></svg>':'')+'<time>'+m.t+'</time></div><div class="l ln2"><span class="sj">'+esc(m.s)+'</span>'+(m.fl?'<span class="mk fl" title="Markiert"><svg><use href="#i-flag"/></svg></span>':'')+'</div></div></div>';
+    }else if(v==='list-b'){
+      h+='<div class="ra rb'+cls+'"><span class="av'+(m.g?' g':'')+'">'+m.i+'</span><div style="min-width:0"><div class="l"><b>'+esc(m.f)+'</b><span class="ic2">'+ic(m)+'</span><time style="margin-left:0">'+m.t+'</time></div><div class="l ln2"><span class="sj">'+esc(m.s)+'</span><span class="pv">'+esc(m.p)+'</span></div></div></div>';
+    }else{
+      h+='<div class="ra rc'+cls+'"><b>'+esc(m.f)+'</b><span class="mid"><span class="sj">'+esc(m.s)+'</span><span class="pv">– '+esc(m.p)+'</span></span><span class="ic2">'+ic(m)+'</span><time style="margin-left:0">'+m.t+'</time></div>';
+    }
+  });
+  box.innerHTML=h;
+  const head=app.querySelector('.head.hb .av');
+  if(head){head.style.setProperty('--h',hue({f:'Mobile',d:'mobile.example'}));head.innerHTML=app.classList.contains('noicon')?'M':'<svg><use href="#i-receipt"/></svg>';}
+}
+document.getElementById('hues').addEventListener('change',e=>app.classList.toggle('nohue',!e.target.checked));
+document.getElementById('logos').addEventListener('change',e=>{app.classList.toggle('nologo',!e.target.checked);renderList();});
+document.getElementById('icons').addEventListener('change',e=>{app.classList.toggle('noicon',!e.target.checked);renderList();});
+renderList();
+document.getElementById('marks').addEventListener('change',e=>app.classList.toggle('nomarks',!e.target.checked));
+document.getElementById('acct').addEventListener('click',()=>setState(app.classList.contains('st-konten')?'':'konten'));
+app.querySelectorAll('.grp>.b').forEach(b=>b.addEventListener('click',()=>{
+  const g=b.parentElement.dataset.g;
+  setState(b.parentElement.classList.contains('pin')?'':(g==='ablegen'||g==='darst'?g:''));
+}));
+
+// Konten: ein Konto, mehrere oder alle; mindestens eines bleibt gewählt.
+const accounts=[
+  {id:'arbeit',name:'Arbeit',addr:'anna@work.example.org',ini:'AB',color:'#5aa2ff',unread:4,on:true},
+  {id:'privat',name:'Privat',addr:'anna.berg@example.org',ini:'AP',color:'#3fb8a5',unread:2,on:true},
+  {id:'verein',name:'Verein',addr:'kasse@tsv.example',ini:'TV',color:'#d99a26',unread:0,on:true},
+];
+const rows=document.getElementById('acc-rows');
+function renderAccounts(){
+  rows.innerHTML='';
+  accounts.forEach(a=>{
+    const r=document.createElement('div');
+    r.className='ar'+(a.on?' on':'');r.setAttribute('role','menuitemcheckbox');r.setAttribute('aria-checked',a.on);r.tabIndex=0;
+    r.innerHTML='<span class="cb"><svg><use href="#i-check"/></svg></span><span class="who"><b>'+a.name+'</b><span>'+a.addr+'</span></span><em>'+(a.unread||'')+'</em><button class="only" type="button">nur dieses</button>';
+    r.addEventListener('click',e=>{
+      if(e.target.closest('.only')){accounts.forEach(x=>x.on=x===a);}
+      else if(!(a.on&&accounts.filter(x=>x.on).length===1)){a.on=!a.on;}
+      renderAccounts();
+    });
+    rows.appendChild(r);
+  });
+  const on=accounts.filter(a=>a.on), unread=on.reduce((n,a)=>n+a.unread,0);
+  const cb=document.getElementById('cb-all');
+  cb.className='cb'+(on.length===accounts.length?' on':' some');
+  const name=document.getElementById('acct-name'), sub=document.getElementById('acct-sub');
+  if(on.length===accounts.length){name.textContent='Alle Konten';sub.textContent=on.map(a=>a.name).join(', ');}
+  else if(on.length===1){name.textContent=on[0].name;sub.textContent=on[0].addr;}
+  else{name.textContent=on.length+' Konten';sub.textContent=on.map(a=>a.name).join(', ');}
+}
+document.getElementById('acc-all').addEventListener('click',()=>{accounts.forEach(a=>a.on=true);renderAccounts();});
+renderAccounts();
+
+// Darstellung: Ansicht und Farben schalten die Mail um.
+app.querySelectorAll('.seg').forEach(seg=>seg.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+  seg.querySelectorAll('button').forEach(o=>o.setAttribute('aria-pressed',o===b?'true':'false'));
+  if(seg.dataset.k==='fmt'){app.classList.toggle('fmt-text',b.dataset.v==='text');}
+  else{['light','dark','app'].forEach(v=>app.classList.toggle('mail-'+v,v===b.dataset.v));}
+})));
+</script>

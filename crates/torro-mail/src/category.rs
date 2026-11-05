@@ -76,11 +76,20 @@ pub enum CategoryIcon {
     CircleDashed,
     #[default]
     Tag,
+    Megaphone,
+    Bot,
+    Receipt,
+    Package,
+    Skull,
+    Newspaper,
+    Building2,
+    Landmark,
+    TriangleAlert,
 }
 
 impl CategoryIcon {
     /// Every icon a category can use, in the order shown by the icon picker.
-    pub const ALL: [CategoryIcon; 26] = [
+    pub const ALL: [CategoryIcon; 35] = [
         Self::MessageCircle,
         Self::ListTodo,
         Self::CircleCheck,
@@ -107,6 +116,15 @@ impl CategoryIcon {
         Self::Ellipsis,
         Self::CircleDashed,
         Self::Tag,
+        Self::Megaphone,
+        Self::Bot,
+        Self::Receipt,
+        Self::Package,
+        Self::Skull,
+        Self::Newspaper,
+        Self::Building2,
+        Self::Landmark,
+        Self::TriangleAlert,
     ];
 
     /// Stable snake-case key used by the catalogue database and APIs.
@@ -138,6 +156,15 @@ impl CategoryIcon {
             Self::Ellipsis => "ellipsis",
             Self::CircleDashed => "circle_dashed",
             Self::Tag => "tag",
+            Self::Megaphone => "megaphone",
+            Self::Bot => "bot",
+            Self::Receipt => "receipt",
+            Self::Package => "package",
+            Self::Skull => "skull",
+            Self::Newspaper => "newspaper",
+            Self::Building2 => "building2",
+            Self::Landmark => "landmark",
+            Self::TriangleAlert => "triangle_alert",
         }
     }
 
@@ -369,21 +396,21 @@ impl Category {
             Self::Personal => CategoryIcon::User,
             Self::Invitation => CategoryIcon::CalendarPlus,
             Self::Invoice => CategoryIcon::TextQuote,
-            Self::Receipt => CategoryIcon::Paperclip,
+            Self::Receipt => CategoryIcon::Receipt,
             Self::Order => CategoryIcon::SquareCheck,
-            Self::Shipping => CategoryIcon::Send,
+            Self::Shipping => CategoryIcon::Package,
             Self::Booking => CategoryIcon::CalendarDays,
-            Self::Statement => CategoryIcon::ChartColumn,
+            Self::Statement => CategoryIcon::Landmark,
             Self::Document => CategoryIcon::AlignLeft,
-            Self::Newsletter => CategoryIcon::Mail,
-            Self::Promotion => CategoryIcon::Flag,
+            Self::Newsletter => CategoryIcon::Newspaper,
+            Self::Promotion => CategoryIcon::Megaphone,
             Self::ServiceNotice => CategoryIcon::Bell,
             Self::Social => CategoryIcon::Users,
             Self::EventInvite => CategoryIcon::Video,
             Self::Bounce => CategoryIcon::MailOpen,
-            Self::AutoReply => CategoryIcon::Reply,
-            Self::Spam => CategoryIcon::Trash2,
-            Self::Phishing => CategoryIcon::Eye,
+            Self::AutoReply => CategoryIcon::Bot,
+            Self::Spam => CategoryIcon::Skull,
+            Self::Phishing => CategoryIcon::TriangleAlert,
             Self::Other => CategoryIcon::Ellipsis,
             Self::Custom(_) => CategoryIcon::Tag,
         }
@@ -873,5 +900,45 @@ mod tests {
             assert_eq!(CategoryIcon::from_key(icon.key()), icon);
         }
         assert_eq!(CategoryIcon::from_key("a_future_icon"), CategoryIcon::Tag);
+    }
+
+    /// Issue #458: the set has the marks of the new mail list – megaphone, robot, receipt, package,
+    /// skull, newspaper, building, bank, warning – under stable keys, and the categories the suite
+    /// brings show them where the person kept their mark.
+    #[test]
+    fn the_new_marks_have_keys_and_the_built_in_categories_wear_them() {
+        let new = [
+            (CategoryIcon::Megaphone, "megaphone"),
+            (CategoryIcon::Bot, "bot"),
+            (CategoryIcon::Receipt, "receipt"),
+            (CategoryIcon::Package, "package"),
+            (CategoryIcon::Skull, "skull"),
+            (CategoryIcon::Newspaper, "newspaper"),
+            (CategoryIcon::Building2, "building2"),
+            (CategoryIcon::Landmark, "landmark"),
+            (CategoryIcon::TriangleAlert, "triangle_alert"),
+        ];
+        for (icon, key) in new {
+            assert_eq!(icon.key(), key);
+            assert_eq!(CategoryIcon::from_key(key), icon);
+            assert!(CategoryIcon::ALL.contains(&icon), "{key}");
+        }
+        let defaults = [
+            (Category::Newsletter, CategoryIcon::Newspaper),
+            (Category::Promotion, CategoryIcon::Megaphone),
+            (Category::Receipt, CategoryIcon::Receipt),
+            (Category::Shipping, CategoryIcon::Package),
+            (Category::AutoReply, CategoryIcon::Bot),
+            (Category::Statement, CategoryIcon::Landmark),
+            (Category::Spam, CategoryIcon::Skull),
+            (Category::Phishing, CategoryIcon::TriangleAlert),
+        ];
+        for (category, icon) in defaults {
+            assert_eq!(category.default_icon(), icon, "{category:?}");
+        }
+        let mut keys: Vec<&str> = CategoryIcon::ALL.iter().map(|icon| icon.key()).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), CategoryIcon::ALL.len(), "every key once");
     }
 }
