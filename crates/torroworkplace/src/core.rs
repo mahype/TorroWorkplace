@@ -10851,8 +10851,15 @@ impl Core {
     /// its account. Only an answer with suggestions gets them: a refused request read nothing.
     async fn read_mail_ids(&self, rights: &torro_ipc::api::Rights) -> Vec<String> {
         let reach = Reach::Client(rights);
-        let accounts: Vec<String> =
-            self.mail.accounts_within(reach).await.into_iter().filter(|account| reads_mail(reach, account)).collect();
+        // The accounts `Core::correspondents` reads: those with a store, as `MailService::stores` has them.
+        let accounts: Vec<String> = self
+            .mail
+            .stores(reach)
+            .await
+            .into_iter()
+            .map(|(account, _)| account)
+            .filter(|account| reads_mail(reach, account))
+            .collect();
         crate::audit::read_account_ids(&accounts)
     }
 

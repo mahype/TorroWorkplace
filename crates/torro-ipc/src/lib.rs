@@ -1383,9 +1383,11 @@ pub enum Request {
     /// 500 characters or when the address books cannot be read. Every field is `untrusted`.
     #[serde(rename = "contacts.suggest_recipients")]
     SuggestRecipients {
-        /// What was typed: every word must start a word of the name or the address.
+        /// What was typed: every word must start a word of the name or the address. At most 500
+        /// characters.
+        #[schemars(length(max = 500))]
         query: String,
-        /// The most suggestions: 1 to 20, 8 when left out.
+        /// The most suggestions: 1 to 20 (held within), 8 when left out.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(range(min = 1, max = 20))]
         limit: Option<u32>,

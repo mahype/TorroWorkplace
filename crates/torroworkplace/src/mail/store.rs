@@ -68,6 +68,10 @@ use super::overview::{CameIn, InInbox};
 use super::query::{Field, Query, Test};
 use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
 
+/// The most messages [`MailStore::correspondents`] reads of each side (sent, received), the newest
+/// first: a search that cannot be narrowed (letters beyond ASCII) reads no more than this per key.
+const CORRESPONDENT_ROWS: u32 = 5_000;
+
 /// Message texts older than this many days are dropped by [`MailStore::prune_bodies`]; headers stay.
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
@@ -1778,6 +1782,7 @@ impl MailStore {
                 sql.push_str(" AND recipients LIKE ?3 ESCAPE '\\'");
                 values.push(Value::Text(pattern.clone()));
             }
+            sql.push_str(&format!(" ORDER BY date DESC LIMIT {CORRESPONDENT_ROWS}"));
             let mut statement = self.db.prepare(&sql)?;
             let rows = statement.query_map(params_from_iter(values), |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
@@ -1807,6 +1812,7 @@ impl MailStore {
             sql.push_str(" AND m.sender LIKE ?3 ESCAPE '\\'");
             values.push(Value::Text(pattern.clone()));
         }
+        sql.push_str(&format!(" ORDER BY m.date DESC LIMIT {CORRESPONDENT_ROWS}"));
         let mut statement = self.db.prepare(&sql)?;
         let rows = statement
             .query_map(params_from_iter(values), |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
