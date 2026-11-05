@@ -5,9 +5,8 @@
 //! Accounts        identity and connection, offline content, folders and backup per account
 //! Reading         display, default sender, compose format and formatted signature
 //! Attachments     default click, Downloads folder and save targets (task M12.7, [`attachments`])
-//! Categorization  rules before model sorting, plus editable categories; models here and in the
-//!                 cloud, one in the cloud only after its question (issue #424)
-//! Filters         saved searches that move, mark or file new mail in the inbox (issue #339, [`filters`])
+//! Categorization  the model, the rules and filters in one order, the categories, and sorting the
+//!                 mail already there (issue #454, [`categorization`]); filters are part of it
 //! ```
 //!
 //! Passwords stay in the keychain; the page only sends a newly typed secret to the connection
@@ -22,37 +21,44 @@ use crate::{Action, Data, Page, Section};
 
 pub mod attachments;
 mod backup;
+pub mod categorization;
 mod editor;
 pub mod filters;
 
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <id>` takes.
-pub const SECTIONS: [Section; 5] = [
+pub const SECTIONS: [Section; 4] = [
     // Accounts is first: the gear lands on who the mail comes from.
     Section { id: ACCOUNTS_SECTION, icon: Icon::Mail, label: "Accounts" },
     Section { id: "reading", icon: Icon::MailOpen, label: "Reading & writing" },
     // What a click on an attachment does and where it is saved (task M12.7, issue #290); "Manage
     // save targets…" in the menu of an attachment opens it ([`ATTACHMENTS_SECTION`]).
     Section { id: ATTACHMENTS_SECTION, icon: Icon::Paperclip, label: "Attachments" },
-    // What incoming mail is sorted into (task E12.10, `docs/kategorien.md`).
-    Section { id: "categorization", icon: Icon::Tag, label: "Categorization" },
-    // Saved searches with what to do with new mail (issue #339); "Create filter…" at a mail and
-    // at the search field open a new one here ([`new_filter`]).
-    Section { id: FILTERS_SECTION, icon: Icon::Filter, label: "Filters" },
+    // What incoming mail is sorted into (task E12.10, `docs/kategorien.md`), with the filters since
+    // issue #454: "Create filter…" at a mail and at the search field open a new one here
+    // ([`new_filter`]).
+    Section { id: CATEGORIZATION_SECTION, icon: Icon::Tag, label: "Categorization" },
 ];
 
 /// The id of the section "Attachments": what `--settings attachments` takes and where "Manage save
 /// targets…" leads.
 pub const ATTACHMENTS_SECTION: &str = "attachments";
 
-/// The id of the section "Filters" (issue #339): what `--settings filters` takes and where "Create
-/// filter…" leads.
-pub const FILTERS_SECTION: &str = "filters";
+/// The id of the section "Categorization": what `--settings categorization` takes and where "Create
+/// filter…" leads (issue #454: the filters are part of it).
+pub const CATEGORIZATION_SECTION: &str = "categorization";
 
-/// The message that opens a new filter's page in "Filters" with `query` and `account` filled in
-/// (`None`: every account) and asks what it finds – what torroinbox sends after opening the
-/// section for "Create filter…" (`from:<address>`) and "Create filter from search…".
+/// The message that opens a new filter's dialog in "Categorization" › "Rules & filters" with
+/// `query` and `account` filled in (`None`: every account) and asks what it finds – what torroinbox
+/// sends after opening the section for "Create filter…" (`from:<address>`) and "Create filter from
+/// search…".
 pub fn new_filter(query: String, account: Option<String>) -> Message {
-    Message::Filters(filters::Message::New { query, account })
+    Message::Categorization(categorization::Message::Filters(filters::Message::New { query, account }))
+}
+
+/// The messages that put "Categorization" into the demo state `name` (`--demo --open
+/// categorization-<name>` of torroinbox, issue #454); `None` for a name it does not know.
+pub fn categorization_scene(name: &str) -> Option<Vec<Message>> {
+    categorization::scene(name).map(|messages| messages.into_iter().map(Message::Categorization).collect())
 }
 
 /// The message that opens the add-account dialog in "Accounts" (issue #410) – what torroinbox sends
@@ -106,11 +112,11 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
         torro_ipc::Request::PreviewClearCategories,
         // The catalogue (task E15.2): what the categories are called and where they stand now.
         torro_ipc::Request::ListCategories { account: None },
-        // The sorting rules (task E15.5), listed and edited under Categorization.
+        // The sorting rules (task E15.5) and the filters (issue #339) in their one order (issue #454),
+        // listed and edited under Categorization.
         torro_ipc::Request::ListSortRules,
-        // "Filters" (issue #339): the filters, and the folders a filter can move mail into.
         torro_ipc::Request::ListMailFilters,
-        torro_ipc::Request::MailFolders { account: None },
+        torro_ipc::Request::ListSortingOrder,
     ]
 }
 
@@ -120,13 +126,12 @@ pub struct State {
     /// Accounts: which account's page is open and what is typed into it. Reading keeps nothing.
     pub accounts: accounts::State,
     pub reading: reading::State,
-    /// Categorization: the page of a category or a sorting rule that is open (task E15.5).
+    /// Categorization: its tab, dialogs and menus, the page of a category or a sorting rule that is
+    /// open (task E15.5) and the dialog of a filter (issue #339, #454).
     pub categorization: categorization::State,
     pub storage: storage::State,
     /// Attachments: the editor of a save target while it is open (task M12.7).
     pub attachments: attachments::State,
-    /// Filters: the open filter's page and the question of "Apply" (issue #339).
-    pub filters: filters::State,
     /// The section whose ask is on its way (issue #397). An answer names no request, and a refusal
     /// is a bare `error`, so one ask goes out at a time and its answer reaches only the section that
     /// asked; the others wait in [`State::queued`] until it is back ([`next_ask`]).
@@ -141,7 +146,6 @@ enum Asker {
     Accounts,
     Categorization,
     Storage,
-    Filters,
 }
 
 /// What the sections report; the app wraps it in its own message.
@@ -152,7 +156,6 @@ pub enum Message {
     Categorization(categorization::Message),
     Storage(storage::Message),
     Attachments(attachments::Message),
-    Filters(filters::Message),
 }
 
 /// What a section's widget reported, and what the host is to do about it. An ask while another one
@@ -162,7 +165,6 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action<AppAct
         Message::Accounts(accounts::Message::Storage(_)) | Message::Storage(_) => Some(Asker::Storage),
         Message::Accounts(_) => Some(Asker::Accounts),
         Message::Categorization(_) => Some(Asker::Categorization),
-        Message::Filters(_) => Some(Asker::Filters),
         Message::Reading(_) | Message::Attachments(_) => None,
     };
     let action = section_update(state, message, data);
@@ -226,7 +228,6 @@ fn section_update(state: &mut State, message: Message, data: &Data) -> Action<Ap
             Action::Open(ACCOUNTS_SECTION)
         }
         Message::Storage(message) => storage::update(&mut state.storage, message, data),
-        Message::Filters(message) => filters::update(&mut state.filters, message, data),
     }
 }
 
@@ -235,8 +236,7 @@ fn section_update(state: &mut State, message: Message, data: &Data) -> Action<Ap
 pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Message> {
     match section {
         "reading" => wrap(Page::new(reading::view(&state.reading, data)), Message::Reading),
-        "categorization" => wrap(categorization::page(&state.categorization, data), Message::Categorization),
-        FILTERS_SECTION => wrap(filters::page(&state.filters, data), Message::Filters),
+        CATEGORIZATION_SECTION => wrap(categorization::page(&state.categorization, data), Message::Categorization),
         ATTACHMENTS_SECTION => wrap(Page::new(attachments::view(&state.attachments, data)), Message::Attachments),
         // Only an account's page is wider than the usual reading width: identity and connection
         // stand side by side there, two forms and the gap between them (issue #343).
@@ -264,8 +264,9 @@ pub fn overlay<'a>(
             attachments::overlay(&state.attachments, data, class).map(|dialog| dialog.map(Message::Attachments))
         }
         ACCOUNTS_SECTION => accounts::overlay(&state.accounts, data).map(|menu| menu.map(Message::Accounts)),
-        // The question before a model in the cloud sorts mail (issue #424).
-        "categorization" => {
+        // The dialogs and menus of the page: the question before a model in the cloud sorts mail
+        // (issue #424), "Sort existing mail", a filter, the menus (issue #454).
+        CATEGORIZATION_SECTION => {
             categorization::overlay(&state.categorization, data).map(|dialog| dialog.map(Message::Categorization))
         }
         _ => None,
@@ -289,14 +290,15 @@ pub fn sent(state: &mut State) {
 /// already being typed stays in place while unrelated settings refresh.
 pub fn loaded(state: &mut State, data: &Data) {
     reading::loaded(&mut state.reading, data);
-    editor::loaded(&mut state.categorization.editor, data);
 }
 
 /// A send of the host came back with `result` – the data loaded after it, or why it failed –: a
-/// filter's page waiting for its save closes once the filter is stored, or stays with what was typed
-/// (issue #339, [`filters::sent`]). The window calls it on every `Sent`, before the host takes it.
-pub fn filters_sent(state: &mut State, result: &Result<Data, String>) {
-    filters::sent(&mut state.filters, result);
+/// filter's dialog waiting for its save closes once the filter is stored, or stays with what was
+/// typed (issue #339, [`filters::sent`]), and a group's form of the editor likewise (issue #397).
+/// The window calls it on every `Sent`, before the host takes it; a filter stored with "Also apply…"
+/// comes back as the message that runs it, which the window sends as a click of the page.
+pub fn categorization_sent(state: &mut State, result: &Result<Data, String>) -> Option<Message> {
+    categorization::sent(&mut state.categorization, result).map(Message::Categorization)
 }
 
 /// What Escape means while "Accounts" shows: close the "…" menu of an account's head (task DS.6).
@@ -305,44 +307,24 @@ pub fn accounts_escape(state: &State) -> Option<Message> {
     accounts::escape(&state.accounts).map(Message::Accounts)
 }
 
-/// What Escape means in these sections: the question before a model in the cloud sorts mail is
-/// cancelled (issue #424), else a page of the categories' editor goes back to its list (task E15.5),
-/// asking first when something typed would go. `None` leaves it to the window, which closes the
-/// settings.
+/// What Escape means in "Categorization": what lies on top goes first – the question before a model
+/// in the cloud sorts mail (issue #424), a dialog, a menu –, else a page of the categories' editor
+/// goes back to the tabs (task E15.5), asking first when something typed would go
+/// ([`categorization::escape`]). `None` leaves it to the window, which closes the settings.
 pub fn escape(state: &State) -> Option<Message> {
-    if categorization::asking_cloud(&state.categorization) {
-        return Some(Message::Categorization(categorization::Message::CancelCloud));
-    }
-    editor::escape(&state.categorization.editor)
-        .map(|message| Message::Categorization(categorization::Message::Editor(message)))
-}
-
-/// What Escape means while "Filters" shows: a filter's page goes back to the list, asking first when
-/// something typed would go (issue #339). `None` on the list, which lets the window close the
-/// settings.
-pub fn filters_escape(state: &State) -> Option<Message> {
-    filters::escape(&state.filters).map(Message::Filters)
+    categorization::escape(&state.categorization).map(Message::Categorization)
 }
 
 /// The answer of a one-off request: a preview of the selected sorting scope, or a filter's preview
-/// or run (issue #339). A filter's answer goes to "Filters" only.
+/// or run (issue #339), each to the part of "Categorization" that asked.
 pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
     // Only the section that asked: another one's refusal reads the same (issue #397).
     match state.asking.take() {
         Some(Asker::Accounts) => accounts::answered(&mut state.accounts, answer),
         Some(Asker::Categorization) => categorization::answered(&mut state.categorization, answer),
         Some(Asker::Storage) => storage::answered(&mut state.storage, answer),
-        Some(Asker::Filters) => {
-            filters::answered(&mut state.filters, answer);
-        }
         None => {}
     }
-}
-
-/// A send of the host came back with `result` (the window calls it on every `Sent`): a main
-/// category of the category editor is saved, or the refusal shows in its form (issue #397).
-pub fn editor_sent(state: &mut State, result: &Result<Data, String>) {
-    editor::sent(&mut state.categorization.editor, result);
 }
 
 /// Backup answers carry their originating account, so another section's pending answer cannot
@@ -4115,7 +4097,8 @@ mod tests {
         let data = Data::default();
         let mut state = State::default();
         let period = |period| Message::Categorization(categorization::Message::Period(period));
-        let first = update(&mut state, period(categorization::Period::Days30), &data);
+        let open = Message::Categorization(categorization::Message::OpenSort { rules_only: false });
+        let first = update(&mut state, open, &data);
         assert!(matches!(first, Action::Ask(torro_ipc::Request::PreviewCategoryJob { .. })), "{first:?}");
         let second = update(&mut state, period(categorization::Period::Year), &data);
         assert_eq!(second, Action::None, "waits for the first");
@@ -4132,11 +4115,10 @@ mod tests {
     #[test]
     fn the_sections_are_reachable_by_their_words() {
         let ids: Vec<&str> = SECTIONS.iter().map(|section| section.id).collect();
-        assert_eq!(ids, ["accounts", "reading", "attachments", "categorization", "filters"]);
+        assert_eq!(ids, ["accounts", "reading", "attachments", "categorization"], "no Filters since issue #454");
         assert_eq!(SECTIONS[0].name(), tr("Accounts"));
         assert_eq!(SECTIONS[2].name(), tr("Attachments"), "task M12.7");
         assert_eq!(SECTIONS[3].name(), tr("Categorization"), "task E12.10");
-        assert_eq!(SECTIONS[4].name(), tr("Filters"), "issue #339");
         let (mut host, _) = Host::new(Arc::new(Demo::new()), SECTIONS.to_vec(), wanted());
         for id in ids {
             assert!(host.open(id), "{id}");
@@ -4162,7 +4144,7 @@ mod tests {
                 torro_ipc::Request::ListCategories { account: None },
                 torro_ipc::Request::ListSortRules,
                 torro_ipc::Request::ListMailFilters,
-                torro_ipc::Request::MailFolders { account: None },
+                torro_ipc::Request::ListSortingOrder,
             ]
         );
     }
@@ -4699,24 +4681,28 @@ mod tests {
         assert_eq!(categorization::assigned_off(&switched_off), None, "sorting is off anyway");
     }
 
-    /// Task E12.10: "Catch up now" starts the run, "Cancel" stops it.
+    /// Issue #454: "Sort existing mail…" asks for its preview and starts a run with what it applies;
+    /// a rule's "Apply to existing mail" applies the rules and filters alone. Applying nothing asks
+    /// nothing.
     #[test]
-    fn catching_up_starts_and_stops() {
+    fn sorting_existing_mail_starts_with_what_it_applies() {
+        use categorization::Message;
         let data = Data::default();
-        for (message, cancel) in
-            [(categorization::Message::CatchUp(false), false), (categorization::Message::CatchUp(true), true)]
-        {
-            let Action::Send(requests) = categorization::update::<()>(&mut Default::default(), message, &data) else {
-                panic!("a request")
-            };
-            assert_eq!(requests, vec![torro_ipc::Request::CatchUpCategories { cancel, again: false }]);
-        }
-        // Task E15.5: "Sort again" goes through the whole window anew.
-        let message = categorization::Message::SortAgain;
-        let Action::Send(requests) = categorization::update::<()>(&mut Default::default(), message, &data) else {
-            panic!("a request")
+        let mut state = categorization::State::default();
+        let open = categorization::update::<()>(&mut state, Message::OpenSort { rules_only: false }, &data);
+        let Action::Ask(torro_ipc::Request::PreviewCategoryJob { scope }) = open else { panic!("a preview: {open:?}") };
+        assert!(scope.apply_rules && !scope.apply_model, "no model sorts in the empty data");
+        assert!(categorization::overlay(&state, &data).is_some());
+        let none = categorization::update::<()>(&mut state, Message::ApplyRules(false), &data);
+        assert_eq!(none, Action::None, "nothing applied, nothing to count");
+        let _ = categorization::update::<()>(&mut state, Message::ApplyRules(true), &data);
+        let _ = categorization::update::<()>(&mut state, Message::Again(true), &data);
+        let Action::Send(requests) = categorization::update::<()>(&mut state, Message::StartJob, &data) else {
+            panic!("a run")
         };
-        assert_eq!(requests, vec![torro_ipc::Request::CatchUpCategories { cancel: false, again: true }]);
+        let [torro_ipc::Request::StartCategoryJob { scope }] = requests.as_slice() else { panic!("one run") };
+        assert!(scope.again && scope.apply_rules && !scope.apply_model);
+        assert!(categorization::overlay(&state, &data).is_none(), "the dialog closed");
     }
 
     /// Task E15.5: the editor's page replaces the list, and "‹ Back" brings the list back.
@@ -4736,1200 +4722,5 @@ mod tests {
         let back = Message::Categorization(categorization::Message::Editor(super::editor::Message::Back));
         let _ = update(&mut state, back, &data);
         assert!(page(&state, &data, "categorization").sub_page.is_none());
-    }
-}
-
-/// "Categorization" (task E12.10, concept `docs/kategorien.md`): what incoming mail is sorted
-/// into, and by which model.
-///
-/// ```text
-/// Sort mail into categories   on/off
-/// Contacts                    "Mail from contacts is personal" on/off (issue #390)
-/// Model                       the models of the AI accounts that can sort: "Decision models (fast)"
-///                             first, then "Other models", chat models that answer in a fixed
-///                             format (task MW.3, issue #421)
-/// Catch up                    how far the backlog has come, "Catch up now" / "Cancel"
-/// Show in the sidebar         one switch per category
-/// Rules ↗                     the kept senders, in the Notification Hub
-/// ```
-///
-/// **No setting for the moment of sorting or the confidence threshold**: both are fixed
-/// (`docs/kategorien.md`, "decisions instead of options").
-///
-/// **The slot and its exception** (issue #325, task MW.3): what the page shows is what sorts – the
-/// exception `inbox.categorize` while one is stored, else the slot Sorting ([`in_effect`]). Picking a
-/// model sets the slot (`ai.set_slot decide`) and takes an exception back, so no new exception is
-/// made. The switch "off" stores the exception switched off, with the account and model in effect;
-/// "on" takes it back (`engine: null`), and the slot sorts again. An exception with a model of its
-/// own says so at its row ("Only for sorting mail").
-///
-/// **Models in the cloud** (issue #424) are always offered, under "In the cloud – mail leaves this
-/// computer" with a cloud at each row. Picking one asks first ("Sort mail in the cloud?"); only "Use"
-/// sets it, and with the slot the core lets the mail out (the permission of the slot Sorting,
-/// `decide_mail_to_cloud`; `docs/ki.md`, principle 4) – there is no switch of its own. One in effect
-/// without that permission waits and says so. The core refuses such a model without it as well (task
-/// E12.5), so the rule holds even if this page were wrong.
-///
-/// **A model turned off** (PR review #242): only models turned on in the control centre's
-/// AI section are offered (task S.26). The assigned one turned off since stands on top of "Model"
-/// with "Turned off in Settings › AI" and an alert in the attention colour – the core sorts
-/// nothing then ([`assigned_off`]) –, and "Manage models…" ends the group, the way to turn it on.
-///
-/// **Decision models first** (issue #421, [`grouped`]): they answer directly and sort much faster
-/// than a chat model through the fallback, and the group's note says so. Without one, "No decision
-/// model" stands in place of their group and leads to Settings › AI, where "Use suggestion" offers one
-/// to download with its progress.
-pub mod categorization {
-    use iced::Theme;
-    use iced::widget::text::Wrapping;
-    use iced::widget::{column, svg};
-    use torro_core::ai::{AiAssignment, AiFunction, AiModel, AiSlot};
-    use torro_core::i18n::trf;
-    use torro_gui::icon;
-    use torro_gui::theme::palette;
-    use torro_gui::{layout, style, theme, typo, widgets};
-    use torro_ipc::inbox::{CategoryJobControl, CategoryJobPreview, CategoryJobScope, CategoryJobState};
-    use torro_ipc::{Request, Response};
-    use torro_mail::Category;
-
-    use super::*;
-    use crate::parts::{choice, pressable, row_frame, setting_row, switch};
-
-    /// Form choices remain local; the actual job and its progress always come from the service.
-    #[derive(Debug, Default)]
-    pub struct State {
-        pub(super) editor: super::editor::State,
-        tab: Tab,
-        all_accounts: bool,
-        accounts: Vec<String>,
-        all_folders: bool,
-        folders: Vec<String>,
-        period: Period,
-        again: bool,
-        /// The bulk operation stays compact until the person chooses to set its scope.
-        job_expanded: bool,
-        preview: Option<CategoryJobPreview>,
-        preview_error: Option<String>,
-        pending_scope: Option<CategoryJobScope>,
-        asking_clear: bool,
-        /// `None` means the recommended choice: switch future automatic sorting off.
-        disable_automatic_after_clear: Option<bool>,
-        /// A model in the cloud picked for sorting while the question before it sorts is open (issue
-        /// #424): only "Use" sets it, "Cancel" changes nothing.
-        asking_cloud: Option<CloudPick>,
-    }
-
-    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-    enum Tab {
-        #[default]
-        Automatic,
-        Categories,
-    }
-
-    /// A model in the cloud waiting for the question before it sorts mail (issue #424).
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct CloudPick {
-        /// Its AI account (`ai:…`).
-        engine: String,
-        /// What the question calls it: the model's name, or the account's.
-        name: String,
-        /// What "Use" sends: what the pick or the switch would have sent without the question.
-        requests: Vec<Request>,
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-    pub enum Period {
-        #[default]
-        All,
-        Days30,
-        Days90,
-        Year,
-    }
-
-    /// What a row of this section reports.
-    #[derive(Debug, Clone)]
-    pub enum Message {
-        /// Switch between automatic sorting and the category catalogue.
-        Tab(usize),
-        /// The switch: sorting mail on or off.
-        Enabled(bool),
-        /// "Mail from contacts is personal" on or off (issue #390, `settings.set_setting
-        /// mail_contacts_personal`).
-        ContactsPersonal(bool),
-        /// A model picked for sorting mail. One in the cloud asks first (issue #424).
-        Model(String, String),
-        /// "Use" in the question before a model in the cloud sorts mail: it goes into the slot, which
-        /// lets the mail out (`decide_mail_to_cloud`, set by the core with the slot).
-        UseCloud,
-        /// "Cancel" in that question, a click next to it, or Escape: nothing changes.
-        CancelCloud,
-        /// "Catch up now" (`false`) or "Cancel" (`true`).
-        CatchUp(bool),
-        /// "Sort again" (task E15.5): the whole window anew, after new rules or descriptions.
-        SortAgain,
-        ShowJob(bool),
-        /// Change the scope of the explicit sorting job and refresh its preview.
-        AllAccounts,
-        ToggleAccount(String),
-        AllFolders,
-        ToggleFolder(String),
-        Period(Period),
-        Again(bool),
-        StartJob,
-        ControlJob(String, CategoryJobControl),
-        AskClear,
-        ConfirmClear,
-        CloseClear,
-        DisableAutomaticAfterClear(bool),
-        ControlClear(String, CategoryJobControl),
-        /// The editor of the categories and the sorting rules (task E15.5).
-        Editor(super::editor::Message),
-        /// One category shown in the sidebar or not.
-        Shown(Category, bool),
-        /// "Manage models…": which models are on is set in the control centre's accounts.
-        ManageModels,
-    }
-
-    pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
-        match message {
-            Message::Tab(index) => {
-                if index == 1 && state.editor.is_rule_open() {
-                    let action = super::editor::update(&mut state.editor, super::editor::Message::Back, data);
-                    if state.editor.is_rule_open() {
-                        return action;
-                    }
-                }
-                state.tab = if index == 1 { Tab::Categories } else { Tab::Automatic };
-                Action::None
-            }
-            Message::Editor(message) => {
-                let action = super::editor::update(&mut state.editor, message, data);
-                if state.editor.is_rule_open() {
-                    state.tab = Tab::Automatic;
-                }
-                action
-            }
-            Message::AllAccounts => {
-                state.all_accounts = true;
-                state.accounts.clear();
-                preview_action(state)
-            }
-            Message::ToggleAccount(account) => {
-                state.all_accounts = false;
-                toggle(&mut state.accounts, account);
-                if state.accounts.is_empty() {
-                    state.all_accounts = true;
-                }
-                preview_action(state)
-            }
-            Message::AllFolders => {
-                state.all_folders = true;
-                state.folders.clear();
-                preview_action(state)
-            }
-            Message::ToggleFolder(folder) => {
-                state.all_folders = false;
-                toggle(&mut state.folders, folder);
-                if state.folders.is_empty() {
-                    state.all_folders = true;
-                }
-                preview_action(state)
-            }
-            Message::Period(period) => {
-                state.period = period;
-                preview_action(state)
-            }
-            Message::Again(again) => {
-                state.again = again;
-                preview_action(state)
-            }
-            Message::StartJob => Action::send(Request::StartCategoryJob { scope: scope(state) }),
-            Message::ControlJob(id, action) => Action::send(Request::ControlCategoryJob { id, action }),
-            Message::AskClear => {
-                state.asking_clear = true;
-                Action::None
-            }
-            Message::CloseClear => {
-                state.asking_clear = false;
-                Action::None
-            }
-            Message::DisableAutomaticAfterClear(on) => {
-                state.disable_automatic_after_clear = Some(on);
-                Action::None
-            }
-            Message::ConfirmClear => {
-                state.asking_clear = false;
-                Action::send(Request::ClearCategories {
-                    all_accounts: true,
-                    disable_automatic: state.disable_automatic_after_clear.unwrap_or(true),
-                })
-            }
-            Message::ControlClear(id, action) => Action::send(Request::ControlClearCategories { id, action }),
-            Message::SortAgain => Action::send(Request::CatchUpCategories { cancel: false, again: true }),
-            Message::ShowJob(show) => {
-                state.job_expanded = show;
-                Action::None
-            }
-            Message::ContactsPersonal(on) => Action::send(Request::SetSetting {
-                key: torro_ipc::SettingKey::MailContactsPersonal,
-                value: serde_json::json!(on),
-            }),
-            Message::Enabled(true) => switched_on(state, data),
-            // Off is the exception switched off, with what sorts now: it goes before the slot and
-            // keeps sorting off, also while the slot changes. Nothing sorts, nothing to switch off.
-            Message::Enabled(false) => {
-                let held = in_effect(data);
-                match held.engine {
-                    Some(engine) => Action::send(Request::SetAiAssignment {
-                        function: AiFunction::InboxCategorize,
-                        engine: Some(engine),
-                        model: held.model,
-                        effort: held.effort,
-                        enabled: false,
-                    }),
-                    None => Action::None,
-                }
-            }
-            // Picking a model switches the sorting on: that is what picking one means. A model in the
-            // cloud asks first (issue #424) – choosing it is the consent that mail leaves this
-            // computer –, unless it sorts already with that consent.
-            Message::Model(engine, model) => {
-                let pick = in_cloud(data, &engine, Some(&model)).filter(|_| !consented(data, &engine, &model));
-                let requests = use_model(data, engine, Some(model));
-                match pick {
-                    Some(pick) => {
-                        state.asking_cloud = Some(CloudPick { requests, ..pick });
-                        Action::None
-                    }
-                    None => Action::Send(requests),
-                }
-            }
-            Message::UseCloud => match state.asking_cloud.take() {
-                Some(pick) => Action::Send(pick.requests),
-                None => Action::None,
-            },
-            Message::CancelCloud => {
-                state.asking_cloud = None;
-                Action::None
-            }
-            Message::CatchUp(cancel) => Action::send(Request::CatchUpCategories { cancel, again: false }),
-            Message::Shown(category, shown) => Action::send(super::editor::shown_request(data, category, shown)),
-            Message::ManageModels => Action::Open(crate::assistant::AI_SECTION),
-        }
-    }
-
-    /// `model` of `engine` goes into the slot Sorting. An exception would stand before it, so it is
-    /// taken back – first (review of #325): setting the slot can let Sorting's mail out, and meanwhile
-    /// an exception the person switched off would sort again. The requests go one after the other and
-    /// stop at the first refused ([`crate::send`]), so a refused take-back sets no slot. For a model in
-    /// the cloud the core sets the consent (`decide_mail_to_cloud`) with the slot, for one here it takes
-    /// it back.
-    fn use_model(data: &Data, engine: String, model: Option<String>) -> Vec<Request> {
-        let effort = data.settings.ai_slots.decide.as_ref().and_then(|slot| slot.effort);
-        let mut requests: Vec<Request> = stored_exception(data).map(|_| no_exception()).into_iter().collect();
-        requests.push(set_slot(engine, model, effort));
-        requests
-    }
-
-    /// The model `id` of `engine` when it computes in the cloud, as the question names it; `None` for one
-    /// on this computer. A listed model by what its server says ([`stays_here`]); one the list lacks by
-    /// its account alone, so a model at Ollama that is not listed (yet) counts as elsewhere – a copy of a
-    /// cloud model may carry no `:cloud` in its name. Naming no model ("Automatic"), by the account's
-    /// seat as the core weighs it: only an account on this computer (Ollama, LM Studio, Strata) picks
-    /// only models here (review of #325) – a server of one's own counts as elsewhere, also at
-    /// `localhost`. The pick sends nothing yet ([`CloudPick::requests`] is empty).
-    fn in_cloud(data: &Data, engine: &str, id: Option<&str>) -> Option<CloudPick> {
-        let pick = |name: String| CloudPick { engine: engine.to_string(), name, requests: Vec::new() };
-        let Some(id) = id else {
-            let here = crate::accounts::ai_provider(engine)
-                .is_some_and(|provider| provider.seat() == torro_core::ai::Seat::ThisComputer);
-            return (!here).then(|| pick(account_label(data, engine)));
-        };
-        let listed = data
-            .decider_models
-            .iter()
-            .find(|(account, model)| account == engine && crate::accounts::same_model(&model.id, id));
-        let model = listed.map_or_else(|| AiModel::named(id), |(_, model)| model.clone());
-        (!stays_here(engine, &model)).then(|| pick(model.name))
-    }
-
-    /// `model` of `engine` sorts now with the person's consent that mail leaves this computer: it is what
-    /// is in effect ([`in_effect`], the model as Ollama names it with its tag or without), switched on,
-    /// and the permission of Sorting is on.
-    fn consented(data: &Data, engine: &str, model: &str) -> bool {
-        let held = in_effect(data);
-        held.is_ready()
-            && held.engine.as_deref() == Some(engine)
-            && held.model.as_deref().is_some_and(|held| crate::accounts::same_model(held, model))
-            && data.settings.mail_to_cloud_in(AiSlot::Decide)
-    }
-
-    /// The question before a model in the cloud sorts mail is open (issue #424).
-    pub fn asking_cloud(state: &State) -> bool {
-        state.asking_cloud.is_some()
-    }
-
-    /// The question before a model in the cloud sorts mail (issue #424), over the window while it is
-    /// open: the model by its name, the provider by the name of its AI account.
-    pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
-        let pick = state.asking_cloud.as_ref()?;
-        let provider = account_label(data, &pick.engine);
-        Some(crate::parts::cloud_consent(&pick.name, &provider, Message::UseCloud, Message::CancelCloud))
-    }
-
-    /// The exception stored for sorting mail (`ai.set_assignment inbox.categorize`), on or off; `None`
-    /// when none is stored – the core lists the function with empty fields then.
-    fn stored_exception(data: &Data) -> Option<AiAssignment> {
-        data.assignments
-            .iter()
-            .find(|info| info.assignment.function == AiFunction::InboxCategorize)
-            .map(|info| info.assignment.clone())
-            .filter(|held| held.engine.is_some())
-    }
-
-    /// What sorts mail now (issue #325), as the core weighs it: the exception while one is stored –
-    /// one switched off keeps sorting off –, else the slot Sorting as an assignment that is on; nothing
-    /// assigned when neither is set.
-    pub fn in_effect(data: &Data) -> AiAssignment {
-        let function = AiFunction::InboxCategorize;
-        if let Some(own) = stored_exception(data) {
-            return own;
-        }
-        match data.settings.ai_slots.get(AiSlot::Decide) {
-            Some(slot) => AiAssignment {
-                function,
-                engine: Some(slot.engine.clone()),
-                model: slot.model.clone(),
-                effort: slot.effort,
-                enabled: true,
-            },
-            None => AiAssignment::none(function),
-        }
-    }
-
-    /// The exception with a model of its own: stored and on, so it sorts instead of the slot.
-    fn own_exception(data: &Data) -> Option<AiAssignment> {
-        stored_exception(data).filter(|held| held.enabled)
-    }
-
-    /// The switch "on": the exception switched off is taken back, so the slot sorts again. Without a
-    /// slot, it gets what sorted last – the exception's model – or the first model offered on this
-    /// computer; nothing to sort with, nothing to switch on. The slot first, so a refused one takes
-    /// nothing back. What sorted last in the cloud without the consent asks first, as a pick does
-    /// (issue #424): a switch never lets mail out.
-    fn switched_on<A>(state: &mut State, data: &Data) -> Action<A> {
-        let exception = stored_exception(data);
-        let mut requests = Vec::new();
-        let mut cloud = None;
-        if data.settings.ai_slots.decide.is_none() {
-            if let Some(held) = &exception
-                && let Some(engine) = &held.engine
-                && !data.settings.mail_to_cloud_in(AiSlot::Decide)
-            {
-                cloud = in_cloud(data, engine, held.model.as_deref());
-            }
-            let from_exception = exception
-                .as_ref()
-                .and_then(|held| held.engine.clone().map(|engine| set_slot(engine, held.model.clone(), held.effort)));
-            let first = || {
-                offered(data)
-                    .into_iter()
-                    .find(|(engine, model)| stays_here(engine, model))
-                    .map(|(engine, model)| set_slot(engine, Some(model.id), None))
-            };
-            match from_exception.or_else(first) {
-                Some(request) => requests.push(request),
-                None => return Action::None,
-            }
-        }
-        requests.extend(exception.map(|_| no_exception()));
-        match (requests.is_empty(), cloud) {
-            (true, _) => Action::None,
-            // The same requests, in the same order, once the person says yes.
-            (false, Some(pick)) => {
-                state.asking_cloud = Some(CloudPick { requests, ..pick });
-                Action::None
-            }
-            (false, None) => Action::Send(requests),
-        }
-    }
-
-    /// `ai.set_slot decide` with `engine` and `model`.
-    fn set_slot(engine: String, model: Option<String>, effort: Option<torro_core::ai::Effort>) -> Request {
-        Request::SetAiSlot { slot: AiSlot::Decide, engine: Some(engine), model, effort }
-    }
-
-    /// `ai.set_assignment inbox.categorize` with `engine: null`: the exception taken back.
-    fn no_exception() -> Request {
-        Request::SetAiAssignment {
-            function: AiFunction::InboxCategorize,
-            engine: None,
-            model: None,
-            effort: None,
-            enabled: false,
-        }
-    }
-
-    /// The section's page: the list, or the open page of a category or a sorting rule with
-    /// "‹ Back" (task E15.5).
-    pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
-        if state.editor.is_rule_open() {
-            return Page::new(view(state, data));
-        }
-        match super::editor::page(&state.editor, data) {
-            Some((name, body, save)) => {
-                let back = Message::Editor(super::editor::Message::Back);
-                Page::new(body.map(Message::Editor)).sub_page(name, back).actions(vec![save.map(Message::Editor)])
-            }
-            None => Page::new(view(state, data)),
-        }
-    }
-
-    pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-        let tabs = widgets::tabs(
-            vec![(tr("Automatic sorting").to_string(), None), (tr("Categories").to_string(), None)],
-            usize::from(state.tab == Tab::Categories),
-            Message::Tab,
-        );
-        if state.tab == Tab::Categories {
-            let mut page = column![tabs].spacing(layout::section_gap());
-            for group in super::editor::categories_groups(&state.editor, data) {
-                page = page.push(group.map(Message::Editor));
-            }
-            return page.into();
-        }
-        let held = in_effect(data);
-        let on = held.is_ready();
-        let switch_row = setting_row(None, tr("Sort mail into categories"), None, switch(on, Message::Enabled));
-        // The rules first: they decide before the model (the mockup's order, `docs/kategorien.md`).
-        // "Always for this sender?" keeps its senders among them (task E15.3).
-        let sorting_rules = super::editor::rules_group(&state.editor, data).map(Message::Editor);
-        // Issue #390: mail from the address books goes to Personal after the rules and before the
-        // model, with a model or without one – so it stands between the two.
-        let contacts = widgets::group(
-            tr("Contacts"),
-            vec![setting_row(
-                None,
-                tr("Mail from contacts is personal"),
-                None,
-                switch(data.settings.mail_contacts_personal, Message::ContactsPersonal),
-            )],
-            Some(
-                tr("Mail from an address in your address books goes to Personal. Newsletters, invitations and automatic replies are sorted as before.")
-                    .to_string(),
-            ),
-        );
-        let mut model_choices = vec![switch_row];
-        model_choices.extend(model_rows(data, &held));
-        let cloud = match data.settings.mail_to_cloud_in(AiSlot::Decide) {
-            true => tr(
-                "The chosen model sorts mail. Mail may leave this computer; no message is moved or deleted, and categories can be changed by hand.",
-            ),
-            false => tr(
-                "A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved or deleted, and you can change any category by hand.",
-            ),
-        };
-        let fast = tr("Decision models answer directly and sort mail much faster than chat models.");
-        let note = format!("{cloud} {fast}");
-        let models = widgets::group(tr("2. Model sorting"), model_choices, Some(note));
-        column![tabs, sorting_rules, contacts, models, job_group(state, data)].spacing(layout::section_gap()).into()
-    }
-
-    fn toggle(selected: &mut Vec<String>, id: String) {
-        if let Some(position) = selected.iter().position(|held| held == &id) {
-            selected.remove(position);
-        } else {
-            selected.push(id);
-        }
-    }
-
-    fn scope(state: &State) -> CategoryJobScope {
-        let days = match state.period {
-            Period::All => None,
-            Period::Days30 => Some(30),
-            Period::Days90 => Some(90),
-            Period::Year => Some(365),
-        };
-        CategoryJobScope {
-            accounts: if state.all_accounts { Vec::new() } else { state.accounts.clone() },
-            folders: if state.all_folders { Vec::new() } else { state.folders.clone() },
-            since: days.map(|days| chrono::Utc::now() - chrono::Duration::days(days)),
-            before: None,
-            again: state.again,
-            ..CategoryJobScope::default()
-        }
-    }
-
-    fn preview_action<A>(state: &mut State) -> Action<A> {
-        state.preview = None;
-        state.preview_error = None;
-        let scope = scope(state);
-        state.pending_scope = Some(scope.clone());
-        Action::Ask(Request::PreviewCategoryJob { scope })
-    }
-
-    /// The host delivers the answer of the currently selected scope without replacing all
-    /// settings data. The service alone counts; the form stores no derived totals.
-    pub fn answered(state: &mut State, answer: &Result<Response, String>) {
-        match answer {
-            Ok(Response::CategoryJobPreview { preview }) if preview.request_scope == state.pending_scope => {
-                state.preview = Some(preview.clone());
-                state.preview_error = None;
-                state.pending_scope = None;
-            }
-            Err(problem) => {
-                state.preview_error = Some(problem.clone());
-                state.pending_scope = None;
-            }
-            _ => {}
-        }
-    }
-
-    fn job_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-        use iced::widget::column;
-        if !state.job_expanded {
-            let status = data.category_job.as_ref().map(|job| job_state_label(job.state).to_string());
-            let title = status.map_or_else(
-                || tr("Sort existing emails").to_string(),
-                |status| trf("Sort existing emails · {status}", &[("status", &status)]),
-            );
-            let detail = data.category_job.as_ref().map_or_else(
-                || tr("Choose time span, accounts and folders when needed.").to_string(),
-                |job| {
-                    let done: u64 = job.accounts.iter().map(|account| account.processed).sum();
-                    let total: u64 = job.accounts.iter().map(|account| account.eligible).sum();
-                    trf("{done} of {total}", &[("done", &done), ("total", &total)])
-                },
-            );
-            let compact = widgets::group(
-                tr("Existing emails"),
-                vec![setting_row(
-                    None,
-                    title,
-                    Some(detail),
-                    widgets::text_button(None, tr("Set up…"), style::button::secondary, Some(Message::ShowJob(true))),
-                )],
-                None,
-            );
-            return column![compact, clear_group(state, data)].spacing(layout::section_gap()).into();
-        }
-        let all_accounts = state.all_accounts || state.accounts.is_empty();
-        let mut account_rows: Vec<Element<'a, Message>> =
-            vec![choice(tr("All mail accounts").to_string(), all_accounts, Message::AllAccounts)];
-        for stats in &data.mail_stats {
-            account_rows.push(choice(
-                account_label(data, &stats.account),
-                !all_accounts && state.accounts.contains(&stats.account),
-                Message::ToggleAccount(stats.account.clone()),
-            ));
-        }
-        let accounts = widgets::group(
-            tr("Mail accounts"),
-            account_rows,
-            Some(tr("Choose one or more accounts, or all accounts.").to_string()),
-        );
-
-        let all_folders = state.all_folders || state.folders.is_empty();
-        let mut folder_rows: Vec<Element<'a, Message>> =
-            vec![choice(tr("All folders").to_string(), all_folders, Message::AllFolders)];
-        for stats in &data.mail_stats {
-            if !all_accounts && !state.accounts.contains(&stats.account) {
-                continue;
-            }
-            for folder in &stats.folders {
-                folder_rows.push(choice(
-                    format!("{} · {}", account_label(data, &stats.account), folder.folder.name),
-                    !all_folders && state.folders.contains(&folder.folder.id),
-                    Message::ToggleFolder(folder.folder.id.clone()),
-                ));
-            }
-        }
-        let folders = widgets::group(tr("Folders to sort"), folder_rows, None);
-        let period = widgets::group(
-            tr("Time span"),
-            vec![
-                choice(tr("All emails").to_string(), state.period == Period::All, Message::Period(Period::All)),
-                choice(tr("Last 30 days").to_string(), state.period == Period::Days30, Message::Period(Period::Days30)),
-                choice(tr("Last 90 days").to_string(), state.period == Period::Days90, Message::Period(Period::Days90)),
-                choice(tr("Last year").to_string(), state.period == Period::Year, Message::Period(Period::Year)),
-                setting_row(
-                    None,
-                    tr("Recheck model categories"),
-                    Some(tr("Manual choices and sorting rules remain protected.").to_string()),
-                    switch(state.again, Message::Again),
-                ),
-            ],
-            None,
-        );
-        let preview = if state.pending_scope.is_some() || state.preview_error.is_some() {
-            None
-        } else {
-            state.preview.as_ref().or(data.category_job_preview.as_ref())
-        };
-        // The preview of all mail the load asked for (issue #394), while its first answer is out;
-        // a preview of a chosen selection is the page's own and says "Calculating selection…".
-        let updating = state.preview.is_none()
-            && state.pending_scope.is_none()
-            && data.updating(&Request::PreviewCategoryJob { scope: CategoryJobScope::default() });
-        let preview_words = match (preview, state.preview_error.as_ref()) {
-            (_, Some(problem)) => problem.clone(),
-            (Some(preview), _) => trf(
-                "{eligible} to sort · {unclassified} without a category · {automatic} automatic · {protected} protected · {total} total",
-                &[
-                    ("eligible", &preview.eligible),
-                    ("unclassified", &preview.unclassified),
-                    ("automatic", &preview.automatic),
-                    ("protected", &preview.protected),
-                    ("total", &preview.total),
-                ],
-            ),
-            (None, _) => tr("Calculating selection…").to_string(),
-        };
-        let clear_incomplete = data.categorization.clear_job.as_ref().is_some_and(|job| {
-            matches!(job.state, CategoryJobState::Running | CategoryJobState::Paused | CategoryJobState::Failed)
-        });
-        let running =
-            clear_incomplete || data.category_job.as_ref().is_some_and(|job| job.state == CategoryJobState::Running);
-        let start = widgets::text_button(
-            None,
-            tr("Start sorting"),
-            style::button::secondary,
-            (!running && preview.is_some_and(|preview| preview.eligible > 0)).then_some(Message::StartJob),
-        );
-        let summary = widgets::group(
-            tr("Preview"),
-            vec![
-                row_frame(
-                    match (updating, preview) {
-                        (true, None) => column![
-                            typo::text(typo::body_strong(), tr("Selected mail")),
-                            widgets::refresh_note(tr("Updating…")),
-                        ],
-                        (true, Some(_)) => column![
-                            typo::text(typo::body_strong(), tr("Selected mail")),
-                            widgets::refresh_note(tr("Updating…")),
-                            typo::text(typo::body(), preview_words).wrapping(Wrapping::WordOrGlyph),
-                        ],
-                        (false, _) => column![
-                            typo::text(typo::body_strong(), tr("Selected mail")),
-                            typo::text(typo::body(), preview_words).wrapping(Wrapping::WordOrGlyph),
-                        ],
-                    }
-                    .spacing(theme::space::xs()),
-                    false,
-                ),
-                row_frame(start, false),
-                setting_row(None, tr("Model location"), Some(job_model_note(data)), iced::widget::space().width(0)),
-            ],
-            Some(
-                tr("The preview and progress count all selected mail. Sidebar badges count unread mail only.")
-                    .to_string(),
-            ),
-        );
-        let close =
-            widgets::text_button(None, tr("Close selection"), style::button::ghost, Some(Message::ShowJob(false)));
-        let mut page =
-            column![row_frame(close, false), accounts, folders, period, summary].spacing(layout::section_gap());
-        if let Some(job) = &data.category_job {
-            let total: u64 = job.accounts.iter().map(|account| account.eligible).sum();
-            let processed: u64 = job.accounts.iter().map(|account| account.processed).sum();
-            let mut rows = vec![setting_row(
-                None,
-                tr("Sorting progress"),
-                Some(trf("{done} of {total}", &[("done", &processed), ("total", &total)])),
-                typo::text(typo::body_strong(), job_state_label(job.state)),
-            )];
-            for account in &job.accounts {
-                rows.push(setting_row(
-                    None,
-                    account_label(data, &account.account),
-                    Some(trf("{done} of {total}", &[("done", &account.processed), ("total", &account.eligible)])),
-                    typo::text(typo::body(), account.changed.to_string()),
-                ));
-            }
-            for error in &job.errors {
-                rows.push(setting_row(None, tr("Error"), Some(error.clone()), iced::widget::space().width(0)));
-            }
-            let controls = match job.state {
-                CategoryJobState::Running => vec![
-                    widgets::text_button(
-                        None,
-                        tr("Pause"),
-                        style::button::secondary,
-                        Some(Message::ControlJob(job.id.clone(), CategoryJobControl::Pause)),
-                    ),
-                    widgets::text_button(
-                        None,
-                        tr("Cancel"),
-                        style::button::ghost,
-                        Some(Message::ControlJob(job.id.clone(), CategoryJobControl::Cancel)),
-                    ),
-                ],
-                CategoryJobState::Paused | CategoryJobState::Failed | CategoryJobState::Cancelled => vec![
-                    widgets::text_button(
-                        None,
-                        tr("Resume"),
-                        style::button::secondary,
-                        Some(Message::ControlJob(job.id.clone(), CategoryJobControl::Resume)),
-                    ),
-                    widgets::text_button(
-                        None,
-                        tr("Cancel"),
-                        style::button::ghost,
-                        Some(Message::ControlJob(job.id.clone(), CategoryJobControl::Cancel)),
-                    ),
-                ],
-                CategoryJobState::Complete => Vec::new(),
-            };
-            if !controls.is_empty() {
-                rows.push(iced::widget::row(controls).spacing(theme::space::m()).into());
-            }
-            page = page.push(widgets::group(tr("Current sorting job"), rows, None));
-        }
-        page = page.push(clear_group(state, data));
-        page.into()
-    }
-
-    fn clear_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-        let mut rows: Vec<Element<'a, Message>> = Vec::new();
-        let count = data.category_clear_preview.as_ref().map(|preview| preview.total).unwrap_or(0);
-        // Until the count's first answer (issue #394) it is not "0 assignments" but on its way.
-        let updating = data.updating(&Request::PreviewClearCategories);
-        if updating {
-            rows.push(row_frame(widgets::refresh_note(tr("Updating…")), false));
-        }
-        let known = data.category_clear_preview.is_some() || !updating;
-        let incomplete = data.categorization.clear_job.as_ref().is_some_and(|job| {
-            matches!(job.state, CategoryJobState::Running | CategoryJobState::Paused | CategoryJobState::Failed)
-        });
-        let ask = widgets::text_button(
-            None,
-            tr("Remove all categories…"),
-            style::button::secondary,
-            (count > 0 && !incomplete).then_some(Message::AskClear),
-        );
-        rows.push(setting_row(
-            None,
-            tr("Categories on mail"),
-            known.then(|| {
-                trf(
-                    "{count} assignments across all accounts and folders",
-                    &[("count", &torro_gui::units::format_count(count))],
-                )
-            }),
-            ask,
-        ));
-        if state.asking_clear {
-            if let Some(preview) = &data.category_clear_preview {
-                for account in &preview.accounts {
-                    rows.push(setting_row(
-                        None,
-                        account_label(data, &account.account),
-                        Some(trf("{count} categories", &[("count", &account.categorized)])),
-                        iced::widget::space().width(0),
-                    ));
-                }
-            }
-            let disable = state.disable_automatic_after_clear.unwrap_or(true);
-            rows.push(setting_row(
-                None,
-                tr("Turn off automatic categorization afterwards"),
-                Some(if disable {
-                    tr("New mail stays uncategorized until you turn sorting on again.").to_string()
-                } else {
-                    tr("New mail may receive categories again after this reset.").to_string()
-                }),
-                switch(disable, Message::DisableAutomaticAfterClear),
-            ));
-            rows.push(row_frame(
-                typo::text(
-                    typo::body(),
-                    tr("This removes manual, rule and model categories and model answers. Mail, folders and sorting rules remain."),
-                )
-                .wrapping(Wrapping::WordOrGlyph),
-                false,
-            ));
-            rows.push(row_frame(
-                iced::widget::row![
-                    widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseClear)),
-                    widgets::text_button(
-                        None,
-                        tr("Remove categories from all mail"),
-                        style::button::secondary,
-                        Some(Message::ConfirmClear)
-                    ),
-                ]
-                .spacing(theme::space::m()),
-                false,
-            ));
-        }
-        if let Some(job) = &data.categorization.clear_job {
-            let removed: u64 = job.accounts.iter().map(|account| account.removed).sum();
-            let selected: u64 = job.accounts.iter().map(|account| account.categorized).sum();
-            rows.push(setting_row(
-                None,
-                tr("Reset progress"),
-                Some(trf("{done} of {total}", &[("done", &removed), ("total", &selected)])),
-                typo::text(typo::body_strong(), job_state_label(job.state)),
-            ));
-            for error in &job.errors {
-                rows.push(setting_row(None, tr("Error"), Some(error.clone()), iced::widget::space().width(0)));
-            }
-            let controls = match job.state {
-                CategoryJobState::Running => vec![
-                    widgets::text_button(
-                        None,
-                        tr("Pause"),
-                        style::button::secondary,
-                        Some(Message::ControlClear(job.id.clone(), CategoryJobControl::Pause)),
-                    ),
-                    widgets::text_button(
-                        None,
-                        tr("Cancel"),
-                        style::button::ghost,
-                        Some(Message::ControlClear(job.id.clone(), CategoryJobControl::Cancel)),
-                    ),
-                ],
-                CategoryJobState::Paused | CategoryJobState::Failed | CategoryJobState::Cancelled => vec![
-                    widgets::text_button(
-                        None,
-                        tr("Resume"),
-                        style::button::secondary,
-                        Some(Message::ControlClear(job.id.clone(), CategoryJobControl::Resume)),
-                    ),
-                    widgets::text_button(
-                        None,
-                        tr("Cancel"),
-                        style::button::ghost,
-                        Some(Message::ControlClear(job.id.clone(), CategoryJobControl::Cancel)),
-                    ),
-                ],
-                CategoryJobState::Complete => Vec::new(),
-            };
-            if !controls.is_empty() {
-                rows.push(iced::widget::row(controls).spacing(theme::space::m()).into());
-            }
-        }
-        widgets::group(
-            tr("Reset categorization"),
-            rows,
-            Some(tr("Only category assignments and model answers are removed; no mail is deleted.").to_string()),
-        )
-    }
-
-    fn job_state_label(state: CategoryJobState) -> &'static str {
-        match state {
-            CategoryJobState::Running => tr("Running"),
-            CategoryJobState::Paused => tr("Paused"),
-            CategoryJobState::Cancelled => tr("Cancelled"),
-            CategoryJobState::Complete => tr("Complete"),
-            CategoryJobState::Failed => tr("Failed"),
-        }
-    }
-
-    fn job_model_note(data: &Data) -> String {
-        if let Some(cloud) = data.category_job.as_ref().and_then(|job| job.model_in_cloud) {
-            return match cloud {
-                true => tr("Cloud model: mail content leaves this computer.").to_string(),
-                false => tr("Local model: mail content stays on this computer.").to_string(),
-            };
-        }
-        let held = in_effect(data);
-        let here = data
-            .decider_models
-            .iter()
-            .find(|(engine, model)| {
-                held.engine.as_deref() == Some(engine.as_str()) && held.model.as_deref() == Some(model.id.as_str())
-            })
-            .map(|(engine, model)| stays_here(engine, model));
-        // The models are asked for after the assignments (issue #394): until then the note does
-        // not ask for a choice that may well be made.
-        let asking = data.decider_models.is_empty()
-            && data.updating.iter().any(|request| matches!(request, Request::AiModels { .. }));
-        match here {
-            Some(false) => tr("Cloud model: mail content leaves this computer.").to_string(),
-            Some(true) => tr("Local model: mail content stays on this computer.").to_string(),
-            None if asking => tr("Updating…").to_string(),
-            None => tr("Choose a model above.").to_string(),
-        }
-    }
-
-    /// The models that may sort mail: every AI account's models that can – decision models, and
-    /// chat models with tools through the fallback (task MW.3, `AiModel::can_decide`) – and are
-    /// turned on for the suite (task S.26, `AiModel::enabled`). Those in the cloud too (issue #424):
-    /// picking one asks first, and that answer is the consent that mail leaves this computer
-    /// (`docs/ki.md`, principle 4). The core refuses one without it (task E12.5), so the rule holds
-    /// even if this page were wrong.
-    pub(super) fn offered(data: &Data) -> Vec<(String, AiModel)> {
-        deciders(data).into_iter().filter(|(_, model)| model.enabled).collect()
-    }
-
-    /// The models that can sort mail, turned on or not.
-    fn deciders(data: &Data) -> Vec<(String, AiModel)> {
-        data.decider_models.iter().filter(|(_, model)| model.can_decide()).cloned().collect()
-    }
-
-    /// Whether `model` of the AI account `engine` (`ai:<provider>@<host>`) computes on this computer,
-    /// as far as the list tells: a provider in the cloud (OpenRouter, OpenAI …) never, whatever a model
-    /// says, as the core judges it (`place_of`; design review of #424); else what its server says
-    /// (`AiModel::remote`, Ollama and Strata), else by the account – LM Studio, or a server of one's own
-    /// at an address of this computer. An unknown provider counts as elsewhere. Only for what is
-    /// offered; the core judges again.
-    fn stays_here(engine: &str, model: &AiModel) -> bool {
-        use torro_core::ai::Seat;
-        if crate::accounts::ai_provider(engine)
-            .is_some_and(|provider| !matches!(provider.seat(), Seat::ThisComputer | Seat::OwnServer))
-        {
-            return false;
-        }
-        if let Some(remote) = model.remote {
-            return !remote;
-        }
-        let (provider, host) = engine.strip_prefix("ai:").and_then(|rest| rest.split_once('@')).unwrap_or_default();
-        let lm_studio = torro_core::ai::AiProvider::LmStudio.id();
-        let own = torro_core::ai::AiProvider::OpenAiCompatible.id();
-        provider == lm_studio || (provider == own && torro_core::ai::is_this_computer(host))
-    }
-
-    /// The model assigned for sorting mail when the sorting is on and that model of its AI account
-    /// is turned off (PR review #242): the account's models are in and have it off, or lack it. The
-    /// core sorts nothing then (task S.24). Its account and name as listed – the id where the list
-    /// lacks it. `None` while the sorting is off, the model is on, "Automatic" is assigned, or the
-    /// account's models are not in yet.
-    pub fn assigned_off(data: &Data) -> Option<(String, String)> {
-        let held = in_effect(data);
-        let (engine, model) = (held.engine.filter(|_| held.enabled)?, held.model?);
-        let mut listed = data.decider_models.iter().filter(|(account, _)| *account == engine).peekable();
-        listed.peek()?;
-        match listed.find(|(_, known)| known.id == model) {
-            Some((_, known)) if known.enabled => None,
-            Some((_, known)) => Some((engine, known.name.clone())),
-            None => Some((engine, model)),
-        }
-    }
-
-    /// A model offered for sorting with its AI account (`ai:…`), as [`offered`] lists it.
-    pub(super) type Offered = (String, AiModel);
-
-    /// The models offered ([`offered`]) in the parts of the list, as [`grouped`] splits them.
-    pub(super) type Parts = (Vec<Offered>, Vec<Offered>, Vec<Offered>);
-
-    /// The models offered ([`offered`]) by where they compute (issue #424) and how they sort (issue
-    /// #421): on this computer the decision models, which answer directly and much faster, then the
-    /// others, which sort through the fallback; then those in the cloud ([`stays_here`]), their
-    /// decision models first. In each part the accounts with a model on this computer come first, then
-    /// those with models elsewhere only (Jev, the cloud; issue #323, Open First), each by account name,
-    /// then model name; an account stays together.
-    pub(super) fn grouped(data: &Data) -> Parts {
-        let mut offered = offered(data);
-        let here: std::collections::BTreeSet<String> = offered
-            .iter()
-            .filter(|(engine, model)| stays_here(engine, model))
-            .map(|(engine, _)| engine.clone())
-            .collect();
-        offered.sort_by(|(a_engine, a_model), (b_engine, b_model)| {
-            (!here.contains(a_engine))
-                .cmp(&!here.contains(b_engine))
-                .then_with(|| account_label(data, a_engine).cmp(&account_label(data, b_engine)))
-                .then_with(|| a_engine.cmp(b_engine))
-                .then_with(|| a_model.name.cmp(&b_model.name))
-        });
-        let decides = |(_, model): &Offered| model.decision == Some(true);
-        let (local, cloud): (Vec<Offered>, Vec<Offered>) =
-            offered.into_iter().partition(|(engine, model)| stays_here(engine, model));
-        let (fast, other) = local.into_iter().partition(decides);
-        let (cloud_fast, cloud_other): (Vec<Offered>, Vec<Offered>) = cloud.into_iter().partition(decides);
-        (fast, other, cloud_fast.into_iter().chain(cloud_other).collect())
-    }
-
-    /// One row per model that may sort mail, the one in effect checked; picking one switches the
-    /// sorting on. Grouped by where they compute (issue #424) and how they sort (issue #421): under "On
-    /// this computer" the "Decision models (fast)", then "Other models"; under "In the cloud – mail
-    /// leaves this computer" the models elsewhere, each with a cloud at the end. Each row names the
-    /// model and, under it, its account, where it computes and how big it is ([`model_facts`], issue
-    /// #431). A chat model says that it answers in a fixed format (the fallback, task MW.3), the model
-    /// of an exception that it is only for sorting mail, a model in the cloud in effect without the
-    /// consent that it waits for it, in a third line. Without a decision model here a row in place of
-    /// the first group says that sorting runs slower and leads to Settings › AI, which suggests one to
-    /// download. Without any model, one row says so instead of the groups: where to turn one on when
-    /// there are models that can sort but none is on (task S.26), else where to add one. The model in
-    /// effect turned off since comes first ([`assigned_off`]), "Manage models…" last.
-    fn model_rows<'a>(data: &'a Data, held: &AiAssignment) -> Vec<Element<'a, Message>> {
-        let (fast, other, cloud) = grouped(data);
-        let off = assigned_off(data);
-        // The turned-off model has no line with facts under its name: its account helps to tell it, as
-        // soon as more than one account is in play.
-        let mut engines: std::collections::BTreeSet<&str> =
-            fast.iter().chain(&other).chain(&cloud).map(|(engine, _)| engine.as_str()).collect();
-        engines.extend(off.as_ref().map(|(engine, _)| engine.as_str()));
-        let several = engines.len() > 1;
-        let label = |engine: &str, name: &str| match several {
-            true => format!("{} · {}", account_label(data, engine), name),
-            false => name.to_string(),
-        };
-        let mut rows: Vec<Element<'a, Message>> =
-            off.iter().map(|(engine, name)| off_row(label(engine, name))).collect();
-        // The section AI of the same settings (issue #410): a page below, not another window.
-        let arrow = crate::parts::chevron::<Message>;
-        // Where the models compute, as the head of a part (design review of #424): a group head of a
-        // list (`row_group`), not a row of its own height, so it does not read as a choice.
-        let head = |text: iced::widget::Text<'a>| -> Element<'a, Message> {
-            let height = torro_gui::theme::size::row_group();
-            iced::widget::container(text)
-                .width(iced::Fill)
-                .center_y(height)
-                .padding([0.0, torro_gui::theme::space::l()])
-                .into()
-        };
-        let heading = |title: &str| head(typo::text(typo::body_strong(), title.to_owned()));
-        // The kinds of model under "On this computer": quieter than the place above them, as the
-        // titles of a menu's sections, on the same axis as the rows.
-        let subheading = |title: &str| head(typo::text(typo::caption(), title.to_owned()).style(theme::text_3));
-        if fast.is_empty() && other.is_empty() && cloud.is_empty() {
-            if off.is_none() {
-                let detail = match deciders(data).is_empty() {
-                    true => tr("Add a local AI such as Ollama under AI and load a model that decides."),
-                    false => tr("Turn on models in Settings › AI."),
-                };
-                let none = iced::widget::space().width(0);
-                rows.push(setting_row(None, tr("No model that can sort mail"), Some(detail.to_owned()), none));
-            }
-        } else {
-            let own = own_exception(data);
-            let consent = data.settings.mail_to_cloud_in(AiSlot::Decide);
-            let choice = |(engine, model): (String, AiModel)| {
-                let is = |held: &AiAssignment| {
-                    held.engine.as_deref() == Some(engine.as_str()) && held.model.as_deref() == Some(model.id.as_str())
-                };
-                let in_cloud = !stays_here(&engine, &model);
-                // In effect, but the core sorts nothing with it until the person says yes (an old
-                // setting, or an agent kept mail here): no check, and the line says why.
-                let waiting = held.is_ready() && is(held) && in_cloud && !consent;
-                let chosen = held.is_ready() && is(held) && !waiting;
-                let notes: Vec<&str> = [
-                    waiting.then(|| tr("Waiting for your OK – mail stays here")),
-                    own.as_ref().filter(|own| is(own)).map(|_| tr("Only for sorting mail")),
-                    model.decides_by_chat().then(|| tr("Answers in a fixed format, slower")),
-                ]
-                .into_iter()
-                .flatten()
-                .collect();
-                let note = (!notes.is_empty()).then(|| notes.join(" · "));
-                let facts = model_facts(data, &engine, &model);
-                let row = ModelRow { name: model.name, facts, note, chosen, in_cloud };
-                model_choice(row, Message::Model(engine, model.id))
-            };
-            rows.push(heading(tr("On this computer")));
-            if fast.is_empty() {
-                // In place of the group: loading one lives in Settings › AI with its progress, where "Use
-                // suggestion" offers one (and turns on one already loaded). The detail wraps instead of being
-                // cut: it says where to get one and must be read whole.
-                let detail = tr("Sorting runs slower with a chat model. Settings › AI suggests one to download.");
-                let lines = column![
-                    typo::text(typo::body(), tr("No decision model")).style(theme::text),
-                    typo::text(typo::meta(), detail).style(theme::text_2).width(iced::Fill),
-                ];
-                let none = iced::widget::row![lines.width(iced::Fill), arrow()]
-                    .spacing(torro_gui::theme::space::l())
-                    .align_y(iced::Alignment::Center);
-                // As high as a row with a detail line while the hint fits on one line, taller when it wraps.
-                let tall = torro_gui::theme::size::header() + torro_gui::theme::space::m();
-                let air = (tall - typo::line_height(typo::body()) - typo::line_height(typo::meta())) / 2.0;
-                let none = iced::widget::container(none)
-                    .width(iced::Fill)
-                    .padding([air.max(0.0), torro_gui::theme::space::l()]);
-                rows.push(pressable(none.into(), Some(Message::ManageModels)));
-            } else {
-                rows.push(subheading(tr("Decision models (fast)")));
-                rows.extend(fast.into_iter().map(choice));
-            }
-            if !other.is_empty() {
-                rows.push(subheading(tr("Other models")));
-                rows.extend(other.into_iter().map(choice));
-            }
-            if !cloud.is_empty() {
-                rows.push(heading(tr("In the cloud – mail leaves this computer")));
-                rows.extend(cloud.into_iter().map(choice));
-            }
-        }
-        // Which models are offered is set where the accounts are (task S.26), the whole suite at once.
-        rows.push(pressable(setting_row(None, tr("Manage models…"), None, arrow()), Some(Message::ManageModels)));
-        rows
-    }
-
-    /// What a model row says under its name (issue #431): its account and how big it is
-    /// ([`size_facts`]), joined with " · ". Where it computes is said once, by the head of its part and
-    /// the cloud at its end (issue #424), not again in each row. What is unknown is left out.
-    pub(super) fn model_facts(data: &Data, engine: &str, model: &AiModel) -> String {
-        let mut facts = vec![account_label(data, engine)];
-        facts.extend(crate::parts::size_facts(model));
-        facts.join(" · ")
-    }
-
-    /// What a row of [`model_choice`] shows.
-    struct ModelRow {
-        name: String,
-        /// Account, place and size ([`model_facts`]).
-        facts: String,
-        /// The third line, where there is one.
-        note: Option<String>,
-        /// The model that sorts: a check at the end.
-        chosen: bool,
-        /// The model computes in the cloud (issue #424): a cloud before the check.
-        in_cloud: bool,
-    }
-
-    /// One model to pick, like [`choice`]: its name, its facts ([`model_facts`]) and, where it has
-    /// one, a third line with a note. The row is the button, a check at the end marks the one that
-    /// sorts; a model in the cloud has a cloud in a fixed place before it (issue #424), so a narrow
-    /// window cuts the lines, never the cloud. A long line is cut off at the end.
-    fn model_choice<'a>(row: ModelRow, on_press: Message) -> Element<'a, Message> {
-        let ModelRow { name, facts, note, chosen, in_cloud } = row;
-        let check: Element<'a, Message> = match chosen {
-            true => icon::icon(Icon::Check, icon::SIZE)
-                .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text) })
-                .into(),
-            false => iced::widget::space().width(icon::SIZE).into(),
-        };
-        let cloud = in_cloud.then(|| {
-            icon::icon(Icon::Cloud, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
-        });
-        let extra = usize::from(note.is_some());
-        let mut lines = column![
-            widgets::ellipsized(typo::body(), name, theme::text),
-            widgets::ellipsized(typo::meta(), facts, theme::text_3),
-        ];
-        if let Some(note) = note {
-            lines = lines.push(widgets::ellipsized(typo::meta(), note, theme::text_2));
-        }
-        let content = iced::widget::row![lines.width(iced::Fill)]
-            .push(cloud)
-            .push(check)
-            .spacing(torro_gui::theme::space::l())
-            .align_y(iced::Alignment::Center);
-        let row = crate::parts::row_frame_with_lines(content, true, extra);
-        pressable(row, Some(on_press))
-    }
-
-    /// The assigned model turned off (PR review #242), as a row of "Model": an alert in the attention
-    /// colour before its name – the mail goes unsorted, which is worth noticing, not only reading –,
-    /// why, and the check of the stored choice. No button: it is turned on under "Manage models…".
-    fn off_row<'a>(label: String) -> Element<'a, Message> {
-        let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
-            .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention_text) });
-        let check =
-            icon::icon(Icon::Check, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text) });
-        let detail = tr("Turned off in Settings › AI").to_string();
-        setting_row(Some(alert.into()), label, Some(detail), check)
-    }
-
-    /// What the account `id` is called, as the control centre calls it; the id itself when it is
-    /// gone from the list.
-    fn account_label(data: &Data, id: &str) -> String {
-        data.accounts
-            .iter()
-            .find(|account| account.id == id)
-            .map(|account| account.label.clone())
-            .unwrap_or_else(|| id.to_string())
     }
 }
