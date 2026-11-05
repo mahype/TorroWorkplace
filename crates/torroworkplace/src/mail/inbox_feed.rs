@@ -2402,7 +2402,7 @@ pub(crate) mod tests {
         let first =
             Request::MoveSortingStep { kind: torro_inbox::SortingKind::Rule, id: rules[0].id.clone(), position: 0 };
         let plan = inbox.plan_sorting_move(&first, None, &filters, &filters).expect("planned");
-        inbox.apply_sorting_move(&plan).expect("moved");
+        inbox.apply_sorting_move(&plan, &filters).expect("moved");
         feed.take(arrived(&[&all["Later bill"]]), Utc::now()).await;
         let later = by_subject(&mail).await;
         assert_eq!(later["Later bill"].category, Some(MailCategory::by_rule(Category::Newsletter)), "the rule's now");

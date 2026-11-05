@@ -897,7 +897,11 @@ position }` setzt einen Schritt an einen Platz unter diesen Schritten (über dem
 Freigabe. Wer einen Filter verschiebt oder einen Schritt an einem Filter vorbei, braucht die Rechte, diesen Filter zu
 ändern (wie `mail.update_filter`, Fußnote 27), auch bei `inbox.move_sort_rule`; sonst `forbidden`, geprüft vor der
 Freigabe und bei der Ausführung. Die Freigabe nennt den Schritt und die Filter, an denen er vorbeigeht, wie
-gespeichert. Ein Sortierlauf (`inbox.start_category_job`) wendet mit `scope.apply_rules` Regeln und Filter in dieser
+gespeichert. Ein Verschieben, das an einem Filter vorbeigeht, den der Client nicht sieht (etwa einem Filter für alle
+Konten bei einem Client mit einem Konto), ist bewusst `forbidden`: So erfährt er zwar, dass dort ein Filter steht, aber
+nichts über ihn, und er ändert nie, was er nicht ändern darf. Geplant und geschrieben wird in einem Schritt gegen die
+Reihenfolge, wie sie gerade ist; hat sie sich seit dem Planen geändert, endet der Befehl mit `conflict`. Die Freigabe
+nennt den Platz in der ganzen Reihenfolge. Ein Sortierlauf (`inbox.start_category_job`) wendet mit `scope.apply_rules` Regeln und Filter in dieser
 Reihenfolge an; ein Filter setzt dabei nur seine Kategorie und nur für Mail im Posteingang.
 
 ²⁸ **Kontakte** (Issue #351, Konzept [kontakte.md](kontakte.md)): Rechte gelten je Adressbuch,

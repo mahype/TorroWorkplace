@@ -7025,18 +7025,24 @@ impl Core {
             preview.protected += current.protected;
             preview.eligible += current.eligible;
         }
-        preview.seconds = self.category_pace_of(&scope).await.and_then(|run| run.seconds_for(preview.eligible));
+        preview.seconds = self.category_pace_of(&scope, reach).await.and_then(|run| run.seconds_for(preview.eligible));
         preview.request_scope = Some(asked);
         Response::CategoryJobPreview { preview }
     }
 
     /// The run whose pace a preview of `scope` is estimated at (issue #454): the running or last run,
     /// when it sorted the same way – with the model `scope` would ask now, or with the rules alone.
+    /// A run of accounts `reach` does not read counts as none, as `inbox.get_category_job` hides it.
     async fn category_pace_of(
         &self,
         scope: &torro_ipc::inbox::CategoryJobScope,
+        reach: Reach<'_>,
     ) -> Option<torro_ipc::inbox::CategoryJob> {
         let last = self.inbox.category_job(None).ok().flatten()?;
+        let available = self.mail.accounts_in(reach).await;
+        if last.scope.accounts.iter().any(|account| !available.contains(account)) {
+            return None;
+        }
         let now = match scope.apply_model {
             true => category_job_decider(&self.settings, &self.ai, scope).await.ok().map(|(decider, _)| decider),
             false => None,
@@ -7555,10 +7561,10 @@ impl Core {
                     Ok(plan) => plan,
                     Err(refused) => return refused,
                 };
-                if let Err(refused) = self.inbox.apply_sorting_move(&plan) {
+                let (filters, seen) = self.sorting_filters(client);
+                if let Err(refused) = self.inbox.apply_sorting_move(&plan, &filters) {
                     return refused;
                 }
-                let (filters, seen) = self.sorting_filters(client);
                 self.inbox.moved_answer(&request, client, &filters, &seen)
             }
             // The catalogue and the backlog need the mail stores, so the core answers them, not
@@ -8185,6 +8191,7 @@ impl Core {
         if plan.moved.kind == torro_inbox::SortingKind::Filter {
             facts.sort_filter = stored(&plan.moved.id).map(Box::new);
         }
+        facts.place = plan.new.iter().position(|step| *step == plan.moved).map(|at| at + 1);
         facts.passed = torro_inbox::rules::passed_filters(&plan.old, &plan.new, &plan.moved)
             .iter()
             .filter_map(|id| stored(id))

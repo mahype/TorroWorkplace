@@ -1603,15 +1603,26 @@ impl Inbox {
     }
 
     /// Writes the order a move planned ([`Inbox::plan_sorting_move`]); the rules take the places it
-    /// gives them. `Err` is the answer for the client.
-    pub fn apply_sorting_move(&self, plan: &SortingMove) -> Result<(), Response> {
-        self.with(|db| {
+    /// gives them. In one transaction with a look at the order as it is now (`filters` the ids of the
+    /// filters there are): changed since the plan – another move, a new rule – it writes nothing and
+    /// answers `conflict`, so no change is lost. `Err` is the answer for the client.
+    pub fn apply_sorting_move(&self, plan: &SortingMove, filters: &[String]) -> Result<(), Response> {
+        let written = self.with(|db| {
             let tx = db.transaction()?;
+            if sorting_in(&tx, Some(filters))? != plan.old {
+                return Ok(false);
+            }
             write_sorting(&tx, &plan.new)?;
             tx.commit()?;
-            Ok(())
-        })
-        .map_err(Failure::response)
+            Ok(true)
+        });
+        match written.map_err(Failure::response)? {
+            true => Ok(()),
+            false => Err(Response::Error {
+                code: "conflict".into(),
+                message: tr("The order of rules and filters changed meanwhile. Try again.").into(),
+            }),
+        }
     }
 
     /// The order of the steps the client sees after a move, as `inbox.move_sorting_step` answers
@@ -7717,7 +7728,7 @@ pub(crate) mod tests {
         // The filter between the two rules.
         let between = Request::MoveSortingStep { kind: torro_inbox::SortingKind::Filter, id: "f1".into(), position: 1 };
         let plan = inbox.plan_sorting_move(&between, None, &filters, &filters).expect("planned");
-        inbox.apply_sorting_move(&plan).expect("written");
+        inbox.apply_sorting_move(&plan, &filters).expect("written");
         assert_eq!(order(&inbox), [r(&one), f("f1"), r(&two)]);
         // At place 1 of the rules: right before the second rule, below the filter.
         let three = id(inbox.handle(create("three.example", Some(1)), None, at(8, 2)));
@@ -7725,7 +7736,7 @@ pub(crate) mod tests {
         // Moved to place 0: right before the first rule; past the end: below the last rule.
         let first = Request::MoveSortRule { id: three.clone(), position: 0 };
         let plan = inbox.plan_sorting_move(&first, None, &filters, &filters).expect("planned");
-        inbox.apply_sorting_move(&plan).expect("written");
+        inbox.apply_sorting_move(&plan, &filters).expect("written");
         assert_eq!(order(&inbox), [r(&three), r(&one), f("f1"), r(&two)]);
         let last = Request::MoveSortRule { id: one.clone(), position: 9 };
         assert!(matches!(inbox.handle(last, None, at(8, 3)), Response::SortRules { .. }));
@@ -7739,6 +7750,14 @@ pub(crate) mod tests {
         assert_eq!(order(&inbox), [r(&three), f("f1"), r(&one)]);
         inbox.forget_sorting_filter("f1");
         assert_eq!(inbox.sorting(&[]).expect("read").0, [r(&three), r(&one)]);
+        // Two moves planned on the same order: the second finds it changed and writes nothing.
+        let up = Request::MoveSortingStep { kind: torro_inbox::SortingKind::Rule, id: one.clone(), position: 0 };
+        let down = Request::MoveSortingStep { kind: torro_inbox::SortingKind::Rule, id: three.clone(), position: 9 };
+        let first = inbox.plan_sorting_move(&up, None, &[], &[]).expect("planned");
+        let second = inbox.plan_sorting_move(&down, None, &[], &[]).expect("planned");
+        inbox.apply_sorting_move(&first, &[]).expect("written");
+        assert_eq!(inbox.apply_sorting_move(&second, &[]).err().as_ref().map(code), Some("conflict"));
+        assert_eq!(inbox.sorting(&[]).expect("read").0, [r(&one), r(&three)]);
     }
 
     /// Task E15.3: sorting rules are made, changed, moved and removed in an order without gaps,
