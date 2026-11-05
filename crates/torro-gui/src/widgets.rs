@@ -3099,7 +3099,10 @@ pub fn floating_rail<'a, M: Clone + 'a>(
             let press = group.first_press().unwrap_or_else(|| on_event(RailEvent::Open(at)));
             let face = rail_face(&group, active == Some(at), press);
             // A card group opens nothing under the pointer, so its name stands in a tooltip.
-            let face: Element<'a, M> = if group.card {
+            // Not while its card is open: the tooltip would lie on it.
+            let face: Element<'a, M> = if group.card && active == Some(at) {
+                face
+            } else if group.card {
                 let name = typo::text(typo::caption(), group.label.clone()).style(theme::text_2);
                 tip(face, name, tooltip::Position::Left)
             } else {

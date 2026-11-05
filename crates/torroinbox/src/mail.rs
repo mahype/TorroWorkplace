@@ -2802,8 +2802,8 @@ fn formats() -> [(String, Message); 2] {
 /// The segments of "Light | Dark" (task M9.7), light first.
 fn schemes() -> [(String, Message); 2] {
     [
-        (tr("Light").to_owned(), Message::MailColors(MailAppearance::Light)),
-        (tr("Dark").to_owned(), Message::MailColors(MailAppearance::Dark)),
+        (tr("Light").to_owned(), Message::FooterMailColors(MailAppearance::Light)),
+        (tr("Dark").to_owned(), Message::FooterMailColors(MailAppearance::Dark)),
     ]
 }
 

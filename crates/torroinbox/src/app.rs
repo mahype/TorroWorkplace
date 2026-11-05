@@ -3406,6 +3406,9 @@ pub enum Message {
     /// light, dark or as the app –: the setting `mail_appearance` changes, at once in this window, and
     /// is stored (issue #456). Never the window's colours.
     MailColors(MailAppearance),
+    /// "Light | Dark" of the hub's panel footer (task E9.4): as [`Message::MailColors`], but a click on
+    /// the colours shown while they follow the app changes nothing – the switch has no "As app".
+    FooterMailColors(MailAppearance),
     /// A link in a mail's HTML was clicked (task M9.7): `http`, `https` and `mailto` open in the
     /// browser, anything else is dropped.
     HtmlLink(String),
@@ -5035,7 +5038,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     self.rail_open = Some(at);
                 }
             }
-            Message::ToggleMailDisplay => self.toggle_menu(Menu::MailDisplay),
+            Message::ToggleMailDisplay => {
+                // At the rail: its group "Display" stands chosen while the card is open.
+                self.menu_at = MenuAt::Panel;
+                self.toggle_menu(Menu::MailDisplay);
+            }
             Message::AskAttachments(id) => self.ask_file_menu(&id, Menu::Attachments),
             Message::StepMail(forward) => return self.step(forward),
             Message::OpenMailWindow(id) => {
@@ -5668,7 +5675,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.error = Some(Failure::new(tr("Couldn't open the compose window."), err));
             }
             Message::ShowMailAs(format) => return self.choose_display(Some(format), None),
-            Message::MailColors(colors) => {
+            Message::MailColors(colors) => return self.choose_display(None, Some(colors)),
+            Message::FooterMailColors(colors) => {
                 // "Light | Dark" of the hub's footer shows the colours as they come out: a click on the one
                 // shown while they follow the app changes nothing to see, so it stores nothing either.
                 let dark = self.theme().extended_palette().is_dark;
@@ -10829,7 +10837,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// (`docs/prototypes/mail-layout/`) has it: over the list the search field with its filters, the
     /// order, "Refresh" and – in "Reply later" – "Focus & reply"; a selection of mail puts its count,
     /// Delete and Clear selection in place of order and Refresh. Where the sidebar is not expanded the
-    /// navigation menu leads, and medium and narrow windows have "Show overview" (Esc), the overview's
+    /// navigation menu leads, and medium and narrow windows have "Show overview", the overview's
     /// way in now that no path stands over the list. Beside the reader of the wide window its own head
     /// ([`App::reader_head`]) follows behind the line of the split.
     fn mail_head<'a>(&'a self, class: SizeClass, nav: &Anchor, filters: &Anchor) -> Element<'a, Message> {
@@ -12832,6 +12840,7 @@ fn closes_rail(message: &Message) -> bool {
             | Message::AskSaveAttachments(_)
             | Message::ShowMailAs(_)
             | Message::MailColors(_)
+            | Message::FooterMailColors(_)
             | Message::CopyText
             | Message::CloseDetail
             | Message::ToggleMailDisplay
@@ -19867,12 +19876,27 @@ mod tests {
         assert_eq!(app.sent.last(), Some(&Sent::Setting(torro_ipc::SettingKey::MailView, "text".into())));
         let _ = app.update(Message::ToggleMailDisplay);
         let _ = app.view();
+        // The hub's footer has no "As app": its colour shown while they follow the app stores nothing.
+        let dark = app.theme().extended_palette().is_dark;
+        let shown = if dark { MailAppearance::Dark } else { MailAppearance::Light };
+        let before = app.sent.len();
+        let _ = app.update(Message::FooterMailColors(shown));
+        assert_eq!((app.look.colors, app.sent.len()), (MailAppearance::App, before), "nothing changes to see");
+        // The card has: the same colour, chosen there, holds when the app changes its colours.
+        let _ = app.update(Message::MailColors(shown));
+        assert_eq!(app.look.colors, shown);
+        let value = if dark { "dark" } else { "light" };
+        assert_eq!(app.sent.last(), Some(&Sent::Setting(torro_ipc::SettingKey::MailAppearance, value.into())));
         let _ = app.update(Message::MailColors(MailAppearance::Light));
-        assert_eq!(app.look.colors, MailAppearance::Light);
-        assert_eq!(app.sent.last(), Some(&Sent::Setting(torro_ipc::SettingKey::MailAppearance, "light".into())));
         // The demo stores no setting and reads its defaults every tick: the choice holds over them.
         let _ = app.update(look(MailFormat::Html, MailAppearance::App));
         assert_eq!((app.mail_format, app.look.colors), (MailFormat::Text, MailAppearance::Light), "the demo holds it");
+        let anchors = detail::Anchors::default().with_rail();
+        assert_eq!(app.menu, Some(Menu::MailDisplay), "the card is still open");
+        let groups = app.rail_groups(SizeClass::Wide, &anchors).expect("the rail");
+        let at = groups.iter().position(|group| group.label == tr("Display"));
+        assert_eq!(app.rail_active(&groups), at, "Display stands chosen while its card is open");
+        let _ = app.update(Message::CloseMenu);
         let _ = app.update(Message::CloseMenu);
         if app.html_for_letter().is_some() {
             let _ = press(&mut app, Key::V);
