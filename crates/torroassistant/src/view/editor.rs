@@ -232,7 +232,7 @@ impl App {
     pub(super) fn bot_menu(&self, id: &str) -> Element<'_, Message> {
         let mut items = vec![
             MenuItem::new(Icon::SquarePen, tr("New chat"), Message::NewBotChat(id.to_owned())),
-            MenuItem::new(Icon::SlidersHorizontal, tr("Edit bot"), Message::EditBot(id.to_owned())),
+            MenuItem::new(Icon::SquarePen, tr("Edit bot"), Message::EditBot(id.to_owned())),
             MenuItem::new(Icon::UserCheck, tr("Access…"), Message::BotAccess(id.to_owned())),
         ];
         if !self.chat_only {
@@ -244,10 +244,12 @@ impl App {
 
     /// The header while the editor is open: the bot's picture and name ("New bot" for a new one)
     /// after `leading`, then "Save" – the window's one primary button, always in sight however long
-    /// the form – and "Close".
+    /// the form – and "Close". A narrow window (`class`) has no room for more beside the top row's
+    /// pieces (issue #459): the name without the note, cut to its room, and "Save" as its icon.
     pub(super) fn editor_header<'a>(
         &'a self,
         draft: &'a BotDraft,
+        class: SizeClass,
         mut leading: Vec<Element<'a, Message>>,
     ) -> Element<'a, Message> {
         let name = match draft.name.trim() {
@@ -258,9 +260,12 @@ impl App {
         leading.push(avatar(&draft.name, &draft.avatar, header_avatar()));
         let note = Some(if draft.id.is_some() { tr("Edit bot") } else { tr("New bot") }.to_owned())
             .filter(|note| *note != name);
-        let title = shell::header_title(None, name, note);
+        let narrow = class == SizeClass::Narrow;
+        let title = if narrow { self.narrow_title(name, 2) } else { shell::header_title(None, name, note) };
         let save = if draft.saving {
             widgets::busy_button(tr("Saving…"), style::button::primary)
+        } else if narrow {
+            widgets::compact_button(Icon::Check, tr("Save"), style::button::primary, Some(Message::SaveBot))
         } else {
             widgets::text_button(Some(Icon::Check), tr("Save"), style::button::primary, Some(Message::SaveBot))
         };
