@@ -210,6 +210,30 @@ pub enum Icon {
     MessageSquareReply,
     /// "Set aside" in the mail window (task E19.4): a pile of mail to look up again.
     Bookmark,
+    /// The mail window's account field (issue #455): opens the choice of accounts.
+    ChevronsUpDown,
+    /// "Display" of the mail's action rail (issue #456): HTML or text, the mail's colours.
+    Contrast,
+    /// "Open in new window" over the mail (issue #457).
+    ExternalLink,
+    /// A category's mark (issue #458): promotion.
+    Megaphone,
+    /// A category's mark (issue #458): automatic replies.
+    Bot,
+    /// A category's mark (issue #458): receipts.
+    Receipt,
+    /// A category's mark (issue #458): shipping.
+    Package,
+    /// A category's mark and the circle of unwanted mail (issue #458): spam.
+    Skull,
+    /// A category's mark (issue #458): newsletters.
+    Newspaper,
+    /// A category's mark (issue #458): organisations, offices.
+    Building2,
+    /// A category's mark (issue #458): bank statements.
+    Landmark,
+    /// A category's mark (issue #458): phishing.
+    TriangleAlert,
 }
 
 impl Icon {
@@ -331,6 +355,18 @@ impl Icon {
         Icon::FolderX,
         Icon::MessageSquareReply,
         Icon::Bookmark,
+        Icon::ChevronsUpDown,
+        Icon::Contrast,
+        Icon::ExternalLink,
+        Icon::Megaphone,
+        Icon::Bot,
+        Icon::Receipt,
+        Icon::Package,
+        Icon::Skull,
+        Icon::Newspaper,
+        Icon::Building2,
+        Icon::Landmark,
+        Icon::TriangleAlert,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -462,6 +498,18 @@ impl Icon {
             Icon::FolderX => include_bytes!("../assets/icons/folder-x.svg"),
             Icon::MessageSquareReply => include_bytes!("../assets/icons/message-square-reply.svg"),
             Icon::Bookmark => include_bytes!("../assets/icons/bookmark.svg"),
+            Icon::ChevronsUpDown => include_bytes!("../assets/icons/chevrons-up-down.svg"),
+            Icon::Contrast => include_bytes!("../assets/icons/contrast.svg"),
+            Icon::ExternalLink => include_bytes!("../assets/icons/external-link.svg"),
+            Icon::Megaphone => include_bytes!("../assets/icons/megaphone.svg"),
+            Icon::Bot => include_bytes!("../assets/icons/bot.svg"),
+            Icon::Receipt => include_bytes!("../assets/icons/receipt.svg"),
+            Icon::Package => include_bytes!("../assets/icons/package.svg"),
+            Icon::Skull => include_bytes!("../assets/icons/skull.svg"),
+            Icon::Newspaper => include_bytes!("../assets/icons/newspaper.svg"),
+            Icon::Building2 => include_bytes!("../assets/icons/building-2.svg"),
+            Icon::Landmark => include_bytes!("../assets/icons/landmark.svg"),
+            Icon::TriangleAlert => include_bytes!("../assets/icons/triangle-alert.svg"),
         }
     }
 }
