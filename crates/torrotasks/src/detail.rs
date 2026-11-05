@@ -59,7 +59,7 @@ use iced::widget::{
     button, checkbox, column, container, responsive, row, rule, scrollable, stack, svg, text_editor, text_input,
 };
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border, keyboard};
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::panel;
 use torro_gui::theme::{self, Palette, palette, size, space};
@@ -364,12 +364,12 @@ impl Look {
 /// merged and closed issues violet, closed pull requests red.
 fn state_look(details: &GitHubDetails) -> Look {
     match (details.kind, details.state) {
-        (GitHubKind::Issue, GitHubState::Open) => Look::new(Icon::CircleDot, tr("Open"), |p| p.ok),
+        (GitHubKind::Issue, GitHubState::Open) => Look::new(Icon::CircleDot, trc("state", "Open"), |p| p.ok),
         (GitHubKind::Issue, _) => Look::new(Icon::CircleCheck, tr("Closed"), |p| p.merged),
         (GitHubKind::PullRequest, GitHubState::Open) if details.draft => {
             Look::new(Icon::GitPullRequestDraft, tr("Draft"), |p| p.text_3)
         }
-        (GitHubKind::PullRequest, GitHubState::Open) => Look::new(Icon::GitPullRequest, tr("Open"), |p| p.ok),
+        (GitHubKind::PullRequest, GitHubState::Open) => Look::new(Icon::GitPullRequest, trc("state", "Open"), |p| p.ok),
         (GitHubKind::PullRequest, GitHubState::Merged) => Look::new(Icon::GitMerge, tr("Merged"), |p| p.merged),
         (GitHubKind::PullRequest, GitHubState::Closed) => {
             Look::new(Icon::GitPullRequestClosed, tr("Closed"), |p| p.error)
@@ -804,7 +804,7 @@ impl Detail {
         match self.github() {
             Some(details) => state_look(details).word,
             None if self.draft.completed => tr("Completed"),
-            None => tr("Open"),
+            None => trc("state", "Open"),
         }
     }
 
@@ -2050,6 +2050,14 @@ mod tests {
     use torro_pim::CollectionKind;
     use torro_pim::model::GitHubLabel;
 
+    /// The open state reads "Offen" in German, not the verb "Öffnen" of the button (#434).
+    #[test]
+    fn the_open_state_is_offen_in_german() {
+        use torro_core::i18n::{Lang, trc_in};
+        assert_eq!(trc_in(Lang::De, "state", "Open"), "Offen");
+        assert_eq!(trc_in(Lang::En, "state", "Open"), "Open");
+    }
+
     fn day(d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, d).expect("valid date")
     }
@@ -2641,7 +2649,7 @@ mod tests {
                 (Some(tr("Source")), Prop::Account),
             ]
         );
-        assert_eq!(detail.status_word(), tr("Open"));
+        assert_eq!(detail.status_word(), trc("state", "Open"));
         assert_eq!((detail.draft.priority, detail.due_label(), detail.parent_title()), (Prio::None, None, None));
         assert!(rows(&detail, false).iter().all(|(title, _)| *title != Some(tr("Source"))), "no empty Source block");
     }
@@ -2686,7 +2694,7 @@ mod tests {
             ],
             "read-only: no placeholder rows for priority, due or parent"
         );
-        assert_eq!(detail.status_word(), tr("Open"));
+        assert_eq!(detail.status_word(), trc("state", "Open"));
         assert_eq!(detail.labels(), [("#3B82F6".to_string(), "ui".to_string())]);
         assert_eq!(detail.place_name(), "TorroWorkplace", "the repository stands in for the list");
         assert_eq!(detail.place_mark(), Mark::Icon(Icon::Github));
@@ -2729,11 +2737,11 @@ mod tests {
         let pr = |state, draft| GitHubDetails { state, draft, ..pull_request() };
         let issue = |state| GitHubDetails { kind: GitHubKind::Issue, ..pr(state, false) };
         let cases = [
-            (pr(GitHubState::Open, false), Icon::GitPullRequest, tr("Open")),
+            (pr(GitHubState::Open, false), Icon::GitPullRequest, trc("state", "Open")),
             (pr(GitHubState::Open, true), Icon::GitPullRequestDraft, tr("Draft")),
             (pr(GitHubState::Merged, false), Icon::GitMerge, tr("Merged")),
             (pr(GitHubState::Closed, false), Icon::GitPullRequestClosed, tr("Closed")),
-            (issue(GitHubState::Open), Icon::CircleDot, tr("Open")),
+            (issue(GitHubState::Open), Icon::CircleDot, trc("state", "Open")),
             (issue(GitHubState::Closed), Icon::CircleCheck, tr("Closed")),
         ];
         for (details, icon, word) in cases {
