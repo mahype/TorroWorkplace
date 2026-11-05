@@ -1237,10 +1237,29 @@ fn old_filter_move(entry: &mut serde_json::Value) -> bool {
     );
     let old =
         request.get("file").is_some_and(|file| serde_json::from_value::<torro_mail::FilterFile>(file.clone()).is_err());
-    if filter && old {
-        request.remove("file");
-    }
+    // An approval that ran holds the filters in its answer too (`mail_filter`, `mail_filters`):
+    // they lose the old move as well, else the entry would not read.
+    drop_old_moves(entry);
     filter && old
+}
+
+/// Takes every move this version does not read out of the filters in `value`: any object with a
+/// `query` and a `file` that is not the trash – a filter, or the request of one.
+fn drop_old_moves(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            let old = object.contains_key("query")
+                && object
+                    .get("file")
+                    .is_some_and(|file| serde_json::from_value::<torro_mail::FilterFile>(file.clone()).is_err());
+            if old {
+                object.remove("file");
+            }
+            object.values_mut().for_each(drop_old_moves);
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(drop_old_moves),
+        _ => {}
+    }
 }
 
 /// Runs file work on a blocking thread, so other requests are not held up.
@@ -4206,6 +4225,30 @@ pub(crate) mod tests {
         };
         let old = approvals.open("c1", "One", filter, None, "x".into(), at(0)).await.expect("opened");
         let other = approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
+        // One that ran: its answer holds the filter with the old move too.
+        let filter_request = Request::CreateMailFilter {
+            query: "from:news.example".into(),
+            account: None,
+            file: Some(FilterFile::Trash),
+            mark_read: false,
+            category: None,
+            enabled: true,
+        };
+        let ran = approvals.open("c1", "One", filter_request, None, "y".into(), at(0)).await.expect("opened");
+        let answer = Response::MailFilter {
+            filter: MailFilter {
+                id: "f1".into(),
+                query: "from:news.example".into(),
+                account: None,
+                file: Some(FilterFile::Trash),
+                mark_read: false,
+                category: None,
+                enabled: true,
+                created: DateTime::<Utc>::UNIX_EPOCH,
+            },
+        };
+        approvals.decide(&ran.id, true, at(1)).await.expect("allowed");
+        approvals.finish(&ran.id, answer, at(1)).await.expect("done");
         let stored = fs::read_to_string(file_in(dir.path())).expect("stored");
         let archived = stored.replace(r#""to": "trash""#, r#""to": "archive""#);
         assert_ne!(stored, archived, "the move is in the file");
@@ -4220,6 +4263,10 @@ pub(crate) mod tests {
             "{list:?}"
         );
         assert_eq!(state(&other.id), Some(ApprovalState::Pending));
+        assert!(
+            matches!(state(&ran.id), Some(ApprovalState::Done { response }) if matches!(response.as_ref(), Response::MailFilter { filter } if filter.file.is_none())),
+            "a decided one keeps its answer, without the move"
+        );
         assert!(!dir.path().join("state").join("approvals.json.damaged").exists());
     }
 
