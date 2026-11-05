@@ -468,9 +468,13 @@ fn reports(state: &State, client: &ClientInfo, data: &Data) -> bool {
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let now = Utc::now();
     match state.page.client(data) {
-        Some(client) => responsive(move |size| detail(state, client, data, now, control_column(size.width)))
-            .height(Length::Shrink)
-            .into(),
+        // The rights' controls line up in the width of their column (issue #464).
+        Some(client) => responsive(move |size| {
+            let wide = widgets::page_column_count(size.width, 2) > 1;
+            detail(state, client, data, now, control_column(widgets::page_column_width(size.width, 2)), wide)
+        })
+        .height(Length::Shrink)
+        .into(),
         None => list(state, data, now),
     }
 }
@@ -535,24 +539,30 @@ fn orphan_row(hook: &ClientInfo) -> Element<'_, Message> {
     setting_row(None, tr("Hooks without an agent"), Some(api::kind_label(hook)), remove)
 }
 
-/// A client's page: the shared head of [`Page`] – for an agent with hooks the group "Notification
-/// Hub" between its name and the rights, so the one switch is not screens down –, then the shared
-/// foot; the controls in `slot`.
+/// A client's page: the shared parts of [`Page`] – for an agent with hooks the group "Notification
+/// Hub" between its name and the rights, so the one switch is not screens down –, then key and
+/// activity; the controls in `slot`. In a `wide` page (issue #464) the rights stand at the left, the
+/// hub heads the column beside them.
 fn detail<'a>(
     state: &'a State,
     client: &'a ClientInfo,
     data: &'a Data,
     now: DateTime<Utc>,
     slot: Option<f32>,
+    wide: bool,
 ) -> Element<'a, Message> {
     let page = &state.page;
     let wrap = |part: Element<'a, PageMessage>| part.map(Message::Page);
-    let mut head = page.head(client, data, now, slot).into_iter().map(wrap);
-    let mut parts: Vec<Element<'a, Message>> = head.next().into_iter().collect();
-    parts.extend(hook_agent(&client.kind).map(|agent| hub_group(state, client, agent, data, slot)));
-    parts.extend(head);
-    parts.extend(page.foot(client, now, slot).into_iter().map(wrap));
-    column(parts).spacing(layout::section_gap()).into()
+    let blocks = widgets::page_columns(move || {
+        let hub = hook_agent(&client.kind).map(|agent| hub_group(state, client, agent, data, slot));
+        let rights = page.rights_groups(client, data, slot).into_iter().map(wrap);
+        let key = page.key_and_activity(client, now, slot).into_iter().map(wrap);
+        match wide {
+            true => api::page_blocks([rights.collect(), hub.into_iter().chain(key).collect()]),
+            false => api::page_blocks([hub.into_iter().chain(rights).collect(), key.collect()]),
+        }
+    });
+    column![wrap(page.title(client, now)), blocks, wrap(page.away())].spacing(layout::section_gap()).into()
 }
 
 /// "Notification Hub": the switch "Report when waiting or done" – off while a flip is on its way –

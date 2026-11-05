@@ -706,11 +706,13 @@ pub fn appearance<'a>(state: &'a State, settings: &'a Settings) -> Element<'a, M
     responsive(move |room: Size| page(state, settings, room.width)).height(Length::Shrink).into()
 }
 
-/// The three groups of [`appearance`] for a page `width` wide.
+/// The three groups of [`appearance`] for a page `width` wide: side by side where it is wide (issue
+/// #464), each laid out for the width of its column.
 fn page<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<'a, Message> {
-    column![designs(state, settings, width), looks(state, settings, width), display(settings, width)]
-        .spacing(layout::section_gap())
-        .into()
+    let width = widgets::page_column_width(width, 3);
+    widgets::page_columns(move || {
+        vec![designs(state, settings, width), looks(state, settings, width), display(settings, width)]
+    })
 }
 
 /// The three colour modes in the order of the segment, each with its symbol and word.

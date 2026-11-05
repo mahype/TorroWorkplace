@@ -72,11 +72,17 @@ fn set_chat(default: Option<AssistantDefault>) -> Request {
 
 /// The status, and while the assistant is on what a new chat starts with.
 pub fn view(data: &Data) -> Element<'_, Message> {
-    let mut page = column![status_group(data)].spacing(layout::section_gap());
-    if super::is_on(data) {
-        page = page.extend(default_groups(data));
-    }
-    page.into()
+    // Side by side where the page is wide (issue #464): status with "New chats", "Model", "Effort".
+    widgets::page_columns(move || {
+        let mut first = column![status_group(data)].spacing(layout::section_gap());
+        let mut rest = Vec::new();
+        if super::is_on(data) {
+            let mut groups = default_groups(data).into_iter();
+            first = first.push(groups.next());
+            rest.extend(groups);
+        }
+        std::iter::once(first.into()).chain(rest).collect()
+    })
 }
 
 /// "Status": the assistant on or off, and the one way on from here – the whole row opens Access,

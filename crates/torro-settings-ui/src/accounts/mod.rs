@@ -3508,19 +3508,33 @@ fn detail<'a>(
         return ntfy_detail(account, view, data, now);
     }
     // A GitHub account has no calendars or lists (yet); what its token may do matters instead. An
-    // AI account has its models (task S.31).
-    let middle = match account.kind.as_str() {
-        "github" => Some(permissions_group(account.scopes.as_deref())),
-        AI_KIND => Some(models_group(state, account)),
-        _ => collections_moved(state, data),
-    };
-    column![heading(account), status_group(account, data, now)]
-        .push(middle)
-        .push(sources_moved(state, account, data))
-        .push(connection_group(account))
-        .push(remove_button())
-        .spacing(layout::section_gap())
-        .into()
+    // AI account has its models (task S.31). Side by side where the page is wide (issue #464): the
+    // status with where its things live, the connection, the models or rights.
+    let blocks = widgets::page_columns(move || {
+        let (collections, rights) = match account.kind.as_str() {
+            "github" => (None, Some(permissions_group(account.scopes.as_deref()))),
+            AI_KIND => (None, Some(models_group(state, account))),
+            _ => (collections_moved(state, data), None),
+        };
+        page_blocks(vec![
+            vec![Some(status_group(account, data, now)), collections, sources_moved(state, account, data)],
+            vec![connection_group(account)],
+            vec![rights],
+        ])
+    });
+    column![heading(account), blocks, remove_button()].spacing(layout::section_gap()).into()
+}
+
+/// The blocks of a detail page for [`widgets::page_columns`]: the groups of each block under each other,
+/// a block without any group left out.
+fn page_blocks<'a>(blocks: Vec<Vec<Option<Element<'a, Message>>>>) -> Vec<Element<'a, Message>> {
+    blocks
+        .into_iter()
+        .filter_map(|groups| {
+            let groups: Vec<Element<'a, Message>> = groups.into_iter().flatten().collect();
+            (!groups.is_empty()).then(|| column(groups).spacing(layout::section_gap()).into())
+        })
+        .collect()
 }
 
 /// A group that says where a setting of this account lives now and opens the window it lives in
@@ -3678,20 +3692,20 @@ fn calendar_part_name(services: Services) -> Option<&'static str> {
 /// its place in the Notification Hub are now ([`mail_moved`]), the services and the connection, and
 /// the removal at the end.
 fn mail_detail<'a>(
-    state: &State,
+    state: &'a State,
     account: &'a AccountInfo,
     mail: &'a MailView,
-    data: &dyn Seen,
+    data: &'a dyn Seen,
     now: DateTime<Utc>,
 ) -> Element<'a, Message> {
-    column![heading(account), mail_status_group(account, mail, data, now)]
-        .extend(mail_moved(state, data))
-        .push(services_group(mail))
-        .push(mail_connection_group(account, mail))
-        .push(trusted_certificates_group(mail))
-        .push(remove_button())
-        .spacing(layout::section_gap())
-        .into()
+    // Side by side where the page is wide (issue #464): status and services, the connection.
+    let blocks = widgets::page_columns(move || {
+        let mut services = vec![Some(mail_status_group(account, mail, data, now))];
+        services.extend(mail_moved(state, data).into_iter().map(Some));
+        services.push(Some(services_group(mail)));
+        page_blocks(vec![services, vec![Some(mail_connection_group(account, mail)), trusted_certificates_group(mail)]])
+    });
+    column![heading(account), blocks, remove_button()].spacing(layout::section_gap()).into()
 }
 
 /// One row per service that is in use, each with its dot, its last sync or its problem; "Sync now"
@@ -3741,7 +3755,9 @@ fn wrapped_row<'a>(
     control: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     let lines = column![typo::text(typo::body(), name), typo::text(typo::meta(), detail).style(theme::text_2)];
-    container(row![].push(mark).push(lines.width(Fill)).push(control).spacing(space::m()).align_y(Alignment::Center))
+    // The text keeps the reading width in a wide page (issue #464).
+    let lines = widgets::reading_cell(lines.width(Fill));
+    container(row![].push(mark).push(lines).push(control).spacing(space::m()).align_y(Alignment::Center))
         .width(Fill)
         .padding([space::m(), space::l()])
         .into()
@@ -4253,19 +4269,18 @@ fn topics_text(n: usize) -> String {
 fn ntfy_detail<'a>(
     account: &'a AccountInfo,
     view: &'a NtfyView,
-    data: &dyn Seen,
+    data: &'a dyn Seen,
     now: DateTime<Utc>,
 ) -> Element<'a, Message> {
     let health = account.id.parse::<SourceRef>().ok().and_then(|source| source_health(data, &source));
-    column![
-        heading(account),
-        status_group(account, data, now),
-        topics_group(view, health),
-        ntfy_connection_group(view),
-        remove_button(),
-    ]
-    .spacing(layout::section_gap())
-    .into()
+    // Side by side where the page is wide (issue #464): the status, the topics with the server.
+    let blocks = widgets::page_columns(move || {
+        page_blocks(vec![
+            vec![Some(status_group(account, data, now))],
+            vec![Some(topics_group(view, health)), Some(ntfy_connection_group(view))],
+        ])
+    });
+    column![heading(account), blocks, remove_button()].spacing(layout::section_gap()).into()
 }
 
 /// The topics by label with their names below; a row opens the topic dialog. "Add topic…" ends the
@@ -4581,18 +4596,21 @@ mod tests {
 
     /// The width the list gets beside the providers' column in a content `content` wide (as
     /// `Ui::body` lays it out): the content less the panel's two edges, the column and its line and the
-    /// page's padding, at most the reading width.
+    /// page's padding; the page has no cap of its own (issue #464).
     fn page_width(class: SizeClass, content: f32) -> f32 {
         let column = column_mode(class, content).map_or(0.0, |mode| column_width(mode) + size::HAIRLINE);
         let page = layout::page_padding();
-        (content - 2.0 * size::HAIRLINE - column - page.left - page.right).min(size::content_max())
+        content - 2.0 * size::HAIRLINE - column - page.left - page.right
     }
 
     /// Issue #248: the column gets its names only where the list keeps its reading width beside it,
     /// so growing the content or the window never makes the list narrower – except for the shell's
-    /// own sidebar opening at 1024, by at most its difference to the rail.
+    /// own sidebar opening at 1024, by at most its difference to the rail. Since the page has no cap
+    /// (issue #464) the names take some of the room above the reading width; what is measured is the
+    /// list up to that width ([`size::content_max()`]), which they never take.
     #[test]
     fn the_provider_column_never_makes_the_list_narrower() {
+        let page_width = |class, content| page_width(class, content).min(size::content_max());
         let from = layout::wide_column_from();
         assert_eq!(column_mode(SizeClass::Wide, from), Some(SidebarMode::Expanded));
         assert_eq!(column_mode(SizeClass::Wide, from - 1.0), Some(SidebarMode::Rail));
