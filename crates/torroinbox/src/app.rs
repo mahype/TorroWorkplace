@@ -17,12 +17,12 @@
 //! mail it holds) and "Sent" ([`App::top_entries`]), then lists the groups of categories without a
 //! title; after a gap Reply later and Set aside (the piles, with the mail they hold) and Follow up (tasks E18.4 and E19.4,
 //! [`App::nav_entries`]); then "Folders" with Archive, pinned folders and an on-demand
-//! folder browser grouped by account ([`App::folder_entries`]); no sources. The mail header filters combined views by account. In the
+//! folder browser grouped by account ([`App::folder_entries`]); no sources. The account field at the top of the sidebar chooses the accounts shown (issue #455). In the
 //! comfortable density mail shows as cards with their buttons always shown ([`App::look`],
 //! `list::Look`); in the wide layout an open mail stands in the reader beside the list
 //! ([`App::wide_reader`], `mail::reader`) instead of in the panel; every action on it stands in the
-//! mail's action rail at its right (task E14.3, [`App::rail_groups`]), collapsed or expanded as the
-//! window remembers ([`App::actions`], `]`). The narrow layout opens the same grouped folder
+//! mail's action rail, which floats over the mail at its right edge (task E14.3, issue #456,
+//! [`App::rail_groups`]). The narrow layout opens the same grouped folder
 //! browser on demand. Nothing is dismissed in the mail window: mail is archived, followed up or put
 //! on a pile. Nothing is hidden either (issue #339): a filter moves mail instead.
 //!

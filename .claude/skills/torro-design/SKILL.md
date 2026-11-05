@@ -340,9 +340,11 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   `cargo run -p torro-gui --example gallery -- --cards` (dazu `--light`, `--design console`, `--design compact`).
 - **Aktionsleiste der Mail** (E14, nur das Mail-Fenster, alle Größen; Entwurf
   `docs/prototypes/inbox/mail-aktionsleiste.html#d`): Alles, was man mit der geöffneten Mail tun kann, steht in
-  **einer Leiste am rechten Rand der Mail** (`widgets::action_rail`), über die ganze Höhe, Fläche `PANEL`, links eine
-  `LINE`, `space::xs()` Luft zur Scrollleiste davor; die Liste hat keine Knöpfe, über der Mail stehen keine. Gruppen
-  (`widgets::RailGroup`) in fester Reihenfolge Reply · File · Torro · Mark, unten abgesetzt Mute · More
+  **einer Leiste, die seit #456 über der Mail schwebt** (`widgets::floating_rail`, Entwurf
+  `docs/prototypes/mail-layout/`): eine Karte im Menü-Stil mit Schatten, Radius `lg`, senkrecht mittig, `space::s()`
+  vom rechten Rand des Lesers bzw. Paneels (`widgets::with_floating_rail`, `Panel::floating`); der Text der Mail hält
+  `widgets::floating_rail_room()` Abstand, der Kopf läuft darunter durch. Die Liste hat keine Knöpfe. Gruppen
+  (`widgets::RailGroup`) in fester Reihenfolge Reply · File · Torro · Mark, unten abgesetzt Mute · Display · More
   (`RailGroup::foot`), jede nur mit dem, was für die Mail geht; was gerade nicht geht, steht aus (`RailItem` ohne
   Nachricht, 40 %, ohne `kbd`). **Feste Gruppen-Icons** (Reply, Check, ListTodo, Flag, BellOff, Ellipsis), egal was
   das erste Item ist. **Reply** ist die Hauptgruppe (`RailGroup::accent`): eingeklappt eine gefüllte rote Fläche wie
@@ -351,31 +353,16 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   (`RailItem::accent`). Ein Klick aufs Gruppen-Icon tut das erste Item, das geht – **nie ein destruktives**
   (`RailItem::danger`, Delete): ist es das, öffnet der Klick das Klappfeld. Mark zeigt eine markierte Mail am Icon
   (`RailGroup::tinted`, `attention`). More beginnt mit Copy text (ein Klick auf „…“ kopiert).
-  **Eingeklappt** (`RailMode::Collapsed`, `shell::rail()` breit): oben der Umschalter `panel-right` als Icon-Knopf
-  (`size::control_lg()`, `style::button::icon`, Tooltip „Expand actions“ mit `kbd` „]“) `space::s()` vom Rand, darunter
-  `space::s()` und eine `LINE` von Rand zu Rand – in beiden Modi gleich, der Knopf springt beim Umschalten nicht. Ein
-  Icon je Gruppe; `SELECTED`, solange ihr Klappfeld oder ein Menü/Dialog ihrer Items offen ist. Das Klappfeld
-  (`widgets::rail_flyout`) öffnet erst, wenn der Zeiger **ca. 150 ms** auf dem Icon ruht (die App hält Zeitpunkt und
-  Timer, `widgets::RailEvent`); von einem offenen Feld zur Nachbargruppe sofort; Verlassen schließt sofort. Es liegt
-  links neben dem Icon und endet `space::xs()` vor der `LINE` der Leiste; für alle Gruppen gleich breit
+  Ein Icon je Gruppe (`size::control_lg()`, `space::xs()` Abstand); `SELECTED`, solange ihr Klappfeld, ein Menü/Dialog
+  ihrer Items oder ihre Karte offen ist. Das Klappfeld (`widgets::rail_flyout`) öffnet erst, wenn der Zeiger **ca.
+  150 ms** auf dem Icon ruht (die App hält Zeitpunkt und Timer, `widgets::RailEvent`); von einem offenen Feld zur
+  Nachbargruppe sofort; Verlassen schließt sofort. Es liegt links neben dem Icon, für alle Gruppen gleich breit
   (`size::sidebar()`), Fläche und Rand wie ein Menü, Gruppenname als Abschnittstitel, Zeilen 30 mit Icon, Wort und
-  `kbd`; die Zeile, die ein Klick aufs Icon auslöst, steht hervorgehoben. Obere Gruppen: erste Zeile auf Höhe des
-  Icons; untere Gruppen unten bündig; am Fensterrand begrenzt. Kein Scrim; es liegt als Ebene über dem ganzen Fenster
-  (`Shell::overlay`), nie in einem schmaleren Teil. **Ausgeklappt** (`RailMode::Expanded`, `size::sidebar()` breit, nur
-  in Breit): Umschalter an derselben Stelle (Tooltip „Collapse actions“), alle Gruppen offen im Rhythmus der linken
-  Seitenleiste – Zeilen `size::row_sidebar()` mit 2 Abstand, Titel wie `widgets::sidebar_group_in`; die erste Gruppe
-  und Gruppen mit nur einem Item ohne Titel (nur dessen Abstand darüber). Die Spalte gehört zum Layout, die Mail rückt
-  nach innen. Oben scrollt, wenn das Fenster zu niedrig ist (Scrollleiste im Rand, die `kbd` bleiben frei),
-  `space::s()` vor dem Fuß, der bleibt. Bekäme der Leser neben der ausgeklappten Leiste weniger als
-  `size::form_max()`, wird sie **nur eingeklappt dargestellt** (der gemerkte Modus bleibt, der Kopf mit dem
-  Umschalter bleibt, der Umschalter steht aus mit dem Tooltip „Widen the window to expand actions“ –
-  `widgets::RailToggle::Off`, `widgets::action_rail_toggle` –, damit Reply und die anderen Icons nicht springen;
-  `]` schaltet den gemerkten Modus). **Mittel und Schmal:** die Mail steht im Paneel
-  (`Panel::side(rail, RailMode::Collapsed.width())`), die Leiste immer eingeklappt und ohne Umschalter; in Mittel ist
-  das Paneel `size::panel()` + Leiste breit, die Mail behält 400. **Umschalten:** Knopf oder Taste `]`
-  (`shell::is_actions_key`, wie `[` für die Seitenleiste), gemerkt je Fensterart und Ausschnitt in `ui.json`
-  (`ui_state::actions_from`, `"collapsed"`/`"expanded"`). Einladungen (Accept, Maybe, Decline) bleiben als Karte im
-  Kopf der Mail. Anschauen: `cargo run -p torro-gui --example gallery -- --mailbar` (dazu `--light`, `--design console`).
+  `kbd`; die Zeile, die ein Klick aufs Icon auslöst, steht hervorgehoben. **Display** (`RailGroup::card`, Icon
+  `contrast`) öffnet kein Klappfeld, sondern per Klick die Karte „Display“ (HTML/Text, Light/Dark/As app; die Wahl ist
+  die Einstellung `mail_view` bzw. `mail_appearance`), sein Name steht im Tooltip. Die ausgeklappte Leiste
+  (`RailMode::Expanded`), ihr Umschalter und die Taste `]` gibt es im Mail-Fenster nicht mehr. Einladungen (Accept,
+  Maybe, Decline) bleiben als Karte im Kopf der Mail. Anschauen: `cargo run -p torro-gui --example gallery -- --mailbar` (dazu `--light`, `--design console`).
 - **Befehlsleiste und Leiste der Zeile** (E11.1, **mit #241 entfernt**): Die Befehlsleiste oben im Leser
   (`widgets::command_bar` mit `command_split`, `command_cell`, `command_more`, `command_words`), die Leiste der
   gewählten Zeile (`widgets::row_strip`, `row_strip_words`), die Torro-Pillen (`widgets::pill_button`) und der versenkte
