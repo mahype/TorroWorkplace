@@ -3457,7 +3457,7 @@ impl Core {
         let read = match &admitted {
             // Only a search that may read mail names accounts (`contacts_only` reads none).
             Ok((_, rights)) if matches!(request, Request::SuggestRecipients { contacts_only: false, .. }) => {
-                Box::pin(self.read_mail_ids(rights)).await
+                self.read_mail_ids(rights).await
             }
             _ => Vec::new(),
         };
@@ -4189,7 +4189,7 @@ impl Core {
         };
         let response = answer.unwrap_or_else(Refused::response);
         if let (Response::RecipientSuggestions { .. }, Some(info), true) = (&response, &client, reads_mail_too) {
-            ids.extend(Box::pin(self.read_mail_ids(&info.rights)).await);
+            ids.extend(self.read_mail_ids(&info.rights).await);
         }
         let line = crate::audit::entry(client.map(|info| info.id), command, ids, &response, Utc::now());
         self.audit.record(&line);
@@ -6046,10 +6046,6 @@ impl Core {
                 Ok(entries) => Response::Catalog { entries },
                 Err(err) => Response::Error { code: "error".into(), message: err.to_string() },
             },
-            // Recipient suggestions (issue #460): contacts and the mail of the accounts `reach` may read.
-            Request::SuggestRecipients { query, limit, contacts_only } => {
-                self.suggest_recipients(query, limit, contacts_only, reach).await
-            }
             // Contacts (`docs/kontakte.md`, issue #351); a client's reach was checked before
             // (`Core::out_of_reach`).
             request @ (Request::ListAddressBooks { .. }
@@ -6068,7 +6064,9 @@ impl Core {
             | Request::SetContactPhoto { .. }
             | Request::MoveContact { .. }
             | Request::DeleteContact { .. }
-            | Request::ResolveContactConflict { .. }) => Box::pin(self.contacts.handle(request, reach)).await,
+            | Request::ResolveContactConflict { .. }
+            // Recipient suggestions (issue #460): contacts and the mail of the accounts `reach` may read.
+            | Request::SuggestRecipients { .. }) => self.contacts_request(request, reach).await,
             // The other commands (task MA.5). A client's rights were checked before (`handle_client`,
             // `run_approved`); what a server shows and offers depends on who asks, and a client never reaches
             // what only a person does (point 10), whatever came before.
@@ -8130,24 +8128,28 @@ impl Core {
         }
     }
 
-    /// `contacts.suggest_recipients` (issue #460): the candidates of the address books `reach` sees
-    /// ([`ContactsService::suggest_candidates`]) and the people of the mail accounts it may read
-    /// ([`Core::correspondents`]), ranked by [`torro_contacts::suggest::rank`]. `error` for a search
-    /// over [`torro_contacts::suggest::MAX_QUERY_CHARS`] characters and when the address books cannot
-    /// be read; a blank one is an empty list.
-    ///
-    /// Like [`Core::apply_mail_filter`] it hands back its future boxed, built in a frame of its own: the
-    /// dispatch every request passes through stays small.
-    fn suggest_recipients<'a>(
-        &'a self,
-        query: String,
-        limit: Option<u32>,
-        contacts_only: bool,
-        reach: Reach<'a>,
-    ) -> torro_core::ai::BoxFuture<'a, Response> {
-        Box::pin(async move { self.suggest_ranked(&query, limit, contacts_only, reach).await })
+    /// A request of the area `contacts`: `contacts.suggest_recipients` here ([`Core::suggest_ranked`],
+    /// issue #460), every other one in the contacts service. One future for the whole area, boxed
+    /// where it is made like [`Core::apply_mail_filter`]: the dispatch every request passes through
+    /// keeps a single, small await for it (a second one overflowed the stack of a debug test).
+    fn contacts_request<'a>(&'a self, request: Request, reach: Reach<'a>) -> torro_core::ai::BoxFuture<'a, Response> {
+        Box::pin(async move {
+            match request {
+                Request::SuggestRecipients { query, limit, contacts_only } => {
+                    self.suggest_ranked(&query, limit, contacts_only, reach).await
+                }
+                other => self.contacts.handle(other, reach).await,
+            }
+        })
     }
 
+    /// `contacts.suggest_recipients` (issue #460): the candidates of the address books `reach` sees
+    /// ([`ContactsService::suggest_candidates`], and the contacts of the people of the mail,
+    /// [`ContactsService::contacts_with`]) and the people of the mail accounts it may read
+    /// ([`Core::correspondents`]; none with `contacts_only`), ranked by
+    /// [`torro_contacts::suggest::rank`]. `error` for a search over
+    /// [`torro_contacts::suggest::MAX_QUERY_CHARS`] characters and when the address books cannot be
+    /// read; a blank one is an empty list.
     async fn suggest_ranked(&self, query: &str, limit: Option<u32>, contacts_only: bool, reach: Reach<'_>) -> Response {
         use torro_contacts::suggest;
         if query.chars().count() > suggest::MAX_QUERY_CHARS {
@@ -10887,7 +10889,14 @@ impl Core {
     /// The mail accounts a `contacts.suggest_recipients` of a client with `rights` reads (issue #460),
     /// for its log line: every account it may read ([`reads_mail`]), as `mail.search_messages` names
     /// its account. Only an answer with suggestions gets them: a refused request read nothing.
-    async fn read_mail_ids(&self, rights: &torro_ipc::api::Rights) -> Vec<String> {
+    ///
+    /// Boxed where it is made, like [`Core::apply_mail_filter`]: the ways every client request passes
+    /// keep their frames small.
+    fn read_mail_ids<'a>(&'a self, rights: &'a torro_ipc::api::Rights) -> torro_core::ai::BoxFuture<'a, Vec<String>> {
+        Box::pin(self.read_mail_ids_now(rights))
+    }
+
+    async fn read_mail_ids_now(&self, rights: &torro_ipc::api::Rights) -> Vec<String> {
         let reach = Reach::Client(rights);
         // The accounts `Core::correspondents` reads: those with a store, as `MailService::stores` has them.
         let accounts: Vec<String> = self
