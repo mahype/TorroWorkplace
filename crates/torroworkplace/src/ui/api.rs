@@ -381,15 +381,15 @@ impl Page {
         editor.into_iter().map(|group| group.map(PageMessage::Rights)).collect()
     }
 
-    /// Beside the rights of a client's page (issue #464): its key with "Create new key", then its
-    /// latest requests.
-    pub fn key_and_activity<'a>(
+    /// Beside the rights of a client's page (issue #464): its latest requests, then its key with
+    /// "Create new key" – the order of the page before, so one column reads as it did.
+    pub fn activity_and_key<'a>(
         &'a self,
         client: &ClientInfo,
         now: DateTime<Utc>,
         column: Option<f32>,
     ) -> Vec<Element<'a, PageMessage>> {
-        vec![key_group(self.home, column), self.activity_group(client, now)]
+        vec![self.activity_group(client, now), key_group(self.home, column)]
     }
 
     /// The end of a client's page, under its columns: "Revoke…" (API) or "Disconnect…" (MCP).
@@ -803,7 +803,7 @@ fn detail<'a>(
     let page = &state.page;
     let blocks = widgets::page_columns(move || {
         let rights = page.rights_groups(client, data, slot);
-        let key = page.key_and_activity(client, now, slot);
+        let key = page.activity_and_key(client, now, slot);
         page_blocks([rights, key].map(|parts| parts.into_iter().map(|part| part.map(Message::Page)).collect()))
     });
     column![page.title(client, now).map(Message::Page), blocks, page.away().map(Message::Page)]

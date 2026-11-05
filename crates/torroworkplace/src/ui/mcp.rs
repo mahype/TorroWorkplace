@@ -540,8 +540,8 @@ fn orphan_row(hook: &ClientInfo) -> Element<'_, Message> {
 }
 
 /// A client's page: the shared parts of [`Page`] – for an agent with hooks the group "Notification
-/// Hub" between its name and the rights, so the one switch is not screens down –, then key and
-/// activity; the controls in `slot`. In a `wide` page (issue #464) the rights stand at the left, the
+/// Hub" between its name and the rights, so the one switch is not screens down –, then activity and
+/// key; the controls in `slot`. In a `wide` page (issue #464) the rights stand at the left, the
 /// hub heads the column beside them.
 fn detail<'a>(
     state: &'a State,
@@ -556,7 +556,7 @@ fn detail<'a>(
     let blocks = widgets::page_columns(move || {
         let hub = hook_agent(&client.kind).map(|agent| hub_group(state, client, agent, data, slot));
         let rights = page.rights_groups(client, data, slot).into_iter().map(wrap);
-        let key = page.key_and_activity(client, now, slot).into_iter().map(wrap);
+        let key = page.activity_and_key(client, now, slot).into_iter().map(wrap);
         match wide {
             true => api::page_blocks([rights.collect(), hub.into_iter().chain(key).collect()]),
             false => api::page_blocks([hub.into_iter().chain(rights).collect(), key.collect()]),

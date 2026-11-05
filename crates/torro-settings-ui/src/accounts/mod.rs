@@ -3510,18 +3510,26 @@ fn detail<'a>(
     // A GitHub account has no calendars or lists (yet); what its token may do matters instead. An
     // AI account has its models (task S.31). Side by side where the page is wide (issue #464): the
     // status with where its things live, the connection, the models or rights.
-    let blocks = widgets::page_columns(move || {
-        let (collections, rights) = match account.kind.as_str() {
-            "github" => (None, Some(permissions_group(account.scopes.as_deref()))),
-            AI_KIND => (None, Some(models_group(state, account))),
-            _ => (collections_moved(state, data), None),
-        };
-        page_blocks(vec![
-            vec![Some(status_group(account, data, now)), collections, sources_moved(state, account, data)],
-            vec![connection_group(account)],
-            vec![rights],
-        ])
-    });
+    // In one column the order of before: the models or rights right under the status.
+    let blocks = responsive(move |room| {
+        let wide = widgets::page_column_count(room.width, 3) > 1;
+        widgets::page_columns(move || {
+            let (collections, rights) = match account.kind.as_str() {
+                "github" => (None, Some(permissions_group(account.scopes.as_deref()))),
+                AI_KIND => (None, Some(models_group(state, account))),
+                _ => (collections_moved(state, data), None),
+            };
+            let status = Some(status_group(account, data, now));
+            let sources = sources_moved(state, account, data);
+            match wide {
+                true => {
+                    page_blocks(vec![vec![status, collections, sources], vec![connection_group(account)], vec![rights]])
+                }
+                false => page_blocks(vec![vec![status, rights, collections, sources, connection_group(account)]]),
+            }
+        })
+    })
+    .height(iced::Length::Shrink);
     column![heading(account), blocks, remove_button()].spacing(layout::section_gap()).into()
 }
 

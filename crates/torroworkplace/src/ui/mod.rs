@@ -1959,8 +1959,8 @@ impl Ui {
     }
 
     /// The page: loading until the core answered, the error state when it does not answer (the
-    /// overview shows that itself), else the section's view under the notices – at most
-    /// `CONTENT_MAX` wide, scrolling inside the margin of the size class. Accounts' list has its
+    /// overview shows that itself), else the section's view under the notices – as wide as the
+    /// content area (issue #464), scrolling inside the margin of the size class. Accounts' list has its
     /// providers in a column at the left edge beside it (task S.37), which does not scroll with it.
     fn body(&self, class: SizeClass) -> Element<'_, Message> {
         if !self.loaded {
