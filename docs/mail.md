@@ -109,7 +109,15 @@ spricht nur über IPC mit dem Dienst wie Kalender und Aufgaben.
 | **Mini / Leiste** | Anzeige, keine Mini-App: ungelesen je Konto, die drei neuesten Absender. Frage: „Wer wartet auf mich?“ |
 
 - **Schreiben in einem eigenen Fenster.** Im Tiling kachelt es sich neben die Liste, man kann
-  beim Schreiben nachlesen. Im Fenster-Modus als Paneel.
+  beim Schreiben nachlesen. Im Fenster-Modus als Paneel. Aufbau nach Fassung A (#460, Entwurf
+  [`prototypes/mail-compose/`](prototypes/mail-compose/index.html)): Kopfzeile mit Anhängen, Schließen und Senden,
+  Von mit Adresse, An mit Cc/Bcc, Betreff, eine feste Werkzeugleiste (fett, kursiv, unterstrichen | Listen, Zitat |
+  Link, Formatierung entfernen; was in schmalen Kacheln nicht passt, steht von hinten im Menü „…“), das Papier mit
+  Text und Signatur, Anhänge als Chips darunter. Empfänger werden Chips, Vorschläge kommen aus Adressbuch und Mails
+  ([kontakte.md](kontakte.md), „Empfänger-Vorschläge“). Das **Papier** schaltet ◐ hell oder dunkel, unabhängig vom
+  Fenster und von den Mailfarben des Lesers (Einstellung `compose_paper`, gemerkt); die gesendete Mail bleibt gleich.
+  Der Text bleibt ein Textfeld mit leisen Zeichen: Eine Webview lässt sich unter Wayland nicht in ein Iced-Fenster
+  einbetten, Schriftgröße und Textfarbe kann es nicht zeigen. Bilder im Text: #461, Einfügen mit Formatierung: #462.
 - **Einladungen** (iMIP) zeigen oben in der Nachricht „Accept / Maybe / Decline“; die Antwort
   geht per Mail zurück (iTIP `REPLY` über das Konto, Schalter „Nach außen“ wie beim Senden), der
   Termin landet in dem Kalender, der die frühere Kopie hält, sonst im ersten beschreibbaren (E8.3b,
@@ -308,6 +316,8 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Mail als HTML (M9) | Lesebereich der Inbox (Schalter HTML/Text, Taste `v`) | `mail.get_message` mit `include_html` · Read | `mail_get_message` mit `include_html` |
 | Flags setzen | Liste, Lesebereich | `mail.set_flags` · Write | `mail_set_flags` |
 | Entwurf speichern | Schreibfenster | `mail.save_draft` · Write | `mail_save_draft` |
+| Empfänger vorschlagen (#460) | Schreibfenster, Liste unter An, Cc, Bcc | `contacts.suggest_recipients` · Read (Mail nur mit Leserecht aufs Konto) | `contacts_suggest_recipients` |
+| Papier hell/dunkel (#460) | Schreibfenster, Knopf ◐ | `settings.set_setting` mit `compose_paper` · Admin | `settings_set_setting` |
 | Verschieben / Archiv | Liste, Lesebereich | `mail.move_messages` · Write (nach Trash: Delete) | `mail_move_messages` |
 | Löschen | Liste, Lesebereich | `mail.delete_messages` · Delete | `mail_delete_messages` |
 | Entwurf senden | Schreibfenster | `mail.send_draft` · Write + Senden-Schalter | `mail_send_draft` (antwortet ggf. `pending`) |

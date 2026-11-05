@@ -29,9 +29,9 @@ use std::sync::{Mutex, PoisonError};
 
 use torro_core::design::{self, DesignError, Part};
 use torro_core::settings::{
-    self, AssistantDefault, AttachmentClick, ComponentSwitch, FolderChange, Language, ListOrderEntry, MailAppearance,
-    MailAttachments, MailFormat, Maps, Night, PdfSettings, PdfTemplate, PdfTemplateId, Reminders, Retention,
-    SearchProviderSwitch, Settings, SetupState, ToolSwitch, Voice, WebSearch, WorkingHours, Zoom,
+    self, AssistantDefault, AttachmentClick, ComponentSwitch, ComposePaper, FolderChange, Language, ListOrderEntry,
+    MailAppearance, MailAttachments, MailFormat, Maps, Night, PdfSettings, PdfTemplate, PdfTemplateId, Reminders,
+    Retention, SearchProviderSwitch, Settings, SetupState, ToolSwitch, Voice, WebSearch, WorkingHours, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -632,6 +632,8 @@ enum Change {
     MailView(MailFormat),
     /// The colours of a mail's content (task M9.5).
     MailAppearance(MailAppearance),
+    /// The paper of the compose window (issue #460).
+    ComposePaper(ComposePaper),
     /// What a click on an attachment's name does (issue #290). Whether a named target exists is not
     /// checked: one that is gone opens the file.
     MailAttachmentClick(AttachmentClick),
@@ -726,6 +728,7 @@ impl Change {
             SettingKey::MailAppearance => {
                 Change::MailAppearance(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
+            SettingKey::ComposePaper => Change::ComposePaper(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::MailSender => {
                 let sender: Option<String> = serde_json::from_value(value.clone()).map_err(invalid)?;
                 if sender
@@ -827,6 +830,7 @@ impl Change {
             Change::Component(switch) => settings.set_component(switch.component, switch.enabled),
             Change::MailView(format) => settings.mail_view = format,
             Change::MailAppearance(appearance) => settings.mail_appearance = appearance,
+            Change::ComposePaper(paper) => settings.compose_paper = paper,
             Change::MailSender(sender) => settings.mail_sender = sender,
             Change::MailAttachmentClick(click) => settings.mail_attachments.click = click,
             Change::MailDownloadsFolder(folder) => settings.mail_attachments.downloads = folder,
@@ -1797,6 +1801,7 @@ mod tests {
                 components_off: BTreeSet::from([Component::Mail]),
                 mail_view: MailFormat::Html,
                 mail_appearance: MailAppearance::App,
+                compose_paper: ComposePaper::Light,
                 mail_sender: None,
                 mail_attachments: MailAttachments::default(),
                 mail_to_cloud: false,
@@ -1880,6 +1885,22 @@ mod tests {
         store.set(SettingKey::MailAppearance, &json!("light")).expect("light");
         let current = store.current();
         assert_eq!((current.mail_view, current.mail_appearance), (MailFormat::Html, MailAppearance::Light));
+    }
+
+    /// Issue #460: the paper of the compose window is set by its key, kept in the file and read back
+    /// after a restart; a value that does not fit is refused and changes nothing.
+    #[test]
+    fn the_compose_paper_is_set_kept_and_checked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("settings.json");
+        let store = SettingsStore::at(file.clone());
+        assert_eq!(store.current().compose_paper, ComposePaper::Light);
+        store.set(SettingKey::ComposePaper, &json!("dark")).expect("dark");
+        for refused in [json!("sepia"), json!("Dark"), json!(true), json!(null)] {
+            assert!(store.set(SettingKey::ComposePaper, &refused).is_err(), "{refused}");
+        }
+        assert_eq!(store.current().compose_paper, ComposePaper::Dark);
+        assert_eq!(SettingsStore::at(file).current().compose_paper, ComposePaper::Dark, "kept after a restart");
     }
 
     #[test]

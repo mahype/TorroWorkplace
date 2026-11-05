@@ -68,6 +68,10 @@ use super::overview::{CameIn, InInbox};
 use super::query::{Field, Query, Test};
 use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
 
+/// The most messages [`MailStore::correspondents`] reads of each side (sent, received), the newest
+/// first: what one key typed into a recipient field may cost.
+const CORRESPONDENT_ROWS: u32 = 5_000;
+
 /// Message texts older than this many days are dropped by [`MailStore::prune_bodies`]; headers stay.
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
@@ -1703,6 +1707,107 @@ impl MailStore {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// The people of this account's mail since `since`, for the recipient suggestions (issue #460,
+    /// `contacts.suggest_recipients`): everyone mail went to from the sent folder (`To:` and `Cc:`),
+    /// each mail counting by its age at `now` ([`torro_contacts::suggest::sent_weight`]), and the
+    /// senders of personal mail in every other folder but drafts, junk and trash – mail of a list
+    /// (`List-Id`), automatic mail (`Auto-Submitted` other than `no`) and bulk mail (`Precedence:
+    /// bulk`, `list`, `junk`) say nothing about whom the person writes to, and would fill the list
+    /// with "noreply" addresses. The folders go by their role; the person's picks for roles count as
+    /// well (the role stays empty until the folders sync again): `sent_path` is the sent folder,
+    /// `skipped` the paths of the picked drafts, junk and trash.
+    ///
+    /// Not narrowed by what was typed: the headers are stored as written, and a contact matches by
+    /// the name in the address book, which the mail need not carry. At most [`CORRESPONDENT_ROWS`] of
+    /// each side, the newest. A header this version cannot read counts as none.
+    pub fn correspondents(
+        &self,
+        since: DateTime<Utc>,
+        now: DateTime<Utc>,
+        sent_path: Option<&str>,
+        skipped: &[String],
+    ) -> Result<Vec<torro_contacts::suggest::Correspondent>, MailStoreError> {
+        use std::collections::BTreeMap;
+
+        use torro_contacts::suggest::{Correspondent, sent_weight};
+
+        let sent: Option<String> = match self
+            .db
+            .query_row("SELECT id FROM folders WHERE role = 'sent' ORDER BY path LIMIT 1", [], |row| row.get(0))
+            .optional()?
+        {
+            Some(id) => Some(id),
+            None => match sent_path {
+                Some(path) => {
+                    self.db.query_row("SELECT id FROM folders WHERE path = ?1", [path], |row| row.get(0)).optional()?
+                }
+                None => None,
+            },
+        };
+        let mut people: BTreeMap<String, Correspondent> = BTreeMap::new();
+        let mut note = |who: &MailAddress, date: DateTime<Utc>, sent: bool| {
+            let address = who.address.trim();
+            if address.is_empty() {
+                return;
+            }
+            let person = people
+                .entry(address.to_lowercase())
+                .or_insert_with(|| Correspondent { address: address.to_string(), ..Correspondent::default() });
+            if person.name.as_deref().is_none_or(|name| name.trim().is_empty()) {
+                person.name = who.name.clone().filter(|name| !name.trim().is_empty());
+            }
+            if sent {
+                person.score += sent_weight((now - date).num_days());
+                person.last_sent = person.last_sent.max(Some(date));
+            } else {
+                person.last_received = person.last_received.max(Some(date));
+            }
+        };
+        let date_of = |seconds: i64| DateTime::from_timestamp(seconds, 0);
+
+        if let Some(sent) = &sent {
+            let mut statement = self.db.prepare(&format!(
+                "SELECT to_json, cc_json, date FROM messages WHERE folder_id = ?1 AND date >= ?2
+                 ORDER BY date DESC LIMIT {CORRESPONDENT_ROWS}"
+            ))?;
+            let rows = statement.query_map(params![sent, since.timestamp()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+            })?;
+            for row in rows {
+                let (to, cc, seconds) = row?;
+                let Some(date) = date_of(seconds) else { continue };
+                for json in [to, cc] {
+                    for who in serde_json::from_str::<Vec<MailAddress>>(&json).unwrap_or_default() {
+                        note(&who, date, true);
+                    }
+                }
+            }
+        }
+
+        let skipped = serde_json::to_string(skipped)?;
+        let mut statement = self.db.prepare(&format!(
+            "SELECT m.from_json, m.date FROM messages m JOIN folders f ON f.id = m.folder_id
+             WHERE m.date >= ?1 AND m.from_json IS NOT NULL AND f.id IS NOT ?2
+                AND coalesce(f.role, '') NOT IN ('sent', 'drafts', 'junk', 'trash')
+                AND f.path NOT IN (SELECT value FROM json_each(?3))
+                AND m.list_id IS NULL
+                AND (m.auto_submitted IS NULL OR lower(trim(m.auto_submitted)) = 'no')
+                AND (m.precedence IS NULL OR lower(trim(m.precedence)) NOT IN ('bulk', 'list', 'junk'))
+             ORDER BY m.date DESC LIMIT {CORRESPONDENT_ROWS}"
+        ))?;
+        let rows = statement.query_map(params![since.timestamp(), sent, skipped], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (from, seconds) = row?;
+            let (Some(date), Ok(who)) = (date_of(seconds), serde_json::from_str::<MailAddress>(&from)) else {
+                continue;
+            };
+            note(&who, date, false);
+        }
+        Ok(people.into_values().collect())
+    }
+
     /// The mail of the inbox folder now for `mail.overview` (issue #409), newest first; none
     /// without an inbox folder. A category this version cannot read counts as none, as in
     /// [`MailStore::unread_by_category`].
@@ -3118,6 +3223,70 @@ mod tests {
     fn search_ids(store: &MailStore, text: &str) -> Vec<String> {
         let query = SearchQuery { query: parse(text).expect("a query"), ..SearchQuery::default() };
         store.search(&query, 50, 0).expect("search").into_iter().map(|summary| summary.id).collect()
+    }
+
+    /// Issue #460: the people of the mail are those written to from Sent, counted by age, and the
+    /// senders of personal mail; lists, automatic and bulk mail, drafts, junk and trash say nothing.
+    #[test]
+    fn correspondents_are_who_was_written_to_and_who_wrote_in_person() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let junk = folder(&store, "Junk", Some(Role::Junk));
+        let picked = folder(&store, "INBOX.Gesendet", None);
+        let now = day(30);
+        let to = |uid: u32, people: Vec<MailAddress>| NewMessage {
+            from: Some(address(None, "anna@example.org")),
+            to: people,
+            ..message(uid, "Sent")
+        };
+        let jonas = address(Some("Jonas Berger"), "jonas@berger.de");
+        add(&store, &picked, &to(28, vec![jonas.clone()]));
+        add(&store, &picked, &NewMessage { cc: vec![address(None, "JONAS@berger.de")], ..to(10, vec![]) });
+        add(&store, &picked, &to(1, vec![address(None, "mira@schulte.de")]));
+        let person = |uid: u32, from: &str| NewMessage { from: Some(address(None, from)), ..message(uid, "Hi") };
+        add(&store, &inbox, &person(20, "jo.meyer@posteo.de"));
+        let traits = |list: bool, auto: Option<&str>, precedence: Option<&str>| MessageTraits {
+            list_id: list.then(|| "<news.example.com>".to_string()),
+            auto_submitted: auto.map(str::to_string),
+            precedence: precedence.map(str::to_string),
+            ..MessageTraits::default()
+        };
+        add(&store, &inbox, &NewMessage { traits: traits(true, None, None), ..person(21, "news@shop.de") });
+        add(
+            &store,
+            &inbox,
+            &NewMessage { traits: traits(false, Some("auto-replied"), None), ..person(22, "away@x.de") },
+        );
+        add(&store, &inbox, &NewMessage { traits: traits(false, None, Some("bulk")), ..person(23, "bulk@x.de") });
+        add(&store, &inbox, &NewMessage { traits: traits(false, Some("no"), None), ..person(24, "lena@x.de") });
+        add(&store, &junk, &person(25, "spam@x.de"));
+
+        let found = store.correspondents(day(1), now, Some("INBOX.Gesendet"), &[]).expect("people");
+        let by = |address: &str| found.iter().find(|p| p.address.eq_ignore_ascii_case(address));
+        let mut addresses: Vec<String> = found.iter().map(|p| p.address.to_lowercase()).collect();
+        addresses.sort();
+        assert_eq!(addresses, ["jo.meyer@posteo.de", "jonas@berger.de", "lena@x.de", "mira@schulte.de"]);
+        let jonas = by("jonas@berger.de").expect("jonas");
+        assert_eq!(
+            (jonas.score, jonas.last_sent, jonas.name.as_deref()),
+            (4.0 + 2.0, Some(day(28)), Some("Jonas Berger"))
+        );
+        assert_eq!(by("mira@schulte.de").expect("mira").score, 2.0, "29 days ago");
+        let meyer = by("jo.meyer@posteo.de").expect("meyer");
+        assert_eq!((meyer.score, meyer.last_received, meyer.last_sent), (0.0, Some(day(20)), None));
+
+        // Without the person's pick and no folder with the role, nothing counts as sent.
+        let unpicked = store.correspondents(day(1), now, None, &[]).expect("people");
+        assert!(unpicked.iter().all(|p| p.last_sent.is_none()));
+        // A folder the person picked as junk says nothing, though its role is not stored yet.
+        let picked_junk = folder(&store, "INBOX.Spam", None);
+        add(&store, &picked_junk, &person(26, "spam2@x.de"));
+        let without =
+            store.correspondents(day(1), now, Some("INBOX.Gesendet"), &["INBOX.Spam".into()]).expect("people");
+        assert!(without.iter().all(|p| p.address != "spam2@x.de"));
+        let with = store.correspondents(day(1), now, Some("INBOX.Gesendet"), &[]).expect("people");
+        assert!(with.iter().any(|p| p.address == "spam2@x.de"), "only by the pick");
+        assert!(store.correspondents(day(29), now, Some("INBOX.Gesendet"), &[]).expect("people").is_empty());
     }
 
     #[test]

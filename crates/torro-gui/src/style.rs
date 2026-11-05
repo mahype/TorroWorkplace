@@ -555,6 +555,21 @@ pub mod container {
         Style { border: outline(palette(theme).line_strong, radius::lg()), ..menu(theme) }
     }
 
+    /// A field that holds more than an input (issue #460, a recipient field with its chips): no
+    /// surface, 1-px `line_strong` border, radius [`radius::sm()`], like [`super::text_input`]; the input
+    /// inside is a [`super::text_input_flat`], whose focus ring shows.
+    pub fn field(theme: &Theme) -> Style {
+        Style { border: outline(palette(theme).line_strong, radius::sm()), ..Style::default() }
+    }
+
+    /// The paper of the compose window (issue #460): `panel` with a 1-px `line_strong` border, radius
+    /// [`radius::md()`]. Drawn inside `themed::in_paper`, so `panel` is the light or the dark one the
+    /// person chose, whatever the window's mode; the text on it is a [`super::text_editor_paper`].
+    pub fn paper(theme: &Theme) -> Style {
+        let p = palette(theme);
+        Style { text_color: Some(p.text), border: outline(p.line_strong, radius::md()), ..surface(p.panel) }
+    }
+
     /// A property chip ("Today", "Work"): `raised`, 1-px `line_strong` border, radius
     /// [`radius::xs()`], text `text`. Height [`super::CHIP_HEIGHT`], padding [`super::CHIP_PADDING`],
     /// label `CAPTION`, icon 14 in `text_3`.
@@ -662,6 +677,18 @@ pub fn text_editor(theme: &Theme, status: widget::text_editor::Status) -> widget
         value: input.value,
         selection: input.selection,
     }
+}
+
+/// The text of the compose window on its paper (issue #460, [`container::paper`]): like
+/// [`text_editor`] without a surface and a frame of its own – the paper is both. The focus stays
+/// visible as the paper's: the editor fills it, so its `focus_ring` border lies on the paper's edge.
+pub fn text_editor_paper(theme: &Theme, status: widget::text_editor::Status) -> widget::text_editor::Style {
+    let framed = text_editor(theme, status);
+    let border = match status {
+        widget::text_editor::Status::Focused { .. } => framed.border.rounded(radius::md()),
+        _ => Border::default(),
+    };
+    widget::text_editor::Style { background: Background::Color(Color::TRANSPARENT), border, ..framed }
 }
 
 /// A pick list (`pick_list(…).style(style::pick_list).menu_style(style::pick_list_menu)`): looks

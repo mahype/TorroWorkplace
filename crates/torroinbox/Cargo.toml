@@ -12,6 +12,8 @@ description = "Inbox for the tiled desktop: what wants your attention from agent
 workspace = true
 
 [dependencies]
+# Recipient suggestions in the compose window (issue #460): their types, ranking for the demo.
+torro-contacts.workspace = true
 torro-core.workspace = true
 torro-gui.workspace = true
 # HTML mail in the reader (task M9.7): Blitz draws it inside the window.
@@ -22,10 +24,15 @@ torro-mail.workspace = true
 torro-pim.workspace = true
 # The settings behind the gear, in the window's content area (task S.20).
 torro-settings-ui.workspace = true
+# The pictures of contacts come as Base64 PNG (`contacts.get_photo`).
+base64.workspace = true
 chrono.workspace = true
-iced.workspace = true
+# `image-without-codecs`: the pictures of contacts in the suggestions (issue #460).
+iced = { workspace = true, features = ["image-without-codecs"] }
+# Not used in code: turns on the PNG decoder of the `image` crate Iced decodes the pictures with.
+image.workspace = true
 rfd.workspace = true
-# The value of `settings.set_setting`, which "Display" sends (issue #456).
+# The value of `settings.set_setting`: "Display" (issue #456) and the compose paper (issue #460).
 serde_json.workspace = true
 # `cid:` pictures are asked of the core on the picture fetcher's worker thread, which blocks on it.
 tokio.workspace = true

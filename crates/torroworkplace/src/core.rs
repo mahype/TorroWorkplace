@@ -3489,6 +3489,13 @@ impl Core {
                 ids.extend(crate::audit::delegation_ids(&delegation.bot, &delegation.assistant));
             }
         }
+        let read = match &admitted {
+            // Only a search that may read mail names accounts (`contacts_only` reads none).
+            Ok((_, rights)) if matches!(request, Request::SuggestRecipients { contacts_only: false, .. }) => {
+                self.read_mail_ids(rights).await
+            }
+            _ => Vec::new(),
+        };
         let answer = match admitted {
             Ok((id, rights)) => match key.and_then(|key| self.clients.lent_approvals(key).map(|own| (key, own))) {
                 Some((key, own)) => self.handle_lent(key, &own, id, rights, request, scope).await,
@@ -3496,6 +3503,9 @@ impl Core {
             },
             Err(refused) => Err(refused),
         };
+        if matches!(answer, Ok(Response::RecipientSuggestions { .. })) {
+            ids.extend(read);
+        }
         let shown = match &answer {
             Ok(response) => crate::audit::entry(client, command, ids, response, Utc::now()),
             Err(refused) => crate::audit::entry(client, command, ids, &refused.response(), Utc::now()),
@@ -4159,6 +4169,7 @@ impl Core {
         mode: Mode,
         web: Option<crate::approvals::WebConsent>,
     ) -> Response {
+        let reads_mail_too = matches!(request, Request::SuggestRecipients { contacts_only: false, .. });
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
         ids.extend(self.holder_ids(&request));
         ids.push(crate::audit::engine_id(engine));
@@ -4212,6 +4223,9 @@ impl Core {
             None => Err(Refused::Forbidden { command }),
         };
         let response = answer.unwrap_or_else(Refused::response);
+        if let (Response::RecipientSuggestions { .. }, Some(info), true) = (&response, &client, reads_mail_too) {
+            ids.extend(self.read_mail_ids(&info.rights).await);
+        }
         let line = crate::audit::entry(client.map(|info| info.id), command, ids, &response, Utc::now());
         self.audit.record(&line);
         response
@@ -6085,7 +6099,9 @@ impl Core {
             | Request::SetContactPhoto { .. }
             | Request::MoveContact { .. }
             | Request::DeleteContact { .. }
-            | Request::ResolveContactConflict { .. }) => Box::pin(self.contacts.handle(request, reach)).await,
+            | Request::ResolveContactConflict { .. }
+            // Recipient suggestions (issue #460): contacts and the mail of the accounts `reach` may read.
+            | Request::SuggestRecipients { .. }) => self.contacts_request(request, reach).await,
             // The other commands (task MA.5). A client's rights were checked before (`handle_client`,
             // `run_approved`); what a server shows and offers depends on who asks, and a client never reaches
             // what only a person does (point 10), whatever came before.
@@ -8167,6 +8183,117 @@ impl Core {
                 Err(Box::new(refusal("error", "the inbox cannot be written".into())))
             }
         }
+    }
+
+    /// A request of the area `contacts`: `contacts.suggest_recipients` here ([`Core::suggest_ranked`],
+    /// issue #460), every other one in the contacts service. One future for the whole area, boxed
+    /// where it is made like [`Core::apply_mail_filter`]: the dispatch every request passes through
+    /// keeps a single, small await for it (a second one overflowed the stack of a debug test).
+    fn contacts_request<'a>(&'a self, request: Request, reach: Reach<'a>) -> torro_core::ai::BoxFuture<'a, Response> {
+        Box::pin(async move {
+            match request {
+                Request::SuggestRecipients { query, limit, contacts_only } => {
+                    self.suggest_ranked(&query, limit, contacts_only, reach).await
+                }
+                other => self.contacts.handle(other, reach).await,
+            }
+        })
+    }
+
+    /// `contacts.suggest_recipients` (issue #460): the candidates of the address books `reach` sees
+    /// ([`ContactsService::suggest_candidates`], and the contacts of the people of the mail,
+    /// [`ContactsService::contacts_with`]) and the people of the mail accounts it may read
+    /// ([`Core::correspondents`]; none with `contacts_only`), ranked by
+    /// [`torro_contacts::suggest::rank`]. `error` for a search over
+    /// [`torro_contacts::suggest::MAX_QUERY_CHARS`] characters and when the address books cannot be
+    /// read; a blank one is an empty list.
+    async fn suggest_ranked(&self, query: &str, limit: Option<u32>, contacts_only: bool, reach: Reach<'_>) -> Response {
+        use torro_contacts::suggest;
+        if query.chars().count() > suggest::MAX_QUERY_CHARS {
+            return refusal("error", format!("query may hold at most {} characters", suggest::MAX_QUERY_CHARS));
+        }
+        let words = suggest::search_words(query);
+        if words.is_empty() {
+            return Response::RecipientSuggestions { suggestions: Vec::new() };
+        }
+        let show_hidden = self.settings.current().contacts_show_hidden_books;
+        let (mut contacts, groups) = match self.contacts.suggest_candidates(reach, query, show_hidden) {
+            Ok(found) => found,
+            Err(err) => return crate::contacts::service::error_response(&err),
+        };
+        let history = if contacts_only { Vec::new() } else { self.correspondents(reach).await };
+        // The people of the mail that match, written to most first: their contacts belong among the
+        // candidates whatever the search found first, so they rank and are never "seen" twice.
+        // Those written to most, matching or not: a contact may match by the name in its book only.
+        let mut written: Vec<&suggest::Correspondent> = history.iter().filter(|person| person.score > 0.0).collect();
+        written.sort_by(|a, b| b.score.total_cmp(&a.score).then(b.last_sent.cmp(&a.last_sent)));
+        // And the latest that match, as the section of addresses known only from mail shows them.
+        let mut matching: Vec<&suggest::Correspondent> = history
+            .iter()
+            .filter(|person| suggest::matches(&words, person.name.as_deref().unwrap_or_default(), &person.address))
+            .collect();
+        matching.sort_by_key(|person| std::cmp::Reverse(person.last_sent.max(person.last_received)));
+        let mut addresses: Vec<String> = Vec::new();
+        for person in
+            written.iter().take(suggest::KNOWN_ADDRESSES).chain(matching.iter().take(suggest::KNOWN_ADDRESSES))
+        {
+            if !addresses.iter().any(|known| known.eq_ignore_ascii_case(&person.address)) {
+                addresses.push(person.address.clone());
+            }
+        }
+        match self.contacts.contacts_with(reach, &addresses, show_hidden) {
+            Ok(known) => {
+                for contact in known {
+                    if !contacts.iter().any(|held| held.id == contact.id) {
+                        contacts.push(contact);
+                    }
+                }
+            }
+            Err(err) => return crate::contacts::service::error_response(&err),
+        }
+        let suggestions = suggest::rank(query, &contacts, &groups, &history, limit);
+        Response::RecipientSuggestions { suggestions }
+    }
+
+    /// The people of the mail `reach` may read ([`reads_mail`]) in the last year, for the recipient
+    /// suggestions (issue #460, [`crate::mail::store::MailStore::correspondents`]): merged over
+    /// the accounts, without the accounts' own addresses – for a client those of the accounts it
+    /// reaches, for the suite those of every one. An account without a store, or whose store fails,
+    /// adds nobody.
+    async fn correspondents(&self, reach: Reach<'_>) -> Vec<torro_contacts::suggest::Correspondent> {
+        let accounts = self.mail.stored_accounts().await.unwrap_or_default();
+        let mut own: Vec<String> = Vec::new();
+        let mut people = Vec::new();
+        let now = Utc::now();
+        let since = now - chrono::Duration::days(365);
+        for (id, store) in self.mail.stores(reach).await {
+            let account = accounts.iter().find(|account| account.id == id);
+            if let Some(address) = account.and_then(|account| account.mail.as_ref()).map(|mail| &mail.address) {
+                own.push(address.trim().to_lowercase());
+            }
+            if !reads_mail(reach, &id) {
+                continue;
+            }
+            let picked = account.and_then(|account| account.mail_settings.as_ref()).map(|s| &s.folder_roles);
+            let sent_path = picked.and_then(|roles| roles.get(&torro_mail::Role::Sent).cloned());
+            let skipped: Vec<String> = [torro_mail::Role::Drafts, torro_mail::Role::Junk, torro_mail::Role::Trash]
+                .iter()
+                .filter_map(|role| picked.and_then(|roles| roles.get(role).cloned()))
+                .collect();
+            match store.read(move |store| store.correspondents(since, now, sent_path.as_deref(), &skipped)).await {
+                Ok(found) => people.extend(found),
+                Err(err) => eprintln!("torroworkplace: contacts: cannot read the people of a mail account: {err}"),
+            }
+        }
+        if matches!(reach, Reach::Suite) {
+            own.extend(
+                accounts.iter().filter_map(|account| account.mail.as_ref()).map(|m| m.address.trim().to_lowercase()),
+            );
+        }
+        torro_contacts::suggest::merge(people)
+            .into_iter()
+            .filter(|person| !own.contains(&person.address.trim().to_lowercase()))
+            .collect()
     }
 
     /// What the handlers of saving attachments need from the core (task M12.3): the Downloads folder
@@ -10814,6 +10941,30 @@ impl Core {
     /// read (the command itself then reports why).
     fn key_holder(&self, id: &str, key: Option<u8>) -> Option<torro_setups::Template> {
         self.store.shortcut_holder(key?, id).ok().flatten()
+    }
+
+    /// The mail accounts a `contacts.suggest_recipients` of a client with `rights` reads (issue #460),
+    /// for its log line: every account it may read ([`reads_mail`]), as `mail.search_messages` names
+    /// its account. Only an answer with suggestions gets them: a refused request read nothing.
+    ///
+    /// Boxed where it is made, like [`Core::apply_mail_filter`]: the ways every client request passes
+    /// keep their frames small.
+    fn read_mail_ids<'a>(&'a self, rights: &'a torro_ipc::api::Rights) -> torro_core::ai::BoxFuture<'a, Vec<String>> {
+        Box::pin(self.read_mail_ids_now(rights))
+    }
+
+    async fn read_mail_ids_now(&self, rights: &torro_ipc::api::Rights) -> Vec<String> {
+        let reach = Reach::Client(rights);
+        // The accounts `Core::correspondents` reads: those with a store, as `MailService::stores` has them.
+        let accounts: Vec<String> = self
+            .mail
+            .stores(reach)
+            .await
+            .into_iter()
+            .map(|(account, _)| account)
+            .filter(|account| reads_mail(reach, account))
+            .collect();
+        crate::audit::read_account_ids(&accounts)
     }
 
     /// The log ids of who loses a key with `request` (issue #243, [`crate::audit::taken_from_id`]),
@@ -30532,6 +30683,108 @@ mod tests {
         let far = "x".repeat(torro_ipc::SUGGESTION_LOCATION_MAX + 1);
         assert_eq!(code(&extras_refusal(Some(&far), None).expect("refused")), "error");
         assert_eq!(extras_refusal(Some("Room 2"), Some("ok")), None);
+    }
+
+    /// Issue #460: recipient suggestions bring contacts of the books in reach and people of the mail
+    /// the caller may read – a client without mail gets contacts only, one with account A nobody of
+    /// account B –, never an account's own address; the log names the accounts read, never the search.
+    #[tokio::test]
+    async fn recipient_suggestions_stay_within_the_books_and_mail_in_reach() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let date = (Utc::now() - chrono::TimeDelta::days(2)).to_rfc2822();
+        let mail = |from: &str, to: &str, n: u32| {
+            format!(
+                "From: {from}\r\nTo: {to}\r\nSubject: Hello {n}\r\nDate: {date}\r\nMessage-ID: <hello-{n}@example>\r\n\
+                 Content-Type: text/plain\r\n\r\nHi\r\n"
+            )
+        };
+        let first = FakeImap::start(MAIL_PASSWORD).await;
+        first.add("INBOX", &mail("Jo Meyer <jo.meyer@posteo.de>", "anna@example.org", 1), &[]);
+        first.add(
+            "Sent",
+            &mail("anna@example.org", "Jonas Berger <jonas@berger.de>, anna@example.org", 2),
+            &["\\Seen"],
+        );
+        first.add("Sent", &mail("anna@example.org", "jo.sent@posteo.de, bob@example.org", 3), &["\\Seen"]);
+        // Johanna by her address only, twice: she matches "jo" by the name in the address book.
+        first.add("Sent", &mail("anna@example.org", "j.kraft@werke.de", 5), &["\\Seen"]);
+        first.add("Sent", &mail("anna@example.org", "j.kraft@werke.de", 6), &["\\Seen"]);
+        let second = FakeImap::start(MAIL_PASSWORD).await;
+        second.add("INBOX", &mail("Jo Second <jo.second@posteo.de>", "bob@example.org", 4), &[]);
+        let secrets = MemoryTokens::default();
+        let anna = mail_account("anna@example.org", &first.endpoint);
+        let bob = mail_account("bob@example.org", &second.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&anna, MAIL_PASSWORD), (&bob, MAIL_PASSWORD)]);
+        let mail_service = service_in(dir.path(), &secrets);
+        mail_service.reload().await;
+        mail_service.sync_all(Reach::Suite).await.expect("synced");
+        let books = Arc::new(crate::contacts::sync::fake::Server::default());
+        let book = books.add_book("contacts", true, false);
+        let jonas =
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:jonas\r\nFN:Jonas Berger\r\nEMAIL:jonas@berger.de\r\nEND:VCARD\r\n";
+        books.put_card(&book, "jonas", jonas);
+        let johanna =
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:johanna\r\nFN:Johanna Kraft\r\nEMAIL:j.kraft@werke.de\r\nEND:VCARD\r\n";
+        books.put_card(&book, "johanna", johanna);
+        let account = "nextcloud:anna@cloud.example.org";
+        let contacts =
+            crate::contacts::ContactsService::in_dir(&dir.path().join("contacts"), vec![(account.into(), books)]);
+        contacts.sync_all().await;
+        let core = audited(dir.path()).with_mail(mail_service).with_contacts(contacts);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let suggest =
+            |query: &str| Request::SuggestRecipients { query: query.into(), limit: None, contacts_only: false };
+        let addresses = |answer: Response| -> Vec<String> {
+            let Response::RecipientSuggestions { suggestions } = answer else { panic!("suggestions: {answer:?}") };
+            suggestions.into_iter().map(|s| s.address).collect()
+        };
+
+        let all = addresses(ask(&core, Some(&app_key), suggest("jo")).await);
+        assert_eq!(&all[..2], ["j.kraft@werke.de", "jonas@berger.de"], "written to most first, also without a name");
+        let mut seen = all[2..].to_vec();
+        seen.sort();
+        assert_eq!(seen, ["jo.meyer@posteo.de", "jo.second@posteo.de", "jo.sent@posteo.de"]);
+        for own in ["anna", "bob"] {
+            assert!(addresses(ask(&core, Some(&app_key), suggest(own)).await).is_empty(), "never an account's own");
+        }
+        assert_eq!(code(&ask(&core, Some(&app_key), suggest(&"j".repeat(501))).await), "error");
+        assert!(addresses(ask(&core, Some(&app_key), suggest(" ")).await).is_empty());
+        let only = Request::SuggestRecipients { query: "jo".into(), limit: None, contacts_only: true };
+        assert_eq!(addresses(ask(&core, Some(&app_key), only).await), ["j.kraft@werke.de", "jonas@berger.de"]);
+        let Response::RecipientSuggestions { suggestions } = ask(&core, Some(&app_key), suggest("jo")).await else {
+            panic!("suggestions")
+        };
+        assert!(suggestions[0].last_sent.is_some());
+
+        // Contacts only, by name, without read access to mail.
+        let mut no_mail = RightsTemplate::ReadOnly.rights();
+        no_mail.areas.insert(Area::Mail, AreaRights { level: Level::NoAccess, admin: false });
+        no_mail.mail_accounts = Selection::All;
+        no_mail.address_books = Selection::All;
+        let (_, blind) = client(&core, no_mail).await;
+        assert_eq!(addresses(ask(&core, Some(&blind), suggest("jo")).await), ["j.kraft@werke.de", "jonas@berger.de"]);
+
+        // Account A only: nobody of B.
+        let mut reading = RightsTemplate::ReadOnly.rights();
+        reading.mail_accounts = Selection::Only(vec![anna.id.clone()]);
+        reading.address_books = Selection::All;
+        let (reader, key) = client(&core, reading).await;
+        let found = addresses(ask(&core, Some(&key), suggest("jo")).await);
+        assert!(
+            found.contains(&"jo.meyer@posteo.de".to_string()) && !found.contains(&"jo.second@posteo.de".to_string())
+        );
+        assert!(
+            addresses(ask(&core, Some(&key), suggest("bob")).await).contains(&"bob@example.org".to_string()),
+            "another account's address is a person like any other for a client that does not reach it"
+        );
+
+        let line = audit_lines(dir.path()).into_iter().rfind(|line| line.client.as_deref() == Some(reader.as_str()));
+        let line = line.expect("a line of the reader");
+        assert_eq!(line.command, "contacts.suggest_recipients");
+        assert_eq!(line.ids, [format!("account:{}", anna.id)]);
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("the log");
+        assert!(!log.contains("\"jo\"") && !log.contains("bob\"") && !log.contains("posteo"), "no search, no person");
     }
 
     /// Issue #351: a client sees contacts only in the address books of its rights – by list, search

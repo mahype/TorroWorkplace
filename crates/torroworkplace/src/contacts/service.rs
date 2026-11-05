@@ -17,6 +17,7 @@
 
 use base64::Engine;
 use chrono::{Local, Utc};
+use torro_contacts::suggest::GroupCandidate;
 use torro_contacts::{
     AddressBook, Birthday, Contact, ContactFields, ContactPage, ContactState, ContactSummary, ContactsError,
     ContactsProvider, FieldsError, Group, Keep, Moved, PhotoSize, Stored, contact_id, vcard,
@@ -30,6 +31,13 @@ use super::store::{BookRow, CardRow, Op, Query, Queued, Store};
 use super::sync::{self, Sent, with};
 use super::{ContactsService, photo};
 use crate::pim::Reach;
+
+/// The most contacts, groups and members of one group `contacts.suggest_recipients` looks at (issue
+/// #460): a search of one or two letters matches many, and the answer holds at most 20 anyway.
+pub const SUGGEST_CANDIDATES: usize = 200;
+
+/// The name of Nextcloud's system address book (every user of the instance), hidden by default.
+const SYSTEM_BOOK: &str = "z-server-generated--system";
 
 /// What a command needs of the store before it runs: its contact and the contact's book.
 struct Found {
@@ -328,6 +336,115 @@ impl ContactsService {
             .map(|(book, name, count)| Group { book, name, count, untrusted: true })
             .collect();
         Ok(Response::ContactGroups { groups })
+    }
+
+    /// What `contacts.suggest_recipients` ranks for `query` (issue #460,
+    /// [`torro_contacts::suggest::rank`]): the contacts of the books `reach` sees whose search text
+    /// holds every word, and the groups whose name may match, each with its members; at most
+    /// [`SUGGEST_CANDIDATES`] contacts, and as many per group. A client sees its books as everywhere
+    /// ([`Rights::reaches_address_book`]: a hidden one only when named); the suite every book with
+    /// "Recently contacted", and Nextcloud's system book only while the person shows hidden books
+    /// (`show_hidden`, setting `contacts.show_hidden_books`): it holds every user of the instance.
+    /// Books that are not hidden come first, so a person in "Recently contacted" too is suggested
+    /// as the contact of a real book.
+    pub fn suggest_candidates(
+        &self,
+        reach: Reach<'_>,
+        query: &str,
+        show_hidden: bool,
+    ) -> Result<(Vec<Contact>, Vec<GroupCandidate>), ContactsError> {
+        let words = torro_contacts::suggest::search_words(query);
+        let books = self.suggest_books(reach, show_hidden)?;
+        if words.is_empty() || books.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let ids: Vec<String> = books.iter().map(|b| b.id.clone()).collect();
+        let contacts_of = |s: &Store, rows: Vec<CardRow>| -> Vec<Contact> {
+            let mut contacts: Vec<Contact> = rows
+                .iter()
+                .filter_map(|row| books.iter().find(|b| b.id == row.book).map(|book| contact_of(s, row, book)))
+                .collect();
+            // The store sorts by name; the books' order decides who stands first for one address.
+            contacts.sort_by_key(|contact| books.iter().position(|b| b.id == contact.book));
+            contacts
+        };
+        with(self.store()?, |s| {
+            let query = Query {
+                books: ids.clone(),
+                text: Some(words.join(" ")),
+                limit: SUGGEST_CANDIDATES,
+                ..Query::default()
+            };
+            let mut contacts = contacts_of(s, s.query(&query)?.0);
+            // Favourites come before every other contact: never cut off by the names before them.
+            let favourites = Query { favorites: true, ..query.clone() };
+            for contact in contacts_of(s, s.query(&favourites)?.0) {
+                if !contacts.iter().any(|held| held.id == contact.id) {
+                    contacts.push(contact);
+                }
+            }
+            let mut groups = Vec::new();
+            for (book, name, _) in s.groups(&ids)? {
+                if groups.len() >= SUGGEST_CANDIDATES || !torro_contacts::suggest::matches(&words, &name, "") {
+                    continue;
+                }
+                let members = Query {
+                    books: vec![book],
+                    group: Some(name.clone()),
+                    limit: SUGGEST_CANDIDATES,
+                    ..Query::default()
+                };
+                groups.push(GroupCandidate { name, members: contacts_of(s, s.query(&members)?.0) });
+            }
+            Ok((contacts, groups))
+        })
+    }
+
+    /// The books of the suggestions ([`ContactsService::suggest_candidates`]): not hidden ones first.
+    fn suggest_books(&self, reach: Reach<'_>, show_hidden: bool) -> Result<Vec<BookRow>, ContactsError> {
+        let mut books: Vec<BookRow> = self
+            .books_within(reach, None)?
+            .into_iter()
+            .filter(|book| match reach {
+                Reach::Suite => show_hidden || !(book.hidden && book.name == SYSTEM_BOOK),
+                Reach::Client(_) => true,
+            })
+            .collect();
+        books.sort_by_key(|book| book.hidden);
+        Ok(books)
+    }
+
+    /// The contacts of the suggestions' books (as [`ContactsService::suggest_candidates`] has them)
+    /// that hold one of `addresses` as a mail address, whatever its case (issue #460): the people of
+    /// the mail, so a contact written to often ranks even when the search found others first, and
+    /// its address is never offered as one "known only from mail".
+    pub fn contacts_with(
+        &self,
+        reach: Reach<'_>,
+        addresses: &[String],
+        show_hidden: bool,
+    ) -> Result<Vec<Contact>, ContactsError> {
+        let books = self.suggest_books(reach, show_hidden)?;
+        if addresses.is_empty() || books.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<String> = books.iter().map(|b| b.id.clone()).collect();
+        with(self.store()?, |s| {
+            let mut found: Vec<Contact> = Vec::new();
+            for address in addresses {
+                let wanted = address.trim().to_lowercase();
+                let query = Query { books: ids.clone(), text: Some(wanted.clone()), limit: 50, ..Query::default() };
+                for row in s.query(&query)?.0 {
+                    let Some(book) = books.iter().find(|b| b.id == row.book) else { continue };
+                    let contact = contact_of(s, &row, book);
+                    let holds = contact.emails.iter().any(|email| email.value.trim().to_lowercase() == wanted);
+                    if holds && !found.iter().any(|known| known.id == contact.id) {
+                        found.push(contact);
+                    }
+                }
+            }
+            Ok(found)
+        })
     }
 
     fn birthdays(&self, reach: Reach<'_>, days: Option<u32>) -> Result<Response, ContactsError> {
@@ -858,6 +975,49 @@ mod tests {
         let mut rights = RightsTemplate::FullAccess.rights();
         rights.address_books = Selection::Only(vec![format!("{ACCOUNT}/contacts"), format!("{ACCOUNT}/team")]);
         rights
+    }
+
+    /// Issue #460: the candidates of the recipient suggestions come from the books the caller sees –
+    /// a client's by its rights, the suite's without the system book unless hidden books are shown –
+    /// and a group brings its members.
+    #[tokio::test]
+    async fn suggestion_candidates_come_from_the_books_in_reach() {
+        let dir = tempfile::tempdir().expect("dir");
+        let server = Arc::new(Server::default());
+        let work = server.add_book("contacts", true, false);
+        let private = server.add_book("privat", true, false);
+        let system = server.add_book("z-server-generated--system", false, true);
+        let grouped = |uid: &str, name: &str, email: &str| {
+            card(uid, name, email).replace("END:VCARD", "CATEGORIES:Jour fixe\r\nEND:VCARD")
+        };
+        server.put_card(&work, "jonas", &grouped("jonas", "Jonas Berger", "jonas@berger.de"));
+        server.put_card(&work, "mira", &grouped("mira", "Mira Schulte", "mira@schulte.de"));
+        server.put_card(&private, "joachim", &card("joachim", "Joachim Geheim", "joachim@example.org"));
+        server.put_card(&system, "johann", &card("johann", "Johann Kollege", "johann@cloud.example.org"));
+        let service = ContactsService::in_dir(dir.path(), vec![(ACCOUNT.into(), Arc::clone(&server))]);
+        service.sync_all().await;
+        let names = |found: &(Vec<Contact>, Vec<GroupCandidate>)| {
+            let mut names: Vec<String> = found.0.iter().map(Contact::shown_name).collect();
+            names.sort();
+            names
+        };
+
+        let suite = service.suggest_candidates(Reach::Suite, "jo", false).expect("suite");
+        assert_eq!(names(&suite), ["Joachim Geheim", "Jonas Berger"], "no system book unless shown");
+        let shown = service.suggest_candidates(Reach::Suite, "jo", true).expect("shown");
+        assert_eq!(names(&shown), ["Joachim Geheim", "Johann Kollege", "Jonas Berger"]);
+
+        let rights = only_work();
+        let client = service.suggest_candidates(Reach::Client(&rights), "jo", true).expect("client");
+        assert_eq!(names(&client), ["Jonas Berger"], "only the books of its rights");
+
+        let groups = service.suggest_candidates(Reach::Client(&rights), "jour", false).expect("groups").1;
+        assert_eq!(groups.len(), 1);
+        let mut members: Vec<String> = groups[0].members.iter().map(Contact::shown_name).collect();
+        members.sort();
+        assert_eq!(groups[0].name, "Jour fixe");
+        assert_eq!(members, ["Jonas Berger", "Mira Schulte"], "a group brings its members");
+        assert!(service.suggest_candidates(Reach::Suite, "  ", true).expect("blank").0.is_empty());
     }
 
     #[tokio::test]

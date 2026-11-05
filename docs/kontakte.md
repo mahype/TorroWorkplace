@@ -269,7 +269,7 @@ Bereich `contacts`:
 | KO1 | `contacts.resolve_conflict { id, keep: mine\|theirs\|both, etag }` | Write, mit `mine`/`theirs` **Delete** | `contacts_resolve_conflict` |
 | KO2 | `contacts.locate_contact { id, address: usize }` (Antwort `found \| not_found \| queued \| no_consent`; Netz nur für den App-Schlüssel) | Read | `contacts_locate_contact` |
 | KO2 | `contacts.open_in_maps { id, address: usize }` (öffnet die Karten-App oder den Browser) | Write | `contacts_open_in_maps` |
-| KO3 | `contacts.suggest_recipients { query, limit? }` (Mail-Adressen aus Kontakten und „Recently contacted“) | Read | `contacts_suggest_recipients` |
+| KO3, #460 | `contacts.suggest_recipients { query, limit? }` (Kontakte, Gruppen und Adressen aus Mails, siehe unten) | Read | `contacts_suggest_recipients` |
 | KO3 | `contacts.import_vcards { book, data, dry_run }` | Write | `contacts_import_vcards` |
 | KO3 | `contacts.export_vcards { book?, ids? }` | Read | `contacts_export_vcards` |
 | KO3 | `contacts.find_duplicates { book? }` | Read | `contacts_find_duplicates` |
@@ -341,6 +341,26 @@ Erläuterungen:
   - Abschnitt „Maps“: Kachelserver, Ortssuche an/aus mit Erklärung, Cache-Größe und „Clear“.
 - **Eingang und Mail (KO3):** Aktion „Save as contact“ bei Mails und vCard-Anhängen,
   Empfänger-Vorschläge im Schreibfenster.
+
+**Empfänger-Vorschläge (#460, vorgezogen aus KO3):** Ab dem ersten Buchstaben in An, Cc oder Bcc fragt das
+Schreibfenster 150 ms nach der letzten Taste `contacts.suggest_recipients`. Die Reihenfolge rechnet der Dienst
+(`torro_contacts::suggest::rank`):
+
+1. Kontakte, an die zuletzt und oft geschrieben wurde: Jede Mail im Ordner Gesendet des letzten Jahres zählt je
+   Empfänger (An, Cc) nach Alter 4 (bis 7 Tage), 2 (bis 30), 1 (bis 90) oder ½ (bis 365). Der Merker „zuletzt
+   benutzt“ des Adressbuchs zählt nicht: ihn setzt heute nichts, und er kennt weder Häufigkeit noch Adressen ohne
+   Kontakt.
+2. Favoriten, dann Gruppen (eine Gruppe fügt alle Mitglieder mit Adresse ein, die noch in keinem Feld stehen), dann
+   die übrigen Kontakte, je nach Name.
+3. Abgesetzt „From mail, not in contacts“: Adressen, die nur aus Mails bekannt sind (Empfänger eigener Mails und
+   Absender persönlicher Mails, nie Listen, Newsletter, automatische Mails, Entwürfe, Spam und Papierkorb), die
+   jüngste zuerst, mit „+ Contact“. Solange es welche gibt, lassen die Kontakte ihnen zwei Plätze.
+
+Jedes Suchwort muss der Anfang eines Namensworts, der Adresse oder eines Adressteils nach `@ . - _ +` sein, ohne
+Groß/Klein und Akzente. Die Bücher sind die des Aufrufers; die Suite nimmt „Recently contacted“ dazu, das
+Systemadressbuch nur, solange ausgeblendete Bücher gezeigt werden. Adressen aus Mails nur aus Konten, die der
+Aufrufer lesen darf; die eigenen Adressen der Konten nie. „+ Contact“ legt mit Name und Adresse einen Kontakt im
+ersten beschreibbaren Buch an (`contacts.create_contact`); ohne beschreibbares Buch fehlt der Knopf.
 
 **Karte im Kontakt (KO2):** ein fester Ausschnitt (Zoom 15, 3×3 Kacheln) mit Pin, unten rechts
 „© OpenStreetMap contributors“. Ein Klick öffnet die Karten-App. Ohne Koordinaten und ohne

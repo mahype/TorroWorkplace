@@ -7288,12 +7288,15 @@ dependencies = [
 name = "torroinbox"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "iced",
+ "image",
  "rfd",
  "serde_json",
  "tempfile",
  "tokio",
+ "torro-contacts",
  "torro-core",
  "torro-gui",
  "torro-htmlview",

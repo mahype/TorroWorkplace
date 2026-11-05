@@ -1058,6 +1058,7 @@ fn describe(request: &Request) -> String {
         Request::GetContact { .. } => "read a contact".into(),
         Request::GetContactPhoto { .. } => "read a contact's picture".into(),
         Request::ListContactGroups { .. } => "list contact groups".into(),
+        Request::SuggestRecipients { .. } => "suggest recipients".into(),
         Request::UpcomingBirthdays { .. } => "list birthdays".into(),
         Request::CreateContact { .. } => "create a contact".into(),
         Request::AddToContact { .. } => "add to a contact".into(),

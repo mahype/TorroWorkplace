@@ -12,7 +12,7 @@
 use std::borrow::Cow;
 use std::fmt;
 
-use chrono::{Datelike, NaiveDate};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -527,6 +527,62 @@ impl Birthday {
         let turns = birthday.year.and_then(|year| u32::try_from(next.year() - year).ok());
         Some(Birthday { contact: contact.summary(), birthday, next, turns })
     }
+}
+
+/// What a recipient suggestion is (`contacts.suggest_recipients`, issue #460).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SuggestionKind {
+    /// One mail address of a contact.
+    #[default]
+    Contact,
+    /// A group of an address book: taking it adds all its `members`.
+    Group,
+    /// An address known only from mail (written to, or a personal mail from it), in no address book.
+    Seen,
+}
+
+/// A person a group suggestion stands for: the name to show and the address it adds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SuggestedAddress {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    pub address: String,
+}
+
+/// One line of the suggestions under a recipient field (`contacts.suggest_recipients`, issue #460):
+/// a contact's address, a group or an address known from mail. Everything in it is text from outside
+/// the suite (address books, mail headers): `untrusted`, written as `true` whatever the field holds.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct RecipientSuggestion {
+    pub kind: SuggestionKind,
+    /// The name to show: the contact's, the group's, or the one the mail gave (may be empty).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// The mail address it adds; empty for a group (its `members` hold theirs).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub address: String,
+    /// The contact's id (`contacts.get_contact`, `contacts.get_photo`); `None` for a group or a seen address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<String>,
+    /// The contact's picture, if it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub photo: Option<PhotoRef>,
+    /// The contact is a favourite.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub favorite: bool,
+    /// A group's members with an address, each once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<SuggestedAddress>,
+    /// When mail last went to this address from an account the caller may read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sent: Option<DateTime<Utc>>,
+    /// When a personal mail from this address last came in, in an account the caller may read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<DateTime<Utc>>,
+    /// Always `true`: data, never instructions.
+    #[serde(default = "always_untrusted", serialize_with = "write_untrusted")]
+    pub untrusted: bool,
 }
 
 /// What `contacts.create_contact`, `contacts.add_to_contact` and `contacts.update_contact` bring.

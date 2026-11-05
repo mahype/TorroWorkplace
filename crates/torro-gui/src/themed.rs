@@ -6,6 +6,8 @@
 //!   eigenen Farben").
 //! - [`on_accent`]: the theme of a chosen row drawn in the accent colour ([`theme::on_accent_theme`],
 //!   issue #291, `[list] selection = "fill"`): its text and icons take `on_accent` the same way.
+//! - [`in_paper`]: the light or dark theme of the colour scheme, whatever the window's (issue #460):
+//!   the paper of the compose window, which a person switches apart from the window, as in Outlook.
 //!
 //! Iced's own `Themer` needs the theme when the view is built, but views don't know the window's
 //! mode then; this one picks it while drawing, from the theme the window draws in. Overlays
@@ -26,6 +28,15 @@ pub(crate) fn in_sidebar<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Eleme
 /// `content` drawn in the theme of a row in the accent colour: its text and icons in `on_accent`.
 pub(crate) fn on_accent<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
     Element::new(Themed { content: content.into(), pick: theme::on_accent_theme })
+}
+
+/// `content` drawn in the dark theme of the colour scheme ([`theme::theme`]) with `dark`, else in
+/// the light one ([`theme::light`]), whatever the window draws in (issue #460, the paper of the
+/// compose window). Everything inside takes that mode's colours from [`theme::palette`]; menus and
+/// tooltips opened from inside keep the window's.
+pub fn in_paper<'a, M: 'a>(content: impl Into<Element<'a, M>>, dark: bool) -> Element<'a, M> {
+    let pick: fn(&Theme) -> Theme = if dark { |_| theme::theme() } else { |_| theme::light() };
+    Element::new(Themed { content: content.into(), pick })
 }
 
 struct Themed<'a, M> {

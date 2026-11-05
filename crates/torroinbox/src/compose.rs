@@ -8,10 +8,24 @@
 //!   on a file card of the assistant (`apps.open_app` with `file:<id>`), with the path its register
 //!   keeps. The person sees the mail with the file and sends it, or not.
 //!
-//! - **Fields:** From (the account; a choice with two or more), To, Cc and Bcc (unfolded on
-//!   demand, or at once when an answer fills them), Subject, the text and the attachments. The
+//! - **Layout** (issue #460, version A of the design in `docs/prototypes/mail-compose/`): a header
+//!   (title, state of the draft, attach, close | Send), From with its address in `text_3`, To with Cc
+//!   and Bcc (unfolded on demand, or at once when an answer fills them), Subject, a fixed toolbar,
+//!   the paper with the text and the signature, and the attachments as chips under it. The
 //!   account's signature is shown under the text but not put into it: the core adds it when the
 //!   message is built, so it would stand twice.
+//! - **Recipients as chips:** `,` `;`, Enter (with no suggestion open) and leaving the field turn what
+//!   was typed into chips ([`Recipients`]); words that are no address become chips marked with the
+//!   alert icon, and Send names them as before. Backspace in an empty field takes the last chip.
+//! - **Suggestions** (issue #460, `contacts.suggest_recipients`): 150 ms after the last letter
+//!   ([`SUGGEST_AFTER`]) the core is asked, and a list floats under the field – contacts with their
+//!   picture, groups (taking one adds every member not in a field yet) and, apart, addresses known
+//!   only from mail with "+ Contact" (only with a writable address book). ↑↓ choose, Enter and Tab
+//!   take, Esc closes only the list. An answer to an older search is dropped; an error or
+//!   `forbidden` shows no list.
+//! - **Paper** (issue #460): the button ◐ at the end of the toolbar switches the background of the
+//!   text between light and dark, apart from the window (`settings.set_setting compose_paper`, kept
+//!   for the next window). The mail sent is the same either way.
 //! - **Answers:** a reply goes to `Reply-To:` (else the sender), reply all adds everyone else on
 //!   the message except the accounts of this computer, a forward fills no recipient and takes the
 //!   attachments along as `DraftAttachment::MailPart`. The text quotes the message ("On … wrote:"
@@ -24,7 +38,9 @@
 //!   (`mail.send_draft`); an error stays in the window with the text, the draft stays where it
 //!   is, and one can try again. Only after a send that the server took the window closes.
 //! - **Formatted mail** (issue #125, for accounts that write HTML, `MailSettings::format`): a
-//!   toolbar over the text and the keys `Cmd+B`/`I`/`U`/`K` (`Ctrl` elsewhere) write the marks of
+//!   toolbar over the text (bold, italic, underline | lists, quote | link, clear; what does not fit
+//!   goes from the back into "…", issue #460) and the keys `Cmd+B`/`I`/`U`/`K`/`\` (`Ctrl` elsewhere)
+//!   write the marks of
 //!   [`torro_mail::markup`] (`**bold**`, `*italic*`, `__underline__`, `[text](address)`, `- ` and
 //!   `1. ` lists, `> ` quotes); Enter in a list item starts the next one. The editor shows the marks
 //!   quietly and quotes in the secondary colour ([`markup::looks`]). Saved, the text becomes
@@ -42,6 +58,7 @@
 //! [`InboxClient`] and the demo implement it here). Mail is foreign text: what a quoted message
 //! brings is cleaned of control and direction characters before it enters the text.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -56,10 +73,12 @@ use iced::theme::Mode;
 use iced::widget::operation;
 use iced::widget::text::Wrapping;
 use iced::widget::text_editor::{self, Binding, Content, Cursor, Edit, Motion, Position};
-use iced::widget::{Space, column, container, row, text_input};
+use iced::widget::{Space, button, column, container, image, row, text_input};
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
+use torro_contacts::{RecipientSuggestion, SuggestionKind};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::ComposePaper;
 use torro_core::shortcuts::{self, Preset, System};
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
@@ -67,9 +86,9 @@ use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, Cover, Surface, TitleButtons};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
-use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement};
+use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, TileFace, TileSize};
 use torro_gui::zoom::{self, Zoom};
-use torro_gui::{datetime, style, typo};
+use torro_gui::{datetime, style, themed, typo};
 use torro_inbox::InboxError;
 use torro_inbox::demo::DemoSource;
 use torro_ipc::inbox::InboxClient;
@@ -97,6 +116,10 @@ pub const AUTOSAVE: Duration = Duration::from_secs(3);
 
 /// How often the window checks whether [`AUTOSAVE`] has passed. Only while something is unsaved.
 const CLOCK: Duration = Duration::from_secs(1);
+
+/// How long after the last letter typed into a recipient field the core is asked for suggestions:
+/// one request per pause, not one per key.
+pub const SUGGEST_AFTER: Duration = Duration::from_millis(150);
 
 /// The size a compose window opens at: a letter, not the inbox's three columns.
 const WINDOW: Size = Size::new(760.0, 700.0);
@@ -198,10 +221,14 @@ pub enum Open {
     Failed,
     /// Formatted text: bold, italic, a link, lists and a quote (issue #125).
     Format,
+    /// Recipients as chips, one of them no address, and the suggestions for "jo" (issue #460).
+    Suggest,
+    /// The dark paper (issue #460).
+    PaperDark,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 9] = [
+    const ALL: [(&'static str, Open); 11] = [
         ("cc", Open::Cc),
         ("attach", Open::Attach),
         ("error", Open::Error),
@@ -211,6 +238,8 @@ impl Open {
         ("loading", Open::Loading),
         ("failed", Open::Failed),
         ("format", Open::Format),
+        ("suggest", Open::Suggest),
+        ("paper-dark", Open::PaperDark),
     ];
 }
 
@@ -315,14 +344,6 @@ pub struct Sender {
     pub html: bool,
 }
 
-impl Sender {
-    /// `Name <address>`, or the address alone.
-    pub fn label(&self) -> String {
-        let name = list::one_line(&self.name);
-        if name.is_empty() { self.address.clone() } else { format!("{name} <{}>", self.address) }
-    }
-}
-
 /// The mail accounts of `accounts` (`accounts.list_accounts`) with mail switched on, in the
 /// core's order.
 pub fn senders_of(accounts: &[AccountInfo]) -> Vec<Sender> {
@@ -415,6 +436,47 @@ pub trait ComposeSource: Send + Sync {
 
     /// `mail.delete_messages` for a draft that is not wanted any more (into the trash).
     fn discard_draft(&self, id: String) -> impl Future<Output = Result<(), ComposeError>> + Send;
+
+    /// `contacts.suggest_recipients` (issue #460): who to write to for `query`, in the order to show.
+    /// None where the source has no contacts.
+    fn suggest(&self, query: String) -> impl Future<Output = Result<Vec<RecipientSuggestion>, ComposeError>> + Send {
+        let _ = query;
+        async { Ok(Vec::new()) }
+    }
+
+    /// `contacts.get_photo` in the small size: a contact's picture as PNG, `None` without one.
+    fn photo(&self, contact: String) -> impl Future<Output = Result<Option<Vec<u8>>, ComposeError>> + Send {
+        let _ = contact;
+        async { Ok(None) }
+    }
+
+    /// The address book "+ Contact" writes to (`contacts.list_address_books`): the first one that
+    /// may be written and is not hidden; `None` without one, and then the button is missing.
+    fn writable_book(&self) -> impl Future<Output = Result<Option<String>, ComposeError>> + Send {
+        async { Ok(None) }
+    }
+
+    /// `contacts.create_contact`: a contact with `name` (may be empty) and `address` in `book`.
+    fn create_contact(
+        &self,
+        book: String,
+        name: String,
+        address: String,
+    ) -> impl Future<Output = Result<(), ComposeError>> + Send {
+        let _ = (book, name, address);
+        async { Err(ComposeError::Forbidden) }
+    }
+
+    /// The paper the window starts with (setting `compose_paper`).
+    fn paper(&self) -> impl Future<Output = Result<ComposePaper, ComposeError>> + Send {
+        async { Ok(ComposePaper::default()) }
+    }
+
+    /// `settings.set_setting compose_paper`: keeps the paper for the next window.
+    fn set_paper(&self, paper: ComposePaper) -> impl Future<Output = Result<(), ComposeError>> + Send {
+        let _ = paper;
+        async { Ok(()) }
+    }
 }
 
 /// Sends `request` over the socket of `client` and maps the answer: errors by their code, a core
@@ -483,6 +545,64 @@ impl ComposeSource for InboxClient {
             other => Err(unexpected(other)),
         }
     }
+
+    async fn suggest(&self, query: String) -> Result<Vec<RecipientSuggestion>, ComposeError> {
+        match ask(self, Request::SuggestRecipients { query, limit: None, contacts_only: false }).await? {
+            Response::RecipientSuggestions { suggestions } => Ok(suggestions),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn photo(&self, contact: String) -> Result<Option<Vec<u8>>, ComposeError> {
+        use base64::Engine as _;
+        match ask(self, Request::GetContactPhoto { id: contact, size: torro_contacts::PhotoSize::Small }).await {
+            Ok(Response::Image { png }) => Ok(base64::engine::general_purpose::STANDARD.decode(png).ok()),
+            Ok(other) => Err(unexpected(other)),
+            Err(ComposeError::NotFound) => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn writable_book(&self) -> Result<Option<String>, ComposeError> {
+        match ask(self, Request::ListAddressBooks { account: None }).await? {
+            Response::AddressBooks { books } => {
+                Ok(books.into_iter().find(|book| book.writable && !book.hidden_by_default).map(|book| book.id))
+            }
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn create_contact(&self, book: String, name: String, address: String) -> Result<(), ComposeError> {
+        match ask(self, Request::CreateContact { book, fields: new_contact(name, address) }).await? {
+            Response::Contact { .. } => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn paper(&self) -> Result<ComposePaper, ComposeError> {
+        match ask(self, Request::Settings).await? {
+            Response::Settings { settings } => Ok(settings.compose_paper),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn set_paper(&self, paper: ComposePaper) -> Result<(), ComposeError> {
+        let value = serde_json::to_value(paper).map_err(|err| ComposeError::Other(err.to_string()))?;
+        match ask(self, Request::SetSetting { key: torro_ipc::SettingKey::ComposePaper, value }).await? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+}
+
+/// The fields of a contact "+ Contact" makes: the name the mail gave, if any, and the address.
+fn new_contact(name: String, address: String) -> torro_contacts::ContactFields {
+    let name = list::one_line(&name);
+    torro_contacts::ContactFields {
+        display_name: (!name.is_empty()).then_some(name),
+        emails: Some(vec![torro_contacts::Labeled::new(address, torro_contacts::FieldKind::Other)]),
+        ..torro_contacts::ContactFields::default()
+    }
 }
 
 impl ComposeSource for DemoSource {
@@ -517,6 +637,77 @@ impl ComposeSource for DemoSource {
     async fn discard_draft(&self, id: String) -> Result<(), ComposeError> {
         Ok(DemoSource::discard_draft(self, &id)?)
     }
+
+    async fn suggest(&self, query: String) -> Result<Vec<RecipientSuggestion>, ComposeError> {
+        Ok(demo_suggestions(&query, Utc::now()))
+    }
+
+    async fn photo(&self, contact: String) -> Result<Option<Vec<u8>>, ComposeError> {
+        Ok(Some(demo_photo(&contact)))
+    }
+
+    async fn writable_book(&self) -> Result<Option<String>, ComposeError> {
+        Ok(Some(torro_contacts::demo::CONTACTS.to_owned()))
+    }
+
+    async fn create_contact(&self, _book: String, name: String, address: String) -> Result<(), ComposeError> {
+        demo_added().lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((name, address));
+        Ok(())
+    }
+}
+
+/// The contacts "+ Contact" made in the demo, until the window closes.
+fn demo_added() -> &'static std::sync::Mutex<Vec<(String, String)>> {
+    static ADDED: std::sync::OnceLock<std::sync::Mutex<Vec<(String, String)>>> = std::sync::OnceLock::new();
+    ADDED.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// The suggestions of the demo for `query` at `now`: the sample contacts of `torro_contacts::demo`,
+/// their groups and a group "Jour fixe", and a fixed history (written to Jonas Keller lately and
+/// often, Emma Johansson a while ago; mail from Jo Meyer and to Johannes Brandt, in no book).
+pub fn demo_suggestions(query: &str, now: DateTime<Utc>) -> Vec<RecipientSuggestion> {
+    use torro_contacts::suggest::{Correspondent, GroupCandidate, rank};
+    let (_, mut contacts) = torro_contacts::demo::sample(now.date_naive());
+    for (i, (name, address)) in
+        demo_added().lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().enumerate()
+    {
+        contacts.push(torro_contacts::Contact {
+            id: format!("{}/demo-added-{i}", torro_contacts::demo::CONTACTS),
+            display_name: name.clone(),
+            emails: vec![torro_contacts::Labeled::new(address.clone(), torro_contacts::FieldKind::Other)],
+            ..torro_contacts::Contact::default()
+        });
+    }
+    let mut groups: Vec<GroupCandidate> = ["Family", "Friends", "Work"]
+        .into_iter()
+        .map(|name| GroupCandidate {
+            name: name.to_owned(),
+            members: contacts.iter().filter(|c| c.groups.iter().any(|g| g == name)).cloned().collect(),
+        })
+        .collect();
+    groups.push(GroupCandidate { name: "Jour fixe".into(), members: contacts.iter().take(5).cloned().collect() });
+    let days = |n: i64| Some(now - chrono::Duration::days(n));
+    let person = |address: &str, name: Option<&str>, score: f64, sent: Option<DateTime<Utc>>, seen| Correspondent {
+        address: address.into(),
+        name: name.map(str::to_owned),
+        score,
+        last_sent: sent,
+        last_received: seen,
+    };
+    let history = [
+        person("jonas.keller@example.org", None, 6.0, days(2), days(1)),
+        person("emma.johansson@example.org", None, 1.0, days(40), None),
+        person("jo.meyer@posteo.de", Some("Jo Meyer"), 0.0, None, days(8)),
+        person("johannes.brandt@web.de", Some("Johannes Brandt"), 0.5, days(100), None),
+    ];
+    rank(query, &contacts, &groups, &history, None)
+}
+
+/// The picture of a sample contact: a square in one of four quiet colours, by its id.
+fn demo_photo(contact: &str) -> Vec<u8> {
+    const COLOURS: [[u8; 3]; 4] = [[0x5B, 0x8C, 0xFF], [0x3F, 0xB9, 0x84], [0xE8, 0xA3, 0x3D], [0xD9, 0x6C, 0xA8]];
+    let pick = contact.bytes().fold(0usize, |sum, byte| sum.wrapping_add(usize::from(byte)));
+    torro_contacts::demo::solid_png(64, COLOURS[pick % COLOURS.len()])
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -832,9 +1023,173 @@ pub fn format_address(who: &MailAddress) -> String {
     }
 }
 
-/// [`format_address`] for a list, separated by commas.
+/// [`format_address`] for a list, separated by commas: read back by [`parse_addresses`] as the same
+/// people (the fields show chips since issue #460, so only the tests write lists).
+#[cfg(test)]
 pub fn format_addresses(people: &[MailAddress]) -> String {
     people.iter().map(format_address).collect::<Vec<_>>().join(", ")
+}
+
+/// The byte index of the last `,` or `;` of `text` that separates recipients: outside quotes and
+/// angle brackets, as [`parse_addresses`] reads them.
+fn last_separator(text: &str) -> Option<usize> {
+    let (mut quoted, mut angle, mut last) = (false, false, None);
+    for (at, c) in text.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '<' if !quoted => angle = true,
+            '>' if !quoted => angle = false,
+            ',' | ';' if !quoted && !angle => last = Some(at),
+            _ => {}
+        }
+    }
+    last
+}
+
+/// One of the three recipient fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    To,
+    Cc,
+    Bcc,
+}
+
+impl Field {
+    const ALL: [Field; 3] = [Field::To, Field::Cc, Field::Bcc];
+
+    /// The id of its input.
+    fn id(self) -> &'static str {
+        match self {
+            Field::To => TO,
+            Field::Cc => CC,
+            Field::Bcc => BCC,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Field::To => tr("To"),
+            Field::Cc => tr("Cc"),
+            Field::Bcc => tr("Bcc"),
+        }
+    }
+}
+
+/// A recipient taken from a field (issue #460): a person, or a word that is no address – marked in
+/// the field and named when the mail is sent, as before.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Chip {
+    Person(MailAddress),
+    Broken(String),
+}
+
+/// What a recipient field holds (issue #460): the chips taken so far and what is being typed after
+/// them. The draft takes the people of both ([`Recipients::addresses`]), so an autosave never loses
+/// a half-typed one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Recipients {
+    pub chips: Vec<Chip>,
+    pub typed: String,
+}
+
+impl Recipients {
+    /// `people` as chips.
+    pub fn of(people: &[MailAddress]) -> Recipients {
+        let mut recipients = Recipients::default();
+        for who in people {
+            recipients.add(who.clone());
+        }
+        recipients
+    }
+
+    /// `text` as chips, read as [`parse_addresses`] reads it.
+    pub fn parsed(text: &str) -> Recipients {
+        let mut recipients = Recipients { typed: text.to_owned(), ..Recipients::default() };
+        recipients.commit();
+        recipients
+    }
+
+    /// Turns what was typed into chips: each address a person (once), each other word a broken
+    /// chip. `false` when nothing was typed.
+    pub fn commit(&mut self) -> bool {
+        let typed = std::mem::take(&mut self.typed);
+        if typed.trim().is_empty() {
+            return false;
+        }
+        let (found, refused) = parse_addresses(&typed);
+        for who in found {
+            self.add(who);
+        }
+        self.chips.extend(refused.into_iter().map(Chip::Broken));
+        true
+    }
+
+    /// `who` as a chip, unless the field holds the address already; what was typed goes.
+    pub fn add(&mut self, who: MailAddress) -> bool {
+        self.typed.clear();
+        if self.holds(&who.address) {
+            return false;
+        }
+        self.chips.push(Chip::Person(who));
+        true
+    }
+
+    /// Whether a chip of the field is `address`, whatever its case.
+    pub fn holds(&self, address: &str) -> bool {
+        self.chips.iter().any(|chip| matches!(chip, Chip::Person(who) if who.address.eq_ignore_ascii_case(address)))
+    }
+
+    /// The field changed to `text`. Everything up to its last separator (`,` `;`) becomes chips, the
+    /// rest stays typed. The same empty text again is Backspace in an empty field: the last chip
+    /// goes. `true` when something but the typed text changed.
+    pub fn input(&mut self, text: String) -> bool {
+        if text.is_empty() && self.typed.is_empty() {
+            return self.chips.pop().is_some();
+        }
+        match last_separator(&text) {
+            Some(at) => {
+                self.typed = text[..at].to_owned();
+                self.commit();
+                self.typed = text[at + 1..].trim_start().to_owned();
+                true
+            }
+            None => {
+                self.typed = text;
+                false
+            }
+        }
+    }
+
+    /// The people of the chips and of what is typed: what the draft holds.
+    pub fn addresses(&self) -> Vec<MailAddress> {
+        let mut people: Vec<MailAddress> = self
+            .chips
+            .iter()
+            .filter_map(|chip| match chip {
+                Chip::Person(who) => Some(who.clone()),
+                Chip::Broken(_) => None,
+            })
+            .collect();
+        for who in parse_addresses(&self.typed).0 {
+            if !people.iter().any(|known| known.address.eq_ignore_ascii_case(&who.address)) {
+                people.push(who);
+            }
+        }
+        people
+    }
+
+    /// The words of the chips and of what is typed that are no address.
+    pub fn refused(&self) -> Vec<String> {
+        let broken = self.chips.iter().filter_map(|chip| match chip {
+            Chip::Broken(word) => Some(word.clone()),
+            Chip::Person(_) => None,
+        });
+        broken.chain(parse_addresses(&self.typed).1).collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.chips.is_empty() && self.typed.trim().is_empty()
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -861,6 +1216,10 @@ pub struct Prepared {
     pub senders: Vec<Sender>,
     pub message: Option<Box<Mail>>,
     pub default_sender: Option<String>,
+    /// Where "+ Contact" writes ([`ComposeSource::writable_book`]); `None` hides the button.
+    pub writable_book: Option<String>,
+    /// The paper the person chose last (setting `compose_paper`).
+    pub paper: ComposePaper,
 }
 
 /// Where the window stands before it can be written in.
@@ -926,8 +1285,33 @@ pub enum Message {
     Bcc(String),
     Subject(String),
     Body(text_editor::Action),
-    /// A button of the toolbar or its key (formatted mail only).
+    /// A button of the toolbar, its key or its entry in "…" (formatted mail only).
     Format(Format),
+    /// "…" of the toolbar opens or closes the menu of what did not fit (issue #460).
+    ToolsMenu,
+    /// ◐: the paper turns light or dark (issue #460).
+    TogglePaper,
+    /// The paper was kept, or not (then it turns back to the one before).
+    PaperSaved(ComposePaper, Result<(), ComposeError>),
+    /// Enter in a recipient field: takes the chosen suggestion, else makes chips of what was typed.
+    Submit(Field),
+    /// The ✕ of a chip.
+    RemoveChip(Field, usize),
+    /// [`SUGGEST_AFTER`] passed since the letter with this number: ask the core unless more came.
+    SuggestDue(u64, Field),
+    /// The suggestions for the letters with this number.
+    Suggested(u64, Field, Result<Vec<RecipientSuggestion>, ComposeError>),
+    /// ↓ (`true`) or ↑ while the suggestions are open.
+    Arrow(bool),
+    /// A suggestion was clicked (or Enter, Tab).
+    Take(usize),
+    /// A click beside the open suggestions.
+    CloseSuggestions,
+    /// "+ Contact" of a suggestion known only from mail.
+    AddContact(usize),
+    ContactAdded(Result<(), ComposeError>),
+    /// A contact's picture: its id, the version asked for and the PNG (`None` without one).
+    Photo(String, String, Option<Vec<u8>>),
     ShowCc,
     ShowBcc,
     /// The From menu opens or closes.
@@ -977,9 +1361,9 @@ pub struct Window<S> {
     senders: Vec<Sender>,
     /// Index into `senders`.
     from: usize,
-    to: String,
-    cc: String,
-    bcc: String,
+    to: Recipients,
+    cc: Recipients,
+    bcc: Recipients,
     show_cc: bool,
     show_bcc: bool,
     subject: String,
@@ -1007,8 +1391,33 @@ pub struct Window<S> {
     menu: bool,
     /// The question on closing with unsaved changes is open.
     asking: bool,
+    /// The suggestions under a recipient field, while they are open (issue #460).
+    suggestions: Option<Suggestions>,
+    /// Counts the letters typed into recipient fields: an answer to an older one is dropped.
+    asked: u64,
+    /// The pictures of contacts by id: the version fetched, and the picture once it is here.
+    photos: HashMap<String, (String, Option<image::Handle>)>,
+    /// Where "+ Contact" writes; `None` hides it.
+    writable_book: Option<String>,
+    /// The paper of the text (issue #460).
+    paper: ComposePaper,
+    /// The menu "…" of the toolbar is open.
+    tools: bool,
     #[cfg(test)]
     calls: Vec<Call>,
+}
+
+/// The open suggestions under a recipient field.
+#[derive(Debug, Clone, PartialEq)]
+struct Suggestions {
+    field: Field,
+    /// What was typed when they came: Enter and Tab take one only while it still is.
+    query: String,
+    items: Vec<RecipientSuggestion>,
+    /// The line under the keyboard cursor (↑↓); Enter and Tab take it.
+    highlight: usize,
+    /// "+ Contact" did not work: why, in a line of the list.
+    problem: Option<String>,
 }
 
 impl<S: ComposeSource + 'static> Window<S> {
@@ -1032,9 +1441,9 @@ impl<S: ComposeSource + 'static> Window<S> {
             phase,
             senders: Vec::new(),
             from: 0,
-            to: String::new(),
-            cc: String::new(),
-            bcc: String::new(),
+            to: Recipients::default(),
+            cc: Recipients::default(),
+            bcc: Recipients::default(),
             show_cc: false,
             show_bcc: false,
             subject: String::new(),
@@ -1053,6 +1462,12 @@ impl<S: ComposeSource + 'static> Window<S> {
             notice: None,
             menu: false,
             asking: false,
+            suggestions: None,
+            asked: 0,
+            photos: HashMap::new(),
+            writable_book: None,
+            paper: ComposePaper::default(),
+            tools: false,
             start,
             #[cfg(test)]
             calls: Vec::new(),
@@ -1173,11 +1588,18 @@ impl<S: ComposeSource + 'static> Window<S> {
                 self.phase = Phase::Loading;
                 return self.prepare();
             }
-            Message::To(text) => self.edited(|window| window.to = text),
-            Message::Cc(text) => self.edited(|window| window.cc = text),
-            Message::Bcc(text) => self.edited(|window| window.bcc = text),
-            Message::Subject(text) => self.edited(|window| window.subject = text),
+            Message::To(text) => return self.typed(Field::To, text),
+            Message::Cc(text) => return self.typed(Field::Cc, text),
+            Message::Bcc(text) => return self.typed(Field::Bcc, text),
+            Message::Subject(text) => {
+                self.leave(None);
+                self.edited(|window| window.subject = text);
+            }
             Message::Body(action) => {
+                // Writing or clicking in the text leaves the recipient fields; scrolling does not.
+                if !matches!(action, text_editor::Action::Scroll { .. }) {
+                    self.leave(None);
+                }
                 // Enter in a list item starts the next one (an empty one ends the list).
                 let enter = matches!(action, text_editor::Action::Edit(Edit::Enter));
                 if enter && self.formatted() && continue_list(&mut self.body) {
@@ -1191,6 +1613,7 @@ impl<S: ComposeSource + 'static> Window<S> {
                 }
             }
             Message::Format(format) => {
+                self.tools = false;
                 if self.editable() && self.formatted() {
                     apply_format(&mut self.body, format);
                     self.touch();
@@ -1205,6 +1628,46 @@ impl<S: ComposeSource + 'static> Window<S> {
             Message::ShowBcc => {
                 self.show_bcc = true;
                 return operation::focus(BCC);
+            }
+            Message::ToolsMenu => self.tools = !self.tools && self.ready(),
+            Message::TogglePaper => return self.toggle_paper(),
+            Message::PaperSaved(_, Ok(())) => {}
+            Message::PaperSaved(before, Err(err)) => {
+                self.paper = before;
+                self.notice = Some(Notice::new(tr("Couldn't keep the paper."), err));
+            }
+            Message::Submit(field) => return self.submit(field),
+            Message::RemoveChip(field, index) => {
+                if self.editable() && index < self.field(field).chips.len() {
+                    self.field_mut(field).chips.remove(index);
+                    self.touch();
+                }
+            }
+            Message::SuggestDue(number, field) => return self.ask_core(number, field),
+            Message::Suggested(number, field, result) => return self.suggested(number, field, result),
+            Message::Arrow(down) => {
+                if let Some(open) = &mut self.suggestions {
+                    let len = open.items.len().max(1);
+                    open.highlight = if down { (open.highlight + 1) % len } else { (open.highlight + len - 1) % len };
+                }
+            }
+            Message::Take(index) => return self.take(index),
+            Message::CloseSuggestions => self.close_suggestions(),
+            Message::AddContact(index) => return self.add_contact(index),
+            Message::ContactAdded(Ok(())) => {
+                if let Some(field) = self.suggestions.as_ref().map(|open| open.field) {
+                    self.asked += 1;
+                    return self.ask_core(self.asked, field);
+                }
+            }
+            Message::ContactAdded(Err(err)) => {
+                if let Some(open) = &mut self.suggestions {
+                    open.problem = Some(format!("{} {err}", tr("Couldn't add the contact.")));
+                }
+            }
+            Message::Photo(id, version, png) => {
+                let handle = png.map(image::Handle::from_bytes);
+                self.photos.insert(id, (version, handle));
             }
             Message::FromMenu => self.menu = !self.menu,
             Message::PickFrom(index) => {
@@ -1236,12 +1699,209 @@ impl<S: ComposeSource + 'static> Window<S> {
             }
             Message::DismissNotice => self.notice = None,
             Message::Focus(forward) => {
+                // Tab takes the suggestion; Shift+Tab goes back to the field before, as ever.
+                if let Some(open) = self.current_suggestions().filter(|_| forward) {
+                    return self.take(open.highlight);
+                }
                 if self.ready() && !self.asking && !self.is_glance() {
+                    self.leave(None);
                     return if forward { operation::focus_next() } else { operation::focus_previous() };
                 }
             }
         }
         Task::none()
+    }
+
+    fn field(&self, field: Field) -> &Recipients {
+        match field {
+            Field::To => &self.to,
+            Field::Cc => &self.cc,
+            Field::Bcc => &self.bcc,
+        }
+    }
+
+    fn field_mut(&mut self, field: Field) -> &mut Recipients {
+        match field {
+            Field::To => &mut self.to,
+            Field::Cc => &mut self.cc,
+            Field::Bcc => &mut self.bcc,
+        }
+    }
+
+    /// Whether any recipient field holds `address`.
+    fn anywhere(&self, address: &str) -> bool {
+        Field::ALL.into_iter().any(|field| self.field(field).holds(address))
+    }
+
+    /// The person left the recipient fields but `staying`: what was typed in them becomes chips.
+    /// The draft is the same either way ([`Recipients::addresses`]), so nothing needs saving.
+    fn leave(&mut self, staying: Option<Field>) {
+        for field in Field::ALL.into_iter().filter(|field| Some(*field) != staying) {
+            self.field_mut(field).commit();
+        }
+        if self.suggestions.as_ref().is_some_and(|open| Some(open.field) != staying) {
+            self.close_suggestions();
+        }
+    }
+
+    /// The recipient field `field` changed to `text`: chips where a separator came, and the
+    /// suggestions for what is typed after [`SUGGEST_AFTER`].
+    fn typed(&mut self, field: Field, text: String) -> Task<Message> {
+        if !self.editable() {
+            return Task::none();
+        }
+        self.leave(Some(field));
+        self.field_mut(field).input(text);
+        self.touch();
+        self.asked += 1;
+        if self.field(field).typed.trim().is_empty() {
+            self.suggestions = None;
+            return Task::none();
+        }
+        let number = self.asked;
+        Task::perform(async { tokio::time::sleep(SUGGEST_AFTER).await }, move |()| Message::SuggestDue(number, field))
+    }
+
+    /// Asks the core for the suggestions of what `field` holds, unless more was typed since `number`.
+    fn ask_core(&mut self, number: u64, field: Field) -> Task<Message> {
+        let query = self.field(field).typed.trim().to_owned();
+        if number != self.asked || query.is_empty() {
+            return Task::none();
+        }
+        let source = self.source.clone();
+        Task::perform(async move { source.suggest(query).await }, move |result| {
+            Message::Suggested(number, field, result)
+        })
+    }
+
+    /// The suggestions for the letters with `number` are in: shown when they are the latest and
+    /// there are some; an error (also `forbidden`) shows no list.
+    fn suggested(
+        &mut self,
+        number: u64,
+        field: Field,
+        result: Result<Vec<RecipientSuggestion>, ComposeError>,
+    ) -> Task<Message> {
+        if number != self.asked || !self.editable() {
+            return Task::none();
+        }
+        match result {
+            Ok(items) if !items.is_empty() => {
+                self.suggestions = Some(Suggestions {
+                    field,
+                    query: self.field(field).typed.trim().to_owned(),
+                    items,
+                    highlight: 0,
+                    problem: None,
+                });
+                self.fetch_photos()
+            }
+            _ => {
+                self.suggestions = None;
+                Task::none()
+            }
+        }
+    }
+
+    /// Fetches the pictures of the contacts suggested that are not here in their version yet.
+    fn fetch_photos(&mut self) -> Task<Message> {
+        let Some(open) = &self.suggestions else { return Task::none() };
+        let wanted: Vec<(String, String)> = open
+            .items
+            .iter()
+            .filter_map(|item| Some((item.contact.clone()?, item.photo.as_ref()?.version.clone())))
+            .filter(|(id, version)| self.photos.get(id).is_none_or(|(known, _)| known != version))
+            .collect();
+        let mut tasks = Vec::new();
+        for (id, version) in wanted {
+            self.photos.insert(id.clone(), (version.clone(), None));
+            let source = self.source.clone();
+            let ask = id.clone();
+            tasks.push(Task::perform(async move { source.photo(ask).await }, move |png| {
+                Message::Photo(id.clone(), version.clone(), png.ok().flatten())
+            }));
+        }
+        Task::batch(tasks)
+    }
+
+    /// The open suggestions while they belong to what is typed: letters typed after them make them
+    /// out of date until the next answer, and Enter or Tab then must not take an older person.
+    fn current_suggestions(&self) -> Option<&Suggestions> {
+        self.suggestions.as_ref().filter(|open| self.field(open.field).typed.trim() == open.query)
+    }
+
+    /// Closes the suggestions; an answer still on its way is dropped.
+    fn close_suggestions(&mut self) {
+        self.suggestions = None;
+        self.asked += 1;
+    }
+
+    /// Enter in `field`: the suggestion under the cursor, else chips of what was typed.
+    fn submit(&mut self, field: Field) -> Task<Message> {
+        if let Some(open) = self.current_suggestions().filter(|open| open.field == field) {
+            return self.take(open.highlight);
+        }
+        if self.editable() {
+            self.field_mut(field).commit();
+            self.close_suggestions();
+        }
+        Task::none()
+    }
+
+    /// Takes the suggestion at `index` into its field: a person once, a group as every member that
+    /// is in no field yet. What was typed goes; the focus stays in the field.
+    fn take(&mut self, index: usize) -> Task<Message> {
+        let Some(open) = self.suggestions.take() else { return Task::none() };
+        self.asked += 1;
+        let Some(item) = open.items.get(index).filter(|_| self.editable()) else { return Task::none() };
+        let field = open.field;
+        let people: Vec<MailAddress> = match item.kind {
+            SuggestionKind::Group => item
+                .members
+                .iter()
+                .map(|member| MailAddress {
+                    name: Some(list::one_line(&member.name)).filter(|name| !name.is_empty()),
+                    address: member.address.clone(),
+                })
+                .collect(),
+            SuggestionKind::Contact | SuggestionKind::Seen => vec![MailAddress {
+                name: Some(list::one_line(&item.name)).filter(|name| !name.is_empty()),
+                address: item.address.clone(),
+            }],
+        };
+        self.field_mut(field).typed.clear();
+        for who in people {
+            if !self.anywhere(&who.address) {
+                self.field_mut(field).add(who);
+            }
+        }
+        self.touch();
+        operation::focus(field.id())
+    }
+
+    /// "+ Contact" of the suggestion at `index`: a contact with its name and address in the writable
+    /// book; then the suggestions are asked anew.
+    fn add_contact(&mut self, index: usize) -> Task<Message> {
+        let Some(book) = self.writable_book.clone() else { return Task::none() };
+        let Some(item) = self.suggestions.as_ref().and_then(|open| open.items.get(index)).cloned() else {
+            return Task::none();
+        };
+        let source = self.source.clone();
+        Task::perform(async move { source.create_contact(book, item.name, item.address).await }, Message::ContactAdded)
+    }
+
+    /// ◐: the other paper at once, kept for the next window; when it cannot be kept it turns back.
+    fn toggle_paper(&mut self) -> Task<Message> {
+        if !self.ready() {
+            return Task::none();
+        }
+        let before = self.paper;
+        self.paper = match before {
+            ComposePaper::Light => ComposePaper::Dark,
+            ComposePaper::Dark => ComposePaper::Light,
+        };
+        let (source, paper) = (self.source.clone(), self.paper);
+        Task::perform(async move { source.set_paper(paper).await }, move |result| Message::PaperSaved(before, result))
     }
 
     /// Applies a change of a field, if the fields can be changed now.
@@ -1286,8 +1946,10 @@ impl<S: ComposeSource + 'static> Window<S> {
         )
         .unwrap_or(0);
         self.senders = prepared.senders;
-        self.to = format_addresses(&opened.to);
-        self.cc = format_addresses(&opened.cc);
+        self.writable_book = prepared.writable_book;
+        self.paper = prepared.paper;
+        self.to = Recipients::of(&opened.to);
+        self.cc = Recipients::of(&opened.cc);
         self.show_cc = !opened.cc.is_empty();
         self.subject = opened.subject;
         self.body = Content::with_text(&opened.body);
@@ -1302,7 +1964,7 @@ impl<S: ComposeSource + 'static> Window<S> {
         }
         self.apply_open();
         let focus = if self.to.is_empty() { TO } else { BODY };
-        operation::focus(focus)
+        Task::batch([operation::focus(focus), self.fetch_photos()])
     }
 
     /// The forced states of `--demo --open`, once the window is ready.
@@ -1311,9 +1973,9 @@ impl<S: ComposeSource + 'static> Window<S> {
             Some(Open::Cc) => {
                 self.show_cc = true;
                 self.show_bcc = true;
-                self.to = "Jonas Weber <jonas.weber@work.example.org>".to_owned();
-                self.cc = "lena.hoffmann@work.example.org, team@work.example.org".to_owned();
-                self.bcc = "anna@example.org".to_owned();
+                self.to = Recipients::parsed("Jonas Weber <jonas.weber@work.example.org>");
+                self.cc = Recipients::parsed("lena.hoffmann@work.example.org, team@work.example.org");
+                self.bcc = Recipients::parsed("anna@example.org");
                 self.subject = "Budget review for Q4".to_owned();
                 self.body = Content::with_text(
                     "Hi Jonas,\n\nthe numbers look fine to me. Lena and the team are in copy.\n\nAnna",
@@ -1345,13 +2007,33 @@ impl<S: ComposeSource + 'static> Window<S> {
             }
             Some(Open::Menu) => self.menu = self.senders.len() > 1,
             Some(Open::Format) => {
-                self.to = "Jonas Weber <jonas.weber@work.example.org>".to_owned();
+                self.to = Recipients::parsed("Jonas Weber <jonas.weber@work.example.org>");
                 self.subject = "Budget review for Q4".to_owned();
                 self.body = Content::with_text(concat!(
                     "Hi Jonas,\n\nthe numbers look **fine** to me, *except* the travel budget. ",
                     "See [the sheet](https://intranet.work.example.org/budget/q4).\n\n",
                     "- Flights\n- Hotels\n\n1. Check\n2. __Approve__\n\n> Could you look before Thursday?\n\nAnna",
                 ));
+            }
+            Some(Open::Suggest) => {
+                self.to = Recipients::parsed("Maria Lopez <maria.lopez@example.org>, jonas@berger");
+                self.to.typed = "jo".to_owned();
+                self.subject = "Floor plan for the new office".to_owned();
+                self.body = Content::with_text(
+                    "Hi Maria, hi Jonas,\n\nthe floor plan is attached. **Please reply by Friday.**\n\nAnna",
+                );
+                let items = demo_suggestions("jo", Utc::now());
+                let query = "jo".to_owned();
+                self.suggestions = Some(Suggestions { field: Field::To, query, items, highlight: 0, problem: None });
+                self.writable_book.get_or_insert_with(|| torro_contacts::demo::CONTACTS.to_owned());
+            }
+            Some(Open::PaperDark) => {
+                self.paper = ComposePaper::Dark;
+                self.to = Recipients::parsed("Jonas Weber <jonas.weber@work.example.org>");
+                self.subject = "Budget review for Q4".to_owned();
+                self.body = Content::with_text(
+                    "Hi Jonas,\n\nthe numbers look **fine** to me.\n\n> Could you look before Thursday?\n\nAnna",
+                );
             }
             Some(Open::Loading | Open::Failed) | None => {}
         }
@@ -1417,9 +2099,9 @@ impl<S: ComposeSource + 'static> Window<S> {
         Draft {
             id,
             account,
-            to: parse_addresses(&self.to).0,
-            cc: parse_addresses(&self.cc).0,
-            bcc: parse_addresses(&self.bcc).0,
+            to: self.to.addresses(),
+            cc: self.cc.addresses(),
+            bcc: self.bcc.addresses(),
             subject: list::one_line(&self.subject),
             body: html.as_deref().map_or(text, html::to_text),
             html,
@@ -1430,8 +2112,7 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     /// What stops a send: no recipient, or words in a field that are no address.
     pub fn problem(&self) -> Option<Notice> {
-        let refused: Vec<String> =
-            [&self.to, &self.cc, &self.bcc].into_iter().flat_map(|field| parse_addresses(field).1).collect();
+        let refused: Vec<String> = Field::ALL.into_iter().flat_map(|field| self.field(field).refused()).collect();
         if let Some(first) = refused.first() {
             return Some(Notice::plain(trf("{address} isn't a valid address.", &[("address", &first)])));
         }
@@ -1561,7 +2242,13 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     /// Esc: closes what is open, else asks to close the window.
     fn escape(&mut self) -> Task<Message> {
-        if self.menu {
+        if let Some(field) = self.suggestions.as_ref().map(|open| open.field) {
+            self.close_suggestions();
+            // Escape also takes the focus from the field (Iced's input); typing goes on there.
+            return operation::focus(field.id());
+        } else if self.tools {
+            self.tools = false;
+        } else if self.menu {
             self.menu = false;
         } else if self.asking {
             self.asking = false;
@@ -1578,6 +2265,8 @@ impl<S: ComposeSource + 'static> Window<S> {
         }
         if self.unsaved() {
             self.menu = false;
+            self.tools = false;
+            self.suggestions = None;
             self.asking = true;
             return Task::none();
         }
@@ -1616,8 +2305,8 @@ fn unsure_reason() -> &'static str {
     tr("The connection broke after the message was handed over. Look into the Sent folder before sending it again.")
 }
 
-/// Keys, also while a field has the focus: Esc, the shortcut "send" ([`is_send`]) and Tab. (Only
-/// plain Enter and the letters are the fields'.)
+/// Keys, also while a field has the focus: Esc, the shortcut "send" ([`is_send`]), Tab and ↑↓ (for
+/// the suggestions). (Only plain Enter and the letters are the fields'.)
 fn key(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
     let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. }) = event else {
         return None;
@@ -1628,6 +2317,9 @@ fn key(event: iced::Event, _status: iced::event::Status, _window: iced::window::
     match key {
         Key::Named(Named::Escape) => Some(Message::Escape),
         Key::Named(Named::Tab) if !modifiers.command() && !modifiers.alt() => Some(Message::Focus(!modifiers.shift())),
+        // The suggestions of a recipient field (issue #460); without them the window ignores them.
+        Key::Named(Named::ArrowDown) if modifiers.is_empty() => Some(Message::Arrow(true)),
+        Key::Named(Named::ArrowUp) if modifiers.is_empty() => Some(Message::Arrow(false)),
         _ => None,
     }
 }
@@ -1640,7 +2332,10 @@ pub async fn prepare<S: ComposeSource>(source: Arc<S>, kind: Kind) -> Result<Pre
         Some(id) => Some(Box::new(source.get_mail(id.to_owned()).await?)),
         None => None,
     };
-    Ok(Prepared { senders, message, default_sender })
+    // Neither stops the window: without them "+ Contact" is missing and the paper is light.
+    let writable_book = source.writable_book().await.ok().flatten();
+    let paper = source.paper().await.unwrap_or_default();
+    Ok(Prepared { senders, message, default_sender, writable_book, paper })
 }
 
 /// Saves `draft`; a draft that is gone (`NotFound` for the id it carries) is saved as a new one,
@@ -1704,7 +2399,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             Phase::Failed(notice) => notice_line(notice, None),
             Phase::Ready => {
                 let recipients = {
-                    let (to, _) = parse_addresses(&self.to);
+                    let to = self.to.addresses();
                     let names: Vec<String> = to.iter().map(|who| mail::sender_name(Some(who))).collect();
                     if names.is_empty() { tr("No recipient yet").to_owned() } else { names.join(", ") }
                 };
@@ -1752,27 +2447,39 @@ impl<S: ComposeSource + 'static> Window<S> {
     /// The window in the layout of `class` (not mini or strip).
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
         let narrow = class == SizeClass::Narrow;
-        let anchor = Anchor::new();
+        let anchors = Anchors::default();
         let body: Element<'_, Message> = match &self.phase {
             Phase::Loading => widgets::loading(),
             Phase::Failed(notice) => failure(notice),
-            Phase::Ready => self.form(narrow, &anchor),
+            Phase::Ready => self.form(narrow, &anchors),
         };
         // The compose window has no sidebar: header and form sit flush in the window, with the
         // padding of the medium header when there is room and the narrow one when there is not.
         let frame = if narrow { SizeClass::Narrow } else { SizeClass::Medium };
-        let overlay = (self.menu && self.ready()).then(|| self.sender_menu(&anchor));
+        let overlay = if !self.ready() {
+            None
+        } else if self.menu {
+            Some(self.sender_menu(&anchors.from))
+        } else if self.tools {
+            Some(self.tools_menu(&anchors.tools, narrow))
+        } else {
+            self.suggestions.as_ref().map(|open| self.suggestion_list(open, &anchors, narrow))
+        };
         let window: Element<'_, Message> =
             shell::shell(frame, Space::new(), self.header(narrow), body, None).overlay(overlay).into();
         if self.asking { widgets::modal(window, self.question(), size::panel(), Message::KeepWriting) } else { window }
     }
 
-    /// The header bar: what is written and how the draft stands, then attach, close and the one
-    /// primary button, "Send". Narrow windows keep the icons and drop the status.
+    /// The header bar: what is written and how the draft stands, then attach, close, a line and the
+    /// one primary button, "Send". Narrow windows keep the icons and drop the status.
     fn header(&self, narrow: bool) -> Element<'_, Message> {
         let kind = &self.start.kind;
         let note = if narrow { None } else { self.status().map(str::to_owned) };
-        let title = shell::header_title(Some(kind.icon()), kind.title(), note);
+        let mut title = shell::header_title(Some(kind.icon()), kind.title(), note);
+        // Narrow has no room for the state of the draft beside the title: it is the title's tooltip.
+        if let Some(status) = self.status().filter(|_| narrow) {
+            title = widgets::with_tooltip(title, status);
+        }
         let editable = self.editable();
         let attach = widgets::icon_button(Icon::Paperclip, tr("Attach files"), editable.then_some(Message::Attach));
         let close = widgets::icon_button(Icon::X, tr("Close"), (!self.sending).then_some(Message::Close));
@@ -1784,62 +2491,75 @@ impl<S: ComposeSource + 'static> Window<S> {
             let button = widgets::text_button(Some(Icon::Send), label, style::button::primary, press);
             widgets::with_tooltip(button, trf("Send ({keys})", &[("keys", &send_keys())]))
         };
-        shell::header_bar([], title, [attach, close, send])
+        shell::header_bar([], title, [attach, close, divider(), send])
     }
 
-    /// The form: a notice if there is one, the fields, the text, the signature.
-    fn form(&self, narrow: bool, anchor: &Anchor) -> Element<'_, Message> {
+    /// The form of version A (issue #460): a notice if there is one, From, the recipients, Subject,
+    /// the toolbar, the paper with the text and the signature, the attachments under it.
+    fn form(&self, narrow: bool, anchors: &Anchors) -> Element<'_, Message> {
         let editable = self.editable();
         let mut fields = column![].spacing(space::s());
         if let Some(notice) = &self.notice {
             fields = fields.push(notice_line(notice, Some(Message::DismissNotice)));
         }
-        fields = fields.push(field(tr("From"), self.sender_control(anchor)));
-        let mut folds = row![].spacing(space::xs());
+        fields = fields.push(field(tr("From"), self.sender_control(&anchors.from)));
+        let mut folds = Vec::new();
         if !self.show_cc {
             let press = editable.then_some(Message::ShowCc);
-            folds = folds.push(widgets::text_button(None, tr("Cc"), style::button::ghost, press));
+            folds.push(widgets::text_button(None, tr("Cc"), style::button::ghost, press));
         }
         if !self.show_bcc {
             let press = editable.then_some(Message::ShowBcc);
-            folds = folds.push(widgets::text_button(None, tr("Bcc"), style::button::ghost, press));
+            folds.push(widgets::text_button(None, tr("Bcc"), style::button::ghost, press));
         }
-        let to = row![self.input(TO, &self.to, Message::To), folds].spacing(space::s()).align_y(Alignment::Center);
-        fields = fields.push(field(tr("To"), to));
+        let folds_width = [(!self.show_cc, tr("Cc")), (!self.show_bcc, tr("Bcc"))]
+            .into_iter()
+            .filter(|(shown, _)| *shown)
+            .map(|(_, label)| widgets::text_button_width(false, label) + space::xs())
+            .sum::<f32>();
+        let to = self.recipients(Field::To, anchors, narrow, folds, folds_width);
+        fields = fields.push(field(Field::To.label(), to));
         if self.show_cc {
-            fields = fields.push(field(tr("Cc"), self.input(CC, &self.cc, Message::Cc)));
+            fields =
+                fields.push(field(Field::Cc.label(), self.recipients(Field::Cc, anchors, narrow, Vec::new(), 0.0)));
         }
         if self.show_bcc {
-            fields = fields.push(field(tr("Bcc"), self.input(BCC, &self.bcc, Message::Bcc)));
+            fields =
+                fields.push(field(Field::Bcc.label(), self.recipients(Field::Bcc, anchors, narrow, Vec::new(), 0.0)));
         }
-        fields = fields.push(field(tr("Subject"), self.input(SUBJECT, &self.subject, Message::Subject)));
-        if !self.attachments.is_empty() {
-            let chips = self.attachments.iter().enumerate().map(|(i, attached)| self.attachment_chip(i, attached));
-            fields = fields.push(field("", widgets::chip_row(chips.collect())));
-        }
+        fields = fields.push(field(tr("Subject"), self.input(SUBJECT, &self.subject, Message::Subject, None)));
+
         let mut editor = iced::widget::text_editor(&self.body)
             .id(BODY)
             .placeholder(tr("Write your message…"))
             .size(typo::body().size)
             .line_height(typo::body().line_height)
             .font(typo::body().font)
-            .padding(style::INPUT_PADDING)
+            .padding(space::m())
             .height(Fill)
             .wrapping(Wrapping::WordOrGlyph)
-            .style(style::text_editor)
+            .style(style::text_editor_paper)
             .key_binding(editor_binding);
         if editable {
             editor = editor.on_action(Message::Body);
         }
-        let mut form = column![fields].spacing(space::s()).height(Fill);
-        if self.formatted() {
-            form = form.push(self.toolbar());
-            form = form.push(editor.highlight_with::<MarkupHighlighter>((), look_format));
+        let text: Element<'_, Message> = if self.formatted() {
+            editor.highlight_with::<MarkupHighlighter>((), look_format).into()
         } else {
-            form = form.push(editor);
-        }
+            editor.into()
+        };
+        let mut page = column![text].height(Fill);
         if let Some(signature) = self.sender().and_then(|sender| sender.signature.as_deref()) {
-            form = form.push(signature_block(signature));
+            page = page.push(container(signature_block(signature)).padding(Padding::new(space::m()).top(0.0)));
+        }
+        let paper = container(page).width(Fill).height(Fill).style(style::container::paper);
+        let mut form =
+            column![fields, self.toolbar(narrow, &anchors.tools), themed::in_paper(paper, self.dark_paper())]
+                .spacing(space::s())
+                .height(Fill);
+        if !self.attachments.is_empty() {
+            let chips = self.attachments.iter().enumerate().map(|(i, attached)| self.attachment_chip(i, attached));
+            form = form.push(widgets::chip_row(chips.collect()));
         }
         // The form takes the whole width of its window (issue #124): the compose window is a tile
         // of its own, sized by the tiling manager, so a reading width would only leave a gap.
@@ -1847,25 +2567,284 @@ impl<S: ComposeSource + 'static> Window<S> {
         container(form).width(Fill).height(Fill).padding(padding).into()
     }
 
-    /// The toolbar of formatted mail (issue #125): bold, italic, underline, link | lists, quote.
-    /// Each button does what its key does; the tooltip names the key.
-    fn toolbar(&self) -> Element<'_, Message> {
-        let editable = self.editable();
-        let button = |format: Format| -> Element<'_, Message> {
-            let tip = match format.key() {
-                Some(key) => trf("{name} ({keys})", &[("name", &format.name()), ("keys", &shortcut(key))]),
-                None => format.name().to_owned(),
-            };
-            widgets::icon_button(format.icon(), tip, editable.then_some(Message::Format(format)))
-        };
-        let divider = container(iced::widget::rule::vertical(size::HAIRLINE).style(style::rule)).height(space::l());
-        let inline = [Format::Bold, Format::Italic, Format::Underline, Format::Link].map(button);
-        let blocks = [Format::Bullets, Format::Numbers, Format::Quote].map(button);
-        row(inline).push(divider).extend(blocks).spacing(space::xs()).align_y(Alignment::Center).into()
+    fn dark_paper(&self) -> bool {
+        self.paper == ComposePaper::Dark
     }
 
-    /// A single-line field of the form.
-    fn input<'a>(&self, id: &'static str, value: &'a str, on_input: fn(String) -> Message) -> Element<'a, Message> {
+    /// The width the toolbar has: the window's below the title band, less the form's padding.
+    fn toolbar_room(&self, narrow: bool) -> f32 {
+        let padding = if narrow { space::m() } else { space::l() };
+        shell::below_titlebar(self.size, self.zoom.factor()).width - 2.0 * padding
+    }
+
+    /// The fixed toolbar (issues #125, #460): bold, italic, underline | lists, quote | link, clear,
+    /// and at the end ◐ for the paper. What does not fit goes from the back into "…" ([`fits`]); ◐
+    /// and "…" always stay. An account that writes plain text has ◐ only. Each button does what its
+    /// key does; the tooltip names the key.
+    fn toolbar(&self, narrow: bool, anchor: &Anchor) -> Element<'_, Message> {
+        let editable = self.editable();
+        let mut bar = row![].spacing(space::xs()).align_y(Alignment::Center);
+        if self.formatted() {
+            let shown = fits(self.toolbar_room(narrow));
+            for (i, group) in Format::GROUPS.iter().enumerate() {
+                let buttons: Vec<Format> = group.iter().copied().filter(|format| shown.contains(format)).collect();
+                if buttons.is_empty() {
+                    continue;
+                }
+                if i > 0 {
+                    bar = bar.push(divider());
+                }
+                for format in buttons {
+                    let tip = match format.key() {
+                        Some(key) => trf("{name} ({keys})", &[("name", &format.name()), ("keys", &shortcut(key))]),
+                        None => format.name().to_owned(),
+                    };
+                    bar =
+                        bar.push(widgets::icon_button(format.icon(), tip, editable.then_some(Message::Format(format))));
+                }
+            }
+            if shown.len() < Format::ALL.len() {
+                let more =
+                    widgets::icon_button(Icon::Ellipsis, tr("More formatting"), editable.then_some(Message::ToolsMenu));
+                bar = bar.push(widgets::anchored(anchor, more));
+            }
+        }
+        let paper = if self.dark_paper() { tr("Switch to light paper") } else { tr("Switch to dark paper") };
+        let toggle = widgets::icon_button(Icon::Contrast, paper, self.ready().then_some(Message::TogglePaper));
+        bar.push(Space::new().width(Fill)).push(toggle).into()
+    }
+
+    /// The menu "…" of the toolbar: the formats that did not fit, in their order.
+    fn tools_menu(&self, anchor: &Anchor, narrow: bool) -> Element<'_, Message> {
+        let shown = fits(self.toolbar_room(narrow));
+        let items = Format::ALL
+            .into_iter()
+            .filter(|format| !shown.contains(format))
+            .map(|format| MenuItem::new(format.icon(), format.name(), Message::Format(format)))
+            .collect();
+        widgets::floating(
+            anchor,
+            Placement::Below(Align::End),
+            widgets::menu(vec![MenuSection::new(items)]),
+            Message::ToolsMenu,
+        )
+    }
+
+    /// The width a recipient field has beside its label.
+    fn field_room(&self, narrow: bool) -> f32 {
+        self.toolbar_room(narrow) - label_width() - space::s()
+    }
+
+    /// A recipient field (issue #460): one frame with its chips, the input for the next one under them
+    /// and `folds` (Cc, Bcc, `folds_width` wide) at the top right. The suggestions hang under it.
+    fn recipients<'a>(
+        &'a self,
+        which: Field,
+        anchors: &Anchors,
+        narrow: bool,
+        folds: Vec<Element<'a, Message>>,
+        folds_width: f32,
+    ) -> Element<'a, Message> {
+        let held = self.field(which);
+        let on_input: fn(String) -> Message = match which {
+            Field::To => Message::To,
+            Field::Cc => Message::Cc,
+            Field::Bcc => Message::Bcc,
+        };
+        let editable = self.editable();
+        let input: Element<'_, Message> = text_input("", &held.typed)
+            .id(which.id())
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
+            .font(typo::body().font)
+            .padding(style::INPUT_PADDING)
+            .width(Fill)
+            .style(style::text_input_flat)
+            .on_input_maybe(editable.then_some(on_input))
+            .on_submit_maybe(editable.then_some(Message::Submit(which)))
+            .into();
+        let folds = row(folds).spacing(space::xs()).align_y(Alignment::Center);
+        let body: Element<'_, Message> = if held.chips.is_empty() {
+            row![input, folds].align_y(Alignment::Center).into()
+        } else {
+            // A chip's name gives way before the field is full: the ✕ and the folds keep their room.
+            let room = (self.field_room(narrow) - folds_width - size::control_sm() - 4.0 * space::s())
+                .clamp(size::control_sm(), size::props());
+            let chips =
+                held.chips.iter().enumerate().map(|(i, chip)| self.recipient_chip(which, i, chip, room)).collect();
+            let top = row![container(widgets::chip_row(chips)).width(Fill), folds].align_y(Alignment::Start);
+            column![container(top).padding(Padding::new(space::xs()).bottom(0.0)), input].into()
+        };
+        widgets::anchored(anchors.of(which), container(body).width(Fill).style(style::container::field))
+    }
+
+    /// A recipient as a chip with its ✕: a person by name (the address in the tooltip), a word that is
+    /// no address with the alert icon and a tooltip that says so.
+    fn recipient_chip<'a>(&self, which: Field, index: usize, chip: &'a Chip, room: f32) -> Element<'a, Message> {
+        let (chip, tip): (Element<'a, Message>, String) = match chip {
+            Chip::Person(who) => {
+                let name = who.name.as_deref().map(list::one_line).filter(|name| !name.is_empty());
+                let label = typo::ellipsize(name.as_deref().unwrap_or(&who.address), typo::meta(), room);
+                (widgets::chip(Some(Mark::Icon(Icon::User)), label, None), format_address(who))
+            }
+            Chip::Broken(word) => {
+                let alert = icon::icon(Icon::CircleAlert, icon::SIZE_SM)
+                    .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
+                let label = typo::ellipsize(&list::one_line(word), typo::meta(), room);
+                (widgets::chip_led(alert, label, None), tr("This isn't a valid address.").to_owned())
+            }
+        };
+        let press = self.editable().then_some(Message::RemoveChip(which, index));
+        let remove = widgets::icon_button(Icon::X, tr("Remove"), press);
+        row![widgets::with_tooltip(chip, tip), remove].align_y(Alignment::Center).into()
+    }
+
+    /// The suggestions under their field (issue #460): contacts and groups, then apart the addresses
+    /// known only from mail, then the keys.
+    fn suggestion_list<'a>(&'a self, open: &'a Suggestions, anchors: &Anchors, narrow: bool) -> Element<'a, Message> {
+        // Never wider than its field: a narrow window keeps the card inside.
+        let width = size::panel().min(self.field_room(narrow));
+        let mut list = column![];
+        let title = |words: &'static str| {
+            container(typo::text(typo::caption(), words).style(theme::text_3))
+                .padding(Padding::new(space::s()).bottom(space::xs()))
+        };
+        let mut seen_title = false;
+        if open.items.first().is_some_and(|item| item.kind != SuggestionKind::Seen) {
+            list = list.push(title(tr("Contacts")));
+        }
+        for (i, item) in open.items.iter().enumerate() {
+            if item.kind == SuggestionKind::Seen && !seen_title {
+                seen_title = true;
+                list = list.push(title(tr("From mail, not in contacts")));
+            }
+            list = list.push(self.suggestion_row(i, item, i == open.highlight, width));
+        }
+        if let Some(problem) = &open.problem {
+            let line = typo::text(typo::meta(), problem.as_str())
+                .style(|t: &Theme| iced::widget::text::Style { color: Some(palette(t).error_text) });
+            list = list.push(container(line).padding(style::ITEM_PADDING));
+        }
+        let keys = row![
+            widgets::kbd(tr("Up")),
+            widgets::kbd(tr("Down")),
+            typo::text(typo::meta(), tr("choose")).style(theme::text_3),
+            widgets::kbd("Enter"),
+            typo::text(typo::meta(), tr("take")).style(theme::text_3),
+            widgets::kbd("Esc"),
+            typo::text(typo::meta(), tr("close")).style(theme::text_3),
+        ]
+        .spacing(space::xs())
+        .align_y(Alignment::Center)
+        .wrap()
+        .vertical_spacing(space::xs());
+        let line =
+            container(iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]);
+        list = list.push(line).push(container(keys).padding(Padding::new(space::xs()).left(space::s())));
+        let card = container(list).width(width).padding(style::MENU_INSET).style(style::container::menu);
+        widgets::floating(anchors.of(open.field), Placement::Below(Align::Start), card, Message::CloseSuggestions)
+    }
+
+    /// One suggestion: picture or mark, name, address, and at the end when mail last went there, the
+    /// favourite, the size of a group, or "+ Contact".
+    fn suggestion_row<'a>(
+        &'a self,
+        index: usize,
+        item: &'a RecipientSuggestion,
+        lit: bool,
+        width: f32,
+    ) -> Element<'a, Message> {
+        let edge = size::tile_sm();
+        let lead: Element<'a, Message> = match item.kind {
+            SuggestionKind::Contact => {
+                let photo = item.contact.as_ref().and_then(|id| self.photos.get(id)).and_then(|(_, h)| h.as_ref());
+                face(&item.name, photo, edge)
+            }
+            SuggestionKind::Group => widgets::source_tile(TileFace::Icon(Icon::Users), TileSize::Small, None),
+            SuggestionKind::Seen => widgets::source_tile(TileFace::Icon(Icon::Mail), TileSize::Small, None),
+        };
+        let quiet = |words: String| typo::text(typo::meta(), words).style(theme::text_3).wrapping(Wrapping::None);
+        let (name, detail) = match item.kind {
+            SuggestionKind::Group if item.members.len() == 1 => (item.name.clone(), tr("Group · 1 person").to_owned()),
+            SuggestionKind::Group => (item.name.clone(), trf("Group · {n} people", &[("n", &item.members.len())])),
+            _ if item.name.trim().is_empty() => (item.address.clone(), String::new()),
+            _ => (item.name.clone(), item.address.clone()),
+        };
+        let day = |at: DateTime<Utc>| datetime::format_day_month(datetime::to_local(at).date());
+        let (trail, trail_width): (Element<'a, Message>, f32) = {
+            let words = |text: String| {
+                let wide = typo::text_width(&text, typo::meta());
+                (quiet(text).into(), wide)
+            };
+            match item.kind {
+                SuggestionKind::Group => words(tr("Add all").to_owned()),
+                SuggestionKind::Seen if self.writable_book.is_some() => {
+                    let add = widgets::text_button(
+                        Some(Icon::UserPlus),
+                        tr("Contact"),
+                        style::button::ghost,
+                        self.editable().then_some(Message::AddContact(index)),
+                    );
+                    let add_width = widgets::text_button_width(true, tr("Contact"));
+                    match item.last_seen.max(item.last_sent) {
+                        Some(at) => {
+                            let when = trf("Last mail {date}", &[("date", &day(at))]);
+                            let wide = typo::text_width(&when, typo::meta()) + space::s() + add_width;
+                            (row![quiet(when), add].spacing(space::s()).align_y(Alignment::Center).into(), wide)
+                        }
+                        None => (add, add_width),
+                    }
+                }
+                SuggestionKind::Seen => match item.last_seen.max(item.last_sent) {
+                    Some(at) => words(trf("Last mail {date}", &[("date", &day(at))])),
+                    None => (Space::new().into(), 0.0),
+                },
+                SuggestionKind::Contact => match (item.last_sent, item.favorite) {
+                    (Some(at), _) => words(trf("Last {date}", &[("date", &day(at))])),
+                    (None, true) => words(tr("Favorite").to_owned()),
+                    (None, false) => (Space::new().into(), 0.0),
+                },
+            }
+        };
+        // The room between the face and the end: the name takes at most half, the address the rest;
+        // the size of a group is never cut.
+        let room = width - 2.0 * style::MENU_INSET - 2.0 * space::s() - edge - 3.0 * space::s() - trail_width;
+        let name_room = match item.kind {
+            SuggestionKind::Group => room - typo::text_width(&detail, typo::meta()) - space::s(),
+            _ => room / 2.0,
+        };
+        let name = typo::ellipsize(&list::one_line(&name), typo::body(), name_room.max(edge));
+        let detail_room = room - typo::text_width(&name, typo::body()) - space::s();
+        let detail = match item.kind {
+            SuggestionKind::Group => detail,
+            _ => typo::ellipsize(&list::one_line(&detail), typo::meta(), detail_room.max(0.0)),
+        };
+        // Name and address give way to the end of the row: cut with "…", never past the card.
+        let words = row![typo::text(typo::body(), name).wrapping(Wrapping::None), quiet(detail)]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+        let content =
+            row![lead, container(words).width(Fill).clip(true), trail].spacing(space::s()).align_y(Alignment::Center);
+        // As high as the button "+ Contact" in it.
+        button(container(content).center_y(Fill))
+            .width(Fill)
+            .height(size::control_sm())
+            .padding(style::ITEM_PADDING)
+            .style(style::button::menu_item(lit))
+            .on_press(Message::Take(index))
+            .into()
+    }
+
+    /// A single-line field of the form. A recipient field (`which`) takes Enter for itself
+    /// ([`Message::Submit`]).
+    fn input<'a>(
+        &self,
+        id: &'static str,
+        value: &'a str,
+        on_input: fn(String) -> Message,
+        which: Option<Field>,
+    ) -> Element<'a, Message> {
+        let editable = self.editable();
         text_input("", value)
             .id(id)
             .size(typo::body().size)
@@ -1874,25 +2853,31 @@ impl<S: ComposeSource + 'static> Window<S> {
             .padding(style::INPUT_PADDING)
             .width(Fill)
             .style(style::text_input)
-            .on_input_maybe(self.editable().then_some(on_input))
+            .on_input_maybe(editable.then_some(on_input))
+            .on_submit_maybe(which.filter(|_| editable).map(Message::Submit))
             .into()
     }
 
     /// The account to write from: its name when there is only one, else a button that opens the
     /// menu of them.
+    /// Its name in `text`, its address beside it in `text_3` (version A, issue #460).
     fn sender_control(&self, anchor: &Anchor) -> Element<'_, Message> {
-        match self.senders.as_slice() {
-            [only] => container(typo::text(typo::body(), only.label()).style(theme::text_2).wrapping(Wrapping::None))
-                .center_y(size::control())
+        let Some(sender) = self.sender() else { return Space::new().into() };
+        let name = list::one_line(&sender.name);
+        let address = typo::text(typo::meta(), sender.address.as_str()).style(theme::text_3).wrapping(Wrapping::None);
+        let picked: Element<'_, Message> = match self.senders.len() {
+            1 if name.is_empty() => address.into(),
+            1 => row![typo::text(typo::body(), name).wrapping(Wrapping::None), address]
+                .spacing(space::s())
+                .align_y(Alignment::Center)
                 .into(),
-            _ => {
-                let label = self.sender().map(Sender::label).unwrap_or_default();
-                row![widgets::select_button(anchor, label, Message::FromMenu)]
-                    .height(size::control())
-                    .align_y(Alignment::Center)
-                    .into()
-            }
-        }
+            _ if name.is_empty() => widgets::select_button(anchor, sender.address.clone(), Message::FromMenu),
+            _ => row![widgets::select_button(anchor, name, Message::FromMenu), address]
+                .spacing(space::s())
+                .align_y(Alignment::Center)
+                .into(),
+        };
+        container(picked).center_y(size::control()).into()
     }
 
     /// The menu of the accounts, under the From button.
@@ -1902,7 +2887,13 @@ impl<S: ComposeSource + 'static> Window<S> {
             .iter()
             .enumerate()
             .map(|(i, sender)| {
-                MenuItem::new(Icon::Mail, sender.address.clone(), Message::PickFrom(i)).current(i == self.from)
+                let name = list::one_line(&sender.name);
+                let item = if name.is_empty() {
+                    MenuItem::new(Icon::Mail, sender.address.clone(), Message::PickFrom(i))
+                } else {
+                    MenuItem::new(Icon::Mail, name, Message::PickFrom(i)).detail(sender.address.clone())
+                };
+                item.current(i == self.from)
             })
             .collect();
         widgets::floating(
@@ -1974,7 +2965,9 @@ fn editor_binding(press: text_editor::KeyPress) -> Option<Binding<Message>> {
     if is_send(System::current(), &press.key, press.physical_key, press.modifiers) {
         return Some(Binding::Custom(Message::Send));
     }
-    if let Some(format) = format_key(&press.key, press.modifiers) {
+    if let Some(format) =
+        format_key(&press.key, press.modifiers).or_else(|| clear_key(&press.modified_key, press.modifiers))
+    {
         return Some(Binding::Custom(Message::Format(format)));
     }
     Binding::from_key_press(press)
@@ -1983,10 +2976,21 @@ fn editor_binding(press: text_editor::KeyPress) -> Option<Binding<Message>> {
 /// The formatting of `Cmd`/`Ctrl` and B, I, U or K (no Shift, no Alt); `None` for other keys.
 fn format_key(key: &Key, modifiers: keyboard::Modifiers) -> Option<Format> {
     let Key::Character(letter) = key.as_ref() else { return None };
+    // `\` takes Option (macOS) or AltGr on a German keyboard, and Shift with them: only the command
+    // key counts for it (issue #460).
+    if letter == "\\" && modifiers.command() {
+        return Some(Format::Clear);
+    }
     if !modifiers.command() || modifiers.shift() || modifiers.alt() {
         return None;
     }
     Format::ALL.into_iter().find(|format| format.key().is_some_and(|key| key.eq_ignore_ascii_case(letter)))
+}
+
+/// [`Format::Clear`] by the key as typed (`modified_key`): on a Mac with a German layout Cmd+Option+
+/// Shift+7 reports `/` as the key and `\\` only with the modifiers applied.
+fn clear_key(modified: &Key, modifiers: keyboard::Modifiers) -> Option<Format> {
+    matches!(modified.as_ref(), Key::Character("\\")).then_some(Format::Clear).filter(|_| modifiers.command())
 }
 
 /// `Cmd+B` on macOS, `Ctrl+B` elsewhere, for tooltips.
@@ -2017,18 +3021,28 @@ pub enum Format {
     Numbers,
     /// `> ` likewise.
     Quote,
+    /// Takes every mark off the selection, or off the cursor's line without one (issue #460).
+    Clear,
 }
 
 impl Format {
-    /// In the order of the toolbar.
-    pub const ALL: [Format; 7] = [
+    /// In the order of the toolbar (issue #460): bold, italic, underline | lists, quote | link, clear.
+    pub const ALL: [Format; 8] = [
         Format::Bold,
         Format::Italic,
         Format::Underline,
-        Format::Link,
         Format::Bullets,
         Format::Numbers,
         Format::Quote,
+        Format::Link,
+        Format::Clear,
+    ];
+
+    /// The groups of the toolbar, a line between each two.
+    const GROUPS: [&'static [Format]; 3] = [
+        &[Format::Bold, Format::Italic, Format::Underline],
+        &[Format::Bullets, Format::Numbers, Format::Quote],
+        &[Format::Link, Format::Clear],
     ];
 
     /// The mark around text, for bold, italic and underline.
@@ -2037,7 +3051,7 @@ impl Format {
             Format::Bold => Some("**"),
             Format::Italic => Some("*"),
             Format::Underline => Some("__"),
-            Format::Link | Format::Bullets | Format::Numbers | Format::Quote => None,
+            Format::Link | Format::Bullets | Format::Numbers | Format::Quote | Format::Clear => None,
         }
     }
 
@@ -2048,6 +3062,7 @@ impl Format {
             Format::Italic => Some("I"),
             Format::Underline => Some("U"),
             Format::Link => Some("K"),
+            Format::Clear => Some("\\"),
             Format::Bullets | Format::Numbers | Format::Quote => None,
         }
     }
@@ -2061,6 +3076,7 @@ impl Format {
             Format::Bullets => Icon::List,
             Format::Numbers => Icon::ListOrdered,
             Format::Quote => Icon::TextQuote,
+            Format::Clear => Icon::RemoveFormatting,
         }
     }
 
@@ -2073,6 +3089,7 @@ impl Format {
             Format::Bullets => tr("Bulleted list"),
             Format::Numbers => tr("Numbered list"),
             Format::Quote => tr("Quote"),
+            Format::Clear => tr("Clear formatting"),
         }
     }
 }
@@ -2082,8 +3099,36 @@ pub fn apply_format(content: &mut Content, format: Format) {
     match format.mark() {
         Some(mark) => wrap(content, mark),
         None if format == Format::Link => link(content),
+        None if format == Format::Clear => clear(content),
         None => prefix_lines(content, format),
     }
+}
+
+/// `line` without its marks ([`markup::looks`]): `**`, `*`, `__`, a link's brackets and address, the
+/// `- ` or `1. ` of an item, the `>` of a quote. The text between them stays.
+fn unmarked(line: &str) -> String {
+    let marks: Vec<Range<usize>> =
+        markup::looks(line).into_iter().filter(|(_, look)| look.mark).map(|(range, _)| range).collect();
+    line.char_indices().filter(|(at, _)| !marks.iter().any(|range| range.contains(at))).map(|(_, c)| c).collect()
+}
+
+/// [`Format::Clear`]: the marks off every line of the selection, or off the cursor's line.
+fn clear(content: &mut Content) {
+    if let Some(selected) = content.selection().filter(|selected| !selected.is_empty()) {
+        let lines: Vec<String> = selected.split('\n').map(unmarked).collect();
+        paste(content, &lines.join("\n"));
+        return;
+    }
+    let at = content.cursor().position.line;
+    let Some(line) = content.line(at).map(|line| line.text.into_owned()) else { return };
+    let plain = unmarked(&line);
+    if plain == line {
+        return;
+    }
+    // A column is a byte index of the line.
+    let end = Position { line: at, column: line.len() };
+    content.move_to(Cursor { position: Position { line: at, column: 0 }, selection: Some(end) });
+    paste(content, &plain);
 }
 
 fn paste(content: &mut Content, text: &str) {
@@ -2161,7 +3206,7 @@ fn line_mark(line: &str, format: Format) -> Option<usize> {
             let after = rest.strip_prefix('>')?;
             1 + usize::from(after.starts_with(' '))
         }
-        Format::Bold | Format::Italic | Format::Underline | Format::Link => return None,
+        Format::Bold | Format::Italic | Format::Underline | Format::Link | Format::Clear => return None,
     };
     Some(lead + len)
 }
@@ -2307,24 +3352,93 @@ fn look_format(look: &markup::Look, theme: &Theme) -> highlighter::Format<iced::
     highlighter::Format { color, font: (font != base).then_some(font) }
 }
 
+/// Where the floating layers of the form hang: the From button, the recipient fields and "…".
+#[derive(Default)]
+struct Anchors {
+    from: Anchor,
+    to: Anchor,
+    cc: Anchor,
+    bcc: Anchor,
+    tools: Anchor,
+}
+
+impl Anchors {
+    fn of(&self, field: Field) -> &Anchor {
+        match field {
+            Field::To => &self.to,
+            Field::Cc => &self.cc,
+            Field::Bcc => &self.bcc,
+        }
+    }
+}
+
+/// A short upright line between groups of buttons.
+fn divider<'a>() -> Element<'a, Message> {
+    container(iced::widget::rule::vertical(size::HAIRLINE).style(style::rule)).height(space::l()).into()
+}
+
+/// The formats of the toolbar that fit into `room` (issue #460), from the front: ◐ always stands at
+/// the end, and when not all fit "…" stands before it with the rest.
+fn fits(room: f32) -> Vec<Format> {
+    let button = size::control_sm() + space::xs();
+    let line = size::HAIRLINE + space::xs();
+    let all: f32 = Format::ALL.len() as f32 * button + (Format::GROUPS.len() - 1) as f32 * line;
+    // ◐ and the room it keeps from the formats.
+    let fixed = button + space::s();
+    if all + fixed <= room {
+        return Format::ALL.to_vec();
+    }
+    let mut left = room - fixed - button;
+    let mut shown = Vec::new();
+    for (i, group) in Format::GROUPS.iter().enumerate() {
+        for (j, format) in group.iter().enumerate() {
+            let cost = button + if i > 0 && j == 0 { line } else { 0.0 };
+            if cost > left {
+                return shown;
+            }
+            left -= cost;
+            shown.push(*format);
+        }
+    }
+    shown
+}
+
+/// A person's face in a suggestion, `edge` wide: the contact's picture when it is here, else the
+/// initials on `raised`.
+fn face<'a>(name: &str, photo: Option<&image::Handle>, edge: f32) -> Element<'a, Message> {
+    if let Some(photo) = photo {
+        return image(photo.clone()).width(edge).height(edge).border_radius(edge / 2.0).into();
+    }
+    let letters = typo::text(typo::caption(), list::initials(name)).style(theme::text).wrapping(Wrapping::None);
+    container(letters)
+        .center(edge)
+        .style(move |t: &Theme| {
+            let p = palette(t);
+            container::Style {
+                background: Some(iced::Background::Color(p.selected)),
+                border: iced::border::rounded(edge / 2.0).color(p.line_strong).width(size::HAIRLINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
 /// A labelled row of the form: the label in `META` on the left, the control beside it.
 fn field<'a>(label: &'static str, control: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     let label = container(typo::text(typo::meta(), label).style(theme::text_3).wrapping(Wrapping::None))
         .width(label_width())
         .center_y(size::control());
-    row![label, control.into()].spacing(space::s()).align_y(Alignment::Center).into()
+    // Top: a recipient field grows by a line of chips above its input.
+    row![label, control.into()].spacing(space::s()).align_y(Alignment::Start).into()
 }
 
-/// The account's signature under the text: read-only, because the core adds it to the message.
+/// The account's signature under the text: read-only, because the core adds it to the message. Its
+/// label sets it apart; no line, which would double the focus ring of the text above it (#460).
 fn signature_block(signature: &str) -> Element<'_, Message> {
     let label = container(typo::text(typo::meta(), tr("Signature")).style(theme::text_3).wrapping(Wrapping::None));
-    column![
-        iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule),
-        row![label.width(label_width()), typo::text(typo::meta(), list::plain(signature)).style(theme::text_2)]
-            .spacing(space::s()),
-    ]
-    .spacing(space::s())
-    .into()
+    row![label.width(label_width()), typo::text(typo::meta(), list::plain(signature)).style(theme::text_2)]
+        .spacing(space::s())
+        .into()
 }
 
 /// A sentence that something did not work, in a line of the form: the alert icon (the colour only
@@ -2332,6 +3446,9 @@ fn signature_block(signature: &str) -> Element<'_, Message> {
 fn notice_line(notice: &Notice, dismiss: Option<Message>) -> Element<'_, Message> {
     let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
+    // On the middle of the sentence's first line.
+    let line = typo::body().line_height.to_absolute(typo::body().size).0;
+    let alert = container(alert).center_y(line);
     let mut words = column![typo::text(typo::body(), notice.what.as_str())].spacing(space::xs());
     if let Some(why) = &notice.why {
         words = words.push(typo::text(typo::meta(), why.as_str()).style(theme::text_3));
@@ -2662,8 +3779,6 @@ mod tests {
             ],
             "no other kind, no account with mail off, a blank signature is none, the format as set"
         );
-        assert_eq!(senders[0].label(), "Anna <anna@example.org>");
-        assert_eq!(senders[1].label(), "blank@example.org");
     }
 
     #[test]
@@ -2831,7 +3946,8 @@ mod tests {
         let Some(Call::Save(draft)) = window.calls.last().cloned() else { panic!("a save") };
         assert_eq!(draft.to, [who("", "bob@example.org")], "the part that is an address is saved");
         let _ = deliver_save(&mut window);
-        assert_eq!(window.to, "bob@example.org, ali", "the field keeps what was typed");
+        let bob = Chip::Person(who("", "bob@example.org"));
+        assert_eq!((window.to.chips.as_slice(), window.to.typed.as_str()), (&[bob][..], "ali"), "kept as typed");
     }
 
     #[test]
@@ -2887,7 +4003,7 @@ mod tests {
         assert_eq!(notice.what, tr("Couldn't save the draft. Your text is still here."));
         assert_eq!(notice.why.as_deref(), Some(ComposeError::Offline.to_string().as_str()));
         assert!(window.unsaved() && window.editable(), "nothing is lost, and the fields still take text");
-        assert_eq!((window.to.as_str(), window.subject.as_str()), ("bob@example.org", "Lunch"));
+        assert_eq!((window.to.addresses(), window.subject.as_str()), (vec![who("", "bob@example.org")], "Lunch"));
         source.fail_save.lock().expect("lock").take();
         let _ = window.update(Message::Tick(later()));
         assert_eq!(window.calls.iter().filter(|call| matches!(call, Call::Save(_))).count(), 2, "it tries again");
@@ -2924,7 +4040,7 @@ mod tests {
         assert!(!window.sending && window.editable(), "and can be written in again");
         let notice = window.notice.clone().expect("the error stays in the window");
         assert_eq!((notice.what.as_str(), notice.why.as_deref()), (tr("Couldn't send the message."), Some(reason)));
-        assert_eq!((window.to.as_str(), window.subject.as_str()), ("bob@example.org", "Lunch"));
+        assert_eq!((window.to.addresses(), window.subject.as_str()), (vec![who("", "bob@example.org")], "Lunch"));
         assert_eq!(window.body.text(), "Shall we?");
         let kept = source.inner.drafts();
         assert_eq!(kept.len(), 1, "the draft is still in the drafts folder");
@@ -3315,6 +4431,9 @@ mod tests {
             &["--open", "unsure"],
             &["--open", "discard"],
             &["--open", "menu"],
+            &["--open", "suggest"],
+            &["--open", "paper-dark"],
+            &["--open", "format"],
         ];
         for words in states {
             let mut window = ready(words);
@@ -3357,6 +4476,189 @@ mod tests {
         assert_eq!(ready(&[]).title(), tr("New message"));
         assert_eq!(COMPOSE.window_class, "torro-compose");
         assert_eq!(COMPOSE.binary, "torroinbox");
+    }
+
+    // ----- issue #460: chips, suggestions, paper, toolbar -----
+
+    #[test]
+    fn typed_recipients_become_chips_at_a_separator_and_backspace_takes_the_last() {
+        let mut field = Recipients::default();
+        assert!(!field.input("anna@example.org".into()), "no separator yet");
+        assert!(field.input("anna@example.org, \"Doe, Jane\" <jane@example.org>; nob".into()));
+        assert_eq!(
+            (field.chips.clone(), field.typed.as_str()),
+            (
+                vec![Chip::Person(who("", "anna@example.org")), Chip::Person(who("Doe, Jane", "jane@example.org"))],
+                "nob"
+            )
+        );
+        field.typed = "nobody".into();
+        assert!(field.commit());
+        assert_eq!(field.chips.last(), Some(&Chip::Broken("nobody".into())), "no address: a marked chip");
+        assert_eq!(field.refused(), ["nobody"]);
+        assert_eq!(field.addresses().len(), 2);
+        assert!(!field.add(who("Anna", "ANNA@example.org")), "an address once");
+        // Backspace in the empty field: the same empty text again.
+        assert!(field.input(String::new()));
+        assert_eq!(field.chips.len(), 2);
+        assert_eq!(Recipients::parsed("a@b.org, c@d.org").chips.len(), 2);
+    }
+
+    #[test]
+    fn chips_are_made_by_enter_and_by_leaving_and_a_broken_one_stops_sending() {
+        let mut window = ready(&[]);
+        let _ = window.update(Message::To("bob@example.org".into()));
+        let _ = window.update(Message::Submit(Field::To));
+        assert_eq!(window.to.chips, [Chip::Person(who("", "bob@example.org"))]);
+        let _ = window.update(Message::ShowCc);
+        let _ = window.update(Message::Cc("lena".into()));
+        let _ = window.update(Message::Subject("Lunch".into()));
+        assert_eq!((window.cc.chips.as_slice(), window.cc.typed.as_str()), (&[Chip::Broken("lena".into())][..], ""));
+        let _ = window.update(Message::Send);
+        assert_eq!(
+            window.notice.as_ref().map(|n| n.what.clone()),
+            Some(trf("{address} isn't a valid address.", &[("address", &"lena")]))
+        );
+        assert_eq!(sends(&window), 0);
+        let _ = window.update(Message::RemoveChip(Field::Cc, 0));
+        assert!(window.cc.is_empty() && window.problem().is_none());
+    }
+
+    #[test]
+    fn suggestions_come_for_the_latest_letters_and_are_taken_with_the_keys() {
+        let mut window = ready(&[]);
+        let _ = window.update(Message::To("jo".into()));
+        let first = window.asked;
+        let _ = window.update(Message::To("jon".into()));
+        let found = block_on(ComposeSource::suggest(window.source.as_ref(), "jon".into()));
+        // An answer to the older letters is dropped.
+        let _ = window.update(Message::Suggested(first, Field::To, found.clone()));
+        assert!(window.suggestions.is_none());
+        let _ = window.update(Message::Suggested(window.asked, Field::To, found));
+        let items = window.suggestions.as_ref().map(|open| open.items.clone()).expect("open");
+        assert_eq!(items[0].address, "jonas.keller@example.org", "written to lately and often first");
+        let _ = window.update(Message::Arrow(true));
+        let _ = window.update(Message::Arrow(false));
+        let _ = window.update(Message::Arrow(false));
+        assert_eq!(window.suggestions.as_ref().map(|open| open.highlight), Some(items.len() - 1), "round");
+        let _ = window.update(Message::Arrow(true));
+        let _ = window.update(Message::Submit(Field::To));
+        assert!(window.suggestions.is_none());
+        assert_eq!(
+            (window.to.addresses()[0].address.as_str(), window.to.typed.as_str()),
+            ("jonas.keller@example.org", "")
+        );
+        assert_eq!(window.draft().to.len(), 1, "taken into the draft");
+
+        // Tab takes too; Esc closes only the list; an error shows none.
+        let _ = window.update(Message::To("emma".into()));
+        let found = block_on(ComposeSource::suggest(window.source.as_ref(), "emma".into()));
+        let _ = window.update(Message::Suggested(window.asked, Field::To, found.clone()));
+        let _ = window.update(Message::Escape);
+        assert!(window.suggestions.is_none() && !window.asking && !exited(&window));
+        assert_eq!(window.to.typed, "emma");
+        let _ = window.update(Message::To("emma ".into()));
+        let _ = window.update(Message::Suggested(window.asked, Field::To, found));
+        let _ = window.update(Message::Focus(false));
+        assert!(!window.to.holds("emma.johansson@example.org"), "Shift+Tab takes nothing");
+        let _ = window.update(Message::To("emma ".into()));
+        let found = block_on(ComposeSource::suggest(window.source.as_ref(), "emma".into()));
+        let _ = window.update(Message::Suggested(window.asked, Field::To, found));
+        let _ = window.update(Message::Focus(true));
+        assert!(window.to.holds("emma.johansson@example.org"));
+        let _ = window.update(Message::To("x".into()));
+        let _ = window.update(Message::Suggested(window.asked, Field::To, Err(ComposeError::Forbidden)));
+        assert!(window.suggestions.is_none(), "forbidden: no list");
+    }
+
+    #[test]
+    fn letters_typed_after_the_suggestions_make_enter_keep_what_was_typed() {
+        let mut window = ready(&[]);
+        let _ = window.update(Message::To("jonas".into()));
+        let found = block_on(ComposeSource::suggest(window.source.as_ref(), "jonas".into()));
+        let _ = window.update(Message::Suggested(window.asked, Field::To, found));
+        assert!(window.suggestions.is_some());
+        // Typed on faster than the next answer: Enter takes the address, not the older suggestion.
+        let _ = window.update(Message::To("jonas@neu.example.org".into()));
+        let _ = window.update(Message::Submit(Field::To));
+        assert_eq!(window.to.chips, [Chip::Person(who("", "jonas@neu.example.org"))]);
+        // Scrolling the text keeps what is typed and the list.
+        let _ = window.update(Message::To("emma".into()));
+        let found = block_on(ComposeSource::suggest(window.source.as_ref(), "emma".into()));
+        let _ = window.update(Message::Suggested(window.asked, Field::To, found));
+        let _ = window.update(Message::Body(text_editor::Action::Scroll { lines: 1 }));
+        assert!(window.suggestions.is_some() && window.to.typed == "emma");
+    }
+
+    #[test]
+    fn a_group_adds_every_member_that_is_in_no_field_yet() {
+        let mut window = ready(&[]);
+        let members = demo_suggestions("jour", Utc::now());
+        let group = members.iter().find(|s| s.kind == SuggestionKind::Group).cloned().expect("Jour fixe");
+        let first = group.members[0].address.clone();
+        let _ = window.update(Message::ShowCc);
+        let _ = window.update(Message::Cc(format!("{first},")));
+        let _ = window.update(Message::To("jour".into()));
+        let _ = window.update(Message::Suggested(window.asked, Field::To, Ok(vec![group.clone()])));
+        let _ = window.update(Message::Take(0));
+        assert_eq!(window.to.chips.len(), group.members.len() - 1, "not the one in Cc");
+        assert!(!window.to.holds(&first) && window.cc.holds(&first));
+    }
+
+    #[test]
+    fn plus_contact_asks_again_and_a_failure_shows_in_the_list() {
+        let mut window = ready(&["--open", "suggest"]);
+        assert!(window.writable_book.is_some(), "the demo has a writable book");
+        let seen =
+            window.suggestions.as_ref().and_then(|open| open.items.iter().position(|s| s.kind == SuggestionKind::Seen));
+        assert!(seen.is_some(), "an address known only from mail");
+        let _ = window.update(Message::ContactAdded(Err(ComposeError::Forbidden)));
+        assert!(window.suggestions.as_ref().and_then(|open| open.problem.clone()).is_some());
+        let before = window.asked;
+        let _ = window.update(Message::ContactAdded(Ok(())));
+        assert!(window.asked > before, "asked anew");
+    }
+
+    #[test]
+    fn the_paper_turns_at_once_keeps_the_mail_and_turns_back_when_it_cannot_be_kept() {
+        let mut window = ready(&[]);
+        type_in(&mut window, "Bob <bob@example.org>", "Lunch", "Shall **we**?");
+        assert_eq!(window.paper, ComposePaper::Light);
+        let light = window.draft();
+        let _ = window.update(Message::TogglePaper);
+        assert_eq!(window.paper, ComposePaper::Dark);
+        assert_eq!(window.draft(), light, "the mail is the same on either paper");
+        let _ = window.update(Message::PaperSaved(ComposePaper::Light, Err(ComposeError::Offline)));
+        assert_eq!(window.paper, ComposePaper::Light, "back to the one before");
+        assert!(window.notice.is_some());
+        let dark = ready(&["--open", "paper-dark"]);
+        assert_eq!(dark.paper, ComposePaper::Dark);
+    }
+
+    #[test]
+    fn clear_takes_the_marks_off_the_selection_or_the_line() {
+        let mut content = editor("**Bold** and [a link](https://example.org)\n- item");
+        apply_format(&mut content, Format::Clear);
+        assert_eq!(text_of(&content), "**Bold** and [a link](https://example.org)\nitem", "the cursor's line");
+        select_all(&mut content);
+        apply_format(&mut content, Format::Clear);
+        assert_eq!(text_of(&content), "Bold and a link\nitem");
+        let mut umlauts = editor("> äää\n**Grüße**");
+        apply_format(&mut umlauts, Format::Clear);
+        assert_eq!(text_of(&umlauts), "> äää\nGrüße", "a column is a byte index");
+        assert_eq!(format_key(&Key::Character("\\".into()), keyboard::Modifiers::COMMAND), Some(Format::Clear));
+        // A German keyboard types `\\` with Option (AltGr) and Shift.
+        let german = keyboard::Modifiers::COMMAND | keyboard::Modifiers::ALT | keyboard::Modifiers::SHIFT;
+        assert_eq!(format_key(&Key::Character("\\".into()), german), Some(Format::Clear));
+    }
+
+    #[test]
+    fn what_does_not_fit_in_the_toolbar_goes_into_the_menu_from_the_back() {
+        assert_eq!(fits(1000.0), Format::ALL.to_vec());
+        let narrow = fits(300.0);
+        assert!(!narrow.is_empty() && narrow.len() < Format::ALL.len());
+        assert_eq!(narrow, Format::ALL[..narrow.len()].to_vec(), "from the front");
+        assert!(fits(0.0).is_empty());
     }
 
     /// A demo source whose saves can be made to fail.

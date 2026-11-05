@@ -138,6 +138,11 @@ pub struct Settings {
     /// the rest of the window. Read leniently, like [`Settings::mail_view`].
     #[serde(default, deserialize_with = "lenient")]
     pub mail_appearance: MailAppearance,
+    /// The paper of the compose window (issue #460): light (the default) or dark, only the background
+    /// of the text, whatever the window's appearance and the reader's `mail_appearance`. The mail sent
+    /// stays the same. Read leniently, like [`Settings::mail_view`].
+    #[serde(default, deserialize_with = "lenient")]
+    pub compose_paper: ComposePaper,
     /// Account id used for a newly composed mail when no account was requested explicitly.
     /// Replies keep the account of the message. A removed account is ignored by the composer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -316,6 +321,19 @@ pub enum MailAppearance {
     /// `"light"`: always the mail's own colours.
     Light,
     /// `"dark"`: always recoloured for a dark background.
+    Dark,
+}
+
+/// The paper the compose window writes on (`settings.set_setting compose_paper`, issue #460): light or
+/// dark behind the text, independent of the window (as in Outlook). Only how it is drawn there; the
+/// mail sent is the same either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ComposePaper {
+    /// `"light"`: dark text on a light page, the default.
+    #[default]
+    Light,
+    /// `"dark"`: light text on a dark page.
     Dark,
 }
 
@@ -787,6 +805,7 @@ impl Default for Settings {
             components_off: BTreeSet::new(),
             mail_view: MailFormat::default(),
             mail_appearance: MailAppearance::default(),
+            compose_paper: ComposePaper::default(),
             mail_sender: None,
             mail_attachments: MailAttachments::default(),
             mail_to_cloud: false,
@@ -2667,6 +2686,24 @@ mod tests {
         assert_eq!(damaged.zoom.percent(), 110, "the other settings still read");
     }
 
+    /// Issue #460: the compose window writes on light paper unless the person chose dark; a file
+    /// from before, or a value that does not read, keeps light and the other settings.
+    #[test]
+    fn the_compose_paper_is_light_unless_set() {
+        assert_eq!(Settings::default().compose_paper, ComposePaper::Light);
+        let written = serde_json::to_value(Settings::default()).expect("json");
+        assert_eq!(written["composePaper"], serde_json::json!("light"));
+        for (paper, word) in [(ComposePaper::Light, "light"), (ComposePaper::Dark, "dark")] {
+            assert_eq!(serde_json::to_value(paper).expect("json"), serde_json::json!(word));
+        }
+        let set: Settings = serde_json::from_str(r#"{"composePaper": "dark"}"#).expect("reads");
+        assert_eq!(set.compose_paper, ComposePaper::Dark);
+        let old: Settings = serde_json::from_str(r#"{"language": "german"}"#).expect("a file from before");
+        assert_eq!(old.compose_paper, ComposePaper::Light);
+        let damaged: Settings = serde_json::from_str(r#"{"composePaper": "sepia", "zoom": 1.1}"#).expect("lenient");
+        assert_eq!((damaged.compose_paper, damaged.zoom.percent()), (ComposePaper::Light, 110));
+    }
+
     #[test]
     fn missing_file_loads_defaults() {
         let dir = TempDir::new("missing");
@@ -2712,6 +2749,7 @@ mod tests {
             components_off: BTreeSet::new(),
             mail_view: MailFormat::Html,
             mail_appearance: MailAppearance::App,
+            compose_paper: ComposePaper::Light,
             mail_sender: None,
             mail_attachments: MailAttachments::default(),
             mail_to_cloud: false,
@@ -2987,6 +3025,7 @@ mod tests {
             components_off: BTreeSet::from([Component::Mail, Component::Assistant]),
             mail_view: MailFormat::Text,
             mail_appearance: MailAppearance::Dark,
+            compose_paper: ComposePaper::Dark,
             mail_sender: Some("mail:anna@example.org".into()),
             mail_attachments: MailAttachments {
                 click: AttachmentClick::SaveAs,

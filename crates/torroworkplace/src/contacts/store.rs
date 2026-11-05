@@ -227,33 +227,8 @@ pub fn digits(text: &str) -> String {
 /// becomes "ss"). SQLite folds only ASCII letters, so "BRÜHL" would miss "Brühl" and "König"
 /// would sort behind "Kurz"; both sides of a comparison go through here instead.
 pub fn folded(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars().flat_map(char::to_lowercase) {
-        match c {
-            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => out.push('a'),
-            'æ' => out.push_str("ae"),
-            'ç' | 'ć' | 'č' => out.push('c'),
-            'ď' | 'đ' => out.push('d'),
-            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ė' | 'ę' | 'ě' => out.push('e'),
-            'ğ' => out.push('g'),
-            'ì' | 'í' | 'î' | 'ï' | 'ī' | 'į' | 'ı' => out.push('i'),
-            'ł' | 'ľ' | 'ĺ' => out.push('l'),
-            'ñ' | 'ń' | 'ň' => out.push('n'),
-            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ő' => out.push('o'),
-            'œ' => out.push_str("oe"),
-            'ŕ' | 'ř' => out.push('r'),
-            'ß' => out.push_str("ss"),
-            'ś' | 'š' | 'ş' | 'ș' => out.push('s'),
-            'ť' | 'ţ' | 'ț' => out.push('t'),
-            'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ů' | 'ű' | 'ų' => out.push('u'),
-            'ý' | 'ÿ' => out.push('y'),
-            'ź' | 'ż' | 'ž' => out.push('z'),
-            // Combining marks, as in a decomposed "u\u{308}" or the lower case of "İ".
-            '\u{300}'..='\u{36f}' => {}
-            _ => out.push(c),
-        }
-    }
-    out
+    // One folding for the store's search and the recipient suggestions (issue #460).
+    torro_contacts::suggest::fold(text)
 }
 
 /// What a list sorts `name` by: [`folded`], without leading punctuation, so "(mazzo)" stands
