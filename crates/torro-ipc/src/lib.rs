@@ -6135,6 +6135,11 @@ pub struct ColorSchemeInfo {
     /// it dark, also in light mode. A reply of an older core without it reads as `false`.
     #[serde(default)]
     pub dark_only: bool,
+    /// The colour scheme is one of the vivid ones (`vivid = true`, issue #515): a sibling of another
+    /// scheme with a bright accent. The suite lists them in a group of their own. A reply of an older
+    /// core without it reads as `false`.
+    #[serde(default)]
+    pub vivid: bool,
 }
 
 /// One client as [`Request::ListClients`] reports it: everything in `clients.json` but the hash
@@ -6872,7 +6877,7 @@ mod tests {
     /// `colorScheme`, `font` and `mailView` are gone from designs. A reply of an older core without
     /// the density, or still with the suggestions, reads as well (`balanced`, the suggestions ignored).
     #[test]
-    fn designs_and_colour_schemes_carry_density_and_dark_only() {
+    fn designs_and_colour_schemes_carry_density_dark_only_and_vivid() {
         use serde_json::json;
         use torro_core::design::DensityLevel;
         let dense = DesignInfo {
@@ -6914,13 +6919,17 @@ mod tests {
             problems: Vec::new(),
             active: false,
             dark_only: true,
+            vivid: true,
         };
         let mut json = serde_json::to_value(&night).expect("json");
         assert_eq!(json["darkOnly"], true);
+        assert_eq!(json["vivid"], true);
         assert_eq!(serde_json::from_value::<ColorSchemeInfo>(json.clone()).expect("parses"), night);
-        json.as_object_mut().expect("an object").remove("darkOnly");
+        let fields = json.as_object_mut().expect("an object");
+        fields.remove("darkOnly");
+        fields.remove("vivid");
         let read = serde_json::from_value::<ColorSchemeInfo>(json).expect("an answer of an older core");
-        assert!(!read.dark_only);
+        assert!(!read.dark_only && !read.vivid);
     }
 
     #[test]
