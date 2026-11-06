@@ -1727,7 +1727,51 @@ pub(crate) mod tests {
         assert_eq!(fs::read_dir(&downloads).expect("readable").count(), 1, "nothing more was saved");
     }
 
-    /// Issue #501: "Skip if identical" finds the same drawing of the mail there and writes nothing.
+    /// Issue #501, Erledigt 3 and 4 for HTML: an HTML mail goes through the service drawn as HTML, with
+    /// the picture it carries itself (`cid:`) taken from its own parts – a red square in the picture.
+    #[tokio::test]
+    async fn an_html_mail_is_drawn_with_its_own_pictures() {
+        use base64::Engine;
+        let mut logo = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut logo, 40, 40);
+            encoder.set_color(png::ColorType::Rgb);
+            let mut writer = encoder.write_header().expect("a header");
+            writer.write_image_data(&[220u8, 20, 20].repeat(40 * 40)).expect("red");
+        }
+        let logo = base64::engine::general_purpose::STANDARD.encode(&logo);
+        let date = Utc.with_ymd_and_hms(2026, 3, 28, 12, 0, 0).single().expect("a date").to_rfc2822();
+        let raw = format!(
+            "From: Stadtwerke Bonn <billing@stadtwerke-bonn.de>\r\nTo: anna@example.org\r\nSubject: Newsletter\r\n\
+             Date: {date}\r\nMessage-ID: <html@example.org>\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/related; boundary=\"r1\"\r\n\r\n--r1\r\n\
+             Content-Type: text/html; charset=utf-8\r\n\r\n\
+             <html><body><h1>Hallo</h1><img src=\"cid:logo@example.org\" width=\"40\" height=\"40\"></body></html>\r\n\
+             --r1\r\nContent-Type: image/png\r\nContent-ID: <logo@example.org>\r\n\
+             Content-Disposition: inline\r\nContent-Transfer-Encoding: base64\r\n\r\n{logo}\r\n--r1--\r\n"
+        );
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &raw, &[]);
+        let service = synced(dir.path(), &server).await;
+        let id = message_id(&service, "Newsletter").await;
+        let downloads = dir.path().join("Downloads");
+        fs::create_dir(&downloads).expect("downloads");
+        let context = Context { downloads: Some(downloads), categories: Category::BUILT_IN.to_vec() };
+        let save = Request::SaveMailAs { id, format: ExportFormat::Png, to: SaveTo::Downloads };
+        let saved = answer(&service, Reach::Suite, &context, save).await;
+        let Response::SavedMail { path, .. } = saved else { panic!("saved: {saved:?}") };
+        let decoder = png::Decoder::new(std::io::BufReader::new(fs::File::open(&path).expect("written")));
+        let mut reader = decoder.read_info().expect("a PNG");
+        let mut pixels = vec![0; reader.output_buffer_size().expect("a size")];
+        let frame = reader.next_frame(&mut pixels).expect("pixels");
+        let red =
+            pixels[..frame.buffer_size()].chunks_exact(3).filter(|p| p[0] > 180 && p[1] < 60 && p[2] < 60).count();
+        assert!(red > 1000, "the picture of the mail is drawn: {red} red pixels");
+    }
+
+    /// Issue #501: "Skip if identical" finds the same drawing of the mail there and writes nothing, as
+    /// PDF and as picture.
     #[tokio::test]
     async fn the_same_mail_is_skipped_in_a_target_that_skips_identical_files() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1738,11 +1782,13 @@ pub(crate) mod tests {
         let context = Context { downloads: None, categories: Category::BUILT_IN.to_vec() };
         let target = SaveTargetSpec { on_conflict: OnConflict::SkipIdentical, ..spec("Skip", dir.path()) };
         let made = service.save_targets().create(target, &context.categories).expect("stored");
-        let save = Request::SaveMailAs { id, format: ExportFormat::Png, to: SaveTo::Target(made.id) };
-        let first = answer(&service, Reach::Suite, &context, save.clone()).await;
-        let Response::SavedMail { path, skipped: false, .. } = first else { panic!("saved: {first:?}") };
-        let second = answer(&service, Reach::Suite, &context, save).await;
-        assert_eq!(second, Response::SavedMail { path, skipped: true, shortened: false });
+        for format in ExportFormat::ALL {
+            let save = Request::SaveMailAs { id: id.clone(), format, to: SaveTo::Target(made.id.clone()) };
+            let first = answer(&service, Reach::Suite, &context, save.clone()).await;
+            let Response::SavedMail { path, skipped: false, .. } = first else { panic!("saved: {first:?}") };
+            let second = answer(&service, Reach::Suite, &context, save).await;
+            assert_eq!(second, Response::SavedMail { path, skipped: true, shortened: false }, "{format:?}");
+        }
     }
 
     /// The store drops the text of an older mail again (`prune_bodies_for`: at once with headers only,

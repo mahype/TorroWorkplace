@@ -7,13 +7,17 @@
 //! `cid:` pictures from the message's own parts and – like the reader – its external pictures loaded
 //! (decision 2); a text mail is its text in a block that keeps its lines. Both are laid out 720
 //! logical pixels wide at scale 2 and always in light colours: paper is light. Drawing waits for the
-//! pictures at most [`WAIT_FOR_PICTURES`]. [`Content`] is not `Send`, so everything happens on one
-//! blocking thread, and only one export runs at a time ([`EXPORTS`]): each holds a few dozen MB.
+//! pictures at most [`WAIT_FOR_PICTURES`]; a picture that comes later can move what follows, so the
+//! heights are measured again on every page and after the picture, and a mail that grew is marked
+//! shortened. [`Content`] is not `Send`, so everything happens on one blocking thread, and only one
+//! export runs at a time ([`EXPORTS`]): a PNG holds a few dozen MB while it is made, a PDF its pages
+//! uncompressed until it is written (about 9 MB a page, at most [`MAX_PAGES`]).
 //!
 //! **PNG.** One long picture, written band by band (at most [`BAND_ROWS`] rows painted at once), at
 //! most [`MAX_PNG_ROWS`] rows; a longer mail is cut (decision 4). **PDF.** A4 pages with 12-mm margins,
 //! each one picture of a band of the mail; a page ends at the lowest row of one colour in its last
-//! 15 % (a gap between lines), else where the page is full. At most [`MAX_PAGES`] pages. The PDF's
+//! 15 % (a gap between lines), else where the page is full. At most [`MAX_PAGES`] pages, lossless and
+//! at full size, and the same mail makes the same bytes (a target's "Skip if identical"). The PDF's
 //! text cannot be selected: it is pictures.
 //!
 //! **Log.** Nothing here writes a subject, an address or any text of the mail anywhere.
@@ -23,7 +27,8 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, Utc};
 use printpdf::{
-    Mm, Op, PdfDocument, PdfPage, PdfSaveOptions, RawImage, RawImageData, RawImageFormat, XObjectTransform,
+    ImageCompression, ImageOptimizationOptions, Mm, Op, PdfDocument, PdfPage, PdfSaveOptions, RawImage, RawImageData,
+    RawImageFormat, XObject, XObjectId, XObjectTransform,
 };
 use torro_core::i18n::{tr, trf};
 use torro_htmlview::{CidSource, Content, MAX_PICTURE_BYTES, Scheme};
@@ -277,7 +282,7 @@ fn text_html(text: &str) -> String {
 
 /// The head and the content one under the other, addressed by device rows.
 struct Sheet {
-    parts: Vec<(Content, u32)>,
+    parts: Vec<(Content, std::cell::Cell<u32>)>,
     width: u32,
 }
 
@@ -286,16 +291,25 @@ impl Sheet {
         let parts = contents
             .into_iter()
             .map(|content| {
-                let rows = (content.height(WIDTH, SCALE, Scheme::Light) * SCALE).ceil().max(1.0) as u32;
+                let rows = std::cell::Cell::new(rows_of(&content));
                 (content, rows)
             })
             .collect();
         Sheet { parts, width: (WIDTH * SCALE).round() as u32 }
     }
 
-    /// Every row of the sheet.
+    /// Every row of the sheet, as last measured.
     fn rows(&self) -> u32 {
-        self.parts.iter().map(|(_, rows)| rows).sum()
+        self.parts.iter().map(|(_, rows)| rows.get()).sum()
+    }
+
+    /// Measures every part again – a picture that arrived late can make one taller – and answers
+    /// every row of the sheet.
+    fn measure(&self) -> u32 {
+        for (content, rows) in &self.parts {
+            rows.set(rows_of(content));
+        }
+        self.rows()
     }
 
     /// The rows `from..to` as RGB, 3 bytes a pixel, row by row; rows a part does not paint are white.
@@ -304,6 +318,7 @@ impl Sheet {
         let mut rgb = Vec::with_capacity((to - from) as usize * row_bytes);
         let mut offset = 0;
         for (content, rows) in &self.parts {
+            let rows = rows.get();
             let (start, end) = (from.max(offset), to.min(offset + rows));
             if start < end {
                 let top = (start - offset) as f32 / SCALE;
@@ -322,7 +337,13 @@ impl Sheet {
     }
 }
 
-/// The sheet as one PNG picture, at most `max_rows` rows ([`MAX_PNG_ROWS`]).
+/// The device rows `content` takes at the export's width.
+fn rows_of(content: &Content) -> u32 {
+    (content.height(WIDTH, SCALE, Scheme::Light) * SCALE).ceil().max(1.0) as u32
+}
+
+/// The sheet as one PNG picture, at most `max_rows` rows ([`MAX_PNG_ROWS`]). A mail that grew while
+/// it was written (a late picture) counts as shortened: its end may be missing.
 fn png(sheet: &Sheet, max_rows: u32) -> Result<Drawn, String> {
     let total = sheet.rows();
     let rows = total.min(max_rows);
@@ -342,7 +363,8 @@ fn png(sheet: &Sheet, max_rows: u32) -> Result<Drawn, String> {
         stream.finish().map_err(|err| err.to_string())?;
     }
     writer.finish().map_err(|err| err.to_string())?;
-    Ok(Drawn { bytes, shortened: total > rows })
+    let grew = sheet.measure() > total;
+    Ok(Drawn { bytes, shortened: total > rows || grew })
 }
 
 /// The rows of one A4 page's picture: as wide as the text between the margins.
@@ -367,11 +389,13 @@ fn cut(rgb: &[u8], width: u32, rows: u32) -> u32 {
 
 /// The sheet as a PDF of A4 pages, at most `max_pages` ([`MAX_PAGES`]).
 fn pdf(sheet: &Sheet, max_pages: usize) -> Result<Drawn, String> {
-    let total = sheet.rows();
+    let mut total = sheet.rows();
     let full = page_rows(sheet.width);
     let mut doc = PdfDocument::new(tr("Mail"));
     let mut from = 0;
     while from < total && doc.pages.len() < max_pages {
+        // A late picture moves what follows: each page is cut from the mail as it stands now.
+        total = sheet.measure();
         let to = (from + full).min(total);
         let mut rgb = sheet.band(from, to);
         let rows = if to < total { cut(&rgb, sheet.width, to - from) } else { to - from };
@@ -383,7 +407,10 @@ fn pdf(sheet: &Sheet, max_pages: usize) -> Result<Drawn, String> {
             data_format: RawImageFormat::RGB8,
             tag: Vec::new(),
         };
-        let id = doc.add_image(&image);
+        // A fixed id per page (printpdf's own is random): the same mail makes the same file, so a target's
+        // "Skip if identical" finds it ([`stable_trailer`]).
+        let id = XObjectId(format!("page{}", doc.pages.len() + 1));
+        doc.resources.xobjects.map.insert(id.clone(), XObject::Image(image));
         let width_mm = PAGE_WIDTH_MM - 2.0 * MARGIN_MM;
         let height_mm = width_mm * rows as f32 / sheet.width as f32;
         // An image is first drawn at its size at 300 dpi; scale that to the room it takes.
@@ -405,8 +432,40 @@ fn pdf(sheet: &Sheet, max_pages: usize) -> Result<Drawn, String> {
         doc.pages.push(PdfPage::new(Mm(PAGE_WIDTH_MM), Mm(PAGE_HEIGHT_MM), ops));
         from += rows;
     }
-    let bytes = doc.save(&PdfSaveOptions::default(), &mut Vec::new());
-    Ok(Drawn { bytes, shortened: from < total })
+    // Lossless and at full size: printpdf's defaults shrink a page over 2 MB and save it as JPEG,
+    // which blurs the text.
+    let images = ImageOptimizationOptions {
+        max_image_size: None,
+        format: Some(ImageCompression::Flate),
+        ..ImageOptimizationOptions::default()
+    };
+    let options = PdfSaveOptions { image_optimization: Some(images), ..PdfSaveOptions::default() };
+    let bytes = stable_trailer(doc.save(&options, &mut Vec::new()));
+    Ok(Drawn { bytes, shortened: from < total.max(sheet.measure()) })
+}
+
+/// `pdf` with the file identifiers of its trailer (`/ID`, two strings printpdf makes at random) set to
+/// zeros of the same length, so nothing else moves: the same mail makes the same bytes.
+fn stable_trailer(mut pdf: Vec<u8>) -> Vec<u8> {
+    let Some(at) = pdf.windows(3).rposition(|window| window == b"/ID") else { return pdf };
+    let mut strings = 0;
+    let mut inside = false;
+    for byte in &mut pdf[at..] {
+        match (*byte, inside) {
+            (b'(', false) => inside = true,
+            (b')', true) => {
+                inside = false;
+                strings += 1;
+                if strings == 2 {
+                    break;
+                }
+            }
+            (b']', false) => break,
+            (_, true) => *byte = b'0',
+            _ => {}
+        }
+    }
+    pdf
 }
 
 #[cfg(test)]
@@ -507,6 +566,22 @@ mod tests {
         assert_eq!((png_size(&drawn.bytes), drawn.shortened), ((1440, 600), true));
         let whole = png(&sheet, MAX_PNG_ROWS).expect("drawn");
         assert_eq!((png_size(&whole.bytes), whole.shortened), ((1440, sheet.rows()), false));
+    }
+
+    /// The same mail makes the same PDF and the same PNG, so "Skip if identical" holds; the pages are
+    /// kept lossless and at their size.
+    #[test]
+    fn the_same_mail_makes_the_same_file() {
+        let first = pdf(&text_sheet(5), MAX_PAGES).expect("drawn");
+        let second = pdf(&text_sheet(5), MAX_PAGES).expect("drawn");
+        assert!(first.bytes == second.bytes, "PDF bytes differ");
+        let text = String::from_utf8_lossy(&first.bytes);
+        assert!(!text.contains("DCTDecode"), "no JPEG");
+        assert!(text.contains("/Width 1440"), "full width");
+        assert_eq!(
+            png(&text_sheet(5), MAX_PNG_ROWS).expect("drawn"),
+            png(&text_sheet(5), MAX_PNG_ROWS).expect("drawn")
+        );
     }
 
     /// A page ends after the lowest row of one colour in its last part, else where it is full.
