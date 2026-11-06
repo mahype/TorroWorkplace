@@ -1751,7 +1751,10 @@ pub(crate) mod tests {
         let all = store.run(|store| store.search(&SearchQuery::default(), 50, 0)).await.expect("read");
         let of = |subject: &str| all.iter().find(|m| m.subject == subject).cloned().expect("synced");
         // Set four days ago, due an hour ago; the reply is two days old.
-        let (since, at) = (Utc::now() - TimeDelta::days(4), Utc::now() - TimeDelta::hours(1));
+        // Whole microseconds, as the store keeps times: Linux's clock has nanoseconds, which would not
+        // come back as they went in.
+        let (since, at) =
+            (Utc::now() - TimeDelta::days(4), chrono::SubsecRound::trunc_subsecs(Utc::now() - TimeDelta::hours(1), 6));
         let mut entries = BTreeMap::new();
         for subject in ["Offer", "Plan"] {
             let found = mail_to_snooze(&mail, Reach::Suite, &of(subject).id).await.expect("the mail");
@@ -1910,7 +1913,9 @@ pub(crate) mod tests {
         let store = mail.store(ANNA).await.expect("the store");
         let all = store.run(|store| store.search(&SearchQuery::default(), 50, 0)).await.expect("read");
         let of = |subject: &str| all.iter().find(|m| m.subject == subject).cloned().expect("synced");
-        let (since, until) = (Utc::now() - TimeDelta::days(4), Utc::now() + TimeDelta::hours(1));
+        // Whole microseconds, as the store keeps times (Linux's clock has nanoseconds).
+        let (since, until) =
+            (Utc::now() - TimeDelta::days(4), chrono::SubsecRound::trunc_subsecs(Utc::now() + TimeDelta::hours(1), 6));
         let mut entries = BTreeMap::new();
         for subject in ["Offer", "Plan"] {
             let found = mail_to_snooze(&mail, Reach::Suite, &of(subject).id).await.expect("the mail");
