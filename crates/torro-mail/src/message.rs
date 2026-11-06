@@ -138,7 +138,8 @@ pub struct MessageSummary {
     pub pile_since: Option<DateTime<Utc>>,
     /// The domain whose logo stands for the sender (issue #453, `mail.get_sender_logo`): set only
     /// when the core checked the mail's DKIM signature itself and found it to belong to the
-    /// sender's domain (or a domain above or below it), the core keeps a logo of that domain, and
+    /// sender's registrable domain (`news.paypal.de` and `paypal.de` are `paypal.de`, after the Public
+    /// Suffix List), the core keeps a logo of that domain, and
     /// "Logos of known senders" is on. `None` for every other message: forged mail never names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logo: Option<String>,

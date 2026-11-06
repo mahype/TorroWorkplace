@@ -7,11 +7,13 @@
 //! A signature counts when it passes ([`DkimResult::Pass`]), signs the `From` header (RFC 6376
 //! requires it; else the sender could be rewritten under the signature), signs the whole body (`l=`
 //! would let anyone append text below a signed newsletter), is not `rsa-sha1` (RFC 8301) and its
-//! domain `d=` is the sender's domain or a domain above it (`mail.paypal.de` signed by `paypal.de`):
-//! that signing domain stands for the sender. A signer *below* the sender's domain does not count:
-//! without the public suffix list, a subdomain handed out to others (`x.duckdns.org`) could sign for
-//! the domain above it. Only a DNS failure ([`DkimResult::TempError`]) leaves the question open
-//! ([`Checked::Retry`]); every other outcome is an answer.
+//! domain `d=` has the same registrable domain as the sender's, after the Public Suffix List (`psl`),
+//! as DMARC's relaxed alignment asks: `news.paypal.de` signed by `paypal.de` or `e.paypal.de`. That
+//! registrable domain stands for the sender and is the one whose logo shows, so every subdomain of a
+//! sender (one per recipient, say) gets one logo, fetched once. A subdomain handed out to others is a
+//! registrable domain of its own (`x.duckdns.org`) and never signs for its parent. Only a DNS failure
+//! ([`DkimResult::TempError`]) leaves the question open ([`Checked::Retry`]); every other outcome is
+//! an answer.
 //!
 //! The keys (`<selector>._domainkey.<domain>` TXT records) are kept in a cache of their own,
 //! [`TXT_CACHE_MAX`] entries for at most [`TXT_KEEP`]: a sync of a full inbox asks for the key of
@@ -43,8 +45,7 @@ pub const UNANSWERED_REST: Duration = Duration::from_secs(5 * 60);
 /// What the check of one message found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Checked {
-    /// A signature of this domain (in lower case, ASCII) passed: the sender's domain, or the domain
-    /// above it that signed.
+    /// A signature of the sender's registrable domain passed: that domain, in lower case, ASCII.
     Domain(String),
     /// No signature passed that belongs to the sender's domain (none at all, broken, foreign, cut
     /// with `l=`), or the message names no sender.
@@ -138,9 +139,7 @@ impl SenderCheck {
             match (output.result(), output.signature()) {
                 (DkimResult::Pass, Some(signature)) if counts(signature) => {
                     let Some(domain) = checked_domain(&signature.d) else { continue };
-                    if let Some(standing) = standing_for(&sender, &domain)
-                        && found.as_ref().is_none_or(|kept| standing.len() < kept.len())
-                    {
+                    if let Some(standing) = standing_for(&sender, &domain) {
                         found = Some(standing);
                     }
                 }
@@ -196,12 +195,12 @@ pub fn sender_domain(address: &str) -> Option<String> {
     checked_domain(domain)
 }
 
-/// The domain that stands for the sender `sender` when `signer` signed its mail: the signer, when it
-/// is the sender's domain or a domain above it, else `None` (a signer below does not count, module
-/// docs).
+/// The domain that stands for the sender `sender` when `signer` signed its mail: their registrable
+/// domain when it is the same (module docs), else `None`; also `None` for a name that is a public
+/// suffix itself (`co.uk`, `github.io`).
 fn standing_for(sender: &str, signer: &str) -> Option<String> {
-    let below = sender.strip_suffix(signer).is_some_and(|rest| rest.ends_with('.'));
-    (sender == signer || below).then(|| signer.to_string())
+    let registrable = psl::domain_str(sender)?;
+    (psl::domain_str(signer) == Some(registrable)).then(|| registrable.to_string())
 }
 
 /// `name` as the resolver keys it: lower case with a final dot.
@@ -322,17 +321,23 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_domain_above_the_sender_counts_and_one_below_does_not() {
+    async fn a_subdomain_of_the_same_registrable_domain_counts() {
         let raw = signed("news@mail.paypal.example", "paypal.example", false);
         let below = check(&["paypal.example"]).verified_domain(&raw).await;
         assert_eq!(below, Checked::Domain("paypal.example".into()), "signed by the parent");
         let raw = signed("Service@PayPal.example", "PayPal.example", false);
         let same = check(&["paypal.example"]).verified_domain(&raw).await;
         assert_eq!(same, Checked::Domain("paypal.example".into()), "in any case");
-        // A subdomain may be someone else's (`x.duckdns.org`): it never signs for the domain above it.
         let raw = signed(SENDER, "e.paypal.example", false);
         let below = check(&["e.paypal.example"]).verified_domain(&raw).await;
-        assert_eq!(below, Checked::None, "signed below the sender");
+        assert_eq!(below, Checked::Domain("paypal.example".into()), "a subdomain of the same sender");
+        // One sender per recipient (`u4711.tracker.example`): one logo, of the registrable domain.
+        let raw = signed("news@u4711.tracker.example", "u4711.tracker.example", false);
+        let one = check(&["u4711.tracker.example"]).verified_domain(&raw).await;
+        assert_eq!(one, Checked::Domain("tracker.example".into()));
+        // A subdomain handed out to others is a domain of its own: it never signs for the one above.
+        let raw = signed("admin@duckdns.org", "x.duckdns.org", false);
+        assert_eq!(check(&["x.duckdns.org"]).verified_domain(&raw).await, Checked::None, "public suffix");
     }
 
     #[tokio::test]
@@ -421,7 +426,10 @@ pub(crate) mod tests {
         assert_eq!(sender_domain("anna@localhost"), None);
         assert_eq!(sender_domain("anna"), None);
         assert_eq!(standing_for("mail.paypal.example", "paypal.example"), Some("paypal.example".into()));
-        assert_eq!(standing_for("paypal.example", "mail.paypal.example"), None);
+        assert_eq!(standing_for("paypal.example", "mail.paypal.example"), Some("paypal.example".into()));
         assert_eq!(standing_for("paypal.example", "xpaypal.example"), None);
+        assert_eq!(standing_for("shop.co.uk", "evil.co.uk"), None, "two registrable domains");
+        assert_eq!(standing_for("x.duckdns.org", "y.duckdns.org"), None);
+        assert_eq!(standing_for("anna.github.io", "anna.github.io"), Some("anna.github.io".into()));
     }
 }
