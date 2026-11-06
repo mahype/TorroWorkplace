@@ -415,8 +415,8 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   Rechtsklick-Menüs (#497) öffnen am Mauszeiger, wie in macOS, Windows und GNOME: Die Zeile meldet die Stelle
   mit `widgets::context_area(inhalt, |punkt| …)`, das Menü hängt mit `Placement::At` an
   `anker.area(Rectangle::new(punkt, Size::ZERO))` (links oben am Zeiger, am rechten bzw. unteren Rand links bzw.
-  über ihm; passt es auf keiner Seite, rückt es herein). Am Zeiger darf es über den Lesebereich reichen, wenn
-  dort geklickt wurde. Ohne Stelle hängt es mit `Placement::Below(Align::Start)` unter der Zeile, nie neben einer
+  über ihm; passt es auf keiner Seite, rückt es herein). Am Zeiger darf es über den Lesebereich reichen (etwa bei
+  einem Klick nahe dem rechten Rand der Liste). Ohne Stelle hängt es mit `Placement::Below(Align::Start)` unter der Zeile, nie neben einer
   breiten Zeile über dem Lesebereich. Untermenüs daraus öffnen weiter an der Zeile.
 - **Menü mit Suche** (#299, `widgets::search_menu(id, suche, on_input, on_submit, einträge, breite)`): für lange
   Auswahlen (die Schriften in Appearance, über 150 auf einem Mac). Karte wie ein Menü (`MENU`, `LINE_STRONG`,
