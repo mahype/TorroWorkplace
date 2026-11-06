@@ -3010,7 +3010,7 @@ Cancels an app job while it still downloads, also one a person started in the co
 
 Zugriff `admin` · MCP-Tool `apps_uninstall_app`
 
-Uninstalls an app of the suite (window class or binary from list_catalog): it goes to the system's trash, with `remove_data` its own files on this computer too; accounts stay. Answers with the job (see app_job). Always waits for the person's approval. Apps looked after by a package manager, the main application and the Notification Hub while Mail or App Feed is installed cannot be uninstalled here (`conflict`, `not-found`); `busy` while another app job runs, `unsupported` in a development build.
+Uninstalls an app of the suite (window class or binary from list_catalog): it goes to the system's trash, with `remove_data` its own files on this computer too; accounts stay. Answers with the job (see app_job). Always waits for the person's approval. Apps looked after by a package manager, the main application and the Notification Hub while Mail or App Feed is installed cannot be uninstalled here (`conflict`, `not-found`), nor an app whose bundle the service runs from while every other copy of the service is older (`conflict`: install or update the main application first); `busy` while another app job runs, `unsupported` in a development build.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

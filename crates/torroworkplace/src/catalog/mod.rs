@@ -375,7 +375,7 @@ impl Catalog {
             let hook = Arc::clone(&self.inner.hooks.read().unwrap_or_else(PoisonError::into_inner).newest_service);
             if hook(Some(&found.path)).is_none_or(|(_, version)| version < Version::current()) {
                 return Err(CatalogError::Conflict(trf(
-                    "{app} brings the newest copy of the service; update Torro Workplace first.",
+                    "{app} brings the newest copy of the service; install or update Torro Workplace first.",
                     &[("app", &app.display_name)],
                 )));
             }

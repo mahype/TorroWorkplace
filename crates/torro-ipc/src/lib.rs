@@ -1601,7 +1601,8 @@ pub enum Request {
     /// accounts, which all apps share. Codes: `not-found` for a name of no app or the main
     /// application, `conflict` for an app that is not installed, that a package manager looks
     /// after (remove it with the command from [`CatalogApp::managed`]) or that another installed
-    /// app needs (the Notification Hub while Mail or App Feed is there); `busy` while another app
+    /// app needs (the Notification Hub while Mail or App Feed is there) or whose bundle the service runs
+    /// from while every other copy of it is older (it would refuse the data); `busy` while another app
     /// job runs; `unsupported` in a development build.
     #[serde(rename = "apps.uninstall_app")]
     UninstallApp {

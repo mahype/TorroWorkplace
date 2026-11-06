@@ -7236,8 +7236,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("mail|Display", "Darstellung"),
     // App catalog (issue #411)
     (
-        "{app} brings the newest copy of the service; update Torro Workplace first.",
-        "{app} bringt die neueste Kopie des Dienstes mit; aktualisiere zuerst Torro Workplace.",
+        "{app} brings the newest copy of the service; install or update Torro Workplace first.",
+        "{app} bringt die neueste Kopie des Dienstes mit; installiere oder aktualisiere zuerst Torro Workplace.",
     ),
     ("The newest release has no apps for this system.", "Das neueste Release hat keine Apps für dieses System."),
     ("Uninstall an unknown app", "Eine unbekannte App entfernen"),
@@ -7312,8 +7312,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Torro Workplace {version} is available", "Torro Workplace {version} ist verfügbar"),
     ("An update of Torro Workplace is available", "Ein Update von Torro Workplace ist verfügbar"),
     (
-        "The service and this window restart; your apps stay open and reconnect.",
-        "Der Dienst und dieses Fenster starten neu; deine Apps bleiben offen und verbinden sich wieder.",
+        "The service restarts; your apps stay open and reconnect. Open windows use the new version once you close them.",
+        "Der Dienst startet neu; deine Apps bleiben offen und verbinden sich wieder. Offene Fenster nutzen die neue Version, sobald du sie schließt.",
     ),
     ("What's new", "Was ist neu"),
     ("Couldn't reach GitHub.", "GitHub war nicht erreichbar."),

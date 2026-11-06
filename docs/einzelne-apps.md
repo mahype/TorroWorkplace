@@ -159,7 +159,9 @@ Abbrechen geht nur beim Download. Die Steuerzentrale zeigt den Auftrag in einem 
 (Konten bleiben, andere Apps nutzen sie). Entfernte Apps gehen in den Papierkorb. „Show in Finder“ (Explorer,
 Ordner) öffnet den Ort, den der Dienst im Katalog nennt (`path`), lokal ohne Befehl, wie das Öffnen eines Ordners
 unter Appearance: Es liest und ändert nichts. Das Update der Hauptanwendung
-startet danach Dienst und Steuerzentrale neu. In Entwicklungs-Builds antworten Installieren, Aktualisieren und
+startet danach den Dienst neu; das Fenster des Auftrags wartet auf ihn und holt die Steuerzentrale nach vorn. Eine
+offene Steuerzentrale verbindet sich neu und nutzt wie jedes offene Fenster die neue Version, sobald sie geschlossen
+wird (Entscheidung 5). In Entwicklungs-Builds antworten Installieren, Aktualisieren und
 Entfernen mit `unsupported`.
 
 ## Oberfläche, API, MCP
