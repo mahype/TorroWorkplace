@@ -6285,8 +6285,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         );
         let overview = self.mail_overview_shown();
         let shown = overview || self.statistics_shown();
-        let news = if overview && !self.news.asked {
+        // Once per window; after an error again when the overview comes into view anew (review of
+        // #508), so a core that was not there yet does not hide "What's new" until a restart.
+        let failed = matches!(self.news.items, Some(Err(_))) && !self.mail_overview.showing;
+        let news = if overview && (!self.news.asked || failed) {
             self.news.asked = true;
+            self.news.items = None;
             #[cfg(test)]
             self.sent.push(Sent::News);
             let inbox = self.inbox.clone();
@@ -20009,6 +20013,14 @@ mod tests {
         assert_eq!(app.error.as_ref().map(|failure| failure.what), Some(tr("Couldn't hide the announcement.")));
         let _ = app.update(Message::DismissNews("unknown".into()));
         assert_eq!(app.sent.last(), Some(&Sent::DismissNews(first.id)), "nothing sent for an unknown one");
+        // A list that could not be read is asked again when the overview comes into view anew.
+        let _ = app.update(Message::NewsLoaded(Err("down".into())));
+        let _ = app.update(Message::Tick);
+        assert_eq!(news(&app), 1, "not on every tick while it stands");
+        let mail = app.messages.first().expect("demo mail").id.clone();
+        let _ = app.update(Message::SelectMail(mail));
+        let _ = app.update(Message::Escape);
+        assert_eq!(news(&app), 2, "again once it shows anew");
     }
 
     /// Issue #409: the overview asks again when it comes into view with numbers older than a minute,
