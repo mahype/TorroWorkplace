@@ -1330,7 +1330,7 @@ fn sidebar_row<'a, M: Clone + 'a>(
                     column![menu_label(label.into_fragment()), detail_line(detail.into_fragment())].width(Fill).into()
                 }
                 // A child (an account under "Accounts", issue #472) is cut with "…" to the row's
-                // width, never silently: the names beside the open one are long addresses.
+                // width: the names beside the open one are long addresses.
                 (None, None) if matches!(parts.scale, Scale::Small) => menu_label(label.into_fragment()),
                 (None, None) => line_label(typo::body(), label),
                 (Some(open), _) => {
@@ -2312,7 +2312,8 @@ fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
         Some(detail) => column![menu_label(item.label), detail_line(detail)].width(Fill).into(),
         // Without tags nothing takes from the label's width: clip it as every menu did before
         // (task M12.5 must not move the entries of the suite's other menus).
-        None if item.tags.is_empty() => line_label(typo::body(), item.label),
+        // A nested entry (an account under "Accounts", issue #475) is cut with "…" as in the sidebar.
+        None if item.tags.is_empty() && !item.nested => line_label(typo::body(), item.label),
         None => menu_label(item.label),
     };
     let scale = if item.nested { Scale::Small } else { Scale::Row };
@@ -2524,6 +2525,7 @@ pub fn menu_button<'a, M: Clone + 'a>(
 
 /// A [`menu_button`] as a step of a path in front of what is open ("‹ [☁ Accounts ▾] › an account",
 /// issue #473): icon and label in `text_2`, so the open page after it stays the strongest step.
+/// `label` is cut with "…" to [`PATH_MENU_ROOM`] in front of the window's other buttons.
 pub fn path_menu_button<'a, M: Clone + 'a>(
     anchor: &Anchor,
     icon: Option<Icon>,
@@ -2531,6 +2533,15 @@ pub fn path_menu_button<'a, M: Clone + 'a>(
     on_press: M,
 ) -> Element<'a, M> {
     menu_button_in(anchor, icon, label, on_press, Tone::Text2)
+}
+
+/// The most a label of a menu button stands for what is open in a narrow header ("‹ [☁ an account ▾]",
+/// issue #473), as wide as the sidebar: a long address must not run under the settings button.
+pub const PATH_MENU_ROOM: f32 = 240.0;
+
+/// `label` cut with "…" to [`PATH_MENU_ROOM`], for the menu button of a narrow header.
+pub fn path_menu_label(label: &str) -> String {
+    typo::ellipsize(label, typo::body(), PATH_MENU_ROOM)
 }
 
 /// A [`menu_button`] with its icon and label in `tone`.

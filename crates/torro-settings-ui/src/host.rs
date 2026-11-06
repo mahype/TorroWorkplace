@@ -1273,7 +1273,9 @@ impl Host {
             // section it opens the section's menu, as in the medium form (issue #473).
             (Form::Steps, true) => shell::header_title(Some(shell::SETTINGS_ICON), tr("Settings"), None),
             (Form::Steps, false) => match sub_page {
-                Some((name, _)) => widgets::menu_button(anchor, Some(section.icon), name, menu()),
+                Some((name, _)) => {
+                    widgets::menu_button(anchor, Some(section.icon), widgets::path_menu_label(&name), menu())
+                }
                 None => shell::header_title(Some(section.icon), section.name(), None),
             },
             // Medium: the section's menu stays in front of the page below it (issue #473).
@@ -1315,7 +1317,7 @@ impl Host {
     /// marks the open one – in the narrow list nothing is open yet.
     ///
     /// With `children` (what is open below the open section and beside it, task DS.5, issue #475)
-    /// they stand under the section as the rows of a quiet branch, with the section's icon, the open
+    /// they stand under the section as the rows of a quiet branch, each with its own icon, the open
     /// one active; the section itself is then not active, and a click on it goes back up to its own
     /// page (`up`, the `back` of the page below).
     fn list_rows<'a, M: Clone + 'a>(

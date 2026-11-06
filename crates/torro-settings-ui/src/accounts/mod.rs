@@ -2322,7 +2322,9 @@ pub fn siblings(state: &State, data: &dyn Seen) -> Vec<(Icon, String, Option<Mes
                     .iter()
                     .copied()
                     .filter(move |account| group.holds(&account.kind))
-                    .map(move |a| (group.icon(), a))
+                    // A calendar account of the group Mail shows the calendar, so it tells apart
+                    // from the mail account of the same address.
+                    .map(move |a| (if a.kind == "caldav" { Icon::Calendar } else { group.icon() }, a))
             })
             .collect()
     };

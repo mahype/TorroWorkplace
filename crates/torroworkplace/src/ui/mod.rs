@@ -2016,7 +2016,7 @@ impl Ui {
                     .spacing(space::xs())
                     .align_y(Alignment::Center)
                     .into(),
-                    _ => widgets::menu_button(nav, Some(section.icon()), name, menu),
+                    _ => widgets::menu_button(nav, Some(section.icon()), widgets::path_menu_label(&name), menu),
                 };
                 (vec![arrow], title)
             }
