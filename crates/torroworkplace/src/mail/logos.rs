@@ -19,16 +19,21 @@
 //! `https`, follows at most [`MAX_REDIRECTS`] redirects, each checked anew, and gives up after
 //! [`CONNECT_TIMEOUT`] to connect and [`DEADLINE`] in all.
 //!
-//! **What is kept**: never the original. An SVG (at most [`SVG_MAX_BYTES`]) is drawn without scripts
-//! and without anything it refers to: one that holds a script, an entity, a foreign object or a
-//! picture is refused whole. A raster picture (at most [`RASTER_MAX_BYTES`], [`RASTER_MAX_PIXELS`]
-//! on each side when decoded, at least [`RASTER_MIN_PIXELS`]) is decoded within limits. Both are
-//! fitted onto white, [`LOGO_PIXELS`] square, and kept as PNG in `<cache>/sender-logos/` (0700, files
-//! 0600): `<sha256 of the domain>.png` and `index.json`, when each domain was asked and whether it
-//! had a logo.
+//! **What is kept**: never the original. An SVG (at most [`SVG_MAX_BYTES`], never compressed) is
+//! drawn without scripts and without anything it refers to: one that holds a script, an entity, a
+//! foreign object or a picture is refused whole. A raster picture (at most [`RASTER_MAX_BYTES`],
+//! [`RASTER_MAX_PIXELS`] on each side when decoded, at least [`RASTER_MIN_PIXELS`]) is decoded within
+//! limits and fills four fifths of the circle, so its corners are not cut. Both are drawn on a
+//! blocking thread, fitted onto white, [`LOGO_PIXELS`] square, cut round (so the logo is round in
+//! every renderer), and kept as PNG in `<cache>/sender-logos/` (0700, files 0600): `<sha256 of the
+//! domain>.png` and `index.json`, when each domain was asked and whether it had a logo; at most
+//! [`MAX_DOMAINS`].
 //!
 //! **When**: a domain is asked when a checked mail names it ([`SenderLogos::want`]) and it was never
-//! asked, its logo is older than [`FOUND_FOR`], or it had none for [`NOT_FOUND_FOR`]. One task asks
+//! asked, its logo is older than [`FOUND_FOR`], or it had none for [`NOT_FOUND_FOR`]. Only a DNS that
+//! does not answer counts as offline (asked again after an hour); a website that cannot be reached
+//! is a domain without a logo. A kept logo not found when asked again stays for one more round, so a
+//! server failing for a moment does not take it away. One task asks
 //! one domain after the other, [`GAP`] apart. Opening a mail asks nothing: the reading commands only
 //! read what is kept ([`SenderLogos::has`], [`SenderLogos::png`]). While "Logos of known senders" is
 //! off ([`SenderLogos::set_switch`]) nothing is asked or handed out.
@@ -73,6 +78,10 @@ pub const RASTER_MIN_PIXELS: u32 = 48;
 /// A raster picture larger than this on a side is refused before it is decoded.
 pub const RASTER_MAX_PIXELS: u32 = 2048;
 
+/// How much of the circle's side a raster picture fills; a BIMI SVG is made for the circle and fills
+/// all of it.
+const RASTER_FILL_PERCENT: u32 = 80;
+
 /// The most memory decoding one raster picture may take.
 const RASTER_MAX_ALLOC: u64 = 64 << 20;
 
@@ -102,6 +111,9 @@ const PAGE_CANDIDATES: usize = 4;
 
 /// The file of what was asked, beside the logos.
 const INDEX_FILE: &str = "index.json";
+
+/// At most this many domains are kept; beyond, those asked longest ago go with their logos.
+pub const MAX_DOMAINS: usize = 2000;
 
 /// Why a request brought nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +227,18 @@ pub type LogoSwitch = Arc<dyn Fn() -> bool + Send + Sync>;
 struct Asked {
     at: DateTime<Utc>,
     found: bool,
+    /// A logo is kept, but the last time it was asked again it was not found: kept once more, so a
+    /// server that fails for a moment does not take it away; asked again after [`NOT_FOUND_FOR`].
+    #[serde(default)]
+    missed: bool,
+}
+
+impl Asked {
+    /// Whether the domain is to be asked again at `now`.
+    fn due(&self, now: DateTime<Utc>) -> bool {
+        let age = now.signed_duration_since(self.at);
+        age > if self.found && !self.missed { FOUND_FOR } else { NOT_FOUND_FOR }
+    }
 }
 
 /// `index.json`: what was asked, by domain.
@@ -275,7 +299,12 @@ impl SenderLogos {
 
     /// Whether a logo of `domain` is kept and logos are on.
     pub fn has(&self, domain: &str) -> bool {
-        self.on() && self.with_index(|index| index.domains.get(domain).is_some_and(|asked| asked.found))
+        self.on() && self.kept(domain)
+    }
+
+    /// Whether a logo of `domain` is kept, whether logos are on or not.
+    pub fn kept(&self, domain: &str) -> bool {
+        self.with_index(|index| index.domains.get(domain).is_some_and(|asked| asked.found))
     }
 
     /// The kept logo of `domain` as PNG, while logos are on.
@@ -297,10 +326,7 @@ impl SenderLogos {
         let Some(domain) = checked_domain(domain) else { return };
         let start = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            let due = self.index_in(&mut state).domains.get(&domain).is_none_or(|asked| {
-                let age = now.signed_duration_since(asked.at);
-                age > if asked.found { FOUND_FOR } else { NOT_FOUND_FOR }
-            });
+            let due = self.index_in(&mut state).domains.get(&domain).is_none_or(|asked| asked.due(now));
             let resting = state.unreached.get(&domain).is_some_and(|at| at.elapsed() < UNREACHED_FOR);
             if !due || resting || state.queued.contains(&domain) {
                 return;
@@ -317,8 +343,10 @@ impl SenderLogos {
         }
     }
 
-    /// Asks the queued domains one after the other, [`GAP`] apart, until the queue is empty.
+    /// Asks the queued domains one after the other, [`GAP`] apart, until the queue is empty. However
+    /// it ends, a later [`SenderLogos::want`] starts a new one ([`Running`]).
     async fn ask_queue(self: Arc<Self>) {
+        let _running = Running(Arc::clone(&self));
         loop {
             let next = {
                 let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -340,7 +368,9 @@ impl SenderLogos {
         }
     }
 
-    /// Notes what asking `domain` found: its logo, none, or that it could not be reached.
+    /// Notes what asking `domain` found: its logo, none, or that it could not be reached. A kept logo
+    /// that is not found once stays for one more round ([`Asked::missed`]). At most [`MAX_DOMAINS`]
+    /// are kept.
     fn keep(&self, domain: &str, found: Result<Option<Vec<u8>>, WebError>, now: DateTime<Utc>) {
         let Some(dir) = &self.dir else { return };
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -352,22 +382,34 @@ impl SenderLogos {
             }
         };
         state.unreached.remove(domain);
+        let before = self.index_in(&mut state).domains.get(domain).copied();
         let file = dir.join(file_name(domain));
-        let written = match &logo {
-            Some(png) => crate::clients::create_private_dir(dir)
-                .map_err(|err| err.kind())
-                .and_then(|()| crate::clients::write_private(&file, png).map_err(|_| std::io::ErrorKind::Other)),
-            None => match std::fs::remove_file(&file) {
-                Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.kind()),
-                _ => Ok(()),
-            },
+        let (asked, written) = match &logo {
+            Some(png) => (
+                Asked { at: now, found: true, missed: false },
+                crate::clients::create_private_dir(dir)
+                    .map_err(|err| err.kind())
+                    .and_then(|()| crate::clients::write_private(&file, png).map_err(|_| std::io::ErrorKind::Other)),
+            ),
+            None if before.is_some_and(|asked| asked.found && !asked.missed) => {
+                (Asked { at: now, found: true, missed: true }, Ok(()))
+            }
+            None => (Asked { at: now, found: false, missed: false }, remove(&file)),
         };
         if let Err(kind) = written {
             eprintln!("torroworkplace: sender logos: cannot keep a logo: {kind}");
             return;
         }
         let index = self.index_in(&mut state);
-        index.domains.insert(domain.to_string(), Asked { at: now, found: logo.is_some() });
+        index.domains.insert(domain.to_string(), asked);
+        while index.domains.len() > MAX_DOMAINS {
+            let Some(oldest) = index.domains.iter().min_by_key(|(_, asked)| asked.at).map(|(name, _)| name.clone())
+            else {
+                break;
+            };
+            index.domains.remove(&oldest);
+            let _ = remove(&dir.join(file_name(&oldest)));
+        }
         let json = serde_json::to_vec(index).unwrap_or_default();
         let stored = crate::clients::create_private_dir(dir).map_err(|err| err.kind()).and_then(|()| {
             crate::clients::write_private(&dir.join(INDEX_FILE), &json).map_err(|_| std::io::ErrorKind::Other)
@@ -393,30 +435,32 @@ impl SenderLogos {
         })
     }
 
-    /// The logo of `domain` after the module docs, as a PNG of [`LOGO_PIXELS`] on white; `Ok(None)`
-    /// when the domain has none, [`WebError::Offline`] when it could not be asked.
+    /// The logo of `domain` after the module docs, as a round PNG of [`LOGO_PIXELS`] on white;
+    /// `Ok(None)` when the domain has none, [`WebError::Offline`] when the DNS could not be asked.
+    /// Once the DNS answered, a website that cannot be reached is a domain without a logo (a domain
+    /// that only sends mail has none), asked again after [`NOT_FOUND_FOR`].
     pub async fn find(&self, domain: &str) -> Result<Option<Vec<u8>>, WebError> {
         if let Some(svg) = self.bimi(domain).await?
-            && let Some(logo) = from_svg(&svg)
+            && let Some(logo) = drawn(svg, true).await
         {
             return Ok(Some(logo));
         }
         if let Ok(url) = Url::parse(&format!("https://{domain}/apple-touch-icon.png"))
-            && let Some((_, picture)) = self.fetch(url, RASTER_MAX_BYTES).await?
-            && let Some(logo) = from_raster(&picture)
+            && let Some((_, picture)) = self.reach(url, RASTER_MAX_BYTES).await
+            && let Some(logo) = drawn(picture, false).await
         {
             return Ok(Some(logo));
         }
         let Ok(start) = Url::parse(&format!("https://{domain}/")) else { return Ok(None) };
-        let Some((at, page)) = self.fetch(start, PAGE_MAX_BYTES).await? else { return Ok(None) };
+        let Some((at, page)) = self.reach(start, PAGE_MAX_BYTES).await else { return Ok(None) };
         let own = at.host_str().is_some_and(|host| host == domain || host.ends_with(&format!(".{domain}")));
         if !own {
             return Ok(None);
         }
         for symbol in symbols(&String::from_utf8_lossy(&page), &at).into_iter().take(PAGE_CANDIDATES) {
             let max = if symbol.svg { SVG_MAX_BYTES } else { RASTER_MAX_BYTES };
-            let Some((_, picture)) = self.fetch(symbol.url, max).await? else { continue };
-            let logo = if symbol.svg { from_svg(&picture) } else { from_raster(&picture) };
+            let Some((_, picture)) = self.reach(symbol.url, max).await else { continue };
+            let logo = drawn(picture, symbol.svg).await;
             if logo.is_some() {
                 return Ok(logo);
             }
@@ -434,7 +478,12 @@ impl SenderLogos {
             return Ok(None);
         }
         let Ok(url) = Url::parse(&location) else { return Ok(None) };
-        Ok(self.fetch(url, SVG_MAX_BYTES).await?.map(|(_, svg)| svg))
+        Ok(self.reach(url, SVG_MAX_BYTES).await.map(|(_, svg)| svg))
+    }
+
+    /// [`SenderLogos::fetch`], with a server that cannot be reached as no answer.
+    async fn reach(&self, url: Url, max: usize) -> Option<(Url, Vec<u8>)> {
+        self.fetch(url, max).await.ok().flatten()
     }
 
     /// The body at `url` and the address it came from, after at most [`MAX_REDIRECTS`] redirects,
@@ -459,6 +508,30 @@ impl SenderLogos {
         }
         Ok(None)
     }
+}
+
+/// While the task asking the queue runs; however it ends, even by a panic, it notes that none runs.
+struct Running(Arc<SenderLogos>);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.0.state.lock().unwrap_or_else(PoisonError::into_inner).running = false;
+    }
+}
+
+/// Removes `file`; one that is not there is fine.
+fn remove(file: &std::path::Path) -> Result<(), std::io::ErrorKind> {
+    match std::fs::remove_file(file) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.kind()),
+        _ => Ok(()),
+    }
+}
+
+/// `bytes` drawn as a logo ([`from_svg`] or [`from_raster`]) on a blocking thread: decoding takes a
+/// while, and a picture that makes the decoder fail hard is a picture without logo.
+async fn drawn(bytes: Vec<u8>, svg: bool) -> Option<Vec<u8>> {
+    let draw = move || if svg { from_svg(&bytes) } else { from_raster(&bytes) };
+    tokio::task::spawn_blocking(draw).await.ok().flatten()
 }
 
 /// The file of the logo of `domain`: the SHA-256 of its name, so no name from outside picks a path.
@@ -548,7 +621,8 @@ fn symbols(html: &str, base: &Url) -> Vec<Symbol> {
 /// An SVG drawn after the module docs; `None` when it is too large, holds something refused, or
 /// cannot be read.
 pub fn from_svg(bytes: &[u8]) -> Option<Vec<u8>> {
-    if bytes.len() > SVG_MAX_BYTES {
+    // Compressed SVG (`svgz`) would unpack past every limit before anything here could look at it.
+    if bytes.len() > SVG_MAX_BYTES || bytes.starts_with(&[0x1f, 0x8b]) {
         return None;
     }
     let lower = String::from_utf8_lossy(bytes).to_ascii_lowercase();
@@ -605,7 +679,9 @@ pub fn from_raster(bytes: &[u8]) -> Option<Vec<u8>> {
     if picture.width().min(picture.height()) < RASTER_MIN_PIXELS {
         return None;
     }
-    let fitted = picture.resize(LOGO_PIXELS, LOGO_PIXELS, image::imageops::FilterType::Triangle).to_rgba8();
+    // Within the circle's safe square: a touch icon reaches its corners, which the circle would cut.
+    let inner = LOGO_PIXELS * RASTER_FILL_PERCENT / 100;
+    let fitted = picture.resize(inner, inner, image::imageops::FilterType::Triangle).to_rgba8();
     let mut canvas = RgbaImage::from_pixel(LOGO_PIXELS, LOGO_PIXELS, Rgba([255, 255, 255, 255]));
     let x = (LOGO_PIXELS - fitted.width()) / 2;
     let y = (LOGO_PIXELS - fitted.height()) / 2;
@@ -613,7 +689,15 @@ pub fn from_raster(bytes: &[u8]) -> Option<Vec<u8>> {
     png(canvas)
 }
 
-fn png(canvas: RgbaImage) -> Option<Vec<u8>> {
+/// `canvas` cut round (transparent outside the circle, with a soft edge of a pixel) as PNG: round in
+/// every renderer, also one that cannot clip a picture.
+fn png(mut canvas: RgbaImage) -> Option<Vec<u8>> {
+    let radius = canvas.width().min(canvas.height()) as f32 / 2.0;
+    for (x, y, pixel) in canvas.enumerate_pixels_mut() {
+        let distance = ((x as f32 + 0.5 - radius).powi(2) + (y as f32 + 0.5 - radius).powi(2)).sqrt();
+        let coverage = (radius - distance + 0.5).clamp(0.0, 1.0);
+        pixel.0[3] = (f32::from(pixel.0[3]) * coverage).round() as u8;
+    }
     let mut out = Cursor::new(Vec::new());
     image::DynamicImage::ImageRgba8(canvas).write_to(&mut out, image::ImageFormat::Png).ok()?;
     Some(out.into_inner())
@@ -645,6 +729,8 @@ pub(crate) mod tests {
         txt: HashMap<String, Vec<String>>,
         pages: HashMap<String, Reply>,
         offline: bool,
+        /// The DNS answers, but no website does.
+        http_offline: bool,
         asked: Mutex<Vec<String>>,
     }
 
@@ -677,6 +763,9 @@ pub(crate) mod tests {
         fn get<'a>(&'a self, url: &'a Url, max: usize) -> WebFuture<'a, Reply> {
             Box::pin(async move {
                 self.asked.lock().expect("lock").push(url.to_string());
+                if self.offline || self.http_offline {
+                    return Err(WebError::Offline);
+                }
                 match self.pages.get(url.as_str()) {
                     Some(Reply::Body(body)) if body.len() > max => Err(WebError::Failed),
                     Some(reply) => Ok(reply.clone()),
@@ -809,6 +898,18 @@ pub(crate) mod tests {
     async fn an_unreachable_domain_is_offline_not_without_logo() {
         let (_, logos) = with_web(FakeWeb { offline: true, ..FakeWeb::default() });
         assert_eq!(logos.find("paypal.example").await, Err(WebError::Offline));
+        // The DNS answers, the website does not: a domain that only sends mail, without a logo.
+        let (web, logos) = with_web(FakeWeb { http_offline: true, ..FakeWeb::default() });
+        assert_eq!(logos.find("mailer.example").await, Ok(None));
+        assert_eq!(web.asked().len(), 2, "the touch icon and the start page, once each");
+    }
+
+    #[test]
+    fn a_logo_is_round_on_white() {
+        let logo = decoded(&from_raster(&picture(180, 180, image::ImageFormat::Png)).expect("a logo"));
+        assert_eq!(logo.get_pixel(0, 0).0[3], 0, "transparent outside the circle");
+        assert_eq!(logo.get_pixel(64, 64).0[3], 255);
+        assert_eq!(logo.get_pixel(64, 8), &Rgba([255, 255, 255, 255]), "four fifths: a white rim inside the circle");
     }
 
     #[test]
@@ -820,6 +921,9 @@ pub(crate) mod tests {
         large.splice(large.len() - 6..large.len() - 6, std::iter::repeat_n(b' ', SVG_MAX_BYTES));
         assert_eq!(from_svg(&large), None, "larger than 32 KiB");
         assert_eq!(from_svg(b"<svg xmlns='http://www.w3.org/2000/svg'"), None, "broken");
+        let mut packed = vec![0x1f, 0x8b];
+        packed.extend(fixture("logo.svg"));
+        assert_eq!(from_svg(&packed), None, "compressed SVG unpacks past every limit");
     }
 
     #[test]
@@ -878,6 +982,38 @@ pub(crate) mod tests {
         again.want("new.example", now);
         settled(&again).await;
         assert_eq!(web.asked().len(), before);
+    }
+
+    /// A kept logo not found once stays for one more round; a second miss takes it away. Beyond
+    /// [`MAX_DOMAINS`] the domains asked longest ago go.
+    #[test]
+    fn a_logo_survives_one_miss_and_the_index_stays_bounded() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let (_, logos) = with_web(FakeWeb::default());
+        let logos = SenderLogos { dir: Some(tmp.path().to_path_buf()), ..logos };
+        let now = Utc::now();
+        logos.keep("github.example", Ok(Some(b"png".to_vec())), now);
+        logos.keep("github.example", Ok(None), now + TimeDelta::days(31));
+        assert!(logos.kept("github.example") && logos.png("github.example").is_some(), "kept once more");
+        let asked = logos.with_index(|index| index.domains["github.example"]);
+        assert!(!asked.due(now + TimeDelta::days(37)) && asked.due(now + TimeDelta::days(39)), "a week, not a month");
+        logos.keep("github.example", Ok(None), now + TimeDelta::days(39));
+        assert!(!logos.kept("github.example") && logos.png("github.example").is_none(), "gone after two");
+        logos.keep("github.example", Err(WebError::Offline), now);
+        assert!(!logos.kept("github.example"), "offline notes nothing");
+
+        {
+            let mut state = logos.state.lock().expect("lock");
+            let index = logos.index_in(&mut state);
+            for n in 0..MAX_DOMAINS {
+                let asked = Asked { at: now + TimeDelta::seconds(n as i64), found: false, missed: false };
+                index.domains.insert(format!("d{n}.example"), asked);
+            }
+        }
+        logos.keep("new.example", Ok(None), now + TimeDelta::days(1));
+        let names = logos.with_index(|index| index.domains.keys().cloned().collect::<Vec<_>>());
+        assert_eq!(names.len(), MAX_DOMAINS);
+        assert!(!names.contains(&"d0.example".to_string()), "the one asked longest ago went");
     }
 
     /// Waits until the task asking the queue is done.
