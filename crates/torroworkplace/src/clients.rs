@@ -2529,6 +2529,8 @@ pub(crate) mod tests {
         clients.add("Assistant", ASSISTANT_CLIENT, Rights::assistant()).await.expect("again after removing it");
     }
 
+    // Modes are Unix's: Windows keeps a private folder private by its own rules.
+    #[cfg(unix)]
     #[test]
     fn an_existing_state_directory_is_made_private() {
         use std::os::unix::fs::PermissionsExt;

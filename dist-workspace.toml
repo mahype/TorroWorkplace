@@ -25,12 +25,15 @@ targets = [
 # publish-jobs = ["homebrew"]
 # Signed and notarised .app bundles for macOS (.github/workflows/publish-macos-app.yml). Needs the
 # signing secrets and the repository variable MACOS_APP_ENABLED=true, see docs/release.md.
-publish-jobs = ["./publish-macos-app"]
+# The AUR packages (.github/workflows/publish-aur.yml): skipped until the repository variable AUR_ENABLED is 'true'
+# and the AUR secrets exist, see docs/release.md.
+publish-jobs = ["./publish-macos-app", "./publish-aur"]
 # Before anything is built: clippy, design check and tests on Linux, macOS and Windows (.github/workflows/ci.yml).
 # A failing check stops the release.
 plan-jobs = ["./ci"]
 # release.yml carries one hand edit: the `host` job also needs `custom-ci`, otherwise a failed check would skip the
-# builds but `host` (if: always()) would still create the release. After `dist generate` re-apply it.
+# builds but `host` (if: always()) would still create the release. With this line `dist generate` leaves release.yml
+# alone: to regenerate it, comment the line out, run `dist generate`, restore the line and re-apply the hand edit.
 allow-dirty = ["ci"]
 # Where the shell and PowerShell installers put the binaries.
 install-path = "CARGO_HOME"
@@ -43,3 +46,6 @@ pr-run-mode = "skip"
 # the release contents (a called workflow cannot have more rights than its caller grants).
 [dist.github-custom-job-permissions]
 "publish-macos-app" = { contents = "write" }
+# The AUR job only reads the repository (templates); it pushes to the AUR with its own SSH key. Without this entry dist
+# would grant every custom publish job id-token and packages write.
+"publish-aur" = { contents = "read" }

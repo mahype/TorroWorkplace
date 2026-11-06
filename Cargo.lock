@@ -7071,6 +7071,7 @@ dependencies = [
  "iced",
  "iced_test",
  "png 0.18.1",
+ "roxmltree 0.21.1",
  "serde",
  "serde_json",
  "tokio",
@@ -7473,6 +7474,7 @@ dependencies = [
  "winit",
  "winreg",
  "winresource",
+ "zip",
 ]
 
 [[package]]

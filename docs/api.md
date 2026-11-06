@@ -85,7 +85,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
 | `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |
-| `apps` | `list_apps` | `open_app` ¹³ | | |
+| `apps` | `list_apps`, `list_catalog`, `app_job` | `open_app` ¹³, `check_updates`, `cancel_app_job` | | `uninstall_app`, `install_app` und `update_apps` (die letzten zwei **nur App-Schlüssel**, Punkt 11 unten, #411) |
 | `tools` ²² | `list_tools`, `web_search`, `fetch_page`, `list_search_providers` ²², `list_folder`, `find_files` | `create_pdf`, `open_file`, `save_file_as` (**nur App-Schlüssel**, Punkt 9 unten), `create_folder`, `copy_file`, `move_file` | `trash_file` | |
 | `extensions` ²⁵ | `list_extensions`, `get_extension`, `list_catalog`, `list_tools`, `read_logs` (**nur App-Schlüssel**, Punkt 10 unten) | `set_enabled` (einschalten **nur App-Schlüssel**) | `call_tool` (Zugriff des Werkzeugs, ²⁵) | `remove_extension`, `install_extension`, `confirm_tools`, `update_extension`, `set_secret`, `set_folder` (die letzten fünf **nur App-Schlüssel**) |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
@@ -1154,6 +1154,14 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    „Save all to folder…“) nur mit dem App-Schlüssel (`Request::kept_for_people`): Den Pfad wählt ein Mensch im
    Dialog des Systems. Clients speichern nach `downloads` oder in ein Ziel (`{"target": …}`), mit der gewöhnlichen
    Schreibregel (Test `only_people_choose_where_attachments_go` in `torro-ipc`).
+
+11. **Eine App installieren oder aktualisieren** (Issue #411, App-Katalog): `apps.install_app` und
+   `apps.update_apps` nur mit dem App-Schlüssel (`Mcp::Never`). Grund: Wer installiert oder aktualisiert,
+   entscheidet, welcher Code auf dem Rechner der Person läuft, wie bei einem MCP-Server (Punkt 10). Die Liste mit den
+   Versionen (`apps.list_catalog`), das Prüfen auf Updates (`apps.check_updates`), der Stand eines Auftrags
+   (`apps.app_job`) und das Abbrechen (`apps.cancel_app_job`) gibt es auch für Agenten, ebenso das Entfernen
+   (`apps.uninstall_app`, Admin, also immer mit Freigabe). Ein Auftrag meldet nur feste Codes, Größen, Pfade und
+   Versionen, nie die Ausgaben von `codesign`, `tar`, `pacman` oder `powershell`.
 
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.

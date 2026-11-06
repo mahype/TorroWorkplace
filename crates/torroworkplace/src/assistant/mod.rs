@@ -261,8 +261,8 @@ impl Assistant {
         self
     }
 
-    /// The assistant with other coding agents, for tests.
-    #[cfg(test)]
+    /// The assistant with other coding agents, for tests (the agents' tests run on Unix only).
+    #[cfg(all(test, unix))]
     pub(crate) fn with_agents(mut self, agents: engines::Agents) -> Assistant {
         self.agents = agents;
         self

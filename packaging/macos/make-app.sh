@@ -48,9 +48,11 @@ cp "$binary" "$app/Contents/MacOS/$bin"
 chmod +x "$app/Contents/MacOS/$bin"
 
 # CFBundleVersion and CFBundleShortVersionString allow only digits and dots: 0.2.0-rc.1 becomes 0.2.0.
+# TorroVersion keeps the whole version, so copies of the service compare pre-releases too (issue #411).
 bundle_version="${version%%-*}"
 
 sed -e "s|@TITLE@|$title|g" -e "s|@BIN@|$bin|g" -e "s|@APPID@|$appid|g" -e "s|@VERSION@|$bundle_version|g" \
+  -e "s|@FULLVERSION@|$version|g" \
   "$here/Info.plist.in" > "$app/Contents/Info.plist"
 if [ "${AGENT_APP:-}" = "1" ]; then
   plutil -insert LSUIElement -bool true "$app/Contents/Info.plist"

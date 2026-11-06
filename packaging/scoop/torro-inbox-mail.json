@@ -1,0 +1,48 @@
+{
+    "version": "0.1.0",
+    "description": "Torro Workplace Mail: mail for the tiled desktop",
+    "homepage": "https://github.com/mahype/TorroWorkplace",
+    "license": "MIT OR Apache-2.0",
+    "##": [
+        "Torro Workplace Mail on its own (issue #411): its release zip and the background service's (torroworkplace)",
+        "land in this app's folder, where the app finds the service.",
+        "The Notification Hub's zip (torroinbox) comes along too: this app opens its compose window.",
+        "Only the app's own program goes on the PATH and into the Start menu; the main application is the",
+        "manifest torroworkplace. The hashes are filled in per release (checkver/autoupdate)."
+    ],
+    "architecture": {
+        "64bit": {
+            "url": [
+                "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torro-inbox-mail-x86_64-pc-windows-msvc.zip",
+                "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torroinbox-x86_64-pc-windows-msvc.zip",
+                "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torroworkplace-x86_64-pc-windows-msvc.zip"
+            ],
+            "hash": [
+                "TODO-sha256-of-the-zip",
+                "TODO-sha256-of-the-zip",
+                "TODO-sha256-of-the-zip"
+            ]
+        }
+    },
+    "bin": "torro-inbox-mail.exe",
+    "shortcuts": [
+        [
+            "torro-inbox-mail.exe",
+            "Torro Workplace Mail"
+        ]
+    ],
+    "checkver": {
+        "github": "https://github.com/mahype/TorroWorkplace"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": [
+                    "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torro-inbox-mail-x86_64-pc-windows-msvc.zip",
+                    "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torroinbox-x86_64-pc-windows-msvc.zip",
+                    "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torroworkplace-x86_64-pc-windows-msvc.zip"
+                ]
+            }
+        }
+    }
+}

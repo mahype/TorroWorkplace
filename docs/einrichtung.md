@@ -242,8 +242,9 @@ Neu: eine Einstellung je Komponente (`calendar`, `tasks`, `mail`, `inbox`, `assi
 Standard **an**, damit bestehende Installationen nichts merken.
 
 Eine abgeschaltete Komponente
-- erscheint nicht im App-Umschalter, im Tray-Menü und in der Overview; General › Apps zeigt sie mit
-  Schalter „Off“ (dort schaltet man sie wieder ein),
+- erscheint nicht im App-Umschalter, im Tray-Menü und in der Overview; der Abschnitt Apps zeigt sie mit
+  der Pille „Turned off“ (im Menü „…“ der Karte schaltet man sie mit „Turn on“ wieder ein; Workspaces unter
+  General › Startup),
 - verursacht keine Hintergrundarbeit, die nur ihr dient (Mail-Abruf, Abfragen von Eingangsquellen,
   Spracherkennung des Assistenten),
 - behält ihre Konten und Daten. Kalender und Aufgaben teilen sich Konten; ein Konto wird erst entfernt,
@@ -260,7 +261,7 @@ Befehle. Neu sind nur zwei Einstellungen und ein Feld.
 |---|---|---|---|
 | Stand der Einrichtung lesen | Start der Steuerzentrale, Overview | neues Feld `Settings::setup` über `settings.get_settings` · Read | `settings_get_settings` (gibt es) |
 | Einrichtung abschließen / verschieben / neu starten | „Finish“, „Set up later“, General › „Run setup again“ | `Request::SetSetting { key: Setup }` · `settings.set_setting` · Admin | `settings_set_setting` (gibt es, Admin → Freigabe) |
-| Komponente an/aus | Schritt 3, General › Apps | `Request::SetSetting { key: Component, value: {"component": "mail", "enabled": false} }` (Form wie `ListOrder`) · Admin | `settings_set_setting` |
+| Komponente an/aus | Schritt 3, Apps › Menü „…“ (Workspaces: General › Startup) | `Request::SetSetting { key: Component, value: {"component": "mail", "enabled": false} }` (Form wie `ListOrder`) · Admin | `settings_set_setting` |
 | Dienste eines Nextcloud-Kontos | Schritt 2, 4, 5, 7; Kontoseite | neues optionales Feld `AccountInfo::services` über `accounts.list_accounts` · Read | `accounts_list_accounts` (gibt es) |
 | Nextcloud verbinden | Schritt 2 | `ConnectNextcloud` · Admin | `accounts_connect_nextcloud` (gibt es; Anmeldung im Browser macht der Mensch) |
 | CalDAV, Mail, GitHub-Token, ntfy, KI verbinden | Schritte 4–8 | vorhandene `Connect*` · Admin, nur App-Schlüssel | **Never** (Punkt 5: Geheimnisse nur über die Oberfläche) |

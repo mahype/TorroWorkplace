@@ -85,6 +85,7 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | Abschnitt | Inhalt | |
 |---|---|---|
 | **Overview** | Auf einen Blick: Dienst läuft, Tiling-Manager erkannt, Konten (Zahl, Probleme), letzter Sync, „Needs your attention“ mit Konten, die eine neue Anmeldung brauchen | v1 |
+| **Apps** | App-Katalog (#411): jede App mit Icon, Frage, Beschreibung und Version, installierte oben, fehlende darunter; Installieren, Aktualisieren („Update all“, auch die Hauptanwendung) und Entfernen in einem eigenen Fenster mit Schritten und Fortschritt; Ein/Aus einer App im Menü „…“ ihrer Karte; per Paketmanager installierte Apps zeigen den Befehl. Siehe [einzelne-apps.md](einzelne-apps.md), „App-Katalog“ | #411 |
 | **Accounts** | Externe Konten in festen Gruppen (Nextcloud, Mail, GitHub, ntfy): Anbieter links, Konten rechts; Status, Verbindung und Dienste je Konto. | v1 |
 | **AI** | Ständiger Abschnitt für KI-Anbieter, ihre Konten und Modelle sowie die Datenregel „Mail to cloud models“. | seit 2026-10-20 |
 | **API** | Ob Programme die API mit eigenem Schlüssel nutzen dürfen; die Keys mit ihren Rechten bis auf einzelne Endpunkte. Konzept: [api.md](api.md) | #231 (S.35) |
@@ -93,16 +94,16 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | **Approvals** | Was Agenten zur Freigabe vorlegen, und was entschieden wurde | v1 |
 | **Workspaces** | Fenstermanager, Tasten 1 … 0 mit wählbarem Modifikator, Vorlagen bearbeiten, aktualisieren, löschen, beim Anmelden laden. Strategie je Fenster später; die F1–F10 der alten App sind verworfen. Siehe [Workspaces (#243)](#workspaces-243) | #243 (WS.6), Rest später |
 | **Appearance** | Hell/dunkel, Design-Paket ([design-pakete.md](design-pakete.md)), Zoom; gilt für alle Apps, die Apps verweisen hierher | v1 |
-| **General** | Sprache (System / English / Deutsch), Start beim Anmelden, Einrichtung erneut; Gruppe **Apps**: je App „On“ (Komponente) und „Open“, dazu der Satz, dass ihre Einstellungen hinter dem Zahnrad liegen | v1, Gruppe Apps mit S.21 |
-| **Updates** | Automatisch prüfen, „Check for updates now“, zuletzt geprüft | später |
+| **General** | Sprache (System / English / Deutsch), Start beim Anmelden (dort auch der Schalter für Workspaces), Einrichtung erneut. Die frühere Gruppe **Apps** (je App „On“ und „Open“) ist seit #411 der Abschnitt **Apps** | v1 |
+| **Updates** | Steht seit #411 im Abschnitt Apps: der Dienst prüft täglich und beim Öffnen von Apps, ohne Schalter; „⟳“ prüft sofort, der Fuß zeigt, wann zuletzt geprüft wurde | #411 |
 | **Diagnostics** | Log-Datei, Sync-Protokoll, Verbindung testen | später |
 | **Help** | Kurzanleitung, Tastenkürzel, Links | später |
 
-Die Seitenleiste hat **eine** Liste: Overview, Accounts, AI, API, MCP clients, MCP servers (#302), Approvals, Workspaces,
+Die Seitenleiste hat **eine** Liste: Overview, Apps (#411), Accounts, AI, API, MCP clients, MCP servers (#302), Approvals, Workspaces,
 Appearance; General am Fuß (#231). Die heutigen Seiten **Apps**, **Assistant** und **Notification Hub** entfallen (entschieden
 2026-10-16, #210): Apps geht in General auf, die Einstellungen von Assistent und Eingang ziehen in deren Fenster.
 Mit #231 ziehen die Rechte von Assistent und Bots in das Fenster des Assistenten. Die Datenregel steht
-seit 2026-10-20 unter AI; „Agents & API“ entfällt.
+seit 2026-10-20 unter AI; „Agents & API“ entfällt. Seit #411 gibt es wieder einen Abschnitt **Apps**, jetzt als App-Katalog gleich nach Overview; die Gruppe Apps unter General entfällt.
 
 ## Einstellungen in den Apps
 
@@ -180,7 +181,7 @@ zeigen je ihre Abschnitte: Notification Hub und App Feed die des Eingangs, das M
 
 In der Steuerzentrale bleiben: Konten (Status, Verbindung, welche Dienste ein Konto liefert,
 Entfernen; KI-Konten mit Modellen und Datenregel, siehe [KI](#ki)), API und MCP (Programme von außen mit Rechten),
-Approvals, Workspaces, Appearance, General (Sprache, Start beim Anmelden, Apps an/aus). Die Kontodetailseiten
+Approvals, Workspaces, Appearance, General (Sprache, Start beim Anmelden), Apps (Katalog, Apps an/aus, #411). Die Kontodetailseiten
 werden dadurch kurz; wo eine Einstellung umzieht, steht dort eine Zeile, die zum neuen Ort führt
 („Calendars and lists are chosen in Calendar and Tasks.“) mit „Open“ je App.
 
@@ -229,7 +230,7 @@ spätere Auswahl **pro Fenster** (unten) kommt als eigener Schalter dazu, nicht 
   nur lesende Verbindung und wartet nicht auf Synchronisierung oder Indizierung. Die Statistik merkt er
   sich je Konto; `mail.account_stats` antwortet aus diesem Stand mit seinem Zeitpunkt (`as_of`, auf der
   Seite „As of …“) und rechnet im Hintergrund neu, wenn er älter als eine Minute ist.
-- „Open“ unter General › Apps und an den Kontoseiten schickt `apps.open_app` mit der Fensterklasse (Mail:
+- „Open“ im Abschnitt Apps und an den Kontoseiten schickt `apps.open_app` mit der Fensterklasse (Mail:
   `torro-inbox-mail`).
 - Der Schlüssel eines neuen Clients gelangt nie in einen App-Prozess. Bis #231 hieß das: Apps senden keine
   schreibenden `clients.*`. Seit #231 darf **nur** der Abschnitt Access des Assistenten `clients.update_client`,
@@ -735,7 +736,7 @@ die Einstellungen einer App hinter ihrem Zahnrad liegen. `--section apps` öffne
 
 | Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
 |---|---|---|---|---|---|---|
-| je Komponente an/aus (Calendar, Tasks, Mail, Notification Hub, Assistant, Workspaces) | Komponente aus Umschalter, Tray und Übersicht nehmen, nichts im Hintergrund | Apps › Components; Einrichtung › Components | `componentsOff` | `set_setting component` | alle | bleibt, General › Apps |
+| je Komponente an/aus (Calendar, Tasks, Mail, Notification Hub, Assistant, Workspaces) | Komponente aus Umschalter, Tray und Übersicht nehmen, nichts im Hintergrund | Apps › Components; Einrichtung › Components | `componentsOff` | `set_setting component` | alle | bleibt, Apps › Menü „…“ der Karte (Turn off / Turn on), Workspaces unter General › Startup |
 | Open | App starten (Aktion) | Apps › Suite apps | – | `apps.open_app` | – | bleibt als Aktion |
 
 ### Accounts

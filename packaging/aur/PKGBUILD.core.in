@@ -1,0 +1,44 @@
+# Template for the AUR package `torroworkplace-bin`: the background service of the suite, nothing
+# else. It holds the program `torroworkplace` and its systemd user unit, but no launcher entry and no
+# icon: `/usr/share/applications/torro-workplace.desktop` is what marks the main application as
+# installed (docs/einzelne-apps.md), and that comes only with the package `torro-workplace`
+# (PKGBUILD.main.in). Every app package depends on this one (issue #411).
+# .github/workflows/publish-aur.yml replaces the @PLACEHOLDERS@ with sed and lets updpkgsums fill
+# in the checksums.
+#
+# @DESC@    one-line description
+# @VERSION@ version without the leading "v"
+
+# Maintainer: TorroWorkplace contributors
+pkgname=torroworkplace-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='@DESC@'
+arch=('x86_64' 'aarch64')
+url='https://github.com/mahype/TorroWorkplace'
+license=('MIT OR Apache-2.0')
+# The same program opens the control centre's window (`torroworkplace ui`), which dlopens these like
+# the other Iced GUIs; the service alone needs only glibc.
+depends=('glibc' 'gcc-libs' 'libxkbcommon' 'wayland' 'libglvnd' 'vulkan-icd-loader')
+optdepends=('libx11: run on X11 instead of Wayland')
+provides=('torroworkplace')
+conflicts=('torroworkplace')
+
+_repo="https://github.com/mahype/TorroWorkplace"
+source=("torroworkplace-$pkgver.service::$_repo/raw/v$pkgver/packaging/linux/torroworkplace.service")
+source_x86_64=("torroworkplace-$pkgver-x86_64.tar.xz::$_repo/releases/download/v$pkgver/torroworkplace-x86_64-unknown-linux-gnu.tar.xz")
+source_aarch64=("torroworkplace-$pkgver-aarch64.tar.xz::$_repo/releases/download/v$pkgver/torroworkplace-aarch64-unknown-linux-gnu.tar.xz")
+# SKIP is replaced by `updpkgsums` in the publish workflow before the package is pushed.
+sha256sums=('SKIP')
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+  # dist archives contain one top-level directory named after the archive.
+  cd "$srcdir/torroworkplace-${CARCH}-unknown-linux-gnu"
+  install -Dm755 torroworkplace "$pkgdir/usr/bin/torroworkplace"
+  install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+
+  install -Dm644 "$srcdir/torroworkplace-$pkgver.service" "$pkgdir/usr/lib/systemd/user/torroworkplace.service"
+}

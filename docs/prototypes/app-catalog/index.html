@@ -1,0 +1,391 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Torro App-Katalog</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: Steuerzentrale (Seitenleiste 240 + bündiger Inhalt, Kopfleiste 64) mit neuem Abschnitt „Apps“;
+   Installieren/Entfernen in einem eigenen kleinen Fenster ohne Rahmen, wie ein Startfenster.
+   Werte aus torro-design (Standard, #291): dunkel zuerst, hell über das System. */
+:root{
+  --bg:#08090A; --panel:#0F1011; --raised:#141518; --hover:#16171A; --selected:#1C1E22; --menu:#17181B;
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98;
+  --line:rgba(255,255,255,.06); --line-strong:rgba(255,255,255,.10); --line-sel:rgba(255,255,255,.28);
+  --accent:#D50C0C; --on-accent:#FFFFFF; --ok:#3FB984; --attention:#E8A33D; --error:#F0645A;
+  --scrim:rgba(0,0,0,.62); --shadow:0 18px 48px rgba(0,0,0,.55); --focus:rgba(255,255,255,.35);
+  --stage:#050506;
+  --font:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
+  --bg:#F4F5F6; --panel:#FFFFFF; --raised:#F8F9FA; --hover:#F0F1F3; --selected:#E9EAED; --menu:#FFFFFF;
+  --text:#18191B; --text2:#4F535A; --text3:#62666D;
+  --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11); --line-sel:rgba(0,0,0,.32);
+  --ok:#1F9D68; --attention:#B06F12; --error:#C8372D;
+  --scrim:rgba(0,0,0,.30); --shadow:0 18px 48px rgba(0,0,0,.16); --focus:rgba(0,0,0,.5);
+  --stage:#E4E6E9; color-scheme:light;
+}}
+:root[data-theme="light"]{
+  --bg:#F4F5F6; --panel:#FFFFFF; --raised:#F8F9FA; --hover:#F0F1F3; --selected:#E9EAED; --menu:#FFFFFF;
+  --text:#18191B; --text2:#4F535A; --text3:#62666D;
+  --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11); --line-sel:rgba(0,0,0,.32);
+  --ok:#1F9D68; --attention:#B06F12; --error:#C8372D;
+  --scrim:rgba(0,0,0,.30); --shadow:0 18px 48px rgba(0,0,0,.16); --focus:rgba(0,0,0,.5);
+  --stage:#E4E6E9; color-scheme:light;
+}
+*{box-sizing:border-box}
+body{background:var(--stage);color:var(--text);font:400 14px/22px var(--font);-webkit-font-smoothing:antialiased;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:24px 40px}
+.tab{font-variant-numeric:tabular-nums}
+svg.i{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+svg.i.s14{width:14px;height:14px}
+button{font:inherit;color:inherit}
+button:focus-visible,input:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+
+/* Rahmen um den Entwurf: Zustände wählen, Notizen */
+.doc{max-width:1320px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+.doc h1{margin:0;font-size:22px;line-height:28px;font-weight:600;text-wrap:balance}
+.doc p.lead{margin:0;color:var(--text2);max-width:72ch}
+.states{display:flex;flex-wrap:wrap;gap:6px}
+.chip{height:32px;display:inline-flex;align-items:center;gap:6px;padding:0 12px;border-radius:4px;border:1px solid var(--line-strong);background:var(--raised);font-size:12px;font-weight:500;color:var(--text2);cursor:pointer}
+.chip:hover{background:var(--hover);color:var(--text)}
+.chip[aria-pressed="true"]{background:var(--selected);border-color:var(--line-sel);color:var(--text)}
+
+/* Fenster der Steuerzentrale */
+.win{position:relative;display:flex;background:var(--bg);border-radius:10px;box-shadow:var(--shadow);overflow:hidden;min-height:760px;border:1px solid var(--line-strong)}
+.side{width:240px;flex:none;display:flex;flex-direction:column;padding:12px 8px;gap:2px}
+.lights{display:flex;gap:8px;height:16px;align-items:center;padding:0 12px;margin:2px 0 14px}
+.lights i{width:12px;height:12px;border-radius:50%;background:var(--line-strong)}
+.lights i:nth-child(1){background:#FF5F57}.lights i:nth-child(2){background:#FEBC2E}.lights i:nth-child(3){background:#28C840}
+.sw{display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:4px;font-weight:500;margin-bottom:8px}
+.logo{width:20px;height:20px;border-radius:4px;background:var(--accent);display:grid;place-items:center;color:var(--on-accent);font-size:11px;font-weight:600}
+.nav{display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:4px;color:var(--text2)}
+.nav.on{background:var(--selected);color:var(--text)}
+.nav .n{margin-left:auto;font-size:13px;color:var(--text3)}
+.nav .badge{margin-left:auto;display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--text3)}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--c,var(--text3));flex:none}
+.side .spacer{flex:1}
+.side .ver{font-size:12px;color:var(--text3);padding:0 8px}
+.content{flex:1;min-width:0;background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column}
+.head{height:64px;flex:none;display:flex;align-items:center;gap:8px;padding:0 24px;border-bottom:1px solid var(--line)}
+.head .title{font-weight:500}
+.head .sub{color:var(--text3);margin-left:4px;white-space:nowrap}
+.grow{flex:1}
+.btn{height:36px;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 12px;border-radius:4px;border:1px solid var(--line-strong);background:var(--raised);color:var(--text);font-size:12px;font-weight:500;white-space:nowrap;cursor:pointer}
+.btn:hover{background:var(--hover);border-color:var(--line-sel)}
+.btn.ghost{background:none;border-color:transparent;color:var(--text2)}
+.btn.ghost:hover{background:var(--hover);color:var(--text)}
+.btn.primary{background:var(--accent);border-color:transparent;color:var(--on-accent)}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.icon{width:36px;padding:0}
+.btn.danger{background:none;border-color:transparent;color:var(--error)}
+.btn[disabled]{opacity:.4;pointer-events:none}
+.search{height:36px;width:220px;display:flex;align-items:center;gap:8px;padding:0 10px;border-radius:4px;border:1px solid var(--line-strong);background:var(--bg);color:var(--text3)}
+.search input{all:unset;flex:1;min-width:0;color:var(--text);font-size:14px}
+.search input::placeholder{color:var(--text3)}
+.seg{display:inline-flex;height:36px;padding:2px;border-radius:4px;background:var(--bg);border:1px solid var(--line)}
+.seg span{display:grid;place-items:center;width:32px;border-radius:3px;color:var(--text3)}
+.seg span.on{background:var(--selected);color:var(--text);box-shadow:0 0 0 1px var(--line-sel)}
+.body{padding:24px;display:flex;flex-direction:column;gap:24px;overflow:auto}
+.cap{font-size:12px;line-height:16px;font-weight:500;color:var(--text3);display:flex;align-items:center;gap:8px}
+.cap .n{font-variant-numeric:tabular-nums}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+
+/* Karte einer App */
+.card{background:var(--raised);border:1px solid var(--line-strong);border-radius:4px;display:flex;flex-direction:column;min-width:0}
+.card .top{height:40px;display:flex;align-items:center;gap:8px;padding:0 16px;border-bottom:1px solid var(--line);font-size:13px;color:var(--text3)}
+.card .top .ver{font-variant-numeric:tabular-nums;display:inline-flex;align-items:center;gap:6px}
+.card .top .ver b{font-weight:500;color:var(--text)}
+.card .top a{margin-left:auto;display:inline-flex;align-items:center;gap:4px;color:var(--text3);text-decoration:none;font-size:12px;font-weight:500}
+.card .top a:hover{color:var(--text)}
+.card .main{padding:16px;display:flex;flex-direction:column;gap:12px;flex:1}
+.ident{display:flex;gap:12px;align-items:center;min-width:0}
+.appicon{width:48px;height:48px;flex:none;border-radius:11px;background:var(--accent);display:grid;place-items:center;box-shadow:0 2px 6px rgba(0,0,0,.25)}
+.appicon svg{width:30px;height:30px;fill:none;stroke:#fff;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+.ident .t{min-width:0}
+.ident .name{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ident .q{color:var(--text2);font-size:13px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pill{align-self:flex-start;height:22px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:11px;border:1px solid var(--line-strong);font-size:12px;font-weight:500;color:var(--text2)}
+.desc{margin:0;color:var(--text2);font-size:13px;line-height:18px}
+.when{font-size:13px;line-height:18px;color:var(--text3)}
+.acts{display:flex;gap:8px;padding:0 16px 16px}
+.acts .btn:first-child{flex:1}
+.prog{flex:1;display:flex;align-items:center;gap:8px;height:36px;font-size:12px;color:var(--text2)}
+.bar{flex:1;height:4px;border-radius:2px;background:var(--line-strong);overflow:hidden}
+.bar i{display:block;height:100%;background:var(--text);border-radius:2px}
+.cmd{display:flex;align-items:center;gap:8px;height:36px;padding:0 4px 0 10px;border-radius:4px;background:var(--bg);border:1px solid var(--line);font:500 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text2);flex:1;min-width:0}
+.cmd span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cmd button{height:28px;width:28px;display:grid;place-items:center;border:0;background:none;color:var(--text3);border-radius:4px;cursor:pointer}
+.cmd button:hover{background:var(--hover);color:var(--text)}
+
+/* Menü „…“ */
+.menu{position:absolute;min-width:220px;background:var(--menu);border:1px solid var(--line-strong);border-radius:4px;box-shadow:var(--shadow);padding:4px;z-index:5}
+.menu .item{display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;border-radius:4px;color:var(--text);font-size:14px;white-space:nowrap}
+.menu .item:hover{background:var(--hover)}
+.menu .item.red{color:var(--error)}
+.menu .sep{height:1px;background:var(--line);margin:4px 0}
+.menu .item .k{margin-left:auto;color:var(--text3);font-size:12px}
+
+/* Fuß der Seite */
+.foot{margin-top:auto;height:40px;flex:none;display:flex;align-items:center;gap:6px;padding:0 24px;border-top:1px solid var(--line);font-size:12px;color:var(--text3)}
+
+/* Eigenes Fenster: Installieren/Entfernen, wie ein Startfenster */
+.scrim{position:absolute;inset:0;background:var(--scrim);display:grid;place-items:center;padding:16px;z-index:10}
+.splash{width:min(520px,100%);background:var(--menu);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);overflow:hidden}
+.splash .hero{display:flex;gap:16px;align-items:center;padding:24px 24px 20px}
+.splash .hero .appicon{width:72px;height:72px;border-radius:16px}
+.splash .hero .appicon svg{width:44px;height:44px}
+.splash h2{margin:0;font-size:22px;line-height:28px;font-weight:600}
+.splash .hero p{margin:2px 0 0;color:var(--text2)}
+.steps{list-style:none;margin:0;padding:4px 24px 16px;display:flex;flex-direction:column;gap:2px}
+.steps li{display:flex;align-items:center;gap:10px;height:32px;color:var(--text3)}
+.steps li.done{color:var(--text2)}
+.steps li.now{color:var(--text)}
+.steps li .st{width:16px;height:16px;display:grid;place-items:center}
+.steps li .r{margin-left:auto;font-size:13px;color:var(--text3);font-variant-numeric:tabular-nums}
+.ring{width:14px;height:14px;border-radius:50%;border:1.75px solid var(--line-sel)}
+.spin{width:14px;height:14px;border-radius:50%;border:1.75px solid var(--line-strong);border-top-color:var(--text);animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){.spin{animation:none;border-top-color:var(--text2)}}
+.splash .progress{padding:0 24px 20px;display:flex;flex-direction:column;gap:8px}
+.splash .progress .row{display:flex;justify-content:space-between;font-size:13px;color:var(--text3);font-variant-numeric:tabular-nums}
+.splash .progress .bar{height:6px;border-radius:3px}
+.splash .progress .bar i{background:var(--accent)}
+.splash .opt{margin:0 24px 16px;padding:12px;border:1px solid var(--line-strong);border-radius:4px;background:var(--raised);display:flex;gap:10px;align-items:flex-start}
+.splash .opt input{margin:4px 0 0;accent-color:var(--text)}
+.splash .opt b{font-weight:500;display:block}
+.splash .opt span{color:var(--text2);font-size:13px;line-height:18px}
+.splash .bot{display:flex;align-items:center;gap:8px;padding:12px 24px;border-top:1px solid var(--line);background:var(--panel)}
+.splash .bot .note{font-size:12px;color:var(--text3)}
+
+/* Notizen unter dem Entwurf */
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+.note{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:16px;min-width:0}
+.note h3{margin:0 0 6px;font-size:14px;font-weight:600}
+.note p,.note li{margin:0;color:var(--text2);font-size:13px;line-height:20px}
+.note ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+
+@media (max-width: 900px){.side{display:none}.search{width:160px}}
+@media (max-width: 640px){
+  .head{padding:0 12px;height:auto;min-height:64px;flex-wrap:wrap;padding-block:12px}
+  .search,.seg,.sortbtn{display:none}
+  .body{padding:16px}
+  .win{min-height:0}
+}
+</style>
+
+<div class="doc">
+  <h1>App-Katalog der Steuerzentrale</h1>
+  <p class="lead">Entwurf zu #408: In der Hauptanwendung steht jede App der Suite mit Icon, Frage, Beschreibung und Version. Installierte Apps oben, fehlende darunter. Installieren, Aktualisieren und Entfernen laufen in einem eigenen kleinen Fenster mit Schritten und Fortschritt. Oberflächentexte sind englisch, wie in der App.</p>
+  <div class="states" role="group" aria-label="Zustand">
+    <button class="chip" data-state="catalog" aria-pressed="true">Katalog</button>
+    <button class="chip" data-state="menu" aria-pressed="false">Menü „…“ einer App</button>
+    <button class="chip" data-state="install" aria-pressed="false">Installieren läuft</button>
+    <button class="chip" data-state="installed" aria-pressed="false">Installiert</button>
+    <button class="chip" data-state="uninstall" aria-pressed="false">Entfernen</button>
+    <button class="chip" data-state="self" aria-pressed="false">Update der Hauptanwendung</button>
+  </div>
+
+  <div class="win" id="win">
+    <aside class="side">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div class="sw"><span class="logo">T</span>Torro Workplace</div>
+      <div class="nav"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>Overview</div>
+      <div class="nav on"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Apps<span class="badge"><span class="dot" style="--c:var(--attention)"></span><span class="tab">2</span></span></div>
+      <div class="nav"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>Accounts</div>
+      <div class="nav"><svg class="i" viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8Z"/></svg>AI</div>
+      <div class="nav"><svg class="i" viewBox="0 0 24 24"><path d="m8 9-4 3 4 3M16 9l4 3-4 3M14 5l-4 14"/></svg>API</div>
+      <div class="nav"><svg class="i" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>MCP clients</div>
+      <div class="nav"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01"/></svg>MCP servers</div>
+      <div class="nav"><svg class="i" viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6Z"/></svg>Approvals</div>
+      <div class="nav"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 4v16M10 12h11"/></svg>Workspaces</div>
+      <div class="nav"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18Z" fill="currentColor"/></svg>Appearance</div>
+      <div class="spacer"></div>
+      <div class="nav"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>General</div>
+      <div class="ver">Torro Workplace · Version 0.1.0</div>
+    </aside>
+
+    <section class="content">
+      <div class="head">
+        <span class="title">Apps</span><span class="sub tab">5 installed · 2 updates</span>
+        <span class="grow"></span>
+        <button class="btn icon ghost" title="Check for updates" aria-label="Check for updates"><svg class="i" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/></svg></button>
+        <label class="search"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="q" placeholder="Search apps"></label>
+        <button class="btn sortbtn">Name<svg class="i s14" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
+        <span class="seg" aria-label="View"><span class="on" title="Cards"><svg class="i s14" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></span><span title="List"><svg class="i s14" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></span></span>
+        <button class="btn primary" id="updAll">Update all (2)</button>
+      </div>
+
+      <div class="body">
+        <div class="cap">Installed <span class="n">5</span></div>
+        <div class="grid" id="installed"></div>
+        <div class="cap">Available <span class="n" id="availN">2</span></div>
+        <div class="grid" id="available"></div>
+      </div>
+
+      <div class="foot"><svg class="i s14" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>Checked just now · from the releases on GitHub</div>
+    </section>
+
+    <div class="menu" id="menu" hidden>
+      <div class="item"><svg class="i" viewBox="0 0 24 24"><path d="M7 17 17 7M8 7h9v9"/></svg>Open</div>
+      <div class="item"><svg class="i" viewBox="0 0 24 24"><path d="M14 3h7v7M10 14 21 3M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>Release notes</div>
+      <div class="item"><svg class="i" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 4v5h5"/></svg>Reinstall 0.1.0</div>
+      <div class="item"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg>Show in Finder</div>
+      <div class="sep"></div>
+      <div class="item red" id="menuRemove"><svg class="i" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>Uninstall…</div>
+    </div>
+
+    <div class="scrim" id="scrim" hidden><div class="splash" id="splash" role="dialog" aria-modal="true"></div></div>
+  </div>
+
+  <div class="notes">
+    <div class="note"><h3>Wo und was</h3><ul>
+      <li>Neuer Abschnitt <b>Apps</b> in der Steuerzentrale, gleich nach Overview; die Gruppe Apps unter General entfällt.</li>
+      <li>Jede Karte: Version (bei Update „alt → neu“), Release notes, Icon, Name, Frage der App, Zustand, ein Satz, Datum, eine Aktion, Rest im „…“.</li>
+      <li>Genau ein roter Knopf im Fenster: „Update all“. Die Knöpfe der Karten sind ruhig.</li>
+    </ul></div>
+    <div class="note"><h3>Zustände einer Karte</h3><ul>
+      <li><b>Installed</b> – „Open“.</li>
+      <li><b>Update available</b> – „Update to 0.2.0“.</li>
+      <li><b>Available</b> – „Install“.</li>
+      <li><b>Managed by Homebrew/AUR/Scoop</b> – Befehl zum Kopieren statt Knopf, damit der Paketmanager zuständig bleibt.</li>
+      <li><b>Installing… 62 %</b> – Fortschritt in der Karte, solange das Fenster läuft.</li>
+    </ul></div>
+    <div class="note"><h3>Fenster für Installieren und Entfernen</h3><ul>
+      <li>Eigenes kleines Fenster ohne Rahmen, wie ein Startfenster: großes Icon, Name, Schritte mit Haken, roter Balken.</li>
+      <li>Schritte: Download · Check signature · Install · Connect to the service.</li>
+      <li>Entfernen fragt nach, ob auch die Daten der App auf diesem Rechner gehen; Konten bleiben, andere Apps nutzen sie.</li>
+    </ul></div>
+  </div>
+</div>
+
+<script>
+const ICON = {
+  calendar:'<rect x="3" y="4.5" width="18" height="16.5" rx="3"/><path d="M8 2.5v4M16 2.5v4M3 10h18"/><rect x="13.5" y="13.5" width="4" height="4" rx="1" fill="#fff" stroke-width="1"/>',
+  tasks:'<circle cx="12" cy="12" r="9.5"/><path d="m7.5 12.3 3 3 6-6.3"/>',
+  mail:'<rect x="2.5" y="4.5" width="19" height="15" rx="3"/><path d="M3 8.5 12 14l9-5.5"/>',
+  hub:'<path d="M4 17.5c1.6-1.6 2-3.3 2-6V10a6 6 0 0 1 12 0v1.5c0 2.7.4 4.4 2 6Z"/><path d="M10 21.5h4"/>',
+  feed:'<circle cx="6" cy="18" r="1.6" fill="#fff"/><path d="M5 10.5a8.5 8.5 0 0 1 8.5 8.5M5 3.5A15.5 15.5 0 0 1 20.5 19"/>',
+  assistant:'<path d="M10 6.5Q11 13 17.5 14Q11 15 10 21.5Q9 15 2.5 14Q9 13 10 6.5Z" fill="#fff" stroke-width="1.6"/><path d="M18 2.5Q18.4 5.1 21 5.5Q18.4 5.9 18 8.5Q17.6 5.9 15 5.5Q17.6 5.1 18 2.5Z" fill="#fff" stroke-width="1.2"/>',
+  workplace:'<rect x="2.5" y="3.5" width="19" height="17" rx="3.5"/><path d="M10 3.5v17M10 12h11.5"/>'
+};
+const APPS = [
+  {id:'calendar',name:'Torro Calendar',q:"What's coming up?",desc:'Your days and weeks from Nextcloud and other CalDAV calendars, with reminders on every display.',ver:'0.1.0',next:'0.2.0',when:'Updated 28 Oct 2026',state:'update'},
+  {id:'tasks',name:'Torro Tasks',q:'What do I need to do?',desc:'Lists from Nextcloud Tasks and GitHub issues in one place, sorted by what is due.',ver:'0.2.0',when:'Updated 28 Oct 2026',state:'installed'},
+  {id:'mail',name:'Torro Mail',q:'What came in by mail?',desc:'Mail for the tiled desktop: IMAP accounts, categories, filters and a backup of every mailbox.',ver:'0.1.0',next:'0.2.0',when:'Updated 28 Oct 2026',state:'update'},
+  {id:'hub',name:'Torro Notification Hub',q:'What wants my attention?',desc:'Approvals, waiting agents and account problems, all in one list you can clear.',ver:'0.2.0',when:'Installed 12 Oct 2026',state:'brew'},
+  {id:'feed',name:'Torro App Feed',q:'What did my apps report?',desc:'Notifications from GitHub, Nextcloud, Talk, ntfy and your own scripts.',ver:'0.2.0',when:'Installed 12 Oct 2026',state:'installed'},
+  {id:'assistant',name:'Torro Assistant',q:'Can you do that for me?',desc:'Chat with a local or cloud model that may use your mail, calendar and tasks as you allow.',ver:'0.2.0',size:'24.6 MB',state:'available'},
+  {id:'contacts',icon:'hub',name:'Torro Contacts',q:'Who is that, and how do I reach them?',desc:'Address books from CardDAV with a map of where people are. Coming with 0.3.',ver:'0.3.0',size:'',state:'soon'}
+];
+APPS[6].icon=null;
+const contactsIcon='<circle cx="12" cy="9" r="3.5"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/><rect x="2.5" y="2.5" width="19" height="19" rx="3"/>';
+
+function svg(app){return `<svg viewBox="0 0 24 24" aria-hidden="true">${app.id==='contacts'?contactsIcon:ICON[app.id]}</svg>`}
+const ext='<svg class="i s14" viewBox="0 0 24 24"><path d="M7 17 17 7M8 7h9v9"/></svg>';
+const dots='<svg class="i" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>';
+const copy='<svg class="i s14" viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg>';
+
+let progress = 0;
+function card(a){
+  const top = a.state==='update'
+    ? `<span class="ver">${a.ver} <svg class="i s14" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg> <b>${a.next}</b></span>`
+    : `<span class="ver">${a.state==='available'||a.state==='soon'?'Version ':''}${a.state==='installing'?a.next||a.ver:a.ver}</span>`;
+  const pill = {
+    update:'<span class="pill"><span class="dot" style="--c:var(--attention)"></span>Update available</span>',
+    installed:'<span class="pill"><span class="dot" style="--c:var(--ok)"></span>Installed</span>',
+    brew:'<span class="pill"><svg class="i s14" viewBox="0 0 24 24"><path d="M7 3h10l-1 6H8Z"/><path d="M8 9v9a3 3 0 0 0 3 3h2a3 3 0 0 0 3-3V9"/></svg>Managed by Homebrew</span>',
+    available:'<span class="pill"><span class="dot"></span>Available</span>',
+    soon:'<span class="pill"><span class="dot"></span>Coming soon</span>',
+    installing:`<span class="pill"><span class="spin" style="width:10px;height:10px"></span>Installing…</span>`
+  }[a.state];
+  let acts;
+  if(a.state==='update') acts=`<button class="btn" data-act="install" data-id="${a.id}">Update to ${a.next}</button><button class="btn icon" data-act="menu" aria-label="More">${dots}</button>`;
+  else if(a.state==='installed') acts=`<button class="btn" data-act="open">Open</button><button class="btn icon" data-act="menu" aria-label="More">${dots}</button>`;
+  else if(a.state==='brew') acts=`<div class="cmd"><span>brew upgrade torroinbox</span><button title="Copy" aria-label="Copy command">${copy}</button></div><button class="btn icon" data-act="menu" aria-label="More">${dots}</button>`;
+  else if(a.state==='available') acts=`<button class="btn" data-act="install" data-id="${a.id}">Install · ${a.size}</button><button class="btn icon" data-act="menu" aria-label="More" disabled>${dots}</button>`;
+  else if(a.state==='soon') acts=`<button class="btn" disabled>Not released yet</button>`;
+  else acts=`<div class="prog"><div class="bar"><i style="width:${progress}%"></i></div><span class="tab">${progress} %</span></div><button class="btn ghost">Show</button>`;
+  return `<article class="card" data-id="${a.id}">
+    <div class="top">${top}<a href="https://github.com/mahype/TorroWorkplace/releases" target="_blank" rel="noopener">Release notes ${ext}</a></div>
+    <div class="main">
+      <div class="ident"><div class="appicon">${svg(a)}</div><div class="t"><div class="name">${a.name}</div><div class="q">${a.q}</div></div></div>
+      ${pill}
+      <p class="desc">${a.desc}</p>
+      ${a.when?`<div class="when">${a.when}</div>`:''}
+    </div>
+    <div class="acts">${acts}</div>
+  </article>`;
+}
+function render(){
+  const term=(document.getElementById('q').value||'').toLowerCase();
+  const match=a=>!term||(a.name+a.q+a.desc).toLowerCase().includes(term);
+  const inst=APPS.filter(a=>['update','installed','brew'].includes(a.state)||(a.state==='installing'&&a.wasInstalled)).filter(match);
+  const av=APPS.filter(a=>['available','soon'].includes(a.state)||(a.state==='installing'&&!a.wasInstalled)).filter(match);
+  document.getElementById('installed').innerHTML=inst.map(card).join('')||'<p class="desc">No installed app matches.</p>';
+  document.getElementById('available').innerHTML=av.map(card).join('')||'<p class="desc">Every app of the suite is installed.</p>';
+  document.getElementById('availN').textContent=av.length;
+}
+document.getElementById('q').addEventListener('input',render);
+
+const scrim=document.getElementById('scrim'), splash=document.getElementById('splash'), menu=document.getElementById('menu');
+const check='<svg class="i s14" viewBox="0 0 24 24" style="color:var(--ok)"><path d="M20 6 9 17l-5-5"/></svg>';
+function step(cls,label,right){const st=cls==='done'?check:cls==='now'?'<span class="spin"></span>':'<span class="ring"></span>';return `<li class="${cls}"><span class="st">${st}</span>${label}${right?`<span class="r">${right}</span>`:''}</li>`}
+
+function installSplash(done){
+  const a=APPS.find(x=>x.id==='assistant');
+  splash.innerHTML=`<div class="hero"><div class="appicon">${svg(a)}</div><div><h2>${a.name}</h2><p>${done?'Installed 0.2.0':'Installing 0.2.0'}</p></div></div>
+  <ul class="steps">
+    ${step('done','Download','24.6 MB')}
+    ${step(done?'done':'done','Check signature','Developer ID')}
+    ${step(done?'done':'now','Install','/Applications')}
+    ${step(done?'done':'todo','Connect to the service','')}
+  </ul>
+  <div class="progress"><div class="row"><span>${done?'Ready':'Copying files…'}</span><span>${done?'100 %':'62 %'}</span></div><div class="bar"><i style="width:${done?100:62}%"></i></div></div>
+  <div class="bot">${done?'<span class="note">Its settings are behind the gear in its window.</span><span class="grow"></span><button class="btn ghost" data-close>Close</button><button class="btn primary" data-close>Open Torro Assistant</button>':'<span class="note">You can keep working; this window closes when it is done.</span><span class="grow"></span><button class="btn ghost" data-close>Cancel</button>'}</div>`;
+}
+function uninstallSplash(){
+  const a=APPS.find(x=>x.id==='feed');
+  splash.innerHTML=`<div class="hero"><div class="appicon">${svg(a)}</div><div><h2>Uninstall ${a.name}?</h2><p>The app closes and leaves this computer.</p></div></div>
+  <label class="opt"><input type="checkbox" id="rmdata"><div><b>Also remove its data on this computer</b><span>Its settings and what it kept offline. Your accounts stay: other apps of the suite use them.</span></div></label>
+  <ul class="steps">
+    ${step('todo','Close its windows','')}
+    ${step('todo','Remove the app','/Applications')}
+    ${step('todo','Remove it from the launcher','')}
+  </ul>
+  <div class="bot"><span class="grow"></span><button class="btn ghost" data-close>Cancel</button><button class="btn danger" style="border:1px solid var(--line-strong)">Uninstall app</button></div>`;
+}
+function selfSplash(){
+  splash.innerHTML=`<div class="hero"><div class="appicon">${svg({id:'workplace'})}</div><div><h2>Torro Workplace 0.2.0 is available</h2><p>The service and this window restart; your apps stay open and reconnect.</p></div></div>
+  <div class="bot"><button class="btn ghost">What's new ${ext}</button><span class="grow"></span><button class="btn" data-close>Later</button><button class="btn primary" data-close>Update and restart</button></div>`;
+}
+
+function setState(s){
+  document.querySelectorAll('.chip').forEach(c=>c.setAttribute('aria-pressed',String(c.dataset.state===s)));
+  const asst=APPS.find(x=>x.id==='assistant');
+  asst.state='available'; progress=0; menu.hidden=true; scrim.hidden=true;
+  if(s==='install'){asst.state='installing';asst.next='0.2.0';progress=62;installSplash(false);scrim.hidden=false}
+  if(s==='installed'){asst.state='installed';asst.when='Installed just now';installSplash(true);scrim.hidden=false}
+  if(s==='uninstall'){uninstallSplash();scrim.hidden=false}
+  if(s==='self'){selfSplash();scrim.hidden=false}
+  render();
+  if(s==='menu'){
+    const btn=document.querySelector('.card[data-id="calendar"] [data-act="menu"]');
+    const w=document.getElementById('win').getBoundingClientRect(), b=btn.getBoundingClientRect();
+    menu.hidden=false; menu.style.top=(b.bottom-w.top+4)+'px';
+    menu.style.left=Math.max(8,Math.min(b.right-w.left-220,w.width-228))+'px';
+  }
+}
+document.querySelectorAll('.chip').forEach(c=>c.addEventListener('click',()=>setState(c.dataset.state)));
+document.addEventListener('click',e=>{
+  const t=e.target.closest('[data-act],[data-close],#menuRemove');
+  if(!t) return;
+  if(t.id==='menuRemove'){setState('uninstall');return}
+  if(t.hasAttribute('data-close')){setState('catalog');return}
+  if(t.dataset.act==='install'&&t.dataset.id==='assistant'){setState('install');return}
+  if(t.dataset.act==='menu'){setState('menu')}
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')setState('catalog')});
+setState('catalog');
+</script>
+
+</body></html>

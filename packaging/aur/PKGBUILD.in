@@ -1,15 +1,20 @@
-# Template for every AUR `-bin` package of the suite, one per program: torroworkplace-bin,
-# torrocalendar-bin, torrotasks-bin, torroinbox-bin, torro-inbox-mail-bin,
-# torro-inbox-notifications-bin and torroassistant-bin (the list is the matrix of
-# .github/workflows/publish-aur.yml). That workflow replaces the @PLACEHOLDERS@ with sed and lets
-# updpkgsums fill in the checksums. Maintainer of the AUR package: see docs/release.md.
+# Template for the AUR `-bin` package of each app of the suite, one per program: torrocalendar-bin,
+# torrotasks-bin, torroinbox-bin, torro-inbox-mail-bin, torro-inbox-notifications-bin and
+# torroassistant-bin (the list is the matrix of .github/workflows/publish-aur.yml). That workflow
+# replaces the @PLACEHOLDERS@ with sed and lets updpkgsums fill in the checksums. Maintainer of the
+# AUR package: see docs/release.md.
+#
+# Every app package brings the background service: it depends on `torroworkplace-bin` (the program
+# and its systemd unit, PKGBUILD.core.in), so the app runs without the main application. The main
+# application is the package `torro-workplace` (PKGBUILD.main.in), which only adds its launcher
+# entry and icon (issue #411).
 #
 # @BIN@     binary name, e.g. torrocalendar
 # @APPID@   window class / desktop file / icon name, e.g. torro-calendar
 # @TITLE@   human name, e.g. "Torro Calendar"
 # @DESC@    one-line description
 # @VERSION@ version without the leading "v"
-# @DEPENDS@ other packages of the suite this one needs, each quoted and led by a space, e.g.
+# @DEPENDS@ other app packages of the suite this one needs, each quoted and led by a space, e.g.
 #           " 'torroinbox-bin'" (Mail and App Feed open the compose window of torroinbox);
 #           empty for most packages
 
@@ -22,20 +27,20 @@ arch=('x86_64' 'aarch64')
 url='https://github.com/mahype/TorroWorkplace'
 license=('MIT OR Apache-2.0')
 # The Iced GUIs dlopen these at runtime (wayland, xkbcommon, vulkan/EGL; X11 is optional).
-# Behind them the suite's own packages this program needs (the depends placeholder, see the head).
-depends=('glibc' 'gcc-libs' 'libxkbcommon' 'wayland' 'libglvnd' 'vulkan-icd-loader'@DEPENDS@)
+# Behind them the background service and the suite's other packages this program needs (the depends
+# placeholder, see the head).
+depends=('glibc' 'gcc-libs' 'libxkbcommon' 'wayland' 'libglvnd' 'vulkan-icd-loader' 'torroworkplace-bin'@DEPENDS@)
 optdepends=('libx11: run on X11 instead of Wayland')
 provides=('@BIN@')
 conflicts=('@BIN@')
 
 _repo="https://github.com/mahype/TorroWorkplace"
 source=("@APPID@-$pkgver.desktop::$_repo/raw/v$pkgver/packaging/linux/@APPID@.desktop"
-        "@APPID@-$pkgver.svg::$_repo/raw/v$pkgver/packaging/linux/icons/@APPID@.svg"
-        "torroworkplace-$pkgver.service::$_repo/raw/v$pkgver/packaging/linux/torroworkplace.service")
+        "@APPID@-$pkgver.svg::$_repo/raw/v$pkgver/packaging/linux/icons/@APPID@.svg")
 source_x86_64=("@BIN@-$pkgver-x86_64.tar.xz::$_repo/releases/download/v$pkgver/@BIN@-x86_64-unknown-linux-gnu.tar.xz")
 source_aarch64=("@BIN@-$pkgver-aarch64.tar.xz::$_repo/releases/download/v$pkgver/@BIN@-aarch64-unknown-linux-gnu.tar.xz")
 # SKIP is replaced by `updpkgsums` in the publish workflow before the package is pushed.
-sha256sums=('SKIP' 'SKIP' 'SKIP')
+sha256sums=('SKIP' 'SKIP')
 sha256sums_x86_64=('SKIP')
 sha256sums_aarch64=('SKIP')
 
@@ -48,9 +53,4 @@ package() {
 
   install -Dm644 "$srcdir/@APPID@-$pkgver.desktop" "$pkgdir/usr/share/applications/@APPID@.desktop"
   install -Dm644 "$srcdir/@APPID@-$pkgver.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/@APPID@.svg"
-
-  # Only the core ships the systemd user unit.
-  if [ "@BIN@" = "torroworkplace" ]; then
-    install -Dm644 "$srcdir/torroworkplace-$pkgver.service" "$pkgdir/usr/lib/systemd/user/torroworkplace.service"
-  fi
 }

@@ -13,6 +13,10 @@
 //! [`bundle_program`] finds an entry's program in its bundle, [`service_program`] the core's in the
 //! agent bundle "Torro Workplace Service.app" inside "Torro Workplace.app". Both only decide paths, so
 //! they are tested on every system; only their callers ask the file system on macOS.
+//!
+//! Every app brings a copy of the service along (issue #411), so on macOS several bundles may hold one,
+//! of different versions: [`newest_service`] picks the one to start, the highest version
+//! ([`choose_service`], [`plist_version`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,6 +24,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use torro_core::timing;
+use torro_core::version::Version;
 use torro_ipc::pim::PimClient;
 use torro_ipc::{Request, Response};
 use torro_pim::demo::DemoSource;
@@ -131,7 +136,7 @@ pub fn ensure_core(socket: &std::path::Path) {
         let exe = std::env::current_exe().ok();
         let home = home_dir();
         let program = core_program(exe.as_deref(), home.as_deref());
-        match daemon_command(&program, home).spawn() {
+        match daemon_command(&program, home, &[]).spawn() {
             // Reap the daemon if it ever exits while the app still runs.
             Ok(mut child) => {
                 std::thread::spawn(move || child.wait());
@@ -181,26 +186,30 @@ fn nobody_listens(socket: &Path) -> bool {
 
 /// The user's home directory from the environment (`HOME`, on Windows `USERPROFILE`); `None` when
 /// unset or empty.
-fn home_dir() -> Option<PathBuf> {
+pub fn home_dir() -> Option<PathBuf> {
     let name = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     std::env::var_os(name).filter(|home| !home.is_empty()).map(PathBuf::from)
 }
 
-/// The core's program for [`ensure_core`] (decision 6 in `docs/lebenszyklus.md`): on macOS the agent
-/// bundle of the service ([`service_program`]) beside this program's bundle or in an Applications
-/// folder, so the core runs with its own bundle id and without a Dock icon; else, and without that
-/// bundle (development, Homebrew), `torroworkplace` as [`sibling`] finds it.
+/// The core's program for [`ensure_core`] (decision 6 in `docs/lebenszyklus.md`): on macOS the newest
+/// copy of the service's agent bundle in the bundles of the suite ([`newest_service`], issue #411),
+/// beside this program's bundle or in an Applications folder, so the core runs with its own bundle id and
+/// without a Dock icon; else, and without any such bundle (development, Homebrew), `torroworkplace` as
+/// [`sibling`] finds it.
 fn core_program(exe: Option<&Path>, home: Option<&Path>) -> PathBuf {
-    #[cfg(target_os = "macos")]
-    if let Some(program) = service_program(exe, home, Path::is_file) {
+    // macOS: the newest of the bundles' copies; Windows under Scoop: the newest of the apps' copies
+    // (issue #411). Elsewhere the one program beside this one, as [`sibling`] finds it.
+    #[cfg(any(target_os = "macos", windows))]
+    if let Some((program, _)) = newest_service(exe, home) {
         return program;
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     let _ = (exe, home);
     sibling(torro_core::AppId::WORKPLACE.binary)
 }
 
-/// The command [`ensure_core`] starts the core with: `program daemon`, detached from the caller's
+/// The command [`ensure_core`] starts the core with: `program daemon` and the arguments `extra` (a
+/// service handing over to a newer copy adds `--takeover`, issue #411), detached from the caller's
 /// terminal and process group (Unix) or console and process group (Windows: `DETACHED_PROCESS`,
 /// `CREATE_NEW_PROCESS_GROUP`), so it outlives the app or MCP server that started it and a Ctrl+C
 /// in the caller's console does not reach it.
@@ -209,12 +218,17 @@ fn core_program(exe: Option<&Path>, home: Option<&Path>) -> PathBuf {
 /// busy for as long as it runs. `TORRO_TOKEN` is not passed on: it is the key of the agent whose
 /// MCP server started the core, and the core has no use for it.
 #[cfg(any(unix, windows))]
-fn daemon_command(program: &std::path::Path, home: Option<std::path::PathBuf>) -> std::process::Command {
+pub fn daemon_command(
+    program: &std::path::Path,
+    home: Option<std::path::PathBuf>,
+    extra: &[&str],
+) -> std::process::Command {
     use std::process::{Command, Stdio};
 
     let mut command = Command::new(program);
     command
         .arg("daemon")
+        .args(extra)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -392,6 +406,188 @@ pub fn service_program(exe: Option<&Path>, home: Option<&Path>, exists: impl Fn(
     find_bundled(Path::new(SERVICE_PROGRAM), exe, home, exists)
 }
 
+/// Where the service's program lies inside the bundle of any entry of the suite (issue #411): every app
+/// brings the agent bundle along, at the place [`SERVICE_PROGRAM`] names inside "Torro Workplace.app".
+pub const SERVICE_IN_BUNDLE: &str =
+    "Contents/Library/LoginItems/Torro Workplace Service.app/Contents/MacOS/torroworkplace";
+
+/// The service's program in the bundle of `app` ([`SERVICE_IN_BUNDLE`]), relative to the folder holding
+/// that bundle: `Torro Calendar.app/Contents/Library/LoginItems/…/torroworkplace`; for
+/// [`torro_core::AppId::WORKPLACE`] this is [`SERVICE_PROGRAM`].
+pub fn service_in(app: torro_core::AppId) -> PathBuf {
+    Path::new(&format!("{}.app", app.display_name)).join(SERVICE_IN_BUNDLE)
+}
+
+/// The `Info.plist` of the bundle `program` runs in (`…/Contents/MacOS/<program>` →
+/// `…/Contents/Info.plist`); `None` for a path too short to lie in a bundle.
+pub fn info_plist_of(program: &Path) -> Option<PathBuf> {
+    let contents = program.parent()?.parent()?;
+    Some(contents.join("Info.plist"))
+}
+
+/// The version in the XML property list `text` (an `Info.plist`): the suite's whole version `TorroVersion`
+/// (pre-release included, `0.2.0-rc.1`), else Apple's `CFBundleShortVersionString` (digits and dots
+/// only, so a pre-release reads as its release; bundles from before #411's review). `None` when the
+/// text is no XML or has neither as a version. A binary property list is not read: the suite's bundles
+/// carry XML (`packaging/macos/Info.plist.in`).
+pub fn plist_version(text: &str) -> Option<Version> {
+    // The bundles' lists carry Apple's DOCTYPE, which `roxmltree` refuses unless told otherwise.
+    let options = roxmltree::ParsingOptions { allow_dtd: true, ..roxmltree::ParsingOptions::default() };
+    let document = roxmltree::Document::parse_with_options(text, options).ok()?;
+    let dict = document.root_element().children().find(|node| node.has_tag_name("dict"))?;
+    let value_of = |wanted: &str| -> Option<Version> {
+        // In a `dict` each `key` is followed by its value, the next element.
+        let mut elements = dict.children().filter(roxmltree::Node::is_element);
+        while let Some(node) = elements.next() {
+            if node.has_tag_name("key") && node.text() == Some(wanted) {
+                let value = elements.next().filter(|value| value.has_tag_name("string"))?;
+                return value.text()?.parse().ok();
+            }
+        }
+        None
+    };
+    value_of("TorroVersion").or_else(|| value_of("CFBundleShortVersionString"))
+}
+
+/// The copy of the service to start among those in the bundles of the suite (issue #411): each entry of
+/// [`torro_core::AppId::ALL`] in each of [`bundle_folders`] is a candidate ([`service_in`]) where `exists`
+/// says it is. The highest version wins (`version_of` reads it from the program's path; a copy whose
+/// version cannot be read counts as `0.0.0`, so it is started only when there is no other); with equal
+/// versions the one inside "Torro Workplace.app", then the one in the bundle `exe` runs in, then the first
+/// found. `None` when there is none.
+///
+/// Pure: `exists` and `version_of` stand in for the file system, so it is tested on every system;
+/// [`newest_service`] passes the real one on macOS.
+pub fn choose_service(
+    exe: Option<&Path>,
+    home: Option<&Path>,
+    exists: impl Fn(&Path) -> bool,
+    version_of: impl Fn(&Path) -> Option<Version>,
+) -> Option<(PathBuf, Version)> {
+    let unknown = Version { major: 0, minor: 0, patch: 0, pre: Vec::new() };
+    // The bundles `exe` runs in; a candidate below one of them lies in "the own bundle".
+    let own: Vec<&Path> = exe
+        .into_iter()
+        .flat_map(Path::ancestors)
+        .filter(|path| path.extension().is_some_and(|ext| ext == "app"))
+        .collect();
+    let mut found: Vec<(PathBuf, Version, bool, bool)> = Vec::new();
+    for folder in bundle_folders(exe, home) {
+        for app in torro_core::AppId::ALL.iter().copied() {
+            let program = folder.join(service_in(app));
+            if found.iter().any(|(seen, ..)| *seen == program) || !exists(&program) {
+                continue;
+            }
+            let version = version_of(&program).unwrap_or_else(|| unknown.clone());
+            let in_workplace = app == torro_core::AppId::WORKPLACE;
+            let in_own = own.iter().any(|bundle| program.starts_with(bundle));
+            found.push((program, version, in_workplace, in_own));
+        }
+    }
+    // `max_by` keeps the last of equals; reversed, the first found of full equals wins.
+    found
+        .into_iter()
+        .rev()
+        .max_by(|a, b| (&a.1, a.2, a.3).cmp(&(&b.1, b.2, b.3)))
+        .map(|(program, version, ..)| (program, version))
+}
+
+/// The version of the service's copy `program` from its bundle's `Info.plist` ([`info_plist_of`],
+/// [`plist_version`]); `None` when it cannot be read.
+pub fn service_version(program: &Path) -> Option<Version> {
+    let text = std::fs::read_to_string(info_plist_of(program)?).ok()?;
+    plist_version(&text)
+}
+
+/// The newest copy of the core's service and its version (issue #411): what [`ensure_core`] starts, and
+/// what the core hands over to after an install or update. `exe` is the program asking (the bundles it
+/// runs in are looked in first), `home` the user's home (for `~/Applications`).
+///
+/// On macOS [`choose_service`] over the bundles of the suite, on the file system; `None` without any
+/// (development, Homebrew). Under Scoop every app brings a copy of its own: [`choose_scoop_service`].
+/// Otherwise a package installs the service once, as the program `torroworkplace` beside the suite's
+/// other programs: that program beside `exe`, with the caller's own version ([`Version::current`]),
+/// since a package installs the suite's programs of one version together; `None` when it is not there.
+pub fn newest_service(exe: Option<&Path>, home: Option<&Path>) -> Option<(PathBuf, Version)> {
+    newest_service_except(exe, home, None)
+}
+
+/// [`newest_service`] without the copies below `except`: the copy left once an app is uninstalled,
+/// which the core checks before it removes the bundle its service runs from.
+pub fn newest_service_except(
+    exe: Option<&Path>,
+    home: Option<&Path>,
+    except: Option<&Path>,
+) -> Option<(PathBuf, Version)> {
+    let counts = |program: &Path| program.is_file() && !except.is_some_and(|except| program.starts_with(except));
+    #[cfg(target_os = "macos")]
+    {
+        choose_service(exe, home, counts, service_version)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = home;
+        let folders = |apps: &Path| -> Vec<PathBuf> {
+            std::fs::read_dir(apps)
+                .map(|entries| entries.filter_map(|entry| entry.ok().map(|entry| entry.path())).collect())
+                .unwrap_or_default()
+        };
+        if let Some(found) = choose_scoop_service(exe, counts, folders, scoop_version) {
+            return Some(found);
+        }
+        let name = format!("{}{}", torro_core::AppId::WORKPLACE.binary, std::env::consts::EXE_SUFFIX);
+        let program = exe?.parent()?.join(name);
+        counts(&program).then(|| (program, Version::current()))
+    }
+}
+
+/// The newest copy of the service among the apps Scoop installed (issue #411): each app's manifest
+/// brings `torroworkplace.exe` into its own folder, and Scoop updates apps one by one, so the copies'
+/// versions can differ. `exe` must lie in Scoop's layout `<root>/apps/<app>/<version>/`, which Scoop's
+/// own folder `<root>/apps/scoop` marks (the root may be anywhere, `SCOOP`); candidates
+/// are `<scoop>/apps/*/current/torroworkplace.exe` where `exists` says so, with the version
+/// `version_of` reads (Scoop's `manifest.json` beside it; unreadable counts as `0.0.0`). The highest
+/// wins, with equal ones the one in the app `exe` belongs to. `None` outside Scoop's layout.
+///
+/// Pure: `exists`, `folders` (the folders in a folder) and `version_of` stand in for the file system.
+pub fn choose_scoop_service(
+    exe: Option<&Path>,
+    exists: impl Fn(&Path) -> bool,
+    folders: impl Fn(&Path) -> Vec<PathBuf>,
+    version_of: impl Fn(&Path) -> Option<Version>,
+) -> Option<(PathBuf, Version)> {
+    let own = exe?.parent()?.parent()?;
+    let apps = own.parent()?;
+    if apps.file_name()? != "apps" {
+        return None;
+    }
+    let folders = folders(apps);
+    if !folders.iter().any(|folder| folder.file_name().is_some_and(|name| name == "scoop")) {
+        return None;
+    }
+    let unknown = Version { major: 0, minor: 0, patch: 0, pre: Vec::new() };
+    let mut found: Vec<(PathBuf, Version, bool)> = folders
+        .into_iter()
+        .map(|app| (app.join("current").join("torroworkplace.exe"), app == own))
+        .filter(|(program, _)| exists(program))
+        .map(|(program, mine)| {
+            let version = version_of(&program).unwrap_or_else(|| unknown.clone());
+            (program, version, mine)
+        })
+        .collect();
+    found.sort_by(|a, b| (&a.1, a.2).cmp(&(&b.1, b.2)));
+    found.pop().map(|(program, version, _)| (program, version))
+}
+
+/// The version Scoop noted for the app whose copy of the service is `program`: the key `version` of
+/// `manifest.json` beside it.
+#[cfg_attr(target_os = "macos", allow(dead_code, reason = "Scoop is a package manager of Windows"))]
+fn scoop_version(program: &Path) -> Option<Version> {
+    let text = std::fs::read_to_string(program.parent()?.join("manifest.json")).ok()?;
+    let manifest: serde_json::Value = serde_json::from_str(&text).ok()?;
+    manifest.get("version")?.as_str()?.parse().ok()
+}
+
 /// The program file `name` (`torroinbox`) in the bundle of the first entry of
 /// [`torro_core::AppId::ALL`] whose [`torro_core::AppId::program_file`] it is ([`bundle_program`]): the
 /// Notification Hub's bundle for `torroinbox`, the control centre's for `torroworkplace`. `None` for a
@@ -520,6 +716,31 @@ impl PimSource for Source {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #411: under Scoop every app has a copy of the service; the newest starts, with equals the
+    /// app's own, and nothing is chosen outside Scoop's layout.
+    #[test]
+    fn the_newest_scoop_copy_of_the_service_starts() {
+        let apps = PathBuf::from("/d/pkgs/apps");
+        let exe = apps.join("torrotasks/0.1.0/torrotasks.exe");
+        let folders = |_: &Path| {
+            vec![apps.join("scoop"), apps.join("torrocalendar"), apps.join("torrotasks"), apps.join("torroinbox")]
+        };
+        let copy = |app: &str| apps.join(app).join("current/torroworkplace.exe");
+        let version = |program: &Path| match program.to_string_lossy() {
+            text if text.contains("torrocalendar") => "0.2.0".parse().ok(),
+            text if text.contains("torroinbox") => None,
+            _ => "0.1.0".parse().ok(),
+        };
+        let all = |program: &Path| program.ends_with("torroworkplace.exe");
+        let chosen = choose_scoop_service(Some(&exe), all, folders, version).expect("a copy");
+        assert_eq!(chosen, (copy("torrocalendar"), "0.2.0".parse().expect("version")));
+        let without_calendar = |program: &Path| all(program) && !program.starts_with(apps.join("torrocalendar"));
+        let chosen = choose_scoop_service(Some(&exe), without_calendar, folders, version).expect("a copy");
+        assert_eq!(chosen.0, copy("torrotasks"), "0.1.0 beats an unreadable version");
+        let no_scoop = |_: &Path| vec![apps.join("torrotasks")];
+        assert_eq!(choose_scoop_service(Some(&exe), all, no_scoop, version), None, "no folder of Scoop itself");
+    }
 
     #[test]
     fn demo_data_opens_no_app() {
@@ -652,14 +873,18 @@ mod tests {
         use std::path::{Path, PathBuf};
 
         let program = Path::new("/opt/torro/torroworkplace");
-        let command = daemon_command(program, Some(PathBuf::from("/home/anna")));
+        let command = daemon_command(program, Some(PathBuf::from("/home/anna")), &[]);
         assert_eq!(command.get_program(), program.as_os_str());
         assert_eq!(command.get_args().collect::<Vec<_>>(), [OsStr::new("daemon")]);
         assert_eq!(command.get_current_dir(), Some(Path::new("/home/anna")));
         assert!(command.get_envs().any(|(name, value)| name == "TORRO_TOKEN" && value.is_none()));
 
-        let homeless = daemon_command(program, None);
+        let homeless = daemon_command(program, None, &[]);
         assert_eq!(homeless.get_current_dir(), Some(Path::new("/")));
+
+        // Issue #411: a hand-over to a newer copy adds its argument after `daemon`.
+        let takeover = daemon_command(program, None, &["--takeover"]);
+        assert_eq!(takeover.get_args().collect::<Vec<_>>(), [OsStr::new("daemon"), OsStr::new("--takeover")]);
     }
 
     /// The program of `app` in its bundle in `folder`, as [`bundle_program`] names it.
@@ -753,6 +978,105 @@ mod tests {
         assert_eq!(bundled_program_file("torroinbox", Some(mail), None, |path| path == hub), Some(hub.clone()));
         assert_eq!(bundled_program_file("torro-inbox-mail", Some(mail), None, |path| path == mail), Some(mail.into()));
         assert_eq!(bundled_program_file("bash", Some(mail), None, |_| true), None);
+    }
+
+    fn version(text: &str) -> Version {
+        text.parse().expect("a version")
+    }
+
+    /// An `Info.plist` as `packaging/macos/Info.plist.in` builds it, with `version` in it: Apple's key
+    /// without the pre-release (as `make-app.sh` cuts it), the whole one in `TorroVersion`.
+    fn info_plist(version: &str) -> String {
+        let short = version.split('-').next().unwrap_or(version);
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+             <plist version=\"1.0\">\n<dict>\n\
+             \t<key>CFBundleIdentifier</key>\n\t<string>io.github.mahype.torro-workplace-service</string>\n\
+             \t<key>CFBundleVersion</key>\n\t<string>9.9.9</string>\n\
+             \t<key>CFBundleShortVersionString</key>\n\t<string>{short}</string>\n\
+             \t<key>TorroVersion</key>\n\t<string>{version}</string>\n\
+             \t<key>LSUIElement</key>\n\t<true/>\n\
+             </dict>\n</plist>\n"
+        )
+    }
+
+    /// Issue #411: the version is `CFBundleShortVersionString`, not another key; anything else gives none.
+    #[test]
+    fn the_version_of_a_bundle_is_read_from_its_property_list() {
+        assert_eq!(plist_version(&info_plist("0.2.0")), Some(version("0.2.0")));
+        assert_eq!(plist_version(&info_plist("not a version")), None);
+        assert_eq!(plist_version("<plist><dict><key>CFBundleVersion</key><string>1.0.0</string></dict></plist>"), None);
+        let wrong_type = "<plist><dict><key>CFBundleShortVersionString</key><true/></dict></plist>";
+        assert_eq!(plist_version(wrong_type), None);
+        let last = "<plist><dict><key>CFBundleShortVersionString</key></dict></plist>";
+        assert_eq!(plist_version(last), None);
+        assert_eq!(plist_version("bplist00…"), None, "a binary list is not read");
+        // Review of #411: Apple's key cuts a pre-release off; the suite's own key keeps it.
+        let both = "<plist><dict><key>CFBundleShortVersionString</key><string>0.2.0</string>\
+                    <key>TorroVersion</key><string>0.2.0-rc.1</string></dict></plist>";
+        assert_eq!(plist_version(both), Some(version("0.2.0-rc.1")));
+        let program = Path::new("/Applications/Torro Calendar.app").join(SERVICE_IN_BUNDLE);
+        assert_eq!(
+            info_plist_of(&program),
+            Some(PathBuf::from(
+                "/Applications/Torro Calendar.app/Contents/Library/LoginItems/Torro Workplace Service.app/Contents/Info.plist"
+            ))
+        );
+        assert_eq!(service_in(torro_core::AppId::WORKPLACE), PathBuf::from(SERVICE_PROGRAM));
+    }
+
+    /// Issue #411: of several copies of the service the highest version starts; with equal versions the
+    /// one inside "Torro Workplace.app", then the one in the caller's own bundle.
+    #[test]
+    fn the_newest_copy_of_the_service_is_chosen() {
+        let home = Path::new("/Users/anna");
+        let calendar_exe = Path::new("/Applications/Torro Calendar.app/Contents/MacOS/torrocalendar");
+        let copy = |folder: &str, app: torro_core::AppId| Path::new(folder).join(service_in(app));
+        let workplace = copy("/Applications", torro_core::AppId::WORKPLACE);
+        let calendar = copy("/Applications", torro_core::AppId::CALENDAR);
+        let tasks = copy("/Users/anna/Applications", torro_core::AppId::TASKS);
+        assert!(calendar.ends_with(
+            "Torro Calendar.app/Contents/Library/LoginItems/Torro Workplace Service.app/Contents/MacOS/torroworkplace"
+        ));
+        let copies = |list: Vec<(PathBuf, &'static str)>| {
+            move |program: &Path| list.iter().find(|(path, _)| path == program).map(|(_, v)| version(v))
+        };
+        let choose = |exe: &Path, list: Vec<(PathBuf, &'static str)>| {
+            let paths: Vec<PathBuf> = list.iter().map(|(path, _)| path.clone()).collect();
+            choose_service(Some(exe), Some(home), |program| paths.iter().any(|path| path == program), copies(list))
+        };
+
+        // The highest version wins, wherever it lies.
+        let newer_tasks = vec![(workplace.clone(), "0.1.0"), (calendar.clone(), "0.2.0"), (tasks.clone(), "0.3.0")];
+        assert_eq!(choose(calendar_exe, newer_tasks), Some((tasks.clone(), version("0.3.0"))));
+        let pre = vec![(workplace.clone(), "0.2.0"), (tasks.clone(), "0.2.0-rc.1")];
+        assert_eq!(choose(calendar_exe, pre), Some((workplace.clone(), version("0.2.0"))), "a release beats its rc");
+
+        // Equal versions: Torro Workplace first, then the own bundle, then the first found.
+        let equal = vec![(workplace.clone(), "0.2.0"), (calendar.clone(), "0.2.0"), (tasks.clone(), "0.2.0")];
+        assert_eq!(choose(calendar_exe, equal), Some((workplace.clone(), version("0.2.0"))));
+        let without_workplace = vec![(calendar.clone(), "0.2.0"), (tasks.clone(), "0.2.0")];
+        let tasks_exe = Path::new("/Users/anna/Applications/Torro Tasks.app/Contents/MacOS/torrotasks");
+        assert_eq!(choose(tasks_exe, without_workplace.clone()), Some((tasks.clone(), version("0.2.0"))));
+        assert_eq!(choose(calendar_exe, without_workplace.clone()), Some((calendar.clone(), version("0.2.0"))));
+        let elsewhere = Path::new("/Users/anna/torro/target/debug/torroworkplace");
+        assert_eq!(choose(elsewhere, without_workplace), Some((calendar.clone(), version("0.2.0"))), "first found");
+
+        // A copy without a readable version starts only when there is no other.
+        let unreadable = vec![(calendar.clone(), "0.1.0")];
+        let found = |program: &Path| *program == calendar || *program == workplace;
+        let only_calendar = choose_service(Some(calendar_exe), Some(home), found, copies(unreadable));
+        assert_eq!(only_calendar, Some((calendar.clone(), version("0.1.0"))));
+        let none_readable = choose_service(Some(calendar_exe), Some(home), |program| *program == workplace, |_| None);
+        assert_eq!(none_readable, Some((workplace.clone(), version("0.0.0"))));
+
+        // The service, running inside the calendar's bundle, finds the copies beside it as well.
+        let in_calendar = calendar.clone();
+        let both = vec![(workplace.clone(), "0.2.0"), (calendar.clone(), "0.3.0")];
+        assert_eq!(choose(&in_calendar, both), Some((calendar.clone(), version("0.3.0"))));
+
+        assert_eq!(choose_service(Some(calendar_exe), Some(home), |_| false, |_| Some(version("1.0.0"))), None);
     }
 
     #[test]

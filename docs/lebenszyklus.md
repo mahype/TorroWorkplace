@@ -70,7 +70,10 @@ So war es, bevor #279 umgesetzt wurde. Was daraus wurde, steht unter „Entschei
    Dock-Icon), eingebettet in „Torro Workplace.app“ (die Steuerzentrale). Grund: Liefe der Dienst aus
    demselben Bündel wie die Steuerzentrale, würde ein Doppelklick auf „Torro Workplace“ bei laufendem
    Dienst nur den Dienst wecken, und kein Fenster ginge auf. Verworfen: den Weckruf im Dienst selbst
-   abfangen. Das bräuchte nativen AppKit-Code mit `unsafe`.
+   abfangen. Das bräuchte nativen AppKit-Code mit `unsafe`. Seit #411 steckt dasselbe Agenten-Bündel in
+   **jedem** App-Bündel (`<App>.app/Contents/Library/LoginItems/Torro Workplace Service.app`), damit eine einzeln
+   installierte App ihren Dienst mitbringt. Alle Kopien tragen dieselbe Bundle-ID
+   (`io.github.mahype.torro-workplace-service`) und dasselbe Team, sonst fragt der Schlüsselbund je Kopie neu.
 8. **Windows:** Die Apps starten den Dienst auch dort selbst. Startmenü-Einträge kommen über das
    Scoop-Manifest der Suite (`shortcuts`). Windows gruppiert die Taskleiste nach `.exe` und zeigt das
    beim Bauen eingebettete Icon; deshalb bekommen Mail und App Feed eigene Programme (Entscheidung 2),
@@ -80,6 +83,19 @@ So war es, bevor #279 umgesetzt wurde. Was daraus wurde, steht unter „Entschei
    anlegen kann; ohne sie bliebe das Anheften kaputt.
 9. **Icons:** Ein Agent entwirft ein einheitliches Set für alle Apps mit Vorschauseite unter
    `docs/prototypes/icons/`, der Mensch wählt; daraus entstehen `.icns`, `.ico` und die SVGs für Linux.
+10. **Mehrere Kopien des Dienstes: Die neueste startet** (#411). Jede App bringt den Dienst mit (macOS im eigenen
+   Bündel, Linux und Windows als Paket-Abhängigkeit bzw. im selben Archiv), also liegen oft mehrere Kopien auf dem
+   Rechner. Eine App startet die Kopie mit der höchsten Version (macOS: `TorroVersion`, die ganze Version samt Vorabversion, im
+   `Info.plist` des Dienst-Bündels; bei Gleichstand die in „Torro Workplace.app“, dann die im eigenen Bündel).
+   **Datenschutz vor älteren Versionen:** Der Dienst schreibt beim Start die höchste Version, die je auf den Daten
+   lief, nach `<state>/service-version`. Ist er älter als diese, startet er nicht (Exit 1) und sagt auf stderr,
+   welche Version die Daten zuletzt benutzt hat; eine ältere Kopie arbeitet so nie auf Daten einer neueren.
+   **Ablösen:** Installiert oder aktualisiert der App-Katalog eine neuere Kopie (oder entfernt er das Bündel, aus
+   dem der Dienst lief), startet der Dienst `torroworkplace daemon --takeover` aus der neuen Kopie und endet wie
+   bei Quit, aber ohne Quit-Marke: Das zählt nicht als Beenden durch einen Menschen (Entscheidung 4). Die neue
+   Kopie versucht 15 s lang alle 250 ms, den Dienst zu übernehmen. „Start at login“ zeigt nach jedem Start auf den
+   laufenden Dienst. Verworfen: eine feste Kopie (die der Hauptanwendung) als einzige zu starten. Ohne
+   Hauptanwendung gäbe es sonst keinen Dienst.
 
 ## Wer startet was
 

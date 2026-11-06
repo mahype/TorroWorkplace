@@ -305,6 +305,14 @@ fn open_app_accounts(app: AppId) -> AppOpening {
     })
 }
 
+/// The answer of an app command (issue #411): the job, or the catalog's refusal with its code.
+fn app_job(job: Result<torro_ipc::AppJobInfo, crate::catalog::CatalogError>) -> Response {
+    match job {
+        Ok(job) => Response::AppJob { job },
+        Err(refused) => refused.response(),
+    }
+}
+
 /// What tests say is installed: the main application, so a client's sign-in shows the control
 /// centre (which they count) and no app starts by accident.
 fn main_app_only() -> (bool, Vec<torro_ipc::AppInfo>) {
@@ -2669,6 +2677,10 @@ pub struct Core {
     /// The contacts of the Nextcloud and CalDAV accounts (issue #351): the user's store
     /// ([`ContactsService::system`]); tests hold none unless they bring one ([`Core::with_contacts`]).
     contacts: Arc<ContactsService>,
+    /// The app catalog (issue #411): versions, installing, updating, uninstalling
+    /// ([`crate::catalog::Catalog::system`]); tests ask no server and find no app unless they bring
+    /// one ([`Core::with_catalog`]).
+    catalog: crate::catalog::Catalog,
 }
 
 /// How long a measurement without shared memory counts ([`Core::hardware`]): long enough that the
@@ -2764,6 +2776,7 @@ impl Core {
             hardware: tokio::sync::Mutex::new(None),
             pulls: crate::account::pull::Pulls::default(),
             contacts,
+            catalog: if cfg!(test) { crate::catalog::Catalog::none() } else { crate::catalog::Catalog::system() },
         };
         let allowed = core.allowed_folders();
         Core { extensions: core.extensions.clone().with_allowed(allowed), ..core }
@@ -2995,6 +3008,34 @@ impl Core {
         &self.reminders
     }
 
+    /// The app catalog (issue #411): for its daily check ([`crate::catalog::Catalog::watch`]) and for
+    /// the daemon to wire the hand-over to a newer service ([`crate::catalog::Catalog::set_hand_over`],
+    /// [`crate::catalog::Catalog::set_newest_service`]).
+    pub fn catalog(&self) -> &crate::catalog::Catalog {
+        &self.catalog
+    }
+
+    /// The commands of the app catalog (issue #411). Boxed whole, so the answer's future keeps only a
+    /// pointer for them: their downloads and checks would grow every answer past a test thread's stack.
+    fn app_catalog(
+        &self,
+        request: Request,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send + '_>> {
+        Box::pin(async move {
+            let catalog = &self.catalog;
+            match request {
+                Request::ListAppCatalog => Response::AppCatalog { catalog: catalog.list().await },
+                Request::CheckAppUpdates => Response::AppCatalog { catalog: catalog.check().await },
+                Request::AppJob { id } => app_job(catalog.job(&id)),
+                Request::CancelAppJob { id } => app_job(catalog.cancel(&id)),
+                Request::UninstallApp { app, remove_data } => app_job(catalog.uninstall(&app, remove_data).await),
+                Request::InstallApp { app } => app_job(catalog.install(&app).await),
+                Request::UpdateApps { apps } => app_job(catalog.update(&apps).await),
+                _ => Response::Error { code: "error".into(), message: "not an app catalog command".into() },
+            }
+        })
+    }
+
     /// What the reminders' run plans with at `now`: the events of the calendars the suite shows
     /// ([`crate::reminders::window`]; none when the calendars cannot be read, and none while the
     /// calendar is turned off, task W.1: nothing runs in the background for it) and the setting.
@@ -3093,6 +3134,13 @@ impl Core {
     #[cfg(test)]
     pub(crate) fn with_contacts(mut self, contacts: ContactsService) -> Core {
         self.contacts = Arc::new(contacts);
+        self
+    }
+
+    /// The core with the app catalog `catalog` instead of one that finds nothing, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_catalog(mut self, catalog: crate::catalog::Catalog) -> Core {
+        self.catalog = catalog;
         self
     }
 
@@ -5723,6 +5771,15 @@ impl Core {
             // A client's target comes through `handle_client` or `run_approved` with its maker; here
             // a client reaches no file of the tools (`Core::open_target`).
             Request::OpenApp { app, target } => self.open_app_request(&app, target.as_deref(), reach, Maker::App).await,
+            // The app catalog (issue #411): installing and updating only with the app key (`Mcp::Never`,
+            // admin), uninstalling for a client only after the person's approval.
+            request @ (Request::ListAppCatalog
+            | Request::CheckAppUpdates
+            | Request::AppJob { .. }
+            | Request::CancelAppJob { .. }
+            | Request::UninstallApp { .. }
+            | Request::InstallApp { .. }
+            | Request::UpdateApps { .. }) => self.app_catalog(request).await,
             Request::ListApps => {
                 Response::Apps { apps: crate::apps::list(), main_app: crate::apps::main_app_installed() }
             }
@@ -13903,8 +13960,19 @@ mod tests {
 
     /// Issue #302: an approved call runs with the rights of the moment it is allowed: the level taken back
     /// meanwhile makes it `forbidden`; a bot that ran for the assistant gets what both may.
-    #[tokio::test]
-    async fn an_approved_server_tool_runs_with_the_rights_of_now() {
+    #[test]
+    fn an_approved_server_tool_runs_with_the_rights_of_now() {
+        // The approval runs its command through the core again, with a server tool on top: in a debug
+        // build that nests deeper than a test thread's 2 MiB stack holds (on Linux it overflowed), so it
+        // runs on a thread of its own with more.
+        let worker = std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+            runtime.block_on(approved_server_tool_runs_with_the_rights_of_now());
+        });
+        worker.expect("thread").join().expect("the test ran through");
+    }
+
+    async fn approved_server_tool_runs_with_the_rights_of_now() {
         use torro_ipc::api::Confirm;
         let dir = tempfile::tempdir().expect("temp dir");
         let (core, secrets) = extensions_core(dir.path());
@@ -13912,7 +13980,7 @@ mod tests {
         let (id, key) = client(&core, with_server(Rights::none(), Level::Full, Confirm::OnDelete)).await;
         let asked = waits(ask(&core, Some(&key), call_tool("crash")).await);
         core.clients.update(&id, with_server(Rights::none(), Level::Read, Confirm::OnDelete)).await.expect("updated");
-        let decided = approval(core.handle(decide(&asked.id, true)).await);
+        let decided = approval(Box::pin(core.handle(decide(&asked.id, true))).await);
         let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("ran, got {:?}", decided.state) };
         assert_eq!(code(&response), "forbidden");
 
@@ -13945,13 +14013,13 @@ mod tests {
             }
         };
         let pwd = open(call_tool("pwd")).await;
-        let decided = approval(core.handle(decide(&pwd.id, true)).await);
+        let decided = approval(Box::pin(core.handle(decide(&pwd.id, true))).await);
         let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("ran, got {:?}", decided.state) };
         assert_eq!(code(&response), "forbidden", "the assistant may only read");
         #[cfg(unix)]
         {
             let echo = open(call_tool("echo")).await;
-            let decided = approval(core.handle(decide(&echo.id, true)).await);
+            let decided = approval(Box::pin(core.handle(decide(&echo.id, true))).await);
             let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("ran") };
             assert!(matches!(*response, Response::ToolResult { .. }), "{response:?}");
         }
@@ -16645,6 +16713,80 @@ mod tests {
             ]
         );
         assert!(apps[..3].iter().all(|app| app.binary == "torroinbox"));
+    }
+
+    /// Issue #411: the app catalog of a core in tests asks no server and installs nothing (as a
+    /// development build), but lists and answers with fixed codes.
+    #[tokio::test]
+    async fn the_app_catalog_answers_without_a_server() {
+        let dir = tempfile::tempdir().expect("dir");
+        let core = core(dir.path());
+        let Response::AppCatalog { catalog } = core.handle(Request::CheckAppUpdates).await else {
+            panic!("check_updates answers the catalog");
+        };
+        assert_eq!((catalog.error.as_deref(), catalog.latest), (Some("offline"), None));
+        assert_eq!(catalog.main.window_class, "torro-workplace");
+        assert!(matches!(core.handle(Request::ListAppCatalog).await, Response::AppCatalog { .. }));
+        let install = core.handle(Request::InstallApp { app: "torro-tasks".into() }).await;
+        assert_eq!(code(&install), "unsupported");
+        let update = core.handle(Request::UpdateApps { apps: vec!["torroworkplace".into()] }).await;
+        assert_eq!(code(&update), "unsupported");
+        let uninstall = core.handle(Request::UninstallApp { app: "torro-tasks".into(), remove_data: false }).await;
+        assert_eq!(code(&uninstall), "unsupported");
+        assert_eq!(code(&core.handle(Request::AppJob { id: "0123456789abcdef".into() }).await), "not-found");
+        assert_eq!(code(&core.handle(Request::CancelAppJob { id: "0123456789abcdef".into() }).await), "not-found");
+    }
+
+    /// Issue #411, point 11 of "Was nie nach außen geht": a client key with every right in `apps`
+    /// reads the catalog and jobs, waits for a person to uninstall, and never installs or updates.
+    #[tokio::test]
+    async fn a_client_reads_the_catalog_asks_to_uninstall_and_never_installs() {
+        let dir = tempfile::tempdir().expect("dir");
+        let core = core(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Apps, AreaRights { level: Level::Full, admin: true });
+        let (_, key) = client(&core, rights).await;
+        assert!(matches!(ask(&core, Some(&key), Request::ListAppCatalog).await, Response::AppCatalog { .. }));
+        let job = ask(&core, Some(&key), Request::AppJob { id: "0123456789abcdef".into() }).await;
+        assert_eq!(code(&job), "not-found");
+        let uninstall = Request::UninstallApp { app: "torro-tasks".into(), remove_data: true };
+        assert!(matches!(ask(&core, Some(&key), uninstall).await, Response::Pending { .. }), "waits for a person");
+        let install = ask(&core, Some(&key), Request::InstallApp { app: "torro-assistant".into() }).await;
+        assert_eq!(code(&install), "forbidden");
+        let update = ask(&core, Some(&key), Request::UpdateApps { apps: vec!["torroworkplace".into()] }).await;
+        assert_eq!(code(&update), "forbidden");
+    }
+
+    /// Issue #411: installing through the core starts a job that `apps.app_job` follows to its end.
+    #[tokio::test]
+    async fn an_app_is_installed_through_the_core_as_a_job() {
+        let dir = tempfile::tempdir().expect("dir");
+        let env = crate::catalog::tests::windows_env(&dir.path().join("catalog"));
+        let server = httpmock::MockServer::start_async().await;
+        let file = crate::catalog::tests::windows_file("torrotasks", b"MZ tasks");
+        crate::catalog::tests::serve(&server, "0.2.0", &[file]).await;
+        let core = core(dir.path()).with_catalog(crate::catalog::tests::catalog_at(env, &server));
+        let Response::AppJob { job } = core.handle(Request::InstallApp { app: "torrotasks".into() }).await else {
+            panic!("install_app answers the job");
+        };
+        let mut state = job.state;
+        for _ in 0..500 {
+            let Response::AppJob { job: now } = core.handle(Request::AppJob { id: job.id.clone() }).await else {
+                panic!("app_job answers the job");
+            };
+            state = now.state;
+            if state != torro_ipc::AppJobState::Running {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(state, torro_ipc::AppJobState::Done);
+        assert!(dir.path().join("catalog/bin/torrotasks.exe").is_file());
+        let Response::AppCatalog { catalog } = core.handle(Request::ListAppCatalog).await else {
+            panic!("list_catalog answers the catalog");
+        };
+        let tasks = catalog.apps.iter().find(|app| app.window_class == "torro-tasks").expect("tasks");
+        assert!(tasks.installed.is_some(), "{tasks:?}");
     }
 
     #[test]
@@ -24515,10 +24657,10 @@ mod tests {
         core.clients.update(&info.id, reading_mail).await.expect("updated");
         assert_eq!(listed_notes(ask(&core, Some(&key), Request::ListMemories).await).len(), 2);
 
-        let file = dir.path().join("config/assistant/memory.md");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let file = dir.path().join("config/assistant/memory.md");
             assert_eq!(std::fs::metadata(&file).expect("memory.md").permissions().mode() & 0o777, 0o600);
         }
         let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");

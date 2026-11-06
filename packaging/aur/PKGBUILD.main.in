@@ -1,0 +1,28 @@
+# Template for the AUR package `torro-workplace`: the main application of the suite (tray icon and
+# control centre). It has no program of its own: the program is `torroworkplace` from
+# `torroworkplace-bin`, which every app brings as its background service. This package adds the
+# launcher entry and the icon; the entry is what tells the service that the main application is
+# installed (docs/einzelne-apps.md), so it shows the tray icon and the setup (issue #411).
+# @VERSION@ is replaced by .github/workflows/publish-aur.yml; updpkgsums fills in the checksums.
+
+# Maintainer: TorroWorkplace contributors
+pkgname=torro-workplace
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Torro Workplace: tray icon and control centre of the TorroWorkplace suite, with the app catalog'
+arch=('any')
+url='https://github.com/mahype/TorroWorkplace'
+license=('MIT OR Apache-2.0')
+depends=('torroworkplace-bin')
+
+_repo="https://github.com/mahype/TorroWorkplace"
+source=("torro-workplace-$pkgver.desktop::$_repo/raw/v$pkgver/packaging/linux/torro-workplace.desktop"
+        "torro-workplace-$pkgver.svg::$_repo/raw/v$pkgver/packaging/linux/icons/torro-workplace.svg")
+# SKIP is replaced by `updpkgsums` in the publish workflow before the package is pushed.
+sha256sums=('SKIP' 'SKIP')
+
+package() {
+  install -Dm644 "$srcdir/torro-workplace-$pkgver.desktop" "$pkgdir/usr/share/applications/torro-workplace.desktop"
+  install -Dm644 "$srcdir/torro-workplace-$pkgver.svg" \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/torro-workplace.svg"
+}

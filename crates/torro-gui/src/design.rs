@@ -870,7 +870,7 @@ pub(crate) fn family(name: &str) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::theme::{radius, size, space};
     use crate::{layout, shell, style, typo};
@@ -1076,8 +1076,10 @@ mod tests {
         assert_eq!(tokens.light_theme.palette(), tokens.dark_theme.palette());
     }
 
-    /// Held by the tests that switch the process's look, so they do not see each other's.
-    static SWITCHING: Mutex<()> = Mutex::new(());
+    /// Held by the tests that switch the process's look, so they do not see each other's, and by the
+    /// tests elsewhere that compare themes by identity (`theme::sidebar_theme`, `theme::on_accent_theme`):
+    /// a switch beside them builds new themes, and the one they hold would no longer be recognised.
+    pub(crate) static SWITCHING: Mutex<()> = Mutex::new(());
 
     /// Writes `toml` after `format` and `[about]` (named "Torro", so tests running beside see the
     /// standard's theme names) as the file of the part folder `folder`/`id`.

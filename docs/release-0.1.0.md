@@ -5,7 +5,8 @@ fehlt, braucht deine Zugangsdaten oder deine Entscheidung. Hintergrund und Einze
 
 ## Was das Release enthält
 
-Für jede App (`torroworkplace`, `torrocalendar`, `torrotasks`):
+Für jedes Programm (`torroworkplace`, `torroinbox`, `torro-inbox-mail`, `torro-inbox-notifications`, `torrotasks`,
+`torrocalendar`, `torroassistant`; seit #411, Pakete je App: [release.md](release.md), „Pakete je App“):
 
 | System | Datei | Hinweis |
 |---|---|---|
@@ -15,6 +16,11 @@ Für jede App (`torroworkplace`, `torrocalendar`, `torrotasks`):
 | macOS Apple Silicon / Intel | `<app>-aarch64-apple-darwin.app.zip`, `<app>-x86_64-apple-darwin.app.zip` | signiert und notarisiert, zum Doppelklicken (`Torro Workplace.app`, `Torro Calendar.app`, `Torro Tasks.app`) – erst nach Schritt 1 und 2 |
 
 Prüfsummen (`*.sha256`, `sha256.sum`) und `source.tar.gz` kommen dazu.
+
+Seit #411 enthält jedes macOS-Bündel außer „Torro Reminder.app“ den Dienst („Torro Workplace Service.app“), damit
+eine einzeln geladene App läuft. Die Archive für Linux und Windows bleiben ohne Dienst; den bringen die Pakete
+(AUR, Homebrew, Scoop) und der App-Katalog der Steuerzentrale mit. Die AUR-Pakete veröffentlicht das Release erst,
+wenn die Repository-Variable `AUR_ENABLED=true` gesetzt ist ([release.md](release.md)).
 
 Bekannt für 0.1.0: Das Tray-Icon gibt es bisher nur unter Linux; auf macOS und Windows läuft der Dienst
 ohne Icon im Hintergrund. Die Apps haben noch das Standard-Icon des Systems.

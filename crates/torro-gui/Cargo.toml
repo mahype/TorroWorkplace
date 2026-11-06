@@ -16,6 +16,8 @@ torro-pim.workspace = true
 torro-ipc.workspace = true
 chrono.workspace = true
 iced = { workspace = true, features = ["advanced", "markdown"] }
+# The version in a bundle's `Info.plist`, to start the newest copy of the service (issue #411).
+roxmltree.workspace = true
 # `--demo --shots <dir>` (#492, `shots`): the views rendered in memory to PNG, without a window.
 iced_test.workspace = true
 png.workspace = true

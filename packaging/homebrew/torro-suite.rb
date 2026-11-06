@@ -1,7 +1,9 @@
 # Meta formula for the tap mahype/homebrew-torro: `brew install mahype/torro/torro-suite`.
 # Copy to Formula/torro-suite.rb in the tap repository ONCE (and again when an app joins the suite). The app formulae
 # (torroworkplace, torroinbox, torro-inbox-mail, torro-inbox-notifications, torrocalendar, torrotasks, torroassistant)
-# are generated and updated by `dist` on every release, one per program.
+# are generated and updated by `dist` on every release, one per program. Every app formula depends on
+# mahype/torro/torroworkplace, the background service (`[package.metadata.dist.dependencies.homebrew]` in the app
+# crates' Cargo.toml, issue #411), so each app can be installed on its own.
 # Needs no version bump: it only depends on the other formulae.
 class TorroSuite < Formula
   desc "TorroWorkplace suite: core with tray icon, inbox, mail, calendar, tasks and assistant"

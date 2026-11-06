@@ -200,15 +200,15 @@ impl Agents {
     }
 
     /// Agents found in `env` and offered, their runs in `runs`, stopped after `idle` without
-    /// output or `total` in all; for tests.
-    #[cfg(test)]
+    /// output or `total` in all; for tests (they run on Unix only, `mod tests`).
+    #[cfg(all(test, unix))]
     pub fn new(env: Env, runs: PathBuf, idle: Duration, total: Duration) -> Agents {
         Agents { offered: true, env: Some(env), runs: Some(runs), idle, total }
     }
 
     /// The same agents, found but not offered — what the product does ([`Agents::system`]); for
     /// tests.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn not_offered(self) -> Agents {
         Agents { offered: false, ..self }
     }

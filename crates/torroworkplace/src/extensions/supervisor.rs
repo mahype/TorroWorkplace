@@ -1123,8 +1123,9 @@ mod tests {
 
         /// Whether the process `pid` is alive, asked with `kill -0`.
         fn alive(pid: &str) -> bool {
-            std::process::Command::new("/bin/kill")
-                .args(["-0", pid])
+            // The shell's own `kill`: not every system has the program `/bin/kill` (Debian without procps).
+            std::process::Command::new("/bin/sh")
+                .args(["-c", "kill -0 \"$1\"", "sh", pid])
                 .stderr(Stdio::null())
                 .status()
                 .is_ok_and(|status| status.success())

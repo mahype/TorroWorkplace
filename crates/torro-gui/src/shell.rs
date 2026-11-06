@@ -1318,8 +1318,9 @@ pub fn app_name(app: AppId) -> &'static str {
 }
 
 /// The icon of an app in the switcher menu and on its mark ([`app_mark`]). Each of the inbox's
-/// windows has its own: the hub the tray, mail the envelope, the app feed the bell.
-fn app_icon(app: AppId) -> Icon {
+/// windows has its own: the hub the tray, mail the envelope, the app feed the bell. Public for the
+/// control centre's app catalog (issue #411), which shows each app with the icon it has here.
+pub fn app_icon(app: AppId) -> Icon {
     match app.window_class {
         "torro-inbox" => Icon::Inbox,
         "torro-inbox-mail" => Icon::Mail,

@@ -11,6 +11,13 @@ description = "Torro Workplace Mail for the tiled desktop: the inbox's Mail wind
 [lints]
 workspace = true
 
+# The Homebrew formula dist generates for this app brings the background service along (issue #411). `run` only:
+# a dependency without a stage would be installed on the build runners instead of going into the formula.
+[package.metadata.dist.dependencies.homebrew]
+"mahype/torro/torroworkplace" = { stage = ["run"] }
+# Opens its compose window in the Notification Hub (decision 4 of issue #411).
+"mahype/torro/torroinbox" = { stage = ["run"] }
+
 [dependencies]
 torro-core.workspace = true
 # The inbox's code (issue #279): this program only starts it with its window kind.

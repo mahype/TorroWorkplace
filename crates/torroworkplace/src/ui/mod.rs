@@ -42,6 +42,10 @@
 //! The pages are settings pages: `widgets::group`s of rows built with [`setting_row`] (design
 //! skill, section 5), rows that open a page through [`pressable`] with a [`chevron`].
 //!
+//! The section Apps ([`apps`], issue #411) is the app catalog: what is installed, what is new and
+//! what is missing. Its jobs run in a small window of their own, `torroworkplace ui --app-job=…`
+//! ([`app_job`]), which this window starts once the core answered with the job.
+//!
 //! One control centre per person (issue #279, [`torro_gui::instance`]): a second `torroworkplace ui`
 //! brings the running window to the front and ends. A start with a target – a page (`--section`), the
 //! setup (`--setup`, `--setup-if-open`, `--step`) –, the template dialog (`--template`) and the demo
@@ -55,7 +59,11 @@
 mod accounts;
 mod agent_wizard;
 mod api;
+// The window of an app job (issue #411): installing, updating, uninstalling step by step.
+mod app_job;
+// The app catalog (issue #411).
 mod approvals;
+mod apps;
 // MCP servers (task MA.7): the built-in tools, the catalog of MCP servers and one's own.
 mod connections;
 mod general;
@@ -103,6 +111,9 @@ use accounts::{connect, wizard};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     Overview,
+    /// The app catalog (issue #411): every app of the suite with its version, installing, updating
+    /// and uninstalling, and its switch. `--section apps`.
+    Apps,
     Accounts,
     Ai,
     /// Programs that use Torro Workplace with a key: "Allow API keys" and the keys with their
@@ -124,8 +135,9 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 10] = [
+    pub const ALL: [Section; 11] = [
         Section::Overview,
+        Section::Apps,
         Section::Accounts,
         Section::Ai,
         Section::Api,
@@ -146,6 +158,7 @@ impl Section {
     pub fn label(self) -> &'static str {
         match self {
             Section::Overview => tr("Overview"),
+            Section::Apps => tr("Apps"),
             Section::Accounts => tr("Accounts"),
             Section::Ai => tr("AI"),
             Section::Api => tr("API"),
@@ -164,6 +177,10 @@ impl Section {
     fn icon(self) -> Icon {
         match self {
             Section::Overview => Icon::LayoutGrid,
+            // A package: what is installed and what can be. Not the grid the plan names, which is
+            // Overview's beside it and the main application's own icon: in the rail the two
+            // sections would look the same.
+            Section::Apps => Icon::Package,
             Section::Accounts => Icon::Cloud,
             Section::Ai => Icon::Sparkles,
             // Code: programs that call Torro Workplace.
@@ -189,6 +206,7 @@ impl Section {
     pub fn arg(self) -> &'static str {
         match self {
             Section::Overview => "overview",
+            Section::Apps => "apps",
             Section::Accounts => "accounts",
             Section::Ai => "ai",
             Section::Api => "api",
@@ -201,13 +219,14 @@ impl Section {
         }
     }
 
-    /// `--section accounts` and friends, and the words of the pages that moved: `apps` and `inbox`
-    /// (task S.21) now mean General, where the suite's parts are switched on and opened, `agents`
-    /// (task S.35) MCP. Programs out there keep working; `assistant` and `bot:<id>` are read apart
-    /// ([`Launch::parse`]), since they bring the assistant's window to the front.
+    /// `--section accounts` and friends, and the words of the pages that moved: `inbox` (task S.21)
+    /// now means General, `agents` (task S.35) MCP; `apps`, General from task S.21 on, is the app
+    /// catalog since issue #411, where the apps are switched and opened now. Programs out there keep
+    /// working; `assistant` and `bot:<id>` are read apart ([`Launch::parse`]), since they bring the
+    /// assistant's window to the front.
     pub fn from_arg(arg: &str) -> Option<Section> {
         match arg {
-            "apps" | "inbox" => Some(Section::General),
+            "inbox" => Some(Section::General),
             "agents" => Some(Section::Mcp),
             arg => Section::ALL.into_iter().find(|section| section.arg() == arg),
         }
@@ -261,6 +280,9 @@ pub struct Data {
     /// the order the core asks them; only loaded while the setup is open, since listing them asks the system
     /// keychain whether their keys are stored.
     pub search_providers: Vec<torro_ipc::web::SearchProviderInfo>,
+    /// The app catalog (`apps.list_catalog`, issue #411) and the job that runs, loaded apart from
+    /// the rest ([`load_app_catalog`]): the core reads what is installed for it each time.
+    pub app_catalog: apps::Loaded,
     /// Why the last load failed (daemon not running, …).
     pub error: Option<String>,
 }
@@ -338,6 +360,19 @@ pub enum Action {
     /// changed the settings ([`accounts::Asked::changes`]) the shell reloads. The demo answers from
     /// [`launch::demo_answer`].
     AskAi(Vec<(accounts::Asked, Request)>),
+    /// Ask the core to check GitHub for new releases (`apps.check_updates`, issue #411) and hand the
+    /// catalog it answers with to the section Apps ([`apps::checked`]). The demo answers with its own.
+    CheckApps,
+    /// Start an app job (`apps.install_app`, `apps.update_apps`) and open its window once the core
+    /// answered with it ([`apps::started`]); a refusal is the notice in words for people. The demo
+    /// starts nothing.
+    StartAppJob(Request),
+    /// Open the window of an app job (`torroworkplace ui --app-job=…`, [`app_job::open`]): a local
+    /// start of this program, which sends the requests itself. The demo opens nothing.
+    AppWindow(app_job::Target),
+    /// Show where an app lies in the system's file manager ([`apps::reveal`]): a local action without
+    /// a request, as [`Action::OpenFolder`]. The demo opens nothing.
+    Reveal(AppId, Option<String>),
 }
 
 /// What a page puts into the header bar next to the section title. A page module builds it in an
@@ -426,6 +461,10 @@ pub struct Ui {
     connections: connections::State,
     approvals: approvals::State,
     general: general::State,
+    apps: apps::State,
+    /// When the app catalog last came ([`Message::AppCatalog`]): outside its section it is asked for
+    /// once a minute, for the sidebar's count of updates.
+    catalog_at: Option<Instant>,
     /// The first-run setup while it is open (task W.4): it takes the window instead of the
     /// sections.
     setup: Option<setup::State>,
@@ -501,6 +540,13 @@ pub enum Message {
     Connections(connections::Message),
     Approvals(approvals::Message),
     General(general::Message),
+    Apps(apps::Message),
+    /// The app catalog and its running job ([`load_app_catalog`]).
+    AppCatalog(Box<apps::Loaded>),
+    /// The answer to `apps.check_updates` ([`Action::CheckApps`]).
+    AppsChecked(Result<Response, String>),
+    /// The answer to the request that starts an app job ([`Action::StartAppJob`]), as the core gave it.
+    AppJobStarted(Result<Response, String>),
 }
 
 /// Runs the control centre with the start parameters of `torroworkplace ui` ([`Launch::parse`]).
@@ -510,6 +556,10 @@ pub enum Message {
 pub fn run(launch: Launch, shots: Option<&Shots>) -> Result<(), RunError> {
     if launch.template.is_some() {
         return template_form::run(launch, shots);
+    }
+    // The window of an app job (issue #411), also its demo states.
+    if launch.app_job.is_some() || launch.open.is_some_and(Open::is_app_job) {
+        return app_job::run(launch, shots);
     }
     // Before the core is started: a second start only brings the first window to the front.
     if let Some(app) = instance_of(&launch)
@@ -548,7 +598,8 @@ fn instance_of(launch: &Launch) -> Option<AppId> {
         || launch.client.is_some()
         || launch.setup.is_some()
         || launch.setup_if_open
-        || launch.template.is_some();
+        || launch.template.is_some()
+        || launch.app_job.is_some();
     (!target && !launch.demo).then_some(AppId::WORKPLACE)
 }
 
@@ -603,6 +654,8 @@ impl Ui {
             connections: connections::State::default(),
             approvals: approvals::State::default(),
             general: general::State::default(),
+            apps: apps::State::default(),
+            catalog_at: None,
             setup: None,
             target: None,
         };
@@ -1078,6 +1131,61 @@ impl Ui {
             }
             // The demo's designs, fonts and colour schemes, one of each broken; the check mark at the
             // design `--design` draws with, else at the standard.
+            // The app catalog (issue #411); the states of the job's window run in their own window
+            // ([`run`]) and only choose the section here.
+            Open::Apps | Open::AppsInstall | Open::AppsInstalled | Open::AppsUninstall | Open::AppsSelfUpdate => {
+                vec![Message::Select(Section::Apps)]
+            }
+            Open::AppsMenu => vec![
+                Message::Select(Section::Apps),
+                Message::Apps(apps::Message::ToggleMenu(AppId::CALENDAR.window_class.into())),
+            ],
+            Open::AppsInstalling => {
+                let job = apps::demo_job(false);
+                if let apps::Catalog::Listed(catalog) = &mut self.data.app_catalog.catalog {
+                    catalog.job = Some(job.id.clone());
+                }
+                self.data.app_catalog.job = Some(job);
+                vec![Message::Select(Section::Apps)]
+            }
+            // The main application came from a package manager (decision 1): every app shows its command.
+            Open::AppsManaged => {
+                if let apps::Catalog::Listed(catalog) = &mut self.data.app_catalog.catalog {
+                    apps::demo_managed(catalog);
+                }
+                vec![Message::Select(Section::Apps)]
+            }
+            // The main application's update waits: its question card over the cards.
+            Open::AppsMainUpdate => {
+                if let apps::Catalog::Listed(catalog) = &mut self.data.app_catalog.catalog {
+                    catalog.main.installed = Some("0.1.0".into());
+                    catalog.main.state = torro_ipc::CatalogState::Update;
+                }
+                vec![Message::Select(Section::Apps)]
+            }
+            Open::AppsEmpty => {
+                if let apps::Catalog::Listed(catalog) = &mut self.data.app_catalog.catalog {
+                    catalog.apps.clear();
+                }
+                vec![Message::Select(Section::Apps)]
+            }
+            Open::AppsNoMatch => {
+                vec![Message::Select(Section::Apps), Message::Apps(apps::Message::Query("Photoshop".into()))]
+            }
+            Open::AppsError => {
+                self.data.app_catalog = apps::Loaded {
+                    catalog: apps::Catalog::Failed("the core refused apps.list_catalog".into()),
+                    job: None,
+                };
+                vec![Message::Select(Section::Apps)]
+            }
+            Open::AppsOffline => {
+                if let apps::Catalog::Listed(catalog) = &mut self.data.app_catalog.catalog {
+                    catalog.error = Some("offline".into());
+                    catalog.checked = Some(chrono::Utc::now() - chrono::Duration::days(3));
+                }
+                vec![Message::Select(Section::Apps)]
+            }
             Open::Design | Open::DesignSchemes | Open::DesignSwitched | Open::DesignFonts | Open::DesignFontsSearch => {
                 self.data.settings.design =
                     self.launch.design.clone().unwrap_or_else(|| torro_core::design::STANDARD_ID.into());
@@ -1119,13 +1227,26 @@ impl Ui {
             .as_ref()
             .filter(|setup| setup.step() == setup::Step::Ai)
             .map(|_| (self.data.ai_deciders_from.clone(), self.data.ai_deciders.clone()));
-        match (self.launch.demo, self.section) {
+        let rest = match (self.launch.demo, self.section) {
             (true, _) => Task::none(),
             (false, _) if self.on_documents() => Task::batch([load(true, None), load_catalog()]),
             // MCP servers shows the web search providers among the built-in tools (task MA.7 with WEB.6).
             (false, Section::Connections) => Task::batch([load(true, ai_cache), load_catalog()]),
             (false, _) => load(self.setup.is_some(), ai_cache),
+        };
+        Task::batch([rest, self.reload_app_catalog()])
+    }
+
+    /// The app catalog with the reload while Apps is open or a job runs, else once a minute for the
+    /// sidebar's count: the core reads what is installed for it each time (issue #411).
+    fn reload_app_catalog(&self) -> Task<Message> {
+        let due = self.section == Section::Apps
+            || apps::job_runs(&self.data)
+            || self.catalog_at.is_none_or(|at| at.elapsed() >= CATALOG_EVERY);
+        if self.launch.demo || !due {
+            return Task::none();
         }
+        load_app_catalog()
     }
 
     /// Whether the setup shows its step Documents, which lists the ArtCraft apps of the catalog.
@@ -1153,7 +1274,9 @@ impl Ui {
 
     fn subscription(&self) -> Subscription<Message> {
         // Faster while an account is being set up, so the page follows the browser sign-in.
-        let busy = self.accounts.busy() || self.setup.as_ref().is_some_and(setup::State::busy);
+        // And while an app job runs, so its card follows it (issue #411).
+        let busy =
+            self.accounts.busy() || self.setup.as_ref().is_some_and(setup::State::busy) || apps::job_runs(&self.data);
         let every = if busy { Duration::from_secs(1) } else { Duration::from_secs(3) };
         let mut all = vec![
             iced::system::theme_changes().map(Message::SystemMode),
@@ -1183,7 +1306,15 @@ impl Ui {
                 self.waiting = false;
                 // `--section assistant`: the core starts the assistant's window or brings it up.
                 let open = self.target.take().map_or_else(Task::none, |target| send(target.request()));
-                return Task::batch([self.reload(), open]);
+                // A start on Apps checks GitHub as opening it does (issue #411).
+                let check = match self.section == Section::Apps {
+                    true => {
+                        let ask = apps::opened(&mut self.apps);
+                        self.perform(ask)
+                    }
+                    false => Task::none(),
+                };
+                return Task::batch([self.reload(), open, check]);
             }
             // The open section again, from the sidebar or the menu, with a page open below it: back up to
             // the section's own page (issue #264), the menus closed.
@@ -1205,6 +1336,8 @@ impl Ui {
                     Section::Mcp => mcp::opened(),
                     // The catalog is asked for only while the section is open (task MA.8).
                     Section::Connections => Action::Reload,
+                    // What is new on GitHub (issue #411, decision 2).
+                    Section::Apps => apps::opened(&mut self.apps),
                     _ => Action::None,
                 }
             }
@@ -1255,8 +1388,10 @@ impl Ui {
                 let first = !self.loaded;
                 // The catalog comes apart from the rest ([`Message::Catalog`]): a reload keeps it.
                 let catalog = std::mem::take(&mut self.data.catalog);
+                let app_catalog = std::mem::take(&mut self.data.app_catalog);
                 self.data = *data;
                 self.data.catalog = catalog;
+                self.data.app_catalog = app_catalog;
                 let mut providers = Task::none();
                 if first && self.launch.setup_if_open && !self.launch.demo && self.data.error.is_none() {
                     let step = self.launch.setup.unwrap_or(setup::Step::Welcome);
@@ -1386,6 +1521,32 @@ impl Ui {
                 self.data.catalog = catalog;
                 Action::None
             }
+            Message::AppCatalog(loaded) => {
+                self.catalog_at = Some(Instant::now());
+                // A reload that did not reach the core keeps the catalog the page shows.
+                let failed = matches!(loaded.catalog, apps::Catalog::Failed(_));
+                if !(failed && self.data.app_catalog.catalog.listed().is_some()) {
+                    self.data.app_catalog = *loaded;
+                }
+                Action::None
+            }
+            Message::AppsChecked(result) => {
+                apps::checked(&mut self.apps, &mut self.data.app_catalog, &result);
+                Action::None
+            }
+            Message::AppJobStarted(result) => match apps::started(&result) {
+                Ok(job) => {
+                    self.notice = None;
+                    let target = app_job::Target::Follow(job.id.clone());
+                    self.data.app_catalog.job = Some(job);
+                    // The card follows the job from the next reload on.
+                    return Task::batch([self.perform(Action::AppWindow(target)), self.reload()]);
+                }
+                Err(why) => {
+                    self.notice = Some(why);
+                    Action::None
+                }
+            },
             Message::SystemMode(mode) => {
                 self.system_mode = mode;
                 Action::None
@@ -1426,6 +1587,7 @@ impl Ui {
                     Section::Api => api::escape(&self.api).map(Message::Api),
                     Section::Mcp => mcp::escape(&self.mcp).map(Message::Mcp),
                     Section::Connections => connections::escape(&self.connections).map(Message::Connections),
+                    Section::Apps => apps::escape(&self.apps).map(Message::Apps),
                     Section::Appearance => {
                         suite::escape(&self.general.suite).map(|close| Message::General(general::Message::Suite(close)))
                     }
@@ -1481,6 +1643,7 @@ impl Ui {
             Message::Connections(m) => connections::update(&mut self.connections, m, &self.data),
             Message::Approvals(m) => approvals::update(&mut self.approvals, m, &self.data),
             Message::General(m) => general::update(&mut self.general, m, &self.data),
+            Message::Apps(m) => apps::update(&mut self.apps, m, &self.data),
         };
         self.perform(action)
     }
@@ -1684,6 +1847,33 @@ impl Ui {
                 Message::Connections(connections::Message::Picked(chooser, path))
             }),
             Action::Reload => self.reload(),
+            // The demo answers with its catalog as it is, so the footer stops saying "Checking…".
+            Action::CheckApps if self.launch.demo => {
+                let catalog = self.data.app_catalog.catalog.listed().cloned();
+                let answer = catalog.map(|catalog| Response::AppCatalog { catalog }).ok_or_else(String::new);
+                self.update(Message::AppsChecked(answer))
+            }
+            Action::CheckApps => Task::perform(
+                async {
+                    let socket = torro_ipc::socket_path().ok_or_else(|| tr("No home directory").to_string())?;
+                    client::call(&socket, &Request::CheckAppUpdates).await.map_err(|err| err.to_string())
+                },
+                Message::AppsChecked,
+            ),
+            Action::StartAppJob(_) | Action::AppWindow(_) | Action::Reveal(..) if self.launch.demo => Task::none(),
+            Action::StartAppJob(request) => ask(request, Message::AppJobStarted),
+            Action::AppWindow(target) => {
+                if let Err(problem) = app_job::open(&target) {
+                    self.notice = Some(problem);
+                }
+                Task::none()
+            }
+            Action::Reveal(app, path) => {
+                if let Err(problem) = apps::reveal(app, path.as_deref()) {
+                    self.notice = Some(problem);
+                }
+                Task::none()
+            }
         }
     }
 
@@ -1872,6 +2062,7 @@ impl Ui {
             Section::Mcp => api::listed(&self.data, api::Home::Mcp).count(),
             Section::Connections => connections::count(&self.data),
             Section::Approvals => approvals::pending(&self.data.approvals).count(),
+            Section::Apps => apps::updates(&self.data),
             _ => 0,
         };
         if count > 0 { Trail::Count(count) } else { Trail::None }
@@ -1933,6 +2124,11 @@ impl Ui {
                 widgets::Mark::Badged(section.icon(), palette.error_text)
             }
             (Section::Connections, Some(_)) => widgets::Mark::Badged(section.icon(), palette.attention_text),
+            // Updates wait, the main application's too (issue #411): the dot as for an account that
+            // needs the person; the count beside it is that of "Update all".
+            (Section::Apps, _) if apps::waiting(&self.data) => {
+                widgets::Mark::Badged(section.icon(), palette.attention_text)
+            }
             _ => widgets::Mark::Icon(section.icon()),
         }
     }
@@ -1974,6 +2170,7 @@ impl Ui {
             Section::Mcp => mcp::header(&self.mcp, &self.data, class).map(Message::Mcp),
             Section::Connections => connections::header(&self.connections, &self.data, class).map(Message::Connections),
             Section::Workspaces => workspaces::header(&self.workspaces, &self.data, class).map(Message::Workspaces),
+            Section::Apps => apps::header(&self.apps, &self.data, class).map(Message::Apps),
             _ => Header::default(),
         }
     }
@@ -1991,6 +2188,7 @@ impl Ui {
             Section::Connections => connections::overlay(&self.connections, &self.data, layout::of(self.size))
                 .map(|e| e.map(Message::Connections)),
             Section::Appearance => general::overlay(&self.general, &self.data).map(|e| e.map(Message::General)),
+            Section::Apps => apps::overlay(&self.apps, &self.data).map(|e| e.map(Message::Apps)),
             _ => None,
         }
     }
@@ -2000,6 +2198,12 @@ impl Ui {
     /// back button and its name; the page's actions right.
     fn header(&self, class: SizeClass, nav: &Anchor) -> Element<'_, Message> {
         let Header { sub_page, actions } = self.page_header(class);
+        // A quiet word beside the title, where the wide layout has room (design skill, section 0): how
+        // many apps are installed and wait for an update (issue #411).
+        let note = match self.section {
+            Section::Apps => apps::note(&self.data),
+            _ => None,
+        };
         let section = self.section;
         let menu = Message::ToggleMenu(Menu::Nav);
         let form = head_form(class, sub_page.is_some());
@@ -2023,7 +2227,7 @@ impl Ui {
                 let arrow = widgets::icon_button(Icon::ChevronLeft, tr("Back"), Some(back));
                 (vec![arrow], widgets::menu_button(nav, Some(section.icon()), widgets::path_menu_label(&name), menu))
             }
-            (HeadForm::Title, _) => (vec![], shell::header_title(Some(section.icon()), section.label(), None)),
+            (HeadForm::Title, _) => (vec![], shell::header_title(Some(section.icon()), section.label(), note)),
             (_, _) => (vec![], widgets::menu_button(nav, Some(section.icon()), section.label(), menu)),
         };
         shell::header_bar(leading, title, actions)
@@ -2048,6 +2252,12 @@ impl Ui {
         let palette = palette(&theme);
         let page: Element<'_, Message> = match self.section {
             Section::Overview => overview::view(&self.overview, &self.data).map(Message::Overview),
+            Section::Apps => {
+                // The cards' grid takes the room inside the page's margin (issue #411).
+                let margin = page_margin(class);
+                let room = shell::content_width(class, self.sidebar, self.size.width) - margin.left - margin.right;
+                apps::view(&self.apps, &self.data, class, room).map(Message::Apps)
+            }
             Section::Accounts => accounts::view(&self.accounts, &self.data, class, &palette).map(Message::Accounts),
             Section::Ai => accounts::ai_view(&self.accounts, &self.data, class).map(Message::Accounts),
             Section::Workspaces => workspaces::view(&self.workspaces, &self.data, class).map(Message::Workspaces),
@@ -2269,6 +2479,39 @@ fn load(with_providers: bool, ai_cache: Option<MailDeciderCache>) -> Task<Messag
             timing::took("load", started);
             Message::Loaded(Box::new(data))
         },
+    )
+}
+
+/// How often the app catalog is asked for while its section is closed (issue #411), for the
+/// sidebar's count of updates.
+const CATALOG_EVERY: Duration = Duration::from_secs(60);
+
+/// Loads the app catalog (`apps.list_catalog`, issue #411) and, while a job runs, how far it is
+/// (`apps.app_job`), apart from [`load`]: [`Ui::reload_app_catalog`] says when.
+fn load_app_catalog() -> Task<Message> {
+    Task::perform(
+        async {
+            let Some(socket) = torro_ipc::socket_path() else {
+                return apps::Loaded { catalog: apps::Catalog::Failed(tr("No home directory").into()), job: None };
+            };
+            let catalog = listing(&socket, Request::ListAppCatalog, |answer| match answer {
+                Response::AppCatalog { catalog } => Ok(catalog),
+                other => Err(other),
+            });
+            let catalog = match catalog.await {
+                Ok(catalog) => catalog,
+                Err(problem) => return apps::Loaded { catalog: apps::Catalog::Failed(problem), job: None },
+            };
+            let job = match &catalog.job {
+                Some(id) => match client::call(&socket, &Request::AppJob { id: id.clone() }).await {
+                    Ok(Response::AppJob { job }) => Some(job),
+                    _ => None,
+                },
+                None => None,
+            };
+            apps::Loaded { catalog: apps::Catalog::Listed(Box::new(catalog)), job }
+        },
+        |loaded| Message::AppCatalog(Box::new(loaded)),
     )
 }
 
@@ -3275,7 +3518,8 @@ mod tests {
             let mut ui = started(&["--section", word]);
             assert_eq!(ui.section, Section::Overview, "{word}");
             assert!(ui.target.is_some(), "{word}: waits for the core");
-            assert_eq!(ui.update(Message::CoreReady).units(), 2, "{word}: the load and apps.open_app");
+            // The app catalog comes with the first load, for the sidebar's count (issue #411).
+            assert_eq!(ui.update(Message::CoreReady).units(), 3, "{word}: the load, the catalog and apps.open_app");
             assert!(ui.target.is_none(), "{word}: once");
             let demo = started(&["--demo", "--section", word]);
             assert!(demo.target.is_none(), "{word}: the demo starts nothing");
@@ -3391,6 +3635,7 @@ mod tests {
             words,
             [
                 "overview",
+                "apps",
                 "accounts",
                 "ai",
                 "api",
@@ -3402,7 +3647,7 @@ mod tests {
                 "general"
             ]
         );
-        assert_eq!(Section::ALL.len(), 10, "MCP servers joined after MCP clients (task MA.7)");
+        assert_eq!(Section::ALL.len(), 11, "Apps joined after Overview (issue #411)");
         assert_eq!(Section::Connections.label(), tr("MCP servers"));
         assert_eq!(Section::Mcp.label(), tr("MCP clients"));
         let labels: Vec<&str> = Section::ALL.iter().map(|section| section.label()).collect();
@@ -3410,7 +3655,7 @@ mod tests {
         let nav: Vec<Section> = Section::nav().collect();
         assert!(!nav.contains(&Section::General), "General sits at the foot");
         assert_eq!(nav.len(), Section::ALL.len() - 1);
-        assert_eq!(Section::from_arg("apps"), Some(Section::General));
+        assert_eq!(Section::from_arg("apps"), Some(Section::Apps), "the app catalog (issue #411)");
         assert_eq!(Section::from_arg("inbox"), Some(Section::General));
         assert_eq!(Section::from_arg("ai"), Some(Section::Ai));
 
@@ -3433,9 +3678,40 @@ mod tests {
         assert!(ui.loaded && ui.data.error.is_none());
         assert!(!ui.data.accounts.is_empty() && !ui.data.templates.is_empty() && ui.data.apps.is_some());
         assert!(!started(&[]).loaded, "without --demo the page waits for the core");
-        // Task S.21: the word of the page that moved into the apps now means General.
+        // Issue #411: the word leads to the app catalog again.
         let apps = started(&["--demo", "--section", "apps"]);
-        assert_eq!(apps.section, Section::General);
+        assert_eq!(apps.section, Section::Apps);
+        assert!(apps.data.app_catalog.catalog.listed().is_some(), "the demo's catalog");
+    }
+
+    /// Issue #411: the section Apps checks GitHub when it opens, counts its updates in the sidebar
+    /// with the dot of a section that needs the person, and its states of `--open` go where a click
+    /// would; a refused job is the notice in words for people.
+    #[test]
+    fn the_app_catalog_opens_checks_and_counts() {
+        let _switching = switching();
+        let mut ui = started(&["--demo", "--open", "apps"]);
+        assert_eq!(ui.section, Section::Apps);
+        assert_eq!(ui.trail(Section::Apps), Trail::Count(2));
+        let palette = palette(&ui.theme());
+        assert!(matches!(ui.mark(Section::Apps, &palette), widgets::Mark::Badged(Icon::Package, _)));
+        let menu = started(&["--demo", "--open", "apps-menu"]);
+        assert!(menu.page_overlay().is_some(), "the menu of the Calendar's card");
+        let installing = started(&["--demo", "--open", "apps-installing"]);
+        assert!(apps::job_runs(&installing.data));
+        let offline = started(&["--demo", "--open", "apps-offline"]);
+        let catalog = offline.data.app_catalog.catalog.listed().expect("listed");
+        assert_eq!(catalog.error.as_deref(), Some("offline"));
+        let managed = started(&["--demo", "--open", "apps-managed"]);
+        let catalog = managed.data.app_catalog.catalog.listed().expect("listed");
+        assert!(catalog.apps.iter().all(|app| app.managed.is_some()));
+        for size in [Size::new(1600.0, 1000.0), Size::new(800.0, 600.0), Size::new(420.0, 780.0)] {
+            let _ = ui.update(Message::Resized(size));
+            let _ = ui.view();
+        }
+        let refused = Ok(Response::Error { code: "busy".into(), message: "an app job runs".into() });
+        let _ = ui.update(Message::AppJobStarted(refused));
+        assert_eq!(ui.notice.as_deref(), Some(apps::refusal("busy")));
     }
 
     #[test]
@@ -3605,7 +3881,12 @@ mod tests {
         let accounts = demo.data.accounts.len();
         // What the pages and the shell do on their own account.
         let messages = [
-            Message::General(general::Message::OpenApp("torro-tasks".into())),
+            Message::Apps(apps::Message::Open("torro-tasks".into())),
+            Message::Apps(apps::Message::Install("torro-assistant".into())),
+            Message::Apps(apps::Message::UpdateAll),
+            Message::Apps(apps::Message::Uninstall("torro-tasks".into())),
+            Message::Apps(apps::Message::Reveal("torro-tasks".into())),
+            Message::Apps(apps::Message::Switch(torro_core::settings::Component::Mail, false)),
             Message::General(general::Message::Component(torro_core::settings::Component::Mail, false)),
             Message::Switcher(Switcher::OpenApp("torrocalendar")),
             Message::Accounts(accounts::Message::SyncNow),
@@ -3626,7 +3907,11 @@ mod tests {
         assert!(demo.data.settings.component_on(torro_core::settings::Component::Mail), "nor does a switch");
         // Without --demo the same action is a request.
         assert_eq!(ui(Section::Overview).perform(sync()).units(), 1);
-        assert_eq!(ui(Section::Overview).update(Message::Tick).units(), 2, "the reload and the zoom");
+        assert_eq!(ui(Section::Overview).update(Message::Tick).units(), 3, "the reload, the app catalog and the zoom");
+        // Once the catalog came, outside Apps it waits a minute (issue #411).
+        let mut later = ui(Section::Overview);
+        let _ = later.update(Message::AppCatalog(Box::default()));
+        assert_eq!(later.update(Message::Tick).units(), 2, "the reload and the zoom");
     }
 
     #[test]

@@ -3,7 +3,8 @@
 //! - `daemon`: the background service with the tray icon. Owns the window manager
 //!   connection and the workspace templates, and the socket clients talk to; later also
 //!   accounts, sync and the app registry. `--headless` runs it without a tray icon, and so does a
-//!   system without the main application (issue #408, [`daemon_headless`]).
+//!   system without the main application (issue #408, [`daemon_headless`]). `--takeover` waits for a
+//!   running service that hands over to this copy (issue #411, [`daemon_takeover`]).
 //! - `status --json`, `ctl`: for bars, hotkeys and scripts; `notify`: a notice to the inbox.
 //! - `hook claude-code|codex|gemini`: run by the hooks of coding agents; reports waiting and
 //!   finished sessions to the inbox, silently and always with exit code 0 (see `hook`).
@@ -38,6 +39,8 @@ mod apps;
 mod assistant;
 mod audit;
 mod bots;
+// The app catalog: versions, installing, updating, uninstalling (issue #411).
+mod catalog;
 mod categorize;
 mod cli;
 mod client_setup;
@@ -79,7 +82,7 @@ fn main() -> ExitCode {
     match command.as_deref() {
         Some("daemon") => {
             let args: Vec<String> = std::env::args().skip(2).collect();
-            daemon::run(daemon_headless(&args, apps::main_app_installed))
+            daemon::run(daemon_headless(&args, apps::main_app_installed), daemon_takeover(&args))
         }
         None | Some("ui") => {
             // Refuse bad parameters before anything starts (the core, a window).
@@ -138,6 +141,12 @@ fn needs_console(command: Option<&str>) -> bool {
 /// app, an MCP server, the login or a terminal. `main_app` is asked only without `--headless`.
 fn daemon_headless(args: &[String], main_app: impl FnOnce() -> bool) -> bool {
     args.iter().any(|arg| arg == "--headless") || !main_app()
+}
+
+/// Whether `daemon` takes over from a running service that is handing over to it (`--takeover`, issue
+/// #411, `daemon::hand_over`): it then waits for the old one to end instead of giving up at once.
+fn daemon_takeover(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == daemon::TAKEOVER)
 }
 
 /// Windows: makes `println!`/`eprintln!` reach the console of the shell that started us.
@@ -201,5 +210,12 @@ mod tests {
         assert!(daemon_headless(&[], || false), "without it no tray, no setup");
         assert!(daemon_headless(&headless, || true));
         assert!(daemon_headless(&headless, || panic!("not asked with --headless")));
+    }
+
+    #[test]
+    fn a_new_copy_of_the_service_takes_over_with_its_argument() {
+        assert!(!daemon_takeover(&[]));
+        assert!(!daemon_takeover(&["--headless".to_string()]));
+        assert!(daemon_takeover(&["--headless".to_string(), "--takeover".to_string()]));
     }
 }

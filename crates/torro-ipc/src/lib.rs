@@ -1566,6 +1566,75 @@ pub enum Request {
     /// main application is ([`Response::Apps`]).
     #[serde(rename = "apps.list_apps")]
     ListApps,
+    /// The app catalog (issue #411): the main application and every app of the suite with the
+    /// version installed and the newest on GitHub, what a person can do with each and whether a
+    /// package manager looks after it ([`Response::AppCatalog`]). Answers from the state the core
+    /// checked last (daily and with [`Request::CheckAppUpdates`]), never from the network; what is
+    /// installed is read anew each time.
+    #[serde(rename = "apps.list_catalog")]
+    ListAppCatalog,
+    /// Asks GitHub for the newest release now and answers like [`Request::ListAppCatalog`]. Within
+    /// five minutes of the last check the core answers from that one (GitHub limits how often it may
+    /// be asked). Without network the last state stays, with the code `offline` in
+    /// [`AppCatalog::error`]; the request itself does not fail.
+    #[serde(rename = "apps.check_updates")]
+    CheckAppUpdates,
+    /// Where the app job `id` stands ([`Response::AppJob`]): its steps, the percent done and
+    /// whether it runs, is done, failed or was cancelled. `not-found` for a job the core does not
+    /// know (jobs live in memory; after a restart of the core none is left).
+    #[serde(rename = "apps.app_job")]
+    AppJob {
+        /// The job's id, from the answer that started it.
+        id: String,
+    },
+    /// Cancels the app job `id` while it still downloads ([`Response::AppJob`] with the job
+    /// `cancelled`). Once it verifies or installs it runs to its end, so nothing is left half
+    /// installed: then the job is answered as it stands. `not-found` for an unknown job.
+    #[serde(rename = "apps.cancel_app_job")]
+    CancelAppJob {
+        /// The job's id.
+        id: String,
+    },
+    /// Uninstalls the app `app` (window class or binary, as [`Request::OpenApp`] takes it) and
+    /// answers with the job that does it ([`Response::AppJob`]). The app goes to the system's trash;
+    /// with `remove_data` its own files on this computer too (settings, caches, state), never the
+    /// accounts, which all apps share. Codes: `not-found` for a name of no app or the main
+    /// application, `conflict` for an app that is not installed, that a package manager looks
+    /// after (remove it with the command from [`CatalogApp::managed`]) or that another installed
+    /// app needs (the Notification Hub while Mail or App Feed is there) or whose bundle the service runs
+    /// from while every other copy of it is older (it would refuse the data); `busy` while another app
+    /// job runs; `unsupported` in a development build.
+    #[serde(rename = "apps.uninstall_app")]
+    UninstallApp {
+        /// Window class or binary of the app, from `apps.list_catalog`.
+        app: String,
+        /// Also remove the app's own files on this computer; accounts stay.
+        #[serde(default)]
+        remove_data: bool,
+    },
+    /// Installs the app `app` from the newest release and answers with the job that does it
+    /// ([`Response::AppJob`]). Only the app key: whoever installs decides which code runs on the
+    /// person's computer (point 11 of "Was nie nach außen geht" in `docs/api.md`). The download is
+    /// checked (signature on macOS, SHA-256 elsewhere) before anything is installed; Mail and App
+    /// Feed bring the Notification Hub along. Codes: `not-found` for a name of no app, `conflict`
+    /// for an app already installed or looked after by a package manager, `busy` while another app
+    /// job runs, `offline` when GitHub cannot be reached, `unsupported` in a development build or
+    /// when the release has nothing for this system.
+    #[serde(rename = "apps.install_app")]
+    InstallApp {
+        /// Window class or binary of the app, from `apps.list_catalog`.
+        app: String,
+    },
+    /// Updates the apps `apps` to the newest release in one job ([`Response::AppJob`]);
+    /// `torroworkplace` is the main application, which restarts the service and the control centre
+    /// afterwards ([`AppJobInfo::restart`]). Running apps are replaced at once; open windows use the
+    /// new version once they are closed. Only the app key, as [`Request::InstallApp`]. Codes as
+    /// there; `conflict` also for an app that is not installed or has no update.
+    #[serde(rename = "apps.update_apps")]
+    UpdateApps {
+        /// Window classes or binaries; `torroworkplace` for the main application.
+        apps: Vec<String>,
+    },
 
     // Agents and scripts. Only the app key may send these; a client key gets `forbidden`.
     /// All clients with their rights, never with keys ([`Response::Clients`]).
@@ -4294,6 +4363,15 @@ pub enum Response {
         #[serde(default = "on")]
         main_app: bool,
     },
+    /// The app catalog ([`Request::ListAppCatalog`], [`Request::CheckAppUpdates`], issue #411).
+    AppCatalog {
+        catalog: AppCatalog,
+    },
+    /// An app job ([`Request::InstallApp`], [`Request::UpdateApps`], [`Request::UninstallApp`],
+    /// [`Request::AppJob`], [`Request::CancelAppJob`]).
+    AppJob {
+        job: AppJobInfo,
+    },
     /// The design packs ([`Request::ListDesigns`]), the standard first.
     Designs {
         designs: Vec<DesignInfo>,
@@ -5639,6 +5717,187 @@ pub struct AppInfo {
     pub window_class: String,
     /// The binary was found next to the core or on `PATH`, so `OpenApp` can start it.
     pub installed: bool,
+}
+
+/// The app catalog (issue #411, [`Request::ListAppCatalog`]): the main application and the apps
+/// with their versions, as the core checked them last.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppCatalog {
+    /// When the core last asked GitHub successfully; `None` before the first check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<DateTime<Utc>>,
+    /// The newest release's version (`0.2.0`), `None` before the first check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest: Option<String>,
+    /// The newest release's page on GitHub, for "Release notes".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_url: Option<String>,
+    /// Why the last check failed, a fixed code: `offline` (GitHub not reached) or `error` (an
+    /// answer the core could not read). The state of the check before stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The main application (`torroworkplace`: tray icon and control centre).
+    pub main: CatalogApp,
+    /// The apps in launcher order ([`torro_core::AppId::ALL`] without the main application).
+    pub apps: Vec<CatalogApp>,
+    /// The app job that runs now, if one does ([`Request::AppJob`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+}
+
+/// One entry of the [`AppCatalog`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogApp {
+    /// Window class, the entry's name everywhere (`torro-calendar`); what the app commands take.
+    pub window_class: String,
+    /// Its program file ([`torro_core::AppId::program_file`]): `torrocalendar`, `torro-inbox-mail`.
+    pub program: String,
+    /// English product name; front ends show a translated one.
+    pub name: String,
+    /// The version installed (`0.1.0`); `None` when the app is not installed. An installed app whose
+    /// version cannot be read is `unknown`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed: Option<String>,
+    /// The version of the newest release, when it has this app for this system.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available: Option<String>,
+    /// What a person can do with it.
+    pub state: CatalogState,
+    /// The package manager that installed it, with its commands; set when `state` is `managed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed: Option<ManagedBy>,
+    /// Size of the download in bytes, from the release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// Window classes of the apps it brings along (Mail and App Feed: the Notification Hub).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
+    /// Where it lies, as the core found it: the bundle on macOS (`/Applications/Torro Calendar.app`),
+    /// the program elsewhere; `None` when it is not installed. For "Show in Finder".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// What a person can do with a [`CatalogApp`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogState {
+    /// Installed and up to date (or nothing newer is known).
+    Installed,
+    /// Installed, and the newest release is newer.
+    Update,
+    /// Not installed; the release has it for this system.
+    Available,
+    /// Installed by a package manager ([`CatalogApp::managed`]): the catalog shows its commands
+    /// instead of installing, updating or removing itself.
+    Managed,
+    /// Not installed, and the release has nothing for this system (or no check yet).
+    Unavailable,
+}
+
+/// The package manager that looks after an app, with the commands a person runs (issue #411,
+/// decision 1). The commands are built by the core from fixed names, never from what it read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedBy {
+    /// `AUR`, `Homebrew` or `Scoop`.
+    pub manager: String,
+    /// `yay -S torrocalendar-bin`.
+    pub install: String,
+    /// `yay -Syu`.
+    pub update: String,
+    /// `sudo pacman -R torrocalendar-bin`.
+    pub uninstall: String,
+}
+
+/// An app job (issue #411): installing, updating or uninstalling apps, step by step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppJobInfo {
+    /// The job's id, for [`Request::AppJob`] and [`Request::CancelAppJob`].
+    pub id: String,
+    /// Window classes of the apps it was asked for (`torro-workplace` is the main application); what
+    /// they bring along (the Notification Hub for Mail) has steps of its own but is not listed here.
+    pub apps: Vec<String>,
+    pub kind: AppJobKind,
+    /// The steps in order, for every app of the job.
+    pub steps: Vec<AppJobStep>,
+    /// 0 to 100 for the whole job.
+    pub percent: u8,
+    pub state: AppJobState,
+    /// Why it failed, a fixed code: `offline`, `checksum`, `signature`, `no-space`, `permission`,
+    /// `cancelled` or `error`. Never the output of a program the core ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The service restarts with the main application when the job is done (it was updated): the
+    /// control centre waits for the new one. Other jobs may hand the service over to a newer copy
+    /// too; its clients just reconnect.
+    #[serde(default)]
+    pub restart: bool,
+}
+
+/// What an [`AppJobInfo`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppJobKind {
+    Install,
+    Update,
+    Uninstall,
+}
+
+/// Where an [`AppJobInfo`] stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppJobState {
+    Running,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+/// One step of an [`AppJobInfo`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppJobStep {
+    /// Window class of the app the step is for.
+    pub app: String,
+    pub step: AppStep,
+    pub status: StepStatus,
+    /// A short fact for the step: for [`AppStep::Download`] the size loaded, in bytes as decimal
+    /// digits (`25795000`), which front ends format themselves; else a path, a version or
+    /// `Developer ID`. Never the output of a program the core ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// The kinds of step of an app job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppStep {
+    /// Load the archive from the release.
+    Download,
+    /// Check its signature (macOS) or SHA-256.
+    Verify,
+    /// Put the app in place.
+    Install,
+    /// Hand the service over to the newest copy, if there is a newer one.
+    Connect,
+    /// Move the app to the trash.
+    Remove,
+    /// Add or remove the launcher entry (Linux `.desktop`, Windows Start menu).
+    Launcher,
+}
+
+/// Where one [`AppJobStep`] stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepStatus {
+    Todo,
+    Now,
+    Done,
+    Failed,
 }
 
 /// One design pack as [`Request::ListDesigns`] reports it. Name, version, author and
