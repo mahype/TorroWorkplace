@@ -601,6 +601,9 @@ struct Work {
 struct Done {
     /// Bundles and programs moved away or replaced: a service running from one of them hands over.
     removed: Vec<PathBuf>,
+    /// What an uninstall is about to remove, noted before it starts: it may fail halfway, and only what is
+    /// really gone then counts (review of #411).
+    removing: Vec<PathBuf>,
     /// The service program of a main application just updated or installed (the hand-over goes there
     /// unless a newer copy is known).
     main_service: Option<PathBuf>,
@@ -622,9 +625,11 @@ async fn run(inner: Arc<Inner>, work: Work, job: Job) {
             // A later step failed after the bundle this service runs from was replaced or removed
             // (review of #411): it would go on from the trash, so it hands over all the same. Only when
             // its program is really gone: a removal that failed on its first bundle moved nothing.
+            // Replaced (a new copy lies where it ran from) or, for an uninstall that went part of the way,
+            // really gone.
             let exe = inner.env.exe.as_deref();
-            let noted = exe.is_some_and(|exe| done.removed.iter().any(|removed| exe.starts_with(removed)));
-            let gone = noted && exe.is_some_and(|exe| !exe.exists());
+            let under = |paths: &[PathBuf]| exe.is_some_and(|exe| paths.iter().any(|path| exe.starts_with(path)));
+            let gone = under(&done.removed) || (under(&done.removing) && exe.is_some_and(|exe| !exe.exists()));
             let target = match gone {
                 true => {
                     let newest = Arc::clone(&inner.hooks.read().unwrap_or_else(PoisonError::into_inner).newest_service);
@@ -893,10 +898,11 @@ async fn uninstall_item(
     let removing = gone.clone();
     // Noted before: the removal may go part of the way and fail, and a service whose bundle already went
     // to the trash must hand over all the same (review of #411).
-    done.removed.extend(gone);
+    done.removing.extend(gone.iter().cloned());
     blocking(move || install::remove(&removing, &data, platform, &*discard))
         .await
         .map_err(|fail| (app, AppStep::Remove, fail))?;
+    done.removed.extend(gone);
     job.done(class, AppStep::Remove, Some(found.path.display().to_string()));
     if platform != Platform::MacOs {
         if !job.start(class, AppStep::Launcher) {
@@ -1372,6 +1378,32 @@ pub(crate) mod tests {
 
     /// Linux, the whole way: `tar`, checksum, the program beside the service, its `.desktop` entry.
     #[cfg(unix)]
+    /// Review of #411: the main application was put in place and a later step failed: the service still
+    /// hands over to the new copy, and the job says it restarts.
+    #[tokio::test]
+    async fn a_job_that_replaced_the_service_and_failed_later_hands_over() {
+        let dir = tempfile::tempdir().expect("dir");
+        let env = env_in(dir.path(), Platform::Linux, &[("torroworkplace", "0.1.0")], true);
+        let service = put_program(&env, "torroworkplace");
+        // No launcher entry can be written: the folder for it is a file.
+        std::fs::write(dir.path().join("share"), "in the way").expect("file");
+        let server = MockServer::start_async().await;
+        let archive = dir.path().join("a.tar.xz");
+        install::tests::tar_with(&archive, "torroworkplace", b"ELF new core");
+        let body = std::fs::read(&archive).expect("archive");
+        let file = File { name: "torroworkplace-x86_64-unknown-linux-gnu.tar.xz".into(), body, sum: None, delay: None };
+        serve(&server, "0.2.0", &[file]).await;
+        let catalog = catalog_at(env, &server);
+        let handed: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+        let record = Arc::clone(&handed);
+        catalog.set_hand_over(Arc::new(move |program| record.lock().expect("lock").push(program)));
+        let started = catalog.update(&["torroworkplace".into()]).await.expect("started");
+        let job = ended(&catalog, &started.id).await;
+        assert_eq!((job.state, job.restart), (AppJobState::Failed, true), "{job:?}");
+        assert_eq!(std::fs::read(&service).expect("core"), b"ELF new core");
+        assert_eq!(*handed.lock().expect("lock"), [service], "the new copy takes over");
+    }
+
     #[tokio::test]
     async fn installing_on_linux_adds_the_program_and_its_launcher() {
         let dir = tempfile::tempdir().expect("dir");
@@ -1408,13 +1440,13 @@ pub(crate) mod tests {
         assert!(hand_over_target(Some(exe), &nothing, copy("0.2.0"), &current).is_none(), "no newer copy");
         assert!(hand_over_target(Some(exe), &nothing, copy("0.3.0"), &current).is_some(), "a newer copy");
         assert!(hand_over_target(Some(exe), &nothing, None, &current).is_none());
-        let removed = Done { removed: vec![PathBuf::from("/Applications/Torro Calendar.app")], main_service: None };
+        let removed = Done { removed: vec![PathBuf::from("/Applications/Torro Calendar.app")], ..Done::default() };
         assert!(
             hand_over_target(Some(exe), &removed, copy("0.2.0"), &current).is_some(),
             "ran from the removed bundle"
         );
         assert!(hand_over_target(Some(exe), &removed, None, &current).is_none(), "nowhere to go");
-        let main = Done { removed: Vec::new(), main_service: Some(PathBuf::from("/opt/torro/torroworkplace")) };
+        let main = Done { main_service: Some(PathBuf::from("/opt/torro/torroworkplace")), ..Done::default() };
         let target = hand_over_target(Some(exe), &main, copy("0.2.0"), &current).map(|(program, _)| program);
         assert_eq!(target, Some(PathBuf::from("/opt/torro/torroworkplace")), "always after the main application");
         let target = hand_over_target(Some(exe), &main, copy("0.3.0"), &current).map(|(program, _)| program);
