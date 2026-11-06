@@ -1201,8 +1201,9 @@ fn read(file: &Path) -> Result<Vec<Entry>, ApprovalsError> {
 }
 
 /// The entries of an approvals file, read one by one: an approval of a filter with an old move is
-/// read without it and settled ([`old_filter_move`]); any other entry that does not read makes the
-/// whole file unreadable, as before.
+/// read without it and settled ([`old_filter_move`]); one of the order of rules and filters, gone
+/// with issue #481 ([`old_sorting_step`]), is settled while it was open and left out once decided;
+/// any other entry that does not read makes the whole file unreadable, as before.
 fn entries_of(bytes: &[u8]) -> Result<Vec<Entry>, serde_json::Error> {
     let mut json: serde_json::Value = serde_json::from_slice(bytes)?;
     let Some(list) = json.get_mut("approvals").and_then(serde_json::Value::as_array_mut) else {
@@ -1210,12 +1211,24 @@ fn entries_of(bytes: &[u8]) -> Result<Vec<Entry>, serde_json::Error> {
     };
     let mut entries = Vec::with_capacity(list.len());
     for value in list.iter_mut() {
+        let sorting = old_sorting_step(value);
+        if sorting {
+            let state = value.pointer("/info/state").and_then(serde_json::Value::as_str);
+            if !matches!(state, Some("pending" | "running")) {
+                continue;
+            }
+            // A command that reads, so the entry reads; it never runs, it is settled below.
+            value["request"] = serde_json::json!({ "method": "inbox.list_sort_rules" });
+        }
         let old = old_filter_move(value);
         let mut entry: Entry = serde_json::from_value(value.take())?;
-        if old
+        if (old || sorting)
             && !matches!(entry.info.state, ApprovalState::Done { .. } | ApprovalState::Denied | ApprovalState::Expired)
         {
-            let message = tr("The mail filter moves mail to the archive or a folder, which mail filters no longer do.");
+            let message = match sorting {
+                true => tr("The order of rules and filters no longer exists; categories are ordered instead."),
+                false => tr("The mail filter moves mail to the archive or a folder, which mail filters no longer do."),
+            };
             entry.info.state = ApprovalState::Done {
                 response: Box::new(Response::Error { code: "conflict".into(), message: message.to_string() }),
             };
@@ -1224,6 +1237,16 @@ fn entries_of(bytes: &[u8]) -> Result<Vec<Entry>, serde_json::Error> {
         entries.push(entry);
     }
     Ok(entries)
+}
+
+/// Whether the approval `entry` (as stored) is one of the commands of the order of rules and
+/// filters (issue #454) that issue #481 took away – `inbox.move_sorting_step`, `inbox.move_sort_rule`,
+/// `inbox.list_sorting_order` – or holds their answer (`sorting-order`): this version reads neither.
+fn old_sorting_step(entry: &serde_json::Value) -> bool {
+    let method = entry.pointer("/request/method").and_then(serde_json::Value::as_str);
+    let answer = entry.pointer("/info/response/result").and_then(serde_json::Value::as_str);
+    matches!(method, Some("inbox.move_sorting_step" | "inbox.move_sort_rule" | "inbox.list_sorting_order"))
+        || answer == Some("sorting-order")
 }
 
 /// Whether the approval `entry` (as stored) asks to create or change a mail filter that moves mail
@@ -2749,19 +2772,10 @@ pub struct InboxFacts {
     /// main category already there, also one the person made. Empty for requests that name none; a
     /// built-in one not in it is named by the suite's word ([`group_name`]).
     pub groups: Vec<torro_mail::CategoryGroupDef>,
-    /// The sorting rule `inbox.update_sort_rule`, `inbox.remove_sort_rule` or
-    /// `inbox.move_sort_rule` would change, as stored; `None` when unknown. Boxed: the facts are
-    /// held across the awaits of asking for an approval, deep in the stack.
+    /// The sorting rule `inbox.update_sort_rule` or `inbox.remove_sort_rule` would change, as
+    /// stored; `None` when unknown. Boxed: the facts are held across the awaits of asking for an
+    /// approval, deep in the stack.
     pub sort_rule: Option<Box<torro_inbox::SortRule>>,
-    /// The mail filter `inbox.move_sorting_step` would move, as the core stores it (issue #454);
-    /// `None` when unknown or for a rule. Filled in by the core, which keeps the filters.
-    pub sort_filter: Option<Box<MailFilter>>,
-    /// The mail filters `inbox.move_sorting_step` or `inbox.move_sort_rule` would pass, as stored
-    /// (issue #454): moving past them changes what they decide, so the summary names them.
-    pub passed: Vec<MailFilter>,
-    /// Where `inbox.move_sorting_step` puts its step in the whole order, 1 first (issue #454): the
-    /// person sees every step, the client maybe fewer, so its `position` would name another place.
-    pub place: Option<usize>,
     /// For `inbox.set_mail_pile` (task E19.2): the messages
     /// as the mail store holds them, looked up by the ids the command runs with
     /// (`crate::mail::write::facts`), as for `mail.set_flags`.
@@ -2882,17 +2896,6 @@ fn with_rule_extras(
         sentence.push_str(tr(", switched off"));
     }
     sentence
-}
-
-/// `sentence` with the mail filters a move passes ([`InboxFacts::passed`]), as stored: what they
-/// decide changes with the move (issue #454).
-fn passing(sentence: String, facts: &InboxFacts) -> String {
-    if facts.passed.is_empty() {
-        return sentence;
-    }
-    let filters: Vec<String> =
-        facts.passed.iter().map(|filter| filter_words(filter, None, &facts.categories)).collect();
-    trf("{move}, past the mail filters {filters}", &[("move", &sentence), ("filters", &filters.join("; "))])
 }
 
 /// A stored sorting rule in words, for the summaries that change one: "the sorting rule that
@@ -3201,34 +3204,27 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             sentence
         }
         Request::RemoveSortRule { .. } => trf("Remove {rule}", &[("rule", &sort_rule_words(facts))]),
-        // The place in the whole order where the core knows it, as the person sees the list (a client
-        // may see fewer rules); else the rule's place as asked.
-        Request::MoveSortRule { position, .. } => passing(
-            match facts.place {
-                Some(place) => trf(
-                    "Move {step} to place {n} of the sorting order",
-                    &[("step", &sort_rule_words(facts)), ("n", &place.to_string())],
+        // Issue #481: by the catalogue as the inbox keeps it, never the client's words – the category,
+        // the group it goes to, the category it goes before, and what the move changes.
+        Request::MoveCategory { category, group, position } => {
+            let name = category_name(facts, *category);
+            let target = group_name(facts, *group);
+            let others: Vec<&CategoryDef> =
+                facts.categories.iter().filter(|def| def.group == *group && def.category != *category).collect();
+            let place = match others.get(*position as usize) {
+                Some(next) => trf(
+                    "Move the mail category {category} to {group}, before {next}",
+                    &[("category", &name), ("group", &target), ("next", &category_name(facts, next.category))],
                 ),
                 None => trf(
-                    "Move {rule} to place {n}",
-                    &[("rule", &sort_rule_words(facts)), ("n", &(u64::from(*position) + 1).to_string())],
+                    "Move the mail category {category} to the end of {group}",
+                    &[("category", &name), ("group", &target)],
                 ),
-            },
-            facts,
-        ),
-        // Issue #454: a rule or a filter, by what is stored, and the filters it passes.
-        Request::MoveSortingStep { kind, position, .. } => {
-            let step = match kind {
-                torro_inbox::SortingKind::Rule => sort_rule_words(facts),
-                torro_inbox::SortingKind::Filter => match &facts.sort_filter {
-                    Some(filter) => {
-                        trf("the mail filter {filter}", &[("filter", &filter_words(filter, None, &facts.categories))])
-                    }
-                    None => tr("an unknown mail filter").to_string(),
-                },
             };
-            let n = facts.place.unwrap_or(*position as usize + 1).to_string();
-            passing(trf("Move {step} to place {n} of the sorting order", &[("step", &step), ("n", &n)]), facts)
+            trf(
+                "{move}: where rules or filters of several categories match a mail, the one higher up wins",
+                &[("move", &place)],
+            )
         }
         Request::SetItemLane { lane, remember: false, .. } => {
             trf("Move {entry} to {lane}", &[("entry", &entry()), ("lane", &lane_name(*lane))])
@@ -4224,6 +4220,42 @@ pub(crate) mod tests {
 
     /// Issue #454: an open approval of a filter that moves mail to the archive or a folder ends as
     /// `conflict` when the file is read; the other approvals stay as they were.
+    #[tokio::test]
+    async fn an_old_move_of_the_sorting_order_ends_open_approvals_and_drops_decided_ones() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let approvals = quiet_in(dir.path());
+        let open = approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
+        let decided = approvals.open("c1", "One", delete("b"), None, "b".into(), at(0)).await.expect("opened");
+        let other = approvals.open("c1", "One", delete("c"), None, "c".into(), at(0)).await.expect("opened");
+        approvals.decide(&decided.id, true, at(1)).await.expect("allowed");
+        approvals.finish(&decided.id, Response::Ok, at(1)).await.expect("done");
+        // As a version before #481 stored them: a move still open, one that ran with its answer.
+        let stored = fs::read_to_string(file_in(dir.path())).expect("stored");
+        let mut json: serde_json::Value = serde_json::from_str(&stored).expect("json");
+        for entry in json["approvals"].as_array_mut().expect("a list") {
+            let id = entry["info"]["id"].as_str().unwrap_or_default().to_string();
+            if id == open.id {
+                entry["request"] =
+                    serde_json::json!({"method": "inbox.move_sorting_step", "kind": "rule", "id": "r1", "position": 0});
+            } else if id == decided.id {
+                entry["request"] = serde_json::json!({"method": "inbox.move_sort_rule", "id": "r1", "position": 0});
+                entry["info"]["response"] = serde_json::json!({"result": "sorting-order", "steps": []});
+            }
+        }
+        fs::write(file_in(dir.path()), serde_json::to_string(&json).expect("json")).expect("the old file");
+
+        let restarted = quiet_in(dir.path());
+        let list = restarted.list(None, at(1)).await.expect("read");
+        let state = |id: &str| list.iter().find(|info| info.id == id).map(|info| info.state.clone());
+        assert!(
+            matches!(state(&open.id), Some(ApprovalState::Done { response })
+                if matches!(response.as_ref(), Response::Error { code, .. } if code == "conflict")),
+            "{list:?}"
+        );
+        assert_eq!(state(&decided.id), None, "a decided one falls away");
+        assert_eq!(state(&other.id), Some(ApprovalState::Pending));
+    }
+
     #[tokio::test]
     async fn an_old_filter_move_ends_its_approval_and_leaves_the_others() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6763,29 +6795,21 @@ pub(crate) mod tests {
         assert!(words.contains("Anything with a price."), "{words}");
         assert!(words.contains(tr("no longer let the AI choose it")), "{words}");
         assert!(words.contains(torro_core::category::group_label(CategoryGroup::Junk)), "{words}");
-        let moved = Request::MoveSortRule { id: "r1".into(), position: 0 };
-        assert_eq!(inbox_summary(&moved, &facts), trf("Move {rule} to place {n}", &[("rule", &stored), ("n", &"1")]));
-        // Issue #454: a step of the order of rules and filters, with the filters it passes.
-        let spam = MailFilter {
-            id: "f2".into(),
-            query: "from:spam.example".into(),
-            account: None,
-            file: Some(FilterFile::Trash),
-            mark_read: false,
-            category: None,
-            enabled: true,
-            created: DateTime::<Utc>::UNIX_EPOCH,
-        };
-        let step = Request::MoveSortingStep { kind: torro_inbox::SortingKind::Rule, id: "r1".into(), position: 2 };
-        let passing = InboxFacts { passed: vec![spam.clone()], place: Some(5), ..facts.clone() };
-        let words = inbox_summary(&step, &passing);
-        let place = trf("Move {step} to place {n} of the sorting order", &[("step", &stored), ("n", &"5")]);
-        assert!(words.starts_with(&place), "the place in the whole order, not the client's: {words}");
-        assert!(words.contains("from:spam.example") && words.contains(tr("move to the trash")), "{words}");
-        let filter = Request::MoveSortingStep { kind: torro_inbox::SortingKind::Filter, id: "f2".into(), position: 0 };
-        let moving = InboxFacts { sort_filter: Some(Box::new(spam)), ..InboxFacts::default() };
-        assert!(inbox_summary(&filter, &moving).contains("from:spam.example"));
-        assert!(inbox_summary(&filter, &InboxFacts::default()).contains(tr("an unknown mail filter")));
+        // Issue #481: the category, its target and its new neighbour from the catalogue, and the effect.
+        let moved = Request::MoveCategory { category: Category::Order, group: CategoryGroup::PaperTrail, position: 0 };
+        let words = inbox_summary(&moved, &facts);
+        let first = facts.categories.iter().find(|def| def.group == CategoryGroup::PaperTrail).expect("one");
+        assert!(words.contains(&category_name(&facts, first.category)), "{words}");
+        assert!(words.contains(&group_name(&facts, CategoryGroup::PaperTrail)), "{words}");
+        let last = Request::MoveCategory { category: Category::Order, group: CategoryGroup::PaperTrail, position: 99 };
+        let place = trf(
+            "Move the mail category {category} to the end of {group}",
+            &[
+                ("category", &category_name(&facts, Category::Order)),
+                ("group", &group_name(&facts, CategoryGroup::PaperTrail)),
+            ],
+        );
+        assert!(inbox_summary(&last, &facts).starts_with(&place), "{}", inbox_summary(&last, &facts));
         // Without the rule in the inbox nothing is made up.
         let unknown = InboxFacts::default();
         assert_eq!(

@@ -1121,14 +1121,12 @@ impl PimService {
             | Request::CreateCategoryGroup { .. }
             | Request::UpdateCategoryGroup { .. }
             | Request::UpdateCategory { .. }
+            | Request::MoveCategory { .. }
             | Request::RemoveCategory { .. }
             | Request::ListSortRules
             | Request::CreateSortRule { .. }
             | Request::UpdateSortRule { .. }
-            | Request::RemoveSortRule { .. }
-            | Request::MoveSortRule { .. }
-            | Request::ListSortingOrder
-            | Request::MoveSortingStep { .. } => return None,
+            | Request::RemoveSortRule { .. } => return None,
             // A place search or a map reads no calendar (task TE.1); recent places are filtered
             // by the reach where they are read (task TE.5).
             Request::SearchPlaces { .. } | Request::MapPreview { .. } => return None,
