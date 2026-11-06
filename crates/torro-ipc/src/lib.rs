@@ -1475,9 +1475,9 @@ pub enum Request {
     /// Replaces the settings; the core applies what changed (start at login, hidden
     /// collections; the language applies to processes started afterwards). A hidden collection
     /// named by a bare URL instead of its id is answered with `error` and nothing changes. Settings
-    /// without `font` or `colorScheme` keep the stored ones (task L.22). A changed `design` sets
-    /// exactly what is sent: the design's suggestions are applied only by [`Request::SetSetting`]
-    /// (task L.33).
+    /// without `font` or `colorScheme` keep the stored ones (task L.22). `design` sets only spacing
+    /// (issue #484): `"compact"` and `"console"` are stored as `"dense"`, any other id that is no
+    /// spacing level as `"torro"`, the standard.
     #[serde(rename = "settings.update_settings")]
     UpdateSettings { settings: Settings },
     /// Changes one setting and applies it like [`Request::UpdateSettings`]. `value` must fit
@@ -1494,10 +1494,10 @@ pub enum Request {
     /// an unknown id is answered with `not-found`. Answered with [`Response::Ok`].
     #[serde(rename = "settings.set_collection_shown")]
     SetCollectionShown { collection: String, shown: bool },
-    /// Every design: the built-in ones first (Standard, Compact, Console), then each folder under
-    /// `<data>/designs/`, valid or with the reasons it can't be used, the font and mail view it
-    /// suggests, its density, and which one the settings name ([`Response::Designs`]). One is
-    /// chosen with [`Request::SetSetting`] and [`SettingKey::Design`]. Fonts and colour schemes are
+    /// The three spacing levels (issue #484): Standard (`torro`), Comfort and Dense, with their
+    /// density and which one the settings name ([`Response::Designs`]). They set only spacing, never
+    /// the font, the colours or the mail view; there are no designs from a folder. One is chosen
+    /// with [`Request::SetSetting`] and [`SettingKey::Design`]. Fonts and colour schemes are
     /// listed apart ([`Request::ListFonts`], [`Request::ListColorSchemes`]). Reads only; never fails.
     #[serde(rename = "settings.list_designs")]
     ListDesigns,
@@ -3997,24 +3997,23 @@ pub enum SettingKey {
     /// shows, a client's rights stay as they are.
     #[serde(rename = "contacts.show_hidden_books")]
     ContactsShowHiddenBooks,
-    /// The design every window draws with (spacing, sizes, radii, type scale): its id from
-    /// `settings.list_designs`, `"torro"` for the standard. A design that is not there or breaks a
-    /// rule is refused with `error` and its reasons, and nothing changes; an id that is only a font
-    /// or a colour scheme is refused with the key to choose it with. When the design really changes,
-    /// the same write sets the font to the one the design suggests if that font exists and is valid,
-    /// and the mail view to the one it suggests if it has one (task L.33, [`DesignInfo::font`],
-    /// [`DesignInfo::mail_view`]); otherwise they stay, and the colour scheme always stays. Choosing
-    /// the design that is already chosen changes nothing. Open windows follow.
+    /// The spacing level every window draws with (issue #484): `"torro"` (Standard), `"comfort"` or
+    /// `"dense"`, as `settings.list_designs` lists them. It changes only spacing – gaps and the
+    /// heights of rows and controls –, never the font, the colour scheme or the mail view. The old
+    /// `"compact"` and `"console"` are taken as `"dense"`, so older scripts keep working. Any other id
+    /// is refused with `error`, and nothing changes; an id that is only a font or a colour scheme is
+    /// refused with the key to choose it with. Open windows follow.
     Design,
     /// The font every window draws with (task L.22): its id from `settings.list_fonts`, `"torro"`
     /// for the standard; a font of the computer as `"system"` or `"system:<family>"` (issue #299),
     /// stored by that name only – a family that isn't installed is refused, and so is one that is
     /// empty, longer than 64 characters, starts with "." or holds control, format or line-separator
-    /// characters. Refused like [`SettingKey::Design`]. Open windows follow and load its files.
+    /// characters. A font that is not there or breaks a rule is refused with `error` and its reasons, and
+    /// nothing changes. Open windows follow and load its files.
     Font,
     /// The colour scheme every window draws with, both modes and the logo (task L.22): its id from
-    /// `settings.list_color_schemes`, `"torro"` for the standard. Refused like
-    /// [`SettingKey::Design`]. Open windows follow.
+    /// `settings.list_color_schemes`, `"torro"` for the standard. One that is not there or breaks a
+    /// rule is refused with `error` and its reasons, and nothing changes. Open windows follow.
     ColorScheme,
     /// How long the assistant keeps a conversation after its last entry: a number of days from 1
     /// to 3650 (30 unless changed), or `"forever"`. Pinned conversations are always kept
@@ -4396,7 +4395,7 @@ pub enum Response {
     Announcements {
         announcements: Vec<Announcement>,
     },
-    /// The design packs ([`Request::ListDesigns`]), the standard first.
+    /// The spacing levels ([`Request::ListDesigns`]), the standard first.
     Designs {
         designs: Vec<DesignInfo>,
     },
@@ -5955,40 +5954,33 @@ pub enum AnnouncementKind {
     Update,
 }
 
-/// One design pack as [`Request::ListDesigns`] reports it. Name, version, author and
-/// description are the pack's own words, shown as written.
+/// One spacing level as [`Request::ListDesigns`] reports it (issue #484). Name and description are
+/// the suite's words in the language of the core.
+///
+/// The `font` and `mailView` suggestions are gone (issue #484); a reply of an older core that still
+/// carries them reads as well, the fields are ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesignInfo {
-    /// The pack's folder name, what [`SettingKey::Design`] takes; `torro` for the standard.
+    /// What [`SettingKey::Design`] takes: `torro` (the standard), `comfort` or `dense`.
     pub id: String,
-    /// `Plex`; the id when the pack's `design.toml` cannot be read.
+    /// `Comfort`, translated.
     pub name: String,
-    /// `1.0.0`; empty when the pack does not say.
+    /// The suite's version.
     pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// The standard design the suite ships (always first, always valid).
+    /// The standard level (always first).
     pub standard: bool,
-    /// Whether the pack can be used; a pack that breaks a rule is refused as a whole.
+    /// Whether the level can be used; always `true` for a built-in level, kept for older clients.
     pub valid: bool,
     /// Why it can't be used, one sentence per broken rule, for people; empty when valid.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub problems: Vec<String>,
-    /// The settings name this pack (`Settings::design`). When the active one is not valid, the
-    /// windows draw with the standard.
+    /// The settings name this level (`Settings::design`).
     pub active: bool,
-    /// The font the design is meant for (`[about] font`, task L.22): an id for
-    /// [`SettingKey::Font`]. Choosing the design with [`SettingKey::Design`] sets it too, but only
-    /// when that font exists and is valid then (task L.33); the font need not exist to be named here.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub font: Option<String>,
-    /// How the design shows a mail with HTML (`[about] mail_view`, task L.33): `"html"` or
-    /// `"text"`. Choosing the design sets [`SettingKey::MailView`] to it; `None` leaves it as it is.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mail_view: Option<torro_core::settings::MailFormat>,
     /// How much the design shows at once (task L.33), from the height of its mail row:
     /// `"airy"`, `"balanced"`, `"dense"` or `"very_dense"`. A reply of an older core without it
     /// reads as `"balanced"`.
@@ -6840,17 +6832,16 @@ mod tests {
         assert_eq!((read.origin, read.kind), (FontOrigin::Folder, None));
     }
 
-    /// Task L.33: a design names its density and mail view, a colour scheme whether it is dark
-    /// only; `colorScheme` is gone from designs. A reply of an older core without the new fields
-    /// still reads (`balanced`, no mail view, not dark only).
+    /// Task L.33, issue #484: a design names its density, a colour scheme whether it is dark only;
+    /// `colorScheme`, `font` and `mailView` are gone from designs. A reply of an older core without
+    /// the density, or still with the suggestions, reads as well (`balanced`, the suggestions ignored).
     #[test]
-    fn designs_and_colour_schemes_carry_density_mail_view_and_dark_only() {
+    fn designs_and_colour_schemes_carry_density_and_dark_only() {
         use serde_json::json;
         use torro_core::design::DensityLevel;
-        use torro_core::settings::MailFormat;
-        let console = DesignInfo {
-            id: "console".into(),
-            name: "Console".into(),
+        let dense = DesignInfo {
+            id: "dense".into(),
+            name: "Dense".into(),
             version: "0.1.0".into(),
             author: Some("Torro".into()),
             description: None,
@@ -6858,22 +6849,23 @@ mod tests {
             valid: true,
             problems: Vec::new(),
             active: false,
-            font: Some("jetbrains-mono".into()),
-            mail_view: Some(MailFormat::Text),
-            density: DensityLevel::VeryDense,
+            density: DensityLevel::Dense,
         };
-        let json = serde_json::to_value(&console).expect("json");
-        assert_eq!((&json["density"], &json["mailView"]), (&json!("very_dense"), &json!("text")));
-        assert!(json.get("colorScheme").is_none(), "colours never belong to a design");
-        assert_eq!(serde_json::from_value::<DesignInfo>(json.clone()).expect("parses"), console);
-        // An older core: no density, no mail view, but a suggested colour scheme.
+        let json = serde_json::to_value(&dense).expect("json");
+        assert_eq!(json["density"], json!("dense"));
+        for gone in ["colorScheme", "font", "mailView"] {
+            assert!(json.get(gone).is_none(), "{gone}: a design suggests nothing");
+        }
+        assert_eq!(serde_json::from_value::<DesignInfo>(json.clone()).expect("parses"), dense);
+        // An older core: no density, but the suggestions of before.
         let mut older = json;
         let fields = older.as_object_mut().expect("an object");
         fields.remove("density");
-        fields.remove("mailView");
         fields.insert("colorScheme".into(), json!("torro"));
+        fields.insert("font".into(), json!("jetbrains-mono"));
+        fields.insert("mailView".into(), json!("text"));
         let read = serde_json::from_value::<DesignInfo>(older).expect("an answer of an older core");
-        assert_eq!((read.density, read.mail_view), (DensityLevel::Balanced, None));
+        assert_eq!(read, DesignInfo { density: DensityLevel::Balanced, ..dense });
 
         let night = ColorSchemeInfo {
             id: "night".into(),
