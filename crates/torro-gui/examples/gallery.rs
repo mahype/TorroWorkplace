@@ -2079,6 +2079,19 @@ impl Gallery {
                 .spacing(space::s())
                 .align_y(Alignment::Center),
             widgets::drop_line(),
+            // Issue #481: the head of a category's page and its two tiles, one without a switch.
+            row![
+                widgets::select_button_marked(&Anchor::new(), widgets::category_dot(1), "Paper trail", Msg::Noop),
+                widgets::switch_tile("Show in the sidebar", None, true, Some(Box::new(|_| Msg::Noop))),
+                widgets::switch_tile(
+                    "AI may not file mail here",
+                    Some("The headers decide this category.".to_string()),
+                    true,
+                    None,
+                ),
+            ]
+            .spacing(space::m())
+            .align_y(Alignment::Center),
         ]
         .spacing(space::m());
         let hint = |which: Icon, label: &'static str| -> Element<'static, Msg> {

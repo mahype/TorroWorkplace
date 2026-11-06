@@ -2758,6 +2758,68 @@ pub fn select_button<'a, M: Clone + 'a>(anchor: &Anchor, label: impl IntoFragmen
     anchored(anchor, b)
 }
 
+/// A [`select_button`] with a mark in front of its label (issue #481): "● Paper trail ▾", with
+/// [`category_dot`] for a category group (its colour follows the design of the moment, so the mark
+/// comes drawn, not as a [`Mark`] with a fixed colour). Registers `anchor`.
+pub fn select_button_marked<'a, M: Clone + 'a>(
+    anchor: &Anchor,
+    mark: Element<'a, M>,
+    label: impl IntoFragment<'a>,
+    on_press: M,
+) -> Element<'a, M> {
+    let content = row![
+        mark,
+        typo::text(typo::caption(), label).wrapping(Wrapping::None),
+        toned(Icon::ChevronDown, icon::SIZE_SM, Tone::Text3)
+    ]
+    .spacing(ICON_GAP)
+    .align_y(Alignment::Center);
+    let b = button(container(content).center_y(Fill))
+        .height(size::control_sm())
+        .padding(style::button_padding())
+        .style(style::button::secondary)
+        .on_press(on_press);
+    anchored(anchor, b)
+}
+
+/// A tile with a title, a detail line under it and a switch at the right (issue #481), for two
+/// settings that stand side by side: "Show in the sidebar", "AI may not file mail here". `raised`
+/// with a `line_strong` edge, radius [`radius::sm()`]. Without `on_toggle` the switch is not drawn
+/// and the tile reads at 40 % – the setting does not apply here, and the detail says why.
+pub fn switch_tile<'a, M: Clone + 'a>(
+    title: impl IntoFragment<'a>,
+    detail: Option<String>,
+    on: bool,
+    on_toggle: Option<Box<dyn Fn(bool) -> M + 'a>>,
+) -> Element<'a, M> {
+    let usable = on_toggle.is_some();
+    let fade = move |colour: Color| if usable { colour } else { Color { a: colour.a * 0.4, ..colour } };
+    let tone = move |pick: fn(&Palette) -> Color| {
+        move |t: &Theme| iced::widget::text::Style { color: Some(fade(pick(&palette(t)))) }
+    };
+    let mut lines = column![typo::text(typo::body(), title).style(tone(|p| p.text)).wrapping(Wrapping::WordOrGlyph)];
+    if let Some(detail) = detail {
+        lines = lines.push(typo::text(typo::meta(), detail).style(tone(|p| p.text_2)).wrapping(Wrapping::WordOrGlyph));
+    }
+    let mut content = row![lines.width(Fill)].spacing(space::m()).align_y(Alignment::Center);
+    if let Some(change) = on_toggle {
+        content =
+            content.push(iced::widget::toggler(on).size(style::CHECK_SIZE).style(style::toggler).on_toggle(change));
+    }
+    container(content)
+        .width(Fill)
+        .padding(crate::layout::panel_padding())
+        .style(move |t: &Theme| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(fade(p.raised))),
+                border: iced::Border { color: fade(p.line_strong), width: LINE, radius: radius::sm().into() },
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
 /// A [`select_button`] as wide as its place, for a choice in a narrow row (issue #421, the model of
 /// Sorting stacked under its label): the label on one line, cut with "…" to the width left beside
 /// the chevron, which stands at the right end. Registers `anchor`.
@@ -4145,8 +4207,14 @@ pub fn category_choice_chip<'a, M: Clone + 'a>(
     on: bool,
     on_press: Option<M>,
 ) -> Element<'a, M> {
+    choice_chip_with(Some(category_dot(at)), label, on, on_press)
+}
+
+/// The dot of the group colour `at` of the active design (`Palette::category`), as wide as the dot
+/// of a row's mark: drawn with the theme of the moment, so it follows a change of design.
+pub fn category_dot<'a, M: 'a>(at: usize) -> Element<'a, M> {
     let size = Scale::Row.dot();
-    let dot = container(blank().width(size).height(size))
+    container(blank().width(size).height(size))
         .style(move |t: &Theme| {
             let colours = &palette(t).category;
             container::Style {
@@ -4155,8 +4223,7 @@ pub fn category_choice_chip<'a, M: Clone + 'a>(
                 ..Default::default()
             }
         })
-        .into();
-    choice_chip_with(Some(dot), label, on, on_press)
+        .into()
 }
 
 /// The chip of [`choice_chip`] with `lead` (already drawn) after the check mark of a chosen chip.
