@@ -1195,7 +1195,6 @@ fn category_page<'a>(state: &'a State, form: &'a CategoryForm, data: &'a Data) -
                 Some(Message::Reset),
             ));
         }
-        end = end.push(blank().width(Fill));
         if form.category.is_some() && built_in.is_none() {
             end = end.push(widgets::text_button(
                 Some(Icon::Trash2),
@@ -1204,8 +1203,9 @@ fn category_page<'a>(state: &'a State, form: &'a CategoryForm, data: &'a Data) -
                 Some(Message::Remove),
             ));
         }
+        // Narrow, the quiet buttons go onto a second line instead of past the window's edge.
         if changed || form.category.is_some() {
-            page = page.push(end);
+            page = page.push(end.wrap().vertical_spacing(space::s()));
         }
     }
     page.into()
