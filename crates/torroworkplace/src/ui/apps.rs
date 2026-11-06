@@ -218,7 +218,7 @@ pub fn started(result: &Result<Response, String>) -> Result<AppJobInfo, String> 
         Ok(Response::AppJob { job }) => Ok(job.clone()),
         Ok(Response::Error { code, message }) => {
             eprintln!("torroworkplace: an app job was refused ({code}): {message}");
-            Err(refusal(code).to_string())
+            Err(refusal_with(code, message))
         }
         Ok(other) => {
             eprintln!("torroworkplace: unexpected answer to an app job: {other:?}");
@@ -228,6 +228,16 @@ pub fn started(result: &Result<Response, String>) -> Result<AppJobInfo, String> 
             eprintln!("torroworkplace: no answer to an app job: {detail}");
             Err(tr("Torro Workplace isn't responding. It may still be starting.").to_string())
         }
+    }
+}
+
+/// What to say when the core refuses an app job: for `conflict` the core's own sentence, which names
+/// the reason and the next step ("… is needed by …; uninstall that first") from the suite's names
+/// only; for the other codes [`refusal`].
+pub fn refusal_with(code: &str, message: &str) -> String {
+    match code {
+        "conflict" if !message.is_empty() => message.to_string(),
+        _ => refusal(code).to_string(),
     }
 }
 
@@ -384,9 +394,23 @@ pub enum Offer<'a> {
     Unavailable,
 }
 
+/// The apps `job` touches, in the order of its steps: those asked for and what they bring along (the
+/// Notification Hub for Mail), each once.
+pub fn involved(job: &AppJobInfo) -> Vec<&str> {
+    let mut apps: Vec<&str> = Vec::new();
+    for step in &job.steps {
+        if !apps.contains(&step.app.as_str()) {
+            apps.push(&step.app);
+        }
+    }
+    apps
+}
+
 /// What the card of `app` offers.
 pub fn offer<'a>(app: &'a CatalogApp, settings: &Settings, job: Option<&'a AppJobInfo>) -> Offer<'a> {
-    if let Some(job) = job.filter(|job| job.state == AppJobState::Running && job.apps.contains(&app.window_class)) {
+    if let Some(job) =
+        job.filter(|job| job.state == AppJobState::Running && involved(job).contains(&app.window_class.as_str()))
+    {
         return Offer::Running(job);
     }
     match (app.state, &app.managed) {
@@ -596,7 +620,9 @@ fn check_failed<'a>(code: &str) -> Element<'a, Message> {
 fn main_update<'a>(main: &CatalogApp) -> Element<'a, Message> {
     let version = main.available.clone().unwrap_or_default();
     let title = trf("Torro Workplace {version} is available", &[("version", &version)]);
-    let detail = tr("The service and this window restart; your apps stay open and reconnect.");
+    let detail = tr(
+        "The service restarts; your apps stay open and reconnect. Open windows use the new version once you close them.",
+    );
     let actions = vec![
         widgets::PageAction::new(tr("What's new"), Some(Message::ReleaseNotes))
             .icon(Icon::ArrowUpRight)
@@ -1221,6 +1247,27 @@ mod tests {
         let offline = Ok(Response::Error { code: "offline".into(), message: "x".into() });
         assert_eq!(started(&offline), Err(tr("Couldn't reach GitHub.").into()));
         assert!(started(&Err("gone".into())).is_err());
+        // A conflict says the core's reason, which names the next step.
+        let needed = Ok(Response::Error { code: "conflict".into(), message: "Needed by Mail.".into() });
+        assert_eq!(started(&needed), Err("Needed by Mail.".into()));
+    }
+
+    /// Review of #411: a job that brings the Notification Hub along touches it too, in step order,
+    /// although it lists only Mail.
+    #[test]
+    fn a_job_touches_what_it_brings_along() {
+        let step = |app: &str, step| AppJobStep { app: app.into(), step, status: StepStatus::Todo, detail: None };
+        let job = AppJobInfo {
+            apps: vec!["torro-inbox-mail".into()],
+            steps: vec![
+                step("torro-inbox", AppStep::Download),
+                step("torro-inbox", AppStep::Install),
+                step("torro-inbox-mail", AppStep::Download),
+                step("torro-inbox-mail", AppStep::Connect),
+            ],
+            ..demo_job(false)
+        };
+        assert_eq!(involved(&job), ["torro-inbox", "torro-inbox-mail"]);
     }
 
     /// The footer says when the catalog was checked, "just now" within a minute.

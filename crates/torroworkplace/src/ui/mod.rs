@@ -464,10 +464,6 @@ pub struct Ui {
     /// When the app catalog last came ([`Message::AppCatalog`]): outside its section it is asked for
     /// once a minute, for the sidebar's count of updates.
     catalog_at: Option<Instant>,
-    /// The service's version while the main application's update runs (issue #411): once the core
-    /// answers with another, the service restarted and this window ends, so the job's window can
-    /// have the core open the new control centre ([`app_job`]).
-    restart_from: Option<String>,
     /// The first-run setup while it is open (task W.4): it takes the window instead of the
     /// sections.
     setup: Option<setup::State>,
@@ -658,7 +654,6 @@ impl Ui {
             general: general::State::default(),
             apps: apps::State::default(),
             catalog_at: None,
-            restart_from: None,
             setup: None,
             target: None,
         };
@@ -1395,11 +1390,6 @@ impl Ui {
                 self.data = *data;
                 self.data.catalog = catalog;
                 self.data.app_catalog = app_catalog;
-                // The main application was updated and the service restarted with it (issue #411):
-                // this window is the old one; the job's window has the core open the new one.
-                if restarted(self.restart_from.as_deref(), &self.data) {
-                    return iced::exit();
-                }
                 let mut providers = Task::none();
                 if first && self.launch.setup_if_open && !self.launch.demo && self.data.error.is_none() {
                     let step = self.launch.setup.unwrap_or(setup::Step::Welcome);
@@ -1535,11 +1525,6 @@ impl Ui {
                 let failed = matches!(loaded.catalog, apps::Catalog::Failed(_));
                 if !(failed && self.data.app_catalog.catalog.listed().is_some()) {
                     self.data.app_catalog = *loaded;
-                }
-                // A job that updates the main application restarts the service when it is done; the
-                // catalog lists only running jobs, so the update is noted while it runs.
-                if self.restart_from.is_none() && self.data.app_catalog.job.as_ref().is_some_and(updates_main) {
-                    self.restart_from = self.data.status.as_ref().map(|status| status.version.clone());
                 }
                 Action::None
             }
@@ -2526,22 +2511,6 @@ fn load_app_catalog() -> Task<Message> {
         },
         |loaded| Message::AppCatalog(Box::new(loaded)),
     )
-}
-
-/// Whether `job` updates the main application (issue #411): the service restarts after it.
-fn updates_main(job: &torro_ipc::AppJobInfo) -> bool {
-    job.restart
-        || (job.kind == torro_ipc::AppJobKind::Update
-            && job.apps.iter().any(|app| app == torro_core::AppId::WORKPLACE.window_class))
-}
-
-/// Whether the service restarted after the main application's update (issue #411): a reload that
-/// reached the core finds another version than the one before the update (`from`).
-fn restarted(from: Option<&str>, data: &Data) -> bool {
-    match (from, &data.status) {
-        (Some(from), Some(status)) => data.error.is_none() && status.version != from,
-        _ => false,
-    }
 }
 
 /// Loads the catalog of MCP servers (task MA.8), apart from [`load`]: [`Ui::reload`] asks for it only
@@ -3741,16 +3710,6 @@ mod tests {
         let refused = Ok(Response::Error { code: "busy".into(), message: "an app job runs".into() });
         let _ = ui.update(Message::AppJobStarted(refused));
         assert_eq!(ui.notice.as_deref(), Some(apps::refusal("busy")));
-        // A reload with another version of the service after the main application's update ends the
-        // old window; before it, or without such an update, nothing happens.
-        let data = |version: &str| Data {
-            status: Some(Status { version: version.into(), ..ui.data.status.clone().expect("demo status") }),
-            ..Data::default()
-        };
-        assert!(!restarted(None, &data("0.2.0")));
-        assert!(!restarted(Some("0.1.0"), &data("0.1.0")));
-        assert!(restarted(Some("0.1.0"), &data("0.2.0")));
-        assert!(!restarted(Some("0.1.0"), &Data { error: Some("gone".into()), ..data("0.2.0") }));
     }
 
     #[test]

@@ -17,7 +17,8 @@
 //! It asks `apps.app_job` every 500 ms while the job runs. A job that ends with `restart` (the main
 //! application was updated) restarts the service: the window waits until `system.ping` answers
 //! with the new version, then has the core open the control centre (`apps.open_app torroworkplace`)
-//! and ends. The old control centre ends itself when it sees the service change (`Ui::restarting`).
+//! and ends. An open control centre stays and reconnects to the new service; like every open window
+//! it uses the new version once it is closed (decision 5 of #411), so nothing is left without one.
 //!
 //! The window reads and writes nothing itself; every step is a request (skill `torro-api`). Closing
 //! it never stops a job: "Show" on the app's card opens it again. With `--demo` it shows the demo's
@@ -53,8 +54,7 @@ pub const POLL: Duration = Duration::from_millis(500);
 pub const RESTART_WAIT: Duration = Duration::from_secs(90);
 
 /// How long the window waits once the new service answered before it opens the control centre: the
-/// old control centre sees the change on its next reload (every second while a job runs) and ends,
-/// so the core starts the new one instead of bringing the old one to the front.
+/// new service settles first (it took over the socket only just now).
 pub const HANDOVER: Duration = Duration::from_secs(2);
 
 /// What `--app-job=` names.
@@ -253,7 +253,9 @@ pub fn window_height(target: &Target) -> f32 {
     let gap = space::l();
     let content = match target {
         Target::Follow(_) => {
-            let steps = 4.0 * size::row_sidebar() + 3.0 * space::xs();
+            // Download, check, install and connect; elsewhere than on macOS the launcher entry too.
+            let rows: f32 = if cfg!(target_os = "macos") { 4.0 } else { 5.0 };
+            let steps = rows * size::row_sidebar() + (rows - 1.0) * space::xs();
             let progress = line(typo::meta()) + space::s() + space::xs();
             hero(1.0, 2.0) + gap + steps + gap + progress
         }
@@ -497,7 +499,7 @@ impl Window {
             }
             (Reply::Started, Ok(Response::Error { code, message })) => {
                 eprintln!("torroworkplace: the app job was refused ({code}): {message}");
-                self.stage = Stage::Failed(apps::refusal(&code).into());
+                self.stage = Stage::Failed(apps::refusal_with(&code, &message));
                 Step::None
             }
             (Reply::Started, other) => {
@@ -698,7 +700,7 @@ impl Window {
     /// sentence (never in the row of buttons, where long words would push it under them), "Later" and
     /// "Update and restart".
     fn offer(&self) -> Element<'_, Event> {
-        let line = tr("The service and this window restart; your apps stay open and reconnect.").to_string();
+        let line = tr("The service restarts; your apps stay open and reconnect. Open windows use the new version once you close them.").to_string();
         let whats_new = self.catalog.as_ref().and_then(|catalog| catalog.release_url.as_ref()).map(|_| {
             widgets::text_button(
                 Some(Icon::ArrowUpRight),
@@ -799,21 +801,24 @@ fn quiet<'a>(note: String) -> Element<'a, Event> {
     typo::text(typo::meta(), note).style(theme::text_3).wrapping(Wrapping::WordOrGlyph).into()
 }
 
-/// The steps of `job`, one row each: its mark, its name and its detail at the right. A job with
-/// several apps ("Update all") shows a row per app instead, with the step it is at.
+/// The steps of `job`, one row each: its mark, its name and its detail at the right. A job that
+/// touches several apps ("Update all", Mail with the Notification Hub) shows a row per app instead,
+/// with the step it is at.
 fn steps<'a>(job: &'a AppJobInfo) -> Element<'a, Event> {
-    let rows: Vec<Element<'a, Event>> = if job.apps.len() > 1 {
-        job.apps
-            .iter()
+    let involved = apps::involved(job);
+    let rows: Vec<Element<'a, Event>> = if involved.len() > 1 {
+        involved
+            .into_iter()
             .map(|app| {
-                let of: Vec<&AppJobStep> = job.steps.iter().filter(|step| &step.app == app).collect();
+                let of: Vec<&AppJobStep> = job.steps.iter().filter(|step| step.app == app).collect();
                 let status = app_status(&of);
                 let at = of
                     .iter()
                     .find(|step| step.status != StepStatus::Done)
                     .or(of.last())
                     .map(|step| step_label(step.step, job.kind));
-                let name = AppId::find(app).map_or_else(|| app.clone(), |id| format!("Torro {}", shell::app_name(id)));
+                let name =
+                    AppId::find(app).map_or_else(|| app.to_string(), |id| format!("Torro {}", shell::app_name(id)));
                 step_row(status, name, at.map(str::to_string))
             })
             .collect()
