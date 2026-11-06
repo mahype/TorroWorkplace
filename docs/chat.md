@@ -12,7 +12,7 @@ Issues je Stufe. Beantwortet die Ideen „Chat (Nextcloud Talk)“ und „Präse
 Ein leichter Chat der Suite auf **Nextcloud Talk**, schlicht wie früher ICQ, kein zweites Slack:
 
 1. **Eine Kontaktliste** in einem eigenen, schmalen Fenster: alle Menschen der eigenen Nextcloud mit ihrem
-   Status (online, abwesend, nicht stören, offline) und ihrer Statusnachricht. Wer online ist, steht oben. Unten
+   Status (online, abwesend, beschäftigt, nicht stören, offline) und ihrer Statusnachricht. Wer online ist, steht oben. Unten
    der eigene Status.
 2. **Ein Chatfenster je Unterhaltung.** Ein Doppelklick auf einen Namen öffnet es; ist es schon offen, kommt es
    nach vorn. Darin Verlauf, Antwortfeld und die Knöpfe für Anrufe.
@@ -195,17 +195,22 @@ Fenster und die Präsenz; die übrigen sind mit #470 (2026-11-06) dazugekommen, 
      Client höchstens eine solche Abfrage zur Zeit (sonst nur der Cache). So kann kein Agent die Plätze der
      Oberfläche belegen oder den Server mit Abfragen über viele Unterhaltungen beschäftigen.
    - **Klingeln** erkennt der Kern über die Benachrichtigungen des Kontos (Objekt `call`) und über `hasCall` in
-     der Liste. Damit ein Anruf nicht bis zu 60 s unbemerkt bleibt, fragt der Kern die Benachrichtigungen alle
-     10 s ab, solange die Kontaktliste oder ein Chatfenster offen ist, und nutzt `notify_push`, wo es läuft. Wie
-     schnell das wirklich ist, misst die erste Aufgabe der Stufe 5.
-   - **Status** holt der Kern im Takt der Nextcloud-Schleife (60 s), nur solange die Kontaktliste offen ist, sonst
-     gar nicht ([praesenz.md](praesenz.md), „Idee für den Aufbau“, Punkt 2).
+     der Liste. Ein Klingeln endet nach 45 s; die 60-s-Schleife reicht dafür nicht. Darum fragt der Kern die
+     Benachrichtigungen jedes Kontos mit Talk alle 10 s ab, auch wenn kein Fenster des Chats offen ist, solange
+     „Ring for incoming calls“ an ist (ab Stufe 5 ab Werk an, abschaltbar); läuft `notify_push`, nutzt er das statt
+     der Abfrage. Erst so kann er `torrochat` beim Klingeln starten. Wie schnell und wie teuer das wirklich ist,
+     misst der Versuch der Stufe 5.
+   - **Status** holt der Kern im Takt der Nextcloud-Schleife (60 s), solange die Kontaktliste offen ist oder ein
+     Programm in den letzten 5 Minuten `presence.list_people` gefragt hat, sonst gar nicht
+     ([praesenz.md](praesenz.md), „Idee für den Aufbau“, Punkt 2). So beantwortet Stufe 2 „Ist Ben gerade da?“ auch
+     ohne Fenster: Die erste Frage holt frisch, die folgenden lesen den Speicher.
 10. **Präsenz ist ein eigener Bereich `presence`**, kein Teil von `chat`: Den Status gibt es in Nextcloud auch
     ohne Talk (App User status), und wer einem Agenten Chats gibt, gibt ihm nicht von selbst, wer wann am Rechner
     sitzt.
     - **Wer in der Liste steht:** die Menschen aus dem Systemadressbuch des Kontos. Ist es gesperrt, die
       Menschen, mit denen es schon eine 1:1-Unterhaltung gibt, und wen der Mensch über die Suche
-      (`chat.find_people`) hinzufügt (`presence.add_person`, gespeichert im Kern). Bleibt die Liste leer, sagt sie warum („Your Nextcloud does not show other
+      (`presence.find_people`, die Sharee-Suche von Nextcloud, geht ohne Talk) hinzufügt (`presence.add_person`,
+      gespeichert im Kern). Bleibt die Liste leer, sagt sie warum („Your Nextcloud does not show other
       users“).
     - **Abfragen:** Liefert `/statuses` etwas, reicht ein Aufruf (seitenweise). Ist die Liste leer, weil der Admin
       beschränkt hat, fragt der Kern einzeln (`/statuses/{userId}`), höchstens 50 Menschen je Minute; die übrigen
@@ -215,8 +220,11 @@ Fenster und die Präsenz; die übrigen sind mit #470 (2026-11-06) dazugekommen, 
       Leerlaufzeit des Systems, bei gesperrtem Bildschirm und im Ruhezustand nichts. Aus, weil „ich bin online“
       etwas über den Menschen verrät. Ohne Heartbeat zeigt die Liste unten „You appear offline“ mit dem
       Schalter daneben.
-    - **Der eigene Status** (online, abwesend, nicht stören, unsichtbar, Nachricht mit Ablauf) steht unten in der
-      Kontaktliste und im Tray-Menü. Setzen ist nach außen (Entscheidung 4). „Do not disturb“ stellt auch das
+    - **Der eigene Status** (online, abwesend, beschäftigt, nicht stören, unsichtbar, Nachricht mit Ablauf) steht
+      unten in der Kontaktliste und im Tray-Menü. Setzen ist nach außen (Entscheidung 4). „Online“ hält Nextcloud
+      nur mit Heartbeat (ohne fällt es nach 15 Minuten auf offline): Ohne Heartbeat steht „Online“ im Menü aus,
+      mit dem Hinweis auf den Schalter, und `presence.set_own_status` mit `online` antwortet `unsupported`
+      („Turn on “Show others when I am online” first.“). „Do not disturb“ stellt auch das
       Klingeln in der Suite ab.
     - **Mehrere Konten:** je Nextcloud-Konto eine Gruppe in der Liste, ab zwei Konten mit Kontonamen.
 11. **Schnell antworten im Notification Hub** (Stufe 1), nicht im Tray. Das Tray zählt weiter nur
@@ -235,8 +243,9 @@ Fenster und die Präsenz; die übrigen sind mit #470 (2026-11-06) dazugekommen, 
     zweit auf Servern mit internem Signaling (wie dem eigenen); HPB und Gruppenanrufe später. Stufe 5 beginnt mit
     einem Versuch als eigenem Issue (Abschnitt [Anrufe](#anrufe-stufe-5)). Bis das Anruffenster auf einem System
     läuft, öffnet „Accept“ den Anruf im Browser (`<server>/call/<token>`); „Open in Talk“ bleibt danach im Menü.
-14. **Agenten rufen nicht an.** Anruf starten, annehmen, ablehnen und Kamera oder Mikrofon einschalten gibt es nur
-    mit dem App-Schlüssel, also nur durch einen Menschen in der Oberfläche, wie beim Mikrofon des Assistenten
+14. **Agenten rufen nicht an.** Anruf starten und annehmen, das Signaling eines Anrufs und die Wahl von Kamera und
+    Mikrofon gibt es nur mit dem App-Schlüssel, also nur durch einen Menschen in der Oberfläche; Kamera und Mikrofon
+    im Anruf schaltet das Anruffenster selbst, ohne API, wie beim Mikrofon des Assistenten
     ([api.md](api.md), „Was nie nach außen geht“, Punkt 6). Sonst könnte ein Agent im Namen des Menschen
     jemanden anrufen oder unbemerkt mithören und mitsehen. Agenten sehen höchstens, ob in einer Unterhaltung ein
     Anruf läuft (`chat.get_call`, `Read`). Bild und Ton gehen auf keinem Weg über API oder MCP. Das ist ein
@@ -287,7 +296,9 @@ torrocontacts (Teilen) ─────────────┘          ├�
 
 Der Kern spricht mit Talk (Anmeldung, Sitzung, Signaling), die App nur mit dem Kern. Bild und Ton laufen dagegen
 direkt zwischen dem Anruffenster und der Gegenstelle: Kamera und Mikrofon gehören dem Fenster, in dem man sie
-sieht, und macOS fragt die Erlaubnis für genau dieses Programm ab.
+sieht, und macOS fragt die Erlaubnis für genau dieses Programm ab. Das ist eine Ausnahme von „Oberflächen lesen und
+schreiben nichts selbst“ (CLAUDE.md, [api.md](api.md)); sie gilt erst, wenn der Mensch ihr zustimmt (Offen, Stufe 5),
+und steht dann in Punkt 11.
 
 **Kennungen:**
 - **Konto:** die Kennung des Nextcloud-Kontos, `nextcloud:anna@cloud.example`.
@@ -355,7 +366,7 @@ roh darin: Sie sind fremder Text und kämen sonst ungeprüft zu einem Agenten.
   nach einem Klick und nur mit `https`, `mailto`. Bilder lädt der Verlauf nicht (kein Verfolgen,
   nur Text).
 - **Konto weg oder Remote Wipe:** Cache und Status des Kontos werden geleert, laufende Long-Polling-Anfragen
-  und Anrufe werden beendet, das Konto fällt aus allen `chat_accounts`.
+  und Anrufe werden beendet, das Konto fällt aus allen `chat_accounts` und `presence_accounts`.
 - **Anrufe** (ergänzt mit #470):
   - **Kein Mitschnitt.** Die Suite nimmt weder Bild noch Ton auf, auch nicht als Puffer auf der Platte, und
     bietet die Aufnahme von Talk (Recording-Server) nicht an.
@@ -378,7 +389,8 @@ roh darin: Sie sind fremder Text und kämen sonst ungeprüft zu einem Agenten.
   - **Kamera und Mikrofon an zeigt das Fenster immer**, mit Icon und Wort, nie nur mit Farbe. Ein Anruf ohne
     sichtbares Fenster gibt es nicht; wird das Anruffenster geschlossen, endet der Anruf.
   - **Die Wahl der Geräte** speichert der Kern als Einstellung je Rechner (`chat_camera`, `chat_microphone`,
-    `chat_speaker` mit der Kennung des Geräts), nicht im Protokoll und nicht in Freigaben.
+    `chat_speaker` mit der Kennung des Geräts), nicht im Protokoll, nicht in Freigaben und nicht in der Antwort von
+    `settings.get_settings` an Clients.
 
 ## Fenster
 
@@ -390,10 +402,10 @@ Farbe, Rot nur für den einen Primärknopf.
 **Kontaktliste** (Fensterklasse `torro-chat`, Kachel, schmal, 300 breit gedacht):
 - **Obere Zeile:** „Contacts“, rechts die Einstellungen (`shell::SETTINGS_ICON`).
 - **Suchfeld** filtert Namen und Statusnachrichten in der Liste; Enter öffnet den ersten Treffer. Ohne Treffer
-  „Find on server…“ (`chat.find_people`).
-- **Gruppen nach Status:** „Online“, „Away“, „Do not disturb“, „Offline“ in dieser Reihenfolge, jede mit Zahl und
+  „Find on server…“ (`presence.find_people`), das Ergebnis kommt mit „Add to list“ in die Liste.
+- **Gruppen nach Status:** „Online“, „Away“, „Busy“, „Do not disturb“, „Offline“ in dieser Reihenfolge, jede mit Zahl und
   einklappbar; „Offline“ ab Werk zugeklappt, sobald mehr als 20 Menschen darin stehen. In jeder Gruppe nach Name.
-  Jede Zeile: Avatar mit Status-Marke (jede Marke mit eigener Form: Punkt, Mond, Minus, Ring), Name, darunter die
+  Jede Zeile: Avatar mit Status-Marke (jede Marke mit eigener Form: Punkt, Mond, halber Kreis, Minus, Ring), Name, darunter die
   Statusnachricht oder „Last seen yesterday“, rechts die Zahl ungelesener Nachrichten.
 - **Gruppenchats** je nach gewählter Fassung (Entscheidung 17).
 - **Fuß:** eigener Status mit Avatar und Nachricht, ein Klick öffnet ein Menü mit den Status, „Set status
@@ -407,8 +419,8 @@ Farbe, Rot nur für den einen Primärknopf.
 - **Leer:** ohne Konto „Connect Nextcloud“ (öffnet die Steuerzentrale), ohne User status „Your Nextcloud does not
   share status“, ohne sichtbare Menschen „Your Nextcloud does not show other users“ mit der Suche.
 
-**Chatfenster** (Klasse `torro-chat-conversation`, schwebend, 440 × 680 gedacht, Größe und Ort je Unterhaltung
-gemerkt):
+**Chatfenster** (Klasse `torro-chat-conversation`, schwebend, 440 × 680 gedacht; ob Größe und Ort je
+Unterhaltung gemerkt werden können, siehe „Schweben“):
 - **Kopf:** Avatar mit Status, Name, darunter Status und Statusnachricht (bei Gruppen die Zahl der Teilnehmer),
   rechts „Audio call“, „Video call“ und „…“ (Mark as unread, Notifications, Open in Talk, Show contact).
 - **Verlauf:** Nachrichten nach Tag gruppiert, eigene rechts. Zitat bei Antworten, Erwähnungen hervorgehoben,
@@ -441,12 +453,16 @@ sofort in der Liste, gewechselt wird nur hier.
 **Schweben je Fenster-Manager** (Entscheidung 16): Der Kern setzt die Regeln für die festen Klassen des Chats
 beim Start selbst über `torro-wm`, wie heute für `WORKPLACE_DIALOG_CLASS`; einen Request dafür gibt es nicht:
 - **Hyprland:** `float_dialogs` gibt es schon (Regel `float = true, center = true` je Klasse, mit dem Neuladen der
-  Konfiguration erneut gesetzt); für Chatfenster ohne `center`, damit der gemerkte Ort gilt.
-- **AeroSpace:** Laufzeitregeln gibt es nicht. Der Kern stellt ein neues Fenster der Klassen über
-  `aerospace layout floating --window-id <id>` auf schwebend, sobald es erscheint; der Installer kann zusätzlich
-  einen Block `on-window-detected` mit `layout floating` vorschlagen.
-- **GlazeWM:** ebenso über den Befehl `set-floating` am neuen Fenster, alternativ eine `window_rules`-Regel in der
-  Konfiguration.
+  Konfiguration erneut gesetzt). Das reicht für Klingel-, Anruf- und Gerätefenster. Ein Chatfenster an einem
+  gemerkten Ort bräuchte eine Regel ohne `center` und ein Verschieben durch den Kern (unter Wayland darf das
+  Programm sein Fenster nicht selbst setzen, [modes.md](modes.md)); das ist eine neue Methode am Trait
+  `WindowManager`, dessen Schnittstelle festgelegt ist, also eine Rückfrage in Stufe 3. Bis dahin öffnen
+  Chatfenster mittig.
+- **AeroSpace und GlazeWM:** `float_dialogs` tut dort heute nichts, und die „Klasse“ ist die Bundle-ID bzw. der
+  Prozessname: Alle Fenster von `torrochat` teilen sie, auch die Kontaktliste. Unterscheiden ließen sie sich nur am
+  Fenstertitel (AeroSpace `on-window-detected` mit `window-title-regex-substring`, GlazeWM `window_rules` mit
+  `window_title`) oder indem Chat- und Anruffenster ein eigener Prozess bzw. ein eigenes Bündel werden. Welcher Weg,
+  klärt Stufe 3 mit Rückfrage; bis dahin schweben sie dort nicht von selbst.
 - **Ohne Kachel-Manager** (macOS ohne AeroSpace, Windows ohne GlazeWM, GNOME, KDE) schweben die Fenster ohnehin.
 
 **Notification Hub (Stufe 1)**, Paneel eines Talk-Eintrags:
@@ -491,9 +507,9 @@ Bereich `chat`:
 | 2 | siehe Bereich `presence` | | |
 | 3 | `chat.mark_unread { conversation }` | Write | `chat_mark_unread` |
 | 3 | `chat.suggest_mentions { conversation, query, limit? }` | Read | `chat_suggest_mentions` |
-| 3 | `chat.find_people { account, query, limit? }` (Personen des Servers für eine neue Unterhaltung und die Kontaktliste) | Read | `chat_find_people` |
+| 3 | `chat.find_people { account, query, limit? }` (Personen des Servers mit Talk für eine neue Unterhaltung) | Read | `chat_find_people` |
 | 3 | `chat.create_conversation { account, with }` (1:1, gibt eine vorhandene zurück) | Write + **nach außen** | `chat_create_conversation` |
-| 3 | `apps.open_app` mit `target: "chat:<unterhaltung>"` bzw. `"chat:contacts"` (Chatfenster bzw. Kontaktliste; eine Unterhaltung außerhalb von `chat_accounts` ist `not-found`, Erweiterung) | Write (`apps`) | `apps_open_app` (vorhanden) |
+| 3 | `apps.open_app` mit `target: "chat:<unterhaltung>"` bzw. `"chat:contacts"` (Chatfenster bzw. Kontaktliste; eine Unterhaltung außerhalb von `chat_accounts` ist `not-found`. Anders als andere Ziele, die immer ein neues Fenster starten, holt `chat:` ein offenes Chatfenster nach vorn (Entscheidung 15); wie der Kern das der laufenden App sagt, klärt Stufe 3 mit Rückfrage, weil `OpenApp` heute immer startet. Erweiterung) | Write (`apps`) | `apps_open_app` (vorhanden) |
 | 3 | `apps.open_app` mit `target: "contact:<id>"` („Show contact“: `torrocontacts` beim Kontakt; braucht Read in `contacts` und das Adressbuch in `address_books`, sonst `not-found`, Erweiterung) | Write (`apps`) | `apps_open_app` (vorhanden) |
 | 4 | `chat.send_message` mit `items` und `fields` (Erweiterung, TL2) | Write + **nach außen** + Read der Inhalte | `chat_send_message` (vorhanden) |
 | 5 | `chat.get_call { conversation }` (läuft ein Anruf, klingelt es, seit wann, wie viele sind drin, ob der Mensch dabei ist; keine Namen, keine Geräte, kein Bild) | Read | `chat_get_call` |
@@ -518,13 +534,15 @@ Bereich `presence` (Rechte: Stufe in `presence` und eigene Auswahl `presence_acc
 |---|---|---|---|
 | 2 | `presence.list_people { account? }` (Kennung, Anzeigename, Status, Statusnachricht, Ablauf; nichts weiter aus dem Systemadressbuch; `untrusted: true`) | Read | `presence_list_people` |
 | 2 | `presence.add_person { account, person }` / `presence.remove_person { account, person }` (eigene Liste, wenn das Systemadressbuch gesperrt ist; gespeichert im Kern, `presence.json` im Konfigurationsordner) | Write | `presence_add_person`, `presence_remove_person` |
+| 2 | `presence.find_people { account, query, limit? }` (Sharee-Suche von Nextcloud, geht ohne Talk; höchstens 20 Treffer, mindestens zwei Zeichen, `untrusted: true`) | Read | `presence_find_people` |
 | 2 | `presence.get_own_status { account }` | Read | `presence_get_own_status` |
 | 2 | `presence.set_own_status { account, status, message?, icon?, clear_at? }` | Write + **nach außen** | `presence_set_own_status` |
 | 2 | `settings.set_setting` mit `presence_heartbeat` (Heartbeat) | Admin (`settings`); `true` **nur Menschen** | `settings_set_setting` (vorhanden) |
 
 Es gibt keinen Befehl für das Schweben der Fenster: Der Kern setzt die Regeln für die festen Fensterklassen des
 Chats beim Start selbst, wie heute für `WORKPLACE_DIALOG_CLASS`. So kann auch kein Client fremde Klassen schweben
-lassen. Größe, Ort und eingeklappte Gruppen merkt jedes Fenster in `ui.json` (`torro_gui::ui_state`), wie üblich.
+lassen. Eingeklappte Gruppen merkt die Kontaktliste in `ui.json` (`torro_gui::ui_state`); Größe und Ort heute
+nicht (siehe Fenster, „Schweben“).
 
 **Vorgeschlagener Punkt 11 für [„Was nie nach außen geht“](api.md#was-nie-nach-außen-geht)** (`api.md` nimmt
 ihn mit der ersten Aufgabe der Stufe 2 bzw. 5 auf, je nach Teil, samt Tests wie
@@ -539,7 +557,9 @@ ihn mit der ersten Aufgabe der Stufe 2 bzw. 5 auf, je nach Teil, samt Tests wie
 >     - **Geräte wählen** (`settings.set_setting` mit `chat_camera`, `chat_microphone`, `chat_speaker`) und
 >       **mit Kamera beitreten** (`chat_join_camera_off: false`): Die Wahl bereitet vor, welche Kamera und welches
 >       Mikrofon beim nächsten Anruf angehen. Wie beim Mikrofon entscheidet der Wert (`Request::kept_for_people`);
->       `chat_join_camera_off: true` darf jeder mit Admin in `settings`.
+>       `chat_join_camera_off: true` darf jeder mit Admin in `settings`. Die Kennungen der Geräte gibt
+>       `settings.get_settings` nur dem App-Schlüssel heraus (Clients sehen „set“), weil Gerätenamen oft Name und
+>       Rechner des Menschen verraten.
 >     - **Medien gehen nie über den Kern:** Bild und Ton eines Anrufs, die Vorschau der Kamera, der Pegel des
 >       Mikrofons und der Testton laufen nur im Anruffenster bzw. in der Gerätewahl, die dafür selbst auf die
 >       Geräte zugreifen. Das ist die einzige Ausnahme von „Oberflächen lesen und schreiben nichts selbst“: macOS
@@ -597,7 +617,7 @@ Entscheidung 13: selbst gebaut. Was die Machbarkeit dazu ergab, steht in
    Kerns), dann dem Anruf (`POST /call/{token}`, `flags` Ton und Bild); Talk lässt die Gegenseite klingeln. Das
    Anruffenster öffnet sich.
 2. **Klingeln:** Der Kern erkennt einen eingehenden Anruf (Entscheidung 9) und meldet ihn der App, die die
-   Benachrichtigung bzw. das kleine Fenster zeigt. Ist `torrochat` nicht offen, startet der Kern es.
+   Benachrichtigung bzw. das kleine Fenster zeigt. Ist `torrochat` nicht offen, startet der Kern es (dafür die Abfrage alle 10 s aus Entscheidung 9).
 3. **Annehmen:** `chat.answer_call` mit oder ohne Bild; der Kern vergibt die Kennung `call` und gibt sie nur dem
    Anruffenster. Ablehnen (`chat.decline_call`) beendet nur das eigene Klingeln (`notification-state`), nicht den
    Anruf der Gegenseite.
@@ -614,8 +634,9 @@ Entscheidung 13: selbst gebaut. Was die Machbarkeit dazu ergab, steht in
   `[workspace.dependencies]`; der Bau der vorgebauten Bibliothek (clang ≥ 21 unter Linux, `-ObjC` auf macOS,
   `+crt-static` auf Windows) wird im Versuch geprüft, ebenso `scripts/ci-local.sh` ohne Netz.
 - **Kamera:** eine Quelle je System, die Bilder an `NativeVideoSource` gibt. Ob `nokhwa` reicht (baut auf macOS
-  gerade nicht) oder eigene Wege nötig sind, klärt der Versuch; Code mit `unsafe` geht nur nach Rückfrage und nur in
-  `torro-appkit`.
+  gerade nicht) oder eigene Wege nötig sind, klärt der Versuch. Eigene Bindungen an Kamera-Schnittstellen bräuchten `unsafe`; das gibt es heute nur in
+  `torro-appkit`, und das ist nur für macOS. Für Linux oder Windows wäre eine neue Ausnahme nötig, also eine
+  Rückfrage vor der Umsetzung.
 - **Ton:** die Geräteverwaltung von libwebrtc (Liste, Wahl von Mikrofon und Lautsprecher).
 - **Bild in Iced:** ein eigenes `shader`-Widget mit YUV-Texturen auf der wgpu von Iced, Rückfall
   `image::Handle::from_rgba`, wenn keine GPU da ist.
@@ -703,6 +724,11 @@ sie geprüft hat.
   Chatfenster. Kommt nach Stufe 5, wenn das Signaling für Anrufe ohnehin steht; mit HPB billiger.
 - **TURN-Zugangsdaten im Anruffenster** (Datenschutz, Anrufe): Zustimmung des Menschen zur Ausnahme, erste Aufgabe
   der Stufe 5.
+- **Medien im Fenster statt über den Kern** (Aufbau, Punkt 11): Zustimmung des Menschen zur Ausnahme von
+  „Oberflächen lesen und schreiben nichts selbst“, erste Aufgabe der Stufe 5; ohne sie gibt es kein eigenes
+  Anruffenster.
+- **Schweben unter AeroSpace und GlazeWM, Ort der Chatfenster unter Hyprland, ein Fenster je Unterhaltung über
+  `apps.open_app`:** Stufe 3, jeweils mit Rückfrage, weil Schnittstellen von `torro-wm` bzw. `OpenApp` sich ändern.
 - **Ist TURN auf dem eigenen Server eingerichtet?** Zeigt nur eine angemeldete Abfrage; klärt der Versuch.
 - **Matrix oder Slack als weitere Anbieter:** Die Bereiche `chat` und `presence` und das Modell in `torro-chat`
   sind dafür offen. Ein eigener Plan, wenn es so weit ist.
