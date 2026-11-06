@@ -375,7 +375,7 @@ pub(crate) struct LineWords {
 impl LineWords {
     /// The words of a line in `columns`: `who` in `who_level` with `domain` after it in what is left,
     /// `title` in `level` (· `count`) and `preview` in `BODY`, the `account` before the time in at most
-    /// `share` of the title column – as the rows show them ([`mail_rows`], [`notice_rows`]).
+    /// `most` of the title column – as the rows show them ([`mail_rows`], [`notice_rows`]).
     ///
     /// A `mailbox` account (the address "Sent" went out by, issue #449) is cut in whole parts
     /// ([`ellipsize_start`]: the address, else its domain) and, with no room for either, stays as an
@@ -385,14 +385,13 @@ impl LineWords {
         (who, who_level, domain): (&str, Level, Option<&str>),
         (title, level, count): (&str, Level, Option<&str>),
         preview: Option<&str>,
-        (account, share, mailbox): (Option<&str>, f32, bool),
+        (account, most, mailbox): (Option<&str>, f32, bool),
         time: &str,
     ) -> LineWords {
         let who_shown = ellipsize_who(who, who_level, columns.who);
         let left = columns.who - typo::text_width(&who_shown, who_level) - space::s();
         let domain = domain.map(|domain| typo::ellipsize(domain, typo::meta(), left)).filter(|d| !d.is_empty());
         let account_width = |name: &str| typo::text_width(name, typo::meta()) + new_dot() + space::xs() + cell_gap();
-        let most = columns.title * share;
         let (account, account_room) = match account {
             Some(name) if mailbox => {
                 let shown = ellipsize_start(name, typo::meta(), most - new_dot() - space::xs() - cell_gap());
@@ -1598,7 +1597,7 @@ pub(crate) fn mail_line<'a>(look: ListLook, lines: MailLines<'a>, width: f32, se
     let time_width = typo::text_width(&time, typo::meta().tabular());
     let columns = LineColumns::of_marks(width, time_width, if no_marks { 0.0 } else { line_marks_width() });
     let shown = if domain_tail {
-        sent_line_words(columns, &name, (&subject, new, count.as_deref()), &preview, &account_name, &time)
+        sent_line_words(width, columns, &name, (&subject, new, count.as_deref()), &preview, &account_name, &time)
     } else {
         let account_name = account_shown(account_name, domain.as_deref());
         mail_line_words(
@@ -1632,16 +1631,20 @@ fn mail_line_words(
         (name, typo::body_strong(), domain),
         (subject, mail_text_level(new), count),
         preview.as_deref(),
-        (account.as_deref(), LINE_ACCOUNT_SHARE, false),
+        (account.as_deref(), columns.title * LINE_ACCOUNT_SHARE, false),
         time,
     )
 }
 
-/// What the cells of a line of "Sent" show in `columns` ([`LineWords`], issue #449): the recipients
-/// `name` without the mailbox after them, the `subject` with the `preview`, and the `mailbox` it went
-/// out by in the account column before the time – where it has room, and its dot tells two accounts
-/// apart; after the recipients the name column rarely left room for it.
+/// What the cells of a line of "Sent" `width` wide show in `columns` ([`LineWords`], issue #449): the
+/// recipients `name` without the mailbox after them, the `subject` with the `preview`, and the
+/// `mailbox` it went out by in the account column before the time – where it has room, and its dot
+/// tells two accounts apart; after the recipients the name column rarely left room for it.
+///
+/// The mailbox gets the same room in every row of the list ([`LINE_MAILBOX_SHARE`] of the title
+/// column beside the widest time), so one address reads the same in every row, whatever its time.
 fn sent_line_words(
+    width: f32,
     columns: LineColumns,
     name: &str,
     (subject, new, count): (&str, bool, Option<&str>),
@@ -1654,9 +1657,15 @@ fn sent_line_words(
         (name, typo::body_strong(), None),
         (subject, mail_text_level(new), count),
         preview.as_deref(),
-        (mailbox.as_deref(), LINE_MAILBOX_SHARE, true),
+        (mailbox.as_deref(), mailbox_room(width, columns.marks), true),
         time,
     )
+}
+
+/// The room of the mailbox of "Sent" in a line `width` wide with a marks column `marks` wide (issue
+/// #449): [`LINE_MAILBOX_SHARE`] of the title column beside the widest time, the same in every row.
+fn mailbox_room(width: f32, marks: f32) -> f32 {
+    LineColumns::of_marks(width, line_date_width(), marks).title * LINE_MAILBOX_SHARE
 }
 
 /// How far below a row's top the middle of its first line lies – where the action bar sits (task
@@ -1767,7 +1776,7 @@ fn notice_line_words(item: &Item, rows: &Rows<'_>, columns: LineColumns) -> Line
         (&item.source.label(), typo::body(), None),
         (&title, level, count.as_deref()),
         text.as_deref(),
-        (None, LINE_ACCOUNT_SHARE, false),
+        (None, 0.0, false),
         &time,
     )
 }
@@ -2486,9 +2495,10 @@ mod tests {
         let meta = typo::meta();
         let preview = Some("Hello Maria, here is the offer we talked about on Monday.".to_owned());
         let time = "09:41";
-        let words = |width: f32, mailbox: &str| {
+        let words_at = |width: f32, mailbox: &str, time: &str| {
             let columns = LineColumns::of_marks(width, typo::text_width(time, meta.tabular()), 0.0);
             let shown = sent_line_words(
+                width,
                 columns,
                 "To: Maria Schulz +2",
                 ("Offer", false, None),
@@ -2498,6 +2508,7 @@ mod tests {
             );
             (columns, shown)
         };
+        let words = |width: f32, mailbox: &str| words_at(width, mailbox, time);
         for mailbox in ["anna@work.example.org", "ben@work.example.org"] {
             let mut last = f32::INFINITY;
             for width in [1200.0, 700.0, 480.0, 360.0] {
@@ -2512,6 +2523,10 @@ mod tests {
                 assert!(used <= columns.title * LINE_MAILBOX_SHARE, "{width}: at most half the title cell");
                 assert!(used <= last, "{width}: narrower never shows more");
                 last = used;
+                // One address reads the same in every row, whatever the row's time (a narrow line
+                // gives each its own width).
+                let yesterday = trf("Yesterday {time}", &[("time", &"20:19")]);
+                assert_eq!(words_at(width, mailbox, &yesterday).1.account, Some(account), "{width}: as in any row");
             }
             assert_eq!(words(1200.0, mailbox).1.account.as_deref(), Some(mailbox), "wide: the address in full");
         }
