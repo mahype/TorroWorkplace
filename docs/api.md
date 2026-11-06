@@ -407,31 +407,28 @@ Rückfrage stellen (`ask_permission`), der App-Schlüssel liest alle. Entscheide
 App-Schlüssel.
 
 ⁹ `list_designs` (L.3), `list_fonts` und `list_color_schemes` (L.22) nennen die drei Teile des Aussehens
-([design-pakete.md](design-pakete.md), „Design, Schrift und Farbschema getrennt“), jeder aus seinem Ordner: die
-eingebauten Teile zuerst (bei Designs `torro` „Standard“, `compact`, `console`, sonst nur `torro`), dann jeden Ordner
-unter `<data>/designs/`, `<data>/fonts/` bzw. `<data>/color-schemes/` mit `id`, `name`, `version`, `author`,
-`description`, `standard`, `valid`, `problems` (lesbare Gründe, warum ein Teil nicht geht) und `active` (das in den
-Einstellungen gewählte). Dazu bei Designs `font` und `mailView` (`"html"`/`"text"`, die Vorschläge aus `[about]`) und
-`density` (`"airy"`, `"balanced"`, `"dense"`, `"very_dense"`, aus der Höhe der Mail-Zeile, L.33), bei Schriften
-`family` (Familie der Textschrift) und `license`, bei Farbschemata `darkOnly` (nur dunkel: jedes Fenster zeichnet es
-auch im hellen Modus dunkel, L.33). Gewählt wird jeder Teil für sich mit
-`set_setting { key: "design" | "font" | "color_scheme", value: "<id>" }` (`Admin`). **Ein Design zu wählen stellt
-seine Vorschläge mit ein (L.33):** Wechselt das Design wirklich, setzt dieselbe Änderung (ein Schreiben, eine Sperre)
-die Schrift auf `font`, wenn diese Schrift gültig lädt, und die Mail-Darstellung auf `mailView`, wenn das Design eine
-nennt; sonst bleiben sie, das Farbschema bleibt immer. Dasselbe Design noch einmal ändert nichts; danach ändert jeder
-Weg Schrift und Mail-Darstellung frei. Die Antwort bleibt `ok`, was eingestellt ist, zeigt `get_settings`.
-`update_settings` setzt genau, was es schickt, ohne Vorschläge. Ein fehlendes oder ungültiges Teil lehnt der Dienst mit
-`error` und allen Gründen ab; liegt die id in einem anderen Ordner, nennt die Meldung den Schlüssel, der sie wählt
-(`design = "nord"` → `color_scheme`). Die Freigabe zeigt Schlüssel und id, nie den Namen aus dem Ordner; für `design`
-nennt sie dazu, was der Kern mit umstellt („also sets the font to "jetbrains-mono" and the mail view to text“),
-nachgeschlagen im Design und im Schriftordner nach derselben Regel (`approvals::Facts::design`), nie aus dem Text des
-Clients: die Schrift nur als geprüfte id, die gültig lädt, die Mail-Darstellung als `html`/`text`. Die Ausführung prüft
-die Regel nach dem Stand beim Ausführen neu (kam die Schrift zwischen Rückfrage und Entscheidung dazu oder wurde
-zwischendurch gewählt, stellt sie entsprechend mehr oder weniger um) und stellt nie etwas außer Schrift und
-Mail-Darstellung um. Das Feld `colorScheme` der Designs entfällt
-(`[about] color_scheme` ist seit L.33 ein unbekannter Schlüssel: Farben gehören nie zu einem Design); kein `v: 2`, weil
-es optional war und bei jedem Design ohne Vorschlag fehlte. `density` und `darkOnly` sind neu und haben Vorgaben
-(`balanced`, `false`), ein neuer Client liest also auch einen älteren Dienst (verträglich).
+([design-pakete.md](design-pakete.md), „Design, Schrift und Farbschema getrennt“). **Designs sind seit Issue #484 nur
+noch Abstände:** `list_designs` nennt genau die drei eingebauten Stufen `torro` („Standard“), `comfort` („Comfort“,
+deutsch „Komfort“) und `dense` („Dense“, deutsch „Dicht“), ohne Ordner und ohne Vorschläge; Schriften und Farbschemata
+kommen nach dem eingebauten `torro` aus ihren Ordnern `<data>/fonts/` bzw. `<data>/color-schemes/`. Jeder Eintrag hat
+`id`, `name`, `version`, `author`, `description`, `standard`, `valid`, `problems` (lesbare Gründe, warum ein Teil nicht
+geht) und `active` (das in den Einstellungen gewählte); bei den Stufen sind Name und Beschreibung Worte der Suite,
+übersetzt, und `valid` ist immer wahr. Dazu bei Designs `density` (`"airy"`, `"balanced"`, `"dense"`, aus der Höhe der
+Mail-Zeile, L.33; `"very_dense"` kennt das Format weiter), bei Schriften `family` (Familie der Textschrift) und
+`license`, bei Farbschemata `darkOnly` (nur dunkel: jedes Fenster zeichnet es auch im hellen Modus dunkel, L.33).
+Gewählt wird jeder Teil für sich mit `set_setting { key: "design" | "font" | "color_scheme", value: "<id>" }`
+(`Admin`). **Eine Stufe zu wählen ändert nur die Abstände:** Schrift, Farbschema und Mail-Darstellung bleiben. Die
+früheren `"compact"` und `"console"` nimmt `set_setting` als `"dense"` an, damit vorhandene Skripte weiterlaufen; jede
+andere id, die keine Stufe ist, lehnt der Dienst mit `error` ab. `update_settings` speichert `"compact"` und
+`"console"` als `"dense"` und jede andere unbekannte id als `"torro"` (so liest der Dienst auch eine gespeicherte Wahl
+von früher). Eine fehlende oder ungültige Schrift oder ein solches Farbschema lehnt der Dienst mit `error` und allen
+Gründen ab; liegt die id in einem anderen Ordner, nennt die Meldung den Schlüssel, der sie wählt (`design = "nord"` →
+`color_scheme`). Die Freigabe zeigt Schlüssel und id, nie den Namen aus dem Ordner; für `design` die Stufe, die der Kern
+wirklich speichert (`"console"` → `'dense'`), sonst nichts (`approvals::Facts::design` und die Vorschläge aus
+`[about] font` und `[about] mail_view` entfallen mit Issue #484). Die Felder `font` und `mailView` der Designs entfallen
+ebenso wie zuvor `colorScheme`; kein `v: 2`, weil sie optional waren und ein Client sie bei Antworten älterer Dienste
+weiter lesen darf (sie werden übergangen). `density` und `darkOnly` haben Vorgaben (`balanced`, `false`), ein neuer
+Client liest also auch einen älteren Dienst (verträglich).
 `update_settings` ohne `font` oder `colorScheme` behält die gespeicherten. **Schriften des Rechners (#299):**
 `list_fonts` nennt nach den Ordnern die installierten Schriften, `system` (die Oberflächenschrift des
 Betriebssystems) und je Familie `system:<Familie>` ([design-pakete.md](design-pakete.md), „Schriften des Systems“);
