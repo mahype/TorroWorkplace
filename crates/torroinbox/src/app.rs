@@ -1264,7 +1264,7 @@ impl View {
             View::All => Icon::Mail,
             View::Sent => Icon::Send,
             View::Trash => Icon::Trash2,
-            View::Drafts => Icon::SquarePen,
+            View::Drafts => Icon::FilePenLine,
             View::ReplyLater => Icon::MessageSquareReply,
             View::SetAside => Icon::Bookmark,
         }
@@ -10855,8 +10855,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         // The wide mail window reads beside the list (task E8.3), without the panel; while nothing is
         // open the reader's column holds the overview (issue #409).
-        let overview = (class == SizeClass::Wide && self.mail_overview_shown())
-            .then(|| self.mail_overview_page(mail_overview::Place::Page, &overview_at));
+        // "Drafts" holds the person's own mail (issue #502): no statistics of what comes in, but how to
+        // go on.
+        let overview = (class == SizeClass::Wide && self.mail_overview_shown()).then(|| {
+            if self.view == View::Drafts {
+                list::empty_state(Icon::FilePenLine, tr("No draft chosen."), tr("Pick a draft to continue writing."))
+            } else {
+                self.mail_overview_page(mail_overview::Place::Page, &overview_at)
+            }
+        });
         if let Some(reader) = self.wide_reader(class, &anchors).or(overview) {
             // The divider between them drags (issue #130).
             let width = self.split.width(self.split_limits());
@@ -17926,7 +17933,7 @@ mod tests {
         let views: Vec<View> = app.folder_entries().into_iter().take(3).map(|entry| entry.view).collect();
         assert_eq!(views, [View::Drafts, View::Sent, View::Trash]);
         let marks: Vec<Mark> = app.folder_entries().into_iter().take(3).map(|entry| entry.mark).collect();
-        assert_eq!(marks, [Icon::SquarePen, Icon::Send, Icon::Trash2].map(Mark::Icon));
+        assert_eq!(marks, [Icon::FilePenLine, Icon::Send, Icon::Trash2].map(Mark::Icon));
         // The rail and the menu of the narrow windows draw these rows too.
         assert!(!app.folder_entries().iter().any(|entry| entry.label == tr("Archive")), "no Archive under Folders");
         let pin = app.folders.iter().find(|folder| folder.role == Some(Role::Sent)).expect("a sent folder").clone();
@@ -18052,7 +18059,7 @@ mod tests {
     fn drafts_list_the_drafts_of_every_account() {
         assert_eq!(View::Drafts.by_role(), Some((Role::Drafts, None)));
         assert!(View::Drafts.is_mail() && View::Drafts.filter().is_none());
-        assert_eq!((View::Drafts.name(), View::Drafts.icon()), (tr("Drafts").to_owned(), Icon::SquarePen));
+        assert_eq!((View::Drafts.name(), View::Drafts.icon()), (tr("Drafts").to_owned(), Icon::FilePenLine));
         assert_eq!(View::Drafts.listing().as_deref(), Some("drafts"));
         let mut app = mail_window(Density::Compact, &["--open", "drafts"]);
         load(&mut app);

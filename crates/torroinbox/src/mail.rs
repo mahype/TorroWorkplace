@@ -1209,7 +1209,7 @@ pub fn folder_name(folder: &Folder) -> String {
 pub fn folder_icon(role: Option<Role>) -> Icon {
     match role {
         Some(Role::Inbox) => Icon::Inbox,
-        Some(Role::Drafts) => Icon::SquarePen,
+        Some(Role::Drafts) => Icon::FilePenLine,
         Some(Role::Sent) => Icon::Send,
         Some(Role::Archive) => Icon::Archive,
         Some(Role::Junk) => Icon::ShieldAlert,
@@ -1769,7 +1769,7 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
             View::All => (Icon::Mail, tr("No mail in your inboxes."), tr("New mail shows up here.")),
             View::Sent => (Icon::Send, tr("No sent mail."), tr("Mail you send shows up here.")),
             View::Trash => (Icon::Trash2, tr("The trash is empty."), tr("Mail you delete shows up here.")),
-            View::Drafts => (Icon::SquarePen, tr("No drafts."), tr("Drafts you save show up here.")),
+            View::Drafts => (Icon::FilePenLine, tr("No drafts."), tr("Drafts you save show up here.")),
             // The piles (task E19.4): the hint names the key that fills them (`w`, `b`).
             View::ReplyLater => (
                 Icon::MessageSquareReply,
@@ -3692,7 +3692,8 @@ fn attachment_chips<'a>(
     anchors: &detail::Anchors,
     room: f32,
 ) -> Element<'a, Message> {
-    let chips = files.iter().enumerate().map(|(at, file)| attachment_chip(reading, at, file, anchors, room));
+    let alone = files.len() == 1;
+    let chips = files.iter().enumerate().map(|(at, file)| attachment_chip(reading, at, file, anchors, room, alone));
     let chips = row(chips).spacing(space::s()).wrap().vertical_spacing(space::s());
     container(bounded_scroll(chips)).max_height(chips_max_height()).into()
 }
@@ -3729,8 +3730,8 @@ fn bounded_scroll<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, M
 }
 
 /// The attachment `file`, the `at`-th of the mail's, as a split chip (`widgets::split_file_chip`) on
-/// a line `room` wide: its name – cut with "…" where it would take more than half the line
-/// ([`chip_name_room`]) – and its size. A click on it does what the setting says
+/// a line `room` wide: its name – cut with "…" where it would take more than half the line, or the
+/// whole line when it is `alone` ([`chip_name_room`]) – and its size. A click on it does what the setting says
 /// ([`Message::OpenAttachment`], [`click_act`]), the tooltip says what and the whole name ("Open:
 /// invoice.pdf", [`click_tooltip`]); the triangle opens its menu ([`Message::AskAttachment`]) and,
 /// while that menu is open, carries its anchor (`anchors.attachment`).
@@ -3740,10 +3741,11 @@ fn attachment_chip<'a>(
     file: &AttachmentInfo,
     anchors: &detail::Anchors,
     room: f32,
+    alone: bool,
 ) -> Element<'a, Message> {
     let name = attachment_name(file);
     let weight = size_text(file.size);
-    let shown = typo::ellipsize(&name, typo::body(), chip_name_room(&weight, room));
+    let shown = typo::ellipsize(&name, typo::body(), chip_name_room(&weight, room, alone));
     let open = Some(Message::OpenAttachment(reading.id.to_owned(), file.part.clone()));
     let menu = Some(Message::AskAttachment(reading.id.to_owned(), at));
     let anchor = (reading.file_menu == Some(at)).then_some(&anchors.attachment);
@@ -3765,11 +3767,14 @@ fn click_tooltip(reading: &Reading<'_>, file: &AttachmentInfo) -> String {
 
 /// How wide the name on an attachment's chip may be ([`attachment_chip`]): half the line's `room`,
 /// less what the chip needs beside the name – its padding, the paperclip, the gaps, its size `weight`
-/// and the triangle after its line – so one long name never takes a line of its own.
-fn chip_name_room(weight: &str, room: f32) -> f32 {
+/// and the triangle after its line – so one long name never takes a line of its own. A chip `alone`
+/// shares the line with no other and may take all of it (design review of #502: a short name was
+/// cut in a wide reader).
+fn chip_name_room(weight: &str, room: f32, alone: bool) -> f32 {
     let triangle = icon::SIZE_SM + 2.0 * space::s() + size::HAIRLINE;
     let frame = 2.0 * space::m() + icon::SIZE_SM + 2.0 * space::s() + typo::text_width(weight, typo::meta()) + triangle;
-    (room / 2.0 - frame).max(0.0)
+    let line = if alone { room } else { room / 2.0 };
+    (line - frame).max(0.0)
 }
 
 /// One button of the panel's mail standards ([`panel_standards`]).
@@ -5900,13 +5905,15 @@ mod tests {
             let line = attachment_line(reading, &anchors, 800.0, 24.0, 0.0);
             assert!(line.is_none(), "the newsletter's pictures are inline");
         });
-        let room = chip_name_room("3 KB", 800.0);
+        let room = chip_name_room("3 KB", 800.0, false);
         assert!(room > 0.0 && room < 400.0, "{room}");
         let long = "quarterly-budget-review-with-all-departments-and-travel-costs-final-v7.xlsx";
         let shown = typo::ellipsize(long, typo::body(), room);
         assert!(shown != long && shown.ends_with('…'), "{shown}");
         assert_eq!(typo::ellipsize("budget-q4.csv", typo::body(), room), "budget-q4.csv", "a short name whole");
-        assert_eq!(chip_name_room("3 KB", 0.0), 0.0, "never below nothing");
+        assert_eq!(chip_name_room("3 KB", 0.0, false), 0.0, "never below nothing");
+        let alone = chip_name_room("179 KB", 376.0, true);
+        assert_eq!(typo::ellipsize("offer-relaunch.pdf", typo::body(), alone), "offer-relaunch.pdf", "#502");
         // The head says who wrote to whom and nothing about files (issue #491).
         let source = include_str!("mail.rs");
         assert!(!function_source(source, "sender_block").contains("attachment"), "no attachments in the head");

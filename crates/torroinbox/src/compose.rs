@@ -2301,7 +2301,13 @@ impl<S: ComposeSource + 'static> Window<S> {
         // The draft's own parts under their new names: each attachment still there as it was saved
         // takes the name the save gave it, also when others came or went meanwhile.
         let sent = std::mem::take(&mut self.saving_parts);
-        if sent.len() == draft.attachments.len() {
+        // Parts of a draft that was removed meanwhile could not go along (`save_with_fallback`): they
+        // leave the window too, which says so.
+        let lost: Vec<&DraftAttachment> = sent.iter().filter(|saved| !draft.attachments.contains(saved)).collect();
+        if draft.attachments.len() < sent.len() && !lost.is_empty() {
+            self.attachments.retain(|attached| !lost.contains(&&attached.draft()));
+            self.notice = Some(Notice::plain(tr("The attachments of the removed draft could not be kept.")));
+        } else if sent.len() == draft.attachments.len() {
             for attached in &mut self.attachments {
                 let at = sent.iter().position(|saved| *saved == attached.draft());
                 if let (Some(at), Attached::Part { message, part, .. }) = (at, attached)
@@ -2496,10 +2502,23 @@ pub async fn prepare<S: ComposeSource>(source: Arc<S>, kind: Kind) -> Result<Pre
 }
 
 /// Saves `draft`; a draft that is gone (`NotFound` for the id it carries) is saved as a new one,
-/// so what was written is never lost to a draft someone removed.
+/// so what was written is never lost to a draft someone removed. Its own attachments (parts of the
+/// gone draft, issue #502) went with it: when the new one cannot take them it is saved without
+/// them, and the window says so ([`Window::saved`]).
 pub async fn save_with_fallback<S: ComposeSource>(source: Arc<S>, draft: Draft) -> Result<Draft, ComposeError> {
+    let Some(gone) = draft.id.clone() else { return source.save_draft(draft).await };
     match source.save_draft(draft.clone()).await {
-        Err(ComposeError::NotFound) if draft.id.is_some() => source.save_draft(Draft { id: None, ..draft }).await,
+        Err(ComposeError::NotFound) => {
+            let fresh = Draft { id: None, ..draft };
+            let own = |attachment: &DraftAttachment| matches!(attachment, DraftAttachment::MailPart { message, .. } if *message == gone);
+            match source.save_draft(fresh.clone()).await {
+                Err(ComposeError::NotFound) if fresh.attachments.iter().any(own) => {
+                    let attachments = fresh.attachments.iter().filter(|attachment| !own(attachment)).cloned().collect();
+                    source.save_draft(Draft { attachments, ..fresh }).await
+                }
+                other => other,
+            }
+        }
         other => other,
     }
 }
@@ -4489,6 +4508,46 @@ mod tests {
         assert_eq!(window.draft().account, "mail:anna@example.org", "its own account");
         let html = window.draft().html.expect("formatted");
         assert!(html.contains("*not italic*") && !html.contains("<em>"), "{html}");
+    }
+
+    /// Issue #502: a draft removed meanwhile is saved as a new one; its own attachments, which went
+    /// with it, are left out, and the window says so.
+    #[test]
+    fn the_attachments_of_a_removed_draft_are_left_out_and_said() {
+        struct Removed(DemoSource);
+        impl ComposeSource for Removed {
+            async fn senders(&self) -> Result<Vec<Sender>, ComposeError> {
+                ComposeSource::senders(&self.0).await
+            }
+            async fn get_mail(&self, id: String) -> Result<Mail, ComposeError> {
+                ComposeSource::get_mail(&self.0, id).await
+            }
+            async fn get_draft(&self, id: String) -> Result<Draft, ComposeError> {
+                ComposeSource::get_draft(&self.0, id).await
+            }
+            async fn save_draft(&self, draft: Draft) -> Result<Draft, ComposeError> {
+                let gone = |attachment: &DraftAttachment| matches!(attachment, DraftAttachment::MailPart { message, .. } if message == "m:w8");
+                if draft.id.is_some() || draft.attachments.iter().any(gone) {
+                    return Err(ComposeError::NotFound);
+                }
+                ComposeSource::save_draft(&self.0, draft).await
+            }
+            async fn send_draft(&self, id: String) -> Result<Delivery, ComposeError> {
+                ComposeSource::send_draft(&self.0, id).await
+            }
+            async fn discard_draft(&self, id: String) -> Result<(), ComposeError> {
+                ComposeSource::discard_draft(&self.0, id).await
+            }
+        }
+        let source = Arc::new(Removed(DemoSource::new(Utc::now())));
+        let mut window = ready_on(source, &["--draft", "m:w8"]);
+        let _ = window.update(Message::Subject("Offer, second version".into()));
+        let _ = window.update(Message::Tick(later()));
+        let _ = deliver_save(&mut window);
+        assert!(window.attachments.is_empty(), "the part went with the removed draft");
+        let notice = window.notice.clone().expect("it says so");
+        assert_eq!(notice.what, tr("The attachments of the removed draft could not be kept."));
+        assert!(window.draft.as_ref().is_some_and(|(id, _)| id != "m:w8"), "saved as a new draft");
     }
 
     /// Issue #502: a draft of an account the window cannot write from is not opened: saving it would

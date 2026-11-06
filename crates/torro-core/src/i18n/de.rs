@@ -6739,6 +6739,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No drafts.", "Keine Entwürfe."),
     ("Drafts you save show up here.", "Entwürfe, die du speicherst, erscheinen hier."),
     ("Continue writing", "Weiterschreiben"),
+    ("No draft chosen.", "Kein Entwurf gewählt."),
+    ("Pick a draft to continue writing.", "Wähle einen Entwurf, um weiterzuschreiben."),
+    (
+        "The attachments of the removed draft could not be kept.",
+        "Die Anhänge des entfernten Entwurfs ließen sich nicht behalten.",
+    ),
     ("Couldn't load the draft.", "Der Entwurf konnte nicht geladen werden."),
     ("The draft could not be read.", "Der Entwurf konnte nicht gelesen werden."),
     ("The draft's account can't send mail from here.", "Das Konto des Entwurfs kann von hier keine Mail senden."),
