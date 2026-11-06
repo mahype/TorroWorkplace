@@ -5159,9 +5159,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 return Task::batch(tasks);
             }
             Message::SettingsPage(message) => {
-                // A row of the section menu that the page drew itself (another account, issue #473)
-                // ends the menu, as the host's own rows do.
-                if let Some(pane) = self.settings.as_mut() {
+                // A row of the section menu that the page drew itself (another account, the way up,
+                // issue #473) ends the menu, as the host's own rows do; ticks and typing leave it.
+                if let SettingsMessage::Mail(mail) = &message
+                    && settings_mail::leaves_page(mail)
+                    && let Some(pane) = self.settings.as_mut()
+                {
                     pane.host.close_menu();
                 }
                 // "Choose…" on a backup page: the window opens the system's chooser, never the page.

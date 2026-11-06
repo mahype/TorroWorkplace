@@ -398,6 +398,17 @@ pub fn kept(state: State) -> State {
     State { accounts, ..State::default() }
 }
 
+/// Whether `message` leaves the page open below a section for another one or for the section's own
+/// (another account, "‹ Back"): what a row of the host's section menu sends of these pages, after
+/// which the app closes the menu (`Host::close_menu`, issue #473). Ticks and typing never do.
+pub fn leaves_page(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::Accounts(accounts::Message::Open(_) | accounts::Message::Back)
+            | Message::Categorization(categorization::Message::Editor(editor::Message::Back))
+    )
+}
+
 /// One section's page with its messages wrapped in [`Message`].
 fn wrap<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> Message) -> Page<'a, Message> {
     page.map(into)
@@ -2358,6 +2369,14 @@ pub mod accounts {
                     false => assert!(matches!(press, Some(Message::Open(id)) if *id == account.id)),
                 }
             }
+        }
+
+        /// Issue #473: only the way to another account or up ends the host's section menu.
+        #[test]
+        fn only_leaving_an_account_ends_the_section_menu() {
+            assert!(crate::mail::leaves_page(&crate::mail::Message::Accounts(Message::Open("a".into()))));
+            assert!(crate::mail::leaves_page(&crate::mail::Message::Accounts(Message::Back)));
+            assert!(!crate::mail::leaves_page(&crate::mail::Message::Accounts(Message::Tab(1))));
         }
 
         #[test]

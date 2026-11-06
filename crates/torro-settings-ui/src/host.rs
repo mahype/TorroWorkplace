@@ -1024,8 +1024,11 @@ impl Host {
             }
             Message::Apps => work(self.suite_arrived().into_iter().collect()),
             Message::Accounts(message) => {
-                // A row of the menu (another account, the section's way up) ends the menu too.
-                self.menu = false;
+                // A row of the menu (another account, the section's way up) ends the menu too; the
+                // ticks of a download that also come this way leave it open.
+                if matches!(*message, accounts::Message::Open(_) | accounts::Message::Back) {
+                    self.menu = false;
+                }
                 let Some(state) = self.accounts.as_mut() else { return Outcome::None };
                 let action = accounts::update(state, *message, &self.data);
                 self.accounts_act(action)
@@ -1689,6 +1692,8 @@ mod tests {
         host.close_menu();
         assert!(!host.menu);
         host.menu = true;
+        let _: Outcome<()> = host.update(Message::Accounts(Box::new(accounts::Message::PollPulls)));
+        assert!(host.menu, "the tick of a download leaves it open");
         let _: Outcome<()> = host.update(Message::Accounts(Box::new(accounts::Message::Back)));
         assert!(!host.menu, "a row of Accounts closes the menu");
     }
