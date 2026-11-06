@@ -376,16 +376,23 @@ fn archive_spans(words: &[&str]) -> Vec<(usize, usize, Archive)> {
     spans
 }
 
-/// The words of `query` without the archive's ([`archive_spans`]).
+/// The words of `query` without the archive's ([`archive_spans`]); an `OR` that joined a single
+/// archive word to its neighbour goes with it, so no `OR` is left to join the next word by surprise
+/// (`rechnung OR in:archive` keeps `rechnung`).
 fn without_archive_words(query: &str) -> Vec<&str> {
     let words = query_words(query);
-    let spans = archive_spans(&words);
-    words
-        .into_iter()
-        .enumerate()
-        .filter(|(at, _)| !spans.iter().any(|&(from, len, _)| (from..from + len).contains(at)))
-        .map(|(_, word)| word)
-        .collect()
+    let mut out = vec![false; words.len()];
+    for (from, len, _) in archive_spans(&words) {
+        out[from..from + len].iter_mut().for_each(|gone| *gone = true);
+        if len == 1 {
+            if from > 0 && words[from - 1] == "OR" {
+                out[from - 1] = true;
+            } else if words.get(from + 1) == Some(&"OR") {
+                out[from + 1] = true;
+            }
+        }
+    }
+    words.into_iter().zip(out).filter(|(_, gone)| !gone).map(|(word, _)| word).collect()
 }
 
 /// Whether `query` names the archive at all (one of [`Archive`]'s words): the filter icon is lit then.
@@ -938,9 +945,10 @@ struct DemoQuery {
     from: Vec<String>,
     to: Vec<String>,
     subject: Vec<String>,
-    /// The folders of `in:`, one list per clause (issue #476): an `in:` joined to the one before by
-    /// `OR` (`in:inbox OR in:archive`) adds to its list, any other starts a new one; one folder of each
-    /// list must hold the mail, as the core reads them.
+    /// The folders of `in:`, one list per clause (issue #476): an `in:` right after `OR` adds to the
+    /// last list (`in:inbox OR in:archive`, as the menu writes it), any other starts a new one; one
+    /// folder of each list must hold the mail. Simpler than the core, which joins `OR` with whatever
+    /// term stands before it: the demo only needs what the menu writes.
     folders: Vec<Vec<String>>,
     /// The folders of `-in:`: none of them may hold it.
     not_folders: Vec<String>,
@@ -1445,6 +1453,8 @@ mod tests {
         assert_eq!(set_archive("in:inbox OR in:archive", Archive::Without), "");
         assert_eq!(set_archive("in:inbox OR in:archive is:unread", Archive::Only), "is:unread in:archive");
         assert_eq!(set_archive("is:unread in:inbox OR in:archive", Archive::With), "is:unread");
+        assert_eq!(set_archive("rechnung OR in:archive", Archive::Without), "rechnung -in:archive", "no OR left");
+        assert_eq!(set_archive("in:archive OR rechnung", Archive::Only), "rechnung in:archive");
         for chosen in Archive::ALL {
             for query in ["", "budget", "is:flagged from:anna"] {
                 assert_eq!(archive(&set_archive(query, chosen)), chosen, "{query:?} → {chosen:?}");

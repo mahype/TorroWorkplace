@@ -6539,8 +6539,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// "Reply later", "Set aside" and "Remove from …" on the mail `id` (task E19.4, decisions 3 and 4
     /// of E19): `MailSource::set_mail_pile` with `pile` (`None`: off its pile). The row leaves a list
     /// that leaves mail on a pile out ([`View::leaves_out_piles`]: "All", a category, a
-    /// pile), as when it is archived ([`App::take_out`]); in a folder, a search and "Sent"
-    /// it stays with its new pile. The numbers on the piles follow at once. The hint ("On Reply
+    /// pile), as when it is archived ([`App::take_out`]); in a folder, a search, "Sent" and
+    /// "Trash" it stays with its new pile. The numbers on the piles follow at once. The hint ("On Reply
     /// later.", "Set aside.", "Removed from Reply later.", "Removed from Set aside.") offers to undo it with the pile the mail lay on before
     /// ([`Undo::Pile`]); an error brings the row and the numbers back with the load and says so
     /// ([`Message::Piled`]). Nothing for the pile the mail lies on already.
@@ -12801,7 +12801,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// How many messages a load of the view asks for: a page, or as many as "Load more" brought
-    /// in already when the same folder – or "All", "Hidden", "Trash" – is loaded again (at most
+    /// in already when the same folder – or "All", "Sent", "Trash" – is loaded again (at most
     /// what one request may ask).
     fn page_limit(&self) -> u32 {
         let folder = self.view.folder().is_some_and(|folder| self.listed.as_ref() == Some(&folder.id));
@@ -16615,7 +16615,9 @@ mod tests {
         let mut archived = message_ids(&app);
         archived.sort_unstable();
         assert_eq!(archived, ["m:p6", "m:w9"], "the archive of both accounts");
-        // A page at a time, as the archive's view was: "Load more" goes on from the cursor.
+        // A page at a time, as the archive's view was: "Load more" goes on from the cursor, in the
+        // search of the archive.
+        assert_eq!(app.view.search().map(|shown| shown.query.as_str()), Some("in:archive"));
         let shown = app.messages.clone();
         app.messages.truncate(1);
         app.more = Some("1".to_owned());
