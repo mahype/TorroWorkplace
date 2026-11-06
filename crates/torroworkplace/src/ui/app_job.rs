@@ -197,7 +197,13 @@ pub struct Window {
     last: Option<AppJobInfo>,
     /// A poll or ping is on its way: the next tick waits for it.
     asking: bool,
+    /// Polls in a row that got no job back; past [`LOST_POLLS`] the window stops asking.
+    lost: u32,
 }
+
+/// How many polls in a row may go without an answer (10 s at [`POLL`]) before the window says the
+/// service does not answer, instead of asking for ever (review of #411).
+const LOST_POLLS: u32 = 20;
 
 /// Runs the window of `launch.app_job` (or of the demo state `launch.open`).
 /// With `shots` the window's pictures instead ([`torro_gui::shots::run`], #492).
@@ -295,6 +301,7 @@ impl Window {
             job: None,
             last: None,
             asking: false,
+            lost: 0,
         }
     }
 
@@ -496,6 +503,7 @@ impl Window {
             (Reply::Opened, _) => Step::Exit,
             (Reply::Started | Reply::Polled, Ok(Response::AppJob { job })) => {
                 self.job = Some(job.id.clone());
+                self.lost = 0;
                 self.followed(job)
             }
             (Reply::Started, Ok(Response::Error { code, message })) => {
@@ -515,10 +523,14 @@ impl Window {
                 // A job that put the main application in place restarts the service even when the poll
                 // that would have shown `restart` was missed (review of #411); before that, one lost poll
                 // is only asked again.
+                self.lost += 1;
                 if self.last.as_ref().is_some_and(|job| job.restart || main_in_place(job)) {
                     self.restarting();
                 } else if gone {
                     self.stage = Stage::Failed(tr("This job is no longer known. It may have finished.").into());
+                } else if self.lost >= LOST_POLLS {
+                    self.stage =
+                        Stage::Failed(tr("Torro Workplace isn't responding. It may still be starting.").into());
                 }
                 Step::None
             }
@@ -1183,6 +1195,22 @@ mod tests {
         let mut late = started(&updating);
         let _ = late.update(Event::Answer(Reply::Polled, gone()));
         assert!(matches!(late.stage, Stage::Restarting { .. }));
+    }
+
+    /// Review of #411: a service that does not answer ends the asking after a while, with words for it.
+    #[test]
+    fn polls_without_answer_end_after_a_while() {
+        let mut window = Window::new(Target::Follow("j1".into()), false, None);
+        let _ = window.update(Event::Loaded(Box::new(None), None));
+        let running = job(AppJobState::Running, AppJobKind::Install, false);
+        let _ = window.update(Event::Answer(Reply::Polled, Ok(Response::AppJob { job: running })));
+        for _ in 1..LOST_POLLS {
+            let _ = window.update(Event::Answer(Reply::Polled, Err("connection refused".into())));
+        }
+        assert!(matches!(window.stage, Stage::Job(_)), "a short gap is only asked again");
+        let _ = window.update(Event::Answer(Reply::Polled, Err("connection refused".into())));
+        let words = tr("Torro Workplace isn't responding. It may still be starting.").to_string();
+        assert_eq!(window.stage, Stage::Failed(words));
     }
 
     /// Review of #411: a job that put the main application in place and failed later restarts the
