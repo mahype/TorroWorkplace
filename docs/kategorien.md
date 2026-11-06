@@ -382,7 +382,7 @@ Konten, Ordner und Zeitraum. **Was er anwendet**, sagt `scope.apply_rules` und `
 - `apply_rules` („Fixed rules“): Regeln und Filter nach dem Vorrang oben, die festen Merkmale und die Kontakte. Ein Filter
   zählt nur für Mail im Posteingang (wie beim Eintreffen) und setzt hier nur seine Kategorie (`rule`, also
   geschützt); als gelesen markieren und in den Papierkorb legen gibt es bei vorhandener Mail nur über
-  „Apply to existing mail“ am Filter (`mail.apply_filter`).
+  „Also apply…“ im Dialog des Filters (`mail.apply_filter`).
 - `apply_model`: das Modell für das, was die Regeln offen lassen.
 - **Mail mit Kategorie**: „Leave as it is“ oder „Ask the AI again“ (`again`: auch Kategorien des Modells
   neu, eigene Entscheidungen und Kategorien aus Regeln bleiben).

@@ -354,7 +354,7 @@ Dateinamen) und Bedingungen, wann es vorgeschlagen wird (Kategorie, Dateityp, Ab
 
 ## Filter
 
-Issue #339, seit Issue #454 unter Einstellungen › Categorization › Rules & filters. Ein **Filter** ist eine
+Issue #339, seit Issue #481 auf der Seite der Kategorie unter Einstellungen › Categorization. Ein **Filter** ist eine
 gespeicherte Suche mit einer Aktion, etwa „alles von news@shop.example als Werbung einordnen“. Er ersetzt das frühere Ausblenden von Mail (Ansicht „Hidden“, „Hide“, „Show again“): Ausgeblendete Mail
 war weg, ohne dass man sah, wohin. Ein Filter legt sie sichtbar dorthin, wo man sie wiederfindet. Im Notification Hub
 bleibt das Ausblenden für alle anderen Quellen ([eingang.md](eingang.md#stummschalten-nach-merkmalen)).
