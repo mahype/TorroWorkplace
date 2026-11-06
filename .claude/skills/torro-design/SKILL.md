@@ -48,7 +48,8 @@ aus einem Guss wirkt:
   `OpenApp`) und der Knopf `panel-left`; über der ausgeklappten Seitenleiste so breit wie sie, neben der
   Leiste nur das Logo, schmal nur der Knopf (der Umschalter steht dann oben in der Schublade). Daneben die
   **Kopfzeile der App** (`shell::header_bar`), ganz rechts die **Einstellungen** mit Schiebereglern
-  (`shell::SETTINGS_ICON`, nie das Zahnrad; markiert, solange sie offen sind). Die freie Fläche zieht das
+  (`shell::SETTINGS_ICON`, nie das Zahnrad; markiert, solange sie offen sind), so groß wie jeder Symbolknopf und
+  rechts so weit vom Rand wie oben und zur Linie unten (`settings_gap`, #474). Die freie Fläche zieht das
   Fenster, Dialoge und Schublade dimmen die Zeile (`Cover`). Wer seine Kopfzeile nach Spalten teilt, zieht
   `shell::head_inset` vom ersten Teil ab. Suche und „Neu“ stehen als erste Zeile der Seitenleiste
   (`shell::sidebar_tools`). Ohne Shell (Anmelden, Glance, Schreibfenster) bleibt `shell::titlebar`.
@@ -80,7 +81,11 @@ aus einem Guss wirkt:
 - **Kopfzeile** in der oberen Zeile: links Titel (`typo::body_strong()`) mit leiser Ergänzung in `TEXT_3`, dann
   Navigation; rechts Ansicht, Filter, genau ein Primärknopf. Schmale Fenster haben neben Ampel und Knopf wenig Platz:
   dort entfällt zuerst die leise Ergänzung. Andere Knöpfe als die Einstellungen zeigen keine Schieberegler
-  (Ansicht: `list-filter`).
+  (Ansicht: `list-filter`). Ein **Pfad** („Settings › Accounts › ein Konto“): jeder Schritt vor dem letzten, der
+  irgendwohin führt, ist ein `widgets::path_step` (Text `TEXT_3`, Hover wie `ghost`, #264), der letzte fett und
+  ohne Klick. Auf einer **Unterseite** bleibt die Navigation des Bereichs in jeder Größe (#473): Breit in der Liste
+  (die Kinder unter dem Abschnitt, alle Geschwister wie alle Konten, #475), Mittel und Schmal als Menüknopf des
+  Abschnitts vor dem Namen („‹ [☁ Accounts ▾] › ein Konto“, schmal „‹ [☁ ein Konto ▾]“), nie nur der Pfeil.
 - **Mail-Fenster** (#451): über der Liste Suchfeld, Sortieren, Aktualisieren; über dem Leser Betreff, „6 von 9“, ⌃ ⌄
   und „In neuem Fenster“. Die **Aktionsleiste schwebt** als Karte (Menü-Stil, Radius `lg`) senkrecht mittig am rechten
   Rand über der Mail (`widgets::floating_rail`); der Text hält `widgets::floating_rail_room()` Abstand, der Kopf läuft
