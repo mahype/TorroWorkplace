@@ -405,6 +405,9 @@ async fn serve(shows: Shows, takeover: bool) -> Result<(), String> {
     if let Ok(Ok(Response::Pong { .. })) = ping {
         return Err("already running".into());
     }
+    // Issue #411: with "Start at login" on, the login item points at this copy of the service, which may
+    // lie in another bundle than the one that switched it on. Only logged when it cannot be changed.
+    let _ = tokio::task::spawn_blocking(|| crate::settings_service::SettingsStore::system().follow_login_item()).await;
     // A person who quit and starts the service again (or logs in) wants it: MCP may start it again.
     let quit_mark = torro_gui::source::core_state_file(&socket, QUIT_MARK);
     remove_mark(quit_mark.as_deref());

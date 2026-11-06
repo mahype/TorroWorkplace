@@ -565,6 +565,35 @@ impl SettingsStore {
     fn login_item_change(&self, old: &Settings, new: &Settings) -> Option<bool> {
         (self.applies_login_item && old.start_at_login != new.start_at_login).then_some(new.start_at_login)
     }
+
+    /// Points the system's login item at the running program when "Start at login" is on and the item
+    /// points elsewhere (issue #411): every app brings a copy of the service, and the copy that runs now
+    /// may lie in another bundle than the one that switched the setting on, or that one is gone. The
+    /// service calls it on every start. An item that is not there stays away (the person may have removed
+    /// it in the system's settings), and a test store never reaches the system. A failure is only logged.
+    pub fn follow_login_item(&self) {
+        if !self.follows_login_item() {
+            return;
+        }
+        match follow_start_at_login() {
+            Ok(true) => eprintln!("torroworkplace: the login item now starts this program"),
+            Ok(false) => {}
+            Err(err) => eprintln!("torroworkplace: cannot update the login item: {err}"),
+        }
+    }
+
+    /// Whether [`Self::follow_login_item`] looks at the system's login item: only the daemon's store,
+    /// and only with "Start at login" on.
+    fn follows_login_item(&self) -> bool {
+        self.applies_login_item && self.current().start_at_login
+    }
+}
+
+/// Whether a login item that reads `current` (`None`: there is none) must be rewritten to `wanted`, the
+/// entry for the running program ([`SettingsStore::follow_login_item`]): only one that is there and
+/// differs, which is one that starts another program (or an older form of the entry).
+fn login_item_outdated(current: Option<&str>, wanted: &str) -> bool {
+    current.is_some_and(|current| current != wanted)
 }
 
 /// What choosing another design with `set_setting design` sets besides the design (task L.33): the
@@ -1009,6 +1038,29 @@ fn apply_start_at_login(_enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Rewrites this system's start-at-login entry to the running program when it is there and differs
+/// ([`SettingsStore::follow_login_item`], issue #411); `true` when it was rewritten.
+#[cfg(target_os = "linux")]
+fn follow_start_at_login() -> Result<bool, String> {
+    autostart::follow()
+}
+
+#[cfg(target_os = "macos")]
+fn follow_start_at_login() -> Result<bool, String> {
+    launch_agent::follow()
+}
+
+#[cfg(windows)]
+fn follow_start_at_login() -> Result<bool, String> {
+    run_key::follow()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn follow_start_at_login() -> Result<bool, String> {
+    let _ = login_item_outdated;
+    Ok(false)
+}
+
 /// The XDG autostart entry (Linux): desktop environments and Hyprland's session start every
 /// `.desktop` file found in `autostart/` at login.
 #[cfg(target_os = "linux")]
@@ -1031,6 +1083,25 @@ mod autostart {
         }
         let exe = env::current_exe().map_err(|err| format!("cannot find the executable: {err}"))?;
         write_entry(&path, &desktop_entry(&exe)).map_err(|err| format!("cannot write {}: {err}", path.display()))
+    }
+
+    /// Rewrites the entry to the running program when it is there and differs (issue #411); `true` when
+    /// it did. Uses the real environment.
+    pub fn follow() -> Result<bool, String> {
+        let xdg = env::var_os("XDG_CONFIG_HOME");
+        let home = env::var_os("HOME").map(PathBuf::from);
+        let Some(path) = entry_path(xdg.as_deref(), home.as_deref()) else { return Ok(false) };
+        let exe = env::current_exe().map_err(|err| format!("cannot find the executable: {err}"))?;
+        follow_at(&path, &exe).map_err(|err| format!("cannot write {}: {err}", path.display()))
+    }
+
+    /// [`follow`] for the entry at `path` and the program `exe`.
+    fn follow_at(path: &Path, exe: &Path) -> io::Result<bool> {
+        let wanted = desktop_entry(exe);
+        if !super::login_item_outdated(fs::read_to_string(path).ok().as_deref(), &wanted) {
+            return Ok(false);
+        }
+        write_entry(path, &wanted).map(|()| true)
     }
 
     /// `$XDG_CONFIG_HOME/autostart/torro-workplace.desktop`, else `~/.config/autostart/…`. The XDG
@@ -1164,6 +1235,22 @@ mod autostart {
             assert!(!path.exists());
             remove_entry(&path).expect("removing a missing entry is fine");
         }
+
+        /// Issue #411: an entry for another copy is rewritten to the running one; a missing one stays away.
+        #[test]
+        fn an_entry_for_another_program_follows_the_running_one() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = entry_path(Some(dir.path().as_os_str()), None).expect("path");
+            let running = Path::new("/opt/new/torroworkplace");
+
+            assert!(!follow_at(&path, running).expect("nothing to do"));
+            assert!(!path.exists(), "a missing entry stays away");
+
+            write_entry(&path, &desktop_entry(Path::new("/opt/old/torroworkplace"))).expect("create entry");
+            assert!(follow_at(&path, running).expect("rewritten"));
+            assert_eq!(fs::read_to_string(&path).expect("read entry"), desktop_entry(running));
+            assert!(!follow_at(&path, running).expect("already right"));
+        }
     }
 }
 
@@ -1194,6 +1281,24 @@ mod launch_agent {
         let exe = env::current_exe().map_err(|err| format!("cannot find the executable: {err}"))?;
         let content = plist(&exe)?;
         write_plist(&path, &content).map_err(|err| format!("cannot write {}: {err}", path.display()))
+    }
+
+    /// Rewrites the agent to the running program when it is there and differs (issue #411); `true`
+    /// when it did. Like [`set_enabled`] without `launchctl`: `launchd` reads the file at the next login.
+    pub fn follow() -> Result<bool, String> {
+        let home = env::var_os("HOME").map(PathBuf::from);
+        let Some(path) = plist_path(home.as_deref()) else { return Ok(false) };
+        let exe = env::current_exe().map_err(|err| format!("cannot find the executable: {err}"))?;
+        follow_at(&path, &exe)
+    }
+
+    /// [`follow`] for the agent at `path` and the program `exe`.
+    fn follow_at(path: &Path, exe: &Path) -> Result<bool, String> {
+        let wanted = plist(exe)?;
+        if !super::login_item_outdated(fs::read_to_string(path).ok().as_deref(), &wanted) {
+            return Ok(false);
+        }
+        write_plist(path, &wanted).map(|()| true).map_err(|err| format!("cannot write {}: {err}", path.display()))
     }
 
     /// `~/Library/LaunchAgents/io.github.mahype.torro-workplace.plist`. An empty or relative home
@@ -1340,6 +1445,27 @@ mod launch_agent {
             assert!(!path.exists());
             remove_plist(&path).expect("removing a missing plist is fine");
         }
+
+        /// Issue #411: an agent for a copy of the service in another bundle is rewritten to the running
+        /// one; a missing one stays away.
+        #[test]
+        fn an_agent_for_another_copy_follows_the_running_one() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = plist_path(Some(dir.path())).expect("path");
+            let running = Path::new(
+                "/Applications/Torro Tasks.app/Contents/Library/LoginItems/Torro Workplace Service.app/Contents/MacOS/torroworkplace",
+            );
+
+            assert!(!follow_at(&path, running).expect("nothing to do"));
+            assert!(!path.exists(), "a missing agent stays away");
+
+            let old =
+                plist(Path::new("/Applications/Torro Workplace.app/Contents/MacOS/torroworkplace")).expect("plist");
+            write_plist(&path, &old).expect("create plist");
+            assert!(follow_at(&path, running).expect("rewritten"));
+            assert_eq!(fs::read_to_string(&path).expect("read plist"), plist(running).expect("plist"));
+            assert!(!follow_at(&path, running).expect("already right"));
+        }
     }
 }
 
@@ -1386,6 +1512,24 @@ mod run_key {
         }
     }
 
+    /// Rewrites the value to the running program when it is there and differs (issue #411); `true`
+    /// when it did. Uses the real `Run` key.
+    pub fn follow() -> Result<bool, String> {
+        let exe = env::current_exe().map_err(|err| format!("cannot find the executable: {err}"))?;
+        follow_in(RUN_KEY, &exe).map_err(|err| format!(r"cannot change HKCU\{RUN_KEY}: {err}"))
+    }
+
+    /// [`follow`] on the key `subkey` of `HKEY_CURRENT_USER`, as [`set_in`].
+    fn follow_in(subkey: &str, exe: &Path) -> io::Result<bool> {
+        let wanted = command_line(exe);
+        let current: Option<String> =
+            RegKey::predef(HKEY_CURRENT_USER).open_subkey(subkey).and_then(|key| key.get_value(VALUE_NAME)).ok();
+        if !super::login_item_outdated(current.as_deref(), &wanted) {
+            return Ok(false);
+        }
+        set_in(subkey, true, exe).map(|()| true)
+    }
+
     /// `"<exe>" daemon`. The path is quoted so one with spaces (`C:\Program Files\…`) stays the
     /// program; Windows paths cannot contain a quote, so there is nothing to escape.
     fn command_line(exe: &Path) -> String {
@@ -1395,6 +1539,20 @@ mod run_key {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        /// Issue #411: a value for another copy is rewritten to the running one; a missing one stays away.
+        #[test]
+        fn a_value_for_another_program_follows_the_running_one() {
+            let key = TestKey::new("follow");
+            let running = Path::new(r"C:\new\torroworkplace.exe");
+            assert!(!follow_in(&key.0, running).expect("nothing to do"));
+            assert!(key.value().is_err(), "a missing value stays away");
+
+            set_in(&key.0, true, Path::new(r"C:\old\torroworkplace.exe")).expect("set");
+            assert!(follow_in(&key.0, running).expect("rewritten"));
+            assert_eq!(key.value().expect("value"), r#""C:\new\torroworkplace.exe" daemon"#);
+            assert!(!follow_in(&key.0, running).expect("already right"));
+        }
 
         /// A key of its own for one test, removed again when the test ends, even by a failure.
         struct TestKey(String);
@@ -2594,6 +2752,25 @@ mod tests {
         assert_eq!(store.login_item_change(&on, &off), Some(false));
         let german = Settings { language: Language::German, ..on.clone() };
         assert_eq!(store.login_item_change(&on, &german), None, "start at login did not change");
+    }
+
+    /// Issue #411: only the daemon's store with "Start at login" on looks at the login item, and only an
+    /// item that is there and starts something else is rewritten.
+    #[test]
+    fn the_login_item_follows_the_running_service_only_when_switched_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("settings.json");
+        // Written by a test store, which never reaches the system; read by one built like `system()`.
+        let writer = SettingsStore::at(file.clone());
+        let daemons = SettingsStore { applies_login_item: true, ..SettingsStore::at(file) };
+        assert!(!daemons.follows_login_item(), "off by default");
+        writer.set(SettingKey::StartAtLogin, &json!(true)).expect("on");
+        assert!(daemons.follows_login_item());
+        assert!(!writer.follows_login_item(), "a test store never reaches the system");
+
+        assert!(login_item_outdated(Some("old program"), "this program"));
+        assert!(!login_item_outdated(Some("this program"), "this program"));
+        assert!(!login_item_outdated(None, "this program"), "a removed item stays away");
     }
 
     #[test]
