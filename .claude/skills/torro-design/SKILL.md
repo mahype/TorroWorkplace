@@ -632,7 +632,7 @@ Programmname mit den Werten von `--view`, `--section`, `--settings`, `--open`, `
 `--color-scheme` und `--appearance`, danach der Flags, die ein Fenster, einen Eintrag oder eine Darstellung
 wählen (`--chat`, `--bot`, `--lane`, `--source`, `--template`, `--task`, `--message`, `--reply`,
 `--reply-all`, `--forward`, `--account`, `--step`, `--mail-view`, `--mail-colors`, `--density`,
-`--now`), je mit dem ersten Wert, und `-setup` bei `--setup` (Schreibfenster: `torroinbox-compose`, Vorlagen-Dialog:
+`--now`), je mit dem ersten Wert, und `-setup`, `-setup-if-open` bzw. `-saved` bei den gleichnamigen Schaltern (Schreibfenster: `torroinbox-compose`, Vorlagen-Dialog:
 `torroworkplace-template`). Jede Größe zeichnet ein eigener Prozess, damit keine Größe den Demo-Stand
 der nächsten verändert (z. B. eine beim Öffnen gelesene Mail). Die Bilder haben die **doppelte Auflösung** wie ein
 Retina-Bildschirm: Mini (240×160 logisch) ist ein Bild von 480×320 Pixeln. Gleichnamige Bilder werden

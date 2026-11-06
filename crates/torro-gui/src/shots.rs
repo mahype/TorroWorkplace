@@ -73,6 +73,9 @@ const NAMING_FLAGS: [&str; 24] = [
     "--now",
 ];
 
+/// Switches without a value that pick a view of their own; given, they add their name to the file's.
+const NAMING_SWITCHES: [&str; 3] = ["--setup", "--setup-if-open", "--saved"];
+
 /// The largest edge `--shot-size` takes, in logical pixels.
 /// At [`SCALE`] that is a picture of 8192 pixels, the largest texture wgpu guarantees.
 const MAX_EDGE: u32 = 4096;
@@ -218,7 +221,8 @@ impl Shots {
     /// [`SIZES`]. The files start with `name` and the value of each of `--view`, `--section`,
     /// `--settings`, `--open`, `--design`, `--font`, `--color-scheme`, `--appearance`, `--chat`, `--bot`,
     /// `--lane`, `--source`, `--template` and `--task` that is given, in this order, e.g.
-    /// `torrocalendar-week-dark`, and further flags that pick a window, an item or a look ([`NAMING_FLAGS`]).
+    /// `torrocalendar-week-dark`, and further flags that pick a window, an item or a look (`NAMING_FLAGS`),
+    /// and the switches of `NAMING_SWITCHES` by their name.
     /// A flag given twice counts with its first value, as in most of the apps' parsers. `--shot-index <n>`
     /// keeps only the size at `n` (what [`run`] starts a process with).
     pub fn from_args(name: &str, args: &[String]) -> Result<Option<Shots>, ShotError> {
@@ -252,9 +256,13 @@ impl Shots {
                 prefix.push_str(value);
             }
         }
-        // The setup of the control centre is a switch without a value, and a window of its own.
-        if args.iter().any(|arg| arg == "--setup") {
-            prefix.push_str("-setup");
+        // Switches without a value that pick a view of their own: the setup of the control centre, the
+        // template dialog in the mode "Save", the setup only while something is open.
+        for switch in NAMING_SWITCHES {
+            if args.iter().any(|arg| arg == switch) {
+                prefix.push('-');
+                prefix.push_str(switch.trim_start_matches('-'));
+            }
         }
         Ok(Some(Shots { dir: PathBuf::from(dir), prefix: file_safe(&prefix), sizes, index }))
     }
@@ -500,6 +508,16 @@ mod tests {
             let named = Shots::from_args("torroworkplace", &args(line)).expect("valid").expect("asked for");
             assert_eq!((named.dir(), named.prefix.as_str()), (Path::new("d"), "torroworkplace-setup"), "{line:?}");
         }
+        // PR review of #492: the template dialog in the mode "Save" and the setup only while something is open.
+        let saved =
+            Shots::from_args("torroworkplace-template", &args(&["--demo", "--template=t", "--saved", "--shots=d"]))
+                .expect("valid")
+                .expect("asked for");
+        assert_eq!(saved.prefix, "torroworkplace-template-t-saved");
+        let open = Shots::from_args("torroworkplace", &args(&["--demo", "--setup-if-open", "--shots=d"]))
+            .expect("valid")
+            .expect("asked for");
+        assert_eq!(open.prefix, "torroworkplace-setup-if-open");
     }
 
     /// PR review of #492: each size gets a process with the same words and its index; the first that
