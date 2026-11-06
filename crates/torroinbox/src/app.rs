@@ -6646,6 +6646,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// ([`Undo::Pile`]); an error brings the row and the numbers back with the load and says so
     /// ([`Message::Piled`]). Nothing for the pile the mail lies on already.
     fn pile_mail(&mut self, id: String, pile: Option<MailPile>) -> Task<Message> {
+        // A draft goes on no pile (issue #502): it is written on or thrown away, as its rail says.
+        if pile.is_some() && self.in_role(&id, Role::Drafts) {
+            return Task::none();
+        }
         self.pile_with(id, pile, None, None)
     }
 
@@ -18066,7 +18070,8 @@ mod tests {
         let _ = app.update(Message::Mail(MailAction::Forward, "m:w8".into()));
         let _ = app.update(Message::Mail(MailAction::ReplyAll, "m:w8".into()));
         let _ = app.update(Message::Mail(MailAction::Archive, "m:w8".into()));
-        assert_eq!(app.sent.len(), before, "nothing to answer or archive");
+        let _ = app.update(Message::Pile("m:w8".into(), Some(MailPile::ReplyLater)));
+        assert_eq!(app.sent.len(), before, "nothing to answer, archive or pile");
         app.messages.clear();
         let _ = app.view();
     }
