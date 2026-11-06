@@ -1993,7 +1993,8 @@ pub fn slim_span(messages: &[MessageSummary], index: usize, heads: bool) -> Opti
 /// The demo's sender with a logo ([`DemoSource::sender_logo`]).
 const DEMO_LOGO_DOMAIN: &str = "github.example";
 
-/// A made-up mark for the demo's known sender: a dark ring on white, never anyone's real logo.
+/// A made-up mark for the demo's known sender: a dark ring on a white disc, cut round as the core
+/// cuts every logo (`mail::logos` of the core), never anyone's real logo.
 fn demo_logo() -> Vec<u8> {
     let edge = 128u32;
     let mut picture = image::RgbaImage::from_pixel(edge, edge, image::Rgba([255, 255, 255, 255]));
@@ -2003,6 +2004,7 @@ fn demo_logo() -> Vec<u8> {
         if (24.0..=44.0).contains(&distance) {
             *pixel = image::Rgba([0x24, 0x29, 0x2F, 255]);
         }
+        pixel.0[3] = ((centre - distance + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8;
     }
     let mut out = std::io::Cursor::new(Vec::new());
     match image::DynamicImage::ImageRgba8(picture).write_to(&mut out, image::ImageFormat::Png) {
