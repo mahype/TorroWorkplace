@@ -84,7 +84,7 @@ pub struct Settings {
     pub design: String,
     /// The font every window draws with (task L.22, `docs/design-pakete.md` "Wählen"): its id, the folder
     /// name under `<data>/fonts/`, or `"torro"` ([`crate::design::STANDARD_ID`]) for the standard. Kept as
-    /// written like [`Settings::design`]; choosing a design never changes it.
+    /// written even when the font is gone or broken; choosing a design never changes it.
     ///
     /// A settings file without it reads as the standard. Left out of `settings.update_settings` (or sent
     /// as `""`), the stored one stays.

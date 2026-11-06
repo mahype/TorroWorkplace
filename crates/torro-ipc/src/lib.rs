@@ -5982,7 +5982,8 @@ pub struct DesignInfo {
     /// The settings name this level (`Settings::design`).
     pub active: bool,
     /// How much the design shows at once (task L.33), from the height of its mail row:
-    /// `"airy"`, `"balanced"`, `"dense"` or `"very_dense"`. A reply of an older core without it
+    /// `"airy"` (Comfort), `"balanced"` (Standard) or `"dense"` (Dense); `"very_dense"` stays in the
+    /// format for older cores, no built-in level is that dense. A reply of an older core without it
     /// reads as `"balanced"`.
     #[serde(default)]
     pub density: torro_core::design::DensityLevel,
