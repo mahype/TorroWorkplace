@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, pick_list, row, scrollable};
-use iced::{Alignment, Element, Fill, Theme};
+use iced::widget::{Space, column, container, pick_list, responsive, row, scrollable};
+use iced::{Alignment, Element, Fill, Length, Theme};
 use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, ChartColor, palette, size, space};
@@ -642,30 +642,22 @@ fn comes_in_card<'a>(overview: &MailOverview, range: StatsRange, catalogue: &[Ca
     let rows = category_rows(overview, catalogue);
     let largest = rows.iter().map(|row| row.count).max().unwrap_or(0);
     let widths = NumberWidths::of(rows.iter().map(|row| (row.count, row.share.as_str())));
-    let details = details_button();
-    let body = column![
-        day_chart(overview, range, catalogue, None),
-        column(rows.into_iter().map(|row| category_line(row, largest, widths))).spacing(space::xs()),
-        container(details).width(Fill).align_right(Fill),
-    ]
-    .spacing(space::l());
+    let details = widgets::text_button_trailing(
+        tr("Details"),
+        Icon::ChevronRight,
+        style::button::ghost,
+        Some(Message::ShowMailStatistics),
+    );
+    // In a narrow column (the reader's beside a wide list) the bars give their room to the names.
+    let lines = responsive(move |room| {
+        let bars = room.width >= size::panel();
+        column(rows.iter().cloned().map(|row| category_line(row, largest, widths, bars))).spacing(space::xs()).into()
+    })
+    .height(Length::Shrink);
+    let body =
+        column![day_chart(overview, range, catalogue, None), lines, container(details).width(Fill).align_right(Fill),]
+            .spacing(space::l());
     widgets::chart_card(tr("What comes in"), chart_note(range), body)
-}
-
-/// "Details ›": a ghost button with the chevron after the word, since it leads on to the statistics
-/// page (`widgets::text_button` puts its icon in front).
-fn details_button<'a>() -> Element<'a, Message> {
-    let chevron = icon::icon(Icon::ChevronRight, icon::SIZE_SM).style(|t: &Theme, _| iced::widget::svg::Style {
-        color: Some(style::button::ghost(t, iced::widget::button::Status::Active).text_color),
-    });
-    let label = typo::text(typo::caption(), tr("Details")).wrapping(Wrapping::None);
-    let content = row![label, chevron].spacing(space::xs()).align_y(Alignment::Center);
-    iced::widget::button(container(content).center_y(Fill))
-        .height(size::control_sm())
-        .padding(style::button_padding())
-        .style(style::button::ghost)
-        .on_press(Message::ShowMailStatistics)
-        .into()
 }
 
 /// The mark of a category: its icon in its group's colour; room of the same width for "Other".
@@ -721,13 +713,18 @@ pub(crate) fn category_numbers<'a>(
     ]
 }
 
-/// A category's line: its mark and name, then the bar, the count and the share ([`category_numbers`]).
-fn category_line<'a>(row_: CategoryRow, largest: u32, widths: NumberWidths) -> Element<'a, Message> {
+/// A category's line: its mark and name, then the bar (with `bars`), the count and the share
+/// ([`category_numbers`]).
+fn category_line<'a>(row_: CategoryRow, largest: u32, widths: NumberWidths, bars: bool) -> Element<'a, Message> {
     let name = row![category_mark(row_.mark), widgets::ellipsized(typo::body(), row_.label, theme::text)]
         .spacing(space::s())
         .align_y(Alignment::Center);
     let [bar, count, share] = category_numbers(row_.count, largest, row_.share, widths);
-    row![container(name).width(Fill), bar, count, share].spacing(space::m()).align_y(Alignment::Center).into()
+    let mut line = row![container(name).width(Fill)].spacing(space::m()).align_y(Alignment::Center);
+    if bars {
+        line = line.push(bar);
+    }
+    line.push(count).push(share).into()
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -318,7 +318,8 @@ fn categories_tab<'a>(
         .into_iter()
         .map(|held| category_row(held, catalogue, (largest, whole, widths), held.category == chosen.category));
     let note = trf("{n} mails", &[("n", &format_count(u64::from(whole)))]);
-    blocks.push(widgets::chart_card(tr("By category"), note, column(rows).spacing(space::xs())));
+    // The chosen line is filled beside its words: the rows reach into the card's padding (issue #485).
+    blocks.push(widgets::chart_card_rows(tr("By category"), note, column(rows).spacing(space::xs())));
     blocks
 }
 
@@ -438,7 +439,8 @@ fn sender_line<'a>(
         .spacing(space::m())
         .align_y(Alignment::Center);
     if wide {
-        // "Rarely opened" beside the bar, so every row keeps two lines (issue #485).
+        // "Rarely opened" beside the bar, so every row keeps two lines (issue #485); cut with "…" where
+        // the column is narrow.
         let mut bar =
             row![widgets::share_bar(sender.opened, sender.count)].spacing(space::s()).align_y(Alignment::Center);
         if rarely_opened(sender.count, sender.opened) {
@@ -446,7 +448,7 @@ fn sender_line<'a>(
                 row![
                     icon::icon(Icon::EyeOff, icon::SIZE_SM)
                         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) }),
-                    typo::text(typo::meta(), tr("Rarely opened")).style(theme::text_3).wrapping(Wrapping::None),
+                    container(widgets::ellipsized(typo::meta(), tr("Rarely opened"), theme::text_3)).width(Fill),
                 ]
                 .spacing(space::xs())
                 .align_y(Alignment::Center),
@@ -463,7 +465,8 @@ fn sender_line<'a>(
     ]
     .align_x(Alignment::End);
     line = line.push(number);
-    let row_ = container(line).width(Fill).padding(Padding::new(space::xs()).left(space::s()).right(space::s()));
+    // No surface of its own (the bar floats over it): the row stays on the axis of the card's title.
+    let row_ = container(line).width(Fill).padding(Padding::ZERO.top(space::xs()).bottom(space::xs()));
     let actions = sender_actions(&sender.address, sender.unsubscribe.as_ref(), &name, muting, mute_at);
     widgets::row_actions(row_, actions, muting, words)
 }
