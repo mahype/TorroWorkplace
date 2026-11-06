@@ -206,8 +206,10 @@ pub enum Icon {
     Presentation,
     /// GridCraft, a spreadsheet.
     Sheet,
-    /// PdfCraft, a PDF.
+    /// PdfCraft, a PDF; "Save as PDF" of a mail (issue #501).
     FileType,
+    /// "Save as image" of a mail (issue #501): a picture.
+    Image,
     /// "None" in the menu of a server's folder: no folder chosen (issue #303).
     FolderX,
     /// "Reply later" in the mail window (task E19.4): a pile of mail to answer.
@@ -359,6 +361,7 @@ impl Icon {
         Icon::Presentation,
         Icon::Sheet,
         Icon::FileType,
+        Icon::Image,
         Icon::FolderX,
         Icon::MessageSquareReply,
         Icon::Bookmark,
@@ -504,6 +507,7 @@ impl Icon {
             Icon::Presentation => include_bytes!("../assets/icons/presentation.svg"),
             Icon::Sheet => include_bytes!("../assets/icons/sheet.svg"),
             Icon::FileType => include_bytes!("../assets/icons/file-type.svg"),
+            Icon::Image => include_bytes!("../assets/icons/image.svg"),
             Icon::FolderX => include_bytes!("../assets/icons/folder-x.svg"),
             Icon::MessageSquareReply => include_bytes!("../assets/icons/message-square-reply.svg"),
             Icon::Bookmark => include_bytes!("../assets/icons/bookmark.svg"),

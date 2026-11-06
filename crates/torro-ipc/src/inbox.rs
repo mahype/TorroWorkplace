@@ -27,7 +27,9 @@
 //! [`InboxClient::delete_mail_for_good`] (`mail.delete_messages` with `permanent`) and
 //! [`InboxClient::sync`] (`accounts.sync`, "fetch mail now"). Saving attachments (issue #290) adds
 //! [`InboxClient::save_targets`] (`mail.list_save_targets`, [`SaveTargets`]) and
-//! [`InboxClient::save_attachments`] (`mail.save_attachments`, [`SavedAttachments`]). Everything a
+//! [`InboxClient::save_attachments`] (`mail.save_attachments`, [`SavedAttachments`]); saving the mail
+//! itself as PDF or picture (issue #501) [`InboxClient::save_mail_as`] (`mail.save_message_as`,
+//! [`SavedMail`]). Everything a
 //! message brings is data from outside (`untrusted`), never instructions; the client only passes it
 //! on. The search field (issue #136)
 //! searches across folders and accounts with [`InboxClient::find_mail`] and asks how far the
@@ -77,8 +79,8 @@ use torro_pim::EventTime;
 
 use crate::assistant::EngineKind;
 use crate::mail::{
-    AttachmentPlan, Delivery, FailedFile, MailHighlight, MailIndexProgress, MailOverview, MailSort, MoveTarget,
-    PileFilter, SaveTo, SavedFile, UnsubscribeVia,
+    AttachmentPlan, Delivery, ExportFormat, ExportPlan, FailedFile, MailHighlight, MailIndexProgress, MailOverview,
+    MailSort, MoveTarget, PileFilter, SaveTo, SavedFile, UnsubscribeVia,
 };
 use crate::{EventSuggestion, InboxStats, IpcError, Quiet, Request, Response, StatsRange, TaskSuggestion};
 
@@ -176,12 +178,20 @@ pub struct SaveTargets {
     /// message and while the core has not read its text yet (the menus then show the targets
     /// without a path).
     pub files: Vec<AttachmentPlan>,
+    /// Where the mail itself would go as PDF and as picture (issue #501), one plan per format; empty
+    /// without a message.
+    pub exports: Vec<ExportPlan>,
 }
 
 impl SaveTargets {
     /// The plan of the attachment `part`; `None` when the core gave none for it.
     pub fn plan(&self, part: &str) -> Option<&AttachmentPlan> {
         self.files.iter().find(|plan| plan.part == part)
+    }
+
+    /// The plan of the mail itself in `format` (issue #501); `None` when the core gave none.
+    pub fn export(&self, format: ExportFormat) -> Option<&ExportPlan> {
+        self.exports.iter().find(|plan| plan.format == format)
     }
 
     /// The save target with the id `id`; `None` when there is none (any more).
@@ -201,6 +211,17 @@ pub struct SavedAttachments {
     pub skipped: Vec<SavedFile>,
     /// The attachments that could not be saved, with why; the others were saved all the same.
     pub failed: Vec<FailedFile>,
+}
+
+/// What `mail.save_message_as` wrote ([`InboxClient::save_mail_as`], issue #501).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SavedMail {
+    /// The file's absolute path; with `skipped` the file with the same content found there.
+    pub path: String,
+    /// Nothing was written: the same file lies there already ("Skip if identical").
+    pub skipped: bool,
+    /// The mail was too long for one file and its end is cut off.
+    pub shortened: bool,
 }
 
 /// An event of a shown calendar as the inbox needs it to tell what an invitation overlaps
@@ -517,7 +538,9 @@ impl InboxClient {
     /// message the window may not see.
     pub async fn save_targets(&self, id: Option<String>) -> Result<SaveTargets, InboxError> {
         match self.ask(Request::ListSaveTargets { id }).await? {
-            Response::SaveTargets { targets, downloads, files } => Ok(SaveTargets { targets, downloads, files }),
+            Response::SaveTargets { targets, downloads, files, exports } => {
+                Ok(SaveTargets { targets, downloads, files, exports })
+            }
             other => Err(unexpected(other)),
         }
     }
@@ -535,6 +558,17 @@ impl InboxClient {
     ) -> Result<SavedAttachments, InboxError> {
         match self.ask(Request::SaveMailAttachments { id, parts, to }).await? {
             Response::SavedAttachments { saved, skipped, failed } => Ok(SavedAttachments { saved, skipped, failed }),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.save_message_as` (issue #501): saves the message `id` as PDF or picture where `to` says;
+    /// the window, holding the app key, may send `to: file` with the path a person chose in the
+    /// system's dialog. `NotFound` for an unknown message or target, or a target whose folder is
+    /// missing.
+    pub async fn save_mail_as(&self, id: String, format: ExportFormat, to: SaveTo) -> Result<SavedMail, InboxError> {
+        match self.ask(Request::SaveMailAs { id, format, to }).await? {
+            Response::SavedMail { path, skipped, shortened } => Ok(SavedMail { path, skipped, shortened }),
             other => Err(unexpected(other)),
         }
     }
@@ -1219,9 +1253,20 @@ mod tests {
             targets: vec![SaveTarget { id: "t1".into(), spec }],
             downloads: "/home/anna/Downloads".into(),
             files: vec![plan],
+            exports: vec![ExportPlan {
+                format: ExportFormat::Png,
+                file_name: "2026-03-28 Invoice.png".into(),
+                places: Vec::new(),
+                suggested: Vec::new(),
+            }],
         };
         assert_eq!(saving.plan("2").map(|plan| plan.file_name.as_str()), Some("invoice.pdf"));
         assert!(saving.plan("3").is_none());
+        assert_eq!(
+            saving.export(ExportFormat::Png).map(|plan| plan.file_name.as_str()),
+            Some("2026-03-28 Invoice.png")
+        );
+        assert!(saving.export(ExportFormat::Pdf).is_none());
         assert_eq!(saving.target("t1").map(|target| target.spec.name.as_str()), Some("Invoices"));
         assert!(saving.target("gone").is_none());
     }
