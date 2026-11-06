@@ -18,8 +18,10 @@
 //! with "Copy" beside it. On/off of an app is the menu "…" of its card (decision 3); a turned-off app
 //! says "Turned off" where it says "Installed" otherwise.
 //!
-//! Layout: wide windows lay the cards out in a grid that gets more columns with the width, medium
-//! and narrow ones in one column; the narrow header keeps "Check for updates" and "Update all" as
+//! Layout: wide windows lay the cards out in a grid that gets more columns with the width; medium
+//! ones too once two cards of `size::panel()` fit (the design review of #411 found one stretched
+//! column too wide), else one column no wider than `size::content_max()`; narrow ones one column.
+//! The narrow header keeps "Check for updates" and "Update all" as
 //! icons and the search moves over the cards.
 
 use chrono::{DateTime, Utc};

@@ -1536,7 +1536,9 @@ impl Ui {
                 if !(failed && self.data.app_catalog.catalog.listed().is_some()) {
                     self.data.app_catalog = *loaded;
                 }
-                if self.restart_from.is_none() && self.data.app_catalog.job.as_ref().is_some_and(|job| job.restart) {
+                // A job that updates the main application restarts the service when it is done; the
+                // catalog lists only running jobs, so the update is noted while it runs.
+                if self.restart_from.is_none() && self.data.app_catalog.job.as_ref().is_some_and(updates_main) {
                     self.restart_from = self.data.status.as_ref().map(|status| status.version.clone());
                 }
                 Action::None
@@ -2524,6 +2526,13 @@ fn load_app_catalog() -> Task<Message> {
         },
         |loaded| Message::AppCatalog(Box::new(loaded)),
     )
+}
+
+/// Whether `job` updates the main application (issue #411): the service restarts after it.
+fn updates_main(job: &torro_ipc::AppJobInfo) -> bool {
+    job.restart
+        || (job.kind == torro_ipc::AppJobKind::Update
+            && job.apps.iter().any(|app| app == torro_core::AppId::WORKPLACE.window_class))
 }
 
 /// Whether the service restarted after the main application's update (issue #411): a reload that
