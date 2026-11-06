@@ -627,7 +627,6 @@ impl Host {
         let added = suite_sections(&self.sections);
         self.sections.extend(added);
         self.suite = Some(suite::State::default());
-        self.suite_loaded();
         if self.wanted.contains(&Request::Settings) {
             return None;
         }
@@ -1098,7 +1097,6 @@ impl Host {
                     self.data = *data;
                 }
                 self.loaded = true;
-                self.suite_loaded();
                 Outcome::None
             }
             Message::Sent { changed, result } => {
@@ -1108,7 +1106,6 @@ impl Host {
                         if !self.echoed() {
                             self.data = data;
                         }
-                        self.suite_loaded();
                         // The sections are fresh; the app's own data follows, but only after a
                         // real change ([`Outcome::Changed`], [`Message::Sent`]).
                         if changed { Outcome::Changed } else { Outcome::None }
@@ -1133,14 +1130,6 @@ impl Host {
             Message::Done { changed, result: Err(problem) } => {
                 Outcome::Work(Task::done(Message::Sent { changed, result: Box::new(Err(problem)) }))
             }
-        }
-    }
-
-    /// A load is in: the suite's page Appearance names what the core switched with a design chosen
-    /// there ([`suite::loaded`]).
-    fn suite_loaded(&mut self) {
-        if let Some(state) = self.suite.as_mut() {
-            suite::loaded(state, &self.data.settings, false);
         }
     }
 

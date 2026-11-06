@@ -1205,7 +1205,7 @@ impl Ui {
                     Open::DesignSwitched => {
                         messages.push(Message::General(general::Message::Suite(suite::Message::Choose(
                             Part::Design,
-                            "console".into(),
+                            "dense".into(),
                         ))));
                     }
                     _ => {}
@@ -1408,10 +1408,6 @@ impl Ui {
                 self.data.settings.zoom = self.zoom.level();
                 // A choice being saved stays drawn until a reload carries it.
                 settle(&mut self.pending_look, &mut self.data.settings, self.data.error.is_none());
-                // What the core switched with a design chosen here, once a reload carries it (task L.37).
-                if self.data.error.is_none() {
-                    suite::loaded(&mut self.general.suite, &self.data.settings, self.pending_look.design.is_some());
-                }
                 // `--design`, `--font` and `--color-scheme` of the demo win over the stored ones, like
                 // `--appearance`; each part is read only when its id changed (task L.23).
                 let design = match self.data.error.is_none() {
@@ -1892,30 +1888,9 @@ impl Ui {
         };
         let fonts = fonts.unwrap_or_else(Task::none).map(Message::Design);
         if self.launch.demo {
-            let suggested = match part {
-                Part::Design => self.demo_suggestions(&id),
-                _ => Task::none(),
-            };
-            return Task::batch([fonts, suggested]);
+            return fonts;
         }
         Task::batch([fonts, send(save_request(part, &id))])
-    }
-
-    /// What the core does when a design is chosen (task L.33), done by the demo, which has none: the
-    /// font the design `id` suggests, when the demo lists it as usable, and its mail view; then the
-    /// page compares, as after a reload (task L.37).
-    fn demo_suggestions(&mut self, id: &str) -> Task<Message> {
-        let (font, mail_view) = suite::suggestions_of(&self.general.suite, id);
-        if let Some(view) = mail_view {
-            self.data.settings.mail_view = view;
-        }
-        let task = font.and_then(|font| {
-            let task = self.show_sample(Part::Font, &font);
-            self.data.settings.font = font;
-            task
-        });
-        suite::loaded(&mut self.general.suite, &self.data.settings, false);
-        task.map_or_else(Task::none, |task| task.map(Message::Design))
     }
 
     /// The demo's [`Ui::choose`]: draws the sample `id` of `part` as the page listed it, with the
@@ -2897,44 +2872,34 @@ mod tests {
         SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The design pack comes with the settings (task L.3): the window draws with it from the next
-    /// frame, a broken one gives the standard, an unreachable core changes nothing, and `--design`
-    /// of the demo wins.
+    /// The design comes with the settings (task L.3): the window draws with the spacing level from the
+    /// next frame, an unreachable core changes nothing, and `--design` of the demo wins.
     #[test]
     fn the_stored_design_is_drawn_and_the_demo_parameter_wins() {
         let _switching = switching();
-        let dir = tempfile::tempdir().expect("temp dir");
-        // The standard's values under another id, so the tests beside this one see the same tokens.
-        for (id, toml) in [
-            ("twin", "format = 1\n[about]\nname = \"Torro\"\nversion = \"1.0.0\"\n"),
-            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n"),
-        ] {
-            std::fs::create_dir_all(dir.path().join(id)).expect("pack folder");
-            std::fs::write(dir.path().join(id).join("design.toml"), toml).expect("design.toml");
-        }
         let with_design = |id: &str, error: Option<&str>| {
             let settings = Settings { design: id.into(), ..Settings::default() };
             Message::Loaded(Box::new(Data { settings, error: error.map(String::from), ..Data::default() }))
         };
         let mut ui = ui(Section::General);
-        ui.design = Follow::new(None).in_dir(dir.path().to_path_buf());
-        // Only the design changes (there is no font `twin`), so there is no font to load (task L.21).
-        let _ = ui.update(with_design("twin", None));
-        assert_eq!(design::active().id, "twin");
+        ui.design = Follow::new(None).in_folders(design::Folders::default());
+        // Only the design changes, so there is no font to load (task L.21).
+        let _ = ui.update(with_design("dense", None));
+        assert_eq!(design::active().id, "dense");
         let _ = ui.update(with_design("torro", Some("core is not running")));
-        assert_eq!(design::active().id, "twin", "an empty answer keeps the design");
-        let _ = ui.update(with_design("pale", None));
-        assert!(design::active().is_standard(), "a broken pack is never drawn");
+        assert_eq!(design::active().id, "dense", "an empty answer keeps the design");
+        let _ = ui.update(with_design("torro", None));
+        assert!(design::active().is_standard());
 
         let mut demo = started(&["--demo", "--design", "torro"]);
-        demo.design = Follow::new(None).in_dir(dir.path().to_path_buf());
-        let _ = demo.update(with_design("twin", None));
+        demo.design = Follow::new(None).in_folders(design::Folders::default());
+        let _ = demo.update(with_design("dense", None));
         assert!(design::active().is_standard(), "the parameter beats the stored design");
     }
 
-    /// Appearance (tasks L.4, L.23, L.37): opening the page lists the parts; the demo has the three
-    /// built-in designs and its samples, one of each broken and a colour scheme that is only dark, with
-    /// the standard drawn.
+    /// Appearance (tasks L.4, L.23, L.37, issue #484): opening the page lists the parts; the demo has
+    /// the three spacing levels and its samples, a broken font and colour scheme and a colour scheme
+    /// that is only dark, with the standard drawn.
     #[test]
     fn the_design_state_lists_the_demo_parts() {
         // `--design` and `--font` below set what the process draws with.
@@ -2943,10 +2908,10 @@ mod tests {
         assert_eq!(demo.section, Section::Appearance);
         let usable =
             |ids: [&'static str; 5], of: &dyn Fn(&str) -> bool| ids.into_iter().filter(|id| of(id)).collect::<Vec<_>>();
-        let designs = usable(["torro", "compact", "console", "neon", "harbor"], &|id| {
+        let designs = usable(["torro", "comfort", "dense", "console", "harbor"], &|id| {
             suite::design_of(&demo.general.suite, id).is_some()
         });
-        assert_eq!(designs, ["torro", "compact", "console"], "the broken one has nothing to draw with");
+        assert_eq!(designs, ["torro", "comfort", "dense"], "the three levels, no old design");
         let fonts = usable(["torro", "tabular", "brush", "gone", "plex"], &|id| {
             suite::font_of(&demo.general.suite, id).is_some()
         });
@@ -3026,40 +2991,31 @@ mod tests {
     #[test]
     fn a_chosen_design_is_drawn_at_once_and_saved() {
         let _switching = switching();
-        let dir = tempfile::tempdir().expect("temp dir");
-        // The standard's values under an id of its own, so the tests beside this one see the same
-        // tokens and no other test has loaded its fonts.
-        std::fs::create_dir_all(dir.path().join("chosen")).expect("pack folder");
-        std::fs::write(
-            dir.path().join("chosen/design.toml"),
-            "format = 1\n[about]\nname = \"Torro\"\nversion = \"1.0.0\"\n",
-        )
-        .expect("design.toml");
         let with_design = |id: &str| {
             let settings = Settings { design: id.into(), ..Settings::default() };
             Message::Loaded(Box::new(Data { settings, ..Data::default() }))
         };
         let mut ui = ui(Section::General);
-        ui.design = Follow::new(None).in_dir(dir.path().to_path_buf());
+        ui.design = Follow::new(None).in_folders(design::Folders::default());
 
         let task =
-            ui.update(Message::General(general::Message::Suite(suite::Message::Choose(Part::Design, "chosen".into()))));
-        assert_eq!(design::active().id, "chosen", "drawn at once, before the core answers");
-        assert!(task.units() >= 1, "the request that saves it; its font is the standard's, nothing to load");
-        assert_eq!(ui.data.settings.design, "chosen", "the check mark moves at once");
+            ui.update(Message::General(general::Message::Suite(suite::Message::Choose(Part::Design, "dense".into()))));
+        assert_eq!(design::active().id, "dense", "drawn at once, before the core answers");
+        assert!(task.units() >= 1, "the request that saves it; a level loads no font");
+        assert_eq!(ui.data.settings.design, "dense", "the segment moves at once");
 
         let _ = ui.update(with_design("torro"));
-        assert_eq!(design::active().id, "chosen", "a reload from before the save does not switch back");
-        assert_eq!(ui.data.settings.design, "chosen");
-        let _ = ui.update(with_design("chosen"));
+        assert_eq!(design::active().id, "dense", "a reload from before the save does not switch back");
+        assert_eq!(ui.data.settings.design, "dense");
+        let _ = ui.update(with_design("dense"));
         assert_eq!(ui.pending_look, Forced::default(), "saved");
 
         let _ =
             ui.update(Message::General(general::Message::Suite(suite::Message::Choose(Part::Design, "torro".into()))));
         assert!(design::active().is_standard());
         let _ = ui.update(Message::Sent(Err("the core refused it".into())));
-        let _ = ui.update(with_design("chosen"));
-        assert_eq!(design::active().id, "chosen", "a refused choice gives way to the stored one");
+        let _ = ui.update(with_design("dense"));
+        assert_eq!(design::active().id, "dense", "a refused choice gives way to the stored one");
         assert_eq!(ui.notice.as_deref(), Some("the core refused it"));
 
         design::set(torro_core::design::Design::standard());
@@ -3082,7 +3038,6 @@ mod tests {
         write("fonts", &font, "font.toml");
         write("color-schemes", "calm", "color-scheme.toml");
         let folders = design::Folders {
-            designs: Some(root.path().join("designs")),
             fonts: Some(root.path().join("fonts")),
             color_schemes: Some(root.path().join("color-schemes")),
         };
@@ -3151,7 +3106,7 @@ mod tests {
     fn the_demo_draws_a_chosen_sample_and_saves_nothing() {
         let _switching = switching();
         let mut demo = started(&["--demo", "--open", "design"]);
-        demo.data.settings.design = "compact".into();
+        demo.data.settings.design = "dense".into();
         let _ = demo
             .update(Message::General(general::Message::Suite(suite::Message::Choose(Part::Design, "torro".into()))));
         assert_eq!(demo.data.settings.design, "torro");
@@ -3172,56 +3127,53 @@ mod tests {
         assert_eq!(demo.notice, None, "the demo opens nothing");
     }
 
-    /// Task L.37: choosing on the Appearance page saves with `settings.set_setting` and the part's key;
-    /// the core sets what a design suggests with it, and the page names what changed once the reload
-    /// that carries the design came – a reload from before the save does not count.
+    /// Task L.37, issue #484: choosing on the Appearance page saves with `settings.set_setting` and the
+    /// part's key; a spacing level sets nothing else, so the mail view stays when the reload that
+    /// carries it comes – a reload from before the save does not count.
     #[test]
-    fn a_chosen_design_is_saved_and_the_page_names_what_the_core_switched() {
+    fn a_chosen_design_is_saved_with_its_key_and_nothing_else() {
         let _switching = switching();
         for (part, key) in [
             (Part::Design, torro_ipc::SettingKey::Design),
             (Part::Font, torro_ipc::SettingKey::Font),
             (Part::ColorScheme, torro_ipc::SettingKey::ColorScheme),
         ] {
-            let request = save_request(part, "console");
+            let request = save_request(part, "dense");
             assert!(
-                matches!(&request, Request::SetSetting { key: sent, value } if *sent == key && value == "console"),
+                matches!(&request, Request::SetSetting { key: sent, value } if *sent == key && value == "dense"),
                 "{request:?}"
             );
         }
 
         let mut ui = ui(Section::Appearance);
         let _ = ui.update(Message::Looks(Box::new(suite::demo_looks())));
-        let reloaded = |design: &str, view: torro_core::settings::MailFormat| {
-            let settings = Settings { design: design.into(), mail_view: view, ..Settings::default() };
+        let reloaded = |design: &str| {
+            let settings = Settings { design: design.into(), ..Settings::default() };
             Message::Loaded(Box::new(Data { settings, ..Data::default() }))
         };
-        let html = torro_core::settings::MailFormat::Html;
-        let text = torro_core::settings::MailFormat::Text;
-        let _ = ui.update(reloaded("torro", html));
-        let task = ui
-            .update(Message::General(general::Message::Suite(suite::Message::Choose(Part::Design, "console".into()))));
+        let _ = ui.update(reloaded("torro"));
+        let task =
+            ui.update(Message::General(general::Message::Suite(suite::Message::Choose(Part::Design, "dense".into()))));
         assert!(task.units() >= 1, "the request that saves it");
-        let _ = ui.update(reloaded("torro", html));
-        assert_eq!(ui.pending_look.design.as_deref(), Some("console"), "a reload from before the save");
-        let _ = ui.update(reloaded("console", text));
+        let _ = ui.update(reloaded("torro"));
+        assert_eq!(ui.pending_look.design.as_deref(), Some("dense"), "a reload from before the save");
+        let _ = ui.update(reloaded("dense"));
         assert!(ui.pending_look.is_empty(), "saved");
-        assert!(suite::switched(&ui.general.suite).is_some(), "the mail view switched with the design");
+        assert_eq!(ui.data.settings.mail_view, Settings::default().mail_view, "the mail view stays");
 
         design::show(torro_core::design::Selection::standard());
     }
 
-    /// Task L.37: `--open design-switched` chooses Console in the demo, which does what the core would –
-    /// plain-text mail; its font is missing, so the font stays – and the page says so.
+    /// Issue #484: `--open design-switched` chooses Dense in the demo: drawn at once, and nothing else
+    /// switches with it – font and mail view stay.
     #[test]
-    fn the_demo_switches_what_a_design_suggests() {
+    fn the_demo_switches_only_the_spacing_level() {
         let _switching = switching();
         let demo = started(&["--demo", "--open", "design-switched"]);
-        assert_eq!(demo.data.settings.design, "console");
-        assert_eq!(demo.data.settings.mail_view, torro_core::settings::MailFormat::Text);
-        assert_eq!(demo.data.settings.font, Settings::default().font, "JetBrains Mono is missing in the demo");
-        assert!(suite::switched(&demo.general.suite).is_some());
-        assert_eq!(design::active().id, "console", "drawn at once");
+        assert_eq!(demo.data.settings.design, "dense");
+        assert_eq!(demo.data.settings.mail_view, Settings::default().mail_view);
+        assert_eq!(demo.data.settings.font, Settings::default().font);
+        assert_eq!(design::active().id, "dense", "drawn at once");
         let _ = demo.view();
         design::show(torro_core::design::Selection::standard());
     }
@@ -3859,7 +3811,7 @@ mod tests {
 
     #[test]
     fn every_open_state_builds_in_every_class() {
-        // `design-switched` chooses Console, which the whole process draws with.
+        // `design-switched` chooses Dense, which the whole process draws with.
         let _switching = switching();
         for (name, _) in launch::Open::ALL {
             let ui = started(&["--demo", "--open", name]);

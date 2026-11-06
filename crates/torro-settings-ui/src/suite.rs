@@ -13,28 +13,28 @@
 //! control centre maps onto its own and the host onto its own. Every change is one
 //! `Request::SetSetting` with the key that changed; "Quit" sends `Request::Quit` after a question.
 //!
-//! # Appearance (tasks S.14, L.4, L.18, L.23 and L.37, concept `docs/design-pakete.md`)
+//! # Appearance (tasks S.14, L.4, L.18, L.23 and L.37, issue #484, concept `docs/design-pakete.md`)
 //!
-//! Three groups – "Design" (a compact list of the designs), "Font and colors" (the font and the colour
-//! scheme each as a dropdown) and "Display" ("Color mode" as a segment of System, Light, Dark with
-//! symbol and word, and the zoom of the suite with −, the value, + and "Reset", task Z.1). The board
-//! "Appearance · Variant B (chosen)" of issue #291 is the model:
+//! Four groups, each about one thing (issue #484, draft `docs/prototypes/abstaende/`):
 //!
-//! - **Design** – a row per design: a small mail window drawn from the design's own values in the
-//!   active colour scheme ([`MailPreview`]; a design's `preview.png` instead, if it has one), its
-//!   name and description, three dots and the word of its density (`DesignInfo::density`, never
-//!   reckoned here), and the check mark at the one drawn. "version · author" as tooltip of the
-//!   picture.
+//! - **Spacing** – the three spacing levels Comfort, Standard and Dense as a segment, under it a small
+//!   mail window drawn from the chosen level's values in the window's colours ([`MailPreview`]). A
+//!   level sets only spacing and the heights of rows and controls; text, font, colours and the mail
+//!   view stay.
 //! - **Font** – a dropdown with a search field (issue #299, `widgets::search_menu`), each entry named
-//!   by its family and written in it, the one drawn with a check mark; the font the drawn design
-//!   suggests has a dot, and the row's sentence says so ([`FontHint`]). "pack · version · author ·
+//!   by its family and written in it, the one drawn with a check mark. "pack · version · author ·
 //!   licence" as tooltip. The section "Torro fonts" (`FontInfo::origin` bundled or folder) holds
 //!   the groups Sans, Serif, Mono and Other (`FontInfo::kind`), a line parts it from "System fonts",
 //!   the computer's: "System" first, then the families ([`font_sections`]). Typing filters both,
 //!   Enter takes the first usable match.
-//! - **Colour scheme** – a dropdown: four stripes (`bg`, `panel`, `text`, `accent` in the window's
-//!   light or dark mode) and the name, in the sections "Torro", "Light and dark" and "Dark only"
-//!   (`ColorSchemeInfo::dark_only`); an empty section is left out ([`scheme_groups`]).
+//! - **Colors** – the colour scheme as a dropdown: four stripes (`bg`, `panel`, `text`, `accent` in
+//!   the window's light or dark mode) and the name, in the sections "Torro", "Light and dark" and
+//!   "Dark only" (`ColorSchemeInfo::dark_only`); an empty section is left out ([`scheme_groups`]).
+//!   Under it "Color mode" as a segment of System, Light, Dark with symbol and word.
+//! - **Display** – the zoom of the suite with −, the value, + and "Reset" (task Z.1).
+//!
+//! Wide, Spacing stands on the left and the other three on the right; narrow, all four stand one
+//! under the other in that order.
 //!
 //! The three lists come from the core (`settings.list_designs`, `settings.list_fonts`,
 //! `settings.list_color_schemes`, [`list`]); the parts for the previews are read here, only for the
@@ -43,21 +43,18 @@
 //!
 //! Choosing is [`Action::Choose`]: the control centre draws its own window with it at once and saves
 //! it; an app saves it and draws with it as soon as `torro_gui::design::Follow` sees it. Choosing a
-//! design lets the core set the font and mail view it suggests too (task L.33), never the colour
-//! scheme. The page keeps what font and mail view were drawn before and compares them with the reload
-//! that carries the new design ([`loaded`]): what changed is named under the group, "Also switched:
-//! plain-text mail"; nothing changed, no hint.
+//! level sets nothing else.
 //!
-//! An entry that breaks a rule is greyed out with an alert mark. A click on it shows, under its
-//! group, its name, "Can't be used:" and every reason in full, wrapping – a list of reasons is too
-//! long for a tooltip and must be readable without a mouse over it. A second click, or a click on
-//! another one, closes or swaps that ([`Message::Problems`]); one entry's reasons are shown at a
+//! A font or colour scheme that breaks a rule is greyed out with an alert mark. A click on it shows,
+//! under its group, its name, "Can't be used:" and every reason in full, wrapping – a list of reasons
+//! is too long for a tooltip and must be readable without a mouse over it. A second click, or a click
+//! on another one, closes or swaps that ([`Message::Problems`]); one entry's reasons are shown at a
 //! time on the whole page.
 //!
-//! "Reload" (at the heading "Design": it lists all three again) and "Open … folder" (created if it is
+//! "Reload" (at the heading "Font": it lists all three again) and "Open … folder" (created if it is
 //! missing, its path as tooltip) are quiet actions at the right of the headings. Opening a folder is a
 //! local action without a request: it only shows the file manager on this desktop (`docs/api.md`,
-//! footnote 9).
+//! footnote 9). Designs have no folder since issue #484.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -65,15 +62,15 @@ use std::sync::Arc;
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{button, canvas, column, container, responsive, row, rule, scrollable, space as blank, svg, text};
 use iced::{
-    Alignment, Background, Border, Color, ContentFit, Element, Fill, Length, Padding, Pixels, Point, Rectangle,
-    Renderer, Size, Theme, mouse,
+    Alignment, Background, Border, Color, Element, Fill, Length, Padding, Pixels, Point, Rectangle, Renderer, Size,
+    Theme, mouse,
 };
 use torro_core::design::{
-    ColorScheme, DensityLevel, Design, FontKind, FontRole, FontSet, Level, ListSelection, ListStyle, Mode, Part,
-    STANDARD_ID, SYSTEM_ID, Weight,
+    ColorScheme, Design, FontKind, FontRole, FontSet, Level, ListSelection, ListStyle, Mode, Part, STANDARD_ID,
+    SYSTEM_ID, Weight,
 };
-use torro_core::i18n::{tr, trf};
-use torro_core::settings::{Language, MailFormat, Settings, Zoom};
+use torro_core::i18n::tr;
+use torro_core::settings::{Language, Settings, Zoom};
 use torro_core::theme::Appearance;
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{Palette, palette, radius, size, space};
@@ -93,14 +90,14 @@ pub const GENERAL: &str = "general";
 /// The pages' own state: the lists, the open dropdown, the reasons shown, the question open.
 #[derive(Debug, Default)]
 pub struct State {
-    /// The designs as the core listed them last, the standard first; `Err` when it did not answer,
-    /// `None` until the first answer. The fonts and colour schemes alike.
+    /// The spacing levels as the core listed them last, the standard first; `Err` when it did not
+    /// answer, `None` until the first answer. The fonts and colour schemes alike.
     designs: Option<Result<Vec<DesignEntry>, String>>,
     fonts: Option<Result<Vec<FontEntry>, String>>,
     schemes: Option<Result<Vec<SchemeEntry>, String>>,
     /// The entry that can't be used whose reasons are shown under its group (its part and id), after
-    /// a click on it; `None` while no reasons are shown. The part, because one id can name a
-    /// design, a font and a colour scheme at once (`plex`).
+    /// a click on it; `None` while no reasons are shown. The part, because one id can name a font
+    /// and a colour scheme at once (`plex`).
     problems: Option<(Part, String)>,
     /// Whether the colour scheme's dropdown is open ([`overlay`]). At most one of the two dropdowns is
     /// open.
@@ -113,31 +110,8 @@ pub struct State {
     font_query: String,
     /// Where the font dropdown's button is.
     font_anchor: Anchor,
-    /// What was drawn when a design was chosen here, until the reload that carries the choice
-    /// ([`loaded`]).
-    before: Option<Before>,
-    /// What the core switched with the design chosen here last, named under the group "Design";
-    /// `None` when nothing was switched (or nothing chosen yet).
-    switched: Option<Switched>,
     /// The question "Quit background service?" is open ([`overlay`]).
     quitting: bool,
-}
-
-/// The settings a design may switch (task L.33), as they were when the design `design` was chosen
-/// here.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Before {
-    design: String,
-    font: String,
-    mail_view: MailFormat,
-}
-
-/// What the core switched together with a design (task L.37, "Also switched: …"): the new font's id
-/// and the new mail view, each `None` when it stayed.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Switched {
-    font: Option<String>,
-    mail_view: Option<MailFormat>,
 }
 
 /// One entry of a list of the core – a design, a font or a colour scheme (`info`) – with the part
@@ -145,24 +119,19 @@ pub struct Switched {
 #[derive(Debug, Clone)]
 pub struct Entry<I, T> {
     pub info: I,
-    /// The part as read from its folder: what the sample shows and what the demo draws with when it
-    /// is chosen. `None` for one that can't be used (or whose folder changed since the core listed
-    /// it).
+    /// The part as read: what the sample shows and what the demo draws with when it is chosen.
+    /// `None` for one that can't be used (or whose folder changed since the core listed it).
     pub part: Option<Arc<T>>,
-    /// A design's `preview.png` as an SVG image: Iced here draws SVG but not PNG (no `image`
-    /// feature), and its SVG renderer takes a PNG embedded as a `data:` address. Built once per
-    /// listing, so Iced rasterises it once. Always `None` for fonts and colour schemes.
-    preview: Option<svg::Handle>,
 }
 
-/// A design of the list (`settings.list_designs`).
+/// A spacing level of the list (`settings.list_designs`).
 pub type DesignEntry = Entry<DesignInfo, Design>;
 /// A font of the list (`settings.list_fonts`).
 pub type FontEntry = Entry<FontInfo, FontSet>;
 /// A colour scheme of the list (`settings.list_color_schemes`).
 pub type SchemeEntry = Entry<ColorSchemeInfo, ColorScheme>;
 
-/// Two entries are the same when the core listed the same: the part and the picture are read from it.
+/// Two entries are the same when the core listed the same: the part is read from it.
 impl<I: PartialEq, T> PartialEq for Entry<I, T> {
     fn eq(&self, other: &Self) -> bool {
         self.info == other.info
@@ -170,20 +139,9 @@ impl<I: PartialEq, T> PartialEq for Entry<I, T> {
 }
 
 impl<I, T> Entry<I, T> {
-    /// The row `info` with `part` as read from its folder (`None` when it can't be used). For a
-    /// design, use [`Entry::design`], which reads its picture too.
+    /// The row `info` with `part` as read (`None` when it can't be used).
     pub fn new(info: I, part: Option<T>) -> Entry<I, T> {
-        Entry { info, part: part.map(Arc::new), preview: None }
-    }
-}
-
-impl DesignEntry {
-    /// [`Entry::new`] for a design: reads its `preview.png` if it has one (checked by
-    /// `design::load`: a PNG of at most 2 MB and 1200 × 800); a picture that can't be read gives the
-    /// sample.
-    pub fn design(info: DesignInfo, design: Option<Design>) -> DesignEntry {
-        let png = design.as_ref().and_then(|d| d.preview.as_ref()).and_then(|path| std::fs::read(path).ok());
-        Entry { preview: png.as_deref().and_then(png_as_svg), ..Entry::new(info, design) }
+        Entry { info, part: part.map(Arc::new) }
     }
 }
 
@@ -271,8 +229,8 @@ pub fn unlisted(state: &State) -> bool {
     state.designs.is_none()
 }
 
-/// The design `id` as read for its row, for a window that cannot read it from the folders
-/// (`--demo`, whose entries live in memory). `None` when it is not listed or can't be used.
+/// The design `id` as read for the page, for a window that draws with what the page holds (`--demo`,
+/// whose entries live in memory). `None` when it is not listed or can't be used.
 pub fn design_of(state: &State, id: &str) -> Option<Arc<Design>> {
     part_of(&state.designs, id)
 }
@@ -290,36 +248,6 @@ pub fn scheme_of(state: &State, id: &str) -> Option<Arc<ColorScheme>> {
 fn part_of<I: Listed, T>(list: &Option<Result<Vec<Entry<I, T>>, String>>, id: &str) -> Option<Arc<T>> {
     let entries = list.as_ref()?.as_ref().ok()?;
     entries.iter().find(|entry| entry.info.id() == id)?.part.clone()
-}
-
-/// What the design `id` suggests that the core would switch with it (task L.33), for the demo, which
-/// has no core and does it itself: its font, only when it is listed as usable, and its mail view.
-pub fn suggestions_of(state: &State, id: &str) -> (Option<String>, Option<MailFormat>) {
-    let Some(info) = ok(&state.designs).and_then(|designs| designs.iter().find(|entry| entry.info.id == id)) else {
-        return (None, None);
-    };
-    let info = &info.info;
-    let usable = |font: &&String| {
-        ok(&state.fonts).is_some_and(|fonts| fonts.iter().any(|entry| entry.info.id == **font && entry.info.valid))
-    };
-    (info.font.as_ref().filter(usable).cloned(), info.mail_view)
-}
-
-/// After a reload with `settings`: once the reload carries the design chosen here –
-/// `waiting` says whether the shell still waits for it to be saved –, names what the core switched
-/// with it, compared with what was drawn before the choice. A design that was refused (the settings
-/// name another one) leaves no hint. Nothing happens while no design was chosen here.
-pub fn loaded(state: &mut State, settings: &Settings, waiting: bool) {
-    if waiting || state.before.is_none() {
-        return;
-    }
-    let Some(before) = state.before.take() else { return };
-    if settings.design != before.design {
-        return;
-    }
-    let font = (settings.font != before.font).then(|| settings.font.clone());
-    let mail_view = (settings.mail_view != before.mail_view).then_some(settings.mail_view);
-    state.switched = (font.is_some() || mail_view.is_some()).then_some(Switched { font, mail_view });
 }
 
 /// Leaving the page closes the dropdowns and the question.
@@ -340,11 +268,6 @@ pub fn escape(state: &State) -> Option<Message> {
 /// The id of the search field in the font's dropdown, focused when it opens ([`Action::Focus`]).
 pub const FONT_SEARCH: &str = "appearance-font-search";
 
-/// What the core switched with the design chosen here last, for the control centre's tests.
-pub fn switched(state: &State) -> Option<&Switched> {
-    state.switched.as_ref()
-}
-
 /// A list as the page keeps it, when the core listed it.
 fn ok<I, T>(list: &Option<Result<Vec<Entry<I, T>>, String>>) -> Option<&[Entry<I, T>]> {
     list.as_ref()?.as_ref().ok().map(Vec::as_slice)
@@ -358,9 +281,8 @@ pub enum Message {
     StartAtLogin(bool),
     /// −, + or "Reset" of the zoom.
     Zoom(Step),
-    /// A design's row, a font's button or a colour scheme of the dropdown (`part`, its id): draw
-    /// every window with it. Closes the reasons of an entry that can't be used and the dropdown. A
-    /// design remembers what was drawn before, for the hint "Also switched" ([`loaded`]).
+    /// A segment of the spacing levels, a font or a colour scheme of a dropdown (`part`, its id): draw
+    /// every window with it. Closes the reasons of an entry that can't be used and the dropdown.
     Choose(Part, String),
     /// An entry that can't be used (`part`, its id): show its reasons under its group, or hide them
     /// if they are shown already. Closes the dropdown. Asks nothing of the window.
@@ -381,7 +303,7 @@ pub enum Message {
     /// "Reload": list designs, fonts and colour schemes again, after one was added to or changed
     /// in a folder.
     Reload,
-    /// "Open designs folder", "Open fonts folder" or "Open color schemes folder".
+    /// "Open fonts folder" or "Open color schemes folder".
     OpenFolder(Part),
     /// "Quit" under "Background service": ask first.
     Quit,
@@ -430,11 +352,6 @@ pub fn update(state: &mut State, message: Message, settings: &Settings) -> Actio
             state.problems = None;
             state.schemes_open = false;
             state.fonts_open = false;
-            if part == Part::Design {
-                let before = Before { design: id.clone(), font: settings.font.clone(), mail_view: settings.mail_view };
-                state.before = Some(before);
-                state.switched = None;
-            }
             return Action::Choose(part, id);
         }
         Message::Problems(part, id) => {
@@ -496,7 +413,7 @@ pub fn update(state: &mut State, message: Message, settings: &Settings) -> Actio
 }
 
 /// The request that saves the choice of `id` for `part` (Appearance): `settings.set_setting` with the
-/// part's key and the id. The core sets what a design suggests with it (task L.33).
+/// part's key and the id. A design sets nothing else (issue #484).
 pub fn choose_request(part: Part, id: &str) -> Request {
     let key = match part {
         Part::Design => SettingKey::Design,
@@ -630,13 +547,14 @@ impl Lists {
         fonts: Result<Vec<FontInfo>, String>,
         schemes: Result<Vec<ColorSchemeInfo>, String>,
     ) -> Lists {
-        let (dirs, fonts_dir, schemes_dir) = (folder(Part::Design), folder(Part::Font), folder(Part::ColorScheme));
+        let (fonts_dir, schemes_dir) = (folder(Part::Font), folder(Part::ColorScheme));
         Lists {
+            // The spacing levels are built in (issue #484): read without a folder.
             designs: designs.map(|list| {
                 list.into_iter()
                     .map(|info| {
-                        let design = read_part(dirs.as_deref(), &info.id, info.valid, torro_core::design::load);
-                        Entry::design(info, design)
+                        let design = info.valid.then(|| torro_core::design::load(&info.id).ok()).flatten();
+                        Entry::new(info, design)
                     })
                     .collect()
             }),
@@ -700,18 +618,21 @@ pub fn reveal_folder(part: Part) -> Result<(), String> {
     Ok(())
 }
 
-/// The page Appearance (variant B of issue #291, task L.37): the groups "Design", "Font and colors"
-/// and "Display", each laid out for the width the page has.
+/// The page Appearance (issue #484): the groups "Spacing", "Font", "Colors" and "Display", each laid
+/// out for the width the page has.
 pub fn appearance<'a>(state: &'a State, settings: &'a Settings) -> Element<'a, Message> {
     responsive(move |room: Size| page(state, settings, room.width)).height(Length::Shrink).into()
 }
 
-/// The three groups of [`appearance`] for a page `width` wide: side by side where it is wide (issue
-/// #464), each laid out for the width of its column.
+/// The groups of [`appearance`] for a page `width` wide: where it is wide (issue #464) "Spacing" on
+/// the left and "Font", "Colors" and "Display" one under the other on the right; narrow, all four in
+/// that order. Each is laid out for the width of its column.
 fn page<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<'a, Message> {
-    let width = widgets::page_column_width(width, 3);
+    let width = widgets::page_column_width(width, 2);
     widgets::page_columns(move || {
-        vec![designs(state, settings, width), looks(state, settings, width), display(settings, width)]
+        let rest = column![font_group(state, settings), colors_group(state, settings, width), display(settings)]
+            .spacing(layout::section_gap());
+        vec![spacing(state, settings, width), rest.into()]
     })
 }
 
@@ -724,26 +645,13 @@ fn modes() -> [(Icon, &'static str, Appearance); 3] {
     ]
 }
 
-/// The group "Display": "Color mode" as a segment of System, Light and Dark, and the zoom, with the
-/// sentences that explain both under the card. The control centre itself follows the colour mode at
-/// once: it reloads the settings after every change. Where the segment's words do not fit beside its
-/// label (a narrow page `width`, a long translation) it shows its symbols alone, the words as
-/// tooltips.
-fn display<'a>(settings: &'a Settings, width: f32) -> Element<'a, Message> {
-    let chosen = settings.appearance;
-    let active = modes().iter().position(|(_, _, mode)| *mode == chosen).unwrap_or_default();
-    let parts = modes().map(|(which, label, mode)| (which, label, Message::Appearance(mode)));
-    let segment = widgets::icon_segmented(parts, active, width >= mode_words_need());
-    let mode = setting_row(None, tr("Color mode"), None, segment);
+/// The group "Display": the zoom, with the sentence that explains it under the card.
+fn display<'a>(settings: &'a Settings) -> Element<'a, Message> {
     let zoom = setting_row(None, tr("Zoom"), None, zoom_control(settings.zoom));
-    let footer = format!(
-        "{} {}",
-        tr("Light or dark colors for all Torro apps. “System” follows your desktop."),
-        tr(
-            "Makes all Torro apps larger or smaller, like zooming in a browser: Ctrl + Plus and Ctrl + Minus, Ctrl + 0 resets."
-        ),
+    let footer = tr(
+        "Makes all Torro apps larger or smaller, like zooming in a browser: Ctrl + Plus and Ctrl + Minus, Ctrl + 0 resets.",
     );
-    widgets::group(tr("Display"), vec![mode, zoom], Some(footer))
+    widgets::group(tr("Display"), vec![zoom], Some(footer.to_string()))
 }
 
 /// How wide the colour mode's row must be for the segment's words: 16 at both sides and between
@@ -753,30 +661,51 @@ fn mode_words_need() -> f32 {
     3.0 * space::l() + typo::text_width(tr("Color mode"), typo::body()) + widgets::icon_segmented_width(&labels, true)
 }
 
-/// The group "Design": the heading with "Reload" (for all three lists) and "Open designs folder", a
-/// row per design ([`design_row`]), the reasons of the one opened, what the last design chosen here
-/// switched too ("Also switched: …"), and the sentence that explains it. On a page narrower than
-/// [`size::form_max()`] each row puts its density under its description.
-fn designs<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<'a, Message> {
-    let reload = widgets::icon_button(Icon::RefreshCw, tr("Reload"), Some(Message::Reload));
-    let heading = widgets::group_heading(tr("Design"), vec![reload, open_folder(Part::Design, true)]);
+/// The group "Spacing" (issue #484): the spacing levels as a segment in the order the core lists them
+/// (Comfort, Standard, Dense, named in its words), under it the [`MailPreview`] of the level drawn,
+/// and the sentence that explains it. The control centre follows a choice at once, so the whole page
+/// shows the level as well.
+fn spacing<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<'a, Message> {
+    let heading = widgets::group_heading(tr("Spacing"), Vec::new());
     let mut block = column![heading].spacing(layout::item_gap());
-    match listed_or(&state.designs, tr("The designs can't be listed.")) {
+    match listed_or(&state.designs, tr("The spacing levels can't be listed.")) {
         Ok(entries) => {
             let drawn = drawn(entries, &settings.design);
-            let stacked = width < size::form_max();
-            let rows = entries.iter().map(|entry| design_row(entry, entry.info.id == drawn, stacked)).collect();
+            let levels: Vec<&DesignEntry> = level_order(entries);
+            let active = levels.iter().position(|entry| entry.info.id == drawn).unwrap_or_default();
+            let options = levels
+                .iter()
+                .map(|entry| (entry.info.name.as_str(), Message::Choose(Part::Design, entry.info.id.clone())));
+            let segment = container(widgets::segmented(options, active)).width(Fill).padding(layout::panel_padding());
+            let mut rows: Vec<Element<'a, Message>> = vec![segment.into()];
+            if let Some(design) = entries.iter().find(|entry| entry.info.id == drawn).and_then(|e| e.part.clone()) {
+                rows.push(preview(design, width));
+            }
             block = block.push(card(rows));
-            block =
-                block.push(opened(entries, Part::Design, state.problems.as_ref()).map(|entry| problems(&entry.info)));
         }
         Err(placeholder) => block = block.push(card(vec![placeholder])),
     }
-    block = block.push(state.switched.as_ref().map(|switched| switched_hint(switched, &state.fonts)));
     let footer = tr(
-        "Spacing, sizes and corner radii of all Torro apps. More designs go into the designs folder; one that breaks a rule can't be used.",
+        "How much room all Torro apps leave between their elements. Font and colors stay as they are; for larger text use the zoom.",
     );
     block.push(widgets::reading_cell(typo::text(typo::meta(), footer).style(torro_gui::theme::text_2))).into()
+}
+
+/// The levels of `entries` in the order of the segment: from the most room to the least (Comfort,
+/// Standard, Dense), whatever order the core lists them in; a level it does not know goes last.
+fn level_order(entries: &[DesignEntry]) -> Vec<&DesignEntry> {
+    const ORDER: [&str; 3] = ["comfort", STANDARD_ID, "dense"];
+    let rank = |entry: &&DesignEntry| ORDER.iter().position(|id| *id == entry.info.id).unwrap_or(ORDER.len());
+    let mut levels: Vec<&DesignEntry> = entries.iter().filter(|entry| entry.info.valid).collect();
+    levels.sort_by_key(rank);
+    levels
+}
+
+/// The small mail window of `design` under the segment, as wide as the card in a column `width` wide
+/// and in the proportions of [`MAIL_WINDOW`], at most [`size::panel()`] high.
+fn preview<'a>(design: Arc<Design>, width: f32) -> Element<'a, Message> {
+    let height = (width * MAIL_WINDOW.height / MAIL_WINDOW.width).min(size::panel());
+    container(canvas(MailPreview { design }).width(Fill).height(Fill)).width(Fill).height(height).clip(true).into()
 }
 
 /// `rows` in the framed card of a settings group with a line between them, as `widgets::group` draws
@@ -810,37 +739,6 @@ fn listed_or<'a, I, T>(
     }
 }
 
-/// A design's row: its [`thumbnail`] ("version · author" as tooltip), name and description, its
-/// [`density`] and the check mark at the one `drawn`; the whole row is the button. One that can't be
-/// used is greyed out, with an alert mark for the thumbnail and no density, and its click shows its
-/// reasons. `stacked` (a narrow page) puts the density under the description, so the text keeps its
-/// room.
-fn design_row<'a>(entry: &'a DesignEntry, drawn: bool, stacked: bool) -> Element<'a, Message> {
-    let info = &entry.info;
-    let picture = thumbnail(entry);
-    let picture = match byline([Some(info.version.as_str()), info.author.as_deref()]) {
-        Some(tip) => widgets::with_tooltip(picture, tip),
-        None => picture,
-    };
-    let tone: fn(&Theme) -> text::Style = if info.valid { torro_gui::theme::text } else { torro_gui::theme::text_3 };
-    let mut words = column![typo::text(typo::body_strong(), info.name.as_str()).style(tone)].spacing(space::xs());
-    if let Some(description) = info.description.as_deref().filter(|description| !description.is_empty()) {
-        words = words.push(typo::text(typo::meta(), description).style(torro_gui::theme::text_2));
-    }
-    let density = info.valid.then(|| density(info.density, stacked));
-    let content = match stacked {
-        true => row![picture, words.push(density).width(Fill), check_mark(drawn)],
-        false => row![picture, words.width(Fill)].push(density).push(check_mark(drawn)),
-    };
-    let press = match info.valid {
-        true => Message::Choose(Part::Design, info.id.clone()),
-        false => Message::Problems(Part::Design, info.id.clone()),
-    };
-    let content =
-        container(content.spacing(space::l()).align_y(Alignment::Center)).width(Fill).padding([space::m(), space::l()]);
-    button(content).padding(Padding::ZERO).width(Fill).style(style::button::list_row(false)).on_press(press).into()
-}
-
 /// The check mark at the end of the row or entry that is drawn, in `text`; the same room left empty
 /// at the others, so their texts end in one column.
 fn check_mark<'a>(on: bool) -> Element<'a, Message> {
@@ -852,188 +750,64 @@ fn check_mark<'a>(on: bool) -> Element<'a, Message> {
     }
 }
 
-/// The dots of a design's density.
-const DENSITY_DOTS: usize = 3;
-
-/// How many of the [`DENSITY_DOTS`] a density fills: one more with each step from airy (none) to
-/// very dense (all).
-fn density_dots(level: DensityLevel) -> usize {
-    match level {
-        DensityLevel::Airy => 0,
-        DensityLevel::Balanced => 1,
-        DensityLevel::Dense => 2,
-        DensityLevel::VeryDense => 3,
-    }
-}
-
-/// The word of a density.
-fn density_label(level: DensityLevel) -> &'static str {
-    match level {
-        DensityLevel::Airy => tr("Airy"),
-        DensityLevel::Balanced => tr("Balanced"),
-        DensityLevel::Dense => tr("Dense"),
-        DensityLevel::VeryDense => tr("Very dense"),
-    }
-}
-
-/// A design's density as the core reports it (`DesignInfo::density`): the dots (filled in `text_2`,
-/// the rest in `line_strong`, so the word is not needed to compare) and the word in `META` and
-/// `text_3`; at the right end of the row one over the other, `stacked` side by side.
-fn density<'a>(level: DensityLevel, stacked: bool) -> Element<'a, Message> {
-    let filled = density_dots(level);
-    let dots = row((0..DENSITY_DOTS).map(|index| density_dot(index < filled))).spacing(DOT_GAP);
-    let word = typo::text(typo::meta(), density_label(level)).style(torro_gui::theme::text_3).wrapping(Wrapping::None);
-    match stacked {
-        true => row![dots, word].spacing(space::s()).align_y(Alignment::Center).into(),
-        false => column![dots, word].spacing(space::xs()).align_x(Alignment::End).into(),
-    }
-}
-
-/// The edge of a density dot and of the dot of a suggested font: the dot of a chip (6, as in
-/// `torro_gui::widgets`), the same in every design – scaled with the spacing it would shrink to a
-/// speck in Console.
-const DOT_EDGE: f32 = 6.0;
-
-/// Between the dots of a density: half a dot.
-const DOT_GAP: f32 = DOT_EDGE / 2.0;
-
-/// One dot of a [`density`], round in every design.
-fn density_dot<'a>(filled: bool) -> Element<'a, Message> {
-    round_dot(move |p: &Palette| if filled { p.text_2 } else { p.line_strong })
-}
-
-/// A round dot of [`DOT_EDGE`] in the colour `pick` takes from the window's palette.
-fn round_dot<'a>(pick: impl Fn(&Palette) -> Color + 'a) -> Element<'a, Message> {
-    let edge = DOT_EDGE;
-    container(blank().width(edge).height(edge))
-        .style(move |t: &Theme| container::Style {
-            background: Some(Background::Color(pick(&palette(t)))),
-            border: Border { radius: (edge / 2.0).into(), ..Border::default() },
-            ..container::Style::default()
-        })
-        .into()
-}
-
-/// The size of a design's thumbnail: [`PREVIEW_CONTROLS`] buttons wide (144 in the standard, less in
-/// the denser designs, so the list follows the design it is drawn in) and in the proportions of
-/// [`MAIL_WINDOW`].
-fn thumbnail_size() -> Size {
-    let width = PREVIEW_CONTROLS * size::control_sm();
-    Size::new(width, width * MAIL_WINDOW.height / MAIL_WINDOW.width)
-}
-
-/// A design's thumbnail in a `line` frame on `panel`: its `preview.png` (cut to the frame), else a
-/// small mail window drawn from its values ([`MailPreview`]); for one that can't be used an alert
-/// mark in `text_3`, so it is told by a symbol, not by colour alone.
-fn thumbnail<'a>(entry: &'a DesignEntry) -> Element<'a, Message> {
-    let area = thumbnail_size();
-    let content: Element<'a, Message> = match (&entry.preview, &entry.part) {
-        (Some(picture), _) => svg(picture.clone()).content_fit(ContentFit::Cover).width(Fill).height(Fill).into(),
-        (None, Some(design)) if entry.info.valid => {
-            canvas(MailPreview { design: Arc::clone(design) }).width(Fill).height(Fill).into()
-        }
-        _ => container(
-            icon::icon(Icon::CircleAlert, icon::SIZE)
-                .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) }),
-        )
-        .center(Fill)
-        .into(),
-    };
-    container(content)
-        .width(area.width)
-        .height(area.height)
-        .clip(true)
-        .style(|t: &Theme| container::Style {
-            background: Some(Background::Color(palette(t).panel)),
-            border: Border { color: palette(t).line, width: size::HAIRLINE, radius: radius::xs().into() },
-            ..container::Style::default()
-        })
-        .into()
-}
-
-/// Under the group "Design": what the core switched with the design chosen here last, "Also
-/// switched: font JetBrains Mono, plain-text mail", quiet, with an info mark.
-fn switched_hint<'a>(switched: &Switched, fonts: &'a Option<Result<Vec<FontEntry>, String>>) -> Element<'a, Message> {
-    let list = switched_list(switched, fonts);
-    let mark = icon::icon(Icon::Info, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
-    let words = typo::text(typo::meta(), trf("Also switched: {list}", &[("list", &list)]));
-    row![mark, words.style(torro_gui::theme::text_2)].spacing(space::s()).align_y(Alignment::Center).into()
-}
-
-/// The parts of [`switched_hint`], joined with ", ": the font by its family as listed (its id when it
-/// is not listed), and the mail view.
-fn switched_list(switched: &Switched, fonts: &Option<Result<Vec<FontEntry>, String>>) -> String {
-    let mut parts = Vec::new();
-    if let Some(id) = &switched.font {
-        let listed = ok(fonts).and_then(|fonts| fonts.iter().find(|entry| entry.info.id == *id));
-        let name = listed.map_or(id.as_str(), |entry| entry.info.name());
-        parts.push(trf("font {font}", &[("font", &name)]));
-    }
-    if let Some(view) = switched.mail_view {
-        let view = match view {
-            MailFormat::Text => tr("plain-text mail"),
-            MailFormat::Html => tr("HTML mail"),
-        };
-        parts.push(view.to_string());
-    }
-    parts.join(", ")
-}
-
-/// The group "Font and colors": the heading with "Open fonts folder" and "Open color schemes folder"
-/// (their symbols alone where the words do not fit beside the title on a page `width` wide), the
-/// font's row ([`font_row`]) and the colour scheme's ([`scheme_row`]), the reasons of the one opened,
-/// and the sentences that explain both.
-fn looks<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<'a, Message> {
-    let words = width >= looks_heading_need();
-    let folders = vec![open_folder(Part::Font, words), open_folder(Part::ColorScheme, words)];
-    let heading = widgets::group_heading(tr("Font and colors"), folders);
+/// The group "Font": the heading with "Reload" (for all three lists) and "Open fonts folder", the
+/// font's row ([`font_row`]), the reasons of the font opened, and the sentence that explains it.
+fn font_group<'a>(state: &'a State, settings: &'a Settings) -> Element<'a, Message> {
+    let reload = widgets::icon_button(Icon::RefreshCw, tr("Reload"), Some(Message::Reload));
+    let heading = widgets::group_heading(tr("Font"), vec![reload, open_folder(Part::Font)]);
     let font = match listed_or(&state.fonts, tr("The fonts can't be listed.")) {
         Ok(entries) => font_row(state, settings, entries),
         Err(placeholder) => placeholder,
     };
-    let scheme = match listed_or(&state.schemes, tr("The color schemes can't be listed.")) {
-        Ok(entries) => scheme_row(state, settings, entries),
-        Err(placeholder) => placeholder,
-    };
-    let open = state.problems.as_ref();
     let reasons = ok(&state.fonts)
-        .and_then(|fonts| opened(fonts, Part::Font, open))
-        .map(|entry| problems(&entry.info))
-        .or_else(|| {
-            ok(&state.schemes)
-                .and_then(|schemes| opened(schemes, Part::ColorScheme, open))
-                .map(|entry| problems(&entry.info))
-        });
-    let footer = format!(
-        "{} {}",
-        tr(
-            "The typeface of all Torro apps, sized so that text reads alike in every font. More fonts go into the fonts folder, and the fonts installed on this computer can be used too."
-        ),
-        tr("The colors of all Torro apps, light and dark. More color schemes go into the color schemes folder."),
+        .and_then(|fonts| opened(fonts, Part::Font, state.problems.as_ref()))
+        .map(|e| problems(&e.info));
+    let footer = tr(
+        "The typeface of all Torro apps, sized so that text reads alike in every font. More fonts go into the fonts folder, and the fonts installed on this computer can be used too.",
     );
-    column![heading, card(vec![font, scheme])]
+    column![heading, card(vec![font])]
         .push(reasons)
         .push(widgets::reading_cell(typo::text(typo::meta(), footer).style(torro_gui::theme::text_2)))
         .spacing(layout::item_gap())
         .into()
 }
 
-/// How wide the heading "Font and colors" must be for the words of its two folder buttons.
-fn looks_heading_need() -> f32 {
-    typo::text_width(tr("Font and colors"), typo::caption())
-        + widgets::text_button_width(true, tr("Open fonts folder"))
-        + widgets::text_button_width(true, tr("Open color schemes folder"))
-        + space::s()
-        + space::xs()
+/// The group "Colors": the heading with "Open color schemes folder", the colour scheme's row
+/// ([`scheme_row`]) and "Color mode" as a segment of System, Light and Dark, the reasons of the scheme
+/// opened, and the sentences that explain both. The control centre follows the colour mode at once:
+/// it reloads the settings after every change. Where the segment's words do not fit beside its label
+/// (a narrow column `width`, a long translation) it shows its symbols alone, the words as tooltips.
+fn colors_group<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<'a, Message> {
+    let heading = widgets::group_heading(tr("Colors"), vec![open_folder(Part::ColorScheme)]);
+    let scheme = match listed_or(&state.schemes, tr("The color schemes can't be listed.")) {
+        Ok(entries) => scheme_row(state, settings, entries),
+        Err(placeholder) => placeholder,
+    };
+    let chosen = settings.appearance;
+    let active = modes().iter().position(|(_, _, mode)| *mode == chosen).unwrap_or_default();
+    let parts = modes().map(|(which, label, mode)| (which, label, Message::Appearance(mode)));
+    let segment = widgets::icon_segmented(parts, active, width >= mode_words_need());
+    let mode = setting_row(None, tr("Color mode"), None, segment);
+    let reasons = ok(&state.schemes)
+        .and_then(|schemes| opened(schemes, Part::ColorScheme, state.problems.as_ref()))
+        .map(|entry| problems(&entry.info));
+    let footer = format!(
+        "{} {}",
+        tr("The colors of all Torro apps, light and dark. More color schemes go into the color schemes folder."),
+        tr("Light or dark colors for all Torro apps. “System” follows your desktop."),
+    );
+    column![heading, card(vec![scheme, mode])]
+        .push(reasons)
+        .push(widgets::reading_cell(typo::text(typo::meta(), footer).style(torro_gui::theme::text_2)))
+        .spacing(layout::item_gap())
+        .into()
 }
 
-/// The font's row: its name, the sentence about the font the drawn design suggests ([`FontHint`])
-/// under it, and the dropdown's button with the font drawn ([`font_button`]).
+/// The font's row: its name and the dropdown's button with the font drawn ([`font_button`]).
 fn font_row<'a>(state: &'a State, settings: &'a Settings, entries: &'a [FontEntry]) -> Element<'a, Message> {
     let drawn = drawn(entries, &settings.font);
     let current = entries.iter().find(|entry| entry.info.id == drawn);
-    let hint = font_hint(state, settings).map(|hint| hint.sentence());
-    setting_row(None, tr("Font"), hint, font_button(&state.font_anchor, current))
+    setting_row(None, tr("Font"), None, font_button(&state.font_anchor, current))
 }
 
 /// The button of the font's dropdown, in the look of a secondary button [`size::sidebar()`] wide:
@@ -1180,7 +954,6 @@ fn first_font<'a>(entries: &'a [FontEntry], query: &str) -> Option<&'a FontEntry
 /// between the sections, an entry per font ([`font_item`]).
 fn font_menu<'a>(state: &'a State, settings: &'a Settings, entries: &'a [FontEntry]) -> Element<'a, Message> {
     let drawn = drawn(entries, &settings.font);
-    let hint = font_hint(state, settings);
     let open = state.problems.as_ref().filter(|(part, _)| *part == Part::Font).map(|(_, id)| id.as_str());
     let title = |words: &'static str, tone: fn(&Theme) -> text::Style| -> Element<'a, Message> {
         container(typo::text(typo::caption(), words).style(tone))
@@ -1201,20 +974,18 @@ fn font_menu<'a>(state: &'a State, settings: &'a Settings, entries: &'a [FontEnt
             }
             items.extend(members.into_iter().map(|entry| {
                 let id = entry.info.id.as_str();
-                let suggested = hint.as_ref().filter(|hint| hint.marks(id)).map(FontHint::design);
-                font_item(entry, id == drawn, open == Some(id), suggested)
+                font_item(entry, id == drawn, open == Some(id))
             }));
         }
     }
     widgets::search_menu(FONT_SEARCH, &state.font_query, Message::FontQuery, Message::FirstFont, items, size::props())
 }
 
-/// A font of the dropdown, the whole entry a menu item: its name written in it, a dot at the one the
-/// drawn design suggests (`suggested`: the design's name, said in the tooltip with "pack · version ·
-/// author · licence"; for "System" the family it stands for), the check mark at the one `drawn`. One
-/// that can't be used has its name in `text_3` and an alert mark; its click shows its reasons under
-/// the group (`open`: they are shown).
-fn font_item<'a>(entry: &'a FontEntry, drawn: bool, open: bool, suggested: Option<&'a str>) -> Element<'a, Message> {
+/// A font of the dropdown, the whole entry a menu item: its name written in it ("pack · version ·
+/// author · licence" as tooltip; for "System" the family it stands for), the check mark at the one
+/// `drawn`. One that can't be used has its name in `text_3` and an alert mark; its click shows its
+/// reasons under the group (`open`: they are shown).
+fn font_item<'a>(entry: &'a FontEntry, drawn: bool, open: bool) -> Element<'a, Message> {
     let info = &entry.info;
     let tip = match info.id == SYSTEM_ID {
         true => info.family.clone(),
@@ -1225,7 +996,6 @@ fn font_item<'a>(entry: &'a FontEntry, drawn: bool, open: bool, suggested: Optio
             info.license.as_deref(),
         ]),
     };
-    let tip = suggested_tip(suggested, tip);
     let name = in_font(typo::text(typo::body(), font_name(info)).wrapping(Wrapping::None), Some(entry));
     let (name, press) = match info.valid {
         true => (name, Message::Choose(Part::Font, info.id.clone())),
@@ -1234,9 +1004,6 @@ fn font_item<'a>(entry: &'a FontEntry, drawn: bool, open: bool, suggested: Optio
     let mut content = row![container(name).width(Fill).clip(true)].spacing(space::s()).align_y(Alignment::Center);
     if !info.valid {
         content = content.push(small_icon(Icon::CircleAlert, |p| p.text_3));
-    }
-    if suggested.is_some() {
-        content = content.push(round_dot(|p: &Palette| p.text_3));
     }
     let item = button(container(content.push(check_mark(drawn))).center_y(Fill))
         .width(Fill)
@@ -1253,87 +1020,6 @@ fn font_item<'a>(entry: &'a FontEntry, drawn: bool, open: bool, suggested: Optio
 /// `which` at the size of icons in buttons, in the colour `pick` takes from the window's palette.
 fn small_icon<'a>(which: Icon, pick: fn(&Palette) -> Color) -> Element<'a, Message> {
     icon::icon(which, icon::SIZE_SM).style(move |t: &Theme, _| svg::Style { color: Some(pick(&palette(t))) }).into()
-}
-
-/// The tooltip of a font the design `suggested` suggests: "Suggested for {design}" over the rest of
-/// it. Unchanged when it is not suggested.
-fn suggested_tip(suggested: Option<&str>, tip: Option<String>) -> Option<String> {
-    let Some(design) = suggested else { return tip };
-    let why = trf("Suggested for {design}", &[("design", &design)]);
-    Some(match tip {
-        Some(tip) => format!("{why}\n{tip}"),
-        None => why,
-    })
-}
-
-/// What the font row says about the font the drawn design suggests (`DesignInfo::font`, task L.37).
-/// The core sets that font with the design only when it can be used (task L.33).
-#[derive(Debug, PartialEq, Eq)]
-enum FontHint<'a> {
-    /// It is listed, can be used and is drawn; `font` is its family.
-    Drawn { design: &'a str, font: &'a str, id: &'a str },
-    /// It is listed and can be used, another font is drawn; `font` is its family.
-    Other { design: &'a str, font: &'a str, id: &'a str },
-    /// It is not listed as usable – not in the fonts folder, or broken –, so the font stayed; `font`
-    /// is its name as the core lists it (a broken one has no family, then its pack's name), else its
-    /// id, all there is to name it by.
-    Missing { design: &'a str, font: &'a str },
-}
-
-impl<'a> FontHint<'a> {
-    /// The name of the design that suggests it.
-    fn design(&self) -> &'a str {
-        match self {
-            FontHint::Drawn { design, .. } | FontHint::Other { design, .. } | FontHint::Missing { design, .. } => {
-                design
-            }
-        }
-    }
-
-    /// Whether the font `id` is the one suggested, so its button has the dot.
-    fn marks(&self, id: &str) -> bool {
-        match self {
-            FontHint::Drawn { id: suggested, .. } | FontHint::Other { id: suggested, .. } => *suggested == id,
-            FontHint::Missing { .. } => false,
-        }
-    }
-
-    /// The sentence under "Font".
-    fn sentence(&self) -> String {
-        match self {
-            FontHint::Drawn { design, font, .. } => {
-                trf("{font} is suggested for {design}.", &[("font", font), ("design", design)])
-            }
-            FontHint::Other { design, font, .. } => {
-                trf("{design} suggests {font}.", &[("design", design), ("font", font)])
-            }
-            FontHint::Missing { design, font } => {
-                trf("{design} suggests {font}, which isn't installed.", &[("design", design), ("font", font)])
-            }
-        }
-    }
-}
-
-/// The [`FontHint`] of the design drawn; `None` while designs or fonts are not listed, or when the
-/// design suggests no font.
-fn font_hint<'a>(state: &'a State, settings: &'a Settings) -> Option<FontHint<'a>> {
-    let designs = ok(&state.designs)?;
-    let id = drawn(designs, &settings.design);
-    let info = &designs.iter().find(|entry| entry.info.id == id)?.info;
-    let suggested = info.font.as_deref()?;
-    let fonts = ok(&state.fonts)?;
-    let design = info.name.as_str();
-    Some(match fonts.iter().find(|entry| entry.info.id == suggested && entry.info.valid) {
-        // Listed but not usable: named as listed (its pack's name); not listed at all: by its id.
-        None => {
-            let listed = fonts.iter().find(|entry| entry.info.id == suggested);
-            FontHint::Missing { design, font: listed.map_or(suggested, |entry| entry.info.name()) }
-        }
-        Some(entry) if drawn(fonts, &settings.font) == suggested => {
-            FontHint::Drawn { design, font: entry.info.name(), id: suggested }
-        }
-        Some(entry) => FontHint::Other { design, font: entry.info.name(), id: suggested },
-    })
 }
 
 /// The colour scheme's row: its name and the dropdown's button with the scheme drawn
@@ -1569,14 +1255,11 @@ fn byline<'s>(parts: impl IntoIterator<Item = Option<&'s str>>) -> Option<String
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
-// ----- The small mail window of a design (task L.37) -------------------------------------------
+// ----- The small mail window of a spacing level (task L.37, issue #484) ---------------------------
 
-/// The window a [`MailPreview`] shows in small, in logical pixels: the size of the boards of issue
-/// #291, a mail window on a desktop.
-const MAIL_WINDOW: Size = Size::new(1280.0, 800.0);
-
-/// How many buttons ([`size::control_sm()`]) wide a design's thumbnail is.
-const PREVIEW_CONTROLS: f32 = 4.0;
+/// The window a [`MailPreview`] shows in small, in logical pixels: a mail window of a laptop, small
+/// enough that the gaps of a level can be told apart in the preview.
+const MAIL_WINDOW: Size = Size::new(1024.0, 640.0);
 
 /// The share of a text size a line of letters covers seen from afar (about the x-height): how high
 /// the bars are that stand for text in a [`MailPreview`].
@@ -1820,29 +1503,25 @@ fn rail(frame: &mut canvas::Frame, design: &Design, p: &Palette, r: &Regions, x:
     }
 }
 
-/// The folder of `part` in the data directory (`designs/`, `fonts/`, `color-schemes/`); `None`
-/// without a home directory.
+/// The folder of `part` in the data directory (`fonts/`, `color-schemes/`); `None` without a home
+/// directory, and always for designs, which have no folder since issue #484.
 pub fn folder(part: Part) -> Option<PathBuf> {
     match part {
-        Part::Design => torro_core::design::dir(),
+        Part::Design => None,
         Part::Font => torro_core::design::font_dir(),
         Part::ColorScheme => torro_core::design::color_scheme_dir(),
     }
 }
 
-/// "Open designs folder", "Open fonts folder" or "Open color schemes folder", a quiet action of a
-/// heading that names the folder (from home, as `~/…`) in its tooltip; without `words` (no room for
-/// them beside the title) its symbol alone, the words as tooltip.
-fn open_folder<'a>(part: Part, words: bool) -> Element<'a, Message> {
+/// "Open fonts folder" or "Open color schemes folder", a quiet action of a heading that names the
+/// folder (from home, as `~/…`) in its tooltip. Designs have no folder (issue #484): nothing.
+fn open_folder<'a>(part: Part) -> Element<'a, Message> {
     let label = match part {
-        Part::Design => tr("Open designs folder"),
+        Part::Design => return blank().into(),
         Part::Font => tr("Open fonts folder"),
         Part::ColorScheme => tr("Open color schemes folder"),
     };
     let press = Some(Message::OpenFolder(part));
-    if !words {
-        return widgets::icon_button(Icon::Folder, label, press);
-    }
     let open = widgets::text_button(Some(Icon::Folder), label, style::button::ghost, press);
     match folder(part) {
         Some(dir) => widgets::with_tooltip(open, home_relative(&dir)),
@@ -1856,44 +1535,6 @@ fn home_relative(path: &std::path::Path) -> String {
         Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
         None => path.display().to_string(),
     }
-}
-
-/// A PNG as an SVG image for Iced, or `None` when it is not a PNG ([`png_svg`]).
-fn png_as_svg(png: &[u8]) -> Option<svg::Handle> {
-    png_svg(png).map(|svg| svg::Handle::from_memory(svg.into_bytes()))
-}
-
-/// The text of an SVG that shows `png` at its own size, embedded as a `data:` address (the one
-/// kind of reference the SVG renderer resolves without touching the disk). `None` when it is not a
-/// PNG: no signature, or no `IHDR` chunk with the size at its place.
-fn png_svg(png: &[u8]) -> Option<String> {
-    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
-    if !png.starts_with(SIGNATURE) || png.get(12..16)? != b"IHDR" {
-        return None;
-    }
-    let width = u32::from_be_bytes(png.get(16..20)?.try_into().ok()?);
-    let height = u32::from_be_bytes(png.get(20..24)?.try_into().ok()?);
-    Some(format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\"><image width=\"{width}\" height=\"{height}\" href=\"data:image/png;base64,{}\"/></svg>",
-        base64(png)
-    ))
-}
-
-/// Standard base64 with padding (RFC 4648), for the `data:` address of a preview.
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = chunk.iter().enumerate().fold(0u32, |n, (i, byte)| n | (u32::from(*byte) << (16 - 8 * i)));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(char::from(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize]));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 /// −, the level, + and "Reset". The level keeps the width of the widest one ("200%"), so the
@@ -1928,7 +1569,6 @@ fn sample_about(name: &str, version: &str, description: &str) -> torro_core::des
         version: version.into(),
         author: Some("Torro samples".into()),
         description: Some(description.into()),
-        ..torro_core::design::About::default()
     }
 }
 
@@ -1936,68 +1576,39 @@ fn sample_about(name: &str, version: &str, description: &str) -> torro_core::des
 /// like all its data, each list with the standard first, samples that can be chosen and are drawn
 /// at once, and one that breaks rules and says so:
 ///
-/// - designs: the three built-in ones, Standard, Compact and Console (Console suggests JetBrains
-///   Mono, which the demo does not have, and plain-text mail), and "Neon" (broken);
+/// - designs: the three built-in spacing levels, Standard, Comfort and Dense (issue #484);
 /// - fonts: "Tabular" (Inter's tabular cut as text font: the only other family the demo has without
 ///   a folder), "Brush" (broken);
 /// - colour schemes: "Harbor" (teal accent, cool surfaces), "Paper" (warm light surfaces, blue
 ///   accent), "Midnight" (dark only), "Neon" (broken).
 ///
-/// A part `--design`, `--font` or `--color-scheme` names (read from its folder at start, so it is the
-/// active one) joins its list after the samples, so it carries the check mark.
+/// A font or colour scheme `--font` or `--color-scheme` names (read from its folder at start, so it is
+/// the active one) joins its list after the samples, so it carries the check mark.
 pub fn demo_looks() -> Lists {
     Lists { designs: Ok(demo_designs()), fonts: Ok(demo_fonts()), schemes: Ok(demo_schemes()) }
 }
 
-/// The designs of [`demo_looks`].
+/// The designs of [`demo_looks`]: the three built-in spacing levels, as the core lists them.
 fn demo_designs() -> Vec<DesignEntry> {
-    use torro_core::design::{BUILT_IN_IDS, Design, DesignError};
-    let info = |design: &Design| DesignInfo {
-        id: design.id.clone(),
-        name: design.about.name.clone(),
-        version: design.about.version.clone(),
-        author: design.about.author.clone(),
-        description: design.about.description.clone(),
-        standard: design.is_standard(),
-        valid: true,
-        problems: Vec::new(),
-        active: false,
-        font: design.about.font.clone(),
-        mail_view: design.about.mail_view,
-        density: design.density_level(),
-    };
-    let neon = DesignInfo {
-        id: "neon".into(),
-        name: "Neon".into(),
-        version: "0.3.0".into(),
-        author: Some("Torro samples".into()),
-        description: None,
-        standard: false,
-        valid: false,
-        problems: [
-            DesignError::OutOfRange { key: "type.body.size".into(), value: 9.0, min: 11.0, max: 20.0 },
-            DesignError::LineHeight { key: "type.caption".into(), line: 12.0, size: 14.0 },
-            DesignError::UnknownKey { key: "space.xxxl".into() },
-        ]
+    torro_core::design::BUILT_IN_IDS
         .iter()
-        .map(ToString::to_string)
-        .collect(),
-        active: false,
-        font: None,
-        mail_view: None,
-        density: Default::default(),
-    };
-    // The built-in designs need no folder: `load` answers them from the embedded files.
-    let mut designs: Vec<Design> =
-        BUILT_IN_IDS.iter().filter_map(|id| torro_core::design::load(std::path::Path::new(""), id).ok()).collect();
-    let forced = torro_gui::design::active();
-    if !designs.iter().any(|design| design.id == forced.id) {
-        designs.push((*forced).clone());
-    }
-    let mut entries: Vec<DesignEntry> =
-        designs.into_iter().map(|design| Entry::design(info(&design), Some(design))).collect();
-    entries.push(Entry::design(neon, None));
-    entries
+        .filter_map(|id| torro_core::design::load(id).ok())
+        .map(|design| {
+            let info = DesignInfo {
+                id: design.id.clone(),
+                name: design.about.name.clone(),
+                version: design.about.version.clone(),
+                author: design.about.author.clone(),
+                description: design.about.description.clone(),
+                standard: design.is_standard(),
+                valid: true,
+                problems: Vec::new(),
+                active: false,
+                density: design.density_level(),
+            };
+            Entry::new(info, Some(design))
+        })
+        .collect()
 }
 
 /// The fonts of [`demo_looks`]: the standard (bundled, Sans), Tabular from a folder without a kind
@@ -2208,13 +1819,16 @@ mod tests {
         }
     }
 
-    /// Tasks L.18 and L.23: a tile of each part draws with it, "Reload" lists all three again and
-    /// each heading opens its own folder – each without a question first.
+    /// Tasks L.18 and L.23: a choice of each part draws with it, "Reload" lists all three again and
+    /// each heading opens its own folder – each without a question first. Designs have no folder
+    /// (issue #484).
     #[test]
-    fn each_tile_draws_with_its_part_and_the_headings_list_and_open() {
+    fn each_choice_draws_with_its_part_and_the_headings_list_and_open() {
         for part in [Part::Design, Part::Font, Part::ColorScheme] {
             let choose = update(&mut State::default(), Message::Choose(part, "harbor".into()), &Settings::default());
             assert!(matches!(choose, Action::Choose(p, ref id) if p == part && id == "harbor"), "{choose:?}");
+        }
+        for part in [Part::Font, Part::ColorScheme] {
             let open = update(&mut State::default(), Message::OpenFolder(part), &Settings::default());
             assert!(matches!(open, Action::OpenFolder(p) if p == part), "{open:?}");
         }
@@ -2222,6 +1836,9 @@ mod tests {
         assert!(matches!(reload, Action::ListLooks), "{reload:?}");
         assert_eq!(folder(Part::Font), torro_core::design::font_dir());
         assert_eq!(folder(Part::ColorScheme), torro_core::design::color_scheme_dir());
+        assert_eq!(folder(Part::Design), None, "no designs folder");
+        let choose = choose_request(Part::Design, "dense");
+        assert_eq!(choose, Request::SetSetting { key: SettingKey::Design, value: serde_json::json!("dense") });
     }
 
     /// Task L.18: the colour mode's segment sets the appearance, one segment per mode in the order
@@ -2238,10 +1855,12 @@ mod tests {
             assert_eq!(sent(action).0, SettingKey::Appearance, "{mode:?}");
         }
         assert!(mode_words_need() < size::content_max(), "a wide page shows the words");
+        let state = demo();
         for appearance in [Appearance::System, Appearance::Light, Appearance::Dark] {
             let settings = Settings { appearance, ..Settings::default() };
-            drop(display(&settings, size::content_max()));
-            drop(display(&settings, size::props()));
+            drop(colors_group(&state, &settings, size::content_max()));
+            drop(colors_group(&state, &settings, size::props()));
+            drop(display(&settings));
         }
     }
 
@@ -2270,20 +1889,20 @@ mod tests {
                 ok(&state.schemes).and_then(|e| opened(e, part, state.problems.as_ref())).map(|e| e.info.id.clone())
             }
         };
-        assert_eq!(open(&state, Part::Design), None);
+        assert_eq!(open(&state, Part::ColorScheme), None);
 
-        let action = update(&mut state, Message::Problems(Part::Design, "neon".into()), &data.settings);
+        let action = update(&mut state, Message::Problems(Part::ColorScheme, "neon".into()), &data.settings);
         assert!(matches!(action, Action::None), "{action:?}");
-        assert_eq!(open(&state, Part::Design).as_deref(), Some("neon"));
-        assert_eq!(open(&state, Part::ColorScheme), None, "the scheme \"neon\" is another entry");
+        assert_eq!(open(&state, Part::ColorScheme).as_deref(), Some("neon"));
+        assert_eq!(open(&state, Part::Font), None, "only the colour scheme");
         let _: Element<'_, Message> = appearance(&state, &data.settings);
 
-        let _ = update(&mut state, Message::Problems(Part::Design, "neon".into()), &data.settings);
+        let _ = update(&mut state, Message::Problems(Part::ColorScheme, "neon".into()), &data.settings);
         assert_eq!(state.problems, None, "a second click hides them");
 
-        let _ = update(&mut state, Message::Problems(Part::Design, "neon".into()), &data.settings);
         let _ = update(&mut state, Message::Problems(Part::ColorScheme, "neon".into()), &data.settings);
-        assert_eq!((open(&state, Part::Design), open(&state, Part::ColorScheme).as_deref()), (None, Some("neon")));
+        assert_eq!(open(&state, Part::ColorScheme).as_deref(), Some("neon"));
+        assert_eq!(open(&state, Part::Design), None, "every spacing level can be used");
         let _ = update(&mut state, Message::Problems(Part::Font, "brush".into()), &data.settings);
         assert_eq!(open(&state, Part::Font).as_deref(), Some("brush"), "another tile swaps them");
         let _: Element<'_, Message> = appearance(&state, &data.settings);
@@ -2321,77 +1940,13 @@ mod tests {
     fn the_check_mark_is_at_the_part_the_windows_draw_with() {
         let state = demo();
         let designs = ok(&state.designs).expect("designs");
-        assert_eq!(drawn(designs, "compact"), "compact");
+        assert_eq!(drawn(designs, "dense"), "dense");
         assert_eq!(drawn(designs, "torro"), "torro");
-        assert_eq!(drawn(designs, "neon"), "torro", "a broken design is not drawn: the standard is");
-        assert_eq!(drawn(designs, "gone"), "torro", "nor a missing one");
+        assert_eq!(drawn(designs, "console"), "torro", "an old design is no level: the standard is drawn");
         let fonts = ok(&state.fonts).expect("fonts");
         assert_eq!(drawn(fonts, "tabular"), "tabular");
         assert_eq!(drawn(fonts, ""), "torro", "a core from before task L.22 names none");
         assert_eq!(drawn(ok(&state.schemes).expect("schemes"), "neon"), "torro");
-    }
-
-    /// Task L.37: the font's row says what the drawn design suggests – drawn already, another font
-    /// drawn, or a font that is not there – and marks the suggested font's button; a design without
-    /// a suggestion, and a broken one (the standard is drawn), say nothing.
-    #[test]
-    fn the_font_row_says_what_the_drawn_design_suggests() {
-        let mut state = demo();
-        let mut settings = Settings::default();
-        assert_eq!(font_hint(&state, &settings), None, "the standard suggests no font");
-        settings.design = "console".into();
-        let missing = font_hint(&state, &settings).expect("Console suggests one");
-        assert_eq!(missing, FontHint::Missing { design: "Console", font: "jetbrains-mono" });
-        assert!(!missing.marks("jetbrains-mono"), "no button to mark");
-        let sentence: [(&str, &dyn std::fmt::Display); 2] = [("design", &"Console"), ("font", &"jetbrains-mono")];
-        assert_eq!(missing.sentence(), trf("{design} suggests {font}, which isn't installed.", &sentence));
-        // Issue #291: listed by the core but not usable – named as listed, not by its id.
-        if let Some(Ok(fonts)) = state.fonts.as_mut() {
-            let listed = FontInfo {
-                id: "jetbrains-mono".into(),
-                family: None,
-                name: "JetBrains Mono".into(),
-                version: String::new(),
-                author: None,
-                description: None,
-                license: None,
-                origin: torro_ipc::FontOrigin::Bundled,
-                kind: None,
-                standard: false,
-                valid: false,
-                problems: vec!["A file is missing.".into()],
-                active: false,
-            };
-            fonts.push(Entry { info: listed, part: None, preview: None });
-        }
-        let named = font_hint(&state, &settings).expect("Console suggests one");
-        assert_eq!(named, FontHint::Missing { design: "Console", font: "JetBrains Mono" });
-
-        // Compact suggests the demo's Tabular, for this test.
-        if let Some(Ok(designs)) = state.designs.as_mut() {
-            let compact = designs.iter_mut().find(|entry| entry.info.id == "compact").expect("compact");
-            compact.info.font = Some("tabular".into());
-        }
-        settings.design = "compact".into();
-        let other = font_hint(&state, &settings).expect("a hint");
-        assert_eq!(other, FontHint::Other { design: "Compact", font: "Inter Tabular", id: "tabular" });
-        assert!(other.marks("tabular") && !other.marks("torro"));
-        assert_eq!(other.design(), "Compact");
-        let sentence: [(&str, &dyn std::fmt::Display); 2] = [("design", &"Compact"), ("font", &"Inter Tabular")];
-        assert_eq!(other.sentence(), trf("{design} suggests {font}.", &sentence));
-        settings.font = "tabular".into();
-        let drawn = font_hint(&state, &settings).expect("a hint");
-        assert_eq!(drawn, FontHint::Drawn { design: "Compact", font: "Inter Tabular", id: "tabular" });
-        assert!(drawn.marks("tabular"));
-        assert_eq!(drawn.sentence(), trf("{font} is suggested for {design}.", &sentence));
-        settings.design = "neon".into();
-        assert_eq!(font_hint(&state, &settings), None, "a broken one is not drawn: the standard is");
-        assert_eq!(font_hint(&State::default(), &settings), None, "nothing listed yet");
-
-        let why = trf("Suggested for {design}", &[("design", &"Compact")]);
-        assert_eq!(suggested_tip(Some("Compact"), Some("1.2.0".into())), Some(format!("{why}\n1.2.0")));
-        assert_eq!(suggested_tip(None, Some("1.2.0".into())), Some("1.2.0".into()));
-        assert_eq!(suggested_tip(Some("Compact"), None), Some(why));
     }
 
     /// Issue #291 (review of the three designs): the zoom's value has room for every level with
@@ -2407,65 +1962,25 @@ mod tests {
         drop(zoom_control(Zoom::DEFAULT));
     }
 
-    /// Task L.37: choosing a design keeps what was drawn; the reload that carries it names what the
-    /// core switched with it – the font by its family, the mail view –, nothing when nothing changed.
-    /// A reload from before the save waits, a refused design leaves no hint, and choosing again
-    /// clears the last hint.
+    /// Issue #484: choosing a spacing level asks for the level alone and leaves no hint behind; the
+    /// segment shows Comfort, Standard and Dense in that order, named as the core names them.
     #[test]
-    fn the_hint_names_what_the_core_switched_with_a_design() {
+    fn choosing_a_spacing_level_sets_only_the_level() {
         let data = Data::default();
         let mut state = demo();
-        let action = update(&mut state, Message::Choose(Part::Design, "console".into()), &data.settings);
-        assert!(matches!(action, Action::Choose(Part::Design, ref id) if id == "console"), "{action:?}");
-        assert_eq!(state.switched, None);
-
-        // The core switched the mail view and the font.
-        let carried = Settings {
-            design: "console".into(),
-            font: "tabular".into(),
-            mail_view: MailFormat::Text,
-            ..data.settings.clone()
-        };
-        loaded(&mut state, &carried, true);
-        assert_eq!(state.switched, None, "still waiting for the save");
-        loaded(&mut state, &carried, false);
-        let switched = Switched { font: Some("tabular".into()), mail_view: Some(MailFormat::Text) };
-        assert_eq!(state.switched.as_ref(), Some(&switched));
-        let list = format!("{}, {}", trf("font {font}", &[("font", &"Inter Tabular")]), tr("plain-text mail"));
-        assert_eq!(switched_list(&switched, &state.fonts), list);
-        drop(appearance(&state, &data.settings));
-        drop(designs(&state, &data.settings, size::content_max()));
-
-        // Nothing changed: no hint; and choosing again cleared the last one.
-        let _ = update(&mut state, Message::Choose(Part::Design, "compact".into()), &data.settings);
-        assert_eq!(state.switched, None);
-        loaded(&mut state, &Settings { design: "compact".into(), ..data.settings.clone() }, false);
-        assert_eq!(state.switched, None, "nothing was switched");
-
-        // Refused: the settings still name the design before.
-        let _ = update(&mut state, Message::Choose(Part::Design, "console".into()), &data.settings);
-        loaded(&mut state, &data.settings, false);
-        assert_eq!((state.switched.as_ref(), state.before.as_ref()), (None, None));
-
-        // Back to HTML, with a font that is not listed: named by its id.
-        let back = Switched { font: Some("plex".into()), mail_view: Some(MailFormat::Html) };
-        let list = format!("{}, {}", trf("font {font}", &[("font", &"plex")]), tr("HTML mail"));
-        assert_eq!(switched_list(&back, &state.fonts), list);
-    }
-
-    /// Task L.37 (the demo has no core): the suggestions of a design as the core would apply them –
-    /// Console's mail view; its font only when it is listed as usable.
-    #[test]
-    fn the_demo_knows_what_a_design_suggests() {
-        let mut state = demo();
-        assert_eq!(suggestions_of(&state, "console"), (None, Some(MailFormat::Text)), "JetBrains Mono is missing");
-        assert_eq!(suggestions_of(&state, "torro"), (None, None));
-        assert_eq!(suggestions_of(&state, "gone"), (None, None));
-        if let Some(Ok(designs)) = state.designs.as_mut() {
-            let console = designs.iter_mut().find(|entry| entry.info.id == "console").expect("console");
-            console.info.font = Some("tabular".into());
+        let action = update(&mut state, Message::Choose(Part::Design, "dense".into()), &data.settings);
+        assert!(matches!(action, Action::Choose(Part::Design, ref id) if id == "dense"), "{action:?}");
+        let entries = ok(&state.designs).expect("designs");
+        let order: Vec<&str> = level_order(entries).iter().map(|entry| entry.info.id.as_str()).collect();
+        assert_eq!(order, ["comfort", "torro", "dense"], "from the most room to the least");
+        let names: Vec<&str> = level_order(entries).iter().map(|entry| entry.info.name.as_str()).collect();
+        assert_eq!(names, [tr("Comfort"), tr("Standard"), tr("Dense")]);
+        for design in ["torro", "comfort", "dense"] {
+            let settings = Settings { design: design.into(), ..Settings::default() };
+            for width in [size::content_max(), size::props()] {
+                drop(spacing(&state, &settings, width));
+            }
         }
-        assert_eq!(suggestions_of(&state, "console"), (Some("tabular".into()), Some(MailFormat::Text)));
     }
 
     /// Task L.37: the colour schemes' dropdown has the sections "Torro", "Light and dark" and "Dark
@@ -2633,7 +2148,6 @@ mod tests {
         let choose = update(&mut state, Message::Choose(Part::ColorScheme, "midnight".into()), &data.settings);
         assert!(matches!(choose, Action::Choose(Part::ColorScheme, ref id) if id == "midnight"), "{choose:?}");
         assert!(!state.schemes_open, "choosing closes it");
-        assert_eq!(state.before, None, "only a design is compared after the reload");
 
         let _ = update(&mut state, Message::ToggleSchemes, &data.settings);
         let _ = update(&mut state, Message::Problems(Part::ColorScheme, "neon".into()), &data.settings);
@@ -2646,48 +2160,36 @@ mod tests {
 
     /// Task L.37: a design's density comes from the core (`DesignInfo::density`) as dots and a word,
     /// one more dot per step.
+    /// Issue #484: the demo lists the three levels with their density, the core's order.
     #[test]
-    fn the_density_has_its_dots_and_word() {
-        let levels = [DensityLevel::Airy, DensityLevel::Balanced, DensityLevel::Dense, DensityLevel::VeryDense];
-        assert_eq!(levels.map(density_dots), [0, 1, 2, 3]);
-        assert_eq!(levels.map(density_label), [tr("Airy"), tr("Balanced"), tr("Dense"), tr("Very dense")]);
+    fn the_demo_lists_the_three_levels() {
+        use torro_core::design::DensityLevel;
         let state = demo();
         let designs = ok(&state.designs).expect("designs");
-        let listed: Vec<(&str, DensityLevel)> =
-            designs.iter().filter(|e| e.info.valid).map(|e| (e.info.id.as_str(), e.info.density)).collect();
+        let listed: Vec<(&str, DensityLevel)> = designs.iter().map(|e| (e.info.id.as_str(), e.info.density)).collect();
         assert_eq!(
             listed,
-            [("torro", DensityLevel::Balanced), ("compact", DensityLevel::Dense), ("console", DensityLevel::VeryDense)]
+            [("torro", DensityLevel::Balanced), ("comfort", DensityLevel::Airy), ("dense", DensityLevel::Dense)]
         );
-        for level in levels {
-            drop(density(level, true));
-            drop(density(level, false));
-        }
     }
 
-    /// Task L.37: the small mail window is drawn from the design's own values, scaled from the window
-    /// to the thumbnail: the denser the design, the lower its rows and the narrower its sidebar and
-    /// rail; Console's list is wider. The thumbnail follows the design it is drawn in.
+    /// Task L.37, issue #484: the small mail window is drawn from the level's own values, scaled from
+    /// the window to the preview: the denser the level, the lower its rows and header and the narrower
+    /// its rail; the widths of sidebar and list are the same in every level.
     #[test]
     fn the_mail_preview_is_drawn_from_the_design() {
         let state = demo();
         let of = |id: &str| design_of(&state, id).expect(id);
         let width = MAIL_WINDOW.width / 10.0;
-        let [standard, compact, console] = [of("torro"), of("compact"), of("console")].map(|d| Regions::of(&d, width));
+        let [comfort, standard, dense] = [of("comfort"), of("torro"), of("dense")].map(|d| Regions::of(&d, width));
         assert_eq!(standard.scale, 0.1);
         assert_eq!((standard.sidebar, standard.header, standard.row), (24.0, 6.4, 10.0));
-        assert!(standard.row > compact.row && compact.row > console.row);
-        assert!(standard.sidebar > compact.sidebar && compact.sidebar > console.sidebar);
-        assert!(standard.rail > console.rail && console.list > standard.list);
-
-        let thumbnail = thumbnail_size();
-        assert_eq!(thumbnail.width, PREVIEW_CONTROLS * size::control_sm());
-        assert_eq!(thumbnail.width / thumbnail.height, MAIL_WINDOW.width / MAIL_WINDOW.height);
-        let entries = ok(&state.designs).expect("designs");
-        for entry in entries {
-            for (drawn, stacked) in [(true, false), (false, true)] {
-                drop(design_row(entry, drawn, stacked));
-            }
+        assert!(comfort.row > standard.row && standard.row > dense.row);
+        assert!(comfort.rail > standard.rail && standard.rail > dense.rail);
+        assert!(standard.header > dense.header);
+        assert_eq!((comfort.sidebar, comfort.list), (dense.sidebar, dense.list), "widths stay");
+        for design in ["comfort", "torro", "dense"] {
+            drop(preview(of(design), size::content_max()));
         }
     }
 
@@ -2697,14 +2199,14 @@ mod tests {
         assert!(unlisted(&state));
         listed(&mut state, demo_looks());
         assert!(!unlisted(&state));
-        assert!(design_of(&state, "console").is_some(), "an entry that can be used carries its part");
+        assert!(design_of(&state, "dense").is_some(), "an entry that can be used carries its part");
         assert!(font_of(&state, "tabular").is_some());
         assert!(scheme_of(&state, "harbor").is_some());
-        assert!(design_of(&state, "neon").is_none(), "one that can't, none");
+        assert!(design_of(&state, "console").is_none(), "an old design is not listed");
         assert!(font_of(&state, "brush").is_none());
         assert!(scheme_of(&state, "gone").is_none());
         listed(&mut state, Lists::failed("core is not running".into()));
-        assert!(design_of(&state, "console").is_none());
+        assert!(design_of(&state, "dense").is_none());
         assert!(font_of(&state, "tabular").is_none());
     }
 
@@ -2719,54 +2221,25 @@ mod tests {
             let plain = Settings::default();
             let _page: Element<'_, Message> = appearance(state, &plain);
         }
-        let marked = Data { settings: Settings { design: "console".into(), ..Settings::default() } };
+        let marked = Data { settings: Settings { design: "dense".into(), ..Settings::default() } };
         let _page: Element<'_, Message> = appearance(&listing, &marked.settings);
         // The page itself is laid out for its width; build it wide and narrow, in every state.
         for state in [&loading, &listing, &failed, &partly] {
             for width in [size::content_max(), size::props()] {
                 drop(page(state, &marked.settings, width));
-                drop(looks(state, &marked.settings, width));
+                drop(spacing(state, &marked.settings, width));
+                drop(font_group(state, &marked.settings));
             }
         }
     }
 
     #[test]
-    fn base64_matches_the_rfc_4648_vectors() {
-        let cases = [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg==")];
-        for (plain, coded) in cases.into_iter().chain([("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")]) {
-            assert_eq!(base64(plain.as_bytes()), coded, "{plain:?}");
-        }
-    }
-
-    /// A pack's `preview.png` is drawn through the SVG renderer: the SVG built around it must show
-    /// the picture's pixels at its size.
-    #[test]
-    fn a_preview_png_is_drawn_as_an_svg_image() {
-        use resvg::tiny_skia::{Color, Pixmap};
-        let mut picture = Pixmap::new(6, 4).expect("pixmap");
-        picture.fill(Color::from_rgba8(0x14, 0xB8, 0xA6, 0xFF));
-        let png = picture.encode_png().expect("png");
-        let svg = png_svg(&png).expect("a PNG");
-        assert!(svg.contains("width=\"6\" height=\"4\""), "{svg}");
-
-        let tree = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default()).expect("svg");
-        let mut drawn = Pixmap::new(6, 4).expect("pixmap");
-        resvg::render(&tree, resvg::tiny_skia::Transform::default(), &mut drawn.as_mut());
-        let pixel = drawn.pixel(3, 2).expect("pixel");
-        assert_eq!((pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()), (0x14, 0xB8, 0xA6, 0xFF));
-
-        assert!(png_svg(b"GIF89a").is_none(), "not a PNG");
-        assert!(png_svg(&png[..20]).is_none(), "cut short");
-        assert!(png_as_svg(&png).is_some());
-    }
-
-    #[test]
     fn the_folder_is_shown_from_home() {
         if let Some(home) = std::env::home_dir() {
-            let inside = home.join("designs");
-            assert_eq!(home_relative(&inside), format!("~{}designs", std::path::MAIN_SEPARATOR));
+            let inside = home.join("fonts");
+            assert_eq!(home_relative(&inside), format!("~{}fonts", std::path::MAIN_SEPARATOR));
         }
-        let outside = std::path::Path::new("/opt/torro/designs");
+        let outside = std::path::Path::new("/opt/torro/fonts");
         assert_eq!(home_relative(outside), outside.display().to_string());
     }
 }
