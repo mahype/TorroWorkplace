@@ -1360,7 +1360,8 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
   aber nur noch der Platz in der Liste.
 - **Voreinstellung von `model` (Issue #481):** `inbox.create_category` ohne `model` lässt die KI die neue Kategorie
   wählen (`true`), wie die Oberfläche; vorher war es `false`. Wer die KI heraushalten will, gibt `model: false` an. Das
-  Feld bleibt optional, `v` ändert sich nicht.
+  Feld bleibt optional, `v` ändert sich nicht. Folge: In einer Gruppe, die der KI schon 20 Kategorien anbietet, endet ein
+  Aufruf ohne `model`, der bisher durchging, mit `error`; mit `model: false` geht er weiter durch.
 - MCP-Toolnamen sind stabil wie API-Namen. Im MCP wird `pending` nach 60 Sekunden Warten als
   Tool-Fehler mit Code `pending` und der Kennung der Freigabe gemeldet (siehe „Freigaben“).
 
