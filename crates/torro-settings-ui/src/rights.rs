@@ -828,7 +828,7 @@ fn area_detail(area: Area) -> &'static str {
         Area::Tools => tr("The assistant's own tools, such as making PDFs"),
         Area::Extensions => tr("Listing, switching off and removing servers"),
         Area::Settings => tr("Settings of the suite"),
-        Area::Apps => tr("Opening the suite's apps"),
+        Area::Apps => tr("Opening the suite's apps and hiding its announcements"),
         Area::System | Area::Clients | Area::Approvals => "",
     }
 }
