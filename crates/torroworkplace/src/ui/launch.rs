@@ -209,10 +209,38 @@ pub enum Open {
     SetupMailAdd,
     /// The setup's AI step after its search (task W.8): the demo finds Ollama, not LM Studio.
     SetupAi,
+    /// The section Apps (issue #411) with the demo's catalog ([`super::apps::demo_catalog`]): two
+    /// updates, a package manager's app, one missing.
+    Apps,
+    /// The same with the menu "…" of the Calendar's card open.
+    AppsMenu,
+    /// The same with the Assistant being installed: its card shows how far the job is and "Show".
+    AppsInstalling,
+    /// The section with the Notification Hub's command of its package manager in view: the search
+    /// "hub".
+    AppsManaged,
+    /// The section after GitHub could not be reached: the catalog of three days ago, "Retry".
+    AppsOffline,
+    /// The window of a job (`ui --app-job`): the Assistant being installed, at its step "Install".
+    AppsInstall,
+    /// That window once the Assistant is installed: "Close" and "Open Torro Assistant".
+    AppsInstalled,
+    /// That window asking before the App Feed is uninstalled.
+    AppsUninstall,
+    /// That window offering the update of the main application.
+    AppsSelfUpdate,
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 110] = [
+    /// Whether the state is the window of an app job rather than the control centre's
+    /// ([`super::app_job::run`]).
+    pub fn is_app_job(self) -> bool {
+        matches!(self, Open::AppsInstall | Open::AppsInstalled | Open::AppsUninstall | Open::AppsSelfUpdate)
+    }
+}
+
+impl Open {
+    pub const ALL: [(&'static str, Open); 119] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -323,16 +351,26 @@ impl Open {
         ("setup-web", Open::Setup(super::setup::Step::Web)),
         ("setup-documents", Open::Setup(super::setup::Step::Documents)),
         ("setup-done", Open::Setup(super::setup::Step::Done)),
+        ("apps", Open::Apps),
+        ("apps-menu", Open::AppsMenu),
+        ("apps-installing", Open::AppsInstalling),
+        ("apps-managed", Open::AppsManaged),
+        ("apps-offline", Open::AppsOffline),
+        ("apps-install", Open::AppsInstall),
+        ("apps-installed", Open::AppsInstalled),
+        ("apps-uninstall", Open::AppsUninstall),
+        ("apps-self-update", Open::AppsSelfUpdate),
     ];
 }
 
 /// The start parameters of `torroworkplace ui`:
 ///
-/// - `--section overview|accounts|ai|api|mcp|connections|approvals|workspaces|appearance|general`: the page to
+/// - `--section overview|apps|accounts|ai|api|mcp|connections|approvals|workspaces|appearance|general`: the page to
 ///   start on. The states of `--open` that belong to a page choose that page themselves. Other
 ///   programs open a page this way (`torroworkplace ui --section accounts`). The words of pages
-///   that moved keep working ([`Section::from_arg`]): `agents` is MCP (task S.35), `apps` and
-///   `inbox` are General, where the suite's parts are switched on and opened. `assistant` and
+///   that moved keep working ([`Section::from_arg`]): `agents` is MCP (task S.35), `inbox` is
+///   General, where the suite's parts are switched on and opened; `apps` is the app catalog again
+///   (issue #411), where they are switched on and off now. `assistant` and
 ///   `bot:<id>` ([`Launch::client`]) bring the assistant's window to the front instead of a page:
 ///   what the assistant and its bots may use is set there, under Access (task S.34).
 /// - `--demo`: sample accounts, templates, settings, apps, agents, approvals and inbox rules in memory instead
@@ -354,6 +392,10 @@ impl Open {
 /// - `--saved` (needs `--template`): the dialog in the mode `Save`, for a template saved just now;
 ///   "Cancel" deletes it again. Only the tray's "Save workspace…" (task WS.7) passes it, never the
 ///   target `template:<id>`, so no program can have a template deleted by opening its dialog.
+/// - `--app-job=<target>`: open only the window of an app job (issue #411, [`super::app_job`]): a
+///   job's id to follow it, `uninstall:<app>` to ask and uninstall, `update:torroworkplace` to offer
+///   the main application's update. The control centre starts it; with `--demo` the states
+///   `apps-install`, `apps-installed`, `apps-uninstall` and `apps-self-update` of `--open` show it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub section: Section,
@@ -377,6 +419,8 @@ pub struct Launch {
     pub template: Option<String>,
     /// `--saved`: that dialog in the mode `Save` ([`super::template_form::Mode::Save`]).
     pub saved: bool,
+    /// `--app-job=<target>`: the window of an app job ([`super::app_job::Target`]).
+    pub app_job: Option<String>,
 }
 
 impl Default for Launch {
@@ -394,6 +438,7 @@ impl Default for Launch {
             setup_if_open: false,
             template: None,
             saved: false,
+            app_job: None,
         }
     }
 }
@@ -470,7 +515,7 @@ impl Launch {
                 Some(id) if is_bot_id(id) => (Section::Overview, Some(ClientTarget::Bot(id.to_owned()))),
                 _ => {
                     let mut valid: Vec<&str> = Section::ALL.iter().map(|s| s.arg()).collect();
-                    valid.extend(["assistant", "bot:<id>", "agents", "apps", "inbox"]);
+                    valid.extend(["assistant", "bot:<id>", "agents", "inbox"]);
                     (Section::from_arg(word).ok_or_else(|| unknown("--section", word, valid))?, None)
                 }
             },
@@ -524,6 +569,17 @@ impl Launch {
         if saved && template.is_none() {
             return Err(LaunchError::NeedsTemplate("--saved"));
         }
+        let app_job = match flag_value(args, "--app-job")? {
+            Some(value) if super::app_job::Target::parse(value).is_none() => {
+                let valid = vec!["<job id>", "uninstall:<app>", "update:torroworkplace"];
+                return Err(if value.is_empty() {
+                    LaunchError::MissingValue("--app-job")
+                } else {
+                    unknown("--app-job", value, valid)
+                });
+            }
+            other => other.map(str::to_owned),
+        };
         Ok(Launch {
             section,
             client,
@@ -537,6 +593,7 @@ impl Launch {
             setup_if_open,
             template,
             saved,
+            app_job,
         })
     }
 }
@@ -692,6 +749,10 @@ pub fn demo_data() -> Data {
         extensions: super::connections::Listing::Entries(demo_extensions()),
         catalog: super::connections::Listing::Entries(demo_catalog()),
         search_providers: demo_search_providers(),
+        app_catalog: super::apps::Loaded {
+            catalog: super::apps::Catalog::Listed(Box::new(super::apps::demo_catalog(now))),
+            job: None,
+        },
         error: None,
     }
 }
@@ -1566,12 +1627,33 @@ mod tests {
                 "{target:?}"
             );
         }
-        for word in ["apps", "inbox"] {
-            let launch = Launch::parse(&args(&["--section", word])).expect(word);
-            assert_eq!((launch.section, launch.client), (Section::General, None), "{word}");
-        }
+        let inbox = Launch::parse(&args(&["--section", "inbox"])).expect("inbox");
+        assert_eq!((inbox.section, inbox.client), (Section::General, None));
+        // Issue #411: the apps have their own section again, the catalog.
+        let apps = Launch::parse(&args(&["--section", "apps"])).expect("apps");
+        assert_eq!((apps.section, apps.client), (Section::Apps, None));
         let agents = Launch::parse(&args(&["--section", "agents"])).expect("the old word");
         assert_eq!((agents.section, agents.client), (Section::Mcp, None));
+    }
+
+    /// Issue #411: `--app-job=` names a job to follow, an uninstall or the main application's
+    /// update; anything else is refused with what it takes.
+    #[test]
+    fn the_app_job_window_is_named_by_its_target() {
+        let follow = Launch::parse(&args(&["--app-job=a1b2"])).expect("a job");
+        assert_eq!(follow.app_job.as_deref(), Some("a1b2"));
+        let uninstall = Launch::parse(&args(&["--app-job", "uninstall:torro-tasks"])).expect("both spellings");
+        assert_eq!(uninstall.app_job.as_deref(), Some("uninstall:torro-tasks"));
+        assert_eq!(Launch::parse(&args(&["--app-job="])), Err(LaunchError::MissingValue("--app-job")));
+        let refused = Launch::parse(&args(&["--app-job=update:torro-tasks"])).expect_err("only the main application");
+        assert!(refused.to_string().contains("update:torroworkplace"), "{refused}");
+        assert_eq!(Launch::parse(&[]).map(|launch| launch.app_job), Ok(None));
+        for word in ["apps-install", "apps-installed", "apps-uninstall", "apps-self-update"] {
+            let launch = Launch::parse(&args(&["--demo", "--open", word])).expect(word);
+            assert!(launch.open.is_some_and(Open::is_app_job), "{word}");
+        }
+        let section = Launch::parse(&args(&["--demo", "--open", "apps-menu"])).expect("apps-menu");
+        assert!(!section.open.is_some_and(Open::is_app_job));
     }
 
     /// Task WS.6: `--template=<id>` opens only the template's dialog, `--saved` in the mode `Save`
@@ -1648,7 +1730,7 @@ mod tests {
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
             err.to_string().ends_with(
-                "valid values: overview, accounts, ai, api, mcp, connections, approvals, workspaces, appearance, general, assistant, bot:<id>, agents, apps, inbox"
+                "valid values: overview, apps, accounts, ai, api, mcp, connections, approvals, workspaces, appearance, general, assistant, bot:<id>, agents, inbox"
             ),
             "{err}"
         );
