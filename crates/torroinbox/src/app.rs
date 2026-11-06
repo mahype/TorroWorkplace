@@ -3185,9 +3185,9 @@ pub enum Message {
     Unsubscribe,
     /// The core's answer to `mail.unsubscribe`, with what was asked.
     Unsubscribed(UnsubscribeAsk, Result<UnsubscribeVia, String>),
-    /// The core's answer to `mail.get_sender_logo` (issue #453): the logo of a domain as PNG, `None`
-    /// when there is none (or it could not be had).
-    Logo(String, Option<Vec<u8>>),
+    /// The core's answer to `mail.get_sender_logo` (issue #453): the logo of a domain as PNG,
+    /// `Some(None)` when there is none, `None` when the core could not be asked.
+    Logo(String, Option<Option<Vec<u8>>>),
     /// The answer to fetching mail now (task E10.1, `accounts.sync`).
     Fetched(Result<(), String>),
     /// "Pick…" in the snooze menu: the date and time picker.
@@ -4618,7 +4618,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let mut wanted: Vec<(String, String)> = Vec::new();
         for message in self.messages.iter().chain(open) {
             let Some(domain) = &message.logo else { continue };
-            if !self.logos.contains_key(domain) && !wanted.iter().any(|(known, _)| known == domain) {
+            let ask = match self.logos.get(domain) {
+                None => true,
+                Some(mail::Logo::Failed(at)) => at.elapsed() >= mail::LOGO_RETRY,
+                Some(_) => false,
+            };
+            if ask && !wanted.iter().any(|(known, _)| known == domain) {
                 wanted.push((domain.clone(), message.id.clone()));
             }
         }
@@ -4627,7 +4632,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             self.logos.insert(domain.clone(), mail::Logo::Asked);
             let inbox = Arc::clone(&self.inbox);
             tasks.push(Task::perform(async move { inbox.sender_logo(id).await }, move |png| {
-                Message::Logo(domain.clone(), png.ok().flatten())
+                Message::Logo(domain.clone(), png.ok())
             }));
         }
         Task::batch(tasks)
@@ -5032,9 +5037,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::AskUnsubscribe(ask) => return self.ask_unsubscribe(ask),
             Message::Unsubscribe => return self.unsubscribe(),
             Message::Unsubscribed(ask, result) => return self.unsubscribed(ask, result),
-            Message::Logo(domain, png) => {
-                let logo = png
-                    .map_or(mail::Logo::Missing, |png| mail::Logo::Here(iced::widget::image::Handle::from_bytes(png)));
+            Message::Logo(domain, answer) => {
+                let logo = match answer {
+                    Some(Some(png)) => mail::Logo::Here(iced::widget::image::Handle::from_bytes(png)),
+                    Some(None) => mail::Logo::Missing,
+                    None => mail::Logo::Failed(std::time::Instant::now()),
+                };
                 self.logos.insert(domain, logo);
             }
             Message::Fetched(Ok(())) => return self.load(),
@@ -11568,6 +11576,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             },
             unsubscribed: &self.unsubscribed,
             logos: &self.logos,
+            sent: matches!(self.view, View::Sent),
         })
     }
 

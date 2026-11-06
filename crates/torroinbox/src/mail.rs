@@ -2020,7 +2020,12 @@ pub enum Logo {
     Here(iced::widget::image::Handle),
     /// The core has none (any more): the circle shows its mark.
     Missing,
+    /// The core could not be asked (it restarts, say): asked again after [`LOGO_RETRY`].
+    Failed(std::time::Instant),
 }
+
+/// How long a logo that could not be asked waits before it is asked again.
+pub const LOGO_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The logos the window holds, by domain.
 pub type Logos = HashMap<String, Logo>;
@@ -2039,23 +2044,28 @@ fn logo_for<'a>(
     }
     match logos.get(message.logo.as_deref()?)? {
         Logo::Here(handle) => Some(handle),
-        Logo::Asked | Logo::Missing => None,
+        Logo::Asked | Logo::Missing | Logo::Failed(_) => None,
     }
 }
 
-/// The circle in front of a mail (issues #458, #453), `edge` wide: the sender's logo, round, where
-/// [`logo_for`] gives one, else the mark `face` in the colour of `hue`. A contact's photo (#358) will
-/// come before the logo.
+/// The circle in front of a mail (issues #458, #453), `edge` wide: the sender's logo where
+/// [`logo_for`] gives one – round already (the core cuts it so) and with a hairline in `line_strong`
+/// over it, so white on the white list stays a circle –, else the mark `face` in the colour of `hue`.
+/// A contact's photo (#358) will come before the logo.
 pub fn circle_of<'a, M: 'a>(
     face: widgets::Face,
     hue: Option<usize>,
     logo: Option<&iced::widget::image::Handle>,
     edge: f32,
 ) -> Element<'a, M> {
-    match logo {
-        Some(logo) => iced::widget::image(logo.clone()).width(edge).height(edge).border_radius(edge / 2.0).into(),
-        None => widgets::sender_circle(face, hue, edge),
-    }
+    let Some(logo) = logo else { return widgets::sender_circle(face, hue, edge) };
+    let picture = iced::widget::image(logo.clone()).width(edge).height(edge).border_radius(edge / 2.0);
+    let ring =
+        container(iced::widget::Space::new()).width(edge).height(edge).style(move |t: &Theme| container::Style {
+            border: iced::border::rounded(edge / 2.0).color(palette(t).line_strong).width(size::HAIRLINE),
+            ..container::Style::default()
+        });
+    iced::widget::stack![picture, ring].width(edge).height(edge).into()
 }
 
 /// What the circle of `message` shows (issue #458): the skull for the group "Unwanted", the portrait
@@ -2787,6 +2797,8 @@ pub struct Reading<'a> {
     pub unsubscribed: &'a HashSet<String>,
     /// The senders' logos the window holds (issue #453), for the circle in the mail's head.
     pub logos: &'a Logos,
+    /// The mail is read in "Sent": its circle is one's own, never a logo (issue #453).
+    pub sent: bool,
 }
 
 /// How the mail's HTML shows in the panel or the reader (task M9.7): as HTML or its text, in light
@@ -3321,7 +3333,7 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
     // The circle of the list's row (issue #458): the same colour and mark for the same mail.
     let address = summary.from.as_ref().map(|from| from.address.as_str()).unwrap_or_default();
     let face = face_of(summary, reading.categories);
-    let logo = logo_for(reading.logos, summary, face, false);
+    let logo = logo_for(reading.logos, summary, face, reading.sent);
     let circle = |edge| circle_of(face, Some(widgets::sender_hue(address)), logo, edge);
     let face = (edge > 0.0).then(|| circle(edge));
     let words_room = (room - face.as_ref().map_or(0.0, |_| edge + space::m())).max(0.0);
@@ -5658,6 +5670,7 @@ mod tests {
         let unsubscribed = HashSet::new();
         let reading = Reading {
             logos: no_logos(),
+            sent: false,
             categories: &[],
             id,
             summary: summary.as_ref(),
@@ -6561,6 +6574,8 @@ mod tests {
         assert!(logo_for(&logos, &message, mail, true).is_none(), "Sent shows the recipient");
         logos.insert("github.example".into(), Logo::Asked);
         assert!(logo_for(&logos, &message, mail, false).is_none(), "not in yet");
+        logos.insert("github.example".into(), Logo::Failed(std::time::Instant::now()));
+        assert!(logo_for(&logos, &message, mail, false).is_none(), "could not be asked");
         message.logo = None;
         assert!(logo_for(&logos, &message, mail, false).is_none(), "the core named none");
         assert!(image::load_from_memory(&demo_logo()).is_ok(), "the demo's mark is a picture");
@@ -6767,6 +6782,7 @@ mod tests {
                     let none_left = HashSet::new();
                     let reading = Reading {
                         logos: no_logos(),
+                        sent: false,
                         categories: &[],
                         task,
                         id: &message.summary.id,
