@@ -264,6 +264,14 @@ const LINE_SENDER_SHARE: f32 = 0.3;
 /// preview is cut rather than left out ([`line_title_room`]).
 const LINE_TITLE_SHARE: f32 = 0.6;
 
+/// The most of a line's title cell the account before the time takes ([`LineWords::of`]): a third,
+/// so the subject keeps the most.
+const LINE_ACCOUNT_SHARE: f32 = 1.0 / 3.0;
+
+/// [`LINE_ACCOUNT_SHARE`] for the mailbox of "Sent" (issue #449): half, so a whole address fits in a
+/// wide line – it is all that tells two accounts of one domain apart, and the line has no avatar.
+const LINE_MAILBOX_SHARE: f32 = 0.5;
+
 /// Width of the marks column of a line ([`mail_line`], [`notice_line`]): [`LINE_MARKS`] small icons
 /// with [`space::xs()`] between them; a notice's tile stands in it.
 pub(crate) fn line_marks_width() -> f32 {
@@ -361,28 +369,43 @@ pub(crate) struct LineWords {
     pub title: String,
     pub preview: Option<String>,
     pub account: Option<String>,
+    /// The width of the account's column where every row of the list gives it the same (the
+    /// mailboxes of "Sent", issue #449): its dot then stands on one axis in every row.
+    pub account_column: Option<f32>,
+    /// The account in full where it is shown shorter (a mailbox as its domain or only its dot), as
+    /// the tooltip of its cell.
+    pub account_tip: Option<String>,
     pub time: String,
 }
 
 impl LineWords {
     /// The words of a line in `columns`: `who` in `who_level` with `domain` after it in what is left,
-    /// `title` in `level` (· `count`) and `preview` in `BODY`, the `account` before the time – as the
-    /// rows show them ([`mail_rows`], [`notice_rows`]).
+    /// `title` in `level` (· `count`) and `preview` in `BODY`, the `account` before the time in at most
+    /// `most` of the title column – as the rows show them ([`mail_rows`], [`notice_rows`]).
+    ///
+    /// A `mailbox` account (the address "Sent" went out by, issue #449) comes in the form its list
+    /// chose ([`MailboxForm`]) and takes exactly `most`, the list's column for it – an empty name
+    /// keeps its dot in the account's colour.
     fn of(
         columns: LineColumns,
         (who, who_level, domain): (&str, Level, Option<&str>),
         (title, level, count): (&str, Level, Option<&str>),
         preview: Option<&str>,
-        account: Option<&str>,
+        (account, most, mailbox): (Option<&str>, f32, bool),
         time: &str,
     ) -> LineWords {
         let who_shown = ellipsize_who(who, who_level, columns.who);
         let left = columns.who - typo::text_width(&who_shown, who_level) - space::s();
         let domain = domain.map(|domain| typo::ellipsize(domain, typo::meta(), left)).filter(|d| !d.is_empty());
-        let account_room = account.map_or(0.0, |name| {
-            (typo::text_width(name, typo::meta()) + new_dot() + space::xs() + cell_gap()).min(columns.title / 3.0)
-        });
-        let account = account.map(|name| typo::ellipsize(name, typo::meta(), account_room - cell_gap()));
+        let (account, account_room) = match account {
+            Some(name) if mailbox => (Some(name.to_owned()), most),
+            Some(name) => {
+                let room = account_width(name).min(most);
+                let name_room = room - account_width("");
+                (Some(typo::ellipsize(name, typo::meta(), name_room)).filter(|a| !a.is_empty()), room)
+            }
+            None => (None, 0.0),
+        };
         let room = (columns.title - account_room - count.map_or(0.0, pill_width)).max(0.0);
         let preview = preview.filter(|text| !text.is_empty());
         let title_room = line_title_room(typo::text_width(title, level), preview.is_some(), room);
@@ -390,8 +413,20 @@ impl LineWords {
         let preview_room = room - typo::text_width(&title, level).ceil().min(title_room) - space::s();
         let preview = preview.map(|text| typo::ellipsize(text, typo::body(), preview_room)).filter(|t| !t.is_empty());
         let time = typo::ellipsize(time, typo::meta().tabular(), columns.time);
-        LineWords { who: who_shown, domain, title, preview, account: account.filter(|a| !a.is_empty()), time }
+        LineWords { who: who_shown, domain, title, preview, account, account_column: None, account_tip: None, time }
     }
+}
+
+/// What an account takes at the end of a line's title cell with `name`: its dot, the name, the gap
+/// before it and – so account and time read as two columns (design review of #499) – a little more
+/// air before the time ([`account_air`]).
+fn account_width(name: &str) -> f32 {
+    typo::text_width(name, typo::meta()) + new_dot() + space::xs() + cell_gap() + account_air()
+}
+
+/// The air after an account in a line beyond the gap of the cells: together [`space::l()`].
+fn account_air() -> f32 {
+    (space::l() - cell_gap()).max(0.0)
 }
 
 /// The cells of a line in [`LineColumns`] order: `marks` in its column, who – `who` in `who_level` and
@@ -409,7 +444,7 @@ fn line_cells<'a>(
     account: Option<usize>,
     (hits, hit_colour): (&[String], Option<Color>),
 ) -> Element<'a, Message> {
-    let LineWords { who, domain, title, preview, account: account_name, time } = words;
+    let LineWords { who, domain, title, preview, account: account_name, account_column, account_tip, time } = words;
     let mut who = row![typo::text(who_level, who).style(who_colour).wrapping(Wrapping::None)]
         .spacing(space::s())
         .align_y(Alignment::Center);
@@ -424,7 +459,20 @@ fn line_cells<'a>(
     if let Some(preview) = preview {
         title = title.push(marked(preview, typo::body(), theme::text_3, hits, hit_colour));
     }
-    let ends: Vec<Element<'a, Message>> = account_name.map(|name| account_cell(account, name)).into_iter().collect();
+    let ends: Vec<Element<'a, Message>> = account_name
+        .map(|name| {
+            let mut cell = container(account_cell(account, name)).padding(Padding::ZERO.right(account_air()));
+            if let Some(column) = account_column {
+                // The list's column: the dots stand on one axis.
+                cell = cell.width((column - cell_gap()).max(0.0));
+            }
+            match account_tip {
+                Some(tip) => widgets::with_tooltip(cell, tip),
+                None => cell.into(),
+            }
+        })
+        .into_iter()
+        .collect();
     let time = container(time_cell(time)).width(columns.time).align_right(columns.time).clip(true);
     row![
         container(marks).width(columns.marks).clip(true),
@@ -1146,19 +1194,24 @@ pub(crate) struct MailLines<'a> {
     /// The account's place among the mail accounts, for its colour ([`account_index`]).
     pub account: Option<usize>,
     /// The account's name at the end of the preview's line; `None` with one account (or in a
-    /// folder, which is one account's).
+    /// folder, which is one account's). In "Sent" the mailbox it went out by, which only a line shows
+    /// (issue #449, [`MailLines::domain_tail`]).
     pub account_name: Option<String>,
     /// Where the words of a search matched (issue #136): stressed in the subject and the preview.
     pub hits: Option<Hits<'a>>,
     /// The text the avatar takes its initials from, when it is not the `name` – "Sent" shows the
     /// recipient as the name ("To: …"), the avatar the person themselves (issue #445). `None`: `name`.
     pub face: Option<String>,
-    /// The `domain` is cut at its start when it does not fit (the mailbox of "Sent", whose end tells
-    /// the accounts apart, issue #445).
+    /// "Sent": the `domain` is its mailbox ("via …"), cut at its start when it does not fit, as its end
+    /// tells the accounts apart (issue #445). A line leaves it out and shows the `account_name` – the
+    /// mailbox – in the account column instead (issue #449); rows show no account beside it.
     pub domain_tail: bool,
     /// No row of the list has a mark: a line leaves the column of the marks out ([`LineColumns::of_marks`]);
     /// "Sent" has few, and the column would only take the room of the names (issue #445).
     pub no_marks: bool,
+    /// "Sent": the mailboxes of every account of the list, so its lines choose one form and one
+    /// column for them ([`MailboxForm`], issue #449). Empty elsewhere.
+    pub mailboxes: Vec<String>,
 }
 
 /// The matches of a search in a mail row or card (issue #136): the words that matched are stressed
@@ -1240,13 +1293,15 @@ impl<'a> MailLines<'a> {
             face: None,
             domain_tail: false,
             no_marks: false,
+            mailboxes: Vec::new(),
         }
     }
 }
 
-/// A mailbox ("via anna@work.example.org") shortened in whole parts only (issue #445): the address in
-/// full, else without its local part ("via work.example.org"), else nothing – never a piece of a
-/// domain, which would read as another account. Its first word ("via") stays.
+/// A mailbox ("via anna@work.example.org", or the bare address in the account column of a line, issue
+/// #449) shortened in whole parts only (issue #445): the address in full, else without its local part
+/// ("via work.example.org"), else nothing – never a piece of a domain, which would read as another
+/// account. Its first word ("via") stays.
 fn ellipsize_start(text: &str, level: typo::Level, max_width: f32) -> String {
     let (head, address) = text.split_at(text.find(' ').map_or(0, |at| at + 1));
     let domain = address.split_once('@').map(|(_, domain)| format!("{head}{domain}"));
@@ -1311,8 +1366,11 @@ fn mail_rows<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: boo
         face,
         domain_tail,
         no_marks: _,
+        mailboxes: _,
     } = lines;
-    let account_name = account_shown(account_name, domain.as_deref());
+    // "Sent" names its mailbox after the recipient here ("via …"); the account a line shows at its
+    // end (issue #449) would name it twice.
+    let account_name = account_shown(account_name, domain.as_deref()).filter(|_| !domain_tail);
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
     // On the accent the matches keep the row's own colour (`on_accent`) and stand out by weight.
     let hit_colour = hits.map(|hits| hits.text).filter(|_| !parts.fill);
@@ -1564,26 +1622,27 @@ pub(crate) fn mail_line<'a>(look: ListLook, lines: MailLines<'a>, width: f32, se
         face: _,
         domain_tail,
         no_marks,
+        mailboxes,
     } = lines;
-    let account_name = account_shown(account_name, domain.as_deref());
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
     let hit_colour = hits.map(|hits| hits.text).filter(|_| !parts.fill);
     let level = mail_text_level(new);
     let time_width = typo::text_width(&time, typo::meta().tabular());
     let columns = LineColumns::of_marks(width, time_width, if no_marks { 0.0 } else { line_marks_width() });
-    let mut shown = mail_line_words(
-        columns,
-        (&name, domain.as_deref()),
-        (&subject, new, count.as_deref()),
-        &preview,
-        &account_name,
-        &time,
-    );
-    if let Some(full) = domain.as_deref().filter(|_| domain_tail) {
-        // The mailbox of "Sent" is cut in whole parts, not at its end (issue #445).
-        let left = columns.who - typo::text_width(&shown.who, typo::body_strong()) - space::s();
-        shown.domain = Some(ellipsize_start(full, typo::meta(), left)).filter(|d| !d.is_empty());
-    }
+    let shown = if domain_tail {
+        let words = (subject.as_str(), new, count.as_deref());
+        sent_line_words(width, columns, &name, words, &preview, &account_name, &mailboxes, &time)
+    } else {
+        let account_name = account_shown(account_name, domain.as_deref());
+        mail_line_words(
+            columns,
+            (&name, domain.as_deref()),
+            (&subject, new, count.as_deref()),
+            &preview,
+            &account_name,
+            &time,
+        )
+    };
     let marks = row(marks.into_iter().map(|(mark, _)| mark)).spacing(space::xs()).align_y(Alignment::Center);
     let cells =
         line_cells(columns, shown, marks.into(), (level, theme::text), level, count, account, (&words, hit_colour));
@@ -1606,9 +1665,94 @@ fn mail_line_words(
         (name, typo::body_strong(), domain),
         (subject, mail_text_level(new), count),
         preview.as_deref(),
-        account.as_deref(),
+        (account.as_deref(), columns.title * LINE_ACCOUNT_SHARE, false),
         time,
     )
+}
+
+/// What the cells of a line of "Sent" `width` wide show in `columns` ([`LineWords`], issue #449): the
+/// recipients `name` without the mailbox after them, the `subject` with the `preview`, and the
+/// `mailbox` it went out by in the account column before the time – where it has room, and its dot
+/// tells two accounts apart; after the recipients the name column rarely left room for it.
+///
+/// The list chooses one form for all its `mailboxes` ([`MailboxForm::of`]) and one column for them,
+/// so one address reads the same in every row and the dots stand on one axis; shown shorter, the
+/// mailbox is the cell's tooltip in full.
+#[allow(clippy::too_many_arguments)]
+fn sent_line_words(
+    width: f32,
+    columns: LineColumns,
+    name: &str,
+    (subject, new, count): (&str, bool, Option<&str>),
+    preview: &Option<String>,
+    mailbox: &Option<String>,
+    mailboxes: &[String],
+    time: &str,
+) -> LineWords {
+    let Some(mailbox) = mailbox.as_deref() else {
+        let words = (subject, mail_text_level(new), count);
+        return LineWords::of(
+            columns,
+            (name, typo::body_strong(), None),
+            words,
+            preview.as_deref(),
+            (None, 0.0, false),
+            time,
+        );
+    };
+    let all: Vec<&str> = mailboxes.iter().map(String::as_str).chain([mailbox]).collect();
+    let (form, column) = MailboxForm::of(width, columns.marks, &all);
+    let shown = form.show(mailbox);
+    let mut words = LineWords::of(
+        columns,
+        (name, typo::body_strong(), None),
+        (subject, mail_text_level(new), count),
+        preview.as_deref(),
+        (Some(&shown), column, true),
+        time,
+    );
+    words.account_column = Some(column);
+    words.account_tip = (shown != mailbox).then(|| mailbox.to_owned());
+    words
+}
+
+/// How a list of "Sent" shows the mailboxes its mail went out by (issue #449, design review of
+/// #499): one form for every row, never a piece of a domain, which would read as another account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MailboxForm {
+    /// The whole address: it alone tells two accounts of one domain apart.
+    Address,
+    /// The domain after the "@".
+    Domain,
+    /// Only the dot in the account's colour, the address in the tooltip.
+    Dot,
+}
+
+impl MailboxForm {
+    /// The longest form in which every one of `mailboxes` fits the mailbox's room in a line `width`
+    /// wide with a marks column `marks` wide ([`LINE_MAILBOX_SHARE`] of the title column beside the
+    /// widest time, the same in every row), and the column it takes: as wide as the widest shown.
+    fn of(width: f32, marks: f32, mailboxes: &[&str]) -> (MailboxForm, f32) {
+        let room = LineColumns::of_marks(width, line_date_width(), marks).title * LINE_MAILBOX_SHARE;
+        let column = |form: MailboxForm| {
+            mailboxes.iter().map(|mailbox| account_width(&form.show(mailbox))).fold(account_width(""), f32::max)
+        };
+        let form = [MailboxForm::Address, MailboxForm::Domain]
+            .into_iter()
+            .find(|form| column(*form) <= room)
+            .unwrap_or(MailboxForm::Dot);
+        // Even the dot keeps to the room: in a line too narrow for it the subject comes first.
+        (form, column(form).min(room.max(0.0)))
+    }
+
+    /// `mailbox` in this form: the address, its domain, or nothing beside the dot.
+    fn show(self, mailbox: &str) -> String {
+        match self {
+            MailboxForm::Address => mailbox.to_owned(),
+            MailboxForm::Domain => mailbox.split_once('@').map_or(mailbox, |(_, domain)| domain).to_owned(),
+            MailboxForm::Dot => String::new(),
+        }
+    }
 }
 
 /// How far below a row's top the middle of its first line lies – where the action bar sits (task
@@ -1719,7 +1863,7 @@ fn notice_line_words(item: &Item, rows: &Rows<'_>, columns: LineColumns) -> Line
         (&item.source.label(), typo::body(), None),
         (&title, level, count.as_deref()),
         text.as_deref(),
-        None,
+        (None, 0.0, false),
         &time,
     )
 }
@@ -2427,6 +2571,85 @@ mod tests {
         let part = ellipsize_start(mailbox, meta, wide - 1.0);
         assert_eq!(part, "via work.example.org", "whole parts only");
         assert_eq!(ellipsize_start(mailbox, meta, typo::text_width("via work.example.or", meta)), "", "no stump");
+    }
+
+    /// Issue #449 (and the design review of #499): a line of "Sent" shows its mailbox in the account
+    /// column before the time, not after the recipients – in one form for the whole list (every
+    /// address whole, else every domain, else only the dots with the address as tooltip), never a
+    /// piece of a domain, in one column of the list whatever a row's time; in a wide line both
+    /// addresses of one domain whole. Any other line keeps at most a third of the title cell for
+    /// its account.
+    #[test]
+    fn a_line_of_sent_shows_its_mailbox_in_the_account_column() {
+        let meta = typo::meta();
+        let preview = Some("Hello Maria, here is the offer we talked about on Monday.".to_owned());
+        let time = "09:41";
+        let yesterday = trf("Yesterday {time}", &[("time", &"20:19")]);
+        let words = |width: f32, mailbox: &str, mailboxes: &[&str], time: &str| {
+            let columns = LineColumns::of_marks(width, typo::text_width(time, meta.tabular()), 0.0);
+            let mailboxes: Vec<String> = mailboxes.iter().map(|m| (*m).to_owned()).collect();
+            let subject = ("Offer", false, None);
+            let mailbox = Some(mailbox.to_owned());
+            let shown =
+                sent_line_words(width, columns, "To: Maria Schulz +2", subject, &preview, &mailbox, &mailboxes, time);
+            (columns, shown)
+        };
+        let forms = [MailboxForm::Address, MailboxForm::Domain, MailboxForm::Dot];
+        for list in [["anna@work.example.org", "ben@work.example.org"], ["anna@work.example.org", "anna@example.org"]] {
+            let mut last = 0;
+            for width in [1200.0, 700.0, 480.0, 360.0] {
+                let rows: Vec<_> = list
+                    .iter()
+                    .flat_map(|mailbox| {
+                        [time, yesterday.as_str()].map(|time| (*mailbox, words(width, mailbox, &list, time)))
+                    })
+                    .collect();
+                let column = rows[0].1.1.account_column.expect("the list's column");
+                let form = forms
+                    .iter()
+                    .position(|form| rows.iter().all(|(mailbox, (_, shown))| shown.account == Some(form.show(mailbox))))
+                    .expect("one form for the whole list, never a piece of a domain");
+                assert!(form >= last, "{width}: narrower never shows more");
+                last = form;
+                for (mailbox, (columns, shown)) in &rows {
+                    assert_eq!(shown.domain, None, "{width}: no mailbox after the recipients");
+                    assert_eq!(shown.account_column, Some(column), "{width}: one column for every row");
+                    if !line_narrow(width) {
+                        // The column ends where the title cell does, the same in every row of a wide
+                        // line, so the dots stand on one axis; a narrow line gives each row's time its
+                        // own width (issue #291), and the column moves with it.
+                        let end = columns.starts()[2] + columns.title;
+                        let first = rows[0].1.0.starts()[2] + rows[0].1.0.title;
+                        assert_eq!(end, first, "{width}: the dots on one axis");
+                    }
+                    let account = shown.account.clone().expect("the account's dot always stands");
+                    assert!(account_width(&account) <= column, "{width}: {account:?} in its column");
+                    assert!(column <= columns.title * LINE_MAILBOX_SHARE, "{width}: at most half the title cell");
+                    let tip = (account != *mailbox).then(|| (*mailbox).to_owned());
+                    assert_eq!(shown.account_tip, tip, "{width}: shorter, the address as tooltip");
+                }
+            }
+            let wide = words(1200.0, list[1], &list, time).1;
+            assert_eq!(wide.account.as_deref(), Some(list[1]), "wide: the address whole");
+            let narrow = words(360.0, list[0], &list, time).1;
+            assert_eq!(narrow.account.as_deref(), Some(""), "narrow: only the dot");
+            assert_eq!(narrow.account_tip.as_deref(), Some(list[0]));
+        }
+
+        // Any other line: the account in at most a third, cut with "…".
+        let account = Some("a-rather-long-account-name.example.org".to_owned());
+        let columns = LineColumns::of_marks(480.0, typo::text_width(time, meta.tabular()), 0.0);
+        let shown = mail_line_words(
+            columns,
+            ("Jonas Weber", Some("example.org")),
+            ("Offer", false, None),
+            &preview,
+            &account,
+            time,
+        );
+        let cut = shown.account.expect("cut, not left out");
+        assert!(cut.ends_with('…'), "{cut}");
+        assert!(typo::text_width(&cut, meta) <= columns.title * LINE_ACCOUNT_SHARE, "a third");
     }
 
     #[test]

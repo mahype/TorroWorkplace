@@ -1435,21 +1435,24 @@ impl DemoSource {
     }
 
     /// Puts `held` on the demo's mail `id` and on the entry that holds it, and gives that entry
-    /// back; [`InboxError::NotFound`] for mail the demo does not have.
+    /// back – for mail without an entry (a folder's, the archive's, older mail; issue #500) its
+    /// stand-in ([`rules::message_stand_in`]) with the category, as the core answers;
+    /// [`InboxError::NotFound`] for mail the demo does not have.
     fn put_category(&self, id: &str, held: MailCategory) -> Result<Item, InboxError> {
         let mut data = self.lock();
         let message = data.mail.iter_mut().find(|m| m.summary.id == id).ok_or(InboxError::NotFound)?;
         message.summary.category = Some(held);
-        let thread = message.summary.thread_id.clone();
-        let entry = data
-            .items
-            .iter_mut()
-            .find(|item| {
-                item.thread_key == thread || matches!(&item.link, Some(Link::Mail { message }) if message == id)
-            })
-            .ok_or(InboxError::NotFound)?;
-        entry.category = Some(held);
-        Ok(entry.clone())
+        let summary = message.summary.clone();
+        let entry = data.items.iter_mut().find(|item| {
+            item.thread_key == summary.thread_id || matches!(&item.link, Some(Link::Mail { message }) if message == id)
+        });
+        match entry {
+            Some(entry) => {
+                entry.category = Some(held);
+                Ok(entry.clone())
+            }
+            None => rules::message_stand_in(&summary, None, false).ok_or(InboxError::NotFound),
+        }
     }
 
     /// `mail.search_messages` in the folder `folder`, in `order` by date: those holding every word of
