@@ -5140,7 +5140,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.menu_at = MenuAt::Panel;
                 self.toggle_menu(Menu::MailDisplay);
             }
-            Message::StepMail(forward) => return self.step(forward),
+            Message::StepMail(forward) => {
+                // The reader's buttons go on from the mail it shows, not from the end of a selection
+                // (issue #507): the selection goes as with a plain click.
+                self.selected_mail.clear();
+                return self.step(forward);
+            }
             Message::OpenMailWindow(id) => {
                 #[cfg(test)]
                 self.sent.push(Sent::Window(id.clone()));
@@ -16466,6 +16471,13 @@ mod tests {
         let _ = press(&mut app, Key::ExtendDown);
         assert_ne!(app.scroll, Some((0.0, 10.0)), "the moved end is shown");
         assert_eq!(app.selected_mail, rows[..2]);
+        // The reader's "Next mail" goes on from the mail it shows, not from the end of the selection.
+        let _ = app.update(Message::SelectMail(rows[1].clone()));
+        let _ = press(&mut app, Key::ExtendDown);
+        let _ = press(&mut app, Key::ExtendDown);
+        let _ = app.update(Message::StepMail(true));
+        assert!(app.selected_mail.is_empty());
+        assert_eq!(app.cursor.as_deref(), Some(rows[2].as_str()), "the mail after the one read");
     }
 
     /// Issue #507: Shift + ↓ starts again at the cursor after Select All, and a range replaces what
