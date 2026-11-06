@@ -4036,7 +4036,7 @@ static CREATE_CATEGORY: Command = Command {
                   exceptions – what a decision model reads; `model` (left out: true) lets the model choose it for new mail; `false` keeps the AI out. \
                   A hard exception is a sorting rule, not a description. `error` for an empty, multi-line or \
                   taken name (at most 60 characters), an empty description or one over 500 characters, or more \
-                  than 20 categories of the group for the model. Needs the person's approval.",
+                  than 20 categories of the group for the model, or the group `unsorted`, which holds only the category `other`. Needs the person's approval.",
 };
 
 static UPDATE_CATEGORY: Command = Command {
@@ -4050,7 +4050,8 @@ static UPDATE_CATEGORY: Command = Command {
                   categories. Mail already filed keeps its category until inbox_catch_up_categories runs with \
                   `again`. `not-found` for a category not in the catalogue; `error` as for create_category. Needs \
                   the person's approval. `group` takes the keys of create_category: `junk` is unwanted mail, `unsorted` \
-                  mail no other group fits.",
+                  mail no other group fits and holds only `other`: moving any other category there is an `error` \
+                  (one that lies there already stays and may be changed).",
 };
 
 static MOVE_CATEGORY: Command = Command {
@@ -4063,7 +4064,7 @@ static MOVE_CATEGORY: Command = Command {
                   which category wins when rules or filters of several categories match one mail: the one higher \
                   up, groups from the top, within a group categories from the top. `not-found` for a category or \
                   group that is not there; `error` when `group` would offer the decision model more than 20 \
-                  categories. Needs the person's approval.",
+                  categories, or is `unsorted` for a category other than `other` (one that lies there already may stay). Needs the person's approval.",
 };
 
 static REMOVE_CATEGORY: Command = Command {
@@ -4189,7 +4190,8 @@ static SET_MAIL_PILE: Command = Command {
                   mail account this key may not read (read access to `mail` besides write access to `inbox`) or \
                   whose inbox entries it may not see, the same answer as for a message that does not exist; \
                   `unsupported` for the whole call when putting mail on a pile and one lies in the trash or in \
-                  spam (archived mail may; taking mail off works anywhere); nothing is changed then. `since` (with `pile`) is for undo: the mail goes back with the time \
+                  spam (archived mail may; taking mail off works anywhere), `error` for the whole call when the folder of a \
+                  message cannot be read; nothing is changed then. `since` (with `pile`) is for undo: the mail goes back with the time \
                   it had on its pile (`pile_since` of mail_search_messages, at most now), so an answer of one's \
                   own sent meanwhile still takes it off Reply later, at once.",
 };
@@ -4406,8 +4408,8 @@ static SEARCH_MESSAGES: Command = Command {
                   false` with `incomplete_reason: indexing` while older texts are still being indexed (see \
                   mail_index_status). Pages go at most 10 000 matches deep. `snoozed: false` leaves out mail put \
                   off with inbox_snooze_item and puts mail back from it on top by the time it came back (`back`), \
-                  from any folder but archive, trash and spam whatever `in:` says (a sent mail back from a follow-up stands \
-                  on top of in:inbox), though a `folder` given still holds; `total_estimate` does not count such \
+                  from any folder but archive, trash and spam when the search is in:inbox (a sent mail back from a follow-up \
+                  stands on top of in:inbox); any other `in:` (in:sent) or none holds for it too, and so does a `folder` given; `total_estimate` does not count such \
                   mail from other folders; \
                   `snoozed: true` lists only the snoozed mail. `pile: without` leaves out mail put on \
                   Reply later or Set aside with inbox_set_mail_pile, `pile: reply_later` or `set_aside` lists \

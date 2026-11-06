@@ -65,7 +65,9 @@ Englischer Schlüssel ist maßgeblich, die deutsche Beschriftung steht in
 Bis #338 hieß die Gruppe `junk` „Technik und Müll“ und hielt auch Unzustellbar, Abwesenheit und
 Sonstiges. Unter der Schwelle 0,6 landet jede Mail in „Sonstiges“, auch eine echte persönliche
 Mail, bei der das Modell nur unsicher war; darum steht sie in einer eigenen Gruppe zum gezielten
-Durchsehen, nicht im Müll. Die Kategorie Spam heißt deutsch „Spam“, damit sie nicht wie ihre
+Durchsehen, nicht im Müll. Die Gruppe hält nur „Sonstiges“ (#402): Der Dienst lehnt es ab, eine eigene oder
+eine andere eingebaute Kategorie dorthin anzulegen oder zu verschieben (`error`); eine, die schon dort liegt, bleibt
+und lässt sich weiter ändern. Die Kategorie Spam heißt deutsch „Spam“, damit sie nicht wie ihre
 Gruppe heißt.
 
 Der **Schlüssel `junk` bleibt**, nur die Namen, die Menschen lesen, haben sich geändert: Eigene

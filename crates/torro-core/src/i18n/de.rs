@@ -5254,6 +5254,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("“{text}” in the text", "„{text}“ im Text"),
     ("There is no mail category {category}.", "Es gibt keine E-Mail-Kategorie {category}."),
     ("Describe what belongs in the category.", "Beschreib, was in die Kategorie gehört."),
+    (
+        "The main category “Unsorted” holds only “Other”. Choose another one.",
+        "Die Hauptkategorie „Nicht eingeordnet“ nimmt nur „Sonstiges“ auf. Wähl eine andere.",
+    ),
     ("Give the category a name.", "Gib der Kategorie einen Namen."),
     ("There is a category called “{name}” already.", "Es gibt schon eine Kategorie „{name}“."),
     (

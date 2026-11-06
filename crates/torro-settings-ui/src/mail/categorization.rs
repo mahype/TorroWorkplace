@@ -343,8 +343,9 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             Action::None
         }
         Message::OverSlot(group, at) => {
-            if let Some((_, over)) = &mut state.category_drag {
-                *over = Some((group, at));
+            // Nothing but "Other" is let go into "Unsorted" (#402): no slot, so no line and no drop.
+            if let Some((category, over)) = &mut state.category_drag {
+                *over = editor::offers_group(data, Some(*category), group).then_some((group, at));
             }
             Action::None
         }
@@ -412,6 +413,9 @@ fn close_menus(state: &mut State) {
 /// at the end). The place counts among the others of the group, so one dropped below itself in its
 /// own group takes the place above; dropped where it stands, nothing moves.
 fn dropped<A>(data: &Data, category: Category, group: CategoryGroup, at: usize) -> Action<A> {
+    if !editor::offers_group(data, Some(category), group) {
+        return Action::None;
+    }
     let members: Vec<Category> =
         data.categories.iter().filter(|info| info.group == group).map(|info| info.category).collect();
     let from = members.iter().position(|held| *held == category);
@@ -1230,20 +1234,23 @@ fn group_card<'a>(
         if over == Some(count) {
             rows.push(container(widgets::drop_line()).padding([0.0, space::l()]).into());
         }
-        let add = trf("New category in {group}", &[("group", &group.label)]);
-        let plus =
-            icon::icon(Icon::Plus, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) });
-        // As high as the categories above it.
-        let add = row![plus, typo::text(typo::body(), add).style(theme::text_2)]
-            .spacing(space::m())
-            .align_y(Alignment::Center);
-        let add = container(add).width(Fill).center_y(size::row()).padding([0.0, space::l()]);
-        let add = pressable(add.into(), Some(Message::Editor(editor::Message::NewCategoryInGroup(id))));
-        // Over the last row of the card the category goes to the end of the group.
-        rows.push(match dragging {
-            Some(_) => mouse_area(add).on_enter(Message::OverSlot(id, count)).into(),
-            None => add,
-        });
+        // "Unsorted" holds only "Other" (#402): nothing new is made there.
+        if editor::offers_group(data, None, id) {
+            let add = trf("New category in {group}", &[("group", &group.label)]);
+            let plus =
+                icon::icon(Icon::Plus, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) });
+            // As high as the categories above it.
+            let add = row![plus, typo::text(typo::body(), add).style(theme::text_2)]
+                .spacing(space::m())
+                .align_y(Alignment::Center);
+            let add = container(add).width(Fill).center_y(size::row()).padding([0.0, space::l()]);
+            let add = pressable(add.into(), Some(Message::Editor(editor::Message::NewCategoryInGroup(id))));
+            // Over the last row of the card the category goes to the end of the group.
+            rows.push(match dragging {
+                Some(_) => mouse_area(add).on_enter(Message::OverSlot(id, count)).into(),
+                None => add,
+            });
+        }
     } else if state.category_drag.is_some() {
         // A folded group takes a category at its end, over its head.
         let len = data.categories.iter().filter(|info| info.group == id).count();
@@ -1335,10 +1342,16 @@ fn category_cell<'a>(data: &'a Data, info: &'a CategoryInfo, color: usize, dragg
 /// The "…" menu of the group whose menu is open: "Edit group…".
 fn group_menu<'a>(state: &'a State) -> Option<Element<'a, Message>> {
     let group = state.group_menu?;
-    let items = vec![
-        MenuItem::new(Icon::SquarePen, tr("Edit group…"), Message::Editor(editor::Message::EditGroup(group))),
-        MenuItem::new(Icon::Plus, tr("New category…"), Message::Editor(editor::Message::NewCategoryInGroup(group))),
-    ];
+    let mut items =
+        vec![MenuItem::new(Icon::SquarePen, tr("Edit group…"), Message::Editor(editor::Message::EditGroup(group)))];
+    // "Unsorted" holds only "Other" (#402): nothing new is made there.
+    if group != CategoryGroup::Unsorted {
+        items.push(MenuItem::new(
+            Icon::Plus,
+            tr("New category…"),
+            Message::Editor(editor::Message::NewCategoryInGroup(group)),
+        ));
+    }
     let menu = container(widgets::menu(vec![MenuSection::new(items)])).width(widgets::menu_width());
     Some(widgets::floating(&state.group_anchor, Placement::Below(Align::End), menu, Message::GroupMenu(None)))
 }
@@ -1727,6 +1740,11 @@ mod tests {
             let _ = view(state, &data);
             sent(update::<()>(state, Message::DropCategory, &data))
         };
+        // "Unsorted" takes no other category (#402): no slot there, so nothing is sent.
+        let _ = update::<()>(&mut state, Message::CategoryGrip(category), &data);
+        let _ = update::<()>(&mut state, Message::OverSlot(CategoryGroup::Unsorted, 0), &data);
+        assert!(state.category_drag.is_some_and(|(_, over)| over.is_none()), "no slot in Unsorted");
+        assert!(sent(update::<()>(&mut state, Message::DropCategory, &data)).is_empty());
         // On its own place, or right below it: nothing moves.
         assert!(drag(&mut state, group, 0).is_empty(), "its own place");
         assert!(drag(&mut state, group, 1).is_empty(), "right below itself");
