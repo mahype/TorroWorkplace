@@ -354,6 +354,32 @@ pub fn text_button<'a, M: Clone + 'a>(
         .into()
 }
 
+/// [`text_button`] with its icon after the word (issue #485): a button that leads on to another page,
+/// "Details ›" with `Icon::ChevronRight`. Same height, padding, gap and styles.
+///
+/// ```ignore
+/// widgets::text_button_trailing(tr("Details"), Icon::ChevronRight, style::button::ghost, Some(Message::Details))
+/// ```
+pub fn text_button_trailing<'a, M: Clone + 'a>(
+    label: impl IntoFragment<'a>,
+    icon: Icon,
+    style: ButtonStyle,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let content = row![
+        typo::text(typo::caption(), label).wrapping(Wrapping::None),
+        button_icon(icon, icon::SIZE_SM, style, on_press.is_some()),
+    ]
+    .spacing(ICON_GAP)
+    .align_y(Alignment::Center);
+    button(container(content).center_y(Fill))
+        .height(size::control_sm())
+        .padding(style::button_padding())
+        .style(style)
+        .on_press_maybe(on_press)
+        .into()
+}
+
 /// A large button of a reminder over the whole screen (task ER2.1): [`size::control_xl()`] high,
 /// label in `typo::body_strong()`, optional icon (16) in front and the key that presses it as a
 /// [`kbd`] behind ("Enter", "S", "Esc"). `style` as for [`text_button`]; `None` for `on_press`
@@ -6650,15 +6676,45 @@ pub fn chart_card<'a, M: 'a>(
     note: impl IntoFragment<'a>,
     body: impl Into<Element<'a, M>>,
 ) -> Element<'a, M> {
+    chart_card_inset(title, note, body, 0.0)
+}
+
+/// A [`chart_card`] whose `body` is rows with a surface of their own – a chosen or hovered row filled
+/// to `space::s()` beside its content (issue #485). The rows reach that far into the card's padding,
+/// so their content stands on the axis of the title, as in any other card.
+///
+/// ```ignore
+/// let rows = column(lines.map(|line| button(line).padding([space::xs(), space::s()]).style(…)));
+/// widgets::chart_card_rows(tr("By category"), note, rows)
+/// ```
+pub fn chart_card_rows<'a, M: 'a>(
+    title: impl IntoFragment<'a>,
+    note: impl IntoFragment<'a>,
+    rows: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
+    chart_card_inset(title, note, rows, space::s())
+}
+
+/// [`chart_card`] with the body reaching `inset` into the card's padding at the sides.
+fn chart_card_inset<'a, M: 'a>(
+    title: impl IntoFragment<'a>,
+    note: impl IntoFragment<'a>,
+    body: impl Into<Element<'a, M>>,
+    inset: f32,
+) -> Element<'a, M> {
+    // The note gives way with "…" in a narrow card (issue #485): the title stays whole.
     let head = row![
-        typo::text(typo::body_strong(), title).width(Fill).wrapping(Wrapping::None),
-        typo::text(typo::meta(), note).style(theme::text_3).wrapping(Wrapping::None),
+        typo::text(typo::body_strong(), title).wrapping(Wrapping::None),
+        container(ellipsized_end(typo::meta(), note, theme::text_3)).width(Fill),
     ]
     .spacing(space::s())
     .align_y(Alignment::Center);
+    let head = container(head).padding(Padding::ZERO.left(inset).right(inset));
+    let padding = layout::panel_padding();
+    let padding = Padding { left: (padding.left - inset).max(0.0), right: (padding.right - inset).max(0.0), ..padding };
     container(column![head, body.into()].spacing(space::l()))
         .width(Fill)
-        .padding(layout::panel_padding())
+        .padding(padding)
         .style(|t| {
             let p = palette(t);
             container::Style {
