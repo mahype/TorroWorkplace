@@ -1,7 +1,9 @@
 # Präsenz: wer gerade da ist (Kontaktliste mit Status)
 
-Stand: 2026-10-15. **Idee mit Recherche, noch nichts entschieden, keine Aufgaben.** Beantwortet die
-Frage: **Wer ist gerade da, und wie erreiche ich ihn sofort?**
+Stand: 2026-11-06. **Aufgegangen in [chat.md](chat.md) (#470):** Die Kontaktliste ist das erste Fenster des
+Chats, Bereich `presence`, Befehle und Rechte stehen dort. Diese Seite bleibt als Recherche zu Status und
+Sichtbarkeit in Nextcloud; was unten unter „Idee“ und „Offen“ steht, ist dort entschieden oder weitergeführt.
+Beantwortet die Frage: **Wer ist gerade da, und wie erreiche ich ihn sofort?**
 
 ## Ziel
 
