@@ -4487,8 +4487,9 @@ static GET_MESSAGE: Command = Command {
                   `warnings` lists the warning signs of fraud the core found without a model (a sender name naming a \
                   company the address does not belong to, a failed sender check, a link going elsewhere than its \
                   text says …), each a `kind` with at most a `brand` from the core's own table or a `check`; they \
-                  say what looks wrong, not that the mail is fraud, and are left out for mail of someone the person \
-                  knows.",
+                  say what looks wrong, not that the mail is fraud. A program key gets the signs read from the mail \
+                  itself only, also for mail of someone the person knows, so they tell nothing about address books \
+                  or other mail accounts.",
 };
 
 static GET_THREAD: Command = Command {

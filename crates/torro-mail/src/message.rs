@@ -137,7 +137,7 @@ pub struct MessageSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pile_since: Option<DateTime<Utc>>,
     /// Kept out of the inbox as fraud or spam (issue #506, `docs/kategorien.md`): the warning signs
-    /// and the decision model agreed, and the sender is nobody the person knows. Such mail stays in
+    /// and the decision model agreed. Such mail stays in
     /// its folder on the server; "All", the inbox, the numbers and the popups leave it out, the
     /// categories Fraud and Spam show it. `inbox.release_mail` brings it back. `false` for every
     /// other message.
@@ -273,8 +273,11 @@ pub struct Message {
     #[serde(default)]
     pub invitation: bool,
     /// The warning signs of fraud and spam the core found (issue #506, [`crate::WarningSign`]),
-    /// strongest first. Filled by `mail.get_message` only; empty for mail of someone the person knows,
-    /// for mail without any, and wherever else a message is handed out. The signs are the suite's
+    /// strongest first. Filled by `mail.get_message` only, empty wherever else a message is handed
+    /// out. For the app key they leave out mail of someone the person knows and add what needs the
+    /// person's own data (a contact's name, a first contact); a client key gets only the signs read
+    /// from the mail itself, also for a known sender, so they tell it nothing about address books or
+    /// other accounts. The signs are the suite's
     /// words about data from outside: they say what looks wrong, not that the mail is fraud.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<crate::warning::WarningSign>,
