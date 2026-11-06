@@ -2601,10 +2601,9 @@ pub fn rail_context_menu<'a, M: Clone + 'a, N: Clone + 'a>(
             list = list.push(rail_row(item, RailPlace::Card, false));
         }
     }
-    // The scrollbar beside the rows, not over them: over them it covered their key hints where
-    // the menu scrolls (the medium window, design review of #499).
-    // The rows keep the rail's width; the card grows by the scrollbar's gutter only while the menu
-    // scrolls (iced reserves it only then).
+    // The scrollbar beside the rows, not over them: over them it covered their key hints where the
+    // menu scrolls (the medium window, design review of #499). The rows keep the rail's width; the
+    // card grows by the scrollbar's gutter only while the menu scrolls (iced reserves it only then).
     let rows = container(list).width((rail_flyout_width() - 2.0 * style::MENU_INSET).max(0.0));
     let body = scrollable(rows)
         .direction(scrollable::Direction::Vertical(style::scrollbar().spacing(space::xs())))
