@@ -11,6 +11,11 @@ description = "Calendar for the tiled desktop: Nextcloud/CalDAV events in an Ice
 [lints]
 workspace = true
 
+# The Homebrew formula dist generates for this app brings the background service along (issue #411). `run` only:
+# a dependency without a stage would be installed on the build runners instead of going into the formula.
+[package.metadata.dist.dependencies.homebrew]
+"mahype/torro/torroworkplace" = { stage = ["run"] }
+
 [dependencies]
 torro-core.workspace = true
 torro-pim.workspace = true

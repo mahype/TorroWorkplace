@@ -11,6 +11,11 @@ description = "Inbox for the tiled desktop: what wants your attention from agent
 [lints]
 workspace = true
 
+# The Homebrew formula dist generates for this app brings the background service along (issue #411). `run` only:
+# a dependency without a stage would be installed on the build runners instead of going into the formula.
+[package.metadata.dist.dependencies.homebrew]
+"mahype/torro/torroworkplace" = { stage = ["run"] }
+
 [dependencies]
 # Recipient suggestions in the compose window (issue #460): their types, ranking for the demo.
 torro-contacts.workspace = true
