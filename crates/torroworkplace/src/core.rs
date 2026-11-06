@@ -1354,6 +1354,15 @@ fn from_contact(
         && facts.sender.as_deref().is_some_and(|sender| sender.to_lowercase() != own && known(sender))
 }
 
+/// Whether `summary` is mail "Not fraud" can bring back (issue #506): caught, or filed as Phishing or
+/// Spam.
+fn releasable(summary: &torro_mail::MessageSummary) -> bool {
+    summary.caught
+        || summary
+            .category
+            .is_some_and(|held| matches!(held.category, torro_mail::Category::Phishing | torro_mail::Category::Spam))
+}
+
 /// Personal, as the contacts give it (issue #390): set by a rule, not by a model.
 fn by_contact() -> torro_mail::MailCategory {
     torro_mail::MailCategory::by_rule(torro_mail::Category::Personal)
@@ -3452,7 +3461,27 @@ impl Core {
             accounts_file,
             Some(self.new_mail_decider()),
             Some(self.known_sender()),
+            Some(self.fraud_guard()),
         );
+    }
+
+    /// What the mail feed catches fraud and spam with (issue #506): who the person knows – every
+    /// contact in a book that is shown, whatever "Mail from contacts is personal" says, and every
+    /// sender trusted with "Not fraud" – and the narrow question to the model
+    /// ([`Core::new_mail_judge`]).
+    fn fraud_guard(&self) -> crate::mail::inbox_feed::Guard {
+        crate::mail::inbox_feed::Guard { acquaintance: self.acquaintance(), judge: self.new_mail_judge() }
+    }
+
+    /// Who the person knows (issue #506, decision 5), as far as the address books and the inbox's
+    /// rules say: read afresh for every mail.
+    fn acquaintance(&self) -> crate::mail::inbox_feed::Acquaintance {
+        let (contacts, inbox) = (Arc::clone(&self.contacts), Arc::clone(&self.inbox));
+        let names = Arc::clone(&self.contacts);
+        crate::mail::inbox_feed::Acquaintance {
+            knows: Arc::new(move |address: &str| contacts.knows_address(address) || inbox.trusts(address)),
+            knows_name: Arc::new(move |name: &str| names.knows_name(name)),
+        }
     }
 
     /// Whether a sender's address is a contact whose mail goes to Personal (issue #390): while
@@ -3833,8 +3862,15 @@ impl Core {
         }
         // The piles (task E19.2): every mail in an account the client reads and whose entries it
         // sees, as for the changing mail commands; so a foreign id opens no approval.
-        if let Request::SetMailPile { ids, .. } = &request
+        if let Request::SetMailPile { ids, .. } | Request::ReleaseMail { ids, .. } = &request
             && let Err(refused) = self.reachable_mail_of(ids, Reach::Client(&rights)).await
+        {
+            return Ok(refused);
+        }
+        // "Not fraud" only for mail caught or filed as fraud or spam (issue #506): refused before
+        // anyone is asked.
+        if let Request::ReleaseMail { ids, .. } = &request
+            && let Some(refused) = self.unreleasable(ids, Reach::Client(&rights)).await
         {
             return Ok(refused);
         }
@@ -4667,8 +4703,9 @@ impl Core {
                 if let Request::CreateTaskFromItem { collection, .. } = &request {
                     facts.list = self.list_name(collection).await;
                 }
-                // The piles (task E19.2): the subjects as the mail store holds them.
-                if let Request::SetMailPile { .. } = &request {
+                // The piles (task E19.2): the subjects as the mail store holds them; "Not fraud" (issue
+                // #506) the senders it would trust as well.
+                if let Request::SetMailPile { .. } | Request::ReleaseMail { .. } = &request {
                     facts.mail = crate::mail::write::facts(&self.mail, &request).await;
                 }
                 // The calendar of an event by the name the core caches (task E8.5b).
@@ -5861,6 +5898,7 @@ impl Core {
             | Request::ListMuteOptions { .. }
             | Request::MuteItem { .. }
             | Request::SetMailPile { .. }
+            | Request::ReleaseMail { .. }
             | Request::ListRules
             | Request::RemoveRule { .. }
             | Request::ListCategories { .. }
@@ -6027,7 +6065,13 @@ impl Core {
             | Request::GetMailAttachment { .. }) => {
                 // Boxed, as the ntfy commands: reading mail would grow this match's poll frame, deep
                 // in the stack already when the inbox's quiet asks the core again.
-                Box::pin(crate::mail::read::answer_counting(&self.mail, &self.inbox, reach, request)).await
+                let answer = Box::pin(crate::mail::read::answer_counting(&self.mail, &self.inbox, reach, request)).await;
+                match (answer, reach) {
+                    (Response::MailMessage { message }, Reach::Suite) => {
+                        Response::MailMessage { message: Box::pin(self.warn_of(message)).await }
+                    }
+                    (answer, _) => answer,
+                }
             }
             // Saving attachments (issue #290, task M12.3): rights and the paths kept for people were
             // checked before; the handler resolves `id` in the stores `reach` sees only. Boxed as
@@ -6395,6 +6439,60 @@ impl Core {
                     Err(DecideError::NothingToChoose) => None,
                     Err(err) => {
                         eprintln!("torroworkplace: inbox: cannot sort a mail of {account}: {}", err.to_line());
+                        None
+                    }
+                }
+            })
+        })
+    }
+
+    /// The warning signs of `message` as the person sees them in the reader (issue #506): none for
+    /// a sender the person knows ([`crate::mail::inbox_feed::acquainted`]), else those `mail.get_message`
+    /// found with the two that need the person's own data added (a contact's name on a foreign
+    /// address, the first mail of an address). Only for the app key: a client key gets the signs of
+    /// the mail alone, so they tell it nothing about the address books or other accounts.
+    async fn warn_of(&self, mut message: torro_mail::Message) -> torro_mail::Message {
+        let (who, account) = (self.acquaintance(), message.summary.account.clone());
+        if crate::mail::inbox_feed::acquainted(
+            &self.mail,
+            &who,
+            &account,
+            &message.summary,
+            message.traits.auth.as_ref(),
+        )
+        .await
+        {
+            message.warnings.clear();
+            return message;
+        }
+        let (name, first) = crate::mail::inbox_feed::own_data_signs(&self.mail, &who, &account, &message.summary).await;
+        message.warnings = crate::mail::warnings::with_acquaintance(std::mem::take(&mut message.warnings), name, first);
+        message
+    }
+
+    /// What the mail feed asks about a suspicious mail (issue #506): the narrow question "fraud or
+    /// spam?" ([`categorize::judge_request`]) to the model that sorts mail, under the same assignment,
+    /// switches and data rule ([`decider_of`]), once per mail. `None` when no model may be asked or
+    /// its answer says nothing: then nothing is caught. The log names the account and the error only.
+    fn new_mail_judge(&self) -> crate::mail::inbox_feed::Judge {
+        let (settings, ai, mail) = (self.settings.clone(), Arc::clone(&self.ai), Arc::clone(&self.mail));
+        Arc::new(move |account: String, message: String, signs: Vec<torro_mail::WarningSign>| {
+            let (settings, ai, mail) = (settings.clone(), Arc::clone(&ai), Arc::clone(&mail));
+            Box::pin(async move {
+                let (engine, model) = decider_of(&settings, &ai).await.ok()?;
+                let content = match mail.content_for_category(&account, &message).await {
+                    Ok(content) => content?,
+                    Err(err) => {
+                        eprintln!("torroworkplace: inbox: cannot read a mail of {account} to judge it: {}", err.code());
+                        return None;
+                    }
+                };
+                let request = categorize::judge_request(&model, &content, &signs);
+                match ask_decider(&ai, &engine, request).await {
+                    Ok(reply) => categorize::verdict(&reply)
+                        .map(|(fraud, spam)| crate::mail::inbox_feed::Verdict { fraud, spam }),
+                    Err(err) => {
+                        eprintln!("torroworkplace: inbox: cannot judge a mail of {account}: {err}");
                         None
                     }
                 }
@@ -7751,6 +7849,8 @@ impl Core {
             Request::ClassifyItem { id } => Box::pin(self.classify_item(&id, client)).await,
             // The piles name mail, not entries (task E19.2): the core looks it up in the stores.
             request @ Request::SetMailPile { .. } => Box::pin(self.set_mail_pile(request, reach)).await,
+            // "Not fraud" names mail as well (issue #506).
+            request @ Request::ReleaseMail { .. } => Box::pin(self.release_mail(request, reach)).await,
             request => {
                 // What the client may no longer see stays `not-found`, changed or not.
                 if let Some(pin) = pin
@@ -9239,6 +9339,125 @@ impl Core {
             }
         }
         None
+    }
+
+    /// `unsupported` when one of the mail `ids` (in reach, [`Core::reachable_mail_of`] checked that) is
+    /// neither caught nor filed as Phishing or Spam (issue #506): there is nothing to bring back.
+    /// `None` when every one may be brought back, also when a store cannot be read (the command
+    /// finds that out itself).
+    async fn unreleasable(&self, ids: &[String], reach: Reach<'_>) -> Option<Response> {
+        let wanted: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let found = crate::mail::write::locate(&self.mail, reach, &wanted).await.ok()?;
+        for message in found {
+            let Ok(store) = self.mail.store(&message.account).await else { continue };
+            let id = message.id.clone();
+            let Ok(Some(summary)) = store.run(move |store| store.summary(&id)).await else { continue };
+            if !releasable(&summary) {
+                return Some(refusal(
+                    "unsupported",
+                    "only mail caught or filed as fraud or spam can be brought back".into(),
+                ));
+            }
+        }
+        None
+    }
+
+    /// `inbox.release_mail` (issue #506, "Not fraud") for `reach`: the limits, the mail in reach
+    /// ([`Core::reachable_mail_of`], `not-found` for the whole call) and only mail caught or filed as
+    /// Phishing or Spam ([`Core::unreleasable`]); then each mail is no longer caught, loses that
+    /// category and is filed in the inbox like new mail, seen at once so no popup comes, and the
+    /// model sorts it anew in the background. With `trust` each sender is trusted from now on
+    /// ([`Inbox::trust_sender`]). Nothing goes to the server. `error` when a store or the inbox
+    /// cannot be written; what was done before stays.
+    async fn release_mail(&self, request: Request, reach: Reach<'_>) -> Response {
+        if let Some(refused) = torro_ipc::mail::limit_refusal(&request) {
+            return refused;
+        }
+        let Request::ReleaseMail { ids, trust } = request else {
+            return refusal("error", "only inbox.release_mail is answered here".into());
+        };
+        let mail = match self.reachable_mail_of(&ids, reach).await {
+            Ok(mail) => mail,
+            Err(refused) => return refused,
+        };
+        if let Some(refused) = self.unreleasable(&ids, reach).await {
+            return refused;
+        }
+        let now = Utc::now();
+        let mut later: std::collections::BTreeMap<String, Vec<(String, bool)>> = std::collections::BTreeMap::new();
+        for (account, message) in &mail {
+            let store = match self.mail.store(account).await {
+                Ok(store) => store,
+                Err(err) => return err.response(),
+            };
+            let (id, owner) = (message.clone(), account.clone());
+            let released = store
+                .run(move |store| {
+                    let Some(summary) = store.summary(&id)? else { return Ok(None) };
+                    store.set_caught(&id, false)?;
+                    let unwanted = summary.category.is_some_and(|held| {
+                        matches!(held.category, torro_mail::Category::Phishing | torro_mail::Category::Spam)
+                    });
+                    if unwanted {
+                        store.set_category(&id, None)?;
+                    }
+                    // Only mail of the inbox folder becomes an entry, as new mail does; spam the
+                    // server put in its junk folder stays there, nothing is moved.
+                    let inbox = store.folder_by_role(torro_mail::Role::Inbox)?;
+                    let filing = match inbox.is_some_and(|inbox| inbox.id == summary.folder) {
+                        true => crate::mail::inbox_feed::mail_to_file(store, &owner, &id)?,
+                        false => None,
+                    };
+                    Ok(Some((summary, filing)))
+                })
+                .await;
+            let (summary, filing) = match released {
+                Ok(Some(found)) => found,
+                Ok(None) => continue,
+                Err(err) => {
+                    eprintln!("torroworkplace: inbox: cannot bring a caught mail of {account} back: {err}");
+                    return refusal("error", "the mail store cannot be written".into());
+                }
+            };
+            if trust
+                && let Some(sender) = summary.from.as_ref().map(|from| from.address.as_str())
+                && let Ok(source) = account.parse::<torro_inbox::SourceRef>()
+                && let Err(err) = self.inbox.trust_sender(sender, &source, now)
+            {
+                eprintln!("torroworkplace: inbox: cannot trust a sender of {account}: {err}");
+                return refusal("error", "the inbox cannot be written".into());
+            }
+            // Filed like new mail whatever the account's `notify` says: the person asked for it.
+            let entry = match filing.map(|mut filing| {
+                filing.category = None;
+                filing
+            }) {
+                Some(filing) => self.inbox.file_mail(&filing, torro_mail::Notify::All, now),
+                None => Ok(None),
+            };
+            match entry {
+                // Seen at once: the person brought it back and knows it is there; no popup.
+                Ok(Some(entry)) => self.inbox.opened(&entry, None, now),
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!("torroworkplace: inbox: cannot file a mail of {account} brought back: {err}");
+                    return refusal("error", "the inbox cannot be written".into());
+                }
+            }
+            later.entry(account.clone()).or_default().push((message.clone(), false));
+        }
+        // The model sorts it anew, as new mail (task E12.6); the category is gone, so it keeps
+        // whatever it says.
+        let decide = self.new_mail_decider();
+        for (account, messages) in later {
+            tokio::spawn(crate::mail::inbox_feed::decide_later(
+                Arc::clone(&decide),
+                Arc::clone(&self.inbox),
+                account,
+                messages,
+            ));
+        }
+        Response::Ok
     }
 
     /// `inbox.set_mail_pile` (task E19.2) for `reach`: the limits ([`torro_ipc::mail::limit_refusal`],
@@ -21313,6 +21532,7 @@ mod tests {
 
         // One mail, filed as an invoice by hand.
         let search = Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,
@@ -21407,6 +21627,7 @@ mod tests {
             super::tests::core(dir.path()).with_mail(mail)
         };
         let search = |categories: Vec<Category>| Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,
@@ -21579,6 +21800,7 @@ mod tests {
         let app_key = crate::clients::tests::app_key(dir.path());
         async fn listed(core: &Core) -> Vec<torro_mail::MessageSummary> {
             let search = Request::SearchMail {
+                caught: None,
                 account: None,
                 folder: None,
                 query: None,
@@ -21663,6 +21885,7 @@ mod tests {
         use crate::mail::service::tests::{mail_account, service_in, store_accounts};
         use torro_mail::{Category, MailCategory};
         let listing = || Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,
@@ -21810,6 +22033,7 @@ mod tests {
         assert_eq!((progress.processed, progress.changed), (3, 1), "only the inbox's mail changed");
 
         let search = Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,
@@ -21911,6 +22135,7 @@ mod tests {
         assert_eq!(job.left_seconds.is_some(), job.run_millis > 0, "an estimate only with a measured time");
 
         let search = Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,
@@ -21963,6 +22188,7 @@ mod tests {
         let core = core(dir.path()).with_mail(mail);
         let app_key = crate::clients::tests::app_key(dir.path());
         let search = Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,
@@ -22044,6 +22270,7 @@ mod tests {
         let core = core(dir.path()).with_mail(mail);
         let app_key = crate::clients::tests::app_key(dir.path());
         let search = |snoozed: Option<bool>, limit: u32, cursor: Option<String>| Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: Some("in:inbox".into()),
@@ -22166,6 +22393,7 @@ mod tests {
         let core = core(dir.path()).with_mail(mail);
         let app_key = crate::clients::tests::app_key(dir.path());
         let search = Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,
@@ -22281,6 +22509,7 @@ mod tests {
         let core = core(dir.path()).with_mail(mail);
         let app_key = crate::clients::tests::app_key(dir.path());
         let search = |query: Option<&str>| Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: query.map(str::to_string),
@@ -22362,6 +22591,7 @@ mod tests {
     /// The ids of the inbox folder's mail by subject.
     async fn ids_by_subject(core: &Core, key: &Key) -> std::collections::BTreeMap<String, torro_mail::MessageSummary> {
         let search = Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: Some("in:inbox".into()),
@@ -22391,6 +22621,7 @@ mod tests {
         cursor: Option<String>,
     ) -> Request {
         Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: Some("in:inbox".into()),
@@ -22856,6 +23087,150 @@ mod tests {
         assert!(piled().is_empty());
     }
 
+    // ----- Fraud and spam caught (issue #506) -----
+
+    /// Issue #506: caught mail leaves "All" (`caught: false`) and stands alone with `caught: true`;
+    /// "Not fraud" needs a person's approval for a client, names the subject and the sender from the
+    /// store, and then brings the mail back – no longer caught, without Phishing, filed in the inbox,
+    /// its sender trusted. Mail neither caught nor Phishing or Spam is `unsupported`, a foreign
+    /// account `not-found`, both before anyone is asked; the app key releases at once.
+    #[tokio::test]
+    async fn caught_mail_leaves_all_and_comes_back_with_not_fraud() {
+        use crate::mail::read::tests::mail_from;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add("INBOX", &mail_from("Account limited", 0, "service@paypa1-secure.example", None), &[]);
+        server.add("INBOX", &mail_from("Lunch", 0, "maria@example.org", None), &[]);
+        server.add("INBOX", &mail_from("Prize", 0, "winner@prizes.example", None), &[]);
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let mail = ids_by_subject(&core, &app_key).await;
+        let (fraud, lunch, prize) =
+            (mail["Account limited"].id.clone(), mail["Lunch"].id.clone(), mail["Prize"].id.clone());
+        let store = core.mail.store(ANNA_MAIL).await.expect("the store");
+        let caught = [fraud.clone(), prize.clone()];
+        store
+            .run(move |store| {
+                store.set_category(
+                    &caught[0],
+                    Some(torro_mail::MailCategory::by_model(torro_mail::Category::Phishing, 0.97)),
+                )?;
+                store.set_category(
+                    &caught[1],
+                    Some(torro_mail::MailCategory::by_model(torro_mail::Category::Spam, 0.95)),
+                )?;
+                for id in &caught {
+                    store.set_caught(id, true)?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("caught");
+        let search = |wanted: Option<bool>| {
+            let mut request = pile_search(None, None, 50, None);
+            if let Request::SearchMail { caught, .. } = &mut request {
+                *caught = wanted;
+            }
+            request
+        };
+        let subjects = |response: Response| match response {
+            Response::MailMessages { messages, .. } => {
+                let mut subjects: Vec<String> = messages.into_iter().map(|m| m.subject).collect();
+                subjects.sort();
+                subjects
+            }
+            other => panic!("a page, got {other:?}"),
+        };
+        assert_eq!(subjects(ask(&core, Some(&app_key), search(Some(false))).await), ["Lunch"]);
+        assert_eq!(subjects(ask(&core, Some(&app_key), search(Some(true))).await), ["Account limited", "Prize"]);
+        assert_eq!(subjects(ask(&core, Some(&app_key), search(None)).await).len(), 3);
+
+        let release = |ids: Vec<String>, trust| Request::ReleaseMail { ids, trust };
+        // Not caught, not unwanted: nothing to bring back, nobody asked. The admin commands of the
+        // inbox are switched on: without them the key is `forbidden` before anything else.
+        let inbox_admin = AreaRights { level: Level::Full, admin: true };
+        let mut reader = RightsTemplate::FullAccess.rights();
+        reader.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        reader.areas.insert(Area::Inbox, inbox_admin);
+        let (_, reader) = client(&core, reader).await;
+        assert_eq!(code(&ask(&core, Some(&reader), release(vec![lunch.clone()], true)).await), "unsupported");
+        assert_eq!(code(&ask(&core, Some(&app_key), release(vec![lunch], true)).await), "unsupported");
+        let mut stranger = RightsTemplate::FullAccess.rights();
+        stranger.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+        stranger.areas.insert(Area::Inbox, inbox_admin);
+        let (_, stranger) = client(&core, stranger).await;
+        assert_eq!(code(&ask(&core, Some(&stranger), release(vec![fraud.clone()], true)).await), "not-found");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
+
+        // A client with every right still waits for a person; the summary is the store's.
+        let approval = waits(ask(&core, Some(&reader), release(vec![fraud.clone()], true)).await);
+        assert!(approval.summary.contains("Account limited"), "{}", approval.summary);
+        assert!(approval.summary.contains("service@paypa1-secure.example"), "{}", approval.summary);
+        assert!(!core.inbox.trusts("service@paypa1-secure.example"), "not before it is allowed");
+        let decide = Request::DecideApproval { id: approval.id.clone(), allow: true };
+        assert!(!matches!(core.handle(decide).await, Response::Error { .. }));
+        crate::mail::service::tests::eventually("released", || async {
+            core.inbox.trusts("service@paypa1-secure.example")
+        })
+        .await;
+        let back = ids_by_subject(&core, &app_key).await;
+        assert!(!back["Account limited"].caught, "no longer caught");
+        assert_eq!(back["Account limited"].category, None, "Phishing went");
+        assert!(core.inbox.entry_of_message(ANNA_MAIL, &fraud).is_some(), "filed in the inbox");
+        let Response::Rules { rules, .. } = ask(&core, Some(&app_key), Request::ListRules).await else {
+            panic!("rules")
+        };
+        let trusted: Vec<_> = rules.iter().filter(|rule| rule.effect == torro_inbox::RuleEffect::Trusted).collect();
+        assert_eq!(trusted.len(), 1);
+        assert_eq!(trusted[0].sender.as_deref(), Some("service@paypa1-secure.example"));
+
+        // The app key brings spam back at once, here without trusting the sender.
+        assert_eq!(ask(&core, Some(&app_key), release(vec![prize.clone()], false)).await, Response::Ok);
+        let back = ids_by_subject(&core, &app_key).await;
+        assert!(!back["Prize"].caught && back["Prize"].category.is_none());
+        assert!(!core.inbox.trusts("winner@prizes.example"));
+        assert_eq!(subjects(ask(&core, Some(&app_key), search(Some(true))).await), Vec::<String>::new());
+    }
+
+    /// Issue #506: the warning signs of `mail.get_message`. The app key gets those that need the
+    /// person's own data too (the first mail of an address) and none for someone the person wrote
+    /// to; a client key gets the mail's own signs only, the same for a known sender, so they tell it
+    /// nothing about the address books or the other mail.
+    #[tokio::test]
+    async fn warning_signs_tell_a_client_nothing_of_acquaintance() {
+        use crate::mail::read::tests::mail_from;
+        use torro_mail::WarningSign;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add("INBOX", &mail_from("Stranger", 0, "PayPal Service <service@paypa1-secure.example>", None), &[]);
+        server.add("INBOX", &mail_from("Known", 0, "PayPal Team <team@friend.example>", None), &[]);
+        let sent = "From: Anna <anna@example.org>\r\nTo: team@friend.example\r\nSubject: Hello\r\n\
+                    Message-ID: <hello@example.org>\r\nContent-Type: text/plain\r\n\r\nHi\r\n";
+        server.add("Sent", sent, &["\\Seen"]);
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let mail = ids_by_subject(&core, &app_key).await;
+        let mut reader = RightsTemplate::FullAccess.rights();
+        reader.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        let (_, reader) = client(&core, reader).await;
+        let signs = |key: Key, subject: &'static str| {
+            let (core, id) = (&core, mail[subject].id.clone());
+            async move {
+                let get = Request::GetMail { id, include_body: true, include_html: false };
+                match ask(core, Some(&key), get).await {
+                    Response::MailMessage { message } => message.warnings,
+                    other => panic!("a message, got {other:?}"),
+                }
+            }
+        };
+        let brand = WarningSign::BrandMismatch { brand: "PayPal".into() };
+        let app = signs(app_key.clone(), "Stranger").await;
+        assert!(app.contains(&brand) && app.contains(&WarningSign::FirstContact), "{app:?}");
+        let theirs = signs(reader.clone(), "Stranger").await;
+        assert!(theirs.contains(&brand) && !theirs.contains(&WarningSign::FirstContact), "{theirs:?}");
+        assert!(signs(app_key.clone(), "Known").await.is_empty(), "someone written to");
+        let known = signs(reader, "Known").await;
+        assert!(known.contains(&brand), "a client learns nothing from an empty list: {known:?}");
+    }
+
     /// Task M3.1: a client reads the mail of its account; the audit log names the account and
     /// hashed ids, never the words searched, a folder's name or an attachment's file name. Task
     /// M8.1: nor the HTML, a link or picture it names, or a part's content id.
@@ -22894,6 +23269,7 @@ mod tests {
         };
         let archive = folders.into_iter().find(|folder| folder.name == "Archive").map(|folder| folder.id);
         let search = Request::SearchMail {
+            caught: None,
             account: Some(ANNA_MAIL.into()),
             folder: archive,
             query: Some("salary".into()),
@@ -25154,6 +25530,7 @@ mod tests {
 
         // One of the two is filed by hand first: the run must not touch it.
         let search = Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,
@@ -25286,6 +25663,7 @@ mod tests {
             Response::Categorization { .. }
         ));
         let search = Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,
@@ -25421,6 +25799,7 @@ mod tests {
         assert!(odd.calls_async().await >= 1, "the odd mail was asked");
 
         let search = Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,
@@ -25532,6 +25911,7 @@ mod tests {
             Response::Categorization { .. }
         ));
         let search = Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,
@@ -26261,6 +26641,7 @@ mod tests {
         assert!(matches!(answer, Response::AiAssignments { .. }), "the person picks Jev: {answer:?}");
 
         let search = Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,
@@ -26405,6 +26786,7 @@ mod tests {
     /// the category it holds now.
     async fn the_one_mail(core: &Core) -> (String, String, Option<torro_mail::MailCategory>) {
         let listing = Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,
@@ -26603,6 +26985,7 @@ mod tests {
         assert_eq!((progress.eligible, progress.processed, progress.failed), (16, 16, 0), "every mail once");
         assert_eq!(progress.cursor, progress.max_sequence);
         let search = Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,
@@ -26765,6 +27148,7 @@ mod tests {
     /// The subjects of Anna's mail with whether each has a category (issue #420).
     async fn sorted_subjects(core: &Core) -> Vec<(String, bool)> {
         let search = Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,

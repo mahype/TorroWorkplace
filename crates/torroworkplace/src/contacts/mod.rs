@@ -294,6 +294,13 @@ impl ContactsService {
         sync::with(store, |s| s.knows_address(address)).unwrap_or(false)
     }
 
+    /// Whether `name` is the full name of a contact in a book that is not hidden
+    /// ([`Store::knows_name`], issue #506). Without a store, or when it fails, it is not.
+    pub fn knows_name(&self, name: &str) -> bool {
+        let Some(store) = &self.store else { return false };
+        sync::with(store, |s| s.knows_name(name)).unwrap_or(false)
+    }
+
     /// Whether `account` has address books on this device.
     #[cfg(test)]
     pub fn has_books(&self, account: &str) -> bool {

@@ -1111,6 +1111,11 @@ fn describe(request: &Request) -> String {
         // Only the count: the ids would let lines be matched with a mailbox (task E19.2).
         Request::SetMailPile { ids, pile: Some(_), .. } => format!("put {} mails on a pile", ids.len()),
         Request::SetMailPile { ids, pile: None, .. } => format!("take {} mails off their pile", ids.len()),
+        // Only the count and whether the senders are trusted (issue #506): never who they are.
+        Request::ReleaseMail { ids, trust: false } => format!("bring {} caught mails back", ids.len()),
+        Request::ReleaseMail { ids, trust: true } => {
+            format!("bring {} caught mails back and trust their senders", ids.len())
+        }
         Request::ListRules => "inbox rules".into(),
         Request::GetStats { .. } => "inbox statistics".into(),
         Request::GetQuiet => "inbox quiet".into(),

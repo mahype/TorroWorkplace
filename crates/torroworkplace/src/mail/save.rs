@@ -1035,6 +1035,7 @@ pub(crate) mod tests {
 
     fn summary() -> MessageSummary {
         MessageSummary {
+            caught: false,
             id: "m:1".into(),
             account: ANNA.into(),
             folder: "f:1".into(),

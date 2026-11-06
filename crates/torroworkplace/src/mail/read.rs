@@ -155,6 +155,7 @@ pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request
             snoozed,
             categories,
             pile,
+            caught,
         } => {
             let (order, sort) = (order.unwrap_or_default(), sort.unwrap_or_default());
             let search = Search {
@@ -172,6 +173,7 @@ pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request
                 snoozed,
                 categories,
                 pile,
+                caught,
             };
             // Boxed: the core's request match awaits this deep in the stack already.
             Box::pin(search_messages(mail, inbox, reach, search, Utc::now())).await
@@ -418,6 +420,9 @@ pub struct Search {
     /// The piles (task E19.2): `without` leaves out mail on a pile, a pile keeps only its mail,
     /// `None` all of it.
     pub pile: Option<PileFilter>,
+    /// Mail caught as fraud or spam (issue #506): `false` leaves it out, `true` keeps only it,
+    /// `None` all of it.
+    pub caught: Option<bool>,
 }
 
 /// What a search makes of "Later" (task E9.1) and the piles (task E19.2): the inbox's word on the
@@ -557,6 +562,7 @@ pub async fn search_messages(
     // Without words every match ranks the same: then it is by date, in `order`.
     let relevance = (search.sort == MailSort::Relevance && parsed.has_words()).then_some(now);
     let query = SearchQuery {
+        caught: search.caught,
         folder,
         query: parsed,
         unread: search.unread,
@@ -808,11 +814,27 @@ async fn get_message(
             message.html.take()
         }
     };
+    // The warning signs of fraud (issue #506) from what is at hand, before the text goes: the links
+    // of the HTML the store keeps, else of the text. Those that need the person's own data (a
+    // contact's name, the first mail of an address) and leaving out mail of someone the person knows
+    // are the core's, for the app key only (`Core::warn_of`).
+    let kept_html = match &html {
+        Some(html) => Some(html.clone()),
+        None if !include_html => stored_html_of(&located).await,
+        None => None,
+    };
+    message.warnings = super::warnings::signs(&super::warnings::SignFacts::of(&message, kept_html.as_deref()));
     if !include_body {
         message.text = None;
     }
     message.html = if include_html { html } else { None };
     Ok(Response::MailMessage { message })
+}
+
+/// The cleaned HTML the store keeps of the message, `None` when it keeps none or cannot be read: for
+/// the warning signs only, which do without it.
+async fn stored_html_of(located: &Located) -> Option<String> {
+    stored_html(located).await.ok().flatten().flatten()
 }
 
 /// The cleaned HTML of the message as the store has it ([`MailStore::html`](super::store::MailStore::html)).
@@ -906,6 +928,21 @@ async fn fill_texts(
         }
     }
     command.release();
+}
+
+/// The message `id` of `account` with its text and its cleaned HTML (issue #506, the warning signs
+/// of fraud read its links): from the store, else fetched from the server once (`BODY.PEEK[]`, so it
+/// stays unread) and kept as [`fetch_body`] keeps it. `not-found` for an account without mail on or
+/// a message its store does not hold; the account's errors when the server cannot be asked.
+pub(crate) async fn message_with_text(mail: &MailService, account: &str, id: &str) -> Answer<Message> {
+    let store = mail.store(account).await.map_err(|err| Box::new(err.response()))?;
+    let located = locate(&[(account.to_string(), store)], id).await?;
+    let mut message = stored_message(&located).await?;
+    match stored_html(&located).await? {
+        Some(html) if message.text.is_some() => message.html = html,
+        _ => message = fetch_body(mail, &located).await?,
+    }
+    Ok(message)
 }
 
 /// The message as the store has it; `not-found` when the sync dropped it meanwhile.
@@ -1338,6 +1375,7 @@ pub(crate) mod tests {
 
     fn search(query: Option<&str>, limit: u32, cursor: Option<String>) -> Request {
         Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: query.map(str::to_string),
@@ -1360,6 +1398,7 @@ pub(crate) mod tests {
         let query = query.map(str::to_string);
         let (unread, flagged, before, cursor) = (None, None, None, None);
         Request::SearchMail {
+            caught: None,
             account: None,
             folder,
             query,

@@ -2497,6 +2497,25 @@ impl MailService {
         Ok(())
     }
 
+    /// Marks the messages `messages` of `account` caught as fraud or spam, or no longer (issue
+    /// #506). Messages the store does not know are skipped.
+    pub async fn set_caught(&self, account: &str, messages: &[String], caught: bool) -> Result<(), MailError> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        let store = self.mailbox_of(account).await?.store()?;
+        let messages = messages.to_vec();
+        store
+            .run(move |store| {
+                for message in &messages {
+                    store.set_caught(message, caught)?;
+                }
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
     /// Keeps the two answers that come with a category (task E12.6).
     pub async fn set_model_answers(
         &self,

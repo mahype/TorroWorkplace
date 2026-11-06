@@ -1028,9 +1028,10 @@ fn content_type_of(path: &Path) -> &'static str {
 pub(crate) async fn facts(mail: &MailService, request: &Request) -> Option<MailFacts> {
     match request {
         // The piles (task E19.2) name mail as `mail.set_flags` does.
-        Request::SetMailFlags { ids, .. } | Request::DeleteMail { ids, .. } | Request::SetMailPile { ids, .. } => {
-            Some(message_facts(mail, ids).await.0)
-        }
+        Request::SetMailFlags { ids, .. }
+        | Request::DeleteMail { ids, .. }
+        | Request::SetMailPile { ids, .. }
+        | Request::ReleaseMail { ids, .. } => Some(message_facts(mail, ids).await.0),
         Request::MoveMail { ids, to } => {
             let (mut facts, account) = message_facts(mail, ids).await;
             facts.folder = match (to, account) {
@@ -1064,19 +1065,25 @@ async fn message_facts(mail: &MailService, ids: &[String]) -> (MailFacts, Option
     let found = locate_each(mail, Reach::Suite, &as_strs(ids)).await.unwrap_or_default();
     let known: Vec<MessageRef> = found.into_iter().flatten().collect();
     let account = known.first().map(|message| message.account.clone());
-    let mut subjects = Vec::new();
+    let (mut subjects, mut senders) = (Vec::new(), Vec::new());
     for message in &known {
         let Ok(store) = mail.store(&message.account).await else { continue };
         let id = message.id.clone();
         if let Ok(Some(summary)) = store.run(move |store| store.summary(&id)).await {
             subjects.push(summary.subject);
+            let sender = summary.from.map(|from| from.address.trim().to_lowercase()).filter(|from| !from.is_empty());
+            if let Some(sender) = sender
+                && !senders.contains(&sender)
+            {
+                senders.push(sender);
+            }
         }
     }
     let address = match &account {
         Some(account) => mail.config(account).await.ok().map(|config| config.address),
         None => None,
     };
-    (MailFacts { account: address, count: ids.len(), subjects, ..MailFacts::default() }, account)
+    (MailFacts { account: address, count: ids.len(), subjects, senders, ..MailFacts::default() }, account)
 }
 
 /// The subject of the draft `id` of `account` as the store holds it.
