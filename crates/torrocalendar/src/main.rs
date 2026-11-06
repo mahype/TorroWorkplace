@@ -8,6 +8,9 @@
 //! time; `--appearance light|dark|system` overrides the stored appearance and `--design <id>` the
 //! design pack (see [`app::Launch`]).
 //!
+//! `--demo --shots <dir>` writes the view at each size class as PNG files instead of opening a window
+//! (the visual check, [`torro_gui::shots`], issue #492).
+//!
 //! `torrocalendar --settings <section>` opens the window with its settings in the content area
 //! (task S.19): Calendars, Reminders and Night, over the window's own way to the core – with
 //! `--demo` over the settings library's demo, which never opens a socket. Works without `--demo`
@@ -62,6 +65,12 @@ fn main() -> ExitCode {
         args.insert(0, "--reminders".to_string());
     }
     if reminder::Launch::wanted(&args) {
+        // The reminder is a window of its own per screen and no tile: `--shots` does not draw it
+        // (issue #492), and its window must not open in its place.
+        if asks_for_shots(&args) {
+            report_start_error("--shots does not draw the reminder; leave out --reminders and its --open states");
+            return ExitCode::from(64);
+        }
         return match reminder::run(&args) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
@@ -78,6 +87,14 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // `--demo --shots <dir>` (issue #492): the views as pictures, without a window.
+    let shots = match torro_gui::shots::Shots::from_args(APP.binary, &args) {
+        Ok(shots) => shots,
+        Err(err) => {
+            report_start_error(&err.to_string());
+            return ExitCode::from(64);
+        }
+    };
     // Before the core is started: a second start only brings the first window to the front.
     if let Some(app) = instance_of(&args, &launch)
         && torro_gui::instance::claim(app) == Claim::Shown
@@ -87,14 +104,14 @@ fn main() -> ExitCode {
     let source = launch.source(&args);
     // Before the settings load the fonts: the first frame is drawn with the chosen design.
     torro_gui::design::start_for(&source, &launch.forced());
-    let result = iced::application(move || app::App::new(source.clone(), launch.clone()), update, view)
+    let application = iced::application(move || app::App::new(source.clone(), launch.clone()), update, view)
         .settings(torro_gui::settings())
         .title(app::App::title)
         .theme(app::App::theme)
         .scale_factor(app::App::scale_factor)
         .subscription(app::App::subscription)
-        .window(torro_gui::window(APP))
-        .run();
+        .window(torro_gui::window(APP));
+    let result = torro_gui::shots::run(application, shots.as_ref());
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
@@ -110,6 +127,11 @@ fn main() -> ExitCode {
 fn instance_of(args: &[String], launch: &app::Launch) -> Option<AppId> {
     let own_window = args.iter().any(|arg| arg == "--demo") || reminder::Launch::wanted(args);
     (!own_window && launch.settings.is_none()).then_some(APP)
+}
+
+/// The start asks for pictures (`--shots <dir>` or `--shots=<dir>`, issue #492), which the reminder has none of.
+fn asks_for_shots(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--shots" || arg.starts_with("--shots="))
 }
 
 /// The binary runs as `torro-reminder`: the reminder window's agent app on macOS.
@@ -176,6 +198,20 @@ mod tests {
         assert_eq!(file, dir.join(START_ERROR_FILE));
         assert_eq!(std::fs::read_to_string(&file).expect("read"), "second\n");
         std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    /// PR review of #492: a reminder start with `--shots` is refused before its window opens; other words
+    /// are no request for pictures.
+    #[test]
+    fn a_reminder_start_with_shots_is_recognised() {
+        let words = |line: &[&str]| -> Vec<String> { line.iter().map(|arg| (*arg).to_string()).collect() };
+        for line in [&["--demo", "--open", "reminder", "--shots", "d"][..], &["--reminders", "--demo", "--shots=d"]] {
+            let args = words(line);
+            assert!(reminder::Launch::wanted(&args) && asks_for_shots(&args), "{line:?}");
+        }
+        for line in [&["--demo", "--open", "reminder"][..], &["--demo", "--shot-size", "40x30"], &["--shotsx"]] {
+            assert!(!asks_for_shots(&words(line)), "{line:?}");
+        }
     }
 
     /// Issue #279: only the plain calendar window is one per person.

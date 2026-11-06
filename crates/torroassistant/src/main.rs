@@ -6,6 +6,9 @@
 //! answers ([`app`]). Without `--demo` it talks to the core over its socket and starts the core
 //! when it is not running ([`Source::from_args`]).
 //!
+//! `--demo --shots <dir>` writes the view at each size class as PNG files instead of opening a window
+//! (the visual check, [`torro_gui::shots`], issue #492).
+//!
 //! Two kinds of window from one program: `torroassistant` is the main window (class
 //! `torro-assistant`), `torroassistant --chat <id>|new` a single chat window (class
 //! `torro-assistant-chat`), which `assistant.open_window` starts and a workspace template brings
@@ -57,6 +60,7 @@ use torro_core::AppId;
 use torro_core::paths::AppPaths;
 use torro_core::timing;
 use torro_gui::instance::Claim;
+use torro_gui::shots::{RunError, Shots};
 use torro_gui::source::Source;
 
 use crate::app::{App, CHAT, CHAT_SIZE, MAIN, Message};
@@ -90,6 +94,14 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // `--demo --shots <dir>` (issue #492): the views as pictures, without a window.
+    let shots = match Shots::from_args(MAIN.binary, &args) {
+        Ok(shots) => shots,
+        Err(err) => {
+            report_start_error(&err.to_string());
+            return ExitCode::from(64);
+        }
+    };
     // Before the core is started: a second start only brings the main window to the front.
     if let Some(app) = instance_of(&args, &launch)
         && torro_gui::instance::claim(app) == Claim::Shown
@@ -101,7 +113,7 @@ fn main() -> ExitCode {
     let suite = Source::from_args(args.iter().cloned());
     torro_gui::design::start_for(&suite, &launch.forced());
     let backend = if launch.demo { Backend::Demo(Arc::new(demo_for(launch.open))) } else { Backend::core() };
-    match run(backend, suite, launch) {
+    match run(backend, suite, launch, shots.as_ref()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             report_start_error(&err.to_string());
@@ -155,8 +167,9 @@ fn demo_for(open: Option<Open>) -> demo::Demo {
     demo::Demo::new(chrono::Utc::now(), setup)
 }
 
-/// The window on `backend`: the main window or a chat window, as `launch` says.
-fn run(backend: Backend, suite: Source, launch: Launch) -> iced::Result {
+/// The window on `backend`: the main window or a chat window, as `launch` says; with `shots` its
+/// pictures instead ([`torro_gui::shots::run`]).
+fn run(backend: Backend, suite: Source, launch: Launch, shots: Option<&Shots>) -> Result<(), RunError> {
     let mut window = match launch.window {
         Window::Main => torro_gui::window(MAIN),
         Window::Chat(_) | Window::Bot(_) => iced::window::Settings { size: CHAT_SIZE, ..torro_gui::window(CHAT) },
@@ -164,14 +177,14 @@ fn run(backend: Backend, suite: Source, launch: Launch) -> iced::Result {
     if let Some((width, height)) = launch.size {
         window.size = iced::Size::new(f32::from(width), f32::from(height));
     }
-    iced::application(move || App::new(backend.clone(), suite.clone(), launch.clone()), update, view)
+    let application = iced::application(move || App::new(backend.clone(), suite.clone(), launch.clone()), update, view)
         .settings(torro_gui::settings())
         .title(App::title)
         .theme(App::theme)
         .scale_factor(App::scale_factor)
         .subscription(App::subscription)
-        .window(window)
-        .run()
+        .window(window);
+    torro_gui::shots::run(application, shots)
 }
 
 /// [`App::update`], timed: the first list of conversations marks "first data", a slow update is

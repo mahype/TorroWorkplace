@@ -8,6 +8,9 @@
 //! the day; `--appearance light|dark|system` overrides the stored appearance everywhere and
 //! `--design <id>` the design pack (see [`app::Launch`]).
 //!
+//! `--demo --shots <dir>` writes the view at each size class as PNG files instead of opening a window
+//! (the visual check, [`torro_gui::shots`], issue #492).
+//!
 //! `--task=<uid>` names the task the app starts on (task E8.7a): the core passes it when
 //! `apps.open_app` opens a task (`task:<uid>`); an empty uid is refused (exit 64). The app shows it
 //! in the detail, on its list (task E8.7b).
@@ -67,6 +70,14 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // `--demo --shots <dir>` (issue #492): the views as pictures, without a window.
+    let shots = match torro_gui::shots::Shots::from_args(APP.binary, &args) {
+        Ok(shots) => shots,
+        Err(err) => {
+            report_start_error(&err.to_string());
+            return ExitCode::from(64);
+        }
+    };
     // The task to show (tasks E8.7a, E8.7b): read and checked now, so the core's command line never
     // fails; the app opens it in the detail once the tasks are in.
     launch.task = match start_task(&args) {
@@ -85,14 +96,14 @@ fn main() -> ExitCode {
     let source = launch.source(&args);
     // Before the settings load the fonts: the first frame is drawn with the chosen design.
     torro_gui::design::start_for(&source, &launch.forced());
-    let result = iced::application(move || app::App::new(source.clone(), launch.clone()), update, view)
+    let application = iced::application(move || app::App::new(source.clone(), launch.clone()), update, view)
         .settings(torro_gui::settings())
         .title(app::App::title)
         .theme(app::App::theme)
         .scale_factor(app::App::scale_factor)
         .subscription(app::App::subscription)
-        .window(torro_gui::window(APP))
-        .run();
+        .window(torro_gui::window(APP));
+    let result = torro_gui::shots::run(application, shots.as_ref());
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
