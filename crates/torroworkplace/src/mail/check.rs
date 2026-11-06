@@ -92,11 +92,13 @@ impl SenderCheck {
         self.auth.get_or_init(|| MessageAuthenticator::new_system_conf().ok()).as_ref()
     }
 
-    /// Whether the message `raw` comes from the domain of `from` (its sender's address), after the
-    /// module docs.
-    pub async fn verified_domain(&self, raw: &[u8], from: Option<&str>) -> Checked {
-        let Some(sender) = from.and_then(sender_domain) else { return Checked::None };
+    /// Whether the message `raw` comes from the domain of its sender, after the module docs. The
+    /// sender is read from the message itself and must be exactly one address: a second `From`
+    /// header (or address) is how a signed mail is made to show another sender.
+    pub async fn verified_domain(&self, raw: &[u8]) -> Checked {
         let Some(message) = AuthenticatedMessage::parse(raw) else { return Checked::None };
+        let [from] = message.from.as_slice() else { return Checked::None };
+        let Some(sender) = sender_domain(from) else { return Checked::None };
         if message.dkim_headers.is_empty() {
             return Checked::None;
         }
@@ -195,7 +197,7 @@ impl ResolverCache<Box<str>, Txt> for TxtCache {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use mail_auth::common::crypto::Ed25519Key;
     use mail_auth::common::headers::HeaderWriter;
     use mail_auth::dkim::DkimSigner;
@@ -212,25 +214,37 @@ mod tests {
         base64::engine::general_purpose::STANDARD.decode(text).expect("base64")
     }
 
-    fn key_record() -> String {
+    pub(crate) fn key_record() -> String {
         format!("v=DKIM1; k=ed25519; p={PUBLIC}")
     }
 
-    /// The mail of `from`, read from the fixtures, with a DKIM signature of `domain` under the selector
-    /// `torro`; with `body_length` the signature covers only that much of the body (`l=`).
-    fn signed(fixture: &str, domain: &str, body_length: bool) -> Vec<u8> {
-        let path = format!("{}/tests/fixtures/sender_logos/{fixture}", env!("CARGO_MANIFEST_DIR"));
-        let mail =
-            std::fs::read(path).expect("fixture").iter().filter(|&&byte| byte != b'\r').copied().collect::<Vec<u8>>();
-        let mail: Vec<u8> = String::from_utf8(mail).expect("text").replace('\n', "\r\n").into_bytes();
+    /// The mail of the fixture `paypal.eml`, sent by `from`, as it comes from the server (CRLF).
+    fn mail(from: &str) -> Vec<u8> {
+        let path = format!("{}/tests/fixtures/sender_logos/paypal.eml", env!("CARGO_MANIFEST_DIR"));
+        let text = String::from_utf8(std::fs::read(path).expect("fixture")).expect("text").replace('\r', "");
+        let text = text.replace("service@paypal.example", from);
+        text.replace('\n', "\r\n").into_bytes()
+    }
+
+    /// [`mail`] with a DKIM signature of `domain` under the selector `torro`; with `body_length` the
+    /// signature covers only that much of the body (`l=`).
+    fn signed(from: &str, domain: &str, body_length: bool) -> Vec<u8> {
+        sign(&mail(from), domain, body_length)
+    }
+
+    /// `mail` (CRLF) with a DKIM signature of `domain` under the selector `torro`, whose key
+    /// [`key_record`] is.
+    pub(crate) fn sign(mail: &[u8], domain: &str, body_length: bool) -> Vec<u8> {
         let key = Ed25519Key::from_seed_and_public_key(&base64(SEED), &base64(PUBLIC)).expect("key");
         let signer = DkimSigner::from_key(key).domain(domain).selector("torro").headers(["From", "To", "Subject"]);
         let signer = if body_length { signer.body_length(true) } else { signer };
-        let signature = signer.sign(&mail).expect("signed");
+        let signature = signer.sign(mail).expect("signed");
         let mut out = signature.to_header().into_bytes();
-        out.extend_from_slice(&mail);
+        out.extend_from_slice(mail);
         out
     }
+
+    const SENDER: &str = "service@paypal.example";
 
     fn check(domains: &[&str]) -> SenderCheck {
         let check = SenderCheck::offline();
@@ -242,65 +256,74 @@ mod tests {
 
     #[tokio::test]
     async fn a_signature_of_the_senders_domain_passes() {
-        let raw = signed("paypal.eml", "paypal.example", false);
-        let checked = check(&["paypal.example"]).verified_domain(&raw, Some("service@paypal.example")).await;
+        let raw = signed(SENDER, "paypal.example", false);
+        let checked = check(&["paypal.example"]).verified_domain(&raw).await;
         assert_eq!(checked, Checked::Domain("paypal.example".into()));
     }
 
     #[tokio::test]
     async fn a_domain_above_or_below_the_sender_counts_as_the_shorter() {
-        let raw = signed("paypal.eml", "paypal.example", false);
-        let below = check(&["paypal.example"]).verified_domain(&raw, Some("news@mail.paypal.example")).await;
+        let raw = signed("news@mail.paypal.example", "paypal.example", false);
+        let below = check(&["paypal.example"]).verified_domain(&raw).await;
         assert_eq!(below, Checked::Domain("paypal.example".into()), "signed by the parent");
-        let raw = signed("paypal.eml", "e.paypal.example", false);
-        let above = check(&["e.paypal.example"]).verified_domain(&raw, Some("Service@PayPal.example")).await;
+        let raw = signed("Service@PayPal.example", "e.paypal.example", false);
+        let above = check(&["e.paypal.example"]).verified_domain(&raw).await;
         assert_eq!(above, Checked::Domain("paypal.example".into()), "signed below the sender");
     }
 
     #[tokio::test]
     async fn a_foreign_signer_does_not_count() {
-        let raw = signed("paypal.eml", "mailer.example", false);
-        let checked = check(&["mailer.example"]).verified_domain(&raw, Some("service@paypal.example")).await;
+        let raw = signed(SENDER, "mailer.example", false);
+        let checked = check(&["mailer.example"]).verified_domain(&raw).await;
         assert_eq!(checked, Checked::None, "a mailing service signs only for itself");
-        let raw = signed("paypal.eml", "paypal.example.evil.example", false);
-        let checked =
-            check(&["paypal.example.evil.example"]).verified_domain(&raw, Some("service@paypal.example")).await;
+        let raw = signed(SENDER, "paypal.example.evil.example", false);
+        let checked = check(&["paypal.example.evil.example"]).verified_domain(&raw).await;
         assert_eq!(checked, Checked::None, "a name that only starts like the sender's");
     }
 
     #[tokio::test]
     async fn a_signature_of_part_of_the_body_does_not_count() {
-        let raw = signed("paypal.eml", "paypal.example", true);
-        let checked = check(&["paypal.example"]).verified_domain(&raw, Some("service@paypal.example")).await;
+        let raw = signed(SENDER, "paypal.example", true);
+        let checked = check(&["paypal.example"]).verified_domain(&raw).await;
         assert_eq!(checked, Checked::None, "with l= anyone may append text");
     }
 
     #[tokio::test]
     async fn a_changed_body_fails() {
-        let mut raw = signed("paypal.eml", "paypal.example", false);
+        let mut raw = signed(SENDER, "paypal.example", false);
         let at = raw.len() - 4;
         raw[at] = b'X';
-        let checked = check(&["paypal.example"]).verified_domain(&raw, Some("service@paypal.example")).await;
+        let checked = check(&["paypal.example"]).verified_domain(&raw).await;
         assert_eq!(checked, Checked::None);
     }
 
     #[tokio::test]
     async fn an_unanswered_lookup_is_asked_again_later() {
-        let raw = signed("paypal.eml", "paypal.example", false);
+        let raw = signed(SENDER, "paypal.example", false);
         let check = SenderCheck::offline();
         check.unreachable("torro._domainkey.paypal.example");
-        assert_eq!(check.verified_domain(&raw, Some("service@paypal.example")).await, Checked::Retry);
+        assert_eq!(check.verified_domain(&raw).await, Checked::Retry);
     }
 
     #[tokio::test]
-    async fn mail_without_a_signature_or_a_sender_has_no_domain() {
-        let raw = std::fs::read(format!("{}/tests/fixtures/sender_logos/paypal.eml", env!("CARGO_MANIFEST_DIR")))
-            .expect("fixture");
-        let check = check(&[]);
-        assert_eq!(check.verified_domain(&raw, Some("service@paypal.example")).await, Checked::None);
-        let raw = signed("paypal.eml", "paypal.example", false);
-        assert_eq!(self::check(&["paypal.example"]).verified_domain(&raw, None).await, Checked::None);
-        assert_eq!(self::check(&["paypal.example"]).verified_domain(&raw, Some("nobody")).await, Checked::None);
+    async fn mail_without_a_signature_or_one_sender_has_no_domain() {
+        let check = check(&["paypal.example"]);
+        assert_eq!(check.verified_domain(&mail(SENDER)).await, Checked::None, "not signed");
+        let raw = signed("nobody", "paypal.example", false);
+        assert_eq!(check.verified_domain(&raw).await, Checked::None, "no domain");
+        // A second sender added above a signed mail: the signature still passes, and a mail program
+        // may show the added one.
+        let mut raw = b"From: Attacker <attacker@evil.example>\r\n".to_vec();
+        raw.extend(signed(SENDER, "paypal.example", false));
+        assert_eq!(check.verified_domain(&raw).await, Checked::None, "two senders");
+        let raw = signed("service@paypal.example, other@evil.example", "paypal.example", false);
+        assert_eq!(check.verified_domain(&raw).await, Checked::None, "two addresses");
+    }
+
+    /// The service's check reads the system's DNS configuration only when it checks a signed mail.
+    #[tokio::test]
+    async fn the_system_check_asks_nothing_for_mail_without_a_signature() {
+        assert_eq!(SenderCheck::system().verified_domain(&mail(SENDER)).await, Checked::None);
     }
 
     #[test]

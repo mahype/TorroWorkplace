@@ -53,6 +53,7 @@ use torro_mail_imap::imap::{BackupMessage, BodyChunks, FetchedHeader, ImapError,
 use torro_mail_imap::mime::{self, ReadMessage};
 
 use super::MailStoreError;
+use super::check::Checked;
 use super::progress::SyncProgress;
 use super::service::{Command, FlagsUnderway, MailChange, MailError, Mailbox, SharedStore};
 use super::store::{Body, MailStore, NewMessage, ORIGINAL_MAX_BYTES, UidValidity};
@@ -283,9 +284,17 @@ pub(crate) async fn backfill(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) 
             mailbox.note_indexing(false);
         }
         let raw = fetched?;
+        let sender = match &raw {
+            Some(raw) => check_sender(mailbox, raw, now).await,
+            // Gone or too large to read: nothing to check, and not to be fetched again for it.
+            None => mailbox.logos().on().then_some(None),
+        };
         let id = place.id.clone();
         store
             .run(move |store| {
+                if let Some(found) = sender {
+                    store.set_sender_check(&id, found.as_deref())?;
+                }
                 let Some(raw) = raw else { return store.mark_unindexable(&id).map(drop) };
                 let Ok(read) = mime::read(&raw) else { return store.mark_unindexable(&id).map(drop) };
                 if keep {
@@ -300,7 +309,67 @@ pub(crate) async fn backfill(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) 
     if !todo.is_empty() {
         store.run(move |store| store.note_index_run(now)).await?;
     }
-    Ok(todo.len())
+    let checked = if todo.len() < limit as usize {
+        check_senders(mailbox, &store, limit - todo.len() as u32, now).await?
+    } else {
+        0
+    };
+    Ok(todo.len() + checked)
+}
+
+/// How far back the indexer checks the senders of mail kept without a check (issue #453, decision
+/// 4 of the plan): older mail stays without a logo rather than the whole archive being fetched again.
+pub const SENDER_CATCH_UP_DAYS: i64 = 30;
+
+/// Checks the senders of up to `limit` messages of the last [`SENDER_CATCH_UP_DAYS`] days that were
+/// never checked (issue #453): kept from before the check existed, while logos were off, or whose
+/// text the sync did not fetch. Each is fetched once more with `BODY.PEEK[]`, newest first. Stops at
+/// the first that cannot be checked now (DNS offline), so it is not asked again at once. Nothing
+/// while logos are off. Answers how many it checked.
+async fn check_senders(
+    mailbox: &Mailbox,
+    store: &SharedStore,
+    limit: u32,
+    now: DateTime<Utc>,
+) -> Result<usize, MailError> {
+    if !mailbox.logos().on() {
+        return Ok(0);
+    }
+    let since = now - chrono::TimeDelta::days(SENDER_CATCH_UP_DAYS);
+    let todo = store.run(move |store| store.unchecked_senders(limit, since)).await?;
+    let mut checked = 0;
+    for place in todo {
+        let raw = fetch_text(mailbox, &place).await?;
+        let found = match &raw {
+            Some(raw) => match check_sender(mailbox, raw, now).await {
+                Some(found) => found,
+                None => break,
+            },
+            // Gone from the server, or too large to read: nothing to check.
+            None => None,
+        };
+        let id = place.id.clone();
+        store.run(move |store| store.set_sender_check(&id, found.as_deref())).await?;
+        checked += 1;
+    }
+    Ok(checked)
+}
+
+/// What the DKIM check of the mail `raw` found to note (issue #453): `Some(Some(domain))` when its
+/// sender's domain signed it (and that domain's logo is asked for when due), `Some(None)` when not,
+/// `None` when nothing is to be noted: logos are off, or the DNS could not be asked.
+async fn check_sender(mailbox: &Mailbox, raw: &[u8], now: DateTime<Utc>) -> Option<Option<String>> {
+    if !mailbox.logos().on() {
+        return None;
+    }
+    match mailbox.sender_check().verified_domain(raw).await {
+        Checked::Domain(domain) => {
+            mailbox.logos().want(&domain, now);
+            Some(Some(domain))
+        }
+        Checked::None => Some(None),
+        Checked::Retry => None,
+    }
 }
 
 /// The whole message at `place` from the account's command connection; `None` when it is gone, or
@@ -708,6 +777,7 @@ async fn sync_folder(
         let Ok(read) = mime::read(&raw) else { continue };
         // What an invitation invites to, from its calendar part (task E8.3b).
         let invite = super::read::invite_of(&raw, &read);
+        let sender = check_sender(mailbox, &raw, now).await;
         let folder = target.id.clone();
         store
             .run(move |store| {
@@ -717,6 +787,9 @@ async fn sync_folder(
                 message.flags = flags;
                 store.upsert_message(&folder, uidvalidity, &message)?;
                 store.set_body(&id, &Body::of(read, invite))?;
+                if let Some(found) = sender {
+                    store.set_sender_check(&id, found.as_deref())?;
+                }
                 Ok(())
             })
             .await?;
@@ -2169,6 +2242,33 @@ mod tests {
             server.lines()[asked..].iter().filter(|line| line.contains("UID FETCH")).cloned().collect();
         assert!(again.is_empty(), "{again:?}");
         assert_eq!(store.run(|db| db.local_originals_page(0, 10)).await.expect("listed")[0].seq, seq);
+    }
+
+    /// Issue #453, decision 4: mail kept while logos were off (or from before the check existed) is
+    /// checked by the indexer once logos are on, fetched once more, but only for the last 30 days.
+    #[tokio::test]
+    async fn the_indexer_checks_the_senders_of_the_last_thirty_days_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &fake::mail("Recent", 3, None), &[]);
+        server.add("INBOX", &fake::mail("Old", 40, None), &[]);
+        let mailbox = mailbox(dir.path(), &server).await;
+        mailbox.logos().set_switch(Arc::new(|| false));
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("synced");
+        let store = mailbox.store().expect("store");
+        let unchecked = || async {
+            let since = DateTime::<Utc>::UNIX_EPOCH;
+            store.run(move |db| db.unchecked_senders(10, since)).await.expect("asked").len()
+        };
+        assert_eq!(unchecked().await, 2, "off: nothing checked");
+        assert_eq!(backfill(&mailbox, 10, Utc::now()).await.expect("ran"), 0, "off: nothing fetched for it");
+
+        mailbox.logos().set_switch(Arc::new(|| true));
+        let fetched = fetches(&server, "BODY.PEEK[]").len();
+        assert_eq!(backfill(&mailbox, 10, Utc::now()).await.expect("ran"), 1);
+        assert_eq!(fetches(&server, "BODY.PEEK[]").len(), fetched + 1, "only the recent one fetched again");
+        assert_eq!(unchecked().await, 1, "the old one stays unchecked");
+        assert_eq!(backfill(&mailbox, 10, Utc::now()).await.expect("ran"), 0, "not asked again");
     }
 
     #[tokio::test]

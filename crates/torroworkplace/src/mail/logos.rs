@@ -40,7 +40,7 @@ use std::future::Future;
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, TimeDelta, Utc};
@@ -138,26 +138,32 @@ pub trait LogoWeb: Send + Sync {
 /// The system's DNS and an HTTP client that connects only to the public internet, without a proxy.
 pub struct SystemWeb {
     resolver: Arc<dyn Resolver>,
-    /// `None` when no client could be built: then every request is offline.
-    http: Option<reqwest::Client>,
+    /// Built on first use; `None` when no client could be built: then every request is offline.
+    http: OnceLock<Option<reqwest::Client>>,
 }
 
 impl SystemWeb {
     pub fn new() -> SystemWeb {
-        let resolver: Arc<dyn Resolver> = Arc::new(SystemResolver::new());
-        let http = reqwest::Client::builder()
-            .user_agent(crate::places::USER_AGENT)
-            // A proxy would resolve the names itself, past the guard.
-            .no_proxy()
-            // By hand, so every address is checked before it is asked.
-            .redirect(reqwest::redirect::Policy::none())
-            .https_only(true)
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(DEADLINE)
-            .dns_resolver(Arc::new(GuardedDns::new(Arc::clone(&resolver), is_public)))
-            .build()
-            .ok();
-        SystemWeb { resolver, http }
+        SystemWeb { resolver: Arc::new(SystemResolver::new()), http: OnceLock::new() }
+    }
+
+    fn http(&self) -> Option<&reqwest::Client> {
+        self.http
+            .get_or_init(|| {
+                reqwest::Client::builder()
+                    .user_agent(crate::places::USER_AGENT)
+                    // A proxy would resolve the names itself, past the guard.
+                    .no_proxy()
+                    // By hand, so every address is checked before it is asked.
+                    .redirect(reqwest::redirect::Policy::none())
+                    .https_only(true)
+                    .connect_timeout(CONNECT_TIMEOUT)
+                    .timeout(DEADLINE)
+                    .dns_resolver(Arc::new(GuardedDns::new(Arc::clone(&self.resolver), is_public)))
+                    .build()
+                    .ok()
+            })
+            .as_ref()
     }
 }
 
@@ -168,7 +174,7 @@ impl LogoWeb for SystemWeb {
 
     fn get<'a>(&'a self, url: &'a Url, max: usize) -> WebFuture<'a, Reply> {
         Box::pin(async move {
-            let http = self.http.as_ref().ok_or(WebError::Offline)?;
+            let http = self.http().ok_or(WebError::Offline)?;
             let accept = "image/svg+xml, image/png, image/*;q=0.9, text/html;q=0.8";
             let sent = http.get(url.clone()).header(ACCEPT, accept).send().await;
             // The error loses its address before anything looks at it.
@@ -614,7 +620,7 @@ fn png(canvas: RgbaImage) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn fixture(name: &str) -> Vec<u8> {
@@ -622,7 +628,7 @@ mod tests {
     }
 
     /// A picture of `width` × `height` in one colour, encoded as `format`.
-    fn picture(width: u32, height: u32, format: image::ImageFormat) -> Vec<u8> {
+    pub(crate) fn picture(width: u32, height: u32, format: image::ImageFormat) -> Vec<u8> {
         let image = RgbaImage::from_pixel(width, height, Rgba([20, 90, 200, 255]));
         let mut out = Cursor::new(Vec::new());
         image::DynamicImage::ImageRgba8(image).write_to(&mut out, format).expect("encoded");
@@ -635,7 +641,7 @@ mod tests {
 
     /// The DNS and the web of a test: TXT records and answers by address, and every address asked.
     #[derive(Default)]
-    struct FakeWeb {
+    pub(crate) struct FakeWeb {
         txt: HashMap<String, Vec<String>>,
         pages: HashMap<String, Reply>,
         offline: bool,
@@ -648,12 +654,12 @@ mod tests {
             self
         }
 
-        fn page(mut self, url: &str, reply: Reply) -> FakeWeb {
+        pub(crate) fn page(mut self, url: &str, reply: Reply) -> FakeWeb {
             self.pages.insert(url.to_string(), reply);
             self
         }
 
-        fn asked(&self) -> Vec<String> {
+        pub(crate) fn asked(&self) -> Vec<String> {
             self.asked.lock().expect("lock").clone()
         }
     }
@@ -789,6 +795,14 @@ mod tests {
         assert!(!web.asked().iter().any(|url| url.starts_with("http:")), "never plain http");
         let local = Url::parse("https://localhost/x").expect("url");
         assert_eq!(logos.fetch(local, 1024).await, Ok(None), "no name on the internet");
+    }
+
+    /// The service's web builds without asking anything; tests never use it.
+    #[test]
+    fn the_system_web_is_built_without_a_request() {
+        let web: Arc<dyn LogoWeb> = Arc::new(SystemWeb::new());
+        let logos = SenderLogos::new(None, web);
+        assert!(logos.on() && !logos.has("github.example"), "on by default, nothing kept");
     }
 
     #[tokio::test]
