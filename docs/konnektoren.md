@@ -22,8 +22,8 @@ Wie jede Funktion gibt es das dreimal: in der Oberfläche, über die API und üb
 
 ## Begriffe
 
-- **Konnektor:** ein Konto, das Inhalte annimmt und weitergibt. Kennung `slack:<team_id>:<user_id>`,
-  später `discord:<id>` und `webhook:<id>`. Er heißt in der Oberfläche nach dem Dienst und dem
+- **Konnektor:** ein Konto, das Inhalte annimmt und weitergibt. Kennung `slack:<team_id>:<user_id>` (**offen:** mit der Kennung der Eingangsquelle `slack:<x>` in
+  [eingang.md](eingang.md) abstimmen, bevor K1 beide Rechte-Auswahlen anlegt), später `discord:<id>` und `webhook:<id>`. Er heißt in der Oberfläche nach dem Dienst und dem
   Arbeitsbereich („Slack · Acme“).
 - **Beschreibung:** was der Konnektor kann, vom Dienst-Code geliefert, nie vom Nutzer eingegeben:
   - `accepts`: `text`, `file`, `image` (Teilmenge).
@@ -49,21 +49,23 @@ Wie jede Funktion gibt es das dreimal: in der Oberfläche, über die API und üb
    (`connector/<id>/send`), ohne etwas umzubenennen.
 4. **Wieder einschalten nur ein Mensch.** `connectors.set_enabled` mit `enabled: true` hält
    `Request::kept_for_people`: Jeder Client bekommt `forbidden`, auch mit Admin-Rechten; ausschalten darf
-   ein Agent. Wie das Mikrofon und die MCP-Server ([api.md](api.md), „Was nie nach außen geht“, Punkte 6
+   ein Agent, als gewöhnliche Admin-Änderung mit Freigabe (wie das Mikrofon). Kippt der Schalter, während das
+   Teilen-Blatt offen ist, antwortet `send_message` `forbidden` und das Blatt zeigt „Sending is switched off“. Wie das Mikrofon und die MCP-Server ([api.md](api.md), „Was nie nach außen geht“, Punkte 6
    und 10). Neuer **Punkt 12** der Liste.
 5. **Discord: nur Webhook oder Bot** (offen bis K2). Discord erlaubt kein Senden über das eigene
    Benutzerkonto ([eingang.md](eingang.md): „Discord als Benutzer: kein erlaubter Weg“).
 6. **Ziele werden beim Senden gemerkt,** es gibt keine eigene Einstellungsseite dafür (siehe „Gemerkte
    Ziele“).
-7. **Dateien gehen als Verweis, nie als Inhalt.** Ein Befehl darf höchstens 1 MB groß sein; Base64 gibt es
+7. **Dateien gehen als Verweis, nie als Inhalt.** Eine Zeile der Schnittstelle darf höchstens 1 MiB groß sein (`MAX_LINE` in `torro-ipc`); Base64 gibt es
    nicht. Der Kern liest die Datei selbst, aus dem Cache oder einem freigegebenen Ordner.
 8. **Kein Warten bei Fehlern.** Es gibt keine Warteschlange: Geht es nicht, sagt die Antwort es.
 
 ## Inhalte von `connectors.send_message`
 
 `connectors.send_message { connector, target?, text?, items?, mail_part?, file? }`. Mindestens ein
-Inhalt, zusammen mit Ziel (wo der Konnektor Ziele hat). Formen wie in #260; dessen Staging-Handle (ST4)
-wird später eine weitere `file`-Form.
+Inhalt, zusammen mit Ziel (wo der Konnektor Ziele hat). Die Namen gelten nur für diesen Befehl: In #260 heißt
+`file` ein verwaltetes Handle, hier ein Pfad. Beim Einbinden bildet #260 seine Inhalte auf diese Felder ab;
+sein Staging-Handle (ST4) wird hier ein weiteres Feld `staged`, nicht eine zweite Bedeutung von `file`.
 
 | Feld | Inhalt | Der Kern liest | Recht dafür |
 |---|---|---|---|
@@ -72,12 +74,13 @@ wird später eine weitere `file`-Form.
 | `mail_part` | `{ message: "m:…", part }`, ein Anhang einer Mail | den Anhang aus dem Mail-Cache | Lesen in `mail` und das Konto in `mail_accounts` |
 | `file` | Pfad in einem freigegebenen Ordner | die Datei vom Datenträger | Werkzeug `files` mit Lesen, Ordner nach [api.md](api.md) Punkt 9 |
 
-Ein Bild schickt ein Agent also aus einem freigegebenen Ordner. Wie bei Teilen (Entscheidung 2) baut
-der Kern Karte und Datei selbst; ein Client kann nichts unterschieben.
+Ein Bild schickt ein Agent also aus einem freigegebenen Ordner. Bei `items`, `mail_part` und `file` baut
+der Kern Karte und Datei selbst (wie bei Teilen, Entscheidung 2); ein Client kann dort nichts unterschieben.
+`text` ist dagegen freie Eingabe des Absenders; dagegen schützen nur „Nach außen“ und die Freigabe.
 
 ## Rechte
 
-- **Bereich `connectors`** mit den Stufen Read, Write, Admin. Dazu eine **Auswahl `Rights::connectors`**
+- **Bereich `connectors`** mit den Zugriffen Read, Write und Admin (Admin wird getrennt vergeben, auch die höchste Stufe des Bereichs deckt ihn nicht ab; der Rechte-Editor zeigt „Manage“). Dazu eine **Auswahl `Rights::connectors`**
   mit Konto-Kennungen, wie `mail_accounts` und `chat_accounts` ([chat.md](chat.md), Entscheidung 3):
   Fehlt sie in alten Rechten, heißt das keins. Die **Vorlagen öffnen keinen Konnektor**; der Mensch
   wählt sie beim Verbinden eines Agenten.
@@ -190,6 +193,7 @@ Erläuterungen:
   eingeschaltet ist und zum Inhalt passt (`accepts`).
 - **Accounts** ([settings.md](settings.md)): neue Gruppen **Slack**, **Discord**, **Webhook**, „+ Add“
   öffnet den Assistenten bei diesem Anbieter.
+- **Kontoseite, Gruppe „Connection“:** Token-Status („stored“/„missing“), „Replace token“ und bei `auth` „Sign in again“.
 - **Kontoseite, Gruppe „Sending“:**
   - **Schalter** „Sending enabled“ (Entscheidung 4: ein Mensch schaltet ein).
   - **Gemerkte Ziele** mit Stern.
