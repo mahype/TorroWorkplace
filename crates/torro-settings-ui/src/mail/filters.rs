@@ -1,5 +1,5 @@
-//! The dialog of a mail filter (issue #339, since issue #454 in Settings › Categorization › Rules &
-//! filters): a saved search with what to do with the mail it finds in the inbox – file it under a
+//! The dialog of a mail filter (issue #339, since issue #481 on the page of the category it sets in
+//! Settings › Categorization, a filter without category under "Other filters"): a saved search with what to do with the mail it finds in the inbox – file it under a
 //! category, mark it as read, move it to the trash. Mail works with categories only, so a filter
 //! moves no mail to the archive or a folder.
 //!
@@ -15,7 +15,7 @@
 //! What the search finds comes from `mail.preview_filter`. "Save filter" waits for the core
 //! ([`sent`]): only once it stored the filter does the dialog close; a refusal leaves it with what was
 //! typed. With "Also apply…" ticked the stored filter then runs once on the mail it finds
-//! (`mail.apply_filter`), and the result stands above the list of rules and filters ([`apply_view`]),
+//! (`mail.apply_filter`), and the result stands above the list of categories ([`apply_view`]),
 //! with "Apply to more" while the core says more are left.
 //!
 //! Everything is a request; the dialog checks only what a person must fix before saving, and the
@@ -148,7 +148,10 @@ pub enum Message {
         query: String,
         account: Option<String>,
     },
-    /// "Edit…" of a filter's row: open its dialog.
+    /// "Filter from a search…" on a category's page (issue #481): a new filter's dialog with an empty
+    /// search that sets this category.
+    NewFor(Category),
+    /// A filter's row: open its dialog.
     Edit(String),
     /// The switch of a filter's row: stored at once.
     Enabled(String, bool),
@@ -182,6 +185,10 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
     match message {
         Message::New { query, account } => {
             open(state, Form::new(query, account));
+            ask_preview(state)
+        }
+        Message::NewFor(category) => {
+            open(state, Form { category: Some(category), ..Form::new(String::new(), None) });
             ask_preview(state)
         }
         Message::Edit(id) => {

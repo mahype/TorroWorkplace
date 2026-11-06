@@ -1837,9 +1837,10 @@ impl JobRun<'_> {
     /// writes, so that several mails can be asked at once. "Keep mail here" and a change of the model
     /// for sorting are looked at right before each mail goes out.
     ///
-    /// With `apply_rules` (issue #454) the rules and filters decide first, in their order
-    /// (`sorting`); `found` are the enabled filters of the account that found this mail in its inbox
-    /// folder. Without it neither they, the headers nor the contacts sort.
+    /// With `apply_rules` (issue #454) the rules and filters decide first, the category higher up
+    /// winning between several (`sorting`, issue #481); `found` are the enabled filters of the
+    /// account that found this mail in its inbox folder. Without it neither they, the headers nor
+    /// the contacts sort.
     async fn prepare(
         &self,
         job: &torro_ipc::inbox::CategoryJob,
@@ -2129,9 +2130,10 @@ async fn category_job_run(
     }
 }
 
-/// The order of rules and filters, and which enabled filters of `account` find the mails of
-/// `batch` in its inbox folder (issue #454), for a sorting run that applies the rules. What cannot be
-/// read goes to the log and leaves the filters out: the rules still sort.
+/// What decides between rules and filters (issue #481, [`torro_inbox::rules::Sorting`]), and which
+/// enabled filters of `account` find the mails of `batch` in its inbox folder (issue #454), for a
+/// sorting run that applies the rules. What cannot be read goes to the log and leaves the filters
+/// out: the rules still sort.
 async fn job_filters(
     mail: &MailService,
     inbox: &Inbox,
@@ -2139,10 +2141,11 @@ async fn job_filters(
     batch: &[(i64, String)],
 ) -> (crate::mail::filters::Sorting, Vec<(String, Vec<torro_mail::MailFilter>)>) {
     let all = mail.filters().list().unwrap_or_default();
-    let ids: Vec<String> = all.iter().map(|filter| filter.id.clone()).collect();
-    let sorting = inbox.sorting(&ids).unwrap_or_else(|err| {
-        eprintln!("torroworkplace: inbox: a sorting run cannot read the sorting order: {err}");
-        Default::default()
+    let sorting = inbox.sorting().unwrap_or_else(|err| {
+        eprintln!("torroworkplace: inbox: a sorting run cannot read the sorting rules: {err}");
+        // The filters still decide by the catalogue's order, as for new mail.
+        let rank = inbox.catalogue().unwrap_or_default().into_iter().map(|def| def.category).collect();
+        torro_inbox::rules::Sorting { rank, ..Default::default() }
     });
     let running: Vec<torro_mail::MailFilter> = all.into_iter().filter(|filter| filter.runs_in(account)).collect();
     let messages: Vec<String> = batch.iter().map(|(_, message)| message.clone()).collect();
@@ -4072,10 +4075,9 @@ impl Core {
         {
             return Ok(refused);
         }
-        // Nor a move of a step the client does not see, or past a filter it may not change (#454).
-        if let Some(info) = &inbox_client
-            && matches!(request, Request::MoveSortingStep { .. } | Request::MoveSortRule { .. })
-            && let Err(refused) = self.plan_sorting_move(&request, Some(info))
+        // Nor a move of a category or into a group that is not there (issue #481).
+        if let Request::MoveCategory { category, group, position } = &request
+            && let Err(refused) = self.inbox.plan_category_move(*category, *group, *position)
         {
             return Ok(refused);
         }
@@ -4669,9 +4671,12 @@ impl Core {
                 if let Request::CreateEventFromItem { collection, .. } = &request {
                     facts.list = self.calendar_name(collection).await;
                 }
-                // A move in the order of rules and filters names the filters as stored (#454).
-                if matches!(request, Request::MoveSortingStep { .. } | Request::MoveSortRule { .. }) {
-                    self.sorting_facts(&request, self.client_info(client, rights).as_ref(), &mut facts);
+                // A move of a category is pinned to the order of its target group the person sees
+                // (issue #481): changed since, it runs no more.
+                if let Request::MoveCategory { category, group, position } = &request
+                    && let Ok(plan) = self.inbox.plan_category_move(*category, *group, *position)
+                {
+                    fingerprint = Some((plan.fingerprint(), Vec::new()));
                 }
                 let request = with_entry_title(request, facts.item.as_ref());
                 let summary = crate::approvals::inbox_summary(&request, &facts);
@@ -5102,6 +5107,12 @@ impl Core {
         // the agent's hook reads (task E2.5).
         if let Request::AskPermission { .. } = request {
             return Response::Ok;
+        }
+        // A category moves only into the order the person was shown (issue #481); an approval
+        // without a fingerprint matches none.
+        if let Request::MoveCategory { category, group, position } = request {
+            let approved = Some(fingerprint.unwrap_or_default());
+            return Box::pin(self.move_category(category, group, position, approved, Reach::Client(rights))).await;
         }
         if request.operation().area() == Area::Inbox {
             // Boxed for the stack of a debug build, as in `answer_within` (issue #339).
@@ -5862,14 +5873,12 @@ impl Core {
             | Request::ControlClearCategories { .. }
             | Request::CreateCategory { .. }
             | Request::UpdateCategory { .. }
+            | Request::MoveCategory { .. }
             | Request::RemoveCategory { .. }
             | Request::ListSortRules
             | Request::CreateSortRule { .. }
             | Request::UpdateSortRule { .. }
             | Request::RemoveSortRule { .. }
-            | Request::MoveSortRule { .. }
-            | Request::ListSortingOrder
-            | Request::MoveSortingStep { .. }
             | Request::GetStats { .. }
             | Request::GetQuiet) => match reach {
                 Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
@@ -7681,22 +7690,6 @@ impl Core {
                 Box::pin(self.suggest_from_item(&id, Wanted::Event, Vec::new(), client)).await
             }
             Request::GetQuiet => self.get_quiet(client).await,
-            // One order of rules and filters (issue #454): the core keeps the filters.
-            Request::ListSortingOrder => {
-                let (filters, seen) = self.sorting_filters(client);
-                self.inbox.sorting_order(client, &filters, &seen)
-            }
-            request @ (Request::MoveSortingStep { .. } | Request::MoveSortRule { .. }) => {
-                let plan = match self.plan_sorting_move(&request, client) {
-                    Ok(plan) => plan,
-                    Err(refused) => return refused,
-                };
-                let (filters, seen) = self.sorting_filters(client);
-                if let Err(refused) = self.inbox.apply_sorting_move(&plan, &filters) {
-                    return refused;
-                }
-                self.inbox.moved_answer(&request, client, &filters, &seen)
-            }
             // The catalogue and the backlog need the mail stores, so the core answers them, not
             // the inbox database (task E12.4).
             Request::ListCategories { account } => Box::pin(self.list_categories(account, reach)).await,
@@ -7740,6 +7733,11 @@ impl Core {
                     Ok(def) => self.category_answer(&def, reach).await,
                     Err(refused) => refused,
                 }
+            }
+            // Which category wins between rules of several (issue #481): the catalogue answers, with
+            // the counts in reach.
+            Request::MoveCategory { category, group, position } => {
+                Box::pin(self.move_category(category, group, position, None, reach)).await
             }
             Request::RemoveCategory { category, replacement } => {
                 Box::pin(self.remove_category(category, replacement, reach)).await
@@ -8405,85 +8403,25 @@ impl Core {
     fn filter_request<'a>(&'a self, request: Request, reach: Reach<'a>) -> torro_core::ai::BoxFuture<'a, Response> {
         Box::pin(async move {
             let categories = self.filter_categories();
-            let removed = match &request {
-                Request::RemoveMailFilter { id } => Some(id.clone()),
-                _ => None,
-            };
-            let answer = crate::mail::filters::answer(&self.mail, reach, &categories, request).await;
-            // A removed filter leaves the order of rules and filters too (issue #454).
-            if let (Some(id), Response::MailFilters { .. }) = (removed, &answer) {
-                self.inbox.forget_sorting_filter(&id);
-            }
-            answer
+            crate::mail::filters::answer(&self.mail, reach, &categories, request).await
         })
     }
 
-    /// The filter `inbox.move_sorting_step` moves and the filters a move passes, as stored, for the
-    /// summary of its approval (issue #454).
-    fn sorting_facts(
+    /// `inbox.move_category` (issue #481): moves the category and answers with the catalogue, the
+    /// counts in `reach` ([`Core::list_categories`]). `approved` is the fingerprint of the move a
+    /// person was shown ([`crate::inbox::CategoryMove::fingerprint`]); `None` without an approval.
+    async fn move_category(
         &self,
-        request: &Request,
-        client: Option<&torro_ipc::ClientInfo>,
-        facts: &mut crate::approvals::InboxFacts,
-    ) {
-        let (filters, seen) = self.sorting_filters(client);
-        let Ok(plan) = self.inbox.plan_sorting_move(request, client, &filters, &seen) else { return };
-        let stored = |id: &str| self.mail.filters().get(id).ok().flatten();
-        if plan.moved.kind == torro_inbox::SortingKind::Filter {
-            facts.sort_filter = stored(&plan.moved.id).map(Box::new);
+        category: torro_mail::Category,
+        group: torro_mail::CategoryGroup,
+        position: u32,
+        approved: Option<&str>,
+        reach: Reach<'_>,
+    ) -> Response {
+        if let Err(refused) = self.inbox.move_category(category, group, position, approved) {
+            return refused;
         }
-        facts.place = plan.new.iter().position(|step| *step == plan.moved).map(|at| at + 1);
-        facts.passed = torro_inbox::rules::passed_filters(&plan.old, &plan.new, &plan.moved)
-            .iter()
-            .filter_map(|id| stored(id))
-            .collect();
-    }
-
-    /// The ids of the mail filters in their file's order, and those `client` sees (issue #454): every
-    /// one for the app key; for a client only with read access to mail and the filter's account in
-    /// reach ([`crate::mail::filters::visible`]).
-    fn sorting_filters(&self, client: Option<&torro_ipc::ClientInfo>) -> (Vec<String>, Vec<String>) {
-        let all = match self.mail.filters().list() {
-            Ok(all) => all,
-            Err(_) => {
-                eprintln!("torroworkplace: mail: the mail filters cannot be read for the sorting order");
-                Vec::new()
-            }
-        };
-        let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
-        let reads = client.is_none_or(|client| client.rights.area(Area::Mail).allows(Access::Read));
-        let seen = all
-            .iter()
-            .filter(|filter| reads && crate::mail::filters::visible(reach, filter.account.as_deref()))
-            .map(|filter| filter.id.clone())
-            .collect();
-        (all.into_iter().map(|filter| filter.id).collect(), seen)
-    }
-
-    /// What `inbox.move_sorting_step` or `inbox.move_sort_rule` of `client` would make of the order
-    /// of rules and filters (issue #454), checked: a step it does not see is `not-found`, and a client
-    /// that moves a filter or a step past one needs the rights to change that filter
-    /// ([`crate::mail::filters::passing_refusal`]) – before anyone is asked and again when it runs.
-    fn plan_sorting_move(
-        &self,
-        request: &Request,
-        client: Option<&torro_ipc::ClientInfo>,
-    ) -> Result<crate::inbox::SortingMove, Response> {
-        let (filters, seen) = self.sorting_filters(client);
-        let plan = self.inbox.plan_sorting_move(request, client, &filters, &seen)?;
-        let Some(client) = client else { return Ok(plan) };
-        let mut passed = torro_inbox::rules::passed_filters(&plan.old, &plan.new, &plan.moved);
-        if plan.moved.kind == torro_inbox::SortingKind::Filter {
-            passed.push(plan.moved.id.clone());
-        }
-        for id in passed {
-            if let Ok(Some(filter)) = self.mail.filters().get(&id)
-                && let Some(refused) = crate::mail::filters::passing_refusal(&client.rights, &filter)
-            {
-                return Err(refused);
-            }
-        }
-        Ok(plan)
+        Box::pin(self.list_categories(None, reach)).await
     }
 
     /// [`crate::mail::filters::client_refusal`] for a client's `rights`, boxed in a frame of its own
@@ -15114,86 +15052,60 @@ mod tests {
     }
 
     /// A core whose mail data (and so its save targets) live in `dir`, without mail accounts.
-    /// Issue #454: sorting rules and mail filters stand in one order. Nothing moved yet, the filters
-    /// stand above the rules; a move keeps the rules' own order in line. A client sees a filter only
-    /// with read access to mail and its account in reach, and moving a step past a filter – or the
-    /// filter itself – needs the rights to change that filter: without mail, with one account against
-    /// a filter of every account, and with every account (then it waits for the person).
+    /// Issue #481: `inbox.move_category` needs admin access to the inbox, not to mail – it changes
+    /// which category wins, not a filter. It answers with the catalogue as `inbox.list_categories`
+    /// does (counts only in reach: a client without mail counts nothing); a client waits for the
+    /// person, whose approval is pinned to the order shown: moved meanwhile, it ends `conflict`.
     #[tokio::test]
-    async fn rules_and_filters_move_in_one_order_with_the_rights_to_the_filters_they_pass() {
-        use torro_inbox::{SortComparison, SortCondition, SortField, SortingKind, SortingStep};
+    async fn categories_move_with_inbox_admin_and_an_approval_pinned_to_the_order() {
+        use torro_mail::{Category, CategoryGroup};
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core_with_mail_data(dir.path());
         let app_key = crate::clients::tests::app_key(dir.path());
-        let anna = "mail:anna@example.org";
-        let filter = |account: Option<&str>| Request::CreateMailFilter {
-            query: "from:shop.example".into(),
-            account: account.map(str::to_string),
-            file: None,
-            mark_read: true,
-            category: None,
-            enabled: true,
+        let paper = |response: Response| -> Vec<Category> {
+            match response {
+                Response::Categories { categories, .. } => categories
+                    .into_iter()
+                    .filter(|info| info.group == CategoryGroup::PaperTrail)
+                    .map(|info| info.category)
+                    .collect(),
+                other => panic!("the catalogue, not {other:?}"),
+            }
         };
-        let own = mail_filter(ask(&core, Some(&app_key), filter(Some(anna))).await);
-        let every = mail_filter(ask(&core, Some(&app_key), filter(None)).await);
-        let rule = Request::CreateSortRule {
-            category: torro_mail::Category::Invoice,
-            conditions: vec![SortCondition {
-                comparison: SortComparison::Auto,
-                field: SortField::Domain,
-                value: "shop.example".into(),
-            }],
-            exceptions: Vec::new(),
-            position: None,
-            enabled: true,
-        };
-        let Response::SortRule { rule, .. } = ask(&core, Some(&app_key), rule).await else { panic!("a rule") };
-        let steps = |response: Response| match response {
-            Response::SortingOrder { steps } => steps,
-            other => panic!("an order, not {other:?}"),
-        };
-        let (r, f) = (SortingStep::rule(rule.id.clone()), |id: &str| SortingStep::filter(id));
-        let order = steps(ask(&core, Some(&app_key), Request::ListSortingOrder).await);
-        assert_eq!(order, [f(&own.id), f(&every.id), r.clone()], "filters first, as before");
-        let first = Request::MoveSortingStep { kind: SortingKind::Rule, id: rule.id.clone(), position: 0 };
-        assert_eq!(steps(ask(&core, Some(&app_key), first).await), [r.clone(), f(&own.id), f(&every.id)]);
-        let moved = Request::MoveSortingStep { kind: SortingKind::Filter, id: every.id.clone(), position: 1 };
-        assert_eq!(steps(ask(&core, Some(&app_key), moved).await), [r.clone(), f(&every.id), f(&own.id)]);
-        // Removing a filter takes it out of the order.
-        let gone = mail_filter(ask(&core, Some(&app_key), filter(Some(anna))).await);
-        assert_eq!(steps(ask(&core, Some(&app_key), Request::ListSortingOrder).await).len(), 4);
-        ask(&core, Some(&app_key), Request::RemoveMailFilter { id: gone.id }).await;
-        assert_eq!(steps(ask(&core, Some(&app_key), Request::ListSortingOrder).await).len(), 3);
+        let to_top = |category| Request::MoveCategory { category, group: CategoryGroup::PaperTrail, position: 0 };
+        let order = paper(ask(&core, Some(&app_key), to_top(Category::Receipt)).await);
+        assert_eq!(order.first(), Some(&Category::Receipt));
 
-        let last = |kind, id: &str| Request::MoveSortingStep { kind, id: id.into(), position: 9 };
-        // Inbox admin without mail: sees no step, as it sees no rule.
+        // Inbox admin without mail: the move waits for the person, and counts nothing it may not read.
         let mut rights = RightsTemplate::FullAccess.rights();
         rights.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin: true });
         rights.areas.insert(Area::Mail, AreaRights { level: Level::NoAccess, admin: false });
         let (_, blind) = client(&core, rights.clone()).await;
-        assert!(steps(ask(&core, Some(&blind), Request::ListSortingOrder).await).is_empty());
-        assert_eq!(code(&ask(&core, Some(&blind), last(SortingKind::Rule, &rule.id)).await), "not-found");
-        // Reading mail only: sees every step, but may not pass or move a filter.
-        rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
-        let (_, reads) = client(&core, rights.clone()).await;
-        assert_eq!(steps(ask(&core, Some(&reads), Request::ListSortingOrder).await).len(), 3);
-        assert_eq!(code(&ask(&core, Some(&reads), last(SortingKind::Rule, &rule.id)).await), "forbidden");
-        assert_eq!(code(&ask(&core, Some(&reads), last(SortingKind::Filter, &own.id)).await), "forbidden");
-        let old = Request::MoveSortRule { id: rule.id.clone(), position: 9 };
-        assert_eq!(code(&ask(&core, Some(&reads), old).await), "forbidden", "inbox.move_sort_rule too");
-        let still = Request::MoveSortingStep { kind: SortingKind::Rule, id: rule.id.clone(), position: 0 };
-        waits(ask(&core, Some(&reads), still).await);
-        // One account: sees its filter, not the one of every account it would pass too.
-        rights.areas.insert(Area::Mail, AreaRights { level: Level::Full, admin: true });
-        rights.mail_accounts = Selection::Only(vec![anna.into()]);
-        let (_, one) = client(&core, rights.clone()).await;
-        assert_eq!(steps(ask(&core, Some(&one), Request::ListSortingOrder).await), [r.clone(), f(&own.id)]);
-        assert_eq!(code(&ask(&core, Some(&one), last(SortingKind::Rule, &rule.id)).await), "forbidden");
-        assert_eq!(code(&ask(&core, Some(&one), last(SortingKind::Filter, &every.id)).await), "not-found");
-        // Every account: the move waits for the person.
-        rights.mail_accounts = Selection::All;
-        let (_, all) = client(&core, rights).await;
-        waits(ask(&core, Some(&all), last(SortingKind::Rule, &rule.id)).await);
+        let asked = waits(ask(&core, Some(&blind), to_top(Category::Order)).await);
+        assert_eq!(asked.command, "inbox.move_category");
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("done") };
+        match *response {
+            Response::Categories { ref categories, .. } => {
+                assert!(categories.iter().all(|info| info.messages == 0 && info.unread == 0), "nothing counted")
+            }
+            ref other => panic!("the catalogue, not {other:?}"),
+        }
+        assert_eq!(paper(*response).first(), Some(&Category::Order));
+        // Moved meanwhile: the approval no longer fits the order it showed.
+        let asked = waits(ask(&core, Some(&blind), to_top(Category::Shipping)).await);
+        ask(&core, Some(&app_key), to_top(Category::Invoice)).await;
+        let late = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = late.state else { panic!("done") };
+        assert_eq!(code(&response), "conflict");
+        // A group that is not there is `not-found` before anyone is asked.
+        let nowhere =
+            Request::MoveCategory { category: Category::Order, group: CategoryGroup::Custom(42), position: 0 };
+        assert_eq!(code(&ask(&core, Some(&blind), nowhere).await), "not-found");
+        // Reading the inbox only: forbidden.
+        rights.areas.insert(Area::Inbox, AreaRights { level: Level::Read, admin: false });
+        let (_, reads) = client(&core, rights).await;
+        assert_eq!(code(&ask(&core, Some(&reads), to_top(Category::Order)).await), "forbidden");
     }
 
     fn core_with_mail_data(dir: &std::path::Path) -> Core {

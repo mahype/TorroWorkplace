@@ -3564,7 +3564,8 @@ fn filter_sender<'r>(reading: &Reading<'r>) -> Option<&'r str> {
 
 /// The items of the rail's group "More" ([`action_groups`]) for `tools`: the other view of a mail
 /// with HTML, the other colours while its HTML shows, "Copy text", "Create filter…" for the mail's
-/// `sender` (issue #339: Settings › Categorization › Rules & filters with `from:<address>`, issue #454), and with `close` Close.
+/// `sender` (issue #339: a new filter's dialog with `from:<address>` over Settings › Categorization,
+/// issues #454 and #481), and with `close` Close.
 fn more_items<'a>(tools: ViewTools, sender: Option<&str>, close: bool) -> Vec<RailItem<'a, Message>> {
     let mut items = Vec::new();
     // First, so a click on "…" copies the text (decision D): the safest of the group. HTML or text

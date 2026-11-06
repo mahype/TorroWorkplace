@@ -262,7 +262,7 @@ weder Mail noch Slack).
 | Zu Aufgabe machen | Taste `t` | `inbox.create_task_from_item` · Write (braucht auch Tasks-Rechte) | `inbox_create_task_from_item` |
 | Antworten (Mail, Slack, Talk) | Paneel | `inbox.reply` · Write + Schalter „Nach außen“ | `inbox_reply` (ggf. `pending`) |
 | Quelle stummschalten | Menü „Hide from Notification Hub“ (`m`) | `inbox.mute_source` · Admin | `inbox_mute_source` |
-| Mail eines Absenders aus dem Weg räumen (statt Ausblenden, #339) | „Create filter…“ an der Mail, Mail-Fenster › Einstellungen › Categorization › Rules & filters (#454) | `mail.create_filter` · Admin (weitere Befehle in [mail.md](mail.md#filter)) | `mail_create_filter` |
+| Mail eines Absenders aus dem Weg räumen (statt Ausblenden, #339) | „Create filter…“ an der Mail, Mail-Fenster › Einstellungen › Categorization (Seite der Kategorie oder „Other filters“, #481) | `mail.create_filter` · Admin (weitere Befehle in [mail.md](mail.md#filter)) | `mail_create_filter` |
 | Rückgängig nach Done, Later, Stummschalten (E3.11) | Hinweis unten mit „Undo“, `u`, `Ctrl+Z` | vorhandene: `set_item_done`, `snooze_item`, `remove_rule` | dieselben Tools |
 | Verwerfen, nur Benachrichtigungen (E8.4) | ✕ oben rechts auf der Karte | vorhandenes `inbox.set_item_done` · Write | `inbox_set_item_done` |
 | Was sich an einem Eintrag stummschalten lässt (E8.6a) | Glocke auf der Karte öffnet das Menü | `inbox.list_mute_options` · Read | `inbox_list_mute_options` |

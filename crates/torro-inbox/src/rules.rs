@@ -22,8 +22,7 @@ use torro_mail::{Category, CategorySource, MailCategory, Order};
 
 use crate::item::{
     AgentKind, Facet, FacetKey, FollowUp, Item, Kind, Lane, LaneReason, Link, MuteEffect, MuteOption, MuteScope, Rule,
-    RuleEffect, Sender, SortComparison, SortCondition, SortField, SortRule, SortingKind, SortingStep, SourceKind,
-    SourceRef, State,
+    RuleEffect, Sender, SortComparison, SortCondition, SortField, SortRule, SourceKind, SourceRef, State,
 };
 
 /// Days a done entry is kept before [`expired`] says it goes.
@@ -71,9 +70,9 @@ pub fn mail_lane(bulk: bool, remembered: Option<Lane>) -> Lane {
 ///
 /// In this order, and always [`CategorySource::Rule`]:
 ///
-/// 1. `remembered` – the category of the first sorting rule that holds ([`sort_category`], task
-///    E15.3), "Always for this sender?" among them. It wins over every header, because the person
-///    said so.
+/// 1. `remembered` – the category the sorting rules give the mail ([`ranked_category`], task
+///    E15.3, issue #481), "Always for this sender?" among them. It wins over every header, because
+///    the person said so.
 /// 2. [`Category::Invitation`] – the mail invites to an event (iMIP, `invite`).
 /// 3. [`Category::AutoReply`] – `Auto-Submitted` says something other than `no`.
 /// 4. [`Category::Spam`] – `junk`: the mail lies in the folder the server keeps junk in.
@@ -129,143 +128,56 @@ pub struct SortFacts {
     pub text_complete: bool,
 }
 
-/// What the first of `rules` that holds for `mail` files it as (task E15.3, `docs/kategorien.md`,
-/// "Sortierregeln"): a rule holds when it is on, every one of its conditions holds and none of
-/// its exceptions. `rules` stand in their order, so the first wins and a tie is no tie. `None`:
-/// no rule holds, and the headers and the model have their say.
-pub fn sort_category(rules: &[SortRule], mail: &SortInput<'_>) -> Option<Category> {
-    rules.iter().find(|rule| sort_holds(rule, mail)).map(|rule| rule.category)
+/// The rank, kept rules and sorting rules that decide a mail's category (issue #481,
+/// `docs/kategorien.md`, "Vorrang"), as the core reads them once for a round of mail
+/// ([`ranked_category`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Sorting {
+    /// The categories of the catalogue in its order: groups from the top, within a group the
+    /// categories as the person placed them. Higher up wins.
+    pub rank: Vec<Category>,
+    /// The ids of the rules "Always for this sender?" made: they win over every other rule.
+    pub kept: Vec<String>,
+    /// Every sorting rule, in the order of their list.
+    pub rules: Vec<SortRule>,
 }
 
-/// The category the first step of `order` gives `mail` (issue #454, `docs/kategorien.md`,
-/// "Regeln und Filter"): from the top, a sorting rule of `rules` that holds ([`sort_holds`]) or a
-/// mail filter that found the mail and sets a category (`hits`: the filters' ids with their
-/// categories, only those that found it). A filter that found the mail but sets no category is not
-/// in `hits` and decides nothing. A rule that `order` misses (it never should, [`sorting_order`])
-/// comes after the order, in its own. `None`: no step decides, and the headers and the model have
-/// their say.
-pub fn first_category(
-    order: &[SortingStep],
+impl Sorting {
+    /// [`ranked_category`] with what this holds.
+    pub fn category(&self, mail: &SortInput<'_>, hits: &[(&str, Category)]) -> Option<Category> {
+        ranked_category(&self.rank, &self.kept, &self.rules, mail, hits)
+    }
+}
+
+/// The category the fixed rules give `mail` (issue #481, `docs/kategorien.md`, "Vorrang"):
+///
+/// 1. The first rule of `rules` that "Always for this sender?" made (`kept`) and that holds: the
+///    person decided about this very sender, so it wins over every other rule and filter.
+/// 2. Else, among the other rules that hold ([`sort_holds`]) and the mail filters that found the
+///    mail and set a category (`hits`, the filters' ids with their categories), the category that
+///    stands highest in `rank`. A category `rank` does not know comes after every one it knows; a
+///    tie keeps the order of the rules, then of the filters. Within one category the order of its
+///    rules decides nothing.
+///
+/// A filter that found the mail but sets no category is not in `hits` and decides nothing. `None`:
+/// no rule and no filter decides, and the headers, the contacts and the model have their say.
+pub fn ranked_category(
+    rank: &[Category],
+    kept: &[String],
     rules: &[SortRule],
     mail: &SortInput<'_>,
     hits: &[(&str, Category)],
 ) -> Option<Category> {
-    for step in order {
-        let found = match step.kind {
-            SortingKind::Rule => rules
-                .iter()
-                .find(|rule| rule.id == step.id)
-                .filter(|rule| sort_holds(rule, mail))
-                .map(|rule| rule.category),
-            SortingKind::Filter => hits.iter().find(|(id, _)| *id == step.id).map(|(_, category)| *category),
-        };
-        if found.is_some() {
-            return found;
-        }
+    let is_kept = |rule: &&SortRule| kept.contains(&rule.id);
+    if let Some(rule) = rules.iter().filter(is_kept).find(|rule| sort_holds(rule, mail)) {
+        return Some(rule.category);
     }
-    let missed: Vec<SortRule> = rules
-        .iter()
-        .filter(|rule| !order.iter().any(|step| step.kind == SortingKind::Rule && step.id == rule.id))
-        .cloned()
-        .collect();
-    sort_category(&missed, mail)
-}
-
-/// The order of the sorting steps (issue #454) as `stored` keeps it, brought in line with the rules
-/// and filters there are:
-///
-/// - Nothing stored yet: the filters in their order, then the rules – as filters came before the
-///   rules until issue #454.
-/// - A step that is no longer there falls away; a step stored twice counts once.
-/// - A filter that is not stored goes below the last filter (no filter left: at the top). `filters`
-///   `None` keeps the filters as stored and adds none (the inbox alone does not know them).
-/// - A rule that is not stored goes right before the rule that follows it in `rules`, else below
-///   the last rule. The rules always stand in the order of `rules` (the rules' own order), on the
-///   places the rules take in the list.
-pub fn sorting_order(stored: &[SortingStep], rules: &[String], filters: Option<&[String]>) -> Vec<SortingStep> {
-    let known_filter = |id: &str| filters.is_none_or(|filters| filters.iter().any(|held| held == id));
-    let mut order: Vec<SortingStep> = Vec::with_capacity(stored.len());
-    if stored.is_empty() {
-        order.extend(filters.unwrap_or_default().iter().map(SortingStep::filter));
-        order.extend(rules.iter().map(SortingStep::rule));
-        return order;
-    }
-    for step in stored {
-        let there = match step.kind {
-            SortingKind::Rule => rules.contains(&step.id),
-            SortingKind::Filter => known_filter(&step.id),
-        };
-        if there && !order.contains(step) {
-            order.push(step.clone());
-        }
-    }
-    for filter in filters.unwrap_or_default() {
-        let step = SortingStep::filter(filter);
-        if order.contains(&step) {
-            continue;
-        }
-        let at = order.iter().rposition(|held| held.kind == SortingKind::Filter).map_or(0, |last| last + 1);
-        order.insert(at, step);
-    }
-    for (index, rule) in rules.iter().enumerate() {
-        let step = SortingStep::rule(rule);
-        if order.contains(&step) {
-            continue;
-        }
-        let next =
-            rules[index + 1..].iter().find_map(|later| order.iter().position(|held| *held == SortingStep::rule(later)));
-        let at = next.unwrap_or_else(|| {
-            order.iter().rposition(|held| held.kind == SortingKind::Rule).map_or(order.len(), |last| last + 1)
-        });
-        order.insert(at, step);
-    }
-    let mut own = rules.iter();
-    for step in order.iter_mut().filter(|step| step.kind == SortingKind::Rule) {
-        if let Some(rule) = own.next() {
-            step.id = rule.clone();
-        }
-    }
-    order
-}
-
-/// `order` with `step` taken out and put right before `before`; `None`, or a `before` that is not in
-/// the list, puts it last.
-pub fn move_step(order: &[SortingStep], step: &SortingStep, before: Option<&SortingStep>) -> Vec<SortingStep> {
-    let mut moved: Vec<SortingStep> = order.iter().filter(|held| *held != step).cloned().collect();
-    let at = before.and_then(|before| moved.iter().position(|held| held == before)).unwrap_or(moved.len());
-    moved.insert(at, step.clone());
-    moved
-}
-
-/// `order` with the rule `id` put where `inbox.move_sort_rule` and `inbox.create_sort_rule` mean
-/// (issue #454): right before the rule `next` (the rule now after it among the rules), else below the
-/// last other rule; the filters stay where they are.
-pub fn place_rule(order: &[SortingStep], id: &str, next: Option<&str>) -> Vec<SortingStep> {
-    let step = SortingStep::rule(id);
-    let others: Vec<SortingStep> = order.iter().filter(|held| **held != step).cloned().collect();
-    let at = match next.and_then(|next| others.iter().position(|held| *held == SortingStep::rule(next))) {
-        Some(at) => at,
-        None => others.iter().rposition(|held| held.kind == SortingKind::Rule).map_or(others.len(), |last| last + 1),
-    };
-    let mut placed = others;
-    placed.insert(at, step);
-    placed
-}
-
-/// The filters `moved` passes when `old` becomes `new` (issue #454): those that stood above it and
-/// stand below it now, or the other way round. Moving a step past a filter changes what that filter
-/// decides, so the core asks for the rights to it ([`SortingStep`]). `moved` itself is not in the
-/// list.
-pub fn passed_filters(old: &[SortingStep], new: &[SortingStep], moved: &SortingStep) -> Vec<String> {
-    let above = |order: &[SortingStep], step: &SortingStep| {
-        let at = |wanted: &SortingStep| order.iter().position(|held| held == wanted);
-        at(step).zip(at(moved)).map(|(step, moved)| step < moved)
-    };
-    old.iter()
-        .filter(|step| step.kind == SortingKind::Filter && *step != moved)
-        .filter(|step| matches!((above(old, step), above(new, step)), (Some(was), Some(is)) if was != is))
-        .map(|step| step.id.clone())
-        .collect()
+    let held = rules.iter().filter(|rule| !is_kept(rule) && sort_holds(rule, mail)).map(|rule| rule.category);
+    let place = |category: &Category| rank.iter().position(|ranked| ranked == category).unwrap_or(usize::MAX);
+    held.chain(hits.iter().map(|(_, category)| *category))
+        .enumerate()
+        .min_by_key(|(index, category)| (place(category), *index))
+        .map(|(_, category)| category)
 }
 
 /// `rule` holds for `mail`: on, with at least one condition, all of them holding and none of the
@@ -2288,20 +2200,21 @@ mod tests {
             vec![condition(SortField::Domain, "shop.example")],
             vec![condition(SortField::Subject, "invoice")],
         );
-        // In order: the narrow receipt rule does not hold, the order rule is excepted, the shop's
-        // holds – and it wins over everything after it.
+        // The narrow receipt rule does not hold, the order rule is excepted, the shop's holds.
+        let rank = [Category::Receipt, Category::Order, Category::Invoice];
+        let ranked = |rules: &[SortRule], mail: &SortInput<'_>| ranked_category(&rank, &[], rules, mail, &[]);
         let rules = vec![receipts.clone(), order.clone(), shop.clone(), rule(Category::Spam, vec![], Vec::new())];
-        assert_eq!(sort_category(&rules, &mail), Some(Category::Invoice));
-        // Order is all: the broad rule first wins even where a narrower one would hold.
+        assert_eq!(ranked(&rules, &mail), Some(Category::Invoice));
+        // Where both hold, the category higher up wins, whatever the order of the rules.
         let receipt = SortInput { subject: "Receipt", ..mail };
-        assert_eq!(sort_category(&[shop.clone(), receipts.clone()], &receipt), Some(Category::Invoice));
-        assert_eq!(sort_category(&[receipts.clone(), shop.clone()], &receipt), Some(Category::Receipt));
-        // Switched off, a rule holds for nothing and the next one decides.
-        let off = SortRule { enabled: false, ..shop.clone() };
-        assert_eq!(sort_category(&[off, order.clone()], &receipt), Some(Category::Order));
-        assert_eq!(sort_category(&[rule(Category::Spam, vec![], Vec::new())], &mail), None, "no condition, no rule");
+        assert_eq!(ranked(&[shop.clone(), receipts.clone()], &receipt), Some(Category::Receipt));
+        assert_eq!(ranked(&[receipts.clone(), shop.clone()], &receipt), Some(Category::Receipt));
+        // Switched off, a rule holds for nothing and another one decides.
+        let off = SortRule { enabled: false, ..receipts.clone() };
+        assert_eq!(ranked(&[off, shop.clone()], &receipt), Some(Category::Invoice));
+        assert_eq!(ranked(&[rule(Category::Spam, vec![], Vec::new())], &mail), None, "no condition, no rule");
         // What a rule holds for goes before the headers.
-        let kept = sort_category(&[shop], &mail);
+        let kept = ranked(&[shop], &mail);
         assert_eq!(
             mail_category(kept, true, Some("auto-replied"), true),
             Some(MailCategory::by_rule(Category::Invoice))
@@ -2370,73 +2283,49 @@ mod tests {
         assert!(condition_holds(&condition, &input));
     }
 
-    /// Issue #454: one order for rules and filters. Nothing stored: filters, then rules. Steps gone
-    /// fall away; a new filter goes below the last filter (at the top without one), a new rule right
-    /// before the rule after it; the rules keep their own order on their places.
+    /// Issue #481: among the rules and filters that match, the category higher up wins – groups
+    /// from the top, within a group as the person placed them; moving a category turns it round. A
+    /// rule "Always for this sender?" wins over all of them; an unknown category comes last; a tie
+    /// keeps the order of the rules, then of the filters.
     #[test]
-    fn the_sorting_order_is_brought_in_line_with_the_rules_and_filters() {
-        let ids = |list: &[&str]| list.iter().map(|id| id.to_string()).collect::<Vec<_>>();
-        let (r, f) = (SortingStep::rule, SortingStep::filter);
-        let rules = ids(&["r1", "r2"]);
-        let filters = ids(&["f1", "f2"]);
-        assert_eq!(sorting_order(&[], &rules, Some(&filters)), [f("f1"), f("f2"), r("r1"), r("r2")]);
-        assert_eq!(sorting_order(&[], &rules, None), [r("r1"), r("r2")]);
-
-        // A filter between two rules; a filter gone, one new; a rule gone, one new in between.
-        let stored = [r("r1"), f("f1"), f("gone"), r("r2"), r("r1")];
-        let order = sorting_order(&stored, &ids(&["r1", "new", "r2"]), Some(&ids(&["f1", "f9"])));
-        assert_eq!(order, [r("r1"), f("f1"), f("f9"), r("new"), r("r2")]);
-        // Without filters stored, a new one goes on top; a new last rule below the last.
-        let order = sorting_order(&[r("r1")], &ids(&["r1", "r2"]), Some(&ids(&["f1"])));
-        assert_eq!(order, [f("f1"), r("r1"), r("r2")]);
-        // `None` keeps the filters as stored.
-        assert_eq!(sorting_order(&[f("f7"), r("r1")], &ids(&["r1"]), None), [f("f7"), r("r1")]);
-        // The rules' own order wins on the places of the rules.
-        assert_eq!(sorting_order(&[r("r2"), f("f1"), r("r1")], &ids(&["r1", "r2"]), None), [r("r1"), f("f1"), r("r2")]);
-    }
-
-    /// Issue #454: moving a step, placing a rule as `inbox.move_sort_rule` means it, and the filters
-    /// a move passes.
-    #[test]
-    fn steps_move_and_name_the_filters_they_pass() {
-        let (r, f) = (SortingStep::rule, SortingStep::filter);
-        let order = [f("f1"), r("r1"), f("f2"), r("r2")];
-        let moved = move_step(&order, &r("r2"), Some(&f("f1")));
-        assert_eq!(moved, [r("r2"), f("f1"), r("r1"), f("f2")]);
-        assert_eq!(passed_filters(&order, &moved, &r("r2")), ["f1", "f2"]);
-        assert_eq!(move_step(&order, &f("f1"), None), [r("r1"), f("f2"), r("r2"), f("f1")]);
-        assert!(passed_filters(&order, &order, &r("r1")).is_empty());
-        // A rule goes right before the rule after it, else below the last rule.
-        assert_eq!(place_rule(&order, "r2", Some("r1")), [f("f1"), r("r2"), r("r1"), f("f2")]);
-        assert_eq!(place_rule(&order, "r1", None), [f("f1"), f("f2"), r("r2"), r("r1")]);
-    }
-
-    /// Issue #454: from the top, the first rule that holds or filter that found the mail with a
-    /// category decides; a filter above a rule wins over it, and the other way round.
-    #[test]
-    fn the_first_step_decides_the_category() {
-        let rule = SortRule {
-            id: "r1".into(),
-            category: Category::Invoice,
+    fn the_category_higher_up_decides() {
+        let rule = |id: &str, category, domain: &str| SortRule {
+            id: id.into(),
+            category,
             conditions: vec![SortCondition {
                 comparison: SortComparison::Auto,
                 field: SortField::Domain,
-                value: "shop.example".into(),
+                value: domain.into(),
             }],
             exceptions: Vec::new(),
             enabled: true,
             created: DateTime::from_timestamp(0, 0).expect("a time"),
         };
+        let shop = rule("r1", Category::Invoice, "shop.example");
+        let kept = rule("r2", Category::Personal, "shop.example");
         let mail = SortInput { sender: Some("news@shop.example"), ..SortInput::default() };
-        let (r, f) = (SortingStep::rule, SortingStep::filter);
         let hits = [("f1", Category::Newsletter)];
-        let rules = std::slice::from_ref(&rule);
-        assert_eq!(first_category(&[f("f1"), r("r1")], rules, &mail, &hits), Some(Category::Newsletter));
-        assert_eq!(first_category(&[r("r1"), f("f1")], rules, &mail, &hits), Some(Category::Invoice));
-        assert_eq!(first_category(&[f("f2"), r("r1")], rules, &mail, &hits), Some(Category::Invoice), "f2 found none");
+        let rules = std::slice::from_ref(&shop);
+        let invoice_first = [Category::Invoice, Category::Newsletter];
+        let newsletter_first = [Category::Newsletter, Category::Invoice];
+        assert_eq!(ranked_category(&invoice_first, &[], rules, &mail, &hits), Some(Category::Invoice));
+        assert_eq!(ranked_category(&newsletter_first, &[], rules, &mail, &hits), Some(Category::Newsletter));
+        // A filter that found nothing, or a rule that does not hold, decides nothing.
+        assert_eq!(ranked_category(&newsletter_first, &[], rules, &mail, &[]), Some(Category::Invoice));
         let other = SortInput { sender: Some("a@b.example"), ..SortInput::default() };
-        assert_eq!(first_category(&[r("r1"), f("f1")], rules, &other, &hits), Some(Category::Newsletter));
-        assert_eq!(first_category(&[r("r1")], rules, &other, &[]), None);
-        assert_eq!(first_category(&[], rules, &mail, &[]), Some(Category::Invoice), "a rule the order misses");
+        assert_eq!(ranked_category(&invoice_first, &[], rules, &other, &hits), Some(Category::Newsletter));
+        assert_eq!(ranked_category(&invoice_first, &[], rules, &other, &[]), None);
+        // "Always for this sender?" first, wherever its category stands.
+        let both = [shop.clone(), kept.clone()];
+        let ids = ["r2".to_string()];
+        assert_eq!(ranked_category(&invoice_first, &ids, &both, &mail, &hits), Some(Category::Personal));
+        assert_eq!(ranked_category(&invoice_first, &[], &both, &mail, &[]), Some(Category::Invoice), "unknown last");
+        // A tie between two unknown ones keeps the order of the rules, then of the filters.
+        let spam = rule("r3", Category::Spam, "shop.example");
+        assert_eq!(ranked_category(&[], &[], &[spam, shop.clone()], &mail, &hits), Some(Category::Spam));
+        assert_eq!(ranked_category(&[], &[], &[], &mail, &hits), Some(Category::Newsletter));
+        // The bundle says the same.
+        let sorting = Sorting { rank: newsletter_first.to_vec(), kept: Vec::new(), rules: rules.to_vec() };
+        assert_eq!(sorting.category(&mail, &hits), Some(Category::Newsletter));
     }
 }

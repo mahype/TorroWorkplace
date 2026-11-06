@@ -360,18 +360,12 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::CreateCategoryGroup { .. }
         | Request::UpdateCategoryGroup { .. }
         | Request::UpdateCategory { .. }
+        | Request::MoveCategory { .. }
         | Request::RemoveCategory { .. }
         | Request::ListSortRules
         | Request::CreateSortRule { .. } => Vec::new(),
         Request::UpdateSortRule { id: rule, .. }
-        | Request::RemoveSortRule { id: rule }
-        | Request::MoveSortRule { id: rule, .. } => vec![random("rule", rule)],
-        // The order of rules and filters (issue #454): the step by its id only.
-        Request::ListSortingOrder => Vec::new(),
-        Request::MoveSortingStep { kind: torro_inbox::SortingKind::Rule, id: rule, .. } => vec![random("rule", rule)],
-        Request::MoveSortingStep { kind: torro_inbox::SortingKind::Filter, id: filter, .. } => {
-            vec![random("filter", filter)]
-        }
+        | Request::RemoveSortRule { id: rule } => vec![random("rule", rule)],
         // The function and the account are ids, not content; the model's name is the server's.
         Request::AiAssignments => Vec::new(),
         Request::SetAiAssignment { engine, .. } => engine.iter().map(|id| account(id)).collect(),

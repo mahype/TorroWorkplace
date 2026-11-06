@@ -982,14 +982,12 @@ fn describe(request: &Request) -> String {
         Request::CreateCategoryGroup { .. } => "create a main mail category".into(),
         Request::UpdateCategoryGroup { .. } => "change a main mail category".into(),
         Request::UpdateCategory { .. } => "change a mail category".into(),
+        Request::MoveCategory { .. } => "move a mail category".into(),
         Request::RemoveCategory { .. } => "remove a mail category".into(),
         Request::ListSortRules => "list sorting rules".into(),
         Request::CreateSortRule { .. } => "create a sorting rule".into(),
         Request::UpdateSortRule { id, .. } => format!("change sorting rule {id}"),
         Request::RemoveSortRule { id } => format!("remove sorting rule {id}"),
-        Request::MoveSortRule { id, position } => format!("move sorting rule {id} to {position}"),
-        Request::ListSortingOrder => "list the sorting order".into(),
-        Request::MoveSortingStep { kind, id, position } => format!("move sorting step {kind:?} {id} to {position}"),
         // Never the token.
         Request::SetGithubToken { .. } => "set github token".into(),
         // Never the address or the password (task M7.1).

@@ -1,29 +1,29 @@
-//! Settings › Categorization in the mail window (issue #454, before it task E12.10 and issue #343,
-//! concept `docs/kategorien.md`): one rule for the person – **everything set here holds for every
-//! new mail; mail already there is sorted only when they say so**. So the page is ordered by the
-//! things themselves, not by "new" and "existing":
+//! Settings › Categorization in the mail window (issue #481, before it issue #454, task E12.10 and
+//! issue #343, concept `docs/kategorien.md`): one rule for the person – **everything set here holds
+//! for every new mail; mail already there is sorted only when they say so**.
 //!
 //! ```text
 //! Categorization                                              [Sort existing mail…]
-//! Rules, filters and the model sort every new mail as it arrives.
+//! Fixed rules and the AI sort every new mail as it arrives.
 //! ▓▓▓▓▓░░░ Sorting existing mail · 412 of 1,284 · about 4 min left   [Pause] [Cancel]
-//! AI │ Rules & filters 6 │ Categories 23
+//! Categories 23 │ AI
 //! ```
 //!
+//! - **Categories** ([`categories_tab`], the tab the page opens on): the groups as cards with their
+//!   categories in one column, folded and unfolded here. A category's grip moves it within its group
+//!   and into another (`inbox.move_category`), a drop line shows where it goes: the order decides
+//!   which category wins when fixed rules of several match. A click opens its page with its fixed
+//!   rules ([`super::editor`]). "+ New category in …" in its group; then "Other filters" – the mail
+//!   filters that set no category (they mark read or go to the trash) –, and at the bottom "Remove
+//!   categories from all mail…", which removes only the categories.
 //! - **AI** ([`ai_tab`]): "Sort with model", a menu instead of a switch and a list – "Off" first,
 //!   then the models on this computer (decision models "Fast", chat models "Slower") and in the
 //!   cloud ("Cloud", picking one asks first, issue #424). A line under it says what the choice
 //!   means; "Categories the model may choose" leads to the tab Categories.
-//! - **Rules & filters** ([`rules_tab`]): sorting rules and mail filters in their one order
-//!   (`inbox.list_sorting_order`), dragged by their grip (`inbox.move_sorting_step`), the built-in
-//!   "From someone in your address books → Personal" (issue #390) last, then "Everything else › AI".
-//!   A rule opens as a page of its own ([`super::editor`]), a filter as a dialog ([`super::filters`]).
-//! - **Categories** ([`categories_tab`]): the groups as cards with their categories in two columns,
-//!   folded and unfolded here, a category dragged into another group, "+ New category in …" in its
-//!   group; at the bottom "Remove categories from all mail…", which removes only the categories.
-//! - **Sort existing mail** ([`sort_dialog`]): accounts, folders, time span, what to apply, what to
-//!   do with mail that has a category, a preview with how long it takes, "Start sorting"; while a run
-//!   or a removal goes, a line with its progress stands under the head ([`progress`]).
+//! - **Sort existing mail** ([`sort_dialog`]): accounts, folders, time span, what to apply ("Fixed
+//!   rules", the model), what to do with mail that has a category, a preview with how long it takes,
+//!   "Start sorting"; while a run or a removal goes, a line with its progress stands under the head
+//!   ([`progress`]).
 //!
 //! Everything is a request; the core checks all of it again.
 
@@ -39,7 +39,6 @@ use torro_gui::theme::{palette, size, space};
 use torro_gui::units::{format_count, format_duration};
 use torro_gui::widgets::{Align, Anchor, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::{layout, style, theme, typo, widgets};
-use torro_inbox::{SortRule, SortingKind, SortingStep};
 use torro_ipc::inbox::{CategoryInfo, CategoryJobControl, CategoryJobPreview, CategoryJobScope, CategoryJobState};
 use torro_ipc::{Request, Response};
 use torro_mail::{Category, CategoryGroup};
@@ -51,15 +50,15 @@ use crate::{Action, Data, Page};
 /// The tabs of the page, in their order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Tab {
-    /// The model that sorts (the tab the page opens on).
+    /// The categories with their fixed rules (the tab the page opens on, issue #481).
     #[default]
-    Ai,
-    Rules,
     Categories,
+    /// The model that sorts.
+    Ai,
 }
 
 impl Tab {
-    const ALL: [Tab; 3] = [Tab::Ai, Tab::Rules, Tab::Categories];
+    const ALL: [Tab; 2] = [Tab::Categories, Tab::Ai];
 
     fn index(self) -> usize {
         Tab::ALL.iter().position(|tab| *tab == self).unwrap_or_default()
@@ -79,20 +78,14 @@ pub struct State {
     /// A model in the cloud picked while the question before it sorts is open (issue #424): only
     /// "Use" sets it, "Cancel" changes nothing.
     asking_cloud: Option<CloudPick>,
-    /// A step dragged by its grip, and the place among the shown steps it would go to.
-    drag: Option<(SortingStep, Option<usize>)>,
-    /// The step whose "…" menu is open.
-    step_menu: Option<SortingStep>,
-    step_anchor: Anchor,
-    /// The step whose removal is asked ("Delete rule?", "Delete filter?").
-    removing: Option<SortingStep>,
     /// The groups folded on this page.
     folded: BTreeSet<CategoryGroup>,
     /// The group whose "…" menu is open.
     group_menu: Option<CategoryGroup>,
     group_anchor: Anchor,
-    /// A category dragged by its grip, and the group it is over.
-    category_drag: Option<(Category, Option<CategoryGroup>)>,
+    /// A category dragged by its grip, and the slot it is over: a group and the place in it the
+    /// category would take, among all of the group's categories (issue #481).
+    category_drag: Option<(Category, Option<(CategoryGroup, usize)>)>,
     /// "Remove categories from all mail?" is asked.
     asking_clear: bool,
     /// The dialog "Sort existing mail" while it is open.
@@ -123,7 +116,7 @@ struct SortForm {
     /// The folders chosen; empty: every folder.
     folders: Vec<String>,
     period: Period,
-    /// "Rules and filters".
+    /// "Fixed rules": the sorting rules and the mail filters.
     rules: bool,
     /// "Model".
     model: bool,
@@ -192,36 +185,9 @@ pub enum Message {
     CancelCloud,
     /// "Manage models…": which models are on is set in the section AI.
     ManageModels,
-    /// "From someone in your address books" on or off (issue #390, `mail_contacts_personal`).
-    ContactsPersonal(bool),
-    /// The grip of a step was pressed: it follows the pointer until it is let go.
-    Grip(SortingStep),
-    /// The pointer of a drag left the list: let go now, the step stays where it is.
-    Leave,
     /// Escape during a drag: it ends, nothing moves.
     CancelDrag,
-    /// The pointer of a drag is over the shown step at this place.
-    Over(usize),
-    /// The pointer was let go: the dragged step goes where it is.
-    Drop,
-    /// The "…" menu of a step: open it (`Some`) or close it.
-    StepMenu(Option<SortingStep>),
-    /// "Edit…" in a step's menu.
-    EditStep(SortingStep),
-    /// "Apply to existing mail" in a step's menu: a filter runs once, a rule opens "Sort existing
-    /// mail" with the rules and filters alone (decision 6 of issue #454).
-    ApplyStep(SortingStep),
-    /// "Move up" (`true`) or "Move down" in a step's menu.
-    MoveStep(SortingStep, bool),
-    /// "Delete…" in a step's menu: asks first.
-    DeleteStep(SortingStep),
-    /// The answer to "Delete …?".
-    ConfirmDelete(bool),
-    /// The switch of a step's row: stored at once.
-    StepEnabled(SortingStep, bool),
-    /// "New rule…".
-    NewRule,
-    /// "New filter…".
+    /// "New filter…" of "Other filters".
     NewFilter,
     /// The filter dialog and the result of applying a filter.
     Filters(filters::Message),
@@ -235,9 +201,10 @@ pub enum Message {
     CategoryGrip(Category),
     /// The pointer of a category's drag left this group's card.
     LeaveGroup(CategoryGroup),
-    /// The pointer of a category's drag is over this group's card.
-    OverGroup(CategoryGroup),
-    /// The pointer was let go: the dragged category goes into the group it is over.
+    /// The pointer of a category's drag is over this place of a group: before the category at this
+    /// index, or at the end with the group's length.
+    OverSlot(CategoryGroup, usize),
+    /// The pointer was let go: the dragged category goes where the drop line is.
     DropCategory,
     /// One category shown in the sidebar or not.
     Shown(Category, bool),
@@ -249,7 +216,7 @@ pub enum Message {
     ConfirmClear,
     /// Pause, Resume or Cancel of an unfinished removal.
     ControlClear(String, CategoryJobControl),
-    /// "Sort existing mail…" (`rules_only`: from a rule's "Apply to existing mail").
+    /// "Sort existing mail…" (`rules_only`: the fixed rules alone, without the model).
     OpenSort {
         rules_only: bool,
     },
@@ -264,7 +231,7 @@ pub enum Message {
     AllFolders,
     ToggleFolder(String),
     Period(Period),
-    /// "Rules and filters" ticked or not.
+    /// "Fixed rules" ticked or not.
     ApplyRules(bool),
     /// "Model" ticked or not.
     ApplyModel(bool),
@@ -331,123 +298,33 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             state.model_menu = false;
             Action::Open(crate::assistant::AI_SECTION)
         }
-        Message::ContactsPersonal(on) => Action::send(Request::SetSetting {
-            key: torro_ipc::SettingKey::MailContactsPersonal,
-            value: serde_json::json!(on),
-        }),
-        Message::Grip(step) => {
-            state.step_menu = None;
-            state.drag = Some((step, None));
-            Action::None
-        }
-        Message::Leave => {
-            if let Some((_, over)) = &mut state.drag {
-                *over = None;
-            }
-            Action::None
-        }
         Message::CancelDrag => {
-            state.drag = None;
             state.category_drag = None;
             Action::None
         }
         // Only the card it is over lets go: moving fast, the next card may say "over" first.
         Message::LeaveGroup(group) => {
             if let Some((_, over)) = &mut state.category_drag
-                && *over == Some(group)
+                && over.is_some_and(|(held, _)| held == group)
             {
                 *over = None;
             }
             Action::None
-        }
-        Message::Over(at) => {
-            if let Some((_, over)) = &mut state.drag {
-                *over = Some(at);
-            }
-            Action::None
-        }
-        Message::Drop => {
-            let Some((step, Some(at))) = state.drag.take() else { return Action::None };
-            let shown = shown_steps(data);
-            let from = shown.iter().position(|held| *held == step);
-            // The place among the others: a step dropped below itself takes the place above.
-            let position = match from {
-                Some(from) if from < at => at.saturating_sub(1),
-                _ => at,
-            };
-            if from == Some(position) {
-                return Action::None;
-            }
-            moved(step, position)
-        }
-        Message::StepMenu(step) => {
-            state.step_menu = step;
-            Action::None
-        }
-        Message::EditStep(step) => {
-            state.step_menu = None;
-            match step.kind {
-                SortingKind::Rule => editor::update(&mut state.editor, editor::Message::EditRule(step.id), data),
-                SortingKind::Filter => filters::update(&mut state.filters, filters::Message::Edit(step.id), data),
-            }
-        }
-        Message::ApplyStep(step) => {
-            state.step_menu = None;
-            match step.kind {
-                SortingKind::Filter => filters::update(&mut state.filters, filters::Message::ApplyNow(step.id), data),
-                SortingKind::Rule => open_sort(state, data, true),
-            }
-        }
-        Message::MoveStep(step, up) => {
-            state.step_menu = None;
-            let shown = shown_steps(data);
-            let Some(at) = shown.iter().position(|held| *held == step) else { return Action::None };
-            let position = match up {
-                true if at > 0 => at - 1,
-                false if at + 1 < shown.len() => at + 1,
-                _ => return Action::None,
-            };
-            moved(step, position)
-        }
-        Message::DeleteStep(step) => {
-            state.step_menu = None;
-            state.removing = Some(step);
-            Action::None
-        }
-        Message::ConfirmDelete(go) => match (state.removing.take(), go) {
-            (Some(step), true) => match step.kind {
-                SortingKind::Rule => Action::send(Request::RemoveSortRule { id: step.id }),
-                SortingKind::Filter => Action::send(Request::RemoveMailFilter { id: step.id }),
-            },
-            _ => Action::None,
-        },
-        Message::StepEnabled(step, on) => match step.kind {
-            SortingKind::Rule => match data.sort_rules.iter().find(|rule| rule.id == step.id) {
-                Some(rule) => Action::send(rule_switched(rule, on)),
-                None => Action::None,
-            },
-            SortingKind::Filter => filters::update(&mut state.filters, filters::Message::Enabled(step.id, on), data),
-        },
-        Message::NewRule => {
-            close_menus(state);
-            editor::update(&mut state.editor, editor::Message::NewRule, data)
         }
         Message::NewFilter => {
             close_menus(state);
             let new = filters::Message::New { query: String::new(), account: None };
             filters::update(&mut state.filters, new, data)
         }
-        Message::Filters(message) => {
-            // "Create filter…" at a mail opens its dialog over this tab.
-            if matches!(message, filters::Message::New { .. }) {
-                state.tab = Tab::Rules;
-            }
+        Message::Filters(message) => filters::update(&mut state.filters, message, data),
+        // A filter's row, its switch and "Filter from a search…" on a category's page (issue #481).
+        Message::Editor(editor::Message::Filter(message)) => {
+            let _ = editor::update::<A>(&mut state.editor, editor::Message::Popover(None), data);
             filters::update(&mut state.filters, message, data)
         }
         // "Edit group…" and "New category…" of a group's menu: the menu goes with the click.
         Message::Editor(message) => {
             state.group_menu = None;
-            state.step_menu = None;
             editor::update(&mut state.editor, message, data)
         }
         Message::Fold(group) => {
@@ -465,26 +342,15 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             state.category_drag = Some((category, None));
             Action::None
         }
-        Message::OverGroup(group) => {
+        Message::OverSlot(group, at) => {
             if let Some((_, over)) = &mut state.category_drag {
-                *over = Some(group);
+                *over = Some((group, at));
             }
             Action::None
         }
         Message::DropCategory => {
-            let Some((category, Some(group))) = state.category_drag.take() else { return Action::None };
-            let same = data.categories.iter().any(|info| info.category == category && info.group == group);
-            if same {
-                return Action::None;
-            }
-            Action::send(Request::UpdateCategory {
-                category,
-                group: Some(group),
-                name: None,
-                description: None,
-                model: None,
-                icon: None,
-            })
+            let Some((category, Some((group, at)))) = state.category_drag.take() else { return Action::None };
+            dropped(data, category, group, at)
         }
         Message::Shown(category, shown) => Action::send(editor::shown_request(data, category, shown)),
         Message::AskClear => {
@@ -538,26 +404,25 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
 /// Closes every menu of the page; a drag ends without a move.
 fn close_menus(state: &mut State) {
     state.model_menu = false;
-    state.step_menu = None;
     state.group_menu = None;
-    state.drag = None;
     state.category_drag = None;
 }
 
-/// `inbox.move_sorting_step` of `step` to `position` among the shown steps.
-fn moved<A>(step: SortingStep, position: usize) -> Action<A> {
-    Action::send(Request::MoveSortingStep { kind: step.kind, id: step.id, position: position as u32 })
-}
-
-/// `inbox.update_sort_rule` that switches `rule` on or off and keeps everything else.
-fn rule_switched(rule: &SortRule, on: bool) -> Request {
-    Request::UpdateSortRule {
-        id: rule.id.clone(),
-        category: rule.category,
-        conditions: rule.conditions.clone(),
-        exceptions: Some(rule.exceptions.clone()),
-        enabled: Some(on),
+/// `inbox.move_category` for `category` let go before the category at `at` of `group` (its length:
+/// at the end). The place counts among the others of the group, so one dropped below itself in its
+/// own group takes the place above; dropped where it stands, nothing moves.
+fn dropped<A>(data: &Data, category: Category, group: CategoryGroup, at: usize) -> Action<A> {
+    let members: Vec<Category> =
+        data.categories.iter().filter(|info| info.group == group).map(|info| info.category).collect();
+    let from = members.iter().position(|held| *held == category);
+    let position = match from {
+        Some(from) if from < at => at - 1,
+        _ => at,
+    };
+    if from == Some(position) {
+        return Action::None;
     }
+    Action::send(Request::MoveCategory { category, group, position: position as u32 })
 }
 
 /// Opens "Sort existing mail": everything chosen, the model only while one sorts; `rules_only` (a
@@ -662,9 +527,6 @@ pub fn escape(state: &State) -> Option<Message> {
             None => Message::CloseSort,
         });
     }
-    if state.removing.is_some() {
-        return Some(Message::ConfirmDelete(false));
-    }
     if state.asking_clear {
         return Some(Message::CloseClear);
     }
@@ -674,11 +536,8 @@ pub fn escape(state: &State) -> Option<Message> {
     if state.model_menu {
         return Some(Message::ModelMenu(false));
     }
-    if state.drag.is_some() || state.category_drag.is_some() {
+    if state.category_drag.is_some() {
         return Some(Message::CancelDrag);
-    }
-    if state.step_menu.is_some() {
-        return Some(Message::StepMenu(None));
     }
     if state.group_menu.is_some() {
         return Some(Message::GroupMenu(None));
@@ -687,22 +546,16 @@ pub fn escape(state: &State) -> Option<Message> {
 }
 
 /// What a drag of the page is (review of #454): the window hears the button let go anywhere and
-/// sends [`Message::Drop`] or [`Message::DropCategory`]; over its list it moves, elsewhere it ends.
+/// sends [`Message::DropCategory`]; over its list it moves, elsewhere it ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dragging {
-    /// A rule or filter by its grip.
-    Step,
     /// A category by its grip.
     Category,
 }
 
 /// The drag going on, for the window to end it wherever the button is let go.
 pub fn dragging(state: &State) -> Option<Dragging> {
-    match (&state.drag, &state.category_drag) {
-        (Some(_), _) => Some(Dragging::Step),
-        (None, Some(_)) => Some(Dragging::Category),
-        (None, None) => None,
-    }
+    state.category_drag.map(|_| Dragging::Category)
 }
 
 /// The question before a model in the cloud sorts mail is open (issue #424).
@@ -972,14 +825,6 @@ fn chosen(data: &Data) -> Chosen {
 
 // ----- the order of rules and filters -----
 
-/// The steps the page shows, in their order: those of `inbox.list_sorting_order` whose rule or filter
-/// the load holds. Before the core answers it (an older core), the filters, then the rules.
-fn shown_steps(data: &Data) -> Vec<SortingStep> {
-    let rules: Vec<String> = data.sort_rules.iter().map(|rule| rule.id.clone()).collect();
-    let filters: Vec<String> = data.mail_filters.iter().map(|filter| filter.id.clone()).collect();
-    torro_inbox::rules::sorting_order(&data.sorting_order, &rules, Some(&filters))
-}
-
 // ----- the page -----
 
 /// The section's page: a page of the editor (a category, a rule) with "‹ Back" and "Save" while one
@@ -987,7 +832,13 @@ fn shown_steps(data: &Data) -> Vec<SortingStep> {
 pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
     if let Some((name, body, save)) = editor::page(&state.editor, data) {
         let back = Message::Editor(editor::Message::Back);
-        return Page::new(body.map(Message::Editor)).sub_page(name, back).actions(vec![save.map(Message::Editor)]);
+        let body = body.map(Message::Editor);
+        // The run of a filter saved with "Also apply…" on a category's page shows there too.
+        let body = match filters::apply_view(&state.filters) {
+            Some(result) => column![result.map(Message::Filters), body].spacing(layout::section_gap()).into(),
+            None => body,
+        };
+        return Page::new(body).sub_page(name, back).actions(vec![save.map(Message::Editor)]);
     }
     // A run at a time: while one goes or categories are being removed, it waits.
     let busy = data.category_job.as_ref().is_some_and(|job| job.state == CategoryJobState::Running)
@@ -998,29 +849,24 @@ pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
         style::button::secondary,
         (!busy).then_some(Message::OpenSort { rules_only: false }),
     );
-    // Every tab spans the whole width (issue #464), so head and tabs never move; the categories take
-    // two columns where there is room, the rows of the other tabs keep their text at the reading width.
+    // Every tab spans the whole width (issue #464), so head and tabs never move; the categories stand
+    // in one column (issue #481), the rows of the other tabs keep their text at the reading width.
     Page::new(view(state, data)).actions(vec![sort])
 }
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let subtitle = typo::text(typo::body(), tr("Rules, filters and the model sort every new mail as it arrives."))
+    let subtitle = typo::text(typo::body(), tr("Fixed rules and the AI sort every new mail as it arrives."))
         .style(theme::text_2)
         .wrapping(Wrapping::WordOrGlyph);
     let mut page = column![subtitle].spacing(layout::section_gap());
     if let Some(progress) = progress(data) {
         page = page.push(progress);
     }
-    let labels = vec![
-        (tr("AI").to_string(), None),
-        (tr("Rules & filters").to_string(), Some(shown_steps(data).len() as u64 + 1)),
-        (tr("Categories").to_string(), Some(data.categories.len() as u64)),
-    ];
+    let labels = vec![(tr("Categories").to_string(), Some(data.categories.len() as u64)), (tr("AI").to_string(), None)];
     page = page.push(widgets::tabs(labels, state.tab.index(), Message::Tab));
     let tab = match state.tab {
-        Tab::Ai => ai_tab(state, data),
-        Tab::Rules => rules_tab(state, data),
         Tab::Categories => categories_tab(state, data),
+        Tab::Ai => ai_tab(state, data),
     };
     page.push(tab).into()
 }
@@ -1199,7 +1045,7 @@ fn ai_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     };
     let sorting = widgets::group(tr("Sorting"), rows, Some(hint));
     let chosen = data.categories.iter().filter(|info| info.model).count();
-    // The row leads to the tab Categories, where "Let the AI choose it" is set per category.
+    // The row leads to the tab Categories, where "AI may not file mail here" is set per category.
     let may = pressable(
         setting_row(
             None,
@@ -1207,7 +1053,7 @@ fn ai_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             Some(trf("{n} of {total}", &[("n", &chosen), ("total", &data.categories.len())])),
             crate::parts::chevron(),
         ),
-        Some(Message::Tab(2)),
+        Some(Message::Tab(0)),
     );
     // A jump to Settings › AI, as "Appearance ↗" in the sidebar: no "…", nothing opens here.
     let arrow =
@@ -1263,194 +1109,10 @@ fn model_menu<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     widgets::floating(&state.model_anchor, Placement::Below(Align::End), menu, Message::ModelMenu(false))
 }
 
-// ----- tab Rules & filters -----
-
-/// The rules and filters in their one order, the built-in rule of the contacts last, then
-/// "Everything else › AI"; "New rule…" and "New filter…" above them.
-fn rules_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let buttons = vec![
-        widgets::text_button(Some(Icon::Plus), tr("New rule…"), style::button::secondary, Some(Message::NewRule)),
-        widgets::text_button(Some(Icon::Plus), tr("New filter…"), style::button::secondary, Some(Message::NewFilter)),
-    ];
-    let mut page = column![].spacing(layout::section_gap());
-    if let Some(result) = filters::apply_view(&state.filters) {
-        page = page.push(result.map(Message::Filters));
-    }
-    let steps = shown_steps(data);
-    let dragging = state.drag.as_ref();
-    let mut rows: Vec<Element<'a, Message>> = Vec::new();
-    for (at, step) in steps.iter().enumerate() {
-        if dragging.is_some_and(|(_, over)| *over == Some(at)) {
-            rows.push(container(widgets::drop_line()).padding([0.0, space::l()]).into());
-        }
-        let Some(row) = step_row(state, data, step) else { continue };
-        let row: Element<'a, Message> = match dragging {
-            Some(_) => mouse_area(row).on_enter(Message::Over(at)).into(),
-            None => row,
-        };
-        rows.push(row);
-    }
-    if dragging.is_some_and(|(_, over)| *over == Some(steps.len())) {
-        rows.push(container(widgets::drop_line()).padding([0.0, space::l()]).into());
-    }
-    // The built-in rule of issue #390: always last, it cannot be moved – below it the drop goes last.
-    let contacts = step_line(
-        grip_space(),
-        tr("From someone in your address books").to_string(),
-        format!(
-            "{} · {}",
-            tr("Built-in"),
-            trf("Category · {category}", &[("category", &data.category_name(Category::Personal))])
-        ),
-        data.settings.mail_contacts_personal,
-        // Where the other rows have their "…": the switches stand on one axis.
-        row![
-            switch(data.settings.mail_contacts_personal, Message::ContactsPersonal),
-            blank().width(size::control_sm())
-        ]
-        .spacing(space::s())
-        .align_y(Alignment::Center),
-    );
-    let contacts: Element<'a, Message> = match dragging {
-        Some(_) => mouse_area(contacts).on_enter(Message::Over(steps.len())).into(),
-        None => contacts,
-    };
-    rows.push(contacts);
-    let list = widgets::group_with(
-        Some(widgets::group_title(tr("In this order"), buttons)),
-        rows,
-        Some(tr("Top to bottom, the first rule or filter that matches a new mail sets its category. Drag a row by its grip to change the order.").to_string()),
-    );
-    let list: Element<'a, Message> = match dragging {
-        Some(_) => mouse_area(list).on_exit(Message::Leave).interaction(mouse::Interaction::Grabbing).into(),
-        None => list,
-    };
-    let model = match chosen(data) {
-        Chosen::Off => tr("Off").to_string(),
-        Chosen::Here(name) | Chosen::Cloud { name, .. } => name,
-    };
-    // The way to the model, as "Categories the model may choose" leads the other way.
-    let rest = pressable(
-        setting_row(
-            None,
-            tr("Everything else"),
-            Some(trf("AI · {model}", &[("model", &model)])),
-            crate::parts::chevron(),
-        ),
-        Some(Message::Tab(0)),
-    );
-    page.push(list).push(widgets::group(tr("Then"), vec![rest], None)).into()
-}
-
-/// The room of a grip, for the built-in row that has none, so the texts stand on one axis.
-fn grip_space<'a>() -> Element<'a, Message> {
-    blank().width(icon::SIZE).into()
-}
-
-/// One step's row: grip, what it looks at, what it does with its kind, the switch and "…". `None`
-/// for a step the load does not hold.
-fn step_row<'a>(state: &'a State, data: &'a Data, step: &SortingStep) -> Option<Element<'a, Message>> {
-    let (when, then, enabled) = match step.kind {
-        SortingKind::Rule => {
-            let rule = data.sort_rules.iter().find(|rule| rule.id == step.id)?;
-            let mut when = editor::conditions_line(&rule.conditions);
-            if !rule.exceptions.is_empty() {
-                when = trf(
-                    "{conditions}, except {exceptions}",
-                    &[("conditions", &when), ("exceptions", &editor::conditions_line(&rule.exceptions))],
-                );
-            }
-            let then = trf("Category · {category}", &[("category", &data.category_name(rule.category))]);
-            (when, format!("{} · {then}", tr("Rule")), rule.enabled)
-        }
-        SortingKind::Filter => {
-            let filter = data.mail_filters.iter().find(|filter| filter.id == step.id)?;
-            (
-                filter.query.clone(),
-                format!("{} · {}", tr("Filter"), filters::actions_line(filter, data)),
-                filter.enabled,
-            )
-        }
-    };
-    let grip = widgets::grip(Message::Grip(step.clone()), tr("Drag to change the order"));
-    let open = state.step_menu.as_ref() == Some(step);
-    let more = widgets::icon_button(Icon::Ellipsis, tr("More"), Some(Message::StepMenu((!open).then(|| step.clone()))));
-    let more = widgets::anchored_if(open.then_some(&state.step_anchor), more);
-    let step = step.clone();
-    let control = row![switch(enabled, move |on| Message::StepEnabled(step.clone(), on)), more]
-        .spacing(space::s())
-        .align_y(Alignment::Center);
-    Some(step_line(grip, when, then, enabled, control))
-}
-
-/// A row of the list of rules and filters: `lead` (the grip), what it looks at, what it does, and
-/// `control`. Switched off, it says so in its second line and its first is quieter, so off rows
-/// stand out by word and colour.
-fn step_line<'a>(
-    lead: Element<'a, Message>,
-    when: String,
-    then: String,
-    enabled: bool,
-    control: impl Into<Element<'a, Message>>,
-) -> Element<'a, Message> {
-    let (then, title): (String, fn(&Theme) -> iced::widget::text::Style) = match enabled {
-        true => (then, theme::text),
-        false => (trf("Off · {rule}", &[("rule", &then)]), theme::text_2),
-    };
-    let lines =
-        column![widgets::ellipsized(typo::body(), when, title), widgets::ellipsized(typo::meta(), then, theme::text_2)];
-    let text = row![lead, lines.width(Fill)].spacing(space::m()).align_y(Alignment::Center);
-    row_frame(row![text.width(Fill), control.into()].spacing(space::l()).align_y(Alignment::Center), true)
-}
-
-/// The "…" menu of the step whose menu is open: Edit, Apply to existing mail, Move up, Move down,
-/// Delete.
-fn step_menu<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
-    let step = state.step_menu.clone()?;
-    let shown = shown_steps(data);
-    let at = shown.iter().position(|held| *held == step)?;
-    let mut items = vec![
-        MenuItem::new(Icon::SquarePen, tr("Edit…"), Message::EditStep(step.clone())),
-        MenuItem::new(Icon::RefreshCw, tr("Apply to existing mail"), Message::ApplyStep(step.clone())),
-    ];
-    let mut moves = Vec::new();
-    if at > 0 {
-        moves.push(MenuItem::new(Icon::ChevronUp, tr("Move up"), Message::MoveStep(step.clone(), true)));
-    }
-    if at + 1 < shown.len() {
-        moves.push(MenuItem::new(Icon::ChevronDown, tr("Move down"), Message::MoveStep(step.clone(), false)));
-    }
-    let delete = MenuItem::new(Icon::Trash2, tr("Delete…"), Message::DeleteStep(step));
-    let mut sections = vec![MenuSection::new(std::mem::take(&mut items))];
-    if !moves.is_empty() {
-        sections.push(MenuSection::new(moves));
-    }
-    sections.push(MenuSection::new(vec![delete]));
-    let menu = container(widgets::menu(sections)).width(widgets::menu_width());
-    Some(widgets::floating(&state.step_anchor, Placement::Below(Align::End), menu, Message::StepMenu(None)))
-}
-
-/// "Delete this rule?" or "Delete this filter?" over the window.
-fn delete_question<'a>(step: &SortingStep) -> Element<'a, Message> {
-    let (title, consequence, yes) = match step.kind {
-        SortingKind::Rule => (tr("Delete this rule?"), tr("Mail it filed keeps its category."), tr("Delete rule")),
-        SortingKind::Filter => {
-            (tr("Delete this filter?"), tr("Mail it filed keeps its category."), tr("Delete filter"))
-        }
-    };
-    crate::parts::confirm(
-        title,
-        consequence.to_string(),
-        yes,
-        Message::ConfirmDelete(true),
-        Message::ConfirmDelete(false),
-    )
-}
-
 // ----- tab Categories -----
 
-/// The groups as cards with their categories, "New group…" above them, "Categories on mail" with
-/// "Remove categories from all mail…" below, set apart.
+/// The groups as cards with their categories, "New group…" above them, "Other filters" and
+/// "Categories on mail" with "Remove categories from all mail…" below, set apart.
 fn categories_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let new = widgets::text_button(
         Some(Icon::Plus),
@@ -1459,7 +1121,18 @@ fn categories_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> 
         Some(Message::Editor(editor::Message::NewGroup)),
     );
     // "New group…" belongs to the groups: at the right of their title line.
-    let mut page = column![widgets::group_title(tr("Groups"), vec![new])].spacing(layout::section_gap());
+    // What the order means stands before the first card, where the grips are seen.
+    let order = typo::text(
+        typo::meta(),
+        tr("The numbers count mail in Inbox. Where fixed rules of several categories match, the one higher up wins: drag a category by its grip to change the order."),
+    )
+    .style(theme::text_2)
+    .wrapping(Wrapping::WordOrGlyph);
+    let head = column![widgets::group_title(tr("Groups"), vec![new]), widgets::reading_cell(order)].spacing(space::s());
+    let mut page = column![head].spacing(layout::section_gap());
+    if let Some(result) = filters::apply_view(&state.filters) {
+        page = page.push(result.map(Message::Filters));
+    }
     if let Some(form) = editor::group_form_view(&state.editor, None) {
         page = page.push(widgets::group(tr("New group"), vec![form.map(Message::Editor)], None));
     }
@@ -1470,7 +1143,7 @@ fn categories_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> 
     for group in groups {
         page = page.push(group_card(state, data, group));
     }
-    page = page.push(typo::text(typo::meta(), tr("The numbers count mail in Inbox.")).style(theme::text_3));
+    page = page.push(other_filters(data));
     let count = data.category_clear_preview.as_ref().map(|preview| preview.total).unwrap_or(0);
     let busy = data.categorization.clear_job.as_ref().is_some_and(|job| {
         matches!(job.state, CategoryJobState::Running | CategoryJobState::Paused | CategoryJobState::Failed)
@@ -1500,7 +1173,7 @@ fn categories_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> 
 }
 
 /// A group's card: its head (fold, mark, how many categories – the first names while folded –, how
-/// many mails, "…") and, unfolded, its categories in two columns with "+ New category in …".
+/// many mails, "…") and, unfolded, its categories in one column with "+ New category in …".
 fn group_card<'a>(
     state: &'a State,
     data: &'a Data,
@@ -1542,70 +1215,92 @@ fn group_card<'a>(
     }
     if !folded {
         let dragging = state.category_drag.map(|(category, _)| category);
-        rows.push(two_columns(data, children, color, dragging));
+        let over = state.category_drag.and_then(|(_, over)| over).filter(|(held, _)| *held == id).map(|(_, at)| at);
+        let count = children.len();
+        for (at, info) in children.into_iter().enumerate() {
+            if over == Some(at) {
+                rows.push(container(widgets::drop_line()).padding([0.0, space::l()]).into());
+            }
+            let cell = category_cell(data, info, color, dragging == Some(info.category));
+            rows.push(match dragging {
+                Some(_) => mouse_area(cell).on_enter(Message::OverSlot(id, at)).into(),
+                None => cell,
+            });
+        }
+        if over == Some(count) {
+            rows.push(container(widgets::drop_line()).padding([0.0, space::l()]).into());
+        }
         let add = trf("New category in {group}", &[("group", &group.label)]);
         let plus =
             icon::icon(Icon::Plus, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) });
-        rows.push(pressable(
-            setting_row(Some(plus.into()), add, None, blank()),
-            Some(Message::Editor(editor::Message::NewCategoryInGroup(id))),
-        ));
+        // As high as the categories above it.
+        let add = row![plus, typo::text(typo::body(), add).style(theme::text_2)]
+            .spacing(space::m())
+            .align_y(Alignment::Center);
+        let add = container(add).width(Fill).center_y(size::row()).padding([0.0, space::l()]);
+        let add = pressable(add.into(), Some(Message::Editor(editor::Message::NewCategoryInGroup(id))));
+        // Over the last row of the card the category goes to the end of the group.
+        rows.push(match dragging {
+            Some(_) => mouse_area(add).on_enter(Message::OverSlot(id, count)).into(),
+            None => add,
+        });
+    } else if state.category_drag.is_some() {
+        // A folded group takes a category at its end, over its head.
+        let len = data.categories.iter().filter(|info| info.group == id).count();
+        let head = rows.remove(0);
+        rows.insert(0, mouse_area(head).on_enter(Message::OverSlot(id, len)).into());
     }
     let card = widgets::group_with(None, rows, None);
     match state.category_drag {
-        Some((_, over)) => {
-            let card = column![card];
-            let card: Element<'a, Message> = if over == Some(id) {
-                column![card, widgets::drop_line()].spacing(space::xs()).into()
-            } else {
-                card.into()
-            };
-            mouse_area(card)
-                .on_enter(Message::OverGroup(id))
-                .on_exit(Message::LeaveGroup(id))
-                .interaction(mouse::Interaction::Grabbing)
-                .into()
-        }
+        Some(_) => mouse_area(card).on_exit(Message::LeaveGroup(id)).interaction(mouse::Interaction::Grabbing).into(),
         None => card,
     }
 }
 
-/// The cells of `children` ([`category_cell`]) two to a line where two fit at half a form's width
-/// each, else one; `dragged` is the category on its way into another group.
-fn two_columns<'a>(
-    data: &'a Data,
-    children: Vec<&'a CategoryInfo>,
-    color: usize,
-    dragged: Option<Category>,
-) -> Element<'a, Message> {
-    iced::widget::responsive(move |room| {
-        let columns = if room.width >= size::form_max() * 1.5 { 2 } else { 1 };
-        let mut grid = column![];
-        for pair in children.chunks(columns) {
-            let mut line = row![].spacing(space::l());
-            for info in pair {
-                let cell = category_cell(data, info, color, dragged == Some(info.category));
-                line = line.push(container(cell).width(Length::FillPortion(1)));
-            }
-            if pair.len() < columns {
-                line = line.push(blank().width(Length::FillPortion(1)));
-            }
-            grid = grid.push(line);
+/// "Other filters" (issue #481): the mail filters that set no category – they mark mail read or
+/// move it to the trash – or one no longer in the catalogue, each with its switch and a chevron that opens its dialog, and "New
+/// filter…". The filters that set a category stand on that category's page.
+fn other_filters<'a>(data: &'a Data) -> Element<'a, Message> {
+    let new =
+        widgets::text_button(Some(Icon::Plus), tr("New filter…"), style::button::secondary, Some(Message::NewFilter));
+    let mut rows: Vec<Element<'a, Message>> = Vec::new();
+    // A filter whose category was removed stands here too, so it can still be changed or switched off.
+    let elsewhere = |filter: &&torro_mail::MailFilter| {
+        filter.category.is_some_and(|category| data.categories.iter().any(|info| info.category == category))
+    };
+    for filter in data.mail_filters.iter().filter(|filter| !elsewhere(filter)) {
+        let id = filter.id.clone();
+        let switch = switch(filter.enabled, move |on| Message::Filters(filters::Message::Enabled(id.clone(), on)));
+        let title: fn(&Theme) -> iced::widget::text::Style = if filter.enabled { theme::text } else { theme::text_2 };
+        let lines = column![
+            widgets::ellipsized(typo::body(), filter.query.clone(), title),
+            widgets::ellipsized(typo::meta(), filters::actions_line(filter, data), theme::text_2),
+        ];
+        // Off as on a category's page: the word at the right, beside the switch.
+        let mut line = row![lines.width(Fill)].spacing(space::m()).align_y(Alignment::Center);
+        if !filter.enabled {
+            line = line.push(typo::text(typo::meta(), tr("Off")).style(theme::text_3));
         }
-        grid.into()
-    })
-    .into()
+        let line = line.push(switch).push(crate::parts::chevron());
+        let open = Message::Filters(filters::Message::Edit(filter.id.clone()));
+        rows.push(pressable(row_frame(line, true), Some(open)));
+    }
+    if rows.is_empty() {
+        let none = typo::text(typo::body(), tr("No other filters.")).style(theme::text_2);
+        rows.push(row_frame(none, false));
+    }
+    widgets::group_with(
+        Some(widgets::group_title(tr("Other filters"), vec![new])),
+        rows,
+        Some(tr("Filters that set no category: they mark mail as read or move it to the trash.").to_string()),
+    )
 }
 
 /// A category's cell: grip, the dot of its group, its name with "From headers" for one the headers
 /// decide, how many mails, "Show in the sidebar"; a click opens its page.
 fn category_cell<'a>(data: &'a Data, info: &'a CategoryInfo, color: usize, dragged: bool) -> Element<'a, Message> {
     let category = info.category;
-    let dot = container(blank().width(space::s()).height(space::s())).style(move |t: &Theme| container::Style {
-        background: Some(iced::Background::Color(palette(t).category[color])),
-        border: iced::border::rounded(space::s()),
-        ..container::Style::default()
-    });
+    let dot = widgets::category_dot(color);
     let mut name = row![widgets::ellipsized(typo::body(), info.label.clone(), theme::text)]
         .spacing(space::s())
         .align_y(Alignment::Center);
@@ -1613,18 +1308,24 @@ fn category_cell<'a>(data: &'a Data, info: &'a CategoryInfo, color: usize, dragg
         name = name.push(widgets::state_pill(Icon::FileText, tr("From headers")));
     }
     let shown = !data.settings.hidden_categories.contains(&category);
-    let lead = row![widgets::grip(Message::CategoryGrip(category), tr("Drag into another group")), dot]
+    let lead = row![widgets::grip(Message::CategoryGrip(category), tr("Drag to change the order")), dot]
         .spacing(space::xs())
         .align_y(Alignment::Center);
     let line = row![
         lead,
         container(name).width(Fill),
         typo::text(typo::meta().tabular(), format_count(u64::from(info.messages))).style(theme::text_3),
-        widgets::with_tooltip(switch(shown, move |on| Message::Shown(category, on)), tr("Show in the sidebar")),
+        // The eye says what the switch is for, without a tooltip.
+        row![
+            icon::icon(Icon::Eye, icon::SIZE_SM).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) }),
+            widgets::with_tooltip(switch(shown, move |on| Message::Shown(category, on)), tr("Show in the sidebar")),
+        ]
+        .spacing(space::xs())
+        .align_y(Alignment::Center),
     ]
     .spacing(space::m())
     .align_y(Alignment::Center);
-    // The one on its way into another group says so where its grip was taken.
+    // The one on its way says so where its grip was taken: it opens nothing.
     let open = (!dragged).then_some(Message::Editor(editor::Message::EditCategory(category)));
     // As high as a row of a list, not of a settings group: a group holds many of them.
     let line = container(line).width(Fill).center_y(size::row()).padding([0.0, space::l()]);
@@ -1691,8 +1392,8 @@ fn sort_dialog<'a>(
     };
     let apply = vec![
         check_row(
-            tr("Rules and filters"),
-            Some(tr("In their order; filters look at Inbox only").to_string()),
+            tr("Fixed rules"),
+            Some(tr("Sorting rules and filters; filters look at Inbox only").to_string()),
             form.rules,
             Some(Message::ApplyRules(!form.rules)),
         ),
@@ -1849,9 +1550,6 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
             None => dialog,
         });
     }
-    if let Some(step) = &state.removing {
-        return Some(delete_question(step));
-    }
     if state.asking_clear {
         let count = data.category_clear_preview.as_ref().map(|preview| preview.total).unwrap_or(0);
         return Some(crate::parts::confirm(
@@ -1868,11 +1566,11 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
     if let Some(dialog) = filters::overlay(&state.filters, data) {
         return Some(dialog.map(Message::Filters));
     }
+    if let Some(popover) = editor::overlay(&state.editor, data) {
+        return Some(popover.map(Message::Editor));
+    }
     if state.model_menu {
         return Some(model_menu(state, data));
-    }
-    if let Some(menu) = step_menu(state, data) {
-        return Some(menu);
     }
     group_menu(state)
 }
@@ -1881,11 +1579,11 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 /// a tab, a dialog or the menu of the model, as a person would click it.
 pub fn scene(name: &str) -> Option<Vec<Message>> {
     Some(match name {
-        "ai" => Vec::new(),
-        "rules" => vec![Message::Tab(1)],
-        "categories" => vec![Message::Tab(2)],
+        "ai" => vec![Message::Tab(1)],
+        "categories" => Vec::new(),
+        "category" => vec![Message::Editor(editor::Message::EditCategory(Category::Invoice))],
         "sort" => vec![Message::OpenSort { rules_only: false }],
-        "filter" => vec![Message::Tab(1), Message::NewFilter],
+        "filter" => vec![Message::NewFilter],
         "running" => vec![Message::OpenSort { rules_only: false }, Message::StartJob],
         "model" => vec![Message::ModelMenu(true)],
         _ => return None,
@@ -1917,24 +1615,26 @@ mod tests {
         }
     }
 
-    /// Issue #454: the page opens on AI; the tabs are AI, Rules & filters, Categories; "Sort existing
-    /// mail…" stands in the header bar; every tab draws over the demo.
+    /// Issue #481: the page opens on Categories; the tabs are Categories, then AI – "Rules & filters"
+    /// is gone; "Sort existing mail…" stands in the header bar; every tab draws over the demo.
     #[tokio::test]
-    async fn the_page_has_its_head_and_three_tabs() {
+    async fn the_page_has_its_head_and_two_tabs() {
         let data = demo().await;
         let mut state = State::default();
-        assert_eq!(state.tab, Tab::Ai);
+        assert_eq!(state.tab, Tab::Categories);
+        assert_eq!(Tab::ALL, [Tab::Categories, Tab::Ai]);
         {
             let page = page(&state, &data);
             assert_eq!(page.actions.len(), 1, "Sort existing mail…");
             assert!(page.sub_page.is_none());
         }
-        for (index, tab) in [(1, Tab::Rules), (2, Tab::Categories), (0, Tab::Ai)] {
+        for (index, tab) in [(1, Tab::Ai), (0, Tab::Categories), (9, Tab::Categories)] {
             let _ = update::<()>(&mut state, Message::Tab(index), &data);
             assert_eq!(state.tab, tab);
             let _ = view(&state, &data);
         }
-        assert_eq!(scene("rules").map(|messages| messages.len()), Some(1));
+        assert!(scene("rules").is_none(), "no tab of rules any more");
+        assert_eq!(scene("category").map(|messages| messages.len()), Some(1));
         assert!(scene("nope").is_none());
     }
 
@@ -1959,80 +1659,58 @@ mod tests {
         let _ = view(&state, &data);
     }
 
-    /// Issue #454: rules and filters stand in one list in the core's order, the built-in rule of the
-    /// contacts after them; dragging a step sends its place among the shown steps, the menu moves
-    /// and deletes after a question, a filter's "Apply" runs it and a rule's opens "Sort existing mail"
-    /// with the rules alone.
+    /// Issue #481: the filters without a category stand under "Other filters" with their switch; a
+    /// click opens their dialog, "New filter…" a new one, and a new filter's dialog opens over the tab
+    /// Categories without changing the tab.
     #[tokio::test]
-    async fn rules_and_filters_move_in_one_list() {
+    async fn filters_without_a_category_stand_under_other_filters() {
         let data = demo().await;
-        let shown: Vec<String> = shown_steps(&data).into_iter().map(|step| step.id).collect();
-        assert_eq!(shown, ["r1", "f1", "f2", "r2", "f4", "f3", "r3"]);
-        let mut state = State { tab: Tab::Rules, ..State::default() };
+        let mut state = State::default();
+        assert!(data.mail_filters.iter().any(|filter| filter.category.is_none()), "the demo has one");
         let _ = view(&state, &data);
-        let r3 = SortingStep::rule("r3");
-        let _ = update::<()>(&mut state, Message::Grip(r3.clone()), &data);
-        let _ = update::<()>(&mut state, Message::Over(1), &data);
-        let _ = view(&state, &data);
-        let moved = sent(update::<()>(&mut state, Message::Drop, &data));
-        assert_eq!(moved, [Request::MoveSortingStep { kind: SortingKind::Rule, id: "r3".into(), position: 1 }]);
-        // Dropped below itself: the place above counts; on its own place nothing moves.
-        let f1 = SortingStep::filter("f1");
-        let _ = update::<()>(&mut state, Message::Grip(f1.clone()), &data);
-        let _ = update::<()>(&mut state, Message::Over(3), &data);
-        let below = sent(update::<()>(&mut state, Message::Drop, &data));
-        assert_eq!(below, [Request::MoveSortingStep { kind: SortingKind::Filter, id: "f1".into(), position: 2 }]);
-        let _ = update::<()>(&mut state, Message::Grip(f1.clone()), &data);
-        let _ = update::<()>(&mut state, Message::Over(1), &data);
-        assert!(sent(update::<()>(&mut state, Message::Drop, &data)).is_empty());
-        // Let go outside the list, or Escape: the drag ends, nothing moves, no later click moves.
-        let _ = update::<()>(&mut state, Message::Grip(f1.clone()), &data);
-        let _ = update::<()>(&mut state, Message::Over(4), &data);
-        let _ = update::<()>(&mut state, Message::Leave, &data);
-        assert!(sent(update::<()>(&mut state, Message::Drop, &data)).is_empty());
-        assert!(state.drag.is_none(), "ended");
-        let _ = update::<()>(&mut state, Message::Grip(f1.clone()), &data);
-        let _ = update::<()>(&mut state, Message::Over(4), &data);
-        let Some(cancel) = escape(&state) else { panic!("Escape ends the drag") };
-        let _ = update::<()>(&mut state, cancel, &data);
-        assert!(state.drag.is_none() && sent(update::<()>(&mut state, Message::Drop, &data)).is_empty());
-
-        let _ = update::<()>(&mut state, Message::StepMenu(Some(f1.clone())), &data);
-        assert!(overlay(&state, &data).is_some(), "the step's menu");
-        let up = sent(update::<()>(&mut state, Message::MoveStep(f1.clone(), true), &data));
-        assert_eq!(up, [Request::MoveSortingStep { kind: SortingKind::Filter, id: "f1".into(), position: 0 }]);
-        let _ = update::<()>(&mut state, Message::DeleteStep(f1.clone()), &data);
-        assert!(overlay(&state, &data).is_some(), "the question");
-        let deleted = sent(update::<()>(&mut state, Message::ConfirmDelete(true), &data));
-        assert_eq!(deleted, [Request::RemoveMailFilter { id: "f1".into() }]);
-        let applied = update::<()>(&mut state, Message::ApplyStep(f1), &data);
-        assert_eq!(applied, Action::Ask(Request::ApplyMailFilter { id: "f1".into() }));
-        let rule = update::<()>(&mut state, Message::ApplyStep(r3.clone()), &data);
-        let Action::Ask(Request::PreviewCategoryJob { scope }) = rule else { panic!("the dialog's preview") };
-        assert!(scope.apply_rules && !scope.apply_model, "decision 6: the rules and filters alone");
-        let _ = update::<()>(&mut state, Message::CloseSort, &data);
-        // The switches store at once; the built-in rule is the contacts setting.
-        let off = sent(update::<()>(&mut state, Message::StepEnabled(r3, false), &data));
-        assert!(matches!(off.as_slice(), [Request::UpdateSortRule { enabled: Some(false), .. }]), "{off:?}");
-        let contacts = sent(update::<()>(&mut state, Message::ContactsPersonal(false), &data));
-        assert!(matches!(
-            contacts.as_slice(),
-            [Request::SetSetting { key: torro_ipc::SettingKey::MailContactsPersonal, .. }]
-        ));
-        // A rule opens as a page of its own, a filter as a dialog.
-        let _ = update::<()>(&mut state, Message::EditStep(SortingStep::rule("r1")), &data);
-        assert!(page(&state, &data).sub_page.is_some());
-        let _ = update::<()>(&mut state, Message::Editor(editor::Message::Back), &data);
+        let off =
+            sent(update::<()>(&mut state, Message::Filters(filters::Message::Enabled("f4".into(), false)), &data));
+        assert!(matches!(off.as_slice(), [Request::UpdateMailFilter { enabled: Some(false), .. }]), "{off:?}");
+        let _ = update::<()>(&mut state, Message::Filters(filters::Message::Edit("f4".into())), &data);
+        assert!(state.filters.is_open() && overlay(&state, &data).is_some());
+        let _ = update::<()>(&mut state, Message::Filters(filters::Message::Close), &data);
+        let _ = update::<()>(&mut state, Message::Tab(1), &data);
+        let new = filters::Message::New { query: "from:a@b.example".into(), account: None };
+        let _ = update::<()>(&mut state, Message::Filters(new), &data);
+        assert_eq!(state.tab, Tab::Ai, "the dialog opens where the page stands");
+        assert!(state.filters.is_open());
+        let _ = update::<()>(&mut state, Message::Filters(filters::Message::Close), &data);
         let _ = update::<()>(&mut state, Message::NewFilter, &data);
         assert!(state.filters.is_open() && overlay(&state, &data).is_some());
     }
 
-    /// Issue #454: the groups fold and unfold, a category dragged into another group moves there, a
-    /// new category starts in its group, and removing the categories removes only them.
+    /// Issue #481: a category's page shows its rules and filters; "Filter from a search…" opens a
+    /// filter's dialog that sets the category, a filter's row its dialog, over the page.
+    #[tokio::test]
+    async fn a_categorys_page_opens_its_filters() {
+        let data = demo().await;
+        let mut state = State::default();
+        for message in scene("category").unwrap_or_default() {
+            let _ = update::<()>(&mut state, message, &data);
+        }
+        assert!(page(&state, &data).sub_page.is_some(), "the page of Invoice");
+        let new = editor::Message::Filter(filters::Message::NewFor(Category::Invoice));
+        let _ = update::<()>(&mut state, Message::Editor(new), &data);
+        assert!(state.filters.is_open() && overlay(&state, &data).is_some(), "the dialog over the page");
+        let _ = update::<()>(&mut state, Message::Filters(filters::Message::Close), &data);
+        let open = editor::Message::Filter(filters::Message::Edit("f2".into()));
+        let _ = update::<()>(&mut state, Message::Editor(open), &data);
+        assert!(state.filters.is_open());
+        assert!(page(&state, &data).sub_page.is_some(), "the page stays below");
+    }
+
+    /// Issue #454 and #481: the groups fold and unfold, a category dragged moves to the slot of the drop
+    /// line – in its group or into another, its own place counting out –, a new category starts in
+    /// its group, and removing the categories removes only them.
     #[tokio::test]
     async fn categories_stand_in_their_groups() {
         let data = demo().await;
-        let mut state = State { tab: Tab::Categories, ..State::default() };
+        let mut state = State::default();
         let _ = view(&state, &data);
         let group = data.categories[0].group;
         let _ = update::<()>(&mut state, Message::Fold(group), &data);
@@ -2043,14 +1721,21 @@ mod tests {
 
         let category = data.categories[0].category;
         let other = data.categories.iter().map(|info| info.group).find(|held| *held != group).expect("two groups");
-        let _ = update::<()>(&mut state, Message::CategoryGrip(category), &data);
-        let _ = update::<()>(&mut state, Message::OverGroup(group), &data);
-        assert!(sent(update::<()>(&mut state, Message::DropCategory, &data)).is_empty(), "its own group");
-        let _ = update::<()>(&mut state, Message::CategoryGrip(category), &data);
-        let _ = update::<()>(&mut state, Message::OverGroup(other), &data);
-        let _ = view(&state, &data);
-        let moved = sent(update::<()>(&mut state, Message::DropCategory, &data));
-        assert!(matches!(moved.as_slice(), [Request::UpdateCategory { group: Some(to), .. }] if *to == other));
+        let drag = |state: &mut State, group, at| {
+            let _ = update::<()>(state, Message::CategoryGrip(category), &data);
+            let _ = update::<()>(state, Message::OverSlot(group, at), &data);
+            let _ = view(state, &data);
+            sent(update::<()>(state, Message::DropCategory, &data))
+        };
+        // On its own place, or right below it: nothing moves.
+        assert!(drag(&mut state, group, 0).is_empty(), "its own place");
+        assert!(drag(&mut state, group, 1).is_empty(), "right below itself");
+        // Further down its group: the place among the others.
+        let moved = drag(&mut state, group, 3);
+        assert_eq!(moved, [Request::MoveCategory { category, group, position: 2 }]);
+        // Into another group, at its slot there.
+        let moved = drag(&mut state, other, 1);
+        assert_eq!(moved, [Request::MoveCategory { category, group: other, position: 1 }]);
 
         let _ = update::<()>(&mut state, Message::Editor(editor::Message::NewCategoryInGroup(other)), &data);
         assert!(page(&state, &data).sub_page.is_some(), "the new category's page");
@@ -2061,9 +1746,9 @@ mod tests {
         assert!(overlay(&state, &data).is_none(), "the menu goes with its click");
         // A drag let go outside every card ends without a move.
         let _ = update::<()>(&mut state, Message::CategoryGrip(category), &data);
-        let _ = update::<()>(&mut state, Message::OverGroup(other), &data);
+        let _ = update::<()>(&mut state, Message::OverSlot(other, 0), &data);
         let _ = update::<()>(&mut state, Message::LeaveGroup(group), &data);
-        assert!(state.category_drag.is_some_and(|(_, over)| over == Some(other)), "another card's leave");
+        assert!(state.category_drag.is_some_and(|(_, over)| over == Some((other, 0))), "another card's leave");
         let _ = update::<()>(&mut state, Message::LeaveGroup(other), &data);
         assert!(sent(update::<()>(&mut state, Message::DropCategory, &data)).is_empty());
         assert!(state.category_drag.is_none());
