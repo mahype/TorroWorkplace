@@ -629,18 +629,20 @@ Symbol im Dock, kein Fokuswechsel, kein Hyprland. Die Arbeit des Nutzers wird ni
 hoch (320×480), Leiste (1200×200), Schmal (480×900), Mittel (800×600) und Breit (1600×1000), als
 `<präfix>-<größe>-<B>x<H>.png`, z. B. `torrocalendar-week-dark-mini-240x160.png`. Das Präfix ist der
 Programmname mit den Werten von `--view`, `--section`, `--settings`, `--open`, `--design`, `--font`,
-`--color-scheme` und `--appearance` in dieser Reihenfolge (Schreibfenster: `torroinbox-compose`,
+`--color-scheme`, `--appearance`, `--chat`, `--bot`, `--lane`, `--source`, `--template` und `--task` in
+dieser Reihenfolge, je mit dem ersten Wert wie in der App (Schreibfenster: `torroinbox-compose`,
 Vorlagen-Dialog: `torroworkplace-template`). Die Bilder haben die **doppelte Auflösung** wie ein
 Retina-Bildschirm: Mini (240×160 logisch) ist ein Bild von 480×320 Pixeln. Gleichnamige Bilder werden
-überschrieben, jeder Pfad steht auf stdout. Eigene Größen gibt `-- --shot-size 1000x700` (mehrfach;
-ersetzt die sechs, Datei `<präfix>-1000x700.png`). Der erste Fehler bricht mit seinem Exit-Code ab
+überschrieben, jeder Pfad steht auf stdout. Eigene Größen gibt `-- --shot-size 1000x700` (mehrfach, je
+Kante bis 4096; ersetzt die sechs, Datei `<präfix>-1000x700.png`). Der erste Fehler bricht mit seinem Exit-Code ab
 (64: unbekannter Parameter oder Wert).
 
 - **Immer beide Erscheinungsbilder:** je Ansicht `--appearance dark` und `--appearance light`. Ohne
   Fenster kennt die App das Hell/Dunkel des Systems nicht.
 - **Nicht im Bild:** die Fensterhülle (Ampel, Titelleiste), Hover-Zustände, die Mindestgröße des
   Fensters (jede Größe wird gezeichnet, auch eine, die das Fenster nicht zuließe), die Erinnerung über
-  den ganzen Bildschirm (`--reminders`, ein eigenes Fenster je Bildschirm) und Schriftwechsel zur
+  den ganzen Bildschirm (`--reminders`, ein eigenes Fenster je Bildschirm; mit `--shots` lehnt der
+  Kalender ihre Zustände mit Exit 64 ab) und Schriftwechsel zur
   Laufzeit (`design-switched` zeigt eine Ersatzschrift). Dafür bleibt `shoot.sh` (unten).
 - Zeilen `[…/emulator.rs:…] action = …` auf stderr kommen vom Emulator, der manche Aktionen nicht
   ausführt (z. B. die Frage nach dem Erscheinungsbild des Systems), und sind kein Fehler.

@@ -32,7 +32,9 @@ case $out in /*) ;; *) out="$PWD/$out" ;; esac
 root=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "$root"
 cargo build -q -p "$app"
-binary="${CARGO_TARGET_DIR:-target}/debug/$app"
+# Where cargo put it: CARGO_TARGET_DIR or `build.target-dir` of a cargo config may move `target/`.
+target=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
+binary="${target:-target}/debug/$app"
 
 run() {
   # `${arr[@]+…}` keeps empty arrays from tripping `set -u` in the bash 3.2 of macOS.
