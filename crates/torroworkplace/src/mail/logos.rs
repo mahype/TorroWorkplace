@@ -31,8 +31,8 @@
 //!
 //! **When**: a domain is asked when a checked mail names it ([`SenderLogos::want`]) and it was never
 //! asked, its logo is older than [`FOUND_FOR`], or it had none for [`NOT_FOUND_FOR`]. Only a DNS that
-//! does not answer counts as offline (asked again after an hour); a website that cannot be reached
-//! is a domain without a logo. A kept logo not found when asked again stays for one more round, so a
+//! does not answer counts as offline (asked again after an hour, nothing noted); a website that
+//! cannot be reached is noted and asked again after [`UNREACHED_SITE_FOR`], a kept logo staying. A kept logo not found when asked again stays for one more round, so a
 //! server failing for a moment does not take it away. One task asks
 //! one domain after the other, [`GAP`] apart. Opening a mail asks nothing: the reading commands only
 //! read what is kept ([`SenderLogos::has`], [`SenderLogos::png`]). While "Logos of known senders" is
@@ -91,6 +91,10 @@ pub const FOUND_FOR: TimeDelta = TimeDelta::days(30);
 /// A domain without a logo is asked again after this long.
 pub const NOT_FOUND_FOR: TimeDelta = TimeDelta::days(7);
 
+/// A domain whose website could not be reached is asked again after this long: a network that lets
+/// DNS through but blocks the web (a hotel's sign-in page) must not take logos away for a week.
+pub const UNREACHED_SITE_FOR: TimeDelta = TimeDelta::days(1);
+
 /// A domain that could not be reached (offline) is asked again after this long at the earliest.
 const UNREACHED_FOR: Duration = Duration::from_secs(60 * 60);
 
@@ -122,6 +126,9 @@ pub enum WebError {
     Offline,
     /// Anything else (refused address, larger than allowed, a broken answer): there is no logo here.
     Failed,
+    /// The DNS answered, but the domain's website could not be reached ([`SenderLogos::find`]):
+    /// noted, and asked again after [`UNREACHED_SITE_FOR`].
+    Unreached,
 }
 
 /// What one request brought.
@@ -231,13 +238,21 @@ struct Asked {
     /// server that fails for a moment does not take it away; asked again after [`NOT_FOUND_FOR`].
     #[serde(default)]
     missed: bool,
+    /// The last time it was asked its website could not be reached ([`WebError::Unreached`]): a kept
+    /// logo stays as it is; asked again after [`UNREACHED_SITE_FOR`].
+    #[serde(default)]
+    unreached: bool,
 }
 
 impl Asked {
     /// Whether the domain is to be asked again at `now`.
     fn due(&self, now: DateTime<Utc>) -> bool {
         let age = now.signed_duration_since(self.at);
-        age > if self.found && !self.missed { FOUND_FOR } else { NOT_FOUND_FOR }
+        age > match (self.unreached, self.found && !self.missed) {
+            (true, _) => UNREACHED_SITE_FOR,
+            (false, true) => FOUND_FOR,
+            (false, false) => NOT_FOUND_FOR,
+        }
     }
 }
 
@@ -374,8 +389,10 @@ impl SenderLogos {
     fn keep(&self, domain: &str, found: Result<Option<Vec<u8>>, WebError>, now: DateTime<Utc>) {
         let Some(dir) = &self.dir else { return };
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let site_down = found == Err(WebError::Unreached);
         let logo = match found {
             Ok(logo) => logo,
+            Err(WebError::Unreached) => None,
             Err(_) => {
                 state.unreached.insert(domain.to_string(), Instant::now());
                 return;
@@ -384,17 +401,23 @@ impl SenderLogos {
         state.unreached.remove(domain);
         let before = self.index_in(&mut state).domains.get(domain).copied();
         let file = dir.join(file_name(domain));
+        let unreached = site_down;
         let (asked, written) = match &logo {
             Some(png) => (
-                Asked { at: now, found: true, missed: false },
+                Asked { at: now, found: true, missed: false, unreached },
                 crate::clients::create_private_dir(dir)
                     .map_err(|err| err.kind())
                     .and_then(|()| crate::clients::write_private(&file, png).map_err(|_| std::io::ErrorKind::Other)),
             ),
+            // The website was not there: a kept logo stays as it was, and is asked again in a day.
+            None if site_down => match before {
+                Some(kept) if kept.found => (Asked { at: now, unreached, ..kept }, Ok(())),
+                _ => (Asked { at: now, found: false, missed: false, unreached }, remove(&file)),
+            },
             None if before.is_some_and(|asked| asked.found && !asked.missed) => {
-                (Asked { at: now, found: true, missed: true }, Ok(()))
+                (Asked { at: now, found: true, missed: true, unreached }, Ok(()))
             }
-            None => (Asked { at: now, found: false, missed: false }, remove(&file)),
+            None => (Asked { at: now, found: false, missed: false, unreached }, remove(&file)),
         };
         if let Err(kind) = written {
             eprintln!("torroworkplace: sender logos: cannot keep a logo: {kind}");
@@ -436,23 +459,30 @@ impl SenderLogos {
     }
 
     /// The logo of `domain` after the module docs, as a round PNG of [`LOGO_PIXELS`] on white;
-    /// `Ok(None)` when the domain has none, [`WebError::Offline`] when the DNS could not be asked.
-    /// Once the DNS answered, a website that cannot be reached is a domain without a logo (a domain
-    /// that only sends mail has none), asked again after [`NOT_FOUND_FOR`].
+    /// `Ok(None)` when the domain has none, [`WebError::Offline`] when the DNS could not be asked,
+    /// [`WebError::Unreached`] when it answered but neither of the domain's own addresses (its touch
+    /// icon and start page) could be reached: a domain that only sends mail, or a network that
+    /// blocks the web.
     pub async fn find(&self, domain: &str) -> Result<Option<Vec<u8>>, WebError> {
         if let Some(svg) = self.bimi(domain).await?
             && let Some(logo) = drawn(svg, Drawn::Bimi).await
         {
             return Ok(Some(logo));
         }
-        if let Ok(url) = Url::parse(&format!("https://{domain}/apple-touch-icon.png"))
-            && let Some((_, picture)) = self.reach(url, RASTER_MAX_BYTES).await
+        let Ok(touch) = Url::parse(&format!("https://{domain}/apple-touch-icon.png")) else { return Ok(None) };
+        let touch = self.fetch(touch, RASTER_MAX_BYTES).await;
+        let touch_down = touch == Err(WebError::Offline);
+        if let Ok(Some((_, picture))) = touch
             && let Some(logo) = drawn(picture, Drawn::Raster).await
         {
             return Ok(Some(logo));
         }
         let Ok(start) = Url::parse(&format!("https://{domain}/")) else { return Ok(None) };
-        let Some((at, page)) = self.reach(start, PAGE_MAX_BYTES).await else { return Ok(None) };
+        let (at, page) = match self.fetch(start, PAGE_MAX_BYTES).await {
+            Ok(Some(found)) => found,
+            Err(WebError::Offline) if touch_down => return Err(WebError::Unreached),
+            _ => return Ok(None),
+        };
         let own = at.host_str().is_some_and(|host| host == domain || host.ends_with(&format!(".{domain}")));
         if !own {
             return Ok(None);
@@ -503,7 +533,8 @@ impl SenderLogos {
                     Err(_) => return Ok(None),
                 },
                 Ok(Reply::Status(_)) | Err(WebError::Failed) => return Ok(None),
-                Err(WebError::Offline) => return Err(WebError::Offline),
+                // A request either reaches its server or not; "unreached" is what `find` makes of it.
+                Err(WebError::Offline | WebError::Unreached) => return Err(WebError::Offline),
             }
         }
         Ok(None)
@@ -924,7 +955,7 @@ pub(crate) mod tests {
         assert_eq!(logos.find("paypal.example").await, Err(WebError::Offline));
         // The DNS answers, the website does not: a domain that only sends mail, without a logo.
         let (web, logos) = with_web(FakeWeb { http_offline: true, ..FakeWeb::default() });
-        assert_eq!(logos.find("mailer.example").await, Ok(None));
+        assert_eq!(logos.find("mailer.example").await, Err(WebError::Unreached));
         assert_eq!(web.asked().len(), 2, "the touch icon and the start page, once each");
     }
 
@@ -1028,11 +1059,30 @@ pub(crate) mod tests {
         logos.keep("github.example", Err(WebError::Offline), now);
         assert!(!logos.kept("github.example"), "offline notes nothing");
 
+        // A website that cannot be reached (a network blocking the web): a kept logo stays, and the
+        // domain is asked again after a day, not a week or a month.
+        logos.keep("shop.example", Ok(Some(b"png".to_vec())), now);
+        logos.keep("shop.example", Err(WebError::Unreached), now + TimeDelta::days(31));
+        let asked = logos.with_index(|index| index.domains["shop.example"]);
+        assert!(logos.kept("shop.example") && logos.png("shop.example").is_some(), "the logo stays");
+        assert!(!asked.missed, "not counted as a miss");
+        assert!(
+            !asked.due(now + TimeDelta::hours(31 * 24 + 23))
+                && asked.due(now + TimeDelta::days(32) + TimeDelta::hours(1))
+        );
+        logos.keep("mailer.example", Err(WebError::Unreached), now);
+        let asked = logos.with_index(|index| index.domains["mailer.example"]);
+        assert!(!asked.found && asked.due(now + TimeDelta::days(2)), "no logo, asked again after a day");
+        logos.keep("mailer.example", Ok(None), now);
+        let asked = logos.with_index(|index| index.domains["mailer.example"]);
+        assert!(!asked.due(now + TimeDelta::days(2)), "a website without a logo waits a week");
+
         {
             let mut state = logos.state.lock().expect("lock");
             let index = logos.index_in(&mut state);
             for n in 0..MAX_DOMAINS {
-                let asked = Asked { at: now + TimeDelta::seconds(n as i64), found: false, missed: false };
+                let asked =
+                    Asked { at: now + TimeDelta::seconds(n as i64), found: false, missed: false, unreached: false };
                 index.domains.insert(format!("d{n}.example"), asked);
             }
         }
