@@ -5323,6 +5323,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::ContextAction(action) => {
                 self.menu = None;
+                self.context_point = None;
                 let result = self.handle(*action);
                 self.menu_at = MenuAt::Row;
                 return result;
@@ -12529,6 +12530,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     fn close_menus(&mut self) {
         self.menu = None;
+        // A context menu opened later without a right-click hangs under the row, not at an old point.
+        self.context_point = None;
         self.drawer = false;
         self.subject = None;
         self.mail_subject = None;
@@ -20033,7 +20036,7 @@ mod tests {
         assert_eq!(app.menu, None);
         let _ = app.update(Message::ContextMail(id, point));
         let _ = app.update(Message::Escape);
-        assert_eq!(app.menu, None);
+        assert_eq!((app.menu, app.context_point), (None, None), "no old point for the next menu");
 
         let mut overview = mail_entry_open(Density::Compact);
         let entry = overview.detail.as_ref().expect("a mail entry").id.clone();
