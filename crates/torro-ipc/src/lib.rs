@@ -2181,7 +2181,8 @@ pub enum Request {
     },
     /// The catalogue of mail categories ([`Response::Categories`], task E12.4,
     /// `docs/kategorien.md`): every category with its group, the words for both, how much mail it
-    /// holds and how much of that is unread. Counted in the inbox folder of the mail accounts
+    /// holds and how much of that is unread, in the order that decides between rules of several
+    /// categories ([`Request::MoveCategory`]). Counted in the inbox folder of the mail accounts
     /// this key may read – mail thrown away, marked as spam or sent by the person keeps its
     /// category and is counted nowhere. `not-found` for an `account` that is not there or that
     /// this key may not read.
@@ -2349,6 +2350,23 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         icon: Option<torro_mail::CategoryIcon>,
     },
+    /// Moves a mail category to `position` in the group `group`, 0 first, counted among the other
+    /// categories of that group (issue #481, `docs/kategorien.md`, "Vorrang"); past the end puts it
+    /// last. `group` may be another group than its own: the category moves there. Answers with the
+    /// catalogue ([`Response::Categories`]). The order decides which category wins when sorting
+    /// rules or mail filters of several categories match one mail: the one higher up, groups from
+    /// the top, within a group categories from the top. `not-found` for a category or group that is
+    /// not there; `error` when the target group would offer the decision model more than 20
+    /// categories. Needs the person's approval.
+    #[serde(rename = "inbox.move_category")]
+    MoveCategory {
+        /// The category's key, as `inbox.list_categories` gives it.
+        category: torro_mail::Category,
+        /// The group it stands in afterwards: its own or another one.
+        group: torro_mail::CategoryGroup,
+        /// Its place among the other categories of `group`, 0 first; past the end: last.
+        position: u32,
+    },
     /// Removes a mail category the person made ([`Response::CategoryRemoved`], task E15.1). Mail,
     /// entries and sorting rules that name it move to `replacement`, keeping where their category
     /// came from; without mail, entries or rules none is needed. `conflict` when some name it and
@@ -2363,9 +2381,11 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         replacement: Option<torro_mail::Category>,
     },
-    /// The sorting rules for mail, in their order ([`Response::SortRules`], task E15.1): the first
-    /// one whose conditions hold and whose exceptions do not decides a new mail's category, after
-    /// a category the person set by hand and before the headers and the decision model.
+    /// The sorting rules for mail, in the order they were placed ([`Response::SortRules`], task
+    /// E15.1). A rule holds when its conditions hold and its exceptions do not; among the rules and
+    /// mail filters that match a new mail, the category highest up in the catalogue wins (issue
+    /// #481, [`Request::MoveCategory`]), after a category the person set by hand and a rule "Always
+    /// for this sender", before the headers and the decision model.
     #[serde(rename = "inbox.list_sort_rules")]
     ListSortRules,
     /// Adds a sorting rule for mail ([`Response::SortRule`], task E15.1): mail that meets every
@@ -2382,7 +2402,8 @@ pub enum Request {
         /// None of them may hold; at most 10.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         exceptions: Vec<torro_inbox::SortCondition>,
-        /// Where it stands, 0 first; left out: last.
+        /// Where it stands in the list, 0 first; left out: last. The place decides nothing: the
+        /// order of the categories does (issue #481).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         position: Option<u32>,
         /// Switched off, it holds for nothing. Left out: on.
@@ -2414,35 +2435,6 @@ pub enum Request {
     RemoveSortRule {
         /// The rule's id, as `inbox.list_sort_rules` gives it.
         id: String,
-    },
-    /// Moves a sorting rule to `position`, 0 first ([`Response::SortRules`], task E15.1); the
-    /// others keep their order around it. A position past the end puts it last. `not-found` for a
-    /// rule that is not there or that this key may not see.
-    #[serde(rename = "inbox.move_sort_rule")]
-    MoveSortRule {
-        /// The rule's id, as `inbox.list_sort_rules` gives it.
-        id: String,
-        /// Its new place, 0 first.
-        position: u32,
-    },
-    /// The sorting rules and mail filters in one order ([`Response::SortingOrder`], issue #454):
-    /// from the top, the first rule that holds or filter that finds a new mail and sets a category
-    /// decides its category. Only the steps the caller sees: rules as `inbox.list_sort_rules`,
-    /// filters only with read access to mail and as `mail.list_filters`.
-    #[serde(rename = "inbox.list_sorting_order")]
-    ListSortingOrder,
-    /// Moves one sorting rule or mail filter to `position` among the steps the caller sees, 0 first
-    /// ([`Response::SortingOrder`], issue #454); the others keep their order around it. A position
-    /// past the end puts it last. `not-found` for a step that is not there or that the caller does
-    /// not see; `forbidden` when the move passes a filter (or moves one) the caller may not change.
-    #[serde(rename = "inbox.move_sorting_step")]
-    MoveSortingStep {
-        /// A rule or a filter.
-        kind: torro_inbox::SortingKind,
-        /// Its id, as `inbox.list_sorting_order` gives it.
-        id: String,
-        /// Its new place among the steps the caller sees, 0 first.
-        position: u32,
     },
     /// The ways to mute the entry `id` (task E8.6a), for the bell's menu: its conversation, then each
     /// of its traits (sender, domain, list, agent, project, …) with the value the stored entry has,
@@ -4465,7 +4457,8 @@ pub enum Response {
         #[serde(default)]
         slots: Vec<crate::AiSlotInfo>,
     },
-    /// The catalogue of mail categories ([`Request::ListCategories`]). The suite's own words, so
+    /// The catalogue of mail categories ([`Request::ListCategories`], [`Request::MoveCategory`]), in
+    /// its order: by group, within a group as the person placed them. The suite's own words, so
     /// nothing here is foreign text.
     Categories {
         categories: Vec<crate::inbox::CategoryInfo>,
@@ -4522,14 +4515,9 @@ pub enum Response {
         replacement: Option<torro_mail::Category>,
     },
     /// The sorting rules for mail, in their order ([`Request::ListSortRules`],
-    /// [`Request::RemoveSortRule`], [`Request::MoveSortRule`]).
+    /// [`Request::RemoveSortRule`]).
     SortRules {
         rules: Vec<torro_inbox::SortRule>,
-    },
-    /// The sorting rules and mail filters in their one order ([`Request::ListSortingOrder`],
-    /// [`Request::MoveSortingStep`], issue #454).
-    SortingOrder {
-        steps: Vec<torro_inbox::SortingStep>,
     },
     /// One sorting rule as stored ([`Request::CreateSortRule`], [`Request::UpdateSortRule`]),
     /// with where it stands, 0 first.
