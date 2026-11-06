@@ -2603,15 +2603,16 @@ pub fn rail_context_menu<'a, M: Clone + 'a, N: Clone + 'a>(
     }
     // The scrollbar beside the rows, not over them: over them it covered their key hints where
     // the menu scrolls (the medium window, design review of #499).
-    let body = scrollable(list)
+    // The rows keep the rail's width; the card grows by the scrollbar's gutter only while the menu
+    // scrolls (iced reserves it only then).
+    let rows = container(list).width((rail_flyout_width() - 2.0 * style::MENU_INSET).max(0.0));
+    let body = scrollable(rows)
         .direction(scrollable::Direction::Vertical(style::scrollbar().spacing(space::xs())))
         .style(style::scrollable)
         .height(Length::Shrink)
-        .width(Fill);
-    // As wide as the rail's card plus the scrollbar's gutter (6 wide, 2 around it), so the rows keep
-    // the rail's width.
+        .width(Length::Shrink);
     container(container(body).max_height(max_height))
-        .width(rail_flyout_width() + 10.0 + space::xs())
+        .width(Length::Shrink)
         .padding(style::MENU_INSET)
         .style(style::container::menu)
         .into()
