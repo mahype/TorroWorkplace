@@ -1827,6 +1827,26 @@ mod tests {
         let _: Action<()> = update(&mut state, Message::Popover(Some(Popover::Group)), &data);
         assert!(overlay(&state, &data).is_some());
         assert!(matches!(escape(&state), Some(Message::Popover(None))));
+        // The switches of the rows are stored at once: a rule keeps all but its switch, the row of
+        // the contacts is its setting.
+        let off = sent(&mut state, &data, vec![Message::RuleSwitched("r1".into(), false)]);
+        let stored = &data.sort_rules[0];
+        assert_eq!(
+            off,
+            vec![Request::UpdateSortRule {
+                id: "r1".into(),
+                category: stored.category,
+                conditions: stored.conditions.clone(),
+                exceptions: Some(stored.exceptions.clone()),
+                enabled: Some(false),
+            }]
+        );
+        assert!(sent(&mut state, &data, vec![Message::RuleSwitched("gone".into(), false)]).is_empty());
+        let contacts = sent(&mut state, &data, vec![Message::ContactsPersonal(false)]);
+        assert_eq!(
+            contacts,
+            vec![Request::SetSetting { key: SettingKey::MailContactsPersonal, value: serde_json::json!(false) }]
+        );
     }
 
     fn data() -> Data {
