@@ -10800,17 +10800,23 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.file_menu(None).map(|card| widgets::floating(&save_rail_at, below, card, Message::CloseMenu))
             }
             // Issue #501: the formats of the context menu's "Save mail as", at the row.
-            Some(Menu::SaveMailFormat) => self
-                .save_format_menu()
-                .map(|menu| widgets::floating(&rows.row, Placement::Beside, menu, Message::CloseMenu)),
-            // At its item of the rail beside it, as "Save attachments (n)"; from the context menu at
-            // the row, where the formats' menu was.
+            // Only the wide window keeps the row in view beside the reader; medium and narrow open the
+            // reader over it, so there they hang at the rail's floppy disk (design review of #501).
+            Some(Menu::SaveMailFormat) => self.save_format_menu().map(|menu| {
+                let at = if class == SizeClass::Wide { &rows.row } else { &anchors.rail.save };
+                widgets::floating(at, Placement::Beside, menu, Message::CloseMenu)
+            }),
+            // At its item of the rail beside it, as "Save attachments (n)"; from the context menu where
+            // the formats' menu was.
             Some(Menu::SaveMail(format)) => self.export_menu(format).map(|card| {
                 let at = match format {
                     ExportFormat::Pdf => &save_pdf_at,
                     ExportFormat::Png => &save_image_at,
                 };
-                widgets::floating(at, below, card, Message::CloseMenu)
+                match from_panel || class == SizeClass::Wide {
+                    true => widgets::floating(at, below, card, Message::CloseMenu),
+                    false => widgets::floating(&anchors.rail.save, Placement::Beside, card, Message::CloseMenu),
+                }
             }),
         };
         // The open group of the collapsed rail, over the whole window like a menu (task E14.3); it
