@@ -44,7 +44,8 @@ fn entry(
 ) -> Announcement {
     Announcement {
         id: id.into(),
-        // The dates are written here by hand; a wrong one shows the announcement as of the first day.
+        // The dates are written here by hand; a wrong one would be 1 Jan 1970 and never show
+        // (`every_date_is_a_real_day` keeps that from shipping).
         date: NaiveDate::from_ymd_opt(year, month, day).unwrap_or_default(),
         kind,
         title: title.into(),
@@ -193,6 +194,11 @@ mod tests {
 
     fn newest() -> Announcement {
         all().into_iter().next().expect("an announcement")
+    }
+
+    #[test]
+    fn every_date_is_a_real_day() {
+        assert!(all().iter().all(|announcement| announcement.date != NaiveDate::default()), "{:?}", all());
     }
 
     #[test]

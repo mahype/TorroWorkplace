@@ -1067,8 +1067,11 @@ fn describe(request: &Request) -> String {
         Request::InstallApp { app } => format!("install {app}"),
         Request::UpdateApps { apps } => format!("update {}", apps.join(", ")),
         Request::ListAnnouncements => "announcements".into(),
-        // The id is the suite's own (`announcements::all`) or refused with `not-found`.
-        Request::DismissAnnouncement { id } => format!("hide announcement {id}"),
+        // Only an id the suite ships (`announcements::all`), never a client's free text.
+        Request::DismissAnnouncement { id } => match crate::announcements::all().iter().any(|known| &known.id == id) {
+            true => format!("hide announcement {id}"),
+            false => "hide an unknown announcement".into(),
+        },
         Request::ListDesigns => "designs".into(),
         Request::ListFonts => "fonts".into(),
         Request::ListColorSchemes => "colour schemes".into(),
