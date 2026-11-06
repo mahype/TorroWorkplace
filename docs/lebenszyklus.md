@@ -85,7 +85,7 @@ So war es, bevor #279 umgesetzt wurde. Was daraus wurde, steht unter „Entschei
    `docs/prototypes/icons/`, der Mensch wählt; daraus entstehen `.icns`, `.ico` und die SVGs für Linux.
 10. **Mehrere Kopien des Dienstes: Die neueste startet** (#411). Jede App bringt den Dienst mit (macOS im eigenen
    Bündel, Linux und Windows als Paket-Abhängigkeit bzw. im selben Archiv), also liegen oft mehrere Kopien auf dem
-   Rechner. Eine App startet die Kopie mit der höchsten Version (macOS: `CFBundleShortVersionString` im
+   Rechner. Eine App startet die Kopie mit der höchsten Version (macOS: `TorroVersion`, die ganze Version samt Vorabversion, im
    `Info.plist` des Dienst-Bündels; bei Gleichstand die in „Torro Workplace.app“, dann die im eigenen Bündel).
    **Datenschutz vor älteren Versionen:** Der Dienst schreibt beim Start die höchste Version, die je auf den Daten
    lief, nach `<state>/service-version`. Ist er älter als diese, startet er nicht (Exit 1) und sagt auf stderr,

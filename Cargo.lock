@@ -7351,7 +7351,6 @@ dependencies = [
  "reqwest",
  "rfd",
  "rmcp",
- "roxmltree 0.21.1",
  "rusqlite",
  "rustls",
  "schemars",

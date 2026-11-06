@@ -15,6 +15,10 @@
     <string>@VERSION@</string>
     <key>CFBundleShortVersionString</key>
     <string>@VERSION@</string>
+    <!-- The suite's whole version, pre-release included (0.2.0-rc.1): Apple's keys above take digits and
+         dots only. The service's copies are compared by it (torro_gui::source::plist_version). -->
+    <key>TorroVersion</key>
+    <string>@FULLVERSION@</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleIconFile</key>

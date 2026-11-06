@@ -425,23 +425,28 @@ pub fn info_plist_of(program: &Path) -> Option<PathBuf> {
     Some(contents.join("Info.plist"))
 }
 
-/// The version `CFBundleShortVersionString` in the XML property list `text` (an `Info.plist`); `None`
-/// when the text is no XML, has no such key or no version there. A binary property list is not read:
-/// the suite's bundles carry XML (`packaging/macos/Info.plist.in`).
+/// The version in the XML property list `text` (an `Info.plist`): the suite's whole version `TorroVersion`
+/// (pre-release included, `0.2.0-rc.1`), else Apple's `CFBundleShortVersionString` (digits and dots
+/// only, so a pre-release reads as its release; bundles from before #411's review). `None` when the
+/// text is no XML or has neither as a version. A binary property list is not read: the suite's bundles
+/// carry XML (`packaging/macos/Info.plist.in`).
 pub fn plist_version(text: &str) -> Option<Version> {
     // The bundles' lists carry Apple's DOCTYPE, which `roxmltree` refuses unless told otherwise.
     let options = roxmltree::ParsingOptions { allow_dtd: true, ..roxmltree::ParsingOptions::default() };
     let document = roxmltree::Document::parse_with_options(text, options).ok()?;
     let dict = document.root_element().children().find(|node| node.has_tag_name("dict"))?;
-    // In a `dict` each `key` is followed by its value, the next element.
-    let mut elements = dict.children().filter(roxmltree::Node::is_element);
-    while let Some(node) = elements.next() {
-        if node.has_tag_name("key") && node.text() == Some("CFBundleShortVersionString") {
-            let value = elements.next().filter(|value| value.has_tag_name("string"))?;
-            return value.text()?.parse().ok();
+    let value_of = |wanted: &str| -> Option<Version> {
+        // In a `dict` each `key` is followed by its value, the next element.
+        let mut elements = dict.children().filter(roxmltree::Node::is_element);
+        while let Some(node) = elements.next() {
+            if node.has_tag_name("key") && node.text() == Some(wanted) {
+                let value = elements.next().filter(|value| value.has_tag_name("string"))?;
+                return value.text()?.parse().ok();
+            }
         }
-    }
-    None
+        None
+    };
+    value_of("TorroVersion").or_else(|| value_of("CFBundleShortVersionString"))
 }
 
 /// The copy of the service to start among those in the bundles of the suite (issue #411): each entry of
@@ -1004,6 +1009,10 @@ mod tests {
         let last = "<plist><dict><key>CFBundleShortVersionString</key></dict></plist>";
         assert_eq!(plist_version(last), None);
         assert_eq!(plist_version("bplist00…"), None, "a binary list is not read");
+        // Review of #411: Apple's key cuts a pre-release off; the suite's own key keeps it.
+        let both = "<plist><dict><key>CFBundleShortVersionString</key><string>0.2.0</string>\
+                    <key>TorroVersion</key><string>0.2.0-rc.1</string></dict></plist>";
+        assert_eq!(plist_version(both), Some(version("0.2.0-rc.1")));
         let program = Path::new("/Applications/Torro Calendar.app").join(SERVICE_IN_BUNDLE);
         assert_eq!(
             info_plist_of(&program),

@@ -103,7 +103,7 @@ zusätzlich den Notification Hub mit, weil sie dessen Fenster zum Verfassen öff
   Kopien des Dienstes nicht in die Quere kommen. Der Eintrag „Torro Workplace“ kommt nur mit `torroworkplace.json`.
 - **macOS:** Jede Kopie des Service-Bündels ist gleich (`io.github.mahype.torro-workplace-service`, dasselbe
   Team), sonst fragte der Schlüsselbund je Kopie neu. Die Suite startet die Kopie mit der höchsten
-  `CFBundleShortVersionString` in `<App>.app/Contents/Library/LoginItems/Torro Workplace Service.app/Contents/Info.plist`.
+  `TorroVersion` (die ganze Version samt Vorabversion; `CFBundleShortVersionString` nimmt nur Ziffern und Punkte) in `<App>.app/Contents/Library/LoginItems/Torro Workplace Service.app/Contents/Info.plist`.
 - Die nackten Archive und Installer je Programm bleiben ohne Dienst: Wer unter Linux oder Windows eine App so von
   Hand lädt, braucht `torroworkplace` dazu, und es entsteht kein Starter-Eintrag.
 

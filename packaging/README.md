@@ -32,7 +32,7 @@ The names come from `AppId` in `crates/torro-core/src/app.rs`; the suite finds t
 
 The bundle id is `io.github.mahype.<window class>`, the service's `io.github.mahype.torro-workplace-service` in every
 copy, signed by the same team, so the keychain trusts each copy. The suite starts the copy whose `Info.plist` has the
-highest `CFBundleShortVersionString`. Sign the embedded service before the outer bundle. To check all bundles by hand
+highest `TorroVersion` (whole version, pre-release included). Sign the embedded service before the outer bundle. To check all bundles by hand
 without a release, build the workspace and run `scripts/macos-dev-bundles.sh [folder]` (default
 `target/debug/bundles`); it makes the eight bundles, seven of them with the service inside, and signs them with the
 development identity when there is one (`scripts/macos-dev-cert.sh`), else ad hoc. What to check by hand with them:

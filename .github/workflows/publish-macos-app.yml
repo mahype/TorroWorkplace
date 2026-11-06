@@ -8,7 +8,7 @@
 # as an agent bundle in Contents/Library/LoginItems (torro_gui::source::SERVICE_PROGRAM, decision 7 in
 # docs/lebenszyklus.md; one copy per app since issue #411, so each app runs without the main application). The service
 # bundle is the same in every app: bundle id io.github.mahype.torro-workplace-service, signed by the same team, so the
-# keychain trusts every copy; the suite starts the copy with the highest CFBundleShortVersionString.
+# keychain trusts every copy; the suite starts the copy with the highest TorroVersion (its Info.plist, make-app.sh).
 #
 # Two ways to run it, both only when the repository variable MACOS_APP_ENABLED is 'true':
 #   * automatically after a release: dist calls it as a custom publish job

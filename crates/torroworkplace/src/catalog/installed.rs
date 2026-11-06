@@ -2,9 +2,9 @@
 //! looks after it (issue #411, decision 1).
 //!
 //! On macOS an app is its bundle (`Torro Calendar.app/Contents/MacOS/torrocalendar`) in one of the
-//! folders the suite looks in ([`torro_gui::source::bundle_folders`]); its version is
-//! `CFBundleShortVersionString` of the bundle's `Info.plist`. The main application is `Torro
-//! Workplace.app`. Elsewhere an app is its program ([`AppId::program_file`]) beside the service or on
+//! folders the suite looks in ([`torro_gui::source::bundle_folders`]); its version is the one in the
+//! bundle's `Info.plist` (`TorroVersion`, else `CFBundleShortVersionString`). The main application is
+//! `Torro Workplace.app`. Elsewhere an app is its program ([`AppId::program_file`]) beside the service or on
 //! `PATH`, with the version its `--version` prints (at most [`VERSION_WAIT`]); the main application is
 //! installed as [`crate::apps::main_app_installed`] tells.
 //!
@@ -334,16 +334,10 @@ pub fn version_from_output(text: &str) -> Option<String> {
     word.parse::<Version>().ok().map(|version| version.to_string())
 }
 
-/// `CFBundleShortVersionString` of a bundle's `Info.plist` (XML), when it is a version.
+/// The version of a bundle's `Info.plist` (XML), read as the apps read their service's copies
+/// ([`torro_gui::source::plist_version`]: the suite's whole version, pre-release included).
 pub fn plist_version(text: &str) -> Option<String> {
-    let options = roxmltree::ParsingOptions { allow_dtd: true, ..roxmltree::ParsingOptions::default() };
-    let document = roxmltree::Document::parse_with_options(text, options).ok()?;
-    let key = document
-        .descendants()
-        .find(|node| node.has_tag_name("key") && node.text() == Some("CFBundleShortVersionString"))?;
-    let value = key.next_siblings().skip(1).find(roxmltree::Node::is_element)?;
-    let text = value.has_tag_name("string").then(|| value.text()).flatten()?;
-    text.parse::<Version>().ok().map(|version| version.to_string())
+    torro_gui::source::plist_version(text).map(|version| version.to_string())
 }
 
 #[cfg(test)]
