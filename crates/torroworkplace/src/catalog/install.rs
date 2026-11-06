@@ -199,22 +199,30 @@ pub fn unpack_bundle(archive: &Path, into: &Path, bundle: &str, program: &str) -
     if plain { Ok(unpacked) } else { Err(Fail::Error) }
 }
 
-/// macOS: the bundle's signature holds (`codesign --verify --deep --strict`) and is the suite's team's
-/// ([`TEAM`]); else [`Fail::Signature`].
+/// The code requirement a downloaded bundle must meet (review of #411): signed with a Developer ID
+/// certificate that Apple issued (the intermediate's and the leaf's Developer ID markers under Apple's
+/// anchor) to the suite's team ([`TEAM`]). A team name in a certificate of anyone's own making does not
+/// pass: the signature is the only check on macOS that does not come from the same release.
+pub fn requirement() -> String {
+    format!(
+        "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and \
+         certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"{TEAM}\""
+    )
+}
+
+/// macOS: the bundle's signature holds (`codesign --verify --deep --strict`) and meets [`requirement`];
+/// else [`Fail::Signature`]. Nothing `codesign` says is read.
 pub fn check_signature(bundle: &Path) -> Result<(), Fail> {
-    let codesign = "/usr/bin/codesign";
-    let verified = quiet(codesign).args(["--verify", "--deep", "--strict"]).arg(bundle).status();
+    let verified = quiet("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(format!("-R={}", requirement()))
+        .arg(bundle)
+        .status();
     match verified {
-        Ok(status) if status.success() => {}
-        Ok(_) => return Err(Fail::Signature),
-        Err(_) => return Err(Fail::Error),
+        Ok(status) if status.success() => Ok(()),
+        Ok(_) => Err(Fail::Signature),
+        Err(_) => Err(Fail::Error),
     }
-    // What `codesign -dv` says is read here for the team only and goes nowhere else.
-    let shown = quiet(codesign).args(["-dv", "--verbose=2"]).arg(bundle).stderr(Stdio::piped()).output();
-    let shown = shown.map_err(|_| Fail::Error)?;
-    let said = String::from_utf8_lossy(&shown.stderr);
-    let team = said.lines().any(|line| line.trim() == format!("TeamIdentifier={TEAM}"));
-    if shown.status.success() && team { Ok(()) } else { Err(Fail::Signature) }
 }
 
 /// Whether a file can be made in `folder`.
@@ -742,6 +750,35 @@ pub(crate) mod tests {
     fn sizes_are_handed_on_as_bytes() {
         assert_eq!(byte_count(24_600_000), "24600000");
         assert_eq!(byte_count(0), "0");
+    }
+
+    /// Review of #411: the requirement asks for Apple's Developer ID chain and the suite's team, not a
+    /// team name alone.
+    #[test]
+    fn the_requirement_asks_for_apples_developer_id_and_the_team() {
+        let requirement = requirement();
+        assert!(requirement.starts_with("anchor apple generic and "), "{requirement}");
+        assert!(requirement.contains("1.2.840.113635.100.6.2.6") && requirement.contains("1.2.840.113635.100.6.1.13"));
+        assert!(requirement.ends_with(&format!("certificate leaf[subject.OU] = \"{TEAM}\"")), "{requirement}");
+    }
+
+    /// macOS: a bundle that verifies but is signed by anyone (here ad hoc) does not meet the requirement.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_bundle_signed_by_anyone_is_refused() {
+        let dir = tempfile::tempdir().expect("dir");
+        let bundle = dir.path().join("Torro Tasks.app");
+        std::fs::create_dir_all(bundle.join("Contents/MacOS")).expect("bundle");
+        std::fs::copy("/usr/bin/true", bundle.join("Contents/MacOS/torrotasks")).expect("program");
+        let plist = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+                     <key>CFBundleExecutable</key><string>torrotasks</string>\
+                     <key>CFBundleIdentifier</key><string>io.github.mahype.torro-tasks</string></dict></plist>\n";
+        std::fs::write(bundle.join("Contents/Info.plist"), plist).expect("Info.plist");
+        let signed = quiet("/usr/bin/codesign").args(["--force", "--deep", "-s", "-"]).arg(&bundle).status();
+        assert!(signed.is_ok_and(|status| status.success()), "ad hoc signature");
+        let holds = quiet("/usr/bin/codesign").args(["--verify", "--deep", "--strict"]).arg(&bundle).status();
+        assert!(holds.is_ok_and(|status| status.success()), "the signature itself holds");
+        assert_eq!(check_signature(&bundle), Err(Fail::Signature));
     }
 
     /// macOS: an unsigned bundle is refused before anything is put in place.
