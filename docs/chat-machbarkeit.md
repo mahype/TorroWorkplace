@@ -23,6 +23,8 @@ als *vermutet* markiert.
   Talk Desktop hat dafür keinen Link.
 - **Empfehlung:** Stufe 5 öffnet Anrufe im Browser; Text, Status und Klingeln laufen in der Suite. Ein nativer
   Anruf wird ein eigener Versuch, wenn Text und Status stehen (Abschnitt [Empfehlung](#empfehlung)).
+- **Entschieden (2026-11-06): Anrufe werden selbst gebaut**, gegen die Empfehlung; Stufe 5 beginnt mit einem Versuch
+  (Abschnitt [Entscheidung](#entscheidung)).
 
 ## Der eigene Server
 
