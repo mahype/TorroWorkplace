@@ -107,26 +107,11 @@ pub struct Demo {
     category_clear_job: Mutex<Option<CategoryClearJob>>,
     cache_policy: Mutex<Option<MailCachePolicy>>,
     cache_job: Mutex<Option<MailCacheJob>>,
-    /// The order of the sample rules and filters (`inbox.list_sorting_order`, issue #454): mixed, a
-    /// filter between two rules; `inbox.move_sorting_step` changes it for the demo's lifetime.
-    sorting_order: Mutex<Vec<torro_inbox::SortingStep>>,
+    /// The sample catalogue once a category was moved (`inbox.move_category`, issue #481), for the
+    /// demo's lifetime; `None`: as the suite brings it, with the sample edits.
+    catalogue: Mutex<Option<Vec<torro_mail::CategoryDef>>>,
     /// Why the sample mail account does not sync ([`Demo::with_mail_problem`]); `None` normally.
     mail_problem: Option<String>,
-}
-
-/// The sample order of rules and filters (issue #454): the kept sender, the newsletter filter, the
-/// bills of the sample account, the tax rule, the old forum to the trash, the digest, the sale.
-fn demo_sorting_order() -> Vec<torro_inbox::SortingStep> {
-    use torro_inbox::SortingStep;
-    vec![
-        SortingStep::rule("r1"),
-        SortingStep::filter("f1"),
-        SortingStep::filter("f2"),
-        SortingStep::rule("r2"),
-        SortingStep::filter("f4"),
-        SortingStep::filter("f3"),
-        SortingStep::rule("r3"),
-    ]
 }
 
 impl Demo {
@@ -175,7 +160,7 @@ impl Demo {
             category_clear_job: Mutex::new(None),
             cache_policy: Mutex::new(None),
             cache_job: Mutex::new(None),
-            sorting_order: Mutex::new(demo_sorting_order()),
+            catalogue: Mutex::new(None),
             mail_problem: None,
         }
     }
@@ -888,6 +873,41 @@ impl Demo {
     /// The catalogue of mail categories (`inbox.list_categories`): the suite's own, one renamed,
     /// and one of the person's own (task E15.5).
     fn categories(&self) -> Vec<torro_ipc::inbox::CategoryInfo> {
+        let defs = self.catalogue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let defs = defs.unwrap_or_else(Demo::sample_catalogue);
+        // Mail in each category (issue #454): the tab Categories shows its numbers, four digits too.
+        const MAILS: [u32; 12] = [214, 96, 42, 18, 1046, 7, 3, 1318, 402, 77, 2140, 0];
+        defs.iter()
+            .enumerate()
+            .map(|(at, def)| {
+                let messages = MAILS[at % MAILS.len()];
+                torro_ipc::inbox::CategoryInfo::of(def, messages / 10, messages)
+            })
+            .collect()
+    }
+
+    /// `inbox.move_category` as the core does it (issue #481): out of its place, into `group` at
+    /// `position` among the others there, past the end last; the catalogue stays by group.
+    fn move_category(&self, category: torro_mail::Category, group: torro_mail::CategoryGroup, position: u32) {
+        let mut stored = self.catalogue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut defs = stored.take().unwrap_or_else(Demo::sample_catalogue);
+        if let Some(from) = defs.iter().position(|def| def.category == category) {
+            let mut moved = defs.remove(from);
+            moved.group = group;
+            let places: Vec<usize> =
+                defs.iter().enumerate().filter(|(_, def)| def.group == group).map(|(at, _)| at).collect();
+            let at = match places.get(position as usize) {
+                Some(at) => *at,
+                None => places.last().map_or(defs.len(), |last| last + 1),
+            };
+            defs.insert(at, moved);
+            defs.sort_by_key(|def| def.group.database_id());
+        }
+        *stored = Some(defs);
+    }
+
+    /// The suite's catalogue with the sample edits: "Bills" for Invoice, and a category "Tax".
+    fn sample_catalogue() -> Vec<torro_mail::CategoryDef> {
         let mut defs = torro_mail::CategoryDef::defaults();
         if let Some(invoice) = defs.iter_mut().find(|def| def.category == torro_mail::Category::Invoice) {
             invoice.name = Some("Bills".into());
@@ -904,15 +924,8 @@ impl Demo {
                 icon: torro_mail::CategoryIcon::Tag,
             });
         }
-        // Mail in each category (issue #454): the tab Categories shows its numbers, four digits too.
-        const MAILS: [u32; 12] = [214, 96, 42, 18, 1046, 7, 3, 1318, 402, 77, 2140, 0];
-        defs.iter()
-            .enumerate()
-            .map(|(at, def)| {
-                let messages = MAILS[at % MAILS.len()];
-                torro_ipc::inbox::CategoryInfo::of(def, messages / 10, messages)
-            })
-            .collect()
+        defs.sort_by_key(|def| def.group.database_id());
+        defs
     }
 
     /// The sorting rules (`inbox.list_sort_rules`, task E15.5): a kept sender, a domain with an
@@ -1243,21 +1256,16 @@ impl Backend for Demo {
                     .collect(),
             },
             Request::ListSortRules => Response::SortRules { rules: self.sort_rules() },
-            Request::ListSortingOrder => Response::SortingOrder {
-                steps: self.sorting_order.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
-            },
-            // As the core moves (issue #454): among the shown steps, past the end last.
-            Request::MoveSortingStep { kind, id, position } => {
-                let mut order = self.sorting_order.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                let step = torro_inbox::SortingStep { kind: *kind, id: id.clone() };
-                let others: Vec<torro_inbox::SortingStep> =
-                    order.iter().filter(|held| **held != step).cloned().collect();
-                let before = others.get(*position as usize).cloned();
-                *order = torro_inbox::rules::move_step(&order, &step, before.as_ref());
-                let steps = order.clone();
-                drop(order);
+            Request::MoveCategory { category, group, position } => {
+                self.move_category(*category, *group, *position);
                 self.note(request);
-                Response::SortingOrder { steps }
+                Response::Categories {
+                    categories: self.categories(),
+                    groups: torro_mail::CategoryGroupDef::defaults()
+                        .iter()
+                        .map(torro_ipc::inbox::CategoryGroupInfo::of)
+                        .collect(),
+                }
             }
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::Accounts => Response::Accounts { accounts: self.accounts() },

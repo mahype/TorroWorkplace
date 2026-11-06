@@ -2,19 +2,32 @@
 //! `docs/kategorien.md`, "Eigene Kategorien und Sortierregeln"), part of Settings ›
 //! Categorization in the mail window.
 //!
-//! The lists stand in [`super::categorization`] (issue #454): the rules among the filters in the
-//! tab "Rules & filters", the categories in their groups in the tab "Categories". This module holds
-//! the pages they open and the form of a group.
+//! The list stands in [`super::categorization`] (tab Categories). This module holds the pages it
+//! opens and the form of a group.
 //!
-//! A category's page: name, group, description, "Let the AI choose it" with how many of its group
-//! the AI chooses between ("7 of 20"), whether the sidebar shows it, for one of the suite "Reset"
-//! and for one of the person's own "Remove…" with the category its mail goes to. A rule's page:
-//! "File as", the conditions and the exceptions (field and words each), on/off, its place with
-//! "Move up"/"Move down", and "Delete rule". "Save" stands in the header bar.
+//! A category's page (issue #481), compact so four rules fit without scrolling:
+//!
+//! ```text
+//! [▣ ▾] [Invoice                         ] [● Paper trail ▾]
+//! Description for the AI  [ Text …                         ]
+//!   ✦ If the AI is on, it reads the description … Fixed rules always come first.
+//! Fixed rules · go before the AI                         [+ Rule ▾]
+//!   Domain is telekom.de                                  (●)  ›
+//!   [Search] from:shop.example has:attachment             (●)  ›
+//! ┌ Show in the sidebar (●) ┐ ┌ AI may not file mail here ( ) ┐   (narrow: one below the other)
+//! Use the suite's name, description and icon             Remove…
+//! ```
+//!
+//! The symbol and the group open as popovers ([`overlay`]). The fixed rules are the sorting rules
+//! and the mail filters that set this category, and for Personal the built-in rule "From someone in
+//! your address books"; "+ Rule" offers a rule or a filter from a search. A filter's dialog belongs
+//! to [`super::filters`]: its messages go out as [`Message::Filter`]. A rule's page: "File as", the
+//! conditions and the exceptions (field and words each), on/off and "Delete rule"; it goes back to
+//! the category's page it came from. "Save" stands in the header bar.
 //!
 //! Everything is a request (`inbox.create_category`, `inbox.update_category`,
 //! `inbox.remove_category`, `inbox.create_sort_rule`, `inbox.update_sort_rule`,
-//! `inbox.remove_sort_rule`, `inbox.move_sort_rule`, `settings.set_setting`); the page checks only
+//! `inbox.remove_sort_rule`, `settings.set_setting`); the page checks only
 //! what a person must fix before saving – the core checks all of it again. Mistakes show after
 //! the first "Save", under the field they are about, and "Save" puts the cursor into the first
 //! one it can (`.claude/skills/torro-design`, forms). What would lose something – deleting a rule,
@@ -26,6 +39,7 @@ use iced::{Alignment, Element, Fill, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::Icon;
 use torro_gui::theme::{palette, size, space};
+use torro_gui::widgets::{Align, Anchor, MenuItem, MenuSection, Placement};
 use torro_gui::{layout, style, typo, widgets};
 use torro_inbox::item::{SORT_CONDITIONS_MAX, SORT_VALUE_MAX};
 use torro_inbox::{SortComparison, SortCondition, SortField, SortRule};
@@ -34,7 +48,8 @@ use torro_ipc::{Request, SettingKey};
 use torro_mail::category::{DESCRIPTION_MAX, MODEL_PER_GROUP_MAX, NAME_MAX};
 use torro_mail::{Category, CategoryGroup, CategoryIcon};
 
-use crate::parts::{choice, field, picker, pressable, row_frame, setting_row, switch};
+use super::filters;
+use crate::parts::{field, picker, pressable, row_frame, setting_row, switch};
 use crate::{Action, Data};
 
 /// The id of the name field of a category's page: "Save" with a mistake in it goes there.
@@ -49,6 +64,25 @@ pub struct State {
     form: Option<Form>,
     asking: Option<Ask>,
     group_form: Option<GroupForm>,
+    /// The category whose page opened the rule's page that is open: its page comes back once the
+    /// rule's page closes (issue #481).
+    back_to: Option<Category>,
+    /// The popover open on a category's page.
+    popover: Option<Popover>,
+    icon_anchor: Anchor,
+    group_anchor: Anchor,
+    rule_anchor: Anchor,
+}
+
+/// The popovers of a category's page (issue #481).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Popover {
+    /// The symbols, as a grid.
+    Icon,
+    /// The groups.
+    Group,
+    /// "+ Rule": a rule, or a filter from a search.
+    Rule,
 }
 
 impl State {
@@ -136,6 +170,17 @@ pub enum Message {
     Model(bool),
     /// "Show in the sidebar" on a category's page: stored at once, as every switch of the list.
     Shown(Category, bool),
+    /// A popover of a category's page: open it (`Some`) or close it.
+    Popover(Option<Popover>),
+    /// "Rule…" of "+ Rule" on a category's page: a new rule that files mail there.
+    NewRuleIn(Category),
+    /// The switch of a rule's row on a category's page: stored at once.
+    RuleSwitched(String, bool),
+    /// "From someone in your address books" on Personal's page (issue #390): stored at once.
+    ContactsPersonal(bool),
+    /// For the filter dialog ([`super::filters`]): a filter's row, its switch, "Filter from a
+    /// search…". [`super::categorization`] hands it on.
+    Filter(filters::Message),
     SaveCategory,
     /// "Reset": put back the suite's name, description and icon – after the question.
     Reset,
@@ -178,11 +223,6 @@ pub enum Message {
     SaveRule,
     /// "Delete rule" – after the question.
     DeleteRule,
-    /// "Move up" (`up: true`) or "Move down" on a stored rule's page.
-    Move {
-        id: String,
-        up: bool,
-    },
     /// The answer to the question the page asks: go ahead (`true`) or not.
     Answer(bool),
     /// "‹ Back" from a page to the list, and Escape: asks first when something typed would go.
@@ -275,6 +315,8 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
         Message::NewCategory => {
             state.group_form = None;
             state.asking = None;
+            state.back_to = None;
+            state.popover = None;
             state.form = Some(Form::Category(CategoryForm {
                 category: None,
                 name: String::new(),
@@ -290,6 +332,8 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
         }
         Message::EditCategory(category) => {
             state.group_form = None;
+            state.back_to = None;
+            state.popover = None;
             if let Some(info) = data.categories.iter().find(|info| info.category == category) {
                 state.asking = None;
                 state.form = Some(Form::Category(CategoryForm::of(info)));
@@ -317,39 +361,54 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             }));
             Action::None
         }
+        Message::NewRuleIn(category) => {
+            state.popover = None;
+            let back = state.open_category();
+            let action = update(state, Message::NewRule, data);
+            if let Some(Form::Rule(form)) = &mut state.form {
+                form.category = Some(category);
+                state.back_to = back;
+            }
+            action
+        }
         Message::EditRule(id) => {
-            if state.form.as_ref().is_some_and(|form| form.dirty(data)) {
-                state.asking = Some(Ask::Discard);
-                return Action::None;
+            let back = state.open_category();
+            let action = edit_rule(state, id, data);
+            if matches!(state.form, Some(Form::Rule(_))) && back.is_some() {
+                state.back_to = back;
             }
-            if matches!(state.form.as_ref(), Some(Form::Rule(form)) if form.id.as_deref() == Some(id.as_str())) {
-                state.form = None;
-                state.asking = None;
-                return Action::None;
-            }
-            if let Some(rule) = data.sort_rules.iter().find(|rule| rule.id == id) {
-                state.asking = None;
-                state.form = Some(Form::Rule(RuleForm::of(rule)));
-            }
+            action
+        }
+        Message::Popover(popover) => {
+            state.popover = popover;
             Action::None
         }
+        Message::RuleSwitched(id, on) => match data.sort_rules.iter().find(|rule| rule.id == id) {
+            Some(rule) => Action::send(rule_switched(rule, on)),
+            None => Action::None,
+        },
+        Message::ContactsPersonal(on) => {
+            Action::send(Request::SetSetting { key: SettingKey::MailContactsPersonal, value: serde_json::json!(on) })
+        }
+        // Handed on by the categorization before it gets here.
+        Message::Filter(_) => Action::None,
         Message::Shown(category, shown) => Action::send(shown_request(data, category, shown)),
         Message::Icon(icon) => {
+            state.popover = None;
             if let Some(Form::Category(form)) = &mut state.form {
                 form.icon = icon;
             }
             Action::None
         }
-        Message::Move { id, up } => {
-            let Some(at) = data.sort_rules.iter().position(|rule| rule.id == id) else { return Action::None };
-            let position = match up {
-                true if at > 0 => at - 1,
-                false if at + 1 < data.sort_rules.len() => at + 1,
-                _ => return Action::None,
-            };
-            Action::send(Request::MoveSortRule { id, position: position as u32 })
+        Message::Group(group) => {
+            state.popover = None;
+            if let Some(Form::Category(form)) = &mut state.form {
+                form.group = group;
+            }
+            Action::None
         }
         Message::Back => {
+            state.popover = None;
             if state.group_form.take().is_some() {
                 return Action::None;
             }
@@ -361,7 +420,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
                 state.asking = Some(Ask::Discard);
                 return Action::None;
             }
-            state.form = None;
+            close(state, data);
             Action::None
         }
         Message::Reset => {
@@ -394,7 +453,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
                 }
                 _ => return Action::None,
             };
-            state.form = None;
+            close(state, data);
             action
         }
         message => {
@@ -404,11 +463,65 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
                 None => (Action::None, false),
             };
             if closes {
-                state.form = None;
+                close(state, data);
             }
             action
         }
     }
+}
+
+/// "‹ Back", a question answered or a page that closes itself: a rule's page opened from a
+/// category's page goes back there (issue #481), every other page to the list.
+fn close(state: &mut State, data: &Data) {
+    state.popover = None;
+    let back = match state.form {
+        Some(Form::Rule(_)) => state.back_to.take(),
+        _ => None,
+    };
+    state.back_to = None;
+    state.form = back
+        .and_then(|category| data.categories.iter().find(|info| info.category == category))
+        .map(|info| Form::Category(CategoryForm::of(info)));
+}
+
+/// `inbox.update_sort_rule` that switches `rule` on or off and keeps everything else.
+pub(super) fn rule_switched(rule: &SortRule, on: bool) -> Request {
+    Request::UpdateSortRule {
+        id: rule.id.clone(),
+        category: rule.category,
+        conditions: rule.conditions.clone(),
+        exceptions: Some(rule.exceptions.clone()),
+        enabled: Some(on),
+    }
+}
+
+impl State {
+    /// The stored category whose page is open, if one is.
+    fn open_category(&self) -> Option<Category> {
+        match &self.form {
+            Some(Form::Category(form)) => form.category,
+            _ => None,
+        }
+    }
+}
+
+/// Opens the stored rule `id`'s page (a second click on the open one closes it), asking first when
+/// something typed on the open page would go.
+fn edit_rule<A>(state: &mut State, id: String, data: &Data) -> Action<A> {
+    if state.form.as_ref().is_some_and(|form| form.dirty(data)) {
+        state.asking = Some(Ask::Discard);
+        return Action::None;
+    }
+    if matches!(state.form.as_ref(), Some(Form::Rule(form)) if form.id.as_deref() == Some(id.as_str())) {
+        state.form = None;
+        state.asking = None;
+        return Action::None;
+    }
+    if let Some(rule) = data.sort_rules.iter().find(|rule| rule.id == id) {
+        state.asking = None;
+        state.form = Some(Form::Rule(RuleForm::of(rule)));
+    }
+    Action::None
 }
 
 /// A send came back while a main category is being saved (issue #397). The form closes once the
@@ -442,6 +555,9 @@ pub fn sent(state: &mut State, result: &Result<Data, String>) {
 /// What Escape means while the editor is open: the same as "‹ Back". `None` while the list
 /// shows – then the settings close as before.
 pub fn escape(state: &State) -> Option<Message> {
+    if state.popover.is_some() {
+        return Some(Message::Popover(None));
+    }
     state.is_open().then_some(Message::Back)
 }
 
@@ -638,7 +754,7 @@ impl CategoryForm {
         })
     }
 
-    /// What is wrong with "Let the AI choose it", if anything: one more than its group holds.
+    /// What is wrong with the AI tile ("AI may not file mail here" off), if anything: one more than its group holds.
     fn model_mistake(&self, data: &Data) -> Option<String> {
         (self.model && self.for_model(data) > MODEL_PER_GROUP_MAX).then(|| {
             trf(
@@ -789,7 +905,7 @@ pub fn page<'a>(state: &'a State, data: &'a Data) -> Option<(String, Element<'a,
                 Some(category) => crate::category_name_in(&data.categories, category),
             };
             let ready = form.category.is_none() || form.request(data).is_some();
-            (name, category_page(form, data), save_button(ready, Message::SaveCategory))
+            (name, category_page(state, form, data), save_button(ready, Message::SaveCategory))
         }
         Form::Rule(form) => {
             let name = match (&form.id, form.category) {
@@ -945,14 +1061,27 @@ fn checked_group<'a>(
     }
 }
 
-/// A category's page.
-fn category_page<'a>(form: &'a CategoryForm, data: &'a Data) -> Element<'a, Message> {
+/// A category's page (issue #481): the head in one line, the description with what the AI does
+/// with it, the fixed rules, the two tiles, "Reset" and "Remove…" at the end.
+fn category_page<'a>(state: &'a State, form: &'a CategoryForm, data: &'a Data) -> Element<'a, Message> {
+    let color = group_color(data, form.group);
+    let toggle = |popover| Message::Popover((state.popover != Some(popover)).then_some(popover));
+    let symbol = widgets::anchored(
+        &state.icon_anchor,
+        widgets::boxed_button(category_icon(form.icon), tr("Icon"), Some(toggle(Popover::Icon))),
+    );
     let name = field(tr("Name"), &form.name).id(NAME_FIELD).on_input(Message::Name).on_submit(Message::SaveCategory);
-    let groups: Vec<Element<'a, Message>> = data
-        .category_groups
-        .iter()
-        .map(|held| choice(held.label.clone(), form.group == held.group, Message::Group(held.group)))
-        .collect();
+    let group = widgets::select_button_marked(
+        &state.group_anchor,
+        widgets::category_dot(color),
+        group_words(data, form.group),
+        toggle(Popover::Group),
+    );
+    let head = row![symbol, container(name).width(Fill), group].spacing(space::s()).align_y(Alignment::Center);
+    let mut head = column![head].spacing(space::s());
+    if let Some(mistake) = note_or_mistake(form.tried, form.name_mistake(data), None) {
+        head = head.push(mistake);
+    }
     let description = text_editor(&form.description)
         .on_action(Message::Description)
         .placeholder(tr("What belongs here, with examples – and what does not."))
@@ -963,68 +1092,249 @@ fn category_page<'a>(form: &'a CategoryForm, data: &'a Data) -> Element<'a, Mess
         .wrapping(Wrapping::WordOrGlyph)
         .height(description_height())
         .style(style::text_editor);
+    let hint = row![
+        torro_gui::icon::icon(Icon::Sparkles, torro_gui::icon::SIZE_SM)
+            .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).accent) }),
+        typo::text(
+            typo::meta(),
+            tr(
+                "If the AI is on, it reads the description and files matching mail here. Fixed rules always come first."
+            ),
+        )
+        .style(torro_gui::theme::text_2)
+        .wrapping(Wrapping::WordOrGlyph),
+    ]
+    .spacing(space::xs())
+    .align_y(Alignment::Center);
+    let mut about = column![typo::text(typo::caption(), tr("Description for the AI")).style(torro_gui::theme::text_3)]
+        .spacing(space::s())
+        .push(description);
+    about = about.push(match note_or_mistake(form.tried, form.description_mistake(data), None) {
+        Some(mistake) => mistake,
+        None => hint.into(),
+    });
+    let mut page = column![head, about].spacing(layout::section_gap());
+    // A new category has no rules yet: they name it by its key, which it gets when it is saved.
+    if let Some(category) = form.category {
+        page = page.push(fixed_rules(state, data, category));
+    }
+    page = page.push(tiles(form, data));
+    if let Some(mistake) = note_or_mistake(form.tried, form.model_mistake(data), None) {
+        page = page.push(mistake);
+    }
+    let built_in = form.built_in(data);
+    let changed = built_in.is_some_and(|info| {
+        info.renamed
+            || info.description != suite_description(info.category)
+            || info.icon != info.category.default_icon()
+    });
+    if form.removing {
+        page = page.push(removal(form, data));
+    } else {
+        let mut end = row![].spacing(space::s()).align_y(Alignment::Center);
+        if changed {
+            end = end.push(widgets::text_button(
+                Some(Icon::History),
+                tr("Use the suite's name, description and icon"),
+                style::button::ghost,
+                Some(Message::Reset),
+            ));
+        }
+        end = end.push(blank().width(Fill));
+        if form.category.is_some() && built_in.is_none() {
+            end = end.push(widgets::text_button(
+                Some(Icon::Trash2),
+                tr("Remove…"),
+                style::button::danger,
+                Some(Message::Remove),
+            ));
+        }
+        if changed || (form.category.is_some() && built_in.is_none()) {
+            page = page.push(end);
+        }
+    }
+    page.into()
+}
+
+/// The colour of `group` in the group palette, 0–4.
+fn group_color(data: &Data, group: CategoryGroup) -> usize {
+    data.category_groups.iter().find(|held| held.group == group).map_or(0, |held| usize::from(held.color.min(4)))
+}
+
+/// "Fixed rules · go before the AI" with "+ Rule": the sorting rules and the mail filters that file
+/// mail as `category`, each with its switch and a chevron that opens it; for Personal also the
+/// built-in "From someone in your address books" with its switch alone. No hint about rules of
+/// other categories that might match too: the searches of filters cannot be compared reliably.
+fn fixed_rules<'a>(state: &'a State, data: &'a Data, category: Category) -> Element<'a, Message> {
+    let open = state.popover == Some(Popover::Rule);
+    let add = widgets::anchored(
+        &state.rule_anchor,
+        widgets::text_button(
+            Some(Icon::Plus),
+            tr("Rule"),
+            style::button::secondary,
+            Some(Message::Popover((!open).then_some(Popover::Rule))),
+        ),
+    );
+    let mut rows: Vec<Element<'a, Message>> = Vec::new();
+    for rule in data.sort_rules.iter().filter(|rule| rule.category == category) {
+        let mut when = conditions_line(&rule.conditions);
+        if !rule.exceptions.is_empty() {
+            when = trf(
+                "{conditions}, except {exceptions}",
+                &[("conditions", &when), ("exceptions", &conditions_line(&rule.exceptions))],
+            );
+        }
+        let id = rule.id.clone();
+        let switch = switch(rule.enabled, move |on| Message::RuleSwitched(id.clone(), on));
+        rows.push(fixed_line(None, when, rule.enabled, switch, Some(Message::EditRule(rule.id.clone()))));
+    }
+    for filter in data.mail_filters.iter().filter(|filter| filter.category == Some(category)) {
+        let id = filter.id.clone();
+        let switch = switch(filter.enabled, move |on| Message::Filter(filters::Message::Enabled(id.clone(), on)));
+        // "Search" the noun, as the chip of a saved search: "Suche", not "Suchen".
+        let chip = widgets::state_pill(Icon::Search, torro_core::i18n::trc("noun", "Search"));
+        let open = Message::Filter(filters::Message::Edit(filter.id.clone()));
+        rows.push(fixed_line(Some(chip), filter.query.clone(), filter.enabled, switch, Some(open)));
+    }
+    if category == Category::Personal {
+        let on = data.settings.mail_contacts_personal;
+        let switch = switch(on, Message::ContactsPersonal);
+        rows.push(fixed_line(None, tr("From someone in your address books").to_string(), on, switch, None));
+    }
+    if rows.is_empty() {
+        let none = typo::text(typo::body(), tr("No fixed rules yet.")).style(torro_gui::theme::text_2);
+        rows.push(row_frame(none, false));
+    }
+    widgets::group_with(Some(widgets::group_title(tr("Fixed rules · go before the AI"), vec![add])), rows, None)
+}
+
+/// A row of the fixed rules: `lead` (the chip of a filter), what it looks at – quieter and with
+/// "Off" when switched off, so an off row stands out by word and colour –, its switch, and a
+/// chevron when it opens (`open`).
+fn fixed_line<'a>(
+    lead: Option<Element<'a, Message>>,
+    when: String,
+    enabled: bool,
+    control: Element<'a, Message>,
+    open: Option<Message>,
+) -> Element<'a, Message> {
+    let tone: fn(&Theme) -> iced::widget::text::Style =
+        if enabled { torro_gui::theme::text } else { torro_gui::theme::text_2 };
+    let mut text = row![].spacing(space::s()).align_y(Alignment::Center);
+    if let Some(lead) = lead {
+        text = text.push(lead);
+    }
+    text = text.push(container(widgets::ellipsized(typo::body(), when, tone)).width(Fill));
+    if !enabled {
+        text = text.push(typo::text(typo::meta(), tr("Off")).style(torro_gui::theme::text_3));
+    }
+    let mut line = row![text.width(Fill), control].spacing(space::m()).align_y(Alignment::Center);
+    let chevron: Element<'a, Message> = match open {
+        Some(_) => crate::parts::chevron(),
+        None => blank().width(torro_gui::icon::SIZE).into(),
+    };
+    line = line.push(chevron);
+    pressable(row_frame(line, false), open)
+}
+
+/// "Show in the sidebar" (stored at once) and "AI may not file mail here" (saved with the page) as
+/// two tiles, side by side from a form's width, else one below the other. A category that follows
+/// from the headers has its AI tile without a switch: the AI never files mail there.
+fn tiles<'a>(form: &'a CategoryForm, data: &'a Data) -> Element<'a, Message> {
+    let category = form.category;
+    let by_rule_only = category.is_some_and(Category::by_rule_only);
+    let model = form.model;
     let counted = trf(
         "{group}: {n} of {most} categories for the AI",
         &[("group", &group_words(data, form.group)), ("n", &form.for_model(data)), ("most", &MODEL_PER_GROUP_MAX)],
     );
-    let model = setting_row(None, tr("Let the AI choose it"), Some(counted), switch(form.model, Message::Model));
-    let built_in = form.built_in(data);
-    let description_note = match built_in {
-        Some(_) => tr("Empty, it is the suite's description again. A hard exception is a sorting rule."),
-        None => tr("The AI reads it to decide. A hard exception is a sorting rule."),
-    };
-    let mut page = column![
-        checked_group(
-            tr("Name"),
-            vec![row_frame(name, false)],
-            note_or_mistake(form.tried, form.name_mistake(data), None)
-        ),
-        widgets::group(tr("Group"), groups, Some(tr("The group sets the category colour.").to_string())),
-        widgets::group(
-            tr("Icon"),
-            vec![container(icon_picker(form.icon, Message::Icon, form.group)).padding([space::m(), space::l()]).into()],
-            Some(tr("The icon is shown in the colour of its group.").to_string()),
-        ),
-        checked_group(
-            tr("Description"),
-            vec![container(description).width(Fill).padding([space::s(), space::l()]).into()],
-            note_or_mistake(form.tried, form.description_mistake(data), Some(description_note.to_string())),
-        ),
-        checked_group(tr("AI"), vec![model], note_or_mistake(form.tried, form.model_mistake(data), None)),
-    ]
-    .spacing(layout::section_gap());
-    // A stored category: the sidebar's switch, stored at once like every switch of a list.
-    if let Some(category) = form.category {
-        let shown = !data.settings.hidden_categories.contains(&category);
-        let switch = switch(shown, move |on| Message::Shown(category, on));
-        let sidebar = setting_row(None, tr("Show in the sidebar"), None, switch);
-        page = page.push(widgets::group(tr("Sidebar"), vec![sidebar], None));
-    }
-    if built_in.is_some_and(|info| {
-        info.renamed
-            || info.description != suite_description(info.category)
-            || info.icon != info.category.default_icon()
-    }) {
-        let reset = widgets::text_button(None, tr("Reset"), style::button::secondary, Some(Message::Reset));
-        page = page.push(widgets::group(
-            tr("Reset"),
-            vec![setting_row(None, tr("Use the suite's name, description and icon"), None, reset)],
-            None,
-        ));
-    }
-    if form.category.is_some() && built_in.is_none() {
-        page = page.push(removal(form, data));
-    }
-    page.into()
+    let shown = category.map(|category| !data.settings.hidden_categories.contains(&category));
+    responsive(move |room| {
+        let ai: Element<'a, Message> = match by_rule_only {
+            true => widgets::switch_tile(
+                tr("AI may not file mail here"),
+                Some(tr("The headers decide this category; the AI never files mail here.").to_string()),
+                true,
+                None,
+            ),
+            false => widgets::switch_tile(
+                tr("AI may not file mail here"),
+                Some(counted.clone()),
+                !model,
+                Some(Box::new(|off: bool| Message::Model(!off))),
+            ),
+        };
+        let mut tiles: Vec<Element<'a, Message>> = Vec::new();
+        if let (Some(category), Some(shown)) = (category, shown) {
+            tiles.push(widgets::switch_tile(
+                tr("Show in the sidebar"),
+                None,
+                shown,
+                Some(Box::new(move |on: bool| Message::Shown(category, on))),
+            ));
+        }
+        tiles.push(ai);
+        if room.width >= size::form_max() {
+            let line = tiles.into_iter().map(|tile| container(tile).width(Fill).into());
+            row(line.collect::<Vec<Element<'a, Message>>>()).spacing(space::m()).into()
+        } else {
+            column(tiles).spacing(space::m()).into()
+        }
+    })
+    .into()
 }
+
+/// The popover of a category's page that is open (issue #481): the symbols as a grid, the groups,
+/// or "+ Rule" with a rule or a filter from a search.
+pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    let Some(Form::Category(form)) = &state.form else { return None };
+    let dismiss = Message::Popover(None);
+    Some(match state.popover? {
+        Popover::Icon => {
+            let width = ICON_COLUMNS * (size::control_sm() + space::s()) + space::m() * 2.0;
+            let grid = container(icon_picker(form.icon, Message::Icon, form.group))
+                .width(width)
+                .padding(space::m())
+                .style(style::container::menu);
+            widgets::floating(&state.icon_anchor, Placement::Below(Align::Start), grid, dismiss)
+        }
+        Popover::Group => {
+            let items = data
+                .category_groups
+                .iter()
+                .map(|held| MenuItem::new(category_icon(held.icon), held.label.clone(), Message::Group(held.group)))
+                .collect();
+            let menu = container(widgets::menu(vec![MenuSection::new(items)])).width(widgets::menu_width());
+            widgets::floating(&state.group_anchor, Placement::Below(Align::End), menu, dismiss)
+        }
+        Popover::Rule => {
+            let category = form.category?;
+            let items = vec![
+                MenuItem::new(Icon::ListFilter, tr("Rule…"), Message::NewRuleIn(category)),
+                MenuItem::new(
+                    Icon::Search,
+                    tr("Filter from a search…"),
+                    Message::Filter(filters::Message::NewFor(category)),
+                ),
+            ];
+            let menu = container(widgets::menu(vec![MenuSection::new(items)])).width(widgets::menu_width());
+            widgets::floating(&state.rule_anchor, Placement::Below(Align::End), menu, dismiss)
+        }
+    })
+}
+
+/// The symbols of the popover in one line, so the grid is as wide as eight buttons.
+const ICON_COLUMNS: f32 = 8.0;
 
 /// The suite's description of `category`, as the catalogue gives it while nobody changed it.
 fn suite_description(category: Category) -> String {
     torro_core::category::suite_description(category).unwrap_or_default().to_string()
 }
 
-/// The room of the description: five lines and the padding of a field.
-const DESCRIPTION_LINES: f32 = 5.0;
+/// The room of the description: three lines and the padding of a field, so four fixed rules fit
+/// on the page without scrolling (issue #481).
+const DESCRIPTION_LINES: f32 = 3.0;
 
 fn description_height() -> f32 {
     DESCRIPTION_LINES * typo::line_height(typo::body()) + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom
@@ -1199,18 +1509,9 @@ fn category_picker<'a>(
         .into()
 }
 
-/// "Remove…" for a category of the person's own, and once pressed the category its mail goes to,
+/// Once "Remove…" was pressed on a category of the person's own: the category its mail goes to,
 /// "Cancel" and "Remove category" in one row.
 fn removal<'a>(form: &'a CategoryForm, data: &'a Data) -> Element<'a, Message> {
-    if !form.removing {
-        let remove =
-            widgets::text_button(Some(Icon::Trash2), tr("Remove…"), style::button::danger, Some(Message::Remove));
-        return widgets::group(
-            tr("Remove"),
-            vec![setting_row(None, tr("Remove this category"), None, remove)],
-            Some(tr("Its mail, entries and rules move to a category you choose.").to_string()),
-        );
-    }
     let pick = category_picker(category_choices(data, form.category), form.replacement, Message::Replacement);
     let buttons = row![
         pick,
@@ -1260,23 +1561,7 @@ fn rule_page<'a>(form: &'a RuleForm, data: &'a Data) -> Element<'a, Message> {
         widgets::group(tr("Rule"), vec![enabled], None),
     ]
     .spacing(layout::section_gap());
-    if let Some(id) = &form.id {
-        if let Some(at) = data.sort_rules.iter().position(|rule| &rule.id == id) {
-            let count = data.sort_rules.len();
-            let up = (at > 0).then(|| Message::Move { id: id.clone(), up: true });
-            let down = (at + 1 < count).then(|| Message::Move { id: id.clone(), up: false });
-            let moves = row![
-                widgets::text_button(Some(Icon::ChevronUp), tr("Move up"), style::button::secondary, up),
-                widgets::text_button(Some(Icon::ChevronDown), tr("Move down"), style::button::secondary, down),
-            ]
-            .spacing(space::s());
-            let place = trf("Place {n} of {count}", &[("n", &(at + 1)), ("count", &count)]);
-            page = page.push(widgets::group(
-                tr("Order"),
-                vec![setting_row(None, place, None, moves)],
-                Some(tr("The first rule that fits decides, so a narrow rule goes before a broad one.").to_string()),
-            ));
-        }
+    if form.id.is_some() {
         let delete = widgets::text_button(
             Some(Icon::Trash2),
             tr("Delete rule"),
@@ -1748,14 +2033,11 @@ mod tests {
         assert!(sent(&mut state, &data, vec![Message::SaveRule]).is_empty());
     }
 
-    /// A stored rule: "Move up"/"Move down" by one place, stopping at the ends; the switch on its
-    /// page is saved with it.
+    /// A stored rule: the switch on its page is saved with it; its page has no place to move it to
+    /// any more (issue #481), the order of the categories decides.
     #[test]
-    fn a_rule_moves_and_switches_on_its_page() {
+    fn a_rule_switches_on_its_page() {
         let (data, mut state) = (data(), State::default());
-        let down = sent(&mut state, &data, vec![Message::Move { id: "r1".into(), up: false }]);
-        assert_eq!(down, vec![Request::MoveSortRule { id: "r1".into(), position: 1 }]);
-        assert!(sent(&mut state, &data, vec![Message::Move { id: "r1".into(), up: true }]).is_empty(), "first already");
         let off = sent(
             &mut state,
             &data,
