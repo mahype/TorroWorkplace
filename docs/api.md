@@ -85,7 +85,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
 | `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |
-| `apps` | `list_apps`, `list_catalog`, `app_job` | `open_app` ¹³, `check_updates`, `cancel_app_job` | | `uninstall_app`, `install_app` und `update_apps` (die letzten zwei **nur App-Schlüssel**, Punkt 11 unten, #411) |
+| `apps` | `list_apps`, `list_catalog`, `app_job`, `list_announcements` (#485) | `open_app` ¹³, `check_updates`, `cancel_app_job`, `dismiss_announcement` (#485) | | `uninstall_app`, `install_app` und `update_apps` (die letzten zwei **nur App-Schlüssel**, Punkt 11 unten, #411) |
 | `tools` ²² | `list_tools`, `web_search`, `fetch_page`, `list_search_providers` ²², `list_folder`, `find_files` | `create_pdf`, `open_file`, `save_file_as` (**nur App-Schlüssel**, Punkt 9 unten), `create_folder`, `copy_file`, `move_file` | `trash_file` | |
 | `extensions` ²⁵ | `list_extensions`, `get_extension`, `list_catalog`, `list_tools`, `read_logs` (**nur App-Schlüssel**, Punkt 10 unten) | `set_enabled` (einschalten **nur App-Schlüssel**) | `call_tool` (Zugriff des Werkzeugs, ²⁵) | `remove_extension`, `install_extension`, `confirm_tools`, `update_extension`, `set_secret`, `set_folder` (die letzten fünf **nur App-Schlüssel**) |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
@@ -190,7 +190,8 @@ Die Stufe hängt teils vom Request ab (`Request::operation()`):
   auf dem Server, nie aus dem Request; ins Protokoll kommen nur Konto und die gehashte Kennung der Mail.
 
 **Übersicht #409:** `mail.overview` zählt nur die erreichbaren Konten, ohne `account` alle, eine Mail in zwei
-Konten (gleiche Message-ID) nur, wenn beide erreichbar sind. Namen, Adressen und `latest` der Absender sind
+Konten (gleiche Message-ID) nur, wenn beide erreichbar sind. Seit #485 zählt es jede Kategorie auch je Tag
+(`days`, parallel zu den Tagen der Übersicht; ein älterer Dienst lässt das Feld weg). Namen, Adressen und `latest` der Absender sind
 `untrusted`; ins Protokoll kommt nur das Konto.
 
 **Stand der Synchronisierung #422:** `mail.sync_status` liest nur und nennt nur erreichbare Konten (ein anderes
