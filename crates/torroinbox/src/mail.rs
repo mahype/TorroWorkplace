@@ -2962,7 +2962,8 @@ fn panel_letter<'a>(reading: &Reading<'a>) -> Vec<Element<'a, Message>> {
         Some(Ok(_)) => match html_filling(reading) {
             // Out to the panel's edges; the note stays in line with the title (16 from the edge).
             Some(html) => {
-                vec![panel::bleed(html_letter(html, Padding::ZERO.left(space::l()).right(space::l()), space::l()))]
+                let pad = Padding::ZERO.left(space::l()).right(space::l());
+                vec![panel::bleed(html_letter(html, pad, space::l(), !reading.in_drafts))]
             }
             None => vec![reading_column(letter(reading).width(Fill))],
         },
@@ -2974,10 +2975,12 @@ fn panel_letter<'a>(reading: &Reading<'a>) -> Vec<Element<'a, Message>> {
 /// a plain text does) with the note under it, or the text with the note on foreign text and its
 /// "Links". The reader and the panel do not use it for HTML ([`html_filling`]); "Focus & reply" does.
 fn letter<'a>(reading: &Reading<'a>) -> iced::widget::Column<'a, Message> {
+    let foreign = !reading.in_drafts;
     if let Some(html) = html_edge(reading) {
-        return column![html_view(html).margin(0.0), html_note()].spacing(space::m());
+        let shown = column![html_view(html).margin(0.0)].spacing(space::m());
+        return if foreign { shown.push(html_note()) } else { shown };
     }
-    let mut text = column![text_block(reading.text, text_level(reading.read))].spacing(space::l());
+    let mut text = column![text_block(reading.text, text_level(reading.read), foreign)].spacing(space::l());
     if let Some(links) = text_links(reading.text) {
         text = text.push(links);
     }
@@ -2989,9 +2992,11 @@ fn letter<'a>(reading: &Reading<'a>) -> iced::widget::Column<'a, Message> {
 /// it keeps `note_padding`, as the text of a plain mail does. A mail without a background of its own
 /// keeps its text off the edge (issue #447): by the note's left side at the sides, in line with the
 /// head, and by `top` above and below, as a text mail stands under the line.
-fn html_letter<'a>(html: HtmlReading<'a>, note_padding: Padding, top: f32) -> Element<'a, Message> {
-    let note = container(html_note()).padding(note_padding);
-    column![html_view(html).margin(note_padding.left).margin_vertical(top), note].spacing(space::m()).width(Fill).into()
+///
+/// A draft (issue #502, `foreign` false) is the person's own text: no note on mail from outside.
+fn html_letter<'a>(html: HtmlReading<'a>, note_padding: Padding, top: f32, foreign: bool) -> Element<'a, Message> {
+    let shown = column![html_view(html).margin(note_padding.left).margin_vertical(top)].spacing(space::m()).width(Fill);
+    if foreign { shown.push(container(html_note()).padding(note_padding)).into() } else { shown.into() }
 }
 
 /// The widest the mail's text or HTML stands in a reader or panel `width` wide (issue #291, the reading
@@ -3137,7 +3142,7 @@ fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, M
         Some(Ok(_)) => match html_filling(reading) {
             Some(html) => {
                 let note = Padding { left: pad.left, right: pad.right, bottom: pad.bottom, top: 0.0 };
-                container(html_letter(html, note, pad.top)).width(widths.html).into()
+                container(html_letter(html, note, pad.top, !reading.in_drafts)).width(widths.html).into()
             }
             None => container(letter(reading).width(widths.mail)).padding(pad).into(),
         },
@@ -3352,7 +3357,14 @@ pub fn action_groups<'a>(
         RailGroup::new(Icon::Check, tr("File"), file_items(reading, entry, folders, anchors)).at(&rail.file),
         RailGroup::new(Icon::ListTodo, tr("Torro"), torro_items(reading, entry, anchors)).at(&rail.torro),
         if flagged { mark.tinted(reading.attention) } else { mark },
-        RailGroup::new(Icon::BellOff, tr("Mute"), mute_items(reading, entry, anchors)).foot().at(&rail.mute),
+        // One's own draft is nothing to mute (issue #502).
+        RailGroup::new(
+            Icon::BellOff,
+            tr("Mute"),
+            if reading.in_drafts { Vec::new() } else { mute_items(reading, entry, anchors) },
+        )
+        .foot()
+        .at(&rail.mute),
         // Issue #456: a click opens the card "Display" (HTML or text, the mail's colours), not a list.
         RailGroup::new(Icon::Contrast, trc("mail", "Display"), display_items(reading)).card().foot().at(&rail.display),
         RailGroup::new(Icon::Ellipsis, tr("More"), more_items(reading.view_tools(), filter_sender(reading), close))
@@ -3381,6 +3393,19 @@ fn file_items<'a>(
         (None, None) => None,
     };
     let mail = |action: MailAction| Some(Message::Mail(action, reading.id.to_owned()));
+    // A draft is written on or thrown away (issue #502): no archive, piles, follow-up or lane, so a
+    // click on the group's icon opens its card at Delete.
+    if reading.in_drafts {
+        if filing.is_some_and(|filing| filing.delete) {
+            items.push(RailItem::new(Icon::Trash2, tr("Delete"), "#", mail(MailAction::Delete)).danger());
+        }
+        if let Some(files) = files_of(reading) {
+            let words = trf("Save attachments ({n})", &[("n", &files.len())]);
+            let save = Some(Message::AskSaveAttachments(reading.id.to_owned()));
+            items.push(RailItem::new(Icon::Download, words, "", save).at(&anchors.save_rail));
+        }
+        return items;
+    }
     // First, so a click on the group's icon archives, as it marked an entry done before.
     let archive = filing.is_some_and(|filing| filing.archive);
     if archive {
@@ -3965,16 +3990,16 @@ fn html_note<'a>() -> Element<'a, Message> {
 }
 
 /// The text in `level`, to select with the mouse and copy (issue #119, [`Selectable`]), then the
-/// note on foreign text. "Copy text" stands in the rail's "More" (task E14.3) and the panel's footer (task E9.4). The
+/// note on foreign text (`foreign`; a draft is the person's own text, issue #502). "Copy text" stands in the rail's "More" (task E14.3) and the panel's footer (task E9.4). The
 /// web addresses in the text follow as "Links" ([`text_links`]), which the caller places.
-fn text_block<'a>(text: &'a Selectable, level: typo::Level) -> Element<'a, Message> {
+fn text_block<'a>(text: &'a Selectable, level: typo::Level, foreign: bool) -> Element<'a, Message> {
     let mut block = column![].spacing(space::s());
     if !text.text().trim().is_empty() {
         block = block.push(text.view(level, theme::text_2, Message::Text));
     }
     // No title over the text: the headers above already say whose mail it is (and "Message" reads
     // as a notice in German, the entries' word).
-    block.push(note(detail::foreign_note())).into()
+    if foreign { block.push(note(detail::foreign_note())).into() } else { block.into() }
 }
 
 /// "Links": the web addresses in the mail's text (`torro_gui::selectable::web_links`), each a row
@@ -5435,6 +5460,9 @@ mod tests {
             let continued = sends(&groups, tr("Continue writing"), tr("Continue writing"));
             assert!(matches!(continued, Some(Message::Mail(MailAction::ContinueDraft, id)) if id == "m:w8"));
             assert!(rail_words(&groups).iter().all(|(group, _)| group != tr("Reply")), "no Reply on a draft");
+            assert!(rail_words(&groups).iter().all(|(group, _)| group != tr("Mute")), "nothing to mute");
+            let file = rail_words(&groups).into_iter().find(|(group, _)| group == tr("File")).expect("File");
+            assert_eq!(file.1, strings(&[tr("Delete"), &trf("Save attachments ({n})", &[("n", &1)])]));
             let summary = draft.summary().expect("headers").clone();
             let panel = standards(&draft, &summary);
             assert_eq!(panel.write, 1);

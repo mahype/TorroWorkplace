@@ -187,7 +187,8 @@ impl Kind {
             Kind::Reply(_) => tr("Reply"),
             Kind::ReplyAll(_) => tr("Reply all"),
             Kind::Forward(_) => tr("Forward"),
-            Kind::Draft(_) => tr("Draft"),
+            // Not "Draft": the state beside it says "Draft saved" (design review of #502).
+            Kind::Draft(_) => tr("Continue writing"),
         }
     }
 
@@ -4002,7 +4003,7 @@ mod tests {
         assert_eq!(kind(&["--compose", "--reply-all=m:2"]), Kind::ReplyAll("m:2".into()));
         assert_eq!(kind(&["--compose", "--forward", "m:3"]), Kind::Forward("m:3".into()));
         assert_eq!(kind(&["--compose", "--draft", "m:4"]), Kind::Draft("m:4".into()), "issue #502");
-        assert_eq!(Kind::Draft("m:4".into()).title(), tr("Draft"));
+        assert_eq!(Kind::Draft("m:4".into()).title(), tr("Continue writing"));
         assert_eq!(Kind::Draft("m:4".into()).message(), None, "it answers nothing by itself");
         let start = parse(&["--compose", "--account", "mail:anna@example.org", "--open", "menu"]).expect("valid");
         assert_eq!(
