@@ -687,7 +687,7 @@ mod tests {
         assert_eq!((l.section_gap, l.item_gap), (16.0, 6.0));
         let s = dense.size;
         assert_eq!([s.control_sm, s.control, s.control_lg, s.control_xl], [30.0, 32.0, 36.0, 44.0]);
-        assert_eq!([s.row, s.row_two, s.row_message, s.row_notice], [40.0, 48.0, 78.0, 56.0]);
+        assert_eq!([s.row, s.row_two, s.row_message, s.row_notice], [42.0, 48.0, 78.0, 56.0]);
         assert_eq!([s.row_sidebar, s.row_group, s.header, s.hour, s.card_gap], [28.0, 32.0, 48.0, 40.0, 8.0]);
         assert_eq!([s.command, s.pill, s.rail, s.rail_wide], [40.0, 36.0, 52.0, 232.0]);
         assert_eq!(dense.density_level(), DensityLevel::Dense);
