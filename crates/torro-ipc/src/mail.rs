@@ -279,6 +279,59 @@ pub struct PlannedPlace {
     pub file: String,
 }
 
+/// What `mail.save_message_as` makes of a mail (issue #501): the mail drawn as the reader shows it,
+/// head (sender, recipients, date, subject) and content, as `pdf` (A4 pages) or `png` (one long
+/// picture).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    /// A PDF of A4 pages, each a picture of a part of the mail.
+    Pdf,
+    /// One PNG picture of the whole mail.
+    Png,
+}
+
+impl ExportFormat {
+    /// The file's extension: `pdf`, `png`.
+    pub fn extension(self) -> &'static str {
+        match self {
+            ExportFormat::Pdf => "pdf",
+            ExportFormat::Png => "png",
+        }
+    }
+
+    /// The file's MIME type: `application/pdf`, `image/png`.
+    pub fn content_type(self) -> &'static str {
+        match self {
+            ExportFormat::Pdf => "application/pdf",
+            ExportFormat::Png => "image/png",
+        }
+    }
+
+    /// Both formats, PDF first.
+    pub const ALL: [ExportFormat; 2] = [ExportFormat::Pdf, ExportFormat::Png];
+}
+
+/// Where a mail saved as PDF or picture would go, for `mail.list_save_targets` with `id` (issue #501):
+/// its file name and the place in each target, like [`AttachmentPlan`] for an attachment. The name
+/// comes from the mail's subject: data from outside, cleaned so it stays one piece below the folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPlan {
+    /// The format this plan is for.
+    pub format: ExportFormat,
+    /// The file's name for Downloads and what the save dialog starts with: "2026-03-28 Subject.pdf".
+    pub file_name: String,
+    /// The place in each save target, in the order of the targets. A target whose scheme cannot be
+    /// resolved for this file has none.
+    #[serde(default)]
+    pub places: Vec<PlannedPlace>,
+    /// The ids of the targets suggested for this file (their conditions with the file type PDF or
+    /// image), in the order of the targets.
+    #[serde(default)]
+    pub suggested: Vec<String>,
+}
+
 /// One attachment `mail.save_attachments` wrote, or found there already with the same content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1001,6 +1054,8 @@ fn mail_ids(request: &Request) -> impl Iterator<Item = &str> {
             };
             parts.iter().map(String::as_str).chain(target).collect()
         }
+        // Saving a mail as PDF or picture (issue #501): the target's id.
+        Request::SaveMailAs { to: SaveTo::Target(target), .. } => vec![target],
         // Mail filters (issue #339): their ids.
         Request::UpdateMailFilter { id, .. } | Request::RemoveMailFilter { id } | Request::ApplyMailFilter { id } => {
             vec![id]
@@ -1059,8 +1114,8 @@ impl Request {
         }
     }
 
-    /// Every message id a request names, in order: `id`/`ids` (also of `mail.list_save_targets` and
-    /// `mail.save_attachments`), a draft's own id, the message it answers and the messages it
+    /// Every message id a request names, in order: `id`/`ids` (also of `mail.list_save_targets`,
+    /// `mail.save_attachments` and `mail.save_message_as`), a draft's own id, the message it answers and the messages it
     /// forwards parts of, the mail put on a pile (`inbox.set_mail_pile`, task E19.2). Empty for every
     /// other request. If one of them is in an account the caller does not reach, the whole call is `not-found` (checked
     /// before anything is read).
@@ -1070,6 +1125,7 @@ impl Request {
             | Request::GetMailThread { id }
             | Request::GetMailAttachment { id, .. }
             | Request::SaveMailAttachments { id, .. }
+            | Request::SaveMailAs { id, .. }
             | Request::ListSaveTargets { id: Some(id) }
             | Request::SendDraft { id } => vec![id.as_str()],
             Request::SetMailFlags { ids, .. }
@@ -1173,13 +1229,20 @@ mod tests {
             targets: vec![target.clone()],
             downloads: "/Users/anna/Downloads".into(),
             files: vec![plan],
+            exports: Vec::new(),
         };
         let json = serde_json::to_value(&listed).expect("writes");
         assert_eq!(json["result"], "save-targets");
         assert_eq!(serde_json::from_value::<Response>(json).expect("reads"), listed);
-        let removed = Response::SaveTargets { targets: Vec::new(), downloads: "/d".into(), files: Vec::new() };
+        let removed = Response::SaveTargets {
+            targets: Vec::new(),
+            downloads: "/d".into(),
+            files: Vec::new(),
+            exports: Vec::new(),
+        };
         let json = serde_json::to_value(&removed).expect("writes");
         assert!(json.get("files").is_none(), "no files without an id: {json}");
+        assert!(json.get("exports").is_none(), "no exports without an id: {json}");
         assert_eq!(serde_json::from_value::<Response>(json).expect("reads"), removed);
         let one = Response::SaveTarget { target };
         let json = serde_json::to_value(&one).expect("writes");
@@ -1202,6 +1265,46 @@ mod tests {
         assert!(refused(&save(vec![long.clone()], SaveTo::Downloads)));
         assert!(refused(&save(Vec::new(), SaveTo::Target(long.clone()))));
         assert!(refused(&Request::RemoveSaveTarget { id: long }));
+    }
+
+    /// Issue #501: the format is a word, a plan reads back with `fileName`, and saving a mail as PDF or
+    /// picture names its message (for the reach check) and keeps the target's id within the limits.
+    #[test]
+    fn saving_a_mail_as_names_its_message_and_keeps_the_limits() {
+        assert_eq!(serde_json::to_value(ExportFormat::Pdf).expect("writes"), serde_json::json!("pdf"));
+        assert_eq!(serde_json::from_value::<ExportFormat>(serde_json::json!("png")).expect("reads"), ExportFormat::Png);
+        assert!(serde_json::from_value::<ExportFormat>(serde_json::json!("html")).is_err(), "no HTML export");
+        assert_eq!((ExportFormat::Pdf.extension(), ExportFormat::Png.content_type()), ("pdf", "image/png"));
+        let plan = ExportPlan {
+            format: ExportFormat::Pdf,
+            file_name: "2026-03-28 Ihre Rechnung.pdf".into(),
+            places: vec![PlannedPlace {
+                target: "0a1b2c3d".into(),
+                folders: vec!["2026".into()],
+                file: "x.pdf".into(),
+            }],
+            suggested: vec!["0a1b2c3d".into()],
+        };
+        let json = serde_json::to_value(&plan).expect("writes");
+        assert_eq!(
+            (json["format"].as_str(), json["fileName"].as_str()),
+            (Some("pdf"), Some("2026-03-28 Ihre Rechnung.pdf"))
+        );
+        assert_eq!(serde_json::from_value::<ExportPlan>(json).expect("reads"), plan);
+
+        let save = |to| Request::SaveMailAs { id: "m:1".into(), format: ExportFormat::Png, to };
+        assert_eq!(save(SaveTo::Downloads).message_ids(), ["m:1"]);
+        assert!(limit_refusal(&save(SaveTo::Target("0a1b2c3d".into()))).is_none());
+        assert!(refused(&save(SaveTo::Target("x".repeat(MAX_ID_BYTES + 1)))));
+        assert!(refused(&Request::SaveMailAs {
+            id: "x".repeat(MAX_ID_BYTES + 1),
+            format: ExportFormat::Pdf,
+            to: SaveTo::Downloads
+        }));
+        let saved = Response::SavedMail { path: "/Users/anna/Downloads/a.pdf".into(), skipped: false, shortened: true };
+        let json = serde_json::to_value(&saved).expect("writes");
+        assert_eq!(json["result"], "saved-mail");
+        assert_eq!(serde_json::from_value::<Response>(json).expect("reads"), saved);
     }
 
     /// Issue #339: a mail filter names its account for the reach check, its search keeps the length

@@ -1108,6 +1108,7 @@ impl Demo {
             targets: self.save_targets(),
             downloads: downloads.unwrap_or_else(|| "/home/anna/Downloads".into()),
             files: Vec::new(),
+            exports: Vec::new(),
         }
     }
 

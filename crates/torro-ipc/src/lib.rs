@@ -3101,6 +3101,24 @@ pub enum Request {
         /// Where the files go.
         to: mail::SaveTo,
     },
+    /// Saves a mail as a PDF or a picture (issue #501, [`Response::SavedMail`]): drawn as the reader
+    /// shows it – the head (sender, recipients, date, subject) and the content, HTML as HTML with its
+    /// pictures (external ones are loaded, as the reader loads them) – always in light colours. A PDF
+    /// holds A4 pages of pictures (its text cannot be selected), a PNG one long picture; a mail longer
+    /// than 50 pages or 30,000 pixels is cut (`shortened`). Attachments are not part of it. The file is
+    /// named "<date> <subject>", in a save target after its schemes; a file is never overwritten except
+    /// for `to: file`. `not-found` for a message the caller does not reach, an unknown target, or a
+    /// target whose folder is missing; `forbidden` for `to: file` or `folder` from a client;
+    /// `offline` when the mail cannot be fetched; `error` when it cannot be drawn or written.
+    #[serde(rename = "mail.save_message_as")]
+    SaveMailAs {
+        /// The message's id (`m:…`).
+        id: String,
+        /// `pdf` or `png`.
+        format: mail::ExportFormat,
+        /// Where the file goes; `to: folder` puts it in that folder under its own name.
+        to: mail::SaveTo,
+    },
     /// Adds and removes flags of messages on the server ([`Response::Ok`]).
     #[serde(rename = "mail.set_flags")]
     SetMailFlags {
@@ -4804,6 +4822,10 @@ pub enum Response {
         /// With `id`: one plan per attachment that is not `inline`, in the message's order.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         files: Vec<mail::AttachmentPlan>,
+        /// With `id`: where the mail itself would go as PDF and as picture (issue #501,
+        /// `mail.save_message_as`), one plan per format. Its file name comes from the subject.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        exports: Vec<mail::ExportPlan>,
     },
     /// A save target as stored ([`Request::CreateSaveTarget`], [`Request::UpdateSaveTarget`]).
     SaveTarget {
@@ -4848,6 +4870,19 @@ pub enum Response {
         /// The attachments that could not be saved, with why.
         #[serde(default)]
         failed: Vec<mail::FailedFile>,
+    },
+    /// What [`Request::SaveMailAs`] wrote (issue #501).
+    SavedMail {
+        /// The file's absolute path; with `skipped` the file with the same content found there.
+        path: String,
+        /// Nothing was written: a file with the same content is there already (a target with "Skip
+        /// if identical").
+        #[serde(default)]
+        skipped: bool,
+        /// The mail was longer than a file takes (50 PDF pages, 30,000 pixels of picture): its end
+        /// is cut off.
+        #[serde(default)]
+        shortened: bool,
     },
     /// A draft as saved ([`Request::SaveDraft`]), with its id.
     MailDraft {
