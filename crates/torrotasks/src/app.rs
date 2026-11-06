@@ -1935,22 +1935,8 @@ impl App {
             widgets::icon_button(Icon::ListFilter, tr("Display"), Some(Message::ToggleDisplay))
         };
         let narrow = !matches!(class, SizeClass::Wide | SizeClass::Medium);
-        // Issue #484: "New task" keeps its word only while the head holds it beside the title, "{n}
-        // open" and Display – beside the detail the list is narrow, and a roomier level wider.
         let open = trf("{n} open", &[("n", &list::open_count(&self.todos, &self.filter, self.today))]);
-        let display_width = match width >= HEAD_LABELS_FROM {
-            true => widgets::text_button_width(true, tr("Display")),
-            false => size::control_sm(),
-        };
-        let title_width = icon::SIZE
-            + 6.0
-            + typo::text_width(&name, typo::body_strong())
-            + 6.0
-            + typo::text_width(&open, typo::body());
-        let needed = title_width + display_width + widgets::text_button_width(true, tr("New task")) + 3.0 * space::s();
-        // The head stands where `header` puts it: after the top row's lead, 16 and 12 from its edges.
-        let room = width - space::l() - space::m() - shell::head_inset(class, self.sidebar, self.zoom.factor());
-        let words = room >= needed;
+        let words = self.new_task_words_fit(class, width, &name, &open);
         let new_button = if narrow || !words {
             widgets::compact_button(Icon::Plus, tr("New task"), style::button::primary, Some(new_task))
         } else {
@@ -1970,6 +1956,23 @@ impl App {
         // The top row has the panel button beside the lights (issue #459): a narrow window has no room
         // left for "{n} open" too, and the list's groups count their tasks.
         shell::header_bar([], widgets::menu_button(nav, icon, name, Message::ToggleNav), trailing)
+    }
+
+    /// Whether "New task" keeps its word in the list head `width` wide (issue #484): only while the
+    /// head holds it beside the title `name`, "{n} open" (`open`) and Display – beside the detail the
+    /// list is narrow, and a roomier spacing level makes the head wider. From the tokens of the level
+    /// drawn; the head stands where `header` puts it, after the top row's lead, 16 and 12 from its
+    /// edges.
+    fn new_task_words_fit(&self, class: SizeClass, width: f32, name: &str, open: &str) -> bool {
+        let display_width = match width >= HEAD_LABELS_FROM {
+            true => widgets::text_button_width(true, tr("Display")),
+            false => size::control_sm(),
+        };
+        let title_width =
+            icon::SIZE + 6.0 + typo::text_width(name, typo::body_strong()) + 6.0 + typo::text_width(open, typo::body());
+        let needed = title_width + display_width + widgets::text_button_width(true, tr("New task")) + 3.0 * space::s();
+        let room = width - space::l() - space::m() - shell::head_inset(class, self.sidebar, self.zoom.factor());
+        room >= needed
     }
 
     /// How the detail lays itself out in `columns`: beside the properties column, with its
@@ -4666,6 +4669,18 @@ mod tests {
         let unknown = Launch::parse(&args(&["--demo", "--color-scheme", "no-such-scheme"])).expect_err("unknown");
         assert!(unknown.to_string().contains("--color-scheme"), "{unknown}");
         assert_eq!(Launch::parse(&args(&["--demo", "--design"])), Err(LaunchError::MissingValue("--design")));
+    }
+
+    /// Issue #484: "New task" keeps its word in a head that holds it and shrinks to "+" beside the
+    /// detail, where the list is the medium one – in the standard as well (it ran into the detail's
+    /// head before).
+    #[test]
+    fn new_task_shrinks_only_when_the_head_lacks_room() {
+        let app = launched(&["--demo"]);
+        let (name, open) = ("Today", "6 open");
+        assert!(app.new_task_words_fit(SizeClass::Wide, size::list(), name, open), "the wide list holds it");
+        assert!(!app.new_task_words_fit(SizeClass::Medium, size::list_medium(), name, open), "beside the detail");
+        assert!(app.new_task_words_fit(SizeClass::Medium, size::content_max(), name, open), "a list alone");
     }
 
     /// The message "design changed" (task L.3, issue #484): the stored setting arrives and the window
