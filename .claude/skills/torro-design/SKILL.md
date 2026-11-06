@@ -417,7 +417,9 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   `anker.area(Rectangle::new(punkt, Size::ZERO))` (links oben am Zeiger, am rechten bzw. unteren Rand links bzw.
   über ihm; passt es auf keiner Seite, rückt es herein). Am Zeiger darf es über den Lesebereich reichen (etwa bei
   einem Klick nahe dem rechten Rand der Liste). Ohne Stelle hängt es mit `Placement::Below(Align::Start)` unter der Zeile, nie neben einer
-  breiten Zeile über dem Lesebereich. Untermenüs daraus öffnen weiter an der Zeile.
+  breiten Zeile über dem Lesebereich. Untermenüs daraus öffnen weiter an der Zeile. Im Kontextmenü aus der
+  Leiste (`widgets::rail_context_menu`) tragen nur Gruppen mit mehreren Einträgen einen Titel; eine Gruppe mit
+  einem Eintrag trennt der Strich, damit das Menü kurz bleibt und am Zeiger Platz findet.
 - **Menü mit Suche** (#299, `widgets::search_menu(id, suche, on_input, on_submit, einträge, breite)`): für lange
   Auswahlen (die Schriften in Appearance, über 150 auf einem Mac). Karte wie ein Menü (`MENU`, `LINE_STRONG`,
   `style::MENU_INSET`, höchstens `size::panel()` hoch, darunter rollt es), oben ein flaches Suchfeld
