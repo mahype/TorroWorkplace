@@ -2038,7 +2038,8 @@ impl<S: ComposeSource + 'static> Window<S> {
         if let Some(draft) = prepared.draft.as_deref()
             && !prepared.senders.iter().any(|sender| sender.account == draft.account)
         {
-            self.phase = Phase::Failed(Notice::new(self.start.kind.load_failed(), ComposeError::NotFound));
+            let why = tr("The draft's account can't send mail from here.");
+            self.phase = Phase::Failed(Notice::new(self.start.kind.load_failed(), why));
             return Task::none();
         }
         let own: Vec<String> = prepared.senders.iter().map(|sender| sender.address.to_lowercase()).collect();
@@ -2046,8 +2047,9 @@ impl<S: ComposeSource + 'static> Window<S> {
             Some(draft) => reopening(draft, prepared.message.as_deref()),
             None => opening(&self.start.kind, prepared.message.as_deref(), &own),
         };
-        // A draft is written on from its own account (issue #502).
-        let wanted = self.start.account.clone().or_else(|| prepared.draft.as_ref().map(|draft| draft.account.clone()));
+        // A draft is written on from its own account (issue #502), whatever `--account` says: the
+        // draft the window holds lives there.
+        let wanted = prepared.draft.as_ref().map(|draft| draft.account.clone()).or_else(|| self.start.account.clone());
         self.from = pick_sender_with_default(
             &prepared.senders,
             wanted.as_deref(),
@@ -2069,10 +2071,13 @@ impl<S: ComposeSource + 'static> Window<S> {
         self.in_reply_to = opened.in_reply_to;
         self.history = opened.history;
         if let Some(draft) = prepared.draft {
-            // An account that writes plain text writes on the draft's plain text, without marks.
+            // An account that writes plain text writes on the draft's plain text, without marks; one
+            // that writes formatted mail keeps the marks of a plain draft as text.
             if draft.html.is_some() && !self.formatted() {
                 self.body = Content::with_text(&draft.body);
                 self.history = None;
+            } else if draft.html.is_none() && self.formatted() {
+                self.body = Content::with_text(&html::plain_to_markup(&draft.body));
             }
             // Saving replaces it; nothing is unsaved until something changes.
             let Draft { id, account, .. } = *draft;
@@ -4460,6 +4465,30 @@ mod tests {
         let opened = reopening(&quote_only, None);
         assert!(opened.body.starts_with("\n\nOn Monday, Bernd wrote:"), "{:?}", opened.body);
         assert_eq!(opened.history.as_deref(), Some("On Monday, Bernd wrote:"));
+    }
+
+    /// Issue #502: a draft saved as plain text keeps its stars as text in an account that writes
+    /// formatted mail, and `--account` does not move a draft into another account.
+    #[test]
+    fn a_plain_draft_keeps_its_marks_and_its_account() {
+        let source = Arc::new(DemoSource::new(Utc::now()));
+        let plain = Draft {
+            id: None,
+            account: "mail:anna@example.org".into(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Prices".into(),
+            body: "2 * 3 and *not italic*".into(),
+            html: None,
+            in_reply_to: None,
+            attachments: Vec::new(),
+        };
+        let id = source.save_draft(plain).expect("saved").id.expect("an id");
+        let window = ready_on(source, &["--draft", &id, "--account", "mail:anna@work.example.org"]);
+        assert_eq!(window.draft().account, "mail:anna@example.org", "its own account");
+        let html = window.draft().html.expect("formatted");
+        assert!(html.contains("*not italic*") && !html.contains("<em>"), "{html}");
     }
 
     /// Issue #502: a draft of an account the window cannot write from is not opened: saving it would

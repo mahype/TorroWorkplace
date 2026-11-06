@@ -6741,6 +6741,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Continue writing", "Weiterschreiben"),
     ("Couldn't load the draft.", "Der Entwurf konnte nicht geladen werden."),
     ("The draft could not be read.", "Der Entwurf konnte nicht gelesen werden."),
+    ("The draft's account can't send mail from here.", "Das Konto des Entwurfs kann von hier keine Mail senden."),
     // Mail settings: an account's detail page (DS.6, issue #314)
     ("In use", "Belegt"),
     ("Not counted by folder", "Keinem Ordner zugeordnet"),

@@ -6482,11 +6482,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// and leaves its entry to the core.
     fn mail_action(&mut self, action: MailAction, id: String) -> Task<Message> {
         self.close_menus();
-        // A draft is written on, not answered (issue #502): `r` continues it, Reply all and Forward
-        // do nothing.
+        // A draft is written on, not answered (issue #502): `r` continues it; Reply all, Forward and
+        // Archive do nothing (archived it would be no draft any more), as its rail offers none.
         let action = match action {
             MailAction::Reply if self.in_role(&id, Role::Drafts) => MailAction::ContinueDraft,
-            MailAction::ReplyAll | MailAction::Forward if self.in_role(&id, Role::Drafts) => return Task::none(),
+            MailAction::ReplyAll | MailAction::Forward | MailAction::Archive if self.in_role(&id, Role::Drafts) => {
+                return Task::none();
+            }
             other => other,
         };
         if let Some(kind) = Compose::of(action) {
@@ -18063,7 +18065,8 @@ mod tests {
         let before = app.sent.len();
         let _ = app.update(Message::Mail(MailAction::Forward, "m:w8".into()));
         let _ = app.update(Message::Mail(MailAction::ReplyAll, "m:w8".into()));
-        assert_eq!(app.sent.len(), before, "nothing to answer");
+        let _ = app.update(Message::Mail(MailAction::Archive, "m:w8".into()));
+        assert_eq!(app.sent.len(), before, "nothing to answer or archive");
         app.messages.clear();
         let _ = app.view();
     }

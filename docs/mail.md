@@ -318,7 +318,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Mail als HTML (M9) | Lesebereich der Inbox (Schalter HTML/Text, Taste `v`) | `mail.get_message` mit `include_html` · Read | `mail_get_message` mit `include_html` |
 | Flags setzen | Liste, Lesebereich | `mail.set_flags` · Write | `mail_set_flags` |
 | Entwurf speichern | Schreibfenster | `mail.save_draft` · Write | `mail_save_draft` |
-| Entwurf weiterschreiben (#502) | Mail-Fenster › Ordner › „Entwürfe“, „Continue writing“ (Taste `r`) › Schreibfenster | `mail.get_draft` · Read (nur eigene Entwürfe eines Clients) | `mail_get_draft` |
+| Entwurf weiterschreiben (#502) | Mail-Fenster › Ordner › „Entwürfe“, „Weiterschreiben“ (Taste `r`) › Schreibfenster | `mail.get_draft` · Read (nur eigene Entwürfe eines Clients) | `mail_get_draft` |
 | Empfänger vorschlagen (#460) | Schreibfenster, Liste unter An, Cc, Bcc | `contacts.suggest_recipients` · Read (Mail nur mit Leserecht aufs Konto) | `contacts_suggest_recipients` |
 | Papier hell/dunkel (#460) | Schreibfenster, Knopf ◐ | `settings.set_setting` mit `compose_paper` · Admin | `settings_set_setting` |
 | Verschieben / Archiv | Liste, Lesebereich | `mail.move_messages` · Write (nach Trash: Delete) | `mail_move_messages` |

@@ -3823,10 +3823,11 @@ fn standards(reading: &Reading<'_>, summary: &MessageSummary) -> Standards {
         ]
     };
     let write = lead.len();
-    lead.extend([
-        ReaderButton::new(Icon::Archive, trc("action", "Archive"), mail(MailAction::Archive)),
-        ReaderButton::new(Icon::Trash2, tr("Delete"), delete),
-    ]);
+    // A draft is written on or thrown away (issue #502): archived it would be no draft any more.
+    if !reading.in_drafts {
+        lead.push(ReaderButton::new(Icon::Archive, trc("action", "Archive"), mail(MailAction::Archive)));
+    }
+    lead.push(ReaderButton::new(Icon::Trash2, tr("Delete"), delete));
     let tools = vec![
         ReaderButton::new(
             Icon::Flag,
@@ -5467,6 +5468,7 @@ mod tests {
             let panel = standards(&draft, &summary);
             assert_eq!(panel.write, 1);
             assert_eq!(panel.lead[0].label, tr("Continue writing"));
+            assert_eq!(panel.lead.len(), 2, "Continue writing and Delete, no Archive");
             let answer = standards(reading, &summary);
             assert_eq!(answer.write, 3, "a mail is answered as before");
         });
