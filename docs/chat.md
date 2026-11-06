@@ -1,8 +1,7 @@
 # Chat: Kontaktliste, Chatfenster und Anrufe auf Nextcloud Talk
 
 Stand: 2026-11-06. **Konzept (#470), löst den Text-Chat-Plan aus #201 ab.** Machbarkeit:
-[chat-machbarkeit.md](chat-machbarkeit.md). Entwürfe: [prototypes/chat/](prototypes/chat/index.html) (zum Durchsehen
-auch als [Artifact](https://claude.ai/artifact/8qB44DohpPixdfsPkzSNNP)). Recherche zu
+[chat-machbarkeit.md](chat-machbarkeit.md). Entwürfe: [prototypes/chat/](prototypes/chat/index.html). Recherche zu
 Status und Sichtbarkeit: [praesenz.md](praesenz.md). Aufgaben gibt es noch keine; die Umsetzung kommt als eigene
 Issues je Stufe. Beantwortet die Ideen „Chat (Nextcloud Talk)“ und „Präsenz“ aus dem
 [App-Katalog](app-catalog.md): **Wer ist gerade da, wer hat mir geschrieben, und wie erreiche ich ihn sofort?**
@@ -112,7 +111,7 @@ Fenster und die Präsenz; die übrigen sind mit #470 (2026-11-06) dazugekommen, 
 3. **Rechte je Konto**, wie bei Mail: `Rights.chat_accounts: Selection` mit den Kennungen der
    Nextcloud-Konten (`nextcloud:<login>@<host>`). Fehlt in alten Rechten = nichts. Für `presence` gibt es eine eigene Auswahl
    `Rights.presence_accounts`: Wer einem Agenten nur den Status freigibt, öffnet ihm damit nicht die Chats des
-   Kontos, und umgekehrt. `presence.list_people` gibt nur Kennung, Anzeigename und Status heraus, nichts weiter
+   Kontos, und umgekehrt. `presence.list_people` gibt nur Kennung, Anzeigename, Status, Statusnachricht und Ablauf heraus, nichts weiter
    aus dem Systemadressbuch; so umgeht es `Rights::address_books` nicht.
    - **Was ein Client nicht sehen darf, gibt es für ihn nicht:** Unterhaltungen und Personen anderer Konten sind
      `not-found`, gefiltert vor dem Lesen, auch bei Zählern und Suche.
@@ -214,7 +213,8 @@ Fenster und die Präsenz; die übrigen sind mit #470 (2026-11-06) dazugekommen, 
       users“).
     - **Abfragen:** Liefert `/statuses` etwas, reicht ein Aufruf (seitenweise). Ist die Liste leer, weil der Admin
       beschränkt hat, fragt der Kern einzeln (`/statuses/{userId}`), höchstens 50 Menschen je Minute; die übrigen
-      zeigen „Status unknown“ statt „Offline“.
+      stehen in der Gruppe „Offline“ mit „Status unknown“ als Unterzeile statt „Last seen …“ und zählen in Mini und
+      Leiste nicht als online.
     - **Heartbeat ab Werk aus.** Der Schalter „Show others when I am online“ (Steuerzentrale und Einstellungen
       des Chats) schaltet ihn ein. Dann schickt der Dienst alle 5 Minuten `online` oder `away` nach der
       Leerlaufzeit des Systems, bei gesperrtem Bildschirm und im Ruhezustand nichts. Aus, weil „ich bin online“
@@ -233,7 +233,7 @@ Fenster und die Präsenz; die übrigen sind mit #470 (2026-11-06) dazugekommen, 
     Cursor im Antwortfeld; ab Stufe 3 öffnet „Open chat“ das Chatfenster. Eine Antwort direkt in der
     Systembenachrichtigung braucht nativen Code je System und ist offen (siehe unten).
 12. **Teilen in einen Chat (TL2)** gehört zum Chat, Stufe 4. `chat.send_message` bekommt
-    `items` und `fields` wie `mail.save_draft` in TL1. Der Kern baut die Karte über `share::card_for`
+    `items` und `fields` wie `mail.save_draft` in TL1. Der Kern baut die Karte über `share::card_for` (aus TL1, noch nicht gebaut; Stufe 4 setzt TL1 voraus)
     mit den Rechten des Aufrufers, lädt die Datei in den Anhangsordner und teilt sie mit dem Text der
     Karte als Beschriftung. Mehr unter [Teilen in einen Chat](#teilen-in-einen-chat-stufe-4).
 13. **Anrufe werden selbst gebaut** (entschieden vom Menschen am 2026-11-06, nach
@@ -242,7 +242,7 @@ Fenster und die Präsenz; die übrigen sind mit #470 (2026-11-06) dazugekommen, 
     `webrtc-sys` von LiveKit (ohne LiveKit-Server), eigenem Talk-Signaling und dem Bild in Iced. Zuerst nur Anrufe zu
     zweit auf Servern mit internem Signaling (wie dem eigenen); HPB und Gruppenanrufe später. Stufe 5 beginnt mit
     einem Versuch als eigenem Issue (Abschnitt [Anrufe](#anrufe-stufe-5)). Bis das Anruffenster auf einem System
-    läuft, öffnet „Accept“ den Anruf im Browser (`<server>/call/<token>`); „Open in Talk“ bleibt danach im Menü.
+    läuft, öffnet „Accept“ den Anruf im Browser (`<server>/call/<token>`); „Open in Talk“ bleibt auch danach im Menü.
 14. **Agenten rufen nicht an.** Anruf starten und annehmen, das Signaling eines Anrufs und die Wahl von Kamera und
     Mikrofon gibt es nur mit dem App-Schlüssel, also nur durch einen Menschen in der Oberfläche; Kamera und Mikrofon
     im Anruf schaltet das Anruffenster selbst, ohne API, wie beim Mikrofon des Assistenten
@@ -250,7 +250,7 @@ Fenster und die Präsenz; die übrigen sind mit #470 (2026-11-06) dazugekommen, 
     jemanden anrufen oder unbemerkt mithören und mitsehen. Agenten sehen höchstens, ob in einer Unterhaltung ein
     Anruf läuft (`chat.get_call`, `Read`). Bild und Ton gehen auf keinem Weg über API oder MCP. Das ist ein
     **vorgeschlagener neuer Punkt 11** für „Was nie nach außen geht“ (Wortlaut unter [Befehle](#befehle)); `api.md`
-    nimmt ihn mit der ersten Aufgabe der Stufe 5 auf. Ablehnen und Auflegen dürfen Agenten, weil beides nichts
+    nimmt den Teil zum Heartbeat mit der ersten Aufgabe der Stufe 2 auf, den Rest mit der ersten Aufgabe der Stufe 5. Ablehnen und Auflegen dürfen Agenten, weil beides nichts
     einschaltet.
 15. **Fenster wie ICQ.** Kontaktliste und Chat sind zwei getrennte Fenster, keine Ansicht der Kontakte-App und
     kein Fenster mit Liste und Verlauf nebeneinander (so noch in #201). Je Unterhaltung höchstens ein
@@ -411,11 +411,11 @@ Farbe, Rot nur für den einen Primärknopf.
 - **Fuß:** eigener Status mit Avatar und Nachricht, ein Klick öffnet ein Menü mit den Status, „Set status
   message…“ (mit Ablauf: 30 min, 1 h, heute, diese Woche) und „Show others when I am online“.
 - **Bedienung:** Pfeiltasten wandern, Enter oder Doppelklick öffnet das Chatfenster, `⌘F`/`Ctrl+F` springt in die
-  Suche. Kontextmenü: „Open chat“, „Audio call“, „Video call“, „Show contact“ (öffnet `torrocontacts` beim Kontakt mit
+  Suche. Kontextmenü: „Open chat“, „Audio call“, „Video call“, „Show contact“ (sobald es die Kontakte-App `torrocontacts` gibt; öffnet sie beim Kontakt mit
   derselben Mail-Adresse bzw. Nextcloud-Kennung; die Zuordnung macht der Kern, ohne Treffer fehlt der Eintrag),
   „Remove from list“ (nur für selbst hinzugefügte).
 - **Größen:** Mini zeigt die Zahl der Menschen online und die ungelesenen Unterhaltungen; Leiste die Avatare der
-  Menschen online. Breiter als schmal wird die Liste nicht gestreckt (`size::content_max()`).
+  Menschen online. In einer breiten Kachel wird die Liste höchstens `size::content_max()` breit, nicht gestreckt.
 - **Leer:** ohne Konto „Connect Nextcloud“ (öffnet die Steuerzentrale), ohne User status „Your Nextcloud does not
   share status“, ohne sichtbare Menschen „Your Nextcloud does not show other users“ mit der Suche.
 
@@ -430,8 +430,9 @@ Unterhaltung gemerkt werden können, siehe „Schweben“):
 - **Eingabe:** mehrzeilig, Enter sendet, Shift+Enter bricht um. `@` öffnet Vorschläge. Ein Zähler erscheint ab
   90 % der Höchstlänge. Im Menü „Send without notification“.
 - **Gelesen:** Ist das Fenster im Vordergrund und die neueste Nachricht sichtbar, setzt die App den Lesestand.
-- **Tasten:** `Esc` bricht eine Antwort ab bzw. schließt das Fenster, `⌘⇧A`/`Ctrl+Shift+A` startet einen
-  Audioanruf, `⌘⇧V`/`Ctrl+Shift+V` einen Videoanruf.
+- **Tasten:** `Esc` bricht eine Antwort ab bzw. schließt das Fenster. Anrufe starten bewusst nur über die Knöpfe,
+  ohne Taste: Eine Taste im Eingabefeld (etwa `Ctrl+Shift+V`, „ohne Formatierung einfügen“) schaltete sonst
+  versehentlich Kamera und Mikrofon ein.
 - **Leer und Fehler:** Offline zeigt den Speicher mit „Offline“ im Kopf; eine verschwundene Unterhaltung „This
   conversation is no longer available“.
 
@@ -452,8 +453,9 @@ sofort in der Liste, gewechselt wird nur hier.
 
 **Schweben je Fenster-Manager** (Entscheidung 16): Der Kern setzt die Regeln für die festen Klassen des Chats
 beim Start selbst über `torro-wm`, wie heute für `WORKPLACE_DIALOG_CLASS`; einen Request dafür gibt es nicht:
-- **Hyprland:** `float_dialogs` gibt es schon (Regel `float = true, center = true` je Klasse, mit dem Neuladen der
-  Konfiguration erneut gesetzt). Das reicht für Klingel-, Anruf- und Gerätefenster. Ein Chatfenster an einem
+- **Hyprland:** `float_dialogs` gibt es schon (Regel `float = true, center = true` je Klasse). Ein Neuladen der
+  Konfiguration verwirft Laufzeit-Regeln (`ConfigReloaded` in `torro-wm`); der Kern muss sie darauf neu setzen,
+  das tut er heute für keine Klasse und kommt mit Stufe 3 dazu. Das reicht für Klingel-, Anruf- und Gerätefenster. Ein Chatfenster an einem
   gemerkten Ort bräuchte eine Regel ohne `center` und ein Verschieben durch den Kern (unter Wayland darf das
   Programm sein Fenster nicht selbst setzen, [modes.md](modes.md)); das ist eine neue Methode am Trait
   `WindowManager`, dessen Schnittstelle festgelegt ist, also eine Rückfrage in Stufe 3. Bis dahin öffnen
@@ -498,7 +500,7 @@ Bereich `chat`:
 
 | Stufe | Befehl | Zugriff | MCP |
 |---|---|---|---|
-| 1 | `chat.list_conversations { account?, unread_only?, query?, limit? }` (Name, Art, ungelesen, Erwähnung, letzte Nachricht, läuft ein Anruf, klingelt es) | Read | `chat_list_conversations` |
+| 1 | `chat.list_conversations { account?, unread_only?, query?, limit? }` (Name, Art, ungelesen, Erwähnung, letzte Nachricht, läuft ein Anruf; ab Stufe 5 auch: klingelt es) | Read | `chat_list_conversations` |
 | 1 | `chat.get_messages { conversation, before?, after?, limit? }` (höchstens 100, ändert keinen Lesestand) | Read | `chat_get_messages` |
 | 1 | `chat.send_message { conversation, text, reply_to?, silent? }` | Write + **nach außen** | `chat_send_message` |
 | 1 | `chat.mark_read { conversation, up_to? }` | Write | `chat_mark_read` |
@@ -513,8 +515,8 @@ Bereich `chat`:
 | 3 | `apps.open_app` mit `target: "contact:<id>"` („Show contact“: `torrocontacts` beim Kontakt; braucht Read in `contacts` und das Adressbuch in `address_books`, sonst `not-found`, Erweiterung) | Write (`apps`) | `apps_open_app` (vorhanden) |
 | 4 | `chat.send_message` mit `items` und `fields` (Erweiterung, TL2) | Write + **nach außen** + Read der Inhalte | `chat_send_message` (vorhanden) |
 | 5 | `chat.get_call { conversation }` (läuft ein Anruf, klingelt es, seit wann, wie viele sind drin, ob der Mensch dabei ist; keine Namen, keine Geräte, kein Bild) | Read | `chat_get_call` |
-| 5 | `chat.start_call { conversation, video }` (Anruffenster öffnen, beitreten, Gegenseite klingeln lassen) | Write | `Never` (Punkt 11) |
-| 5 | `chat.answer_call { conversation, video }` (annehmen, mit Bild oder nur Ton) | Write | `Never` (Punkt 11) |
+| 5 | `chat.start_call { conversation, video }` (Anruffenster öffnen, beitreten, Gegenseite klingeln lassen) | Write + nach außen | `Never` (Punkt 11) |
+| 5 | `chat.answer_call { conversation, video }` (annehmen, mit Bild oder nur Ton) | Write + nach außen | `Never` (Punkt 11) |
 | 5 | `chat.decline_call { conversation }` (eigenes Klingeln beenden, die Gegenseite telefoniert weiter) | Write | `chat_decline_call` |
 | 5 | `chat.leave_call { conversation }` (auflegen, schließt das Anruffenster) | Write | `chat_leave_call` |
 | 5 | `chat.call_events { call, after? }` (Signaling-Nachrichten und Teilnehmer für das Anruffenster) | Read | `Never` (Punkt 11) |
@@ -545,11 +547,11 @@ lassen. Eingeklappte Gruppen merkt die Kontaktliste in `ui.json` (`torro_gui::ui
 nicht (siehe Fenster, „Schweben“).
 
 **Vorgeschlagener Punkt 11 für [„Was nie nach außen geht“](api.md#was-nie-nach-außen-geht)** (`api.md` nimmt
-ihn mit der ersten Aufgabe der Stufe 2 bzw. 5 auf, je nach Teil, samt Tests wie
+den Teil zum Heartbeat mit der ersten Aufgabe der Stufe 2 auf, den Rest mit der ersten Aufgabe der Stufe 5, samt Tests wie
 `the_microphone_is_switched_on_by_people_only` und den Never-Befehlen in `kept_back` von `names_follow_the_rules`):
 
-> 11. **Anrufe und Kamera:** nur mit dem App-Schlüssel, also nur durch einen Menschen im Chatfenster, beim
->     Klingeln oder im Anruffenster.
+> 11. **Anrufe und Kamera:** nur mit dem App-Schlüssel, also nur durch einen Menschen in der Oberfläche
+>     (Chatfenster, Klingeln, Anruffenster, Gerätewahl, Einstellungen des Chats, Steuerzentrale).
 >     - **Anruf starten und annehmen** (`chat.start_call`, `chat.answer_call`): Sonst könnte ein Agent im Namen
 >       des Menschen jemanden anrufen oder Mikrofon und Kamera in einen Anruf schalten.
 >     - **Das Signaling eines Anrufs** (`chat.call_events`, `chat.call_signal`, `chat.call_credentials`): Wer es
@@ -562,7 +564,8 @@ ihn mit der ersten Aufgabe der Stufe 2 bzw. 5 auf, je nach Teil, samt Tests wie
 >       Rechner des Menschen verraten.
 >     - **Medien gehen nie über den Kern:** Bild und Ton eines Anrufs, die Vorschau der Kamera, der Pegel des
 >       Mikrofons und der Testton laufen nur im Anruffenster bzw. in der Gerätewahl, die dafür selbst auf die
->       Geräte zugreifen. Das ist die einzige Ausnahme von „Oberflächen lesen und schreiben nichts selbst“: macOS
+>       Geräte zugreifen. Das ist neben dem Ansichtszustand in `ui.json` eine Ausnahme von „Oberflächen lesen und schreiben nichts
+>       selbst“: macOS
 >       fragt die Erlaubnis für das Programm ab, das die Kamera nutzt, und Bild und Ton durch den Dienst zu leiten,
 >       kostete Zeit und hieße, dass der Dienst sie sieht. Kamera und Mikrofon an und aus schaltet das Fenster selbst
 >       (keine API); den Zustand erfahren die anderen nur über `call_signal`.
@@ -586,9 +589,11 @@ Erläuterungen:
 - **Der Heartbeat ist nach außen**, aber kein eigener Befehl: Er läuft im Dienst, sobald der Mensch ihn
   eingeschaltet hat.
 - **`add_person` ist nur `Write`:** Es ändert nur die eigene Liste auf diesem Rechner, niemand sonst sieht es.
-- **„Nach außen“** sind `send_message`, `create_conversation`, `edit_message`, `delete_message`, `react` und
-  `set_own_status`: Sie kommen in `OUTBOUND` (`torro-ipc`, `api.rs`), und der Doc-Kommentar an `Lack::Outbound`
-  („always mail“) wird mit dem Text neutral (Entscheidung 4).
+- **„Nach außen“** sind `send_message`, `create_conversation`, `edit_message`, `delete_message`, `react`,
+  `set_own_status` und, obwohl Clients sie wegen `Never` ohnehin nicht bekommen, `start_call` und `answer_call` (die
+  Gegenseite klingelt bzw. sieht einen beitreten): Sie kommen in `OUTBOUND` (`torro-ipc`, `api.rs`). Mit dem Text
+  von `Lack::Outbound` werden auch der Doc-Kommentar an `Lack::area()` („always mail“) und der an `Rights::outbound`
+  („send mail …“) neutral (Entscheidung 4).
 - **`get_messages` ist `Read`,** obwohl es eine Unterhaltung für Long Polling vormerkt: Das ändert
   nichts beim Menschen oder auf dem Server.
 - **`edit_message` ist `Delete`,** weil es den alten Text unwiederbringlich ersetzt (Regel aus
@@ -619,7 +624,8 @@ Entscheidung 13: selbst gebaut. Was die Machbarkeit dazu ergab, steht in
 2. **Klingeln:** Der Kern erkennt einen eingehenden Anruf (Entscheidung 9) und meldet ihn der App, die die
    Benachrichtigung bzw. das kleine Fenster zeigt. Ist `torrochat` nicht offen, startet der Kern es (dafür die Abfrage alle 10 s aus Entscheidung 9).
 3. **Annehmen:** `chat.answer_call` mit oder ohne Bild; der Kern vergibt die Kennung `call` und gibt sie nur dem
-   Anruffenster. Ablehnen (`chat.decline_call`) beendet nur das eigene Klingeln (`notification-state`), nicht den
+   Anruffenster. Ablehnen (`chat.decline_call`) beendet nur das eigene Klingeln (der Kern nimmt die Benachrichtigung `call`
+   zurück; `notification-state` fragt nur ab, ob weiter geklingelt wird; den genauen Weg prüft der Versuch), nicht den
    Anruf der Gegenseite.
 4. **Im Anruf:** Der Kern pollt `signaling/{token}` und reicht die Nachrichten (`offer`, `answer`, `candidate`,
    `mute` …) über `chat.call_events` an das Anruffenster; was das Fenster schickt, geht über `chat.call_signal`
@@ -682,7 +688,7 @@ sie geprüft hat.
      `If-None-Match: *`. Bei 412 hängt der Kern „ (2)“, „ (3)“ … an. Die Benutzer-ID kommt aus
      `GET /ocs/v2.php/cloud/user`, nie aus dem Loginnamen.
   3. Freigabe Art 10 in die Unterhaltung, `talkMetaData` mit `caption` = Text des Menschen oder
-     Agenten, sonst der Text der Karte, und `referenceId`, damit eine Wiederholung nicht doppelt
+     Agenten, sonst der Text der Karte, und eine `referenceId` (ob Talk sie beim Teilen einer Datei annimmt, prüft Stufe 4), damit eine Wiederholung nicht doppelt
      postet.
   4. Schlägt das Teilen fehl, löscht der Kern die eben hochgeladene Datei wieder (`If-Match`).
   - Ohne `media-caption` kommen zwei Nachrichten: erst der Text, dann die Datei.
@@ -725,8 +731,9 @@ sie geprüft hat.
 - **TURN-Zugangsdaten im Anruffenster** (Datenschutz, Anrufe): Zustimmung des Menschen zur Ausnahme, erste Aufgabe
   der Stufe 5.
 - **Medien im Fenster statt über den Kern** (Aufbau, Punkt 11): Zustimmung des Menschen zur Ausnahme von
-  „Oberflächen lesen und schreiben nichts selbst“, erste Aufgabe der Stufe 5; ohne sie gibt es kein eigenes
-  Anruffenster.
+  „Oberflächen lesen und schreiben nichts selbst“, erste Aufgabe der Stufe 5. Die Wahl „Selbst gebaut“ vom
+  2026-11-06 setzt sie voraus (ohne sie gibt es kein eigenes Anruffenster); festgeschrieben in `api.md` wird sie
+  erst nach ausdrücklicher Bestätigung.
 - **Schweben unter AeroSpace und GlazeWM, Ort der Chatfenster unter Hyprland, ein Fenster je Unterhaltung über
   `apps.open_app`:** Stufe 3, jeweils mit Rückfrage, weil Schnittstellen von `torro-wm` bzw. `OpenApp` sich ändern.
 - **Ist TURN auf dem eigenen Server eingerichtet?** Zeigt nur eine angemeldete Abfrage; klärt der Versuch.
