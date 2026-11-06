@@ -4,8 +4,11 @@
 #
 # Names and layout must match what the suite looks for (torro_gui::source::bundle_program, issue #279):
 # `<title>.app/Contents/MacOS/<bin>` with title = AppId::display_name, bin = AppId::program_file and the bundle id
-# io.github.mahype.<appid>, appid = AppId::window_class. "Torro Workplace.app" carries the core's service as an agent
-# bundle in Contents/Library/LoginItems (torro_gui::source::SERVICE_PROGRAM, decision 7 in docs/lebenszyklus.md).
+# io.github.mahype.<appid>, appid = AppId::window_class. Every app bundle except the reminder carries the core's service
+# as an agent bundle in Contents/Library/LoginItems (torro_gui::source::SERVICE_PROGRAM, decision 7 in
+# docs/lebenszyklus.md; one copy per app since issue #411, so each app runs without the main application). The service
+# bundle is the same in every app: bundle id io.github.mahype.torro-workplace-service, signed by the same team, so the
+# keychain trusts every copy; the suite starts the copy with the highest CFBundleShortVersionString.
 #
 # Two ways to run it, both only when the repository variable MACOS_APP_ENABLED is 'true':
 #   * automatically after a release: dist calls it as a custom publish job
@@ -48,23 +51,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The control centre; `service` embeds "Torro Workplace Service.app" (the same binary, started as `daemon`).
+          # `service: "1"` embeds "Torro Workplace Service.app", made from the released torroworkplace binary (started as
+          # `daemon`), into every app except the reminder (issue #411). The control centre first.
           - { bin: torroworkplace, service: "1", appid: torro-workplace, title: Torro Workplace, arch: aarch64, runner: macos-14 }
           - { bin: torroworkplace, service: "1", appid: torro-workplace, title: Torro Workplace, arch: x86_64, runner: macos-15-intel }
           # The inbox's three apps (decision 2 in docs/lebenszyklus.md), each a program of its own.
-          - { bin: torroinbox, appid: torro-inbox, title: Torro Notification Hub, arch: aarch64, runner: macos-14 }
-          - { bin: torroinbox, appid: torro-inbox, title: Torro Notification Hub, arch: x86_64, runner: macos-15-intel }
-          - { bin: torro-inbox-mail, appid: torro-inbox-mail, title: Torro Workplace Mail, arch: aarch64, runner: macos-14 }
-          - { bin: torro-inbox-mail, appid: torro-inbox-mail, title: Torro Workplace Mail, arch: x86_64, runner: macos-15-intel }
-          - { bin: torro-inbox-notifications, appid: torro-inbox-notifications, title: Torro App Feed, arch: aarch64, runner: macos-14 }
-          - { bin: torro-inbox-notifications, appid: torro-inbox-notifications, title: Torro App Feed, arch: x86_64, runner: macos-15-intel }
-          - { bin: torroassistant, appid: torro-assistant, title: Torro Assistant, arch: aarch64, runner: macos-14 }
-          - { bin: torroassistant, appid: torro-assistant, title: Torro Assistant, arch: x86_64, runner: macos-15-intel }
-          - { bin: torrocalendar, appid: torro-calendar, title: Torro Calendar, arch: aarch64, runner: macos-14 }
-          - { bin: torrocalendar, appid: torro-calendar, title: Torro Calendar, arch: x86_64, runner: macos-15-intel }
-          - { bin: torrotasks, appid: torro-tasks, title: Torro Tasks, arch: aarch64, runner: macos-14 }
-          - { bin: torrotasks, appid: torro-tasks, title: Torro Tasks, arch: x86_64, runner: macos-15-intel }
-          # The reminder over the whole screen (task ER2.2): the calendar's binary as an agent app.
+          - { bin: torroinbox, service: "1", appid: torro-inbox, title: Torro Notification Hub, arch: aarch64, runner: macos-14 }
+          - { bin: torroinbox, service: "1", appid: torro-inbox, title: Torro Notification Hub, arch: x86_64, runner: macos-15-intel }
+          - { bin: torro-inbox-mail, service: "1", appid: torro-inbox-mail, title: Torro Workplace Mail, arch: aarch64, runner: macos-14 }
+          - { bin: torro-inbox-mail, service: "1", appid: torro-inbox-mail, title: Torro Workplace Mail, arch: x86_64, runner: macos-15-intel }
+          - { bin: torro-inbox-notifications, service: "1", appid: torro-inbox-notifications, title: Torro App Feed, arch: aarch64, runner: macos-14 }
+          - { bin: torro-inbox-notifications, service: "1", appid: torro-inbox-notifications, title: Torro App Feed, arch: x86_64, runner: macos-15-intel }
+          - { bin: torroassistant, service: "1", appid: torro-assistant, title: Torro Assistant, arch: aarch64, runner: macos-14 }
+          - { bin: torroassistant, service: "1", appid: torro-assistant, title: Torro Assistant, arch: x86_64, runner: macos-15-intel }
+          - { bin: torrocalendar, service: "1", appid: torro-calendar, title: Torro Calendar, arch: aarch64, runner: macos-14 }
+          - { bin: torrocalendar, service: "1", appid: torro-calendar, title: Torro Calendar, arch: x86_64, runner: macos-15-intel }
+          - { bin: torrotasks, service: "1", appid: torro-tasks, title: Torro Tasks, arch: aarch64, runner: macos-14 }
+          - { bin: torrotasks, service: "1", appid: torro-tasks, title: Torro Tasks, arch: x86_64, runner: macos-15-intel }
+          # The reminder over the whole screen (task ER2.2): the calendar's binary as an agent app, without the service
+          # (the calendar's bundle carries it).
           # Its icon is the calendar's (packaging/macos/icons/, task AP.7); every other bundle has the icon of its appid.
           - { bin: torrocalendar, exe: torro-reminder, agent: "1", appid: torro-reminder, icon: torro-calendar, title: Torro Reminder, arch: aarch64, runner: macos-14 }
           - { bin: torrocalendar, exe: torro-reminder, agent: "1", appid: torro-reminder, icon: torro-calendar, title: Torro Reminder, arch: x86_64, runner: macos-15-intel }
@@ -79,10 +84,16 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download the released binary
+      - name: Download the released binaries
         run: |
+          set -euo pipefail
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "${{ matrix.bin }}-${TARGET}.tar.xz"
           tar -xf "${{ matrix.bin }}-${TARGET}.tar.xz"
+          # The service bundle needs the core's binary; the control centre's own archive is that one already.
+          if [ "${{ matrix.service }}" = "1" ] && [ "${{ matrix.bin }}" != torroworkplace ]; then
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "torroworkplace-${TARGET}.tar.xz"
+            tar -xf "torroworkplace-${TARGET}.tar.xz"
+          fi
 
       - name: Build the .app bundle
         run: |
@@ -91,9 +102,10 @@ jobs:
           binary="${{ matrix.bin }}-${TARGET}/${{ matrix.bin }}"
           embed=""
           if [ "${{ matrix.service }}" = "1" ]; then
-            # The core's service: an agent bundle without a Dock icon, embedded into the control centre's bundle.
+            # The core's service: an agent bundle without a Dock icon, embedded into this app's bundle. Always the
+            # torroworkplace binary and the id torro-workplace-service, whichever app carries it.
             AGENT_APP=1 packaging/macos/make-app.sh torroworkplace torro-workplace-service "Torro Workplace Service" \
-              "$version" "$binary" service packaging/macos/icons/torro-workplace.png
+              "$version" "torroworkplace-${TARGET}/torroworkplace" service packaging/macos/icons/torro-workplace.png
             embed="service/Torro Workplace Service.app"
           fi
           # The icon: a 1024x1024 PNG from packaging/macos/icons/ (task AP.7), made into an .icns by make-app.sh.
@@ -133,7 +145,8 @@ jobs:
       - name: Sign (hardened runtime)
         run: |
           set -euo pipefail
-          # Nested code first: the outer signature seals the embedded service bundle as it is then.
+          # Inside out: the embedded service bundle (its program, then the bundle), then this app's program, then this
+          # bundle; the outer signature seals the nested code as it is then.
           if [ "${{ matrix.service }}" = "1" ]; then
             codesign --force --timestamp --options runtime --sign "$MACOS_SIGN_IDENTITY" \
               "$SERVICE/Contents/MacOS/torroworkplace"
@@ -151,6 +164,7 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
           set -euo pipefail
+          # One submission per bundle; it covers the embedded service bundle as well.
           # ditto keeps extended attributes and symlinks; plain zip can break notarisation.
           ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarise.zip"
           xcrun notarytool submit "$RUNNER_TEMP/notarise.zip" \
