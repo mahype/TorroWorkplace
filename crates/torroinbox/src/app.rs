@@ -2849,6 +2849,10 @@ pub struct App<S> {
     selected_mail: Vec<String>,
     /// The last clicked row is the start of a Shift selection.
     mail_anchor: Option<String>,
+    /// The message id at the moving end of the selection (issue #507): where Shift + ↓/↑ grow or
+    /// shrink it from, and where a plain arrow goes on from. It only counts while `selected_mail`
+    /// holds something; the cursor stays on the mail the panel shows meanwhile.
+    mail_lead: Option<String>,
     modifiers: iced::keyboard::Modifiers,
     /// Mail read in this window; keeps entry rows from reverting to bold during a reload.
     seen_mail: std::collections::BTreeSet<String>,
@@ -3078,6 +3082,8 @@ pub enum Message {
     AskLane(String),
     /// "Category ▸" on a mail (task E12.8): opens the list of categories.
     AskCategory(String),
+    /// "Category…" on a message `m:…` without an entry (issue #500): the list of categories for it.
+    AskMailCategory(String),
     /// A click on a group of "Categories" (task E12.8, issue #300): a folded group opens and is
     /// shown, an open group not shown is shown, the open group shown folds
     /// ([`App::toggle_category_group`]).
@@ -4219,6 +4225,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             cursor: None,
             selected_mail: Vec::new(),
             mail_anchor: None,
+            mail_lead: None,
             modifiers: iced::keyboard::Modifiers::default(),
             seen_mail: std::collections::BTreeSet::new(),
             scroll: None,
@@ -4767,7 +4774,18 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 }
             }
             Message::Show(view) => return self.show_view(view),
-            Message::Select(id) => self.select(id),
+            Message::Select(id) => {
+                // An entry of the mail window that links to a mail takes Ctrl-/⌘- and Shift-clicks
+                // as a folder's row does (issue #507).
+                let message = match self.items.iter().find(|item| item.id == id).and_then(|item| item.link.as_ref()) {
+                    Some(Link::Mail { message }) if self.launch.kind == Kind::Mail => Some(message.clone()),
+                    _ => None,
+                };
+                if message.is_some_and(|message| self.select_mail_with_modifiers(&message)) {
+                    return Task::none();
+                }
+                self.select(id);
+            }
             Message::Act(id, command) => return self.act(&id, command),
             Message::ToggleInfo(column) => return self.toggle_info(column),
             Message::ShowColumn(column) => return self.switch_column(column),
@@ -4829,6 +4847,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::AskCategory(id) => {
                 self.menu_at = MenuAt::Panel;
                 return self.ask_category(&id);
+            }
+            Message::AskMailCategory(id) => {
+                self.menu_at = MenuAt::Panel;
+                return self.ask_mail_category(&id);
             }
             // One category picked: ask whether it holds for this sender from now on (E12.8).
             Message::PickCategory(category) => {
@@ -5124,7 +5146,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.menu_at = MenuAt::Panel;
                 self.toggle_menu(Menu::MailDisplay);
             }
-            Message::StepMail(forward) => return self.step(forward),
+            Message::StepMail(forward) => {
+                // The reader's buttons go on from the mail it shows, not from the end of a selection
+                // (issue #507): the selection goes as with a plain click.
+                self.selected_mail.clear();
+                return self.step(forward);
+            }
             Message::OpenMailWindow(id) => {
                 #[cfg(test)]
                 self.sent.push(Sent::Window(id.clone()));
@@ -5380,6 +5407,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 {
                     self.selected_mail = self.selectable_mail();
                     self.mail_anchor = self.selected_mail.first().cloned();
+                    self.mail_lead = None;
                 }
             }
             Message::ClearMailSelection => {
@@ -6524,6 +6552,27 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         (reopen, follow)
     }
 
+    /// What the undo of moving the messages `ids` together opens again and keeps: for each the entry
+    /// [`App::reopened_by_undo`] and the follow-ups of [`App::with_follow_backs`], each entry once –
+    /// two marked mails of one conversation share their entry (issue #331).
+    fn follow_backs_of(&self, ids: &[String]) -> (Vec<String>, Vec<FollowBack>) {
+        let mut reopen: Vec<String> = Vec::new();
+        let mut follow: Vec<FollowBack> = Vec::new();
+        for id in ids {
+            if let Some(entry) = self.reopened_by_undo(id).filter(|entry| !reopen.contains(entry)) {
+                reopen.push(entry);
+            }
+            let (more, backs) = self.with_follow_backs(id, reopen);
+            reopen = more;
+            for back in backs {
+                if !follow.iter().any(|held| held.id == back.id) {
+                    follow.push(back);
+                }
+            }
+        }
+        (reopen, follow)
+    }
+
     /// The entries the window holds that show the message `id` and are not done (list, panel, menu,
     /// "For me", "Coming back"), each once: what archiving from a mail entry closes (task E18.5).
     fn open_entries_of(&self, id: &str) -> Vec<String> {
@@ -7186,6 +7235,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     fn select(&mut self, id: String) {
         self.close_menus();
         self.selected_mail.clear();
+        // A Shift-click after a plain click starts at the entry clicked, not at an older anchor.
+        self.mail_anchor = None;
         self.detail = self.items.iter().chain(&self.snoozed).find(|item| item.id == id).cloned();
         if let Some(item) = &self.detail {
             self.column = self.launch.kind.column_or_first(Column::of(item));
@@ -7207,33 +7258,35 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         listed
     }
 
-    /// Modifier clicks select without opening a different message in the reader.
+    /// Modifier clicks select without opening a different message in the reader. `id` is a message
+    /// id, also for the rows of entries (issue #507): the selection holds messages.
     fn select_mail_with_modifiers(&mut self, id: &str) -> bool {
-        let Some(clicked) = self.messages.iter().position(|message| message.id == id) else { return false };
+        let listed = self.selectable_mail();
+        let Some(clicked) = listed.iter().position(|message| message == id) else { return false };
         let extend = self.modifiers.shift();
         let toggle = self.modifiers.control() || self.modifiers.logo();
         if !extend && !toggle {
             return false;
         }
+        let cursor = self.cursor_mail();
         if extend {
-            let anchor = self.mail_anchor.as_deref().or(self.cursor.as_deref()).unwrap_or(id);
-            let start = self.messages.iter().position(|message| message.id == anchor).unwrap_or(clicked);
+            let anchor = self.mail_anchor.clone().or(cursor).unwrap_or_else(|| id.to_owned());
+            let start = listed.iter().position(|message| *message == anchor).unwrap_or(clicked);
             let (first, last) = if start <= clicked { (start, clicked) } else { (clicked, start) };
             if !toggle {
                 self.selected_mail.clear();
             }
-            for message in &self.messages[first..=last] {
-                if !self.selected_mail.contains(&message.id) {
-                    self.selected_mail.push(message.id.clone());
+            for message in &listed[first..=last] {
+                if !self.selected_mail.contains(message) {
+                    self.selected_mail.push(message.clone());
                 }
             }
-            self.mail_anchor = Some(anchor.to_owned());
+            self.mail_anchor = Some(anchor);
         } else {
             if self.selected_mail.is_empty()
-                && let Some(cursor) = self.cursor.as_ref().filter(|cursor| *cursor != id)
-                && self.messages.iter().any(|message| message.id == *cursor)
+                && let Some(cursor) = cursor.filter(|cursor| cursor != id)
             {
-                self.selected_mail.push(cursor.clone());
+                self.selected_mail.push(cursor);
             }
             if let Some(place) = self.selected_mail.iter().position(|selected| selected == id) {
                 self.selected_mail.remove(place);
@@ -7242,7 +7295,53 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             self.mail_anchor = Some(id.to_owned());
         }
+        self.mail_lead = Some(id.to_owned());
         true
+    }
+
+    /// Where the row of message `message` lies among the rows the keys walk ([`App::rows`]): in a
+    /// folder among its messages, elsewhere the first entry that links to it (issue #507).
+    fn mail_row(&self, message: &str) -> Option<usize> {
+        if self.view.is_mail() {
+            return self.messages.iter().position(|listed| listed.id == message);
+        }
+        self.rows()
+            .iter()
+            .position(|item| matches!(item.link.as_ref(), Some(Link::Mail { message: linked }) if linked == message))
+    }
+
+    /// The mail under the cursor when it can be selected ([`App::selectable_mail`]): where a Shift
+    /// selection starts without an anchor (issue #507).
+    fn cursor_mail(&self) -> Option<String> {
+        self.mail_target().filter(|message| self.selectable_mail().contains(message))
+    }
+
+    /// Shift + ↓/↑ (issue #507): moves the end of the selection of mail one row down or up, and
+    /// selects every mail between the anchor and it – going back towards the anchor gives rows back.
+    /// It starts at the mail under the cursor. The cursor, the panel and the reader stay with the
+    /// mail they show, so a key like `r` still acts on what one reads. The list scrolls with the end.
+    /// Without mail to select (the Notification Hub) it moves the cursor as the plain arrow does.
+    fn extend(&mut self, forward: bool) -> Task<Message> {
+        let listed = if self.has_mail_list() { self.selectable_mail() } else { Vec::new() };
+        let Some(end) = listed.len().checked_sub(1) else { return self.step(forward) };
+        let place = |id: &Option<String>| id.as_ref().and_then(|id| listed.iter().position(|message| message == id));
+        let (anchor, lead) = match (place(&self.mail_anchor), place(&self.mail_lead)) {
+            (Some(anchor), Some(lead)) if !self.selected_mail.is_empty() => (anchor, lead),
+            _ => match place(&self.cursor_mail()) {
+                Some(start) => (start, start),
+                None => return self.step(forward),
+            },
+        };
+        let lead = if forward { (lead + 1).min(end) } else { lead.saturating_sub(1) };
+        let (first, last) = if anchor <= lead { (anchor, lead) } else { (lead, anchor) };
+        // The range takes the place of what was selected, as a Shift-click without Ctrl does.
+        self.selected_mail = listed[first..=last].to_vec();
+        self.mail_anchor = Some(listed[anchor].clone());
+        self.mail_lead = Some(listed[lead].clone());
+        match self.mail_row(&listed[lead]) {
+            Some(row) => self.reveal(row),
+            None => Task::none(),
+        }
     }
 
     /// Mail folders and searches list messages directly; the mail window's other views list
@@ -7260,13 +7359,17 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.launch.kind != Kind::Mail {
             return Vec::new();
         }
-        self.rows()
-            .into_iter()
-            .filter_map(|item| match item.link.as_ref() {
-                Some(Link::Mail { message }) => Some(message.clone()),
-                _ => None,
-            })
-            .collect()
+        // Two entries may link to one mail: it is listed once, at its first entry, so a range never
+        // sticks at the second (issue #507).
+        let mut listed = Vec::new();
+        for item in self.rows() {
+            if let Some(Link::Mail { message }) = item.link.as_ref()
+                && !listed.contains(message)
+            {
+                listed.push(message.clone());
+            }
+        }
+        listed
     }
 
     fn delete_selected_mail(&mut self) -> Task<Message> {
@@ -7282,11 +7385,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         // Entry views do not necessarily hold each message's current folder. Offer undo only
         // when every source folder is known and identical, rather than guessing the inbox.
         let homes: Vec<_> = ids.iter().map(|id| self.folder_of(id)).collect();
+        // Gathered before `take_out`, which drops the entries `with_follow_backs` looks at (issue #331).
+        let (reopen, follow) = self.follow_backs_of(&ids);
         let undo = homes[0].as_ref().filter(|home| homes.iter().all(|held| held.as_ref() == Some(*home))).map(|home| {
             Undo::Mail {
                 edit: MailEdit::Move { ids: ids.clone(), to: MoveTarget::Folder(home.clone()) },
-                reopen: Vec::new(),
-                follow: Vec::new(),
+                reopen,
+                follow,
             }
         });
         let hint = Some(Hint { text: tr("Moved to Trash").to_owned(), undo, shown: Instant::now(), folder: None });
@@ -8511,6 +8616,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Command::ReplyLater if self.focusing().is_some() => self.focus_remove(),
             Command::Next => self.step(true),
             Command::Previous => self.step(false),
+            Command::ExtendNext => self.extend(true),
+            Command::ExtendPrevious => self.extend(false),
             Command::ColumnLeft if self.is_board() => self.step_beside(false),
             Command::ColumnRight if self.is_board() => self.step_beside(true),
             Command::ColumnLeft => self.switch_column(Column::Mail),
@@ -8665,11 +8772,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     }
 
     /// Moves the cursor one row down or up and stops at the first and last row; with no cursor
-    /// yet, down chooses the first row and up the last. The open panel shows the new row.
+    /// yet, down chooses the first row and up the last. The open panel shows the new row. A
+    /// selection of mail goes (issue #507): the cursor goes on from its moving end, as in other mail
+    /// programs.
     fn step(&mut self, forward: bool) -> Task<Message> {
         let rows = if self.view.is_mail() { self.messages.len() } else { self.rows().len() };
+        let lead = match &self.mail_lead {
+            Some(lead) if !self.selected_mail.is_empty() => self.mail_row(lead),
+            _ => None,
+        };
+        self.selected_mail.clear();
+        self.mail_anchor = None;
+        self.mail_lead = None;
         let Some(last) = rows.checked_sub(1) else { return Task::none() };
-        let next = match (self.cursor_place(), forward) {
+        let next = match (lead.or_else(|| self.cursor_place()), forward) {
             (None, true) => 0,
             (None, false) => last,
             (Some(place), true) => (place + 1).min(last),
@@ -8779,15 +8895,18 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// window – as [`App::open_entry`] does; an entry without such a link, and a mail (task E4.2),
     /// opens in the panel. In a folder Enter opens the message under the cursor in the panel.
     fn open_cursor(&mut self) -> Task<Message> {
+        // Straight to the row's selection, not through a click: Shift + Enter selects nothing
+        // (issue #507).
         if self.view.is_mail() {
-            return match self.cursor.clone() {
-                Some(id) => self.update(Message::SelectMail(id)),
-                None => Task::none(),
-            };
+            let opened = self.cursor.clone().is_some_and(|id| self.select_mail(id));
+            return if opened { self.keep_opened_search() } else { Task::none() };
         }
         let Some(item) = self.cursor_item().cloned() else { return Task::none() };
         match detail::openable(&item) {
-            Some(Link::Mail { .. }) | None => self.update(Message::Select(item.id)),
+            Some(Link::Mail { .. }) | None => {
+                self.select(item.id);
+                Task::none()
+            }
             Some(_) => self.open_entry(&item),
         }
     }
@@ -8833,6 +8952,24 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if item.source.kind != torro_inbox::SourceKind::Mail {
             return Task::none();
         }
+        self.drawer = false;
+        self.picked_category = None;
+        self.subject = Some(item);
+        self.menu = Some(Menu::Category);
+        Task::none()
+    }
+
+    /// "Category…" on the message `id` without an entry (issue #500): the categories to file it
+    /// under, as for an entry ([`App::ask_category`]) – the message's stand-in
+    /// ([`torro_inbox::rules::message_stand_in`]) is the subject, so "Only this mail" and "Always for
+    /// <sender>" send its id `m:…`, which `inbox.set_item_category` takes as well. A message with an
+    /// entry goes through the entry.
+    fn ask_mail_category(&mut self, id: &str) -> Task<Message> {
+        if let Some(entry) = self.entry_of(id) {
+            return self.ask_category(&entry);
+        }
+        let Some(summary) = self.message_summary(id) else { return Task::none() };
+        let Some(item) = torro_inbox::rules::message_stand_in(&summary, None, false) else { return Task::none() };
         self.drawer = false;
         self.picked_category = None;
         self.subject = Some(item);
@@ -12984,6 +13121,7 @@ fn closes_rail(message: &Message) -> bool {
             | Message::AskMailTask(_)
             | Message::AskEvent(_)
             | Message::AskCategory(_)
+            | Message::AskMailCategory(_)
             | Message::Reclassify(_)
             | Message::AskHide(_)
             | Message::AskMuteMail(_)
@@ -16337,6 +16475,148 @@ mod tests {
         );
     }
 
+    /// Issue #507: Shift + ↓/↑ grow the selection from the mail one stood on and shrink it going
+    /// back; the reader stays; a plain arrow drops the selection and goes on from its end; the list
+    /// scrolls with the end.
+    #[test]
+    fn shift_and_the_arrows_select_a_range_of_a_folder() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::SelectMail("m:w1".into()));
+        let rows: Vec<String> = message_ids(&app).into_iter().map(str::to_owned).collect();
+        assert_eq!(rows[0], "m:w1");
+        let letter = |app: &App<DemoSource>| app.letter.as_ref().map(|letter| letter.id.clone());
+        assert_eq!(letter(&app).as_deref(), Some("m:w1"));
+        let _ = press(&mut app, Key::ExtendDown);
+        let _ = press(&mut app, Key::ExtendDown);
+        assert_eq!(app.selected_mail, rows[..3], "the anchor and two rows below");
+        assert_eq!(app.cursor.as_deref(), Some("m:w1"), "the cursor stays with the mail one reads");
+        assert_eq!(letter(&app).as_deref(), Some("m:w1"), "the reader does not change");
+        let _ = press(&mut app, Key::ExtendUp);
+        assert_eq!(app.selected_mail, rows[..2], "back towards the anchor gives a row back");
+        let _ = press(&mut app, Key::Down);
+        assert!(app.selected_mail.is_empty(), "a plain arrow drops the selection");
+        assert_eq!(app.cursor.as_deref(), Some(rows[2].as_str()), "and goes on below its end");
+        // Upwards past the anchor: the range turns round it and stops at the first row.
+        let _ = press(&mut app, Key::ExtendUp);
+        let _ = press(&mut app, Key::ExtendUp);
+        let _ = press(&mut app, Key::ExtendUp);
+        assert_eq!(app.selected_mail, rows[..3], "from the first row down to the anchor");
+        let _ = press(&mut app, Key::Up);
+        assert!(app.selected_mail.is_empty());
+        assert_eq!(app.cursor.as_deref(), Some(rows[0].as_str()), "the first row stays the first");
+        // The list scrolls with the end of the selection.
+        app.scroll = Some((0.0, 10.0));
+        let _ = press(&mut app, Key::ExtendDown);
+        assert_ne!(app.scroll, Some((0.0, 10.0)), "the moved end is shown");
+        assert_eq!(app.selected_mail, rows[..2]);
+        // The reader's "Next mail" goes on from the mail it shows, not from the end of the selection.
+        let _ = app.update(Message::SelectMail(rows[1].clone()));
+        let _ = press(&mut app, Key::ExtendDown);
+        let _ = press(&mut app, Key::ExtendDown);
+        let _ = app.update(Message::StepMail(true));
+        assert!(app.selected_mail.is_empty());
+        assert_eq!(app.cursor.as_deref(), Some(rows[2].as_str()), "the mail after the one read");
+    }
+
+    /// Issue #507: Shift + ↓ starts again at the cursor after Select All, and a range replaces what
+    /// Ctrl-click picked, as a Shift-click without Ctrl does.
+    #[test]
+    fn shift_and_the_arrows_start_at_the_cursor_after_other_selections() {
+        use iced::keyboard::Modifiers;
+
+        let mut app = in_folder("f:work-inbox");
+        let rows: Vec<String> = message_ids(&app).into_iter().map(str::to_owned).collect();
+        let _ = app.update(Message::SelectMail(rows[1].clone()));
+        let _ = app.update(Message::SelectAllVisibleChecked(false));
+        let _ = press(&mut app, Key::ExtendDown);
+        assert_eq!(app.selected_mail, rows[1..3], "from the cursor, not from the first row");
+        let _ = app.update(Message::ModifiersChanged(Modifiers::CTRL));
+        let _ = app.update(Message::SelectMail(rows[4].clone()));
+        let _ = app.update(Message::ModifiersChanged(Modifiers::empty()));
+        assert_eq!(app.selected_mail, [rows[1].as_str(), &rows[2], &rows[4]]);
+        let _ = press(&mut app, Key::ExtendUp);
+        assert_eq!(app.selected_mail, rows[3..5], "from the row Ctrl-clicked last");
+    }
+
+    /// Issue #507: the overview of the mail window selects its mail with Shift + ↓/↑ and with Ctrl-/⌘-
+    /// and Shift-clicks as a folder does; the panel keeps its entry.
+    #[test]
+    fn the_mail_entries_select_with_keys_and_modifier_clicks() {
+        use iced::keyboard::Modifiers;
+
+        let mut app = mail_entries(Density::Compact, &[]);
+        let entries: Vec<(String, String)> = app
+            .rows()
+            .iter()
+            .filter_map(|item| match &item.link {
+                Some(Link::Mail { message }) => Some((item.id.clone(), message.clone())),
+                _ => None,
+            })
+            .collect();
+        assert!(entries.len() >= 4, "the demo's overview lists mail entries: {entries:?}");
+        let mail: Vec<String> = entries.iter().map(|(_, message)| message.clone()).collect();
+        let shown = |app: &App<DemoSource>| app.detail.as_ref().map(|item| item.id.clone());
+        let _ = app.update(Message::Select(entries[0].0.clone()));
+        assert_eq!(shown(&app), Some(entries[0].0.clone()));
+        let _ = press(&mut app, Key::ExtendDown);
+        assert_eq!(app.selected_mail, mail[..2]);
+        assert_eq!(shown(&app), Some(entries[0].0.clone()), "the panel keeps its entry");
+        let _ = press(&mut app, Key::Down);
+        assert!(app.selected_mail.is_empty());
+        assert_eq!(app.cursor.as_deref(), Some(entries[2].0.as_str()), "on below the end");
+
+        let _ = app.update(Message::Select(entries[0].0.clone()));
+        let _ = app.update(Message::ModifiersChanged(Modifiers::CTRL));
+        let _ = app.update(Message::Select(entries[2].0.clone()));
+        assert_eq!(app.selected_mail, [mail[0].as_str(), &mail[2]], "Ctrl-click adds, the cursor's mail first");
+        let _ = app.update(Message::Select(entries[0].0.clone()));
+        assert_eq!(app.selected_mail, [mail[2].as_str()], "and takes away");
+        assert_eq!(shown(&app), Some(entries[0].0.clone()), "the panel does not change");
+        let _ = app.update(Message::ModifiersChanged(Modifiers::SHIFT));
+        let _ = app.update(Message::Select(entries[3].0.clone()));
+        assert_eq!(app.selected_mail, mail[..4], "Shift: from the anchor");
+        assert_eq!(shown(&app), Some(entries[0].0.clone()));
+        let _ = app.update(Message::ModifiersChanged(Modifiers::empty()));
+        let _ = app.update(Message::Select(entries[1].0.clone()));
+        assert!(app.selected_mail.is_empty(), "a plain click replaces the selection");
+        assert_eq!(shown(&app), Some(entries[1].0.clone()));
+        let _ = app.update(Message::ModifiersChanged(Modifiers::SHIFT));
+        let _ = app.update(Message::Select(entries[2].0.clone()));
+        assert_eq!(app.selected_mail, mail[1..3], "Shift after a plain click starts at that entry");
+    }
+
+    /// Issue #507: two entries that link to one mail list it once, so Shift + ↓ walks past it to the
+    /// end of the list.
+    #[test]
+    fn a_mail_of_two_entries_is_selected_once() {
+        let mut app = mail_entries(Density::Compact, &[]);
+        let before = app.selectable_mail();
+        let twin = app.items.iter().find(|item| matches!(item.link, Some(Link::Mail { .. }))).cloned();
+        let mut twin = twin.expect("a mail entry");
+        twin.id = "twin".into();
+        app.items.push(twin);
+        assert_eq!(app.selectable_mail(), before, "the mail stays where its first entry is");
+        let first = app.rows().first().map(|item| item.id.clone()).expect("a row");
+        let _ = app.update(Message::Select(first));
+        for _ in 0..app.rows().len() {
+            let _ = press(&mut app, Key::ExtendDown);
+        }
+        let start = before.iter().position(|message| Some(message) == app.cursor_mail().as_ref()).expect("listed");
+        assert_eq!(app.selected_mail, before[start..], "every mail from the cursor to the end, once");
+    }
+
+    /// Issue #507: the Notification Hub has no selection of mail – Shift + ↓ moves its cursor as ↓.
+    #[test]
+    fn shift_and_the_arrows_move_the_hubs_cursor() {
+        let mut hub = overview_at(&["--view", "hub"]);
+        let _ = press(&mut hub, Key::Down);
+        let first = hub.cursor.clone();
+        assert!(first.is_some());
+        let _ = press(&mut hub, Key::ExtendDown);
+        assert!(hub.selected_mail.is_empty());
+        assert_ne!(hub.cursor, first, "the cursor moved on");
+    }
+
     #[test]
     fn the_mail_entries_select_and_delete_only_displayed_mail_entries() {
         let mut app = mail_entries(Density::Compact, &[]);
@@ -19170,6 +19450,73 @@ mod tests {
         assert_eq!(back.follow_up.map(|f| (f.at, f.unless_reply)), Some((at, true)), "with its follow-up");
     }
 
+    /// Issue #331: "Undo" of deleting several marked mails brings back the follow-ups of their entries
+    /// as deleting one mail does – each entry open again with its time and condition –, end to end
+    /// through the demo. (A snoozed entry's mail is not in "All", and a folder holds no entries.)
+    #[test]
+    fn undo_of_deleting_marked_mail_keeps_the_follow_ups() {
+        use iced::keyboard::Modifiers;
+
+        let mut app = mail_window(Density::Compact, &[]);
+        // Two open mail entries whose mails lie in one folder, so the toast offers an undo.
+        let entries: Vec<(String, String, String)> = app
+            .for_me
+            .iter()
+            .filter(|item| item.state.is_open())
+            .filter_map(|item| match &item.link {
+                Some(Link::Mail { message }) => {
+                    app.folder_of(message).map(|folder| (item.id.clone(), message.clone(), folder))
+                }
+                _ => None,
+            })
+            .collect();
+        let (one, first, other, second) = entries
+            .iter()
+            .enumerate()
+            .find_map(|(at, (entry, message, folder))| {
+                let (other, mail, _) = entries[at + 1..].iter().find(|(_, _, held)| held == folder)?;
+                Some((entry.clone(), message.clone(), other.clone(), mail.clone()))
+            })
+            .expect("two open mail entries with mail in one folder");
+        let at = app.now + TimeDelta::days(2);
+        let later = app.now + TimeDelta::days(5);
+        block_on(app.inbox.snooze_item(one.clone(), Some(at), true, true)).expect("open with a follow-up");
+        block_on(app.inbox.snooze_item(other.clone(), Some(later), false, true)).expect("open with a follow-up");
+        load(&mut app);
+        let listed = message_ids(&app);
+        assert!(listed.contains(&first.as_str()) && listed.contains(&second.as_str()), "{listed:?}");
+
+        let _ = app.update(Message::SelectMail(first.clone()));
+        let _ = app.update(Message::ModifiersChanged(Modifiers::CTRL));
+        let _ = app.update(Message::SelectMail(second.clone()));
+        let _ = app.update(Message::ModifiersChanged(Modifiers::empty()));
+        assert_eq!(app.selected_mail, [first.clone(), second.clone()]);
+        let _ = app.update(Message::DeleteSelectedMail);
+        let (edit, hint) = app
+            .sent
+            .iter()
+            .rev()
+            .find_map(|sent| match sent {
+                Sent::Mail(edit @ MailEdit::Delete { .. }, Some(hint)) => Some((edit.clone(), hint.clone())),
+                _ => None,
+            })
+            .expect("deleted with a toast");
+        block_on(edit.apply(app.inbox.clone())).expect("deleted");
+        for entry in [&one, &other] {
+            block_on(app.inbox.set_item_done(entry.clone(), true)).expect("closed as the core does");
+            assert!(entry_now(&app, entry).follow_up.is_none(), "closing cleared the follow-up");
+        }
+        let Some(Undo::Mail { edit, reopen, follow }) = hint.undo else { panic!("an undo") };
+        block_on(undo_move(app.inbox.clone(), edit, reopen, follow)).expect("undone");
+
+        for (entry, when, unless_reply) in [(&one, at, true), (&other, later, false)] {
+            let back = entry_now(&app, entry);
+            assert!(back.state.is_open(), "{entry} open again: {:?}", back.state);
+            let kept = back.follow_up.map(|f| (f.at, f.unless_reply));
+            assert_eq!(kept, Some((when, unless_reply)), "{entry} with its follow-up");
+        }
+    }
+
     /// Task E18.4: the start states of the mail window – no `--open`, `overview`, `info`, `done` and
     /// the mail entry states show All (those with the first mail of All in the reader), `archive` and
     /// `hidden` their view; the other windows stay on their overview.
@@ -20143,6 +20490,84 @@ mod tests {
         assert!(file.items.iter().any(|item| item.label == trc("action", "Archive")), "task E18.5: Archive");
         assert!(file.items.iter().all(|item| item.label != tr("Done")), "no Done for mail");
         let _ = overview.view();
+    }
+
+    /// Issue #500: a right click on a mail without an entry offers "Category…" in "Torro" beside
+    /// "Task"; it opens the list of categories for the mail's stand-in, whose question names the
+    /// sender ("Always for …"), and "Only this mail" files it by hand – the core takes the mail's
+    /// id `m:…` –, so the list and the sidebar's count follow once the window loads again.
+    #[test]
+    fn a_mail_without_an_entry_is_filed_by_hand_from_its_context_menu() {
+        // The context menu of the first mail of "All" (issue #497): "Category…" for any mail there.
+        let mut app = mail_window(Density::Compact, &["--open", "mail-context"]);
+        assert_eq!((app.menu, app.menu_at), (Some(Menu::MailContext), MenuAt::Row));
+        let id = app.cursor.clone().expect("a mail at the cursor");
+        let groups = app.rail_groups(SizeClass::Wide, &detail::Anchors::default()).expect("the mail's actions");
+        let torro = groups.iter().find(|group| group.label == tr("Torro")).expect("the group Torro");
+        let labels: Vec<String> = torro.items.iter().map(|item| item.label.to_string()).collect();
+        assert_eq!(labels, [tr("Task"), tr("Category…")], "no Re-categorize without an entry");
+        let ask = torro.items[1].on_press.clone();
+        assert!(matches!(&ask, Some(Message::AskMailCategory(asked)) if *asked == id), "{ask:?}");
+        drop(groups);
+        draw_everywhere(&mut app);
+
+        // A mail the demo holds no entry for at all (not even a done one), so the core answers
+        // with its stand-in.
+        let entries = block_on(app.inbox.list_items(torro_inbox::ItemFilter::default())).expect("the entries");
+        let id = app
+            .messages
+            .iter()
+            .find(|message| {
+                !entries.iter().any(|item| {
+                    item.thread_key == message.thread_id
+                        || matches!(&item.link, Some(Link::Mail { message: linked }) if *linked == message.id)
+                })
+            })
+            .map(|message| message.id.clone())
+            .expect("a mail without an entry");
+        let _ = app.update(Message::ContextMail(id.clone(), Point::new(24.0, 12.0)));
+        let _ = app.update(Message::ContextAction(Box::new(Message::AskMailCategory(id.clone()))));
+        assert_eq!(app.menu, Some(Menu::Category));
+        assert_eq!(app.subject.as_ref().map(|item| item.id.as_str()), Some(id.as_str()), "the mail's stand-in");
+        let summary = app.message_summary(&id).expect("the mail");
+        let had = summary.category.map(|held| held.category);
+        let counted = |app: &App<DemoSource>, category| {
+            app.categories.iter().find(|held| held.category == category).map_or(0, |held| held.messages)
+        };
+        let picked = app
+            .categories
+            .iter()
+            .find(|held| Some(held.category) != had && !(held.built_in && held.category.by_rule_only()))
+            .map(|held| held.category)
+            .expect("another category");
+        let before = counted(&app, picked);
+        let _ = app.view();
+        let _ = app.update(Message::PickCategory(picked));
+        assert_eq!(app.menu, Some(Menu::CategoryAlways));
+        let sender = summary.from.as_ref().map(|from| from.address.to_lowercase()).expect("a sender");
+        let choices = app.choices();
+        let labels: Vec<&str> = choices.iter().map(|choice| choice.label.as_str()).collect();
+        assert_eq!(labels, [tr("Only this mail"), trf("Always for {sender}", &[("sender", &sender)]).as_str()]);
+        assert!(
+            matches!(&choices[1].message, Message::SetCategory(at, category, true) if *at == id && *category == picked),
+            "Always for the sender"
+        );
+        let Message::SetCategory(at, category, false) = choices[0].message.clone() else { panic!("Only this mail") };
+        assert_eq!((at.as_str(), category), (id.as_str(), picked));
+        let _ = app.view();
+
+        // As the task of "Only this mail" does: the demo files the mail, the window loads again.
+        let _ = app.update(Message::SetCategory(at.clone(), category, false));
+        assert_eq!(app.menu, None);
+        let filed = block_on(MailSource::set_mail_category(app.inbox.as_ref(), at, category, false))
+            .map_err(|err| err.to_string());
+        assert_eq!(filed.as_ref().map(|item| item.id.as_str()), Ok(id.as_str()), "the stand-in comes back");
+        let _ = app.update(Message::Categorized(Box::new(filed)));
+        assert!(app.error.is_none(), "{:?}", app.error);
+        load(&mut app);
+        let held = app.message_summary(&id).and_then(|summary| summary.category).expect("filed");
+        assert_eq!(held, torro_mail::MailCategory::by_person(picked), "by hand, kept from the model");
+        assert_eq!(counted(&app, picked), before + 1, "the sidebar counts it");
     }
 
     /// Issue #456: the rail floats over the mail in every size of the mail window – the same groups,
