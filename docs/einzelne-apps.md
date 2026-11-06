@@ -150,7 +150,9 @@ Installieren, Aktualisieren und Entfernen laufen als **Auftrag** im Dienst, eine
 Download, Check signature (macOS: `codesign`, Team `2GA7DQ3P3Z`; sonst SHA-256), Install und Connect to the service.
 Abbrechen geht nur beim Download. Die Steuerzentrale zeigt den Auftrag in einem kleinen eigenen Fenster ohne Rahmen
 (`torroworkplace ui --app-job=<id>`); Entfernen fragt vorher, ob auch die Daten der App auf diesem Rechner gehen
-(Konten bleiben, andere Apps nutzen sie). Entfernte Apps gehen in den Papierkorb. Das Update der Hauptanwendung
+(Konten bleiben, andere Apps nutzen sie). Entfernte Apps gehen in den Papierkorb. „Show in Finder“ (Explorer,
+Ordner) öffnet den Ort, den der Dienst im Katalog nennt (`path`), lokal ohne Befehl, wie das Öffnen eines Ordners
+unter Appearance: Es liest und ändert nichts. Das Update der Hauptanwendung
 startet danach Dienst und Steuerzentrale neu. In Entwicklungs-Builds antworten Installieren, Aktualisieren und
 Entfernen mit `unsupported`.
 

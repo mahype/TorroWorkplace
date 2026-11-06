@@ -551,6 +551,7 @@ fn entry(env: &Env, app: AppId, scan: &Scan, stored: &Stored) -> CatalogApp {
         managed: manager.map(|manager| manager.commands(app)),
         size,
         requires: requires(app).iter().map(|app| app.window_class.to_string()).collect(),
+        path: found.map(|found| found.path.display().to_string()),
     }
 }
 

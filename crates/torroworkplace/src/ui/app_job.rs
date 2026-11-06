@@ -696,7 +696,7 @@ impl Window {
         let middle = column![steps(job), progress].spacing(space::l());
         let (note, buttons) = match job.state {
             AppJobState::Running => (
-                Some(tr("You can keep working; this window closes when it is done.").to_string()),
+                Some(tr("You can keep working while it runs.").to_string()),
                 vec![widgets::text_button(
                     None,
                     tr("Cancel"),

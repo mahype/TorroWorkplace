@@ -7235,6 +7235,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{n} of {total}+", "{n} von {total}+"),
     ("mail|Display", "Darstellung"),
     // App catalog (issue #411)
+    ("Uninstall an unknown app", "Eine unbekannte App entfernen"),
     (
         "Another app is being installed, updated or uninstalled.",
         "Gerade wird schon eine App installiert, aktualisiert oder entfernt.",
@@ -7372,10 +7373,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Connecting to the service…", "Verbinde mit dem Dienst…"),
     ("Moving to the trash…", "Wird in den Papierkorb gelegt…"),
     ("Updating the launcher…", "Starter wird aktualisiert…"),
-    (
-        "You can keep working; this window closes when it is done.",
-        "Du kannst weiterarbeiten; dieses Fenster schließt sich, wenn alles fertig ist.",
-    ),
+    ("You can keep working while it runs.", "Du kannst weiterarbeiten, während das läuft."),
     ("Try again", "Noch einmal versuchen"),
     ("Restarting…", "Startet neu…"),
     ("Opening Torro Workplace…", "Torro Workplace wird geöffnet…"),

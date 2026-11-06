@@ -179,8 +179,10 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::Reveal(app) => {
             close(state);
+            // Where the core found it, so the menu and the card never disagree (issue #411).
+            let path = catalog.and_then(|catalog| entry_of(catalog, &app)).and_then(|entry| entry.path.clone());
             match AppId::find(&app) {
-                Some(app) => Action::Reveal(app),
+                Some(app) => Action::Reveal(app, path),
                 None => Action::None,
             }
         }
@@ -241,6 +243,11 @@ pub fn refusal(code: &str) -> &'static str {
 
 /// The apps "Update all" updates: every app the catalog has an update for, never the main
 /// application, whose update restarts the service and asks first ([`Message::SelfUpdate`]).
+/// The entry of `class` in `catalog`: an app or the main application.
+fn entry_of<'a>(catalog: &'a AppCatalog, class: &str) -> Option<&'a CatalogApp> {
+    std::iter::once(&catalog.main).chain(&catalog.apps).find(|app| app.window_class == class)
+}
+
 pub fn updatable(catalog: &AppCatalog) -> Vec<String> {
     catalog.apps.iter().filter(|app| app.state == CatalogState::Update).map(|app| app.window_class.clone()).collect()
 }
@@ -831,30 +838,23 @@ pub fn reveal_label() -> &'static str {
     }
 }
 
-/// Shows where `app` lies in the system's file manager: its bundle in Finder on macOS, its program
-/// beside the suite's in the file manager elsewhere. A local action without a request, as opening a
-/// folder of Appearance is (`docs/api.md`, footnote 9): nothing is read or changed. Returns what
-/// went wrong, for the notice.
-pub fn reveal(app: AppId) -> Result<(), String> {
+/// Shows where `app` lies in the system's file manager: `path` is where the core found it
+/// ([`CatalogApp::path`]: its bundle on macOS, its program elsewhere), so the menu shows what the card
+/// says is installed. A local action without a request, as opening a folder of Appearance is
+/// (`docs/api.md`, footnote 9): nothing is read or changed. Returns what went wrong, for the notice.
+pub fn reveal(app: AppId, path: Option<&str>) -> Result<(), String> {
     let missing =
         || trf("Couldn't find {app} on this computer.", &[("app", &format!("Torro {}", shell::app_name(app)))]);
+    let program = path.map(std::path::PathBuf::from).filter(|path| path.is_absolute() && path.exists());
+    let program = program.ok_or_else(missing)?;
     #[cfg(target_os = "macos")]
     let mut command = {
-        let exe = std::env::current_exe().ok();
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-        let program = torro_gui::source::bundle_program(app, exe.as_deref(), home.as_deref(), std::path::Path::is_file)
-            .ok_or_else(missing)?;
-        let bundle = torro_gui::source::bundle_of(&program).map(std::path::Path::to_path_buf).ok_or_else(missing)?;
         let mut command = std::process::Command::new("open");
-        command.arg("-R").arg(bundle);
+        command.arg("-R").arg(&program);
         command
     };
     #[cfg(not(target_os = "macos"))]
     let mut command = {
-        let program = torro_gui::source::sibling(app.program_file());
-        if !program.is_absolute() || !program.exists() {
-            return Err(missing());
-        }
         #[cfg(target_os = "windows")]
         let command = {
             let mut command = std::process::Command::new("explorer");
@@ -889,6 +889,7 @@ pub fn demo_catalog(now: DateTime<Utc>) -> AppCatalog {
         managed: None,
         size: Some(25_795_000),
         requires: Vec::new(),
+        path: installed.map(|_| format!("/Applications/{}.app", app.display_name)),
     };
     let hub = CatalogApp {
         managed: Some(ManagedBy {
@@ -1032,7 +1033,9 @@ mod tests {
         assert!(matches!(send(Message::ReleaseNotes), Action::OpenUrl(ref url) if url.contains("/releases/")));
         assert!(matches!(send(Message::ShowJob("j1".into())), Action::AppWindow(Target::Follow(ref id)) if id == "j1"));
         assert!(matches!(send(Message::Copy("yay -Syu".into())), Action::Copy(ref text) if text == "yay -Syu"));
-        assert!(matches!(send(Message::Reveal("torro-tasks".into())), Action::Reveal(app) if app == AppId::TASKS));
+        assert!(
+            matches!(send(Message::Reveal("torro-tasks".into())), Action::Reveal(app, Some(_)) if app == AppId::TASKS)
+        );
         let Action::Send(Request::SetSetting { key, value }) = send(Message::Switch(Component::Calendar, false)) else {
             panic!("expected the setting");
         };

@@ -5783,6 +5783,10 @@ pub struct CatalogApp {
     /// Window classes of the apps it brings along (Mail and App Feed: the Notification Hub).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<String>,
+    /// Where it lies, as the core found it: the bundle on macOS (`/Applications/Torro Calendar.app`),
+    /// the program elsewhere; `None` when it is not installed. For "Show in Finder".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 /// What a person can do with a [`CatalogApp`].

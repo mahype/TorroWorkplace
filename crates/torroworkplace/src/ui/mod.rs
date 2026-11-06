@@ -371,7 +371,7 @@ pub enum Action {
     AppWindow(app_job::Target),
     /// Show where an app lies in the system's file manager ([`apps::reveal`]): a local action without
     /// a request, as [`Action::OpenFolder`]. The demo opens nothing.
-    Reveal(AppId),
+    Reveal(AppId, Option<String>),
 }
 
 /// What a page puts into the header bar next to the section title. A page module builds it in an
@@ -1847,7 +1847,7 @@ impl Ui {
                 },
                 Message::AppsChecked,
             ),
-            Action::StartAppJob(_) | Action::AppWindow(_) | Action::Reveal(_) if self.launch.demo => Task::none(),
+            Action::StartAppJob(_) | Action::AppWindow(_) | Action::Reveal(..) if self.launch.demo => Task::none(),
             Action::StartAppJob(request) => ask(request, Message::AppJobStarted),
             Action::AppWindow(target) => {
                 if let Err(problem) = app_job::open(&target) {
@@ -1855,8 +1855,8 @@ impl Ui {
                 }
                 Task::none()
             }
-            Action::Reveal(app) => {
-                if let Err(problem) = apps::reveal(app) {
+            Action::Reveal(app, path) => {
+                if let Err(problem) = apps::reveal(app, path.as_deref()) {
                     self.notice = Some(problem);
                 }
                 Task::none()
