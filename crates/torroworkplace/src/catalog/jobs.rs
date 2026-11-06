@@ -269,13 +269,13 @@ mod tests {
         assert!(job.start("torro-tasks", AppStep::Download));
         job.progress("torro-tasks", AppStep::Download, 0.5);
         assert_eq!(jobs.get(&job.id).map(|info| info.percent), Some(33), "half of 6 of 9");
-        job.done("torro-tasks", AppStep::Download, Some("1.0 MB".into()));
+        job.done("torro-tasks", AppStep::Download, Some("1000000".into()));
         job.finish(false);
         job.end();
         assert_eq!(jobs.running(), None);
         let ended = jobs.get(&job.id).expect("listed");
         assert_eq!((ended.state, ended.percent), (AppJobState::Done, 100));
-        assert_eq!(ended.steps[0].detail.as_deref(), Some("1.0 MB"));
+        assert_eq!(ended.steps[0].detail.as_deref(), Some("1000000"));
         assert!(jobs.begin(AppJobKind::Update, Vec::new(), steps()).is_ok(), "the next one may begin");
         assert_eq!(jobs.get("0000"), None);
     }

@@ -694,7 +694,7 @@ async fn install_item(
         };
         fetched.push((*part, file, expected));
     }
-    job.done(class, AppStep::Download, Some(install::megabytes(loaded)));
+    job.done(class, AppStep::Download, Some(install::byte_count(loaded)));
 
     // Check: the checksum everywhere it is given, on macOS also the signature.
     if !job.start(class, AppStep::Verify) {

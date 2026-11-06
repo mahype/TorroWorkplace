@@ -5872,8 +5872,9 @@ pub struct AppJobStep {
     pub app: String,
     pub step: AppStep,
     pub status: StepStatus,
-    /// A short fact for the step: a size (`24.6 MB`), a path, a version or `Developer ID`; never
-    /// the output of a program the core ran.
+    /// A short fact for the step: for [`AppStep::Download`] the size loaded, in bytes as decimal
+    /// digits (`25795000`), which front ends format themselves; else a path, a version or
+    /// `Developer ID`. Never the output of a program the core ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }

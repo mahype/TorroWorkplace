@@ -78,9 +78,10 @@ pub fn io_fail(err: &io::Error) -> Fail {
     }
 }
 
-/// A size for the step's detail: `24.6 MB`.
-pub fn megabytes(bytes: u64) -> String {
-    format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+/// The detail of the step Download: the bytes loaded as decimal digits (`25795000`); front ends
+/// format the size in their own language (`AppJobStep::detail`).
+pub fn byte_count(bytes: u64) -> String {
+    bytes.to_string()
 }
 
 /// Waits until `cancel` says so; forever when nobody can say so any more.
@@ -738,9 +739,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn sizes_are_shown_in_megabytes() {
-        assert_eq!(megabytes(24_600_000), "24.6 MB");
-        assert_eq!(megabytes(0), "0.0 MB");
+    fn sizes_are_handed_on_as_bytes() {
+        assert_eq!(byte_count(24_600_000), "24600000");
+        assert_eq!(byte_count(0), "0");
     }
 
     /// macOS: an unsigned bundle is refused before anything is put in place.
