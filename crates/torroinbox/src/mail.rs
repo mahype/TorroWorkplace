@@ -3893,7 +3893,12 @@ fn attachment_row<'a>(
     let menu = Some(Message::AskAttachment(reading.id.to_owned(), at));
     let triangle = widgets::icon_button(Icon::ChevronDown, tr("More ways to open or save"), menu);
     let triangle = widgets::anchored_if((reading.file_menu == Some(at)).then_some(&anchors.attachment), triangle);
-    row![container(name).width(Fill), triangle].spacing(space::xs()).align_y(Alignment::Center).into()
+    // The triangle stands on the axis of "Save all ▾" above: that frame's hairline takes 1 from the edge
+    // (measured in the design review of #491, the chevrons' centres then agree).
+    let axis = Padding::new(0.0).right(size::HAIRLINE);
+    container(row![container(name).width(Fill), triangle].spacing(space::xs()).align_y(Alignment::Center))
+        .padding(axis)
+        .into()
 }
 
 /// The text of `mail` as the window shows, selects and copies it (issue #119): plain, without
