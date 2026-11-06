@@ -6752,7 +6752,8 @@ fn chart_card_inset<'a, M: 'a>(
 
 /// The head of a [`chart_card`] `width` wide (issue #446): `title` and `note` as they are when both
 /// fit with [`space::s()`] between them; else the title whole (cut with "…" only when it alone is
-/// wider) and the note cut to what is left, `None` when nothing of it is left or it is empty. The
+/// wider) and the note cut at a word to what is left ([`cut_at_word`]), `None` when less than half
+/// of it would be left or it is empty – a stump reads restless, and the tooltip has it. The
 /// flag says whether anything was cut, so the card can show both in full as a tooltip. Cut rather
 /// than wrapped, so the head stays one line high and the charts of a row stand level.
 pub fn chart_head(title: &str, note: &str, width: f32) -> (String, Option<String>, bool) {
@@ -6767,8 +6768,26 @@ pub fn chart_head(title: &str, note: &str, width: f32) -> (String, Option<String
     }
     let shown = typo::ellipsize(title, strong, width);
     let left = width - typo::text_width(&shown, strong) - space::s();
-    let note = Some(typo::ellipsize(note, meta, left)).filter(|note| !note.is_empty());
-    (shown, note, true)
+    (shown, cut_at_word(note, meta, left), true)
+}
+
+/// `text` cut after its last whole word that fits `max_width` in `level` with "…" (design review of
+/// #499: no "ö…" stump); `None` when less than half of its letters would be left.
+fn cut_at_word(text: &str, level: typo::Level, max_width: f32) -> Option<String> {
+    if typo::text_width(text, level) <= max_width {
+        return Some(text.to_owned());
+    }
+    let room = max_width - typo::text_width(typo::ELLIPSIS, level);
+    let mut kept = None;
+    for (at, _) in text.match_indices(' ') {
+        let head = text[..at].trim_end();
+        if typo::text_width(head, level) > room {
+            break;
+        }
+        kept = Some(head);
+    }
+    let kept = kept.filter(|head| 2 * head.chars().count() >= text.chars().count())?;
+    Some(format!("{kept}{}", typo::ELLIPSIS))
 }
 
 /// A figure on its own (task E8.8b, "Insights"): `label` (`META`, `text_3`) over the `value` in
@@ -8342,16 +8361,19 @@ mod tests {
         };
         let wide = chart_head(title, note, 400.0);
         assert_eq!(wide, (title.to_owned(), Some(note.to_owned()), false), "both fit");
-        let narrow = chart_head(title, note, 260.0);
-        assert_eq!(narrow.0, title, "the title whole");
-        let cut = narrow.1.clone().expect("a part of the note");
-        assert!(cut.ends_with(typo::ELLIPSIS) && note.starts_with(cut.trim_end_matches(typo::ELLIPSIS)), "{cut}");
-        assert!(narrow.2, "cut: the tooltip says it in full");
+        // Room for "and how much of it…" and two more letters: cut after the word, no stump.
+        let room = |words: &str| typo::text_width(title, strong) + space::s() + typo::text_width(words, meta);
+        let narrow_width = room("and how much of it yo…");
+        let narrow = chart_head(title, note, narrow_width);
+        assert_eq!(narrow, (title.to_owned(), Some("and how much of it…".to_owned()), true), "cut at a word");
+        // Less than half of the note left: none of it, the tooltip has it.
+        let short = chart_head(title, note, room("and how much…"));
+        assert_eq!((short.0.as_str(), short.1.as_deref(), short.2), (title, None, true), "no stump of a note");
         let tight = chart_head(title, note, 120.0);
         assert!(tight.0.ends_with(typo::ELLIPSIS), "the title cut too: {tight:?}");
         assert_eq!(tight.1, None, "no room for the note");
         assert!(tight.2);
-        for (width, head) in [(400.0, &wide), (260.0, &narrow), (120.0, &tight)] {
+        for (width, head) in [(400.0, &wide), (narrow_width, &narrow), (120.0, &tight)] {
             assert!(width_of(head) <= width, "{width}: {head:?} fits, nothing overlaps");
         }
         assert_eq!(chart_head(title, "", 400.0), (title.to_owned(), None, false), "no note");
