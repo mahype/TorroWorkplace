@@ -6524,6 +6524,27 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         (reopen, follow)
     }
 
+    /// What the undo of moving the messages `ids` together opens again and keeps: for each the entry
+    /// [`App::reopened_by_undo`] and the follow-ups of [`App::with_follow_backs`], each entry once –
+    /// two marked mails of one conversation share their entry (issue #331).
+    fn follow_backs_of(&self, ids: &[String]) -> (Vec<String>, Vec<FollowBack>) {
+        let mut reopen: Vec<String> = Vec::new();
+        let mut follow: Vec<FollowBack> = Vec::new();
+        for id in ids {
+            if let Some(entry) = self.reopened_by_undo(id).filter(|entry| !reopen.contains(entry)) {
+                reopen.push(entry);
+            }
+            let (more, backs) = self.with_follow_backs(id, reopen);
+            reopen = more;
+            for back in backs {
+                if !follow.iter().any(|held| held.id == back.id) {
+                    follow.push(back);
+                }
+            }
+        }
+        (reopen, follow)
+    }
+
     /// The entries the window holds that show the message `id` and are not done (list, panel, menu,
     /// "For me", "Coming back"), each once: what archiving from a mail entry closes (task E18.5).
     fn open_entries_of(&self, id: &str) -> Vec<String> {
@@ -7282,11 +7303,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         // Entry views do not necessarily hold each message's current folder. Offer undo only
         // when every source folder is known and identical, rather than guessing the inbox.
         let homes: Vec<_> = ids.iter().map(|id| self.folder_of(id)).collect();
+        // Gathered before `take_out`, which drops the entries `with_follow_backs` looks at (issue #331).
+        let (reopen, follow) = self.follow_backs_of(&ids);
         let undo = homes[0].as_ref().filter(|home| homes.iter().all(|held| held.as_ref() == Some(*home))).map(|home| {
             Undo::Mail {
                 edit: MailEdit::Move { ids: ids.clone(), to: MoveTarget::Folder(home.clone()) },
-                reopen: Vec::new(),
-                follow: Vec::new(),
+                reopen,
+                follow,
             }
         });
         let hint = Some(Hint { text: tr("Moved to Trash").to_owned(), undo, shown: Instant::now(), folder: None });
@@ -19182,6 +19205,73 @@ mod tests {
         let back = entry_now(&app, &entry);
         assert_eq!(back.state, State::Snoozed { until: at }, "put off again");
         assert_eq!(back.follow_up.map(|f| (f.at, f.unless_reply)), Some((at, true)), "with its follow-up");
+    }
+
+    /// Issue #331: "Undo" of deleting several marked mails brings back the follow-ups of their entries
+    /// as deleting one mail does – each entry open again with its time and condition –, end to end
+    /// through the demo. (A snoozed entry's mail is not in "All", and a folder holds no entries.)
+    #[test]
+    fn undo_of_deleting_marked_mail_keeps_the_follow_ups() {
+        use iced::keyboard::Modifiers;
+
+        let mut app = mail_window(Density::Compact, &[]);
+        // Two open mail entries whose mails lie in one folder, so the toast offers an undo.
+        let entries: Vec<(String, String, String)> = app
+            .for_me
+            .iter()
+            .filter(|item| item.state.is_open())
+            .filter_map(|item| match &item.link {
+                Some(Link::Mail { message }) => {
+                    app.folder_of(message).map(|folder| (item.id.clone(), message.clone(), folder))
+                }
+                _ => None,
+            })
+            .collect();
+        let (one, first, other, second) = entries
+            .iter()
+            .enumerate()
+            .find_map(|(at, (entry, message, folder))| {
+                let (other, mail, _) = entries[at + 1..].iter().find(|(_, _, held)| held == folder)?;
+                Some((entry.clone(), message.clone(), other.clone(), mail.clone()))
+            })
+            .expect("two open mail entries with mail in one folder");
+        let at = app.now + TimeDelta::days(2);
+        let later = app.now + TimeDelta::days(5);
+        block_on(app.inbox.snooze_item(one.clone(), Some(at), true, true)).expect("open with a follow-up");
+        block_on(app.inbox.snooze_item(other.clone(), Some(later), false, true)).expect("open with a follow-up");
+        load(&mut app);
+        let listed = message_ids(&app);
+        assert!(listed.contains(&first.as_str()) && listed.contains(&second.as_str()), "{listed:?}");
+
+        let _ = app.update(Message::SelectMail(first.clone()));
+        let _ = app.update(Message::ModifiersChanged(Modifiers::CTRL));
+        let _ = app.update(Message::SelectMail(second.clone()));
+        let _ = app.update(Message::ModifiersChanged(Modifiers::empty()));
+        assert_eq!(app.selected_mail, [first.clone(), second.clone()]);
+        let _ = app.update(Message::DeleteSelectedMail);
+        let (edit, hint) = app
+            .sent
+            .iter()
+            .rev()
+            .find_map(|sent| match sent {
+                Sent::Mail(edit @ MailEdit::Delete { .. }, Some(hint)) => Some((edit.clone(), hint.clone())),
+                _ => None,
+            })
+            .expect("deleted with a toast");
+        block_on(edit.apply(app.inbox.clone())).expect("deleted");
+        for entry in [&one, &other] {
+            block_on(app.inbox.set_item_done(entry.clone(), true)).expect("closed as the core does");
+            assert!(entry_now(&app, entry).follow_up.is_none(), "closing cleared the follow-up");
+        }
+        let Some(Undo::Mail { edit, reopen, follow }) = hint.undo else { panic!("an undo") };
+        block_on(undo_move(app.inbox.clone(), edit, reopen, follow)).expect("undone");
+
+        for (entry, when, unless_reply) in [(&one, at, true), (&other, later, false)] {
+            let back = entry_now(&app, entry);
+            assert!(back.state.is_open(), "{entry} open again: {:?}", back.state);
+            let kept = back.follow_up.map(|f| (f.at, f.unless_reply));
+            assert_eq!(kept, Some((when, unless_reply)), "{entry} with its follow-up");
+        }
     }
 
     /// Task E18.4: the start states of the mail window – no `--open`, `overview`, `info`, `done` and
