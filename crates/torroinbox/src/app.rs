@@ -16971,6 +16971,13 @@ mod tests {
             assert_eq!(app.cursor, wanted, "--open {open}: that mail");
             draw_everywhere(&mut app);
         }
+        // Issue #501: the fifth group the demo opens is Save, and the formats hang at the row.
+        let mut app = mail_window(Density::Compact, &["--open", "save-group"]);
+        load(&mut app);
+        let groups = app.rail_groups(SizeClass::Wide, &detail::Anchors::default()).expect("the rail");
+        assert_eq!((app.rail_open, groups[4].label.as_ref()), (Some(4), tr("Save")));
+        let app = mail_window(Density::Compact, &["--open", "save-format-menu"]);
+        assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::SaveMailFormat), false));
     }
 
     /// Issue #497: the context menu opens with its corner where the row was clicked, and without a

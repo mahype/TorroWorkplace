@@ -8,7 +8,7 @@
 //! (decision 2); a text mail is its text in a block that keeps its lines. Both are laid out 720
 //! logical pixels wide at scale 2 and always in light colours: paper is light. Drawing waits for the
 //! pictures at most [`WAIT_FOR_PICTURES`]; a picture that comes later can move what follows, so the
-//! heights are measured again on every page and after the picture, and a mail that grew is marked
+//! heights are measured again on every page and after the picture, and a mail that changed is marked
 //! shortened. [`Content`] is not `Send`, so everything happens on one blocking thread, and only one
 //! export runs at a time ([`EXPORTS`]): a PNG holds a few dozen MB while it is made, a PDF its pages
 //! uncompressed until it is written (about 9 MB a page, at most [`MAX_PAGES`]).
@@ -342,8 +342,8 @@ fn rows_of(content: &Content) -> u32 {
     (content.height(WIDTH, SCALE, Scheme::Light) * SCALE).ceil().max(1.0) as u32
 }
 
-/// The sheet as one PNG picture, at most `max_rows` rows ([`MAX_PNG_ROWS`]). A mail that grew while
-/// it was written (a late picture) counts as shortened: its end may be missing.
+/// The sheet as one PNG picture, at most `max_rows` rows ([`MAX_PNG_ROWS`]). A mail that changed
+/// while it was written (a late picture) counts as shortened: a piece of it may be missing.
 fn png(sheet: &Sheet, max_rows: u32) -> Result<Drawn, String> {
     let total = sheet.rows();
     let rows = total.min(max_rows);
@@ -363,8 +363,9 @@ fn png(sheet: &Sheet, max_rows: u32) -> Result<Drawn, String> {
         stream.finish().map_err(|err| err.to_string())?;
     }
     writer.finish().map_err(|err| err.to_string())?;
-    let grew = sheet.measure() > total;
-    Ok(Drawn { bytes, shortened: total > rows || grew })
+    // Taller or shorter (a wide picture zooms the mail out): the bands no longer fit together.
+    let moved = sheet.measure() != total;
+    Ok(Drawn { bytes, shortened: total > rows || moved })
 }
 
 /// The rows of one A4 page's picture: as wide as the text between the margins.
@@ -390,12 +391,19 @@ fn cut(rgb: &[u8], width: u32, rows: u32) -> u32 {
 /// The sheet as a PDF of A4 pages, at most `max_pages` ([`MAX_PAGES`]).
 fn pdf(sheet: &Sheet, max_pages: usize) -> Result<Drawn, String> {
     let mut total = sheet.rows();
+    let mut moved = false;
     let full = page_rows(sheet.width);
     let mut doc = PdfDocument::new(tr("Mail"));
     let mut from = 0;
     while from < total && doc.pages.len() < max_pages {
         // A late picture moves what follows: each page is cut from the mail as it stands now.
-        total = sheet.measure();
+        let now = sheet.measure();
+        moved |= now != total;
+        total = now;
+        // A late wide picture zooms the mail out, so it can end above where the last page did.
+        if from >= total {
+            break;
+        }
         let to = (from + full).min(total);
         let mut rgb = sheet.band(from, to);
         let rows = if to < total { cut(&rgb, sheet.width, to - from) } else { to - from };
@@ -437,11 +445,15 @@ fn pdf(sheet: &Sheet, max_pages: usize) -> Result<Drawn, String> {
     let images = ImageOptimizationOptions {
         max_image_size: None,
         format: Some(ImageCompression::Flate),
+        // Not even "almost grey" pages made grey.
+        auto_optimize: Some(false),
         ..ImageOptimizationOptions::default()
     };
     let options = PdfSaveOptions { image_optimization: Some(images), ..PdfSaveOptions::default() };
     let bytes = stable_trailer(doc.save(&options, &mut Vec::new()));
-    Ok(Drawn { bytes, shortened: from < total.max(sheet.measure()) })
+    // A mail that changed while its pages were cut may miss a piece between two of them.
+    let moved = moved || sheet.measure() != total;
+    Ok(Drawn { bytes, shortened: from < total || moved })
 }
 
 /// `pdf` with the file identifiers of its trailer (`/ID`, two strings printpdf makes at random) set to
