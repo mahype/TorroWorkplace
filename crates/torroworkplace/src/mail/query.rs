@@ -125,15 +125,25 @@ impl Query {
         self.terms().any(|term| matches!(term.test, Test::Text { .. }))
     }
 
-    /// The query without the clauses that only ask for folders (`in:` alone, or several joined by
-    /// `OR`), every other clause as it is (task E19.1). For the mail back from a follow-up with
-    /// `snoozed: false`: it stands on top of "All" (`in:inbox`) also when it lies elsewhere, a sent
-    /// mail nobody answered. A clause mixing `in:` with another test stays whole, and so does one
+    /// The query without the clauses that only ask for the inbox (`in:inbox` alone, or joined by
+    /// `OR` to other folders), every other clause as it is (task E19.1, #330). For the mail back
+    /// from a follow-up with `snoozed: false`: it stands on top of "All" (`in:inbox`) also when it
+    /// lies elsewhere, a sent mail nobody answered. `None` when the query does not ask for the
+    /// inbox this way (`in:sent`, no `in:` at all, `in:trash`): then the folder it names holds for
+    /// the mail back as well. A clause mixing `in:` with another test stays whole, and so does one
     /// that leaves a folder out (`-in:trash`): that narrows, it never asks for a place.
-    pub fn without_folders(&self) -> Query {
-        let folders_only =
-            |clause: &Clause| clause.any.iter().all(|term| !term.negated && matches!(term.test, Test::In(_)));
-        Query { clauses: self.clauses.iter().filter(|clause| !folders_only(clause)).cloned().collect() }
+    pub fn without_inbox(&self) -> Option<Query> {
+        let asks_inbox = |clause: &Clause| {
+            clause.any.iter().all(|term| !term.negated && matches!(term.test, Test::In(_)))
+                && clause
+                    .any
+                    .iter()
+                    .any(|term| matches!(&term.test, Test::In(folder) if folder.eq_ignore_ascii_case("inbox")))
+        };
+        if !self.clauses.iter().any(asks_inbox) {
+            return None;
+        }
+        Some(Query { clauses: self.clauses.iter().filter(|clause| !asks_inbox(clause)).cloned().collect() })
     }
 
     /// It needs the texts of messages (words anywhere, or attachment names), which are indexed
@@ -456,20 +466,28 @@ mod tests {
         assert!(!parse("is:unread in:inbox").expect("parses").has_words());
     }
 
-    /// Task E19.1: only clauses that ask for folders go; the rest stays as it was.
+    /// Task E19.1, #330: only clauses that ask for the inbox go; the rest stays as it was.
     #[test]
-    fn without_folders_drops_only_what_asks_for_a_folder() {
+    fn without_inbox_drops_only_what_asks_for_the_inbox() {
         let query = parse("in:inbox offer in:sent OR in:archive -in:trash in:inbox OR is:unread").expect("parses");
         assert_eq!(
-            query.without_folders(),
-            Query {
+            query.without_inbox(),
+            Some(Query {
                 clauses: vec![
                     Clause { any: vec![word("offer")] },
+                    Clause { any: vec![test(Test::In("sent".into())), test(Test::In("archive".into()))] },
                     Clause { any: vec![not(test(Test::In("trash".into())))] },
                     Clause { any: vec![test(Test::In("inbox".into())), test(Test::Unread(true))] },
                 ]
-            }
+            })
         );
-        assert!(parse("in:inbox").expect("parses").without_folders().is_empty());
+        assert_eq!(parse("in:inbox").expect("parses").without_inbox(), Some(Query::default()));
+        assert_eq!(parse("in:sent").expect("parses").without_inbox(), None);
+        assert_eq!(parse("offer").expect("parses").without_inbox(), None);
+        assert_eq!(parse("in:inbox OR in:sent").expect("parses").without_inbox(), Some(Query::default()));
+        assert_eq!(
+            parse("in:INBOX in:sent").expect("parses").without_inbox(),
+            Some(Query { clauses: vec![Clause { any: vec![test(Test::In("sent".into()))] }] })
+        );
     }
 }

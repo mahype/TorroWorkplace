@@ -5000,6 +5000,7 @@ fn plan_category_move(
     // Into another group: checked as `inbox.update_category` checks it, so nobody is asked to approve
     // a move that would then be refused (API review of #481).
     if catalogue::find(&catalogue, category)?.group != group {
+        catalogue::not_into_unsorted(category, Some(catalogue::find(&catalogue, category)?.group), group)?;
         let mut moved = catalogue.clone();
         if let Some(def) = moved.iter_mut().find(|def| def.category == category) {
             def.group = group;
@@ -8301,6 +8302,63 @@ pub(crate) mod tests {
             "error",
             "renaming into a taken name"
         );
+    }
+
+    /// #402: "Unsorted" holds only "Other": nothing else is made, moved or updated into it – also
+    /// planned, before anyone is asked –, while "Other" moves out and back and a category that lay
+    /// there before stays and can be renamed.
+    #[test]
+    fn unsorted_holds_only_other() {
+        use torro_mail::{Category, CategoryGroup, CategoryIcon};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let refused = |answer: Result<torro_mail::CategoryDef, Response>| match answer {
+            Err(Response::Error { code, message }) => (code, message),
+            other => panic!("refused, got {other:?}"),
+        };
+        let message = tr("The main category “Unsorted” holds only “Other”. Choose another one.");
+        let new = inbox.create_category(
+            CategoryGroup::Unsorted,
+            "Club",
+            "The sports club.",
+            false,
+            CategoryIcon::Tag,
+            at(8, 0),
+        );
+        assert_eq!(refused(new), ("error".into(), message.to_string()));
+        let own = inbox
+            .create_category(CategoryGroup::Info, "Club", "The sports club.", false, CategoryIcon::Tag, at(8, 0))
+            .expect("a category");
+        let before = inbox.catalogue().expect("catalogue");
+        for category in [own.category, Category::Newsletter] {
+            let update = inbox.update_category(category, Some(CategoryGroup::Unsorted), None, None, None, None);
+            assert_eq!(refused(update), ("error".into(), message.to_string()));
+            let planned = inbox.plan_category_move(category, CategoryGroup::Unsorted, 0);
+            assert!(matches!(planned, Err(Response::Error { ref code, .. }) if code == "error"), "{planned:?}");
+        }
+        assert_eq!(inbox.catalogue().expect("catalogue"), before, "nothing changed");
+
+        // "Other" may leave and come back.
+        assert!(inbox.update_category(Category::Other, Some(CategoryGroup::Info), None, None, None, None).is_ok());
+        assert!(inbox.update_category(Category::Other, Some(CategoryGroup::Unsorted), None, None, None, None).is_ok());
+        assert!(inbox.plan_category_move(Category::Other, CategoryGroup::Unsorted, 0).is_ok());
+
+        // One that lies there from before stays and can be changed.
+        let Category::Custom(custom) = own.category else { panic!("a category of one's own") };
+        inbox
+            .with(|db| {
+                db.execute("UPDATE custom_categories SET grp = 'unsorted' WHERE id = ?1", [custom.number()])?;
+                Ok(())
+            })
+            .expect("put there as before");
+        let renamed = inbox.update_category(own.category, None, Some("Sports club".into()), None, None, None);
+        assert_eq!(
+            renamed.map(|def| (def.name, def.group)).ok(),
+            Some((Some("Sports club".into()), CategoryGroup::Unsorted))
+        );
+        let same = inbox.update_category(own.category, Some(CategoryGroup::Unsorted), None, None, None, None);
+        assert!(same.is_ok(), "staying is no move");
     }
 
     /// Issue #265: icon choices for built-in and custom categories survive a restart, and putting

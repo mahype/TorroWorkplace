@@ -1357,6 +1357,17 @@ fn tiles<'a>(form: &'a CategoryForm, data: &'a Data) -> Element<'a, Message> {
     .into()
 }
 
+/// Whether `group` may take `category` (`None`: a new one) in the settings (#402): "Unsorted" holds
+/// only "Other", so it is offered for no other category, unless the category lies there already
+/// (the service keeps such a catalogue as it is). Every other group takes any.
+pub(crate) fn offers_group(data: &Data, category: Option<Category>, group: CategoryGroup) -> bool {
+    group != CategoryGroup::Unsorted
+        || category.is_some_and(|category| {
+            category == Category::Other
+                || data.categories.iter().any(|info| info.category == category && info.group == group)
+        })
+}
+
 /// The popover of a category's page that is open (issue #481): the symbols as a grid, the groups,
 /// or "+ Rule" with a rule or a filter from a search.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
@@ -1375,6 +1386,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
             let items = data
                 .category_groups
                 .iter()
+                .filter(|held| offers_group(data, form.category, held.group))
                 .map(|held| MenuItem::new(category_icon(held.icon), held.label.clone(), Message::Group(held.group)))
                 .collect();
             let menu = container(widgets::menu(vec![MenuSection::new(items)])).width(widgets::menu_width());
@@ -1826,6 +1838,13 @@ mod tests {
         assert!(sent(&mut state, &data, vec![Message::Shift { category: first.category, up: true }]).is_empty());
         let _: Action<()> = update(&mut state, Message::Popover(Some(Popover::Group)), &data);
         assert!(overlay(&state, &data).is_some());
+        // "Unsorted" holds only "Other" (#402): offered for a new category and one of one's own in
+        // "Info" no more, but for "Other" and a category that lies there already.
+        assert!(offers_group(&data, None, CategoryGroup::Info));
+        assert!(!offers_group(&data, None, CategoryGroup::Unsorted));
+        assert!(!offers_group(&data, Some(Category::Newsletter), CategoryGroup::Unsorted));
+        assert!(offers_group(&data, Some(Category::Other), CategoryGroup::Unsorted));
+        assert!(offers_group(&data, Some(Category::Newsletter), CategoryGroup::PaperTrail));
         assert!(matches!(escape(&state), Some(Message::Popover(None))));
         // The switches of the rows are stored at once: a rule keeps all but its switch, the row of
         // the contacts is its setting.

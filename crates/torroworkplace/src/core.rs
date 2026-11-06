@@ -9207,17 +9207,31 @@ impl Core {
     /// lies in a folder with the role trash or junk (review of #315): thrown away or spam, it goes
     /// on no pile – the mail window does not offer it there, and the API keeps to the same. Archived
     /// mail may. Only for putting mail on a pile; taking it off works wherever it lies, so mail that
-    /// went to the trash afterwards still comes off. `None` when every mail may go on a pile, also
-    /// when a store cannot be read (the command finds that out itself).
+    /// went to the trash afterwards still comes off. `error` when a store or its folders cannot be
+    /// read (#332): without them nobody knows where the mail lies, so it is not put on a pile on
+    /// a guess. `None` when every mail may go on a pile.
     async fn unpileable(&self, ids: &[String], reach: Reach<'_>) -> Option<Response> {
+        let unreadable = |what: &dyn std::fmt::Display| {
+            eprintln!("torroworkplace: cannot tell where mail lies, so it goes on no pile: {what}");
+            Some(refusal("error", "the folder of the mail cannot be read, so it is put on no pile".into()))
+        };
         let wanted: Vec<&str> = ids.iter().map(String::as_str).collect();
-        let found = crate::mail::write::locate(&self.mail, reach, &wanted).await.ok()?;
+        let found = match crate::mail::write::locate(&self.mail, reach, &wanted).await {
+            Ok(found) => found,
+            Err(error) => return unreadable(&format!("{error:?}")),
+        };
         let mut accounts: Vec<&str> = found.iter().map(|message| message.account.as_str()).collect();
         accounts.sort_unstable();
         accounts.dedup();
         for account in accounts {
-            let Ok(store) = self.mail.store(account).await else { continue };
-            let bins = store.run(|store| store.folders()).await.ok().unwrap_or_default();
+            let store = match self.mail.store(account).await {
+                Ok(store) => store,
+                Err(error) => return unreadable(&format!("{error:?}")),
+            };
+            let bins = match store.run(|store| store.folders()).await {
+                Ok(bins) => bins,
+                Err(error) => return unreadable(&format!("{error:?}")),
+            };
             let bin = |folder: &str| {
                 bins.iter().any(|held| {
                     held.id == folder && matches!(held.role, Some(torro_mail::Role::Trash | torro_mail::Role::Junk))
@@ -22364,6 +22378,13 @@ mod tests {
         assert_eq!(all[0].back, Some(later));
         // Other words of the search still hold for it.
         assert_eq!(subjects(&page(ask(&core, Some(&app_key), search(Some("in:inbox offer"))).await)).len(), 0);
+        // Only a search of the inbox looks for the mail back elsewhere (#330): any other folder
+        // holds for it as well, so the sent mail does not show up in the drafts, the archive or the trash.
+        let in_folder = async |query: &str| subjects(&page(ask(&core, Some(&app_key), search(Some(query))).await));
+        assert_eq!(in_folder("in:inbox").await, ["Question", "Mail 1"]);
+        assert!(in_folder("in:drafts").await.is_empty());
+        assert_eq!(in_folder("in:archive").await, ["Re Question archived"]);
+        assert_eq!(in_folder("in:trash").await, ["Re Question"]);
     }
 
     // ----- "Show again" (task E18.2) -----
@@ -22760,6 +22781,40 @@ mod tests {
         assert_eq!(ask(&core, Some(&app_key), put(vec![id("Kept")], None)).await, Response::Ok);
         waits(ask(&core, Some(&asking), put(vec![id("Filed")], None)).await);
         assert_eq!(piled(), [id("Filed")]);
+    }
+
+    /// #332: when the folders of the mail cannot be read, putting it on a pile is an `error` for
+    /// the whole call – by the API, before anyone is asked –; taking it off needs no folder.
+    #[tokio::test]
+    async fn no_pile_when_the_folder_of_the_mail_cannot_be_read() {
+        use crate::mail::read::tests::mail_from;
+        use torro_mail::MailPile;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add("INBOX", &mail_from("Kept", 2, "bernd@example.com", None), &["\\Seen"]);
+        let (core, app_key) = shown_core(dir.path(), &server).await;
+        let store = core.mail.store(ANNA_MAIL).await.expect("the store");
+        let every = crate::mail::store::SearchQuery::default();
+        let mail = store.run(move |store| store.search(&every, 50, 0)).await.expect("read");
+        let id = mail.iter().find(|m| m.subject == "Kept").expect("synced").id.clone();
+        // Break what `folders()` reads, not what finds the message.
+        let path = store.run(|store| Ok(store.path().to_path_buf())).await.expect("path");
+        rusqlite::Connection::open(path)
+            .expect("opens")
+            .execute("ALTER TABLE folders RENAME COLUMN name TO broken", [])
+            .expect("broken");
+        let put = |pile| Request::SetMailPile { ids: vec![id.clone()], pile, since: None };
+        let mut asking = RightsTemplate::FullAccess.rights();
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, asking) = client(&core, asking).await;
+
+        let on = put(Some(MailPile::ReplyLater));
+        assert_eq!(code(&ask(&core, Some(&asking), on.clone()).await), "error");
+        assert_eq!(code(&ask(&core, Some(&app_key), on).await), "error");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
+        let piled = core.inbox.mail_piles(&[ANNA_MAIL.into()]).expect("read").all_of(ANNA_MAIL);
+        assert!(piled.is_empty(), "nothing on a pile");
+        assert_eq!(ask(&core, Some(&app_key), put(None)).await, Response::Ok, "taking off needs no folder");
     }
 
     /// Task E19.2: the piles keep to the accounts a key reads and whose entries it sees – checked

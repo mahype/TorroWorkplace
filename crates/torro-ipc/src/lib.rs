@@ -2393,7 +2393,8 @@ pub enum Request {
     /// `docs/kategorien.md`). Its key is `custom_<n>` and never changes. `error` for a name that is
     /// empty, longer than 60 characters, more than one line or already a category's, for a
     /// description that is empty or longer than 500 characters, and when `model` would make more
-    /// than 20 categories of the group a model chooses between.
+    /// than 20 categories of the group a model chooses between, and for the group `unsorted`: it holds
+    /// only `other` (#402).
     #[serde(rename = "inbox.create_category")]
     CreateCategory {
         /// The group it stands in.
@@ -2414,7 +2415,8 @@ pub enum Request {
     /// E15.1). Only the fields given change; the key stays, so mail and rules keep it. An empty
     /// `name` or `description` puts back the suite's words for one of its categories (`error` for
     /// one of the person's). `not-found` for a category that is not in the catalogue; `error` as
-    /// for `inbox.create_category`.
+    /// for `inbox.create_category`, also for a `group` of `unsorted` given to any category but `other`
+    /// (#402; one that lies there already stays and may be changed).
     #[serde(rename = "inbox.update_category")]
     UpdateCategory {
         /// The category's key, as `inbox.list_categories` gives it.
@@ -2443,7 +2445,8 @@ pub enum Request {
     /// rules or mail filters of several categories match one mail: the one higher up, groups from
     /// the top, within a group categories from the top. `not-found` for a category or group that is
     /// not there; `error` when the target group would offer the decision model more than 20
-    /// categories. Needs the person's approval.
+    /// categories, or is `unsorted` for a category other than `other` (#402), checked before the
+    /// approval is asked for. Needs the person's approval.
     #[serde(rename = "inbox.move_category")]
     MoveCategory {
         /// The category's key, as `inbox.list_categories` gives it.
@@ -2596,7 +2599,8 @@ pub enum Request {
     ///
     /// Mail in the trash or in spam goes on no pile: with `pile`, `unsupported` for the whole call
     /// as soon as one id lies in a folder with that role, checked before an approval is asked for;
-    /// archived mail may. Taking mail off (`pile` left out) works wherever it lies.
+    /// archived mail may. With `pile`, `error` for the whole call when the service cannot read the folder of a
+    /// message (nothing is guessed, nothing changes). Taking mail off (`pile` left out) works wherever it lies.
     ///
     /// Mail of several accounts may go in one call. Answered with [`Response::Ok`]; `not-found`
     /// for the whole call, with nothing changed, as soon as one id is in no account whose mail the
@@ -2880,8 +2884,8 @@ pub enum Request {
         /// "Later" (task E9.1): `false` leaves out messages whose inbox entry is snoozed now and
         /// puts messages that came back from it (their `back`) by the time
         /// they came back instead of their date (not with `sort: relevance`); such mail comes from any
-        /// folder but archive, trash and spam whatever `in:` the query says (a `folder` still holds),
-        /// and `total_estimate` does not count it from other folders. `true` gives only the snoozed
+        /// folder but archive, trash and spam when the query asks for `in:inbox`; any other `in:` or
+        /// none holds for it too, and so does a `folder` given. `total_estimate` does not count it from other folders. `true` gives only the snoozed
         /// ones. Left out: every message, by date. Filtered before paging, so pages and
         /// `cursor` hold; a cursor belongs to this field as well. Only for accounts whose inbox
         /// entries the caller sees (read access to `inbox`, the account among `inbox_sources`);

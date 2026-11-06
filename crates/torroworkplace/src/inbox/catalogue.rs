@@ -312,6 +312,23 @@ pub(super) fn find(catalogue: &[CategoryDef], category: Category) -> Result<&Cat
     })
 }
 
+/// `invalid` when `category` would be put into "Unsorted" (`to`) from `from` (`None`: it is new) and
+/// is not "Other" (#402): that group holds only "Other", the place for mail that fits nowhere. A
+/// category that lies there already stays and may still be changed, so catalogues from before this
+/// rule keep working. Weighed only when the group is given, not for every change (see [`check`]).
+pub(super) fn not_into_unsorted(
+    category: Category,
+    from: Option<CategoryGroup>,
+    to: CategoryGroup,
+) -> Result<(), Failure> {
+    if to == CategoryGroup::Unsorted && category != Category::Other && from != Some(CategoryGroup::Unsorted) {
+        return Err(Failure::Invalid(
+            tr("The main category “Unsorted” holds only “Other”. Choose another one.").into(),
+        ));
+    }
+    Ok(())
+}
+
 /// A new category of the person's own (`inbox.create_category`).
 pub(super) fn create(
     db: &Connection,
@@ -323,12 +340,14 @@ pub(super) fn create(
     now: DateTime<Utc>,
 ) -> Result<CategoryDef, Failure> {
     find_group(db, group)?;
+    // A category has no number before it is made; any custom one is not "Other".
+    let unborn = CustomCategory::new(u32::MAX).map_or(Category::Other, Category::Custom);
+    not_into_unsorted(unborn, None, group)?;
     let name = checked_name(name)?;
     let description = checked_description(description)?
         .ok_or_else(|| Failure::Invalid(tr("Describe what belongs in the category.").into()))?;
     let mut catalogue = catalogue_in(db)?;
     // Checked as it would stand, with a key no category has yet.
-    let unborn = CustomCategory::new(u32::MAX).map_or(Category::Other, Category::Custom);
     catalogue.push(CategoryDef {
         category: unborn,
         group,
@@ -368,6 +387,7 @@ pub(super) fn update(db: &Connection, category: Category, changes: Changes) -> R
     let mut def = find(&catalogue, category)?.clone();
     if let Some(group) = changes.group {
         find_group(db, group)?;
+        not_into_unsorted(category, Some(def.group), group)?;
         def.group = group;
     }
     // In another group it has no place there yet: it goes after the placed ones (issue #481).
