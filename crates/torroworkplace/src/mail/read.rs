@@ -433,11 +433,12 @@ struct LaterView {
 impl LaterView {
     /// The queries for the store of `account`: the page is merged from all of them. One query
     /// except with `snoozed: false`, which fetches the mail back from Later apart (none when
-    /// there is none), so it is found whatever its date – and wherever it lies (task E19.1,
-    /// decision 8): that query drops the `in:` of the search ([`query::Query::without_folders`]),
-    /// so a sent mail back from a follow-up stands on top of "All" (`in:inbox`) as well. Mail in the
-    /// archive, the trash or spam is left out there ([`anywhere_not_dealt_with`]): archived or thrown
-    /// away, it is not back.
+    /// there is none), so it is found whatever its date – and, for a search in the inbox, wherever
+    /// it lies (task E19.1, decision 8, #330): that query drops the `in:inbox` of the search
+    /// ([`query::Query::without_inbox`]), so a sent mail back from a follow-up stands on top of
+    /// "All" (`in:inbox`) as well. Mail in the archive, the trash or spam is left out there
+    /// ([`where_back`]): archived or thrown away, it is not back. A search for another folder
+    /// (`in:sent`, `in:archive`) or none keeps its query: the folder it names holds for the mail back too.
     ///
     /// The pile (task E19.2) narrows each of them alike ([`LaterView::piled`]).
     fn queries(&self, account: &str, query: &SearchQuery) -> Vec<SearchQuery> {
@@ -450,7 +451,7 @@ impl LaterView {
                 except.extend(back.iter().cloned());
                 let mut queries = vec![SearchQuery { except, ..query.clone() }];
                 if !back.is_empty() {
-                    let anywhere = anywhere_not_dealt_with(&query.query);
+                    let anywhere = where_back(&query.query);
                     queries.push(SearchQuery { only: Some(back), query: anywhere, ..query.clone() });
                 }
                 queries
@@ -501,11 +502,12 @@ impl LaterView {
     }
 }
 
-/// `query` without what it asks of folders ([`Query::without_folders`]), but never in the archive,
-/// the trash or spam (task E19.1, review of #315): where the mail back from Later is looked for with
-/// `snoozed: false`. Mail there was dealt with, as the mail feed's `settle` holds it too.
-fn anywhere_not_dealt_with(query: &Query) -> Query {
-    let mut anywhere = query.without_folders();
+/// Where the mail back from Later is looked for with `snoozed: false` (task E19.1, review of #315,
+/// #330): for a search in the inbox `query` without that ([`Query::without_inbox`]), but never in the
+/// archive, the trash or spam; mail there was dealt with, as the mail feed's `settle` holds it too.
+/// Any other search stays as it is, so the folder it names holds.
+fn where_back(query: &Query) -> Query {
+    let Some(mut anywhere) = query.without_inbox() else { return query.clone() };
     for role in ["archive", "trash", "junk"] {
         let term = query::Term { negated: true, test: query::Test::In(role.into()) };
         anywhere.clauses.push(query::Clause { any: vec![term] });
