@@ -629,7 +629,11 @@ async fn run(inner: Arc<Inner>, work: Work, job: Job) {
             // really gone.
             let exe = inner.env.exe.as_deref();
             let under = |paths: &[PathBuf]| exe.is_some_and(|exe| paths.iter().any(|path| exe.starts_with(path)));
-            let gone = under(&done.removed) || (under(&done.removing) && exe.is_some_and(|exe| !exe.exists()));
+            if under(&done.removing) && exe.is_some_and(|exe| !exe.exists()) {
+                let removing = std::mem::take(&mut done.removing);
+                done.removed.extend(removing);
+            }
+            let gone = under(&done.removed);
             let target = match gone {
                 true => {
                     let newest = Arc::clone(&inner.hooks.read().unwrap_or_else(PoisonError::into_inner).newest_service);
