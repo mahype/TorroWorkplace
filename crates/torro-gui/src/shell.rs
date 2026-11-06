@@ -987,28 +987,31 @@ fn head_row<'a, M: Clone + 'a>(top: &TopRow<M>, header: Element<'a, M>) -> iced:
     row.align_y(Alignment::Center)
 }
 
-/// The edge of the settings button in the top row (issue #474): smaller than the other icon buttons
-/// ([`size::control_sm()`], 36 in the standard design), so it keeps room to the window's corner, whose
-/// rounding on macOS would cut a button that stands closer, and to the line below. Decided after the
-/// visual check of #472.
-const SETTINGS_EDGE: f32 = 28.0;
+/// The edge of the settings button in the top row (issue #474): one [`space::s()`] smaller than the
+/// other icon buttons ([`size::control_sm()`]; 36 − 8 = 28 in the standard design), so it keeps room
+/// to the window's corner, whose rounding on macOS would cut a button that stands closer, and to the
+/// line below. It follows the design's tokens, as the other buttons do. Decided after the visual check
+/// of #472 and its review.
+fn settings_edge() -> f32 {
+    (size::control_sm() - space::s()).max(0.0)
+}
 
 /// The gap right of the settings button, in layout units, at the zoom factor `zoom` (issue #474): as
-/// wide as the room above and below the button ([`SETTINGS_EDGE`]), which sits in the middle of the
+/// wide as the room above and below the button ([`settings_edge`]), which sits in the middle of the
 /// row over the line, so it stands the same distance from the top, the right edge and the line (5.5
 /// at zoom 1). The gap shrinks to nothing rather than below.
 fn settings_gap(zoom: f32) -> f32 {
-    ((TOP_ROW / zoom - LINE - SETTINGS_EDGE) / 2.0).max(0.0)
+    ((TOP_ROW / zoom - LINE - settings_edge()) / 2.0).max(0.0)
 }
 
 /// The settings button of the top row: [`SETTINGS_ICON`], "Settings", marked while `open` like a
 /// chosen sidebar row (neutral, never red).
 fn settings_button<'a, M: Clone + 'a>(on_press: M, open: bool) -> Element<'a, M> {
-    // Closed it looks like an icon button (`text_2`, `hover` on hover), only [`SETTINGS_EDGE`] square.
+    // Closed it looks like an icon button (`text_2`, `hover` on hover), only [`settings_edge`] square.
     let tone = if open { Tone::Text } else { Tone::Text2 };
     let pressable = button(container(widgets::toned(SETTINGS_ICON, icon::SIZE, tone)).center(Fill))
-        .width(SETTINGS_EDGE)
-        .height(SETTINGS_EDGE)
+        .width(settings_edge())
+        .height(settings_edge())
         .padding(0)
         .on_press(on_press);
     let pressable = match open {
@@ -1637,7 +1640,9 @@ mod tests {
         // room above and below, and the gap to the right edge matches it.
         let gap = settings_gap(1.0);
         assert!(gap > 0.0);
-        assert!((gap + SETTINGS_EDGE + gap + LINE - TOP_ROW).abs() < 0.001, "{gap}");
+        assert!((gap + settings_edge() + gap + LINE - TOP_ROW).abs() < 0.001, "{gap}");
+        // One small step smaller than the other icon buttons, from the design's tokens.
+        assert!((settings_edge() - (size::control_sm() - space::s())).abs() < 0.001);
         assert!(gap >= 5.0, "room to the rounded corner: {gap}");
         // A zoom that leaves no room above and below leaves none to the right either.
         assert_eq!(settings_gap(10.0), 0.0);

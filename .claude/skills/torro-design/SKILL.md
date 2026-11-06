@@ -48,8 +48,8 @@ aus einem Guss wirkt:
   `OpenApp`) und der Knopf `panel-left`; über der ausgeklappten Seitenleiste so breit wie sie, neben der
   Leiste nur das Logo, schmal nur der Knopf (der Umschalter steht dann oben in der Schublade). Daneben die
   **Kopfzeile der App** (`shell::header_bar`), ganz rechts die **Einstellungen** mit Schiebereglern
-  (`shell::SETTINGS_ICON`, nie das Zahnrad; markiert, solange sie offen sind), 28 im Quadrat (kleiner als die
-  übrigen Symbolknöpfe, damit die runde Fensterecke ihn nicht anschneidet) und rechts so weit vom Rand wie oben
+  (`shell::SETTINGS_ICON`, nie das Zahnrad; markiert, solange sie offen sind), `control_sm − space::s()` im Quadrat (28 im
+  Standard, kleiner als die übrigen Symbolknöpfe, damit die runde Fensterecke ihn nicht anschneidet) und rechts so weit vom Rand wie oben
   und zur Linie unten (`settings_gap`, 5,5 bei Zoom 1, #474). Die freie Fläche zieht das
   Fenster, Dialoge und Schublade dimmen die Zeile (`Cover`). Wer seine Kopfzeile nach Spalten teilt, zieht
   `shell::head_inset` vom ersten Teil ab. Suche und „Neu“ stehen als erste Zeile der Seitenleiste
