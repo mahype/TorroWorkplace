@@ -1582,7 +1582,7 @@ mod tests {
         let lines = |m: Metrics| (m.line, m.separators, m.selection, m.below_head);
         assert_eq!(lines(metrics("torro")), (false, true, ListSelection::Bar, 4.0));
         assert_eq!(lines(metrics("comfort")), (false, true, ListSelection::Bar, 4.0));
-        assert_eq!(lines(metrics("dense")).0, false, "two lines in every level");
+        assert!(!lines(metrics("dense")).0, "two lines in every level");
         assert_eq!(lines(metrics_of(&one_line())), (true, false, ListSelection::Fill, 0.0));
         assert_eq!(Metrics::new(size::content_max(), false), metrics("torro"), "the process draws with the standard");
     }

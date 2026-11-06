@@ -337,6 +337,10 @@ pub enum Action {
 }
 
 /// Handles `message` on the pages, with the settings as loaded last.
+#[expect(
+    clippy::only_used_in_recursion,
+    reason = "the settings stay in the pages' interface; since issue #484 no message compares with them"
+)]
 pub fn update(state: &mut State, message: Message, settings: &Settings) -> Action {
     // The core takes the same names the settings file uses (`"german"`, `"dark"`, `true`), so the
     // values come from the enums' own serialisation. A value that cannot serialise (none here)
