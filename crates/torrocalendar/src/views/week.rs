@@ -59,9 +59,11 @@ const UNTITLED: &str = "(untitled)";
 pub(super) fn day_number() -> typo::Level {
     typo::body_strong().tabular()
 }
-/// Edge of the box around a day number, and of today's red circle (`.dayhead b`, 24).
+/// Edge of the box around a day number, and of today's red circle (`.dayhead b`, 24): `xl`, but never
+/// less than the number's line and a pixel at either side – Dense's `xl` is 16, the number 22 high
+/// (issue #484).
 pub(super) fn day_circle() -> f32 {
-    space::xl()
+    space::xl().max(typo::line_height(day_number()) + 2.0)
 }
 /// Width of the colour bar on the left of events and all-day chips (`inset 3px 0 0`).
 pub(super) const BAR: f32 = 3.0;
@@ -429,7 +431,8 @@ fn header(days: &[NaiveDate], today: NaiveDate, axis: f32) -> Element<'static, M
         let label: Element<'static, Message> = if stacked {
             column![name, number].align_x(Horizontal::Center).into()
         } else {
-            row![name, number].spacing(space::xs()).align_y(Vertical::Center).into()
+            // A circle grown past `xl` (Dense, issue #484) keeps the weekday clear with what it grew.
+            row![name, number].spacing(space::xs().max(day_circle() - space::xl())).align_y(Vertical::Center).into()
         };
         let marked = several && is_today;
         header = header.push(

@@ -1567,6 +1567,7 @@ impl App {
         let new_event = Message::NewEvent { date: self.anchor, time: Some(NaiveTime::MIN + Days::hours(9)) };
         let select = || widgets::select_button(views, self.shown().label(), Message::ToggleMenu(Menu::View));
         if class == SizeClass::Wide || class == SizeClass::Medium {
+            let title_width = title_words(&title, note.as_deref());
             let today = widgets::text_button(None, tr("Today"), style::button::ghost, Some(Message::Today));
             let title = row![
                 shell::header_title(None, title, note),
@@ -1574,8 +1575,13 @@ impl App {
             ]
             .spacing(space::l())
             .align_y(Alignment::Center);
-            let primary =
-                widgets::text_button(Some(Icon::Plus), tr("New event"), style::button::primary, Some(new_event));
+            // Issue #484: in a roomier spacing level the medium header runs out of room; then "New
+            // event" shrinks to "+" first, as in narrow windows.
+            let primary = if class == SizeClass::Medium && !self.medium_header_fits(title_width) {
+                widgets::compact_button(Icon::Plus, tr("New event"), style::button::primary, Some(new_event))
+            } else {
+                widgets::text_button(Some(Icon::Plus), tr("New event"), style::button::primary, Some(new_event))
+            };
             let mut trailing = Vec::new();
             if self.shown() == CalView::Timeline {
                 // Without a night there is nothing to unfold, and no moon to double-click.
@@ -1610,6 +1616,21 @@ impl App {
             let primary = widgets::compact_button(Icon::Plus, tr("New event"), style::button::primary, Some(new_event));
             shell::header_bar([], shell::header_title(None, title, None), [select(), primary])
         }
+    }
+
+    /// Whether the medium header holds "New event" with its word (issue #484): the rail, the panel
+    /// button and the settings, the title `title_width` wide, "Today", ‹ ›, the view's menu, refresh
+    /// and the primary button with the gaps between them – all from the tokens of the level drawn,
+    /// so a roomier level shrinks the button sooner.
+    fn medium_header_fits(&self, title_width: f32) -> bool {
+        let icon = size::control_sm();
+        let today = widgets::text_button_width(false, tr("Today"));
+        let views = widgets::text_button_width(true, self.shown().label());
+        let primary = widgets::text_button_width(true, tr("New event"));
+        let chrome = shell::rail() + 2.0 * icon + 2.0 * space::l();
+        let needed =
+            chrome + title_width + space::l() + today + 2.0 * icon + 2.0 * space::xs() + views + icon + primary;
+        needed + 4.0 * space::s() <= self.size.width
     }
 
     /// The sidebar (`calendar.html`, `.sidebar`): app switcher, small month, the views with their
@@ -2419,6 +2440,13 @@ fn group_title<'a>(account: &'a PimAccount, shown: &[&PimAccount]) -> &'a str {
 /// The error state's text when the account or the events could not be loaded.
 fn load_failed(err: &str) -> String {
     trf("The calendar could not be loaded: {error}", &[("error", &err)])
+}
+
+/// How wide a header title with its quiet `note` is drawn (`shell::header_title`): the title in
+/// `body_strong`, the note in `body`, 6 apart.
+fn title_words(title: &str, note: Option<&str>) -> f32 {
+    let note = note.map_or(0.0, |note| 6.0 + typo::text_width(note, typo::body()));
+    typo::text_width(title, typo::body_strong()) + note
 }
 
 #[cfg(test)]
