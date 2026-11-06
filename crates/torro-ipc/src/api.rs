@@ -3945,7 +3945,7 @@ static CREATE_CATEGORY: Command = Command {
                   (unwanted mail: spam, phishing), `unsorted` (mail no other group fits) or a `custom_group_<n>` \
                   the person made. `icon` chooses a monochrome category icon; the group supplies \
                   its colour. `description` says what belongs there, with examples and \
-                  exceptions – what a decision model reads; `model: true` lets the model choose it for new mail. \
+                  exceptions – what a decision model reads; `model` (left out: true) lets the model choose it for new mail; `false` keeps the AI out. \
                   A hard exception is a sorting rule, not a description. `error` for an empty, multi-line or \
                   taken name (at most 60 characters), an empty description or one over 500 characters, or more \
                   than 20 categories of the group for the model. Needs the person's approval.",
@@ -7481,6 +7481,20 @@ mod tests {
             ]
         );
         assert!(CATALOGUE.iter().filter(|command| command.area == Area::Inbox).all(|command| command.mcp == Mcp::Tool));
+    }
+
+    /// Issue #481: a category made without `model` lets the AI choose it, as the settings do.
+    #[test]
+    fn a_new_category_lets_the_ai_choose_it_unless_told() {
+        let made: Request = serde_json::from_str(
+            r#"{"method":"inbox.create_category","group":"info","name":"Tax","description":"Tax."}"#,
+        )
+        .expect("a request");
+        assert!(matches!(made, Request::CreateCategory { model: true, .. }), "{made:?}");
+        let off =
+            r#"{"method":"inbox.create_category","group":"info","name":"Tax","description":"Tax.","model":false}"#;
+        let off: Request = serde_json::from_str(off).expect("a request");
+        assert!(matches!(off, Request::CreateCategory { model: false, .. }));
     }
 
     /// Task E8.8a: an unknown span is no request at all, so the core answers `error`.

@@ -2317,8 +2317,9 @@ pub enum Request {
         name: String,
         /// What it means, with examples and exceptions: what a decision model reads.
         description: String,
-        /// A decision model may choose it.
-        #[serde(default)]
+        /// A decision model may choose it. Left out: yes, as in the settings – "AI may not file
+        /// mail here" starts off (issue #481).
+        #[serde(default = "on")]
         model: bool,
         /// The monochrome icon for the new category; its group supplies the colour.
         #[serde(default)]

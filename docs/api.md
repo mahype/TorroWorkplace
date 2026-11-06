@@ -1358,6 +1358,9 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
   Offene Freigaben für die alten Befehle enden beim Lesen mit `conflict` („The order of rules and filters no longer
   exists; categories are ordered instead.“), erledigte fallen weg. `position` von `inbox.create_sort_rule` bleibt, ist
   aber nur noch der Platz in der Liste.
+- **Voreinstellung von `model` (Issue #481):** `inbox.create_category` ohne `model` lässt die KI die neue Kategorie
+  wählen (`true`), wie die Oberfläche; vorher war es `false`. Wer die KI heraushalten will, gibt `model: false` an. Das
+  Feld bleibt optional, `v` ändert sich nicht.
 - MCP-Toolnamen sind stabil wie API-Namen. Im MCP wird `pending` nach 60 Sekunden Warten als
   Tool-Fehler mit Code `pending` und der Kennung der Freigabe gemeldet (siehe „Freigaben“).
 

@@ -1262,14 +1262,14 @@ Pause, resume or cancel a bulk category reset by ID. Resume keeps its stored acc
 
 Zugriff `admin` · MCP-Tool `inbox_create_category`
 
-Makes a mail category of the person's own in an existing main category and returns it; its key is `custom_<n>` and never changes. `group` is `waiting_for_me`, `paper_trail`, `info`, `junk` (unwanted mail: spam, phishing), `unsorted` (mail no other group fits) or a `custom_group_<n>` the person made. `icon` chooses a monochrome category icon; the group supplies its colour. `description` says what belongs there, with examples and exceptions – what a decision model reads; `model: true` lets the model choose it for new mail. A hard exception is a sorting rule, not a description. `error` for an empty, multi-line or taken name (at most 60 characters), an empty description or one over 500 characters, or more than 20 categories of the group for the model. Needs the person's approval.
+Makes a mail category of the person's own in an existing main category and returns it; its key is `custom_<n>` and never changes. `group` is `waiting_for_me`, `paper_trail`, `info`, `junk` (unwanted mail: spam, phishing), `unsorted` (mail no other group fits) or a `custom_group_<n>` the person made. `icon` chooses a monochrome category icon; the group supplies its colour. `description` says what belongs there, with examples and exceptions – what a decision model reads; `model` (left out: true) lets the model choose it for new mail; `false` keeps the AI out. A hard exception is a sorting rule, not a description. `error` for an empty, multi-line or taken name (at most 60 characters), an empty description or one over 500 characters, or more than 20 categories of the group for the model. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `description` | string | ja | What it means, with examples and exceptions: what a decision model reads. |
 | `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` \| `"unsorted"` \| string | ja | The group it stands in. |
 | `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"circle_dashed"` \| `"tag"` \| `"megaphone"` \| `"bot"` \| `"receipt"` \| `"package"` \| `"skull"` \| `"newspaper"` \| `"building2"` \| `"landmark"` \| `"triangle_alert"` | nein, Standard `"tag"` | The monochrome icon for the new category; its group supplies the colour. |
-| `model` | boolean | nein, Standard `false` | A decision model may choose it. |
+| `model` | boolean | nein, Standard `true` | A decision model may choose it. Left out: yes, as in the settings – "AI may not file mail here" starts off (issue #481). |
 | `name` | string | ja | What it is called. |
 
 ### `inbox.update_category`
