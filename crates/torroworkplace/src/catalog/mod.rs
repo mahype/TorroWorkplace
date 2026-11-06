@@ -1381,9 +1381,9 @@ pub(crate) mod tests {
     }
 
     /// Linux, the whole way: `tar`, checksum, the program beside the service, its `.desktop` entry.
-    #[cfg(unix)]
     /// Review of #411: the main application was put in place and a later step failed: the service still
     /// hands over to the new copy, and the job says it restarts.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_job_that_replaced_the_service_and_failed_later_hands_over() {
         let dir = tempfile::tempdir().expect("dir");
@@ -1408,6 +1408,7 @@ pub(crate) mod tests {
         assert_eq!(*handed.lock().expect("lock"), [service], "the new copy takes over");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn installing_on_linux_adds_the_program_and_its_launcher() {
         let dir = tempfile::tempdir().expect("dir");
