@@ -195,16 +195,19 @@ pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request
 
 /// `response` with a message's `logo` only where the core keeps that domain's logo and logos are on
 /// (issue #453): the store names the domain a check found ([`MessageSummary::logo`]), whether there
-/// is a logo to show is decided here, for every summary of a reading answer.
-fn with_logos(mut response: Response, logos: &SenderLogos) -> Response {
+/// is a logo to show is decided here, for every summary of a reading answer (and of
+/// `mail.preview_filter`). The setting is read once per answer.
+pub(crate) fn with_logos(mut response: Response, logos: &SenderLogos) -> Response {
+    let on = logos.on();
     let mut keep = |summary: &mut MessageSummary| {
-        summary.logo = summary.logo.take().filter(|domain| logos.has(domain));
+        summary.logo = summary.logo.take().filter(|domain| on && logos.kept(domain));
     };
     match &mut response {
         Response::MailMessages { messages, .. } => messages.iter_mut().for_each(&mut keep),
         Response::MailMessage { message } => keep(&mut message.summary),
         Response::MailThread { messages } => messages.iter_mut().for_each(|message| keep(&mut message.summary)),
         Response::MailOverview { overview } => overview.senders.iter_mut().for_each(|sender| keep(&mut sender.latest)),
+        Response::MailFilterPreview { messages, .. } => messages.iter_mut().for_each(&mut keep),
         _ => {}
     }
     response
