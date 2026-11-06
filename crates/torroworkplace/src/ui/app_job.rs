@@ -203,21 +203,39 @@ pub fn run(launch: Launch) -> iced::Result {
         torro_gui::source::ensure_core(socket);
     }
     torro_gui::design::start(socket.as_deref(), &launch.forced());
+    let settings = window_settings(&target_of(&launch));
     iced::application(move || Window::start(&launch), Window::perform_update, Window::view)
         .settings(torro_gui::settings())
         .title(Window::title)
         .theme(Window::theme)
         .scale_factor(|window: &Window| window.zoom.factor())
         .subscription(Window::subscription)
-        .window(window_settings())
+        .window(settings)
         .run()
 }
 
-/// The window: [`size::panel()`] square, borderless, in the middle of the screen, not resizable; on
-/// Linux with the dialog's class, which Hyprland floats.
-pub fn window_settings() -> iced::window::Settings {
+/// The target `launch` names: `--app-job=`, else the demo's state.
+fn target_of(launch: &Launch) -> Target {
+    launch
+        .app_job
+        .as_deref()
+        .and_then(Target::parse)
+        .or_else(|| demo_target(launch.open))
+        .unwrap_or(Target::Follow(String::new()))
+}
+
+/// The window for `target`: [`size::panel()`] wide, borderless, in the middle of the screen, not
+/// resizable; on Linux with the dialog's class, which Hyprland floats. As high as its stage needs: a
+/// job's steps take [`size::panel()`], the question before an uninstall [`size::props()`], the offer
+/// of the main application's update [`size::sidebar()`].
+pub fn window_settings(target: &Target) -> iced::window::Settings {
     let mut settings = torro_gui::window(AppId::WORKPLACE);
-    settings.size = Size::new(size::panel(), size::panel());
+    let height = match target {
+        Target::Follow(_) => size::panel(),
+        Target::Uninstall(_) => size::props(),
+        Target::SelfUpdate => size::sidebar(),
+    };
+    settings.size = Size::new(size::panel(), height);
     settings.decorations = false;
     settings.resizable = false;
     settings.position = iced::window::Position::Centered;
@@ -257,13 +275,7 @@ impl Window {
     }
 
     fn start(launch: &Launch) -> (Window, Task<Event>) {
-        let target = launch
-            .app_job
-            .as_deref()
-            .and_then(Target::parse)
-            .or_else(|| demo_target(launch.open))
-            .unwrap_or(Target::Follow(String::new()));
-        let mut window = Window::new(target, launch.demo, launch.appearance);
+        let mut window = Window::new(target_of(launch), launch.demo, launch.appearance);
         let first = if launch.demo {
             let mut catalog = apps::demo_catalog(chrono::Utc::now());
             // The demo's main application is up to date on the page; its window offers the update.
@@ -612,17 +624,16 @@ impl Window {
     fn frame<'a>(
         &self,
         hero: Element<'a, Event>,
-        note: Option<String>,
+        lead: Option<Element<'a, Event>>,
         buttons: Vec<Element<'a, Event>>,
         middle: Element<'a, Event>,
     ) -> Element<'a, Event> {
-        let note: Element<'a, Event> = match note {
-            Some(note) => {
-                typo::text(typo::meta(), note).style(theme::text_3).wrapping(Wrapping::WordOrGlyph).width(Fill).into()
-            }
+        // What stands left of the buttons takes the rest of the row, so the buttons keep to the right.
+        let lead: Element<'a, Event> = match lead {
+            Some(lead) => container(lead).width(Fill).into(),
             None => blank::horizontal().into(),
         };
-        let bottom = row![note].extend(buttons).spacing(space::s()).align_y(Alignment::Center);
+        let bottom = row![lead].extend(buttons).spacing(space::s()).align_y(Alignment::Center);
         column![hero, container(middle).height(Fill).width(Fill), bottom].spacing(space::l()).into()
     }
 
@@ -657,13 +668,13 @@ impl Window {
     fn offer(&self) -> Element<'_, Event> {
         let line = tr("The service and this window restart; your apps stay open and reconnect.").to_string();
         let whats_new = self.catalog.as_ref().and_then(|catalog| catalog.release_url.as_ref()).map(|_| Event::WhatsNew);
+        let whats_new =
+            widgets::text_button(Some(Icon::ArrowUpRight), tr("What's new"), style::button::ghost, whats_new);
         let buttons = vec![
-            widgets::text_button(Some(Icon::ArrowUpRight), tr("What's new"), style::button::ghost, whats_new),
-            blank::horizontal().into(),
             widgets::text_button(None, tr("Later"), style::button::secondary, Some(Event::Close)),
             widgets::text_button(None, tr("Update and restart"), style::button::primary, Some(Event::Confirm)),
         ];
-        self.frame(self.hero(line), None, buttons, Space::new().into())
+        self.frame(self.hero(line), Some(whats_new), buttons, Space::new().into())
     }
 
     /// A running or finished job: its steps, the progress, and "Cancel" or "Close" and "Open <app>".
@@ -717,7 +728,7 @@ impl Window {
                 (None, buttons)
             }
         };
-        self.frame(self.hero(line), note, buttons, middle.into())
+        self.frame(self.hero(line), note.map(quiet), buttons, middle.into())
     }
 
     /// The main application restarts: its steps done, and that the control centre opens again.
@@ -727,8 +738,8 @@ impl Window {
             Some(job) => steps(job),
             None => Space::new().into(),
         };
-        let note = Some(tr("Your apps stay open and reconnect by themselves.").to_string());
-        self.frame(self.hero(line.to_string()), note, vec![], middle)
+        let note = quiet(tr("Your apps stay open and reconnect by themselves.").to_string());
+        self.frame(self.hero(line.to_string()), Some(note), vec![], middle)
     }
 
     /// The job could not start or is lost: why, "Close", and "Try again" where it can.
@@ -745,6 +756,11 @@ impl Window {
                 .align_y(Alignment::Start);
         self.frame(self.hero(self.name()), None, buttons, middle.into())
     }
+}
+
+/// A quiet sentence beside the buttons ("You can keep working; …").
+fn quiet<'a>(note: String) -> Element<'a, Event> {
+    typo::text(typo::meta(), note).style(theme::text_3).wrapping(Wrapping::WordOrGlyph).into()
 }
 
 /// The steps of `job`, one row each: its mark, its name and its detail at the right. A job with
@@ -1134,8 +1150,9 @@ mod tests {
         drop(several.view());
         assert_eq!(demo_target(Some(Open::AppsSelfUpdate)), Some(Target::SelfUpdate));
         assert_eq!(demo_target(Some(Open::Menu)), None);
-        let settings = window_settings();
+        let settings = window_settings(&Target::Follow("j".into()));
         assert!(!settings.decorations && !settings.resizable);
-        assert_eq!(settings.size.width, size::panel());
+        assert_eq!(settings.size, Size::new(size::panel(), size::panel()));
+        assert!(window_settings(&Target::SelfUpdate).size.height < settings.size.height);
     }
 }

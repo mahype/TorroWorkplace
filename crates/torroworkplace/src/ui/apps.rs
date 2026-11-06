@@ -410,7 +410,7 @@ pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<
     let mut actions: Vec<Element<'a, Message>> =
         vec![widgets::icon_button(Icon::RefreshCw, tr("Check for updates"), check)];
     if !narrow {
-        actions.push(search(state));
+        actions.push(search(state, Length::Fixed(size::sidebar())));
     }
     let count = catalog.map(updatable).map_or(0, |apps| apps.len());
     if count > 0 {
@@ -441,13 +441,14 @@ fn summary(catalog: &AppCatalog) -> String {
 }
 
 /// "Search apps".
-fn search(state: &State) -> Element<'_, Message> {
+/// "Search apps", `width` wide: as wide as the sidebar in the header, the page's width over the cards.
+fn search(state: &State, width: Length) -> Element<'_, Message> {
     let field = text_input(tr("Search apps"), &state.query)
         .size(typo::body().size)
         .line_height(typo::body().line_height)
         .font(typo::body().font)
         .padding(style::INPUT_PADDING)
-        .width(size::sidebar())
+        .width(width)
         .style(style::text_input)
         .on_input(Message::Query);
     field.into()
@@ -467,7 +468,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass, width: f32) 
     let job = data.app_catalog.job.as_ref();
     let mut page = column![].spacing(layout::section_gap()).width(Fill);
     if !matches!(class, SizeClass::Wide | SizeClass::Medium) {
-        page = page.push(container(search(state)).width(Fill));
+        page = page.push(search(state, Fill));
     }
     if catalog.main.state == CatalogState::Update {
         page = page.push(main_update(&catalog.main));
@@ -745,7 +746,7 @@ fn footer<'a>(state: &'a State, catalog: &'a AppCatalog) -> Element<'a, Message>
             words.extend(checked);
             row![
                 mark(Icon::TriangleAlert, true),
-                quiet(words.join(" · ")),
+                quiet(words.join(" ")),
                 widgets::text_button(Some(Icon::RefreshCw), tr("Retry"), style::button::ghost, Some(Message::Check)),
             ]
             .spacing(space::s())
@@ -886,7 +887,7 @@ pub fn demo_catalog(now: DateTime<Utc>) -> AppCatalog {
         available: Some(available.into()),
         state,
         managed: None,
-        size: Some(24_600_000),
+        size: Some(25_795_000),
         requires: Vec::new(),
     };
     let hub = CatalogApp {
