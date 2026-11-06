@@ -7141,7 +7141,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{share} of what came in", "{share} von allem, was kam"),
     // Mail window: slimmer overview, statistics page and announcements (issue #485)
     ("By category", "Nach Kategorie"),
-    ("Couldn't hide the message.", "Die Neuigkeit konnte nicht ausgeblendet werden."),
+    ("Couldn't hide the announcement.", "Die Neuigkeit konnte nicht ausgeblendet werden."),
     ("Couldn't load the statistics.", "Die Statistik konnte nicht geladen werden."),
     ("Details", "Details"),
     ("New app: Torro Contacts", "Neue App: Torro Contacts"),

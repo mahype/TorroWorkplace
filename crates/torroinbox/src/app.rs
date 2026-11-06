@@ -5884,7 +5884,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::NewsDismissed(announcement, result) => {
                 if result.is_err() {
                     self.news.put_back(announcement);
-                    self.error = Some(Failure::new(tr("Couldn't hide the message."), result.err().unwrap_or_default()));
+                    self.error =
+                        Some(Failure::new(tr("Couldn't hide the announcement."), result.err().unwrap_or_default()));
                 }
             }
             Message::MailOverviewTidy => return self.show_old_newsletters(),
@@ -20005,7 +20006,7 @@ mod tests {
         assert!(!app.news.shown().contains(&first), "gone at once");
         let _ = app.update(Message::NewsDismissed(first.clone(), Err("down".into())));
         assert!(app.news.shown().contains(&first), "back after the error");
-        assert_eq!(app.error.as_ref().map(|failure| failure.what), Some(tr("Couldn't hide the message.")));
+        assert_eq!(app.error.as_ref().map(|failure| failure.what), Some(tr("Couldn't hide the announcement.")));
         let _ = app.update(Message::DismissNews("unknown".into()));
         assert_eq!(app.sent.last(), Some(&Sent::DismissNews(first.id)), "nothing sent for an unknown one");
     }
