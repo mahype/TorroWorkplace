@@ -1,0 +1,828 @@
+{
+  "url": "https://api.github.com/repos/mahype/TorroWorkplace/releases/1",
+  "id": 1,
+  "html_url": "https://github.com/mahype/TorroWorkplace/releases/tag/v0.2.0",
+  "tag_name": "v0.2.0",
+  "name": "v0.2.0",
+  "draft": false,
+  "prerelease": false,
+  "published_at": "2026-10-28T12:00:00Z",
+  "assets": [
+    {
+      "id": 1000,
+      "name": "torroworkplace-x86_64-unknown-linux-gnu.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroworkplace-x86_64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1001,
+      "name": "torroworkplace-x86_64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroworkplace-x86_64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1002,
+      "name": "torroworkplace-aarch64-unknown-linux-gnu.tar.xz",
+      "size": 9002000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroworkplace-aarch64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1003,
+      "name": "torroworkplace-aarch64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroworkplace-aarch64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1004,
+      "name": "torroworkplace-x86_64-pc-windows-msvc.zip",
+      "size": 8004000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroworkplace-x86_64-pc-windows-msvc.zip"
+    },
+    {
+      "id": 1005,
+      "name": "torroworkplace-x86_64-pc-windows-msvc.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroworkplace-x86_64-pc-windows-msvc.zip.sha256"
+    },
+    {
+      "id": 1006,
+      "name": "torroworkplace-aarch64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroworkplace-aarch64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1007,
+      "name": "torroworkplace-aarch64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroworkplace-aarch64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1008,
+      "name": "torroworkplace-aarch64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroworkplace-aarch64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1009,
+      "name": "torroworkplace-aarch64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroworkplace-aarch64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1010,
+      "name": "torroworkplace-x86_64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroworkplace-x86_64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1011,
+      "name": "torroworkplace-x86_64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroworkplace-x86_64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1012,
+      "name": "torroworkplace-x86_64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroworkplace-x86_64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1013,
+      "name": "torroworkplace-x86_64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroworkplace-x86_64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1014,
+      "name": "torroinbox-x86_64-unknown-linux-gnu.tar.xz",
+      "size": 9014000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroinbox-x86_64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1015,
+      "name": "torroinbox-x86_64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroinbox-x86_64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1016,
+      "name": "torroinbox-aarch64-unknown-linux-gnu.tar.xz",
+      "size": 9016000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroinbox-aarch64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1017,
+      "name": "torroinbox-aarch64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroinbox-aarch64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1018,
+      "name": "torroinbox-x86_64-pc-windows-msvc.zip",
+      "size": 8018000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroinbox-x86_64-pc-windows-msvc.zip"
+    },
+    {
+      "id": 1019,
+      "name": "torroinbox-x86_64-pc-windows-msvc.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroinbox-x86_64-pc-windows-msvc.zip.sha256"
+    },
+    {
+      "id": 1020,
+      "name": "torroinbox-aarch64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroinbox-aarch64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1021,
+      "name": "torroinbox-aarch64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroinbox-aarch64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1022,
+      "name": "torroinbox-aarch64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroinbox-aarch64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1023,
+      "name": "torroinbox-aarch64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroinbox-aarch64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1024,
+      "name": "torroinbox-x86_64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroinbox-x86_64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1025,
+      "name": "torroinbox-x86_64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroinbox-x86_64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1026,
+      "name": "torroinbox-x86_64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroinbox-x86_64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1027,
+      "name": "torroinbox-x86_64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroinbox-x86_64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1028,
+      "name": "torro-inbox-mail-x86_64-unknown-linux-gnu.tar.xz",
+      "size": 9028000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-mail-x86_64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1029,
+      "name": "torro-inbox-mail-x86_64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-mail-x86_64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1030,
+      "name": "torro-inbox-mail-aarch64-unknown-linux-gnu.tar.xz",
+      "size": 9030000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-mail-aarch64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1031,
+      "name": "torro-inbox-mail-aarch64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-mail-aarch64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1032,
+      "name": "torro-inbox-mail-x86_64-pc-windows-msvc.zip",
+      "size": 8032000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-mail-x86_64-pc-windows-msvc.zip"
+    },
+    {
+      "id": 1033,
+      "name": "torro-inbox-mail-x86_64-pc-windows-msvc.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-mail-x86_64-pc-windows-msvc.zip.sha256"
+    },
+    {
+      "id": 1034,
+      "name": "torro-inbox-mail-aarch64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-mail-aarch64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1035,
+      "name": "torro-inbox-mail-aarch64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-mail-aarch64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1036,
+      "name": "torro-inbox-mail-aarch64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-mail-aarch64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1037,
+      "name": "torro-inbox-mail-aarch64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-mail-aarch64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1038,
+      "name": "torro-inbox-mail-x86_64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-mail-x86_64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1039,
+      "name": "torro-inbox-mail-x86_64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-mail-x86_64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1040,
+      "name": "torro-inbox-mail-x86_64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-mail-x86_64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1041,
+      "name": "torro-inbox-mail-x86_64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-mail-x86_64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1042,
+      "name": "torro-inbox-notifications-x86_64-unknown-linux-gnu.tar.xz",
+      "size": 9042000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-notifications-x86_64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1043,
+      "name": "torro-inbox-notifications-x86_64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-notifications-x86_64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1044,
+      "name": "torro-inbox-notifications-aarch64-unknown-linux-gnu.tar.xz",
+      "size": 9044000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-notifications-aarch64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1045,
+      "name": "torro-inbox-notifications-aarch64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-notifications-aarch64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1046,
+      "name": "torro-inbox-notifications-x86_64-pc-windows-msvc.zip",
+      "size": 8046000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-notifications-x86_64-pc-windows-msvc.zip"
+    },
+    {
+      "id": 1047,
+      "name": "torro-inbox-notifications-x86_64-pc-windows-msvc.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-notifications-x86_64-pc-windows-msvc.zip.sha256"
+    },
+    {
+      "id": 1048,
+      "name": "torro-inbox-notifications-aarch64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-notifications-aarch64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1049,
+      "name": "torro-inbox-notifications-aarch64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-notifications-aarch64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1050,
+      "name": "torro-inbox-notifications-aarch64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-notifications-aarch64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1051,
+      "name": "torro-inbox-notifications-aarch64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-notifications-aarch64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1052,
+      "name": "torro-inbox-notifications-x86_64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-notifications-x86_64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1053,
+      "name": "torro-inbox-notifications-x86_64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-notifications-x86_64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1054,
+      "name": "torro-inbox-notifications-x86_64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-notifications-x86_64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1055,
+      "name": "torro-inbox-notifications-x86_64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-inbox-notifications-x86_64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1056,
+      "name": "torrotasks-x86_64-unknown-linux-gnu.tar.xz",
+      "size": 9056000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrotasks-x86_64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1057,
+      "name": "torrotasks-x86_64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrotasks-x86_64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1058,
+      "name": "torrotasks-aarch64-unknown-linux-gnu.tar.xz",
+      "size": 9058000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrotasks-aarch64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1059,
+      "name": "torrotasks-aarch64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrotasks-aarch64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1060,
+      "name": "torrotasks-x86_64-pc-windows-msvc.zip",
+      "size": 8060000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrotasks-x86_64-pc-windows-msvc.zip"
+    },
+    {
+      "id": 1061,
+      "name": "torrotasks-x86_64-pc-windows-msvc.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrotasks-x86_64-pc-windows-msvc.zip.sha256"
+    },
+    {
+      "id": 1062,
+      "name": "torrotasks-aarch64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrotasks-aarch64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1063,
+      "name": "torrotasks-aarch64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrotasks-aarch64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1064,
+      "name": "torrotasks-aarch64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrotasks-aarch64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1065,
+      "name": "torrotasks-aarch64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrotasks-aarch64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1066,
+      "name": "torrotasks-x86_64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrotasks-x86_64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1067,
+      "name": "torrotasks-x86_64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrotasks-x86_64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1068,
+      "name": "torrotasks-x86_64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrotasks-x86_64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1069,
+      "name": "torrotasks-x86_64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrotasks-x86_64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1070,
+      "name": "torrocalendar-x86_64-unknown-linux-gnu.tar.xz",
+      "size": 9070000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrocalendar-x86_64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1071,
+      "name": "torrocalendar-x86_64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrocalendar-x86_64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1072,
+      "name": "torrocalendar-aarch64-unknown-linux-gnu.tar.xz",
+      "size": 9072000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrocalendar-aarch64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1073,
+      "name": "torrocalendar-aarch64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrocalendar-aarch64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1074,
+      "name": "torrocalendar-x86_64-pc-windows-msvc.zip",
+      "size": 8074000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrocalendar-x86_64-pc-windows-msvc.zip"
+    },
+    {
+      "id": 1075,
+      "name": "torrocalendar-x86_64-pc-windows-msvc.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrocalendar-x86_64-pc-windows-msvc.zip.sha256"
+    },
+    {
+      "id": 1076,
+      "name": "torrocalendar-aarch64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrocalendar-aarch64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1077,
+      "name": "torrocalendar-aarch64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrocalendar-aarch64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1078,
+      "name": "torrocalendar-aarch64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrocalendar-aarch64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1079,
+      "name": "torrocalendar-aarch64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrocalendar-aarch64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1080,
+      "name": "torrocalendar-x86_64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrocalendar-x86_64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1081,
+      "name": "torrocalendar-x86_64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrocalendar-x86_64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1082,
+      "name": "torrocalendar-x86_64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrocalendar-x86_64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1083,
+      "name": "torrocalendar-x86_64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torrocalendar-x86_64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1084,
+      "name": "torroassistant-x86_64-unknown-linux-gnu.tar.xz",
+      "size": 9084000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-x86_64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1085,
+      "name": "torroassistant-x86_64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-x86_64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1086,
+      "name": "torroassistant-aarch64-unknown-linux-gnu.tar.xz",
+      "size": 9086000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-aarch64-unknown-linux-gnu.tar.xz"
+    },
+    {
+      "id": 1087,
+      "name": "torroassistant-aarch64-unknown-linux-gnu.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-aarch64-unknown-linux-gnu.tar.xz.sha256"
+    },
+    {
+      "id": 1088,
+      "name": "torroassistant-x86_64-pc-windows-msvc.zip",
+      "size": 8088000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-x86_64-pc-windows-msvc.zip"
+    },
+    {
+      "id": 1089,
+      "name": "torroassistant-x86_64-pc-windows-msvc.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-x86_64-pc-windows-msvc.zip.sha256"
+    },
+    {
+      "id": 1090,
+      "name": "torroassistant-aarch64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-aarch64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1091,
+      "name": "torroassistant-aarch64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-aarch64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1092,
+      "name": "torroassistant-aarch64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-aarch64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1093,
+      "name": "torroassistant-aarch64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-aarch64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1094,
+      "name": "torroassistant-x86_64-apple-darwin.tar.xz",
+      "size": 9000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-x86_64-apple-darwin.tar.xz"
+    },
+    {
+      "id": 1095,
+      "name": "torroassistant-x86_64-apple-darwin.tar.xz.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-x86_64-apple-darwin.tar.xz.sha256"
+    },
+    {
+      "id": 1096,
+      "name": "torroassistant-x86_64-apple-darwin.app.zip",
+      "size": 24600000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-x86_64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1097,
+      "name": "torroassistant-x86_64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-x86_64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1098,
+      "name": "torro-reminder-aarch64-apple-darwin.app.zip",
+      "size": 12000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-reminder-aarch64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1099,
+      "name": "torro-reminder-aarch64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-reminder-aarch64-apple-darwin.app.zip.sha256"
+    },
+    {
+      "id": 1100,
+      "name": "torro-reminder-x86_64-apple-darwin.app.zip",
+      "size": 12000000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-reminder-x86_64-apple-darwin.app.zip"
+    },
+    {
+      "id": 1101,
+      "name": "torro-reminder-x86_64-apple-darwin.app.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torro-reminder-x86_64-apple-darwin.app.zip.sha256"
+    }
+  ]
+}

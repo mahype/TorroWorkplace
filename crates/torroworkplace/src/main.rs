@@ -37,6 +37,8 @@ mod apps;
 mod assistant;
 mod audit;
 mod bots;
+// The app catalog: versions, installing, updating, uninstalling (issue #411).
+mod catalog;
 mod categorize;
 mod cli;
 mod client_setup;
