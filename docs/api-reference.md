@@ -1775,7 +1775,7 @@ Keine Felder.
 
 Zugriff `admin` · MCP-Tool `mail_create_filter`
 
-Adds a mail filter at the end of the list and returns it with its id. From then on it runs on new mail in the inbox; mail already there changes only with mail_apply_filter. Give `query` (as in mail_search_messages, no `in:` or `filename:`, at most 500 characters), optionally `account`, and at least one action: `file` (only `{"to": "trash"}`: filters do not move mail to the archive or a folder, mail works with categories), `mark_read`, `category`. A filter for every account needs access to every mail account, a category admin access to the inbox; marking as read needs write access to mail, the trash delete access (as mail_set_flags and mail_delete_messages would), else `forbidden`. It goes below the last filter in the sorting order. Needs the person's approval.
+Adds a mail filter at the end of the list and returns it with its id. From then on it runs on new mail in the inbox; mail already there changes only with mail_apply_filter. Give `query` (as in mail_search_messages, no `in:` or `filename:`, at most 500 characters), optionally `account`, and at least one action: `file` (only `{"to": "trash"}`: filters do not move mail to the archive or a folder, mail works with categories), `mark_read`, `category`. A filter for every account needs access to every mail account, a category admin access to the inbox; marking as read needs write access to mail, the trash delete access (as mail_set_flags and mail_delete_messages would), else `forbidden`. When filters or rules of several categories match a mail, the category higher up in inbox_list_categories wins. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -1806,7 +1806,7 @@ Changes a mail filter and returns it: `query`, `account` and the actions as give
 
 Zugriff `admin` · MCP-Tool `mail_remove_filter`
 
-Removes a mail filter and returns the filters left, in order; it leaves the sorting order too. Mail it moved or filed stays where it is. `not-found` for a filter that is not there or out of reach. Needs the person's approval.
+Removes a mail filter and returns the filters left, in order. Mail it moved or filed stays where it is. `not-found` for a filter that is not there or out of reach. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

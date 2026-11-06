@@ -4218,8 +4218,8 @@ pub(crate) mod tests {
         approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
     }
 
-    /// Issue #454: an open approval of a filter that moves mail to the archive or a folder ends as
-    /// `conflict` when the file is read; the other approvals stay as they were.
+    /// Issue #481: an open approval of a command of the old order of rules and filters ends as
+    /// `conflict` when the file is read, one decided already falls away; the others stay as they were.
     #[tokio::test]
     async fn an_old_move_of_the_sorting_order_ends_open_approvals_and_drops_decided_ones() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -4256,6 +4256,8 @@ pub(crate) mod tests {
         assert_eq!(state(&other.id), Some(ApprovalState::Pending));
     }
 
+    /// Issue #454: an open approval of a filter that moves mail to the archive or a folder ends as
+    /// `conflict` when the file is read; the other approvals stay as they were.
     #[tokio::test]
     async fn an_old_filter_move_ends_its_approval_and_leaves_the_others() {
         let dir = tempfile::tempdir().expect("temp dir");

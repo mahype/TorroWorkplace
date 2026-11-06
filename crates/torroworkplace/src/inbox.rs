@@ -4994,6 +4994,15 @@ fn plan_category_move(
     if !catalogue::groups_in(db)?.iter().any(|held| held.group == group) {
         return Err(Failure::NotFound(trf("There is no main category {group}.", &[("group", &group.key())])));
     }
+    // Into another group: checked as `inbox.update_category` checks it, so nobody is asked to approve
+    // a move that would then be refused (API review of #481).
+    if catalogue::find(&catalogue, category)?.group != group {
+        let mut moved = catalogue.clone();
+        if let Some(def) = moved.iter_mut().find(|def| def.category == category) {
+            def.group = group;
+        }
+        catalogue::check(&moved, category, false)?;
+    }
     let old: Vec<torro_mail::Category> =
         catalogue.iter().filter(|def| def.group == group).map(|def| def.category).collect();
     let mut new: Vec<torro_mail::Category> = old.iter().copied().filter(|held| *held != category).collect();
@@ -7698,6 +7707,17 @@ pub(crate) mod tests {
         assert_eq!(missing.err().as_ref().map(code), Some("not-found"));
         let nowhere = inbox.move_category(Category::Order, CategoryGroup::Custom(42), 0, None);
         assert_eq!(nowhere.err().as_ref().map(code), Some("not-found"));
+        // A group that would offer the AI more than 20 is refused already in the plan, before anyone
+        // is asked.
+        let full = inbox.create_category_group("Full", torro_mail::CategoryIcon::Tag, 1).expect("a group");
+        for n in 0..20 {
+            let name = format!("Full {n}");
+            inbox
+                .create_category(full.group, &name, "Mail about it.", true, torro_mail::CategoryIcon::Tag, at(8, 3))
+                .expect("made");
+        }
+        let over = inbox.plan_category_move(Category::Order, full.group, 0);
+        assert_eq!(over.err().as_ref().map(code), Some("error"));
     }
 
     /// Issue #481, [`SCHEMA_V20`]: a file of schema 19 loses the order of rules and filters, and a

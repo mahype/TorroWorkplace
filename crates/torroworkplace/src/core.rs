@@ -1830,8 +1830,9 @@ impl JobRun<'_> {
     /// for sorting are looked at right before each mail goes out.
     ///
     /// With `apply_rules` (issue #454) the rules and filters decide first, the category higher up
-    /// winning between several (`sorting`, issue #481); `found` are the enabled filters of the account that found this mail in its inbox
-    /// folder. Without it neither they, the headers nor the contacts sort.
+    /// winning between several (`sorting`, issue #481); `found` are the enabled filters of the
+    /// account that found this mail in its inbox folder. Without it neither they, the headers nor
+    /// the contacts sort.
     async fn prepare(
         &self,
         job: &torro_ipc::inbox::CategoryJob,

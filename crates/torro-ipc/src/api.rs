@@ -4460,7 +4460,8 @@ static CREATE_MAIL_FILTER: Command = Command {
                   or a folder, mail works with categories), `mark_read`, `category`. A filter for every account needs \
                   access to every mail account, a category admin access to the inbox; marking as read needs write \
                   access to mail, the trash delete access (as mail_set_flags and mail_delete_messages would), else \
-                  `forbidden`. It goes below the last filter in the sorting order. Needs the person's approval.",
+                  `forbidden`. When filters or rules of several categories match a mail, the category higher up in \
+                  inbox_list_categories wins. Needs the person's approval.",
 };
 
 static UPDATE_MAIL_FILTER: Command = Command {
@@ -4480,7 +4481,7 @@ static REMOVE_MAIL_FILTER: Command = Command {
     area: Area::Mail,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Removes a mail filter and returns the filters left, in order; it leaves the sorting order too. Mail \
+    description: "Removes a mail filter and returns the filters left, in order. Mail \
                   it moved or filed stays where it is. `not-found` for a filter that is not there or out of reach. Needs the person's approval.",
 };
 

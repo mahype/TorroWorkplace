@@ -2909,7 +2909,8 @@ pub enum Request {
     // `not-found`.
     /// The mail filters the caller sees, in the order the person keeps them
     /// ([`Response::MailFilters`]). Every filter that finds a new mail runs; for the trash the first
-    /// one wins, for the category the order of the sorting steps (`inbox.list_sorting_order`).
+    /// one wins, for the category the one higher up in `inbox.list_categories` (issue #481,
+    /// [`Request::MoveCategory`]).
     #[serde(rename = "mail.list_filters")]
     ListMailFilters,
     /// Adds a mail filter at the end of the list ([`Response::MailFilter`], with its new id `f<n>`).
