@@ -7332,13 +7332,17 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.launch.kind != Kind::Mail {
             return Vec::new();
         }
-        self.rows()
-            .into_iter()
-            .filter_map(|item| match item.link.as_ref() {
-                Some(Link::Mail { message }) => Some(message.clone()),
-                _ => None,
-            })
-            .collect()
+        // Two entries may link to one mail: it is listed once, at its first entry, so a range never
+        // sticks at the second (issue #507).
+        let mut listed = Vec::new();
+        for item in self.rows() {
+            if let Some(Link::Mail { message }) = item.link.as_ref()
+                && !listed.contains(message)
+            {
+                listed.push(message.clone());
+            }
+        }
+        listed
     }
 
     fn delete_selected_mail(&mut self) -> Task<Message> {
@@ -16545,6 +16549,26 @@ mod tests {
         let _ = app.update(Message::ModifiersChanged(Modifiers::SHIFT));
         let _ = app.update(Message::Select(entries[2].0.clone()));
         assert_eq!(app.selected_mail, mail[1..3], "Shift after a plain click starts at that entry");
+    }
+
+    /// Issue #507: two entries that link to one mail list it once, so Shift + ↓ walks past it to the
+    /// end of the list.
+    #[test]
+    fn a_mail_of_two_entries_is_selected_once() {
+        let mut app = mail_entries(Density::Compact, &[]);
+        let before = app.selectable_mail();
+        let twin = app.items.iter().find(|item| matches!(item.link, Some(Link::Mail { .. }))).cloned();
+        let mut twin = twin.expect("a mail entry");
+        twin.id = "twin".into();
+        app.items.push(twin);
+        assert_eq!(app.selectable_mail(), before, "the mail stays where its first entry is");
+        let first = app.rows().first().map(|item| item.id.clone()).expect("a row");
+        let _ = app.update(Message::Select(first));
+        for _ in 0..app.rows().len() {
+            let _ = press(&mut app, Key::ExtendDown);
+        }
+        let start = before.iter().position(|message| Some(message) == app.cursor_mail().as_ref()).expect("listed");
+        assert_eq!(app.selected_mail, before[start..], "every mail from the cursor to the end, once");
     }
 
     /// Issue #507: the Notification Hub has no selection of mail – Shift + ↓ moves its cursor as ↓.
