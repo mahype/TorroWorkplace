@@ -85,6 +85,11 @@ httpmock = { version = "0.8.3", default-features = false }
 lettre = { version = "0.11.23", default-features = false, features = ["aws-lc-rs", "builder", "hostname", "rustls-platform-verifier", "smtp-transport", "tokio1", "tokio1-rustls"] }
 mail-builder = { version = "1.0.0", default-features = false }
 mail-parser = { version = "0.11.9", features = ["full_encoding"] }
+# The core's own DKIM check of incoming mail (issue #453): a sender's logo shows only for mail signed by its domain.
+# 0.13, not the newer 0.14+: those need mail-parser 1.0, and the suite reads mail with 0.11. With aws-lc-rs, the
+# crypto provider rustls already uses (never ring or OpenSSL); it turns on hickory's TLS and DNSSEC on aws-lc-rs.
+# No reports (quick-xml, zip). Apache-2.0 OR MIT.
+mail-auth = { version = "=0.13.0", default-features = false, features = ["aws-lc-rs"] }
 # The HTML part of a mail, cleaned through an allow list before the core keeps or hands it out (task M8.1).
 ammonia = "4.2.3"
 # DuckDuckGo's results page read for the tool web (torroworkplace, WEB.2, issue #305), with CSS selectors; the
