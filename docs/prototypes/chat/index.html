@@ -37,11 +37,11 @@
   <!-- 1 · Kontaktliste und Chatfenster -->
   <section id="liste">
     <h2>Kontaktliste und Chatfenster</h2>
-    <p>Wer online ist, steht oben; „Away“, „Do not disturb“ und „Offline“ sind eigene Gruppen, jede Marke hat eine eigene Form. Unter dem Namen steht die Statusnachricht. Unten der eigene Status, ein Klick öffnet die Auswahl. Enter oder Doppelklick öffnet den Chat; ist das Fenster schon offen, kommt es nach vorn.</p>
+    <p>Wer online ist, steht oben; „Busy“, „Away“, „Do not disturb“ und „Offline“ sind eigene Gruppen, jede Marke hat eine eigene Form. Unter dem Namen steht die Statusnachricht. Unten der eigene Status, ein Klick öffnet die Auswahl. Enter oder Doppelklick öffnet den Chat; ist das Fenster schon offen, kommt es nach vorn.</p>
     <div class="stage">
       <div>
-        <p class="cap">Kontaktliste · 300 × 680</p>
-        <div class="win" style="width:300px;height:680px" aria-label="Contacts window">
+        <p class="cap">Kontaktliste · 300 × 740</p>
+        <div class="win" style="width:300px;height:740px" aria-label="Contacts window">
           <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Contacts</b>
             <button class="ibtn" type="button" title="Settings"><svg data-i="sliders"></svg></button></div>
           <div style="padding:8px 8px 0;display:flex;flex-direction:column;gap:8px">
@@ -54,6 +54,8 @@
             <div class="person"><span class="av" style="--c:#3FB984">DR<span class="st"></span></span><span class="who"><b class="ell">David Roth</b><span class="ell">Online</span></span></div>
             <div class="ghead"><svg data-i="chev"></svg>Away <span class="tab">1</span></div>
             <div class="person"><span class="av" style="--c:#E8A33D">BK<span class="st away"></span></span><span class="who"><b class="ell">Ben Kurz</b><span class="ell">Lunch break · back at 13:30</span></span></div>
+            <div class="ghead"><svg data-i="chev"></svg>Busy <span class="tab">1</span></div>
+            <div class="person"><span class="av" style="--c:#5B8CFF">GH<span class="st busy"></span></span><span class="who"><b class="ell">Gina Hahn</b><span class="ell">In a call</span></span></div>
             <div class="ghead"><svg data-i="chev"></svg>Do not disturb <span class="tab">1</span></div>
             <div class="person"><span class="av" style="--c:#D96CA8">CW<span class="st dnd"></span></span><span class="who"><b class="ell">Carla Weiß</b><span class="ell">In a meeting until 11:00</span></span></div>
             <div class="ghead"><svg data-i="chev"></svg>Offline <span class="tab">2</span></div>
@@ -63,11 +65,12 @@
               <div class="ghead"><svg data-i="chev"></svg>Groups <span class="tab">3</span></div>
               <div class="person"><span class="gtile"><svg data-i="users"></svg></span><span class="who"><b class="ell">Team Alpha</b><span class="ell">Ben: Who takes the review?</span></span><span class="badge">3</span></div>
               <div class="person"><span class="gtile"><svg data-i="users"></svg></span><span class="who"><b class="ell">Website relaunch</b><span class="ell">5 people</span></span></div>
+              <div class="person"><span class="gtile"><svg data-i="users"></svg></span><span class="who"><b class="ell">Coffee corner</b><span class="ell">12 people</span></span></div>
             </div>
           </div>
           <div class="foot">
             <button class="cbtn ghost" type="button" data-only="groups:c" style="justify-content:flex-start"><svg data-i="users"></svg>Group chats… <span class="badge" style="margin-left:auto">3</span></button>
-            <div class="me"><span class="av" style="--c:#D50C0C">SW<span class="st"></span></span><span class="who"><b class="ell">Online</b><span class="ell">Set a status message</span></span><svg data-i="chev" class="s14" style="color:var(--text3)"></svg></div>
+            <div class="me" title="Online needs “Show others when I am online”"><span class="av" style="--c:#6E7681">SW<span class="st"></span></span><span class="who"><b class="ell">Online</b><span class="ell">Set a status message</span></span><svg data-i="chev" class="s14" style="color:var(--text3)"></svg></div>
           </div>
         </div>
       </div>
@@ -120,6 +123,7 @@
           <div class="list">
             <div class="person"><span class="gtile"><svg data-i="users"></svg></span><span class="who"><b class="ell">Team Alpha</b><span class="ell">Ben: Who takes the review?</span></span><span class="badge">3</span></div>
             <div class="person"><span class="gtile"><svg data-i="users"></svg></span><span class="who"><b class="ell">Website relaunch</b><span class="ell">5 people</span></span></div>
+            <div class="person"><span class="gtile"><svg data-i="users"></svg></span><span class="who"><b class="ell">Coffee corner</b><span class="ell">12 people</span></span></div>
           </div>
         </div>
       </div>
@@ -181,11 +185,11 @@
           <div class="stagev">
             <div data-only="call:a">
               <div class="tile" style="inset:12px"><span class="av xl" style="--c:#5B8CFF">AB</span><span class="hint">Camera of Anna Berg</span><span class="name">Anna Berg</span></div>
-              <div class="tile self" style="right:24px;bottom:24px;width:200px;height:124px"><span class="av lg" style="--c:#D50C0C">SW</span><span class="name"><svg data-i="micoff"></svg>You</span></div>
+              <div class="tile self" style="right:24px;bottom:24px;width:200px;height:124px"><span class="av lg" style="--c:#6E7681">SW</span><span class="name"><svg data-i="micoff"></svg>You</span></div>
             </div>
             <div data-only="call:b">
               <div class="tile" style="left:12px;top:12px;bottom:12px;width:calc(50% - 18px)"><span class="av xl" style="--c:#5B8CFF">AB</span><span class="hint">Camera of Anna Berg</span><span class="name">Anna Berg</span></div>
-              <div class="tile self" style="right:12px;top:12px;bottom:12px;width:calc(50% - 18px);box-shadow:none"><span class="av xl" style="--c:#D50C0C">SW</span><span class="name"><svg data-i="micoff"></svg>You</span></div>
+              <div class="tile self" style="right:12px;top:12px;bottom:12px;width:calc(50% - 18px);box-shadow:none"><span class="av xl" style="--c:#6E7681">SW</span><span class="name"><svg data-i="micoff"></svg>You</span></div>
             </div>
           </div>
           <div class="callbar">
@@ -218,7 +222,7 @@
           <div class="form">
             <div class="fgroup"><span class="flabel">Camera</span>
               <div class="select"><svg data-i="video"></svg><span class="ell">FaceTime HD Camera</span><svg class="ch" data-i="chev"></svg></div>
-              <div class="preview"><span class="av xl" style="--c:#D50C0C">SW</span><span class="hint"><svg data-i="lock" class="s14"></svg>Preview stays on this computer</span></div></div>
+              <div class="preview"><span class="av xl" style="--c:#6E7681">SW</span><span class="hint"><svg data-i="lock" class="s14"></svg>Preview stays on this computer</span></div></div>
             <div class="fgroup"><span class="flabel">Microphone</span>
               <div class="select"><svg data-i="mic"></svg><span class="ell">MacBook Pro Microphone</span><svg class="ch" data-i="chev"></svg></div>
               <div class="switch"><span class="meter" aria-label="Input level"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="faint" style="font-size:13px">Speak to test</span></div></div>
