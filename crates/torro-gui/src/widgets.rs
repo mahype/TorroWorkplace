@@ -6709,9 +6709,11 @@ fn chart_card_inset<'a, M: 'a>(
     ]
     .spacing(space::s())
     .align_y(Alignment::Center);
-    let head = container(head).padding(Padding::ZERO.left(inset).right(inset));
+    // A design with less padding than `inset` gives the rows only what it has, so titles stay in line.
     let padding = layout::panel_padding();
-    let padding = Padding { left: (padding.left - inset).max(0.0), right: (padding.right - inset).max(0.0), ..padding };
+    let (left, right) = (inset.min(padding.left), inset.min(padding.right));
+    let head = container(head).padding(Padding::ZERO.left(left).right(right));
+    let padding = Padding { left: padding.left - left, right: padding.right - right, ..padding };
     container(column![head, body.into()].spacing(space::l()))
         .width(Fill)
         .padding(padding)
