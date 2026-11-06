@@ -795,7 +795,7 @@ impl Feed {
 
     /// Runs the mail filters of `account` on its new mail `new` of the inbox folder
     /// ([`super::filters::on_arrival`], issue #339) and gives back the mails a filter found that got
-    /// a category, with it: the first rule or filter of the sorting order that decides (issue #454).
+    /// a category, with it: the category higher up among the rules and filters that match (issue #481).
     /// Without the catalogue of categories, or while the categories are being removed, no category
     /// is set; reading and the trash still happen.
     async fn filter(&self, store: &SharedStore, account: &str, new: &[String]) -> Vec<(String, MailCategory)> {
@@ -808,13 +808,13 @@ impl Feed {
                 Vec::new()
             }
         };
-        let filters: Vec<String> =
-            self.mail.filters().list().unwrap_or_default().into_iter().map(|filter| filter.id).collect();
-        let sorting = match self.inbox.sorting(&filters) {
+        let sorting = match self.inbox.sorting() {
             Ok(sorting) => sorting,
             Err(err) => {
-                eprintln!("torroworkplace: inbox: cannot read the sorting order to filter mail of {account}: {err}");
-                (filters.into_iter().map(torro_inbox::SortingStep::filter).collect(), Vec::new())
+                eprintln!("torroworkplace: inbox: cannot read the sorting rules to filter mail of {account}: {err}");
+                // The filters still decide, by the catalogue's order.
+                let rank = categories.clone();
+                torro_inbox::rules::Sorting { rank, ..Default::default() }
             }
         };
         super::filters::on_arrival(&self.mail, store, account, new, &categories, &sorting).await
@@ -2359,8 +2359,9 @@ pub(crate) mod tests {
         assert!(by_subject(&mail).await["Weekly news"].flags.contains(&Flag::Seen), "and in the store");
     }
 
-    /// A filter's category (decision 4): kept with the mail as a rule's, on the entry before the
-    /// sorting rules, which still sort the mail no filter finds.
+    /// A filter's category (decision 4): kept with the mail as a rule's, on the entry; the sorting
+    /// rules still sort the mail no filter finds. Where both match, the category higher up wins
+    /// (issue #481).
     #[tokio::test]
     async fn a_filters_category_comes_before_the_sorting_rules() {
         use torro_inbox::{SortCondition, SortField};
@@ -2395,15 +2396,9 @@ pub(crate) mod tests {
         assert_eq!(kept["Bill"].folder, all["Bill"].folder, "a category alone moves nothing");
         assert!(!kept["Bill"].flags.contains(&Flag::Seen));
 
-        // Issue #454: with the rule moved above the filter, the rule decides for what both find.
-        let Response::SortRules { rules } = inbox.handle(Request::ListSortRules, None, Utc::now()) else {
-            panic!("the rules")
-        };
-        let filters: Vec<String> = mail.filters().list().expect("read").into_iter().map(|filter| filter.id).collect();
-        let first =
-            Request::MoveSortingStep { kind: torro_inbox::SortingKind::Rule, id: rules[0].id.clone(), position: 0 };
-        let plan = inbox.plan_sorting_move(&first, None, &filters, &filters).expect("planned");
-        inbox.apply_sorting_move(&plan, &filters).expect("moved");
+        // Issue #481: both find "Bill"; Invoice stands above Newsletter, so the filter's category
+        // won. With Newsletter moved above Invoice, the rule decides for what both find.
+        inbox.move_category(Category::Newsletter, torro_mail::CategoryGroup::PaperTrail, 0, None).expect("moved");
         feed.take(arrived(&[&all["Later bill"]]), Utc::now()).await;
         let later = by_subject(&mail).await;
         assert_eq!(later["Later bill"].category, Some(MailCategory::by_rule(Category::Newsletter)), "the rule's now");

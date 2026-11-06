@@ -8,9 +8,9 @@
 //! same mail is a pure rule here ([`FilterActions::of`]), so the core and any preview decide the same.
 //!
 //! **Order counts.** Filters stand in the order the person keeps them. Every matching filter runs;
-//! for the trash and the category the first one that sets it wins, reading needs only one. Which
-//! category new mail gets when sorting rules match too is the order of the sorting steps
-//! (`torro_inbox::SortingStep`, issue #454).
+//! for the trash the first one that sets it wins, reading needs only one. Which
+//! category new mail gets when filters or sorting rules of several categories match is the order of
+//! the categories (`torro_inbox::rules::ranked_category`, issue #481): the one higher up wins.
 //!
 //! **Ids** have the fixed form `f<n>` (`f1`, `f12`), given once and never again, so the audit log
 //! may write them as they are (they are hex digits) and an old reference never names another filter.

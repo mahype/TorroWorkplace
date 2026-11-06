@@ -36,8 +36,8 @@
 //! **New mail** ([`on_arrival`]): the mail feed hands over the mail that just arrived in an
 //! account's inbox folder (not a folder's first sync, not a catch-up); the enabled filters of that
 //! account run on it with the same steps. Which category a mail a filter found gets is decided by
-//! the order of the sorting steps (issue #454): the first rule or filter from the top that matches
-//! ([`torro_inbox::rules::first_category`]); it goes on the inbox entry too.
+//! the order of the categories (issue #481): among the rules and filters that match, the category
+//! higher up wins ([`torro_inbox::rules::ranked_category`]); it goes on the inbox entry too.
 //!
 //! **Approvals** ([`to_approve`]): what a person is shown comes from the stored filter and the mail
 //! store (the account's address), never from the client's words but the new search; an approval of a change, a removal or a run is pinned to the stored filter
@@ -463,31 +463,6 @@ fn actions_refusal(rights: &Rights, mark_read: bool, file: Option<&FilterFile>) 
     Ok(())
 }
 
-/// `forbidden` unless a client with `rights` may change `filter` (issue #454): moving a sorting step
-/// past a filter, or the filter itself, changes what it decides, so it needs what
-/// `mail.update_filter` of it would need – admin access to mail, the filter's account in reach (every
-/// account for a filter of every account), admin access to `inbox` for its category and the rights
-/// its actions need ([`actions_refusal`]).
-pub fn passing_refusal(rights: &Rights, filter: &MailFilter) -> Option<Response> {
-    let reach = Reach::Client(rights);
-    let change = Request::UpdateMailFilter {
-        id: filter.id.clone(),
-        query: filter.query.clone(),
-        account: filter.account.clone(),
-        file: filter.file.clone(),
-        mark_read: filter.mark_read,
-        category: filter.category,
-        enabled: None,
-    };
-    let may = rights.allows_request(&change)
-        && visible(reach, filter.account.as_deref())
-        && (filter.category.is_none() || sets_category(reach))
-        && actions_refusal(rights, filter.mark_read, filter.file.as_ref()).is_ok();
-    let why =
-        tr("Moving a sorting step past a mail filter, or the filter itself, needs the rights to change that filter.");
-    (!may).then(|| FilterError::Forbidden(why.to_string()).response())
-}
-
 /// `forbidden`, `not-found` or `error` for a filter `spec` from `reach` (see [`client_refusal`]).
 /// `stored` is the filter a change replaces (`None` for a new one): its category passes unchanged
 /// ([`with_kept`]); everything else is checked as for a new filter.
@@ -903,7 +878,7 @@ pub async fn matching(
     Ok(found.into_iter().map(|(id, filters)| (id, FilterActions::of(&filters))).collect())
 }
 
-/// The filters of `found` that set a category of `categories`, as [`torro_inbox::rules::first_category`]
+/// The filters of `found` that set a category of `categories`, as [`torro_inbox::rules::ranked_category`]
 /// takes them: their ids with their categories.
 pub fn category_hits<'a>(found: &'a [MailFilter], categories: &[Category]) -> Vec<(&'a str, Category)> {
     found
@@ -914,9 +889,9 @@ pub fn category_hits<'a>(found: &'a [MailFilter], categories: &[Category]) -> Ve
         .collect()
 }
 
-/// The order of the sorting steps and the sorting rules (issue #454), as the inbox keeps them
-/// (`crate::inbox::Inbox::sorting`): which rule or filter decides the category of a mail.
-pub type Sorting = (Vec<torro_inbox::SortingStep>, Vec<torro_inbox::SortRule>);
+/// What decides the category of a mail between rules and filters (issue #481), as the inbox keeps
+/// it (`crate::inbox::Inbox::sorting`).
+pub type Sorting = torro_inbox::rules::Sorting;
 
 /// Runs the enabled filters of `account` ([`MailFilters::running_in`]) on its new mail `new` (ids
 /// `m:…` that just arrived in its inbox folder; the mail feed calls it, never on a folder's first
@@ -927,9 +902,9 @@ pub type Sorting = (Vec<torro_inbox::SortingStep>, Vec<torro_inbox::SortRule>);
 ///   ([`delivered`]): it was moved or copied into the inbox, not delivered, and a filter must not
 ///   take it out again. Copies in the archive (Gmail's "All Mail") and in sent mail do not count.
 /// - Reading and the trash: what the filters that found a mail do together ([`FilterActions::of`]).
-/// - The category of a mail a filter found (issue #454): the first step of `sorting` from the top
-///   that decides ([`torro_inbox::rules::first_category`]) – a rule above the filter wins over it,
-///   and so does a filter above a rule. A category that is no longer in `categories` (the
+/// - The category of a mail a filter found (issue #481): among the rules that hold and the filters
+///   that found it, the category higher up in the catalogue wins ([`torro_inbox::rules::ranked_category`]),
+///   a rule "Always for this sender?" before all of them. A category that is no longer in `categories` (the
 ///   catalogue) is skipped; without one the rules and headers have their say when the mail is
 ///   filed, as for any mail.
 /// - Read, then the category, then the trash ([`carry_out`]). Mail read or moved by a filter gets no
@@ -970,7 +945,6 @@ pub async fn on_arrival(
             return Vec::new();
         }
     };
-    let (order, rules) = sorting;
     // Mails that get the same actions go together, so each action runs once per kind.
     let mut groups: Vec<(FilterActions, Vec<&MessageSummary>)> = Vec::new();
     for (id, by) in found {
@@ -985,10 +959,17 @@ pub async fn on_arrival(
                     list_id: facts.content.list.as_deref(),
                     facts: Some(&facts.sort_facts),
                 };
-                torro_inbox::rules::first_category(order, rules, &input, &category_hits(&by, categories))
+                sorting.category(&input, &category_hits(&by, categories))
             }
-            // Without what the rules look at, the filters decide in their own order.
-            _ => actions.category,
+            // Without what the rules look at, the filters decide alone, still by the order of the
+            // categories (issue #481).
+            _ => torro_inbox::rules::ranked_category(
+                &sorting.rank,
+                &[],
+                &[],
+                &torro_inbox::rules::SortInput::default(),
+                &category_hits(&by, categories),
+            ),
         };
         actions.category = actions.category.filter(|category| categories.contains(category));
         let Some(message) = arrived.iter().find(|message| message.id == id) else { continue };

@@ -204,11 +204,9 @@ pub struct Data {
     /// person chose, else the system's. Empty until that answer came.
     pub downloads: String,
     /// The mail filters (`mail.list_filters`, issue #339): the mail window's section
-    /// "Categorization" lists and edits them among the sorting rules.
+    /// "Categorization" shows those that set a category on that category's page (issue #481), the
+    /// others under "Other filters".
     pub mail_filters: Vec<torro_mail::MailFilter>,
-    /// The sorting rules and mail filters in their one order (`inbox.list_sorting_order`, issue
-    /// #454). Empty from a load that did not ask for it, and from a core before #454.
-    pub sorting_order: Vec<torro_inbox::SortingStep>,
     /// Why the load failed, if it did (daemon not running …); the host shows it over the page.
     pub error: Option<String>,
     /// The requests whose first answer is still on its way since the settings opened (issue
@@ -344,7 +342,6 @@ impl Data {
                 self.rule_hits = hits;
             }
             Response::MailFilters { filters } => self.mail_filters = filters,
-            Response::SortingOrder { steps } => self.sorting_order = steps,
             _ => {}
         }
     }

@@ -47,7 +47,7 @@ pub const ATTACHMENTS_SECTION: &str = "attachments";
 /// filter…" leads (issue #454: the filters are part of it).
 pub const CATEGORIZATION_SECTION: &str = "categorization";
 
-/// The message that opens a new filter's dialog in "Categorization" › "Rules & filters" with
+/// The message that opens a new filter's dialog in "Categorization" with
 /// `query` and `account` filled in (`None`: every account) and asks what it finds – what torroinbox
 /// sends after opening the section for "Create filter…" (`from:<address>`) and "Create filter from
 /// search…".
@@ -56,7 +56,7 @@ pub fn new_filter(query: String, account: Option<String>) -> Message {
 }
 
 /// The drag going on in "Categorization" (issue #454): the window ends it wherever the button is
-/// let go, with [`categorization::Message::Drop`] or [`categorization::Message::DropCategory`].
+/// let go, with [`categorization::Message::DropCategory`].
 pub fn categorization_dragging(state: &State) -> Option<categorization::Dragging> {
     categorization::dragging(&state.categorization)
 }
@@ -118,11 +118,10 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
         torro_ipc::Request::PreviewClearCategories,
         // The catalogue (task E15.2): what the categories are called and where they stand now.
         torro_ipc::Request::ListCategories { account: None },
-        // The sorting rules (task E15.5) and the filters (issue #339) in their one order (issue #454),
-        // listed and edited under Categorization.
+        // The sorting rules (task E15.5) and the filters (issue #339), shown and edited on the page
+        // of their category under Categorization (issue #481).
         torro_ipc::Request::ListSortRules,
         torro_ipc::Request::ListMailFilters,
-        torro_ipc::Request::ListSortingOrder,
     ]
 }
 
@@ -4240,7 +4239,6 @@ mod tests {
                 torro_ipc::Request::ListCategories { account: None },
                 torro_ipc::Request::ListSortRules,
                 torro_ipc::Request::ListMailFilters,
-                torro_ipc::Request::ListSortingOrder,
             ]
         );
     }
@@ -4279,7 +4277,7 @@ mod tests {
         for on in [false, true] {
             let action = categorization::update::<()>(
                 &mut Default::default(),
-                categorization::Message::ContactsPersonal(on),
+                categorization::Message::Editor(super::editor::Message::ContactsPersonal(on)),
                 &Data::default(),
             );
             let Action::Send(requests) = action else { panic!("a request") };

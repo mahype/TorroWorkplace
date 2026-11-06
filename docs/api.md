@@ -80,7 +80,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `calendar` | `list_calendars`, `list_events` ¹⁹, `list_reminders` ²⁰, `search_places`, `map_preview` (Termin-Editor, TE.1) | `save_event` ¹⁹ ²⁴, `snooze_reminder`, `dismiss_reminder`, `pause_reminders`, `preview_reminder` ²⁰ | `delete_event` ²⁴ | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `contacts` ²⁸ | `list_address_books`, `list_contacts`, `get_contact`, `get_photo`, `list_groups`, `upcoming_birthdays` | `create_contact`, `add_to_contact`, `set_favorite`, `add_to_group`, `mark_used`, `move_contact`, `resolve_conflict` mit `both` | `update_contact`, `remove_from_group`, `set_photo`, `delete_contact`, `resolve_conflict` mit `mine`/`theirs` | |
-| `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵, `list_sorting_order` ²⁹ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ², `move_sorting_step` ²⁹ |
+| `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ², `move_category` ²⁹ |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
 | `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
@@ -870,8 +870,8 @@ Was gebaut ist und dabei genauer wurde als oben (Details: [erweiterungen.md › 
 Aktion – `file` (seit Issue #454 nur `{"to": "trash"}`; Archiv und Ordner ergeben `error` „file only takes {"to":
 "trash"}“, [Versionen](#versionen)), `mark_read`, `category`. Der Dienst hält höchstens 200 Filter in
 `<data>/mail/filters.json`, Kennung `f<n>`, und lässt die eingeschalteten auf neue Mail im Posteingang laufen; jeder
-passende wirkt. Welche Kategorie eine Mail bekommt, entscheidet die gemeinsame Reihenfolge von Sortierregeln und Filtern
-(`inbox.list_sorting_order`, `inbox.move_sorting_step`, beide Bereich `inbox`, Lesen bzw. `Admin`; Fußnote 29). `list_filters` und `preview_filter { query, account? }` (Anzahl und die fünf neuesten Treffer im Posteingang)
+passende wirkt. Passen Regeln oder Filter mehrerer Kategorien, bekommt die Mail die Kategorie, die im Katalog weiter
+oben steht (`inbox.move_category`, Bereich `inbox`, `Admin`; Fußnote 29). `list_filters` und `preview_filter { query, account? }` (Anzahl und die fünf neuesten Treffer im Posteingang)
 sind `Read`; `create_filter` (hängt an), `update_filter` (Platz und Kennung bleiben, `enabled` fehlt = bleibt),
 `remove_filter` und `apply_filter { id }` sind `Admin`, weil ein Filter dauerhaft auf die Mail des Menschen wirkt: Bei
 Agenten wartet jede Änderung und jedes Anwenden auf eine Freigabe, nicht nur das Löschen. `apply_filter` wendet einen
@@ -890,19 +890,20 @@ er da fand: eine Änderung des Filters oder andere Treffer dazwischen ergeben `c
 Betreffe und Texte der Vorschau `untrusted`. `update_filter` und `remove_filter` sind als idempotent gekennzeichnet,
 alle außer `apply_filter` als lokal (sie ändern nichts auf einem Server).
 
-²⁹ **Reihenfolge von Regeln und Filtern** (Issue #454, Konzept [kategorien.md](kategorien.md#vorrang)):
-`inbox.list_sorting_order` liefert die Schritte (`kind` `rule` oder `filter`, `id`), die der Client sieht: Regeln wie
-`list_sort_rules`, Filter nur mit `Read` auf Mail und ihrem Konto in Reichweite. `inbox.move_sorting_step { kind, id,
-position }` setzt einen Schritt an einen Platz unter diesen Schritten (über dem Ende: zuletzt), `Admin` in `inbox` mit
-Freigabe. Wer einen Filter verschiebt oder einen Schritt an einem Filter vorbei, braucht die Rechte, diesen Filter zu
-ändern (wie `mail.update_filter`, Fußnote 27), auch bei `inbox.move_sort_rule`; sonst `forbidden`, geprüft vor der
-Freigabe und bei der Ausführung. Die Freigabe nennt den Schritt und die Filter, an denen er vorbeigeht, wie
-gespeichert. Ein Verschieben, das an einem Filter vorbeigeht, den der Client nicht sieht (etwa einem Filter für alle
-Konten bei einem Client mit einem Konto), ist bewusst `forbidden`: So erfährt er zwar, dass dort ein Filter steht, aber
-nichts über ihn, und er ändert nie, was er nicht ändern darf. Geplant und geschrieben wird in einem Schritt gegen die
-Reihenfolge, wie sie gerade ist; hat sie sich seit dem Planen geändert, endet der Befehl mit `conflict`. Die Freigabe
-nennt den Platz in der ganzen Reihenfolge. Ein Sortierlauf (`inbox.start_category_job`) wendet mit `scope.apply_rules` Regeln und Filter in dieser
-Reihenfolge an; ein Filter setzt dabei nur seine Kategorie und nur für Mail im Posteingang.
+²⁹ **Vorrang zwischen Kategorien** (Issue #481, Konzept [kategorien.md](kategorien.md#vorrang)): Passen Sortierregeln
+oder Mail-Filter mehrerer Kategorien auf eine Mail, gewinnt die Kategorie, die in `inbox.list_categories` weiter oben
+steht (Gruppen von oben, darin Kategorien von oben); eine gemerkte Regel „Always for this sender?“ geht allen vor, die
+eingebaute Regel der Kontakte greift erst nach allen. `inbox.move_category { category, group, position }` setzt eine
+Kategorie an einen Platz unter den anderen Kategorien von `group` (0 zuerst, über dem Ende: zuletzt), auch in eine andere
+Gruppe; Antwort ist der Katalog wie bei `list_categories` (Zahlen nur in Reichweite). `Admin` in `inbox` mit Freigabe,
+**kein** Recht für Mail-Filter: Bis #454 brauchte, wer einen Schritt an einem Filter vorbei verschob, die Rechte, den
+Filter zu ändern (`inbox.move_sorting_step`). Seit #481 ändert das Verschieben keinen Filter mehr, sondern nur, welche
+Kategorie gewinnt – eine Entscheidung über Kategorien, so wie das Anlegen einer Sortierregel. Die Freigabe nennt
+Kategorie, Zielgruppe und die Kategorie, vor der sie landet, aus dem Katalog des Dienstes, und die Wirkung; sie ist an
+die Reihenfolge der Zielgruppe gebunden, die sie zeigt: hat sich diese seitdem geändert, endet sie mit `conflict`.
+`not-found` für eine Kategorie oder Gruppe, die es nicht gibt, `error`, wenn die Zielgruppe dem Modell dann mehr als 20
+Kategorien anböte. Ein Sortierlauf (`inbox.start_category_job`) wendet mit `scope.apply_rules` Regeln und Filter nach
+diesem Vorrang an; ein Filter setzt dabei nur seine Kategorie und nur für Mail im Posteingang.
 
 ²⁸ **Kontakte** (Issue #351, Konzept [kontakte.md](kontakte.md)): Rechte gelten je Adressbuch,
 `Rights.address_books` mit Kennungen `<konto-id>/<name>`; fehlt das Feld in alten Rechten, ist kein Buch frei. Die
@@ -1348,6 +1349,19 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
   Verschieben weiter annähme, müsste es vortäuschen. Gespeicherte Filter verlieren das Verschieben beim Lesen (ohne
   übrige Aktion ausgeschaltet), offene Freigaben dafür enden als `conflict`. Die MCP-Tools `mail_create_filter`,
   `mail_update_filter`, `mail_preview_filter` und `mail_apply_filter` bleiben, ihr Schema nennt nur den Papierkorb.
+- **Ausnahme Reihenfolge von Regeln und Filtern (Issue #481):** `inbox.list_sorting_order`, `inbox.move_sorting_step` und
+  `inbox.move_sort_rule` (MCP `inbox_list_sorting_order`, `inbox_move_sorting_step`, `inbox_move_sort_rule`) und die
+  Antwortart `sorting-order` sind entfernt, **ohne** `v: 2`, wie bei Issue #339. Grund: Die gemeinsame Reihenfolge gibt
+  es nicht mehr, über den Vorrang entscheidet die Reihenfolge der Kategorien (`inbox.move_category`, Fußnote 29); ein
+  Dienst, der die alten Befehle weiter beantwortete, müsste eine Reihenfolge vortäuschen, die nichts mehr entscheidet.
+  Folgen: Ein alter Befehlsname ergibt über die API `error` mit „unknown method“, die alten MCP-Tools gibt es nicht mehr.
+  Offene Freigaben für die alten Befehle enden beim Lesen mit `conflict` („The order of rules and filters no longer
+  exists; categories are ordered instead.“), erledigte fallen weg. `position` von `inbox.create_sort_rule` bleibt, ist
+  aber nur noch der Platz in der Liste.
+- **Voreinstellung von `model` (Issue #481):** `inbox.create_category` ohne `model` lässt die KI die neue Kategorie
+  wählen (`true`), wie die Oberfläche; vorher war es `false`. Wer die KI heraushalten will, gibt `model: false` an. Das
+  Feld bleibt optional, `v` ändert sich nicht. Folge: In einer Gruppe, die der KI schon 20 Kategorien anbietet, endet ein
+  Aufruf ohne `model`, der bisher durchging, mit `error`; mit `model: false` geht er weiter durch.
 - MCP-Toolnamen sind stabil wie API-Namen. Im MCP wird `pending` nach 60 Sekunden Warten als
   Tool-Fehler mit Code `pending` und der Kennung der Freigabe gemeldet (siehe „Freigaben“).
 

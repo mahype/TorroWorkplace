@@ -856,14 +856,16 @@ pub enum RuleEffect {
 /// A sorting rule for mail (task E15.1, issue #255, `docs/kategorien.md`): mail that meets every
 /// one of `conditions` and none of `exceptions` is filed as `category`.
 ///
-/// The rules stand in an order the person sees and changes (`inbox.move_sort_rule`); the **first**
-/// one that holds decides ([`crate::rules::sort_category`]). They come after a category the person
-/// set by hand and before the headers and the decision model. "Always for this sender?" keeps
-/// one of these too, with a single condition on the sender.
+/// The rules belong to their category; their own order decides nothing (issue #481). When rules
+/// or mail filters of several categories hold, the category higher up in the catalogue wins
+/// ([`crate::rules::ranked_category`]), except a rule "Always for this sender?", which wins over
+/// every other. They come after a category the person set by hand and before the headers and the
+/// decision model. "Always for this sender?" keeps one of these, with a single condition on the
+/// sender.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SortRule {
-    /// Opaque id given by the core; pass it to `inbox.update_sort_rule`, `inbox.move_sort_rule`
-    /// and `inbox.remove_sort_rule`.
+    /// Opaque id given by the core; pass it to `inbox.update_sort_rule` and
+    /// `inbox.remove_sort_rule`.
     pub id: String,
     /// What the mail is filed as.
     pub category: torro_mail::Category,
@@ -876,40 +878,6 @@ pub struct SortRule {
     pub enabled: bool,
     /// When it was made.
     pub created: DateTime<Utc>,
-}
-
-/// What a step of the sorting order is (issue #454): a sorting rule of the inbox or a mail filter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SortingKind {
-    /// A sorting rule, by its id from `inbox.list_sort_rules`.
-    Rule,
-    /// A mail filter, by its id from `mail.list_filters` (`f<n>`).
-    Filter,
-}
-
-/// One step of the order in which sorting rules and mail filters file new mail (issue #454): from
-/// the top, the first rule that holds or filter that finds the mail and sets a category decides
-/// ([`crate::rules::first_category`]). Rules and filters stand in one list; the person moves them
-/// with `inbox.move_sorting_step`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-pub struct SortingStep {
-    /// A sorting rule or a mail filter.
-    pub kind: SortingKind,
-    /// Its id: of `inbox.list_sort_rules` for a rule, of `mail.list_filters` for a filter.
-    pub id: String,
-}
-
-impl SortingStep {
-    /// The step of the sorting rule `id`.
-    pub fn rule(id: impl Into<String>) -> SortingStep {
-        SortingStep { kind: SortingKind::Rule, id: id.into() }
-    }
-
-    /// The step of the mail filter `id`.
-    pub fn filter(id: impl Into<String>) -> SortingStep {
-        SortingStep { kind: SortingKind::Filter, id: id.into() }
-    }
 }
 
 /// The most conditions of one [`SortRule`], and the most exceptions (task E15.3).

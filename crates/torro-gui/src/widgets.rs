@@ -2758,6 +2758,70 @@ pub fn select_button<'a, M: Clone + 'a>(anchor: &Anchor, label: impl IntoFragmen
     anchored(anchor, b)
 }
 
+/// A [`select_button`] with a mark in front of its label (issue #481): "● Paper trail ▾", with
+/// [`category_dot`] for a category group (its colour follows the design of the moment, so the mark
+/// comes drawn, not as a [`Mark`] with a fixed colour). Registers `anchor`.
+pub fn select_button_marked<'a, M: Clone + 'a>(
+    anchor: &Anchor,
+    mark: Element<'a, M>,
+    label: impl IntoFragment<'a>,
+    on_press: M,
+) -> Element<'a, M> {
+    let content = row![
+        mark,
+        typo::text(typo::caption(), label).wrapping(Wrapping::None),
+        toned(Icon::ChevronDown, icon::SIZE_SM, Tone::Text3)
+    ]
+    .spacing(ICON_GAP)
+    .align_y(Alignment::Center);
+    let b = button(container(content).center_y(Fill))
+        .height(size::control_sm())
+        .padding(style::button_padding())
+        .style(style::button::secondary)
+        .on_press(on_press);
+    anchored(anchor, b)
+}
+
+/// A tile with a title, a detail line under it and a switch at the right (issue #481), for two
+/// settings that stand side by side: "Show in the sidebar", "AI may not file mail here". `raised`
+/// with a `line_strong` edge, radius [`radius::sm()`], always room for two lines of detail, so two
+/// tiles in a row stand equally high. Without `on_toggle` the switch shows disabled and the title
+/// reads at 40 % – the setting does not apply here; the detail keeps its full `text_2`, as it says
+/// why.
+pub fn switch_tile<'a, M: Clone + 'a>(
+    title: impl IntoFragment<'a>,
+    detail: Option<String>,
+    on: bool,
+    on_toggle: Option<Box<dyn Fn(bool) -> M + 'a>>,
+) -> Element<'a, M> {
+    let usable = on_toggle.is_some();
+    let title = typo::text(typo::body(), title).wrapping(Wrapping::WordOrGlyph).style(move |t: &Theme| {
+        let colour = palette(t).text;
+        iced::widget::text::Style { color: Some(if usable { colour } else { Color { a: colour.a * 0.4, ..colour } }) }
+    });
+    let mut lines = column![title];
+    if let Some(detail) = detail {
+        lines = lines.push(typo::text(typo::meta(), detail).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
+    }
+    // At least room for two lines of detail, more when the words need it.
+    let room = typo::line_height(typo::body()) + 2.0 * typo::line_height(typo::meta());
+    let lines = row![blank().height(room), lines.width(Fill)].align_y(Alignment::Center);
+    let switch = iced::widget::toggler(on).size(style::CHECK_SIZE).style(style::toggler).on_toggle_maybe(on_toggle);
+    let content = row![lines, switch].spacing(space::m()).align_y(Alignment::Center);
+    container(content)
+        .width(Fill)
+        .padding(crate::layout::panel_padding())
+        .style(|t: &Theme| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(p.raised)),
+                border: iced::Border { color: p.line_strong, width: LINE, radius: radius::sm().into() },
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
 /// A [`select_button`] as wide as its place, for a choice in a narrow row (issue #421, the model of
 /// Sorting stacked under its label): the label on one line, cut with "…" to the width left beside
 /// the chevron, which stands at the right end. Registers `anchor`.
@@ -4145,8 +4209,14 @@ pub fn category_choice_chip<'a, M: Clone + 'a>(
     on: bool,
     on_press: Option<M>,
 ) -> Element<'a, M> {
+    choice_chip_with(Some(category_dot(at)), label, on, on_press)
+}
+
+/// The dot of the group colour `at` of the active design (`Palette::category`), as wide as the dot
+/// of a row's mark: drawn with the theme of the moment, so it follows a change of design.
+pub fn category_dot<'a, M: 'a>(at: usize) -> Element<'a, M> {
     let size = Scale::Row.dot();
-    let dot = container(blank().width(size).height(size))
+    container(blank().width(size).height(size))
         .style(move |t: &Theme| {
             let colours = &palette(t).category;
             container::Style {
@@ -4155,8 +4225,7 @@ pub fn category_choice_chip<'a, M: Clone + 'a>(
                 ..Default::default()
             }
         })
-        .into();
-    choice_chip_with(Some(dot), label, on, on_press)
+        .into()
 }
 
 /// The chip of [`choice_chip`] with `lead` (already drawn) after the check mark of a chosen chip.
@@ -4678,14 +4747,19 @@ fn progress_share(done: u64, total: u64) -> u16 {
 }
 
 /// The grip of a row that can be dragged into another place (issue #454, after the rows of
-/// torrotasks): `GripVertical` in `text_3`, 14, with `hint` as its tooltip and the hand that grabs.
-/// Pressing it sends `on_press`; the list then follows the pointer over its rows and drops on
-/// release, and shows a [`drop_line`] where the row would go.
+/// torrotasks): `GripVertical` in `text_3`, 14, with `hint` as its tooltip and the hand that grabs,
+/// on a target of [`GRIP_TARGET`] (issue #481: the smallest a pointer should have to hit). Pressing
+/// it sends `on_press`; the list then follows the pointer over its rows and drops on release, and
+/// shows a [`drop_line`] where the row would go.
 pub fn grip<'a, M: Clone + 'a>(on_press: M, hint: &'a str) -> Element<'a, M> {
     let mark =
-        container(toned(Icon::GripVertical, icon::SIZE_SM, Tone::Text3)).center_x(icon::SIZE).center_y(icon::SIZE);
+        container(toned(Icon::GripVertical, icon::SIZE_SM, Tone::Text3)).center_x(GRIP_TARGET).center_y(GRIP_TARGET);
     mouse_area(with_tooltip(mark, hint)).on_press(on_press).interaction(mouse::Interaction::Grab).into()
 }
+
+/// The edge of the area a [`grip`] takes the pointer in: 24, the smallest target the design rules
+/// allow, around an icon of 14.
+pub const GRIP_TARGET: f32 = 24.0;
 
 /// Thickness of a [`drop_line`].
 const DROP_LINE: f32 = 2.0 * size::HAIRLINE;

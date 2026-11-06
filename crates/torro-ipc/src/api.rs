@@ -1704,14 +1704,12 @@ impl Request {
             Request::ControlClearCategories { .. } => &CONTROL_CLEAR_CATEGORIES,
             Request::CreateCategory { .. } => &CREATE_CATEGORY,
             Request::UpdateCategory { .. } => &UPDATE_CATEGORY,
+            Request::MoveCategory { .. } => &MOVE_CATEGORY,
             Request::RemoveCategory { .. } => &REMOVE_CATEGORY,
             Request::ListSortRules => &LIST_SORT_RULES,
             Request::CreateSortRule { .. } => &CREATE_SORT_RULE,
             Request::UpdateSortRule { .. } => &UPDATE_SORT_RULE,
             Request::RemoveSortRule { .. } => &REMOVE_SORT_RULE,
-            Request::MoveSortRule { .. } => &MOVE_SORT_RULE,
-            Request::ListSortingOrder => &LIST_SORTING_ORDER,
-            Request::MoveSortingStep { .. } => &MOVE_SORTING_STEP,
             Request::ListMuteOptions { .. } => &LIST_MUTE_OPTIONS,
             Request::MuteItem { .. } => &MUTE_ITEM,
             Request::SetMailPile { .. } => &SET_MAIL_PILE,
@@ -2031,14 +2029,12 @@ pub static CATALOGUE: &[&Command] = &[
     &CONTROL_CLEAR_CATEGORIES,
     &CREATE_CATEGORY,
     &UPDATE_CATEGORY,
+    &MOVE_CATEGORY,
     &REMOVE_CATEGORY,
     &LIST_SORT_RULES,
     &CREATE_SORT_RULE,
     &UPDATE_SORT_RULE,
     &REMOVE_SORT_RULE,
-    &MOVE_SORT_RULE,
-    &LIST_SORTING_ORDER,
-    &MOVE_SORTING_STEP,
     &LIST_MUTE_OPTIONS,
     &MUTE_ITEM,
     &SET_MAIL_PILE,
@@ -3894,7 +3890,7 @@ static START_CATEGORY_JOB: Command = Command {
     area: Area::Inbox,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress. Use the same `scope` as the preview. `scope.apply_rules` applies the sorting rules and mail filters in their order (inbox_list_sorting_order), the headers and mail from contacts; a filter's category counts for mail in the inbox folder only, and reading or the trash never run here (mail_apply_filter does that). `scope.apply_model` asks the decision model where they leave a mail open; at least one of the two, and a model only with `apply_model`, else `error`. `scope.engine` and `scope.model` together choose a decision model, otherwise the current `inbox.categorize` assignment applies; the mail cloud setting is enforced even for an explicit model. An agent may name a model that runs elsewhere only when it is the one sorting uses now (ai_list_assignments), otherwise it gets `forbidden`: which model elsewhere reads the mail is for a person. The answer holds `job.id`, the frozen account cursors, `eligible`, `processed`, `changed`, errors, the model location, `left_seconds` (an estimate once mail was sorted) and the state. Only one run goes at a time; new mail still gets the normal incoming sorting.",
+    description: "Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress. Use the same `scope` as the preview. `scope.apply_rules` applies the sorting rules and mail filters (where several categories match, the one higher up in inbox_list_categories wins), the headers and mail from contacts; a filter's category counts for mail in the inbox folder only, and reading or the trash never run here (mail_apply_filter does that). `scope.apply_model` asks the decision model where they leave a mail open; at least one of the two, and a model only with `apply_model`, else `error`. `scope.engine` and `scope.model` together choose a decision model, otherwise the current `inbox.categorize` assignment applies; the mail cloud setting is enforced even for an explicit model. An agent may name a model that runs elsewhere only when it is the one sorting uses now (ai_list_assignments), otherwise it gets `forbidden`: which model elsewhere reads the mail is for a person. The answer holds `job.id`, the frozen account cursors, `eligible`, `processed`, `changed`, errors, the model location, `left_seconds` (an estimate once mail was sorted) and the state. Only one run goes at a time; new mail still gets the normal incoming sorting.",
 };
 
 static GET_CATEGORY_JOB: Command = Command {
@@ -3949,7 +3945,7 @@ static CREATE_CATEGORY: Command = Command {
                   (unwanted mail: spam, phishing), `unsorted` (mail no other group fits) or a `custom_group_<n>` \
                   the person made. `icon` chooses a monochrome category icon; the group supplies \
                   its colour. `description` says what belongs there, with examples and \
-                  exceptions – what a decision model reads; `model: true` lets the model choose it for new mail. \
+                  exceptions – what a decision model reads; `model` (left out: true) lets the model choose it for new mail; `false` keeps the AI out. \
                   A hard exception is a sorting rule, not a description. `error` for an empty, multi-line or \
                   taken name (at most 60 characters), an empty description or one over 500 characters, or more \
                   than 20 categories of the group for the model. Needs the person's approval.",
@@ -3967,6 +3963,19 @@ static UPDATE_CATEGORY: Command = Command {
                   `again`. `not-found` for a category not in the catalogue; `error` as for create_category. Needs \
                   the person's approval. `group` takes the keys of create_category: `junk` is unwanted mail, `unsorted` \
                   mail no other group fits.",
+};
+
+static MOVE_CATEGORY: Command = Command {
+    name: "inbox.move_category",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Moves a mail category to `position` (0 first, past the end: last) among the other categories of \
+                  `group`, its own group or another one, and returns the catalogue in its new order. This changes \
+                  which category wins when rules or filters of several categories match one mail: the one higher \
+                  up, groups from the top, within a group categories from the top. `not-found` for a category or \
+                  group that is not there; `error` when `group` would offer the decision model more than 20 \
+                  categories. Needs the person's approval.",
 };
 
 static REMOVE_CATEGORY: Command = Command {
@@ -3989,10 +3998,12 @@ static LIST_SORT_RULES: Command = Command {
     description: "Lists the sorting rules for mail in their order. Each files mail as `category` when every one of \
                   its `conditions` holds and none of its `exceptions`; fields are `sender` (the whole address), \
                   `domain` (the domain or one below it), `subject` and `text` (contain the value), upper and lower \
-                  case never count. The first rule that holds decides, after a category the person set by hand \
-                  and before the headers and the decision model; rules and mail filters stand in one order \
-                  (inbox_list_sorting_order), so a filter above a rule decides first. Rules with \
-                  `enabled: false` hold for nothing. \
+                  case never count. Rules and filters come before the headers and the decision model, after a \
+                  category the person set by hand; a rule \"Always for this sender\" wins over every other while it names one sender or domain \
+                  without exception. When \
+                  rules or mail filters of several categories match, the category higher up in \
+                  inbox_list_categories wins (inbox_move_category changes that); the order of the rules decides \
+                  nothing. Rules with `enabled: false` hold for nothing. \
                   \"Always for this sender\" keeps one of these too. The values are the person's own words.",
 };
 
@@ -4001,7 +4012,8 @@ static CREATE_SORT_RULE: Command = Command {
     area: Area::Inbox,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Adds a sorting rule for mail at `position` (0 first; left out: last) and returns it. From then on \
+    description: "Adds a sorting rule for mail at `position` in the list (0 first; left out: last) and returns it. \
+                  The place decides nothing; the order of the categories does (inbox_move_category). From then on \
                   new mail that meets every condition and no exception is filed as `category`; mail already \
                   filed changes only with inbox_catch_up_categories and `again`. A condition names a `field` \
                   (sender, domain, reply_to, recipient, subject, text, attachment, attachment_name, size, \
@@ -4019,7 +4031,7 @@ static UPDATE_SORT_RULE: Command = Command {
     mcp: Mcp::Tool,
     description: "Changes a sorting rule and returns it: `category` and `conditions` always, `exceptions` and \
                   `enabled` where given (left out, they stay; an empty `exceptions` takes them away). Its place \
-                  stays (inbox_move_sort_rule moves it). `not-found` for a rule that is not there or out of reach, \
+                  in the list stays. `not-found` for a rule that is not there or out of reach, \
                   `error` as for create_sort_rule. Needs the person's approval.",
 };
 
@@ -4030,43 +4042,6 @@ static REMOVE_SORT_RULE: Command = Command {
     mcp: Mcp::Tool,
     description: "Removes a sorting rule and returns the rules left, in order. Mail it filed keeps its category. \
                   `not-found` for a rule that is not there or out of reach. Needs the person's approval.",
-};
-
-static MOVE_SORT_RULE: Command = Command {
-    name: "inbox.move_sort_rule",
-    area: Area::Inbox,
-    access: Access::Admin,
-    mcp: Mcp::Tool,
-    description: "Moves one sorting rule to `position` (0 first, past the end: last); the others keep their order \
-                  around it. Returns all rules in their new order. The first rule that holds decides, so the order \
-                  is what makes a narrow rule win over a broad one. Places count in the list this key sees; mail \
-                  filters keep theirs (inbox_move_sorting_step moves rules and filters in one list). Passing a \
-                  filter needs the rights to change it, else `forbidden`. `not-found` for a rule that is not \
-                  there or out of reach. Needs the person's approval.",
-};
-
-static LIST_SORTING_ORDER: Command = Command {
-    name: "inbox.list_sorting_order",
-    area: Area::Inbox,
-    access: Access::Read,
-    mcp: Mcp::Tool,
-    description: "Lists the sorting rules and mail filters in their one order, as `kind` (`rule` or `filter`) and \
-                  `id`. New mail gets the category of the first step from the top that decides: a rule that holds \
-                  or a filter that finds it and sets a category (inbox_list_sort_rules and mail_list_filters say \
-                  what each does). Only the steps you can see; filters only with read access to mail.",
-};
-
-static MOVE_SORTING_STEP: Command = Command {
-    name: "inbox.move_sorting_step",
-    area: Area::Inbox,
-    access: Access::Admin,
-    mcp: Mcp::Tool,
-    description: "Moves one sorting rule or mail filter (`kind`, `id`) to `position` (0 first, past the end: last) \
-                  among the steps you see; the others keep their order around it. Returns the order. The first \
-                  step that decides wins, so the order makes a narrow rule or filter win over a broad one. Moving \
-                  a filter, or a step past a filter, needs the rights to change that filter (as \
-                  mail_update_filter), else `forbidden`. `not-found` for a step that is not there or out of \
-                  reach. Needs the person's approval.",
 };
 
 static LIST_MUTE_OPTIONS: Command = Command {
@@ -4469,9 +4444,9 @@ static LIST_MAIL_FILTERS: Command = Command {
                   account only with access to every account), in their order: each a search in the language of \
                   mail_search_messages, the account it runs in (left out: every account) and its actions – `file` \
                   (only `{\"to\": \"trash\"}`), `mark_read`, `category`. Enabled filters run on new mail in the \
-                  inbox while Torro Workplace runs; every one that matches runs. Which category new mail gets follows \
-                  the order of filters and sorting rules together (inbox_list_sorting_order): the first that \
-                  matches from the top. The searches are the person's own words.",
+                  inbox while Torro Workplace runs; every one that matches runs. When filters and sorting rules of \
+                  several categories match new mail, the category higher up in inbox_list_categories wins \
+                  (inbox_move_category). The searches are the person's own words.",
 };
 
 static CREATE_MAIL_FILTER: Command = Command {
@@ -4486,7 +4461,8 @@ static CREATE_MAIL_FILTER: Command = Command {
                   or a folder, mail works with categories), `mark_read`, `category`. A filter for every account needs \
                   access to every mail account, a category admin access to the inbox; marking as read needs write \
                   access to mail, the trash delete access (as mail_set_flags and mail_delete_messages would), else \
-                  `forbidden`. It goes below the last filter in the sorting order. Needs the person's approval.",
+                  `forbidden`. When filters or rules of several categories match a mail, the category higher up in \
+                  inbox_list_categories wins. Needs the person's approval.",
 };
 
 static UPDATE_MAIL_FILTER: Command = Command {
@@ -4506,7 +4482,7 @@ static REMOVE_MAIL_FILTER: Command = Command {
     area: Area::Mail,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Removes a mail filter and returns the filters left, in order; it leaves the sorting order too. Mail \
+    description: "Removes a mail filter and returns the filters left, in order. Mail \
                   it moved or filed stays where it is. `not-found` for a filter that is not there or out of reach. Needs the person's approval.",
 };
 
@@ -5584,6 +5560,11 @@ mod tests {
                 model: None,
                 icon: None,
             },
+            Request::MoveCategory {
+                category: torro_mail::Category::Invoice,
+                group: torro_mail::CategoryGroup::Junk,
+                position: 1,
+            },
             Request::RemoveCategory {
                 category: torro_mail::Category::Custom(torro_mail::CustomCategory::new(1).expect("a number")),
                 replacement: Some(torro_mail::Category::Other),
@@ -5612,9 +5593,6 @@ mod tests {
                 enabled: Some(false),
             },
             Request::RemoveSortRule { id: "r1".into() },
-            Request::MoveSortRule { id: "r1".into(), position: 0 },
-            Request::ListSortingOrder,
-            Request::MoveSortingStep { kind: torro_inbox::SortingKind::Filter, id: "f1".into(), position: 2 },
             Request::ListMuteOptions { id: "i1".into() },
             Request::MuteItem {
                 id: "i1".into(),
@@ -7487,14 +7465,12 @@ mod tests {
                 "inbox.control_clear_categories",
                 "inbox.create_category",
                 "inbox.update_category",
+                "inbox.move_category",
                 "inbox.remove_category",
                 "inbox.list_sort_rules",
                 "inbox.create_sort_rule",
                 "inbox.update_sort_rule",
                 "inbox.remove_sort_rule",
-                "inbox.move_sort_rule",
-                "inbox.list_sorting_order",
-                "inbox.move_sorting_step",
                 "inbox.list_mute_options",
                 "inbox.mute_item",
                 "inbox.set_mail_pile",
@@ -7505,6 +7481,20 @@ mod tests {
             ]
         );
         assert!(CATALOGUE.iter().filter(|command| command.area == Area::Inbox).all(|command| command.mcp == Mcp::Tool));
+    }
+
+    /// Issue #481: a category made without `model` lets the AI choose it, as the settings do.
+    #[test]
+    fn a_new_category_lets_the_ai_choose_it_unless_told() {
+        let made: Request = serde_json::from_str(
+            r#"{"method":"inbox.create_category","group":"info","name":"Tax","description":"Tax."}"#,
+        )
+        .expect("a request");
+        assert!(matches!(made, Request::CreateCategory { model: true, .. }), "{made:?}");
+        let off =
+            r#"{"method":"inbox.create_category","group":"info","name":"Tax","description":"Tax.","model":false}"#;
+        let off: Request = serde_json::from_str(off).expect("a request");
+        assert!(matches!(off, Request::CreateCategory { model: false, .. }));
     }
 
     /// Task E8.8a: an unknown span is no request at all, so the core answers `error`.

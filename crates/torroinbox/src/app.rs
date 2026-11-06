@@ -1611,13 +1611,13 @@ pub enum Open {
     Unsubscribe,
     /// Settings › Categorization on its tab AI (issue #454).
     Categorization,
-    /// … on its tab "Rules & filters".
-    CategorizationRules,
+    /// … with the page of a category and its fixed rules (issue #481).
+    CategorizationCategory,
     /// … on its tab "Categories".
     CategorizationCategories,
     /// … with the dialog "Sort existing mail".
     CategorizationSort,
-    /// … with the dialog "New filter" over "Rules & filters".
+    /// … with the dialog "New filter" over the tab Categories.
     CategorizationFilter,
     /// … with a run of "Sort existing mail" going, its line under the head.
     CategorizationRunning,
@@ -1711,7 +1711,7 @@ impl Open {
         ("mail-overview-empty", Open::MailOverviewEmpty),
         ("unsubscribe", Open::Unsubscribe),
         ("categorization", Open::Categorization),
-        ("categorization-rules", Open::CategorizationRules),
+        ("categorization-category", Open::CategorizationCategory),
         ("categorization-categories", Open::CategorizationCategories),
         ("categorization-sort", Open::CategorizationSort),
         ("categorization-filter", Open::CategorizationFilter),
@@ -1738,7 +1738,7 @@ impl Open {
     fn categorization_scene(self) -> Option<&'static str> {
         match self {
             Open::Categorization => Some("ai"),
-            Open::CategorizationRules => Some("rules"),
+            Open::CategorizationCategory => Some("category"),
             Open::CategorizationCategories => Some("categories"),
             Open::CategorizationSort => Some("sort"),
             Open::CategorizationFilter => Some("filter"),
@@ -4443,12 +4443,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             use settings_mail::categorization::{Dragging, Message as Categorization};
             let page =
                 |message| Message::SettingsPage(SettingsMessage::Mail(settings_mail::Message::Categorization(message)));
-            match settings_mail::categorization_dragging(state) {
-                Some(Dragging::Step) => subscriptions.push(split::release().map(move |()| page(Categorization::Drop))),
-                Some(Dragging::Category) => {
-                    subscriptions.push(split::release().map(move |()| page(Categorization::DropCategory)))
-                }
-                None => {}
+            if let Some(Dragging::Category) = settings_mail::categorization_dragging(state) {
+                subscriptions.push(split::release().map(move |()| page(Categorization::DropCategory)));
             }
         }
         // A download under Settings › AI asks how far it is (issue #410).
@@ -21045,7 +21041,7 @@ mod tests {
     }
 
     /// Issue #339, since #454 in Settings › Categorization: "Create filter…" opens the dialog of a new
-    /// filter filled in over "Rules & filters", which asks what it finds; Escape asks before the
+    /// filter filled in over the page, which asks what it finds; Escape asks before the
     /// typed search goes.
     #[test]
     fn create_filter_opens_the_filled_in_dialog() {
