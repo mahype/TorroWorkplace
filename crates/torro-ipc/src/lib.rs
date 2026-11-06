@@ -3163,6 +3163,19 @@ pub enum Request {
         /// The draft's id from `mail.save_draft`.
         id: String,
     },
+    /// Reads a saved draft back so it can be written on and saved again ([`Response::MailDraft`],
+    /// issue #502): account, To, Cc, Bcc, subject, the plain text, the HTML cleaned like a saved
+    /// draft's, the message it answers (`in_reply_to`, the first message with the draft's
+    /// `In-Reply-To` outside the drafts folder of its account, else `None`) and its attachments
+    /// as parts of the draft itself (`DraftAttachment::MailPart`), so saving it again keeps them.
+    /// A client reads only its own drafts, like it replaces and sends only those; a draft of
+    /// someone else, a message outside the drafts folder and an account the caller does not reach
+    /// are `not-found`, like for `mail.send_draft`.
+    #[serde(rename = "mail.get_draft")]
+    GetDraft {
+        /// The draft's id (`m:…`).
+        id: String,
+    },
     /// Answers the invitation in the mail `id` of the mail account `account` (task E8.3b): sends the
     /// organizer an iMIP `REPLY` from the account (`text/calendar; method=REPLY` beside a short text,
     /// with the event's UID and sequence and the account as attendee with the answer as `PARTSTAT`),
@@ -4848,7 +4861,7 @@ pub enum Response {
         #[serde(default)]
         failed: Vec<mail::FailedFile>,
     },
-    /// A draft as saved ([`Request::SaveDraft`]), with its id.
+    /// A draft as saved ([`Request::SaveDraft`]) or read back ([`Request::GetDraft`]), with its id.
     MailDraft {
         draft: Draft,
     },

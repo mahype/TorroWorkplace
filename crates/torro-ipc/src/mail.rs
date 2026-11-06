@@ -1071,7 +1071,8 @@ impl Request {
             | Request::GetMailAttachment { id, .. }
             | Request::SaveMailAttachments { id, .. }
             | Request::ListSaveTargets { id: Some(id) }
-            | Request::SendDraft { id } => vec![id.as_str()],
+            | Request::SendDraft { id }
+            | Request::GetDraft { id } => vec![id.as_str()],
             Request::SetMailFlags { ids, .. }
             | Request::MoveMail { ids, .. }
             | Request::DeleteMail { ids, .. }
