@@ -308,6 +308,7 @@ impl InboxClient {
         order: Order,
     ) -> Result<(Vec<MessageSummary>, Option<String>), InboxError> {
         let request = Request::SearchMail {
+            caught: None,
             account: None,
             folder: Some(folder),
             query,
@@ -337,6 +338,7 @@ impl InboxClient {
     pub async fn find_mail(&self, find: MailFind) -> Result<MailFound, InboxError> {
         let MailFind { account, folder, query, sort, order, limit, cursor } = find;
         let request = Request::SearchMail {
+            caught: None,
             account,
             folder,
             query: Some(query),
@@ -369,7 +371,10 @@ impl InboxClient {
     /// otherwise, and the cursor of the next one (`None` on the last page).
     pub async fn mail_by_role(&self, find: MailByRole) -> Result<(Vec<MessageSummary>, Option<String>), InboxError> {
         let MailByRole { role, account, snoozed, pile, order, limit, cursor } = find;
+        // "All" (the inbox without the piles) leaves out mail caught as fraud or spam (issue #506).
+        let caught = (role == Role::Inbox && pile == Some(PileFilter::Without)).then_some(false);
         let request = Request::SearchMail {
+            caught,
             account,
             folder: None,
             query: Some(in_role(role)),
@@ -393,11 +398,13 @@ impl InboxClient {
 
     /// How much unread mail "All" holds (task E18.3, decision 4 of E18): the search of "All" –
     /// [`Role::Inbox`] with `snoozed` `Some(false)` and, since task E19.3, `pile:
-    /// without` (mail on a pile is not in "All") – with `unread: Some(true)` and `limit: 1`, for
+    /// without` (mail on a pile is not in "All"), since issue #506 `caught: false` – with `unread: Some(true)` and `limit: 1`, for
     /// `account` or every account the window reaches. Answers the core's `total_estimate`, 0 when it
     /// sends none.
     pub async fn count_unread_in_all(&self, account: Option<String>) -> Result<u64, InboxError> {
+        // Mail caught as fraud or spam is not in "All" (issue #506).
         let request = Request::SearchMail {
+            caught: Some(false),
             account,
             folder: None,
             query: Some(in_role(Role::Inbox)),
@@ -433,6 +440,14 @@ impl InboxClient {
         since: Option<DateTime<Utc>>,
     ) -> Result<(), InboxError> {
         self.ask_ok(Request::SetMailPile { ids, pile, since }).await
+    }
+
+    /// `inbox.release_mail` (issue #506, "Not fraud"): brings the mail `ids` (`m:…`, 1 to 100) that
+    /// the core caught as fraud or spam, or that is filed as Phishing or Spam, back into the inbox;
+    /// with `trust` their senders are never caught again. [`InboxError::NotFound`] when one of them
+    /// lies in an account the window may not see; nothing changes then.
+    pub async fn release_mail(&self, ids: Vec<String>, trust: bool) -> Result<(), InboxError> {
+        self.ask_ok(Request::ReleaseMail { ids, trust }).await
     }
 
     /// One page of a pile (task E19.3, [`MailInPile`]): `mail.search_messages` without a folder,
@@ -829,6 +844,7 @@ fn pile_search(
     order: Option<Order>,
 ) -> Request {
     Request::SearchMail {
+        caught: None,
         account,
         folder: None,
         query: Some(PILE_QUERY.to_owned()),
@@ -884,6 +900,7 @@ impl InboxClient {
         order: Order,
     ) -> Result<(Vec<MessageSummary>, Option<String>), InboxError> {
         let request = Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query: None,
@@ -926,6 +943,7 @@ impl InboxClient {
         limit: u32,
     ) -> Result<Vec<MessageSummary>, InboxError> {
         let request = Request::SearchMail {
+            caught: None,
             account,
             folder: None,
             query: None,
@@ -1901,6 +1919,7 @@ mod tests {
 
     fn summary(id: &str, folder: &str) -> MessageSummary {
         MessageSummary {
+            caught: false,
             id: id.into(),
             account: "mail:anna@example.org".into(),
             folder: folder.into(),
@@ -1999,6 +2018,7 @@ mod tests {
             },
             Request::GetMail { id, include_body: true, include_html } => Response::MailMessage {
                 message: Message {
+                    warnings: Vec::new(),
                     summary: summary(&id, "f:inbox"),
                     cc: Vec::new(),
                     reply_to: Vec::new(),
@@ -2155,6 +2175,7 @@ mod tests {
                 snoozed,
                 categories,
                 pile,
+                caught: _,
             } if categories.is_empty() => {
                 // The pile only when there is one (task E19.3), so the ids before it stay as they were.
                 let id = format!(
@@ -2317,6 +2338,7 @@ mod tests {
         client.search_by_category(vec![Category::Invoice], 50, None, Order::NewestFirst).await.expect("a page");
 
         let search = |account: Option<String>, pile, limit, cursor: Option<&str>, order| Request::SearchMail {
+            caught: None,
             account,
             folder: None,
             query: Some(PILE_QUERY.into()),
@@ -2348,6 +2370,7 @@ mod tests {
                 search(None, PileFilter::ReplyLater, 1, None, None),
                 Request::SnoozeItem { id: "m:7".into(), until: Some(at(15)), unless_reply: true, keep_open: false },
                 Request::SearchMail {
+                    caught: None,
                     account: None,
                     folder: None,
                     query: None,

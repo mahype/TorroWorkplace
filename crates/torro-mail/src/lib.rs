@@ -19,6 +19,8 @@
 //!   subfolders and file names, and when a target is suggested (issue #290).
 //! - [`html`] and [`markup`]: formatted mail (issue #125): the safe subset of HTML the suite
 //!   sends, its plain text and the signature in it; the compose window's marks rendered to it.
+//! - [`warning`]: the warning signs of fraud and spam ([`WarningSign`], issue #506) and the sender
+//!   checks of `Authentication-Results` they are partly read from.
 //!
 //! **Ids are opaque.** Folders (`f:…`) and messages (`m:…`) get ids from the core's mail store,
 //! which resolves them; no client takes one apart, and nothing is ever split at a path separator.
@@ -35,6 +37,7 @@ pub mod markup;
 pub mod message;
 pub mod order;
 pub mod save_target;
+pub mod warning;
 
 pub use account::{
     ACCOUNT_PREFIX, BackupPreferences, Endpoint, InvalidAddress, MailAccountConfig, MailFormat, MailSettings, Notify,
@@ -53,3 +56,4 @@ pub use save_target::{
     DateSource, FileFacts, FileKind, OnConflict, Resolved, SaveTarget, SaveTargetSpec, SchemaError, SuggestWhen,
     Suggestion,
 };
+pub use warning::{AuthCheck, AuthResult, AuthResults, WarningSign};

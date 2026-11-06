@@ -1394,6 +1394,7 @@ mod tests {
     /// A message of anna@example.org from the shop's newsletter, as the mail store lists it.
     fn shop_message(id: &str, account: &str) -> torro_mail::MessageSummary {
         torro_mail::MessageSummary {
+            caught: false,
             id: id.into(),
             account: account.into(),
             folder: "f:archive".into(),
