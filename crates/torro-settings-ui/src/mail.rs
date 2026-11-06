@@ -26,7 +26,7 @@ mod editor;
 pub mod filters;
 
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <id>` takes.
-pub const SECTIONS: [Section; 4] = [
+pub const SECTIONS: [Section; 5] = [
     // Accounts is first: the gear lands on who the mail comes from.
     Section { id: ACCOUNTS_SECTION, icon: Icon::Mail, label: "Accounts" },
     Section { id: "reading", icon: Icon::MailOpen, label: "Reading & writing" },
@@ -37,7 +37,15 @@ pub const SECTIONS: [Section; 4] = [
     // issue #454: "Create filter…" at a mail and at the search field open a new one here
     // ([`new_filter`]).
     Section { id: CATEGORIZATION_SECTION, icon: Icon::Tag, label: "Categorization" },
+    // The numbers the mail window's overview leaves out (issue #485): who sends the most, what lies
+    // in the inbox, how each category develops. Its page is the window's ([`STATISTICS_SECTION`]).
+    Section { id: STATISTICS_SECTION, icon: Icon::ChartColumn, label: "Statistics" },
 ];
+
+/// The id of the section "Statistics" (issue #485): what `--settings statistics` takes and where
+/// "Details ›" of the overview leads. Its page counts the window's own answers of `mail.overview`, so
+/// the window draws it itself; [`page`] gives an empty one for it.
+pub const STATISTICS_SECTION: &str = "statistics";
 
 /// The id of the section "Attachments": what `--settings attachments` takes and where "Manage save
 /// targets…" leads.
@@ -243,6 +251,8 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Mes
         "reading" => wrap(Page::new(reading::view(&state.reading, data)), Message::Reading),
         CATEGORIZATION_SECTION => wrap(categorization::page(&state.categorization, data), Message::Categorization),
         ATTACHMENTS_SECTION => wrap(Page::new(attachments::view(&state.attachments, data)), Message::Attachments),
+        // The window draws it in place of this ([`STATISTICS_SECTION`]).
+        STATISTICS_SECTION => Page::new(iced::widget::Space::new()),
         // Every page takes the whole width (issue #464); an account's page puts its blocks side by
         // side itself (issue #343).
         _ => wrap(accounts::page_with_storage(&state.accounts, &state.storage, data), Message::Accounts),
@@ -4210,10 +4220,15 @@ mod tests {
     #[test]
     fn the_sections_are_reachable_by_their_words() {
         let ids: Vec<&str> = SECTIONS.iter().map(|section| section.id).collect();
-        assert_eq!(ids, ["accounts", "reading", "attachments", "categorization"], "no Filters since issue #454");
+        assert_eq!(
+            ids,
+            ["accounts", "reading", "attachments", "categorization", "statistics"],
+            "no Filters since issue #454"
+        );
         assert_eq!(SECTIONS[0].name(), tr("Accounts"));
         assert_eq!(SECTIONS[2].name(), tr("Attachments"), "task M12.7");
         assert_eq!(SECTIONS[3].name(), tr("Categorization"), "task E12.10");
+        assert_eq!((SECTIONS[4].id, SECTIONS[4].name()), (STATISTICS_SECTION, tr("Statistics")), "issue #485");
         let (mut host, _) = Host::new(Arc::new(Demo::new()), SECTIONS.to_vec(), wanted());
         for id in ids {
             assert!(host.open(id), "{id}");
