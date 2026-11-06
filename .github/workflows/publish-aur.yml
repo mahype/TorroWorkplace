@@ -1,10 +1,12 @@
-# DRAFT - INACTIVE until the maintainer enables it (docs/release.md, section "Einmal einrichten").
-#
-# Pushes the `-bin` packages and the `torro-suite` meta package to the AUR after a release.
-# It is a reusable workflow: it only runs when dist-workspace.toml lists it as a custom publish job
-#     publish-jobs = ["./publish-aur"]
-# followed by `dist generate`, which adds the call to release.yml (dist then passes `plan`).
-# Without that line this file does nothing.
+# Pushes the suite's AUR packages after a release (docs/release.md, section "Einmal einrichten"):
+#   * torroworkplace-bin          the background service: program and systemd unit (packaging/aur/PKGBUILD.core.in)
+#   * one -bin package per app    program, .desktop entry and icon; depends on torroworkplace-bin (PKGBUILD.in)
+#   * torro-workplace             the main application: .desktop entry and icon, depends on torroworkplace-bin
+#                                 (PKGBUILD.main.in)
+#   * torro-suite                 meta package that depends on all of them (PKGBUILD.suite.in)
+# It is a reusable workflow, called by release.yml as a custom publish job (`publish-jobs` in dist-workspace.toml,
+# dist passes `plan`). Every job is skipped until the repository variable AUR_ENABLED is 'true', so a release runs
+# without AUR until the maintainer has set it up.
 #
 # Needs (repository secrets): AUR_SSH_PRIVATE_KEY, AUR_USERNAME, AUR_EMAIL.
 # The public half of the key belongs into the AUR account of the package maintainer.
@@ -25,17 +27,19 @@ permissions:
 jobs:
   aur-bin:
     name: ${{ matrix.bin }}-bin
+    if: ${{ vars.AUR_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { bin: torroworkplace, appid: torro-workplace, title: Torro Workplace, desc: "TorroWorkplace core: tray icon, workspace templates and one MCP server for the suite" }
+          # The background service every app depends on: program and systemd unit only (issue #411).
+          - { bin: torroworkplace, template: PKGBUILD.core.in, desc: "TorroWorkplace background service: workspace templates, accounts and one MCP server for the suite" }
           - { bin: torrocalendar, appid: torro-calendar, title: Torro Calendar, desc: "Calendar for the tiled desktop (Nextcloud/CalDAV)" }
           - { bin: torrotasks, appid: torro-tasks, title: Torro Tasks, desc: "Tasks for the tiled desktop" }
           # The inbox's three programs (decision 2 in docs/lebenszyklus.md): each its own package, .desktop entry and icon.
-          # `deps`: the suite's packages a program needs, space-separated; Mail and App Feed open the compose window of
-          # torroinbox.
+          # `deps`: the suite's app packages a program needs besides torroworkplace-bin, space-separated; Mail and
+          # App Feed open the compose window of torroinbox.
           - { bin: torroinbox, appid: torro-inbox, title: Torro Notification Hub, desc: "Notification Hub for the tiled desktop: what wants your attention from agents, the suite and scripts" }
           - { bin: torro-inbox-mail, appid: torro-inbox-mail, title: Torro Workplace Mail, desc: "Mail for the tiled desktop, the mail window of the TorroWorkplace inbox", deps: torroinbox-bin }
           - { bin: torro-inbox-notifications, appid: torro-inbox-notifications, title: Torro App Feed, desc: "App Feed for the tiled desktop: notifications from GitHub, Nextcloud, Talk, ntfy and scripts", deps: torroinbox-bin }
@@ -47,6 +51,7 @@ jobs:
       - name: Render PKGBUILD
         env:
           TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+          TEMPLATE: packaging/aur/${{ matrix.template || 'PKGBUILD.in' }}
           BIN: ${{ matrix.bin }}
           APPID: ${{ matrix.appid }}
           TITLE: ${{ matrix.title }}
@@ -60,7 +65,7 @@ jobs:
           for dep in ${DEPS}; do depends="${depends} '${dep}'"; done
           sed -e "s|@BIN@|${BIN}|g" -e "s|@APPID@|${APPID}|g" -e "s|@TITLE@|${TITLE}|g" \
               -e "s|@DESC@|${DESC}|g" -e "s|@VERSION@|${version}|g" -e "s|@DEPENDS@|${depends}|g" \
-              packaging/aur/PKGBUILD.in > PKGBUILD
+              "${TEMPLATE}" > PKGBUILD
           cat PKGBUILD
       - name: Publish to the AUR
         # Verify the newest tag of the action on its Releases page before the first run; pin a commit SHA if you prefer.
@@ -76,9 +81,37 @@ jobs:
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_message: "Update to ${{ fromJson(inputs.plan).announcement_tag }}"
 
+  aur-main:
+    name: torro-workplace
+    needs: aur-bin
+    if: ${{ vars.AUR_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Render PKGBUILD
+        env:
+          TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+        run: |
+          sed -e "s|@VERSION@|${TAG#v}|g" packaging/aur/PKGBUILD.main.in > PKGBUILD
+          cat PKGBUILD
+      - name: Publish to the AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
+        with:
+          pkgname: torro-workplace
+          pkgbuild: ./PKGBUILD
+          updpkgsums: true
+          test: true
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ fromJson(inputs.plan).announcement_tag }}"
+
   aur-suite:
     name: torro-suite
-    needs: aur-bin
+    needs: [aur-bin, aur-main]
+    if: ${{ vars.AUR_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
