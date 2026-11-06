@@ -78,8 +78,8 @@ pub const RASTER_MIN_PIXELS: u32 = 48;
 /// A raster picture larger than this on a side is refused before it is decoded.
 pub const RASTER_MAX_PIXELS: u32 = 2048;
 
-/// How much of the circle's side a raster picture fills; a BIMI SVG is made for the circle and fills
-/// all of it.
+/// How much of the circle's side a raster picture or a website's SVG symbol fills; a BIMI SVG is made
+/// for the circle and fills all of it.
 const RASTER_FILL_PERCENT: u32 = 80;
 
 /// The most memory decoding one raster picture may take.
@@ -441,13 +441,13 @@ impl SenderLogos {
     /// that only sends mail has none), asked again after [`NOT_FOUND_FOR`].
     pub async fn find(&self, domain: &str) -> Result<Option<Vec<u8>>, WebError> {
         if let Some(svg) = self.bimi(domain).await?
-            && let Some(logo) = drawn(svg, true).await
+            && let Some(logo) = drawn(svg, Drawn::Bimi).await
         {
             return Ok(Some(logo));
         }
         if let Ok(url) = Url::parse(&format!("https://{domain}/apple-touch-icon.png"))
             && let Some((_, picture)) = self.reach(url, RASTER_MAX_BYTES).await
-            && let Some(logo) = drawn(picture, false).await
+            && let Some(logo) = drawn(picture, Drawn::Raster).await
         {
             return Ok(Some(logo));
         }
@@ -460,7 +460,7 @@ impl SenderLogos {
         for symbol in symbols(&String::from_utf8_lossy(&page), &at).into_iter().take(PAGE_CANDIDATES) {
             let max = if symbol.svg { SVG_MAX_BYTES } else { RASTER_MAX_BYTES };
             let Some((_, picture)) = self.reach(symbol.url, max).await else { continue };
-            let logo = drawn(picture, symbol.svg).await;
+            let logo = drawn(picture, if symbol.svg { Drawn::Svg } else { Drawn::Raster }).await;
             if logo.is_some() {
                 return Ok(logo);
             }
@@ -515,7 +515,11 @@ struct Running(Arc<SenderLogos>);
 
 impl Drop for Running {
     fn drop(&mut self) {
-        self.0.state.lock().unwrap_or_else(PoisonError::into_inner).running = false;
+        // Only for a panic: a task that ends normally noted it under the lock already, and a new one
+        // may have started since.
+        if std::thread::panicking() {
+            self.0.state.lock().unwrap_or_else(PoisonError::into_inner).running = false;
+        }
     }
 }
 
@@ -529,8 +533,12 @@ fn remove(file: &std::path::Path) -> Result<(), std::io::ErrorKind> {
 
 /// `bytes` drawn as a logo ([`from_svg`] or [`from_raster`]) on a blocking thread: decoding takes a
 /// while, and a picture that makes the decoder fail hard is a picture without logo.
-async fn drawn(bytes: Vec<u8>, svg: bool) -> Option<Vec<u8>> {
-    let draw = move || if svg { from_svg(&bytes) } else { from_raster(&bytes) };
+async fn drawn(bytes: Vec<u8>, kind: Drawn) -> Option<Vec<u8>> {
+    let draw = move || match kind {
+        Drawn::Bimi => from_svg(&bytes),
+        Drawn::Svg => svg_filling(&bytes, RASTER_FILL_PERCENT),
+        Drawn::Raster => from_raster(&bytes),
+    };
     tokio::task::spawn_blocking(draw).await.ok().flatten()
 }
 
@@ -621,6 +629,21 @@ fn symbols(html: &str, base: &Url) -> Vec<Symbol> {
 /// An SVG drawn after the module docs; `None` when it is too large, holds something refused, or
 /// cannot be read.
 pub fn from_svg(bytes: &[u8]) -> Option<Vec<u8>> {
+    svg_filling(bytes, 100)
+}
+
+/// What a picture to draw is ([`drawn`]).
+#[derive(Debug, Clone, Copy)]
+enum Drawn {
+    /// A BIMI logo: an SVG made for the circle, filling all of it.
+    Bimi,
+    /// An SVG symbol of a website, which may reach its corners: it fills as much as a raster one.
+    Svg,
+    Raster,
+}
+
+/// [`from_svg`], the SVG filling `percent` of the circle's side.
+fn svg_filling(bytes: &[u8], percent: u32) -> Option<Vec<u8>> {
     // Compressed SVG (`svgz`) would unpack past every limit before anything here could look at it.
     if bytes.len() > SVG_MAX_BYTES || bytes.starts_with(&[0x1f, 0x8b]) {
         return None;
@@ -654,7 +677,8 @@ pub fn from_svg(bytes: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let side = LOGO_PIXELS as f32;
-    let scale = (side / width).min(side / height);
+    let inner = side * percent as f32 / 100.0;
+    let scale = (inner / width).min(inner / height);
     let (x, y) = ((side - width * scale) / 2.0, (side - height * scale) / 2.0);
     let mut pixmap = Pixmap::new(LOGO_PIXELS, LOGO_PIXELS)?;
     pixmap.fill(Color::WHITE);
@@ -915,6 +939,8 @@ pub(crate) mod tests {
     #[test]
     fn svgs_without_scripts_references_or_too_many_bytes() {
         assert!(from_svg(&fixture("logo.svg")).is_some());
+        let symbol = decoded(&svg_filling(&fixture("logo.svg"), RASTER_FILL_PERCENT).expect("a symbol"));
+        assert_eq!(symbol.get_pixel(64, 8), &Rgba([255, 255, 255, 255]), "a website's SVG keeps a white rim");
         assert_eq!(from_svg(&fixture("script.svg")), None, "a script");
         assert_eq!(from_svg(&fixture("external.svg")), None, "a picture from the web");
         let mut large = fixture("logo.svg");
