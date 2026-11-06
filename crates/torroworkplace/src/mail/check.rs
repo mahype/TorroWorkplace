@@ -4,16 +4,20 @@
 //! one's own mail server is not read: a sender can write it into the mail, and not every server
 //! adds one.
 //!
-//! A signature counts when it passes ([`DkimResult::Pass`]), signs the whole body (`l=` would let
-//! anyone append text below a signed newsletter) and its domain `d=` is the sender's domain, or a
-//! domain above or below it (`mail.paypal.de` signed by `paypal.de`, or the other way round). The
-//! domain that stands for the sender is the shorter of the two. Only a DNS failure
-//! ([`DkimResult::TempError`]) leaves the question open ([`Checked::Retry`]); every other outcome is
-//! an answer.
+//! A signature counts when it passes ([`DkimResult::Pass`]), signs the `From` header (RFC 6376
+//! requires it; else the sender could be rewritten under the signature), signs the whole body (`l=`
+//! would let anyone append text below a signed newsletter), is not `rsa-sha1` (RFC 8301) and its
+//! domain `d=` is the sender's domain or a domain above it (`mail.paypal.de` signed by `paypal.de`):
+//! that signing domain stands for the sender. A signer *below* the sender's domain does not count:
+//! without the public suffix list, a subdomain handed out to others (`x.duckdns.org`) could sign for
+//! the domain above it. Only a DNS failure ([`DkimResult::TempError`]) leaves the question open
+//! ([`Checked::Retry`]); every other outcome is an answer.
 //!
 //! The keys (`<selector>._domainkey.<domain>` TXT records) are kept in a cache of their own,
 //! [`TXT_CACHE_MAX`] entries for at most [`TXT_KEEP`]: a sync of a full inbox asks for the key of
-//! one newsletter only once. Nothing here logs a domain, an address or a header.
+//! one newsletter only once. A signing domain whose DNS did not answer is not asked again for
+//! [`UNANSWERED_REST`], so a sync with many of its mails does not wait for each. Nothing here logs a
+//! domain, an address or a header.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -33,11 +37,14 @@ pub const TXT_KEEP: Duration = Duration::from_secs(60 * 60);
 /// How long checking one message may take: the DNS lookups of its signatures.
 const CHECK_DEADLINE: Duration = Duration::from_secs(10);
 
+/// A signing domain whose DNS did not answer is not asked again for this long.
+pub const UNANSWERED_REST: Duration = Duration::from_secs(5 * 60);
+
 /// What the check of one message found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Checked {
-    /// A signature of this domain (in lower case, ASCII) passed: the sender's domain, or the shorter
-    /// of it and the signing domain when one lies below the other.
+    /// A signature of this domain (in lower case, ASCII) passed: the sender's domain, or the domain
+    /// above it that signed.
     Domain(String),
     /// No signature passed that belongs to the sender's domain (none at all, broken, foreign, cut
     /// with `l=`), or the message names no sender.
@@ -52,13 +59,15 @@ pub struct SenderCheck {
     /// resolver could be built: then nothing is checked yet ([`Checked::Retry`]).
     auth: OnceLock<Option<MessageAuthenticator>>,
     txt: TxtCache,
+    /// Signing domains whose DNS did not answer, and when ([`UNANSWERED_REST`]).
+    unanswered: Mutex<HashMap<String, Instant>>,
 }
 
 impl SenderCheck {
     /// The check on the system's DNS configuration. Without one every signed message waits for a
     /// later try ([`Checked::Retry`]).
     pub fn system() -> SenderCheck {
-        SenderCheck { auth: OnceLock::new(), txt: TxtCache::default() }
+        SenderCheck { auth: OnceLock::new(), txt: TxtCache::default(), unanswered: Mutex::default() }
     }
 
     /// A check that asks no DNS server: only the keys put into its cache ([`SenderCheck::know`])
@@ -69,7 +78,7 @@ impl SenderCheck {
         use mail_auth::hickory_resolver::config::{ResolverConfig, ResolverOpts};
         let config = ResolverConfig::from_name_servers(Vec::new());
         let _ = auth.set(MessageAuthenticator::new(config, ResolverOpts::default()).ok());
-        SenderCheck { auth, txt: TxtCache::default() }
+        SenderCheck { auth, txt: TxtCache::default(), unanswered: Mutex::default() }
     }
 
     /// Puts the TXT record `record` of `name` (`<selector>._domainkey.<domain>`) into the cache.
@@ -92,6 +101,12 @@ impl SenderCheck {
         self.auth.get_or_init(|| MessageAuthenticator::new_system_conf().ok()).as_ref()
     }
 
+    /// Whether mail can be checked at all: there is a DNS configuration. Without one nothing is
+    /// fetched only to be checked.
+    pub fn ready(&self) -> bool {
+        self.authenticator().is_some()
+    }
+
     /// Whether the message `raw` comes from the domain of its sender, after the module docs. The
     /// sender is read from the message itself and must be exactly one address: a second `From`
     /// header (or address) is how a signed mail is made to show another sender.
@@ -103,14 +118,22 @@ impl SenderCheck {
             return Checked::None;
         }
         let Some(authenticator) = self.authenticator() else { return Checked::Retry };
+        let signers: Vec<String> =
+            message.dkim_headers.iter().map(|header| header.header.d.to_ascii_lowercase()).collect();
+        if signers.iter().all(|signer| self.resting(signer)) {
+            return Checked::Retry;
+        }
         let parameters = Parameters::new(&message).with_txt_cache(&self.txt);
         let checked = tokio::time::timeout(CHECK_DEADLINE, authenticator.verify_dkim(parameters)).await;
-        let Ok(outputs) = checked else { return Checked::Retry };
+        let Ok(outputs) = checked else {
+            self.note_unanswered(&signers);
+            return Checked::Retry;
+        };
         let mut found: Option<String> = None;
         let mut unanswered = false;
         for output in &outputs {
             match (output.result(), output.signature()) {
-                (DkimResult::Pass, Some(signature)) if signature.l == 0 => {
+                (DkimResult::Pass, Some(signature)) if counts(signature) => {
                     let Some(domain) = checked_domain(&signature.d) else { continue };
                     if let Some(standing) = standing_for(&sender, &domain)
                         && found.as_ref().is_none_or(|kept| standing.len() < kept.len())
@@ -118,7 +141,12 @@ impl SenderCheck {
                         found = Some(standing);
                     }
                 }
-                (DkimResult::TempError(_), _) => unanswered = true,
+                (DkimResult::TempError(_), signature) => {
+                    unanswered = true;
+                    if let Some(signature) = signature {
+                        self.note_unanswered(&[signature.d.to_ascii_lowercase()]);
+                    }
+                }
                 _ => {}
             }
         }
@@ -130,6 +158,34 @@ impl SenderCheck {
     }
 }
 
+impl SenderCheck {
+    /// Whether the DNS of the signing domain `signer` did not answer within [`UNANSWERED_REST`].
+    fn resting(&self, signer: &str) -> bool {
+        let unanswered = self.unanswered.lock().unwrap_or_else(PoisonError::into_inner);
+        unanswered.get(signer).is_some_and(|at| at.elapsed() < UNANSWERED_REST)
+    }
+
+    /// Notes that the DNS of `signers` did not answer; at most [`TXT_CACHE_MAX`] are kept.
+    fn note_unanswered(&self, signers: &[String]) {
+        let mut unanswered = self.unanswered.lock().unwrap_or_else(PoisonError::into_inner);
+        unanswered.retain(|_, at| at.elapsed() < UNANSWERED_REST);
+        if unanswered.len() >= TXT_CACHE_MAX {
+            unanswered.clear();
+        }
+        for signer in signers {
+            unanswered.insert(signer.clone(), Instant::now());
+        }
+    }
+}
+
+/// Whether a passing signature counts (module docs): it signs `From` and the whole body, and not
+/// with `rsa-sha1`.
+fn counts(signature: &mail_auth::dkim::Signature) -> bool {
+    signature.l == 0
+        && signature.a != mail_auth::common::crypto::Algorithm::RsaSha1
+        && signature.h.iter().any(|header| header.eq_ignore_ascii_case("from"))
+}
+
 /// The domain of the address `address` (after the last `@`), in lower case and ASCII; `None` when
 /// it is no domain on the internet.
 pub fn sender_domain(address: &str) -> Option<String> {
@@ -137,17 +193,12 @@ pub fn sender_domain(address: &str) -> Option<String> {
     checked_domain(domain)
 }
 
-/// The domain that stands for the sender `sender` when `signer` signed its mail: the shorter of the
-/// two when they are the same or one lies below the other, else `None`.
+/// The domain that stands for the sender `sender` when `signer` signed its mail: the signer, when it
+/// is the sender's domain or a domain above it, else `None` (a signer below does not count, module
+/// docs).
 fn standing_for(sender: &str, signer: &str) -> Option<String> {
-    let below = |lower: &str, upper: &str| lower.strip_suffix(upper).is_some_and(|rest| rest.ends_with('.'));
-    if sender == signer || below(sender, signer) {
-        Some(signer.to_string())
-    } else if below(signer, sender) {
-        Some(sender.to_string())
-    } else {
-        None
-    }
+    let below = sender.strip_suffix(signer).is_some_and(|rest| rest.ends_with('.'));
+    (sender == signer || below).then(|| signer.to_string())
 }
 
 /// `name` as the resolver keys it: lower case with a final dot.
@@ -235,8 +286,14 @@ pub(crate) mod tests {
     /// `mail` (CRLF) with a DKIM signature of `domain` under the selector `torro`, whose key
     /// [`key_record`] is.
     pub(crate) fn sign(mail: &[u8], domain: &str, body_length: bool) -> Vec<u8> {
+        sign_headers(mail, domain, body_length, &["From", "To", "Subject"])
+    }
+
+    /// [`sign`] over the headers `headers`.
+    fn sign_headers(mail: &[u8], domain: &str, body_length: bool, headers: &[&str]) -> Vec<u8> {
         let key = Ed25519Key::from_seed_and_public_key(&base64(SEED), &base64(PUBLIC)).expect("key");
-        let signer = DkimSigner::from_key(key).domain(domain).selector("torro").headers(["From", "To", "Subject"]);
+        let signer =
+            DkimSigner::from_key(key).domain(domain).selector("torro").headers(headers.iter().map(|h| h.to_string()));
         let signer = if body_length { signer.body_length(true) } else { signer };
         let signature = signer.sign(mail).expect("signed");
         let mut out = signature.to_header().into_bytes();
@@ -262,13 +319,17 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_domain_above_or_below_the_sender_counts_as_the_shorter() {
+    async fn a_domain_above_the_sender_counts_and_one_below_does_not() {
         let raw = signed("news@mail.paypal.example", "paypal.example", false);
         let below = check(&["paypal.example"]).verified_domain(&raw).await;
         assert_eq!(below, Checked::Domain("paypal.example".into()), "signed by the parent");
-        let raw = signed("Service@PayPal.example", "e.paypal.example", false);
-        let above = check(&["e.paypal.example"]).verified_domain(&raw).await;
-        assert_eq!(above, Checked::Domain("paypal.example".into()), "signed below the sender");
+        let raw = signed("Service@PayPal.example", "PayPal.example", false);
+        let same = check(&["paypal.example"]).verified_domain(&raw).await;
+        assert_eq!(same, Checked::Domain("paypal.example".into()), "in any case");
+        // A subdomain may be someone else's (`x.duckdns.org`): it never signs for the domain above it.
+        let raw = signed(SENDER, "e.paypal.example", false);
+        let below = check(&["e.paypal.example"]).verified_domain(&raw).await;
+        assert_eq!(below, Checked::None, "signed below the sender");
     }
 
     #[tokio::test]
@@ -303,6 +364,17 @@ pub(crate) mod tests {
         let check = SenderCheck::offline();
         check.unreachable("torro._domainkey.paypal.example");
         assert_eq!(check.verified_domain(&raw).await, Checked::Retry);
+        // The key there now, the domain still rests: a sync with many of its mails does not wait for each.
+        check.know("torro._domainkey.paypal.example", &key_record());
+        assert_eq!(check.verified_domain(&raw).await, Checked::Retry, "resting");
+        check.unanswered.lock().expect("lock").clear();
+        assert_eq!(check.verified_domain(&raw).await, Checked::Domain("paypal.example".into()), "asked again");
+    }
+
+    #[tokio::test]
+    async fn a_signature_that_leaves_out_the_sender_does_not_count() {
+        let raw = sign_headers(&mail(SENDER), "paypal.example", false, &["To", "Subject"]);
+        assert_eq!(check(&["paypal.example"]).verified_domain(&raw).await, Checked::None, "From not signed");
     }
 
     #[tokio::test]
@@ -346,6 +418,7 @@ pub(crate) mod tests {
         assert_eq!(sender_domain("anna@localhost"), None);
         assert_eq!(sender_domain("anna"), None);
         assert_eq!(standing_for("mail.paypal.example", "paypal.example"), Some("paypal.example".into()));
+        assert_eq!(standing_for("paypal.example", "mail.paypal.example"), None);
         assert_eq!(standing_for("paypal.example", "xpaypal.example"), None);
     }
 }
