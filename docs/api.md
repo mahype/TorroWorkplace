@@ -892,11 +892,7 @@ er da fand: eine Änderung des Filters oder andere Treffer dazwischen ergeben `c
 Betreffe und Texte der Vorschau `untrusted`. `update_filter` und `remove_filter` sind als idempotent gekennzeichnet,
 alle außer `apply_filter` als lokal (sie ändern nichts auf einem Server).
 
-²⁹ **„Nicht eingeordnet“ hält nur „Sonstiges“** (#402): `create_category`, `update_category` und `move_category` mit der
-Gruppe `unsorted` sind für jede andere Kategorie als `other` ein `error`, bei `move_category` schon vor der Freigabe. Eine
-Kategorie, die vor dieser Regel dort lag, bleibt und lässt sich weiter ändern.
-
-**Vorrang zwischen Kategorien** (Issue #481, Konzept [kategorien.md](kategorien.md#vorrang)): Passen Sortierregeln
+²⁹ **Vorrang zwischen Kategorien** (Issue #481, Konzept [kategorien.md](kategorien.md#vorrang)): Passen Sortierregeln
 oder Mail-Filter mehrerer Kategorien auf eine Mail, gewinnt die Kategorie, die in `inbox.list_categories` weiter oben
 steht (Gruppen von oben, darin Kategorien von oben); eine gemerkte Regel „Always for this sender?“ geht allen vor, die
 eingebaute Regel der Kontakte greift erst nach allen. `inbox.move_category { category, group, position }` setzt eine
@@ -910,6 +906,10 @@ die Reihenfolge der Zielgruppe gebunden, die sie zeigt: hat sich diese seitdem g
 `not-found` für eine Kategorie oder Gruppe, die es nicht gibt, `error`, wenn die Zielgruppe dem Modell dann mehr als 20
 Kategorien anböte. Ein Sortierlauf (`inbox.start_category_job`) wendet mit `scope.apply_rules` Regeln und Filter nach
 diesem Vorrang an; ein Filter setzt dabei nur seine Kategorie und nur für Mail im Posteingang.
+
+**„Nicht eingeordnet“ hält nur „Sonstiges“** (#402): `create_category`, `update_category` und `move_category` mit der
+Gruppe `unsorted` sind für jede andere Kategorie als `other` ein `error`, bei `move_category` schon vor der Freigabe. Eine
+Kategorie, die vor dieser Regel dort lag, bleibt und lässt sich weiter ändern.
 
 ²⁸ **Kontakte** (Issue #351, Konzept [kontakte.md](kontakte.md)): Rechte gelten je Adressbuch,
 `Rights.address_books` mit Kennungen `<konto-id>/<name>`; fehlt das Feld in alten Rechten, ist kein Buch frei. Die
