@@ -538,7 +538,8 @@ pub fn newest_service_except(
 
 /// The newest copy of the service among the apps Scoop installed (issue #411): each app's manifest
 /// brings `torroworkplace.exe` into its own folder, and Scoop updates apps one by one, so the copies'
-/// versions can differ. `exe` must lie in Scoop's layout `<scoop>/apps/<app>/<version>/`; candidates
+/// versions can differ. `exe` must lie in Scoop's layout `<root>/apps/<app>/<version>/`, which Scoop's
+/// own folder `<root>/apps/scoop` marks (the root may be anywhere, `SCOOP`); candidates
 /// are `<scoop>/apps/*/current/torroworkplace.exe` where `exists` says so, with the version
 /// `version_of` reads (Scoop's `manifest.json` beside it; unreadable counts as `0.0.0`). The highest
 /// wins, with equal ones the one in the app `exe` belongs to. `None` outside Scoop's layout.
@@ -552,12 +553,15 @@ pub fn choose_scoop_service(
 ) -> Option<(PathBuf, Version)> {
     let own = exe?.parent()?.parent()?;
     let apps = own.parent()?;
-    let scoop = apps.parent()?.file_name()?.to_string_lossy().eq_ignore_ascii_case("scoop");
-    if !scoop || apps.file_name()? != "apps" {
+    if apps.file_name()? != "apps" {
+        return None;
+    }
+    let folders = folders(apps);
+    if !folders.iter().any(|folder| folder.file_name().is_some_and(|name| name == "scoop")) {
         return None;
     }
     let unknown = Version { major: 0, minor: 0, patch: 0, pre: Vec::new() };
-    let mut found: Vec<(PathBuf, Version, bool)> = folders(apps)
+    let mut found: Vec<(PathBuf, Version, bool)> = folders
         .into_iter()
         .map(|app| (app.join("current").join("torroworkplace.exe"), app == own))
         .filter(|(program, _)| exists(program))
@@ -712,9 +716,11 @@ mod tests {
     /// app's own, and nothing is chosen outside Scoop's layout.
     #[test]
     fn the_newest_scoop_copy_of_the_service_starts() {
-        let apps = PathBuf::from("/u/scoop/apps");
+        let apps = PathBuf::from("/d/pkgs/apps");
         let exe = apps.join("torrotasks/0.1.0/torrotasks.exe");
-        let folders = |_: &Path| vec![apps.join("torrocalendar"), apps.join("torrotasks"), apps.join("torroinbox")];
+        let folders = |_: &Path| {
+            vec![apps.join("scoop"), apps.join("torrocalendar"), apps.join("torrotasks"), apps.join("torroinbox")]
+        };
         let copy = |app: &str| apps.join(app).join("current/torroworkplace.exe");
         let version = |program: &Path| match program.to_string_lossy() {
             text if text.contains("torrocalendar") => "0.2.0".parse().ok(),
@@ -727,8 +733,8 @@ mod tests {
         let without_calendar = |program: &Path| all(program) && !program.starts_with(apps.join("torrocalendar"));
         let chosen = choose_scoop_service(Some(&exe), without_calendar, folders, version).expect("a copy");
         assert_eq!(chosen.0, copy("torrotasks"), "0.1.0 beats an unreadable version");
-        let elsewhere = PathBuf::from("/opt/torro/bin/torrotasks");
-        assert_eq!(choose_scoop_service(Some(&elsewhere), all, folders, version), None);
+        let no_scoop = |_: &Path| vec![apps.join("torrotasks")];
+        assert_eq!(choose_scoop_service(Some(&exe), all, no_scoop, version), None, "no folder of Scoop itself");
     }
 
     #[test]
