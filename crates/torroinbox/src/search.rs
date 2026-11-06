@@ -938,8 +938,10 @@ struct DemoQuery {
     from: Vec<String>,
     to: Vec<String>,
     subject: Vec<String>,
-    /// The folders of `in:` (issue #476: `in:inbox OR in:archive`): one of them must hold the mail.
-    folders: Vec<String>,
+    /// The folders of `in:`, one list per clause (issue #476): an `in:` joined to the one before by
+    /// `OR` (`in:inbox OR in:archive`) adds to its list, any other starts a new one; one folder of each
+    /// list must hold the mail, as the core reads them.
+    folders: Vec<Vec<String>>,
     /// The folders of `-in:`: none of them may hold it.
     not_folders: Vec<String>,
     attachment: bool,
@@ -951,8 +953,11 @@ struct DemoQuery {
 impl DemoQuery {
     fn parse(query: &str) -> DemoQuery {
         let mut parsed = DemoQuery::default();
-        for token in query.split_whitespace() {
-            let token = token.trim_matches('"').to_lowercase();
+        // Whether the word before was `OR` (capitals only, as the core reads it).
+        let mut joined = false;
+        for word in query.split_whitespace() {
+            let or = std::mem::replace(&mut joined, word == "OR");
+            let token = word.trim_matches('"').to_lowercase();
             if token == "or" || token.is_empty() {
                 continue;
             }
@@ -967,7 +972,10 @@ impl DemoQuery {
                 Some(("from", who)) => parsed.from.push(who.to_owned()),
                 Some(("to", who)) => parsed.to.push(who.to_owned()),
                 Some(("subject", word)) => parsed.subject.push(word.to_owned()),
-                Some(("in", folder)) => parsed.folders.push(folder.to_owned()),
+                Some(("in", folder)) => match parsed.folders.last_mut() {
+                    Some(clause) if or => clause.push(folder.to_owned()),
+                    _ => parsed.folders.push(vec![folder.to_owned()]),
+                },
                 Some(("has", "attachment" | "attachments")) => parsed.attachment = true,
                 Some(("is", "unread")) => parsed.flags.push((Flag::Seen, false)),
                 Some(("is", "read")) => parsed.flags.push((Flag::Seen, true)),
@@ -998,7 +1006,7 @@ impl DemoQuery {
             && self.from.iter().all(|who| from.contains(who))
             && self.to.iter().all(|who| to.contains(who))
             && self.subject.iter().all(|word| subject.contains(word))
-            && (self.folders.is_empty() || self.folders.iter().any(|wanted| names_folder(folder, wanted)))
+            && self.folders.iter().all(|clause| clause.iter().any(|wanted| names_folder(folder, wanted)))
             && !self.not_folders.iter().any(|wanted| names_folder(folder, wanted))
             && (!self.attachment || summary.has_attachments)
             && self.flags.iter().all(|(flag, set)| summary.flags.contains(flag) == *set)
@@ -1473,6 +1481,7 @@ mod tests {
         assert!(with.iter().any(|message| role(message) == Some(Role::Archive)), "the archive");
         assert!(with.iter().any(|message| role(message) == Some(Role::Inbox)), "and the inboxes");
         assert!(with.iter().all(|message| matches!(role(message), Some(Role::Inbox | Role::Archive))));
+        assert!(demo_find(&source, find("in:inbox in:archive")).expect("found").messages.is_empty(), "both at once");
         let without = demo_find(&source, find("-in:archive")).expect("found").messages;
         assert!(!without.is_empty() && without.iter().all(|message| role(message) != Some(Role::Archive)));
         // "Only archive" a page at a time, as the archive's view was: the first page's cursor goes on.

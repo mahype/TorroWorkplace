@@ -3822,7 +3822,7 @@ async fn category_selected<S: MailSource>(
     }
 }
 
-/// The page of "All", "Sent" or "Archive" (`view`, task E18.4, issue #445) from `cursor` on: one
+/// The page of "All", "Sent" or "Trash" (`view`, task E18.4, issues #445, #455) from `cursor` on: one
 /// `MailSource::mail_by_role` for every account (`accounts` `None`) or the one chosen; with several
 /// chosen, the core's pages walked as [`category_selected`] does, keeping the chosen accounts' mail,
 /// so the cursor stays the core's and "Load more" skips nothing. Empty for any other view and for no
@@ -3836,7 +3836,7 @@ async fn role_selected<S: MailSource>(
     accounts: Option<&[String]>,
 ) -> Result<MailPage, String> {
     let Some((role, snoozed)) = view.by_role() else { return Ok(MailPage::of(Vec::new(), None)) };
-    // "All" leaves the mail on a pile out (task E19.4, decision 3 of E19); "Sent" and "Archive" are
+    // "All" leaves the mail on a pile out (task E19.4, decision 3 of E19); "Sent" and "Trash" are
     // where it lies as well.
     let pile = (*view == View::All).then_some(PileFilter::Without);
     let ask = |account: Option<String>, limit: u32, cursor: Option<String>| async move {
@@ -4276,7 +4276,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Some(Open::Menu | Open::CategoryMenu) => Some(Menu::Nav),
                 Some(Open::Switcher) => Some(Menu::Switcher),
                 Some(Open::MailAccounts) => Some(Menu::MailAccounts),
-                Some(Open::ArchiveMenu) => Some(Menu::SearchFilters),
+                // The filter menu is the mail window's search field's; the other windows show none here.
+                Some(Open::ArchiveMenu) if mail_window => Some(Menu::SearchFilters),
                 _ => None,
             },
             menu_at: MenuAt::default(),
@@ -6538,7 +6539,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// "Reply later", "Set aside" and "Remove from …" on the mail `id` (task E19.4, decisions 3 and 4
     /// of E19): `MailSource::set_mail_pile` with `pile` (`None`: off its pile). The row leaves a list
     /// that leaves mail on a pile out ([`View::leaves_out_piles`]: "All", a category, a
-    /// pile), as when it is archived ([`App::take_out`]); in a folder, a search and "Archive"
+    /// pile), as when it is archived ([`App::take_out`]); in a folder, a search and "Sent"
     /// it stays with its new pile. The numbers on the piles follow at once. The hint ("On Reply
     /// later.", "Set aside.", "Removed from Reply later.", "Removed from Set aside.") offers to undo it with the pile the mail lay on before
     /// ([`Undo::Pile`]); an error brings the row and the numbers back with the load and says so
@@ -12800,7 +12801,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// How many messages a load of the view asks for: a page, or as many as "Load more" brought
-    /// in already when the same folder – or "All", "Hidden", "Archive" – is loaded again (at most
+    /// in already when the same folder – or "All", "Hidden", "Trash" – is loaded again (at most
     /// what one request may ask).
     fn page_limit(&self) -> u32 {
         let folder = self.view.folder().is_some_and(|folder| self.listed.as_ref() == Some(&folder.id));
@@ -16614,6 +16615,13 @@ mod tests {
         let mut archived = message_ids(&app);
         archived.sort_unstable();
         assert_eq!(archived, ["m:p6", "m:w9"], "the archive of both accounts");
+        // A page at a time, as the archive's view was: "Load more" goes on from the cursor.
+        let shown = app.messages.clone();
+        app.messages.truncate(1);
+        app.more = Some("1".to_owned());
+        let _ = app.update(Message::MoreMail);
+        assert_eq!(app.sent.last(), Some(&Sent::More("1".to_owned())));
+        app.messages = shown;
         draw_everywhere(&mut app);
         let _ = app.update(Message::SearchArchive(Archive::With));
         assert_eq!(app.search, "in:inbox OR in:archive");
@@ -17630,7 +17638,7 @@ mod tests {
         assert_eq!(app.mail_sidebar_foot(SidebarMode::Expanded, &Anchor::new()).len(), 1, "at the foot");
     }
 
-    /// Issue #455: "Trash" lists the mail in the trash folders of every account shown, as "Archive"
+    /// Issue #455: "Trash" lists the mail in the trash folders of every account shown, as "Sent"
     /// lists its role, without a number; the demo has two mails there.
     #[test]
     fn the_trash_lists_the_mail_of_every_trash_folder() {
@@ -17698,7 +17706,7 @@ mod tests {
     }
 
     /// Issue #445: "Sent" lists the mail of the sent folders of every account, newest first, with
-    /// the fields of "Archive" (no snoozed filter, no pile filter); `--open sent` starts on it; with
+    /// the fields of "Trash" (no snoozed filter, no pile filter); `--open sent` starts on it; with
     /// one account chosen it lists only that account's mail.
     #[test]
     fn sent_lists_the_sent_mail_of_every_account_newest_first() {

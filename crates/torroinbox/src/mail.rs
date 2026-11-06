@@ -322,7 +322,7 @@ pub trait MailSource: Send + Sync {
     /// `find.snoozed` says and, by `find.pile` (task E19.3), leaving out or giving only mail on a pile,
     /// at most `find.limit` in `find.order` from `find.cursor` on (the [`MailPage::next`] of the page
     /// before, asked with the same fields). "All" is [`Role::Inbox`] with `snoozed` `Some(false)` and
-    /// `pile` `Some(PileFilter::Without)`, "Archive" [`Role::Archive`]. The page has no highlights.
+    /// `pile` `Some(PileFilter::Without)`, "Trash" [`Role::Trash`]. The page has no highlights.
     fn mail_by_role(&self, find: MailByRole) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
 
     /// The number on "All" (task E18.3, decision 4 of E18): `mail.search_messages` as "All" asks it
