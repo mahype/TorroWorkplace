@@ -412,6 +412,11 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
 - **Menüs** (`widgets::menu`): Fläche `MENU`, Rand `LINE_STRONG`, Radius `radius::md()`, Schatten, Innenrand 4;
   Einträge 30 hoch mit Icon, Text und rechts Zahl oder Tasten-Hinweis; Abschnitte mit `typo::caption()`-
   Titel; Trenner `LINE`.
+  Rechtsklick-Menüs (#497) öffnen am Mauszeiger, wie in macOS, Windows und GNOME: Die Zeile meldet die Stelle
+  mit `widgets::context_area(inhalt, |punkt| …)`, das Menü hängt mit `Placement::At` an
+  `anker.area(Rectangle::new(punkt, Size::ZERO))` (links oben am Zeiger, am rechten bzw. unteren Rand links bzw.
+  über ihm). Ohne Stelle hängt es mit `Placement::Below(Align::Start)` unter der Zeile, nie neben einer
+  breiten Zeile über dem Lesebereich. Untermenüs daraus öffnen weiter an der Zeile.
 - **Menü mit Suche** (#299, `widgets::search_menu(id, suche, on_input, on_submit, einträge, breite)`): für lange
   Auswahlen (die Schriften in Appearance, über 150 auf einem Mac). Karte wie ein Menü (`MENU`, `LINE_STRONG`,
   `style::MENU_INSET`, höchstens `size::panel()` hoch, darunter rollt es), oben ein flaches Suchfeld
