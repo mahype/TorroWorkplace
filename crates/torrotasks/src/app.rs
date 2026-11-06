@@ -4677,7 +4677,7 @@ mod tests {
         let mut app = launched(&["--demo"]);
         app.design = Follow::new(None).in_folders(design::Folders::default());
         let _ = app.update(Message::Design(design::Message::Stored(Ok(design::Chosen {
-            design: "console".into(),
+            design: "plex".into(),
             ..design::Chosen::standard()
         }))));
         assert!(design::active().is_standard(), "an old design is no level: the standard");
