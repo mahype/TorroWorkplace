@@ -2786,7 +2786,7 @@ pub fn entry_panel<'a>(
 /// the mail loads, after an error and for a mail without attachments. `anchors` are the window's, for
 /// the menus of the triangles.
 pub fn panel_foot<'a>(reading: &Reading<'_>, anchors: &detail::Anchors) -> Vec<Element<'a, Message>> {
-    attachment_rows(reading, anchors).into_iter().collect()
+    attachment_rows(reading, anchors, FOOT_ROWS).into_iter().collect()
 }
 
 /// The footer of a folder's message in the panel (task E9.4), in the panel's style and in the
@@ -2917,7 +2917,7 @@ fn split_body<'a>(reading: &Reading<'a>, anchors: &detail::Anchors) -> Element<'
         body = body.push(panel::inset(task_card(task, reading.now)));
     }
     // The attachments as rows over the mail, each with its triangle (task M12.6).
-    if let Some(rows) = attachment_rows(reading, anchors) {
+    if let Some(rows) = attachment_rows(reading, anchors, FILE_ROWS) {
         body = body.push(rows);
     }
     body.extend(panel_letter(reading)).into()
@@ -3645,9 +3645,13 @@ fn chips_max_height() -> f32 {
     FILE_LINES * size::control() + (FILE_LINES - 1.0) * space::s()
 }
 
-/// The most the panel's attachment rows take: [`FILE_ROWS`] rows of `size::control()`.
-fn rows_max_height() -> f32 {
-    FILE_ROWS * size::control()
+/// How many attachment rows the mail window's footer shows before they scroll: the floating action rail
+/// stands over the panel's body only, so a taller footer would cut it off in a low window (issue #491).
+const FOOT_ROWS: f32 = 2.0;
+
+/// The most `rows` attachment rows take: `rows` of `size::control()`.
+fn rows_max_height(rows: f32) -> f32 {
+    rows * size::control()
 }
 
 /// `content` in a vertical scrollable as high as it is, up to what its parent allows: the suite's
@@ -3847,10 +3851,11 @@ pub fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 /// The mail's attachments as rows (task M12.6, design B of `docs/prototypes/inbox/mail-anhaenge.html`):
 /// "Attachments" and "{n} files · {size}" ([`files_meta`]) over them with "Save all ▾" at its right
 /// from two on ([`save_all_control`], framed), then one row each ([`attachment_row`]); beyond
-/// [`FILE_ROWS`] rows they scroll, so the footer never pushes the mail out of a low panel. For the
+/// `rows` rows they scroll ([`FILE_ROWS`] in the hub, [`FOOT_ROWS`] in the mail window's footer), so
+/// the footer never pushes the mail out of a low panel. For the
 /// panel – its footer in the mail window ([`panel_foot`]), over the mail in the hub and the App Feed
 /// ([`Bars::Split`]). `None` where [`files_of`] has none.
-fn attachment_rows<'a>(reading: &Reading<'_>, anchors: &detail::Anchors) -> Option<Element<'a, Message>> {
+fn attachment_rows<'a>(reading: &Reading<'_>, anchors: &detail::Anchors, rows: f32) -> Option<Element<'a, Message>> {
     let files = files_of(reading)?;
     let title = typo::text(typo::caption(), tr("Attachments")).style(theme::text_3).wrapping(Wrapping::None);
     let meta = typo::text(typo::meta().tabular(), files_meta(&files)).style(theme::text_3).wrapping(Wrapping::None);
@@ -3859,9 +3864,9 @@ fn attachment_rows<'a>(reading: &Reading<'_>, anchors: &detail::Anchors) -> Opti
         head = head.push(all);
     }
     let head = container(head).padding(Padding { bottom: space::xs(), ..style::ITEM_PADDING });
-    let rows = files.iter().enumerate().map(|(at, file)| attachment_row(reading, at, file, anchors));
-    let rows = container(bounded_scroll(column(rows))).max_height(rows_max_height());
-    Some(column![head, rows].into())
+    let list = files.iter().enumerate().map(|(at, file)| attachment_row(reading, at, file, anchors));
+    let list = container(bounded_scroll(column(list))).max_height(rows_max_height(rows));
+    Some(column![head, list].into())
 }
 
 /// The attachment `file`, the `at`-th of the mail's, as a row: the paperclip, its name and size – a
@@ -5806,13 +5811,14 @@ mod tests {
     fn many_attachments_scroll_inside_their_block_and_rows() {
         let anchors = detail::Anchors::default();
         assert_eq!(chips_max_height(), 2.0 * size::control() + space::s());
-        assert_eq!(rows_max_height(), 4.0 * size::control());
+        assert_eq!(rows_max_height(FILE_ROWS), 4.0 * size::control());
+        assert!(rows_max_height(FOOT_ROWS) < rows_max_height(FILE_ROWS), "the footer leaves the rail its height");
         reading_of("m:w6", MailFormat::Text, true, |reading| {
             let files = files_of(reading).expect("the minutes and the slides");
             assert!(files.len() > 2 * FILE_ROWS as usize, "more than fit: {}", files.len());
-            assert!(files.len() as f32 * size::control() > rows_max_height(), "the rows would not fit");
+            assert!(files.len() as f32 * size::control() > rows_max_height(FOOT_ROWS), "the rows would not fit");
             assert!(attachment_line(reading, &anchors, 800.0, 24.0, 0.0).is_some());
-            assert!(attachment_rows(reading, &anchors).is_some());
+            assert!(attachment_rows(reading, &anchors, FOOT_ROWS).is_some());
         });
     }
 
@@ -5839,7 +5845,9 @@ mod tests {
             assert!(save_all_control(reading, &files, &anchors, true).is_some(), "two: Save all");
             assert!(file_words(reading).contains(&two));
             assert_eq!(files_meta(&files), format!("{} · {}", trf("{n} files", &[("n", &2)]), size_text(144_690)));
-            assert!(attachment_rows(reading, &anchors).is_some() && !panel_foot(reading, &anchors).is_empty());
+            assert!(
+                attachment_rows(reading, &anchors, FOOT_ROWS).is_some() && !panel_foot(reading, &anchors).is_empty()
+            );
         });
         reading_of("m:w1", MailFormat::Text, true, |reading| {
             let files = files_of(reading).expect("one file");
