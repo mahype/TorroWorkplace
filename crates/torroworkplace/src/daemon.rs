@@ -33,6 +33,13 @@
 //! next one. Then, too, the service removes the marker of the last try to start it
 //! ([`torro_gui::source::CORE_START_MARK`]): it runs, so a quit right after may be followed by a start
 //! at once.
+//!
+//! Every app brings a copy of the service along (issue #411), so copies of different versions may meet
+//! one set of data. The service notes the newest version that ran on it ([`SERVICE_VERSION`]) and an
+//! older copy refuses to start ([`check_data_version`]). A newer copy takes over from a running older one
+//! ([`hand_over`]): the old one starts `daemon --takeover` and ends like a quit, but leaves no quit
+//! marker, since no person stopped the service; the new one waits for the old one's lock
+//! ([`claim_patiently`]).
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -42,8 +49,10 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 use torro_core::AppId;
+use torro_core::i18n::trf;
 use torro_core::paths::AppPaths;
 use torro_core::timing;
+use torro_core::version::Version;
 use torro_ipc::{Door, Key, Request, Response, app_key_path, client, server, socket_path};
 use torro_setups::storage::Store;
 
@@ -238,8 +247,62 @@ fn end_after_answer(quit: mpsc::UnboundedSender<()>, mark: Option<&Path>) {
     });
 }
 
-/// Runs the service until it is told to quit. `headless` skips the tray icon.
-pub fn run(headless: bool) -> ExitCode {
+/// The argument of `daemon` a service hands over with ([`hand_over`], issue #411): the new service waits
+/// for the old one to end ([`claim_patiently`]) instead of giving up as "already running".
+pub const TAKEOVER: &str = "--takeover";
+
+/// Hands the service over to the copy `program` (issue #411): starts `program daemon --takeover`
+/// detached ([`torro_gui::source::daemon_command`]), then ends this service like a quit (the socket stops,
+/// the template keys and MCP servers go, [`serve`]) once [`ANSWER_GRACE`] is up, so an answer on its way
+/// still goes out. Unlike a quit it leaves no [`QUIT_MARK`]: no person stopped the service, so MCP servers
+/// may start it again should the new one fail. `quit` is the service's quit channel, `runtime` the runtime
+/// that ends it.
+///
+/// When `program` cannot be started, nothing ends: the error comes back and this service keeps running.
+#[cfg(any(unix, windows))]
+pub fn hand_over(
+    program: &Path,
+    quit: &mpsc::UnboundedSender<()>,
+    runtime: &tokio::runtime::Handle,
+) -> std::io::Result<()> {
+    let home = torro_gui::source::home_dir();
+    let mut child = torro_gui::source::daemon_command(program, home, &[TAKEOVER]).spawn()?;
+    // Reaped should it end while this service still runs (a refused start ends within the grace time).
+    std::thread::spawn(move || child.wait());
+    let quit = quit.clone();
+    runtime.spawn(async move {
+        tokio::time::sleep(ANSWER_GRACE).await;
+        let _ = quit.send(());
+    });
+    Ok(())
+}
+
+/// No system without processes runs the service; there is nothing to hand over to.
+#[cfg(not(any(unix, windows)))]
+pub fn hand_over(
+    _program: &Path,
+    _quit: &mpsc::UnboundedSender<()>,
+    _runtime: &tokio::runtime::Handle,
+) -> std::io::Result<()> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+}
+
+/// A hand-over ([`hand_over`]) as a plain closure for the parts of the core that decide on one (the job
+/// runner of the app catalog, issue #479): called with the program of the newest copy, it starts that
+/// copy and ends this service. Must be made inside the service's runtime, which it keeps to end the
+/// service on. A program that cannot be started is only logged, and this service keeps running.
+pub(crate) fn hand_over_fn(quit: mpsc::UnboundedSender<()>) -> Arc<dyn Fn(PathBuf) + Send + Sync> {
+    let runtime = tokio::runtime::Handle::current();
+    Arc::new(move |program: PathBuf| {
+        if let Err(err) = hand_over(&program, &quit, &runtime) {
+            eprintln!("torroworkplace: cannot hand over to {}: {err}; keeping this service", program.display());
+        }
+    })
+}
+
+/// Runs the service until it is told to quit. `headless` skips the tray icon; `takeover` (`daemon
+/// --takeover`, [`TAKEOVER`]) waits for a running service that is handing over to end first.
+pub fn run(headless: bool, takeover: bool) -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(err) => {
@@ -248,20 +311,20 @@ pub fn run(headless: bool) -> ExitCode {
         }
     };
     if headless {
-        return finish(runtime.block_on(serve(Shows::Nothing)));
+        return finish(runtime.block_on(serve(Shows::Nothing, takeover)));
     }
     #[cfg(target_os = "linux")]
     {
-        finish(runtime.block_on(serve(Shows::Ksni)))
+        finish(runtime.block_on(serve(Shows::Ksni, takeover)))
     }
     #[cfg(any(target_os = "macos", windows))]
     {
-        run_with_event_loop(runtime)
+        run_with_event_loop(runtime, takeover)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         eprintln!("torroworkplace: no tray icon on this system; running headless");
-        finish(runtime.block_on(serve(Shows::Nothing)))
+        finish(runtime.block_on(serve(Shows::Nothing, takeover)))
     }
 }
 
@@ -274,17 +337,17 @@ const SERVICE_WAIT: Duration = Duration::from_secs(2);
 /// macOS and Windows: the service as a task on the runtime, the tray's event loop on this (the
 /// main) thread. Without an event loop the service runs headless.
 #[cfg(any(target_os = "macos", windows))]
-fn run_with_event_loop(runtime: tokio::runtime::Runtime) -> ExitCode {
+fn run_with_event_loop(runtime: tokio::runtime::Runtime, takeover: bool) -> ExitCode {
     let shell = match tray::Shell::new() {
         Ok(shell) => shell,
         Err(err) => {
             eprintln!("torroworkplace: {err}; running headless");
-            return finish(runtime.block_on(serve(Shows::Nothing)));
+            return finish(runtime.block_on(serve(Shows::Nothing, takeover)));
         }
     };
     let handle = shell.handle();
     let service = runtime.spawn(async move {
-        let result = serve(Shows::Desktop(handle.clone())).await;
+        let result = serve(Shows::Desktop(handle.clone()), takeover).await;
         handle.exit();
         result
     });
@@ -324,10 +387,17 @@ enum Shows {
     Desktop(tray::DesktopHandle),
 }
 
-async fn serve(shows: Shows) -> Result<(), String> {
+async fn serve(shows: Shows, takeover: bool) -> Result<(), String> {
     // Before anything starts: two services started at once would both start the core (bind the
     // template keys, load the templates of the login) before one of them failed on the socket.
-    let _service = claim_service()?;
+    let state = AppPaths::for_app(AppId::WORKPLACE).ok_or("no home directory")?.state;
+    // A service taking over (issue #411) waits for the old one, which ends right after starting it.
+    let _service = match takeover {
+        true => claim_patiently(|| claim_service(&state), TAKEOVER_WAIT, TAKEOVER_POLL).await?,
+        false => claim_service(&state)?,
+    };
+    // Issue #411: an older copy never works on data a newer one used.
+    check_data_version(&state, &Version::current())?;
     let socket = socket_path().ok_or("no home directory")?;
     // Bounded: a program that holds the socket or pipe name but never answers must not stall
     // the start; the server then fails on the taken name with a clear error instead.
@@ -388,6 +458,9 @@ async fn serve(shows: Shows) -> Result<(), String> {
         })
     };
     timing::mark("socket task started");
+    // How the core hands the service over to a newer copy of it (issue #411): ends it through the same
+    // channel as a quit. The job runner of the app catalog (#479) is to take it.
+    let _hand_over = hand_over_fn(quit_tx.clone());
 
     let daemon = Arc::new(Daemon {
         core: Arc::clone(&core),
@@ -486,6 +559,68 @@ const EXTENSIONS_WAIT: Duration = Duration::from_secs(5);
 /// ([`once_listening`]).
 const SETUP_WAIT: Duration = Duration::from_secs(10);
 
+/// How long a service taking over ([`TAKEOVER`]) waits for the old one to release its lock: its end takes
+/// the grace time, [`RELEASE_WAIT`] and [`EXTENSIONS_WAIT`] at most, and some room on a busy computer.
+const TAKEOVER_WAIT: Duration = Duration::from_secs(15);
+
+/// How often a service taking over tries the lock.
+const TAKEOVER_POLL: Duration = Duration::from_millis(250);
+
+/// The file in the core's state directory that names the newest version of the service that ran on the
+/// user's data (issue #411, [`check_data_version`]): the version only, as `0.2.0`.
+pub const SERVICE_VERSION: &str = "service-version";
+
+/// `claim` until it succeeds, every `every` for at most `limit` (issue #411): a service taking over waits
+/// so for the lock of the old one, which ends right after starting it. The last error once the time is up.
+async fn claim_patiently<T, E>(
+    mut claim: impl FnMut() -> Result<T, E>,
+    limit: Duration,
+    every: Duration,
+) -> Result<T, E> {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        match claim() {
+            Ok(claimed) => return Ok(claimed),
+            Err(err) if tokio::time::Instant::now() + every > deadline => return Err(err),
+            Err(_) => tokio::time::sleep(every).await,
+        }
+    }
+}
+
+/// What the data's version ([`SERVICE_VERSION`], as read: `stored`) means for a service of version `own`:
+/// `Err` with the stored version when it is newer, so this one must not start; else `Ok` with the version
+/// to note, the higher of the two. A missing or unreadable note counts as none.
+fn data_version(stored: Option<&str>, own: &Version) -> Result<Version, Version> {
+    match stored.and_then(|text| text.parse::<Version>().ok()) {
+        Some(stored) if stored > *own => Err(stored),
+        Some(stored) => Ok(stored.max(own.clone())),
+        None => Ok(own.clone()),
+    }
+}
+
+/// Refuses to start a service older than the newest that ran on the data in `state` (issue #411): its
+/// files may be in a form an older one misreads. Else notes the higher version in [`SERVICE_VERSION`]. A
+/// note that cannot be written is only logged: refusing to start for it would leave the user with no
+/// service at all.
+fn check_data_version(state: &Path, own: &Version) -> Result<(), String> {
+    let path = state.join(SERVICE_VERSION);
+    let stored = std::fs::read_to_string(&path).ok();
+    match data_version(stored.as_deref(), own) {
+        Err(newer) => {
+            Err(trf("data was last used by Torro Workplace {newer}; this is {own}", &[("newer", &newer), ("own", own)]))
+        }
+        Ok(version) => {
+            let note = version.to_string();
+            if stored.as_deref().map(str::trim) != Some(note.as_str())
+                && let Err(err) = std::fs::create_dir_all(state).and_then(|()| std::fs::write(&path, &note))
+            {
+                eprintln!("torroworkplace: cannot write {}: {err}", path.display());
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Once the core at `socket` answers `system.ping` within `limit` (issue #279): removes the marker of
 /// the last try to start it at `start_mark` ([`remove_mark`]), then runs `then`; `true`. A socket that
 /// does not answer in time does neither: `false`, with a line on stderr. The marker then stays, so the
@@ -574,10 +709,10 @@ fn on_signal(kind: tokio::signal::unix::SignalKind, name: &str) -> impl Future<O
 /// The socket alone cannot tell: it is bound only after the core started (the server binds it when
 /// it starts serving), and a second service started at the same time would get that far as well. A
 /// file system without locks is only logged; then the socket's check is all there is, as before.
-fn claim_service() -> Result<Option<std::fs::File>, String> {
-    let state = AppPaths::for_app(AppId::WORKPLACE).ok_or("no home directory")?.state;
+/// `state` is the core's state directory.
+fn claim_service(state: &Path) -> Result<Option<std::fs::File>, String> {
     let path = state.join(SERVICE_LOCK);
-    let opened = std::fs::create_dir_all(&state)
+    let opened = std::fs::create_dir_all(state)
         .and_then(|()| std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path));
     let file = match opened {
         Ok(file) => file,
@@ -1213,6 +1348,98 @@ mod tests {
         assert!(!stopped_by_person(&socket));
         remove_mark(Some(&mark));
         remove_mark(None);
+    }
+
+    fn version(text: &str) -> Version {
+        text.parse().expect("a version")
+    }
+
+    /// Issue #411: a newer note refuses the start; else the higher version is noted.
+    #[test]
+    fn the_data_s_version_decides_whether_a_service_may_start() {
+        let own = version("0.2.0");
+        assert_eq!(data_version(None, &own), Ok(version("0.2.0")), "nothing noted yet");
+        assert_eq!(data_version(Some("garbage"), &own), Ok(version("0.2.0")), "an unreadable note");
+        assert_eq!(data_version(Some("0.1.5\n"), &own), Ok(version("0.2.0")), "an older one ran before");
+        assert_eq!(data_version(Some("0.2.0"), &own), Ok(version("0.2.0")));
+        assert_eq!(data_version(Some("0.3.0"), &own), Err(version("0.3.0")));
+        assert_eq!(data_version(Some("0.2.0"), &version("0.2.0-rc.1")), Err(version("0.2.0")), "an rc is older");
+    }
+
+    /// Issue #411: the note is written on the start and an older service is refused with both versions.
+    #[test]
+    fn an_older_service_does_not_start_on_newer_data() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let state = dir.path().join("state");
+        let note = state.join(SERVICE_VERSION);
+
+        assert_eq!(check_data_version(&state, &version("0.2.0")), Ok(()));
+        assert_eq!(std::fs::read_to_string(&note).expect("noted"), "0.2.0");
+        assert_eq!(check_data_version(&state, &version("0.3.0")), Ok(()));
+        assert_eq!(std::fs::read_to_string(&note).expect("noted"), "0.3.0");
+
+        let refused = check_data_version(&state, &version("0.2.0")).expect_err("older than the data");
+        let expected = trf(
+            "data was last used by Torro Workplace {newer}; this is {own}",
+            &[("newer", &"0.3.0"), ("own", &"0.2.0")],
+        );
+        assert_eq!(refused, expected);
+        assert_eq!(std::fs::read_to_string(&note).expect("noted"), "0.3.0", "the refused one changes nothing");
+    }
+
+    /// Issue #411: a service taking over tries until the old one let go, and gives up after its limit.
+    #[tokio::test]
+    async fn a_takeover_waits_for_the_old_service() {
+        let mut tries = 0;
+        let claimed = claim_patiently(
+            || {
+                tries += 1;
+                if tries < 3 { Err("already running") } else { Ok(tries) }
+            },
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+        )
+        .await;
+        assert_eq!(claimed, Ok(3));
+
+        let started = std::time::Instant::now();
+        let given_up =
+            claim_patiently(|| Err::<(), _>("already running"), Duration::from_millis(100), Duration::from_millis(20))
+                .await;
+        assert_eq!(given_up, Err("already running"));
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    }
+
+    /// Issue #411: a hand-over starts `<program> daemon --takeover` and ends the service, without a
+    /// person's quit mark; a program that cannot start ends nothing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hand_over_starts_the_new_copy_and_ends_the_service() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let called = dir.path().join("called");
+        let program = dir.path().join("torroworkplace");
+        std::fs::write(&program, format!("#!/bin/sh\necho \"$@\" > '{}'\n", called.display())).expect("written");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("executable");
+        let (quit, mut ended) = mpsc::unbounded_channel();
+
+        let missing = dir.path().join("missing");
+        assert!(hand_over(&missing, &quit, &tokio::runtime::Handle::current()).is_err());
+        hand_over_fn(quit.clone())(missing);
+        let nothing = tokio::time::timeout(ANSWER_GRACE * 3, ended.recv()).await;
+        assert!(nothing.is_err(), "a failed hand-over keeps the service");
+
+        hand_over_fn(quit.clone())(program);
+        let end = tokio::time::timeout(Duration::from_secs(5), ended.recv()).await;
+        assert_eq!(end, Ok(Some(())), "the service ends");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let read = || std::fs::read_to_string(&called).unwrap_or_default();
+        while !read().ends_with('\n') && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(read().trim(), "daemon --takeover", "the new copy ran");
+        assert!(!dir.path().join(QUIT_MARK).exists());
     }
 
     /// Issue #279: the setup opens only once the socket answers; a socket that takes connections but
