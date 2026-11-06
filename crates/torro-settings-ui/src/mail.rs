@@ -130,6 +130,8 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
         // of their category under Categorization (issue #481).
         torro_ipc::Request::ListSortRules,
         torro_ipc::Request::ListMailFilters,
+        // The senders trusted with "Not fraud" (issue #506), on the pages of Spam and Phishing.
+        torro_ipc::Request::ListRules,
     ]
 }
 

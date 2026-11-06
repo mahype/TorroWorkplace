@@ -1595,6 +1595,8 @@ pub fn scene(name: &str) -> Option<Vec<Message>> {
         "ai" => vec![Message::Tab(1)],
         "categories" => Vec::new(),
         "category" => vec![Message::Editor(editor::Message::EditCategory(Category::Invoice))],
+        // Issue #506: the page of Phishing with its trusted senders.
+        "phishing" => vec![Message::Editor(editor::Message::EditCategory(Category::Phishing))],
         "sort" => vec![Message::OpenSort { rules_only: false }],
         "filter" => vec![Message::NewFilter],
         "running" => vec![Message::OpenSort { rules_only: false }, Message::StartJob],

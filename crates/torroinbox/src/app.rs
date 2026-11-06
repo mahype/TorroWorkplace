@@ -1098,6 +1098,8 @@ pub enum Sent {
     /// pile (`None`: off it), since when (an undo's, decision of #315) and the hint that follows the
     /// answer (`None` after an undo).
     Pile(Vec<String>, Option<MailPile>, Option<DateTime<Utc>>, Option<Hint>),
+    /// `inbox.release_mail` with the sender trusted (issue #506, "Not fraud"): the mail.
+    Release(String),
     /// `MailSource::send_reply` of "Focus & reply" (task E19.5): the mail answered and the text.
     Reply(String, String),
     /// The next page of the pile for "Focus & reply" (decision of #315), asked when the round had had
@@ -1576,6 +1578,9 @@ pub enum Open {
     /// That group open and shown with the navigation menu open (only the medium and narrow header
     /// have it).
     CategoryMenu,
+    /// Unwanted › Phishing with the mail the core caught as fraud open (issue #506): its band with the
+    /// warning signs and "Not fraud"; set once the catalogue is in.
+    Caught,
     /// The mail window's "Sent" below "All" (issue #445): the mail of every sent folder.
     Sent,
     /// The archive of every account (task E18.4; since issue #476 the search's "Only archive"): "All"
@@ -1629,6 +1634,8 @@ pub enum Open {
     Categorization,
     /// … with the page of a category and its fixed rules (issue #481).
     CategorizationCategory,
+    /// The same on the page of Phishing, with the senders trusted with "Not fraud" (issue #506).
+    CategorizationPhishing,
     /// … on its tab "Categories".
     CategorizationCategories,
     /// … with the dialog "Sort existing mail".
@@ -1646,7 +1653,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 94] = [
+    const ALL: [(&'static str, Open); 96] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1711,6 +1718,7 @@ impl Open {
         ("category-group", Open::CategoryGroup),
         ("category", Open::Category),
         ("category-menu", Open::CategoryMenu),
+        ("caught", Open::Caught),
         ("sent", Open::Sent),
         ("archive", Open::Archive),
         ("archive-menu", Open::ArchiveMenu),
@@ -1734,6 +1742,7 @@ impl Open {
         ("unsubscribe", Open::Unsubscribe),
         ("categorization", Open::Categorization),
         ("categorization-category", Open::CategorizationCategory),
+        ("categorization-phishing", Open::CategorizationPhishing),
         ("categorization-categories", Open::CategorizationCategories),
         ("categorization-sort", Open::CategorizationSort),
         ("categorization-filter", Open::CategorizationFilter),
@@ -1761,6 +1770,7 @@ impl Open {
         match self {
             Open::Categorization => Some("ai"),
             Open::CategorizationCategory => Some("category"),
+            Open::CategorizationPhishing => Some("phishing"),
             Open::CategorizationCategories => Some("categories"),
             Open::CategorizationSort => Some("sort"),
             Open::CategorizationFilter => Some("filter"),
@@ -1795,6 +1805,9 @@ impl Open {
         }
     }
 }
+
+/// The demo's mail caught as fraud (issue #506), which `--open caught` opens.
+const DEMO_CAUGHT: &str = "m:w30";
 
 /// Where `--open account…` puts the first mail account's page (task DS.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3330,6 +3343,11 @@ pub enum Message {
     Pile(String, Option<MailPile>),
     /// The core's answer to `inbox.set_mail_pile`, with the hint to show (`None` after an undo).
     Piled(Result<(), String>, Option<Hint>),
+    /// "Not fraud" or "Not spam" in the band of the mail with this id (issue #506): it comes back into
+    /// the inbox and its sender is trusted from now on ([`App::release_mail`]).
+    Release(String),
+    /// The core's answer to `inbox.release_mail` for the mail with this id.
+    Released(String, Result<(), String>),
     /// "Only if no reply" in the mail window's "Follow up" and its picker (task E19.4): on or off,
     /// the menu stays open.
     ToggleUnlessReply,
@@ -5458,6 +5476,21 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.error = Some(Failure::new(tr("Couldn't change the pile."), err));
                 return Task::batch([self.load(), focus_top()]);
             }
+            Message::Release(id) => return self.release_mail(id),
+            Message::Released(id, Ok(())) => {
+                // The open mail shows itself as it is now: no band, no category the core took away.
+                if let Some(Ok(mail)) =
+                    self.letter.as_mut().filter(|letter| letter.id == id).and_then(|l| l.loaded.as_mut())
+                {
+                    mail::released(mail);
+                }
+                let text = tr("Moved to your inbox. Mail from this sender comes in from now on.").to_owned();
+                self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
+                return self.load();
+            }
+            Message::Released(_, Err(err)) => {
+                self.error = Some(Failure::new(tr("Couldn't bring the mail back."), err));
+            }
             Message::ToggleUnlessReply => self.unless_reply = !self.unless_reply,
             Message::FocusReply => return self.start_focus(),
             // While the reply is on its way the field takes no typing: what goes is what shows.
@@ -6665,6 +6698,19 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         // Put on or taken off now: no time of its own.
         self.set_mail_pile(ids, pile, None, Some(hint))
+    }
+
+    /// "Not fraud" (issue #506): sends `inbox.release_mail` for the mail `id`, trusting its sender –
+    /// as the band promises: its next mail comes in. The answer comes as [`Message::Released`].
+    fn release_mail(&mut self, id: String) -> Task<Message> {
+        #[cfg(test)]
+        self.sent.push(Sent::Release(id.clone()));
+        let inbox = self.inbox.clone();
+        let asked = id.clone();
+        Task::perform(
+            async move { inbox.release_mail(vec![asked], true).await.map_err(|err| err.to_string()) },
+            move |result| Message::Released(id.clone(), result),
+        )
     }
 
     /// Sends `inbox.set_mail_pile` for `ids` with `since` (an undo's time on the pile, `None`: now);
@@ -11796,8 +11842,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// the view they show. Only once, so a group folded afterwards stays folded.
     fn stage_categories(&mut self) -> Option<Task<Message>> {
         let open = self.launch.open?;
-        if self.categories_staged || !matches!(open, Open::CategoryGroup | Open::Category | Open::CategoryMenu) {
+        if self.categories_staged
+            || !matches!(open, Open::CategoryGroup | Open::Category | Open::CategoryMenu | Open::Caught)
+        {
             return None;
+        }
+        if open == Open::Caught {
+            let phishing = self.categories.iter().find(|held| held.category == torro_mail::Category::Phishing)?;
+            let (view, group) = (View::Category(mail::CategoryView::of_category(phishing)), phishing.group);
+            self.categories_staged = true;
+            self.open_groups.insert(group);
+            self.view = view;
+            self.cursor = Some(DEMO_CAUGHT.into());
+            self.reading = true;
+            return Some(self.load());
         }
         let group = self.staged_category_group()?;
         let view = if open == Open::Category {
@@ -11828,7 +11886,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         Task::none()
     }
 
-    /// The mail open in the reader is one the model called a fraud ([`Category::Phishing`]).
+    /// The mail open in the reader is one the model called a fraud ([`Category::Phishing`]) or the
+    /// core caught as fraud or spam (issue #506).
     ///
     /// **Either** the loaded mail or the row of the list is enough: asking once too often costs
     /// a click, opening a fraudulent link once too often costs more. So a list that is a moment
@@ -11838,12 +11897,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let fraud = |held: Option<torro_mail::MailCategory>| {
             held.is_some_and(|held| held.category == torro_mail::Category::Phishing)
         };
-        let of_list = self.messages.iter().find(|message| message.id == letter.id).and_then(|m| m.category);
-        let of_mail = match &letter.loaded {
-            Some(Ok(mail)) => mail.summary.category,
-            _ => None,
+        let listed = self.messages.iter().find(|message| message.id == letter.id);
+        let of_list = listed.and_then(|m| m.category);
+        let (of_mail, caught) = match &letter.loaded {
+            Some(Ok(mail)) => (mail.summary.category, mail.summary.caught),
+            _ => (None, false),
         };
-        fraud(of_mail) || fraud(of_list)
+        // Caught as fraud or spam (issue #506): its links stay held back as well.
+        fraud(of_mail) || fraud(of_list) || caught || listed.is_some_and(|m| m.caught)
     }
 
     /// The colour of the category group at `at` in `Palette::category` (task E12.8).
@@ -13114,6 +13175,7 @@ fn closes_rail(message: &Message) -> bool {
         message,
         Message::Mail(..)
             | Message::Pile(..)
+            | Message::Release(..)
             | Message::SetDone(..)
             | Message::AskSnooze(_)
             | Message::AskLane(_)
@@ -15721,9 +15783,10 @@ mod tests {
         assert_eq!(app.listed, None, "the folders are in and the inbox chosen, not yet its mail");
         load(&mut app);
         assert_eq!(app.view.folder().map(|folder| folder.id.as_str()), Some("f:work-inbox"));
-        let newest_first = ["m:w1", "m:w2", "m:w3", "m:w13", "m:w4", "m:w14", "m:w5", "m:w6"];
+        // The fraud caught (issue #506) stays in its folder, the oldest there.
+        let newest_first = ["m:w1", "m:w2", "m:w3", "m:w13", "m:w4", "m:w14", "m:w5", "m:w6", "m:w30"];
         assert_eq!(message_ids(&app), newest_first, "newest first");
-        assert_eq!(app.count_note(), "8");
+        assert_eq!(app.count_note(), "9");
         assert_eq!(app.title(), trf("Notification Hub · {view}", &[("view", &tr("Inbox"))]));
         draw_everywhere(&mut app);
         let _ = app.update(Message::Resized(WIDE));
@@ -15821,7 +15884,7 @@ mod tests {
         assert_eq!(
             work,
             [
-                (tr("Inbox"), Some(5)),
+                (tr("Inbox"), Some(6)),
                 (tr("Drafts"), None),
                 (tr("Sent"), None),
                 (tr("Archive"), None),
@@ -16327,6 +16390,41 @@ mod tests {
             let _ = app.update(Message::HtmlLink(url.into()));
         }
         assert_eq!(app.sent.len(), before, "nothing else opens");
+    }
+
+    /// Issue #506: a caught mail holds its links back by being caught alone; "Not fraud" in its band
+    /// asks the core to bring it back with its sender trusted, and the answer takes the band away at
+    /// once, with a hint that its sender's mail comes in from now on.
+    #[test]
+    fn not_fraud_brings_a_caught_mail_back() {
+        let mut app = reading_mail("f:work-inbox", "m:w30");
+        let caught = |app: &App<DemoSource>| match app.letter.as_ref().and_then(|letter| letter.loaded.as_ref()) {
+            Some(Ok(mail)) => (mail.summary.caught, mail.warnings.len()),
+            other => panic!("the mail, got {other:?}"),
+        };
+        assert_eq!(caught(&app), (true, 4), "caught, with its signs");
+        for message in &mut app.messages {
+            message.category = None;
+        }
+        if let Some(Ok(mail)) = app.letter.as_mut().and_then(|letter| letter.loaded.as_mut()) {
+            mail.summary.category = None;
+        }
+        let before = app.sent.len();
+        let _ = app.update(Message::OpenMailLink("https://paypa1-secure.example/login".into()));
+        assert_eq!((app.sent.len(), app.menu), (before, Some(Menu::PhishingLink)), "caught alone holds the link");
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.view();
+
+        let _ = app.update(Message::Release("m:w30".into()));
+        assert_eq!(app.sent.last(), Some(&Sent::Release("m:w30".into())));
+        let _ = app.update(Message::Released("m:w30".into(), Ok(())));
+        assert_eq!(caught(&app), (false, 0), "the band goes at once");
+        assert_eq!(
+            app.hint.as_ref().map(|hint| hint.text.as_str()),
+            Some(tr("Moved to your inbox. Mail from this sender comes in from now on."))
+        );
+        let _ = app.update(Message::Released("m:w30".into(), Err("offline".into())));
+        assert!(app.error.is_some(), "a failure says so");
     }
 
     /// Task E12.9: a link of a mail the model called a fraud opens nothing – the question names
@@ -16851,7 +16949,7 @@ mod tests {
         let _ = app.update(Message::ClearSearch);
         assert_eq!((app.search.as_str(), &app.view), ("", &folder), "back where it started");
         load(&mut app);
-        assert_eq!(app.messages.len(), 8);
+        assert_eq!(app.messages.len(), 9);
         let _ = app.update(Message::SearchInput("nothing like this".into()));
         let _ = app.update(Message::Search);
         load(&mut app);
@@ -17174,10 +17272,10 @@ mod tests {
         let _ = app.update(Message::MoreMail);
         assert_eq!(app.sent.last(), Some(&Sent::More("4".into())));
         let more =
-            MailSource::search_mail(app.inbox.as_ref(), "f:work-inbox".into(), None, 4, Some("4".into()), app.order);
+            MailSource::search_mail(app.inbox.as_ref(), "f:work-inbox".into(), None, 50, Some("4".into()), app.order);
         let page = block_on(more).map_err(|err| err.to_string());
         let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, page));
-        assert_eq!(app.messages.len(), 8, "nothing twice");
+        assert_eq!(app.messages.len(), 9, "nothing twice");
         assert_eq!(app.more, None);
         assert_eq!(app.page_limit(), mail::PAGE, "a load asks for a page at least");
     }

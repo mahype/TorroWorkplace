@@ -1213,6 +1213,7 @@ mod tests {
     #[test]
     fn people_are_listed_once() {
         let message = |from: MailAddress, to: Vec<MailAddress>| MessageSummary {
+            caught: false,
             id: "m".into(),
             account: "mail:anna@work.example.org".into(),
             folder: "f:1".into(),

@@ -1020,6 +1020,7 @@ pub(crate) mod tests {
     #[test]
     fn the_demo_takes_its_senders_and_inbox_from_its_mail() {
         let mail = |id: &str, address: &str, days_ago: u64, category| MessageSummary {
+            caught: false,
             id: id.into(),
             account: "mail:anna@example.org".into(),
             folder: "f:inbox".into(),

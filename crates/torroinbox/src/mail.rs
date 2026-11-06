@@ -338,6 +338,12 @@ pub trait MailSource: Send + Sync {
         since: Option<DateTime<Utc>>,
     ) -> impl Future<Output = Result<(), InboxError>> + Send;
 
+    /// `inbox.release_mail` (issue #506, [`InboxClient::release_mail`]): "Not fraud" for the mail
+    /// `ids` – caught as fraud or spam, or filed as Phishing or Spam –, which comes back into the
+    /// inbox; with `trust` its senders are never caught again. [`InboxError::NotFound`] when one of
+    /// them is not mail the window may see.
+    fn release_mail(&self, ids: Vec<String>, trust: bool) -> impl Future<Output = Result<(), InboxError>> + Send;
+
     /// One page of a pile (task E19.3, [`InboxClient::mail_in_pile`]): the mail on `find.pile` in
     /// every folder but the trash and spam, of every account the window reaches (or of
     /// `find.account`), whether snoozed or not, at most `find.limit` in `find.order` from
@@ -529,6 +535,10 @@ impl MailSource for InboxClient {
         InboxClient::set_mail_pile(self, ids, pile, since).await
     }
 
+    async fn release_mail(&self, ids: Vec<String>, trust: bool) -> Result<(), InboxError> {
+        InboxClient::release_mail(self, ids, trust).await
+    }
+
     async fn mail_in_pile(&self, find: MailInPile) -> Result<MailPage, InboxError> {
         let (messages, next) = InboxClient::mail_in_pile(self, find).await?;
         Ok(MailPage::of(messages, next))
@@ -704,6 +714,10 @@ impl MailSource for DemoSource {
     async fn mail_by_role(&self, find: MailByRole) -> Result<MailPage, InboxError> {
         let mut found = DemoSource::by_role(self, find.role, find.account.as_deref(), find.snoozed, find.order);
         found.retain(|message| pile_matches(find.pile, message.pile));
+        // "All" leaves out what the core caught as fraud or spam (issue #506), as the client asks it.
+        if find.role == Role::Inbox && find.pile == Some(PileFilter::Without) {
+            found.retain(|message| !message.caught);
+        }
         let mut page = demo_page(found, find.limit, find.cursor.as_deref())?;
         for message in &mut page.messages {
             message.invite = demo_invite(&message.id, message.date);
@@ -714,7 +728,9 @@ impl MailSource for DemoSource {
     /// The unread mail of what "All" lists, counted exactly: none on a pile.
     async fn unread_in_all(&self, account: Option<String>) -> Result<u64, InboxError> {
         let all = DemoSource::by_role(self, Role::Inbox, account.as_deref(), Some(false), Order::NewestFirst);
-        let unread = |message: &&MessageSummary| message.pile.is_none() && !message.flags.contains(&Flag::Seen);
+        let unread = |message: &&MessageSummary| {
+            message.pile.is_none() && !message.caught && !message.flags.contains(&Flag::Seen)
+        };
         Ok(all.iter().filter(unread).count() as u64)
     }
 
@@ -725,6 +741,11 @@ impl MailSource for DemoSource {
         since: Option<DateTime<Utc>>,
     ) -> Result<(), InboxError> {
         DemoSource::set_mail_pile(self, &ids, pile, since)
+    }
+
+    /// The demo brings the mail back and trusts nobody: there is no core to keep a rule.
+    async fn release_mail(&self, ids: Vec<String>, _trust: bool) -> Result<(), InboxError> {
+        DemoSource::release_mail(self, &ids)
     }
 
     /// The demo's pile ([`DemoSource::in_pile`]) a page at a time, as its roles.
@@ -1025,6 +1046,11 @@ impl MailSource for crate::empty::EmptySource {
         _pile: Option<MailPile>,
         _since: Option<DateTime<Utc>>,
     ) -> Result<(), InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    /// There is no mail to bring back.
+    async fn release_mail(&self, _ids: Vec<String>, _trust: bool) -> Result<(), InboxError> {
         Err(InboxError::NotFound)
     }
 
@@ -3148,19 +3174,20 @@ pub fn head<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, room: f32
             }
             None => sender,
         });
-        // What the mail is (task E12.8), right under who sent it: the whole pill, with the
-        // suggestion mark when a model guessed it (`docs/ki.md`, principle 5). Also in the panel,
-        // which draws this head without the subject.
-        if let Some(held) = summary.category {
-            // Phishing (task E12.9): a band over the message, and its links ask before they open.
-            // Nothing is hidden, moved or deleted – the one change is the extra click.
-            if held.category == torro_mail::Category::Phishing {
-                head = head.push(widgets::warning_band(
-                    tr("This looks like an attempt to deceive."),
-                    tr("Links here open only after you confirm, and you see where each one goes. \
-                        The mail itself is untouched."),
-                ));
+        // Phishing (task E12.9) and mail caught as fraud or spam (issue #506): a band over the
+        // message with the warning signs and "Not fraud", and its links ask before they open. Nothing
+        // is deleted. A stranger's mail with signs but no verdict gets one quiet line instead.
+        let signs = loaded_warnings(reading);
+        match fraud_band(summary, signs) {
+            Some(band) => head = head.push(band),
+            None if !signs.is_empty() => {
+                let line = trf(
+                    "Warning signs: {signs}",
+                    &[("signs", &signs.iter().map(warning_words).collect::<Vec<_>>().join(" · "))],
+                );
+                head = head.push(typo::text(typo::meta(), line).style(theme::text_3).wrapping(Wrapping::WordOrGlyph));
             }
+            None => {}
         }
     }
     // What the mail invites to, with its answers (task E8.3b), and the task made of it (task E8.7b).
@@ -3174,6 +3201,80 @@ pub fn head<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, room: f32
         head = head.push(task_card(task, reading.now));
     }
     head.into()
+}
+
+/// The warning signs of the loaded mail (issue #506, `mail.get_message`); none while it loads.
+fn loaded_warnings<'a>(reading: &Reading<'a>) -> &'a [torro_mail::WarningSign] {
+    match reading.loaded {
+        Some(Ok(mail)) => &mail.warnings,
+        _ => &[],
+    }
+}
+
+/// The band over a mail filed as Phishing or caught as fraud or spam (issues #506, E12.9), with the
+/// warning signs and the button that brings it back; `None` for every other mail. A caught one says it
+/// stays out of the inbox, an unsure one that it looks like an attempt to deceive.
+fn fraud_band<'a>(summary: &MessageSummary, signs: &[torro_mail::WarningSign]) -> Option<Element<'a, Message>> {
+    let category = summary.category.map(|held| held.category);
+    let spam = category == Some(torro_mail::Category::Spam);
+    if !summary.caught && category != Some(torro_mail::Category::Phishing) {
+        return None;
+    }
+    let what = match (summary.caught, spam) {
+        (true, true) => tr("Caught as spam. It stays out of your inbox."),
+        (true, false) => tr("Caught as fraud. It stays out of your inbox."),
+        (false, _) => tr("This looks like an attempt to deceive."),
+    };
+    let why = tr("Links here open only after you confirm, and you see where each one goes. \
+                  The mail itself is untouched.");
+    let label = if spam { tr("Not spam") } else { tr("Not fraud") };
+    let lines = signs.iter().map(warning_words).collect();
+    Some(widgets::warning_band_with(what, why, lines, Some((label.to_owned(), Message::Release(summary.id.clone())))))
+}
+
+/// One warning sign as the reader names it (issue #506): what looks wrong, in a few words.
+pub fn warning_words(sign: &torro_mail::WarningSign) -> String {
+    use torro_mail::WarningSign as Sign;
+    match sign {
+        Sign::BrandMismatch { brand } => {
+            trf("The name says {brand}, the address does not belong to it", &[("brand", brand)])
+        }
+        Sign::Lookalike { brand } => trf("The address only looks like one of {brand}", &[("brand", brand)]),
+        Sign::FreemailBrand { brand } => trf("A free mail address in the name of {brand}", &[("brand", brand)]),
+        Sign::AuthFailed { check } => trf("The sender check ({check}) failed", &[("check", &check.label())]),
+        Sign::AuthNone { check } => trf("The sender is not checked ({check})", &[("check", &check.label())]),
+        Sign::ReplyToDiffers => tr("Replies go to another address").to_owned(),
+        Sign::ReturnPathDiffers => tr("Sent through another domain").to_owned(),
+        Sign::ContactNameForeign => tr("A contact's name on a foreign address").to_owned(),
+        Sign::LinkMismatch => tr("A link goes elsewhere than it says").to_owned(),
+        Sign::LinkIp => tr("A link goes to a bare IP address").to_owned(),
+        Sign::LinkShortener => tr("A link hides where it goes").to_owned(),
+        Sign::UnusualTld => tr("An unusual domain ending").to_owned(),
+        Sign::Punycode => tr("An address with look-alike letters").to_owned(),
+        Sign::RiskyAttachment => tr("An attachment that can run code").to_owned(),
+        Sign::DoubleExtension => tr("An attachment with two file endings").to_owned(),
+        Sign::ArchiveAttachment => tr("A packed attachment").to_owned(),
+        Sign::ImageOnly => tr("Only an image, almost no text").to_owned(),
+        Sign::Pressure => tr("Pressure to act fast").to_owned(),
+        Sign::PaymentChange => tr("Asks for money or new bank details").to_owned(),
+        Sign::GenericGreeting => tr("No personal greeting").to_owned(),
+        Sign::FirstContact => tr("The first mail from this address").to_owned(),
+        Sign::FakeReply => tr("Says it is a reply, but answers nothing").to_owned(),
+    }
+}
+
+/// The loaded `mail` after "Not fraud" (issue #506): no longer caught, without its signs and without
+/// the category Phishing or Spam the core took away – the band goes at once, not with the next load.
+pub fn released(mail: &mut Mail) {
+    mail.summary.caught = false;
+    mail.warnings.clear();
+    if mail
+        .summary
+        .category
+        .is_some_and(|held| matches!(held.category, torro_mail::Category::Phishing | torro_mail::Category::Spam))
+    {
+        mail.summary.category = None;
+    }
 }
 
 /// Who wrote the mail, in the reader's head `room` wide (issue #457, the draft's head B): two quiet
