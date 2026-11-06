@@ -713,6 +713,10 @@ pub struct OverviewCategory {
     pub count: u32,
     /// Of `count`, the mail marked as seen.
     pub opened: u32,
+    /// How much of it came in per day, parallel to [`MailOverview::days`] (issue #485). Empty from
+    /// a core before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub days: Vec<u32>,
 }
 
 /// One of the senders with the most mail ([`MailOverview::senders`]). Name, address and `latest`

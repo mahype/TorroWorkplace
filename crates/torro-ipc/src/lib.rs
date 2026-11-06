@@ -1635,6 +1635,19 @@ pub enum Request {
         /// Window classes or binaries; `torroworkplace` for the main application.
         apps: Vec<String>,
     },
+    /// The suite's announcements (issue #485): what came new with this version, as the apps ship
+    /// them, the newest first, in the person's language ([`Response::Announcements`]). Leaves out
+    /// those hidden with [`Request::DismissAnnouncement`] and those older than
+    /// [`ANNOUNCEMENT_DAYS`] days. Changes nothing. Errors: `error` when the list of hidden ones
+    /// cannot be read.
+    #[serde(rename = "apps.list_announcements")]
+    ListAnnouncements,
+    /// Hides the announcement `id` (from [`Request::ListAnnouncements`]) for good; windows open
+    /// elsewhere drop it when they next load the list. Hiding one twice is fine. Answered with
+    /// [`Response::Ok`]; `not-found` for an id of no announcement, `error` when the list of hidden
+    /// ones cannot be read or written.
+    #[serde(rename = "apps.dismiss_announcement")]
+    DismissAnnouncement { id: String },
 
     // Agents and scripts. Only the app key may send these; a client key gets `forbidden`.
     /// All clients with their rights, never with keys ([`Response::Clients`]).
@@ -4372,6 +4385,10 @@ pub enum Response {
     AppJob {
         job: AppJobInfo,
     },
+    /// The announcements ([`Request::ListAnnouncements`]), the newest first.
+    Announcements {
+        announcements: Vec<Announcement>,
+    },
     /// The design packs ([`Request::ListDesigns`]), the standard first.
     Designs {
         designs: Vec<DesignInfo>,
@@ -5898,6 +5915,37 @@ pub enum StepStatus {
     Now,
     Done,
     Failed,
+}
+
+/// How many days an announcement is shown after its date ([`Request::ListAnnouncements`]).
+pub const ANNOUNCEMENT_DAYS: i64 = 90;
+
+/// One announcement of the suite (issue #485), as [`Request::ListAnnouncements`] reports it. The
+/// apps ship them; nothing of it comes from outside.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Announcement {
+    /// Stable id, for [`Request::DismissAnnouncement`]: `2026-11-mail-statistics`.
+    pub id: String,
+    /// The day it came out.
+    pub date: NaiveDate,
+    pub kind: AnnouncementKind,
+    /// One line, in the person's language.
+    pub title: String,
+    /// One or two sentences, in the person's language.
+    pub text: String,
+}
+
+/// What an [`Announcement`] is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnnouncementKind {
+    /// A new app of the suite.
+    App,
+    /// A new function in an app.
+    Feature,
+    /// A new version.
+    Update,
 }
 
 /// One design pack as [`Request::ListDesigns`] reports it. Name, version, author and
