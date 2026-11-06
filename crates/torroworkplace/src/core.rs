@@ -6065,7 +6065,8 @@ impl Core {
             | Request::MailIndexStatus { .. }
             | Request::GetMail { .. }
             | Request::GetMailThread { .. }
-            | Request::GetMailAttachment { .. }) => {
+            | Request::GetMailAttachment { .. }
+            | Request::GetSenderLogo { .. }) => {
                 // Boxed, as the ntfy commands: reading mail would grow this match's poll frame, deep
                 // in the stack already when the inbox's quiet asks the core again.
                 Box::pin(crate::mail::read::answer_counting(&self.mail, &self.inbox, reach, request)).await

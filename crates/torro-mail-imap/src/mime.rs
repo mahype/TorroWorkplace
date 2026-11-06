@@ -314,6 +314,7 @@ impl ReadMessage {
                 category: None,
                 untrusted: true,
                 pile_since: None,
+                logo: None,
             },
             cc: self.cc,
             reply_to: self.reply_to,

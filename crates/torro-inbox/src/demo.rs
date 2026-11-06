@@ -757,6 +757,7 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             untrusted: true,
             // The sample's piles since the mail came (decision of #315: the undo keeps this time).
             pile_since: letter.pile.map(|_| now - TimeDelta::minutes(letter.minutes)),
+            logo: None,
         },
         cc: Vec::new(),
         reply_to: Vec::new(),

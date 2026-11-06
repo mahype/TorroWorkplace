@@ -3085,6 +3085,7 @@ fn summary_from_row(account: &str, row: &Row<'_>) -> rusqlite::Result<MessageSum
         category: category_from_row(row)?,
         untrusted: true,
         pile_since: None,
+        logo: None,
     })
 }
 
