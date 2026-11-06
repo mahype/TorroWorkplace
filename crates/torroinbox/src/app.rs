@@ -195,7 +195,7 @@ use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, column, container, pick_list, row, rule, stack, text_editor, text_input};
-use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
+use iced::{Alignment, Element, Fill, Padding, Point, Rectangle, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::design::Density;
 use torro_core::i18n::{tr, trc, trf};
@@ -1558,6 +1558,12 @@ pub enum Open {
     /// That invoice after its first attachment was saved to its first save target: the hint with
     /// "Show in folder", kept for good.
     AttachmentSaved,
+    /// "All" with the context menu of its first mail open, right-clicked at the left of its row
+    /// (issue #497): the menu starts at the pointer, the reading pane stays free.
+    MailContext,
+    /// The same for a mail further down (the sixth, else the last): in a low window the menu opens
+    /// above the pointer or moves in, whole on screen.
+    MailContextLow,
     /// The mail window's "Waiting for me" open and shown, the group with the most categories of
     /// the demo (issue #300); set once the catalogue is in.
     CategoryGroup,
@@ -1628,7 +1634,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 88] = [
+    const ALL: [(&'static str, Open); 90] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1688,6 +1694,8 @@ impl Open {
         ("attachment-menu", Open::AttachmentMenu),
         ("save-all-menu", Open::SaveAllMenu),
         ("attachment-saved", Open::AttachmentSaved),
+        ("mail-context", Open::MailContext),
+        ("mail-context-low", Open::MailContextLow),
         ("category-group", Open::CategoryGroup),
         ("category", Open::Category),
         ("category-menu", Open::CategoryMenu),
@@ -2604,8 +2612,8 @@ fn shows_entries(message: &Message) -> bool {
             | Message::Arrange(_)
             | Message::Select(_)
             | Message::SelectMail(_)
-            | Message::ContextMail(_)
-            | Message::ContextEntry(_)
+            | Message::ContextMail(..)
+            | Message::ContextEntry(..)
             | Message::OpenRow(_)
             | Message::OpenForMe(_)
             | Message::OpenItem(_)
@@ -2922,6 +2930,9 @@ pub struct App<S> {
     menu: Option<Menu>,
     /// Which buttons the open menu for an entry hangs at (issue #122).
     menu_at: MenuAt,
+    /// Where the row of the open context menu was right-clicked, relative to the row (issue #497):
+    /// the menu opens there; without a point it hangs under the row ([`context_spot`]).
+    context_point: Option<Point>,
     /// Whether the sidebar drawer is open (medium and narrow layouts).
     drawer: bool,
     /// The sidebar the user chose for the wide layout, kept in `ui.json`.
@@ -3259,10 +3270,11 @@ pub enum Message {
     OpenRules,
     /// From a folder's list: the message with this id under the cursor and in the panel.
     SelectMail(String),
-    /// A right-click on a message row or card opens its actions beside the list.
-    ContextMail(String),
-    /// A right-click on a mail entry in the overview opens its reader's actions.
-    ContextEntry(String),
+    /// A right-click on a message row or card opens its actions at the pointer: the point is where
+    /// the row or card was clicked, relative to its top-left corner (issue #497).
+    ContextMail(String, Point),
+    /// A right-click on a mail entry in the overview opens its reader's actions at the pointer.
+    ContextEntry(String, Point),
     /// An action chosen from the message's context menu.
     ContextAction(Box<Message>),
     ModifiersChanged(iced::keyboard::Modifiers),
@@ -4138,6 +4150,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     Open::AttachmentMenu
                     | Open::SaveAllMenu
                     | Open::AttachmentSaved
+                    | Open::MailContext
+                    | Open::MailContextLow
                     | Open::Invitations
                     | Open::Invitation
                     | Open::Unsubscribe,
@@ -4271,6 +4285,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 _ => None,
             },
             menu_at: MenuAt::default(),
+            context_point: None,
             // Without a sidebar the app switcher lives in the drawer.
             drawer: matches!(open, Some(Open::Drawer | Open::Switcher)),
             sidebar: SidebarMode::default(),
@@ -5289,17 +5304,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     return self.keep_opened_search();
                 }
             }
-            Message::ContextMail(id) => {
+            Message::ContextMail(id, point) => {
                 if self.select_mail(id) {
                     self.menu = Some(Menu::MailContext);
+                    self.context_point = Some(point);
                     self.menu_at = MenuAt::Row;
                     return self.keep_opened_search();
                 }
             }
-            Message::ContextEntry(id) => {
+            Message::ContextEntry(id, point) => {
                 self.select(id);
                 if self.detail.is_some() {
                     self.menu = Some(Menu::MailContext);
+                    self.context_point = Some(point);
                     self.menu_at = MenuAt::Row;
                     return self.keep_opened_search();
                 }
@@ -10502,9 +10519,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let layer = match self.menu {
             None => None,
             Some(Menu::MailContext) => self.rail_groups(class, &anchors).map(|groups| {
+                let (spot, placement) = context_spot(self.context_point, &rows.row);
                 widgets::floating(
-                    &rows.row,
-                    Placement::Beside,
+                    &spot,
+                    placement,
                     widgets::rail_context_menu(
                         groups,
                         |action| Message::ContextAction(Box::new(action)),
@@ -12687,6 +12705,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     };
                 }
             }
+            // A right-click at the left of a row, 12 into it (issue #497): the menu at the pointer.
+            Some(open @ (Open::MailContext | Open::MailContextLow)) => {
+                let message = match open {
+                    Open::MailContext => self.messages.first(),
+                    _ => self.messages.get(5).or(self.messages.last()),
+                };
+                if let Some(id) = message.map(|message| message.id.clone()) {
+                    return self.update(Message::ContextMail(id, Point::new(24.0, 12.0)));
+                }
+            }
             Some(Open::Unsubscribe) => {
                 let newsletter = |message: &&MessageSummary| {
                     message.category.as_ref().is_some_and(|held| {
@@ -13111,6 +13139,16 @@ fn menu_anchor(
 /// (`bare`, the mail window: no buttons, [`App::bare_rows`]) – the row itself (`rows.row`).
 fn row_trigger(rows: &detail::Anchors, bare: bool, pick: fn(&detail::Anchors) -> &Anchor) -> &Anchor {
     if bare { &rows.row } else { pick(rows) }
+}
+
+/// Where the context menu of the row `row` opens (issue #497): with its top-left corner at `point`,
+/// where the row was right-clicked (relative to the row), as in macOS, Windows and GNOME; without a
+/// point under the row, left edges in line – never beside the whole row over the reading pane.
+fn context_spot(point: Option<Point>, row: &Anchor) -> (Anchor, Placement) {
+    match point {
+        Some(point) => (row.area(Rectangle::new(point, Size::ZERO)), Placement::At),
+        None => (row.clone(), Placement::Below(Align::Start)),
+    }
 }
 
 fn dialog_placement(panel: bool) -> Placement {
@@ -16678,6 +16716,32 @@ mod tests {
         for open in ["invitations", "attachment-menu", "save-all-menu", "attachment-saved"] {
             assert_eq!(mail_window(Density::Compact, &["--open", open]).view, View::All, "--open {open}");
         }
+        // Issue #497: the context menu of the first mail and of one further down, at the pointer.
+        for (open, index) in [("mail-context", 0), ("mail-context-low", 5)] {
+            let mut app = mail_window(Density::Compact, &["--open", open]);
+            assert_eq!(app.view, View::All, "--open {open}");
+            assert_eq!(app.menu, Some(Menu::MailContext), "--open {open}");
+            assert_eq!(app.context_point, Some(Point::new(24.0, 12.0)));
+            let wanted = app.messages.get(index).or(app.messages.last()).map(|message| message.id.clone());
+            assert_eq!(app.cursor, wanted, "--open {open}: that mail");
+            draw_everywhere(&mut app);
+        }
+    }
+
+    /// Issue #497: the context menu opens with its corner where the row was clicked, and without a
+    /// point under the row, left edges in line – never beside the row over the reading pane.
+    #[test]
+    fn the_context_menu_opens_at_the_pointer_or_under_the_row() {
+        // `Anchor` has no equality of its own; its debug form shows the area it narrows to.
+        let row = Anchor::new();
+        let point = Point::new(24.0, 12.0);
+        let (spot, placement) = context_spot(Some(point), &row);
+        assert_eq!(placement, Placement::At);
+        let pointer = row.area(Rectangle::new(point, Size::ZERO));
+        assert_eq!(format!("{spot:?}"), format!("{pointer:?}"), "a zero-sized area at the point");
+        let (under, placement) = context_spot(None, &row);
+        assert_eq!(placement, Placement::Below(Align::Start));
+        assert_eq!(format!("{under:?}"), format!("{row:?}"), "the whole row");
     }
 
     /// Issue #136: typing searches once the keys pause, not at every key; a blank field goes back.
@@ -16985,11 +17049,13 @@ mod tests {
         assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::SaveAll { rail: true }), true), "at the item");
         draw_everywhere(&mut app);
         let _ = app.update(Message::CloseMenu);
-        let _ = app.update(Message::ContextMail("m:p3".into()));
-        assert_eq!(app.menu, Some(Menu::MailContext));
+        let point = Point::new(40.0, 10.0);
+        let _ = app.update(Message::ContextMail("m:p3".into(), point));
+        assert_eq!((app.menu, app.context_point), (Some(Menu::MailContext), Some(point)));
         let _ = app.update(Message::ContextAction(Box::new(Message::AskSaveAttachments("m:p3".into()))));
         assert_eq!(app.menu, Some(Menu::SaveAll { rail: true }));
         assert!(!app.menu_from_panel(), "at the row, as Later… from the context menu");
+        assert_eq!(app.menu_at, MenuAt::Row, "issue #497: under the row, not at the pointer");
         draw_everywhere(&mut app);
     }
 
@@ -19951,8 +20017,10 @@ mod tests {
         load(&mut app);
         let _ = app.update(Message::Resized(WIDE));
         let id = app.messages.first().expect("a mail").id.clone();
-        let _ = app.update(Message::ContextMail(id.clone()));
+        let point = Point::new(24.0, 12.0);
+        let _ = app.update(Message::ContextMail(id.clone(), point));
         assert_eq!((app.menu, app.cursor.as_deref()), (Some(Menu::MailContext), Some(id.as_str())));
+        assert_eq!(app.context_point, Some(point), "issue #497: where the row was clicked");
         assert_eq!(app.focus(), Focus::Elsewhere, "list shortcuts do not act behind the menu");
         let groups = app.rail_groups(SizeClass::Wide, &detail::Anchors::default()).expect("the mail's actions");
         assert_eq!(groups.first().map(|group| group.label.to_string()), Some(tr("Reply").to_owned()));
@@ -19963,14 +20031,15 @@ mod tests {
         assert_eq!((app.menu, app.menu_at), (Some(Menu::Task), MenuAt::Row));
         let _ = app.update(Message::Escape);
         assert_eq!(app.menu, None);
-        let _ = app.update(Message::ContextMail(id));
+        let _ = app.update(Message::ContextMail(id, point));
         let _ = app.update(Message::Escape);
         assert_eq!(app.menu, None);
 
         let mut overview = mail_entry_open(Density::Compact);
         let entry = overview.detail.as_ref().expect("a mail entry").id.clone();
-        let _ = overview.update(Message::ContextEntry(entry.clone()));
+        let _ = overview.update(Message::ContextEntry(entry.clone(), point));
         assert_eq!((overview.menu, overview.cursor.as_deref()), (Some(Menu::MailContext), Some(entry.as_str())));
+        assert_eq!(overview.context_point, Some(point));
         let groups = overview.rail_groups(SizeClass::Wide, &detail::Anchors::default()).expect("the entry's actions");
         let file = groups.iter().find(|group| group.label == tr("File")).expect("File group");
         assert!(file.items.iter().any(|item| item.label == trc("action", "Archive")), "task E18.5: Archive");
