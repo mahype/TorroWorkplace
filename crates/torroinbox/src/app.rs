@@ -2860,6 +2860,9 @@ pub struct App<S> {
     /// The senders (addresses in lower case) this window unsubscribed from while it runs (issue #416):
     /// their mail offers "Unsubscribe…" no more until the window starts again.
     unsubscribed: HashSet<String>,
+    /// The mails being saved as PDF or picture (issue #501, review of PR #514): a second click on the
+    /// same one in the same format waits for the first instead of making a second file.
+    exporting: HashSet<(String, ExportFormat)>,
     /// The calendars an invitation's event can go to (task E8.3c), asked once the first invitation
     /// is read: `None` until they are in, then the answer.
     invite_calendars: Option<Result<Vec<TaskList>, String>>,
@@ -3481,7 +3484,7 @@ pub enum Message {
     SaveMailChosen(String, ExportFormat, Option<std::path::PathBuf>),
     /// `mail.save_message_as` answered: the words of where, taken when it was sent
     /// ([`mail::save_mail_place`]), and where the file lies.
-    MailSaved(Option<String>, Result<torro_ipc::inbox::SavedMail, String>),
+    MailSaved(String, ExportFormat, Option<String>, Result<torro_ipc::inbox::SavedMail, String>),
     /// "Show in folder" in the hint after saving (task M12.6).
     ShowInFolder,
     /// The file manager was asked to show that folder.
@@ -4313,6 +4316,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             answers: Vec::new(),
             unsubscribe_ask: None,
             unsubscribed: HashSet::new(),
+            exporting: HashSet::new(),
             invite_calendars: None,
             invite_pick: None,
             invite_events: None,
@@ -5707,13 +5711,19 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             },
             // Cancelled in the dialog: nothing is sent, nothing is said.
             Message::SaveMailChosen(_, _, None) => {}
-            Message::MailSaved(place, Ok(saved)) => {
+            Message::MailSaved(id, format, place, Ok(saved)) => {
+                self.exporting.remove(&(id, format));
                 let place = mail::saved_mail_place(place, &saved);
                 let folder = std::path::Path::new(&saved.path).parent().map(std::path::Path::to_path_buf);
                 let text = mail::saved_mail_text(&saved, &place);
                 self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder });
             }
-            Message::MailSaved(_, Err(err)) => {
+            Message::MailSaved(id, format, _, Err(err)) => {
+                self.exporting.remove(&(id, format));
+                // The "Saving…" of this save goes with its answer.
+                if self.hint.as_ref().is_some_and(|hint| hint.text == tr("Saving…")) {
+                    self.hint = None;
+                }
                 self.error = Some(Failure::new(tr("Couldn't save the mail."), err));
             }
             Message::SaveAll(id) => {
@@ -6348,13 +6358,18 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// `mail.save_message_as` for the mail `id` as `format` to `to` (issue #501); the words of where go
     /// along now, as for attachments ([`Message::MailSaved`]).
     fn save_mail(&mut self, id: String, format: ExportFormat, to: SaveTo) -> Task<Message> {
+        // Drawing can take a while (pictures load): say so, and let a second click wait for it.
+        if !self.exporting.insert((id.clone(), format)) {
+            return Task::none();
+        }
+        self.hint = Some(Hint { text: tr("Saving…").to_owned(), undo: None, shown: Instant::now(), folder: None });
         #[cfg(test)]
         self.sent.push(Sent::SaveMail(id.clone(), format, to.clone()));
         let place = mail::save_mail_place(&to, self.saving_of(&id), format);
-        let inbox = self.inbox.clone();
+        let (inbox, answered) = (self.inbox.clone(), id.clone());
         Task::perform(
             async move { MailSource::save_mail_as(inbox.as_ref(), id, format, to).await.map_err(|err| err.to_string()) },
-            move |saved| Message::MailSaved(place.clone(), saved),
+            move |saved| Message::MailSaved(answered.clone(), format, place.clone(), saved),
         )
     }
 
@@ -17696,7 +17711,12 @@ mod tests {
         let saved = block_on(MailSource::save_mail_as(app.inbox.as_ref(), id.clone(), format, to.clone()));
         let saved = saved.expect("the demo answers");
         let place = mail::save_mail_place(&to, app.saving_of(&id), format);
-        let _ = app.update(Message::MailSaved(place.clone(), Ok(saved.clone())));
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Saving…")), "while it draws");
+        let sends = app.sent.len();
+        let again = mail::FileAct::Target(target.id.clone());
+        let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Pdf, again));
+        assert_eq!(app.sent.len(), sends, "a second click waits for the first");
+        let _ = app.update(Message::MailSaved(id.clone(), format, place.clone(), Ok(saved.clone())));
         let hint = app.hint.clone().expect("a hint");
         let words = place.clone().expect("the target's words");
         assert_eq!(hint.text, trf("Saved to {where}", &[("where", &words)]));
@@ -17705,10 +17725,10 @@ mod tests {
         let _ = app.update(Message::ShowInFolder);
         assert_eq!(app.sent.last(), folder.map(Sent::ShowFolder).as_ref());
         let cut = torro_ipc::inbox::SavedMail { shortened: true, ..saved };
-        let _ = app.update(Message::MailSaved(place, Ok(cut)));
+        let _ = app.update(Message::MailSaved(id.clone(), format, place, Ok(cut)));
         let shortened = trf("Saved to {where}, shortened: the mail is too long", &[("where", &words)]);
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.clone()), Some(shortened));
-        let _ = app.update(Message::MailSaved(None, Err("offline".into())));
+        let _ = app.update(Message::MailSaved(id.clone(), format, None, Err("offline".into())));
         let failure = app.error.take().expect("said");
         assert_eq!((failure.what, failure.why.as_str()), (tr("Couldn't save the mail."), "offline"));
 
@@ -17721,6 +17741,8 @@ mod tests {
             app.update(Message::SaveMailChosen("m:p3".into(), ExportFormat::Png, Some("/home/anna/Mail.png".into())));
         let file = SaveTo::File("/home/anna/Mail.png".into());
         assert_eq!(app.sent.last(), Some(&Sent::SaveMail("m:p3".into(), ExportFormat::Png, file)));
+        let done = torro_ipc::inbox::SavedMail { path: "/home/anna/Mail.png".into(), ..Default::default() };
+        let _ = app.update(Message::MailSaved("m:p3".into(), ExportFormat::Png, None, Ok(done)));
         let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Png, mail::FileAct::Downloads));
         assert_eq!(app.sent.last(), Some(&Sent::SaveMail("m:p3".into(), ExportFormat::Png, SaveTo::Downloads)));
     }
