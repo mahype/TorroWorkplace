@@ -511,9 +511,10 @@ impl Window {
             // that is the restart; else the job is gone.
             (Reply::Polled, answer) => {
                 let gone = matches!(&answer, Ok(Response::Error { code, .. }) if code == "not-found");
-                // A job updating the main application restarts the service even when the poll that would
-                // have shown `restart` was missed (review of #411).
-                if self.last.as_ref().is_some_and(|job| job.restart || updates_main(job)) {
+                // A job that put the main application in place restarts the service even when the poll
+                // that would have shown `restart` was missed (review of #411); before that, one lost poll
+                // is only asked again.
+                if self.last.as_ref().is_some_and(|job| job.restart || main_in_place(job)) {
                     self.restarting();
                 } else if gone {
                     self.stage = Stage::Failed(tr("This job is no longer known. It may have finished.").into());
@@ -947,9 +948,15 @@ pub fn failure(code: &str) -> &'static str {
     }
 }
 
-/// Whether `job` updates the main application, after which the service restarts.
-fn updates_main(job: &AppJobInfo) -> bool {
-    job.kind == AppJobKind::Update && job.apps.iter().any(|app| app == AppId::WORKPLACE.window_class)
+/// Whether `job` installed or updated the main application and its step Install is done: from then on
+/// the service restarts with the new copy.
+fn main_in_place(job: &AppJobInfo) -> bool {
+    let main = AppId::WORKPLACE.window_class;
+    job.kind != AppJobKind::Uninstall
+        && job
+            .steps
+            .iter()
+            .any(|step| step.app == main && step.step == AppStep::Install && step.status == StepStatus::Done)
 }
 
 /// Whether the service that answered with `version` is the restarted one: the expected version or a
@@ -1147,14 +1154,32 @@ mod tests {
     /// application restarts all the same.
     #[test]
     fn a_missed_restart_of_the_main_update_still_waits_for_the_service() {
-        let mut missed = window(Target::SelfUpdate);
-        let _ = missed.update(Event::Confirm);
+        let main = AppId::WORKPLACE.window_class;
         let mut updating = job(AppJobState::Running, AppJobKind::Update, false);
-        updating.apps = vec![AppId::WORKPLACE.window_class.into()];
-        let _ = missed.update(Event::Answer(Reply::Started, Ok(Response::AppJob { job: updating })));
-        let gone = Ok(Response::Error { code: "not-found".into(), message: "no such job".into() });
-        let _ = missed.update(Event::Answer(Reply::Polled, gone));
-        assert!(matches!(missed.stage, Stage::Restarting { .. }));
+        updating.apps = vec![main.into()];
+        for step in &mut updating.steps {
+            step.app = main.into();
+        }
+        let started = |job: &AppJobInfo| {
+            let mut window = window(Target::SelfUpdate);
+            let _ = window.update(Event::Confirm);
+            let _ = window.update(Event::Answer(Reply::Started, Ok(Response::AppJob { job: job.clone() })));
+            window
+        };
+        let gone = || Ok(Response::Error { code: "not-found".into(), message: "no such job".into() });
+        // Still downloading: one lost poll is only asked again, the job is followed on.
+        let mut early = started(&updating);
+        let _ = early.update(Event::Answer(Reply::Polled, Err("connection refused".into())));
+        assert!(matches!(early.stage, Stage::Job(_)), "{:?}", early.stage);
+        // Once the main application is in place, the job's end is the service's restart.
+        for step in &mut updating.steps {
+            if step.step == AppStep::Install {
+                step.status = StepStatus::Done;
+            }
+        }
+        let mut late = started(&updating);
+        let _ = late.update(Event::Answer(Reply::Polled, gone()));
+        assert!(matches!(late.stage, Stage::Restarting { .. }));
     }
 
     /// "Cancel" works while the download runs; a refused start says why and offers to try again
