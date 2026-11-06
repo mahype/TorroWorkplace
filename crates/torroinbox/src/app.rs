@@ -2863,6 +2863,8 @@ pub struct App<S> {
     /// The mails being saved as PDF or picture (issue #501, review of PR #514): a second click on the
     /// same one in the same format waits for the first instead of making a second file.
     exporting: HashSet<(String, ExportFormat)>,
+    /// The logos of known senders (issue #453) by domain: each asked once while the window runs.
+    logos: mail::Logos,
     /// The calendars an invitation's event can go to (task E8.3c), asked once the first invitation
     /// is read: `None` until they are in, then the answer.
     invite_calendars: Option<Result<Vec<TaskList>, String>>,
@@ -3183,6 +3185,9 @@ pub enum Message {
     Unsubscribe,
     /// The core's answer to `mail.unsubscribe`, with what was asked.
     Unsubscribed(UnsubscribeAsk, Result<UnsubscribeVia, String>),
+    /// The core's answer to `mail.get_sender_logo` (issue #453): the logo of a domain as PNG, `None`
+    /// when there is none (or it could not be had).
+    Logo(String, Option<Vec<u8>>),
     /// The answer to fetching mail now (task E10.1, `accounts.sync`).
     Fetched(Result<(), String>),
     /// "Pick…" in the snooze menu: the date and time picker.
@@ -4317,6 +4322,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             unsubscribe_ask: None,
             unsubscribed: HashSet::new(),
             exporting: HashSet::new(),
+            logos: mail::Logos::new(),
             invite_calendars: None,
             invite_pick: None,
             invite_events: None,
@@ -4598,7 +4604,33 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.follow_html();
         // The overview of the mail window asks for its numbers once it shows (issue #409).
         let overview = self.follow_mail_overview();
-        Task::batch([task, more, letter, overview])
+        // The logos of the senders the list or the open mail name (issue #453).
+        let logos = self.follow_logos();
+        Task::batch([task, more, letter, overview, logos])
+    }
+
+    /// Asks once for the logo of each domain the listed mail and the open mail name
+    /// ([`MessageSummary::logo`]) that the window does not hold yet (issue #453). The core names a
+    /// domain only for mail whose sender's domain signed it, and while logos are on.
+    fn follow_logos(&mut self) -> Task<Message> {
+        let open =
+            self.letter.as_ref().and_then(|letter| letter.loaded.as_ref()?.as_ref().ok()).map(|mail| &mail.summary);
+        let mut wanted: Vec<(String, String)> = Vec::new();
+        for message in self.messages.iter().chain(open) {
+            let Some(domain) = &message.logo else { continue };
+            if !self.logos.contains_key(domain) && !wanted.iter().any(|(known, _)| known == domain) {
+                wanted.push((domain.clone(), message.id.clone()));
+            }
+        }
+        let mut tasks = Vec::new();
+        for (domain, id) in wanted {
+            self.logos.insert(domain.clone(), mail::Logo::Asked);
+            let inbox = Arc::clone(&self.inbox);
+            tasks.push(Task::perform(async move { inbox.sender_logo(id).await }, move |png| {
+                Message::Logo(domain.clone(), png.ok().flatten())
+            }));
+        }
+        Task::batch(tasks)
     }
 
     /// The parsed HTML of the mail held (task M9.7, [`App::html`]): made when a mail with HTML is
@@ -5000,6 +5032,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::AskUnsubscribe(ask) => return self.ask_unsubscribe(ask),
             Message::Unsubscribe => return self.unsubscribe(),
             Message::Unsubscribed(ask, result) => return self.unsubscribed(ask, result),
+            Message::Logo(domain, png) => {
+                let logo = png
+                    .map_or(mail::Logo::Missing, |png| mail::Logo::Here(iced::widget::image::Handle::from_bytes(png)));
+                self.logos.insert(domain, logo);
+            }
             Message::Fetched(Ok(())) => return self.load(),
             Message::Fetched(Err(err)) => {
                 // `accounts.sync` fetches calendars, tasks and GitHub too and answers the first failure of
@@ -11530,6 +11567,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 _ => None,
             },
             unsubscribed: &self.unsubscribed,
+            logos: &self.logos,
         })
     }
 
@@ -11625,6 +11663,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     highlights: &self.highlights,
                     text: palette(&self.theme()).text,
                     bare: self.bare_rows(),
+                    logos: &self.logos,
                 })
             }
         } else if self.is_board() {

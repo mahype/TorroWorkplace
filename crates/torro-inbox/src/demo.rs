@@ -757,7 +757,8 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             untrusted: true,
             // The sample's piles since the mail came (decision of #315: the undo keeps this time).
             pile_since: letter.pile.map(|_| now - TimeDelta::minutes(letter.minutes)),
-            logo: None,
+            // Issue #453: the sample's one sender whose domain signed its mail and has a logo.
+            logo: letter.from.1.ends_with("@github.example").then(|| "github.example".to_owned()),
         },
         cc: Vec::new(),
         reply_to: Vec::new(),
