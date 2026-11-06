@@ -396,10 +396,10 @@ impl SenderLogos {
     /// The logo of `domain` after the module docs, as a PNG of [`LOGO_PIXELS`] on white; `Ok(None)`
     /// when the domain has none, [`WebError::Offline`] when it could not be asked.
     pub async fn find(&self, domain: &str) -> Result<Option<Vec<u8>>, WebError> {
-        if let Some(svg) = self.bimi(domain).await? {
-            if let Some(logo) = from_svg(&svg) {
-                return Ok(Some(logo));
-            }
+        if let Some(svg) = self.bimi(domain).await?
+            && let Some(logo) = from_svg(&svg)
+        {
+            return Ok(Some(logo));
         }
         if let Ok(url) = Url::parse(&format!("https://{domain}/apple-touch-icon.png"))
             && let Some((_, picture)) = self.fetch(url, RASTER_MAX_BYTES).await?

@@ -20,7 +20,6 @@ use std::hash::Hash;
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use mail_auth::hickory_resolver::config::{ResolverConfig, ResolverOpts};
 use mail_auth::{AuthenticatedMessage, DkimResult, MessageAuthenticator, Parameters, ResolverCache, Txt};
 use torro_pim_caldav::discover::checked_domain;
 
@@ -67,6 +66,7 @@ impl SenderCheck {
     #[cfg(test)]
     pub fn offline() -> SenderCheck {
         let auth = OnceLock::new();
+        use mail_auth::hickory_resolver::config::{ResolverConfig, ResolverOpts};
         let config = ResolverConfig::from_name_servers(Vec::new());
         let _ = auth.set(MessageAuthenticator::new(config, ResolverOpts::default()).ok());
         SenderCheck { auth, txt: TxtCache::default() }
