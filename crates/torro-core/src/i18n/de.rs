@@ -7244,7 +7244,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{app} is not installed.", "{app} ist nicht installiert."),
     ("{app} has no update.", "Für {app} gibt es kein Update."),
     ("There is no app {app} to uninstall.", "Es gibt keine App {app}, die du entfernen kannst."),
-    ("{app} is needed by {other}; uninstall that first.", "{other} braucht {app}; entferne zuerst {other}."),
+    ("{app} is needed by {other}; uninstall that first.", "{other} braucht {app}; entferne das zuerst."),
     (
         "A development build does not install, update or uninstall apps.",
         "Ein Entwicklungs-Build installiert, aktualisiert und entfernt keine Apps.",
