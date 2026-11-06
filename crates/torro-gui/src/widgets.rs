@@ -2545,6 +2545,8 @@ fn search_results<M>(items: Vec<Element<'_, M>>) -> Result<Vec<Element<'_, M>>, 
 
 /// The action rail as a context menu: its groups form vertical sections with separators.
 /// Uses the rail's item rows so disabled actions and key hints have the same appearance.
+/// A group of one entry has no title: the separator sets it apart, and the menu stays short
+/// enough to open at the pointer rather than move in over the row (issue #497).
 pub fn rail_context_menu<'a, M: Clone + 'a, N: Clone + 'a>(
     groups: Vec<RailGroup<'a, M>>,
     on_action: impl Fn(M) -> N,
@@ -2555,8 +2557,10 @@ pub fn rail_context_menu<'a, M: Clone + 'a, N: Clone + 'a>(
         if index > 0 {
             list = list.push(container(rule::horizontal(LINE).style(style::rule)).padding([space::xs(), 0.0]));
         }
-        let title = typo::text(typo::caption(), group.label).style(theme::text_3).wrapping(Wrapping::None);
-        list = list.push(container(title).padding(flyout_title_padding()));
+        if rail_menu_titled(group.items.len()) {
+            let title = typo::text(typo::caption(), group.label).style(theme::text_3).wrapping(Wrapping::None);
+            list = list.push(container(title).padding(flyout_title_padding()));
+        }
         for item in group.items {
             let item = RailItem {
                 icon: item.icon,
@@ -2577,6 +2581,11 @@ pub fn rail_context_menu<'a, M: Clone + 'a, N: Clone + 'a>(
         .padding(style::MENU_INSET)
         .style(style::container::menu)
         .into()
+}
+
+/// Whether a group of `entries` in a [`rail_context_menu`] shows its title: only with more than one.
+fn rail_menu_titled(entries: usize) -> bool {
+    entries > 1
 }
 
 /// A header button that opens a menu, with a chevron: the navigation menu of the medium and
@@ -7640,6 +7649,13 @@ mod tests {
         assert_eq!(at(200.0, 350.0, tall).y, beside_gap(), "above would leave the window: from the top margin");
         let wide = Size::new(600.0, 200.0);
         assert_eq!(at(450.0, 150.0, wide).x, beside_gap(), "left would leave the window: from the left margin");
+    }
+
+    /// Issue #497: a group of one entry in the context menu goes without its title.
+    #[test]
+    fn a_context_menu_titles_only_groups_of_several_entries() {
+        assert!(!rail_menu_titled(1), "one entry: the separator is enough");
+        assert!(rail_menu_titled(2));
     }
 
     /// Task E8.12 (finding 4): a bar of buttons shows all words or none – only its lead may keep its
