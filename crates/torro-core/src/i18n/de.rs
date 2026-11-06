@@ -3370,6 +3370,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Search conversations", "Unterhaltungen durchsuchen"),
     ("Searched mail", "Mail durchsucht"),
     ("Sent mail", "Mail gesendet"),
+    ("Read draft", "Entwurf gelesen"),
     ("Set up access", "Zugriff einrichten"),
     ("Six tasks are open; two are due this week.", "Sechs Aufgaben sind offen, zwei sind diese Woche fällig."),
     ("Stop", "Stopp"),
@@ -6734,6 +6735,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No recipient", "Kein Empfänger"),
     ("No sent mail.", "Keine gesendeten Mails."),
     ("Mail you send shows up here.", "Mails, die du sendest, erscheinen hier."),
+    // Mail window: drafts, and writing on one (issue #502)
+    ("No drafts.", "Keine Entwürfe."),
+    ("Drafts you save show up here.", "Entwürfe, die du speicherst, erscheinen hier."),
+    ("Continue writing", "Weiterschreiben"),
+    ("Couldn't load the draft.", "Der Entwurf konnte nicht geladen werden."),
     // Mail settings: an account's detail page (DS.6, issue #314)
     ("In use", "Belegt"),
     ("Not counted by folder", "Keinem Ordner zugeordnet"),

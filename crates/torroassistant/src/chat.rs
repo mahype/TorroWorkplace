@@ -431,6 +431,7 @@ pub fn tool_title(name: &str) -> String {
         "mail.get_thread" => tr("Read conversation"),
         "mail.save_draft" => tr("Saved draft"),
         "mail.send_draft" => tr("Sent mail"),
+        "mail.get_draft" => tr("Read draft"),
         "mail.move_messages" => tr("Moved mail"),
         "mail.delete_messages" => tr("Deleted mail"),
         "workspaces.list_templates" => tr("Looked up templates"),

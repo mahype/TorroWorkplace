@@ -653,7 +653,7 @@ hoch (320×480), Leiste (1200×200), Schmal (480×900), Mittel (800×600) und Br
 Programmname mit den Werten von `--view`, `--section`, `--settings`, `--open`, `--design`, `--font`,
 `--color-scheme` und `--appearance`, danach der Flags, die ein Fenster, einen Eintrag oder eine Darstellung
 wählen (`--chat`, `--bot`, `--lane`, `--source`, `--template`, `--task`, `--message`, `--reply`,
-`--reply-all`, `--forward`, `--account`, `--step`, `--mail-view`, `--mail-colors`, `--density`,
+`--reply-all`, `--forward`, `--draft`, `--account`, `--step`, `--mail-view`, `--mail-colors`, `--density`,
 `--now`), je mit dem ersten Wert, und `-setup`, `-setup-if-open` bzw. `-saved` bei den gleichnamigen Schaltern (Schreibfenster: `torroinbox-compose`, Vorlagen-Dialog:
 `torroworkplace-template`). Jede Größe zeichnet ein eigener Prozess, damit keine Größe den Demo-Stand
 der nächsten verändert (z. B. eine beim Öffnen gelesene Mail). Die Bilder haben die **doppelte Auflösung** wie ein
