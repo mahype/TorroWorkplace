@@ -2597,6 +2597,7 @@ pub fn rail_context_menu<'a, M: Clone + 'a, N: Clone + 'a>(
                 lead: item.lead,
                 danger: item.danger,
                 anchor: None,
+                opens_menu: item.opens_menu,
             };
             list = list.push(rail_row(item, RailPlace::Card, false));
         }
@@ -3009,6 +3010,9 @@ pub struct RailItem<'a, M> {
     /// anchor (`row_anchor.or(&group_anchor)`, [`Anchor::or`]) so it hangs at the group's icon while the row is
     /// not on screen (collapsed rail, group closed).
     pub anchor: Option<Anchor>,
+    /// The row opens a menu of its own (issue #501, "Save as ▸"), set with [`RailItem::opens_menu`]:
+    /// it ends in a chevron in `text_3` instead of a key.
+    pub opens_menu: bool,
 }
 
 impl<'a, M> RailItem<'a, M> {
@@ -3024,7 +3028,13 @@ impl<'a, M> RailItem<'a, M> {
             lead: false,
             danger: false,
             anchor: None,
+            opens_menu: false,
         }
+    }
+
+    /// The same item as one that opens a menu of its own ([`RailItem::opens_menu`]).
+    pub fn opens_menu(self) -> Self {
+        Self { opens_menu: true, ..self }
     }
 
     /// The same item with its icon in the accent colour ([`RailItem::accent`]).
@@ -3556,7 +3566,14 @@ fn rail_row<'a, M: Clone + 'a>(item: RailItem<'a, M>, place: RailPlace, lit: boo
         line_label(typo::body(), item.label)
     };
     let mut content = row![mark, word].spacing(space::s()).align_y(Alignment::Center);
-    if on && !item.key.is_empty() {
+    if item.opens_menu {
+        // Faded with the row while it is off, as its icon is.
+        let chevron: Element<'a, M> = icon(Icon::ChevronRight, GROUP_CHEVRON)
+            .style(|t, _| svg::Style { color: Some(Tone::Text3.of(&palette(t))) })
+            .opacity(icon_opacity(on))
+            .into();
+        content = content.push(chevron);
+    } else if on && !item.key.is_empty() {
         content = content.push(kbd(item.key));
     }
     let row = button(container(content).center_y(Fill)).width(Fill).padding(style::ITEM_PADDING);

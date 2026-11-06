@@ -1156,6 +1156,8 @@ fn describe(request: &Request) -> String {
         Request::RemoveSaveTarget { id } => format!("remove save target {id}"),
         Request::SaveMailAttachments { parts, .. } if parts.is_empty() => "save all mail attachments".into(),
         Request::SaveMailAttachments { parts, .. } => format!("save {} mail attachments", parts.len()),
+        Request::SaveMailAs { format: torro_ipc::mail::ExportFormat::Pdf, .. } => "save mail as pdf".into(),
+        Request::SaveMailAs { format: torro_ipc::mail::ExportFormat::Png, .. } => "save mail as image".into(),
         // Never a filter's search, account or folder (issue #339).
         Request::ListMailFilters => "list mail filters".into(),
         Request::CreateMailFilter { .. } => "create a mail filter".into(),

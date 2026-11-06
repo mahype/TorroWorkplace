@@ -478,8 +478,9 @@ pub fn ids(request: &Request) -> Vec<String> {
             vec![random("save-target", target)]
         }
         // Saving attachments: the message hashed and the target by its id, never a file name, a part's
-        // name or a path (`to: file | folder`, where the files went).
-        Request::SaveMailAttachments { id: message, to, .. } => {
+        // name or a path (`to: file | folder`, where the files went); a mail saved as PDF or picture
+        // alike (issue #501).
+        Request::SaveMailAttachments { id: message, to, .. } | Request::SaveMailAs { id: message, to, .. } => {
             let target = match to {
                 torro_ipc::mail::SaveTo::Target(target) => Some(random("save-target", target)),
                 _ => None,

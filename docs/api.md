@@ -1159,7 +1159,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Systems) darf jeder mit Admin. Und `mail.save_attachments` mit **`to: file` oder `to: folder`** („Save as…“,
    „Save all to folder…“) nur mit dem App-Schlüssel (`Request::kept_for_people`): Den Pfad wählt ein Mensch im
    Dialog des Systems. Clients speichern nach `downloads` oder in ein Ziel (`{"target": …}`), mit der gewöhnlichen
-   Schreibregel (Test `only_people_choose_where_attachments_go` in `torro-ipc`).
+   Schreibregel (Test `only_people_choose_where_attachments_go` in `torro-ipc`). Dasselbe gilt für
+   `mail.save_message_as` (Issue #501, die Mail selbst als PDF oder Bild).
 
 11. **Eine App installieren oder aktualisieren** (Issue #411, App-Katalog): `apps.install_app` und
    `apps.update_apps` nur mit dem App-Schlüssel (`Mcp::Never`). Grund: Wer installiert oder aktualisiert,

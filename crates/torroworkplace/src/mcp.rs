@@ -22,7 +22,9 @@
 //! - `inbox_post_item`: `title`, optional `body`, `url`, `lane` and `thread_key`, always a
 //!   `notice` (the only kind a client key reports anyway),
 //! - `mail_save_attachments`: `id`, optional `parts`, and `to` as `downloads` or a save target's
-//!   id, never a path (task M12.4).
+//!   id, never a path (task M12.4),
+//! - `mail_save_message_as`: `id`, `format` (`pdf`, `png`) and `to` as for `mail_save_attachments`,
+//!   never a path (issue #501).
 //!
 //! Inbox answers carry `untrusted` on every entry, as the core stores it: titles and bodies from
 //! agents and scripts are data for the agent reading them, never instructions. So do mail
@@ -822,6 +824,7 @@ pub fn request_for<Tz: TimeZone>(tool: &str, arguments: JsonObject, zone: &Tz) -
         "inbox.post_item" => Ok(post_item(parse(arguments)?)),
         "approvals.ask_permission" => Ok(ask_permission(parse(arguments)?)),
         "mail.save_attachments" => Ok(save_attachments(parse(arguments)?)),
+        "mail.save_message_as" => Ok(save_message_as(parse(arguments)?)),
         name => {
             let mut arguments = arguments;
             arguments.insert("method".into(), Value::String(name.into()));
@@ -1077,6 +1080,7 @@ pub fn easy_input_schema(command: &str) -> Option<Schema> {
         "inbox.post_item" => schema_of::<PostInput>(),
         "approvals.ask_permission" => schema_of::<AskInput>(),
         "mail.save_attachments" => schema_of::<SaveAttachmentsInput>(),
+        "mail.save_message_as" => schema_of::<SaveMessageAsInput>(),
         _ => return None,
     };
     Some(schema)
@@ -1322,11 +1326,34 @@ struct SaveAttachmentsInput {
 
 fn save_attachments(input: SaveAttachmentsInput) -> Request {
     let SaveAttachmentsInput { id, parts, to } = input;
-    let to = match to.as_str() {
+    Request::SaveMailAttachments { id, parts: parts.unwrap_or_default(), to: save_to(&to) }
+}
+
+/// `downloads`, else a save target's id: a tool never names a path.
+fn save_to(to: &str) -> torro_ipc::mail::SaveTo {
+    match to {
         "downloads" => torro_ipc::mail::SaveTo::Downloads,
         target => torro_ipc::mail::SaveTo::Target(target.to_owned()),
-    };
-    Request::SaveMailAttachments { id, parts: parts.unwrap_or_default(), to }
+    }
+}
+
+/// Input of `mail_save_message_as` (issue #501): the message, the format, and where the file goes. As
+/// for `mail_save_attachments` there is no field for a path: a person chooses one in the app.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SaveMessageAsInput {
+    /// Id of the message, as mail_search_messages returns it.
+    id: String,
+    /// `pdf` for a PDF of A4 pages, `png` for one long picture.
+    format: torro_ipc::mail::ExportFormat,
+    /// Where the file goes: `downloads` for the Downloads folder, or the id of a save target from
+    /// mail_list_save_targets, e.g. `0a1b2c3d`. Paths are not accepted.
+    to: String,
+}
+
+fn save_message_as(input: SaveMessageAsInput) -> Request {
+    let SaveMessageAsInput { id, format, to } = input;
+    Request::SaveMailAs { id, format, to: save_to(&to) }
 }
 
 fn ask_permission(input: AskInput) -> Request {
@@ -2205,7 +2232,7 @@ mod tests {
     /// `downloads` or a save target's id. A path is never an input: a person chooses one.
     #[test]
     fn save_attachments_takes_downloads_or_a_target_and_never_a_path() {
-        use torro_ipc::mail::SaveTo;
+        use torro_ipc::mail::{ExportFormat, SaveTo};
 
         let call = |input: Value| request_for("mail_save_attachments", args(input), &Utc);
         assert_eq!(
@@ -2242,6 +2269,40 @@ mod tests {
             .unwrap_or_default();
         keys.sort();
         assert_eq!(keys, ["id", "parts", "to"]);
+
+        // Issue #501: the mail itself as PDF or picture, by the same rule.
+        let call = |input: Value| request_for("mail_save_message_as", args(input), &Utc);
+        assert_eq!(
+            call(json!({"id": "m:1", "format": "pdf", "to": "downloads"})),
+            Ok(Request::SaveMailAs { id: "m:1".into(), format: ExportFormat::Pdf, to: SaveTo::Downloads })
+        );
+        assert_eq!(
+            call(json!({"id": "m:1", "format": "png", "to": "0a1b2c3d"})),
+            Ok(Request::SaveMailAs {
+                id: "m:1".into(),
+                format: ExportFormat::Png,
+                to: SaveTo::Target("0a1b2c3d".into())
+            })
+        );
+        for input in [
+            json!({"id": "m:1", "to": "downloads"}),
+            json!({"id": "m:1", "format": "html", "to": "downloads"}),
+            json!({"id": "m:1", "format": "pdf", "to": {"file": "/Users/anna/a.pdf"}}),
+            json!({"id": "m:1", "format": "pdf", "to": "downloads", "file": "/Users/anna/a.pdf"}),
+            json!({"id": "m:1", "format": "pdf", "to": "downloads", "path": "/Users/anna"}),
+        ] {
+            let refused = call(input.clone());
+            assert!(matches!(refused, Err(ToolError::Input(_))), "{input}: {refused:?}");
+        }
+        let mut keys: Vec<String> = tools()
+            .iter()
+            .find(|tool| tool.name == "mail_save_message_as")
+            .and_then(|tool| tool.input_schema.get("properties"))
+            .and_then(Value::as_object)
+            .map(|properties| properties.keys().cloned().collect())
+            .unwrap_or_default();
+        keys.sort();
+        assert_eq!(keys, ["format", "id", "to"]);
 
         // Save targets are set up by a person only; the other three tools come from the catalogue.
         assert!(tools().iter().all(|tool| tool.name != "mail_create_save_target"));

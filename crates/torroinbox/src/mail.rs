@@ -96,13 +96,13 @@ use torro_inbox::source::TaskList;
 use torro_inbox::{Item, Lane, Link, State};
 use torro_ipc::inbox::CategoryInfo;
 use torro_ipc::inbox::{
-    CalendarEvent, InboxClient, MailByRole, MailFind, MailFound, MailInPile, SaveTargets, SavedAttachments,
+    CalendarEvent, InboxClient, MailByRole, MailFind, MailFound, MailInPile, SaveTargets, SavedAttachments, SavedMail,
 };
 #[cfg(test)]
 use torro_ipc::mail::MailSort;
 use torro_ipc::mail::{
-    AttachmentPlan, Delivery, MailHighlight, MailIndexProgress, MailOverview, MoveRole, MoveTarget, PileFilter,
-    PlannedPlace, SaveTo, SavedFile, UnsubscribeVia,
+    AttachmentPlan, Delivery, ExportFormat, ExportPlan, MailHighlight, MailIndexProgress, MailOverview, MoveRole,
+    MoveTarget, PileFilter, PlannedPlace, SaveTo, SavedFile, UnsubscribeVia,
 };
 use torro_ipc::{Request, Response, StatsRange};
 use torro_mail::{
@@ -211,6 +211,17 @@ pub trait MailSource: Send + Sync {
         parts: Vec<String>,
         to: SaveTo,
     ) -> impl Future<Output = Result<SavedAttachments, InboxError>> + Send;
+
+    /// `mail.save_message_as` (issue #501): saves the message `id` as PDF or picture where `to` says;
+    /// `to: file` carries the path a person chose in the system's dialog. Answers where the file lies
+    /// ([`SavedMail`]); a file is never overwritten but with `to: file`. [`InboxError::NotFound`] for an
+    /// unknown message or target, or a target whose folder is missing.
+    fn save_mail_as(
+        &self,
+        id: String,
+        format: ExportFormat,
+        to: SaveTo,
+    ) -> impl Future<Output = Result<SavedMail, InboxError>> + Send;
 
     /// `mail.set_flags`: sets `add` and clears `remove` on the messages `ids`.
     fn set_mail_flags(
@@ -568,6 +579,10 @@ impl MailSource for InboxClient {
         InboxClient::save_attachments(self, id, parts, to).await
     }
 
+    async fn save_mail_as(&self, id: String, format: ExportFormat, to: SaveTo) -> Result<SavedMail, InboxError> {
+        InboxClient::save_mail_as(self, id, format, to).await
+    }
+
     async fn set_mail_flags(&self, ids: Vec<String>, add: Vec<Flag>, remove: Vec<Flag>) -> Result<(), InboxError> {
         InboxClient::set_mail_flags(self, ids, add, remove).await
     }
@@ -763,11 +778,14 @@ impl MailSource for DemoSource {
     /// each of its attachments would go – planned as the core plans it ([`demo_plan`]).
     async fn save_targets(&self, id: Option<String>) -> Result<SaveTargets, InboxError> {
         let targets = torro_inbox::demo::save_targets();
-        let files = match id {
-            Some(id) => demo_plans(&DemoSource::get_mail(self, &id)?, &targets),
-            None => Vec::new(),
+        let (files, exports) = match id {
+            Some(id) => {
+                let mail = DemoSource::get_mail(self, &id)?;
+                (demo_plans(&mail, &targets), demo_exports(&mail, &targets))
+            }
+            None => (Vec::new(), Vec::new()),
         };
-        Ok(SaveTargets { targets, downloads: torro_inbox::demo::DEMO_DOWNLOADS.to_owned(), files })
+        Ok(SaveTargets { targets, downloads: torro_inbox::demo::DEMO_DOWNLOADS.to_owned(), files, exports })
     }
 
     /// The demo writes no file (issue #290): it answers where the core would have put each one
@@ -780,6 +798,13 @@ impl MailSource for DemoSource {
     ) -> Result<SavedAttachments, InboxError> {
         let mail = DemoSource::get_mail(self, &id)?;
         demo_saved(&mail, &parts, &to)
+    }
+
+    /// The demo draws no mail (issue #501): it answers where the core would have put the file
+    /// ([`demo_saved_mail`]).
+    async fn save_mail_as(&self, id: String, format: ExportFormat, to: SaveTo) -> Result<SavedMail, InboxError> {
+        let mail = DemoSource::get_mail(self, &id)?;
+        demo_saved_mail(&mail, format, &to)
     }
 
     async fn set_mail_flags(&self, ids: Vec<String>, add: Vec<Flag>, remove: Vec<Flag>) -> Result<(), InboxError> {
@@ -950,6 +975,10 @@ impl MailSource for crate::empty::EmptySource {
         _parts: Vec<String>,
         _to: SaveTo,
     ) -> Result<SavedAttachments, InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn save_mail_as(&self, _id: String, _format: ExportFormat, _to: SaveTo) -> Result<SavedMail, InboxError> {
         Err(InboxError::NotFound)
     }
 
@@ -3301,17 +3330,21 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///    "Remove from Set aside" in its place, with the same key, wherever it lies; Follow up… (`s`, `AskSnooze`) for every mail but one in the archive, the trash or spam
 ///    ([`follows_up`]) – its entry's when it has an open one, else the mail's own id (decision 8 of
 ///    E19); for an `entry` "Move to Info" or "Move to For me" (`l`,
-///    `AskLane`); Delete (`#`) on the same rule as Archive; last "Save attachments (n)" for a loaded
-///    mail with attachments (task M12.6, `AskSaveAttachments`: the menu of "Save all").
+///    `AskLane`); Delete (`#`) on the same rule as Archive.
 /// 3. **Torro**: Task (`t`; `AskTask` for an entry, `AskMailTask` for a folder's message), for an
 ///    entry Event (`c`, `AskEvent`) and – for a mail entry – Category… (`AskCategory`) and, with a
 ///    decision model set up ([`Reading::deciding`]), Re-categorize (`Reclassify`, sparkles in the
 ///    accent).
 /// 4. **Mark**, once the mail's flags are known: Flag or Unflag, Mark read or Mark unread.
-/// 5. **Mute** (at the foot): Mute… (`m`; `AskHide` for an entry that can be muted, `AskMuteMail`
+/// 5. **Save** ([`save_items`], issue #501, the floppy disk): "Save as PDF" and "Save as image"
+///    (`AskSaveMailAs`, each opening the menu of its ways and save targets), off while the mail loads,
+///    and "Save attachments (n)" for a loaded mail with attachments (task M12.6,
+///    `AskSaveAttachments`: the menu of "Save all"). The list's context menu shows the two formats as
+///    one "Save mail as" ([`context_groups`]).
+/// 6. **Mute** (at the foot): Mute… (`m`; `AskHide` for an entry that can be muted, `AskMuteMail`
 ///    for a folder's message). Its menu offers no popup and "Only Info"; mail is never hidden (issue
 ///    #339).
-/// 6. **More** (at the foot), what [`Reading::view_tools`] offers: Copy text (`CopyText`) first,
+/// 7. **More** (at the foot), what [`Reading::view_tools`] offers: Copy text (`CopyText`) first,
 ///    then Show as text or Show as HTML (`v`, `ShowMailAs`), Light or Dark colours (`MailColors`,
 ///    while the HTML shows), "Create filter…" for the loaded mail's sender (issue #339,
 ///    `CreateFilter` with `from:<address>`), and with `close` (the reader; the panel has its ✕)
@@ -3357,6 +3390,7 @@ pub fn action_groups<'a>(
         RailGroup::new(Icon::Check, tr("File"), file_items(reading, entry, folders, anchors)).at(&rail.file),
         RailGroup::new(Icon::ListTodo, tr("Torro"), torro_items(reading, entry, anchors)).at(&rail.torro),
         if flagged { mark.tinted(reading.attention) } else { mark },
+        RailGroup::new(Icon::Save, tr("Save"), save_items(reading, anchors)).at(&rail.save),
         // One's own draft is nothing to mute (issue #502).
         RailGroup::new(
             Icon::BellOff,
@@ -3375,7 +3409,7 @@ pub fn action_groups<'a>(
 }
 
 /// The items of the rail's group "File" ([`action_groups`]), in this order (task E19.4): Archive ·
-/// Reply later · Set aside · Follow up… · "Move to …" · Delete · Save attachments (n). The piles
+/// Reply later · Set aside · Follow up… · "Move to …" · Delete. The piles
 /// follow [`MessageSummary::pile`]: on one, its item is "Remove from …" with the same key, in every
 /// view; they wait for the mail's headers, which say its pile. Follow up… stands once the mail's
 /// account is known (its headers or its entry), as Archive and Delete.
@@ -3394,15 +3428,10 @@ fn file_items<'a>(
     };
     let mail = |action: MailAction| Some(Message::Mail(action, reading.id.to_owned()));
     // A draft is written on or thrown away (issue #502): no archive, piles, follow-up or lane, so a
-    // click on the group's icon opens its card at Delete.
+    // click on the group's icon opens its card at Delete. Its attachments are saved under "Save".
     if reading.in_drafts {
         if filing.is_some_and(|filing| filing.delete) {
             items.push(RailItem::new(Icon::Trash2, tr("Delete"), "#", mail(MailAction::Delete)).danger());
-        }
-        if let Some(files) = files_of(reading) {
-            let words = trf("Save attachments ({n})", &[("n", &files.len())]);
-            let save = Some(Message::AskSaveAttachments(reading.id.to_owned()));
-            items.push(RailItem::new(Icon::Download, words, "", save).at(&anchors.save_rail));
         }
         return items;
     }
@@ -3444,14 +3473,49 @@ fn file_items<'a>(
         // Never what a click on the group's icon does (finding 8).
         items.push(RailItem::new(Icon::Trash2, tr("Delete"), "#", mail(MailAction::Delete)).danger());
     }
-    // Task M12.6: the menu of "Save all" at this item – from the list's context menu at the row –,
-    // once the mail shows attachments. Last, so a click on the group's icon still files the mail.
+    items
+}
+
+/// The items of the rail's group "Save" ([`action_groups`], issue #501): "Save as PDF" and "Save as
+/// image" – each opens the menu of its ways and save targets at its row (`AskSaveMailAs`), off while
+/// the mail loads –, then "Save attachments (n)" (task M12.6: the menu of "Save all" at this item,
+/// from the list's context menu at the row) once the mail shows attachments.
+fn save_items<'a>(reading: &Reading<'_>, anchors: &detail::Anchors) -> Vec<RailItem<'a, Message>> {
+    let loaded = matches!(reading.loaded, Some(Ok(_)));
+    let ask = |format: ExportFormat| loaded.then(|| Message::AskSaveMailAs(reading.id.to_owned(), format));
+    let mut items = vec![
+        RailItem::new(Icon::FileType, tr("Save as PDF"), "", ask(ExportFormat::Pdf)).opens_menu().at(&anchors.save_pdf),
+        RailItem::new(Icon::Image, tr("Save as image"), "", ask(ExportFormat::Png))
+            .opens_menu()
+            .at(&anchors.save_image),
+    ];
     if let Some(files) = files_of(reading) {
         let words = trf("Save attachments ({n})", &[("n", &files.len())]);
         let save = Some(Message::AskSaveAttachments(reading.id.to_owned()));
-        items.push(RailItem::new(Icon::Download, words, "", save).at(&anchors.save_rail));
+        items.push(RailItem::new(Icon::Download, words, "", save).opens_menu().at(&anchors.save_rail));
     }
     items
+}
+
+/// `groups` of [`action_groups`] as the context menu of the mail's row shows them (issue #501): in
+/// "Save" the two formats become one "Save mail as" ([`Message::AskSaveMailFormat`]), whose menu of the
+/// formats opens at the row – then the ways and targets of the one chosen, at the same place. Off as
+/// the formats are while the mail loads.
+pub fn context_groups<'a>(groups: Vec<RailGroup<'a, Message>>, id: &str) -> Vec<RailGroup<'a, Message>> {
+    groups
+        .into_iter()
+        .map(|mut group| {
+            let format = |item: &RailItem<'a, Message>| matches!(item.icon, Icon::FileType | Icon::Image);
+            let Some(at) = group.items.iter().position(format).filter(|_| group.icon == Icon::Save) else {
+                return group;
+            };
+            let on = group.items.iter().any(|item| matches!(item.on_press, Some(Message::AskSaveMailAs(..))));
+            group.items.retain(|item| !format(item));
+            let ask = on.then(|| Message::AskSaveMailFormat(id.to_owned()));
+            group.items.insert(at, RailItem::new(Icon::Save, tr("Save mail as"), "", ask).opens_menu());
+            group
+        })
+        .collect()
 }
 
 /// "Reply later" (`w`) and "Set aside" (`b`) for the mail in `reading` (task E19.4): each puts it on
@@ -4201,10 +4265,16 @@ pub fn act_words(act: &FileAct, saving: Option<&SaveTargets>, all: bool) -> Stri
 /// its plan in `saving` says – the menu's detail and the hint after saving. The target's name alone
 /// without a plan (`part` `None`: "Save all", each file by its own date).
 pub fn place_words(saving: &SaveTargets, target: &str, part: Option<&str>) -> String {
-    let name =
-        saving.target(target).map_or_else(|| tr("Unknown target").to_owned(), |found| list::one_line(&found.spec.name));
     let place =
         part.and_then(|part| saving.plan(part)).and_then(|plan| plan.places.iter().find(|p| p.target == target));
+    target_words(saving, target, place)
+}
+
+/// "Invoices › 2026 › 03": the target `target` and the subfolders of `place` in it; the target's name
+/// alone without a place.
+fn target_words(saving: &SaveTargets, target: &str, place: Option<&PlannedPlace>) -> String {
+    let name =
+        saving.target(target).map_or_else(|| tr("Unknown target").to_owned(), |found| list::one_line(&found.spec.name));
     match place {
         Some(place) => std::iter::once(name)
             .chain(place.folders.iter().map(|folder| list::one_line(folder)))
@@ -4384,6 +4454,205 @@ pub fn dialog_name(saving: Option<&SaveTargets>, file: &AttachmentInfo) -> Strin
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| "attachment".to_owned()),
     }
+}
+
+// ----- Saving the mail as PDF or picture (issue #501) -----------------------------------------
+
+/// "Invoices › 2026 › 03": where the mail saved as `format` would go in the target `target`, as the
+/// plan in `saving` says; the target's name alone without one.
+pub fn export_place_words(saving: &SaveTargets, target: &str, format: ExportFormat) -> String {
+    let place = saving.export(format).and_then(|plan| plan.places.iter().find(|place| place.target == target));
+    target_words(saving, target, place)
+}
+
+/// What the menu of "Save as PDF" or "Save as image" shows ([`export_menu`]).
+#[derive(Debug, Clone, Copy)]
+pub struct ExportMenu<'a> {
+    /// The message's id.
+    pub id: &'a str,
+    pub format: ExportFormat,
+    /// The save targets and plans of the mail; `None` while they load or when they failed.
+    pub saving: Option<&'a SaveTargets>,
+    /// The mail's category, for the sparkles of "Suggested".
+    pub category: Option<MailCategory>,
+}
+
+/// The sections of the menu of "Save as PDF" or "Save as image" (issue #501), as an attachment's
+/// ([`file_menu`]) without Open and without "Click":
+///
+/// 1. titled with the format ("Save as PDF", "Save as image"): Save to Downloads (`Download`) and
+///    Save as… (`Save`);
+/// 2. "Save to": the save targets (`Folder`), those suggested for the format first, each with where
+///    the file would go ([`export_place_words`]) and "Suggested";
+/// 3. "Manage save targets…".
+///
+/// Every entry sends [`Message::SaveMail`]. Without targets – none set up, or still loading – section
+/// 2 is left out.
+pub fn export_menu<'a>(menu: ExportMenu<'_>) -> Vec<MenuSection<'a, Message>> {
+    let send = |act: FileAct| Message::SaveMail(menu.id.to_owned(), menu.format, act);
+    let entry = |icon: Icon, act: FileAct| MenuItem::new(icon, act_words(&act, menu.saving, false), send(act));
+    let title = match menu.format {
+        ExportFormat::Pdf => tr("Save as PDF"),
+        ExportFormat::Png => tr("Save as image"),
+    };
+    let ways = vec![entry(Icon::Download, FileAct::Downloads), entry(Icon::Save, FileAct::Choose)];
+    let mut sections = vec![MenuSection::titled(title, ways)];
+    if let Some(saving) = menu.saving.filter(|saving| !saving.targets.is_empty()) {
+        let suggested: Vec<&str> = saving
+            .export(menu.format)
+            .map(|plan| plan.suggested.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        let mut targets: Vec<&torro_mail::SaveTarget> = suggested.iter().filter_map(|id| saving.target(id)).collect();
+        targets.extend(saving.targets.iter().filter(|target| !suggested.contains(&target.id.as_str())));
+        let items = targets
+            .into_iter()
+            .map(|target| {
+                let detail = export_place_words(saving, &target.id, menu.format);
+                let message = send(FileAct::Target(target.id.clone()));
+                let item = MenuItem::new(Icon::Folder, list::one_line(&target.spec.name), message).detail(detail);
+                match suggested.contains(&target.id.as_str()) {
+                    true => item.tag(tr("Suggested"), suggested_by_model(target, menu.category)),
+                    false => item,
+                }
+            })
+            .collect();
+        sections.push(MenuSection::titled(tr("Save to"), items));
+    }
+    let manage = MenuItem::new(torro_gui::shell::SETTINGS_ICON, tr("Manage save targets…"), Message::ManageSaveTargets);
+    sections.push(MenuSection::new(vec![manage]));
+    sections
+}
+
+/// The words of where saving the mail as `format` to `to` goes, for its hint, taken when it is sent:
+/// "Downloads", the target with its subfolders ([`export_place_words`]), the name of the folder chosen
+/// (`to: folder`) or of the file's folder ("Save as…"). `None` for a target `saving` does not list:
+/// the hint then names the folder the file went to ([`saved_mail_place`]).
+pub fn save_mail_place(to: &SaveTo, saving: Option<&SaveTargets>, format: ExportFormat) -> Option<String> {
+    match to {
+        SaveTo::Target(id) => {
+            saving.filter(|saving| saving.target(id).is_some()).map(|saving| export_place_words(saving, id, format))
+        }
+        other => save_place(other, None, None),
+    }
+}
+
+/// The words of where the mail went for its hint: `place` as [`save_mail_place`] took it, else the
+/// name of the folder the file lies in.
+pub fn saved_mail_place(place: Option<String>, saved: &SavedMail) -> String {
+    place
+        .or_else(|| Path::new(&saved.path).parent()?.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .unwrap_or_default()
+}
+
+/// What the hint says after `mail.save_message_as` answered (issue #501): "Saved to {where}", and when
+/// the mail was too long for the file that its end is cut off.
+pub fn saved_mail_text(saved: &SavedMail, place: &str) -> String {
+    match saved.shortened {
+        false => trf("Saved to {where}", &[("where", &place)]),
+        true => trf("Saved to {where}, shortened: the mail is too long", &[("where", &place)]),
+    }
+}
+
+/// The name the save dialog of "Save as…" starts with for the mail `summary` as `format`: the plan's,
+/// else made as the core makes it – "<YYYY-MM-DD> <subject>.<ext>" ([`export_file_name`]) –, "Mail"
+/// without the mail's headers.
+pub fn export_dialog_name(
+    saving: Option<&SaveTargets>,
+    format: ExportFormat,
+    summary: Option<&MessageSummary>,
+) -> String {
+    match (saving.and_then(|saving| saving.export(format)), summary) {
+        (Some(plan), _) => plan.file_name.clone(),
+        (None, Some(summary)) => export_file_name(summary, format),
+        (None, None) => format!("{}.{}", tr("Mail"), format.extension()),
+    }
+}
+
+/// The subject as a file name takes it, as the core cuts it: one line, at most 60 characters, "Mail"
+/// for none.
+fn export_subject(subject: &str) -> String {
+    let one_line: String = subject.split_whitespace().collect::<Vec<_>>().join(" ");
+    let short: String = one_line.chars().take(60).collect();
+    match short.trim() {
+        "" => tr("Mail").to_owned(),
+        short => short.to_owned(),
+    }
+}
+
+/// "<YYYY-MM-DD> <subject>.<ext>" for the mail `summary` as `format`, by its day on this computer's
+/// clock, cleaned as the core cleans it (`export_plan` in the core's `mail/save.rs`).
+fn export_file_name(summary: &MessageSummary, format: ExportFormat) -> String {
+    let day = summary.date.with_timezone(&Local).format("%Y-%m-%d");
+    let name = format!("{day} {}.{}", export_subject(&summary.subject), format.extension());
+    torro_mail::save_target::clean_file_name(&name)
+}
+
+/// The demo's plans of `mail` itself in `targets` (issue #501), made as the core makes them
+/// (`export_plan` in the core's `mail/save.rs`): "<date> <subject>.<ext>", the subject for `{name}`.
+fn demo_exports(mail: &Mail, targets: &[torro_mail::SaveTarget]) -> Vec<ExportPlan> {
+    let summary = &mail.summary;
+    let months: [String; 12] = std::array::from_fn(|at| datetime::month_name(at as u32 + 1).to_owned());
+    let sender = summary.from.as_ref();
+    let subject = export_subject(&summary.subject);
+    let day = summary.date.with_timezone(&Local);
+    ExportFormat::ALL
+        .iter()
+        .map(|&format| {
+            let ext = format.extension();
+            let facts = torro_mail::FileFacts {
+                mail_date: day.date_naive(),
+                file_name: Some(format!("{subject}.{ext}")),
+                content_type: format.content_type().to_owned(),
+                sender_name: sender.and_then(|from| from.name.clone()),
+                sender_address: sender.map(|from| from.address.clone()).unwrap_or_default(),
+                account: address(&summary.account).to_owned(),
+                subject: summary.subject.clone(),
+                month_names: months.clone(),
+            };
+            let kind = match format {
+                ExportFormat::Pdf => torro_mail::FileKind::Pdf,
+                ExportFormat::Png => torro_mail::FileKind::Image,
+            };
+            let file_name = export_file_name(summary, format);
+            let mut plan = ExportPlan { format, file_name, places: Vec::new(), suggested: Vec::new() };
+            for target in targets {
+                if let Ok(resolved) = torro_mail::save_target::resolve(&target.spec, &facts) {
+                    let (folders, file) = (resolved.folders, resolved.file);
+                    plan.places.push(PlannedPlace { target: target.id.clone(), folders, file });
+                }
+                let suggest = &target.spec.suggest;
+                if torro_mail::save_target::suggestion(suggest, summary.category, Some(kind), &facts.sender_address)
+                    .is_some()
+                {
+                    plan.suggested.push(target.id.clone());
+                }
+            }
+            plan
+        })
+        .collect()
+}
+
+/// What the demo answers to `mail.save_message_as` (issue #501): where the core would have put the
+/// file, without drawing or writing one. [`InboxError::NotFound`] for an unknown target.
+fn demo_saved_mail(mail: &Mail, format: ExportFormat, to: &SaveTo) -> Result<SavedMail, InboxError> {
+    let targets = torro_inbox::demo::save_targets();
+    let plans = demo_exports(mail, &targets);
+    let plan = plans.iter().find(|plan| plan.format == format).ok_or(InboxError::NotFound)?;
+    let path = match to {
+        SaveTo::Downloads => Path::new(torro_inbox::demo::DEMO_DOWNLOADS).join(&plan.file_name),
+        SaveTo::File(file) => PathBuf::from(file),
+        SaveTo::Folder(folder) => Path::new(folder).join(&plan.file_name),
+        SaveTo::Target(id) => {
+            let target = targets.iter().find(|target| target.id == *id).ok_or(InboxError::NotFound)?;
+            let place = plan.places.iter().find(|place| place.target == *id).ok_or(InboxError::NotFound)?;
+            place
+                .folders
+                .iter()
+                .fold(PathBuf::from(&target.spec.folder), |path, folder| path.join(folder))
+                .join(&place.file)
+        }
+    };
+    Ok(SavedMail { path: path.to_string_lossy().into_owned(), ..SavedMail::default() })
 }
 
 /// The demo's plans of `mail`'s attachments in `targets` (issue #290), made as the core makes them
@@ -5468,7 +5737,7 @@ mod tests {
             assert!(rail_words(&groups).iter().all(|(group, _)| group != tr("Reply")), "no Reply on a draft");
             assert!(rail_words(&groups).iter().all(|(group, _)| group != tr("Mute")), "nothing to mute");
             let file = rail_words(&groups).into_iter().find(|(group, _)| group == tr("File")).expect("File");
-            assert_eq!(file.1, strings(&[tr("Delete"), &trf("Save attachments ({n})", &[("n", &1)])]));
+            assert_eq!(file.1, strings(&[tr("Delete")]), "attachments are saved under Save");
             let summary = draft.summary().expect("headers").clone();
             let panel = standards(&draft, &summary);
             assert_eq!(panel.write, 1);
@@ -5508,19 +5777,30 @@ mod tests {
                             tr("Follow up…").to_owned(),
                             move_to.clone(),
                             tr("Delete").to_owned(),
-                            // The budget's sheet (task M12.6).
-                            trf("Save attachments ({n})", &[("n", &1)]),
                         ]
                     ),
                     (tr("Torro").to_owned(), strings(&[tr("Task"), tr("Event"), tr("Category…")])),
                     (tr("Mark").to_owned(), mark_words(reading)),
+                    // Issue #501: the mail as PDF or picture, and the budget's sheet (task M12.6).
+                    (
+                        tr("Save").to_owned(),
+                        vec![
+                            tr("Save as PDF").to_owned(),
+                            tr("Save as image").to_owned(),
+                            trf("Save attachments ({n})", &[("n", &1)]),
+                        ]
+                    ),
                     (tr("Mute").to_owned(), strings(&[tr("Mute…")])),
                     (trc("mail", "Display").to_owned(), strings(&[trc("mail", "Display")])),
                     (tr("More").to_owned(), strings(&[tr("Copy text"), tr("Create filter…"), tr("Close")])),
                 ]
             );
             let feet: Vec<bool> = groups.iter().map(|group| group.foot).collect();
-            assert_eq!(feet, [false, false, false, false, true, true, true], "Mute, Display and More at the foot");
+            assert_eq!(
+                feet,
+                [false, false, false, false, false, true, true, true],
+                "Mute, Display and More at the foot"
+            );
             assert!(groups[0].accent && groups[0].items[0].lead, "Reply the main group, its row strong");
             assert!(groups[1..].iter().all(|group| !group.accent));
             let mail = |sent: Option<Message>, action: MailAction| matches!(sent, Some(Message::Mail(sent, id)) if sent == action && id == "m:w1");
@@ -5570,9 +5850,10 @@ mod tests {
                 keys,
                 [
                     vec!["R", "", "F"],
-                    vec!["E", "W", "B", "S", "L", "#", ""],
+                    vec!["E", "W", "B", "S", "L", "#"],
                     vec!["T", "C", ""],
                     vec!["", ""],
+                    vec!["", "", ""],
                     vec!["M"],
                     vec![""],
                     vec!["", "", "Esc"]
@@ -5585,8 +5866,16 @@ mod tests {
             }
             // Fixed icons, whatever the first item (finding 8).
             let icons: Vec<Icon> = groups.iter().map(|group| group.icon).collect();
-            let fixed =
-                [Icon::Reply, Icon::Check, Icon::ListTodo, Icon::Flag, Icon::BellOff, Icon::Contrast, Icon::Ellipsis];
+            let fixed = [
+                Icon::Reply,
+                Icon::Check,
+                Icon::ListTodo,
+                Icon::Flag,
+                Icon::Save,
+                Icon::BellOff,
+                Icon::Contrast,
+                Icon::Ellipsis,
+            ];
             assert_eq!(icons, fixed);
             assert!(group(&groups, tr("File")).items.iter().filter(|i| i.danger).all(|i| i.label == tr("Delete")));
             let flagged = reading.summary().expect("headers").flags.contains(&Flag::Flagged);
@@ -5603,10 +5892,12 @@ mod tests {
                 [
                     tr("Follow up…").to_owned(),
                     move_to,
-                    trf("Save attachments ({n})", &[("n", &1)]),
                     tr("Task").to_owned(),
                     tr("Event").to_owned(),
                     tr("Category…").to_owned(),
+                    tr("Save as PDF").to_owned(),
+                    tr("Save as image").to_owned(),
+                    trf("Save attachments ({n})", &[("n", &1)]),
                     tr("Mute…").to_owned()
                 ]
             );
@@ -5630,7 +5921,6 @@ mod tests {
             let groups = action_groups(reading, entry, &folders, false, &anchors);
             let file = &group(&groups, tr("File")).items;
             let words: Vec<&str> = file.iter().map(|i| i.label.as_ref()).collect();
-            let save = trf("Save attachments ({n})", &[("n", &1)]);
             let lane = lane_word(Lane::Info);
             assert_eq!(
                 words,
@@ -5641,7 +5931,6 @@ mod tests {
                     tr("Follow up…"),
                     lane.as_str(),
                     tr("Delete"),
-                    save.as_str()
                 ]
             );
             assert!(file.iter().all(|i| i.label != tr("Reopen") && i.label != tr("Done")), "no Done, no Reopen");
@@ -5677,13 +5966,13 @@ mod tests {
                     tr("File"),
                     tr("Torro"),
                     tr("Mark"),
+                    tr("Save"),
                     tr("Mute"),
                     trc("mail", "Display"),
                     tr("More")
                 ])
             );
             let file = &group(&groups, tr("File")).items;
-            let save = trf("Save attachments ({n})", &[("n", &1)]);
             assert_eq!(
                 file.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(),
                 strings(&[
@@ -5692,13 +5981,17 @@ mod tests {
                     tr("Set aside"),
                     tr("Follow up…"),
                     tr("Delete"),
-                    &save
                 ])
             );
             let keys: Vec<&str> = file.iter().map(|i| i.key).collect();
-            assert_eq!(keys, ["E", "W", "B", "S", "#", ""], "`e` archives in a folder (task E18.5)");
+            assert_eq!(keys, ["E", "W", "B", "S", "#"], "`e` archives in a folder (task E18.5)");
             assert!(matches!(file[3].press(), Some(Message::AskSnooze(id)) if id == "m:w1"), "by the mail's id");
-            assert!(matches!(file[5].press(), Some(Message::AskSaveAttachments(id)) if id == "m:w1"));
+            // Issue #501: the attachments are saved from the group Save, a click on whose icon asks for
+            // the PDF's menu.
+            let save = &group(&groups, tr("Save"));
+            assert!(matches!(save.items[2].press(), Some(Message::AskSaveAttachments(id)) if id == "m:w1"));
+            assert!(matches!(save.first_press(), Some(Message::AskSaveMailAs(id, ExportFormat::Pdf)) if id == "m:w1"));
+            assert_eq!(save.icon, Icon::Save);
             assert_eq!(group(&groups, tr("File")).icon, Icon::Check, "the group's fixed icon");
             assert!(group(&groups, tr("File")).first_press().is_some(), "a click archives");
             let torro = &group(&groups, tr("Torro")).items;
@@ -5711,7 +6004,7 @@ mod tests {
             let no_archive: Vec<Folder> = folders.iter().filter(|f| f.role != Some(Role::Archive)).cloned().collect();
             let groups = action_groups(reading, None, &no_archive, true, &detail::Anchors::default());
             let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
-            assert_eq!(file, strings(&[tr("Reply later"), tr("Set aside"), tr("Follow up…"), tr("Delete"), &save]));
+            assert_eq!(file, strings(&[tr("Reply later"), tr("Set aside"), tr("Follow up…"), tr("Delete")]));
             // Review of #315: the click opens the card rather than putting the mail on a pile.
             assert!(group(&groups, tr("File")).first_press().is_none(), "no pile and never Delete by a click");
         });
@@ -5878,12 +6171,15 @@ mod tests {
             let loading = Reading { summary: None, ..*reading };
             let groups = action_groups(&loading, None, &folders, false, &detail::Anchors::default());
             let titles: Vec<String> = rail_words(&groups).into_iter().map(|(title, _)| title).collect();
-            // File keeps its piles' places, off (review of #315); the rest needs the headers.
+            // File keeps its piles' places, off (review of #315), and Save its formats, off (issue
+            // #501); the rest needs the headers.
             assert_eq!(
                 titles,
-                strings(&[tr("Reply"), tr("File"), tr("Torro"), tr("Mute")]),
+                strings(&[tr("Reply"), tr("File"), tr("Torro"), tr("Save"), tr("Mute")]),
                 "only what needs no headers"
             );
+            let save = &group(&groups, tr("Save")).items;
+            assert!(save.iter().all(|item| item.on_press.is_none()), "off while the mail loads");
             assert!(group(&groups, tr("File")).items.iter().all(|i| i.press().is_none()), "File is off");
         });
     }
@@ -5946,14 +6242,15 @@ mod tests {
         iced::futures::executor::block_on(MailSource::save_targets(&demo, Some(id.to_owned()))).expect("planned")
     }
 
-    /// Task M12.6: "Save all ▾" stands over two attachments and more, not over one; the rail's File
-    /// has "Save attachments (n)" only once the mail shows attachments; the panel lists them as rows.
+    /// Task M12.6: "Save all ▾" stands over two attachments and more, not over one; the rail's Save
+    /// (issue #501) has "Save attachments (n)" only once the mail shows attachments; the panel lists
+    /// them as rows.
     #[test]
     fn save_all_shows_from_two_attachments_on() {
         let anchors = detail::Anchors::default();
         let file_words = |reading: &Reading<'_>| -> Vec<String> {
             let groups = action_groups(reading, None, &folders(), true, &anchors);
-            let file = groups.into_iter().find(|group| group.label == tr("File")).expect("File");
+            let file = groups.into_iter().find(|group| group.label == tr("Save")).expect("Save");
             file.items.iter().map(|item| item.label.to_string()).collect()
         };
         let two = trf("Save attachments ({n})", &[("n", &2)]);
@@ -6099,6 +6396,55 @@ mod tests {
         assert_eq!(demo_saved(&mail, &["9".into()], &SaveTo::Downloads), Err(InboxError::NotFound));
         assert!(demo_saved(&mail, &[], &SaveTo::File("/tmp/a.pdf".into())).is_err(), "one file at a time");
         assert_eq!(saved_folder(&SavedAttachments::default()), None);
+    }
+
+    /// Issue #501: the demo plans the mail itself as the core does – "<date> <subject>.<ext>", the
+    /// subject for a target's name, the invoice suggested where a target asks for invoices – and
+    /// answers where it would have put the file; the menu shows Downloads, Save as… and the targets
+    /// with their paths, suggested ones first.
+    #[test]
+    fn the_mail_is_planned_and_saved_as_pdf_or_image() {
+        let saving = saving_of("m:p3");
+        let mail = DemoSource::new(now()).get_mail("m:p3").expect("the invoice");
+        let day = mail.summary.date.with_timezone(&Local).format("%Y-%m-%d").to_string();
+        let pdf = saving.export(ExportFormat::Pdf).expect("a PDF plan");
+        let subject = mail.summary.subject.trim();
+        assert_eq!(pdf.file_name, torro_mail::save_target::clean_file_name(&format!("{day} {subject}.pdf")));
+        assert!(saving.export(ExportFormat::Png).is_some_and(|png| png.file_name.ends_with(".png")));
+        assert!(pdf.suggested.contains(&"demo-invoices".to_owned()), "the invoice: {:?}", pdf.suggested);
+
+        let to_target = SaveTo::Target("demo-invoices".into());
+        let saved = demo_saved_mail(&mail, ExportFormat::Pdf, &to_target).expect("planned");
+        let place = pdf.places.iter().find(|place| place.target == "demo-invoices").expect("a place");
+        assert!(saved.path.starts_with("/home/anna/Documents/Invoices/") && saved.path.ends_with(&place.file));
+        assert!(!Path::new(&saved.path).exists(), "nothing written");
+        let words = save_mail_place(&to_target, Some(&saving), ExportFormat::Pdf).expect("the target's words");
+        assert!(words.starts_with("Invoices"), "{words}");
+        assert_eq!(saved_mail_text(&saved, &words), trf("Saved to {where}", &[("where", &words)]));
+        let downloads = demo_saved_mail(&mail, ExportFormat::Png, &SaveTo::Downloads).expect("planned");
+        assert!(downloads.path.ends_with(".png"));
+        assert_eq!(saved_mail_place(None, &downloads), "Downloads");
+        assert_eq!(
+            demo_saved_mail(&mail, ExportFormat::Pdf, &SaveTo::Target("gone".into())),
+            Err(InboxError::NotFound)
+        );
+        let odd = MessageSummary { subject: " a/b ".into(), ..mail.summary.clone() };
+        assert_eq!(export_dialog_name(None, ExportFormat::Png, Some(&odd)), format!("{day} a_b.png"), "dated");
+        assert_eq!(export_dialog_name(None, ExportFormat::Pdf, None), format!("{}.pdf", tr("Mail")));
+        assert_eq!(export_dialog_name(Some(&saving), ExportFormat::Pdf, Some(&odd)), pdf.file_name);
+
+        let menu = ExportMenu { id: "m:p3", format: ExportFormat::Pdf, saving: Some(&saving), category: None };
+        let sections = export_menu(menu);
+        let ways: Vec<String> = sections[0].items.iter().map(|item| item.label.to_string()).collect();
+        assert_eq!(ways, [tr("Save to Downloads"), tr("Save as…")]);
+        let first = &sections[1].items[0];
+        assert_eq!((first.label.as_ref(), first.tags.len()), ("Invoices", 1), "suggested first");
+        assert_eq!(
+            first.detail.as_deref(),
+            Some(export_place_words(&saving, "demo-invoices", ExportFormat::Pdf).as_str())
+        );
+        assert_eq!(export_menu(ExportMenu { saving: None, ..menu }).len(), 2, "without targets");
+        let _ = file_menu_card(export_menu(menu), size::panel(), 600.0);
     }
 
     /// Some of the demo's mail, newest first, for the tests of the slim list.

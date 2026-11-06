@@ -370,10 +370,13 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   `docs/prototypes/mail-layout/`): eine Karte im Menü-Stil mit Schatten, Radius `lg`, senkrecht mittig, `space::s()`
   vom rechten Rand des Lesers bzw. Paneels (`widgets::with_floating_rail`, `Panel::floating`); der Text der Mail hält
   `widgets::floating_rail_room()` Abstand, der Kopf läuft darunter durch. Die Liste hat keine Knöpfe. Gruppen
-  (`widgets::RailGroup`) in fester Reihenfolge Reply · File · Torro · Mark, unten abgesetzt Mute · Display · More
-  (`RailGroup::foot`), jede nur mit dem, was für die Mail geht; was gerade nicht geht, steht aus (`RailItem` ohne
-  Nachricht, 40 %, ohne `kbd`). **Feste Gruppen-Icons** (Reply, Check, ListTodo, Flag, BellOff, Ellipsis), egal was
-  das erste Item ist. **Reply** ist die Hauptgruppe (`RailGroup::accent`): eingeklappt eine gefüllte rote Fläche wie
+  (`widgets::RailGroup`) in fester Reihenfolge Reply · File · Torro · Mark · Save, unten abgesetzt Mute · Display ·
+  More (`RailGroup::foot`), jede nur mit dem, was für die Mail geht; was gerade nicht geht, steht aus (`RailItem` ohne
+  Nachricht, 40 %, ohne `kbd`). **Feste Gruppen-Icons** (Reply, Check, ListTodo, Flag, Save, BellOff, Ellipsis), egal
+  was das erste Item ist. **Save** (#501, Diskette): „Save as PDF“ und „Save as image“ öffnen je ein Menü (Downloads,
+  Save as…, Ablageziele mit Pfad), „Save attachments (n)“ das Menü von „Save all“; eine Zeile, die ein Menü öffnet,
+  endet statt `kbd` mit einem Chevron 12 in `TEXT_3` (`RailItem::opens_menu`). Im Kontextmenü der Liste stehen die
+  beiden Formate als ein „Save mail as ›“ (`mail::context_groups`). **Reply** ist die Hauptgruppe (`RailGroup::accent`): eingeklappt eine gefüllte rote Fläche wie
   der Primärknopf, Icon in `on_accent`; ausgeklappt und im Klappfeld rotes Icon und Wort „Reply“ kräftig
   (`RailItem::lead`, `typo::body_strong()` in `TEXT`). KI-Sparkles nur als Icon in der Akzentfarbe
   (`RailItem::accent`). Ein Klick aufs Gruppen-Icon tut das erste Item, das geht – **nie ein destruktives**

@@ -104,10 +104,14 @@ pub struct Anchors {
     /// The triangle of "Save all ▾" over the attachments (task M12.6): the menu of all of them opens
     /// here.
     pub save_all: Anchor,
-    /// "Save attachments (n)" in the rail's group File (task M12.6): the menu of "Save all" opened
-    /// from the rail – or, through [`Anchors::with_rail`], at the group's icon – and from the list's
-    /// context menu at the row.
+    /// "Save attachments (n)" in the rail's group Save (task M12.6, issue #501): the menu of "Save
+    /// all" opened from the rail – or, through [`Anchors::with_rail`], at the group's icon – and from
+    /// the list's context menu at the row.
     pub save_rail: Anchor,
+    /// "Save as PDF" in the rail's group Save (issue #501): its menu of ways and targets opens here.
+    pub save_pdf: Anchor,
+    /// "Save as image" in the rail's group Save (issue #501), alike.
+    pub save_image: Anchor,
     /// The icons of the groups of the mail's action rail (task E14.3, `mail::action_groups`): an
     /// open group hangs at its icon, and – through [`Anchors::with_rail`] – so do the menus and
     /// dialogs of its items while their row is not on screen.
@@ -122,14 +126,16 @@ pub struct Anchors {
 pub struct RailAnchors {
     /// Reply · Reply all · Forward.
     pub reply: Anchor,
-    /// Archive · Later… · Move to … · Delete · Save attachments (task E18.5: mail has no Done): the
-    /// snooze menu and the lane question fall back to it.
+    /// Archive · Later… · Move to … · Delete (task E18.5: mail has no Done): the snooze menu and the
+    /// lane question fall back to it.
     pub file: Anchor,
     /// Task · Event · Category… · Re-categorize: the dialogs of Task and Event and the list of
     /// categories fall back to it.
     pub torro: Anchor,
     /// Flag · Mark read.
     pub mark: Anchor,
+    /// Save as PDF · Save as image · Save attachments (issue #501): their menus fall back to it.
+    pub save: Anchor,
     /// Mute…: the bell's menu falls back to it.
     pub mute: Anchor,
     /// "Display" (issue #456): its card – HTML or text, the mail's colours – hangs here.
@@ -151,6 +157,8 @@ impl Anchors {
             Message::Act(_, Command::Hide) | Message::AskHide(_) | Message::AskMuteMail(_) => Some(&self.hide),
             Message::AskCategory(_) => Some(&self.category),
             Message::AskSaveAttachments(_) => Some(&self.save_rail),
+            Message::AskSaveMailAs(_, torro_ipc::mail::ExportFormat::Pdf) => Some(&self.save_pdf),
+            Message::AskSaveMailAs(_, torro_ipc::mail::ExportFormat::Png) => Some(&self.save_image),
             _ => None,
         }
     }
@@ -161,7 +169,8 @@ impl Anchors {
     /// and its menu hangs there; collapsed – or once the open group closed on the click – the row
     /// is not on screen and the menu hangs at the group's icon. The rail is fixed beside the mail,
     /// so that icon is always in view. Where no rail is drawn (the hub, the App Feed) the fallbacks
-    /// stay empty and change nothing. "Save attachments (n)" falls back to File too (task M12.6).
+    /// stay empty and change nothing. "Save attachments (n)", "Save as PDF" and "Save as image" fall
+    /// back to Save (task M12.6, issue #501).
     /// Make the window's set with it once per `view`.
     pub fn with_rail(self) -> Anchors {
         let rail = self.rail.clone();
@@ -172,7 +181,9 @@ impl Anchors {
             event: self.event.or(&rail.torro),
             category: self.category.or(&rail.torro),
             hide: self.hide.or(&rail.mute),
-            save_rail: self.save_rail.or(&rail.file),
+            save_rail: self.save_rail.or(&rail.save),
+            save_pdf: self.save_pdf.or(&rail.save),
+            save_image: self.save_image.or(&rail.save),
             ..self
         }
     }
