@@ -1854,6 +1854,11 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
         face,
         domain_tail: *data.view == View::Sent,
         no_marks: no_marks(data),
+        mailboxes: if *data.view == View::Sent {
+            data.accounts.iter().map(|account| (*account).to_owned()).collect()
+        } else {
+            Vec::new()
+        },
     };
     let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
         || data.selected_ids.contains(&message.id);
@@ -2049,6 +2054,7 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
         face,
         domain_tail: *data.view == View::Sent,
         no_marks: false,
+        mailboxes: Vec::new(),
     };
     let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
         || data.selected_ids.contains(&message.id);
