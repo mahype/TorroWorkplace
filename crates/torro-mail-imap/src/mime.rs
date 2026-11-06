@@ -117,7 +117,8 @@ pub struct ReadMessage {
     pub html: Option<String>,
     /// The first HTML part of the text as it is, uncleaned; `None` when there is none. Only for
     /// the core, to send a stored draft as it was written ([`Outgoing::html`], cleaned there,
-    /// issue #125): never handed out, and nothing it names is fetched.
+    /// issue #125), and to hand a draft back to write on (`mail.get_draft`, issue #502), cleaned
+    /// as a saved draft is: never handed out as it is, and nothing it names is fetched.
     pub html_source: Option<String>,
     /// The attachments, inline parts included, without content.
     pub attachments: Vec<AttachmentInfo>,

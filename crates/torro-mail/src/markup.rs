@@ -12,8 +12,9 @@ use std::ops::Range;
 
 use crate::html::{QUOTE_CLASS, escape, safe_url};
 
-/// Characters a backslash turns into plain text.
-const ESCAPABLE: &str = "\\*_[]()>-#`";
+/// Characters a backslash turns into plain text. The `.` keeps `3\\. October` from starting a
+/// numbered list (issue #502, a draft written elsewhere read back).
+const ESCAPABLE: &str = "\\*_[]()>-#`.";
 
 /// The HTML of `text` (line ends `\n` or `\r\n`):
 ///

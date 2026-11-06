@@ -109,7 +109,7 @@ pub fn to_text(html: &str) -> String {
 /// [`to_text`] writes them, without marks, and its first line is the second value (`None` without
 /// one). Everything else (headings, tables, code, rules) is text as [`to_text`] writes it. Bold,
 /// italic and underline right at a letter keep only their text, as the markup has no mark there; a
-/// line that starts like a numbered item (`3. `) cannot be escaped and reads as one again.
+/// line that starts like a numbered item (`3. `) gets a `\\` before its dot.
 pub fn to_markup(html: &str) -> (String, Option<String>) {
     let nodes = parse(html);
     let start = nodes.iter().position(|node| matches!(node, Node::Element(element) if element.has_class(QUOTE_CLASS)));
@@ -760,7 +760,7 @@ impl Lines {
 // ---------------------------------------------------------------------------------------------
 
 /// The characters [`crate::markup`] lets a `\` turn into text.
-const MARKS: &str = "\\*_[]()>-#`";
+const MARKS: &str = "\\*_[]()>-#`.";
 
 /// The lines of own text in `nodes` as markup ([`to_markup`]): inline content gathered into lines,
 /// each block apart by a blank line.
@@ -793,8 +793,12 @@ fn end_lines(line: &mut String, out: &mut Vec<String>) {
     let gathered = std::mem::take(line);
     for part in gathered.split('\n') {
         let collapsed = part.split(' ').filter(|word| !word.is_empty()).collect::<Vec<_>>().join(" ");
+        let digits = collapsed.find(|c: char| !c.is_ascii_digit()).filter(|end| (1..=6).contains(end));
         let escaped = if collapsed.starts_with('>') || collapsed.starts_with("- ") {
             format!("\\{collapsed}")
+        } else if let Some(end) = digits.filter(|&end| collapsed[end..].starts_with(". ")) {
+            // `3. October` would start a numbered list: the dot is text.
+            format!("{}\\{}", &collapsed[..end], &collapsed[end..])
         } else {
             collapsed
         };
@@ -1187,6 +1191,9 @@ mod tests {
             assert_eq!(to_markup(html).0, markup, "{html}");
         }
         assert_eq!(to_html(&to_markup("<p>_<u>x</u></p>").0, None), "<p>_<u>x</u></p>");
+        let date = "<p>3. October suits me.</p>";
+        assert_eq!(to_markup(date).0, "3\\. October suits me.");
+        assert_eq!(to_html(&to_markup(date).0, None), date, "no numbered list");
         let plain = "Price 2 * 3, see *the file*.\n- not a list\n> quoted **text**\n>\n>> deeper";
         let markup = plain_to_markup(plain);
         assert_eq!(
