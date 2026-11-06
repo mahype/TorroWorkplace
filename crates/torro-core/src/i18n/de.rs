@@ -53,10 +53,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("just now", "gerade eben"),
     ("Last synced {when}", "Zuletzt synchronisiert {when}"),
     ("Light", "Hell"),
-    (
-        "Light or dark colors for all Torro apps. “System” follows your desktop.",
-        "Helle oder dunkle Farben für alle Torro-Apps. „System“ folgt deinem Desktop.",
-    ),
     ("Name", "Name"),
     ("{n} d ago", "vor {n} Tg."),
     ("{n} days ago", "vor {n} Tagen"),
@@ -2939,10 +2935,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Open color schemes folder", "Farbschema-Ordner öffnen"),
     ("Open fonts folder", "Schriften-Ordner öffnen"),
     ("The color schemes can't be listed.", "Die Farbschemata können nicht aufgelistet werden."),
-    (
-        "The colors of all Torro apps, light and dark. More color schemes go into the color schemes folder.",
-        "Die Farben aller Torro-Apps, hell und dunkel. Weitere Farbschemata kommen in den Farbschema-Ordner.",
-    ),
     ("The fonts can't be listed.", "Die Schriften können nicht aufgelistet werden."),
     (
         "The typeface of all Torro apps, sized so that text reads alike in every font. More fonts go into the fonts folder, and the fonts installed on this computer can be used too.",
@@ -5974,6 +5966,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Spacing levels instead of designs (issue #484)
     ("Colors", "Farben"),
     ("Comfort", "Komfort"),
+    (
+        "The colors of all Torro apps, light and dark. “System” follows your desktop. More color schemes go into the color schemes folder.",
+        "Die Farben aller Torro-Apps, hell und dunkel. „System“ folgt deinem Desktop. Weitere Farbschemata kommen in den Farbschema-Ordner.",
+    ),
     (
         "How much room all Torro apps leave between their elements. Font and colors stay as they are; for larger text use the zoom.",
         "Wie viel Platz alle Torro-Apps zwischen ihren Elementen lassen. Schrift und Farben bleiben, wie sie sind; für größeren Text gibt es den Zoom.",

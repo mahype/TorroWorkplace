@@ -670,7 +670,9 @@ fn mode_words_need() -> f32 {
 /// and the sentence that explains it. The control centre follows a choice at once, so the whole page
 /// shows the level as well.
 fn spacing<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<'a, Message> {
-    let heading = widgets::group_heading(tr("Spacing"), Vec::new());
+    // As high as the headings with buttons beside it, so the groups of both columns start on one line.
+    let heading =
+        container(widgets::group_heading(tr("Spacing"), Vec::new())).height(size::control_sm()).center_y(Fill);
     let mut block = column![heading].spacing(layout::item_gap());
     match listed_or(&state.designs, tr("The spacing levels can't be listed.")) {
         Ok(entries) => {
@@ -705,11 +707,14 @@ fn level_order(entries: &[DesignEntry]) -> Vec<&DesignEntry> {
     levels
 }
 
-/// The small mail window of `design` under the segment, as wide as the card in a column `width` wide
-/// and in the proportions of [`MAIL_WINDOW`], at most [`size::panel()`] high.
+/// The small mail window of `design` under the segment, in the proportions of [`MAIL_WINDOW`]: as
+/// wide as the card in a column `width` wide, but at most [`size::panel()`] high, then centred in the
+/// card – a whole window, never a cut-out of one that is drawn too large.
 fn preview<'a>(design: Arc<Design>, width: f32) -> Element<'a, Message> {
-    let height = (width * MAIL_WINDOW.height / MAIL_WINDOW.width).min(size::panel());
-    container(canvas(MailPreview { design }).width(Fill).height(Fill)).width(Fill).height(height).clip(true).into()
+    let wide = width.min(size::panel() * MAIL_WINDOW.width / MAIL_WINDOW.height);
+    let high = wide * MAIL_WINDOW.height / MAIL_WINDOW.width;
+    let window = container(canvas(MailPreview { design }).width(Fill).height(Fill)).width(wide).height(high).clip(true);
+    container(window).center_x(Fill).into()
 }
 
 /// `rows` in the framed card of a settings group with a line between them, as `widgets::group` draws
@@ -778,7 +783,7 @@ fn font_group<'a>(state: &'a State, settings: &'a Settings) -> Element<'a, Messa
 
 /// The group "Colors": the heading with "Open color schemes folder", the colour scheme's row
 /// ([`scheme_row`]) and "Color mode" as a segment of System, Light and Dark, the reasons of the scheme
-/// opened, and the sentences that explain both. The control centre follows the colour mode at once:
+/// opened, and the sentence that explains both. The control centre follows the colour mode at once:
 /// it reloads the settings after every change. Where the segment's words do not fit beside its label
 /// (a narrow column `width`, a long translation) it shows its symbols alone, the words as tooltips.
 fn colors_group<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<'a, Message> {
@@ -795,10 +800,8 @@ fn colors_group<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Ele
     let reasons = ok(&state.schemes)
         .and_then(|schemes| opened(schemes, Part::ColorScheme, state.problems.as_ref()))
         .map(|entry| problems(&entry.info));
-    let footer = format!(
-        "{} {}",
-        tr("The colors of all Torro apps, light and dark. More color schemes go into the color schemes folder."),
-        tr("Light or dark colors for all Torro apps. “System” follows your desktop."),
+    let footer = tr(
+        "The colors of all Torro apps, light and dark. “System” follows your desktop. More color schemes go into the color schemes folder.",
     );
     column![heading, card(vec![scheme, mode])]
         .push(reasons)
