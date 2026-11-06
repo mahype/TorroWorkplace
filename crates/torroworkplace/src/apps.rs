@@ -248,6 +248,7 @@ pub fn open_command(bundle: &Path, args: Option<&[String]>) -> Vec<String> {
 /// running in "Torro Workplace.app" (before its own service bundle, decision 7) would otherwise ask the
 /// system to start itself, which only activates the core and opens no control centre. `None` then, and
 /// when there is no bundle.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code, reason = "bundles are macOS's; tests use it everywhere"))]
 pub fn bundle_for(
     app: AppId,
     exe: Option<&Path>,

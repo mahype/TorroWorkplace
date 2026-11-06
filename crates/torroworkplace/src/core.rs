@@ -24734,10 +24734,10 @@ mod tests {
         core.clients.update(&info.id, reading_mail).await.expect("updated");
         assert_eq!(listed_notes(ask(&core, Some(&key), Request::ListMemories).await).len(), 2);
 
-        let file = dir.path().join("config/assistant/memory.md");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let file = dir.path().join("config/assistant/memory.md");
             assert_eq!(std::fs::metadata(&file).expect("memory.md").permissions().mode() & 0o777, 0o600);
         }
         let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
