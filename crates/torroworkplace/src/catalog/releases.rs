@@ -41,6 +41,10 @@ pub const ERROR: &str = "error";
 /// How long a check may take as a whole.
 const CHECK_WAIT: Duration = Duration::from_secs(30);
 
+/// How long after a check that did not reach GitHub the next one answers the stored state at once, so a
+/// computer without network does not wait [`CHECK_WAIT`] on every look at the catalog (review of #411).
+const OFFLINE_GAP: TimeDelta = TimeDelta::seconds(30);
+
 /// How long building a connection and each read of a download may take; a download as a whole has no
 /// limit (archives are tens of megabytes).
 const CONNECT_WAIT: Duration = Duration::from_secs(20);
@@ -119,6 +123,8 @@ pub struct Releases {
     state: Mutex<Option<Stored>>,
     /// One check at a time; a second waits and then answers from the first.
     checking: tokio::sync::Mutex<()>,
+    /// When a check last did not reach GitHub ([`OFFLINE_GAP`]); in memory only.
+    offline_at: Mutex<Option<DateTime<Utc>>>,
 }
 
 impl Releases {
@@ -143,6 +149,7 @@ impl Releases {
             http: OnceLock::new(),
             state: Mutex::new(None),
             checking: tokio::sync::Mutex::new(()),
+            offline_at: Mutex::new(None),
         }
     }
 
@@ -190,10 +197,15 @@ impl Releases {
         if stored.asked.is_some_and(|asked| now - asked < CHECK_GAP && asked <= now) {
             return stored;
         }
+        let offline_at = *self.offline_at.lock().unwrap_or_else(PoisonError::into_inner);
+        if offline_at.is_some_and(|at| now - at < OFFLINE_GAP && at <= now) {
+            return stored;
+        }
         let answer = match tokio::time::timeout(CHECK_WAIT, self.fetch()).await {
             Ok(answer) => answer,
             Err(_) => Err(OFFLINE),
         };
+        *self.offline_at.lock().unwrap_or_else(PoisonError::into_inner) = matches!(answer, Err(OFFLINE)).then_some(now);
         let next = match answer {
             Ok(release) => Stored {
                 checked: Some(now),
@@ -244,7 +256,7 @@ impl Releases {
     /// pages, archives only from [`Releases::downloads`] with a plain file name.
     fn read_release(&self, latest: Latest) -> Result<(String, Option<String>, Vec<Asset>), &'static str> {
         let version = latest.tag_name.parse::<Version>().map_err(|_| ERROR)?.to_string();
-        let page = Some(latest.html_url).filter(|url| url.starts_with(RELEASE_PAGES));
+        let page = Some(latest.html_url).filter(|url| below(url, RELEASE_PAGES));
         let plain = |name: &str| {
             !name.is_empty()
                 && !name.starts_with('.')
@@ -253,11 +265,27 @@ impl Releases {
         let assets = latest
             .assets
             .into_iter()
-            .filter(|asset| plain(&asset.name) && asset.browser_download_url.starts_with(&self.downloads))
+            .filter(|asset| plain(&asset.name) && below(&asset.browser_download_url, &self.downloads))
             .map(|asset| Asset { name: asset.name, size: asset.size, url: asset.browser_download_url })
             .collect();
         Ok((version, page, assets))
     }
+}
+
+/// Whether `url` lies below `base`, read as URLs, not as text (review of #411): the same scheme, host and
+/// port, a path that begins with the base's, no `.` or `..` segment (also encoded) that would lead out
+/// of it, and neither query nor fragment.
+fn below(url: &str, base: &str) -> bool {
+    let (Ok(url), Ok(base)) = (reqwest::Url::parse(url), reqwest::Url::parse(base)) else { return false };
+    let same = url.scheme() == base.scheme()
+        && url.host_str() == base.host_str()
+        && url.port_or_known_default() == base.port_or_known_default();
+    let raw = url.path();
+    let wandering = raw.split('/').any(|segment| {
+        let lower = segment.to_ascii_lowercase();
+        matches!(lower.as_str(), "." | ".." | "%2e" | "%2e%2e" | ".%2e" | "%2e.") || lower.contains("%2f")
+    });
+    same && !wandering && url.query().is_none() && url.fragment().is_none() && raw.starts_with(base.path())
 }
 
 /// Writes `stored` to `file` through a temporary file beside it, so a reader never sees half of it.
@@ -275,6 +303,37 @@ fn write(file: &std::path::Path, stored: &Stored) -> std::io::Result<()> {
 pub(crate) mod tests {
     use super::*;
     use httpmock::MockServer;
+
+    /// Review of #411: download addresses are read as URLs; nothing leads out of the suite's releases.
+    #[test]
+    fn only_addresses_below_the_releases_count() {
+        let ok = format!("{DOWNLOADS}v0.2.0/torrotasks-x86_64-pc-windows-msvc.zip");
+        assert!(below(&ok, DOWNLOADS));
+        for refused in [
+            "https://github.com/mahype/TorroWorkplace/releases/download/../../evil/releases/download/x.zip",
+            "https://github.com/mahype/TorroWorkplace/releases/download/%2e%2e/%2e%2e/evil/x.zip",
+            "https://github.com/mahype/TorroWorkplace/releases/download/v1/x.zip?x=1",
+            "https://github.com/mahype/TorroWorkplace/releases/download/v1/x.zip#y",
+            "https://github.com.evil.example/mahype/TorroWorkplace/releases/download/v1/x.zip",
+            "http://github.com/mahype/TorroWorkplace/releases/download/v1/x.zip",
+            "https://github.com:444/mahype/TorroWorkplace/releases/download/v1/x.zip",
+            "https://github.com/mahype/TorroWorkplace/releases/downloadx/v1/x.zip",
+            "not a url",
+        ] {
+            assert!(!below(refused, DOWNLOADS), "{refused}");
+        }
+    }
+
+    /// Review of #411: without network the next look within half a minute answers at once.
+    #[tokio::test]
+    async fn after_an_offline_check_the_next_answers_at_once() {
+        let releases = Releases::new(Some(nowhere()), DOWNLOADS.into(), None);
+        let now = Utc::now();
+        assert_eq!(releases.check(now).await.error.as_deref(), Some(OFFLINE));
+        let started = std::time::Instant::now();
+        assert_eq!(releases.check(now + TimeDelta::seconds(10)).await.error.as_deref(), Some(OFFLINE));
+        assert!(started.elapsed() < Duration::from_millis(200), "answered from the stored state");
+    }
 
     pub(crate) fn release_json(server: &MockServer, version: &str) -> serde_json::Value {
         let base = server.url("/download/");

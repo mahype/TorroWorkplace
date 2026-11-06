@@ -194,9 +194,12 @@ pub fn unpack_bundle(archive: &Path, into: &Path, bundle: &str, program: &str) -
         return Err(Fail::Error);
     }
     let unpacked = into.join(bundle);
+    // The bundle itself and its folders a real directory, not a link out of the archive (review of #411).
+    let real_dir = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir());
+    let folders = [unpacked.clone(), unpacked.join("Contents"), unpacked.join("Contents/MacOS")];
     let program = unpacked.join("Contents/MacOS").join(program);
     let plain = std::fs::symlink_metadata(&program).is_ok_and(|meta| meta.is_file());
-    if plain { Ok(unpacked) } else { Err(Fail::Error) }
+    if plain && folders.iter().all(|folder| real_dir(folder)) { Ok(unpacked) } else { Err(Fail::Error) }
 }
 
 /// The code requirement a downloaded bundle must meet (review of #411): signed with a Developer ID
