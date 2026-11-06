@@ -1999,29 +1999,30 @@ impl Ui {
     fn header(&self, class: SizeClass, nav: &Anchor) -> Element<'_, Message> {
         let Header { sub_page, actions } = self.page_header(class);
         let section = self.section;
-        let wide = shell::has_sidebar(class);
         let menu = Message::ToggleMenu(Menu::Nav);
-        let (leading, title): (Vec<Element<'_, Message>>, Element<'_, Message>) = match sub_page {
-            Some((name, back)) => {
+        let form = head_form(class, sub_page.is_some());
+        let (leading, title): (Vec<Element<'_, Message>>, Element<'_, Message>) = match (form, sub_page) {
+            (HeadForm::Path, Some((name, back))) => {
                 let arrow = widgets::icon_button(Icon::ChevronLeft, tr("Back"), Some(back.clone()));
-                // Below the wide path the section leads up; medium and narrow keep the section's menu in
-                // front of the page below it (issues #264, #473).
-                let title = match class {
-                    _ if wide => crumb(section, name, back),
-                    SizeClass::Medium => row![
-                        widgets::path_menu_button(nav, Some(section.icon()), section.label(), menu),
-                        path_chevron(),
-                        widgets::path_here(name),
-                    ]
-                    .spacing(space::xs())
-                    .align_y(Alignment::Center)
-                    .into(),
-                    _ => widgets::menu_button(nav, Some(section.icon()), widgets::path_menu_label(&name), menu),
-                };
-                (vec![arrow], title)
+                (vec![arrow], crumb(section, name, back))
             }
-            None if wide => (vec![], shell::header_title(Some(section.icon()), section.label(), None)),
-            None => (vec![], widgets::menu_button(nav, Some(section.icon()), section.label(), menu)),
+            (HeadForm::MenuThenPage, Some((name, back))) => {
+                let arrow = widgets::icon_button(Icon::ChevronLeft, tr("Back"), Some(back));
+                let title = row![
+                    widgets::path_menu_button(nav, Some(section.icon()), section.label(), menu),
+                    path_chevron(),
+                    widgets::path_here(name),
+                ]
+                .spacing(space::xs())
+                .align_y(Alignment::Center);
+                (vec![arrow], title.into())
+            }
+            (HeadForm::MenuOfPage, Some((name, back))) => {
+                let arrow = widgets::icon_button(Icon::ChevronLeft, tr("Back"), Some(back));
+                (vec![arrow], widgets::menu_button(nav, Some(section.icon()), widgets::path_menu_label(&name), menu))
+            }
+            (HeadForm::Title, _) => (vec![], shell::header_title(Some(section.icon()), section.label(), None)),
+            (_, _) => (vec![], widgets::menu_button(nav, Some(section.icon()), section.label(), menu)),
         };
         shell::header_bar(leading, title, actions)
     }
@@ -2088,6 +2089,34 @@ fn page_margin(class: SizeClass) -> Padding {
         SizeClass::Wide | SizeClass::Medium => layout::page_padding(),
         SizeClass::Narrow => Padding::new(space::l()),
         SizeClass::Mini | SizeClass::Strip => Padding::new(space::m()),
+    }
+}
+
+/// What the header shows of the section ([`Ui::header`]): the title or the path where the sidebar
+/// stands (wide), else the section's menu – on a page below the section too (issue #473), so its
+/// navigation never leaves the header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeadForm {
+    /// Wide, the section's own page: its icon and name.
+    Title,
+    /// Wide, a page below the section: "‹ Accounts › an account", the section pressable.
+    Path,
+    /// Medium and narrow, the section's own page: "[☁ Accounts ▾]".
+    Menu,
+    /// Medium, a page below the section: "‹ [☁ Accounts ▾] › an account".
+    MenuThenPage,
+    /// Narrow, a page below the section: "‹ [☁ an account ▾]".
+    MenuOfPage,
+}
+
+/// The [`HeadForm`] of a window of `class`, on a page below the section while `sub_page`.
+fn head_form(class: SizeClass, sub_page: bool) -> HeadForm {
+    match (shell::has_sidebar(class), class, sub_page) {
+        (true, _, false) => HeadForm::Title,
+        (true, _, true) => HeadForm::Path,
+        (false, _, false) => HeadForm::Menu,
+        (false, SizeClass::Medium, true) => HeadForm::MenuThenPage,
+        (false, _, true) => HeadForm::MenuOfPage,
     }
 }
 
@@ -2436,6 +2465,13 @@ mod tests {
         let children = ui.children();
         assert!(children.len() > 1, "the accounts beside it");
         assert!(children.iter().filter(|(_, _, press)| press.is_none()).count() == 1, "the open one marked");
+        // Issue #473: the section's menu stays in the header of medium and narrow windows.
+        assert!(ui.page_back().is_some(), "a page below the section");
+        let forms: Vec<HeadForm> =
+            [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow].map(|class| head_form(class, true)).to_vec();
+        assert_eq!(forms, [HeadForm::Path, HeadForm::MenuThenPage, HeadForm::MenuOfPage]);
+        assert_eq!(head_form(SizeClass::Narrow, false), HeadForm::Menu);
+        assert_eq!(head_form(SizeClass::Wide, false), HeadForm::Title);
         for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
             let _ = ui.header(class, &Anchor::new());
         }
