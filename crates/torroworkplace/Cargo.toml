@@ -92,6 +92,7 @@ zip.workspace = true
 # Logos of known senders (issue #453): the DKIM check of a mail, and a BIMI logo (SVG) rastered without scripts or
 # outside references.
 mail-auth.workspace = true
+psl.workspace = true
 resvg.workspace = true
 
 # Not under `[target.'cfg(windows)'.build-dependencies]`: Cargo checks that `cfg` against the host that runs the build

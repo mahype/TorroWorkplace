@@ -90,6 +90,10 @@ mail-parser = { version = "0.11.9", features = ["full_encoding"] }
 # crypto provider rustls already uses (never ring or OpenSSL); it turns on hickory's TLS and DNSSEC on aws-lc-rs.
 # No reports (quick-xml, zip). Apache-2.0 OR MIT.
 mail-auth = { version = "=0.13.0", default-features = false, features = ["aws-lc-rs"] }
+# The registrable domain of a mail's sender (issue #453): `news.paypal.de` and `paypal.de` are one sender, and a
+# subdomain handed out to others (`x.duckdns.org`) is not its parent's. The Public Suffix List compiled in, no file
+# and no download at run time. MIT/Apache-2.0.
+psl = "2.1.248"
 # The HTML part of a mail, cleaned through an allow list before the core keeps or hands it out (task M8.1).
 ammonia = "4.2.3"
 # DuckDuckGo's results page read for the tool web (torroworkplace, WEB.2, issue #305), with CSS selectors; the
