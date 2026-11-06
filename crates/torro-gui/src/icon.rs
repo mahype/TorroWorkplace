@@ -239,6 +239,9 @@ pub enum Icon {
     Landmark,
     /// A category's mark (issue #458): phishing.
     TriangleAlert,
+    /// "Drafts" of the mail window and a drafts folder (issue #502): apart from `SquarePen`, which
+    /// writes a new message.
+    FilePenLine,
 }
 
 impl Icon {
@@ -374,6 +377,7 @@ impl Icon {
         Icon::Building2,
         Icon::Landmark,
         Icon::TriangleAlert,
+        Icon::FilePenLine,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -519,6 +523,7 @@ impl Icon {
             Icon::Building2 => include_bytes!("../assets/icons/building-2.svg"),
             Icon::Landmark => include_bytes!("../assets/icons/landmark.svg"),
             Icon::TriangleAlert => include_bytes!("../assets/icons/triangle-alert.svg"),
+            Icon::FilePenLine => include_bytes!("../assets/icons/file-pen-line.svg"),
         }
     }
 }
