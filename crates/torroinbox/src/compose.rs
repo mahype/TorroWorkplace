@@ -961,10 +961,15 @@ pub fn opening(kind: &Kind, message: Option<&Mail>, own: &[String]) -> Opening {
 /// knows (`mail`, the draft as `mail.get_message` reads it) takes its name and size from there,
 /// any other one is called "Attachment" with no size.
 pub fn reopening(draft: &Draft, mail: Option<&Mail>) -> Opening {
-    let (body, history) = match draft.html.as_deref() {
+    let (mut body, history) = match draft.html.as_deref() {
         Some(markup) => html::to_markup(markup),
         None => (draft.body.clone(), None),
     };
+    // An answer without own text yet starts with room above the quote, as a new answer does: typing
+    // at once must not change the line where the history starts.
+    if history.as_deref().is_some_and(|history| body.trim_start().starts_with(history)) {
+        body = format!("\n\n{}", body.trim_start());
+    }
     let attachments = draft
         .attachments
         .iter()
@@ -2027,6 +2032,14 @@ impl<S: ComposeSource + 'static> Window<S> {
                 Phase::Failed(Notice::new(tr("No mail account yet."), tr("Connect one in Settings, under Accounts.")));
             return Task::none();
         }
+        // A draft of an account it cannot be written from would be saved into another one and lost
+        // from its own: it is not opened.
+        if let Some(draft) = prepared.draft.as_deref()
+            && !prepared.senders.iter().any(|sender| sender.account == draft.account)
+        {
+            self.phase = Phase::Failed(Notice::new(self.start.kind.load_failed(), ComposeError::NotFound));
+            return Task::none();
+        }
         let own: Vec<String> = prepared.senders.iter().map(|sender| sender.address.to_lowercase()).collect();
         let opened = match prepared.draft.as_deref() {
             Some(draft) => reopening(draft, prepared.message.as_deref()),
@@ -2279,13 +2292,14 @@ impl<S: ComposeSource + 'static> Window<S> {
                 return Task::none();
             }
         };
-        // The draft's own parts under their new names, while the attachments are the ones saved.
+        // The draft's own parts under their new names: each attachment still there as it was saved
+        // takes the name the save gave it, also when others came or went meanwhile.
         let sent = std::mem::take(&mut self.saving_parts);
-        let unchanged = self.attachments.iter().map(Attached::draft).eq(sent.iter().cloned());
-        if unchanged && draft.attachments.len() == self.attachments.len() {
-            for (attached, now) in self.attachments.iter_mut().zip(&draft.attachments) {
-                if let (Attached::Part { message, part, .. }, DraftAttachment::MailPart { message: id, part: number }) =
-                    (attached, now)
+        if sent.len() == draft.attachments.len() {
+            for attached in &mut self.attachments {
+                let at = sent.iter().position(|saved| *saved == attached.draft());
+                if let (Some(at), Attached::Part { message, part, .. }) = (at, attached)
+                    && let DraftAttachment::MailPart { message: id, part: number } = &draft.attachments[at]
                 {
                     *message = id.clone();
                     *part = number.clone();
@@ -4436,6 +4450,50 @@ mod tests {
         assert_eq!((opened.attachments[0].name(), opened.attachments[0].size()), (tr("Attachment"), 0));
         let missing = ready_failing(&["--draft", "m:p1"]);
         assert_eq!(missing, tr("Couldn't load the draft."), "a mail that is no draft");
+
+        // An answer without own text gets room above its quote, as a new answer has.
+        let quote_only = Draft {
+            html: Some(markup::to_html("On Monday, Bernd wrote:\n> Lunch?", Some("On Monday, Bernd wrote:"))),
+            ..window.draft()
+        };
+        let opened = reopening(&quote_only, None);
+        assert!(opened.body.starts_with("\n\nOn Monday, Bernd wrote:"), "{:?}", opened.body);
+        assert_eq!(opened.history.as_deref(), Some("On Monday, Bernd wrote:"));
+    }
+
+    /// Issue #502: a draft of an account the window cannot write from is not opened: saving it would
+    /// move it into another account.
+    #[test]
+    fn a_draft_of_an_account_without_mail_is_not_opened() {
+        let source = Arc::new(DemoSource::new(Utc::now()));
+        let mut prepared = block_on(prepare(source.clone(), Kind::Draft("m:w8".into())));
+        if let Ok(prepared) = &mut prepared {
+            prepared.senders.retain(|sender| sender.account != "mail:anna@work.example.org");
+        }
+        let launch = Launch::parse(&args(&["--compose", "--demo", "--draft", "m:w8"])).expect("valid parameters");
+        let mut window = Window::new(source, Source::from_args(args(&["--demo"])), launch).0;
+        let _ = window.update(Message::Loaded(prepared));
+        assert!(matches!(&window.phase, Phase::Failed(notice) if notice.what == tr("Couldn't load the draft.")));
+    }
+
+    /// Issue #502: an attachment added while a save runs does not keep the draft's own parts from
+    /// their new names.
+    #[test]
+    fn parts_are_named_anew_also_when_a_file_came_meanwhile() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("plan.pdf");
+        std::fs::write(&path, vec![0u8; 300]).expect("written");
+        let mut window = ready(&["--draft", "m:w8"]);
+        let _ = window.update(Message::Subject("Offer, second version".into()));
+        let _ = window.update(Message::Tick(later()));
+        let revision = window.saving.expect("a save is running");
+        let _ = window.update(Message::Picked(vec![path]));
+        let mut saved = window.draft();
+        saved.attachments = vec![DraftAttachment::MailPart { message: "m:w8".into(), part: "1.2".into() }];
+        let _ = window.update(Message::Saved(revision, Box::new(Ok(saved))));
+        let now = window.draft().attachments;
+        assert_eq!(now[0], DraftAttachment::MailPart { message: "m:w8".into(), part: "1.2".into() });
+        assert!(matches!(now[1], DraftAttachment::File { .. }), "the new file stays");
     }
 
     fn ready_failing(words: &[&str]) -> String {
