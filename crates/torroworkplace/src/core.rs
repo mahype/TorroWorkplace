@@ -5712,6 +5712,16 @@ impl Core {
             // A client's target comes through `handle_client` or `run_approved` with its maker; here
             // a client reaches no file of the tools (`Core::open_target`).
             Request::OpenApp { app, target } => self.open_app_request(&app, target.as_deref(), reach, Maker::App).await,
+            // The app catalog (issue #411); the handlers follow with the catalog module.
+            Request::ListAppCatalog
+            | Request::CheckAppUpdates
+            | Request::AppJob { .. }
+            | Request::CancelAppJob { .. }
+            | Request::UninstallApp { .. }
+            | Request::InstallApp { .. }
+            | Request::UpdateApps { .. } => {
+                Response::Error { code: "unsupported".into(), message: tr("The app catalog is not ready yet.").into() }
+            }
             Request::ListApps => {
                 Response::Apps { apps: crate::apps::list(), main_app: crate::apps::main_app_installed() }
             }

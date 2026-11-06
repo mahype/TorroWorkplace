@@ -213,6 +213,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::UpdateSettings { .. }
         | Request::Accounts
         | Request::ListApps
+        | Request::ListAppCatalog
+        | Request::CheckAppUpdates
         | Request::ListDesigns
         | Request::ListFonts
         | Request::ListColorSchemes
@@ -305,6 +307,13 @@ pub fn ids(request: &Request) -> Vec<String> {
             true => vec![id("app", app)],
             false => Vec::new(),
         },
+        // The app catalog (issue #411): names of the suite only, as for opening an app.
+        Request::UninstallApp { app, .. } | Request::InstallApp { app } => match AppId::find(app).is_some() {
+            true => vec![id("app", app)],
+            false => Vec::new(),
+        },
+        Request::UpdateApps { apps } => apps.iter().filter(|app| AppId::find(app).is_some()).map(|app| id("app", app)).collect(),
+        Request::AppJob { id: job } | Request::CancelAppJob { id: job } => vec![random("job", job)],
         Request::UpdateClient { id: client, .. }
         | Request::NewClientKey { id: client }
         | Request::RemoveClient { id: client }

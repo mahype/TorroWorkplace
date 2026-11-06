@@ -1664,6 +1664,13 @@ impl Request {
             Request::ListColorSchemes => &LIST_COLOR_SCHEMES,
             Request::ListApps => &LIST_APPS,
             Request::OpenApp { .. } => &OPEN_APP,
+            Request::ListAppCatalog => &LIST_APP_CATALOG,
+            Request::CheckAppUpdates => &CHECK_APP_UPDATES,
+            Request::AppJob { .. } => &APP_JOB,
+            Request::CancelAppJob { .. } => &CANCEL_APP_JOB,
+            Request::UninstallApp { .. } => &UNINSTALL_APP,
+            Request::InstallApp { .. } => &INSTALL_APP,
+            Request::UpdateApps { .. } => &UPDATE_APPS,
             Request::ListClients => &LIST_CLIENTS,
             Request::CreateClient { .. } => &CREATE_CLIENT,
             Request::UpdateClient { .. } => &UPDATE_CLIENT,
@@ -1984,6 +1991,13 @@ pub static CATALOGUE: &[&Command] = &[
     &UPDATE_SETTINGS,
     &LIST_APPS,
     &OPEN_APP,
+    &LIST_APP_CATALOG,
+    &CHECK_APP_UPDATES,
+    &APP_JOB,
+    &CANCEL_APP_JOB,
+    &UNINSTALL_APP,
+    &INSTALL_APP,
+    &UPDATE_APPS,
     &LIST_CLIENTS,
     &CREATE_CLIENT,
     &UPDATE_CLIENT,
@@ -3438,6 +3452,78 @@ static OPEN_APP: Command = Command {
                   mail, task or template this key may not read is `not-found`, and so is a \
                   file this key did not make or cannot reach (the PDF tool switched off, no read access to \
                   `tools`, `pdf` not selected).",
+};
+
+static LIST_APP_CATALOG: Command = Command {
+    name: "apps.list_catalog",
+    area: Area::Apps,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists the main application and every app of the suite with the version installed, the newest \
+                  version on GitHub, its state (`installed`, `update`, `available`, `managed` by a package manager \
+                  with its commands, `unavailable`) and the download size, as the service checked last. For \
+                  versions and updates; to open an app use list_apps and open_app.",
+};
+
+static CHECK_APP_UPDATES: Command = Command {
+    name: "apps.check_updates",
+    area: Area::Apps,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Asks GitHub for the newest release now and answers like list_catalog. Within five minutes of the \
+                  last check it answers from that one. Without network the last state stays, with `error: \
+                  offline`.",
+};
+
+static APP_JOB: Command = Command {
+    name: "apps.app_job",
+    area: Area::Apps,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Tells where an app job (installing, updating or uninstalling apps) stands: its steps, the percent \
+                  done and whether it runs, is done, failed or was cancelled.",
+};
+
+static CANCEL_APP_JOB: Command = Command {
+    name: "apps.cancel_app_job",
+    area: Area::Apps,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Cancels an app job while it still downloads; once it verifies or installs it runs to its end and \
+                  is answered as it stands.",
+};
+
+static UNINSTALL_APP: Command = Command {
+    name: "apps.uninstall_app",
+    area: Area::Apps,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Uninstalls an app of the suite (window class or binary from list_catalog): it goes to the system's \
+                  trash, with `remove_data` its own files on this computer too; accounts stay. Answers with the job \
+                  (see app_job). Always waits for the person's approval. Apps looked after by a package manager, the \
+                  main application and the Notification Hub while Mail or App Feed is installed cannot be \
+                  uninstalled here (`conflict`, `not-found`).",
+};
+
+// Installing and updating decide which code runs on the person's computer: only the app key, never
+// a tool (`docs/api.md`, "Was nie nach außen geht", 11).
+
+static INSTALL_APP: Command = Command {
+    name: "apps.install_app",
+    area: Area::Apps,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Installs an app of the suite from the newest release, after checking its signature or SHA-256; \
+                  Mail and App Feed bring the Notification Hub along. Answers with the job (see app_job).",
+};
+
+static UPDATE_APPS: Command = Command {
+    name: "apps.update_apps",
+    area: Area::Apps,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Updates apps of the suite to the newest release in one job; `torroworkplace` is the main \
+                  application, after whose update the service restarts. Running apps are replaced at once.",
 };
 
 // The `clients` commands are never MCP tools, and only the app key may use them (`docs/api.md`,
@@ -5456,6 +5542,13 @@ mod tests {
             Request::ListApps,
             Request::OpenApp { app: "torrocalendar".into(), target: None },
             Request::OpenApp { app: "torrotasks".into(), target: Some("task:7d1e5b2a".into()) },
+            Request::ListAppCatalog,
+            Request::CheckAppUpdates,
+            Request::AppJob { id: "j1".into() },
+            Request::CancelAppJob { id: "j1".into() },
+            Request::UninstallApp { app: "torro-calendar".into(), remove_data: false },
+            Request::InstallApp { app: "torro-assistant".into() },
+            Request::UpdateApps { apps: vec!["torroworkplace".into(), "torro-tasks".into()] },
             Request::ListClients,
             Request::CreateClient {
                 name: "Claude Code".into(),
@@ -6212,6 +6305,9 @@ mod tests {
                         | "extensions.read_logs"
                         // Point 5: the key of a web search provider (issue #305).
                         | "accounts.set_search_key"
+                        // Point 11: installing decides which code runs (issue #411).
+                        | "apps.install_app"
+                        | "apps.update_apps"
                 );
             assert_eq!(command.mcp == Mcp::Never, kept_back, "{}", command.name);
             // Only the app key may manage clients, so all of their commands are admin commands.

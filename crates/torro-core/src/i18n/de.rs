@@ -7234,4 +7234,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{n} attachments", "{n} Anhänge"),
     ("{n} of {total}+", "{n} von {total}+"),
     ("mail|Display", "Darstellung"),
+    // App catalog (issue #411)
+    ("The app catalog is not ready yet.", "Der App-Katalog ist noch nicht fertig."),
+    ("Uninstall {app}", "{app} entfernen"),
+    ("Uninstall {app} and remove its data on this computer", "{app} entfernen, samt ihrer Daten auf diesem Computer"),
 ];

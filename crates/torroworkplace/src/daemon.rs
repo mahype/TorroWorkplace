@@ -888,6 +888,13 @@ fn describe(request: &Request) -> String {
         // The app only, never the target: it names a mail or a task (task E8.7a).
         Request::OpenApp { app, .. } => format!("open {app}"),
         Request::ListApps => "apps".into(),
+        Request::ListAppCatalog => "app catalog".into(),
+        Request::CheckAppUpdates => "check app updates".into(),
+        Request::AppJob { id } => format!("app job {id}"),
+        Request::CancelAppJob { id } => format!("cancel app job {id}"),
+        Request::UninstallApp { app, .. } => format!("uninstall {app}"),
+        Request::InstallApp { app } => format!("install {app}"),
+        Request::UpdateApps { apps } => format!("update {}", apps.join(", ")),
         Request::ListDesigns => "designs".into(),
         Request::ListFonts => "fonts".into(),
         Request::ListColorSchemes => "colour schemes".into(),

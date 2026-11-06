@@ -66,7 +66,7 @@ als Beschreibung der MCP-Tools lesen.
 | [`tools`](#tools) | [`tools.list_tools`](#toolslist_tools), [`tools.create_pdf`](#toolscreate_pdf), [`tools.open_file`](#toolsopen_file), [`tools.save_file_as`](#toolssave_file_as), [`tools.web_search`](#toolsweb_search), [`tools.fetch_page`](#toolsfetch_page), [`tools.list_search_providers`](#toolslist_search_providers), [`tools.list_folder`](#toolslist_folder), [`tools.find_files`](#toolsfind_files), [`tools.create_folder`](#toolscreate_folder), [`tools.copy_file`](#toolscopy_file), [`tools.move_file`](#toolsmove_file), [`tools.trash_file`](#toolstrash_file) |
 | [`extensions`](#extensions) | [`extensions.list_extensions`](#extensionslist_extensions), [`extensions.get_extension`](#extensionsget_extension), [`extensions.list_catalog`](#extensionslist_catalog), [`extensions.list_tools`](#extensionslist_tools), [`extensions.call_tool`](#extensionscall_tool), [`extensions.set_enabled`](#extensionsset_enabled), [`extensions.install_extension`](#extensionsinstall_extension), [`extensions.confirm_tools`](#extensionsconfirm_tools), [`extensions.update_extension`](#extensionsupdate_extension), [`extensions.set_secret`](#extensionsset_secret), [`extensions.set_folder`](#extensionsset_folder), [`extensions.read_logs`](#extensionsread_logs), [`extensions.remove_extension`](#extensionsremove_extension) |
 | [`settings`](#settings) | [`settings.get_settings`](#settingsget_settings), [`settings.set_setting`](#settingsset_setting), [`settings.set_collection_shown`](#settingsset_collection_shown), [`settings.list_designs`](#settingslist_designs), [`settings.list_fonts`](#settingslist_fonts), [`settings.list_color_schemes`](#settingslist_color_schemes), [`settings.voice_status`](#settingsvoice_status), [`settings.test_voice`](#settingstest_voice), [`settings.update_settings`](#settingsupdate_settings) |
-| [`apps`](#apps) | [`apps.list_apps`](#appslist_apps), [`apps.open_app`](#appsopen_app) |
+| [`apps`](#apps) | [`apps.list_apps`](#appslist_apps), [`apps.open_app`](#appsopen_app), [`apps.list_catalog`](#appslist_catalog), [`apps.check_updates`](#appscheck_updates), [`apps.app_job`](#appsapp_job), [`apps.cancel_app_job`](#appscancel_app_job), [`apps.uninstall_app`](#appsuninstall_app), [`apps.install_app`](#appsinstall_app), [`apps.update_apps`](#appsupdate_apps) |
 | [`clients`](#clients) | [`clients.list_clients`](#clientslist_clients), [`clients.create_client`](#clientscreate_client), [`clients.update_client`](#clientsupdate_client), [`clients.new_key`](#clientsnew_key), [`clients.remove_client`](#clientsremove_client), [`clients.activity`](#clientsactivity) |
 | [`approvals`](#approvals) | [`approvals.list_approvals`](#approvalslist_approvals), [`approvals.approval_status`](#approvalsapproval_status), [`approvals.decide_approval`](#approvalsdecide_approval), [`approvals.ask_permission`](#approvalsask_permission) |
 
@@ -2969,6 +2969,73 @@ Opens an app of the suite by binary name or window class (from list_apps), or br
 |---|---|---|---|
 | `app` | string | ja | Binary name or window class, from `apps.list_apps`. |
 | `target` | string | nein | What the app shows: `mail:<address>:<Message-ID>`, `task:<uid>`, `file:<id>` (a new mail with that file of the assistant's tools attached) or `template:<id>` (the dialog to edit a workspace template); left out: the app as it starts. |
+
+### `apps.list_catalog`
+
+Zugriff `read` · MCP-Tool `apps_list_catalog`
+
+Lists the main application and every app of the suite with the version installed, the newest version on GitHub, its state (`installed`, `update`, `available`, `managed` by a package manager with its commands, `unavailable`) and the download size, as the service checked last. For versions and updates; to open an app use list_apps and open_app.
+
+Keine Felder.
+
+### `apps.check_updates`
+
+Zugriff `write` · MCP-Tool `apps_check_updates`
+
+Asks GitHub for the newest release now and answers like list_catalog. Within five minutes of the last check it answers from that one. Without network the last state stays, with `error: offline`.
+
+Keine Felder.
+
+### `apps.app_job`
+
+Zugriff `read` · MCP-Tool `apps_app_job`
+
+Tells where an app job (installing, updating or uninstalling apps) stands: its steps, the percent done and whether it runs, is done, failed or was cancelled.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `id` | string | ja | The job's id, from the answer that started it. |
+
+### `apps.cancel_app_job`
+
+Zugriff `write` · MCP-Tool `apps_cancel_app_job`
+
+Cancels an app job while it still downloads; once it verifies or installs it runs to its end and is answered as it stands.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `id` | string | ja | The job's id. |
+
+### `apps.uninstall_app`
+
+Zugriff `admin` · MCP-Tool `apps_uninstall_app`
+
+Uninstalls an app of the suite (window class or binary from list_catalog): it goes to the system's trash, with `remove_data` its own files on this computer too; accounts stay. Answers with the job (see app_job). Always waits for the person's approval. Apps looked after by a package manager, the main application and the Notification Hub while Mail or App Feed is installed cannot be uninstalled here (`conflict`, `not-found`).
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `app` | string | ja | Window class or binary of the app, from `apps.list_catalog`. |
+| `remove_data` | boolean | nein, Standard `false` | Also remove the app's own files on this computer; accounts stay. |
+
+### `apps.install_app`
+
+Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
+
+Installs an app of the suite from the newest release, after checking its signature or SHA-256; Mail and App Feed bring the Notification Hub along. Answers with the job (see app_job).
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `app` | string | ja | Window class or binary of the app, from `apps.list_catalog`. |
+
+### `apps.update_apps`
+
+Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
+
+Updates apps of the suite to the newest release in one job; `torroworkplace` is the main application, after whose update the service restarts. Running apps are replaced at once.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `apps` | array<string> | ja | Window classes or binaries; `torroworkplace` for the main application. |
 
 ## `clients`
 

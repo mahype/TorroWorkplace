@@ -1251,6 +1251,13 @@ impl PimService {
             | Request::ListScreens
             | Request::OpenApp { .. }
             | Request::ListApps
+            | Request::ListAppCatalog
+            | Request::CheckAppUpdates
+            | Request::AppJob { .. }
+            | Request::CancelAppJob { .. }
+            | Request::UninstallApp { .. }
+            | Request::InstallApp { .. }
+            | Request::UpdateApps { .. }
             | Request::ListDesigns
             | Request::ListFonts
             | Request::ListColorSchemes
