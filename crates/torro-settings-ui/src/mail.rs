@@ -400,13 +400,7 @@ pub fn kept(state: State) -> State {
 
 /// One section's page with its messages wrapped in [`Message`].
 fn wrap<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> Message) -> Page<'a, Message> {
-    Page {
-        body: page.body.map(into),
-        sub_page: page.sub_page.map(|(name, back)| (name, into(back))),
-        actions: page.actions.into_iter().map(|action| action.map(into)).collect(),
-        save_bar: page.save_bar.map(|bar| bar.map(into)),
-        max_width: page.max_width,
-    }
+    page.map(into)
 }
 
 /// "Accounts": one row per mail account, and below it the account's own identity, connection,
@@ -1279,7 +1273,8 @@ pub mod accounts {
                 let stats = data.mail_stats.iter().find(|stats| stats.account == draft.account);
                 let updating = data.updating(&Request::MailAccountStats { account: None });
                 let page = Page::new(account_page(state, draft, mail, stats, storage, data, updating))
-                    .sub_page(label, Message::Back);
+                    .sub_page(label, Message::Back)
+                    .siblings(siblings(data, &draft.account));
                 // A page that does not save itself: the bar stands while the name or the signature
                 // differs from what is stored, on every tab.
                 match draft.summary(mail) {
@@ -1298,6 +1293,19 @@ pub mod accounts {
             }
             None => Page::new(list(data)),
         }
+    }
+
+    /// Every mail account beside the open one `open` (issue #475), as the list and the menu of the
+    /// settings show them under "Accounts": each with its label and what opens it, the open one
+    /// without.
+    fn siblings(data: &Data, open: &str) -> Vec<(String, Option<Message>)> {
+        mail_accounts(data)
+            .into_iter()
+            .map(|(account, _)| {
+                let press = (account.id != open).then(|| Message::Open(account.id.clone()));
+                (account_label(data, &account.id), press)
+            })
+            .collect()
     }
 
     /// How the path names the open account: its address.
@@ -2328,6 +2336,28 @@ pub mod accounts {
             assert_eq!(opened, Some("anna@example.org".to_string()));
             let _: Action<()> = update(&mut state, Message::Back, &data);
             assert!(page(&state, &data).sub_page.is_none());
+        }
+
+        /// Issue #475: an open account brings every mail account beside it, in the daemon's order;
+        /// the open one without a press, the others opening theirs.
+        #[test]
+        fn an_open_account_brings_the_mail_accounts_beside_it() {
+            let mut data = data();
+            data.accounts.push(account("ben@example.org", "Ben Example", None));
+            let mut state = State::default();
+            assert!(page(&state, &data).siblings.is_empty(), "the list has none");
+            let _: Action<()> = update(&mut state, Message::Open("mail:anna@example.org".into()), &data);
+            let beside = page(&state, &data).siblings;
+            let mail = mail_accounts(&data);
+            assert_eq!(beside.len(), 2);
+            assert_eq!(beside.len(), mail.len());
+            for ((name, press), (account, _)) in beside.iter().zip(&mail) {
+                assert_eq!(name, &account_label(&data, &account.id));
+                match account.id == "mail:anna@example.org" {
+                    true => assert!(press.is_none(), "the open one stays"),
+                    false => assert!(matches!(press, Some(Message::Open(id)) if *id == account.id)),
+                }
+            }
         }
 
         #[test]

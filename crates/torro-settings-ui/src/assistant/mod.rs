@@ -296,13 +296,7 @@ pub fn closing(state: &State, data: &Data) -> Option<Message> {
 
 /// One section's page with its messages wrapped in [`Message`].
 fn wrap<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> Message) -> Page<'a, Message> {
-    Page {
-        body: page.body.map(into),
-        sub_page: page.sub_page.map(|(name, back)| (name, into(back))),
-        actions: page.actions.into_iter().map(|action| action.map(into)).collect(),
-        save_bar: page.save_bar.map(|bar| bar.map(into)),
-        max_width: page.max_width,
-    }
+    page.map(into)
 }
 
 /// The assistant's client as the daemon lists it (one client of the kind `assistant`, decision 5
