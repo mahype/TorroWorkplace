@@ -196,7 +196,8 @@ Fenster und die Präsenz; die übrigen sind mit #470 (2026-11-06) dazugekommen, 
    - **Klingeln** erkennt der Kern über die Benachrichtigungen des Kontos (Objekt `call`) und über `hasCall` in
      der Liste. Ein Klingeln endet nach 45 s; die 60-s-Schleife reicht dafür nicht. Darum fragt der Kern die
      Benachrichtigungen jedes Kontos mit Talk alle 10 s ab, auch wenn kein Fenster des Chats offen ist, solange
-     „Ring for incoming calls“ an ist (ab Stufe 5 ab Werk an, abschaltbar); läuft `notify_push`, nutzt er das statt
+     „Ring for incoming calls“ an ist (ab Stufe 5 ab Werk an; Schalter in den Einstellungen des Chats und in der
+     Steuerzentrale unter General, Einstellung `chat_ring`); läuft `notify_push`, nutzt er das statt
      der Abfrage. Erst so kann er `torrochat` beim Klingeln starten. Wie schnell und wie teuer das wirklich ist,
      misst der Versuch der Stufe 5.
    - **Status** holt der Kern im Takt der Nextcloud-Schleife (60 s), solange die Kontaktliste offen ist oder ein
@@ -482,7 +483,7 @@ beim Start selbst über `torro-wm`, wie heute für `WORKPLACE_DIALOG_CLASS`; ein
 **Steuerzentrale:** Rechte-Zeilen „Chat (Talk)“ und „Presence“ mit je eigener Kontoauswahl (der Zusatz „Talk“
 unterscheidet sie vom Assistenten); der Hinweis an „Send on my behalf“
 nennt künftig Mail, Antworten auf Einladungen, Chat und den eigenen Status. Auf der Kontoseite stehen Talk und User
-status bei den Diensten. Unter General der Schalter „Show others when I am online“.
+status bei den Diensten. Unter General die Schalter „Show others when I am online“ und „Ring for incoming calls“.
 
 **Teilen-Blatt (Stufe 4):** Ziel „Chat“ mit den letzten Unterhaltungen und Suche, siehe unten.
 
@@ -523,6 +524,7 @@ Bereich `chat`:
 | 5 | `chat.call_signal { call, messages }` (Signaling-Nachrichten des Anruffensters an Talk) | Write | `Never` (Punkt 11) |
 | 5 | `chat.call_credentials { call }` (STUN/TURN für den laufenden Anruf, einmal je Anruf; nur nach Zustimmung zur Ausnahme, siehe Anrufe) | Read | `Never` (Punkte 1 und 11) |
 | 5 | `settings.set_setting` mit `chat_camera`, `chat_microphone`, `chat_speaker` (Kennung des Geräts) und `chat_join_camera_off` (Erweiterung) | Admin (`settings`); Geräte und `chat_join_camera_off: false` **nur Menschen** | `settings_set_setting` (vorhanden) |
+| 5 | `settings.set_setting` mit `chat_ring` („Ring for incoming calls“: Abfrage alle 10 s und Start von `torrochat` beim Klingeln; Erweiterung) | Admin (`settings`) | `settings_set_setting` (vorhanden) |
 | 6 | `chat.edit_message { id, text }` | **Delete** + **nach außen** | `chat_edit_message` |
 | 6 | `chat.delete_message { id }` | Delete + **nach außen** | `chat_delete_message` |
 | 6 | `chat.react { id, emoji, remove? }` | Write + **nach außen** | `chat_react` |
