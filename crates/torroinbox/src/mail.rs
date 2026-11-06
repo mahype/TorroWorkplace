@@ -1243,6 +1243,8 @@ pub enum MailAction {
     Flag(bool),
     /// Mark read (`true`) or unread.
     Read(bool),
+    /// Write on a saved draft in the compose window (`r` on a draft, issue #502).
+    ContinueDraft,
 }
 
 /// Which compose window [`compose_command`] opens.
@@ -1251,6 +1253,8 @@ pub enum Compose {
     Reply,
     ReplyAll,
     Forward,
+    /// The saved draft, to write on (`--draft`, issue #502).
+    Draft,
 }
 
 impl Compose {
@@ -1260,6 +1264,7 @@ impl Compose {
             MailAction::Reply => Some(Compose::Reply),
             MailAction::ReplyAll => Some(Compose::ReplyAll),
             MailAction::Forward => Some(Compose::Forward),
+            MailAction::ContinueDraft => Some(Compose::Draft),
             MailAction::Archive | MailAction::Delete | MailAction::Junk | MailAction::Flag(_) | MailAction::Read(_) => {
                 None
             }
@@ -1272,12 +1277,13 @@ impl Compose {
             Compose::Reply => "--reply",
             Compose::ReplyAll => "--reply-all",
             Compose::Forward => "--forward",
+            Compose::Draft => "--draft",
         }
     }
 }
 
 /// The arguments of the compose window for the message `id`: `--compose --reply <id>` (or
-/// `--reply-all`, `--forward`), with `--demo` when this window runs on the demo, so the compose
+/// `--reply-all`, `--forward`, `--draft`), with `--demo` when this window runs on the demo, so the compose
 /// window finds the same sample mail. The window itself is task E4.3; it reads exactly these.
 pub fn compose_args(kind: Compose, id: &str, demo: bool) -> Vec<String> {
     let mut args = vec!["--compose".to_owned(), kind.flag().to_owned(), id.to_owned()];
@@ -1495,7 +1501,7 @@ pub fn edit_of(action: MailAction, id: &str) -> Option<MailEdit> {
         MailAction::Junk => Some(MailEdit::Move { ids: ids.clone(), to: MoveTarget::Role(MoveRole::Junk) }),
         MailAction::Flag(set) => Some(flag(Flag::Flagged, set)),
         MailAction::Read(read) => Some(flag(Flag::Seen, read)),
-        MailAction::Reply | MailAction::ReplyAll | MailAction::Forward => None,
+        MailAction::Reply | MailAction::ReplyAll | MailAction::Forward | MailAction::ContinueDraft => None,
     }
 }
 
@@ -1763,6 +1769,7 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
             View::All => (Icon::Mail, tr("No mail in your inboxes."), tr("New mail shows up here.")),
             View::Sent => (Icon::Send, tr("No sent mail."), tr("Mail you send shows up here.")),
             View::Trash => (Icon::Trash2, tr("The trash is empty."), tr("Mail you delete shows up here.")),
+            View::Drafts => (Icon::SquarePen, tr("No drafts."), tr("Drafts you save show up here.")),
             // The piles (task E19.4): the hint names the key that fills them (`w`, `b`).
             View::ReplyLater => (
                 Icon::MessageSquareReply,
@@ -1852,7 +1859,7 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
         account_name: (*data.view == View::Sent).then(|| address(&message.account).to_owned()),
         hits: data.hits(&message.id),
         face,
-        domain_tail: *data.view == View::Sent,
+        domain_tail: names_recipient(data.view),
         no_marks: no_marks(data),
         mailboxes: if *data.view == View::Sent {
             data.accounts.iter().map(|account| (*account).to_owned()).collect()
@@ -1959,7 +1966,7 @@ fn slim_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) ->
     let (name, _, _) = row_names(data.view, message);
     // In "Sent" the row names the recipient, and the circle takes the recipient's colour.
     let address = match (data.view, message.to.first()) {
-        (View::Sent, Some(to)) => to.address.as_str(),
+        (View::Sent | View::Drafts, Some(to)) => to.address.as_str(),
         _ => message.from.as_ref().map(|from| from.address.as_str()).unwrap_or_default(),
     };
     let edge = layout::list().avatar;
@@ -2052,7 +2059,7 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
         account_name: several.then(|| account_name(&message.account)),
         hits: data.hits(&message.id),
         face,
-        domain_tail: *data.view == View::Sent,
+        domain_tail: names_recipient(data.view),
         no_marks: false,
         mailboxes: Vec::new(),
     };
@@ -2113,7 +2120,7 @@ pub fn message_card_height(message: &MessageSummary, width: f32) -> f32 {
 /// Whether no message of "Sent" on the page has a mark (what the category, an invitation, an attachment
 /// or a flag show): a line then leaves the marks' column out (issue #445).
 fn no_marks(data: &MailList<'_>) -> bool {
-    *data.view == View::Sent
+    names_recipient(data.view)
         && !data.messages.iter().any(|message| {
             message.category.is_some()
                 || message.invite.is_some()
@@ -2122,10 +2129,16 @@ fn no_marks(data: &MailList<'_>) -> bool {
         })
 }
 
+/// Whether the rows of `view` name the recipient, not the sender: "Sent", and "Drafts" (issue #502),
+/// whose mail is Anna's own too.
+pub(crate) fn names_recipient(view: &View) -> bool {
+    matches!(view, View::Sent | View::Drafts)
+}
+
 /// The name, the domain and the avatar's text of `message`'s row or card in `view`: the sender's, or
-/// in "Sent" the recipient's and the mailbox ([`sent_lines`]).
+/// in "Sent" and "Drafts" the recipient's and the mailbox ([`sent_lines`]).
 fn row_names(view: &View, message: &MessageSummary) -> (String, Option<String>, Option<String>) {
-    if *view == View::Sent {
+    if names_recipient(view) {
         let (name, mailbox, face) = sent_lines(message);
         return (name, mailbox, Some(face));
     }
@@ -2627,6 +2640,8 @@ pub struct Reading<'a> {
     pub attention: Color,
     /// The message lies in the trash: it is not deleted again from here.
     pub in_trash: bool,
+    /// The message lies in a drafts folder (issue #502): it is written on, not answered.
+    pub in_drafts: bool,
     /// A decision model is set up for sorting mail (task E12.8, `inbox.get_categorization`):
     /// only then does the reader offer "Re-categorize". Without an AI the function is simply not
     /// there (`docs/ki.md`, principle 1).
@@ -3316,16 +3331,24 @@ pub fn action_groups<'a>(
 ) -> Vec<RailGroup<'a, Message>> {
     let rail = &anchors.rail;
     let mail = |action: MailAction| Some(Message::Mail(action, reading.id.to_owned()));
-    let reply = vec![
-        RailItem::new(Icon::Reply, tr("Reply"), "R", mail(MailAction::Reply)).lead(),
-        RailItem::new(Icon::ReplyAll, tr("Reply all"), "", mail(MailAction::ReplyAll)),
-        RailItem::new(Icon::Forward, tr("Forward"), "F", mail(MailAction::Forward)),
-    ];
+    // A draft is written on, not answered (issue #502): one item in the accent group, at Reply's
+    // place and with its key.
+    let write = if reading.in_drafts {
+        let item = RailItem::new(Icon::SquarePen, tr("Continue writing"), "R", mail(MailAction::ContinueDraft));
+        RailGroup::new(Icon::SquarePen, tr("Continue writing"), vec![item.lead()])
+    } else {
+        let reply = vec![
+            RailItem::new(Icon::Reply, tr("Reply"), "R", mail(MailAction::Reply)).lead(),
+            RailItem::new(Icon::ReplyAll, tr("Reply all"), "", mail(MailAction::ReplyAll)),
+            RailItem::new(Icon::Forward, tr("Forward"), "F", mail(MailAction::Forward)),
+        ];
+        RailGroup::new(Icon::Reply, tr("Reply"), reply)
+    };
     // A flagged mail says so at the group's icon (finding 9), in the colour of the flag in its row.
     let flagged = reading.summary().is_some_and(|summary| summary.flags.contains(&Flag::Flagged));
     let mark = RailGroup::new(Icon::Flag, tr("Mark"), mark_items(reading)).at(&rail.mark);
     let groups = [
-        RailGroup::new(Icon::Reply, tr("Reply"), reply).accent().at(&rail.reply),
+        write.accent().at(&rail.reply),
         RailGroup::new(Icon::Check, tr("File"), file_items(reading, entry, folders, anchors)).at(&rail.file),
         RailGroup::new(Icon::ListTodo, tr("Torro"), torro_items(reading, entry, anchors)).at(&rail.torro),
         if flagged { mark.tinted(reading.attention) } else { mark },
@@ -3748,15 +3771,14 @@ impl ReaderButton {
 /// has, and nothing of Torro's. The mail window has its action rail instead (task E14.3,
 /// [`action_groups`]).
 struct Standards {
-    /// Reply, Reply all, Forward (the first [`WRITE`]), then Archive and Delete – Delete off in the
-    /// trash.
+    /// Reply, Reply all, Forward (the first `write`; for a draft Continue writing alone, issue
+    /// #502), then Archive and Delete – Delete off in the trash.
     lead: Vec<ReaderButton>,
+    /// How many of `lead` write: a line follows them.
+    write: usize,
     /// Flag or Unflag, Mark read or Mark unread: quiet icons after a line.
     tools: Vec<ReaderButton>,
 }
-
-/// How many of [`Standards::lead`] write (Reply, Reply all, Forward): a line follows them.
-const WRITE: usize = 3;
 
 /// The [`Standards`] of the mail in `reading` with its flags in `summary`; the panel has its ✕ in its
 /// head. Each sends what its key sends ([`MailAction`]).
@@ -3766,13 +3788,20 @@ fn standards(reading: &Reading<'_>, summary: &MessageSummary) -> Standards {
     let flagged = summary.flags.contains(&Flag::Flagged);
     let read = summary.flags.contains(&Flag::Seen);
     let delete = (!reading.in_trash).then(|| Message::Mail(MailAction::Delete, id.to_owned()));
-    let lead = vec![
-        ReaderButton::new(Icon::Reply, tr("Reply"), mail(MailAction::Reply)),
-        ReaderButton::new(Icon::ReplyAll, tr("Reply all"), mail(MailAction::ReplyAll)),
-        ReaderButton::new(Icon::Forward, tr("Forward"), mail(MailAction::Forward)),
+    let mut lead = if reading.in_drafts {
+        vec![ReaderButton::new(Icon::SquarePen, tr("Continue writing"), mail(MailAction::ContinueDraft))]
+    } else {
+        vec![
+            ReaderButton::new(Icon::Reply, tr("Reply"), mail(MailAction::Reply)),
+            ReaderButton::new(Icon::ReplyAll, tr("Reply all"), mail(MailAction::ReplyAll)),
+            ReaderButton::new(Icon::Forward, tr("Forward"), mail(MailAction::Forward)),
+        ]
+    };
+    let write = lead.len();
+    lead.extend([
         ReaderButton::new(Icon::Archive, trc("action", "Archive"), mail(MailAction::Archive)),
         ReaderButton::new(Icon::Trash2, tr("Delete"), delete),
-    ];
+    ]);
     let tools = vec![
         ReaderButton::new(
             Icon::Flag,
@@ -3785,17 +3814,17 @@ fn standards(reading: &Reading<'_>, summary: &MessageSummary) -> Standards {
             ReaderButton::new(Icon::MailOpen, tr("Mark read"), mail(MailAction::Read(true)))
         },
     ];
-    Standards { lead, tools }
+    Standards { lead, write, tools }
 }
 
 /// The mail standards at the top of the panel (task E9.4), in the reader's form – buttons
 /// [`size::control()`] high, Reply primary with its word, the others `secondary` as icons, Flag and
 /// read as quiet icons – in one row that wraps where the panel is narrower than its 400.
 fn panel_standards<'a>(reading: &Reading<'a>, summary: &MessageSummary) -> Element<'a, Message> {
-    let Standards { lead, tools } = standards(reading, summary);
+    let Standards { lead, write, tools } = standards(reading, summary);
     let mut bar = row![].spacing(space::xs()).align_y(Alignment::Center);
     for (i, button) in lead.into_iter().enumerate() {
-        if i == WRITE {
+        if i == write {
             bar = bar.push(separator());
         }
         let style = if i == 0 { style::button::primary } else { style::button::secondary };
@@ -5284,6 +5313,7 @@ mod tests {
             text: &text,
             attention: Color::BLACK,
             in_trash: false,
+            in_drafts: false,
             deciding: false,
             dated: true,
             read: true,
@@ -5388,6 +5418,32 @@ mod tests {
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             assert_eq!(mute_words(reading), strings(&[tr("Mute…")]), "no List-Unsubscribe");
         });
+    }
+
+    /// Issue #502: a draft is written on, not answered – the accent group is "Continue writing" with
+    /// one item and the key R, and the panel's standards have one button where three wrote.
+    #[test]
+    fn a_draft_offers_continue_writing_instead_of_reply() {
+        let folders = folders();
+        reading_of("m:w8", MailFormat::Text, true, |reading| {
+            let draft = Reading { in_drafts: true, ..*reading };
+            let anchors = detail::Anchors::default().with_rail();
+            let groups = action_groups(&draft, None, &folders, true, &anchors);
+            let first = rail_words(&groups).into_iter().next().expect("a group");
+            assert_eq!(first, (tr("Continue writing").to_owned(), strings(&[tr("Continue writing")])));
+            assert_eq!(groups[0].items[0].key, "R");
+            let continued = sends(&groups, tr("Continue writing"), tr("Continue writing"));
+            assert!(matches!(continued, Some(Message::Mail(MailAction::ContinueDraft, id)) if id == "m:w8"));
+            assert!(rail_words(&groups).iter().all(|(group, _)| group != tr("Reply")), "no Reply on a draft");
+            let summary = draft.summary().expect("headers").clone();
+            let panel = standards(&draft, &summary);
+            assert_eq!(panel.write, 1);
+            assert_eq!(panel.lead[0].label, tr("Continue writing"));
+            let answer = standards(reading, &summary);
+            assert_eq!(answer.write, 3, "a mail is answered as before");
+        });
+        assert_eq!(Compose::of(MailAction::ContinueDraft), Some(Compose::Draft));
+        assert_eq!(compose_args(Compose::Draft, "m:w8", true), ["--compose", "--draft", "m:w8", "--demo"]);
     }
 
     /// Task E14.3: for a mail entry the rail holds Reply, File, Torro, Mark, Mute and More in this
@@ -6296,6 +6352,7 @@ mod tests {
                         text: &text,
                         attention: Color::BLACK,
                         in_trash: false,
+                        in_drafts: false,
                         deciding: false,
                         dated: true,
                         read,
