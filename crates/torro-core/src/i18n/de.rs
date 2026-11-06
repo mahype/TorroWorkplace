@@ -4463,8 +4463,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The first mail from this address", "Die erste E-Mail von dieser Adresse"),
     ("Says it is a reply, but answers nothing", "Gibt sich als Antwort aus, beantwortet aber nichts"),
     (
-        "Moved to your inbox. Mail from this sender comes in from now on.",
-        "In deinen Eingang geholt. E-Mails dieses Absenders kommen ab jetzt an.",
+        "Not fraud: it is in your inbox, and mail from this sender comes in from now on.",
+        "Kein Betrug: Sie ist in deinem Eingang, und E-Mails dieses Absenders kommen ab jetzt an.",
     ),
     ("Couldn't bring the mail back.", "Die E-Mail ließ sich nicht zurückholen."),
     ("Never caught as fraud or spam", "Nie als Betrug oder Spam abgefangen"),
@@ -4472,8 +4472,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No trusted senders yet.", "Noch keine vertrauten Absender."),
     ("Bring {messages} back into the inbox as no fraud", "{messages} als kein Betrug in den Eingang holen"),
     (
-        "Bring {messages} back into the inbox and never catch mail from {senders} again",
-        "{messages} in den Eingang holen und E-Mails von {senders} nie mehr abfangen",
+        "Bring {messages} back into the inbox and never catch mail from {senders} again, in every mail account",
+        "{messages} in den Eingang holen und E-Mails von {senders} in keinem E-Mail-Konto mehr abfangen",
     ),
     ("their senders", "ihre Absender"),
     ("Catch mail from {sender} as fraud or spam again", "E-Mails von {sender} wieder als Betrug oder Spam abfangen"),

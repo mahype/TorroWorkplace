@@ -3049,7 +3049,7 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 senders => senders.iter().map(|sender| format!("\"{}\"", quote(sender))).collect::<Vec<_>>().join(", "),
             };
             trf(
-                "Bring {messages} back into the inbox and never catch mail from {senders} again",
+                "Bring {messages} back into the inbox and never catch mail from {senders} again, in every mail account",
                 &[("messages", &mail_messages(facts.mail.as_ref(), ids.len())), ("senders", &senders)],
             )
         }
@@ -6101,7 +6101,7 @@ pub(crate) mod tests {
         assert_eq!(
             inbox_summary(&release(true), &caught),
             trf(
-                "Bring {messages} back into the inbox and never catch mail from {senders} again",
+                "Bring {messages} back into the inbox and never catch mail from {senders} again, in every mail account",
                 &[("messages", &messages), ("senders", &"\"deals@shop.example\", \"x'y@shop.example\"")]
             )
         );

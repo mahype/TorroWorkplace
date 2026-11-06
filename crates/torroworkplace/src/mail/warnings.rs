@@ -390,7 +390,9 @@ fn sender_signs(name: &str, domain: Option<&str>, found: &mut Vec<WarningSign>) 
     let Some(domain) = domain else { return };
     let freemail = FREEMAIL.contains(&registrable(domain).as_str());
     for brand in named_brands(name) {
-        if within(domain, brand.domains) {
+        // A free mail domain of the brand itself (`outlook.com`, `icloud.com`) is anyone's address:
+        // a company writes from its own domains, never from a box everybody can get.
+        if within(domain, brand.domains) && !freemail {
             continue;
         }
         found.push(WarningSign::BrandMismatch { brand: brand.name.into() });
@@ -412,10 +414,9 @@ fn sender_signs(name: &str, domain: Option<&str>, found: &mut Vec<WarningSign>) 
 /// The brand `domain` only looks like (module docs), while it is none of the brand's: a label of
 /// it, or a part of one between hyphens, is the brand's word after folding look-alike letters
 /// (`paypa1`, `rn` for `m`, also the word itself below a foreign domain, `paypal.com.login.example`),
-/// one letter swapped or added (`netfliix`), or holds a long brand word with more letters on
-/// (`paypalsecure`). The top-level
-/// domain is no label here. Words that are ordinary words too ([`ORDINARY_WORDS`]) only count as
-/// they are, never one letter off or inside another word.
+/// one letter swapped or added (`netfliix`), one left out of a long word (`amazn`), or holds a long
+/// brand word with more letters on (`paypalsecure`). The top-level domain is no label here. Words that
+/// are ordinary words too ([`ORDINARY_WORDS`]) never count in a domain: `apple-farm.de` is no Apple.
 fn lookalike(domain: &str) -> Option<&'static Brand> {
     let labels: Vec<&str> = domain.split('.').collect();
     let labels = &labels[..labels.len().saturating_sub(1)];
@@ -434,10 +435,12 @@ fn lookalike(domain: &str) -> Option<&'static Brand> {
             words.iter().any(|word| {
                 let ordinary = ORDINARY_WORDS.contains(&word.as_str());
                 let exact = folded == *word && !ordinary;
-                // A letter swapped or one more, never one less: `mail` is no `gmail`.
+                // A letter swapped or one more; one less only of a long word (`amazn`, `paypl` for
+                // words of six letters), never of a short one: `mail` is no `gmail`.
+                let shorter = folded.len() + 1 == word.len() && word.len() >= 6;
                 let near = !ordinary
                     && word.len() >= 5
-                    && folded.len() >= word.len()
+                    && (folded.len() >= word.len() || shorter)
                     && folded != *word
                     && distance(&folded, word) <= 1;
                 let joined =
@@ -449,7 +452,7 @@ fn lookalike(domain: &str) -> Option<&'static Brand> {
 }
 
 /// Brand words that are ordinary words or names as well: in a domain they say nothing.
-const ORDINARY_WORDS: &[&str] = &["apple", "steam", "hermes", "visa", "outlook", "george", "meta"];
+const ORDINARY_WORDS: &[&str] = &["apple", "steam", "hermes", "visa", "outlook"];
 
 /// `label` with the letters fraud swaps for look-alikes put back: `0` → `o`, `1` → `l`, `rn` → `m`,
 /// `vv` → `w`.
@@ -784,6 +787,9 @@ mod tests {
         assert!(signs_of(&fake, "").contains(&WarningSign::BrandMismatch { brand: "PayPal".into() }));
         let real = address("PayPal", "service@mail.paypal.de");
         assert!(signs_of(&real, "").is_empty(), "{:?}", signs_of(&real, ""));
+        // A brand's own free mail domain is anyone's address (review of #506).
+        let outlook = signs_of(&address("Microsoft Account Team", "ms.security123@outlook.com"), "");
+        assert!(outlook.contains(&WarningSign::FreemailBrand { brand: "Microsoft".into() }), "{outlook:?}");
         let free = address("Amazon Kundendienst", "amazon.hilfe@gmail.com");
         let found = signs_of(&free, "");
         assert!(found.contains(&WarningSign::FreemailBrand { brand: "Amazon".into() }), "{found:?}");
@@ -793,7 +799,9 @@ mod tests {
 
     #[test]
     fn domains_that_only_look_like_a_brand_are_lookalikes() {
-        for domain in ["paypa1.com", "paypal-secure.com", "arnazon.de", "paypal.com.login-check.ru", "netfliix.com"] {
+        for domain in
+            ["paypa1.com", "paypal-secure.com", "arnazon.de", "paypal.com.login-check.ru", "netfliix.com", "amazn.com"]
+        {
             let found = signs_of(&address("", &format!("info@{domain}")), "");
             assert!(found.iter().any(|sign| matches!(sign, WarningSign::Lookalike { .. })), "{domain}: {found:?}");
         }

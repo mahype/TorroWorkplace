@@ -930,21 +930,6 @@ async fn fill_texts(
     command.release();
 }
 
-/// The message `id` of `account` with its text and its cleaned HTML (issue #506, the warning signs
-/// of fraud read its links): from the store, else fetched from the server once (`BODY.PEEK[]`, so it
-/// stays unread) and kept as [`fetch_body`] keeps it. `not-found` for an account without mail on or
-/// a message its store does not hold; the account's errors when the server cannot be asked.
-pub(crate) async fn message_with_text(mail: &MailService, account: &str, id: &str) -> Answer<Message> {
-    let store = mail.store(account).await.map_err(|err| Box::new(err.response()))?;
-    let located = locate(&[(account.to_string(), store)], id).await?;
-    let mut message = stored_message(&located).await?;
-    match stored_html(&located).await? {
-        Some(html) if message.text.is_some() => message.html = html,
-        _ => message = fetch_body(mail, &located).await?,
-    }
-    Ok(message)
-}
-
 /// The message as the store has it; `not-found` when the sync dropped it meanwhile.
 pub(crate) async fn stored_message(located: &Located) -> Answer<Message> {
     let id = located.place.id.clone();

@@ -247,20 +247,24 @@ Seit Issue #506 fängt Torro sicheren Betrug und Spam ab, bevor er im Eingang an
    hat keine Absenderprüfung und keinen Antwortbezug), geben kein Zeichen.
 2. **Enger Betrugs-Aufruf** an das Modell, das sortiert (`categorize::judge_request`): zwei Ja-Nein-Fragen
    „Betrug?“ und „Spam?“ mit den Warnzeichen als Worten der Suite außerhalb des Zauns. Die verdächtige
-   Mail wartet darauf höchstens eine Minute, ohne Eintrag und ohne Benachrichtigung.
+   Mail einer Runde wartet darauf zusammen höchstens eine Minute, ohne Eintrag und ohne
+   Benachrichtigung; was dann noch offen ist, kommt ohne Urteil an. Gelesen wird dafür nur, was der
+   Speicher hält (Text und HTML, sonst Kopfzeilen und Anfang), nie der Server.
 3. **Wirkung:** ab 90 % Betrug (`SURE`) wird sie `phishing`, ab 90 % Spam `spam`, und sie ist
    **abgefangen** (`MessageSummary::caught`): nicht in „All“, nicht in Zahlen, Eingang und
    Benachrichtigungen, aber unter Unerwünscht › Betrug bzw. Spam mit Band und entschärften Links. Ab
    50 % Betrug (`UNSURE`) bleibt sie im Eingang, als `phishing` mit Band. Sonst, bei Fehler oder ohne
    Antwort wird sie eingetragen wie jede andere. Ohne Sortier-Modell fängt Torro nichts ab.
-4. **„Kein Betrug“** (bzw. „Kein Spam“) holt eine Mail zurück: nicht mehr abgefangen, ohne die Kategorie,
+4. **„Kein Betrug“** (bzw. „Kein Spam“) holt eine Mail zurück: nicht mehr abgefangen, ohne die Kategorie
+   (eine von Hand gesetzte bleibt, sie ändert der Mensch im Kategorie-Menü),
    als neuer Eintrag ohne Benachrichtigung, das Modell ordnet sie neu ein, und ihr Absender gilt ab jetzt
    als vertraut (`RuleEffect::Trusted`, zu sehen und zu entfernen auf den Seiten Spam und Betrug unter
    Einstellungen › Categorization).
 
 **Bekannte werden nie abgefangen**, egal welche Warnzeichen zutreffen: Adressbuch-Kontakte (auch wenn
 „Mail von Kontakten ist persönlich“ aus ist), Adressen, an die ein Konto geschrieben hat (`To`/`Cc` im
-Gesendet-Ordner), Antworten in Unterhaltungen mit eigener Mail und mit „Kein Betrug“ gemerkte Absender.
+Gesendet-Ordner), Antworten in Unterhaltungen mit einer Mail aus dem Gesendet-Ordner (Mail im eigenen
+Namen in anderen Ordnern zählt nicht, sie kann gefälscht sein) und mit „Kein Betrug“ gemerkte Absender.
 Die eigene Adresse zählt nur, solange ihre Absenderprüfung (SPF, DMARC) nicht durchfällt: Die
 Erpressungsmasche „Ich habe dein Konto gehackt“ schickt in ihrem Namen. Ein Bekannter, dessen Adresse
 gefälscht wird, bleibt erkennbar wie bisher (Issue #390): Das Modell wählt nur zwischen `personal` und

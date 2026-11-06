@@ -3229,7 +3229,11 @@ fn fraud_band<'a>(summary: &MessageSummary, signs: &[torro_mail::WarningSign]) -
                   The mail itself is untouched.");
     let label = if spam { tr("Not spam") } else { tr("Not fraud") };
     let lines = signs.iter().map(warning_words).collect();
-    Some(widgets::warning_band_with(what, why, lines, Some((label.to_owned(), Message::Release(summary.id.clone())))))
+    // A person's own Phishing is theirs to change in the category menu; "Not fraud" takes back what
+    // the core or a model said.
+    let by_person = summary.category.is_some_and(|held| held.source == torro_mail::CategorySource::Person);
+    let action = (summary.caught || !by_person).then(|| (label.to_owned(), Message::Release(summary.id.clone())));
+    Some(widgets::warning_band_with(what, why, lines, action))
 }
 
 /// One warning sign as the reader names it (issue #506): what looks wrong, in a few words.

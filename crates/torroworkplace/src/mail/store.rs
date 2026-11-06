@@ -1478,8 +1478,17 @@ impl MailStore {
         Ok(found.is_some())
     }
 
-    /// Whether the store holds a mail from `address` (in any case, any folder) other than `id` (issue
-    /// #506): without one, `id` is the first contact of that address.
+    /// Whether the conversation `thread_id` holds a mail of the sent folder (issue #506): a reply in it
+    /// answers mail of one's own. Mail in one's name in other folders does not count – it may be forged.
+    pub fn sent_in_thread(&self, thread_id: &str) -> Result<bool, MailStoreError> {
+        let Some(sent) = self.folder_by_role(Role::Sent)? else { return Ok(false) };
+        let sql = "SELECT 1 FROM messages WHERE thread_id = ?1 AND folder_id = ?2 LIMIT 1";
+        Ok(self.db.query_row(sql, params![thread_id, sent.id], |row| row.get::<_, i64>(0)).optional()?.is_some())
+    }
+
+    /// Whether the store holds a mail from `address` (in any case, any folder) other than `id` and its
+    /// copies with the same `Message-ID` – Gmail keeps every mail in "All Mail" too (issue #506):
+    /// without one, `id` is the first contact of that address.
     pub fn has_other_from(&self, address: &str, id: &str) -> Result<bool, MailStoreError> {
         let address = address.trim().to_lowercase();
         if address.is_empty() || address.contains('"') || address.contains('\\') {
@@ -1489,7 +1498,10 @@ impl MailStore {
         let found: Option<i64> = self
             .db
             .query_row(
-                "SELECT 1 FROM messages WHERE id <> ?1 AND instr(lower(from_json), ?2) > 0 LIMIT 1",
+                "SELECT 1 FROM messages WHERE id <> ?1 AND instr(lower(from_json), ?2) > 0
+                 AND (rfc_message_id IS NULL
+                      OR rfc_message_id IS NOT (SELECT rfc_message_id FROM messages WHERE id = ?1))
+                 LIMIT 1",
                 params![id, needle],
                 |row| row.get(0),
             )
@@ -3554,6 +3566,19 @@ mod tests {
         assert!(!store.wrote_to("anna@example.org").expect("read"), "the inbox's To does not count");
 
         assert!(store.has_other_from("bernd@example.com", &first).expect("read"), "Bernd wrote twice");
+        // A copy of the same mail elsewhere (Gmail's All Mail) is no other mail.
+        let archive = folder(&store, "All Mail", None);
+        let mut alone = message(9, "Single");
+        alone.from = Some(address(None, "eve@example.net"));
+        let single = add(&store, &inbox, &alone);
+        add(&store, &archive, &alone);
+        assert!(!store.has_other_from("eve@example.net", &single).expect("read"), "the copy does not count");
+        // Only the sent folder makes a conversation one's own; mail in one's name elsewhere may be forged.
+        assert!(store.sent_in_thread(&written.thread_id).expect("read"));
+        let mut forged = message(10, "In your name");
+        forged.from = Some(address(None, "anna@example.org"));
+        add(&store, &inbox, &forged);
+        assert!(!store.sent_in_thread(&forged.thread_id).expect("read"));
         let lone = message(4, "Hi");
         let lone = NewMessage { from: Some(address(None, "dora@example.net")), ..lone };
         let lone = add(&store, &inbox, &lone);

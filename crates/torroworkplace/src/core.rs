@@ -1355,12 +1355,15 @@ fn from_contact(
 }
 
 /// Whether `summary` is mail "Not fraud" can bring back (issue #506): caught, or filed as Phishing or
-/// Spam.
+/// Spam by the core or a model – a person's own choice is theirs to change, not a command's.
 fn releasable(summary: &torro_mail::MessageSummary) -> bool {
-    summary.caught
-        || summary
-            .category
-            .is_some_and(|held| matches!(held.category, torro_mail::Category::Phishing | torro_mail::Category::Spam))
+    summary.caught || summary.category.is_some_and(automatic_unwanted)
+}
+
+/// `held` is Phishing or Spam, said by a rule or a model, not by a person (issue #506).
+fn automatic_unwanted(held: torro_mail::MailCategory) -> bool {
+    matches!(held.category, torro_mail::Category::Phishing | torro_mail::Category::Spam)
+        && held.source != torro_mail::CategorySource::Person
 }
 
 /// Personal, as the contacts give it (issue #390): set by a rule, not by a model.
@@ -3470,7 +3473,7 @@ impl Core {
     /// sender trusted with "Not fraud" – and the narrow question to the model
     /// ([`Core::new_mail_judge`]).
     fn fraud_guard(&self) -> crate::mail::inbox_feed::Guard {
-        crate::mail::inbox_feed::Guard { acquaintance: self.acquaintance(), judge: self.new_mail_judge() }
+        crate::mail::inbox_feed::Guard::new(self.acquaintance(), self.new_mail_judge())
     }
 
     /// Who the person knows (issue #506, decision 5), as far as the address books and the inbox's
@@ -9342,7 +9345,8 @@ impl Core {
     }
 
     /// `unsupported` when one of the mail `ids` (in reach, [`Core::reachable_mail_of`] checked that) is
-    /// neither caught nor filed as Phishing or Spam (issue #506): there is nothing to bring back.
+    /// neither caught nor filed as Phishing or Spam by the core or a model (issue #506): there is
+    /// nothing to bring back, and a person's own choice stays.
     /// `None` when every one may be brought back, also when a store cannot be read (the command
     /// finds that out itself).
     async fn unreleasable(&self, ids: &[String], reach: Reach<'_>) -> Option<Response> {
@@ -9395,9 +9399,8 @@ impl Core {
                 .run(move |store| {
                     let Some(summary) = store.summary(&id)? else { return Ok(None) };
                     store.set_caught(&id, false)?;
-                    let unwanted = summary.category.is_some_and(|held| {
-                        matches!(held.category, torro_mail::Category::Phishing | torro_mail::Category::Spam)
-                    });
+                    // Never a person's own choice: only what the core or a model said goes.
+                    let unwanted = summary.category.is_some_and(automatic_unwanted);
                     if unwanted {
                         store.set_category(&id, None)?;
                     }
@@ -9408,10 +9411,10 @@ impl Core {
                         true => crate::mail::inbox_feed::mail_to_file(store, &owner, &id)?,
                         false => None,
                     };
-                    Ok(Some((summary, filing)))
+                    Ok(Some((summary, filing, unwanted)))
                 })
                 .await;
-            let (summary, filing) = match released {
+            let (summary, filing, unwanted) = match released {
                 Ok(Some(found)) => found,
                 Ok(None) => continue,
                 Err(err) => {
@@ -9438,6 +9441,15 @@ impl Core {
             match entry {
                 // Seen at once: the person brought it back and knows it is there; no popup.
                 Ok(Some(entry)) => self.inbox.opened(&entry, None, now),
+                // In the inbox already (filed as Phishing with its band): its entry loses the
+                // category as the mail did.
+                Ok(None) if unwanted => {
+                    if let Some(entry) = self.inbox.entry_of_message(account, message)
+                        && let Err(err) = self.inbox.set_category(&entry, None)
+                    {
+                        eprintln!("torroworkplace: inbox: cannot take the category off an entry of {account}: {err}");
+                    }
+                }
                 Ok(None) => {}
                 Err(err) => {
                     eprintln!("torroworkplace: inbox: cannot file a mail of {account} brought back: {err}");
@@ -23182,6 +23194,25 @@ mod tests {
         let trusted: Vec<_> = rules.iter().filter(|rule| rule.effect == torro_inbox::RuleEffect::Trusted).collect();
         assert_eq!(trusted.len(), 1);
         assert_eq!(trusted[0].sender.as_deref(), Some("service@paypa1-secure.example"));
+
+        // Filed as Phishing by a model and in the inbox already: its entry loses the category too.
+        // A person's own Phishing is theirs: `unsupported`.
+        let lunch_id = back["Lunch"].id.clone();
+        let filing = crate::mail::read::tests::filing(&back["Lunch"]);
+        core.inbox.file_mail(&filing, torro_mail::Notify::All, Utc::now()).expect("filed");
+        let entry = core.inbox.entry_of_message(ANNA_MAIL, &lunch_id).expect("an entry");
+        let phishing = torro_mail::MailCategory::by_model(torro_mail::Category::Phishing, 0.6);
+        core.inbox.set_category(&entry, Some(phishing)).expect("on the entry");
+        let one = vec![lunch_id.clone()];
+        core.mail.set_category(ANNA_MAIL, &one, Some(phishing)).await.expect("on the mail");
+        assert_eq!(ask(&core, Some(&app_key), release(one.clone(), false)).await, Response::Ok);
+        let Response::Item { item } = ask(&core, Some(&app_key), Request::GetItem { id: entry.clone() }).await else {
+            panic!("the entry")
+        };
+        assert_eq!(item.category, None, "the entry lost Phishing");
+        let by_hand = torro_mail::MailCategory::by_person(torro_mail::Category::Phishing);
+        core.mail.set_category(ANNA_MAIL, &one, Some(by_hand)).await.expect("by hand");
+        assert_eq!(code(&ask(&core, Some(&app_key), release(one, false)).await), "unsupported");
 
         // The app key brings spam back at once, here without trusting the sender.
         assert_eq!(ask(&core, Some(&app_key), release(vec![prize.clone()], false)).await, Response::Ok);

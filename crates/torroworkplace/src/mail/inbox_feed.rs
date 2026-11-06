@@ -226,20 +226,32 @@ struct Judging {
     mail: Arc<MailService>,
     account: String,
     notify: Notify,
-    /// How long one verdict may take ([`JUDGE_TIMEOUT`]).
+    /// How long all verdicts of the round may take together ([`JUDGE_TIMEOUT`]).
     timeout: Duration,
+    /// What is held back ([`Guard`]): each mail leaves it once it is caught or filed.
+    holding: Holding,
 }
 
 impl Judging {
-    /// Asks about each of `held` in turn, at most `timeout` ([`JUDGE_TIMEOUT`]) each, and catches it, files it
-    /// as Phishing or files it as any other mail, as the module docs say. The category is kept only
-    /// while nobody set another meanwhile (`set_category_if_unchanged`); else the mail is filed with
-    /// what is there.
+    /// Asks about each of `held` in turn, all within `timeout` ([`JUDGE_TIMEOUT`]) – what is left
+    /// then is filed without a verdict –, and catches it, files it as Phishing or files it as any
+    /// other mail, as the module docs say. The category is kept only while nobody set another
+    /// meanwhile (`set_category_if_unchanged`); else the mail is filed with what is there.
     async fn run(self, held: Vec<(NewMail, Vec<WarningSign>)>) {
+        let deadline = tokio::time::Instant::now() + self.timeout;
+        for (new, signs) in held {
+            let message = new.message.clone();
+            self.one(new, signs, deadline).await;
+            self.holding.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&message);
+        }
+    }
+
+    /// One mail of [`Judging::run`]: its verdict, until `deadline` at most, and what follows.
+    async fn one(&self, mut new: NewMail, signs: Vec<WarningSign>, deadline: tokio::time::Instant) {
         let account = self.account.clone();
-        for (mut new, signs) in held {
+        {
             let asked = (self.judge)(account.clone(), new.message.clone(), signs);
-            let verdict = tokio::time::timeout(self.timeout, asked).await.ok().flatten();
+            let verdict = tokio::time::timeout_at(deadline, asked).await.ok().flatten();
             let sure = |probability: f32| probability >= crate::categorize::SURE;
             let caught = match verdict {
                 Some(verdict) if sure(verdict.fraud) => {
@@ -256,7 +268,7 @@ impl Judging {
                 && self.keep(&new.message, category).await
             {
                 match self.mail.set_caught(&account, std::slice::from_ref(&new.message), true).await {
-                    Ok(()) => continue,
+                    Ok(()) => return,
                     // Not caught after all: it comes in with the category it has, and its band.
                     Err(err) => {
                         eprintln!("torroworkplace: inbox: cannot catch a mail of {account}: {}", err.code());
@@ -273,18 +285,31 @@ impl Judging {
                 }
                 (None, None) => None,
             };
-            new.category = phishing.or(new.category);
+            // Without a category of the verdict: what the mail has now, if anything came meanwhile.
+            let held = match phishing {
+                Some(category) => Some(category),
+                None => self.category_now(&new.message).await,
+            };
+            new.category = held.or(new.category);
             if let Err(err) = self.inbox.file_mail(&new, self.notify, Utc::now()) {
                 eprintln!("torroworkplace: inbox: cannot file the new mail of {account}: {err}");
-                continue;
+                return;
             }
-            if phishing.is_none()
+            if held.is_none()
                 && let Some(decide) = &self.decide
             {
                 let one = vec![(new.message.clone(), false)];
                 decide_later(Arc::clone(decide), Arc::clone(&self.inbox), account.clone(), one).await;
             }
         }
+    }
+
+    /// The category the mail `message` has in the store now; `None` without one or when the store
+    /// cannot be read.
+    async fn category_now(&self, message: &str) -> Option<torro_mail::MailCategory> {
+        let store = self.mail.store(&self.account).await.ok()?;
+        let id = message.to_string();
+        store.run(move |store| store.summary(&id)).await.ok().flatten().and_then(|summary| summary.category)
     }
 
     /// Keeps `category` with the mail `message` if it still has none; `false` when another came
@@ -355,20 +380,34 @@ pub type Judge = Arc<
 pub struct Guard {
     pub acquaintance: Acquaintance,
     pub judge: Judge,
+    /// The mails (`m:…`) held back for a verdict right now: no other round files them meanwhile, not
+    /// a catch-up after a gap and not the same change again.
+    holding: Holding,
 }
 
-/// How long a suspicious mail waits for the model's verdict at most before it is filed as any other
-/// (issue #506, decision 3): it is held back, so a model that hangs must not hold it for ever.
-pub const JUDGE_TIMEOUT: Duration = Duration::from_secs(60);
+impl Guard {
+    pub fn new(acquaintance: Acquaintance, judge: Judge) -> Guard {
+        Guard { acquaintance, judge, holding: Holding::default() }
+    }
+}
 
-/// How long the feed waits for the text of a stranger's mail before it reads its warning signs from
-/// the headers alone (issue #506): a server that does not answer must not hold up the round.
-const TEXT_TIMEOUT: Duration = Duration::from_secs(15);
+/// The mails held back for a verdict ([`Guard`]), shared by the feed and its judging task.
+type Holding = Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>;
+
+/// Whether `message` is held back for a verdict now.
+fn held_back(holding: &Holding, message: &str) -> bool {
+    holding.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(message)
+}
+
+/// How long the suspicious mail of one round waits for the model's verdicts at most, all of them
+/// together, before what is left is filed as any other mail (issue #506, decision 3): it is held
+/// back, so a model that hangs must not hold it for ever.
+pub const JUDGE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Whether the sender of the mail `summary` of `account` is someone the person knows (issue #506,
 /// decision 5): never caught, whatever its signs. Known are a contact or a trusted sender
 /// ([`Acquaintance::knows`]), an address any account wrote to (`MailStore::wrote_to`) and a mail in
-/// a conversation that holds mail of the account's own (`MailStore::sent_after`). The address of
+/// a conversation that holds mail of the account's sent folder (`MailStore::sent_in_thread`). The address of
 /// one of the person's own accounts counts only while its sender check (SPF, DMARC) did not fail:
 /// the blackmail "I hacked your account" comes in one's own name. A mail without a sender is known
 /// to nobody. Stores that cannot be read count as not knowing.
@@ -397,9 +436,11 @@ pub(crate) async fn acquainted(
             return true;
         }
     }
+    // Only mail in the sent folder counts as one's own here: mail in one's name elsewhere may be
+    // forged, and a reply to it would make the whole conversation "known".
     let Ok(store) = mail.store(account).await else { return false };
-    let (thread, own) = (summary.thread_id.clone(), own_address(account));
-    store.run(move |store| store.sent_after(&thread, DateTime::UNIX_EPOCH, &own)).await.is_ok_and(|count| count > 0)
+    let thread = summary.thread_id.clone();
+    store.run(move |store| store.sent_in_thread(&thread)).await.unwrap_or(false)
 }
 
 /// The two warning signs of the mail `message` of `account` that need the person's own data (issue
@@ -1056,6 +1097,10 @@ impl Feed {
                 return;
             }
         };
+        // Mail held back for a verdict (issue #506) is the judging task's to file.
+        if let Some(guard) = &self.guard {
+            mails.retain(|mail| !held_back(&guard.holding, &mail.message));
+        }
         for mail in &mut mails {
             mail.category =
                 by_filter.iter().find(|(message, _)| *message == mail.message).map(|(_, category)| *category);
@@ -1125,7 +1170,7 @@ impl Feed {
                     .filter(|mail| !held.contains(&mail.message) && !touched.contains(&mail.message))
                     .filter(|mail| mail.category.is_none() && !mail.junk)
                     .collect();
-                self.suspicious(&guard.acquaintance, account, &open).await
+                self.suspicious(guard, account, &open).await
             }
             _ => Vec::new(),
         };
@@ -1147,6 +1192,7 @@ impl Feed {
                 account: account.to_string(),
                 notify,
                 timeout: JUDGE_TIMEOUT,
+                holding: Arc::clone(&guard.holding),
             };
             tokio::spawn(judging.run(suspicious));
         }
@@ -1168,36 +1214,30 @@ impl Feed {
 
     /// Those of `open` (new mail of `account` nothing sorted) whose sender nobody knows
     /// ([`acquainted`]) and whose warning signs reach [`super::warnings::SUSPICION`], each with its
-    /// signs (issue #506). The text and HTML are read for the links (from the store, else the
-    /// server, at most [`TEXT_TIMEOUT`]; then the headers alone). A mail that cannot be read is
-    /// left to be filed.
-    async fn suspicious(
-        &self,
-        who: &Acquaintance,
-        account: &str,
-        open: &[&NewMail],
-    ) -> Vec<(NewMail, Vec<WarningSign>)> {
+    /// signs (issue #506), now held back ([`Guard`]). Read from the store alone – text and HTML as far
+    /// as the sync kept them, else the headers and the snippet –, never from the server: the round
+    /// must not wait for it. A mail that cannot be read is left to be filed.
+    async fn suspicious(&self, guard: &Guard, account: &str, open: &[&NewMail]) -> Vec<(NewMail, Vec<WarningSign>)> {
+        let who = &guard.acquaintance;
         let Ok(store) = self.mail.store(account).await else { return Vec::new() };
         let mut found = Vec::new();
         for mail in open {
             let id = mail.message.clone();
-            let Ok(Some(headers)) = store.run(move |store| store.message(&id)).await else { continue };
-            if acquainted(&self.mail, who, account, &headers.summary, headers.traits.auth.as_ref()).await {
+            let held = store.run(move |store| Ok((store.message(&id)?, store.html(&id)?))).await;
+            let Ok((Some(message), html)) = held else { continue };
+            if acquainted(&self.mail, who, account, &message.summary, message.traits.auth.as_ref()).await {
                 continue;
             }
-            let read = super::read::message_with_text(&self.mail, account, &mail.message);
-            let message = match tokio::time::timeout(TEXT_TIMEOUT, read).await {
-                Ok(Ok(message)) => message,
-                _ => headers,
-            };
             let (name, first) = own_data_signs(&self.mail, who, account, &message.summary).await;
+            let html = html.flatten();
             let facts = super::warnings::SignFacts {
                 contact_name_foreign: name,
                 first_contact: first,
-                ..super::warnings::SignFacts::of(&message, None)
+                ..super::warnings::SignFacts::of(&message, html.as_deref())
             };
             let signs = super::warnings::signs(&facts);
             if super::warnings::score(&signs) >= super::warnings::SUSPICION {
+                guard.holding.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(mail.message.clone());
                 found.push(((*mail).clone(), signs));
             }
         }
@@ -3081,7 +3121,7 @@ pub(crate) mod tests {
             knows: Arc::new(move |address: &str| known.contains(&address)),
             knows_name: Arc::new(|name: &str| name == "Jonas Weber"),
         };
-        (Guard { acquaintance, judge }, judged)
+        (Guard::new(acquaintance, judge), judged)
     }
 
     const FRAUD: [&str; 4] =
@@ -3206,6 +3246,49 @@ pub(crate) mod tests {
         assert_eq!(asked, [all["Hacked"].id.clone()], "only the forged own address was asked about");
     }
 
+    /// Review of #506: the minute holds for the whole round, not for each mail; and a mail held back
+    /// is filed by nobody else meanwhile – not by a catch-up after a gap.
+    #[tokio::test]
+    async fn the_round_waits_one_minute_and_nobody_files_what_is_held() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &fraud_fixture("fraud-boss.eml"), &[]);
+        server.add("INBOX", &fraud_fixture("fraud-bank-dmarc.eml"), &[]);
+        let (inbox, mail, feed) = quiet(dir.path(), &server).await;
+        let hanging: Judge = Arc::new(|_account: String, _message: String, _signs: Vec<WarningSign>| {
+            Box::pin(std::future::pending::<Option<Verdict>>())
+        });
+        let acquaintance = Acquaintance { knows: Arc::new(|_: &str| false), knows_name: Arc::new(|_: &str| false) };
+        let guard = Guard::new(acquaintance, hanging);
+        let holding = Arc::clone(&guard.holding);
+        let feed = Feed { guard: Some(guard), ..feed };
+        let all = by_subject(&mail).await;
+        let new: Vec<&torro_mail::MessageSummary> = all.values().collect();
+        feed.take(arrived(&new), Utc::now()).await;
+        assert_eq!(holding.lock().expect("lock").len(), 2, "both held back");
+        feed.catch_up(Utc::now()).await;
+        assert!(titles(&inbox).is_empty(), "a catch-up files nothing held back");
+
+        let filing = crate::mail::read::tests::filing;
+        let judging = Judging {
+            judge: Arc::new(|_account: String, _message: String, _signs: Vec<WarningSign>| {
+                Box::pin(std::future::pending::<Option<Verdict>>())
+            }),
+            decide: None,
+            inbox: Arc::clone(&inbox),
+            mail: Arc::clone(&mail),
+            account: ANNA.into(),
+            notify: Notify::All,
+            timeout: Duration::from_millis(300),
+            holding: Holding::default(),
+        };
+        let started = std::time::Instant::now();
+        let held: Vec<(NewMail, Vec<WarningSign>)> = new.iter().map(|m| (filing(m), Vec::new())).collect();
+        judging.run(held).await;
+        assert!(started.elapsed() < Duration::from_millis(550), "one deadline for the round: {:?}", started.elapsed());
+        assert_eq!(titles(&inbox).len(), 2);
+    }
+
     /// Issue #506, decision 3: a verdict that does not come in time files the mail as any other, and
     /// the model sorts it as new mail.
     #[tokio::test]
@@ -3229,6 +3312,7 @@ pub(crate) mod tests {
             account: ANNA.into(),
             notify: Notify::All,
             timeout: Duration::from_millis(50),
+            holding: Holding::default(),
         };
         judging.run(vec![(filing(message), vec![WarningSign::PaymentChange])]).await;
         assert_eq!(titles(&inbox), std::slice::from_ref(&message.subject), "filed after all");

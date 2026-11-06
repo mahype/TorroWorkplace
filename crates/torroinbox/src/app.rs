@@ -5484,7 +5484,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 {
                     mail::released(mail);
                 }
-                let text = tr("Moved to your inbox. Mail from this sender comes in from now on.").to_owned();
+                let text =
+                    tr("Not fraud: it is in your inbox, and mail from this sender comes in from now on.").to_owned();
                 self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
                 return self.load();
             }
@@ -16421,7 +16422,7 @@ mod tests {
         assert_eq!(caught(&app), (false, 0), "the band goes at once");
         assert_eq!(
             app.hint.as_ref().map(|hint| hint.text.as_str()),
-            Some(tr("Moved to your inbox. Mail from this sender comes in from now on."))
+            Some(tr("Not fraud: it is in your inbox, and mail from this sender comes in from now on."))
         );
         let _ = app.update(Message::Released("m:w30".into(), Err("offline".into())));
         assert!(app.error.is_some(), "a failure says so");
