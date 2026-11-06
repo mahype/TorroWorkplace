@@ -221,6 +221,14 @@ impl Job {
         running.info.error = Some(code.to_string());
     }
 
+    /// A failed job after which the service hands over to the main application's new copy all the same.
+    pub fn mark_restart(&self) {
+        let mut board = self.board.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(running) = board.running.as_mut().filter(|running| running.info.id == self.id) {
+            running.info.restart = true;
+        }
+    }
+
     /// Every step is done; `restart` when the main application was updated and the service hands over
     /// to its new copy now.
     pub fn finish(&self, restart: bool) {

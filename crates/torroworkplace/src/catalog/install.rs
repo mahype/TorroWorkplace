@@ -249,9 +249,11 @@ pub fn bundle_folder(env: &Env) -> Option<PathBuf> {
 
 /// macOS: puts the bundle `new` at `target`, so that a failure leaves what was there (review of #411):
 /// `new` first goes beside `target` (`.<name>.new`, moved when on the same disk, else copied with
-/// `ditto`, which keeps the signature), what lies at `target` is renamed aside (`.<name>.old`), then the
-/// new one takes its place; when that fails the old one goes back. Only then do the old one and `old`
-/// (an earlier bundle elsewhere) go to the trash; a bundle the trash refuses stays aside, hidden.
+/// `ditto`, which keeps the signature), what lies at `target` is moved aside under its own name into the
+/// hidden folder `.torro-replaced`, then the new one takes its place; when that fails the old one goes
+/// back. Only then do the old one (under its own name, so the trash shows it as it was) and `old` (an
+/// earlier bundle elsewhere) go to the trash; one the trash refuses is deleted, it is the suite's own
+/// program and the new one is in place.
 pub fn place_bundle(
     new: &Path,
     target: &Path,
@@ -275,11 +277,13 @@ pub fn place_bundle(
             return Err(Fail::Error);
         }
     }
-    let aside = dir.join(format!(".{name}.old"));
+    let replaced = dir.join(".torro-replaced");
+    let aside = replaced.join(&name);
     let had = there(target);
     if had {
         clear(&aside);
-        if let Err(err) = std::fs::rename(target, &aside) {
+        let moved = std::fs::create_dir_all(&replaced).and_then(|()| std::fs::rename(target, &aside));
+        if let Err(err) = moved {
             clear(&staged);
             return Err(io_fail(&err));
         }
@@ -294,9 +298,12 @@ pub fn place_bundle(
     let gone = old.filter(|old| *old != target && there(old));
     for away in had.then_some(aside.as_path()).into_iter().chain(gone) {
         if let Err(err) = discard(away) {
-            eprintln!("torroworkplace: the old bundle {} stays, the trash refused it: {err}", away.display());
+            eprintln!("torroworkplace: the trash refused the old bundle {} ({err}); deleting it", away.display());
+            clear(away);
         }
     }
+    // Empty now; a folder something else put there stays.
+    let _ = std::fs::remove_dir(&replaced);
     Ok(())
 }
 
@@ -813,8 +820,8 @@ pub(crate) mod tests {
         };
         place_bundle(&new, &target, Some(&earlier), &discard).expect("placed");
         assert_eq!(std::fs::read_to_string(target.join("Contents/Info.plist")).expect("plist"), "new");
-        let aside = dir.path().join("Applications/.Torro Tasks.app.old");
-        assert_eq!(*trashed.borrow(), [aside.clone(), earlier.clone()], "the old ones, after the new one lies");
+        let aside = dir.path().join("Applications/.torro-replaced/Torro Tasks.app");
+        assert_eq!(*trashed.borrow(), [aside.clone(), earlier.clone()], "the old ones by their names, afterwards");
         let left: Vec<_> = std::fs::read_dir(dir.path().join("Applications")).expect("dir").flatten().collect();
         assert_eq!(left.len(), 1, "no staged or aside bundle stays: {left:?}");
         // Nothing to place: the bundle there stays as it is.

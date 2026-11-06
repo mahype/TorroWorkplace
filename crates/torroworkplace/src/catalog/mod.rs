@@ -225,6 +225,8 @@ struct Inner {
     dev_build: bool,
     /// [`HAND_OVER_DELAY`]; none in tests.
     hand_over_delay: Duration,
+    /// [`HAND_OVER_SETTLE`]; none in tests.
+    hand_over_settle: Duration,
 }
 
 /// The app catalog of the service. Cheap to clone: every clone is the same catalog.
@@ -237,16 +239,19 @@ impl Catalog {
     /// The catalog of this computer: GitHub's releases, the state in the core's state directory, the
     /// apps where the service finds them.
     pub fn system() -> Catalog {
-        Catalog::new(Releases::system(), Env::system(), cfg!(debug_assertions), HAND_OVER_DELAY)
+        Catalog::new(Releases::system(), Env::system(), cfg!(debug_assertions), (HAND_OVER_DELAY, HAND_OVER_SETTLE))
     }
 
     /// A catalog that asks no server, keeps no file and finds no app: the one of a core in tests
     /// unless they bring theirs ([`crate::core::Core::with_catalog`]).
     pub fn none() -> Catalog {
-        Catalog::new(Releases::none(), Env::empty(Platform::CURRENT), true, Duration::ZERO)
+        Catalog::new(Releases::none(), Env::empty(Platform::CURRENT), true, (Duration::ZERO, Duration::ZERO))
     }
 
-    fn new(releases: Releases, env: Env, dev_build: bool, hand_over_delay: Duration) -> Catalog {
+    /// `pauses`: how long a done job waits before the hand-over and how long the runner stays at work
+    /// after it ([`HAND_OVER_DELAY`], [`HAND_OVER_SETTLE`]).
+    fn new(releases: Releases, env: Env, dev_build: bool, pauses: (Duration, Duration)) -> Catalog {
+        let (hand_over_delay, hand_over_settle) = pauses;
         Catalog {
             inner: Arc::new(Inner {
                 releases,
@@ -256,6 +261,7 @@ impl Catalog {
                 hooks: RwLock::new(Hooks::default()),
                 dev_build,
                 hand_over_delay,
+                hand_over_settle,
             }),
         }
     }
@@ -618,12 +624,19 @@ async fn run(inner: Arc<Inner>, work: Work, job: Job) {
             // (review of #411): it would go on from the trash, so it hands over all the same.
             let exe = inner.env.exe.as_deref();
             let gone = exe.is_some_and(|exe| done.removed.iter().any(|removed| exe.starts_with(removed)));
-            if gone {
-                let newest = Arc::clone(&inner.hooks.read().unwrap_or_else(PoisonError::into_inner).newest_service);
-                hand_over_target(exe, &done, newest(None), &Version::current()).map(|(program, _)| program)
-            } else {
-                None
+            let target = match gone {
+                true => {
+                    let newest = Arc::clone(&inner.hooks.read().unwrap_or_else(PoisonError::into_inner).newest_service);
+                    hand_over_target(exe, &done, newest(None), &Version::current()).map(|(program, _)| program)
+                }
+                false => None,
+            };
+            // The main application is in place already (a later step failed): the control centre waits
+            // for the service's restart as after a whole update.
+            if main && target.is_some() {
+                job.mark_restart();
             }
+            target
         }
     };
     // Until the service handed over the runner stays at work, so no job begins that the ending service
@@ -632,9 +645,16 @@ async fn run(inner: Arc<Inner>, work: Work, job: Job) {
         tokio::time::sleep(inner.hand_over_delay).await;
         let hook = Arc::clone(&inner.hooks.read().unwrap_or_else(PoisonError::into_inner).hand_over);
         hook(program);
+        // The service ends shortly after the hand-over; only when it could not hand over (the new copy
+        // did not start, which the hook logs) is the runner free again.
+        tokio::time::sleep(inner.hand_over_settle).await;
     }
     job.end();
 }
+
+/// How long the runner stays at work after handing the service over: the service ends within its grace
+/// time; a job begun meanwhile would be broken off by that end.
+const HAND_OVER_SETTLE: Duration = Duration::from_secs(10);
 
 type StepFail = (AppId, AppStep, Fail);
 
@@ -868,10 +888,12 @@ async fn uninstall_item(
     };
     let discard = Arc::clone(&env.discard);
     let removing = gone.clone();
+    // Noted before: the removal may go part of the way and fail, and a service whose bundle already went
+    // to the trash must hand over all the same (review of #411).
+    done.removed.extend(gone);
     blocking(move || install::remove(&removing, &data, platform, &*discard))
         .await
         .map_err(|fail| (app, AppStep::Remove, fail))?;
-    done.removed.extend(gone);
     job.done(class, AppStep::Remove, Some(found.path.display().to_string()));
     if platform != Platform::MacOs {
         if !job.start(class, AppStep::Launcher) {
@@ -905,7 +927,7 @@ pub(crate) mod tests {
     /// A catalog over `env` that asks `server` and installs for real (no development build).
     pub(crate) fn catalog_at(env: Env, server: &MockServer) -> Catalog {
         let releases = Releases::new(Some(server.base_url()), server.url("/download/"), None);
-        Catalog::new(releases, env, false, Duration::ZERO)
+        Catalog::new(releases, env, false, (Duration::ZERO, Duration::ZERO))
     }
 
     /// One file of a test release: its name, contents and, to test a wrong one, the checksum it names.
@@ -1166,7 +1188,7 @@ pub(crate) mod tests {
         serve(&server, "9.0.0", &[windows_file("torrotasks", b"MZ t")]).await;
         // A pause before the hand-over, as the service has, to see that no job begins in it.
         let releases = Releases::new(Some(server.base_url()), server.url("/download/"), None);
-        let catalog = Catalog::new(releases, env, false, Duration::from_millis(300));
+        let catalog = Catalog::new(releases, env, false, (Duration::from_millis(300), Duration::ZERO));
         let newer = dir.path().join("newer/torroworkplace.exe");
         let found = newer.clone();
         catalog.set_newest_service(Arc::new(move |_| Some((found.clone(), "9.0.0".parse().expect("version")))));
@@ -1309,7 +1331,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("dir");
         let env = env_in(dir.path(), Platform::Windows, &[], true);
         let releases = Releases::new(Some(releases::tests::nowhere()), releases::DOWNLOADS.into(), None);
-        let catalog = Catalog::new(releases, env, false, Duration::ZERO);
+        let catalog = Catalog::new(releases, env, false, (Duration::ZERO, Duration::ZERO));
         assert_eq!(catalog.install("torro-tasks").await.err(), Some(CatalogError::Offline));
     }
 
