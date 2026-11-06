@@ -344,8 +344,10 @@ pub fn plist_version(text: &str) -> Option<String> {
 pub(crate) mod tests {
     use super::*;
 
-    /// An `Info.plist` as `packaging/macos/make-app.sh` writes it, with `version`.
+    /// An `Info.plist` as `packaging/macos/make-app.sh` writes it, with `version`: Apple's keys without the
+    /// pre-release, the whole one in `TorroVersion`.
     pub(crate) fn info_plist(version: &str) -> String {
+        let short = version.split('-').next().unwrap_or(version);
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -354,8 +356,10 @@ pub(crate) mod tests {
   <key>CFBundleIdentifier</key>
   <string>io.github.mahype.torro-calendar</string>
   <key>CFBundleShortVersionString</key>
-  <string>{version}</string>
+  <string>{short}</string>
   <key>CFBundleVersion</key>
+  <string>{short}</string>
+  <key>TorroVersion</key>
   <string>{version}</string>
 </dict>
 </plist>

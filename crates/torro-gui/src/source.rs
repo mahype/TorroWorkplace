@@ -984,15 +984,18 @@ mod tests {
         text.parse().expect("a version")
     }
 
-    /// An `Info.plist` as `packaging/macos/Info.plist.in` builds it, with `version` in it.
+    /// An `Info.plist` as `packaging/macos/Info.plist.in` builds it, with `version` in it: Apple's key
+    /// without the pre-release (as `make-app.sh` cuts it), the whole one in `TorroVersion`.
     fn info_plist(version: &str) -> String {
+        let short = version.split('-').next().unwrap_or(version);
         format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
              <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
              <plist version=\"1.0\">\n<dict>\n\
              \t<key>CFBundleIdentifier</key>\n\t<string>io.github.mahype.torro-workplace-service</string>\n\
              \t<key>CFBundleVersion</key>\n\t<string>9.9.9</string>\n\
-             \t<key>CFBundleShortVersionString</key>\n\t<string>{version}</string>\n\
+             \t<key>CFBundleShortVersionString</key>\n\t<string>{short}</string>\n\
+             \t<key>TorroVersion</key>\n\t<string>{version}</string>\n\
              \t<key>LSUIElement</key>\n\t<true/>\n\
              </dict>\n</plist>\n"
         )

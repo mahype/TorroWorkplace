@@ -13962,6 +13962,7 @@ mod tests {
     /// meanwhile makes it `forbidden`; a bot that ran for the assistant gets what both may.
     #[tokio::test]
     async fn an_approved_server_tool_runs_with_the_rights_of_now() {
+        // Each answer boxed, as `ask` does: inline they make this test's future too big for its thread.
         use torro_ipc::api::Confirm;
         let dir = tempfile::tempdir().expect("temp dir");
         let (core, secrets) = extensions_core(dir.path());
@@ -13969,7 +13970,7 @@ mod tests {
         let (id, key) = client(&core, with_server(Rights::none(), Level::Full, Confirm::OnDelete)).await;
         let asked = waits(ask(&core, Some(&key), call_tool("crash")).await);
         core.clients.update(&id, with_server(Rights::none(), Level::Read, Confirm::OnDelete)).await.expect("updated");
-        let decided = approval(core.handle(decide(&asked.id, true)).await);
+        let decided = approval(Box::pin(core.handle(decide(&asked.id, true))).await);
         let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("ran, got {:?}", decided.state) };
         assert_eq!(code(&response), "forbidden");
 
@@ -14002,13 +14003,13 @@ mod tests {
             }
         };
         let pwd = open(call_tool("pwd")).await;
-        let decided = approval(core.handle(decide(&pwd.id, true)).await);
+        let decided = approval(Box::pin(core.handle(decide(&pwd.id, true))).await);
         let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("ran, got {:?}", decided.state) };
         assert_eq!(code(&response), "forbidden", "the assistant may only read");
         #[cfg(unix)]
         {
             let echo = open(call_tool("echo")).await;
-            let decided = approval(core.handle(decide(&echo.id, true)).await);
+            let decided = approval(Box::pin(core.handle(decide(&echo.id, true))).await);
             let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("ran") };
             assert!(matches!(*response, Response::ToolResult { .. }), "{response:?}");
         }
