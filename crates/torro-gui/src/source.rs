@@ -197,11 +197,13 @@ pub fn home_dir() -> Option<PathBuf> {
 /// without a Dock icon; else, and without any such bundle (development, Homebrew), `torroworkplace` as
 /// [`sibling`] finds it.
 fn core_program(exe: Option<&Path>, home: Option<&Path>) -> PathBuf {
-    #[cfg(target_os = "macos")]
+    // macOS: the newest of the bundles' copies; Windows under Scoop: the newest of the apps' copies
+    // (issue #411). Elsewhere the one program beside this one, as [`sibling`] finds it.
+    #[cfg(any(target_os = "macos", windows))]
     if let Some((program, _)) = newest_service(exe, home) {
         return program;
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     let _ = (exe, home);
     sibling(torro_core::AppId::WORKPLACE.binary)
 }
@@ -497,22 +499,84 @@ pub fn service_version(program: &Path) -> Option<Version> {
 /// runs in are looked in first), `home` the user's home (for `~/Applications`).
 ///
 /// On macOS [`choose_service`] over the bundles of the suite, on the file system; `None` without any
-/// (development, Homebrew). On other systems a package installs the service once, as the program
-/// `torroworkplace` beside the suite's other programs: that program beside `exe`, with the caller's own
-/// version ([`Version::current`]), since a package installs the suite's programs of one version together;
-/// `None` when it is not there.
+/// (development, Homebrew). Under Scoop every app brings a copy of its own: [`choose_scoop_service`].
+/// Otherwise a package installs the service once, as the program `torroworkplace` beside the suite's
+/// other programs: that program beside `exe`, with the caller's own version ([`Version::current`]),
+/// since a package installs the suite's programs of one version together; `None` when it is not there.
 pub fn newest_service(exe: Option<&Path>, home: Option<&Path>) -> Option<(PathBuf, Version)> {
+    newest_service_except(exe, home, None)
+}
+
+/// [`newest_service`] without the copies below `except`: the copy left once an app is uninstalled,
+/// which the core checks before it removes the bundle its service runs from.
+pub fn newest_service_except(
+    exe: Option<&Path>,
+    home: Option<&Path>,
+    except: Option<&Path>,
+) -> Option<(PathBuf, Version)> {
+    let counts = |program: &Path| program.is_file() && !except.is_some_and(|except| program.starts_with(except));
     #[cfg(target_os = "macos")]
     {
-        choose_service(exe, home, Path::is_file, service_version)
+        choose_service(exe, home, counts, service_version)
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = home;
+        let folders = |apps: &Path| -> Vec<PathBuf> {
+            std::fs::read_dir(apps)
+                .map(|entries| entries.filter_map(|entry| entry.ok().map(|entry| entry.path())).collect())
+                .unwrap_or_default()
+        };
+        if let Some(found) = choose_scoop_service(exe, &counts, folders, scoop_version) {
+            return Some(found);
+        }
         let name = format!("{}{}", torro_core::AppId::WORKPLACE.binary, std::env::consts::EXE_SUFFIX);
         let program = exe?.parent()?.join(name);
-        program.is_file().then(|| (program, Version::current()))
+        counts(&program).then(|| (program, Version::current()))
     }
+}
+
+/// The newest copy of the service among the apps Scoop installed (issue #411): each app's manifest
+/// brings `torroworkplace.exe` into its own folder, and Scoop updates apps one by one, so the copies'
+/// versions can differ. `exe` must lie in Scoop's layout `<scoop>/apps/<app>/<version>/`; candidates
+/// are `<scoop>/apps/*/current/torroworkplace.exe` where `exists` says so, with the version
+/// `version_of` reads (Scoop's `manifest.json` beside it; unreadable counts as `0.0.0`). The highest
+/// wins, with equal ones the one in the app `exe` belongs to. `None` outside Scoop's layout.
+///
+/// Pure: `exists`, `folders` (the folders in a folder) and `version_of` stand in for the file system.
+pub fn choose_scoop_service(
+    exe: Option<&Path>,
+    exists: impl Fn(&Path) -> bool,
+    folders: impl Fn(&Path) -> Vec<PathBuf>,
+    version_of: impl Fn(&Path) -> Option<Version>,
+) -> Option<(PathBuf, Version)> {
+    let own = exe?.parent()?.parent()?;
+    let apps = own.parent()?;
+    let scoop = apps.parent()?.file_name()?.to_string_lossy().eq_ignore_ascii_case("scoop");
+    if !scoop || apps.file_name()? != "apps" {
+        return None;
+    }
+    let unknown = Version { major: 0, minor: 0, patch: 0, pre: Vec::new() };
+    let mut found: Vec<(PathBuf, Version, bool)> = folders(apps)
+        .into_iter()
+        .map(|app| (app.join("current").join("torroworkplace.exe"), app == own))
+        .filter(|(program, _)| exists(program))
+        .map(|(program, mine)| {
+            let version = version_of(&program).unwrap_or_else(|| unknown.clone());
+            (program, version, mine)
+        })
+        .collect();
+    found.sort_by(|a, b| (&a.1, a.2).cmp(&(&b.1, b.2)));
+    found.pop().map(|(program, version, _)| (program, version))
+}
+
+/// The version Scoop noted for the app whose copy of the service is `program`: the key `version` of
+/// `manifest.json` beside it.
+#[cfg_attr(target_os = "macos", allow(dead_code, reason = "Scoop is a package manager of Windows"))]
+fn scoop_version(program: &Path) -> Option<Version> {
+    let text = std::fs::read_to_string(program.parent()?.join("manifest.json")).ok()?;
+    let manifest: serde_json::Value = serde_json::from_str(&text).ok()?;
+    manifest.get("version")?.as_str()?.parse().ok()
 }
 
 /// The program file `name` (`torroinbox`) in the bundle of the first entry of
@@ -643,6 +707,29 @@ impl PimSource for Source {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #411: under Scoop every app has a copy of the service; the newest starts, with equals the
+    /// app's own, and nothing is chosen outside Scoop's layout.
+    #[test]
+    fn the_newest_scoop_copy_of_the_service_starts() {
+        let apps = PathBuf::from("/u/scoop/apps");
+        let exe = apps.join("torrotasks/0.1.0/torrotasks.exe");
+        let folders = |_: &Path| vec![apps.join("torrocalendar"), apps.join("torrotasks"), apps.join("torroinbox")];
+        let copy = |app: &str| apps.join(app).join("current/torroworkplace.exe");
+        let version = |program: &Path| match program.to_string_lossy() {
+            text if text.contains("torrocalendar") => "0.2.0".parse().ok(),
+            text if text.contains("torroinbox") => None,
+            _ => "0.1.0".parse().ok(),
+        };
+        let all = |program: &Path| program.ends_with("torroworkplace.exe");
+        let chosen = choose_scoop_service(Some(&exe), all, folders, version).expect("a copy");
+        assert_eq!(chosen, (copy("torrocalendar"), "0.2.0".parse().expect("version")));
+        let without_calendar = |program: &Path| all(program) && !program.starts_with(apps.join("torrocalendar"));
+        let chosen = choose_scoop_service(Some(&exe), without_calendar, folders, version).expect("a copy");
+        assert_eq!(chosen.0, copy("torrotasks"), "0.1.0 beats an unreadable version");
+        let elsewhere = PathBuf::from("/opt/torro/bin/torrotasks");
+        assert_eq!(choose_scoop_service(Some(&elsewhere), all, folders, version), None);
+    }
 
     #[test]
     fn demo_data_opens_no_app() {
