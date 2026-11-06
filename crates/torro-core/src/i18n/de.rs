@@ -3838,6 +3838,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Like the app", "Wie die App"),
     ("Mail colors", "Farben von E-Mails"),
     ("Logos of known senders", "Logos bekannter Absender"),
+    (
+        "Only for mail signed by its own domain. Torro fetches the logo once from that domain.",
+        "Nur für E-Mails mit gültiger Signatur ihrer Domain. Torro holt das Logo einmal von dieser Domain.",
+    ),
     ("Show mail as", "E-Mails zeigen als"),
     // Formatted mail (issue #125)
     ("Bold", "Fett"),

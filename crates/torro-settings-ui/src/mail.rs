@@ -3342,7 +3342,16 @@ pub mod reading {
             vec![
                 setting_row(None, tr("Show mail as"), None, show),
                 setting_row(None, tr("Mail colors"), None, colors),
-                setting_row(None, tr("Logos of known senders"), None, logos),
+                // Issue #453: the switch is on unless turned off, and it reaches out to senders' domains.
+                setting_row(
+                    None,
+                    tr("Logos of known senders"),
+                    Some(
+                        tr("Only for mail signed by its own domain. Torro fetches the logo once from that domain.")
+                            .into(),
+                    ),
+                    logos,
+                ),
             ],
             None,
         );
