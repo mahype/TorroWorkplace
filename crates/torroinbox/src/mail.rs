@@ -1877,11 +1877,17 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
         count: None,
         preview: snippet,
         account,
-        account_name: None,
+        // "Sent" names the mailbox it went out by: a line shows it before the time (issue #449).
+        account_name: (*data.view == View::Sent).then(|| address(&message.account).to_owned()),
         hits: data.hits(&message.id),
         face,
         domain_tail: *data.view == View::Sent,
         no_marks: no_marks(data),
+        mailboxes: if *data.view == View::Sent {
+            data.accounts.iter().map(|account| (*account).to_owned()).collect()
+        } else {
+            Vec::new()
+        },
     };
     let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
         || data.selected_ids.contains(&message.id);
@@ -2077,6 +2083,7 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
         face,
         domain_tail: *data.view == View::Sent,
         no_marks: false,
+        mailboxes: Vec::new(),
     };
     let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
         || data.selected_ids.contains(&message.id);
@@ -3499,8 +3506,14 @@ fn torro_items<'a>(
     anchors: &detail::Anchors,
 ) -> Vec<RailItem<'a, Message>> {
     let Some(ReaderEntry { item, .. }) = entry else {
+        // Mail without an entry (a folder's, the archive's, older mail) is filed by hand too (issue
+        // #500); "Re-categorize" needs an entry, as the model decides for one.
         let task = Some(Message::AskMailTask(reading.id.to_owned()));
-        return vec![RailItem::new(Icon::ListTodo, tr("Task"), "T", task).at(&anchors.task)];
+        let category = Some(Message::AskMailCategory(reading.id.to_owned()));
+        return vec![
+            RailItem::new(Icon::ListTodo, tr("Task"), "T", task).at(&anchors.task),
+            RailItem::new(Icon::Tag, tr("Category…"), "", category).at(&anchors.category),
+        ];
     };
     let id = || item.id.clone();
     let mut items = vec![
@@ -5892,8 +5905,9 @@ mod tests {
             assert_eq!(group(&groups, tr("File")).icon, Icon::Check, "the group's fixed icon");
             assert!(group(&groups, tr("File")).first_press().is_some(), "a click archives");
             let torro = &group(&groups, tr("Torro")).items;
-            assert_eq!(torro.len(), 1);
+            assert_eq!(torro.len(), 2, "Task and, issue #500, Category…");
             assert!(matches!(torro[0].press(), Some(Message::AskMailTask(id)) if id == "m:w1"));
+            assert!(matches!(torro[1].press(), Some(Message::AskMailCategory(id)) if id == "m:w1"));
             let mute = sends(&groups, tr("Mute"), tr("Mute…"));
             assert!(matches!(mute, Some(Message::AskMuteMail(id)) if id == "m:w1"), "the message's own traits");
             // An account without an archive folder: no Archive.

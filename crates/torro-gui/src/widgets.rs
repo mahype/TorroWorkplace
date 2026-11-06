@@ -2602,9 +2602,17 @@ pub fn rail_context_menu<'a, M: Clone + 'a, N: Clone + 'a>(
             list = list.push(rail_row(item, RailPlace::Card, false));
         }
     }
-    let body = scrollable(list).height(Length::Shrink).width(Fill);
+    // The scrollbar beside the rows, not over them: over them it covered their key hints where the
+    // menu scrolls (the medium window, design review of #499). The rows keep the rail's width; the
+    // card grows by the scrollbar's gutter only while the menu scrolls (iced reserves it only then).
+    let rows = container(list).width((rail_flyout_width() - 2.0 * style::MENU_INSET).max(0.0));
+    let body = scrollable(rows)
+        .direction(scrollable::Direction::Vertical(style::scrollbar().spacing(space::xs())))
+        .style(style::scrollable)
+        .height(Length::Shrink)
+        .width(Length::Shrink);
     container(container(body).max_height(max_height))
-        .width(rail_flyout_width())
+        .width(Length::Shrink)
         .padding(style::MENU_INSET)
         .style(style::container::menu)
         .into()
@@ -6688,6 +6696,9 @@ pub fn chart_legend<'a, M: 'a>(series: &[ChartSeries]) -> Element<'a, M> {
 /// `note` at its right (`META`, `text_3`: "average, Mon–Fri", "by day"), the `body` below. On
 /// `panel` – the surface the chart colours were checked on – with a `line_strong` frame, the card
 /// radius and a panel's padding, as wide as it is given.
+///
+/// The head stays one line in a narrow card (issue #446): what does not fit is cut with "…" – the
+/// note first ([`chart_head`]) –, and then the head's tooltip says both in full.
 pub fn chart_card<'a, M: 'a>(
     title: impl IntoFragment<'a>,
     note: impl IntoFragment<'a>,
@@ -6719,13 +6730,23 @@ fn chart_card_inset<'a, M: 'a>(
     body: impl Into<Element<'a, M>>,
     inset: f32,
 ) -> Element<'a, M> {
-    // The note gives way with "…" in a narrow card (issue #485): the title stays whole.
-    let head = row![
-        typo::text(typo::body_strong(), title).wrapping(Wrapping::None),
-        container(ellipsized_end(typo::meta(), note, theme::text_3)).width(Fill),
-    ]
-    .spacing(space::s())
-    .align_y(Alignment::Center);
+    // The note gives way first in a narrow card (issues #446, #485): cut at a word or left out, the
+    // title whole as long as it fits, both in full as the head's tooltip ([`chart_head`]).
+    let (title, note) = (title.into_fragment().to_string(), note.into_fragment().to_string());
+    let head = measured_line(typo::body_strong(), move |size| {
+        let (shown, note_shown, cut) = chart_head(&title, &note, size.width);
+        let mut head = row![typo::text(typo::body_strong(), shown).width(Fill).wrapping(Wrapping::None)]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+        if let Some(note_shown) = note_shown {
+            head = head.push(typo::text(typo::meta(), note_shown).style(theme::text_3).wrapping(Wrapping::None));
+        }
+        if !cut {
+            return head.into();
+        }
+        let full = if note.is_empty() { title.clone() } else { format!("{title} · {note}") };
+        with_tooltip(head, full)
+    });
     // A design with less padding than `inset` gives the rows only what it has, so titles stay in line.
     let padding = layout::panel_padding();
     let (left, right) = (inset.min(padding.left), inset.min(padding.right));
@@ -6744,6 +6765,46 @@ fn chart_card_inset<'a, M: 'a>(
             }
         })
         .into()
+}
+
+/// The head of a [`chart_card`] `width` wide (issue #446): `title` and `note` as they are when both
+/// fit with [`space::s()`] between them; else the title whole (cut with "…" only when it alone is
+/// wider) and the note cut at a word to what is left ([`cut_at_word`]), `None` when less than half
+/// of it would be left or it is empty – a stump reads restless, and the tooltip has it. The
+/// flag says whether anything was cut, so the card can show both in full as a tooltip. Cut rather
+/// than wrapped, so the head stays one line high and the charts of a row stand level.
+pub fn chart_head(title: &str, note: &str, width: f32) -> (String, Option<String>, bool) {
+    let (strong, meta) = (typo::body_strong(), typo::meta());
+    if note.is_empty() {
+        let shown = typo::ellipsize(title, strong, width);
+        let cut = shown != title;
+        return (shown, None, cut);
+    }
+    if typo::text_width(title, strong) + space::s() + typo::text_width(note, meta) <= width {
+        return (title.to_owned(), Some(note.to_owned()), false);
+    }
+    let shown = typo::ellipsize(title, strong, width);
+    let left = width - typo::text_width(&shown, strong) - space::s();
+    (shown, cut_at_word(note, meta, left), true)
+}
+
+/// `text` cut after its last whole word that fits `max_width` in `level` with "…" (design review of
+/// #499: no "ö…" stump); `None` when less than half of its letters would be left.
+fn cut_at_word(text: &str, level: typo::Level, max_width: f32) -> Option<String> {
+    if typo::text_width(text, level) <= max_width {
+        return Some(text.to_owned());
+    }
+    let room = max_width - typo::text_width(typo::ELLIPSIS, level);
+    let mut kept = None;
+    for (at, _) in text.match_indices(' ') {
+        let head = text[..at].trim_end();
+        if typo::text_width(head, level) > room {
+            break;
+        }
+        kept = Some(head);
+    }
+    let kept = kept.filter(|head| 2 * head.chars().count() >= text.chars().count())?;
+    Some(format!("{kept}{}", typo::ELLIPSIS))
 }
 
 /// A figure on its own (task E8.8b, "Insights"): `label` (`META`, `text_3`) over the `value` in
@@ -8302,5 +8363,37 @@ mod tests {
         let quiet = vec![icon_button(Icon::RefreshCw, "Reload", Some(Msg::Go))];
         let _: Element<'_, Msg> = group_heading("Design", quiet);
         let _: Element<'_, Msg> = group_heading("Design", Vec::new());
+    }
+
+    /// Issue #446: in a narrow chart card the title and its note no longer run into each other – the
+    /// note is cut first, then the title, each with "…", and the head says it cut something (its
+    /// tooltip shows both in full); in a wide card both stand whole.
+    #[test]
+    fn a_narrow_chart_head_cuts_rather_than_overlaps() {
+        let (title, note) = ("Who sends the most", "and how much of it you open");
+        let (strong, meta) = (typo::body_strong(), typo::meta());
+        let width_of = |(shown, note, _): &(String, Option<String>, bool)| {
+            typo::text_width(shown, strong)
+                + note.as_deref().map_or(0.0, |note| space::s() + typo::text_width(note, meta))
+        };
+        let wide = chart_head(title, note, 400.0);
+        assert_eq!(wide, (title.to_owned(), Some(note.to_owned()), false), "both fit");
+        // Room for "and how much of it…" and two more letters: cut after the word, no stump.
+        let room = |words: &str| typo::text_width(title, strong) + space::s() + typo::text_width(words, meta);
+        let narrow_width = room("and how much of it yo…");
+        let narrow = chart_head(title, note, narrow_width);
+        assert_eq!(narrow, (title.to_owned(), Some("and how much of it…".to_owned()), true), "cut at a word");
+        // Less than half of the note left: none of it, the tooltip has it.
+        let short = chart_head(title, note, room("and how much…"));
+        assert_eq!((short.0.as_str(), short.1.as_deref(), short.2), (title, None, true), "no stump of a note");
+        let tight = chart_head(title, note, 120.0);
+        assert!(tight.0.ends_with(typo::ELLIPSIS), "the title cut too: {tight:?}");
+        assert_eq!(tight.1, None, "no room for the note");
+        assert!(tight.2);
+        for (width, head) in [(400.0, &wide), (narrow_width, &narrow), (120.0, &tight)] {
+            assert!(width_of(head) <= width, "{width}: {head:?} fits, nothing overlaps");
+        }
+        assert_eq!(chart_head(title, "", 400.0), (title.to_owned(), None, false), "no note");
+        let _: Element<'_, Msg> = chart_card(title, note, blank());
     }
 }
