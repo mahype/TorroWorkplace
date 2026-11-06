@@ -511,7 +511,9 @@ impl Window {
             // that is the restart; else the job is gone.
             (Reply::Polled, answer) => {
                 let gone = matches!(&answer, Ok(Response::Error { code, .. }) if code == "not-found");
-                if self.last.as_ref().is_some_and(|job| job.restart) {
+                // A job updating the main application restarts the service even when the poll that would
+                // have shown `restart` was missed (review of #411).
+                if self.last.as_ref().is_some_and(|job| job.restart || updates_main(job)) {
                     self.restarting();
                 } else if gone {
                     self.stage = Stage::Failed(tr("This job is no longer known. It may have finished.").into());
@@ -945,12 +947,23 @@ pub fn failure(code: &str) -> &'static str {
     }
 }
 
-/// Whether the service that answered with `version` is the restarted one: the expected version,
-/// or – without one – any other than this program's.
+/// Whether `job` updates the main application, after which the service restarts.
+fn updates_main(job: &AppJobInfo) -> bool {
+    job.kind == AppJobKind::Update && job.apps.iter().any(|app| app == AppId::WORKPLACE.window_class)
+}
+
+/// Whether the service that answered with `version` is the restarted one: the expected version or a
+/// newer one (the service may hand over to a newer copy than the update brought, review of #411), or –
+/// without one – any other than this program's.
 pub fn is_new(version: &str, expected: Option<&str>) -> bool {
-    match expected {
-        Some(expected) => version == expected,
-        None => version != env!("CARGO_PKG_VERSION"),
+    use torro_core::version::Version;
+    match (expected, version.parse::<Version>()) {
+        (Some(expected), Ok(answered)) => match expected.parse::<Version>() {
+            Ok(expected) => answered >= expected,
+            Err(_) => version == expected,
+        },
+        (Some(expected), Err(_)) => version == expected,
+        (None, _) => version != env!("CARGO_PKG_VERSION"),
     }
 }
 
@@ -1130,6 +1143,20 @@ mod tests {
         assert!(matches!(other.stage, Stage::Failed(_)));
     }
 
+    /// Review of #411: the poll that would have shown `restart` was missed; an update of the main
+    /// application restarts all the same.
+    #[test]
+    fn a_missed_restart_of_the_main_update_still_waits_for_the_service() {
+        let mut missed = window(Target::SelfUpdate);
+        let _ = missed.update(Event::Confirm);
+        let mut updating = job(AppJobState::Running, AppJobKind::Update, false);
+        updating.apps = vec![AppId::WORKPLACE.window_class.into()];
+        let _ = missed.update(Event::Answer(Reply::Started, Ok(Response::AppJob { job: updating })));
+        let gone = Ok(Response::Error { code: "not-found".into(), message: "no such job".into() });
+        let _ = missed.update(Event::Answer(Reply::Polled, gone));
+        assert!(matches!(missed.stage, Stage::Restarting { .. }));
+    }
+
     /// "Cancel" works while the download runs; a refused start says why and offers to try again
     /// where it can.
     #[test]
@@ -1206,6 +1233,7 @@ mod tests {
     fn the_new_service_is_told_by_its_version() {
         assert!(is_new("0.2.0", Some("0.2.0")));
         assert!(!is_new("0.1.0", Some("0.2.0")));
+        assert!(is_new("0.3.0", Some("0.2.0")), "a newer copy took over");
         assert!(!is_new(env!("CARGO_PKG_VERSION"), None));
         assert!(is_new("99.0.0", None));
     }
