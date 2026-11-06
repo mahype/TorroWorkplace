@@ -1761,16 +1761,26 @@ pub(crate) mod tests {
         let (now, _) = sync_of(answer(&service, Reach::Suite, sync_status(None, None)).await);
         assert_ne!(now, all, "Bernd's sync did change meanwhile");
 
+        // The answer comes with the removal, not at the end of the wait (2 s in the tests). Measured
+        // against when the removal was done: on a machine busy with the whole test suite the removal
+        // itself may take most of the wait (#472), and a wait it ended still ends before the deadline.
         let begun = std::time::Instant::now();
-        let waiting = answer(&service, Reach::Suite, sync_status(None, Some(now)));
+        let deadline = begun + std::time::Duration::from_millis(2000);
+        let waiting = async {
+            let answered = answer(&service, Reach::Suite, sync_status(None, Some(now))).await;
+            (answered, std::time::Instant::now())
+        };
         let removing = async {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             service.remove(ANNA).await.expect("removed");
+            std::time::Instant::now()
         };
-        let (answered, ()) = tokio::join!(waiting, removing);
+        let ((answered, at), removed) = tokio::join!(waiting, removing);
         let (_, states) = sync_of(answered);
         assert_eq!(states.iter().map(|state| state.account.clone()).collect::<Vec<_>>(), [bernds]);
-        assert!(begun.elapsed() < std::time::Duration::from_millis(1500), "the removal ended the wait");
+        if removed + std::time::Duration::from_millis(500) < deadline {
+            assert!(at < deadline, "the removal ended the wait: {:?} after it", at.saturating_duration_since(removed));
+        }
     }
 
     /// The overview of an answer to `mail.overview`.
