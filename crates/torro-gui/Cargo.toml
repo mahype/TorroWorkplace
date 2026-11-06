@@ -16,6 +16,8 @@ torro-pim.workspace = true
 torro-ipc.workspace = true
 chrono.workspace = true
 iced = { workspace = true, features = ["advanced", "markdown"] }
+# The version in a bundle's `Info.plist`, to start the newest copy of the service (issue #411).
+roxmltree.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # The 2-s poll of the chosen design (`design::Follow::subscription`) sleeps on Iced's tokio runtime.
