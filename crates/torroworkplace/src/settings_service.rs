@@ -472,7 +472,10 @@ impl SettingsStore {
             .into_iter()
             .filter(|other| *other != part)
             .filter(|other| {
-                let Some(dir) = self.folder(*other) else { return false };
+                // The designs have no folder (issue #484) but are looked up all the same, so `font =
+                // "dense"` names the key `design`.
+                let built_in = (*other == Part::Design).then_some(Path::new(""));
+                let Some(dir) = self.folder(*other).or(built_in) else { return false };
                 !matches!(
                     load_part(*other, dir, id).as_ref().map_err(Vec::as_slice),
                     Err([DesignError::NotFound { .. }])
@@ -1635,6 +1638,9 @@ mod tests {
         assert!(wrong.contains("is a colour scheme: choose it with the key color_scheme."), "{wrong}");
         let wrong = store.set(SettingKey::ColorScheme, &json!("plain")).expect_err("plain is no colour scheme");
         assert!(wrong.contains("choose it with the key font."), "{wrong}");
+        // Issue #484: a spacing level has no folder, but is named all the same.
+        let level = store.set(SettingKey::Font, &json!("dense")).expect_err("dense is no font");
+        assert!(level.contains("is a design: choose it with the key design."), "{level}");
         let missing = store.set(SettingKey::Font, &json!("gone")).expect_err("no such font");
         assert!(missing.contains("\"gone\"") && !missing.contains("the key"), "{missing}");
         let broken = store.set(SettingKey::ColorScheme, &json!("murky")).expect_err("text too dark");

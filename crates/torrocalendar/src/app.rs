@@ -1628,8 +1628,18 @@ impl App {
         let views = widgets::text_button_width(true, self.shown().label());
         let primary = widgets::text_button_width(true, tr("New event"));
         let chrome = shell::rail() + 2.0 * icon + 2.0 * space::l();
-        let needed =
-            chrome + title_width + space::l() + today + 2.0 * icon + 2.0 * space::xs() + views + icon + primary;
+        // The timeline's "Nights" stands before the views as one more icon button.
+        let nights = if self.shown() == CalView::Timeline { icon + space::s() } else { 0.0 };
+        let needed = chrome
+            + title_width
+            + space::l()
+            + today
+            + 2.0 * icon
+            + 2.0 * space::xs()
+            + views
+            + icon
+            + primary
+            + nights;
         needed + 4.0 * space::s() <= self.size.width
     }
 

@@ -13580,27 +13580,23 @@ mod tests {
     /// lock is taken anyway: the panic of another test is reported by that test, not by this one.
     static DESIGN: Mutex<()> = Mutex::new(());
 
-    /// The message "design changed" (task L.3, issue #484): the stored spacing level arrives and the
-    /// window draws with it from the next frame; an id that is no level (an old design of the designs
-    /// folder) gives the standard.
+    /// The message "design changed" (task L.3, issue #484): the stored setting arrives and the window
+    /// follows it; an id that is no spacing level (an old design of the designs folder) gives the
+    /// standard. Dense itself is only read here the way the window reads it, not switched to: it has
+    /// other values, and the tests beside this one read the standard's tokens without [`DESIGN`].
     #[test]
     fn the_stored_design_is_drawn_and_an_unknown_one_gives_the_standard() {
         let _design = DESIGN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut app = loaded(&[]);
         app.design = Follow::new(None).in_folders(design::Folders::default());
-        let stored = |id: &str| {
-            Message::Design(design::Message::Stored(Ok(design::Chosen {
-                design: id.into(),
-                ..design::Chosen::standard()
-            })))
-        };
-        // Only the design changes, so no font is loaded (task L.21).
-        let _ = app.update(stored("dense"));
-        assert_eq!(design::active().id, "dense");
-        let _ = app.view();
-        let _ = app.update(stored("console"));
+        let _ = app.update(Message::Design(design::Message::Stored(Ok(design::Chosen {
+            design: "console".into(),
+            ..design::Chosen::standard()
+        }))));
         assert!(design::active().is_standard(), "an old design is no level: the standard");
-        design::set(torro_core::design::Design::standard());
+        let _ = app.view();
+        let chosen = design::Chosen { design: "dense".into(), ..design::Chosen::standard() };
+        assert_eq!(design::Folders::default().select(&chosen).design.id, "dense", "what the window would draw");
     }
 
     /// Task E13.2: the window takes its density from the active design – at start, and again when
