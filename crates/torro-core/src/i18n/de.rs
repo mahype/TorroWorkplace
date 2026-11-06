@@ -53,10 +53,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("just now", "gerade eben"),
     ("Last synced {when}", "Zuletzt synchronisiert {when}"),
     ("Light", "Hell"),
-    (
-        "Light or dark colors for all Torro apps. “System” follows your desktop.",
-        "Helle oder dunkle Farben für alle Torro-Apps. „System“ folgt deinem Desktop.",
-    ),
     ("Name", "Name"),
     ("{n} d ago", "vor {n} Tg."),
     ("{n} days ago", "vor {n} Tagen"),
@@ -2894,11 +2890,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "colors.{mode}.on_accent on accent has a contrast of {ratio}:1; text on the primary button needs at least 4.5:1.",
         "colors.{mode}.on_accent auf accent hat einen Kontrast von {ratio}:1; Text auf dem Hauptknopf braucht mindestens 4,5:1.",
     ),
-    ("not a PNG image", "kein PNG-Bild"),
-    (
-        "preview.png is {width} × {height}; at most 1200 × 800 is allowed.",
-        "preview.png ist {width} × {height}; erlaubt sind höchstens 1200 × 800.",
-    ),
     (
         "{fg} on {on} has a contrast of {ratio}:1; controls need at least 3:1.",
         "{fg} auf {on} hat einen Kontrast von {ratio}:1; Bedienelemente brauchen mindestens 3:1.",
@@ -2939,22 +2930,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     // Choosing a design in the control centre (L.4)
     ("Can't be used:", "Nicht nutzbar:"),
-    ("Design", "Design"),
-    ("Open designs folder", "Design-Ordner öffnen"),
     ("Color scheme", "Farbschema"),
     ("Font", "Schrift"),
     ("Open color schemes folder", "Farbschema-Ordner öffnen"),
     ("Open fonts folder", "Schriften-Ordner öffnen"),
-    (
-        "Spacing, sizes and corner radii of all Torro apps. More designs go into the designs folder; one that breaks a rule can't be used.",
-        "Abstände, Größen und Eckenradien aller Torro-Apps. Weitere Designs kommen in den Design-Ordner; eines, das eine Regel verletzt, lässt sich nicht verwenden.",
-    ),
-    ("Suggested for {design}", "Empfohlen für {design}"),
     ("The color schemes can't be listed.", "Die Farbschemata können nicht aufgelistet werden."),
-    (
-        "The colors of all Torro apps, light and dark. More color schemes go into the color schemes folder.",
-        "Die Farben aller Torro-Apps, hell und dunkel. Weitere Farbschemata kommen in den Farbschema-Ordner.",
-    ),
     ("The fonts can't be listed.", "Die Schriften können nicht aufgelistet werden."),
     (
         "The typeface of all Torro apps, sized so that text reads alike in every font. More fonts go into the fonts folder, and the fonts installed on this computer can be used too.",
@@ -2990,12 +2970,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "“{id}” can't be a folder name here. Use up to 32 characters a–z, 0–9 and -; “torro” is built in.",
         "„{id}“ kann hier kein Ordnername sein. Nimm bis zu 32 Zeichen a–z, 0–9 und -; „torro“ ist eingebaut.",
     ),
-    (
-        "“{key}” suggests “{id}”, which can't be an id. Use up to 32 characters a–z, 0–9 and -.",
-        "„{key}“ schlägt „{id}“ vor, das kann keine Kennung sein. Nimm bis zu 32 Zeichen a–z, 0–9 und -.",
-    ),
     ("Reload", "Neu laden"),
-    ("The designs can't be listed.", "Die Designs lassen sich nicht auflisten."),
     // Inbox overview in two columns (E3.9)
     ("Agents, approvals and notices show up here.", "Agenten, Freigaben und Hinweise erscheinen hier."),
     ("Earlier", "Früher"),
@@ -5981,41 +5956,32 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{screen} · main", "{screen} · Hauptbildschirm"),
     ("{screen} · not connected", "{screen} · nicht angeschlossen"),
     ("{size} · main", "{size} · Hauptbildschirm"),
-    // Three designs: Standard, Compact, Console (issue #291, L.31–L.37)
+    // Three designs (issue #291, L.31–L.37); since issue #484 the spacing levels
     (
         "A color scheme with dark_only = true has no [colors.light]. Remove one of them.",
         "Ein Farbschema mit dark_only = true hat kein [colors.light]. Entferne eines von beiden.",
     ),
-    ("Airy", "Luftig"),
-    ("Also switched: {list}", "Ebenfalls umgestellt: {list}"),
-    ("Balanced", "Ausgewogen"),
-    (
-        "Calm and open: flush content, hairlines, a reading column with wide margins",
-        "Ruhig und offen: bündiger Inhalt, Haarlinien, eine Lesespalte mit viel Rand",
-    ),
     ("Dark only", "Nur dunkel"),
     ("Dense", "Dicht"),
-    ("Font and colors", "Schrift und Farben"),
-    ("HTML mail", "Mails als HTML"),
+    // Spacing levels instead of designs (issue #484)
+    ("Colors", "Farben"),
+    ("Comfort", "Komfort"),
+    (
+        "The colors of all Torro apps, light and dark. “System” follows your desktop. More color schemes go into the color schemes folder.",
+        "Die Farben aller Torro-Apps, hell und dunkel. „System“ folgt deinem Desktop. Weitere Farbschemata kommen in den Farbschema-Ordner.",
+    ),
+    (
+        "How much room all Torro apps leave between their elements. Font and colors stay as they are; for larger text use the zoom.",
+        "Wie viel Platz alle Torro-Apps zwischen ihren Elementen lassen. Schrift und Farben bleiben, wie sie sind; für größeren Text gibt es den Zoom.",
+    ),
+    ("Lots of room around text and elements", "Viel Platz um Text und Elemente"),
+    ("Mail row {mail} · Button {button} · Page margin {page}", "Mailzeile {mail} · Knopf {button} · Seitenrand {page}"),
+    ("Spacing", "Abstände"),
+    ("Standard", "Standard"),
+    ("The spacing levels can't be listed.", "Die Abstände lassen sich nicht auflisten."),
+    ("The suite's standard spacing", "Die gewohnten Abstände der Suite"),
+    ("Tightly packed, more on the screen", "Dicht gepackt, mehr auf dem Bildschirm"),
     ("Light and dark", "Hell und dunkel"),
-    ("Standard, built tighter", "Standard, nur enger gebaut"),
-    ("Very dense", "Sehr dicht"),
-    ("Very dense and square, one line per mail", "Sehr dicht und eckig, eine Zeile pro Mail"),
-    ("also sets the font to \"{font}\"", "stellt auch die Schrift auf „{font}“"),
-    (
-        "also sets the font to \"{font}\" and the mail view to {view}",
-        "stellt auch die Schrift auf „{font}“ und die Mail-Darstellung auf {view}",
-    ),
-    ("also sets the mail view to {view}", "stellt auch die Mail-Darstellung auf {view}"),
-    ("font {font}", "Schrift {font}"),
-    ("plain-text mail", "Mails als reiner Text"),
-    ("{design} suggests {font}, which isn't installed.", "{design} schlägt {font} vor, die nicht installiert ist."),
-    ("{design} suggests {font}.", "{design} schlägt {font} vor."),
-    ("{font} is suggested for {design}.", "{font} wird für {design} vorgeschlagen."),
-    (
-        "“{id}” is the name of a design built into the suite. Give the folder another name.",
-        "„{id}“ ist der Name eines eingebauten Designs. Gib dem Ordner einen anderen Namen.",
-    ),
     (
         "“{key}” is {value}; allowed are 0 (off) or {min} to {max}.",
         "„{key}“ ist {value}; erlaubt sind 0 (aus) oder {min} bis {max}.",

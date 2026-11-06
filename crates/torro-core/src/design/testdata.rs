@@ -1,4 +1,4 @@
-//! Test data for the design tests: copies of the fixture folders under `tests/fixtures/{designs,fonts,
+//! Test data for the design tests: copies of the fixture folders under `tests/fixtures/{fonts,
 //! color-schemes}/` in a temporary data folder laid out like the real one, with the font files the
 //! fixtures name copied in from where the suite keeps them (Inter in `torro-gui`, the sample fonts in
 //! the repository), so no font file is stored twice.
@@ -17,7 +17,7 @@ const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 /// The root of the repository.
 const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
-/// A temporary data folder with `designs/`, `fonts/` and `color-schemes/`.
+/// A temporary data folder with `fonts/` and `color-schemes/` (designs have no folder since issue #484).
 pub(super) struct Data {
     tmp: tempfile::TempDir,
 }
@@ -35,10 +35,10 @@ impl Data {
         data
     }
 
-    /// A data folder with every fixture of every part.
+    /// A data folder with every fixture of fonts and colour schemes.
     pub(super) fn all() -> Data {
         let data = Data::new();
-        for part in [Part::Design, Part::Font, Part::ColorScheme] {
+        for part in [Part::Font, Part::ColorScheme] {
             let names = fixture_names(part);
             data.add(part, &names.iter().map(String::as_str).collect::<Vec<_>>());
         }
@@ -146,13 +146,10 @@ pub(super) fn standard_of_the_table() -> Design {
     Design {
         id: STANDARD_ID.to_string(),
         about: About {
-            name: "Standard".to_string(),
+            name: tr("Standard").to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             author: Some("Torro".to_string()),
-            description: Some(
-                tr("Calm and open: flush content, hairlines, a reading column with wide margins").to_string(),
-            ),
-            ..About::default()
+            description: Some(tr("The suite's standard spacing").to_string()),
         },
         typo: TypeScale {
             micro: level(FontRole::Numbers, Weight::Regular, 11.0, 14.0),
@@ -220,6 +217,5 @@ pub(super) fn standard_of_the_table() -> Design {
             avatar: 40.0,
             preview_lines: 1,
         },
-        preview: None,
     }
 }

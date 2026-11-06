@@ -1567,6 +1567,7 @@ impl App {
         let new_event = Message::NewEvent { date: self.anchor, time: Some(NaiveTime::MIN + Days::hours(9)) };
         let select = || widgets::select_button(views, self.shown().label(), Message::ToggleMenu(Menu::View));
         if class == SizeClass::Wide || class == SizeClass::Medium {
+            let title_width = title_words(&title, note.as_deref());
             let today = widgets::text_button(None, tr("Today"), style::button::ghost, Some(Message::Today));
             let title = row![
                 shell::header_title(None, title, note),
@@ -1574,8 +1575,13 @@ impl App {
             ]
             .spacing(space::l())
             .align_y(Alignment::Center);
-            let primary =
-                widgets::text_button(Some(Icon::Plus), tr("New event"), style::button::primary, Some(new_event));
+            // Issue #484: in a roomier spacing level the medium header runs out of room; then "New
+            // event" shrinks to "+" first, as in narrow windows.
+            let primary = if class == SizeClass::Medium && !self.medium_header_fits(title_width) {
+                widgets::compact_button(Icon::Plus, tr("New event"), style::button::primary, Some(new_event))
+            } else {
+                widgets::text_button(Some(Icon::Plus), tr("New event"), style::button::primary, Some(new_event))
+            };
             let mut trailing = Vec::new();
             if self.shown() == CalView::Timeline {
                 // Without a night there is nothing to unfold, and no moon to double-click.
@@ -1610,6 +1616,31 @@ impl App {
             let primary = widgets::compact_button(Icon::Plus, tr("New event"), style::button::primary, Some(new_event));
             shell::header_bar([], shell::header_title(None, title, None), [select(), primary])
         }
+    }
+
+    /// Whether the medium header holds "New event" with its word (issue #484): the rail, the panel
+    /// button and the settings, the title `title_width` wide, "Today", ‹ ›, the view's menu, refresh
+    /// and the primary button with the gaps between them – all from the tokens of the level drawn,
+    /// so a roomier level shrinks the button sooner.
+    fn medium_header_fits(&self, title_width: f32) -> bool {
+        let icon = size::control_sm();
+        let today = widgets::text_button_width(false, tr("Today"));
+        let views = widgets::text_button_width(true, self.shown().label());
+        let primary = widgets::text_button_width(true, tr("New event"));
+        let chrome = shell::rail() + 2.0 * icon + 2.0 * space::l();
+        // The timeline's "Nights" stands before the views as one more icon button.
+        let nights = if self.shown() == CalView::Timeline { icon + space::s() } else { 0.0 };
+        let needed = chrome
+            + title_width
+            + space::l()
+            + today
+            + 2.0 * icon
+            + 2.0 * space::xs()
+            + views
+            + icon
+            + primary
+            + nights;
+        needed + 4.0 * space::s() <= self.size.width
     }
 
     /// The sidebar (`calendar.html`, `.sidebar`): app switcher, small month, the views with their
@@ -2421,6 +2452,13 @@ fn load_failed(err: &str) -> String {
     trf("The calendar could not be loaded: {error}", &[("error", &err)])
 }
 
+/// How wide a header title with its quiet `note` is drawn (`shell::header_title`): the title in
+/// `body_strong`, the note in `body`, 6 apart.
+fn title_words(title: &str, note: Option<&str>) -> f32 {
+    let note = note.map_or(0.0, |note| 6.0 + typo::text_width(note, typo::body()));
+    typo::text_width(title, typo::body_strong()) + note
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3024,35 +3062,22 @@ mod tests {
         // Which ids are valid is `torro_gui::design::is_choice`'s test; it reads the user's designs folder.
     }
 
-    /// The message "design changed" (task L.3): the stored setting arrives and the window draws
-    /// with that pack from the next frame; a broken one gives the standard.
+    /// The message "design changed" (task L.3, issue #484): the stored setting arrives and the window
+    /// follows it; an id that is no spacing level (an old design of the designs folder) gives the
+    /// standard. Dense itself is only read here the way the window reads it, not switched to: it has
+    /// other values, and the tests beside this one read the standard's tokens.
     #[test]
-    fn the_stored_design_is_drawn_and_a_broken_one_gives_the_standard() {
-        let dir = std::env::temp_dir().join(format!("torrocalendar-designs-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        // The standard's values under another id, so the tests beside this one see the same tokens.
-        for (id, toml) in [
-            ("twin", "format = 1\n[about]\nname = \"Torro\"\nversion = \"1.0.0\"\n"),
-            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n"),
-        ] {
-            std::fs::create_dir_all(dir.join(id)).expect("pack folder");
-            std::fs::write(dir.join(id).join("design.toml"), toml).expect("design.toml");
-        }
+    fn the_stored_design_is_drawn_and_an_unknown_one_gives_the_standard() {
         let mut app = launched(&["--demo"]);
-        app.design = Follow::new(None).in_dir(dir.clone());
-        // Only the design changes (there is no font `twin`), so no font is loaded (task L.21).
+        app.design = Follow::new(None).in_folders(design::Folders::default());
         let _ = app.update(Message::Design(design::Message::Stored(Ok(design::Chosen {
-            design: "twin".into(),
+            design: "plex".into(),
             ..design::Chosen::standard()
         }))));
-        assert_eq!(design::active().id, "twin");
+        assert!(design::active().is_standard(), "an old design is no level: the standard");
         let _: Element<'_, Message> = app.view();
-        let _ = app.update(Message::Design(design::Message::Stored(Ok(design::Chosen {
-            design: "pale".into(),
-            ..design::Chosen::standard()
-        }))));
-        assert!(design::active().is_standard(), "a broken pack is never drawn");
-        let _ = std::fs::remove_dir_all(dir);
+        let chosen = design::Chosen { design: "dense".into(), ..design::Chosen::standard() };
+        assert_eq!(design::Folders::default().select(&chosen).design.id, "dense", "what the window would draw");
     }
 
     #[test]

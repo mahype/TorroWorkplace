@@ -1,8 +1,8 @@
 //! The look of the suite as data, in three parts (concept `docs/design-pakete.md`, tasks L.1 and L.19).
 //!
 //! - A [`Design`] is the form: the type scale (role, size, line height and weight of each level, sizes
-//!   meant for Inter), spacing, radii, layout gaps and sizes. Folder `designs/<id>/design.toml` ([`dir`],
-//!   [`load`], [`list`]), with an optional `preview.png`.
+//!   meant for Inter), spacing, radii, layout gaps and sizes. Built in only since issue #484 ([`load`],
+//!   [`list`]): the three spacing levels Standard, Comfort and Dense ([`BUILT_IN_IDS`]).
 //! - A [`FontSet`] is the font: the families of the three roles text, heading and numbers, and the size
 //!   adjustment that makes its lowercase look as large as Inter's. Folder `fonts/<id>/font.toml`
 //!   ([`font_dir`], [`load_font`], [`list_fonts`]) with the font files and `LICENSE.txt`. The fonts
@@ -13,8 +13,11 @@
 //!   [`list_color_schemes`]) with an optional `logo.svg`.
 //!
 //! `torro` ([`STANDARD_ID`]) is all three, built in. Its design is the file `designs/torro/design.toml` of
-//! the repository, embedded at build time; two more designs are built in the same way, `compact` and
-//! `console` ([`BUILT_IN_IDS`], issue #291). The standard font and colour scheme are exactly the values
+//! the repository, embedded at build time; two more designs are built in the same way, `comfort` and
+//! `dense` (issue #484). They set only spacing – the gaps and the heights of rows and controls – and
+//! take text, radii and how lists are drawn from the standard, so choosing one never changes the font,
+//! the colours or the mail view. The old `compact` and `console` (issue #291) read as `dense`
+//! ([`known_id`]). The standard font and colour scheme are exactly the values
 //! `torro_gui::theme`, `torro_gui::typo` and [`crate::theme`] had as constants. The parts meet only through fixed roles (the
 //! three font roles and four weights, the colour roles of [`Palette`]), and every rule checks one part
 //! only, so any valid design, font and colour scheme go together. [`Selection`] puts them together and
@@ -44,7 +47,6 @@ use std::sync::LazyLock;
 
 use crate::AppId;
 use crate::paths::AppPaths;
-use crate::settings::MailFormat;
 use crate::theme::{Rgb, STATUS_ATTENTION, STATUS_ERROR, STATUS_INACTIVE, STATUS_OK, TORRO_RED};
 
 pub use error::DesignError;
@@ -53,8 +55,8 @@ pub use pack::{Listed, list, load};
 pub use scheme::{list_color_schemes, load_color_scheme};
 pub use system::{SystemFonts, is_family_name, list_system_fonts};
 
-/// The id of the standard design. It has no folder; [`load`] answers it without touching the disk,
-/// and a folder of that name under [`dir`] is refused ([`DesignError::BadId`]).
+/// The id of the standard design, font and colour scheme. None has a folder; a font or colour scheme
+/// folder of that name is refused ([`DesignError::BadId`]).
 pub const STANDARD_ID: &str = "torro";
 
 /// The font that follows the interface font of the operating system (issue #299), resolved anew each
@@ -70,29 +72,31 @@ pub fn is_system_id(id: &str) -> bool {
     id == SYSTEM_ID || id.starts_with(SYSTEM_PREFIX)
 }
 
-/// The designs built into the suite, in the order [`list`] gives them: the standard ("Standard"),
-/// "Compact" and "Console" (issue #291). Each is `designs/<id>/design.toml` in the repository,
-/// embedded at build time. [`load`] answers each without touching the disk, and a folder of one of
-/// these names under [`dir`] is refused ([`DesignError::BadId`]). Fonts and colour schemes have only
-/// [`STANDARD_ID`] built in.
-pub const BUILT_IN_IDS: [&str; 3] = [STANDARD_ID, "compact", "console"];
+/// The designs of the suite, in the order [`list`] gives them (issue #484): the standard ("Standard"),
+/// "Comfort" and "Dense" – three spacing levels. Each is `designs/<id>/design.toml` in the repository,
+/// embedded at build time; there are no others. Fonts and colour schemes have only [`STANDARD_ID`]
+/// built in.
+pub const BUILT_IN_IDS: [&str; 3] = [STANDARD_ID, "comfort", "dense"];
 
-/// The folder that holds the designs: `designs/` in the core's data directory (`TORRO_DATA_HOME`
-/// overrides the root). `None` when no home directory is known.
-///
-/// Callers pass it to [`list`] and [`load`]; tests pass a temporary folder instead.
-pub fn dir() -> Option<PathBuf> {
-    data_folder(Part::Design)
+/// The design a stored or sent id stands for (issue #484): a built-in id ([`BUILT_IN_IDS`]) itself, the
+/// old `compact` and `console` (issue #291) [`dense`](BUILT_IN_IDS), anything else `None`. Settings read
+/// `None` as the standard; a request that sets it is refused.
+pub fn known_id(id: &str) -> Option<&'static str> {
+    match id {
+        "compact" | "console" => Some("dense"),
+        _ => BUILT_IN_IDS.into_iter().find(|built_in| *built_in == id),
+    }
 }
 
-/// The folder that holds the fonts: `fonts/` beside [`dir`]. `None` when no home directory is known.
+/// The folder that holds the fonts: `fonts/` in the core's data directory (`TORRO_DATA_HOME` overrides
+/// the root). `None` when no home directory is known.
 ///
 /// Callers pass it to [`list_fonts`] and [`load_font`].
 pub fn font_dir() -> Option<PathBuf> {
     data_folder(Part::Font)
 }
 
-/// The folder that holds the colour schemes: `color-schemes/` beside [`dir`]. `None` when no home
+/// The folder that holds the colour schemes: `color-schemes/` beside [`font_dir`]. `None` when no home
 /// directory is known.
 ///
 /// Callers pass it to [`list_color_schemes`] and [`load_color_scheme`].
@@ -107,7 +111,7 @@ fn data_folder(part: Part) -> Option<PathBuf> {
 /// The three parts of the look, for messages that name the folder a file belongs in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Part {
-    /// `designs/<id>/design.toml`.
+    /// `designs/<id>/design.toml`, built in only since issue #484.
     Design,
     /// `fonts/<id>/font.toml`.
     Font,
@@ -135,17 +139,16 @@ impl Part {
     }
 }
 
-/// The form of the suite: the standard or one from [`dir`], already merged with the standard and
-/// checked. Every field is set; there is nothing optional left to fill in.
+/// The form of the suite: one of the built-in designs ([`BUILT_IN_IDS`]), already merged with the
+/// standard and checked. Every field is set; there is nothing optional left to fill in.
 ///
 /// The sizes of [`Design::typo`] are meant for Inter; [`Selection::level`] adjusts them to the chosen
 /// font.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Design {
-    /// [`STANDARD_ID`] or the folder name.
+    /// One of [`BUILT_IN_IDS`].
     pub id: String,
-    /// Name, version and author, for the list in the control centre; with the font, colour scheme and
-    /// mail view the design suggests.
+    /// Name, version and author, for the list in the control centre.
     pub about: About,
     /// The eleven text levels (`torro_gui::typo`), sizes for Inter.
     pub typo: TypeScale,
@@ -159,13 +162,10 @@ pub struct Design {
     pub size: Size,
     /// How lists are drawn (`[list]`, issue #291); the inbox's [`Density`] follows from it.
     pub list: ListLook,
-    /// `preview.png` in the folder (at most 1200 × 800), for the control centre; `None` shows a
-    /// swatch.
-    pub preview: Option<PathBuf>,
 }
 
-/// What a design, a font or a colour scheme says about itself (`[about]`). Folder data: shown as
-/// written, never translated.
+/// What a design, a font or a colour scheme says about itself (`[about]`). Folder data is shown as
+/// written; the built-in designs translate their name and description.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct About {
     /// Required in a folder.
@@ -174,16 +174,6 @@ pub struct About {
     pub version: String,
     pub author: Option<String>,
     pub description: Option<String>,
-    /// Designs only (`[about] font`): the id of the font the design is meant for. A valid id or
-    /// [`STANDARD_ID`]; whether that font exists is not checked here (each part is checked on its
-    /// own). The core service sets it when the design is chosen, and only when the font loads valid
-    /// (task L.33); after that the font is chosen freely. Always `None` for fonts and colour schemes.
-    /// Colours never belong to a design: `[about] color_scheme` is an unknown key since task L.33.
-    pub font: Option<String>,
-    /// Designs only (`[about] mail_view`, issue #291): how the design suggests a mail with HTML shows in
-    /// the reader – `text` for Console. A suggestion like [`About::font`]; the core service sets it
-    /// when the design is chosen (task L.33). Always `None` for fonts and colour schemes.
-    pub mail_view: Option<MailFormat>,
 }
 
 /// The three font roles a text level can use.
@@ -473,7 +463,7 @@ pub struct Space {
 }
 
 /// The radius scale (`radius = [xs, sm, md, lg]`), never falling from small to large: equal steps
-/// are allowed (Console: all 0, Standard and Compact: all 4).
+/// are allowed (all 4 in every built-in design).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Radius {
     pub xs: f32,
@@ -529,7 +519,7 @@ pub struct Layout {
     /// Between elements inside a group. Standard 10: `torro_gui::widgets::group`.
     pub item_gap: f32,
     /// The padding of a mail in the reader, inside the reading column [`Size::reading_max`]
-    /// (`[layout] reading_padding`, issue #291): Standard 52 × 64, Compact 32 × 40, Console 14 × 18,
+    /// (`[layout] reading_padding`, issue #291): Standard 52 × 64, Comfort 64 × 80, Dense 32 × 40,
     /// read as `torro_gui::layout::reading_padding()`.
     pub reading_padding: Pad,
 }
@@ -566,11 +556,12 @@ impl ListLook {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ListStyle {
-    /// `"rows"`: a row per entry with its lines (a mail: avatar, sender, subject, preview). Standard
-    /// and Compact.
+    /// `"rows"`: a row per entry with its lines (a mail: avatar, sender, subject, preview). Every
+    /// built-in design.
     #[default]
     Rows,
-    /// `"line"`: one line per entry in fixed columns, as tall as [`Size::row_message`]. Console.
+    /// `"line"`: one line per entry in fixed columns, as tall as [`Size::row_message`]. No built-in
+    /// design switches it on since issue #484; it stays for later.
     Line,
     /// `"cards"`: a card per entry with its buttons shown ([`Density::Comfortable`]).
     Cards,
@@ -580,10 +571,11 @@ pub enum ListStyle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ListSelection {
-    /// `"bar"`: a bar at the left edge of the row. Standard and Compact.
+    /// `"bar"`: a bar at the left edge of the row. Every built-in design.
     #[default]
     Bar,
-    /// `"fill"`: the whole row in `accent`, its text and icons in `on_accent`. Console.
+    /// `"fill"`: the whole row in `accent`, its text and icons in `on_accent`. No built-in
+    /// design switches it on since issue #484.
     Fill,
 }
 
@@ -596,14 +588,14 @@ pub enum ListSelection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DensityLevel {
-    /// A mail row of 110 or more.
+    /// A mail row of 110 or more (Comfort: 116).
     Airy,
     /// 88 to 109 (Standard: 100).
     #[default]
     Balanced,
-    /// 56 to 87 (Compact: 76).
+    /// 56 to 87 (Dense: 78).
     Dense,
-    /// Below 56 (Console: 24, one line).
+    /// Below 56 (the old Console: 24, one line).
     VeryDense,
 }
 
@@ -621,7 +613,7 @@ pub struct Size {
     pub row_two: f32,
     /// A mail entry's row in the inbox (task E3.9): avatar, sender, subject and preview on three
     /// lines with the row padding above and below (task E11.1). Standard 100 (three lines of 22 and
-    /// 18 above and below), one line in Console (24).
+    /// 18 above and below), Comfort 116, Dense 78.
     pub row_message: f32,
     /// Any other entry's row in the inbox (task E3.9): source icon, title and text on two lines.
     pub row_notice: f32,
@@ -665,7 +657,7 @@ pub struct Size {
     /// (`torro_gui::widgets::RailMode::Expanded`).
     pub rail_wide: f32,
     /// The widest the text of a mail stands in the reader (issue #291), 480–1200: the reading column.
-    /// Standard 600, Compact 640, Console 1200.
+    /// 600 in every built-in design.
     pub reading_max: f32,
 }
 
@@ -1554,24 +1546,14 @@ mod tests {
         }
     }
 
-    /// Task E11.1: a pack written before the mail window's large buttons has no `command` and no
-    /// `pill`; it takes them from the standard, while a pack that names them keeps its own.
+    /// Task E11.1: a design without `command` and `pill` takes them from the standard (Comfort and
+    /// Dense set them), while one that names them keeps its own.
     #[test]
     fn a_pack_without_the_mail_sizes_takes_the_standards() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-        let pack = |id: &str, size: &str| {
-            std::fs::create_dir_all(tmp.path().join(id)).expect("pack folder");
-            let toml = format!("format = 1\n[about]\nname = \"{id}\"\nversion = \"1.0.0\"\n[size]\n{size}");
-            std::fs::write(tmp.path().join(id).join("design.toml"), toml).expect("design.toml");
-        };
-        pack("older", "row = 44\n");
-        pack("roomier", "command = 52\npill = 40\n");
-        let older = load(tmp.path(), "older").expect("valid");
         let standard = Design::standard().size;
-        assert_eq!((older.size.command, older.size.pill), (standard.command, standard.pill));
-        assert_eq!(older.size.row, 44.0, "its own sizes stay");
-        let roomier = load(tmp.path(), "roomier").expect("valid");
-        assert_eq!((roomier.size.command, roomier.size.pill), (52.0, 40.0));
+        let roomy = load("comfort").expect("built in").size;
+        assert_eq!((roomy.command, roomy.pill), (50.0, 44.0));
+        assert_ne!((roomy.command, roomy.pill), (standard.command, standard.pill));
     }
 
     #[test]
@@ -1660,14 +1642,10 @@ mod tests {
     #[test]
     fn every_valid_design_font_and_colour_scheme_go_together() {
         let data = testdata::Data::all();
-        // The old complete pack `full` is no design any more (task L.21): a roomy one in its place.
-        let roomy = "format = 1\n[about]\nname = \"Roomy\"\nversion = \"1.0.0\"\n\
-                     [type.body]\nsize = 14\nline = 22\n[type.title]\nsize = 17\nline = 24\n[size]\nrow = 44\n";
-        data.write(Part::Design, "roomy", roomy);
         fn valid<T>(listed: Vec<Listed<T>>) -> Vec<T> {
             listed.into_iter().filter_map(|entry| entry.result.ok()).collect()
         }
-        let designs: Vec<Design> = valid(list(&data.dir(Part::Design)));
+        let designs: Vec<Design> = valid(list());
         let fonts: Vec<FontSet> = valid(list_fonts(&data.dir(Part::Font)));
         let schemes: Vec<ColorScheme> = valid(list_color_schemes(&data.dir(Part::ColorScheme)));
         assert!(designs.len() >= 3 && fonts.len() >= 5 && schemes.len() >= 4, "the test data has choices");

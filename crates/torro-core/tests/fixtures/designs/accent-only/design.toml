@@ -1,9 +1,0 @@
-# An old pure colour pack: only colours, no form. It belongs in color-schemes/ now.
-format = 1
-
-[about]
-name = "Teal"
-version = "1.0.0"
-
-[colors.dark]
-accent = "#0E7C7B"

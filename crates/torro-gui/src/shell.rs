@@ -1915,7 +1915,7 @@ mod tests {
             "the content keeps its rest"
         );
         for id in torro_core::design::BUILT_IN_IDS {
-            let d = torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design");
+            let d = torro_core::design::load(id).expect("a built-in design");
             assert!(0.75 * d.size.sidebar > d.size.rail, "{id}: the narrowest sidebar is no rail");
         }
     }

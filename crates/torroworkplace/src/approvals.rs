@@ -322,11 +322,6 @@ pub struct Facts {
     /// in the core says for the model (task MW.7), never the client's word. `None` while the core
     /// does not know it: the summary then names no size.
     pub download_bytes: Option<u64>,
-    /// For `settings.set_setting design` (task L.33): what choosing the design also sets, looked up
-    /// in the design and the fonts folder by `SettingsStore::design_suggestions` – the font only as
-    /// an id that loads valid, the mail view as `html`/`text`, never the design's name or
-    /// description. Empty when it sets nothing more (the same design, none suggested, or unknown).
-    pub design: crate::settings_service::DesignSuggestions,
     /// For `calendar.save_event` with a scope (task TE.4): how many changed occurrences of the series
     /// the save resets ("resets 2 changed events"), read from the stored object in the core's cache
     /// (`torro_pim_caldav::series::resets`), never from the client's event. 0 when none, or when the
@@ -1719,17 +1714,21 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         {
             tr("Turn off maps and place search").to_string()
         }
-        Request::SetSetting { key, value } => {
-            let set = trf(
+        // Issue #484: a design as the level the core really stores – `compact` and `console` are
+        // `dense` – so the person sees what will be set; an id that is no level stays as sent (the core
+        // refuses it).
+        Request::SetSetting { key: key @ torro_ipc::SettingKey::Design, value } => {
+            let level = value.as_str().and_then(torro_core::design::known_id);
+            let shown = level.map_or_else(|| value.to_string(), |id| serde_json::json!(id).to_string());
+            trf(
                 "Change the setting {key} to {value}",
-                &[("key", &quote(&format!("{key:?}"))), ("value", &quote(&value.to_string()))],
-            );
-            // Only a design sets more (task L.33); the facts of no other key are read here.
-            match (key, design_follows(&facts.design)) {
-                (torro_ipc::SettingKey::Design, Some(follows)) => format!("{set}; {follows}"),
-                _ => set,
-            }
+                &[("key", &quote(&format!("{key:?}"))), ("value", &quote(&shown))],
+            )
         }
+        Request::SetSetting { key, value } => trf(
+            "Change the setting {key} to {value}",
+            &[("key", &quote(&format!("{key:?}"))), ("value", &quote(&value.to_string()))],
+        ),
         Request::SetCollectionShown { collection, shown: true } => {
             trf("Show \"{collection}\" in the suite", &[("collection", &named(collection))])
         }
@@ -2316,24 +2315,6 @@ fn template_word(template: torro_ipc::tools::PdfTemplateId) -> &'static str {
 /// When the event of a reminder starts, for its summary; empty when unknown.
 fn reminder_when(item: &Known, today: chrono::NaiveDate) -> String {
     item.start.map(|start| when(&start, today)).unwrap_or_default()
-}
-
-/// What choosing a design also sets (task L.33, [`Facts::design`]), in words: the font as its checked
-/// id and the mail view as `html`/`text`; `None` when it sets nothing more.
-fn design_follows(design: &crate::settings_service::DesignSuggestions) -> Option<String> {
-    let view = |view: &torro_core::settings::MailFormat| match view {
-        torro_core::settings::MailFormat::Html => "html",
-        torro_core::settings::MailFormat::Text => "text",
-    };
-    match (&design.font, &design.mail_view) {
-        (Some(font), Some(mail)) => Some(trf(
-            "also sets the font to \"{font}\" and the mail view to {view}",
-            &[("font", &quote(font)), ("view", &view(mail))],
-        )),
-        (Some(font), None) => Some(trf("also sets the font to \"{font}\"", &[("font", &quote(font))])),
-        (None, Some(mail)) => Some(trf("also sets the mail view to {view}", &[("view", &view(mail))])),
-        (None, None) => None,
-    }
 }
 
 /// The fields a `set_setting reminders` value changes, in words: `"Work" full screen, all-day
@@ -4989,37 +4970,17 @@ pub(crate) mod tests {
         assert!(text.contains("\"Work\"") && text.contains("a/x") && text.contains("allDay"), "{text}");
     }
 
-    /// Task L.33: choosing a design names what the core also sets, from the facts it looked up – the
-    /// font only when it is there, the mail view as html/text – and nothing when it sets nothing more.
+    /// Issue #484: choosing a design names the level the core stores – `console` and `compact` as
+    /// `dense` – and nothing it would set besides: a design sets only spacing.
     #[test]
-    fn a_design_summary_names_what_the_core_also_sets() {
-        use crate::settings_service::DesignSuggestions;
-        use torro_core::settings::MailFormat;
-        let console = Request::SetSetting { key: torro_ipc::SettingKey::Design, value: serde_json::json!("console") };
-        let plain = summary(&console, &Facts::default());
-        assert_eq!(plain, trf("Change the setting {key} to {value}", &[("key", &"Design"), ("value", &"'console'")]));
-        let text_only =
-            Facts { design: DesignSuggestions { font: None, mail_view: Some(MailFormat::Text) }, ..Facts::default() };
-        let follows = trf("also sets the mail view to {view}", &[("view", &"text")]);
-        assert_eq!(summary(&console, &text_only), format!("{plain}; {follows}"), "no font: the mail view alone");
-        let both = Facts {
-            design: DesignSuggestions { font: Some("jetbrains-mono".into()), mail_view: Some(MailFormat::Text) },
-            ..Facts::default()
-        };
-        let follows = trf(
-            "also sets the font to \"{font}\" and the mail view to {view}",
-            &[("font", &"jetbrains-mono"), ("view", &"text")],
-        );
-        assert_eq!(summary(&console, &both), format!("{plain}; {follows}"));
-        let font_only = Facts {
-            design: DesignSuggestions { font: Some("jetbrains-mono".into()), mail_view: None },
-            ..Facts::default()
-        };
-        let follows = trf("also sets the font to \"{font}\"", &[("font", &"jetbrains-mono")]);
-        assert_eq!(summary(&console, &font_only), format!("{plain}; {follows}"));
-        // Another key never takes the design's facts.
-        let font = Request::SetSetting { key: torro_ipc::SettingKey::Font, value: serde_json::json!("torro") };
-        assert!(!summary(&font, &both).contains("jetbrains-mono"));
+    fn a_design_summary_names_the_level_that_is_stored() {
+        let design =
+            |id: &str| Request::SetSetting { key: torro_ipc::SettingKey::Design, value: serde_json::json!(id) };
+        let change = |value: &str| trf("Change the setting {key} to {value}", &[("key", &"Design"), ("value", &value)]);
+        assert_eq!(summary(&design("console"), &Facts::default()), change("'dense'"));
+        assert_eq!(summary(&design("compact"), &Facts::default()), change("'dense'"));
+        assert_eq!(summary(&design("comfort"), &Facts::default()), change("'comfort'"));
+        assert_eq!(summary(&design("plex"), &Facts::default()), change("'plex'"), "refused by the core, shown as sent");
     }
 
     /// Issue #299: a font of the computer is named by its id, cut and cleaned like any text of a

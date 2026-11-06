@@ -183,13 +183,14 @@ pub enum Open {
     CustomServerPaste,
     /// The choice among the two servers of that block, after "Fill in".
     CustomServerChoose,
-    /// Appearance with the demo's designs, fonts and colour schemes ([`torro_settings_ui::suite::demo_looks`]), one of each
-    /// broken; the design `--design` names is drawn, else the standard.
+    /// Appearance with the demo's spacing levels, fonts and colour schemes
+    /// ([`torro_settings_ui::suite::demo_looks`]), a font and a colour scheme broken; the level `--design`
+    /// names is drawn, else the standard.
     Design,
     /// Appearance with the colour scheme's dropdown open (task L.37).
     DesignSchemes,
-    /// Appearance after Console was chosen: the demo switched the mail view as the core would, and
-    /// the page says so ("Also switched: plain-text mail", task L.37).
+    /// Appearance after Dense was chosen (issue #484): the whole window in the dense spacing level,
+    /// nothing else switched.
     DesignSwitched,
     /// Appearance with the font's dropdown open (issue #299).
     DesignFonts,

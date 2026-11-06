@@ -1,0 +1,54 @@
+# Comfort, built into the suite (issue #484): lots of room around text and elements, a calm look.
+#
+# A spacing level only. It sets the spacing scale, the gaps by role and the heights of rows and
+# controls; everything else – text levels, radii, the widths of regions, how lists are drawn – it takes
+# from the standard (`designs/torro/design.toml`), so the font, the colours and the mail view stay as
+# they were chosen. Embedded at build time; the id `comfort` is what settings and the API name.
+
+format = 1
+
+[about]
+name = "Comfort"
+version = "1.0.0"   # a built-in design shows the suite's version instead
+author = "Torro"
+description = "Lots of room around text and elements"
+
+# ------------------------------------------------------------------------------------------------
+# Spacing: one step wider than the standard's [4, 8, 12, 16, 24, 32]. xs stays 4: the narrow time
+# axis (44) holds its figures with xs at either side.
+# ------------------------------------------------------------------------------------------------
+
+[space]             # xs s m l xl xxl, growing
+scale = [4, 10, 16, 20, 32, 40]
+
+[layout]
+page_padding = [32, 32]     # content and pages
+panel_padding = [20, 20]    # panels, floating cards, dialogs
+row_padding = [24, 32]      # list rows: rows of a fixed height take only the sides
+control_padding = [0, 16]   # buttons, chips, inputs
+section_gap = 32            # between groups and sections
+item_gap = 14               # between elements inside a group
+reading_padding = [64, 80]  # a mail in the reader, inside the reading column
+
+# ------------------------------------------------------------------------------------------------
+# Heights: rows and controls grow, the text in them keeps its size, so the room goes to the margins.
+# ------------------------------------------------------------------------------------------------
+
+[size]
+control_sm = 40     # buttons, icon buttons, segments
+control = 42        # inputs, property rows
+control_lg = 44     # quick entry, primary button in a dialog, the action rail's button
+control_xl = 52     # buttons of a reminder over the whole screen
+row = 56            # a task row
+row_two = 64        # two lines of 22 and 10 around them
+row_message = 116   # a mail row: three lines of 22 with 24.5 to spare above and below
+row_notice = 92     # any other inbox row: two lines of 22 with 23.5 to spare above and below
+row_sidebar = 36    # sidebar and menu rows
+row_group = 44      # the head of a group: holds its "+" button (control_sm 40)
+header = 64         # the header bar: as high as the standard's, it already holds control_sm 40
+hour = 56           # an hour in the calendar
+card_gap = 16       # between cards and the parts of a card
+command = 50        # kept in the format, no building block uses it any more
+pill = 44           # the sender's avatar in the reader's head: as large as the rail's button
+rail = 64           # collapsed sidebar and action rail: control_lg and 10 at either side
+rail_wide = 264     # expanded action rail

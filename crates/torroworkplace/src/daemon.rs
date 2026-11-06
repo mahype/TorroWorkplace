@@ -448,7 +448,7 @@ async fn serve(shows: Shows, takeover: bool) -> Result<(), String> {
     timing::mark("clients");
     let store = Store::open_default().map_err(|err| err.to_string())?;
     timing::mark("store");
-    // The first start of the suite brings the example design packs (task L.5); later starts find
+    // The first start of the suite brings the example fonts and colour schemes (task L.5); later starts find
     // the folder and leave it alone.
     let _ = tokio::task::spawn_blocking(crate::designs::install_examples).await;
     timing::mark("designs");

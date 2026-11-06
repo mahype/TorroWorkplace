@@ -27,7 +27,7 @@ noch einmal, sie verweist nur hin. Einzige Ausnahme ist die Einrichtung beim ers
 Was eine App nur für ein Fenster merkt (Seitenleiste, Breite, Reihenfolge der Anzeige), ist keine
 Einstellung und erscheint nirgends in den Einstellungen (`ui.json`, siehe [Bestand](#bestand-stand-2026-10-16)).
 Die Dichte des Eingangs gehört seit Issue #226 nicht mehr dazu: Sie ist ein Wert des Designs (seit Issue #291
-`[list] style`).
+`[list] style`; seit Issue #484 zeigen alle drei Abstandsstufen Zeilen).
 
 **Konten: ein Speicher, viele Türen (#410).** Die Konten liegen im Dienst und gelten für die ganze Suite. Jede
 App verbindet die Konten, die sie braucht, selbst: hinter dem Zahnrad unter „Accounts“ (Kalender: Nextcloud und
@@ -93,7 +93,7 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | **MCP servers** | Was Torro für seine Clients ausführt (`--section connections`): die eingebauten Werkzeuge (PDF, mit der Unterseite „PDF templates“), der Katalog fremder MCP-Server und die eigenen Server; je Server eine Seite. Wer einen Server nutzen darf, steht im Rechte-Editor (MCP clients, API, Access) | #302 (MA.7–MA.9) |
 | **Approvals** | Was Agenten zur Freigabe vorlegen, und was entschieden wurde | v1 |
 | **Workspaces** | Fenstermanager, Tasten 1 … 0 mit wählbarem Modifikator, Vorlagen bearbeiten, aktualisieren, löschen, beim Anmelden laden. Strategie je Fenster später; die F1–F10 der alten App sind verworfen. Siehe [Workspaces (#243)](#workspaces-243) | #243 (WS.6), Rest später |
-| **Appearance** | Hell/dunkel, Design-Paket ([design-pakete.md](design-pakete.md)), Zoom; gilt für alle Apps, die Apps verweisen hierher | v1 |
+| **Appearance** | Abstände (Komfort, Standard, Dicht), Schrift, Farben (Farbschema, hell/dunkel), Zoom ([design-pakete.md](design-pakete.md)); gilt für alle Apps, die Apps verweisen hierher | v1 |
 | **General** | Sprache (System / English / Deutsch), Start beim Anmelden (dort auch der Schalter für Workspaces), Einrichtung erneut. Die frühere Gruppe **Apps** (je App „On“ und „Open“) ist seit #411 der Abschnitt **Apps** | v1 |
 | **Updates** | Steht seit #411 im Abschnitt Apps: der Dienst prüft täglich und beim Öffnen von Apps, ohne Schalter; „⟳“ prüft sofort, der Fuß zeigt, wann zuletzt geprüft wurde | #411 |
 | **Diagnostics** | Log-Datei, Sync-Protokoll, Verbindung testen | später |
@@ -648,7 +648,7 @@ kacheln, etwa „Arbeit · Woche“ und „Familie · Monat“.
 | Konten (ohne Geheimnisse) | `accounts.json` im Config-Verzeichnis des Kerns (gibt es) |
 | Geheimnisse (App-Passwörter, Tokens, API-Schlüssel) | Schlüsselbund des Systems, Dienst `torroworkplace` (gibt es) |
 | Einstellungen (Sprache, Autostart, ausgeblendete Sammlungen, gewähltes Design `design`, Schrift `font`, Farbschema `colorScheme` …) | `settings.json` im Config-Verzeichnis, atomar geschrieben |
-| Designs, Schriften, Farbschemata | `designs/<id>/`, `fonts/<id>/`, `color-schemes/<id>/` im Datenverzeichnis; aufgelistet mit `settings.list_designs`, `settings.list_fonts`, `settings.list_color_schemes`, gewählt mit `settings.set_setting { key: "design" \| "font" \| "color_scheme" }` (L.3, L.22) |
+| Designs, Schriften, Farbschemata | Designs eingebaut (die drei Abstandsstufen `torro`, `comfort`, `dense`, Issue #484; ein alter Ordner `designs/` bleibt liegen, wird aber nicht mehr gelesen), `fonts/<id>/`, `color-schemes/<id>/` im Datenverzeichnis; aufgelistet mit `settings.list_designs`, `settings.list_fonts`, `settings.list_color_schemes`, gewählt mit `settings.set_setting { key: "design" \| "font" \| "color_scheme" }` (L.3, L.22) |
 | Vorlagen | wie bisher `templates/` im Datenverzeichnis; Felder `shortcut` und `startup` (#243) |
 | Tastenmodifikator der Vorlagen | `settings.json`, Feld `workspaces.modifiers` (`super_alt`, `super_ctrl`, `ctrl_alt`, `ctrl_shift`) |
 | Start-Merker (Vorlagen beim Anmelden) | `startup.json` im State-Verzeichnis |
@@ -657,16 +657,17 @@ Die Steuerzentrale liest und schreibt nie selbst Dateien, sondern fragt den Dien
 (`Settings`, `SetSetting`, `Accounts`, `AddAccount…`, `RemoveAccount`, `TestAccount`). So sehen
 Tray, Apps und Steuerzentrale immer denselben Stand.
 
-Wer ein anderes Design wählt (`set_setting design`), bekommt in derselben Änderung dessen Vorschläge: die Schrift
-(`[about] font`), wenn sie gültig lädt, und die Mail-Darstellung (`[about] mail_view` → `mail_view`); das Farbschema
-nie. Danach sind beide wieder frei wählbar; `update_settings` setzt nur, was es schickt (L.33, [api.md](api.md) ⁹).
+Ein Design ist seit Issue #484 nur noch eine Abstandsstufe: Komfort, Standard oder Dicht. Wer eine wählt
+(`set_setting design`), ändert nur die Abstände; Schrift, Farbschema und Mail-Darstellung bleiben. Eine gespeicherte
+Wahl von Compact oder Console wird zu Dicht, ein eigenes Design zu Standard ([api.md](api.md) ⁹).
 
 Design, Schrift und Farbschema gelten in allen offenen Fenstern sofort, auf demselben Weg wie hell/dunkel
 und der Zoom: Jede App fragt die Einstellungen beim Start (vor dem ersten Bild) und bei jedem Takt, liest
 den Teil neu, der sich geändert hat, lädt bei einer neuen Schrift deren Dateien nach und zeichnet neu; nur
-das Tray-Symbol bleibt fest (Issue #114). Ist ein Teil weg oder ungültig, zeichnen alle mit dem Standard
-dieses Teils, die Einstellung bleibt stehen. Zum Ausprobieren ohne Dienst: `--demo --design <id> --font <id>
---color-scheme <id>` in jeder App, jede id aus ihrem eigenen Ordner (L.22).
+das Tray-Symbol bleibt fest (Issue #114). Ist eine Schrift oder ein Farbschema weg oder ungültig, zeichnen alle mit
+dem Standard dieses Teils, die Einstellung bleibt stehen. Zum Ausprobieren ohne Dienst: `--demo --design <id> --font
+<id> --color-scheme <id>` in jeder App; `--design` nimmt `torro`, `comfort` oder `dense`, Schrift und Farbschema je
+eine id aus ihrem eigenen Ordner (L.22).
 
 ## Apps ohne Konto
 
@@ -724,7 +725,7 @@ ihre Zeile hat.
 | Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
 |---|---|---|---|---|---|---|
 | Color mode (System, Light, Dark) | hell oder dunkel, alle Apps | Appearance › Color mode; Einrichtung › Welcome („Appearance“) | `appearance` | `set_setting appearance` | alle | bleibt, Suite; ein Name für beide Orte |
-| Design (Pakete), Reload, Open designs folder | Design-Paket aller Fenster | Appearance › Design | `design`; `<data>/designs/` | `set_setting design`, `settings.list_designs` | alle | bleibt, Suite; #189 teilt es auf |
+| Abstände (Komfort, Standard, Dicht) | Abstandsstufe aller Fenster | Appearance › Spacing | `design` | `set_setting design`, `settings.list_designs` | alle | bleibt, Suite; seit #484 nur Abstände, kein Design-Ordner |
 | Zoom (Zoom out, Zoom in, Reset) | Größe aller Fenster | Appearance › Interface; Strg/⌘ +, −, 0 in jeder App | `zoom` | `set_setting zoom` | alle | bleibt, Suite |
 | Show mail as (Formatted, Plain text) | wie eine HTML-Mail im Leser zuerst erscheint | Appearance › Mail | `mailView` | `set_setting mail_view` | Mail | umziehen nach Mail |
 | Mail colors (Like the app, Light, Dark) | Farben des Mail-Inhalts im Leser | Appearance › Mail | `mailAppearance` | `set_setting mail_appearance` | Mail | umziehen nach Mail |
@@ -886,7 +887,7 @@ Kein Ort für Einstellungen: Sie wählen beim Start, was ein Fenster zeigt, oder
 | `--setup`, `--setup-if-open`, `--step <schritt>` | öffnet die Einrichtung, auf Wunsch nur solange sie offen ist | Steuerzentrale | bleibt |
 | `--settings <abschnitt>` | öffnet eine App mit offenen Einstellungen | alle Apps (S.18–S.20) | bleibt; kein Request, nur ein Startwort |
 | `--demo` | Beispieldaten statt Dienst, schreibt nichts | alle | bleibt (Sichtprüfung) |
-| `--appearance light\|dark\|system`, `--design <id>`, `--font <id>`, `--color-scheme <id>` | überschreibt `appearance`, `design`, `font` bzw. `colorScheme` für dieses Fenster (die drei Teile nur mit `--demo`, je eine id ihres Ordners) | alle | bleibt (Sichtprüfung) |
+| `--appearance light\|dark\|system`, `--design <id>`, `--font <id>`, `--color-scheme <id>` | überschreibt `appearance`, `design`, `font` bzw. `colorScheme` für dieses Fenster (die drei Teile nur mit `--demo`; das Design eine der Stufen `torro`, `comfort`, `dense`, Schrift und Farbschema je eine id ihres Ordners) | alle | bleibt (Sichtprüfung) |
 | `--mail-view`, `--mail-colors` | überschreiben `mailView` und `mailAppearance` für dieses Fenster | Eingang, Mail | bleibt (Sichtprüfung) |
 | `--view`, `--lane`, `--source`, `--account`, `--open`, `--size`, `--now`, `--task` | wählen Fensterart, Ausschnitt, Größe und Zeitpunkt | Apps | bleibt, keine Einstellung |
 | `--reminders`, `--all-displays`, `--monitors`, `--cover` | das Erinnerungsfenster, das der Kern selbst startet (`torrocalendar::reminder`) | Kalender | bleibt, keine Einstellung |

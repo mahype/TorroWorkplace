@@ -2,7 +2,7 @@
 #
 # This file is embedded at build time and read once per process. It must set every key: there are no
 # stand-in values in the code, and a test stops a build whose standard leaves a key out or breaks a
-# rule. Compact and Console take what they leave out from here.
+# rule. Comfort and Dense take what they leave out from here (issue #484): they set only spacing.
 #
 # Calm and open (task L.34): flush content, hairlines between rows, a bar of the accent colour at the
 # chosen row, a reading column with wide margins. Values from the boards "The three designs side by
@@ -10,8 +10,7 @@
 # below, each with its reason.
 #
 # Sizes of text are meant for Inter; a font with another x-height scales them (docs/design-pakete.md).
-# Copy this file into the folder `designs/<id>/` of the data folder to make a design of your own; the
-# id must not be `torro`, `compact` or `console`.
+# Designs are built in only (issue #484): a folder `designs/` in the data folder is no longer read.
 
 format = 1
 
@@ -21,7 +20,7 @@ name = "Standard"
 # A built-in design shows the suite's version instead of this one.
 version = "1.0.0"
 author = "Torro"
-description = "Calm and open: flush content, hairlines, a reading column with wide margins"
+description = "The suite's standard spacing"
 
 # ------------------------------------------------------------------------------------------------
 # Text levels: font role (text | heading | numbers), size, line height, weight (regular | medium |

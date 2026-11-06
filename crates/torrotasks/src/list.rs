@@ -1698,22 +1698,22 @@ mod tests {
     }
 
     fn built_in(id: &str) -> torro_core::design::Design {
-        torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design")
+        torro_core::design::load(id).expect("a built-in design")
     }
 
     /// Issue #291 (task L.36, draft L.32): rows and group heads take their heights from the design –
-    /// one line in Console – and hold what they show: the title's line in a row, the name and the "+"
-    /// button in a head.
+    /// the spacing levels of issue #484 – and hold what they show: the title's line in a row, the name
+    /// and the "+" button in a head.
     #[test]
     fn rows_and_heads_hold_their_content_in_every_design() {
         let heights = |id: &str| {
             let d = built_in(id);
             (d.size.row, d.size.row_group)
         };
+        assert_eq!(heights("comfort"), (56.0, 44.0));
         assert_eq!(heights("torro"), (48.0, 40.0));
-        assert_eq!(heights("compact"), (40.0, 32.0));
-        assert_eq!(heights("console"), (24.0, 24.0), "one line");
-        for id in ["torro", "compact", "console"] {
+        assert_eq!(heights("dense"), (42.0, 32.0));
+        for id in torro_core::design::BUILT_IN_IDS {
             let d = built_in(id);
             assert!(d.size.row >= d.typo.body_strong.line, "{id}: the title fits its row");
             assert!(d.size.row_group >= d.typo.caption.line, "{id}: the name fits its head");
@@ -1732,29 +1732,34 @@ mod tests {
         );
     }
 
-    /// Issue #291 (draft L.32, confirmed: Console's chevron is 8): the chevron of a group head fits the
-    /// rows' side padding, so the group's icon stands on the axis of the checks in every design.
+    /// Issue #291 (draft L.32): the chevron of a group head fits the rows' side padding, so the group's
+    /// icon stands on the axis of the checks in every design.
     #[test]
     fn the_group_icon_stands_on_the_axis_of_the_checks() {
         let chevron = |id: &str| {
             let d = built_in(id);
             chevron_in(d.typo.caption.line, d.space.xs, d.layout.row_padding.horizontal)
         };
-        assert_eq!([chevron("torro"), chevron("compact"), chevron("console")], [12.0, 12.0, 8.0]);
-        for id in ["torro", "compact", "console"] {
+        assert_eq!([chevron("comfort"), chevron("torro"), chevron("dense")], [12.0, 12.0, 14.0]);
+        for id in torro_core::design::BUILT_IN_IDS {
             assert!(chevron(id) <= built_in(id).layout.row_padding.horizontal, "{id}");
         }
         assert_eq!(chevron_size(), 12.0);
         assert_eq!(layout::row_padding().left, 24.0, "the column of the chevron is the rows' padding");
     }
 
-    /// Issue #291 (draft L.32): only the chosen row of a design that fills it (Console) turns its own
-    /// colours to `on_accent`; Standard and Compact mark it with the bar and keep them.
+    /// Issue #291 (draft L.32): only the chosen row of a design that fills it turns its own colours to
+    /// `on_accent`; every built-in level marks it with the bar and keeps them (issue #484), so the
+    /// filled look is built here.
     #[test]
     fn only_a_filled_row_draws_its_colours_in_on_accent() {
-        assert!(fills(built_in("console").list, true));
-        assert!(!fills(built_in("console").list, false));
-        for id in ["torro", "compact"] {
+        let filled = torro_core::design::ListLook {
+            selection: torro_core::design::ListSelection::Fill,
+            ..torro_core::design::Design::standard().list
+        };
+        assert!(fills(filled, true));
+        assert!(!fills(filled, false));
+        for id in torro_core::design::BUILT_IN_IDS {
             assert!(!fills(built_in(id).list, true), "{id}");
         }
         assert!(!fills(layout::list(), true), "the process draws with the standard");

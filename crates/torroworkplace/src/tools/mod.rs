@@ -412,7 +412,7 @@ impl ToolError {
 }
 
 /// Opens `path` with the system's program for it: `open` on macOS, the Explorer on Windows, `xdg-open` elsewhere
-/// (as the control centre opens the designs folder). Does not wait for it.
+/// (as the control centre opens the fonts folder). Does not wait for it.
 fn system_open(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let program = "open";

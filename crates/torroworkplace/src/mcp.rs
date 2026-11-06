@@ -2448,21 +2448,26 @@ mod tests {
         assert_eq!(request_for("settings_list_designs", JsonObject::new(), &Utc), Ok(Request::ListDesigns));
         let hints = tools().iter().find(|t| t.name == "settings_list_designs").and_then(|t| t.annotations.clone());
         assert_eq!(hints.and_then(|h| h.read_only_hint), Some(true));
-        let chosen = request_for("settings_set_setting", args(json!({"key": "design", "value": "plex"})), &Utc);
-        assert_eq!(chosen, Ok(Request::SetSetting { key: torro_ipc::SettingKey::Design, value: json!("plex") }));
-        let set = tools().iter().find(|t| t.name == "settings_set_setting").and_then(|t| t.description.clone());
-        assert!(set.is_some_and(|text| text.contains("`design`")), "set_setting names the design");
-        // Task L.33: the tools say that choosing a design sets its font and mail view, never the colour
-        // scheme, and that whole settings set none of it.
+        let chosen = request_for("settings_set_setting", args(json!({"key": "design", "value": "dense"})), &Utc);
+        assert_eq!(chosen, Ok(Request::SetSetting { key: torro_ipc::SettingKey::Design, value: json!("dense") }));
+        // Issue #484: the tools name the three spacing levels and the alias, and that a level sets only
+        // spacing – no font, colour scheme or mail view, no suggestions in the list.
         let text = |name: &str| tools().iter().find(|t| t.name == name).and_then(|t| t.description.clone());
         let set = text("settings_set_setting").expect("a description");
-        assert!(
-            set.contains("also sets `font`") && set.contains("`mail_view`") && set.contains("the colour scheme never")
-        );
+        assert!(set.contains("`design`"), "set_setting names the design");
+        for level in ["\"torro\"", "\"comfort\"", "\"dense\""] {
+            assert!(set.contains(level), "{level}");
+        }
+        assert!(set.contains("\"compact\" and \"console\" are taken as \"dense\""), "the alias");
+        assert!(!set.contains("also sets `font`"), "a design suggests nothing any more");
         let listed = text("settings_list_designs").expect("a description");
-        assert!(listed.contains("`density`") && listed.contains("`mailView`") && !listed.contains("colorScheme"));
+        assert!(listed.contains("`density`") && listed.contains("\"comfort\"") && listed.contains("\"dense\""));
+        assert!(
+            !listed.contains("`mailView`") && !listed.contains("colorScheme") && !listed.contains("designs folder")
+        );
         assert!(text("settings_list_color_schemes").is_some_and(|text| text.contains("`darkOnly`")));
-        assert!(text("settings_update_settings").is_some_and(|text| text.contains("none of the design's suggestions")));
+        let update = text("settings_update_settings").expect("a description");
+        assert!(update.contains("\"compact\" and \"console\" are stored as \"dense\""), "{update}");
     }
 
     /// Task L.22: fonts and colour schemes are listed read-only, their text is data, and both are
@@ -2471,7 +2476,8 @@ mod tests {
     fn fonts_and_colour_schemes_are_listed_read_only_and_chosen_with_set_setting() {
         assert_eq!(request_for("settings_list_fonts", JsonObject::new(), &Utc), Ok(Request::ListFonts));
         assert_eq!(request_for("settings_list_color_schemes", JsonObject::new(), &Utc), Ok(Request::ListColorSchemes));
-        for name in ["settings_list_designs", "settings_list_fonts", "settings_list_color_schemes"] {
+        // The designs are the suite's own words since issue #484; fonts and colour schemes come from folders.
+        for name in ["settings_list_fonts", "settings_list_color_schemes"] {
             let tool = tools().iter().find(|t| t.name == name).cloned().expect("a tool");
             assert_eq!(tool.annotations.and_then(|h| h.read_only_hint), Some(true), "{name}");
             let text = tool.description.unwrap_or_default();

@@ -183,20 +183,20 @@ mod tests {
 
     /// A built-in design (issue #291) from its embedded file, read without switching the process's.
     fn built_in(id: &str) -> torro_core::design::Design {
-        torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design")
+        torro_core::design::load(id).expect("a built-in design")
     }
 
     /// Issue #291 (review of the three designs): a day's cell holds its number – the line of `micro`
-    /// and `xs` around it – in every design, so Console's numbers (14 high, its `xl` is 12) no longer
-    /// run over their rows; Standard and Compact keep their 24. The circle stays a line inside the cell.
+    /// and `xs` around it – in every design; a cell follows `xl` (issue #484: Comfort 32, Standard 24,
+    /// Dense 16). The circle stays a line inside the cell.
     #[test]
     fn a_day_cell_holds_its_number_in_every_design() {
         let cell = |id: &str| {
             let d = built_in(id);
             cell_in(d.space.xl, d.typo.micro.line, d.space.xs)
         };
-        assert_eq!([cell("torro"), cell("compact"), cell("console")], [24.0, 24.0, 16.0]);
-        for id in ["torro", "compact", "console"] {
+        assert_eq!([cell("comfort"), cell("torro"), cell("dense")], [32.0, 24.0, 16.0]);
+        for id in torro_core::design::BUILT_IN_IDS {
             let d = built_in(id);
             assert!(cell(id) >= d.typo.micro.line + d.space.xs, "{id}: the number fits its cell");
             assert!(circle_in(cell(id)) >= d.typo.micro.line, "{id}: and today's circle");

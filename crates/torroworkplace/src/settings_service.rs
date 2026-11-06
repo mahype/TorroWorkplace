@@ -7,10 +7,10 @@
 //! (`~/Library/LaunchAgents/io.github.mahype.torro-workplace.plist`) and the value
 //! `TorroWorkplace` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` on Windows.
 //! Hidden collections are applied by `pim.rs`, which reads [`SettingsStore::current`] on every
-//! request. A design (task L.3), a font and a colour scheme (task L.22) are checked against the rules
-//! of `torro_core::design` before they are stored, each in its own folder; the apps follow the
-//! settings themselves. Choosing another design with `set_setting` also sets the font and the mail
-//! view it suggests, in the same write ([`DesignSuggestions`], task L.33); whole settings never do.
+//! request. A design – one of the three built-in spacing levels since issue #484 –, a font and a
+//! colour scheme (task L.22) are checked against `torro_core::design` before they are stored, the font
+//! and the colour scheme each in its own folder; the apps follow the settings themselves. Choosing a
+//! design sets only the design: the font, the colour scheme and the mail view stay.
 //!
 //! The file is not looked up here but handed in ([`SettingsStore`]): the daemon uses the user's
 //! `settings.json`, tests a file in a temp directory, so no test reads or writes the real one
@@ -46,10 +46,6 @@ static WRITING: Mutex<()> = Mutex::new(());
 pub struct SettingsStore {
     /// `None` without a home directory: reads give the defaults, changes fail.
     file: Option<PathBuf>,
-    /// The folder of the design packs (`torro_core::design::dir`), where a chosen design other than
-    /// the built-in ones (`torro_core::design::BUILT_IN_IDS`) must be found and valid; `None` without
-    /// a home directory, then only the built-in designs can be chosen.
-    designs: Option<PathBuf>,
     /// The folder of the fonts (`torro_core::design::font_dir`), where a chosen font must be found and
     /// valid; `None` without a home directory, then only the standard can be chosen.
     fonts: Option<PathBuf>,
@@ -68,7 +64,6 @@ impl SettingsStore {
     pub fn system() -> SettingsStore {
         SettingsStore {
             file: settings::settings_file(),
-            designs: design::dir(),
             fonts: design::font_dir(),
             color_schemes: design::color_scheme_dir(),
             applies_login_item: true,
@@ -76,13 +71,12 @@ impl SettingsStore {
     }
 
     /// The settings in `file`, for tests. `start_at_login` is only stored in `file`; the
-    /// system's login item is never touched, so tests may switch it freely. The designs, fonts and
-    /// colour schemes are the folders `designs`, `fonts` and `color-schemes` next to `file`.
+    /// system's login item is never touched, so tests may switch it freely. The fonts and colour
+    /// schemes are the folders `fonts` and `color-schemes` next to `file`.
     #[cfg(test)]
     pub fn at(file: PathBuf) -> SettingsStore {
         let beside = |name: &str| file.parent().map(|dir| dir.join(name));
         SettingsStore {
-            designs: beside("designs"),
             fonts: beside("fonts"),
             color_schemes: beside("color-schemes"),
             file: Some(file),
@@ -94,13 +88,7 @@ impl SettingsStore {
     /// changes fail. Like [`SettingsStore::at`], it never touches the system's login item.
     #[cfg(test)]
     pub fn without_file() -> SettingsStore {
-        SettingsStore { file: None, designs: None, fonts: None, color_schemes: None, applies_login_item: false }
-    }
-
-    /// The folder of the design packs, for `settings.list_designs`; `None` without a home
-    /// directory (only the built-in designs exist then).
-    pub fn designs(&self) -> Option<&Path> {
-        self.designs.as_deref()
+        SettingsStore { file: None, fonts: None, color_schemes: None, applies_login_item: false }
     }
 
     /// The folder of the fonts, for `settings.list_fonts` (task L.22); `None` without a home
@@ -115,10 +103,10 @@ impl SettingsStore {
         self.color_schemes.as_deref()
     }
 
-    /// The folder of `part`.
+    /// The folder of `part`; designs have none since issue #484.
     fn folder(&self, part: Part) -> Option<&Path> {
         match part {
-            Part::Design => self.designs(),
+            Part::Design => None,
             Part::Font => self.fonts(),
             Part::ColorScheme => self.color_schemes(),
         }
@@ -280,21 +268,18 @@ impl SettingsStore {
     }
 
     /// Sets one setting (`Request::SetSetting`). The value is checked against the key before the
-    /// file is read; a value that does not fit is an error and changes nothing.
-    ///
-    /// A design that differs from the stored one also sets what it suggests, in the same write under
-    /// the same lock ([`SettingsStore::design_suggestions`], task L.33): the font when it loads valid,
-    /// the mail view when the design names one. The same design again changes nothing.
+    /// file is read; a value that does not fit is an error and changes nothing. A design sets only the
+    /// design (issue #484).
     pub fn set(&self, key: SettingKey, value: &serde_json::Value) -> Result<(), String> {
         let change = Change::parse(key, value)?;
-        self.change(|settings| self.apply_with_suggestions(change, settings))
+        self.change(|settings| change.apply(settings))
     }
 
     /// Like [`SettingsStore::set`], for clients: a PDF folder, a template's logo or the Downloads
     /// folder of attachments (issue #290) is written only when it is removed or equals the stored
     /// one, read under the same lock as the write. The core refuses a new path before (point 9,
     /// `Core::switches_on_for_people`); this keeps a path a person removed between that check and
-    /// the write removed. A design sets its suggestions as in [`SettingsStore::set`]. The allowed
+    /// the write removed. The allowed
     /// folders are never a client's (point 9, issue #304): the core refuses them before
     /// (`Request::kept_for_people`), and this refuses them too.
     pub fn set_by_client(&self, key: SettingKey, value: &serde_json::Value) -> Result<(), String> {
@@ -302,55 +287,7 @@ impl SettingsStore {
             return Err("only a person manages the allowed folders".into());
         }
         let change = Change::parse(key, value)?;
-        self.change(|settings| {
-            let change = change.limited_for_clients(settings);
-            self.apply_with_suggestions(change, settings)
-        })
-    }
-
-    /// What choosing the design `id` with `set_setting` would set besides the design, against the
-    /// settings as stored now (task L.33): for the summary of an approval (`approvals::Facts`), which
-    /// must name what really changes. The run decides again under the lock ([`SettingsStore::set`]),
-    /// with the same rule.
-    pub fn design_suggestions(&self, id: &str) -> DesignSuggestions {
-        self.suggestions_against(&self.current(), id)
-    }
-
-    /// The rule of [`SettingsStore::design_suggestions`] against `settings`: nothing when `id` is the
-    /// stored design or does not load valid; else the design's font when that font loads valid
-    /// (the same check as choosing it, [`SettingsStore::check_part`]) and its mail view, each only
-    /// when it differs from the stored one. Only these two: never the colour scheme, never words
-    /// from the design's folder. A built-in design suggests without a designs folder too (it loads
-    /// without the disk); its font then only when that font loads, which without a fonts folder only
-    /// the standard does.
-    fn suggestions_against(&self, settings: &Settings, id: &str) -> DesignSuggestions {
-        if settings.design == id {
-            return DesignSuggestions::default();
-        }
-        let chosen = match self.designs() {
-            Some(dir) => design::load(dir, id).ok(),
-            // `design::load` gives a built-in design without touching the disk; any other id would be
-            // read relative to the working directory, so it is not looked up.
-            None if design::BUILT_IN_IDS.contains(&id) => design::load(Path::new(""), id).ok(),
-            None => None,
-        };
-        let Some(chosen) = chosen else {
-            return DesignSuggestions::default();
-        };
-        let font = chosen.about.font.filter(|font| *font != settings.font && self.check_part(Part::Font, font).is_ok());
-        let mail_view = chosen.about.mail_view.filter(|view| *view != settings.mail_view);
-        DesignSuggestions { font, mail_view }
-    }
-
-    /// Applies `change` to `settings` and, for a design that differs from the one in `settings`, what
-    /// it suggests ([`SettingsStore::suggestions_against`], judged before the change).
-    fn apply_with_suggestions(&self, change: Change, settings: &mut Settings) {
-        let suggested = match &change {
-            Change::Design(id) => self.suggestions_against(settings, id),
-            _ => DesignSuggestions::default(),
-        };
-        change.apply(settings);
-        suggested.apply(settings);
+        self.change(|settings| change.limited_for_clients(settings).apply(settings))
     }
 
     /// Shows or hides one collection in all apps (`Request::SetCollectionShown`). Whether the id
@@ -495,9 +432,9 @@ impl SettingsStore {
         Ok(())
     }
 
-    /// Whether the design, font or colour scheme `id` can be chosen: the standard, a built-in design
-    /// (`design::BUILT_IN_IDS`, also without a home directory), or one in the folder of `part` that
-    /// passes every rule. Otherwise every reason, for the person or agent who chose it; an id the
+    /// Whether the design, font or colour scheme `id` can be chosen: a built-in design
+    /// (`design::BUILT_IN_IDS`, the only designs since issue #484), the standard font or colour scheme,
+    /// or one in the folder of `part` that passes every rule. Otherwise every reason, for the person or agent who chose it; an id the
     /// folder lacks but another holds also names the key that chooses it there (`"nord" is a colour
     /// scheme: choose it with the key color_scheme.`, task L.22).
     fn check_part(&self, part: Part, id: &str) -> Result<(), String> {
@@ -507,14 +444,11 @@ impl SettingsStore {
             return Err(format!("the {} can't be used: {BAD_FAMILY}", part_name(part)));
         }
         let refused = |reasons: String| format!("the {} {id:?} can't be used: {reasons}", part_name(part));
-        // The fonts of the computer (issue #299) need no folder either: they are checked where they are.
-        let Some(dir) = self.folder(part).or_else(|| system_font(part, id).then_some(Path::new(""))) else {
-            // The built-in designs need no folder, as `settings.list_designs` shows them valid without one.
-            let built_in = match part {
-                Part::Design => design::BUILT_IN_IDS.contains(&id),
-                Part::Font | Part::ColorScheme => id == design::STANDARD_ID,
-            };
-            return match built_in {
+        // The fonts of the computer (issue #299) need no folder, nor do the designs, which are all built
+        // in (issue #484): they are checked where they are.
+        let unfoldered = system_font(part, id) || part == Part::Design;
+        let Some(dir) = self.folder(part).or_else(|| unfoldered.then_some(Path::new(""))) else {
+            return match id == design::STANDARD_ID {
                 true => Ok(()),
                 false => Err(refused(format!("there is no {} folder without a home directory", folder_name(part)))),
             };
@@ -538,7 +472,10 @@ impl SettingsStore {
             .into_iter()
             .filter(|other| *other != part)
             .filter(|other| {
-                let Some(dir) = self.folder(*other) else { return false };
+                // The designs have no folder (issue #484) but are looked up all the same, so `font =
+                // "dense"` names the key `design`.
+                let built_in = (*other == Part::Design).then_some(Path::new(""));
+                let Some(dir) = self.folder(*other).or(built_in) else { return false };
                 !matches!(
                     load_part(*other, dir, id).as_ref().map_err(Vec::as_slice),
                     Err([DesignError::NotFound { .. }])
@@ -596,30 +533,6 @@ fn login_item_outdated(current: Option<&str>, wanted: &str) -> bool {
     current.is_some_and(|current| current != wanted)
 }
 
-/// What choosing another design with `set_setting design` sets besides the design (task L.33): the
-/// font and the mail view the design suggests (`[about] font`, `[about] mail_view`), each only when
-/// it is set and would change. Built only by [`SettingsStore::design_suggestions`], which looks them
-/// up in the design and checks the font; never from a client's text.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DesignSuggestions {
-    /// The id of the font the design suggests, set only when that font loads valid now.
-    pub font: Option<String>,
-    /// How a mail with HTML shows, as the design suggests.
-    pub mail_view: Option<MailFormat>,
-}
-
-impl DesignSuggestions {
-    /// Puts what is suggested into `settings`; leaves the rest.
-    fn apply(self, settings: &mut Settings) {
-        if let Some(font) = self.font {
-            settings.font = font;
-        }
-        if let Some(view) = self.mail_view {
-            settings.mail_view = view;
-        }
-    }
-}
-
 /// One setting with its value, checked against its key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Change {
@@ -634,7 +547,8 @@ enum Change {
     QuietWhenBusy(bool),
     /// Show the hidden address books in the contacts app.
     ContactsShowHiddenBooks(bool),
-    /// Whether the pack exists and is valid is [`SettingsStore::check_part`]'s check.
+    /// A spacing level, mapped by `design::known_id` (`compact` and `console` are `dense`, issue #484);
+    /// an id it does not know stays as sent, and [`SettingsStore::check_part`] refuses it.
     Design(String),
     /// The font (task L.22), checked like [`Change::Design`].
     Font(String),
@@ -738,7 +652,10 @@ impl Change {
             SettingKey::ContactsShowHiddenBooks => {
                 Change::ContactsShowHiddenBooks(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
-            SettingKey::Design => Change::Design(part_id(key, value)?),
+            SettingKey::Design => {
+                let id = part_id(key, value)?;
+                Change::Design(design::known_id(&id).map_or(id, String::from))
+            }
             SettingKey::Font => Change::Font(part_id(key, value)?),
             SettingKey::ColorScheme => Change::ColorScheme(part_id(key, value)?),
             // Strict, like the night: the file's reading falls back to 30 days instead.
@@ -924,7 +841,7 @@ fn system_font(part: Part, id: &str) -> bool {
 /// Reads the design, font or colour scheme `id` from `dir`, only for its reasons.
 fn load_part(part: Part, dir: &Path, id: &str) -> Result<(), Vec<DesignError>> {
     match part {
-        Part::Design => design::load(dir, id).map(drop),
+        Part::Design => design::load(id).map(drop),
         Part::Font => design::load_font(dir, id).map(drop),
         Part::ColorScheme => design::load_color_scheme(dir, id).map(drop),
     }
@@ -1630,13 +1547,6 @@ mod tests {
         store.file.as_deref().expect("a test store has a file").exists()
     }
 
-    /// Writes a design pack `id` with `toml` as its `design.toml` into the store's designs folder.
-    fn pack(store: &SettingsStore, id: &str, toml: &str) {
-        let folder = store.designs().expect("a test store has a designs folder").join(id);
-        fs::create_dir_all(&folder).expect("pack folder");
-        fs::write(folder.join("design.toml"), toml).expect("design.toml");
-    }
-
     /// Issue #325: the core takes a file from before the slots over like the apps do, and its next
     /// write leaves `assistantDefault` out; the old key writes the slot Chat.
     #[test]
@@ -1662,36 +1572,41 @@ mod tests {
         assert!(store.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide));
     }
 
+    /// Issue #484: the three spacing levels are chosen; `compact` and `console` are taken as Dense.
     #[test]
-    fn a_valid_design_is_stored_and_read_back() {
+    fn a_spacing_level_is_stored_and_read_back() {
         let (_dir, store) = store();
-        pack(
-            &store,
-            "teal",
-            "format = 1\n[about]\nname = \"Teal\"\nversion = \"1.0.0\"\n[radius]\nscale = [3, 5, 7, 9]\n",
-        );
         assert_eq!(store.current().design, "torro", "the standard until one is chosen");
-        store.set(SettingKey::Design, &json!("teal")).expect("a valid pack");
-        assert_eq!(store.current().design, "teal");
+        for (sent, stored) in [("comfort", "comfort"), ("dense", "dense"), ("compact", "dense"), ("console", "dense")] {
+            store.set(SettingKey::Design, &json!(sent)).expect("a level");
+            assert_eq!(store.current().design, stored, "{sent}");
+        }
         store.set(SettingKey::Design, &json!("torro")).expect("the standard is always there");
         assert_eq!(store.current().design, "torro");
     }
 
+    /// Issue #484: a design that is no spacing level – one of the old designs folder – is refused, and
+    /// so is one in whole settings built in the core; whole settings from a client read it as the
+    /// standard ([`Settings::design`]).
     #[test]
-    fn a_missing_or_broken_design_is_refused_with_its_reasons() {
-        let (_dir, store) = store();
-        pack(&store, "pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[size]\nrow = 20\n");
-        let broken = store.set(SettingKey::Design, &json!("pale")).expect_err("rows too low");
-        assert!(broken.contains("\"pale\" can't be used"), "{broken}");
-        assert!(broken.contains("size.row"), "names the broken key: {broken}");
-        let missing = store.set(SettingKey::Design, &json!("plex")).expect_err("no such pack");
+    fn a_design_that_is_no_level_is_refused() {
+        let (dir, store) = store();
+        let old = dir.path().join("designs").join("plex");
+        fs::create_dir_all(&old).expect("an old pack folder");
+        fs::write(old.join("design.toml"), "format = 1\n[about]\nname = \"Plex\"\nversion = \"1.0.0\"\n")
+            .expect("toml");
+        let missing = store.set(SettingKey::Design, &json!("plex")).expect_err("no such level");
         assert!(missing.contains("\"plex\""), "{missing}");
         assert!(store.set(SettingKey::Design, &json!(7)).is_err(), "an id is a string");
         assert!(!file_exists(&store), "nothing was written");
-        // update_settings takes the same check.
         let all = Settings { design: "plex".into(), ..Settings::default() };
         assert!(store.update(all).is_err());
-        assert_eq!(store.current().design, "torro");
+        let sent: Settings = serde_json::from_value(json!({"design": "plex"})).expect("a client's settings");
+        assert_eq!(sent.design, "torro", "read as the standard");
+        let sent: Settings = serde_json::from_value(json!({"design": "console"})).expect("a client's settings");
+        store.update(sent).expect("written");
+        assert_eq!(store.current().design, "dense");
+        assert!(old.join("design.toml").is_file(), "the old folder is never deleted");
     }
 
     /// Writes `toml` after `format` and `[about]` as the file `file` of `id` in the store's folder `folder`.
@@ -1723,6 +1638,9 @@ mod tests {
         assert!(wrong.contains("is a colour scheme: choose it with the key color_scheme."), "{wrong}");
         let wrong = store.set(SettingKey::ColorScheme, &json!("plain")).expect_err("plain is no colour scheme");
         assert!(wrong.contains("choose it with the key font."), "{wrong}");
+        // Issue #484: a spacing level has no folder, but is named all the same.
+        let level = store.set(SettingKey::Font, &json!("dense")).expect_err("dense is no font");
+        assert!(level.contains("is a design: choose it with the key design."), "{level}");
         let missing = store.set(SettingKey::Font, &json!("gone")).expect_err("no such font");
         assert!(missing.contains("\"gone\"") && !missing.contains("the key"), "{missing}");
         let broken = store.set(SettingKey::ColorScheme, &json!("murky")).expect_err("text too dark");
@@ -1788,120 +1706,59 @@ mod tests {
         assert_eq!((store.current().font.as_str(), store.current().color_scheme.as_str()), ("torro", "torro"));
     }
 
+    /// Issue #484: a stored design of the old designs folder reads as the standard and blocks nothing.
     #[test]
-    fn a_design_that_broke_later_does_not_block_other_changes() {
-        let (_dir, store) = store();
-        pack(&store, "teal", "format = 1\n[about]\nname = \"Teal\"\nversion = \"1.0.0\"\n");
-        store.set(SettingKey::Design, &json!("teal")).expect("valid");
-        fs::remove_dir_all(store.designs().expect("folder").join("teal")).expect("remove the pack");
-        store.set(SettingKey::Appearance, &json!("dark")).expect("the design is not checked again");
-        assert_eq!(store.current().design, "teal", "kept as chosen; the apps fall back to the standard");
+    fn a_stored_design_of_the_old_folder_does_not_block_other_changes() {
+        let (dir, store) = store();
+        fs::write(dir.path().join("settings.json"), r#"{"design":"teal"}"#).expect("an old file");
+        assert_eq!(store.current().design, "torro");
+        store.set(SettingKey::Appearance, &json!("dark")).expect("nothing blocks");
+        assert_eq!(store.current().design, "torro");
     }
 
-    /// Task L.33: choosing Console sets its mail view at once, its font only while a valid font of
-    /// that id is there; the standard suggests nothing, so going back keeps both.
+    /// Issue #484: choosing a spacing level changes only the design – the font, the colour scheme and
+    /// the mail view stay, for a person and a client alike.
     #[test]
-    fn choosing_a_design_sets_its_mail_view_and_its_font_only_when_it_loads() {
+    fn choosing_a_design_changes_only_the_design() {
         let (_dir, store) = store();
-        store.set(SettingKey::Design, &json!("console")).expect("built in");
-        let chosen = store.current();
-        assert_eq!((chosen.design.as_str(), chosen.mail_view), ("console", MailFormat::Text));
-        assert_eq!(chosen.font, "torro", "jetbrains-mono is not there: the font stays");
+        part(&store, Part::Font, "jetbrains-mono", "font.toml", "");
+        store.set(SettingKey::Font, &json!("jetbrains-mono")).expect("a font");
+        store.set(SettingKey::MailView, &json!("text")).expect("a mail view");
+        let before = store.current();
+        store.set(SettingKey::Design, &json!("console")).expect("taken as Dense");
+        assert_eq!(store.current(), Settings { design: "dense".into(), ..before.clone() });
+        store.set_by_client(SettingKey::Design, &json!("comfort")).expect("a client too");
+        assert_eq!(store.current(), Settings { design: "comfort".into(), ..before.clone() });
+        store.set(SettingKey::Design, &json!("comfort")).expect("the same design");
+        assert_eq!(store.current().design, "comfort", "the same design again changes nothing");
+
         store.set(SettingKey::Design, &json!("torro")).expect("the standard");
         let back = store.current();
-        assert_eq!((back.font.as_str(), back.mail_view), ("torro", MailFormat::Text), "the standard suggests nothing");
-
-        part(&store, Part::Font, "jetbrains-mono", "font.toml", "");
-        store.set_by_client(SettingKey::Design, &json!("console")).expect("built in");
-        let chosen = store.current();
-        assert_eq!((chosen.font.as_str(), chosen.mail_view), ("jetbrains-mono", MailFormat::Text), "a client too");
-        assert_eq!(chosen.color_scheme, "torro", "never the colour scheme");
-
-        // A broken font of that id is not set.
-        store.set(SettingKey::Design, &json!("torro")).expect("the standard");
-        store.set(SettingKey::Font, &json!("torro")).expect("the standard font");
-        part(
-            &store,
-            Part::Font,
-            "jetbrains-mono",
-            "font.toml",
-            "[fonts.text]\nfamily = \"Gone\"\nregular = \"Gone.ttf\"\n",
-        );
-        store.set(SettingKey::Design, &json!("console")).expect("the design is valid");
-        assert_eq!(store.current().font, "torro", "a font that breaks a rule stays unchosen");
+        assert_eq!((back.font.as_str(), back.mail_view), ("jetbrains-mono", MailFormat::Text), "going back keeps both");
     }
 
-    /// Task L.33: after the design was chosen, font and mail view are free; choosing the same design
-    /// again changes nothing, and whole settings set exactly what they carry.
-    #[test]
-    fn the_same_design_again_and_whole_settings_apply_no_suggestions() {
-        let (_dir, store) = store();
-        part(&store, Part::Font, "jetbrains-mono", "font.toml", "");
-        store.set(SettingKey::Design, &json!("console")).expect("built in");
-        store.set(SettingKey::Font, &json!("torro")).expect("chosen freely");
-        store.set(SettingKey::MailView, &json!("html")).expect("chosen freely");
-        let before = store.current();
-        store.set(SettingKey::Design, &json!("console")).expect("the same design");
-        assert_eq!(store.current(), before, "nothing changed");
-
-        store.set(SettingKey::Design, &json!("torro")).expect("the standard");
-        let whole = Settings { design: "console".into(), ..store.current() };
-        store.update(whole.clone()).expect("written");
-        assert_eq!(store.current(), whole, "update_settings sets exactly what it sends");
-        store.set(SettingKey::Design, &json!("torro")).expect("the standard");
-        store.update_keeping_hidden(Settings { design: "console".into(), ..store.current() }).expect("written");
-        let kept = store.current();
-        assert_eq!((kept.font.as_str(), kept.mail_view), ("torro", MailFormat::Html), "a client's way neither");
-    }
-
-    /// Task L.33: what an approval's summary names, looked up in the design and the fonts folder.
-    #[test]
-    fn the_suggestions_name_only_what_would_change() {
-        let (_dir, store) = store();
-        let text_only = DesignSuggestions { font: None, mail_view: Some(MailFormat::Text) };
-        assert_eq!(store.design_suggestions("console"), text_only, "no such font: the mail view alone");
-        part(&store, Part::Font, "jetbrains-mono", "font.toml", "");
-        let both = DesignSuggestions { font: Some("jetbrains-mono".into()), mail_view: Some(MailFormat::Text) };
-        assert_eq!(store.design_suggestions("console"), both);
-        let nothing = DesignSuggestions::default();
-        assert_eq!(store.design_suggestions("torro"), nothing, "the chosen design changes nothing");
-        assert_eq!(store.design_suggestions("compact"), nothing, "Compact suggests nothing");
-        assert_eq!(store.design_suggestions("gone"), nothing, "a design that is not there");
-        store.set(SettingKey::MailView, &json!("text")).expect("valid");
-        let font_only = DesignSuggestions { font: Some("jetbrains-mono".into()), mail_view: None };
-        assert_eq!(store.design_suggestions("console"), font_only, "the mail view is text already");
-        assert_eq!(store.current().design, "torro", "looking up changes nothing");
-    }
-
-    /// Issue #291 (review of the three designs): without a home directory there are no folders, but
-    /// the built-in designs need none – `settings.list_designs` shows Compact and Console as valid, so
-    /// they can be chosen and suggest what they suggest; a font they suggest only when it loads, which
-    /// without a fonts folder it never does. Other designs, fonts and colour schemes stay refused.
+    /// Issue #291, #484: without a home directory there are no folders, but the designs need none – all
+    /// three levels are built in. Fonts and colour schemes other than the standard stay refused.
     #[test]
     fn built_in_designs_can_be_chosen_without_a_home_folder() {
         let store = SettingsStore::without_file();
         for id in design::BUILT_IN_IDS {
             assert_eq!(store.check_part(Part::Design, id), Ok(()), "{id} is built in");
         }
-        assert!(store.check_part(Part::Design, "nord").is_err(), "a design of a folder needs the folder");
+        assert!(store.check_part(Part::Design, "nord").is_err(), "no such level");
         assert!(store.check_part(Part::Font, "jetbrains-mono").is_err(), "no fonts folder");
         assert!(store.check_part(Part::ColorScheme, "compact").is_err(), "not a colour scheme");
-        let text_only = DesignSuggestions { font: None, mail_view: Some(MailFormat::Text) };
-        assert_eq!(store.design_suggestions("console"), text_only, "Console's mail view, never its font");
-        assert_eq!(store.design_suggestions("compact"), DesignSuggestions::default());
-        assert_eq!(store.design_suggestions("nord"), DesignSuggestions::default(), "not looked up without a folder");
 
-        // A settings file but no folders (the folders come from another directory than the file): the
-        // choice is stored with its mail view.
+        // A settings file but no folders (the folders come from another directory than the file).
         let dir = tempfile::tempdir().expect("temp dir");
         let store = SettingsStore { file: Some(dir.path().join("settings.json")), ..SettingsStore::without_file() };
-        store.set(SettingKey::Design, &json!("console")).expect("built in");
+        store.set(SettingKey::Design, &json!("console")).expect("taken as Dense");
         let chosen = store.current();
         assert_eq!(
             (chosen.design.as_str(), chosen.font.as_str(), chosen.mail_view),
-            ("console", "torro", MailFormat::Text)
+            ("dense", "torro", MailFormat::default())
         );
-        assert!(store.set(SettingKey::Design, &json!("nord")).is_err(), "no designs folder");
+        assert!(store.set(SettingKey::Design, &json!("nord")).is_err(), "no such level");
     }
 
     #[test]
@@ -1916,7 +1773,7 @@ mod tests {
         let working = json!({"from": "07:30", "to": "16:00"});
         Change::parse(SettingKey::WorkingHours, &working).expect("valid working hours").apply(&mut settings);
         Change::parse(SettingKey::QuietWhenBusy, &json!(false)).expect("valid flag").apply(&mut settings);
-        Change::parse(SettingKey::Design, &json!("plex")).expect("an id").apply(&mut settings);
+        Change::parse(SettingKey::Design, &json!("compact")).expect("an id").apply(&mut settings);
         Change::parse(SettingKey::Font, &json!("channelr")).expect("an id").apply(&mut settings);
         Change::parse(SettingKey::ColorScheme, &json!("nord")).expect("an id").apply(&mut settings);
         Change::parse(SettingKey::AssistantRetention, &json!("forever")).expect("forever").apply(&mut settings);
@@ -1945,7 +1802,7 @@ mod tests {
                 list_orders: Default::default(),
                 quiet_when_busy: false,
                 contacts_show_hidden_books: false,
-                design: "plex".into(),
+                design: "dense".into(),
                 font: "channelr".into(),
                 color_scheme: "nord".into(),
                 assistant_retention: Retention::Forever,

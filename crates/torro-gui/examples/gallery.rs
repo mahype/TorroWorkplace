@@ -23,9 +23,8 @@
 //! Escape or a click on the dimmed window closes it). The "Styles ·
 //! Blocks · Window" switch in the header changes the page, "Dark · Light" the mode.
 //!
-//! `-- --design <id>` draws everything with the design `<id>`: the built-in `compact` and `console`
-//! (issue #291), or a design of its own from the designs folder (`TORRO_DATA_HOME/designs`), as
-//! `--design` does in the apps; an id that is not a valid design is said on stderr and the standard
+//! `-- --design <id>` draws everything with the spacing level `<id>`: `comfort` or `dense` (issue
+//! #484), as `--design` does in the apps; an id that is not a level is said on stderr and the standard
 //! stays. `--font` and `--color-scheme` do the same for the font (e.g. `plex`) and the colours.
 //!
 //! `--shot <file.bmp>` saves the window as a picture after three seconds and quits (task L.34): a
@@ -2318,10 +2317,10 @@ impl Gallery {
             widgets::icon_segmented(parts, self.mode, words)
         };
         let heading = widgets::group_heading(
-            "Design",
+            "Colors",
             vec![
                 widgets::icon_button(Icon::RefreshCw, "Reload", Some(Msg::Noop)),
-                widgets::text_button(Some(Icon::Folder), "Open designs folder", style::button::ghost, Some(Msg::Noop)),
+                widgets::text_button(Some(Icon::Folder), "Open folder", style::button::ghost, Some(Msg::Noop)),
             ],
         );
         let names = ["Torro", "Harbor", "Paper", "Commitr Dark Extended", "Neon", "Plex", "Nord", "Dracula"];
@@ -2351,7 +2350,7 @@ impl Gallery {
                     );
                 }
                 let state = if i == self.tile { widgets::PreviewState::Chosen } else { widgets::PreviewState::Plain };
-                // Plex wears the note a chosen design puts on the font or colour scheme it suggests (task L.23).
+                // Plex wears a note, as a tile can (task L.23).
                 let note = (*name == "Plex").then_some("Suggested");
                 widgets::preview_tile_noted(
                     Some(swatch(colour)),

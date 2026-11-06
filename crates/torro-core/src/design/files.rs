@@ -1,7 +1,7 @@
-//! The file rules of a design, a font and a colour scheme: paths stay inside the part's folder (also
-//! through `..` and links), sizes are checked before anything is read, SVGs hold no references and no
-//! scripts, logos are square, fonts are TrueType/OpenType of the named family, `preview.png` is a PNG
-//! of at most 1200 × 800. Nothing here interprets more of a file than these checks need; of a font
+//! The file rules of a font and a colour scheme: paths stay inside the part's folder (also through `..`
+//! and links), sizes are checked before anything is read, SVGs hold no references and no scripts, logos
+//! are square, fonts are TrueType/OpenType of the named family. Designs have no folder since issue #484,
+//! so the pictures of design previews went with it. Nothing here interprets more of a file than these checks need; of a font
 //! only its family names, its x-height and the advance of its figures are read ([`FontInfo`]).
 
 use std::fs;
@@ -9,25 +9,21 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 use super::{DesignError, shown};
-use crate::i18n::tr;
 
 /// `design.toml`, `font.toml`, `color-scheme.toml`.
 pub(super) const TOML_LIMIT: u64 = 64 * 1024;
 const SVG_LIMIT: u64 = 256 * 1024;
-const PNG_LIMIT: u64 = 2 * 1024 * 1024;
 const FONT_LIMIT: u64 = 5 * 1024 * 1024;
 const PACK_LIMIT: u64 = 20 * 1024 * 1024;
 /// More entries than any folder needs; a folder with more is treated as too large, so walking it
 /// stays cheap.
 const PACK_ENTRIES: usize = 1000;
-const PREVIEW_MAX: (u32, u32) = (1200, 800);
 
 /// The kinds of files a TOML file may name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
     Svg,
     Font,
-    Png,
 }
 
 impl Kind {
@@ -36,7 +32,6 @@ impl Kind {
         match self {
             Kind::Svg => ext.as_deref() == Some("svg"),
             Kind::Font => matches!(ext.as_deref(), Some("ttf" | "otf")),
-            Kind::Png => ext.as_deref() == Some("png"),
         }
     }
 
@@ -44,7 +39,6 @@ impl Kind {
         match self {
             Kind::Svg => "SVG",
             Kind::Font => "TTF or OTF",
-            Kind::Png => "PNG",
         }
     }
 }
@@ -173,23 +167,6 @@ impl Root {
         let bytes = self.read(path, FONT_LIMIT)?;
         font_info(&bytes).ok_or_else(|| DesignError::FontUnreadable { file: self.show(path) })
     }
-
-    /// `preview.png` if the pack has one: a PNG of at most 2 MB and 1200 × 800.
-    pub(super) fn preview(&self) -> Result<Option<PathBuf>, Vec<DesignError>> {
-        if fs::symlink_metadata(self.path.join("preview.png")).is_err() {
-            return Ok(None);
-        }
-        let path = self.named("preview.png", "preview.png", Kind::Png)?;
-        let bytes = self.read(&path, PNG_LIMIT).map_err(|err| vec![err])?;
-        let Some((width, height)) = png_size(&bytes) else {
-            let reason = tr("not a PNG image").to_string();
-            return Err(vec![DesignError::Unreadable { file: "preview.png".into(), reason }]);
-        };
-        if width > PREVIEW_MAX.0 || height > PREVIEW_MAX.1 {
-            return Err(vec![DesignError::PreviewSize { width, height }]);
-        }
-        Ok(Some(path))
-    }
 }
 
 /// What the rules need of one font file.
@@ -246,16 +223,6 @@ pub(super) fn has_license(root: &Root, rel: &str) -> bool {
 /// "64 KB", "20 MB".
 fn human(bytes: u64) -> String {
     if bytes >= 1024 * 1024 { format!("{} MB", bytes / (1024 * 1024)) } else { format!("{} KB", bytes / 1024) }
-}
-
-/// Width and height from a PNG's header (signature, then the IHDR chunk).
-fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
-    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
-    if bytes.len() < 24 || &bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
-        return None;
-    }
-    let number = |at: usize| Some(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
-    Some((number(16)?, number(20)?))
 }
 
 /// Every SVG rule `text` breaks: it must parse (without a DTD, so no entities), refer to nothing
@@ -398,14 +365,5 @@ mod tests {
             r#"<!DOCTYPE svg [<!ENTITY a "aaaa">]><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">&a;</svg>"#;
         assert!(matches!(svg_problems("logo.svg", dtd)[..], [DesignError::Unreadable { .. }]));
         assert!(matches!(svg_problems("logo.svg", "<svg")[..], [DesignError::Unreadable { .. }]));
-    }
-
-    #[test]
-    fn png_size_reads_the_header() {
-        let mut header = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
-        header.extend(1200u32.to_be_bytes());
-        header.extend(801u32.to_be_bytes());
-        assert_eq!(png_size(&header), Some((1200, 801)));
-        assert_eq!(png_size(b"GIF89a"), None);
     }
 }

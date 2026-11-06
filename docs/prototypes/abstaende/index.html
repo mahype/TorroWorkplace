@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Erscheinungsbild mit Abständen</title>
+<!-- Entwurf zu Issue #484 (Artifact https://claude.ai/artifact/L9qPaCM5CdafTsV8kEow3H), vom Plan übernommen. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: Erklärseite (themenfähig) um einen fest dunklen Nachbau des Steuerzentrale-Fensters. */
+:root {
+  --bg: #f6f6f7; --fg: #1d1d21; --muted: #5e5e66; --rule: #dcdce0; --card: #ffffff; --accent: #c20b0b;
+  --font: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
+  /* das Fenster selbst: Torro-Standard, dunkel */
+  --w-bg: #121214; --w-side: #161618; --w-panel: #1b1b1e; --w-line: #2b2b30; --w-text: #e7e7ea;
+  --w-muted: #9b9ba3; --w-sel: #26262b; --w-red: #d50c0c; --w-unread: #6aa8ff;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0e0e10; --fg: #e9e9ec; --muted: #a0a0a8; --rule: #2a2a2f; --card: #17171a; --accent: #ff5a4f; color-scheme: dark } }
+:root[data-theme="dark"] { --bg: #0e0e10; --fg: #e9e9ec; --muted: #a0a0a8; --rule: #2a2a2f; --card: #17171a; --accent: #ff5a4f; color-scheme: dark }
+
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 15px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 28px 56px; }
+.wrap { max-width: 1180px; margin: 0 auto; display: grid; gap: 36px; }
+h1 { font-size: 26px; line-height: 1.25; margin: 0; text-wrap: balance; font-weight: 600; }
+h2 { font-size: 18px; margin: 0 0 10px; font-weight: 600; }
+.lead { color: var(--muted); max-width: 70ch; margin: 6px 0 0; }
+.eyebrow { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+section > p, li { max-width: 72ch; }
+ul { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+@media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+.tablebox { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; background: var(--card); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th { font-weight: 600; color: var(--muted); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+tr:last-child td { border-bottom: 0; }
+td.num { text-align: right; }
+.note { color: var(--muted); font-size: 14px; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 14px; color: var(--muted); }
+.controls button { font: inherit; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--rule); background: var(--card); color: var(--fg); cursor: pointer; }
+.controls button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+
+/* ------- das Fenster ------- */
+.win { --page: 24px; --panel: 16px; --section: 24px; --item: 10px; --rowh: 48px; --ctl: 36px; --mail: 100px;
+  --header: 64px; --siderow: 32px; --rpad: 52px;
+  background: var(--w-bg); color: var(--w-text); border-radius: 10px; overflow: hidden; border: 1px solid #000;
+  box-shadow: 0 18px 48px rgba(0,0,0,.25); font-size: 14px; line-height: 22px; display: grid; grid-template-columns: 220px 1fr; min-height: 640px; }
+.win[data-step="comfort"] { --page: 32px; --panel: 20px; --section: 32px; --item: 14px; --rowh: 56px; --ctl: 40px; --mail: 116px; --header: 64px; --siderow: 36px; --rpad: 64px; }
+.win[data-step="dense"]   { --page: 16px; --panel: 12px; --section: 16px; --item: 6px;  --rowh: 40px; --ctl: 30px; --mail: 78px;  --header: 48px; --siderow: 28px; --rpad: 32px; }
+.win * { transition: padding .18s, height .18s, gap .18s, min-height .18s; }
+@media (prefers-reduced-motion: reduce) { .win * { transition: none; } }
+.side { background: var(--w-side); border-right: 1px solid var(--w-line); padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; }
+.brand { display: flex; align-items: center; gap: 8px; padding: 4px 8px 14px; font-weight: 600; }
+.logo { width: 20px; height: 20px; border-radius: 4px; background: var(--w-red); color: #fff; font-size: 12px; display: grid; place-items: center; font-weight: 700; }
+.nav { height: var(--siderow); display: flex; align-items: center; justify-content: space-between; padding: 0 10px; border-radius: 4px; color: var(--w-text); }
+.nav span:last-child { color: var(--w-muted); font-size: 13px; }
+.nav.on { background: var(--w-sel); }
+.main { display: flex; flex-direction: column; min-width: 0; }
+.bar { height: var(--header); border-bottom: 1px solid var(--w-line); display: flex; align-items: center; padding: 0 var(--page); font-weight: 500; flex: none; }
+.page { padding: var(--page); display: grid; grid-template-columns: minmax(0,1.15fr) minmax(0,1fr); gap: var(--section) calc(var(--page) + 8px); align-items: start; }
+.stack { display: grid; gap: var(--section); min-width: 0; }
+.group { display: grid; gap: var(--item); min-width: 0; }
+.ghead { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; line-height: 16px; color: var(--w-muted); font-weight: 500; min-height: 24px; flex-wrap: wrap; }
+.quiet { display: flex; gap: 14px; color: var(--w-text); }
+.quiet span { display: inline-flex; gap: 5px; align-items: center; }
+.box { border: 1px solid var(--w-line); border-radius: 4px; background: var(--w-panel); }
+.srow { min-height: var(--rowh); display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 var(--panel); border-bottom: 1px solid var(--w-line); }
+.srow:last-child { border-bottom: 0; }
+.hint { color: var(--w-muted); font-size: 13px; line-height: 18px; margin: 0; }
+.seg { display: inline-flex; border: 1px solid var(--w-line); border-radius: 4px; padding: 2px; gap: 2px; background: var(--w-bg); }
+.seg button { font: inherit; font-size: 13px; color: var(--w-muted); background: transparent; border: 0; border-radius: 3px; height: calc(var(--ctl) - 6px); padding: 0 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.seg button[aria-pressed="true"] { background: var(--w-sel); color: var(--w-text); box-shadow: inset 0 0 0 1px #3a3a40; }
+.seg button:focus-visible, .controls button:focus-visible { outline: 2px solid #6aa8ff; outline-offset: 1px; }
+.drop { height: var(--ctl); min-width: 150px; border: 1px solid var(--w-line); border-radius: 4px; display: inline-flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 12px; background: var(--w-bg); }
+.drop i { font-style: normal; color: var(--w-muted); }
+.stripes { display: inline-flex; width: 16px; height: 12px; border-radius: 2px; overflow: hidden; }
+.stripes b { flex: 1; } .stripes b:nth-child(1){background:#121214} .stripes b:nth-child(2){background:#e7e7ea} .stripes b:nth-child(3){background:#d50c0c}
+.zoom { display: inline-flex; gap: 14px; align-items: center; color: var(--w-muted); }
+.zoom .ghost { border: 1px solid var(--w-line); border-radius: 4px; height: calc(var(--ctl) - 4px); padding: 0 10px; display: inline-flex; align-items: center; font-size: 13px; }
+.seg-row { padding: var(--panel); display: grid; gap: var(--item); }
+.seg-row .seg { width: 100%; display: grid; grid-template-columns: repeat(3, 1fr); }
+.seg-row .seg button { justify-content: center; }
+
+/* Vorschau: kleines Mailfenster in der gewählten Stufe */
+.preview { border-top: 1px solid var(--w-line); display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); height: 300px; overflow: hidden; font-size: 13px; line-height: 20px; }
+.mlist { border-right: 1px solid var(--w-line); overflow: hidden; }
+.mrow { min-height: calc(var(--mail) * .82); padding: 0 calc(var(--panel) * .9); display: grid; grid-template-columns: 30px minmax(0,1fr); gap: 10px; align-items: center; border-bottom: 1px solid var(--w-line); position: relative; }
+.mrow.sel::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--w-red); }
+.mrow.sel { background: var(--w-sel); }
+.av { width: 30px; height: 30px; border-radius: 50%; background: #34343a; display: grid; place-items: center; font-size: 11px; font-weight: 600; }
+.mrow div { min-width: 0; }
+.mrow b, .mrow em, .mrow small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-style: normal; }
+.mrow b { font-weight: 500; } .mrow small { color: var(--w-muted); font-size: 12px; }
+.mrow.unread b::after { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--w-unread); margin-left: 6px; vertical-align: middle; }
+.reader { padding: calc(var(--rpad) * .45) calc(var(--rpad) * .55); overflow: hidden; display: grid; gap: calc(var(--item) * 1.2); align-content: start; }
+.reader h4 { margin: 0; font-size: 16px; line-height: 22px; font-weight: 600; }
+.reader p { margin: 0; color: #cfcfd4; }
+.reader .from { color: var(--w-muted); font-size: 12px; line-height: 16px; }
+.measure { color: var(--w-muted); font-size: 12px; line-height: 16px; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 980px) { .page { grid-template-columns: minmax(0,1fr); } }
+@media (max-width: 720px) { .win { grid-template-columns: 1fr; } .side { display: none; } .preview { grid-template-columns: 1fr; } .reader { display: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Entwurf zu Issue #484</div>
+    <h1>Erscheinungsbild: Abstände, Schrift und Farben getrennt</h1>
+    <p class="lead">Ein Design regelt nur noch die Abstände. Drei Stufen stehen zur Wahl: Komfort, Standard und Dicht. Schrift und Farben wählt man getrennt davon. Klick im Fenster auf eine Stufe: die ganze Seite und die Vorschau folgen, die Textgröße bleibt gleich.</p>
+  </header>
+
+  <section aria-label="Nachbau der Seite">
+    <div class="controls" style="margin-bottom:10px">
+      <span>Fensterbreite:</span>
+      <button type="button" id="w-wide" aria-pressed="true">breit</button>
+      <button type="button" id="w-narrow" aria-pressed="false">schmal (eine Spalte)</button>
+    </div>
+    <div class="win" id="win" data-step="standard">
+      <nav class="side" aria-label="Seitenleiste">
+        <div class="brand"><span class="logo">T</span>Workplace</div>
+        <div class="nav"><span>Übersicht</span><span></span></div>
+        <div class="nav"><span>Konten</span><span>7</span></div>
+        <div class="nav"><span>KI</span><span>1</span></div>
+        <div class="nav"><span>API</span><span>1</span></div>
+        <div class="nav"><span>MCP-Clients</span><span>2</span></div>
+        <div class="nav"><span>MCP-Server</span><span>5</span></div>
+        <div class="nav"><span>Freigaben</span><span>3</span></div>
+        <div class="nav"><span>Workspaces</span><span>3</span></div>
+        <div class="nav on"><span>Erscheinungsbild</span><span></span></div>
+      </nav>
+      <div class="main">
+        <div class="bar">Erscheinungsbild</div>
+        <div class="page" id="page">
+          <div class="stack">
+            <div class="group">
+              <div class="ghead"><span>Abstände</span></div>
+              <div class="box">
+                <div class="seg-row">
+                  <div class="seg" role="group" aria-label="Abstände">
+                    <button type="button" id="s-comfort" data-step="comfort" aria-pressed="false">Komfort</button>
+                    <button type="button" id="s-standard" data-step="standard" aria-pressed="true">Standard</button>
+                    <button type="button" id="s-dense" data-step="dense" aria-pressed="false">Dicht</button>
+                  </div>
+                  <div class="measure" id="measure">Mailzeile 100 · Knopf 36 · Seitenrand 24</div>
+                </div>
+                <div class="preview" aria-label="Vorschau">
+                  <div class="mlist">
+                    <div class="mrow sel unread"><span class="av">AK</span><div><b>Anna Krüger</b><em>Angebot Messestand Hannover</em><small>Anbei die überarbeitete Fassung mit den neuen Maßen …</small></div></div>
+                    <div class="mrow unread"><span class="av">GH</span><div><b>GitHub</b><em>[torro] PR #496 merged</em><small>Attachments back under the mail, with the triangle …</small></div></div>
+                    <div class="mrow"><span class="av">JL</span><div><b>Jonas Lehmann</b><em>Re: Termin Donnerstag</em><small>Passt mir gut, ich bringe die Unterlagen mit.</small></div></div>
+                    <div class="mrow"><span class="av">NC</span><div><b>Nextcloud</b><em>Freigabe: Quartalszahlen.xlsx</em><small>Sven hat eine Datei mit dir geteilt.</small></div></div>
+                  </div>
+                  <div class="reader">
+                    <div class="from">Anna Krüger · heute, 09:12</div>
+                    <h4>Angebot Messestand Hannover</h4>
+                    <p>Hallo Sven, anbei die überarbeitete Fassung mit den neuen Maßen für den Stand. Die Rückwand ist jetzt 4 Meter breit.</p>
+                    <p>Bis Freitag brauche ich deine Freigabe, dann geht es in den Druck.</p>
+                  </div>
+                </div>
+              </div>
+              <p class="hint">Wie viel Platz alle Torro-Apps zwischen ihren Elementen lassen. Schrift und Farben ändern sich dabei nicht; für größeren Text gibt es den Zoom.</p>
+            </div>
+          </div>
+
+          <div class="stack">
+            <div class="group">
+              <div class="ghead"><span>Schrift</span><span class="quiet"><span>↻ Neu laden</span><span>▢ Schriften-Ordner öffnen</span></span></div>
+              <div class="box">
+                <div class="srow"><span>Schrift</span><span class="drop">Inter <i>⌄</i></span></div>
+              </div>
+              <p class="hint">Die Schrift aller Torro-Apps, so bemessen, dass Text in jeder Schrift gleich groß wirkt. Weitere Schriften kommen in den Schriften-Ordner; die auf diesem Rechner installierten lassen sich mitnutzen.</p>
+            </div>
+            <div class="group">
+              <div class="ghead"><span>Farben</span><span class="quiet"><span>▢ Farbschema-Ordner öffnen</span></span></div>
+              <div class="box">
+                <div class="srow"><span>Farbschema</span><span class="drop"><span style="display:inline-flex;gap:8px;align-items:center"><span class="stripes"><b></b><b></b><b></b></span>Torro</span> <i>⌄</i></span></div>
+                <div class="srow"><span>Farbmodus</span><span class="seg"><button type="button" aria-pressed="true">▭ System</button><button type="button" aria-pressed="false">☼ Hell</button><button type="button" aria-pressed="false">☾ Dunkel</button></span></div>
+              </div>
+              <p class="hint">Die Farben aller Torro-Apps, hell und dunkel. „System“ folgt deinem Desktop. Weitere Farbschemata kommen in den Farbschema-Ordner.</p>
+            </div>
+            <div class="group">
+              <div class="ghead"><span>Anzeige</span></div>
+              <div class="box">
+                <div class="srow"><span>Zoom</span><span class="zoom">−&nbsp; <span style="color:var(--w-text)">100 %</span> &nbsp;+ <span class="ghost">Zurücksetzen</span></span></div>
+              </div>
+              <p class="hint">Macht alle Torro-Apps größer oder kleiner, wie das Zoomen im Browser: Strg + Plus und Strg + Minus, Strg + 0 setzt zurück.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="note">Nachbau zum Ansehen, keine echte Darstellung: Die Vorschau ist verkleinert, die Maße in der Zeile darunter sind die echten Werte in Punkten.</p>
+  </section>
+
+  <section class="cols">
+    <div>
+      <h2>Was sich gegenüber heute ändert</h2>
+      <ul>
+        <li>Die Liste der Designs mit Bildern weicht einem Umschalter mit drei Stufen und einer Vorschau.</li>
+        <li>Compact und Console entfallen, ebenso eigene Designs, der Knopf „Design-Ordner öffnen“ und der kaputte Eintrag in der Liste.</li>
+        <li>Eine Stufe schlägt keine Schrift und keine Mail-Darstellung mehr vor; der Hinweis „Ebenfalls umgestellt“ entfällt.</li>
+        <li>„Schrift und Farben“ wird zu zwei Gruppen: „Schrift“ und „Farben“.</li>
+        <li>Der Farbmodus zieht von „Anzeige“ zu „Farben“; in „Anzeige“ bleibt der Zoom.</li>
+        <li>In einem schmalen Fenster stehen die Gruppen untereinander: Abstände, Schrift, Farben, Anzeige.</li>
+      </ul>
+    </div>
+    <div>
+      <h2>Gespeicherte Wahl</h2>
+      <ul>
+        <li>Wer Compact oder Console gewählt hat, bekommt Dicht.</li>
+        <li>Wer ein eigenes Design gewählt hat, bekommt Standard.</li>
+        <li>Wer eine andere Schrift oder Mail-Darstellung hat, etwa durch Console, behält sie: Nichts davon wird zurückgestellt.</li>
+        <li>Der Ordner mit eigenen Designs bleibt auf der Platte liegen, Torro liest ihn nur nicht mehr.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>Die drei Stufen in Zahlen</h2>
+    <p class="note" style="margin:0 0 10px">Werte in Punkten. Textgrößen, Zeilenhöhe, Ecken und Breiten (Seitenleiste, Liste, Lesespalte) sind in allen Stufen gleich. Umgesetzt hat Dicht für die Aufgabenzeile 42 statt 40: Die Agenda des Kalenders braucht dort zwei Zeilen Text.</p>
+    <div class="tablebox">
+      <table>
+        <thead><tr><th>Element</th><th>Komfort</th><th>Standard (wie heute)</th><th>Dicht</th></tr></thead>
+        <tbody>
+          <tr><td>Mail in der Liste (drei Zeilen Text)</td><td class="num">116</td><td class="num">100</td><td class="num">78</td></tr>
+          <tr><td>Andere Einträge im Eingang</td><td class="num">92</td><td class="num">80</td><td class="num">56</td></tr>
+          <tr><td>Aufgabe, einfache Listenzeile</td><td class="num">56</td><td class="num">48</td><td class="num">42</td></tr>
+          <tr><td>Zeile der Seitenleiste</td><td class="num">36</td><td class="num">32</td><td class="num">28</td></tr>
+          <tr><td>Knopf</td><td class="num">40</td><td class="num">36</td><td class="num">30</td></tr>
+          <tr><td>Eingabefeld</td><td class="num">42</td><td class="num">38</td><td class="num">32</td></tr>
+          <tr><td>Kopfleiste</td><td class="num">64</td><td class="num">64</td><td class="num">48</td></tr>
+          <tr><td>Stunde im Kalender</td><td class="num">56</td><td class="num">48</td><td class="num">40</td></tr>
+          <tr><td>Seitenrand</td><td class="num">32</td><td class="num">24</td><td class="num">16</td></tr>
+          <tr><td>Innenrand von Feldern und Karten</td><td class="num">20</td><td class="num">16</td><td class="num">12</td></tr>
+          <tr><td>Lücke zwischen Gruppen</td><td class="num">32</td><td class="num">24</td><td class="num">16</td></tr>
+          <tr><td>Lücke innerhalb einer Gruppe</td><td class="num">14</td><td class="num">10</td><td class="num">6</td></tr>
+          <tr><td>Rand einer Mail im Lesebereich</td><td class="num">64 × 80</td><td class="num">52 × 64</td><td class="num">32 × 40</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<script>
+(function () {
+  var win = document.getElementById('win');
+  var measure = document.getElementById('measure');
+  var text = {
+    comfort: 'Mailzeile 116 · Knopf 40 · Seitenrand 32',
+    standard: 'Mailzeile 100 · Knopf 36 · Seitenrand 24',
+    dense: 'Mailzeile 78 · Knopf 30 · Seitenrand 16'
+  };
+  var steps = Array.prototype.slice.call(document.querySelectorAll('[data-step]')).filter(function (b) { return b.tagName === 'BUTTON'; });
+  steps.forEach(function (b) {
+    b.addEventListener('click', function () {
+      win.setAttribute('data-step', b.dataset.step);
+      steps.forEach(function (o) { o.setAttribute('aria-pressed', String(o === b)); });
+      measure.textContent = text[b.dataset.step];
+    });
+  });
+  var wide = document.getElementById('w-wide'), narrow = document.getElementById('w-narrow');
+  function width(n) {
+    win.style.maxWidth = n ? '520px' : '';
+    win.style.gridTemplateColumns = n ? '1fr' : '';
+    win.querySelector('.side').style.display = n ? 'none' : '';
+    document.getElementById('page').style.gridTemplateColumns = n ? 'minmax(0,1fr)' : '';
+    wide.setAttribute('aria-pressed', String(!n)); narrow.setAttribute('aria-pressed', String(n));
+  }
+  wide.addEventListener('click', function () { width(false); });
+  narrow.addEventListener('click', function () { width(true); });
+})();
+</script>
+</body>
+</html>

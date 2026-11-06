@@ -4913,12 +4913,6 @@ impl Core {
             Request::OpenFile { file } | Request::SaveFileAs { file, .. } => {
                 Facts { name: self.tools.file(file, Maker::App).await.map(|file| file.title), ..Facts::default() }
             }
-            // What choosing the design also sets (task L.33), looked up in the design and the fonts
-            // folder with the rule the run applies again; never the design's name or the client's words.
-            Request::SetSetting { key: SettingKey::Design, value } => Facts {
-                design: value.as_str().map(|id| self.settings.design_suggestions(id)).unwrap_or_default(),
-                ..Facts::default()
-            },
             // A contact and its book from the store, by the contact's id (issue #351).
             request @ (Request::CreateContact { .. }
             | Request::AddToContact { .. }
@@ -10285,13 +10279,12 @@ impl Core {
         self.backend.events().await
     }
 
-    /// `settings.list_designs` (task L.3): every design with what the control centre and agents
-    /// need to choose one, with the font and mail view it suggests (tasks L.22, L.33) and its density
-    /// (`Design::density_level`; `balanced` for one that can't be used). Packs hold no secrets, so
-    /// every reader sees all of them.
+    /// `settings.list_designs` (task L.3, issue #484): the three built-in spacing levels with their
+    /// density (`Design::density_level`) and which one is chosen. They suggest nothing, and no folder
+    /// is read. They hold no secrets, so every reader sees all of them.
     fn list_designs(&self) -> Vec<torro_ipc::DesignInfo> {
         let chosen = self.settings.current().design;
-        listed_in(self.settings.designs(), torro_core::design::list)
+        torro_core::design::list()
             .into_iter()
             .map(|pack| torro_ipc::DesignInfo {
                 valid: pack.valid(),
@@ -10304,8 +10297,6 @@ impl Core {
                 author: pack.about.author,
                 description: pack.about.description,
                 standard: pack.standard,
-                font: pack.about.font,
-                mail_view: pack.about.mail_view,
             })
             .collect()
     }
@@ -12584,21 +12575,17 @@ mod tests {
         assert_eq!(asking.await.expect("answered"), Response::Accounts { accounts: vec![] });
     }
 
-    /// `settings.list_designs` (task L.3): the standard first, then the packs of the designs
-    /// folder, valid or with their reasons, the chosen one marked; reading is enough to list,
-    /// choosing takes `Admin`.
+    /// `settings.list_designs` (task L.3, issue #484): the three spacing levels, the chosen one marked;
+    /// a designs folder from before is neither listed nor deleted. Reading is enough to list, choosing
+    /// takes `Admin`; `compact` and `console` are taken as Dense, another id is refused.
     #[tokio::test]
-    async fn designs_are_listed_with_their_problems_and_chosen_by_admins_only() {
+    async fn designs_are_the_three_levels_and_chosen_by_admins_only() {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core(dir.path());
         let designs = settings_file(dir.path()).with_file_name("designs");
-        for (id, toml) in [
-            ("teal", "format = 1\n[about]\nname = \"Teal\"\nversion = \"1.2.0\"\nauthor = \"Anna\"\n"),
-            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[size]\nrow = 20\n"),
-        ] {
-            std::fs::create_dir_all(designs.join(id)).expect("pack folder");
-            std::fs::write(designs.join(id).join("design.toml"), toml).expect("design.toml");
-        }
+        std::fs::create_dir_all(designs.join("teal")).expect("an old pack folder");
+        let toml = "format = 1\n[about]\nname = \"Teal\"\nversion = \"1.2.0\"\n";
+        std::fs::write(designs.join("teal").join("design.toml"), toml).expect("design.toml");
         let list = |answer: Response| match answer {
             Response::Designs { designs } => designs,
             other => panic!("list_designs answers with Designs, got {other:?}"),
@@ -12607,31 +12594,26 @@ mod tests {
         let (_, reader) = client(&core, RightsTemplate::ReadOnly.rights()).await;
         let listed = list(ask(&core, Some(&reader), Request::ListDesigns).await);
         let ids: Vec<&str> = listed.iter().map(|design| design.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            ["torro", "compact", "console", "pale", "teal"],
-            "the built-in designs first (issue #291), then by folder name"
-        );
-        assert!(listed[0].standard && listed[0].valid && listed[0].active);
-        assert!(!listed[3].valid && !listed[3].problems.is_empty(), "{:?}", listed[3]);
-        assert!(listed[3].problems.iter().any(|problem| problem.contains("size.row")));
-        assert_eq!((listed[4].name.as_str(), listed[4].version.as_str()), ("Teal", "1.2.0"));
-        assert_eq!(listed[4].author.as_deref(), Some("Anna"));
-        assert!(listed[4].valid && listed[4].problems.is_empty() && !listed[4].standard);
+        assert_eq!(ids, ["torro", "comfort", "dense"], "the folder is not read");
+        assert!(listed[0].standard && listed[0].active);
+        assert!(listed.iter().all(|design| design.valid && design.problems.is_empty()));
+        assert_eq!(listed[1].name, tr("Comfort"));
 
         let choose = |id: &str| Request::SetSetting { key: SettingKey::Design, value: serde_json::json!(id) };
-        assert_eq!(code(&ask(&core, Some(&reader), choose("teal")).await), "forbidden", "choosing is Admin");
-        assert_eq!(code(&core.handle(choose("pale")).await), "error", "a broken pack is refused");
-        assert_eq!(core.handle(choose("teal")).await, Response::Ok);
-        assert_eq!(settings(&core).await.design, "teal");
+        assert_eq!(code(&ask(&core, Some(&reader), choose("dense")).await), "forbidden", "choosing is Admin");
+        assert_eq!(code(&core.handle(choose("teal")).await), "error", "a design of the old folder is no level");
+        assert_eq!(core.handle(choose("comfort")).await, Response::Ok);
+        assert_eq!(settings(&core).await.design, "comfort");
+        assert_eq!(core.handle(choose("console")).await, Response::Ok, "older scripts keep working");
+        assert_eq!(settings(&core).await.design, "dense");
         let active: Vec<String> =
             list(core.handle(Request::ListDesigns).await).into_iter().filter(|d| d.active).map(|d| d.id).collect();
-        assert_eq!(active, ["teal"]);
+        assert_eq!(active, ["dense"]);
+        assert!(designs.join("teal").join("design.toml").is_file(), "the old folder is never deleted");
     }
 
     /// `settings.list_fonts` and `settings.list_color_schemes` (task L.22): the standard first, then
-    /// each folder, valid or with its reasons, the chosen one marked; designs name what they suggest.
-    /// Reading is enough to list, choosing takes `Admin`; an id of another folder names its key.
+    /// each folder, valid or with its reasons, the chosen one marked. Reading is enough to list, choosing takes `Admin`; an id of another folder names its key.
     #[tokio::test]
     async fn fonts_and_colour_schemes_are_listed_and_chosen_by_admins_only() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -12651,12 +12633,6 @@ mod tests {
         std::fs::write(data.join("fonts").join("plex").join("font.toml"), plex).expect("font.toml");
         write("color-schemes", "nord", "color-scheme.toml", "");
         write("color-schemes", "murky", "color-scheme.toml", "[colors.dark]\ntext = \"#151515\"\n");
-        write("designs", "airy", "design.toml", "");
-        let airy = data.join("designs").join("airy").join("design.toml");
-        let text = std::fs::read_to_string(&airy).expect("design.toml");
-        let suggesting =
-            text.replace("author = \"Anna\"\n", "author = \"Anna\"\nfont = \"plain\"\nmail_view = \"text\"\n");
-        std::fs::write(&airy, suggesting).expect("design.toml");
 
         let (_, reader) = client(&core, RightsTemplate::ReadOnly.rights()).await;
         let Response::Fonts { fonts: all } = ask(&core, Some(&reader), Request::ListFonts).await else {
@@ -12690,11 +12666,6 @@ mod tests {
         assert!(!color_schemes[1].valid && !color_schemes[1].problems.is_empty());
         assert!(color_schemes[2].valid && color_schemes[2].version == "1.0.0");
         let Response::Designs { designs } = core.handle(Request::ListDesigns).await else { panic!("designs") };
-        let airy = designs.iter().find(|design| design.id == "airy").expect("listed");
-        assert_eq!(
-            (airy.font.as_deref(), airy.mail_view),
-            (Some("plain"), Some(torro_core::settings::MailFormat::Text))
-        );
         assert!(designs.iter().all(|design| design.id != "nord"), "only designs");
 
         let choose = |key, id: &str| Request::SetSetting { key, value: serde_json::json!(id) };
@@ -12759,11 +12730,11 @@ mod tests {
         assert!(!infos[3].valid && infos[3].problems.iter().any(|p| p.contains("Gone")));
     }
 
-    /// Task L.33: the designs name their density and what they suggest, a colour scheme whether it is
-    /// dark only. Choosing Console sets its mail view, and its font only once a valid font of that id
-    /// is there; a client's approval names exactly that, looked up by the core.
+    /// Task L.33, issue #484: the designs name their density, a colour scheme whether it is dark only.
+    /// Choosing a level changes only the design – font, mail view and colour scheme stay –, and a
+    /// client's approval names the level the core stores (`console` as `dense`).
     #[tokio::test]
-    async fn choosing_a_design_sets_its_suggestions_and_the_approval_names_them() {
+    async fn choosing_a_design_changes_only_spacing_and_the_approval_names_the_level() {
         use torro_core::design::DensityLevel;
         use torro_core::settings::MailFormat;
         let dir = tempfile::tempdir().expect("temp dir");
@@ -12778,37 +12749,27 @@ mod tests {
         let looks: Vec<(&str, DensityLevel)> = designs.iter().map(|d| (d.id.as_str(), d.density)).collect();
         assert_eq!(
             looks,
-            [("torro", DensityLevel::Balanced), ("compact", DensityLevel::Dense), ("console", DensityLevel::VeryDense)]
+            [("torro", DensityLevel::Balanced), ("comfort", DensityLevel::Airy), ("dense", DensityLevel::Dense)]
         );
-        let console = &designs[2];
-        assert_eq!((console.font.as_deref(), console.mail_view), (Some("jetbrains-mono"), Some(MailFormat::Text)));
-        assert_eq!((designs[0].font.as_deref(), designs[0].mail_view), (None, None), "the standard suggests nothing");
         let Response::ColorSchemes { color_schemes } = core.handle(Request::ListColorSchemes).await else {
             panic!("colour schemes")
         };
         let dark: Vec<(&str, bool)> = color_schemes.iter().map(|s| (s.id.as_str(), s.dark_only)).collect();
         assert_eq!(dark, [("torro", false), ("night", true)]);
 
-        // A client asks; the summary names what the core also sets, here only the mail view.
-        let mut rights = RightsTemplate::FullAccess.rights();
-        rights.areas.insert(Area::Settings, AreaRights { level: Level::Full, admin: true });
-        let (_, key) = client(&core, rights).await;
-        let choose = || Request::SetSetting { key: SettingKey::Design, value: serde_json::json!("console") };
-        let change = trf("Change the setting {key} to {value}", &[("key", &"Design"), ("value", &"'console'")]);
-        let asked = waits(ask(&core, Some(&key), choose()).await);
-        let text = trf("also sets the mail view to {view}", &[("view", &"text")]);
-        assert_eq!(asked.summary, format!("{change}; {text}"), "no font jetbrains-mono: the mail view alone");
-
         let font = data.join("fonts").join("jetbrains-mono");
         std::fs::create_dir_all(&font).expect("font folder");
         let toml = "format = 1\n[about]\nname = \"JetBrains Mono\"\nversion = \"1.0.0\"\n";
         std::fs::write(font.join("font.toml"), toml).expect("toml");
+
+        // A client asks; the summary names the level that is stored and nothing besides.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Settings, AreaRights { level: Level::Full, admin: true });
+        let (_, key) = client(&core, rights).await;
+        let choose = || Request::SetSetting { key: SettingKey::Design, value: serde_json::json!("console") };
+        let change = trf("Change the setting {key} to {value}", &[("key", &"Design"), ("value", &"'dense'")]);
         let asked = waits(ask(&core, Some(&key), choose()).await);
-        let both = trf(
-            "also sets the font to \"{font}\" and the mail view to {view}",
-            &[("font", &"jetbrains-mono"), ("view", &"text")],
-        );
-        assert_eq!(asked.summary, format!("{change}; {both}"));
+        assert_eq!(asked.summary, change, "a level sets nothing more");
 
         let app_key = crate::clients::tests::app_key(dir.path());
         let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
@@ -12816,11 +12777,9 @@ mod tests {
         let chosen = settings(&core).await;
         assert_eq!(
             (chosen.design.as_str(), chosen.font.as_str(), chosen.mail_view, chosen.color_scheme.as_str()),
-            ("console", "jetbrains-mono", MailFormat::Text, "torro"),
-            "the run sets the design, its font and its mail view, never the colour scheme"
+            ("dense", "torro", MailFormat::Html, "torro"),
+            "the run sets the design only: no font, mail view or colour scheme follows"
         );
-        let again = waits(ask(&core, Some(&key), choose()).await);
-        assert_eq!(again.summary, change, "the same design again sets nothing more");
     }
 
     #[tokio::test]
