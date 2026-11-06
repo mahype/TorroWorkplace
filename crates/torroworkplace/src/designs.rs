@@ -652,6 +652,41 @@ const COLOR_SCHEMES: &[Example] = &[
             example_file!("color-schemes", "synthwave-84", "LICENSE.txt"),
         ],
     },
+    Example {
+        id: "catppuccin-vivid",
+        files: &[
+            example_file!("color-schemes", "catppuccin-vivid", "color-scheme.toml"),
+            example_file!("color-schemes", "catppuccin-vivid", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "dracula-vivid",
+        files: &[
+            example_file!("color-schemes", "dracula-vivid", "color-scheme.toml"),
+            example_file!("color-schemes", "dracula-vivid", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "gruvbox-vivid",
+        files: &[
+            example_file!("color-schemes", "gruvbox-vivid", "color-scheme.toml"),
+            example_file!("color-schemes", "gruvbox-vivid", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "nord-vivid",
+        files: &[
+            example_file!("color-schemes", "nord-vivid", "color-scheme.toml"),
+            example_file!("color-schemes", "nord-vivid", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "tokyo-night-vivid",
+        files: &[
+            example_file!("color-schemes", "tokyo-night-vivid", "color-scheme.toml"),
+            example_file!("color-schemes", "tokyo-night-vivid", "LICENSE.txt"),
+        ],
+    },
 ];
 
 /// Whether the font `id` ships with the suite (issue #299, `FontInfo::origin`): the standard or one of
@@ -974,6 +1009,8 @@ mod tests {
     ];
     /// The colour schemes after free palettes that are only dark (issue #292, `dark_only`).
     const DARK_ONLY: [&str; 5] = ["cobalt2", "palenight", "poimandres", "sonokai", "synthwave-84"];
+    /// The vivid siblings of five of the schemes above (issue #515, `vivid`); no logo of their own either.
+    const VIVID: [&str; 5] = ["catppuccin-vivid", "dracula-vivid", "gruvbox-vivid", "nord-vivid", "tokyo-night-vivid"];
 
     #[test]
     fn the_embedded_files_are_the_whole_example() {
@@ -1027,8 +1064,14 @@ mod tests {
         let mut fonts: Vec<&str> = COMPLETE.iter().chain(&FONTS_ONLY).copied().collect();
         fonts.sort_unstable();
         assert_eq!(listed(Part::Font), fonts);
-        let mut schemes: Vec<&str> =
-            COMPLETE.iter().chain(&SCHEMES_ONLY).chain(&WITHOUT_LOGO).chain(&DARK_ONLY).copied().collect();
+        let mut schemes: Vec<&str> = COMPLETE
+            .iter()
+            .chain(&SCHEMES_ONLY)
+            .chain(&WITHOUT_LOGO)
+            .chain(&DARK_ONLY)
+            .chain(&VIVID)
+            .copied()
+            .collect();
         schemes.sort_unstable();
         assert_eq!(listed(Part::ColorScheme), schemes);
         for id in COMPLETE {
@@ -1038,7 +1081,7 @@ mod tests {
         for id in COMPLETE.iter().chain(&SCHEMES_ONLY) {
             assert!(design::load_color_scheme(&repo(Part::ColorScheme), id).expect("valid").logo.mark.is_some());
         }
-        for id in WITHOUT_LOGO.iter().chain(&DARK_ONLY) {
+        for id in WITHOUT_LOGO.iter().chain(&DARK_ONLY).chain(&VIVID) {
             let scheme = design::load_color_scheme(&repo(Part::ColorScheme), id).expect("valid");
             assert!(scheme.logo.mark.is_none(), "{id} draws the suite's T on its accent");
         }
@@ -1056,6 +1099,40 @@ mod tests {
         for id in DARK_ONLY {
             let scheme = design::load_color_scheme(&repo(Part::ColorScheme), id).expect("valid");
             assert_eq!(scheme.colors.light, scheme.colors.dark, "{id}: light mode draws the dark colours");
+        }
+    }
+
+    /// Issue #515: exactly the five vivid schemes are `vivid`; each is its template with a new accent
+    /// (and `on_accent` and `focus_ring` to go with it), same licence, a name "<template> Vivid", both modes.
+    #[test]
+    fn the_vivid_schemes_are_siblings_of_their_templates() {
+        let load = |id: &str| design::load_color_scheme(&repo(Part::ColorScheme), id).expect("valid");
+        let vivid: Vec<String> = design::list_color_schemes(&repo(Part::ColorScheme))
+            .into_iter()
+            .filter(|listed| listed.result.as_ref().is_ok_and(|scheme| scheme.vivid))
+            .map(|listed| listed.id)
+            .collect();
+        assert_eq!(vivid, VIVID);
+        for id in VIVID {
+            let template = id.trim_end_matches("-vivid");
+            let (scheme, original) = (load(id), load(template));
+            assert!(!scheme.dark_only, "{id}: both modes");
+            assert_eq!(scheme.about.name, format!("{} Vivid", original.about.name), "{id}: its name");
+            let licence = |folder: &str| std::fs::read(repo(Part::ColorScheme).join(folder).join("LICENSE.txt"));
+            assert_eq!(licence(id).expect("licence"), licence(template).expect("licence"), "{id}: the licence");
+            for (mode, new, old) in [
+                ("dark", scheme.colors.dark, original.colors.dark),
+                ("light", scheme.colors.light, original.colors.light),
+            ] {
+                let mut sibling = old;
+                (sibling.accent, sibling.on_accent, sibling.focus_ring) = (new.accent, new.on_accent, new.focus_ring);
+                assert_eq!(new, sibling, "{id} {mode}: only the accent differs from {template}");
+                assert_ne!(new.accent, old.accent, "{id} {mode}: a new accent");
+                for (surface, name) in [(new.panel, "panel"), (new.selected, "selected")] {
+                    let ratio = new.accent.contrast(surface);
+                    assert!(ratio >= 3.0, "{id} {mode}: the accent on {name} is {ratio:.2}:1");
+                }
+            }
         }
     }
 

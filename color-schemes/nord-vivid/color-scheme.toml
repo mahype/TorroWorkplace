@@ -1,0 +1,61 @@
+# Nord Vivid – Nord with a vivid orange accent (issue #515). Surfaces, text and status colours are those of Nord;
+# only accent, on_accent and focus_ring are new. The notes below on Nord (source, licence) still hold.
+# Nord – after the open Nord colour scheme (Arctic Ice Studio and Sven Greb, MIT) (task L.15, issue #80). Dark is Polar Night, light is built from Snow Storm; Frost for the accent.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+vivid = true
+
+[about]
+name = "Nord Vivid"
+version = "1.0.0"
+author = "Torro, after Nord by Arctic Ice Studio and Sven Greb (MIT)"
+description = "The Nord colour scheme with a vivid orange accent"
+
+# The scheme's colours wherever they pass the rules; moved for contrast: the third text colour (the comment grey is too faint), the error red in both modes, and the Aurora colours in light mode.
+[colors.dark]
+bg = "#2E3440"
+panel = "#3B4252"
+raised = "#3F4758"
+hover = "#424A5B"
+selected = "#434C5E"
+menu = "#434C5E"
+text = "#ECEFF4"
+text_2 = "#D8DEE9"
+text_3 = "#B4BDCC"
+line = "#ECEFF414"
+line_strong = "#ECEFF424"
+line_selected = "#ECEFF461"
+focus_ring = "#FF7A1A"
+accent = "#FF7A1A"
+on_accent = "#2E3440"
+ok = "#A3BE8C"
+attention = "#EBCB8B"
+error = "#E9ACB2"
+merged = "#B48EAD"
+calendar = ["#81A1C1", "#A3BE8C", "#D08770", "#B48EAD", "#8FBCBB"]
+night = "#353B48"
+
+# Vivid accent in light mode: the wanted orange (#FF7A1A) is too bright on light surfaces, so it is darkened to #C24A00
+# to keep white text on it at 4.5:1 or more and the mark (today circle, now line) at 3:1 or more on panel and selected.
+[colors.light]
+bg = "#E5E9F0"
+panel = "#ECEFF4"
+raised = "#E8ECF2"
+hover = "#E2E7EF"
+selected = "#D8DEE9"
+menu = "#ECEFF4"
+text = "#2E3440"
+text_2 = "#3B4252"
+text_3 = "#4C566A"
+line = "#2E344017"
+line_strong = "#2E344029"
+line_selected = "#2E344070"
+focus_ring = "#C24A00"
+accent = "#C24A00"
+on_accent = "#FFFFFF"
+ok = "#5F7C47"
+attention = "#B0862D"
+error = "#A9505A"
+merged = "#8E6787"
+calendar = ["#5E81AC", "#5F7C47", "#B0603F", "#8E6787", "#4F8A89"]
+night = "#DEE3EC"
