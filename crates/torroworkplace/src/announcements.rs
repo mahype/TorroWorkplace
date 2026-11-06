@@ -152,7 +152,7 @@ fn shown(all: Vec<Announcement>, hidden: &BTreeSet<String>, today: NaiveDate) ->
         .into_iter()
         .filter(|announcement| !hidden.contains(&announcement.id) && announcement.date >= oldest)
         .collect();
-    shown.sort_by(|a, b| b.date.cmp(&a.date));
+    shown.sort_by_key(|announcement| std::cmp::Reverse(announcement.date));
     shown
 }
 
