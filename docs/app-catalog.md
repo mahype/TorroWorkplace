@@ -21,7 +21,7 @@ Alle Apps bauen auf dem Kern `torroworkplace` auf (Dienst mit Tray-Icon, Steuerz
 | Fokus / Pomodoro / Zeiterfassung | Woran arbeite ich gerade und wie lange schon? | lokal; Export nach CalDAV | Idee |
 | **Notizen** (`torronotes`) | Wo lege ich schnell etwas ab, auch für Agenten? | Nextcloud Notes (Markdown-Dateien), später auch ein Ordner per WebDAV oder lokal. Konzept: [notizen.md](notizen.md) | **Entwurf** ([tasks/notizen.md](tasks/notizen.md)) |
 | **Kontakte** (`torrocontacts`) | Wer ist das, wie erreiche ich ihn, und wo ist das? | CardDAV (Nextcloud zuerst, dann iCloud, Fastmail, Radicale …), Karte mit OpenStreetMap ohne Schlüssel. Konzept: [kontakte.md](kontakte.md) | **Entwurf** ([tasks/kontakte.md](tasks/kontakte.md)) |
-| Präsenz / Kontaktliste mit Status | Wer ist gerade da, und wie erreiche ich ihn sofort? | Nextcloud User status (Status, Nachricht, Heartbeat), Systemadressbuch, Talk für den Chat. Konzept mit Recherche: [praesenz.md](praesenz.md) | Idee |
+| Präsenz / Kontaktliste mit Status | Wer ist gerade da, und wie erreiche ich ihn sofort? | Nextcloud User status (Status, Nachricht, Heartbeat), Systemadressbuch, Talk für den Chat. Die Kontaktliste des Chats, Konzept: [chat.md](chat.md) (Recherche: [praesenz.md](praesenz.md)) | **Konzept** |
 
 ## Arbeiten mit KI
 
@@ -52,7 +52,7 @@ macOS-Menüleisten-Apps oder tmux-TUIs (siehe [research.md](research.md)).
 | TorroEQ | gibt es; ebenso |
 | ~~Benachrichtigungen~~ | aufgegangen in **Inbox**: ein Fenster für alles, was die Suite und ihre Quellen melden |
 | **Mail-Client der Suite** | Entschieden (Variante A in [eingang.md](eingang.md#mail-eigene-app-oder-quelle-im-eingang)): keine eigene Mail-App, Mail wird eine Quelle der **Inbox** (Ordner in der Seitenleiste, ganze Mail im Paneel, Schreiben in eigenem Fenster). Der Mail-Kern spricht IMAP/SMTP direkt ([mail.md](mail.md)); ein Fenster nur für Mail dann mit `torroinbox --source mail` (E4) |
-| Chat (Nextcloud Talk) | Idee: erst ungelesene Nachrichten im Tray und schnell antworten, später eine schlanke Chat-App; nur Text, keine Anrufe |
+| Chat (Nextcloud Talk) | Konzept: schlicht wie ICQ, eine Kontaktliste mit Status und ein eigenes Chatfenster je Unterhaltung, dazu Anrufe; zuerst schnell antworten im Notification Hub. Konzept: [chat.md](chat.md), Machbarkeit: [chat-machbarkeit.md](chat-machbarkeit.md), Entwürfe: [prototypes/chat/](prototypes/chat/index.html) |
 
 ## Suite-Infrastruktur
 

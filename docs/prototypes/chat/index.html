@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat-Fenster</title>
+<!--
+  Entwürfe für den Chat der Suite (Issue #470, Konzept docs/chat.md, Machbarkeit docs/chat-machbarkeit.md):
+  Kontaktliste, Chatfenster, eingehender Anruf, laufender Videoanruf und Gerätewahl, wie bei ICQ als
+  getrennte Fenster. Fassungen zur Wahl:
+    Gruppen        A · Abschnitt unter den Personen   B · Umschalter oben   C · Knopf „Group chats…“
+    Klingeln       Benachrichtigung · kleines Fenster
+    Anruf          A · Bild in Bild                   B · Nebeneinander
+  Farben und Schrift aus ../linear/torro.css, Maße nach dem Standard-Design (torro-design), Icons aus Lucide
+  0.469.0. Oberfläche englisch wie in der App, Beschriftung der Seite deutsch. Beispieldaten erfunden.
+-->
+<link rel="stylesheet" href="../linear/torro.css">
+<link rel="stylesheet" href="chat.css">
+</head>
+<body>
+<main class="page">
+  <h1>Chat wie ICQ: Kontaktliste, Chatfenster, Anrufe</h1>
+  <p class="lead">Entwürfe zu #470. Die Kontaktliste ist ein eigenes, schmales Fenster. Ein Doppelklick auf einen Namen öffnet ein eigenes Chatfenster, aus dem ein Anruf startet. Chat- und Anruffenster schweben über den Kacheln, damit ein Doppelklick den Bildschirm nicht neu aufteilt.</p>
+  <p>Oben die Fassungen umschalten. Die Wahl zu Gruppen und Klingeln trifft der Mensch beim Durchsehen; das Konzept übernimmt sie danach.</p>
+
+  <div class="controls" role="group" aria-label="Fassungen">
+    <div class="crow" data-ctl="theme"><span class="olbl">Darstellung</span>
+      <button type="button" id="t-dark" data-v="dark">Dunkel</button><button type="button" id="t-light" data-v="light">Hell</button></div>
+    <div class="crow" data-ctl="groups"><span class="olbl">Gruppen</span>
+      <button type="button" id="g-a" data-v="a">A · Abschnitt</button><button type="button" id="g-b" data-v="b">B · Umschalter</button><button type="button" id="g-c" data-v="c">C · Knopf</button></div>
+    <div class="crow" data-ctl="ring"><span class="olbl">Klingeln</span>
+      <button type="button" id="r-n" data-v="notif">Benachrichtigung</button><button type="button" id="r-w" data-v="window">Kleines Fenster</button></div>
+    <div class="crow" data-ctl="call"><span class="olbl">Anruf</span>
+      <button type="button" id="c-a" data-v="a">A · Bild in Bild</button><button type="button" id="c-b" data-v="b">B · Nebeneinander</button></div>
+  </div>
+
+  <!-- 1 · Kontaktliste und Chatfenster -->
+  <section id="liste">
+    <h2>Kontaktliste und Chatfenster</h2>
+    <p>Wer online ist, steht oben; „Away“, „Busy“, „Do not disturb“ und „Offline“ sind eigene Gruppen, jede Marke hat eine eigene Form. Unter dem Namen steht die Statusnachricht. Unten der eigene Status, ein Klick öffnet die Auswahl. Enter oder Doppelklick öffnet den Chat; ist das Fenster schon offen, kommt es nach vorn.</p>
+    <div class="stage">
+      <div>
+        <p class="cap">Kontaktliste · 300 × 940</p>
+        <div class="win" style="width:300px;height:940px" aria-label="Contacts window">
+          <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Contacts</b>
+            <button class="ibtn" type="button" title="Settings"><svg data-i="sliders"></svg></button></div>
+          <div style="padding:8px 8px 0;display:flex;flex-direction:column;gap:8px">
+            <div class="field"><svg data-i="search"></svg><span>Search people</span></div>
+            <div class="seg" data-only="groups:b"><span class="on">People</span><span>Groups <span class="tab">3</span></span></div>
+          </div>
+          <div class="list">
+            <div class="ghead"><svg data-i="chev"></svg>Online <span class="tab">2</span></div>
+            <div class="person sel"><span class="av" style="--c:#5B8CFF">AB<span class="st"></span></span><span class="who"><b class="ell">Anna Berg</b><span class="ell">Working on the relaunch</span></span><span class="badge">2</span></div>
+            <div class="person"><span class="av" style="--c:#3FB984">DR<span class="st"></span></span><span class="who"><b class="ell">David Roth</b><span class="ell">Online</span></span></div>
+            <div class="ghead"><svg data-i="chev"></svg>Away <span class="tab">1</span></div>
+            <div class="person"><span class="av" style="--c:#E8A33D">BK<span class="st away"></span></span><span class="who"><b class="ell">Ben Kurz</b><span class="ell">Lunch break · back at 13:30</span></span></div>
+            <div class="ghead"><svg data-i="chev"></svg>Busy <span class="tab">1</span></div>
+            <div class="person"><span class="av" style="--c:#5B8CFF">GH<span class="st busy"></span></span><span class="who"><b class="ell">Gina Hahn</b><span class="ell">In a call</span></span></div>
+            <div class="ghead"><svg data-i="chev"></svg>Do not disturb <span class="tab">1</span></div>
+            <div class="person"><span class="av" style="--c:#D96CA8">CW<span class="st dnd"></span></span><span class="who"><b class="ell">Carla Weiß</b><span class="ell">In a meeting until 11:00</span></span></div>
+            <div class="ghead"><svg data-i="chev"></svg>Offline <span class="tab">2</span></div>
+            <div class="person dim"><span class="av" style="--c:#A78BFA">EL<span class="st off"></span></span><span class="who"><b class="ell">Eva Lange</b><span class="ell">Last seen yesterday</span></span></div>
+            <div class="person dim"><span class="av" style="--c:#8A8F98">FO<span class="st off"></span></span><span class="who"><b class="ell">Finn Otto</b><span class="ell">On vacation until Friday</span></span></div>
+            <div data-only="groups:a">
+              <div class="ghead"><svg data-i="chev"></svg>Groups <span class="tab">3</span></div>
+              <div class="person"><span class="gtile"><svg data-i="users"></svg></span><span class="who"><b class="ell">Team Alpha</b><span class="ell">Ben: Who takes the review?</span></span><span class="badge">3</span></div>
+              <div class="person"><span class="gtile"><svg data-i="users"></svg></span><span class="who"><b class="ell">Website relaunch</b><span class="ell">5 people</span></span></div>
+              <div class="person"><span class="gtile"><svg data-i="users"></svg></span><span class="who"><b class="ell">Coffee corner</b><span class="ell">12 people</span></span></div>
+            </div>
+          </div>
+          <div class="foot">
+            <button class="cbtn ghost" type="button" data-only="groups:c" style="justify-content:flex-start"><svg data-i="users"></svg>Group chats… <span class="badge" style="margin-left:auto">3</span></button>
+            <div class="me" title="Online needs “Show others when I am online”"><span class="av" style="--c:#6E7681">SW<span class="st"></span></span><span class="who"><b class="ell">Online</b><span class="ell">Set a status message</span></span><svg data-i="chev" class="s14" style="color:var(--text3)"></svg></div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <p class="cap">Chatfenster mit Anna · 440 × 680</p>
+        <div class="win" style="width:440px;height:680px" aria-label="Chat window">
+          <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Anna Berg</b></div>
+          <div class="chead">
+            <span class="av" style="--c:#5B8CFF">AB<span class="st"></span></span>
+            <span class="who grow"><b class="ell">Anna Berg</b><span><span class="st inl"></span>Online · Working on the relaunch</span></span>
+            <button class="ibtn" type="button" title="Audio call"><svg data-i="phone"></svg></button>
+            <button class="ibtn" type="button" title="Video call"><svg data-i="video"></svg></button>
+            <button class="ibtn" type="button" title="More"><svg data-i="more"></svg></button>
+          </div>
+          <div class="msgs">
+            <span class="day">Yesterday</span>
+            <div class="msg mine"><div class="bub">Can you send me the slides for Thursday?</div><span class="meta tab">17:48</span></div>
+            <div class="msg"><div class="bub">Sure, they are in our shared folder.</div><span class="meta tab">17:52</span></div>
+            <span class="sys"><svg data-i="video" class="s14"></svg>Missed video call · <span class="tab">18:03</span></span>
+            <span class="day">Today</span>
+            <div class="newline">New</div>
+            <div class="msg"><div class="bub">Good morning! Do you have a minute?</div></div>
+            <div class="msg"><div class="bub">I would like to show you the new start page before the meeting.</div><span class="meta tab">10:02</span></div>
+          </div>
+          <div class="compose">
+            <div class="input typed">Sure, call me in five minutes|</div>
+            <button class="ibtn" type="button" title="Send (Enter)"><svg data-i="send"></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <div data-only="groups:c">
+        <p class="cap">Fassung C · Menü am Knopf „Group chats…“</p>
+        <div class="pop" style="position:relative;width:300px" aria-label="Group chats menu">
+          <div class="mlabel">Group chats</div>
+          <div>
+            <div class="person sel"><span class="gtile"><svg data-i="users"></svg></span><span class="who"><b class="ell">Team Alpha</b><span class="ell">Ben: Who takes the review?</span></span><span class="badge">3</span></div>
+            <div class="person"><span class="gtile"><svg data-i="users"></svg></span><span class="who"><b class="ell">Website relaunch</b><span class="ell">5 people</span></span></div>
+            <div class="person"><span class="gtile"><svg data-i="users"></svg></span><span class="who"><b class="ell">Coffee corner</b><span class="ell">12 people</span></span></div>
+          </div>
+        </div>
+      </div>
+
+      <div data-only="groups:b">
+        <p class="cap">Fassung B · Reiter „Groups“</p>
+        <div class="win" style="width:300px;height:250px" aria-label="Groups tab">
+          <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Contacts</b></div>
+          <div style="padding:8px 8px 0"><div class="seg"><span>People</span><span class="on">Groups <span class="tab">3</span></span></div></div>
+          <div class="list">
+            <div class="person"><span class="gtile"><svg data-i="users"></svg></span><span class="who"><b class="ell">Team Alpha</b><span class="ell">Ben: Who takes the review?</span></span><span class="badge">3</span></div>
+            <div class="person"><span class="gtile"><svg data-i="users"></svg></span><span class="who"><b class="ell">Website relaunch</b><span class="ell">5 people</span></span></div>
+            <div class="person"><span class="gtile"><svg data-i="users"></svg></span><span class="who"><b class="ell">Coffee corner</b><span class="ell">12 people</span></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li>A zeigt alles in einer Liste, wird aber bei vielen Gruppen lang. B trennt sauber, versteckt aber ungelesene Gruppen hinter dem Reiter (Zahl am Reiter). C hält die Liste rein bei Personen wie ICQ; Gruppen sind einen Klick weiter, der Knopf zeigt die ungelesenen.</li>
+      <li>Ein Gruppenchat öffnet sich in jeder Fassung im selben Chatfenster wie ein Chat zu zweit, mit der Zahl der Teilnehmer statt des Status im Kopf.</li>
+      <li>Eine Tipp-Anzeige („Anna is typing…“) fehlt in der ersten Fassung: Ohne High-Performance-Backend (so auf dem eigenen Server) kostet sie eine eigene Verbindung je offenem Chat; sie kommt später.</li>
+    </ul>
+  </section>
+
+  <!-- 2 · Eingehender Anruf -->
+  <section id="klingeln">
+    <h2>Eingehender Anruf</h2>
+    <p>Klingelt es, kommt eine Meldung, auch wenn kein Chatfenster offen ist. „Accept“ ist der Primärknopf; „Decline“ lehnt ab, ohne die Gegenseite zu beenden, wie in Talk.</p>
+    <div class="stage">
+      <div data-only="ring:notif">
+        <p class="cap">Als Benachrichtigung oben rechts · 360 breit</p>
+        <div class="desk" style="width:440px;height:200px">
+          <div class="notif" style="position:absolute;top:16px;right:16px" aria-label="Incoming call notification">
+            <div class="row"><span class="av lg pulse" style="--c:#5B8CFF">AB</span>
+              <span class="who"><b class="ell">Anna Berg is calling</b><span class="ell">Video call · Talk on cloud.imt24.de</span></span>
+              <button class="ibtn" type="button" title="Mute ringing"><svg data-i="belloff"></svg></button></div>
+            <div class="acts"><button class="cbtn" type="button"><svg data-i="phoneoff"></svg>Decline</button><button class="cbtn" type="button"><svg data-i="phone"></svg>Audio only</button><button class="cbtn primary" type="button"><svg data-i="video"></svg>Accept</button></div>
+          </div>
+        </div>
+      </div>
+      <div data-only="ring:window">
+        <p class="cap">Als kleines Fenster in der Mitte · 340 × 360</p>
+        <div class="win" style="width:340px;height:360px" aria-label="Incoming call window">
+          <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Incoming call</b></div>
+          <div class="ringing">
+            <span class="av xl pulse" style="--c:#5B8CFF">AB<span class="st"></span></span>
+            <b style="margin-top:14px">Anna Berg</b><span>Video call · ringing for <span class="tab">0:12</span></span>
+            <div class="acts"><button class="cbtn lg" type="button"><svg data-i="phoneoff"></svg>Decline</button><button class="cbtn lg primary" type="button"><svg data-i="video"></svg>Accept</button></div>
+            <button class="cbtn ghost" type="button" style="margin-top:4px"><svg data-i="phone"></svg>Accept with audio only</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li>Benachrichtigung: stört am wenigsten, braucht aber eigene Knöpfe in der Systembenachrichtigung (macOS kann das, Linux je nach Desktop). Wo das fehlt, öffnet ein Klick das Chatfenster mit dem Klingeln oben.</li>
+      <li>Kleines Fenster: auf jedem System gleich und unübersehbar, schwebt mittig über den Kacheln, kommt aber in den Vordergrund.</li>
+      <li>Bei „Do not disturb“ klingelt nichts; der Anruf steht danach als „Missed video call“ im Chat und im Notification Hub.</li>
+    </ul>
+  </section>
+
+  <!-- 3 · Laufender Anruf -->
+  <section id="anruf">
+    <h2>Laufender Videoanruf</h2>
+    <p>Anrufe werden selbst gebaut (entschieden am 2026-11-06). Ein eigenes Fenster je Anruf, schwebend, frei in der Größe. Unten Mikrofon, Kamera, Geräte und Auflegen; die Tasten zeigen ihren Zustand mit Icon und Tooltip, nicht nur mit Farbe. Das Chatfenster bleibt daneben offen.</p>
+    <div class="stage">
+      <div>
+        <p class="cap" data-only="call:a">Fassung A · Bild in Bild · 760 × 500</p>
+        <p class="cap" data-only="call:b">Fassung B · Nebeneinander · 760 × 500</p>
+        <div class="win" style="width:760px;height:500px" aria-label="Call window">
+          <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="ell">Call with Anna Berg</b><span class="faint tab" style="font-size:13px">· 04:12</span><span class="grow"></span>
+            <button class="ibtn" type="button" title="Show chat"><svg data-i="chat"></svg></button></div>
+          <div class="stagev">
+            <div data-only="call:a">
+              <div class="tile" style="inset:12px"><span class="av xl" style="--c:#5B8CFF">AB</span><span class="hint">Camera of Anna Berg</span><span class="name">Anna Berg</span></div>
+              <div class="tile self" style="right:24px;bottom:24px;width:200px;height:124px"><span class="av lg" style="--c:#6E7681">SW</span><span class="name"><svg data-i="micoff"></svg>You</span></div>
+            </div>
+            <div data-only="call:b">
+              <div class="tile" style="left:12px;top:12px;bottom:12px;width:calc(50% - 18px)"><span class="av xl" style="--c:#5B8CFF">AB</span><span class="hint">Camera of Anna Berg</span><span class="name">Anna Berg</span></div>
+              <div class="tile self" style="right:12px;top:12px;bottom:12px;width:calc(50% - 18px);box-shadow:none"><span class="av xl" style="--c:#6E7681">SW</span><span class="name"><svg data-i="micoff"></svg>You</span></div>
+            </div>
+          </div>
+          <div class="callbar">
+            <span class="left"><svg data-i="lock" class="s14"></svg>Talk · cloud.imt24.de</span>
+            <button class="cbtn round off" type="button" title="Unmute microphone (M)"><svg data-i="micoff"></svg></button>
+            <button class="cbtn round" type="button" title="Turn camera off (V)"><svg data-i="video"></svg></button>
+            <button class="cbtn round" type="button" title="Devices"><svg data-i="sliders"></svg></button>
+            <button class="cbtn round" type="button" title="Share screen (later)" disabled style="opacity:.4"><svg data-i="screen"></svg></button>
+            <button class="cbtn lg primary" type="button" style="margin-left:8px"><svg data-i="phoneoff"></svg>Leave call</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li>A gibt der anderen Person den meisten Platz, das eigene Bild lässt sich in jede Ecke ziehen. B passt zu breiten, flachen Fenstern und zeigt beide gleich groß.</li>
+      <li>Das Mikrofon ist hier stumm (gefüllte Taste, durchgestrichenes Icon, „You“ mit Symbol). Bildschirm teilen steht ausgegraut für später.</li>
+      <li>Ein Gruppenanruf (später) setzt die Bilder als Raster; die Leiste bleibt gleich.</li>
+    </ul>
+  </section>
+
+  <!-- 4 · Gerätewahl -->
+  <section id="geraete">
+    <h2>Gerätewahl</h2>
+    <p>Aus dem Anruffenster („Devices“) und aus den Einstellungen des Chats. Die Vorschau zeigt das eigene Bild nur auf diesem Rechner; nichts davon wird gespeichert oder verschickt.</p>
+    <div class="stage">
+      <div>
+        <p class="cap">Geräte · 420 × 660</p>
+        <div class="win" style="width:420px;height:660px" aria-label="Devices window">
+          <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Devices</b></div>
+          <div class="form">
+            <div class="fgroup"><span class="flabel">Camera</span>
+              <div class="select"><svg data-i="video"></svg><span class="ell">FaceTime HD Camera</span><svg class="ch" data-i="chev"></svg></div>
+              <div class="preview"><span class="av xl" style="--c:#6E7681">SW</span><span class="hint"><svg data-i="lock" class="s14"></svg>Preview stays on this computer</span></div></div>
+            <div class="fgroup"><span class="flabel">Microphone</span>
+              <div class="select"><svg data-i="mic"></svg><span class="ell">MacBook Pro Microphone</span><svg class="ch" data-i="chev"></svg></div>
+              <div class="switch"><span class="meter" aria-label="Input level"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="faint" style="font-size:13px">Speak to test</span></div></div>
+            <div class="fgroup"><span class="flabel">Speaker</span>
+              <div style="display:flex;gap:8px"><div class="select grow"><svg data-i="volume"></svg><span class="ell">MacBook Pro Speakers</span><svg class="ch" data-i="chev"></svg></div><button class="cbtn" type="button" style="height:38px">Play test sound</button></div></div>
+            <div class="switch"><span class="tg"></span><span>Join calls with camera off</span></div>
+          </div>
+          <div class="dfoot"><button class="cbtn primary" type="button">Done</button></div>
+        </div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li>Ohne Kamera oder ohne Recht dazu steht statt der Vorschau ein Satz mit dem Weg zur Systemeinstellung („Allow camera access in System Settings › Privacy“).</li>
+      <li>Steckt jemand ein Headset ein, wechselt der Anruf nicht von selbst; die Liste zeigt es sofort, gewählt wird hier.</li>
+    </ul>
+  </section>
+</main>
+
+<script>
+/* Lucide 0.469.0, Strich 1.75 (über CSS). */
+const I = {
+  search:'<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  chev:'<path d="m6 9 6 6 6-6"/>',
+  sliders:'<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>',
+  users:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  phone:'<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>',
+  phoneoff:'<path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"/><line x1="22" x2="2" y1="2" y2="22"/>',
+  video:'<path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/><rect x="2" y="6" width="14" height="12" rx="2"/>',
+  mic:'<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>',
+  micoff:'<line x1="2" x2="22" y1="2" y2="22"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 5"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><line x1="12" x2="12" y1="19" y2="22"/>',
+  send:'<path d="M3.714 3.048a.498.498 0 0 0-.683.627l2.843 7.627a2 2 0 0 1 0 1.396l-2.842 7.627a.498.498 0 0 0 .682.627l18-8.5a.5.5 0 0 0 0-.904z"/><path d="M6 12h16"/>',
+  more:'<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
+  chat:'<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+  volume:'<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/>',
+  screen:'<path d="m9 10 3-3 3 3"/><path d="M12 13V7"/><rect width="20" height="14" x="2" y="3" rx="2"/><path d="M12 17v4"/><path d="M8 21h8"/>',
+  lock:'<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  belloff:'<path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"/><path d="m2 2 20 20"/><path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"/>'
+};
+document.querySelectorAll('svg[data-i]').forEach(s => { s.setAttribute('viewBox','0 0 24 24'); s.setAttribute('aria-hidden','true'); s.innerHTML = I[s.dataset.i] || ''; });
+
+/* Fassungen: data-only="schalter:wert" zeigt ein Teil nur bei dieser Wahl. */
+const state = { theme: null, groups: 'a', ring: 'notif', call: 'a' };
+function apply() {
+  if (state.theme) document.documentElement.setAttribute('data-theme', state.theme);
+  document.querySelectorAll('[data-only]').forEach(el => {
+    const [k, v] = el.dataset.only.split(':');
+    el.hidden = state[k] !== v;
+  });
+  document.querySelectorAll('[data-ctl]').forEach(row => {
+    const k = row.dataset.ctl;
+    row.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === state[k])));
+  });
+}
+const preset = document.documentElement.getAttribute('data-theme');
+let light = false;
+try { light = window.matchMedia('(prefers-color-scheme: light)').matches; } catch (e) {}
+state.theme = preset || (light ? 'light' : 'dark');
+document.querySelectorAll('[data-ctl] button').forEach(b => b.addEventListener('click', () => {
+  state[b.closest('[data-ctl]').dataset.ctl] = b.dataset.v; apply();
+}));
+apply();
+</script>
+</body>
+</html>
