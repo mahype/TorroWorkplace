@@ -3306,7 +3306,8 @@ static SET_SETTING: Command = Command {
                   address in the address books goes to the group Personal, after mail filters, sorting rules, \
                   newsletters, invitations and automatic replies, and a model only chooses within that group) or \
                   `mail_sender_logos` (true, the default, or false; while on, the core checks the signature of new \
-                  mail and shows the logo of a sender whose mail passed; off, it checks and fetches nothing) or \
+                  mail and shows the logo of a sender whose mail passed, fetched once per domain from its BIMI record or \
+                  website; off, it checks and fetches nothing) or \
                   what a click on a mail attachment does: `mail_attachment_click` (\"open\", the \
                   default, \"downloads\", \"save_as\", \"suggested\" or {\"target\": \"<id from \
                   mail_list_save_targets>\"}) or `mail_downloads_folder` (null to save attachments in the \
