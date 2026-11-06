@@ -629,9 +629,12 @@ Symbol im Dock, kein Fokuswechsel, kein Hyprland. Die Arbeit des Nutzers wird ni
 hoch (320×480), Leiste (1200×200), Schmal (480×900), Mittel (800×600) und Breit (1600×1000), als
 `<präfix>-<größe>-<B>x<H>.png`, z. B. `torrocalendar-week-dark-mini-240x160.png`. Das Präfix ist der
 Programmname mit den Werten von `--view`, `--section`, `--settings`, `--open`, `--design`, `--font`,
-`--color-scheme`, `--appearance`, `--chat`, `--bot`, `--lane`, `--source`, `--template` und `--task` in
-dieser Reihenfolge, je mit dem ersten Wert wie in der App (Schreibfenster: `torroinbox-compose`,
-Vorlagen-Dialog: `torroworkplace-template`). Die Bilder haben die **doppelte Auflösung** wie ein
+`--color-scheme` und `--appearance`, danach der Flags, die ein Fenster, einen Eintrag oder eine Darstellung
+wählen (`--chat`, `--bot`, `--lane`, `--source`, `--template`, `--task`, `--message`, `--reply`,
+`--reply-all`, `--forward`, `--account`, `--setup`, `--step`, `--mail-view`, `--mail-colors`, `--density`,
+`--now`), je mit dem ersten Wert (Schreibfenster: `torroinbox-compose`, Vorlagen-Dialog:
+`torroworkplace-template`). Jede Größe zeichnet ein eigener Prozess, damit keine Größe den Demo-Stand
+der nächsten verändert (z. B. eine beim Öffnen gelesene Mail). Die Bilder haben die **doppelte Auflösung** wie ein
 Retina-Bildschirm: Mini (240×160 logisch) ist ein Bild von 480×320 Pixeln. Gleichnamige Bilder werden
 überschrieben, jeder Pfad steht auf stdout. Eigene Größen gibt `-- --shot-size 1000x700` (mehrfach, je
 Kante bis 4096; ersetzt die sechs, Datei `<präfix>-1000x700.png`). Der erste Fehler bricht mit seinem Exit-Code ab
