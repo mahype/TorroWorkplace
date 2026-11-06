@@ -3385,6 +3385,35 @@ mod tests {
         );
     }
 
+    /// Issue #411: the catalog's tools build their one request each; installing and updating have none.
+    #[test]
+    fn the_app_catalog_tools_build_their_requests() {
+        assert_eq!(request_for("apps_list_catalog", args(json!({})), &Utc), Ok(Request::ListAppCatalog));
+        assert_eq!(request_for("apps_check_updates", args(json!({})), &Utc), Ok(Request::CheckAppUpdates));
+        let job = json!({"id": "0123456789abcdef"});
+        assert_eq!(
+            request_for("apps_app_job", args(job.clone()), &Utc),
+            Ok(Request::AppJob { id: "0123456789abcdef".into() })
+        );
+        assert_eq!(
+            request_for("apps_cancel_app_job", args(job), &Utc),
+            Ok(Request::CancelAppJob { id: "0123456789abcdef".into() })
+        );
+        assert_eq!(
+            request_for("apps_uninstall_app", args(json!({"app": "torro-calendar"})), &Utc),
+            Ok(Request::UninstallApp { app: "torro-calendar".into(), remove_data: false }),
+            "the data stays unless asked"
+        );
+        assert_eq!(
+            request_for("apps_uninstall_app", args(json!({"app": "torrotasks", "remove_data": true})), &Utc),
+            Ok(Request::UninstallApp { app: "torrotasks".into(), remove_data: true })
+        );
+        for kept_back in ["apps_install_app", "apps_update_apps"] {
+            let refused = request_for(kept_back, args(json!({"app": "torrotasks"})), &Utc);
+            assert_eq!(refused, Err(ToolError::UnknownTool), "{kept_back}");
+        }
+    }
+
     /// Task E2.4: the tool takes the entry's id and nothing else.
     #[test]
     fn inbox_open_item_opens_one_entry_by_its_id() {

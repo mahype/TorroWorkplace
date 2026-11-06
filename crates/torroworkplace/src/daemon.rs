@@ -443,6 +443,9 @@ async fn serve(shows: Shows, takeover: bool) -> Result<(), String> {
     // on the desktop.
     let desktop = Arc::new(crate::reminders::Desktop::new(&core));
     tokio::spawn(crate::reminders::run(Arc::clone(&core), desktop));
+    // The app catalog asks GitHub for a new release a minute after the start, then daily (issue #411,
+    // decision 2), also when headless: the apps show its updates without the main application.
+    tokio::spawn(core.catalog().clone().watch());
 
     let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
     let (quit_tx, mut quit_rx) = mpsc::unbounded_channel();
