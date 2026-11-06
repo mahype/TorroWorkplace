@@ -107,6 +107,9 @@ webpki-roots = "1.0.9"
 # Windows named pipes with a safe API for the security descriptor (torro-ipc, X.1).
 interprocess = { version = "2.4.5", features = ["tokio"] }
 iced ={ version = "0.14.0", features = ["canvas", "svg", "tokio"] }
+# The visual check without a window (#492, `torro_gui::shots`): renders a program in memory to PNG. Brings Fira Sans
+# into every app (about 0.6 MB), the fallback font of its renderer.
+iced_test = "0.14.0"
 keyring = "4.2.0"
 # The file chooser of the compose window (torroinbox, E4.3): native on macOS and Windows, the XDG portal on Linux
 # (no GTK needed), asynchronous so it never blocks the window.
@@ -147,7 +150,8 @@ parley = { version = "0.12.0", default-features = false, features = ["std"] }
 cursor-icon = "1.2.0"
 # Blitz decodes pictures with `image` but turns on no decoder itself: these four, nothing else (no SVG, no TIFF).
 image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
-# Writes PNG files in the example of torro-htmlview; the version `image` brings.
+# Writes PNG files in the example of torro-htmlview and the visual check (`torro_gui::shots`, #492); the version
+# `image` and `iced_test` bring.
 png = "0.18.0"
 winreg = "0.56.0"
 # Only used by the build scripts of the three executables (icon and version info). Without the `toml` feature:

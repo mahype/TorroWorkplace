@@ -14,7 +14,8 @@
 //!   workspaces, apps and general settings. `ui --demo [--open <state>]` shows sample data without
 //!   the service (see `ui::Launch`); `--section` and `--appearance light|dark|system` work too.
 //!   `ui --template=<id> [--saved]` shows only the dialog of one workspace template, in a small
-//!   window of its own (the tray and `apps.open_app` start it).
+//!   window of its own (the tray and `apps.open_app` start it). `ui --demo --shots <dir>` writes the
+//!   window at each size class as PNG files instead of opening it (the visual check, issue #492).
 //! - `mcp`: one MCP server for the whole suite, on stdio, with the agent's key from
 //!   `TORRO_TOKEN`.
 //!
@@ -30,6 +31,7 @@
 use std::process::ExitCode;
 
 use torro_core::AppId;
+use torro_gui::shots::Shots;
 
 mod account;
 mod approvals;
@@ -93,7 +95,17 @@ fn main() -> ExitCode {
                     return ExitCode::from(64);
                 }
             };
-            match ui::run(launch) {
+            // `--demo --shots <dir>` (issue #492): the views as pictures, without a window.
+            let name = if launch.template.is_some() { "torroworkplace-template" } else { APP.binary };
+            let shots = match Shots::from_args(name, &std::env::args().skip(2).collect::<Vec<_>>()) {
+                Ok(shots) => shots,
+                Err(err) => {
+                    attach_console();
+                    eprintln!("{}: {err}", APP.binary);
+                    return ExitCode::from(64);
+                }
+            };
+            match ui::run(launch, shots.as_ref()) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(err) => {
                     attach_console();

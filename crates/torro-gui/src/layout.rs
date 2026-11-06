@@ -214,15 +214,21 @@ mod tests {
         of(iced::Size::new(width, height))
     }
 
+    /// The sizes of the visual check (`crate::shots::SIZES`, issue #492; torro-design, section 9) each
+    /// fall in the class they are named for.
     #[test]
     fn design_example_sizes_get_their_class() {
-        // The sizes `shoot.sh` uses for the visual check (torro-design, section 9).
-        assert_eq!(class(240.0, 160.0), SizeClass::Mini);
-        assert_eq!(class(320.0, 480.0), SizeClass::Mini);
-        assert_eq!(class(1200.0, 200.0), SizeClass::Strip);
-        assert_eq!(class(480.0, 900.0), SizeClass::Narrow);
-        assert_eq!(class(800.0, 600.0), SizeClass::Medium);
-        assert_eq!(class(1600.0, 1000.0), SizeClass::Wide);
+        let want = |name: &str| match name {
+            "mini" | "mini-tall" => SizeClass::Mini,
+            "strip" => SizeClass::Strip,
+            "narrow" => SizeClass::Narrow,
+            "medium" => SizeClass::Medium,
+            "wide" => SizeClass::Wide,
+            other => panic!("no class for the size {other:?}"),
+        };
+        for (name, size) in crate::shots::SIZES {
+            assert_eq!(of(size), want(name), "{name}");
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 ---
 name: torro-design-review
-description: Prüft Oberflächen von TorroWorkplace (Iced-Apps torrocalendar, torrotasks, Steuerzentrale) auf Design-Qualität – startet die App mit --demo, macht Screenshots in allen Größenklassen (Mini-Kachel bis breit) und bewertet sie gegen die Torro-Design-Regeln. Einsetzen nach jeder UI-Änderung oder auf Wunsch "Design prüfen". Zweite Aufgabe: Design-Recherche im Netz (Vorbilder, Muster, Ideen zur Besprechung) auf Wunsch "Design-Ideen sammeln".
+description: Prüft Oberflächen von TorroWorkplace (Iced-Apps torrocalendar, torrotasks, torroinbox, torroassistant, Steuerzentrale) auf Design-Qualität – zeichnet die Demo-Ansichten mit shots.sh ohne Fenster als Bilder in allen Größenklassen (Mini-Kachel bis breit) und bewertet sie gegen die Torro-Design-Regeln. Einsetzen nach jeder UI-Änderung oder auf Wunsch "Design prüfen". Zweite Aufgabe: Design-Recherche im Netz (Vorbilder, Muster, Ideen zur Besprechung) auf Wunsch "Design-Ideen sammeln".
 tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
 model: opus
 effort: medium
@@ -25,10 +25,13 @@ Vorgehen:
 2. Code-Prüfung gegen `torro-design`: Farb- und Größenwerte außerhalb des Themes, Abstände
    außerhalb der Skala, fehlende Zustände (leer/lädt/Fehler, Hover/Fokus/deaktiviert),
    Texte ohne `tr()`, Tastaturbedienung.
-3. Sichtprüfung nach Abschnitt 9 des Skills: App mit `--demo` bauen und starten, Screenshots in
-   allen sechs Größen (Mini, Mini hoch, Leiste, Schmal, Mittel, Breit), jedes Bild mit Read
-   ansehen. Danach App beenden.
-   Geht das nicht (kein Hyprland), sag es und prüfe nur den Code.
+3. Sichtprüfung nach Abschnitt 9 des Skills mit `.claude/skills/torro-design/shots.sh`: je
+   betroffenem Zustand die Bilder in allen sechs Größen (Mini, Mini hoch, Leiste, Schmal, Mittel,
+   Breit), mit `--appearance dark` und `--appearance light`, in einen Ordner im Scratchpad; es geht
+   kein Fenster auf, auf jedem System, auch ohne Hyprland. Jedes Bild mit Read ansehen.
+   Scheitert der Build, sag, dass die Sichtprüfung nicht möglich war, und prüfe nur den Code.
+   Was ohne Fenster nicht im Bild ist (Fensterhülle, Hover, Mindestgröße), nennst du als nicht
+   geprüft; `shoot.sh` nur unter Hyprland und nur, wenn genau das gefragt ist.
 4. Urteil schreiben.
 
 Ausgabe, kurz und konkret:
@@ -44,7 +47,7 @@ Ausgabe, kurz und konkret:
   fehlende Zustände), je mit Datei:Zeile und konkretem Fix (Token, Abstand, Größe).
 - **Sollte** – Verbesserungen an Hierarchie, Ausrichtung, Dichte, Text.
 - **Gut** – was beibehalten werden soll (höchstens 3 Punkte).
-- Pfade der Screenshots.
+- Pfade der Bilder.
 
 Keine allgemeinen Ratschläge ohne Bezug auf das, was du gesehen hast.
 

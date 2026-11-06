@@ -26,6 +26,9 @@
 //! "now"; `--appearance light|dark|system` overrides the stored appearance and `--design <id>` the
 //! design pack (see [`app::Launch`]).
 //!
+//! `--demo --shots <dir>` writes the view at each size class as PNG files instead of opening a window
+//! (the visual check, [`torro_gui::shots`], issue #492).
+//!
 //! One window per slice (E3.6): `--lane for-me|info` or `--source <key>` (`suite`,
 //! `agent:claude-code`, `script:backup`) starts on that view. The core opens the app without
 //! arguments (tray, control centre); a workspace template stores the window's whole command line,
@@ -86,6 +89,7 @@ use torro_core::AppId;
 use torro_core::paths::AppPaths;
 use torro_core::timing;
 use torro_gui::instance::Claim;
+use torro_gui::shots::{RunError, Shots};
 use torro_gui::source::Source;
 use torro_inbox::InboxSource;
 use torro_inbox::demo::DemoSource;
@@ -139,6 +143,16 @@ pub fn start(app: AppId, args: Vec<String>) -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // `--demo --shots <dir>` (issue #492): the views as pictures, without a window; the compose
+    // window's are named apart from the inbox's.
+    let name = if launch.compose.is_some() { format!("{}-compose", app.binary) } else { app.binary.to_string() };
+    let shots = match Shots::from_args(&name, &args) {
+        Ok(shots) => shots,
+        Err(err) => {
+            report_start_error(app, &err.to_string());
+            return ExitCode::from(64);
+        }
+    };
     // Before the core is started: a second start only brings the first window of its kind forward.
     if let Some(app) = instance_of(&launch)
         && torro_gui::instance::claim(app) == Claim::Shown
@@ -151,11 +165,11 @@ pub fn start(app: AppId, args: Vec<String>) -> ExitCode {
     // Before the settings load the fonts: the first frame is drawn with the chosen design.
     torro_gui::design::start_for(&suite, &launch.forced());
     let result = match (launch.compose.is_some(), launch.demo) {
-        (true, true) => compose(Arc::new(DemoSource::new(launch.start())), suite, launch),
-        (true, false) => compose(Arc::new(InboxClient::default()), suite, launch),
+        (true, true) => compose(Arc::new(DemoSource::new(launch.start())), suite, launch, shots.as_ref()),
+        (true, false) => compose(Arc::new(InboxClient::default()), suite, launch, shots.as_ref()),
         // `--open pinned-one` has a demo of one mail account (issue #476).
-        (false, true) => run(Arc::new(launch.demo_source()), suite, launch),
-        (false, false) => run(Arc::new(InboxClient::default()), suite, launch),
+        (false, true) => run(Arc::new(launch.demo_source()), suite, launch, shots.as_ref()),
+        (false, false) => run(Arc::new(InboxClient::default()), suite, launch, shots.as_ref()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -217,21 +231,23 @@ fn instance_of(launch: &Launch) -> Option<AppId> {
 }
 
 /// The window on `inbox`: the core's client or the demo source. Its window class is the one of its
-/// kind (`--view`, task E8.1), so tiling rules and templates tell the three windows apart.
+/// kind (`--view`, task E8.1), so tiling rules and templates tell the three windows apart. With `shots`
+/// its pictures instead ([`torro_gui::shots::run`]).
 fn run<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static>(
     inbox: Arc<S>,
     suite: Source,
     launch: Launch,
-) -> iced::Result {
+    shots: Option<&Shots>,
+) -> Result<(), RunError> {
     let window = torro_gui::window(launch.kind.app());
-    iced::application(move || App::new(inbox.clone(), suite.clone(), launch.clone()), update, view)
+    let application = iced::application(move || App::new(inbox.clone(), suite.clone(), launch.clone()), update, view)
         .settings(torro_gui::settings())
         .title(App::title)
         .theme(App::theme)
         .scale_factor(App::scale_factor)
         .subscription(App::subscription)
-        .window(window)
-        .run()
+        .window(window);
+    torro_gui::shots::run(application, shots)
 }
 
 /// [`App::update`], timed: the first entries in mark "first data", a slow update is written.
@@ -311,16 +327,26 @@ fn start_message(args: &[String]) -> Result<Option<String>, String> {
     Ok(found)
 }
 
-/// The compose window on `source`: the core's client or the demo source.
-fn compose<S: ComposeSource + 'static>(source: Arc<S>, suite: Source, launch: Launch) -> iced::Result {
-    iced::application(move || Window::new(source.clone(), suite.clone(), launch.clone()), compose_update, compose_view)
-        .settings(torro_gui::settings())
-        .title(Window::title)
-        .theme(Window::theme)
-        .scale_factor(Window::scale_factor)
-        .subscription(Window::subscription)
-        .window(compose::window_settings())
-        .run()
+/// The compose window on `source`: the core's client or the demo source; with `shots` its pictures
+/// instead ([`torro_gui::shots::run`]).
+fn compose<S: ComposeSource + 'static>(
+    source: Arc<S>,
+    suite: Source,
+    launch: Launch,
+    shots: Option<&Shots>,
+) -> Result<(), RunError> {
+    let application = iced::application(
+        move || Window::new(source.clone(), suite.clone(), launch.clone()),
+        compose_update,
+        compose_view,
+    )
+    .settings(torro_gui::settings())
+    .title(Window::title)
+    .theme(Window::theme)
+    .scale_factor(Window::scale_factor)
+    .subscription(Window::subscription)
+    .window(compose::window_settings());
+    torro_gui::shots::run(application, shots)
 }
 
 #[cfg(test)]

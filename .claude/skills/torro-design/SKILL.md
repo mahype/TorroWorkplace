@@ -1,6 +1,6 @@
 ---
 name: torro-design
-description: Design-Regeln für alle Oberflächen von TorroWorkplace (Iced-Views, Widgets, Theme, Tray-Menüs, Benachrichtigungen). Laden, bevor UI gebaut, geändert oder begutachtet wird – Farben, Abstände, Typografie, Zustände, Barrierefreiheit, Texte, Sichtprüfung per Screenshot.
+description: Design-Regeln für alle Oberflächen von TorroWorkplace (Iced-Views, Widgets, Theme, Tray-Menüs, Benachrichtigungen). Laden, bevor UI gebaut, geändert oder begutachtet wird – Farben, Abstände, Typografie, Zustände, Barrierefreiheit, Texte, Sichtprüfung per Bild ohne Fenster (shots.sh).
 ---
 
 # Torro-Design
@@ -612,26 +612,48 @@ Regeln:
 ## 9. Sichtprüfung (Pflicht bei UI-Änderungen)
 
 Tests reichen bei Oberfläche nicht. Jede geänderte Ansicht in **allen Größenklassen** ansehen.
-Immer nur **eine** App zur Zeit und nur Fenster mit der eigenen PID anfassen – die Fenster des
-Nutzers nie.
+
+**Der Weg auf jedem System: `shots.sh`, ohne Fenster (#492).** Die App zeichnet ihre Demo-Ansicht im
+Speicher (`--demo --shots <ordner>`, `torro_gui::shots`) und legt sie als PNG ab: kein Fenster, kein
+Symbol im Dock, kein Fokuswechsel, kein Hyprland. Die Arbeit des Nutzers wird nicht unterbrochen.
 
 ```bash
-app=torrocalendar   # bzw. torrotasks; Steuerzentrale: torroworkplace ui --demo (ab Q.1)
-cargo build -p "$app"
-"./target/debug/$app" --demo & pid=$!      # ab Q.1 auch: --open editor | detail | error | empty …
-sleep 3
-.claude/skills/torro-design/shoot.sh "$pid" "$app" "$SCRATCH/design"
-kill "$pid"
+.claude/skills/torro-design/shots.sh torrocalendar "$SCRATCH/design" week editor -- --appearance dark
+.claude/skills/torro-design/shots.sh torrocalendar "$SCRATCH/design" week editor -- --appearance light
 ```
 
-`shoot.sh` stellt das Fenster schwebend, setzt nacheinander die sechs Größen Mini (240×160), Mini
-hoch (320×480), Leiste (1200×200), Schmal (480×900), Mittel (800×600) und Breit (1600×1000) und
-speichert je ein PNG. Hyprland ab 0.56 nimmt Befehle als Lua (`hl.dsp.window.float/resize/move`);
-das Skript nutzt diese Form. Eine Ansicht wechseln geht per Tastenkürzel an das Fenster:
-`hyprctl dispatch "hl.dsp.send_shortcut({ mods = '', key = 'm', window = 'pid:$pid' })"`.
+`shots.sh <app> <ordner> [<zustand> …] [-- <parameter> …]` baut die App (`torrocalendar`,
+`torrotasks`, `torroinbox`, `torroassistant` oder `torroworkplace`; für die Steuerzentrale setzt es
+`ui` davor) und startet sie je Zustand einmal mit `--demo --open <zustand> <parameter> --shots
+<ordner>`, ohne Zustand einmal ohne `--open`. Jeder Lauf schreibt sechs PNGs: Mini (240×160), Mini
+hoch (320×480), Leiste (1200×200), Schmal (480×900), Mittel (800×600) und Breit (1600×1000), als
+`<präfix>-<größe>-<B>x<H>.png`, z. B. `torrocalendar-week-dark-mini-240x160.png`. Das Präfix ist der
+Programmname mit den Werten von `--view`, `--section`, `--settings`, `--open`, `--design`, `--font`,
+`--color-scheme` und `--appearance`, danach der Flags, die ein Fenster, einen Eintrag oder eine Darstellung
+wählen (`--chat`, `--bot`, `--lane`, `--source`, `--template`, `--task`, `--message`, `--reply`,
+`--reply-all`, `--forward`, `--account`, `--step`, `--mail-view`, `--mail-colors`, `--density`,
+`--now`), je mit dem ersten Wert, und `-setup`, `-setup-if-open` bzw. `-saved` bei den gleichnamigen Schaltern (Schreibfenster: `torroinbox-compose`, Vorlagen-Dialog:
+`torroworkplace-template`). Jede Größe zeichnet ein eigener Prozess, damit keine Größe den Demo-Stand
+der nächsten verändert (z. B. eine beim Öffnen gelesene Mail). Die Bilder haben die **doppelte Auflösung** wie ein
+Retina-Bildschirm: Mini (240×160 logisch) ist ein Bild von 480×320 Pixeln. Gleichnamige Bilder werden
+überschrieben, jeder Pfad steht auf stdout. Eigene Größen gibt `-- --shot-size 1000x700` (mehrfach, je
+Kante bis 4096; ersetzt die sechs, Datei `<präfix>-1000x700.png`). Der erste Fehler bricht mit seinem Exit-Code ab
+(64: unbekannter Parameter oder Wert).
+
+- **Immer beide Erscheinungsbilder:** je Ansicht `--appearance dark` und `--appearance light`. Ohne
+  Fenster kennt die App das Hell/Dunkel des Systems nicht.
+- **Nicht im Bild:** die Fensterhülle (Ampel, Titelleiste), Hover-Zustände, die Mindestgröße des
+  Fensters (jede Größe wird gezeichnet, auch eine, die das Fenster nicht zuließe), die Erinnerung über
+  den ganzen Bildschirm (`--reminders`, ein eigenes Fenster je Bildschirm; mit `--shots` lehnt der
+  Kalender ihre Zustände mit Exit 64 ab) und Schriftwechsel zur
+  Laufzeit (`design-switched` zeigt eine Ersatzschrift). Dafür bleibt `shoot.sh` (unten).
+- Zeilen `[…/emulator.rs:…] action = …` auf stderr kommen vom Emulator, der manche Aktionen nicht
+  ausführt (z. B. die Frage nach dem Erscheinungsbild des Systems), und sind kein Fehler.
+  `… not settled after 10 s` heißt: Die Ansicht kam nicht zur Ruhe, das Bild zeigt den Stand nach
+  10 s.
 
 **Zustände per Startparameter (Q.1), ohne zu klicken:** `--demo --open <zustand>` öffnet einen
-Zustand direkt (`--open` und `--now` gehen nur mit `--demo`). Kalender: `day week month agenda
+Zustand direkt (bei `shots.sh` stehen die Zustände vor `--`) (`--open` und `--now` gehen nur mit `--demo`). Kalender: `day week month agenda
 timeline radar night editor editor-new menu drawer switcher error empty loading` (`night`: Zeitstrahl
 mit der Karte „Night“); Aufgaben: `detail pr more menu display drawer
 switcher due error empty loading` (`pr`: Detail des ersten offenen Pull Requests, `more`: Detail mit
@@ -672,14 +694,31 @@ Schrift (z. B. `plex`) und Farben ebenso; `--now 2026-10-13T10:30` (Kalender, Au
 Unbekannte Werte: Fehlermeldung mit den gültigen Werten, Exit-Code 64. Beispiel:
 
 ```bash
-./target/debug/torrocalendar --demo --open editor --appearance light --now 2026-10-13T10:30 & pid=$!
-sleep 3; .claude/skills/torro-design/shoot.sh "$pid" cal-editor "$SCRATCH/design"; kill "$pid"
+.claude/skills/torro-design/shots.sh torrocalendar "$SCRATCH/design" editor -- --appearance light --now 2026-10-13T10:30
 ```
 
-`$SCRATCH` = Scratchpad-Verzeichnis der Sitzung. Hat das Fenster nicht die angeforderte Größe
-(Mindestgröße), ist das ein Befund. Die PNGs mit dem Read-Werkzeug öffnen und gegen diese Regeln
-prüfen. Scheint fremder Text durch, fehlt die Deckkraft-Regel (F.7) – Befund, kein App-Fehler.
-Läuft kein Hyprland, Sichtprüfung als „nicht möglich“ melden.
+`$SCRATCH` = Scratchpad-Verzeichnis der Sitzung. Die PNGs mit dem Read-Werkzeug öffnen und gegen diese
+Regeln prüfen. Scheint fremder Text durch, fehlt die Deckkraft-Regel (F.7) – Befund, kein App-Fehler.
+Scheitert der Build, ist die Sichtprüfung „nicht möglich“.
+
+**Rückfall unter Hyprland: `shoot.sh`.** Nur für das, was ohne Fenster fehlt (Mindestgröße, Hover,
+die Erinnerung, Schriftwechsel), und nur unter Hyprland. Immer nur **eine** App zur Zeit und nur
+Fenster mit der eigenen PID anfassen – die Fenster des Nutzers nie.
+
+```bash
+app=torrocalendar
+cargo build -p "$app"
+"./target/debug/$app" --demo --open week & pid=$!
+sleep 3
+.claude/skills/torro-design/shoot.sh "$pid" "$app" "$SCRATCH/design"
+kill "$pid"
+```
+
+`shoot.sh` stellt das Fenster schwebend, setzt nacheinander die sechs Größen und speichert je ein PNG.
+Hyprland ab 0.56 nimmt Befehle als Lua (`hl.dsp.window.float/resize/move`); das Skript nutzt diese
+Form. Eine Ansicht wechseln geht per Tastenkürzel an das Fenster:
+`hyprctl dispatch "hl.dsp.send_shortcut({ mods = '', key = 'm', window = 'pid:$pid' })"`. Hat das
+Fenster nicht die angeforderte Größe (Mindestgröße), ist das ein Befund.
 
 ## 10. Prüfliste vor „fertig“
 

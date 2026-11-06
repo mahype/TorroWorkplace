@@ -200,21 +200,22 @@ pub struct Window {
 }
 
 /// Runs the window of `launch.app_job` (or of the demo state `launch.open`).
-pub fn run(launch: Launch) -> iced::Result {
+/// With `shots` the window's pictures instead ([`torro_gui::shots::run`], #492).
+pub fn run(launch: Launch, shots: Option<&torro_gui::shots::Shots>) -> Result<(), torro_gui::shots::RunError> {
     let socket = torro_ipc::socket_path().filter(|_| !launch.demo);
     if let Some(socket) = &socket {
         torro_gui::source::ensure_core(socket);
     }
     torro_gui::design::start(socket.as_deref(), &launch.forced());
     let settings = window_settings(&target_of(&launch));
-    iced::application(move || Window::start(&launch), Window::perform_update, Window::view)
+    let application = iced::application(move || Window::start(&launch), Window::perform_update, Window::view)
         .settings(torro_gui::settings())
         .title(Window::title)
         .theme(Window::theme)
         .scale_factor(|window: &Window| window.zoom.factor())
         .subscription(Window::subscription)
-        .window(settings)
-        .run()
+        .window(settings);
+    torro_gui::shots::run(application, shots)
 }
 
 /// The target `launch` names: `--app-job=`, else the demo's state.
