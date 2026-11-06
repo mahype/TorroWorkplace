@@ -1348,7 +1348,7 @@ fn sidebar_row<'a, M: Clone + 'a>(
                 }
                 // A child (an account under "Accounts", issue #472) is cut with "…" to the row's
                 // width: the names beside the open one are long addresses.
-                (None, None) if matches!(parts.scale, Scale::Small) => menu_label(label.into_fragment()),
+                (None, None) if matches!(parts.scale, Scale::Small) => cut_label(label.into_fragment()),
                 (None, None) => line_label(typo::body(), label),
                 (Some(open), _) => {
                     // The chevron follows the name instead of the row's end, so the label takes
@@ -2331,6 +2331,7 @@ fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
         // (task M12.5 must not move the entries of the suite's other menus).
         // A nested entry (an account under "Accounts", issue #475) is cut with "…" as in the sidebar.
         None if item.tags.is_empty() && !item.nested => line_label(typo::body(), item.label),
+        None if item.nested => cut_label(item.label),
         None => menu_label(item.label),
     };
     let scale = if item.nested { Scale::Small } else { Scale::Row };
@@ -2378,6 +2379,18 @@ fn menu_label<'a, M: 'a>(label: iced::widget::text::Fragment<'a>) -> Element<'a,
     measured_line(typo::body(), move |size| {
         let shown = typo::ellipsize(&label, typo::body(), size.width);
         typo::text(typo::body(), shown).wrapping(Wrapping::None).into()
+    })
+}
+
+/// A [`menu_label`] that shows its whole text as tooltip once it is cut (issue #472): for the
+/// accounts under "Accounts" in the sidebar and the menu, whose long addresses may end alike.
+fn cut_label<'a, M: 'a>(label: iced::widget::text::Fragment<'a>) -> Element<'a, M> {
+    let label = label.to_string();
+    measured_line(typo::body(), move |size| {
+        let shown = typo::ellipsize(&label, typo::body(), size.width);
+        let cut = shown != label;
+        let line = typo::text(typo::body(), shown).wrapping(Wrapping::None);
+        if cut { with_tooltip(line, label.clone()) } else { line.into() }
     })
 }
 
