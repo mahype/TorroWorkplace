@@ -83,7 +83,7 @@ kbd.k{font:500 11px/1 Inter,sans-serif;color:var(--text3);border:1px solid var(-
 .st.away:not(.inl){border:0;width:14px;height:14px}
 
 /* ---------- Kontaktliste ---------- */
-.list{flex:1;overflow:hidden;padding:4px 8px 8px}
+.list{flex:1;overflow:auto;padding:4px 8px 8px}
 .ghead{display:flex;align-items:center;gap:6px;height:32px;padding:0 8px;margin-top:8px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
 .ghead svg{width:12px;height:12px}
 .ghead .tab{margin-left:2px}
