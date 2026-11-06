@@ -4747,14 +4747,19 @@ fn progress_share(done: u64, total: u64) -> u16 {
 }
 
 /// The grip of a row that can be dragged into another place (issue #454, after the rows of
-/// torrotasks): `GripVertical` in `text_3`, 14, with `hint` as its tooltip and the hand that grabs.
-/// Pressing it sends `on_press`; the list then follows the pointer over its rows and drops on
-/// release, and shows a [`drop_line`] where the row would go.
+/// torrotasks): `GripVertical` in `text_3`, 14, with `hint` as its tooltip and the hand that grabs,
+/// on a target of [`GRIP_TARGET`] (issue #481: the smallest a pointer should have to hit). Pressing
+/// it sends `on_press`; the list then follows the pointer over its rows and drops on release, and
+/// shows a [`drop_line`] where the row would go.
 pub fn grip<'a, M: Clone + 'a>(on_press: M, hint: &'a str) -> Element<'a, M> {
     let mark =
-        container(toned(Icon::GripVertical, icon::SIZE_SM, Tone::Text3)).center_x(icon::SIZE).center_y(icon::SIZE);
+        container(toned(Icon::GripVertical, icon::SIZE_SM, Tone::Text3)).center_x(GRIP_TARGET).center_y(GRIP_TARGET);
     mouse_area(with_tooltip(mark, hint)).on_press(on_press).interaction(mouse::Interaction::Grab).into()
 }
+
+/// The edge of the area a [`grip`] takes the pointer in: 24, the smallest target the design rules
+/// allow, around an icon of 14.
+pub const GRIP_TARGET: f32 = 24.0;
 
 /// Thickness of a [`drop_line`].
 const DROP_LINE: f32 = 2.0 * size::HAIRLINE;
