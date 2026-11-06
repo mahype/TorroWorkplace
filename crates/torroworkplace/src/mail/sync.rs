@@ -275,6 +275,17 @@ pub(crate) async fn backfill(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) 
     let policy = store.run(|store| store.cache_policy()).await?;
     let todo = store.run(move |store| store.unindexed(limit)).await?;
     mailbox.note_indexing(!todo.is_empty());
+    // The folders whose mail has its sender checked (issue #453, [`checks_senders`]).
+    let checked_folders: BTreeSet<String> = match todo.is_empty() {
+        true => BTreeSet::new(),
+        false => store
+            .run(|store| store.folders())
+            .await?
+            .into_iter()
+            .filter(|folder| checks_senders(folder.role))
+            .map(|folder| folder.id)
+            .collect(),
+    };
     let ids: Vec<String> = todo.iter().map(|(place, _)| place.id.clone()).collect();
     let policy_to_check = policy.clone();
     let keep = store.run(move |store| store.should_cache_bodies(&ids, &policy_to_check, now)).await?;
@@ -285,6 +296,7 @@ pub(crate) async fn backfill(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) 
         }
         let raw = fetched?;
         let sender = match &raw {
+            _ if !checked_folders.contains(&place.folder) => None,
             Some(raw) => check_sender(mailbox, raw, now).await,
             // Gone or too large to read: nothing to check, and not to be fetched again for it.
             None => mailbox.logos().on().then_some(None),
@@ -321,18 +333,26 @@ pub(crate) async fn backfill(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) 
 /// 4 of the plan): older mail stays without a logo rather than the whole archive being fetched again.
 pub const SENDER_CATCH_UP_DAYS: i64 = 30;
 
+/// Whether the mail of a folder with `role` has its sender checked (issue #453): not unwanted or
+/// deleted mail – a sender must not learn from its logo being fetched that its mail arrived, and spam
+/// must not fill the logos –, nor one's own in Sent and Drafts.
+fn checks_senders(role: Option<Role>) -> bool {
+    !matches!(role, Some(Role::Junk | Role::Trash | Role::Sent | Role::Drafts))
+}
+
 /// Checks the senders of up to `limit` messages of the last [`SENDER_CATCH_UP_DAYS`] days that were
 /// never checked (issue #453): kept from before the check existed, while logos were off, or whose
-/// text the sync did not fetch. Each is fetched once more with `BODY.PEEK[]`, newest first. Stops at
-/// the first that cannot be checked now (DNS offline), so it is not asked again at once. Nothing
-/// while logos are off. Answers how many it checked.
+/// text the sync did not fetch; never in the folders [`checks_senders`] leaves out. Each is fetched
+/// once more with `BODY.PEEK[]`, newest first, and gets this one chance: one whose signing domain's
+/// DNS does not answer now is noted as without a logo, so no message is fetched again and again.
+/// Nothing while logos are off or the DNS cannot be asked at all. Answers how many it checked.
 async fn check_senders(
     mailbox: &Mailbox,
     store: &SharedStore,
     limit: u32,
     now: DateTime<Utc>,
 ) -> Result<usize, MailError> {
-    if !mailbox.logos().on() {
+    if !mailbox.logos().on() || !mailbox.sender_check().ready() {
         return Ok(0);
     }
     let since = now - chrono::TimeDelta::days(SENDER_CATCH_UP_DAYS);
@@ -341,10 +361,7 @@ async fn check_senders(
     for place in todo {
         let raw = fetch_text(mailbox, &place).await?;
         let found = match &raw {
-            Some(raw) => match check_sender(mailbox, raw, now).await {
-                Some(found) => found,
-                None => break,
-            },
+            Some(raw) => check_sender(mailbox, raw, now).await.flatten(),
             // Gone from the server, or too large to read: nothing to check.
             None => None,
         };
@@ -777,7 +794,10 @@ async fn sync_folder(
         let Ok(read) = mime::read(&raw) else { continue };
         // What an invitation invites to, from its calendar part (task E8.3b).
         let invite = super::read::invite_of(&raw, &read);
-        let sender = check_sender(mailbox, &raw, now).await;
+        let sender = match checks_senders(target.role) {
+            true => check_sender(mailbox, &raw, now).await,
+            false => None,
+        };
         let folder = target.id.clone();
         store
             .run(move |store| {

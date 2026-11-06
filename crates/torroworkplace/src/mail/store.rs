@@ -1381,11 +1381,12 @@ impl MailStore {
 
     /// Up to `limit` messages dated `since` or later whose sender was never checked (issue #453),
     /// newest first: mail kept from before the check existed, or whose text the sync did not fetch.
-    /// Only messages of folders a sync has opened.
+    /// Only messages of folders a sync has opened, never of Junk, Trash, Sent and Drafts.
     pub fn unchecked_senders(&self, limit: u32, since: DateTime<Utc>) -> Result<Vec<MessageRef>, MailStoreError> {
         let sql = "SELECT m.id, m.folder_id, f.path, f.uidvalidity, m.uid, m.rfc_message_id
                    FROM messages m JOIN folders f ON f.id = m.folder_id
                    WHERE m.sender_check IS NULL AND m.date >= ?1 AND f.uidvalidity IS NOT NULL
+                       AND coalesce(f.role, '') NOT IN ('junk', 'trash', 'sent', 'drafts')
                    ORDER BY m.date DESC, m.seq DESC LIMIT ?2";
         let mut statement = self.db.prepare(sql)?;
         let rows = statement.query_map(params![since.timestamp(), limit], |row| {
@@ -4424,6 +4425,14 @@ mod tests {
         // A new sync of the headers keeps what was checked.
         add(&store, &inbox, &message(3, "again"));
         assert_eq!(logo(&ids[2]).as_deref(), Some("example.com"));
+        // Unwanted, deleted and one's own mail is never checked.
+        for (path, role) in
+            [("Junk", Role::Junk), ("Trash", Role::Trash), ("Sent", Role::Sent), ("Drafts", Role::Drafts)]
+        {
+            let folder = folder(&store, path, Some(role));
+            add(&store, &folder, &message(9, path));
+        }
+        assert_eq!(unchecked(day(1)), [ids[0].clone()], "only the inbox's");
     }
 
     #[test]
