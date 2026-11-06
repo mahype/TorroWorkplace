@@ -10377,6 +10377,7 @@ impl Core {
                 problems: problems_of(&scheme),
                 active: scheme.id == chosen,
                 dark_only: scheme.result.as_ref().is_ok_and(|found| found.dark_only),
+                vivid: scheme.result.as_ref().is_ok_and(|found| found.vivid),
                 id: scheme.id,
                 name: scheme.about.name,
                 version: scheme.about.version,
@@ -12800,6 +12801,10 @@ mod tests {
         std::fs::create_dir_all(&night).expect("scheme folder");
         let toml = "format = 1\ndark_only = true\n[about]\nname = \"Night\"\nversion = \"1.0.0\"\n";
         std::fs::write(night.join("color-scheme.toml"), toml).expect("toml");
+        let volt = data.join("color-schemes").join("volt");
+        std::fs::create_dir_all(&volt).expect("scheme folder");
+        let toml = "format = 1\nvivid = true\n[about]\nname = \"Volt\"\nversion = \"1.0.0\"\n";
+        std::fs::write(volt.join("color-scheme.toml"), toml).expect("toml");
 
         let Response::Designs { designs } = core.handle(Request::ListDesigns).await else { panic!("designs") };
         let looks: Vec<(&str, DensityLevel)> = designs.iter().map(|d| (d.id.as_str(), d.density)).collect();
@@ -12810,8 +12815,9 @@ mod tests {
         let Response::ColorSchemes { color_schemes } = core.handle(Request::ListColorSchemes).await else {
             panic!("colour schemes")
         };
-        let dark: Vec<(&str, bool)> = color_schemes.iter().map(|s| (s.id.as_str(), s.dark_only)).collect();
-        assert_eq!(dark, [("torro", false), ("night", true)]);
+        let groups: Vec<(&str, bool, bool)> =
+            color_schemes.iter().map(|s| (s.id.as_str(), s.dark_only, s.vivid)).collect();
+        assert_eq!(groups, [("torro", false, false), ("night", true, false), ("volt", false, true)]);
 
         let font = data.join("fonts").join("jetbrains-mono");
         std::fs::create_dir_all(&font).expect("font folder");
