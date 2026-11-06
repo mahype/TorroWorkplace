@@ -4256,6 +4256,8 @@ mod tests {
                 torro_ipc::Request::ListCategories { account: None },
                 torro_ipc::Request::ListSortRules,
                 torro_ipc::Request::ListMailFilters,
+                // The senders trusted with "Not fraud" (issue #506).
+                torro_ipc::Request::ListRules,
             ]
         );
     }
