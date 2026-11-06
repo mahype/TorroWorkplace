@@ -261,6 +261,23 @@ impl DemoSource {
         DemoSource { data: Mutex::new(data), offset: now - Utc::now() }
     }
 
+    /// The sample around `now` with one mail account only (issue #476, `--open pinned-one`): the
+    /// folders, messages and entries of the first of [`MAIL_ACCOUNTS`], so the window can be seen as
+    /// someone with a single mailbox sees it. Everything else is the same as [`DemoSource::new`].
+    pub fn single(now: DateTime<Utc>) -> DemoSource {
+        let demo = DemoSource::new(now);
+        {
+            let mut data = demo.lock();
+            let (first, others) = (MAIL_ACCOUNTS[0], &MAIL_ACCOUNTS[1..]);
+            let others: Vec<SourceRef> =
+                others.iter().map(|account| SourceRef::mail(account.trim_start_matches("mail:"))).collect();
+            data.folders.retain(|folder| folder.account == first);
+            data.mail.retain(|message| message.summary.account == first);
+            data.items.retain(|item| !others.contains(&item.source));
+        }
+        demo
+    }
+
     fn now(&self) -> DateTime<Utc> {
         Utc::now() + self.offset
     }
@@ -2461,6 +2478,19 @@ mod tests {
 
     fn role_ids(demo: &DemoSource, role: Role, snoozed: Option<bool>) -> Vec<String> {
         demo.by_role(role, None, snoozed, Order::NewestFirst).into_iter().map(|m| m.id).collect()
+    }
+
+    /// Issue #476: the demo of one account holds only the first account's folders, mail and entries.
+    #[test]
+    fn the_single_demo_has_one_mail_account() {
+        let demo = DemoSource::single(now());
+        let folders = demo.mail_folders().expect("folders");
+        assert!(!folders.is_empty() && folders.iter().all(|folder| folder.account == MAIL_ACCOUNTS[0]));
+        let inbox = demo.by_role(Role::Inbox, None, None, Order::NewestFirst);
+        assert!(!inbox.is_empty() && inbox.iter().all(|message| message.account == MAIL_ACCOUNTS[0]));
+        let private = SourceRef::mail(MAIL_ACCOUNTS[1].trim_start_matches("mail:"));
+        assert!(!demo.lock().items.iter().any(|item| item.source == private), "no entry of the other account");
+        assert!(DemoSource::new(now()).lock().items.iter().any(|item| item.source == private), "which the demo has");
     }
 
     /// Task E18.3: "Archive" lists the archived mail of both accounts, "All" every mail of both

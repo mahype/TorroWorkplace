@@ -153,7 +153,8 @@ pub fn start(app: AppId, args: Vec<String>) -> ExitCode {
     let result = match (launch.compose.is_some(), launch.demo) {
         (true, true) => compose(Arc::new(DemoSource::new(launch.start())), suite, launch),
         (true, false) => compose(Arc::new(InboxClient::default()), suite, launch),
-        (false, true) => run(Arc::new(DemoSource::new(launch.start())), suite, launch),
+        // `--open pinned-one` has a demo of one mail account (issue #476).
+        (false, true) => run(Arc::new(launch.demo_source()), suite, launch),
         (false, false) => run(Arc::new(InboxClient::default()), suite, launch),
     };
     match result {

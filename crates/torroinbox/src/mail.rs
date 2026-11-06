@@ -46,7 +46,7 @@
 //!   the core (`mail.list_save_targets`, [`MailSource::save_targets`]), saving is
 //!   `mail.save_attachments` ([`MailSource::save_attachments`]); the window adds only the system's
 //!   dialogs and "Show in folder" ([`saved_text`], [`saved_folder`]).
-//! - The mail window's views of every account (task E18.3): "All" and "Archive" list the mail of
+//! - The mail window's views of every account (task E18.3): "All", "Sent" and "Trash" list the mail of
 //!   one folder role ([`MailSource::mail_by_role`]), and the number on "All" comes from
 //!   [`MailSource::unread_in_all`]. Mail is never hidden (issue #339).
 //! - The piles (task E19.3): [`MailSource::set_mail_pile`] puts mail on "Reply later" or "Set aside"
@@ -322,7 +322,7 @@ pub trait MailSource: Send + Sync {
     /// `find.snoozed` says and, by `find.pile` (task E19.3), leaving out or giving only mail on a pile,
     /// at most `find.limit` in `find.order` from `find.cursor` on (the [`MailPage::next`] of the page
     /// before, asked with the same fields). "All" is [`Role::Inbox`] with `snoozed` `Some(false)` and
-    /// `pile` `Some(PileFilter::Without)`, "Archive" [`Role::Archive`]. The page has no highlights.
+    /// `pile` `Some(PileFilter::Without)`, "Trash" [`Role::Trash`]. The page has no highlights.
     fn mail_by_role(&self, find: MailByRole) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
 
     /// The number on "All" (task E18.3, decision 4 of E18): `mail.search_messages` as "All" asks it
@@ -1786,7 +1786,6 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
             // The views of every account's mail (task E18.4).
             View::All => (Icon::Mail, tr("No mail in your inboxes."), tr("New mail shows up here.")),
             View::Sent => (Icon::Send, tr("No sent mail."), tr("Mail you send shows up here.")),
-            View::Archive => (Icon::Archive, tr("No archived mail."), tr("Mail you archive shows up here.")),
             View::Trash => (Icon::Trash2, tr("The trash is empty."), tr("Mail you delete shows up here.")),
             // The piles (task E19.4): the hint names the key that fills them (`w`, `b`).
             View::ReplyLater => (
@@ -1856,6 +1855,9 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     if message.flags.contains(&Flag::Flagged) {
         let flag = widgets::with_tooltip(small_icon(Icon::Flag, Some(data.attention)), tr("Flagged"));
         marks.push((flag, icon::SIZE_SM));
+    }
+    if archived(data, message) {
+        marks.push(archive_mark());
     }
     let (name, domain, face) = row_names(data.view, message);
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
@@ -1985,6 +1987,9 @@ fn slim_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) ->
     if message.flags.contains(&Flag::Flagged) {
         marks.push(list::flag_field());
     }
+    if archived(data, message) {
+        marks.push(archive_mark());
+    }
     let lines = list::SlimLines {
         name,
         time: list::stamp(message.date, data.now),
@@ -2024,8 +2029,9 @@ fn row_buttons<'a>(data: &MailList<'_>, message: &MessageSummary) -> Vec<RowActi
 
 /// The card of a message `width` wide (task E8.3, `list::mail_card`): the lines of its row and, as
 /// chips, "Attachments" and "Flagged"; no buttons (task E14.2). An invitation (task E8.3b)
-/// shows when it is and the answer given as chips. In a search, "All" and
-/// "Archive", which hold every account's mail, the head names the account.
+/// shows when it is and the answer given as chips, an archived mail in a search with the archive
+/// "Archived" ([`archived`], issue #476). In a search, "All" and "Trash", which hold every account's
+/// mail, the head names the account.
 fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
     let mut chips = Vec::new();
     // What the mail is (task E12.8): the whole pill, where the card has room for it.
@@ -2039,10 +2045,12 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     if message.flags.contains(&Flag::Flagged) {
         chips.push(widgets::state_pill(Mark::Tinted(Icon::Flag, data.attention), tr("Flagged")));
     }
+    if archived(data, message) {
+        chips.push(widgets::state_pill(Icon::Archive, tr("Archived")));
+    }
     let (name, domain, face) = row_names(data.view, message);
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
-    let several =
-        matches!(data.view, View::Search(_) | View::All | View::Archive | View::Trash) && data.accounts.len() > 1;
+    let several = matches!(data.view, View::Search(_) | View::All | View::Trash) && data.accounts.len() > 1;
     let lines = list::MailLines {
         name,
         domain,
@@ -2560,6 +2568,25 @@ pub fn sender_parts(from: Option<&MailAddress>) -> (String, Option<String>) {
         .filter(|address| !address.is_empty() && *address != name)
         .and_then(|address| torro_inbox::rules::domain_of(&address));
     (name, domain)
+}
+
+/// Whether the row of `message` carries the archive's mark (issue #476): in a search that takes the
+/// archive with the rest ("With archive", not "Only archive", where every mail is archived), for a
+/// mail that lies in a folder of the role Archive.
+fn archived(data: &MailList<'_>, message: &MessageSummary) -> bool {
+    marks_archived(data.view, data.folders, message)
+}
+
+/// [`archived`] for `view` over `folders`, apart from the rest of a list so it can be tested alone.
+fn marks_archived(view: &View, folders: &[Folder], message: &MessageSummary) -> bool {
+    let Some(search) = view.search() else { return false };
+    crate::search::archive(&search.query) == crate::search::Archive::With
+        && folders.iter().any(|folder| folder.id == message.folder && folder.role == Some(Role::Archive))
+}
+
+/// The archive's mark in a row ([`archived`]): the box (14) in `text_3`, "Archived" as its tooltip.
+fn archive_mark<'a>() -> (Element<'a, Message>, f32) {
+    (widgets::with_tooltip(small_icon(Icon::Archive, None), tr("Archived")), icon::SIZE_SM)
 }
 
 /// A small icon (14) in `text_3`, or in `colour` – `on_accent` inside a chosen row drawn in the accent
@@ -4949,6 +4976,27 @@ mod tests {
         let categories = vec![CategoryInfo::of_with_group(&def, 0, 0, Some(&info))];
         assert_eq!(group_look(&categories, own), (Icon::Users, 4));
         assert_eq!(group_look(&[], CategoryGroup::Unsorted), (Icon::CircleDashed, 4));
+    }
+
+    /// Issue #476: an archived mail carries the archive's mark in a search that takes the archive with
+    /// the rest – with words, or "With archive" alone –, not in "Only archive" (every mail there is),
+    /// not outside a search, and a mail of the inbox never.
+    #[test]
+    fn archived_mail_is_marked_in_a_search_with_the_archive() {
+        use crate::search::{Scope, SearchView, Sort};
+        let demo = DemoSource::new(now());
+        let folders = demo.mail_folders().expect("folders");
+        let archived = demo.by_role(Role::Archive, None, None, Order::NewestFirst);
+        let inbox = demo.by_role(Role::Inbox, None, None, Order::NewestFirst);
+        let (archived, inbox) = (archived.first().expect("archived mail"), inbox.first().expect("inbox mail"));
+        let search = |query: &str| View::Search(SearchView::new(query, Scope::All, Sort::Relevance));
+        for query in ["in:inbox OR in:archive", "budget", "is:flagged"] {
+            assert!(marks_archived(&search(query), &folders, archived), "{query}");
+            assert!(!marks_archived(&search(query), &folders, inbox), "{query}: not the inbox's");
+        }
+        assert!(!marks_archived(&search("in:archive"), &folders, archived), "only the archive: no mark");
+        assert!(!marks_archived(&search("budget -in:archive"), &folders, archived));
+        assert!(!marks_archived(&View::All, &folders, archived), "no search");
     }
 
     /// Issue #445: a row of "Sent" names the first recipient ("+2" from three on) and the mailbox
