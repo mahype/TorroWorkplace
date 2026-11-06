@@ -392,10 +392,16 @@ async fn serve(shows: Shows, takeover: bool) -> Result<(), String> {
     // template keys, load the templates of the login) before one of them failed on the socket.
     let state = AppPaths::for_app(AppId::WORKPLACE).ok_or("no home directory")?.state;
     // A service taking over (issue #411) waits for the old one, which ends right after starting it.
-    let _service = match takeover {
+    let claimed = match takeover {
         true => claim_patiently(|| claim_service(&state), TAKEOVER_WAIT, TAKEOVER_POLL).await?,
         false => claim_service(&state)?,
     };
+    // Held until the process ends, not only until `serve` returns: tasks on the runtime (reminders, sync,
+    // the app catalog) may still write while the runtime winds down, and a service taking over must not
+    // start on the same data before they are gone (review of #411).
+    if let Some(lock) = claimed {
+        let _ = HELD_LOCK.set(lock);
+    }
     // Issue #411: an older copy never works on data a newer one used.
     check_data_version(&state, &Version::current())?;
     let socket = socket_path().ok_or("no home directory")?;
@@ -559,6 +565,10 @@ async fn serve(shows: Shows, takeover: bool) -> Result<(), String> {
 
 /// The file in the core's state directory that the running service holds locked ([`claim_service`]).
 const SERVICE_LOCK: &str = "service.lock";
+
+/// The locked [`SERVICE_LOCK`] of this process, kept until the process ends (the system then drops the
+/// lock, also when the process is killed).
+static HELD_LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
 
 /// How long the end of the service waits for the template keys to be released.
 const RELEASE_WAIT: Duration = Duration::from_secs(2);
