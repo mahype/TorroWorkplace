@@ -43,6 +43,7 @@ use torro_gui::dialog;
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, Cover, Surface, TitleButtons};
+use torro_gui::shots::{RunError, Shots};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::widgets;
 use torro_gui::zoom::{self, Zoom};
@@ -886,14 +887,14 @@ enum Event {
 /// wide. It ends after "Save" or "Cancel" went through; Escape and closing the window are "Cancel"
 /// ([`Window::cancel`]), so in the mode `Save` no way out leaves the template behind while the service
 /// answers; one that does not answer, or keeps refusing, cannot keep the window open. With `--demo` it
-/// shows the demo's template and sends nothing.
-pub fn run(launch: Launch) -> iced::Result {
+/// shows the demo's template and sends nothing. With `shots` its pictures instead ([`torro_gui::shots::run`]).
+pub fn run(launch: Launch, shots: Option<&Shots>) -> Result<(), RunError> {
     let socket = torro_ipc::socket_path().filter(|_| !launch.demo);
     if let Some(socket) = &socket {
         torro_gui::source::ensure_core(socket);
     }
     torro_gui::design::start(socket.as_deref(), &launch.forced());
-    iced::application(move || Window::new(launch.clone()), Window::update, Window::view)
+    let application = iced::application(move || Window::new(launch.clone()), Window::update, Window::view)
         .settings(torro_gui::settings())
         .title(|window: &Window| match window.mode {
             Mode::Edit => tr("Edit template").to_string(),
@@ -902,8 +903,8 @@ pub fn run(launch: Launch) -> iced::Result {
         .theme(Window::theme)
         .scale_factor(|window: &Window| window.zoom.factor())
         .subscription(Window::subscription)
-        .window(window_settings())
-        .run()
+        .window(window_settings());
+    torro_gui::shots::run(application, shots)
 }
 
 /// The window: [`size::form_max`] square, with the dialog's class as app id on Linux. It does not

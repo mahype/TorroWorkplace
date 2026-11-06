@@ -83,6 +83,7 @@ use torro_gui::design::{self, Chosen, Follow, Forced};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons, TopRow};
+use torro_gui::shots::{RunError, Shots};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
@@ -504,10 +505,11 @@ pub enum Message {
 
 /// Runs the control centre with the start parameters of `torroworkplace ui` ([`Launch::parse`]).
 /// Demo mode does not start the core either. `--template=<id>` runs only that template's dialog in
-/// a window of its own ([`template_form::run`]).
-pub fn run(launch: Launch) -> iced::Result {
+/// a window of its own ([`template_form::run`]). With `shots` the window's pictures instead
+/// ([`torro_gui::shots::run`]).
+pub fn run(launch: Launch, shots: Option<&Shots>) -> Result<(), RunError> {
     if launch.template.is_some() {
-        return template_form::run(launch);
+        return template_form::run(launch, shots);
     }
     // Before the core is started: a second start only brings the first window to the front.
     if let Some(app) = instance_of(&launch)
@@ -521,7 +523,7 @@ pub fn run(launch: Launch) -> iced::Result {
     }
     // Before the settings load the fonts: the first frame is drawn with the chosen design.
     design::start(socket.as_deref(), &launch.forced());
-    iced::application(move || Ui::new(launch.clone()), timed_update, timed_view)
+    let application = iced::application(move || Ui::new(launch.clone()), timed_update, timed_view)
         .settings(torro_gui::settings())
         .title(|ui: &Ui| {
             let page = if ui.setup.is_some() { tr("Setup") } else { ui.section.label() };
@@ -530,8 +532,8 @@ pub fn run(launch: Launch) -> iced::Result {
         .theme(Ui::theme)
         .scale_factor(|ui: &Ui| ui.zoom.factor())
         .subscription(Ui::subscription)
-        .window(torro_gui::window(AppId::WORKPLACE))
-        .run()
+        .window(torro_gui::window(AppId::WORKPLACE));
+    torro_gui::shots::run(application, shots)
 }
 
 /// The kind of window whose single instance this start is ([`torro_gui::instance::claim`], issue

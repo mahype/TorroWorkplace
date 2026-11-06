@@ -8,6 +8,9 @@
 //! time; `--appearance light|dark|system` overrides the stored appearance and `--design <id>` the
 //! design pack (see [`app::Launch`]).
 //!
+//! `--demo --shots <dir>` writes the view at each size class as PNG files instead of opening a window
+//! (the visual check, [`torro_gui::shots`], issue #492).
+//!
 //! `torrocalendar --settings <section>` opens the window with its settings in the content area
 //! (task S.19): Calendars, Reminders and Night, over the window's own way to the core – with
 //! `--demo` over the settings library's demo, which never opens a socket. Works without `--demo`
@@ -78,6 +81,14 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // `--demo --shots <dir>` (issue #492): the views as pictures, without a window.
+    let shots = match torro_gui::shots::Shots::from_args(APP.binary, &args) {
+        Ok(shots) => shots,
+        Err(err) => {
+            report_start_error(&err.to_string());
+            return ExitCode::from(64);
+        }
+    };
     // Before the core is started: a second start only brings the first window to the front.
     if let Some(app) = instance_of(&args, &launch)
         && torro_gui::instance::claim(app) == Claim::Shown
@@ -87,14 +98,14 @@ fn main() -> ExitCode {
     let source = launch.source(&args);
     // Before the settings load the fonts: the first frame is drawn with the chosen design.
     torro_gui::design::start_for(&source, &launch.forced());
-    let result = iced::application(move || app::App::new(source.clone(), launch.clone()), update, view)
+    let application = iced::application(move || app::App::new(source.clone(), launch.clone()), update, view)
         .settings(torro_gui::settings())
         .title(app::App::title)
         .theme(app::App::theme)
         .scale_factor(app::App::scale_factor)
         .subscription(app::App::subscription)
-        .window(torro_gui::window(APP))
-        .run();
+        .window(torro_gui::window(APP));
+    let result = torro_gui::shots::run(application, shots.as_ref());
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
