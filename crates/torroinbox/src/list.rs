@@ -81,7 +81,7 @@
 //! entry done then.
 //!
 //! Titles and bodies of other sources are foreign text (`Item::untrusted`). Iced draws text as it
-//! is, so nothing in it is ever interpreted; [`line_design`] and [`plain`] also drop control and
+//! is, so nothing in it is ever interpreted; [`one_line`] and [`plain`] also drop control and
 //! direction characters, so a title can neither break the row into lines nor turn its text around.
 
 use std::ops::Range;
@@ -1915,7 +1915,7 @@ fn facet_value(item: &Item, key: FacetKey) -> Option<&str> {
 /// - ntfy: the topic's label and the priority, unless it is ntfy's default 3.
 ///
 /// Nothing for every other source. Repository, app id and person are foreign text, shown as plain
-/// text (Iced interprets nothing, [`line_design`] drops control characters).
+/// text (Iced interprets nothing, [`one_line`] drops control characters).
 pub fn facet_words(item: &Item) -> Vec<(Icon, String)> {
     let value = |key| facet_value(item, key);
     let mut words = Vec::new();
@@ -1994,7 +1994,7 @@ pub fn waiting_word(item: &Item) -> &'static str {
     if item.kind == Kind::Alert { tr("Urgent") } else { tr("Waiting for you") }
 }
 
-/// The title and the preview of `item`'s row, on one line each ([`line_design`]): for a coding agent's
+/// The title and the preview of `item`'s row, on one line each ([`one_line`]): for a coding agent's
 /// session with a name ([`session_name`]) the name, and below or beside it [`agent_line`]; for
 /// every other entry its title and the first line of its body ([`preview`]) – or, for a service's
 /// entry without one (GitHub sends no text), what its traits say ([`facet_line`], task E5.15).
@@ -2026,7 +2026,7 @@ pub fn agent_line(item: &Item) -> String {
         .join(" · ")
 }
 
-/// The first line of the body that has text, on one line ([`line_design`]); `None` without a body.
+/// The first line of the body that has text, on one line ([`one_line`]); `None` without a body.
 pub fn preview(item: &Item) -> Option<String> {
     let body = item.body.as_deref()?;
     body.lines().map(one_line).find(|line| !line.is_empty())

@@ -4941,8 +4941,8 @@ fn group_row_padding(pad: Padding) -> Padding {
     Padding::new(0.0).left(pad.left).right(pad.right)
 }
 
-/// A heading over a block of a settings page with quiet actions at its right (task L.18: "Design"
-/// with "Reload" and "Open designs folder"): `title` in the look of a [`group`] title (`CAPTION` in
+/// A heading over a block of a settings page with quiet actions at its right (task L.18: "Font"
+/// with "Reload" and "Open fonts folder"): `title` in the look of a [`group`] title (`CAPTION` in
 /// `text_3`), the `actions` right-aligned, [`space::xs()`] apart and centred on the title. Pass
 /// quiet buttons – [`icon_button`] or a [`text_button`] in `style::button::ghost` –, never a
 /// primary one: they belong to the block, not to the page. With actions the heading is as high as
