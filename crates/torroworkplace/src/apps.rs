@@ -74,7 +74,9 @@ enum System {
     MacOs,
     /// The launcher entry `applications/torro-workplace.desktop` of the XDG data folders.
     Unix,
-    /// No install to look for yet (Windows until #411): always installed, as before.
+    /// The Start menu shortcut `Torro Workplace.lnk` (issue #411).
+    Windows,
+    /// No install to look for: always installed, as before.
     Other,
 }
 
@@ -83,7 +85,9 @@ impl System {
     const CURRENT: System = System::MacOs;
     #[cfg(all(unix, not(target_os = "macos")))]
     const CURRENT: System = System::Unix;
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    const CURRENT: System = System::Windows;
+    #[cfg(not(any(unix, windows)))]
     const CURRENT: System = System::Other;
 }
 
@@ -98,6 +102,37 @@ struct MainAppProbe<'a> {
     data_home: Option<&'a std::ffi::OsStr>,
     /// `XDG_DATA_DIRS`.
     data_dirs: Option<&'a std::ffi::OsStr>,
+    /// `%APPDATA%`, the user's roaming folder, with the user's Start menu.
+    app_data: Option<&'a std::ffi::OsStr>,
+    /// `%ProgramData%`, with the Start menu of all users.
+    program_data: Option<&'a std::ffi::OsStr>,
+}
+
+/// The name of the main application's Start menu shortcut on Windows (issue #411), from its display name.
+fn start_menu_shortcut() -> String {
+    format!("{}.lnk", AppId::WORKPLACE.display_name)
+}
+
+/// Whether the shortcut [`start_menu_shortcut`] lies in one of the Start menus below `roots` (`%APPDATA%`,
+/// `%ProgramData%`): in `Microsoft\Windows\Start Menu\Programs` itself or one folder below it, where
+/// installers put their shortcuts (`Programs\Torro Workplace\Torro Workplace.lnk`). `exists` and
+/// `subfolders` stand in for the file system.
+fn start_menu_has_main_app(
+    roots: &[&Path],
+    exists: impl Fn(&Path) -> bool,
+    subfolders: impl Fn(&Path) -> Vec<PathBuf>,
+) -> bool {
+    let shortcut = start_menu_shortcut();
+    roots.iter().any(|root| {
+        let programs = root.join("Microsoft").join("Windows").join("Start Menu").join("Programs");
+        exists(&programs.join(&shortcut)) || subfolders(&programs).iter().any(|folder| exists(&folder.join(&shortcut)))
+    })
+}
+
+/// The folders directly in `dir`; none when it cannot be read.
+fn subfolders(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()).collect()
 }
 
 /// Whether the main application (the control centre with its tray icon, "Torro Workplace") is installed
@@ -109,23 +144,34 @@ pub fn main_app_installed() -> bool {
     let home = std::env::var_os("HOME").filter(|home| !home.is_empty()).map(PathBuf::from);
     let data_home = std::env::var_os("XDG_DATA_HOME");
     let data_dirs = std::env::var_os("XDG_DATA_DIRS");
+    let app_data = std::env::var_os("APPDATA");
+    let program_data = std::env::var_os("ProgramData");
     let probe = MainAppProbe {
         setting: setting.as_deref(),
         exe: exe.as_deref(),
         home: home.as_deref(),
         data_home: data_home.as_deref(),
         data_dirs: data_dirs.as_deref(),
+        app_data: app_data.as_deref(),
+        program_data: program_data.as_deref(),
     };
-    main_app_found(System::CURRENT, &probe, Path::is_file)
+    main_app_found(System::CURRENT, &probe, Path::is_file, subfolders)
 }
 
-/// [`main_app_installed`] for `system`, with what the process gave and `exists` in place of the file
-/// system. The rules in order: [`MAIN_APP_VAR`] `1` or `0` decides; macOS: the bundle of
+/// [`main_app_installed`] for `system`, with what the process gave and `exists` and `subfolders` in place
+/// of the file system. The rules in order: [`MAIN_APP_VAR`] `1` or `0` decides; macOS: the bundle of
 /// [`AppId::WORKPLACE`] ([`torro_gui::source::bundle_program`]: beside the running bundle, in
 /// `/Applications`, in `~/Applications`); other Unix: `applications/torro-workplace.desktop` in
 /// `$XDG_DATA_HOME` (empty or unset: `$HOME/.local/share`) or in one of `$XDG_DATA_DIRS` (empty or
-/// unset: `/usr/local/share:/usr/share`), where packages and manual installs put it; elsewhere installed.
-fn main_app_found(system: System, probe: &MainAppProbe, exists: impl Fn(&Path) -> bool) -> bool {
+/// unset: `/usr/local/share:/usr/share`), where packages and manual installs put it; Windows: the Start
+/// menu shortcut "Torro Workplace" of the user (`%APPDATA%`) or of all users (`%ProgramData%`,
+/// [`start_menu_has_main_app`], issue #411); elsewhere installed.
+fn main_app_found(
+    system: System,
+    probe: &MainAppProbe,
+    exists: impl Fn(&Path) -> bool,
+    subfolders: impl Fn(&Path) -> Vec<PathBuf>,
+) -> bool {
     match probe.setting.map(str::trim) {
         Some("1") => return true,
         Some("0") => return false,
@@ -146,6 +192,11 @@ fn main_app_found(system: System, probe: &MainAppProbe, exists: impl Fn(&Path) -
                 None => vec![PathBuf::from("/usr/local/share"), PathBuf::from("/usr/share")],
             };
             data_home.into_iter().chain(data_dirs).any(|dir| exists(&dir.join(&entry)))
+        }
+        System::Windows => {
+            let roots: Vec<&Path> =
+                [probe.app_data, probe.program_data].into_iter().flat_map(given).map(Path::new).collect();
+            start_menu_has_main_app(&roots, exists, subfolders)
         }
         System::Other => true,
     }
@@ -1300,18 +1351,60 @@ pub mod tests {
         move |path| files.iter().any(|file| Path::new(file) == path)
     }
 
+    /// [`main_app_found`] on a file system of `exists` and no folders to look into.
+    fn found(system: System, probe: &MainAppProbe, exists: impl Fn(&Path) -> bool) -> bool {
+        main_app_found(system, probe, exists, |_| Vec::new())
+    }
+
+    /// Issue #411: on Windows the main application is its Start menu shortcut, of the user or of all
+    /// users, in `Programs` or one folder below; deeper, or another app's shortcut, is none.
+    #[test]
+    fn on_windows_the_main_app_is_its_start_menu_shortcut() {
+        // Built from parts, so the paths compare alike on every system the test runs on.
+        let roaming = Path::new("C:").join("Users").join("sam").join("AppData").join("Roaming");
+        let all_users = Path::new("C:").join("ProgramData");
+        let programs = |root: &Path| root.join("Microsoft").join("Windows").join("Start Menu").join("Programs");
+        let probe = MainAppProbe {
+            app_data: Some(roaming.as_os_str()),
+            program_data: Some(all_users.as_os_str()),
+            ..MainAppProbe::default()
+        };
+        let folder = programs(&roaming).join("Torro Workplace");
+        let deeper = folder.join("Extras");
+        let folders = |dir: &Path| match dir == programs(&roaming) {
+            true => vec![programs(&roaming).join("Tools"), folder.clone()],
+            false if dir == folder => vec![deeper.clone()],
+            false => Vec::new(),
+        };
+        let only = |file: PathBuf| move |path: &Path| path == file;
+
+        let user = programs(&roaming).join("Torro Workplace.lnk");
+        assert!(main_app_found(System::Windows, &probe, only(user), folders));
+        let everyone = programs(&all_users).join("Torro Workplace.lnk");
+        assert!(main_app_found(System::Windows, &probe, only(everyone.clone()), folders));
+        assert!(main_app_found(System::Windows, &probe, only(folder.join("Torro Workplace.lnk")), folders));
+        assert!(!main_app_found(System::Windows, &probe, only(deeper.join("Torro Workplace.lnk")), folders));
+        assert!(!main_app_found(System::Windows, &probe, only(folder.join("Torro Calendar.lnk")), folders));
+        // Without the variables there is no Start menu to look in.
+        let unset = MainAppProbe { program_data: Some(std::ffi::OsStr::new("")), ..MainAppProbe::default() };
+        assert!(!main_app_found(System::Windows, &unset, only(everyone), folders));
+        // A shortcut counts only on Windows.
+        let shortcut = programs(&roaming).join("Torro Workplace.lnk");
+        assert!(!main_app_found(System::Unix, &probe, only(shortcut), folders));
+    }
+
     #[test]
     fn the_variable_decides_whether_the_main_app_is_installed() {
         let everything = |_: &Path| true;
         let nothing = |_: &Path| false;
-        for system in [System::MacOs, System::Unix, System::Other] {
+        for system in [System::MacOs, System::Unix, System::Windows, System::Other] {
             let on = MainAppProbe { setting: Some("1"), ..MainAppProbe::default() };
             let off = MainAppProbe { setting: Some("0"), ..MainAppProbe::default() };
-            assert!(main_app_found(system, &on, nothing), "{system:?}");
-            assert!(!main_app_found(system, &off, everything), "{system:?}");
+            assert!(found(system, &on, nothing), "{system:?}");
+            assert!(!found(system, &off, everything), "{system:?}");
             // Any other value is ignored: the system decides.
             let other = MainAppProbe { setting: Some("yes"), ..MainAppProbe::default() };
-            assert_eq!(main_app_found(system, &other, nothing), system == System::Other, "{system:?}");
+            assert_eq!(found(system, &other, nothing), system == System::Other, "{system:?}");
         }
     }
 
@@ -1320,15 +1413,15 @@ pub mod tests {
         let home = Path::new("/Users/sam");
         let probe = MainAppProbe { home: Some(home), ..MainAppProbe::default() };
         let system = among(&["/Applications/Torro Workplace.app/Contents/MacOS/torroworkplace"]);
-        assert!(main_app_found(System::MacOs, &probe, system));
+        assert!(found(System::MacOs, &probe, system));
         let user = among(&["/Users/sam/Applications/Torro Workplace.app/Contents/MacOS/torroworkplace"]);
-        assert!(main_app_found(System::MacOs, &probe, user));
+        assert!(found(System::MacOs, &probe, user));
         // Only an app's bundle is no main application.
         let calendar = among(&["/Applications/Torro Calendar.app/Contents/MacOS/torrocalendar"]);
-        assert!(!main_app_found(System::MacOs, &probe, calendar));
+        assert!(!found(System::MacOs, &probe, calendar));
         // A launcher entry counts only on Linux.
         let entry = among(&["/usr/share/applications/torro-workplace.desktop"]);
-        assert!(!main_app_found(System::MacOs, &probe, entry));
+        assert!(!found(System::MacOs, &probe, entry));
     }
 
     #[test]
@@ -1341,9 +1434,9 @@ pub mod tests {
             "/usr/local/share/applications/torro-workplace.desktop",
             "/usr/share/applications/torro-workplace.desktop",
         ] {
-            assert!(main_app_found(System::Unix, &probe, among(&[file])), "{file}");
+            assert!(found(System::Unix, &probe, among(&[file])), "{file}");
         }
-        assert!(!main_app_found(System::Unix, &probe, among(&["/usr/share/applications/torro-calendar.desktop"])));
+        assert!(!found(System::Unix, &probe, among(&["/usr/share/applications/torro-calendar.desktop"])));
         // Given folders replace the defaults; empty ones count as unset.
         let given = MainAppProbe {
             home: Some(home),
@@ -1352,13 +1445,13 @@ pub mod tests {
             ..MainAppProbe::default()
         };
         for file in ["/data/applications/torro-workplace.desktop", "/opt/b/applications/torro-workplace.desktop"] {
-            assert!(main_app_found(System::Unix, &given, among(&[file])), "{file}");
+            assert!(found(System::Unix, &given, among(&[file])), "{file}");
         }
         for file in [
             "/home/sam/.local/share/applications/torro-workplace.desktop",
             "/usr/share/applications/torro-workplace.desktop",
         ] {
-            assert!(!main_app_found(System::Unix, &given, among(&[file])), "{file}");
+            assert!(!found(System::Unix, &given, among(&[file])), "{file}");
         }
         let empty = MainAppProbe {
             home: Some(home),
@@ -1367,12 +1460,12 @@ pub mod tests {
             ..MainAppProbe::default()
         };
         let file = "/home/sam/.local/share/applications/torro-workplace.desktop";
-        assert!(main_app_found(System::Unix, &empty, among(&[file])));
-        assert!(main_app_found(System::Unix, &empty, among(&["/usr/share/applications/torro-workplace.desktop"])));
+        assert!(found(System::Unix, &empty, among(&[file])));
+        assert!(found(System::Unix, &empty, among(&["/usr/share/applications/torro-workplace.desktop"])));
     }
 
     #[test]
     fn elsewhere_the_main_app_counts_as_installed() {
-        assert!(main_app_found(System::Other, &MainAppProbe::default(), |_| false));
+        assert!(found(System::Other, &MainAppProbe::default(), |_| false));
     }
 }
