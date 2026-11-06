@@ -70,6 +70,8 @@ use iced::{
 };
 use iced::{border, keyboard, mouse};
 
+mod context_area;
+
 use torro_core::design::{ListLook, ListSelection};
 use torro_core::i18n::tr;
 use torro_core::shortcuts::{Held, System};
@@ -2111,6 +2113,21 @@ pub fn anchored_if<'a, M: 'a>(anchor: Option<&Anchor>, content: impl Into<Elemen
     }
 }
 
+/// `content` that sends `on_right_press(point)` when it is right-clicked, with the point of the
+/// click relative to the content's top-left corner (issue #497). For rows with a context menu: the
+/// menu floats at the pointer with [`Placement::At`] at `anchor.area(Rectangle::new(point,
+/// Size::ZERO))`, where `anchor` is [`anchored`] around this same content (same bounds).
+///
+/// ```ignore
+/// widgets::anchored(&row_anchor, widgets::context_area(row, move |at| Message::Context(id.clone(), at)))
+/// ```
+pub fn context_area<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+    on_right_press: impl Fn(Point) -> M + 'a,
+) -> Element<'a, M> {
+    context_area::ContextArea { content: content.into(), on_right_press: Box::new(on_right_press) }.into()
+}
+
 /// Which edge of the anchor a card below it lines up with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Align {
@@ -2128,6 +2145,11 @@ pub enum Placement {
     Below(Align),
     /// 8 right of the anchor, top edges in line; left of it when there is no room (event cards).
     Beside,
+    /// The card's top-left corner at the anchor's top-left corner, no gap: a context menu at the
+    /// pointer, anchored to a zero-sized area where the click was ([`context_area`], issue #497).
+    /// Left of the point when there is no room on the right, above it when there is none below –
+    /// like the context menus of macOS, Windows and GNOME.
+    At,
 }
 
 /// The top-left corner of a card of `card` size placed at `target` inside `viewport`; the card
@@ -2144,6 +2166,19 @@ fn place(target: Rectangle, card: Size, viewport: Rectangle, placement: Placemen
                 target.x - beside_gap() - card.width
             };
             (x, target.y)
+        }
+        Placement::At => {
+            let fits = |start: f32, extent: f32, view_start: f32, view_length: f32| {
+                start + extent <= view_start + view_length - beside_gap()
+            };
+            let x =
+                if fits(target.x, card.width, viewport.x, viewport.width) { target.x } else { target.x - card.width };
+            let y = if fits(target.y, card.height, viewport.y, viewport.height) {
+                target.y
+            } else {
+                target.y - card.height
+            };
+            (x, y)
         }
     };
     let clamp = |value: f32, start: f32, length: f32, extent: f32| {
@@ -2177,7 +2212,9 @@ fn below_or_above(target: Rectangle, card: Size, viewport: Rectangle) -> f32 {
 /// with [`escape`].
 ///
 /// The card stays inside the window: it moves in from the edges and flips to the other side of
-/// the anchor for [`Placement::Beside`]. While the anchor (and its fallbacks, [`Anchor::or`]) was
+/// the anchor for [`Placement::Beside`], to the left of and above the point for [`Placement::At`]
+/// (a context menu at the pointer: anchor `row.area(Rectangle::new(point, Size::ZERO))` with the
+/// point from [`context_area`]). While the anchor (and its fallbacks, [`Anchor::or`]) was
 /// not laid out, the card stands in the middle of the window.
 pub fn floating<'a, M: Clone + 'a>(
     anchor: &Anchor,
@@ -7580,6 +7617,29 @@ mod tests {
         // A card larger than the window keeps its top-left corner on screen.
         let huge = place(rect(10.0, 10.0, 10.0, 10.0), Size::new(2000.0, 2000.0), WINDOW, Placement::Beside);
         assert_eq!(huge, Point::new(beside_gap(), beside_gap()));
+    }
+
+    /// Issue #497: a context menu opens with its top-left corner at the pointer, flips left of it
+    /// at the right edge and above it at the bottom, and moves in when it fits on neither side.
+    #[test]
+    fn a_context_menu_opens_at_the_pointer_and_flips_at_the_edges() {
+        let menu = menu_size();
+        let at = |x: f32, y: f32, card: Size| place(rect(x, y, 0.0, 0.0), card, WINDOW, Placement::At);
+        assert_eq!(at(200.0, 150.0, menu), Point::new(200.0, 150.0), "top-left corner at the pointer");
+        let right = at(800.0, 150.0, menu);
+        assert_eq!(right, Point::new(800.0 - menu.width, 150.0), "no room on the right: left of the pointer");
+        let low = at(200.0, 600.0, menu);
+        assert_eq!(low, Point::new(200.0, 600.0 - menu.height), "no room below: above the pointer");
+        let corner = at(800.0, 600.0, menu);
+        assert_eq!(corner, Point::new(800.0 - menu.width, 600.0 - menu.height), "both edges at once");
+        // Exactly the margin left on the right still opens there.
+        let edge = 900.0 - beside_gap() - menu.width;
+        assert_eq!(at(edge, 150.0, menu).x, edge);
+        // Too tall for either side of a pointer in the middle: moved in, 8 from the window edge.
+        let tall = Size::new(menu.width, 500.0);
+        assert_eq!(at(200.0, 350.0, tall).y, beside_gap(), "above would leave the window: from the top margin");
+        let wide = Size::new(600.0, 200.0);
+        assert_eq!(at(450.0, 150.0, wide).x, beside_gap(), "left would leave the window: from the left margin");
     }
 
     /// Task E8.12 (finding 4): a bar of buttons shows all words or none – only its lead may keep its
