@@ -7651,6 +7651,30 @@ mod tests {
         assert_eq!(at(450.0, 150.0, wide).x, beside_gap(), "left would leave the window: from the left margin");
     }
 
+    /// Issue #497: a right-click on a [`context_area`] reports where it was, relative to the area's
+    /// top-left corner – also when the area does not start at the window's corner –, and nothing
+    /// else does: a left click, or a right-click beside the area.
+    #[test]
+    fn a_context_area_reports_the_point_of_a_right_click_inside_it() {
+        let right = || iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right));
+        let left = || iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        let ui = || {
+            // The area 200 × 40 starts at (10, 40): 10 of padding, then 30 of space above it.
+            let area = context_area(container(blank()).width(200.0).height(40.0), |point| point);
+            iced::widget::column![blank().height(30.0), area].padding(10.0)
+        };
+        let mut inside = iced_test::simulator(ui());
+        inside.point_at(Point::new(60.0, 55.0));
+        let statuses = inside.simulate([left(), right()]);
+        assert_eq!(statuses[1], iced::event::Status::Captured, "the right press is taken");
+        let points: Vec<Point> = inside.into_messages().collect();
+        assert_eq!(points, [Point::new(50.0, 15.0)], "one point, relative to the area; the left click sends nothing");
+        let mut beside = iced_test::simulator(ui());
+        beside.point_at(Point::new(260.0, 55.0));
+        let _ = beside.simulate([right()]);
+        assert_eq!(beside.into_messages().count(), 0, "beside the area: no menu");
+    }
+
     /// Issue #497: a group of one entry in the context menu goes without its title.
     #[test]
     fn a_context_menu_titles_only_groups_of_several_entries() {
