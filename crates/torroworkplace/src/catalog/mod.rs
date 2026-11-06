@@ -260,13 +260,11 @@ impl Catalog {
     }
 
     /// Sets how the service hands over to another copy of itself after a job (issue #477).
-    #[allow(dead_code, reason = "wired by the daemon with the hand-over of #477")]
     pub fn set_hand_over(&self, hand_over: HandOver) {
         self.inner.hooks.write().unwrap_or_else(PoisonError::into_inner).hand_over = hand_over;
     }
 
     /// Sets how the newest copy of the service on this computer is found (issue #477).
-    #[allow(dead_code, reason = "wired by the daemon with the search for copies of #477")]
     pub fn set_newest_service(&self, newest_service: NewestService) {
         self.inner.hooks.write().unwrap_or_else(PoisonError::into_inner).newest_service = newest_service;
     }
