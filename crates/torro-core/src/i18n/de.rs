@@ -7149,7 +7149,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Not sorted yet", "Noch nicht einsortiert"),
     ("Senders", "Absender"),
     ("What comes in and of which kind shows up here.", "Hier steht, was hereinkommt und welcher Art es ist."),
-    ("What's new", "Neuigkeiten"),
+    // "What's new" under the mail window's overview (`trc("news", …)`); the release notes' is "Was ist neu".
+    ("news|What's new", "Neuigkeiten"),
     (
         "Who sends the most, what lies in your inbox and how each category develops moved to Settings › Statistics. \
          The overview now shows only what comes in.",

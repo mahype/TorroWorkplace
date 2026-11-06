@@ -12,7 +12,7 @@ use std::future::Future;
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Fill, Padding, Theme};
-use torro_core::i18n::tr;
+use torro_core::i18n::{tr, trc};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::{datetime, typo, widgets};
@@ -148,7 +148,7 @@ pub fn block(state: &State) -> Option<Element<'_, Message>> {
         return None;
     }
     let lines = column(shown.iter().map(line)).spacing(space::m());
-    Some(widgets::chart_card(tr("What's new"), "", lines))
+    Some(widgets::chart_card(trc("news", "What's new"), "", lines))
 }
 
 /// One announcement: its symbol, the title strong with the text under it (wrapping), the day and ✕.
