@@ -13960,9 +13960,19 @@ mod tests {
 
     /// Issue #302: an approved call runs with the rights of the moment it is allowed: the level taken back
     /// meanwhile makes it `forbidden`; a bot that ran for the assistant gets what both may.
-    #[tokio::test]
-    async fn an_approved_server_tool_runs_with_the_rights_of_now() {
-        // Each answer boxed, as `ask` does: inline they make this test's future too big for its thread.
+    #[test]
+    fn an_approved_server_tool_runs_with_the_rights_of_now() {
+        // The approval runs its command through the core again, with a server tool on top: in a debug
+        // build that nests deeper than a test thread's 2 MiB stack holds (on Linux it overflowed), so it
+        // runs on a thread of its own with more.
+        let worker = std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+            runtime.block_on(approved_server_tool_runs_with_the_rights_of_now());
+        });
+        worker.expect("thread").join().expect("the test ran through");
+    }
+
+    async fn approved_server_tool_runs_with_the_rights_of_now() {
         use torro_ipc::api::Confirm;
         let dir = tempfile::tempdir().expect("temp dir");
         let (core, secrets) = extensions_core(dir.path());
