@@ -12,8 +12,8 @@
 //!   `OverviewCategory::days`) above every category with its count, share and how much was opened
 //!   ([`category_lines`]); a click chooses the line, at first the largest.
 //!
-//! Span and account are the overview's ([`mail_overview::controls`]): in the head's buttons wide and
-//! medium, under the tabs narrow. The settings host scrolls the page and gives it the whole width
+//! Span and account are the overview's ([`mail_overview::controls`]): in the head's buttons in the wide
+//! window, under the tabs in the medium and narrow ones, where the figures stand two by two. The settings host scrolls the page and gives it the whole width
 //! (#464). Names and addresses come from mail (`untrusted`) and are drawn as plain text.
 
 use iced::widget::text::Wrapping;
@@ -368,7 +368,7 @@ fn category_row<'a>(
 
 /// "Who sends the most": a line per sender with how much it sends, how much of it is opened and –
 /// on hover – "Show mails", "Unsubscribe…" and "Mute". Below a form's width the column of what is
-/// opened goes, and the category stands without the address.
+/// opened goes: the second line says it after the category, without the address.
 fn senders_card<'a>(
     overview: &MailOverview,
     muting: Option<&str>,

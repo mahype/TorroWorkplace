@@ -492,7 +492,8 @@ pub struct OverviewData<'a> {
     /// The mail accounts: id and name, for the account menu.
     pub accounts: Vec<(String, String)>,
     pub now: DateTime<Utc>,
-    /// Where it stands; the statistics page takes [`Place::Narrow`] in the narrow window.
+    /// Where it stands; the statistics page takes [`Place::Page`] in the wide window and
+    /// [`Place::Narrow`] in the medium and narrow ones.
     pub place: Place,
     /// Where the menu of "Mute" hangs: at the button of the sender in [`State::muting`].
     pub mute_at: Anchor,

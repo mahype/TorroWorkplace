@@ -6269,8 +6269,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// Keeps the overview in step after every message (issue #409): an open mail closes its panel or
     /// page, a closed "Mute" menu lets go of its sender, and while it or the statistics page shows
     /// (issue #485) it asks for numbers that are missing, for another span or account, or older than a
-    /// minute, and once for the announcements under it. The forced demo states ask for no numbers;
-    /// the announcements they ask for too, since "What's new" stands under every state.
+    /// minute, and once for the announcements under it. The forced demo states ask for no numbers, the
+    /// announcements they ask for too ("What's new" stands under the error and the empty span).
     fn follow_mail_overview(&mut self) -> Task<Message> {
         if self.panel_open() {
             self.mail_overview.open = false;
