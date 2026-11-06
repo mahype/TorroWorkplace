@@ -93,8 +93,8 @@ ein KI-Ergebnis als Vorschlag gekennzeichnet ist:
 ## Die Reihenfolge beim Einordnen
 
 Wie beim Sortieren in Spuren ([eingang.md](eingang.md), Grundregel 6: erst feste Regeln, dann
-lernen, KI höchstens als Vorschlag). Die Reihenfolge ist fest: feste Merkmale, gemerkte Regeln, das
-Modell, zuletzt `other`. Passt keine Regel und ist das Modell nicht sicher genug, bleibt die Mail `other`.
+lernen, KI höchstens als Vorschlag). Die Reihenfolge ist fest: feste Regeln (gemerkte zuerst, siehe
+[Vorrang](#vorrang)), feste Merkmale, Kontakte, das Modell, zuletzt `other`. Passt keine Regel und ist das Modell nicht sicher genug, bleibt die Mail `other`.
 
 1. **Feste Merkmale** entscheiden, was in den Kopfzeilen steht: `invitation` (iMIP `REQUEST`),
    `auto_reply` (`Auto-Submitted` ungleich `no`), `bounce` (mit E9.3a), `spam` für Mail im
@@ -312,7 +312,8 @@ weiter erreichbar.
    die die Mail finden und eine Kategorie setzen; das Modell wird nicht gefragt (`rule`). Ein Filter, der
    nur liest oder in den Papierkorb legt, entscheidet nichts.
    - Eine gemerkte Regel „Always for this sender?“, die gilt, geht allen anderen vor: Der Mensch hat über
-     genau diesen Absender entschieden.
+     genau diesen Absender entschieden. Das gilt, solange sie einen Absender oder eine Domain ohne Ausnahme
+     nennt; im Editor zu mehr umgebaut, ist sie eine Regel wie jede andere ihrer Kategorie.
    - Sonst gewinnt unter den passenden Regeln und Filtern die Kategorie, die in der Liste des Tabs
      Categories weiter oben steht: Gruppen von oben, darin Kategorien von oben. Der Mensch ordnet sie am
      Griff (`inbox.move_category`, in der Gruppe und in eine andere). Innerhalb einer Kategorie ist die
@@ -405,7 +406,7 @@ Lauf oder ein Entfernen, steht unter dem Kopf der Seite eine Zeile mit Fortschri
 | Kategorie entfernen | Einstellungen › Categorization | `inbox.remove_category` · Admin | `inbox_remove_category` |
 | Regeln lesen | Seite der Kategorie unter Einstellungen › Categorization | `inbox.list_sort_rules` · Read | `inbox_list_sort_rules` |
 | Regel anlegen, ändern, entfernen | Seite der Kategorie („+ Rule“, Schalter, Seite der Regel) | `inbox.create_sort_rule`, `inbox.update_sort_rule`, `inbox.remove_sort_rule` · Admin | gleichnamig |
-| Kategorie verschieben (#481), auch in eine andere Gruppe | Tab Categories, Ziehen am Griff | `inbox.move_category` · Admin | `inbox_move_category` |
+| Kategorie verschieben (#481), auch in eine andere Gruppe | Tab Categories, Ziehen am Griff; „Move up“/„Move down“ auf der Seite der Kategorie (in ihrer Gruppe) | `inbox.move_category` · Admin | `inbox_move_category` |
 | Vorhandene Mail sortieren (#454) | „Sort existing mail…“ | `inbox.preview_category_job`, `inbox.start_category_job { apply_rules, apply_model, again }` · Read/Write | gleichnamig |
 | Kategorien von allen Mails entfernen | Tab Categories, unten | `inbox.clear_categories` · Delete | `inbox_clear_categories` |
 

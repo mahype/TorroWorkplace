@@ -312,7 +312,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Filter entfernen (#339) | Dialog › „Delete filter“ | `mail.remove_filter` · Admin | `mail_remove_filter` |
 | Treffer eines Filters zeigen (#339) | Dialog des Filters, „Finds {n} mails in Inbox now.“ | `mail.preview_filter` · Read | `mail_preview_filter` |
 | Filter auf vorhandene Mail anwenden (#339) | „Also apply to the {n} existing mails“ im Dialog | `mail.apply_filter` · Admin | `mail_apply_filter` |
-| Vorrang zwischen Kategorien (#481) | Tab Categories, ziehen am Griff | `inbox.move_category` · Admin | `inbox_move_category` |
+| Vorrang zwischen Kategorien (#481) | Tab Categories, ziehen am Griff; „Move up“/„Move down“ auf der Seite der Kategorie | `inbox.move_category` · Admin | `inbox_move_category` |
 | Mail als HTML (M9) | Lesebereich der Inbox (Schalter HTML/Text, Taste `v`) | `mail.get_message` mit `include_html` · Read | `mail_get_message` mit `include_html` |
 | Flags setzen | Liste, Lesebereich | `mail.set_flags` · Write | `mail_set_flags` |
 | Entwurf speichern | Schreibfenster | `mail.save_draft` · Write | `mail_save_draft` |

@@ -2135,7 +2135,9 @@ async fn job_filters(
     let all = mail.filters().list().unwrap_or_default();
     let sorting = inbox.sorting().unwrap_or_else(|err| {
         eprintln!("torroworkplace: inbox: a sorting run cannot read the sorting rules: {err}");
-        Default::default()
+        // The filters still decide by the catalogue's order, as for new mail.
+        let rank = inbox.catalogue().unwrap_or_default().into_iter().map(|def| def.category).collect();
+        torro_inbox::rules::Sorting { rank, ..Default::default() }
     });
     let running: Vec<torro_mail::MailFilter> = all.into_iter().filter(|filter| filter.runs_in(account)).collect();
     let messages: Vec<String> = batch.iter().map(|(_, message)| message.clone()).collect();

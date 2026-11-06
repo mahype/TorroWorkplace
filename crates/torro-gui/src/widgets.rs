@@ -2803,8 +2803,9 @@ pub fn switch_tile<'a, M: Clone + 'a>(
     if let Some(detail) = detail {
         lines = lines.push(typo::text(typo::meta(), detail).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
     }
+    // At least room for two lines of detail, more when the words need it.
     let room = typo::line_height(typo::body()) + 2.0 * typo::line_height(typo::meta());
-    let lines = container(lines.width(Fill)).center_y(room);
+    let lines = row![blank().height(room), lines.width(Fill)].align_y(Alignment::Center);
     let switch = iced::widget::toggler(on).size(style::CHECK_SIZE).style(style::toggler).on_toggle_maybe(on_toggle);
     let content = row![lines, switch].spacing(space::m()).align_y(Alignment::Center);
     container(content)

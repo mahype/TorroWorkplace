@@ -1178,8 +1178,12 @@ fn category_page<'a>(state: &'a State, form: &'a CategoryForm, data: &'a Data) -
         // The way without a mouse to the place a grip drags to (design review of #481): one up or
         // down in its group, which decides between the rules of several categories.
         if let Some(category) = form.category {
-            let up = shifted(data, category, true).map(|_| Message::Shift { category, up: true });
-            let down = shifted(data, category, false).map(|_| Message::Shift { category, up: false });
+            // In its stored group only: with another group chosen and not saved, they wait.
+            let regrouped = data.categories.iter().any(|info| info.category == category && info.group != form.group);
+            let shift = |up| {
+                (!regrouped).then(|| shifted(data, category, up)).flatten().map(|_| Message::Shift { category, up })
+            };
+            let (up, down) = (shift(true), shift(false));
             end = end.push(widgets::text_button(Some(Icon::ChevronUp), tr("Move up"), style::button::ghost, up));
             end = end.push(widgets::text_button(Some(Icon::ChevronDown), tr("Move down"), style::button::ghost, down));
         }

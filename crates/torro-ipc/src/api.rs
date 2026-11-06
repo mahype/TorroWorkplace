@@ -3999,7 +3999,8 @@ static LIST_SORT_RULES: Command = Command {
                   its `conditions` holds and none of its `exceptions`; fields are `sender` (the whole address), \
                   `domain` (the domain or one below it), `subject` and `text` (contain the value), upper and lower \
                   case never count. Rules and filters come before the headers and the decision model, after a \
-                  category the person set by hand; a rule \"Always for this sender\" wins over every other. When \
+                  category the person set by hand; a rule \"Always for this sender\" wins over every other while it names one sender or domain \
+                  without exception. When \
                   rules or mail filters of several categories match, the category higher up in \
                   inbox_list_categories wins (inbox_move_category changes that); the order of the rules decides \
                   nothing. Rules with `enabled: false` hold for nothing. \
