@@ -17,6 +17,7 @@ der Wahl, was mitgeht, und den Zielen:
 | **Save as file…** | die Datei (`.vcf`) speichern | TL1 |
 | **QR code** | die vCard als QR-Code, zum Abscannen mit dem Handy, ohne Netz | TL1 |
 | **Chat** | eine Nachricht mit Text und Datei in eine Unterhaltung (Nextcloud Talk) | TL2, umgesetzt in Stufe 4 des Chats ([chat.md](chat.md)) |
+| **Konnektoren** (Slack, Discord, Webhook) | Text und Datei an einen Kanal oder eine Person | [konnektoren.md](konnektoren.md) |
 
 Wie jede Funktion gibt es Teilen dreimal: in der Oberfläche (Teilen-Blatt), über die API und über
 MCP. Ein Agent kann also „Schick Max die Kontaktdaten von Anna“ als Mail-Entwurf vorbereiten. Das
