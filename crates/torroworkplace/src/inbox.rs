@@ -153,8 +153,8 @@ use torro_core::paths::AppPaths;
 use torro_inbox::item::{Facet, FacetKey, ItemTask, MuteEffect, MuteScope, Muted, SourceHealth, TaskDue};
 use torro_inbox::rules::{self, KEEP_DONE_DAYS, MutedEntry, Poster};
 use torro_inbox::{
-    Action, AgentInfo, AgentKind, Item, ItemFilter, Kind, Lane, LaneReason, Link, Rule, RuleEffect, Sender,
-    SortingKind, SortingStep, SourceInfo, SourceKind, SourceRef, State, StateFilter,
+    Action, AgentInfo, AgentKind, Item, ItemFilter, Kind, Lane, LaneReason, Link, Rule, RuleEffect, Sender, SourceInfo,
+    SourceKind, SourceRef, State, StateFilter,
 };
 use torro_ipc::api::{self, Access, Area, HOOK_CLIENT, InboxForbidden, Rights, Selection};
 use torro_ipc::{
@@ -179,7 +179,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -624,8 +624,8 @@ DROP TABLE IF EXISTS shown_mail;
 ///
 /// - `sorting_order`: one row per step, `kind` `rule` or `filter`, `id` the rule's or the filter's,
 ///   `position` its place (0 first). Empty until the person first moves a step: then the filters
-///   stand above the rules, as before. The order is brought in line with the rules and filters there
-///   are whenever it is read ([`torro_inbox::rules::sorting_order`]); the rules keep their own
+///   stand above the rules, as before. The order was brought in line with the rules and filters there
+///   were whenever it was read; the rules kept their own
 ///   `sort_rules.position` in the same order.
 const SCHEMA_V19: &str = "
 CREATE TABLE IF NOT EXISTS sorting_order (
@@ -634,6 +634,24 @@ CREATE TABLE IF NOT EXISTS sorting_order (
     position INTEGER NOT NULL,
     PRIMARY KEY (kind, id)
 );
+";
+
+/// From schema version 19 to 20 (issue #481): the categories decide between rules and filters, not
+/// one order of them.
+///
+/// - `category_order`: one row per category the person placed, `position` its place within its
+///   group (0 first). A category without a row keeps its place after the placed ones, in the order
+///   of before ([`catalogue::catalogue_in`]).
+/// - `sorting_order` of issue #454 goes; the order of rules and filters it kept is lost.
+///
+/// After it, [`catalogue::reset_model_choice`] lets a decision model choose every category once
+/// more, as "AI may not file mail here" is off by default.
+const SCHEMA_V20: &str = "
+CREATE TABLE IF NOT EXISTS category_order (
+    category TEXT PRIMARY KEY,
+    position INTEGER NOT NULL
+);
+DROP TABLE IF EXISTS sorting_order;
 ";
 
 /// How many months the statistics keep the day sums of a source (task E8.8a).
@@ -844,9 +862,7 @@ impl Inbox {
             Request::CreateSortRule { conditions, exceptions, .. } => {
                 unseen_account_in(Some(client), conditions.iter().chain(exceptions))
             }
-            Request::RemoveSortRule { id } | Request::MoveSortRule { id, .. } => {
-                visible_sort_rule(db, id, Some(client)).map(drop)
-            }
+            Request::RemoveSortRule { id } => visible_sort_rule(db, id, Some(client)).map(drop),
             // Nobody is asked to let the AI read an entry the client may not see (issue #120).
             Request::OpenItem { id }
             | Request::SuggestTaskFromItem { id, .. }
@@ -1236,6 +1252,7 @@ impl Inbox {
                 }
                 Request::CreateCategory { .. }
                 | Request::UpdateCategory { .. }
+                | Request::MoveCategory { .. }
                 | Request::RemoveCategory { .. }
                 | Request::CreateSortRule { .. } => InboxFacts {
                     categories: catalogue::catalogue_in(db)?,
@@ -1246,18 +1263,11 @@ impl Inbox {
                 Request::UpdateCategoryGroup { .. } => {
                     InboxFacts { groups: catalogue::groups_in(db)?, ..InboxFacts::default() }
                 }
-                Request::UpdateSortRule { id, .. }
-                | Request::RemoveSortRule { id }
-                | Request::MoveSortRule { id, .. }
-                | Request::MoveSortingStep { kind: SortingKind::Rule, id, .. } => InboxFacts {
+                Request::UpdateSortRule { id, .. } | Request::RemoveSortRule { id } => InboxFacts {
                     sort_rule: catalogue::sort_rule_in(db, id)?.map(Box::new),
                     categories: catalogue::catalogue_in(db)?,
                     ..InboxFacts::default()
                 },
-                // The filter and the filters passed come from the core (issue #454).
-                Request::MoveSortingStep { .. } => {
-                    InboxFacts { categories: catalogue::catalogue_in(db)?, ..InboxFacts::default() }
-                }
                 _ => InboxFacts::default(),
             })
         });
@@ -1533,7 +1543,7 @@ impl Inbox {
     /// The catalogue of mail categories (task E15.1): every category with what the person made
     /// of it, in the order the sidebar lists them. `Err` holds the message for the log.
     pub fn catalogue(&self) -> Result<Vec<torro_mail::CategoryDef>, String> {
-        self.with(|db| catalogue::catalogue_in(db)).map_err(|failure| failure.to_string())
+        self.with(|db| Ok(catalogue::catalogue_in(db)?)).map_err(|failure| failure.to_string())
     }
 
     pub fn category_groups(&self) -> Result<Vec<torro_mail::CategoryGroupDef>, String> {
@@ -1572,92 +1582,20 @@ impl Inbox {
             .map_err(|failure| failure.to_string())
     }
 
-    /// The order of the sorting steps and the sorting rules (issue #454), for filing new mail and
-    /// for a sorting run: `filters` are the ids of the mail filters there are, in their file's order.
-    pub fn sorting(&self, filters: &[String]) -> Result<(Vec<SortingStep>, Vec<torro_inbox::SortRule>), String> {
-        self.work(false, |db| Ok((sorting_in(db, Some(filters))?, catalogue::sort_rules_in(db)?)))
-            .map_err(|failure| failure.to_string())
+    /// What decides the category of a mail (issue #481), for filing new mail and for a sorting run:
+    /// the order of the catalogue, the rules "Always for this sender?" made, and every sorting rule
+    /// ([`rules::Sorting`]).
+    pub fn sorting(&self) -> Result<rules::Sorting, String> {
+        self.work(false, |db| sorting_in(db)).map_err(|failure| failure.to_string())
     }
 
-    /// `inbox.list_sorting_order` for `client` ([`Response::SortingOrder`]): the steps it sees, in
-    /// order. `filters` are the ids of the filters there are, `seen_filters` those `client` sees.
-    pub fn sorting_order(&self, client: Option<&ClientInfo>, filters: &[String], seen_filters: &[String]) -> Response {
-        self.work(false, |db| {
-            let order = sorting_in(db, Some(filters))?;
-            Ok(Response::SortingOrder { steps: seen_steps(db, &order, client, seen_filters)? })
-        })
-        .unwrap_or_else(Failure::response)
-    }
-
-    /// What `inbox.move_sorting_step` or `inbox.move_sort_rule` (`request`) of `client` would make of
-    /// the order, without writing it ([`plan_sorting_move`]). `Err` is the answer for the client.
-    pub fn plan_sorting_move(
-        &self,
-        request: &Request,
-        client: Option<&ClientInfo>,
-        filters: &[String],
-        seen_filters: &[String],
-    ) -> Result<SortingMove, Response> {
-        self.work(false, |db| plan_sorting_move(db, request, client, Some(filters), seen_filters))
-            .map_err(Failure::response)
-    }
-
-    /// Writes the order a move planned ([`Inbox::plan_sorting_move`]); the rules take the places it
-    /// gives them. In one transaction with a look at the order as it is now (`filters` the ids of the
-    /// filters there are): changed since the plan – another move, a new rule – it writes nothing and
-    /// answers `conflict`, so no change is lost. `Err` is the answer for the client.
-    pub fn apply_sorting_move(&self, plan: &SortingMove, filters: &[String]) -> Result<(), Response> {
-        let written = self.with(|db| {
-            let tx = db.transaction()?;
-            if sorting_in(&tx, Some(filters))? != plan.old {
-                return Ok(false);
-            }
-            write_sorting(&tx, &plan.new)?;
-            tx.commit()?;
-            Ok(true)
-        });
-        match written.map_err(Failure::response)? {
-            true => Ok(()),
-            false => Err(Response::Error {
-                code: "conflict".into(),
-                message: tr("The order of rules and filters changed meanwhile. Try again.").into(),
-            }),
-        }
-    }
-
-    /// The order of the steps the client sees after a move, as `inbox.move_sorting_step` answers
-    /// ([`Response::SortingOrder`]), or the rules as `inbox.move_sort_rule` answers.
-    pub fn moved_answer(
-        &self,
-        request: &Request,
-        client: Option<&ClientInfo>,
-        filters: &[String],
-        seen_filters: &[String],
-    ) -> Response {
-        match request {
-            Request::MoveSortRule { .. } => self.handle(Request::ListSortRules, client, Utc::now()),
-            _ => self.sorting_order(client, filters, seen_filters),
-        }
-    }
-
-    /// Takes the mail filter `id` out of the order of the sorting steps, when it was removed.
-    pub fn forget_sorting_filter(&self, id: &str) {
-        let removed = self.with(|db| {
-            db.execute("DELETE FROM sorting_order WHERE kind = 'filter' AND id = ?1", [id])?;
-            Ok(())
-        });
-        if let Err(err) = removed {
-            eprintln!("torroworkplace: inbox: cannot take a removed mail filter out of the sorting order: {err}");
-        }
-    }
-
-    /// What the rules and filters make of a mail in a sorting run (issue #454): the first step of
-    /// `sorting` that decides ([`rules::first_category`], `hits` the filters that found it with their
+    /// What the rules and filters make of a mail in a sorting run (issue #481): the category
+    /// `sorting` gives it ([`rules::Sorting::category`], `hits` the filters that found it with their
     /// categories), else the headers ([`rules::mail_category`]); nothing while the categories are
     /// being removed.
     pub fn sorted_category(
         &self,
-        sorting: &(Vec<SortingStep>, Vec<torro_inbox::SortRule>),
+        sorting: &rules::Sorting,
         input: &rules::SortInput<'_>,
         hits: &[(&str, torro_mail::Category)],
         invite: bool,
@@ -1667,10 +1605,52 @@ impl Inbox {
             if clear_blocks_categories(db)? {
                 return Ok(None);
             }
-            let kept = rules::first_category(&sorting.0, &sorting.1, input, hits);
+            let kept = sorting.category(input, hits);
             Ok(rules::mail_category(kept, invite, auto_submitted, false))
         })
         .map_err(|failure| failure.to_string())
+    }
+
+    /// What `inbox.move_category` would make of the group `group` (issue #481), without writing
+    /// it: the order of its categories before and after. `not-found` for a category or a group
+    /// that is not there. `Err` is the answer for the client.
+    pub fn plan_category_move(
+        &self,
+        category: torro_mail::Category,
+        group: torro_mail::CategoryGroup,
+        position: u32,
+    ) -> Result<CategoryMove, Response> {
+        self.work(false, |db| plan_category_move(db, category, group, position)).map_err(Failure::response)
+    }
+
+    /// Moves `category` to `position` in `group` (`inbox.move_category`, issue #481), in one
+    /// transaction with a look at the group as it is now: with `approved` (the fingerprint of the
+    /// move a person was shown, [`CategoryMove::fingerprint`]) a group that changed since writes
+    /// nothing and answers `conflict`. `Err` is the answer for the client.
+    pub fn move_category(
+        &self,
+        category: torro_mail::Category,
+        group: torro_mail::CategoryGroup,
+        position: u32,
+        approved: Option<&str>,
+    ) -> Result<torro_mail::CategoryDef, Response> {
+        let moved = self.with(|db| {
+            let tx = db.transaction()?;
+            let plan = plan_category_move(&tx, category, group, position)?;
+            if approved.is_some_and(|approved| approved != plan.fingerprint()) {
+                return Ok(None);
+            }
+            let def = catalogue::move_category(&tx, category, group, position)?;
+            tx.commit()?;
+            Ok(Some(def))
+        });
+        match moved.map_err(Failure::response)? {
+            Some(def) => Ok(def),
+            None => Err(Response::Error {
+                code: "conflict".into(),
+                message: tr("The categories were moved meanwhile. Try again.").into(),
+            }),
+        }
     }
 
     /// Makes a category of the person's own (`inbox.create_category`, task E15.2). `Err` is the
@@ -2644,19 +2624,6 @@ fn answer(
             visible_sort_rule(db, &id, client)?;
             catalogue::remove_rule(db, &id)?;
             Ok(Response::SortRules { rules: sort_rules_for(db, client)? })
-        }
-        request @ Request::MoveSortRule { .. } => {
-            // The filters as the order holds them: the core moves with the filters it knows
-            // (`Inbox::plan_sorting_move`); here only the rules count.
-            let plan = plan_sorting_move(db, &request, client, None, &[])?;
-            let tx = db.transaction()?;
-            write_sorting(&tx, &plan.new)?;
-            tx.commit()?;
-            Ok(Response::SortRules { rules: sort_rules_for(db, client)? })
-        }
-        // The order of rules and filters names the filters, which the core keeps (issue #454).
-        other @ (Request::ListSortingOrder | Request::MoveSortingStep { .. }) => {
-            Err(Failure::Invalid(format!("{} is answered by the core", other.operation().name())))
         }
         other => Err(Failure::Invalid(format!("{} is no inbox command", other.operation().name()))),
     }
@@ -4179,6 +4146,10 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     if version < 19 {
         tx.execute_batch(SCHEMA_V19)?;
     }
+    if version < 20 {
+        tx.execute_batch(SCHEMA_V20)?;
+        catalogue::reset_model_choice(&tx)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -4868,8 +4839,8 @@ fn pile_of_column(pile: &str) -> Option<MailPile> {
     }
 }
 
-/// What the fixed rules make of `mail` for the sender `sender` (task E12.2): the category of the
-/// first sorting rule that holds (task E15.3; they hold for **every** mail account, like a hidden
+/// What the fixed rules make of `mail` for the sender `sender` (task E12.2): the category the
+/// sorting rules give it ([`rule_category_in`]; they hold for **every** mail account, like a hidden
 /// sender, task E3.11), else what the headers and the folder say ([`rules::mail_category`]).
 fn mail_category_in(db: &Connection, sender: Option<&str>, mail: &NewMail) -> Result<Option<MailCategory>, Failure> {
     let input = rules::SortInput {
@@ -4883,8 +4854,8 @@ fn mail_category_in(db: &Connection, sender: Option<&str>, mail: &NewMail) -> Re
     rule_category_in(db, &input, mail.invite, mail.auto_submitted.as_deref(), mail.junk)
 }
 
-/// The sorting rules in their order (task E15.3), "Always for this sender?" among them, then the
-/// headers and the folder ([`rules::mail_category`]).
+/// The sorting rules (task E15.3) by the order of the categories (issue #481), "Always for this
+/// sender?" first, then the headers and the folder ([`rules::mail_category`]).
 fn rule_category_in(
     db: &Connection,
     input: &rules::SortInput<'_>,
@@ -4895,8 +4866,7 @@ fn rule_category_in(
     if clear_blocks_categories(db)? {
         return Ok(None);
     }
-    let sorting = catalogue::sort_rules_in(db)?;
-    let kept = rules::sort_category(&sorting, input);
+    let kept = sorting_in(db)?.category(input, &[]);
     Ok(rules::mail_category(kept, invite, auto_submitted, junk))
 }
 
@@ -4976,131 +4946,59 @@ fn visible_sort_rule(db: &Connection, id: &str, client: Option<&ClientInfo>) -> 
     sort_rules_for(db, client)?.into_iter().find(|rule| rule.id == id).ok_or_else(|| catalogue::no_rule(id))
 }
 
-// ----- the order of rules and filters (issue #454) -----
+// ----- the order of the categories (issue #481) -----
 
-/// A move in the order of the sorting steps, planned before it is done: the order before and after,
-/// and the step that moves. The core checks the filters it passes ([`rules::passed_filters`]) before
-/// it writes `new` ([`Inbox::apply_sorting_move`]).
+/// What decides the category of a mail ([`rules::Sorting`]): the catalogue's order, the rules
+/// "Always for this sender?" made (they have a mail account, [`catalogue::source_of`]) and every rule.
+fn sorting_in(db: &Connection) -> Result<rules::Sorting, Failure> {
+    let rank = catalogue::catalogue_in(db)?.into_iter().map(|def| def.category).collect();
+    let rules = catalogue::sort_rules_in(db)?;
+    let mut kept = Vec::new();
+    for rule in &rules {
+        if catalogue::source_of(db, &rule.id)?.is_some() {
+            kept.push(rule.id.clone());
+        }
+    }
+    Ok(rules::Sorting { rank, kept, rules })
+}
+
+/// A move of `inbox.move_category`, planned before it is done (issue #481): the category, the group
+/// it goes to, and the order of that group's categories before and after.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SortingMove {
-    pub old: Vec<SortingStep>,
-    pub new: Vec<SortingStep>,
-    pub moved: SortingStep,
+pub struct CategoryMove {
+    pub category: torro_mail::Category,
+    pub group: torro_mail::CategoryGroup,
+    pub old: Vec<torro_mail::Category>,
+    pub new: Vec<torro_mail::Category>,
 }
 
-/// The column `kind` of `sorting_order` ([`SCHEMA_V19`]).
-fn kind_column(kind: SortingKind) -> &'static str {
-    match kind {
-        SortingKind::Rule => "rule",
-        SortingKind::Filter => "filter",
+impl CategoryMove {
+    /// What an approval of the move is pinned to: the category, its target and the order of the
+    /// target group the person was shown ([`crate::audit::hashed`]). Another order there since, and
+    /// the move runs no more.
+    pub fn fingerprint(&self) -> String {
+        let old: Vec<String> = self.old.iter().map(|category| category.key().into_owned()).collect();
+        crate::audit::hashed(&format!("{}>{}:{}", self.category.key(), self.group.key(), old.join(",")))
     }
 }
 
-/// The order of the steps as stored, first first; rows of a kind this version does not know are
-/// left out.
-fn stored_sorting(db: &Connection) -> Result<Vec<SortingStep>, Failure> {
-    let mut statement = db.prepare("SELECT kind, id FROM sorting_order ORDER BY position, kind, id")?;
-    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
-    let mut steps = Vec::new();
-    for row in rows {
-        let (kind, id) = row?;
-        match kind.as_str() {
-            "rule" => steps.push(SortingStep::rule(id)),
-            "filter" => steps.push(SortingStep::filter(id)),
-            _ => {}
-        }
-    }
-    Ok(steps)
-}
-
-/// The whole order of the steps, brought in line with the rules there are and the filters `filters`
-/// (their ids in the order of their file; `None`: as stored) – [`rules::sorting_order`].
-fn sorting_in(db: &Connection, filters: Option<&[String]>) -> Result<Vec<SortingStep>, Failure> {
-    let rules: Vec<String> = catalogue::list_rules(db)?.into_iter().map(|rule| rule.id).collect();
-    Ok(rules::sorting_order(&stored_sorting(db)?, &rules, filters))
-}
-
-/// Writes `order` as the order of the steps, and gives the rules their places in the same order.
-fn write_sorting(db: &Connection, order: &[SortingStep]) -> Result<(), Failure> {
-    db.execute("DELETE FROM sorting_order", [])?;
-    for (position, step) in order.iter().enumerate() {
-        db.execute(
-            "INSERT OR IGNORE INTO sorting_order (kind, id, position) VALUES (?1, ?2, ?3)",
-            params![kind_column(step.kind), step.id, position as i64],
-        )?;
-    }
-    let rules: Vec<String> =
-        order.iter().filter(|step| step.kind == SortingKind::Rule).map(|step| step.id.clone()).collect();
-    catalogue::renumber(db, &rules)
-}
-
-/// The steps of `order` that `client` sees: the rules of [`sort_rules_for`], the filters of
-/// `seen_filters` (the core's word: read access to mail and the filter's account in reach). The app
-/// key sees every step.
-fn seen_steps(
+/// [`Inbox::plan_category_move`] on the open database.
+fn plan_category_move(
     db: &Connection,
-    order: &[SortingStep],
-    client: Option<&ClientInfo>,
-    seen_filters: &[String],
-) -> Result<Vec<SortingStep>, Failure> {
-    if client.is_none() {
-        return Ok(order.to_vec());
+    category: torro_mail::Category,
+    group: torro_mail::CategoryGroup,
+    position: u32,
+) -> Result<CategoryMove, Failure> {
+    let catalogue = catalogue::catalogue_in(db)?;
+    catalogue::find(&catalogue, category)?;
+    if !catalogue::groups_in(db)?.iter().any(|held| held.group == group) {
+        return Err(Failure::NotFound(trf("There is no main category {group}.", &[("group", &group.key())])));
     }
-    let rules: Vec<String> = sort_rules_for(db, client)?.into_iter().map(|rule| rule.id).collect();
-    Ok(order
-        .iter()
-        .filter(|step| match step.kind {
-            SortingKind::Rule => rules.contains(&step.id),
-            SortingKind::Filter => seen_filters.contains(&step.id),
-        })
-        .cloned()
-        .collect())
-}
-
-/// What `inbox.move_sorting_step` or `inbox.move_sort_rule` of `client` would make of the order
-/// (issue #454), without writing it. `filters`: the ids of the filters there are, in their file's
-/// order (`None`: as stored); `seen_filters`: those `client` sees.
-///
-/// - `inbox.move_sorting_step`: the step goes right before the step `client` sees at `position`
-///   among the others it sees (past the end: last of all). `not-found` for a step it does not see.
-/// - `inbox.move_sort_rule`: the place counts among the rules `client` sees ([`full_position`]);
-///   the rule goes right before the rule that follows it then, else below the last rule
-///   ([`rules::place_rule`]). The filters stay where they are.
-fn plan_sorting_move(
-    db: &Connection,
-    request: &Request,
-    client: Option<&ClientInfo>,
-    filters: Option<&[String]>,
-    seen_filters: &[String],
-) -> Result<SortingMove, Failure> {
-    let old = sorting_in(db, filters)?;
-    match request {
-        Request::MoveSortingStep { kind, id, position } => {
-            let moved = SortingStep { kind: *kind, id: id.clone() };
-            let seen = seen_steps(db, &old, client, seen_filters)?;
-            if !seen.contains(&moved) {
-                return Err(match kind {
-                    SortingKind::Rule => catalogue::no_rule(id),
-                    SortingKind::Filter => Failure::NotFound(tr("No such mail filter.").into()),
-                });
-            }
-            let others: Vec<&SortingStep> = seen.iter().filter(|step| **step != moved).collect();
-            let before = others.get(*position as usize).copied();
-            let new = rules::move_step(&old, &moved, before);
-            Ok(SortingMove { old, new, moved })
-        }
-        Request::MoveSortRule { id, position } => {
-            visible_sort_rule(db, id, client)?;
-            let at = full_position(db, client, Some(*position))?.unwrap_or(u32::MAX) as usize;
-            let mut rules: Vec<String> = catalogue::list_rules(db)?.into_iter().map(|rule| rule.id).collect();
-            rules.retain(|held| held != id);
-            let at = at.min(rules.len());
-            let next = rules.get(at).cloned();
-            let new = rules::place_rule(&old, id, next.as_deref());
-            Ok(SortingMove { old, new, moved: SortingStep::rule(id.clone()) })
-        }
-        other => Err(Failure::Invalid(format!("{} moves no sorting step", other.operation().name()))),
-    }
+    let old: Vec<torro_mail::Category> =
+        catalogue.iter().filter(|def| def.group == group).map(|def| def.category).collect();
+    let mut new: Vec<torro_mail::Category> = old.iter().copied().filter(|held| *held != category).collect();
+    new.insert((position as usize).min(new.len()), category);
+    Ok(CategoryMove { category, group, old, new })
 }
 
 /// A sorting rule of the mail account `source` (`None`: a rule of the editor, for every account)
@@ -7712,73 +7610,153 @@ pub(crate) mod tests {
         assert_eq!(version, SCHEMA_VERSION);
     }
 
-    /// Issue #454: the places of `inbox.create_sort_rule` and `inbox.move_sort_rule` still count
-    /// among the rules – a new rule goes right before the rule at its place, a moved one too, else
-    /// below the last rule – and a filter between two rules keeps its place. Removing a rule takes it
-    /// out of the order.
+    /// Issue #481: a category moves within its group and into another; the catalogue reads in that
+    /// order, which decides between rules of several categories, and moving turns it round. A rule
+    /// "Always for this sender?" wins over all of them. A group changed since the approval is
+    /// `conflict`; an unknown category or group `not-found`.
     #[test]
-    fn rule_places_count_among_the_rules_with_a_filter_between() {
-        use torro_inbox::{SortField, SortingStep};
-        use torro_mail::Category;
+    fn categories_move_and_the_one_higher_up_wins() {
+        use torro_inbox::SortField;
+        use torro_mail::{Category, CategoryGroup};
 
         let dir = tempfile::tempdir().expect("a directory");
         let inbox = inbox_in(dir.path());
-        let create = |value: &str, position| Request::CreateSortRule {
-            category: Category::Invoice,
+        let group_of = |inbox: &Inbox, group: CategoryGroup| -> Vec<Category> {
+            let catalogue = inbox.catalogue().expect("read");
+            catalogue.into_iter().filter(|def| def.group == group).map(|def| def.category).collect()
+        };
+        let paper = group_of(&inbox, CategoryGroup::PaperTrail);
+        assert!(paper.starts_with(&[Category::Invoice, Category::Receipt]), "{paper:?}");
+        // Within the group: Receipt first, then the rest as before.
+        inbox.move_category(Category::Receipt, CategoryGroup::PaperTrail, 0, None).expect("moved");
+        let moved = group_of(&inbox, CategoryGroup::PaperTrail);
+        assert_eq!(&moved[..2], [Category::Receipt, Category::Invoice]);
+        assert_eq!(moved.len(), paper.len());
+        // Past the end: last.
+        inbox.move_category(Category::Receipt, CategoryGroup::PaperTrail, 99, None).expect("moved");
+        assert_eq!(group_of(&inbox, CategoryGroup::PaperTrail).last(), Some(&Category::Receipt));
+        // Into another group, at place 1 there.
+        let def = inbox.move_category(Category::Receipt, CategoryGroup::Info, 1, None).expect("moved");
+        assert_eq!(def.group, CategoryGroup::Info);
+        assert_eq!(group_of(&inbox, CategoryGroup::Info)[1], Category::Receipt);
+        assert!(!group_of(&inbox, CategoryGroup::PaperTrail).contains(&Category::Receipt));
+        // Moved there by `inbox.update_category`, it goes after the placed ones.
+        inbox
+            .update_category(Category::Receipt, Some(CategoryGroup::PaperTrail), None, None, None, None)
+            .expect("back");
+        assert_eq!(group_of(&inbox, CategoryGroup::PaperTrail).last(), Some(&Category::Receipt));
+
+        // Two rules hold: the category higher up wins, and moving turns it round.
+        let rule = |category, field, value: &str| Request::CreateSortRule {
+            category,
             conditions: vec![torro_inbox::SortCondition {
                 comparison: torro_inbox::SortComparison::Auto,
-                field: SortField::Domain,
+                field,
                 value: value.into(),
             }],
             exceptions: Vec::new(),
-            position,
+            position: None,
             enabled: true,
         };
-        let id = |answer: Response| match answer {
-            Response::SortRule { rule, .. } => rule.id,
-            other => panic!("a sorting rule, got {other:?}"),
+        inbox.handle(rule(Category::Receipt, SortField::Domain, "shop.example"), None, at(8, 0));
+        inbox.handle(rule(Category::Invoice, SortField::Subject, "invoice"), None, at(8, 1));
+        let input = rules::SortInput {
+            sender: Some("billing@shop.example"),
+            subject: "Your invoice",
+            ..rules::SortInput::default()
         };
-        let one = id(inbox.handle(create("one.example", None), None, at(8, 0)));
-        let two = id(inbox.handle(create("two.example", None), None, at(8, 1)));
-        let filters = ["f1".to_string()];
-        let order = |inbox: &Inbox| inbox.sorting(&filters).expect("read").0;
-        let (r, f) = (SortingStep::rule, SortingStep::filter);
-        // The filter between the two rules.
-        let between = Request::MoveSortingStep { kind: torro_inbox::SortingKind::Filter, id: "f1".into(), position: 1 };
-        let plan = inbox.plan_sorting_move(&between, None, &filters, &filters).expect("planned");
-        inbox.apply_sorting_move(&plan, &filters).expect("written");
-        assert_eq!(order(&inbox), [r(&one), f("f1"), r(&two)]);
-        // At place 1 of the rules: right before the second rule, below the filter.
-        let three = id(inbox.handle(create("three.example", Some(1)), None, at(8, 2)));
-        assert_eq!(order(&inbox), [r(&one), f("f1"), r(&three), r(&two)]);
-        // Moved to place 0: right before the first rule; past the end: below the last rule.
-        let first = Request::MoveSortRule { id: three.clone(), position: 0 };
-        let plan = inbox.plan_sorting_move(&first, None, &filters, &filters).expect("planned");
-        inbox.apply_sorting_move(&plan, &filters).expect("written");
-        assert_eq!(order(&inbox), [r(&three), r(&one), f("f1"), r(&two)]);
-        let last = Request::MoveSortRule { id: one.clone(), position: 9 };
-        assert!(matches!(inbox.handle(last, None, at(8, 3)), Response::SortRules { .. }));
-        assert_eq!(order(&inbox), [r(&three), f("f1"), r(&two), r(&one)]);
-        let rules = |inbox: &Inbox| match inbox.handle(Request::ListSortRules, None, at(9, 0)) {
-            Response::SortRules { rules } => rules.into_iter().map(|rule| rule.id).collect::<Vec<_>>(),
-            other => panic!("the sorting rules, got {other:?}"),
-        };
-        assert_eq!(rules(&inbox), [three.clone(), two.clone(), one.clone()], "the rules' own order follows");
-        inbox.handle(Request::RemoveSortRule { id: two.clone() }, None, at(8, 4));
-        assert_eq!(order(&inbox), [r(&three), f("f1"), r(&one)]);
-        inbox.forget_sorting_filter("f1");
-        assert_eq!(inbox.sorting(&[]).expect("read").0, [r(&three), r(&one)]);
-        // Two moves planned on the same order: the second finds it changed and writes nothing.
-        let up = Request::MoveSortingStep { kind: torro_inbox::SortingKind::Rule, id: one.clone(), position: 0 };
-        let down = Request::MoveSortingStep { kind: torro_inbox::SortingKind::Rule, id: three.clone(), position: 9 };
-        let first = inbox.plan_sorting_move(&up, None, &[], &[]).expect("planned");
-        let second = inbox.plan_sorting_move(&down, None, &[], &[]).expect("planned");
-        inbox.apply_sorting_move(&first, &[]).expect("written");
-        assert_eq!(inbox.apply_sorting_move(&second, &[]).err().as_ref().map(code), Some("conflict"));
-        assert_eq!(inbox.sorting(&[]).expect("read").0, [r(&one), r(&three)]);
+        let category = |inbox: &Inbox| inbox.rule_category(&input, false, None).expect("read").map(|c| c.category);
+        assert_eq!(category(&inbox), Some(Category::Invoice));
+        inbox.move_category(Category::Receipt, CategoryGroup::PaperTrail, 0, None).expect("moved");
+        assert_eq!(category(&inbox), Some(Category::Receipt));
+        // A group higher up wins over one further down.
+        inbox.move_category(Category::Invoice, CategoryGroup::WaitingForMe, 0, None).expect("moved");
+        assert_eq!(category(&inbox), Some(Category::Invoice));
+
+        // "Always for this sender?" wins over every other rule.
+        inbox
+            .with(|db| {
+                let source = SourceRef::mail("anna@example.org");
+                catalogue::keep_sender(db, "billing@shop.example", Category::Personal, &source, at(8, 2), |_| true)?;
+                Ok(())
+            })
+            .expect("kept");
+        assert_eq!(category(&inbox), Some(Category::Personal));
+
+        // A plan pins the order the person was shown; another order since is `conflict`.
+        let plan = inbox.plan_category_move(Category::Order, CategoryGroup::PaperTrail, 0).expect("planned");
+        assert_eq!(plan.new.first(), Some(&Category::Order));
+        inbox.move_category(Category::Shipping, CategoryGroup::PaperTrail, 0, None).expect("moved");
+        let late = inbox.move_category(Category::Order, CategoryGroup::PaperTrail, 0, Some(&plan.fingerprint()));
+        assert_eq!(late.err().as_ref().map(code), Some("conflict"));
+        let plan = inbox.plan_category_move(Category::Order, CategoryGroup::PaperTrail, 0).expect("planned");
+        inbox.move_category(Category::Order, CategoryGroup::PaperTrail, 0, Some(&plan.fingerprint())).expect("moved");
+        assert_eq!(group_of(&inbox, CategoryGroup::PaperTrail).first(), Some(&Category::Order));
+
+        let nobody = torro_mail::CustomCategory::new(77).map(Category::Custom).expect("a key");
+        let missing = inbox.move_category(nobody, CategoryGroup::Info, 0, None);
+        assert_eq!(missing.err().as_ref().map(code), Some("not-found"));
+        let nowhere = inbox.move_category(Category::Order, CategoryGroup::Custom(42), 0, None);
+        assert_eq!(nowhere.err().as_ref().map(code), Some("not-found"));
     }
 
-    /// Task E15.3: sorting rules are made, changed, moved and removed in an order without gaps,
+    /// Issue #481, [`SCHEMA_V20`]: a file of schema 19 loses the order of rules and filters, and a
+    /// decision model may choose every category again – the suite's as it brings them (those of the
+    /// headers stay out), the person's own as long as their group holds no more than 20 for it.
+    #[test]
+    fn schema_20_lets_the_model_choose_every_category_again() {
+        use torro_mail::{Category, CategoryGroup, CategoryIcon};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let own = inbox.create_category_group("Projects", CategoryIcon::Tag, 1).expect("a group");
+        let mut made = Vec::new();
+        for n in 0..21 {
+            let name = format!("Project {n}");
+            let def = inbox
+                .create_category(own.group, &name, "Mail about the project.", false, CategoryIcon::Tag, at(8, 0))
+                .expect("made");
+            made.push(def.category);
+        }
+        inbox.update_category(Category::Invoice, None, None, None, Some(false), None).expect("off");
+        inbox
+            .with(|db| {
+                db.execute_batch(
+                    "DROP TABLE category_order;
+                     CREATE TABLE sorting_order (kind TEXT NOT NULL, id TEXT NOT NULL, position INTEGER NOT NULL,
+                         PRIMARY KEY (kind, id));
+                     INSERT INTO sorting_order VALUES ('filter', 'f1', 0);
+                     PRAGMA user_version = 19;",
+                )?;
+                Ok(())
+            })
+            .expect("back to schema 19");
+        drop(inbox);
+
+        let inbox = inbox_in(dir.path());
+        let catalogue = inbox.catalogue().expect("read");
+        let model = |category: Category| catalogue.iter().find(|def| def.category == category).expect("there").model;
+        assert!(model(Category::Invoice), "the suite's choice again");
+        assert!(!model(Category::Invitation) && !model(Category::AutoReply), "the headers decide those");
+        assert!(made[..20].iter().all(|category| model(*category)), "the first 20 of the group");
+        assert!(!model(made[20]), "the 21st stays out");
+        let offered = catalogue.iter().filter(|def| def.group == own.group && def.model).count();
+        assert_eq!(offered, 20);
+        assert!(catalogue.iter().any(|def| def.group == CategoryGroup::Unsorted));
+        let version: i64 =
+            inbox.with(|db| Ok(db.query_row("PRAGMA user_version", [], |row| row.get(0))?)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        let gone: i64 = inbox
+            .with(|db| {
+                Ok(db.query_row("SELECT count(*) FROM sqlite_master WHERE name = 'sorting_order'", [], |row| {
+                    row.get(0)
+                })?)
+            })
+            .expect("counted");
+        assert_eq!(gone, 0, "the order of rules and filters is gone");
+    }
+
+    /// Task E15.3: sorting rules are made, changed and removed in an order without gaps,
     /// keep to their limits, and a key without mail sees none.
     #[test]
     fn sorting_rules_are_kept_in_their_order() {
@@ -7817,9 +7795,6 @@ pub(crate) mod tests {
         let (_, at_third) = made(inbox.handle(create(Category::Invoice, "three.example", Some(0)), None, at(8, 2)));
         assert_eq!(at_third, 0);
         assert_eq!(order(&inbox), ["three.example", "one.example", "two.example"]);
-        let moved = Request::MoveSortRule { id: first.id.clone(), position: 9 };
-        assert!(matches!(inbox.handle(moved, None, at(8, 3)), Response::SortRules { .. }));
-        assert_eq!(order(&inbox), ["three.example", "two.example", "one.example"], "past the end: last");
         let change = Request::UpdateSortRule {
             id: first.id.clone(),
             category: Category::Receipt,
@@ -7828,7 +7803,7 @@ pub(crate) mod tests {
             enabled: Some(false),
         };
         let (changed, place) = made(inbox.handle(change, None, at(8, 4)));
-        assert_eq!((changed.category, changed.enabled, place), (Category::Receipt, false, 2));
+        assert_eq!((changed.category, changed.enabled, place), (Category::Receipt, false, 1));
         assert_eq!(changed.conditions[0].value, "Receipt", "words as typed, without the space");
         assert_eq!(changed.created, first.created);
         let removed = inbox.handle(Request::RemoveSortRule { id: first.id.clone() }, None, at(8, 5));
@@ -7947,7 +7922,6 @@ pub(crate) mod tests {
         assert_eq!(rules.len(), 2, "the person sees both");
         for request in [
             Request::RemoveSortRule { id: kept.id.clone() },
-            Request::MoveSortRule { id: kept.id.clone(), position: 1 },
             Request::UpdateSortRule {
                 id: kept.id.clone(),
                 category: Category::Spam,
@@ -7999,20 +7973,12 @@ pub(crate) mod tests {
         };
         let Response::SortRule { rule, .. } = inbox.handle(renamed, None, at(9, 5)) else { panic!("changed") };
         assert_eq!((rule.enabled, rule.exceptions.len()), (false, 1), "left out, kept");
-        // Places count in the list the key sees: Anna's new rule and the editor's, Bob's hidden.
+        // The key sees Anna's new rule and the editor's, Bob's stays hidden.
         let Response::SortRules { rules: seen } = inbox.handle(Request::ListSortRules, Some(&anna_only), at(9, 6))
         else {
             panic!("rules")
         };
         assert_eq!(seen.len(), 2);
-        let first = Request::MoveSortRule { id: seen[1].id.clone(), position: 0 };
-        let Response::SortRules { rules: moved } = inbox.handle(first, Some(&anna_only), at(9, 7)) else {
-            panic!("moved")
-        };
-        assert_eq!(
-            moved.iter().map(|rule| rule.id.clone()).collect::<Vec<_>>(),
-            [seen[1].id.clone(), seen[0].id.clone()]
-        );
     }
 
     /// Task E15.3: what files new mail first – a sorting rule before the headers, an exception

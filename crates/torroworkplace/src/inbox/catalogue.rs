@@ -115,10 +115,15 @@ pub(super) fn update_group(
     Ok(CategoryGroupDef { group, name, icon, color })
 }
 
-/// Every category of the catalogue, by group in the order of [`CategoryGroup::ALL`]; within a
-/// group the suite's first in their order, then the person's own in the order they were made. A
-/// category being removed is left out.
-pub(super) fn catalogue_in(db: &Connection) -> Result<Vec<CategoryDef>, Failure> {
+/// Every category of the catalogue, by group in the order of their IDs; within a group first those
+/// the person placed (`category_order`, issue #481) by their place, then the others: the suite's in
+/// their order, then the person's own in the order they were made. A category being removed is
+/// left out. This order decides which category wins when rules or filters of several categories
+/// match ([`torro_inbox::rules::ranked_category`]).
+///
+/// [`StoreError`] rather than [`Failure`], so the migration to schema 20 can read it too
+/// ([`reset_model_choice`]).
+pub(super) fn catalogue_in(db: &Connection) -> Result<Vec<CategoryDef>, StoreError> {
     let mut defs = CategoryDef::defaults();
     let mut edits = db.prepare("SELECT category, grp, name, description, model, icon FROM category_edits")?;
     let rows = edits.query_map([], |row| {
@@ -173,9 +178,115 @@ pub(super) fn catalogue_in(db: &Connection) -> Result<Vec<CategoryDef>, Failure>
             icon: torro_mail::CategoryIcon::from_key(&icon),
         });
     }
-    // By group, as the sidebar lists them; within a group the suite's order, then the person's.
-    defs.sort_by_key(|def| def.group.database_id());
+    // By group, as the sidebar lists them; within a group the places the person gave, then the
+    // suite's order, then the person's own. The sort is stable, so ties keep that order.
+    let placed = placed_in(db)?;
+    let place = |def: &CategoryDef| placed.iter().find(|(key, _)| *key == def.category.key()).map(|(_, at)| *at);
+    defs.sort_by_key(|def| (def.group.database_id(), place(def).map_or((1, 0), |at| (0, at))));
     Ok(defs)
+}
+
+/// The places the person gave categories within their group (`category_order`): key and place.
+fn placed_in(db: &Connection) -> Result<Vec<(String, i64)>, StoreError> {
+    let mut statement = db.prepare("SELECT category, position FROM category_order")?;
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// Moves `category` to `position` among the other categories of `group` (`inbox.move_category`,
+/// issue #481), 0 first, past the end last. Another group than its own is saved as
+/// `inbox.update_category` saves it ([`update`]), checked the same way; then the target group and
+/// the group it left are numbered anew, so every one of their categories holds its place.
+pub(super) fn move_category(
+    db: &Connection,
+    category: Category,
+    group: CategoryGroup,
+    position: u32,
+) -> Result<CategoryDef, Failure> {
+    let before = find(&catalogue_in(db)?, category)?.clone();
+    find_group(db, group)?;
+    let def = if before.group == group {
+        before.clone()
+    } else {
+        let changes = Changes { group: Some(group), name: None, description: None, model: None, icon: None };
+        update(db, category, changes)?
+    };
+    let catalogue = catalogue_in(db)?;
+    let mut target: Vec<Category> = catalogue
+        .iter()
+        .filter(|held| held.group == group && held.category != category)
+        .map(|held| held.category)
+        .collect();
+    target.insert((position as usize).min(target.len()), category);
+    place_all(db, &target)?;
+    if before.group != group {
+        let left: Vec<Category> =
+            catalogue.iter().filter(|held| held.group == before.group).map(|held| held.category).collect();
+        place_all(db, &left)?;
+    }
+    Ok(def)
+}
+
+/// Gives the categories of `order` the places 0, 1, 2 … within their group.
+fn place_all(db: &Connection, order: &[Category]) -> Result<(), Failure> {
+    for (position, category) in order.iter().enumerate() {
+        db.execute(
+            "INSERT INTO category_order (category, position) VALUES (?1, ?2)
+             ON CONFLICT (category) DO UPDATE SET position = ?2",
+            params![category.key(), position as i64],
+        )?;
+    }
+    Ok(())
+}
+
+/// The migration to schema 20 (issue #481): "AI may not file mail here" is off by default now, so a
+/// decision model may choose every category once more. The suite's categories go back to its
+/// choice (those that follow from the headers stay out); the person's own come in, in the order of
+/// the catalogue, as long as their group offers no more than [`MODEL_PER_GROUP_MAX`] – the ones
+/// further down stay out, and the update never fails over it. A group that a category of the suite
+/// moved into and that holds too many already keeps the ones from the top.
+pub(super) fn reset_model_choice(db: &Connection) -> Result<(), StoreError> {
+    db.execute("UPDATE category_edits SET model = NULL", [])?;
+    db.execute(
+        "DELETE FROM category_edits
+         WHERE grp IS NULL AND name IS NULL AND description IS NULL AND model IS NULL AND icon IS NULL",
+        [],
+    )?;
+    db.execute("UPDATE custom_categories SET model = 0", [])?;
+    let mut offered: Vec<(CategoryGroup, usize)> = Vec::new();
+    for def in catalogue_in(db)? {
+        let at = match offered.iter().position(|(group, _)| *group == def.group) {
+            Some(at) => at,
+            None => {
+                offered.push((def.group, 0));
+                offered.len() - 1
+            }
+        };
+        let count = &mut offered[at].1;
+        // "Other" is always offered, as `check` counts it.
+        let wanted = def.model || def.category == Category::Other || !def.category.is_built_in();
+        if !wanted {
+            continue;
+        }
+        let fits = *count < MODEL_PER_GROUP_MAX;
+        if fits || def.category == Category::Other {
+            *count += 1;
+        }
+        match (def.category, fits) {
+            (Category::Custom(custom), true) => {
+                db.execute("UPDATE custom_categories SET model = 1 WHERE id = ?1", [i64::from(custom.number())])?;
+            }
+            (Category::Other, _) | (Category::Custom(_), false) | (_, true) => {}
+            (built_in, false) => {
+                db.execute(
+                    "INSERT INTO category_edits (category, model) VALUES (?1, 0)
+                     ON CONFLICT (category) DO UPDATE SET model = 0",
+                    [built_in.key()],
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The removals cut short: each category with the one its mail and entries go to.
@@ -259,6 +370,8 @@ pub(super) fn update(db: &Connection, category: Category, changes: Changes) -> R
         find_group(db, group)?;
         def.group = group;
     }
+    // In another group it has no place there yet: it goes after the placed ones (issue #481).
+    let regrouped = def.group != find(&catalogue, category)?.group;
     if let Some(model) = changes.model {
         def.model = model;
     }
@@ -284,6 +397,9 @@ pub(super) fn update(db: &Connection, category: Category, changes: Changes) -> R
         *held = def.clone();
     }
     check(&catalogue, category, renamed)?;
+    if regrouped {
+        db.execute("DELETE FROM category_order WHERE category = ?1", [category.key()])?;
+    }
     if category.is_built_in() {
         // Only what differs from the suite is kept, so a category put back reads as new.
         let suite = CategoryDef::built_in(category);
@@ -466,6 +582,7 @@ pub(super) fn finish_removal(db: &mut Connection, category: Category, replacemen
         write_item(&tx, &item)?;
     }
     tx.execute("DELETE FROM custom_categories WHERE id = ?1", [i64::from(custom.number())])?;
+    tx.execute("DELETE FROM category_order WHERE category = ?1", [category.key()])?;
     tx.commit()?;
     Ok(())
 }
@@ -476,6 +593,7 @@ pub(super) fn remove_unused(db: &Connection, category: Category) -> Result<(), F
         return Err(Failure::Unsupported(tr("The categories of the suite can be changed, not removed.").into()));
     };
     db.execute("DELETE FROM custom_categories WHERE id = ?1", [i64::from(custom.number())])?;
+    db.execute("DELETE FROM category_order WHERE category = ?1", [category.key()])?;
     Ok(())
 }
 
@@ -581,7 +699,6 @@ pub(super) fn remove_rule(db: &mut Connection, id: &str) -> Result<(), Failure> 
     if tx.execute("DELETE FROM sort_rules WHERE id = ?1", [id])? == 0 {
         return Err(no_rule(id));
     }
-    tx.execute("DELETE FROM sorting_order WHERE kind = 'rule' AND id = ?1", [id])?;
     let order = order_of(&tx)?;
     renumber(&tx, &order)?;
     tx.commit()?;
