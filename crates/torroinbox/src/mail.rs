@@ -3551,8 +3551,9 @@ fn display_items<'a>(reading: &Reading<'_>) -> Vec<RailItem<'a, Message>> {
 /// from two attachments on ([`save_all_control`]), and under it each attachment as a split chip
 /// ([`attachment_chips`]), which scroll inside the block beyond two lines. [`space::s()`] above it,
 /// [`space::l()`] below and `side` at the sides, at the right `clear` more (the floating rail's room,
-/// issue #491); the chips wrap on a line `room` wide. The triangles' menus hang at `anchors`. `None` while the mail loads, after an error and for a mail
-/// without attachments (inline pictures are none).
+/// issue #491); the chips wrap on a line `room` wide. The triangles' menus hang at `anchors`. `None`
+/// while the mail loads, after an error and for a mail without attachments (inline pictures are
+/// none).
 pub fn attachment_line<'a>(
     reading: &Reading<'_>,
     anchors: &detail::Anchors,
