@@ -935,7 +935,9 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             bulk: true,
             text: "New issue #212 in torro/workplace: the sidebar flickers when the window is resized.\n\n\
                    View it on GitHub: https://github.example/torro/workplace/issues/212",
-            category: Some(MailCategory::by_model(Category::Task, 0.72)),
+            // Sorted by a fixed rule (its sender), not guessed: the list shows a confirmed category's
+            // field filled (issue #485), the others outlined.
+            category: Some(MailCategory::by_rule(Category::Task)),
             ..Letter::new("m:w3", WORK, "inbox", "[torro/workplace] Sidebar flickers on resize (#212)")
         },
         Letter {

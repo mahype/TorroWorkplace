@@ -74,6 +74,8 @@ mod keys;
 mod list;
 mod mail;
 mod mail_overview;
+mod mail_statistics;
+mod news;
 mod notifications;
 mod overview;
 mod search;
@@ -100,6 +102,7 @@ use crate::compose::{ComposeSource, Window};
 use crate::hub::HubSource;
 use crate::insights::StatsSource;
 use crate::mail::MailSource;
+use crate::news::NewsSource;
 use crate::suggest::SuggestSource;
 
 /// Holds the error of the last failed start, in the inbox's state directory (Windows only). One file for
@@ -233,7 +236,7 @@ fn instance_of(launch: &Launch) -> Option<AppId> {
 /// The window on `inbox`: the core's client or the demo source. Its window class is the one of its
 /// kind (`--view`, task E8.1), so tiling rules and templates tell the three windows apart. With `shots`
 /// its pictures instead ([`torro_gui::shots::run`]).
-fn run<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static>(
+fn run<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + SuggestSource + 'static>(
     inbox: Arc<S>,
     suite: Source,
     launch: Launch,
@@ -251,7 +254,7 @@ fn run<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + '
 }
 
 /// [`App::update`], timed: the first entries in mark "first data", a slow update is written.
-fn update<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static>(
+fn update<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + SuggestSource + 'static>(
     app: &mut App<S>,
     message: Message,
 ) -> Task<Message> {
@@ -265,7 +268,7 @@ fn update<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource 
 }
 
 /// [`App::view`], timed: the first call marks "first frame", a slow one is written.
-fn view<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static>(
+fn view<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + SuggestSource + 'static>(
     app: &App<S>,
 ) -> Element<'_, Message> {
     let started = Instant::now();

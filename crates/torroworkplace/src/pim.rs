@@ -1256,6 +1256,8 @@ impl PimService {
             | Request::UninstallApp { .. }
             | Request::InstallApp { .. }
             | Request::UpdateApps { .. }
+            | Request::ListAnnouncements
+            | Request::DismissAnnouncement { .. }
             | Request::ListDesigns
             | Request::ListFonts
             | Request::ListColorSchemes

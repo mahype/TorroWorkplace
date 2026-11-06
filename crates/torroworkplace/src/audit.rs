@@ -215,6 +215,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ListApps
         | Request::ListAppCatalog
         | Request::CheckAppUpdates
+        | Request::ListAnnouncements
         | Request::ListDesigns
         | Request::ListFonts
         | Request::ListColorSchemes
@@ -314,6 +315,13 @@ pub fn ids(request: &Request) -> Vec<String> {
         },
         Request::UpdateApps { apps } => apps.iter().filter(|app| AppId::find(app).is_some()).map(|app| id("app", app)).collect(),
         Request::AppJob { id: job } | Request::CancelAppJob { id: job } => vec![random("job", job)],
+        // Only an id the suite ships (issue #485), never a client's free text.
+        Request::DismissAnnouncement { id: announcement } => {
+            match crate::announcements::all().iter().any(|known| &known.id == announcement) {
+                true => vec![id("announcement", announcement)],
+                false => Vec::new(),
+            }
+        }
         Request::UpdateClient { id: client, .. }
         | Request::NewClientKey { id: client }
         | Request::RemoveClient { id: client }
@@ -977,6 +985,12 @@ pub(crate) mod tests {
         assert_eq!(super::ids(&open), Vec::<String>::new());
         let mail = Request::OpenApp { app: "torro-inbox-mail".into(), target: None };
         assert_eq!(super::ids(&mail), vec!["app:torro-inbox-mail".to_string()], "a window class of the suite");
+        // Issue #485: an announcement by an id the suite ships, never another text.
+        let shipped = crate::announcements::all().remove(0).id;
+        let hide = Request::DismissAnnouncement { id: shipped.clone() };
+        assert_eq!(super::ids(&hide), vec![format!("announcement:{shipped}")]);
+        let unknown = Request::DismissAnnouncement { id: "Dinner with Anna".into() };
+        assert_eq!(super::ids(&unknown), Vec::<String>::new());
         let set = Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: serde_json::json!(1.5) };
         assert_eq!(super::ids(&set), vec!["setting:zoom".to_string()]);
         // Muting (task E8.6a): the entry only, never the trait or a value of it.

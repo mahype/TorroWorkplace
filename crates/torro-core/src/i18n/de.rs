@@ -1397,6 +1397,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Reorder an unknown task", "Eine unbekannte Aufgabe umsortieren"),
     ("Show \"{collection}\" in the suite", "„{collection}“ in der Suite anzeigen"),
     ("Hide \"{collection}\" in the suite", "„{collection}“ in der Suite ausblenden"),
+    ("Hide an unknown announcement", "Eine unbekannte Neuigkeit ausblenden"),
+    ("Hide the announcement \"{title}\"", "Die Neuigkeit „{title}“ ausblenden"),
     ("Change filter list \"{name}\" → \"{new}\"", "Filterliste „{name}“ → „{new}“ ändern"),
     ("Delete filter list \"{list}\"", "Filterliste „{list}“ löschen"),
     ("Unpin \"{title}\" ({item}) from filter list \"{list}\"", "„{title}“ ({item}) von Filterliste „{list}“ lösen"),
@@ -1562,7 +1564,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Issues and pull requests in filter lists", "Issues und Pull Requests in Filterlisten"),
     ("Connected accounts and sync", "Verbundene Konten und Abgleich"),
     ("Settings of the suite", "Einstellungen der Suite"),
-    ("Opening the suite's apps", "Apps der Suite öffnen"),
+    ("Opening the suite's apps and hiding its announcements", "Apps der Suite öffnen und ihre Neuigkeiten ausblenden"),
     ("GitHub", "GitHub"),
     (
         "Write includes reading, Full also deletes and overwrites.",
@@ -7107,7 +7109,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Couldn't load the overview.", "Die Übersicht konnte nicht geladen werden."),
     ("From people", "Von Menschen"),
     ("In your inbox", "Im Posteingang"),
-    ("Latest from people", "Neueste von Menschen"),
     ("Newsletters and ads", "Newsletter und Werbung"),
     ("No mail in this span.", "Keine E-Mails in diesem Zeitraum."),
     ("No sender stands out yet.", "Noch fällt kein Absender auf."),
@@ -7138,6 +7139,31 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{n} of {total} mails", "{n} von {total} E-Mails"),
     ("{n} older than a week", "{n} älter als eine Woche"),
     ("{share} of what came in", "{share} von allem, was kam"),
+    // Mail window: slimmer overview, statistics page and announcements (issue #485)
+    ("By category", "Nach Kategorie"),
+    ("Couldn't hide the announcement.", "Die Neuigkeit konnte nicht ausgeblendet werden."),
+    ("Couldn't load the statistics.", "Die Statistik konnte nicht geladen werden."),
+    ("Details", "Details"),
+    ("New app: Torro Contacts", "Neue App: Torro Contacts"),
+    ("New: statistics in the mail settings", "Neu: Statistik in den Mail-Einstellungen"),
+    ("Not sorted yet", "Noch nicht einsortiert"),
+    ("Senders", "Absender"),
+    ("What comes in and of which kind shows up here.", "Hier steht, was hereinkommt und welcher Art es ist."),
+    // "What's new" under the mail window's overview (`trc("news", …)`); the release notes' is "Was ist neu".
+    ("news|What's new", "Neuigkeiten"),
+    (
+        "Who sends the most, what lies in your inbox and how each category develops moved to Settings › Statistics. \
+         The overview now shows only what comes in.",
+        "Wer am meisten schickt, was im Posteingang liegt und wie sich jede Kategorie entwickelt, steht jetzt unter \
+         Einstellungen › Statistik. Die Übersicht zeigt nur noch, was hereinkommt.",
+    ),
+    (
+        "Your address books from Nextcloud, with birthdays and the people you write to most.",
+        "Deine Adressbücher aus Nextcloud, mit Geburtstagen und den Menschen, denen du am meisten schreibst.",
+    ),
+    ("per day", "je Tag"),
+    ("per week", "je Woche"),
+    ("statistics|Inbox", "Posteingang"),
     // Mail window: sync progress (issue #422)
     ("Checking for changes", "Suche nach Änderungen"),
     ("Complete, {n} of {total} folders", "Vollständig, {n} von {total} Ordnern"),

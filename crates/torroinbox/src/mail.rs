@@ -170,14 +170,6 @@ pub trait MailSource: Send + Sync {
         range: StatsRange,
     ) -> impl Future<Output = Result<MailOverview, InboxError>> + Send;
 
-    /// "Latest from people" of the overview (issue #409): the newest [`mail_overview::PEOPLE`] mails of
-    /// the category "Personal", of `account` or every account, without the mail on a pile – as the
-    /// category lists them (`mail.search_messages` with `categories`).
-    fn latest_from_people(
-        &self,
-        account: Option<String>,
-    ) -> impl Future<Output = Result<Vec<MessageSummary>, InboxError>> + Send;
-
     /// `inbox.set_item_category`: files the mail `id` under `category` by hand; with `remember`
     /// later mail of its sender too (task E12.8). Returns the entry as it stands now.
     fn set_mail_category(
@@ -486,11 +478,6 @@ impl MailSource for InboxClient {
         InboxClient::mail_overview(self, account, range).await
     }
 
-    async fn latest_from_people(&self, account: Option<String>) -> Result<Vec<MessageSummary>, InboxError> {
-        let people = vec![torro_mail::Category::Personal];
-        InboxClient::latest_in_categories(self, account, people, mail_overview::PEOPLE).await
-    }
-
     async fn set_mail_category(
         &self,
         id: String,
@@ -668,13 +655,6 @@ impl MailSource for DemoSource {
         let today =
             inbox.first().map_or_else(|| Local::now().date_naive(), |m| m.date.with_timezone(&Local).date_naive());
         Ok(mail_overview::demo(today, range, account.is_some(), &inbox))
-    }
-
-    async fn latest_from_people(&self, account: Option<String>) -> Result<Vec<MessageSummary>, InboxError> {
-        let mut people = DemoSource::by_category(self, &[torro_mail::Category::Personal], u32::MAX, Order::NewestFirst);
-        people.retain(|message| account.as_ref().is_none_or(|account| message.account == *account));
-        people.truncate(mail_overview::PEOPLE as usize);
-        Ok(people)
     }
 
     async fn set_mail_category(
@@ -923,10 +903,6 @@ impl MailSource for crate::empty::EmptySource {
 
     async fn mail_overview(&self, _account: Option<String>, range: StatsRange) -> Result<MailOverview, InboxError> {
         Ok(mail_overview::nothing(NaiveDate::default(), range))
-    }
-
-    async fn latest_from_people(&self, _account: Option<String>) -> Result<Vec<MessageSummary>, InboxError> {
-        Ok(Vec::new())
     }
 
     async fn set_mail_category(
@@ -1989,6 +1965,8 @@ fn slim_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) ->
     if message.flags.contains(&Flag::Flagged) {
         marks.push(list::flag_field());
     }
+    // What the mail is, beside the flag (issue #485); the circle keeps its mark too.
+    marks.extend(message.category.map(|held| category_field(held, data.categories)));
     if archived(data, message) {
         marks.push(archive_mark());
     }
@@ -2406,6 +2384,26 @@ pub(crate) fn category_mark<'a>(held: MailCategory, categories: &[CategoryInfo])
         svg::Style { color: Some(list::mark_colour(t, p.category[group.min(p.category.len() - 1)])) }
     });
     (widgets::with_tooltip(mark, category_words(held, categories)), icon::SIZE_SM)
+}
+
+/// The field of a mail's category in the slim list (issue #485, [`list::category_field`]): the
+/// category's icon on the colour of its main category, the words in the tooltip.
+pub(crate) fn category_field<'a>(held: MailCategory, categories: &[CategoryInfo]) -> (Element<'a, Message>, f32) {
+    let (symbol, group, suggested, tip) = category_field_look(held, categories);
+    list::category_field(symbol, group, suggested, tip)
+}
+
+/// What the field of `held` shows ([`category_field`]): the category's icon, the place of its main
+/// category's colour in `Palette::category`, whether a model only suggested it, and the tooltip.
+fn category_field_look(held: MailCategory, categories: &[CategoryInfo]) -> (Icon, usize, bool, String) {
+    let (_, group) = category_look(categories, held.category);
+    let (_, group_at) = group_look(categories, group);
+    let category_icon = categories
+        .iter()
+        .find(|info| info.category == held.category)
+        .map(|info| info.icon)
+        .unwrap_or_else(|| held.category.default_icon());
+    (category_symbol(category_icon), group_at, held.is_suggestion(), category_words(held, categories))
 }
 
 /// The whole pill of a mail's category, for the reader and the card (task E12.8).
@@ -6048,6 +6046,28 @@ mod tests {
         assert_eq!(face_of(&message(Some(Category::Personal)), &[]), widgets::Face::Portrait);
         assert_eq!(face_of(&message(Some(Category::Newsletter)), &[]), widgets::Face::Icon(Icon::Newspaper));
         assert_eq!(face_of(&message(Some(Category::Receipt)), &[]), widgets::Face::Icon(Icon::Receipt));
+    }
+
+    /// Issue #485: a mail's category stands beside the flag as a field as wide as it, with the
+    /// category's icon on its main category's colour, the words in the tooltip; one a model only
+    /// suggested says so. A row without a category gets no field.
+    #[test]
+    fn the_category_field_stands_beside_the_flag() {
+        use torro_mail::Category;
+        let confirmed = MailCategory::by_rule(Category::Newsletter);
+        let (symbol, group, suggested, tip) = category_field_look(confirmed, &[]);
+        assert_eq!(symbol, Icon::Newspaper);
+        assert_eq!(group, group_mark(CategoryGroup::Info).1, "the colour of its main category");
+        assert!(!suggested);
+        assert_eq!(tip, category_look(&[], Category::Newsletter).0);
+        assert_eq!(category_field(confirmed, &[]).1, list::flag_field().1, "as wide as the flag");
+        let guessed = MailCategory { source: torro_mail::CategorySource::Model, ..confirmed };
+        let (_, _, suggested, tip) = category_field_look(guessed, &[]);
+        assert!(suggested && tip == category_words(guessed, &[]), "{tip}");
+        let source = function_source(include_str!("mail.rs"), "slim_row");
+        let (flag, field) = (source.find("list::flag_field()"), source.find("category_field(held"));
+        assert!(matches!((flag, field), (Some(flag), Some(field)) if flag < field), "after the flag");
+        assert!(source.contains("message.category.map(|held| category_field("), "only with a category");
     }
 
     /// The source of the function `name` in this file, up to its closing brace.
