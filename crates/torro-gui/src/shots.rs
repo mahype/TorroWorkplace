@@ -283,7 +283,7 @@ impl Shots {
     }
 }
 
-/// Runs `application` as a window, or with `shots` renders it to pictures instead ([`write`]).
+/// Runs `application` as a window, or with `shots` renders it to pictures instead ([`write()`]).
 ///
 /// With more than one size each size gets a process of its own: this program again, with the same
 /// words and `--shot-index <n>`. A demo source lives in the process, and what one boot changes in it
@@ -335,7 +335,7 @@ static FONTS_LOADED: AtomicBool = AtomicBool::new(false);
 /// each file on its own line on stdout and returns them.
 ///
 /// Each size boots the program afresh, runs its tasks and subscriptions until it has been quiet for
-/// [`QUIET`] after booting (at most [`LIMIT`]; then a note goes to stderr and the picture is taken
+/// `QUIET` (300 ms) after booting (at most `LIMIT`, 10 s; then a note goes to stderr and the picture is taken
 /// anyway) and draws it in the theme it asks for (dark if it names none).
 pub fn write<P>(program: &P, shots: &Shots) -> Result<Vec<PathBuf>, ShotError>
 where
@@ -366,8 +366,8 @@ where
     Ok(written)
 }
 
-/// Runs the emulator's events until the program has been quiet for [`QUIET`] after booting, or
-/// [`LIMIT`] has passed (noted on stderr for the picture `path`).
+/// Runs the emulator's events until the program has been quiet for `QUIET` (300 ms) after booting, or
+/// `LIMIT`, 10 s has passed (noted on stderr for the picture `path`).
 fn settle<P>(program: &P, emulator: &mut Emulator<P>, receiver: &mut mpsc::Receiver<emulator::Event<P>>, path: &Path)
 where
     P: iced::Program + 'static,
