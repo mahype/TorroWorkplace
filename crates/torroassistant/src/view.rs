@@ -33,8 +33,8 @@ use torro_gui::{layout, markdown, style, typo};
 use torro_ipc::api::Area;
 use torro_ipc::assistant::{ConversationSummary, EngineKind, Entry, EntryContent};
 use torro_ipc::{ApprovalInfo, ApprovalState};
+use torro_settings_ui::Frame;
 use torro_settings_ui::assistant as settings;
-use torro_settings_ui::{Frame, Page};
 
 use crate::app::{
     Access, App, Dialog, EDITOR, HISTORY, MAIN, MINI_INPUT, Menu, MenuAt, Message, RENAME, SEARCH, composer_binding,
@@ -211,13 +211,7 @@ impl App {
     /// section list (wide), the menu in the header (medium) or the steps of a narrow window.
     fn settings_frame<'a>(&'a self, pane: &'a crate::app::SettingsPane, class: SizeClass) -> Frame<'a, Message> {
         let page = settings::page(&pane.sections, pane.host.data(), pane.host.current().id, class);
-        let page = Page {
-            body: page.body.map(Message::SettingsPage),
-            sub_page: page.sub_page.map(|(name, back)| (name, Message::SettingsPage(back))),
-            actions: page.actions.into_iter().map(|action| action.map(Message::SettingsPage)).collect(),
-            save_bar: page.save_bar.map(|bar| bar.map(Message::SettingsPage)),
-            max_width: page.max_width,
-        };
+        let page = page.map(Message::SettingsPage);
         pane.host.view(class, page, Message::SettingsHost)
     }
 

@@ -294,15 +294,16 @@ pub fn closing(state: &State, data: &Data) -> Option<Message> {
     profile::closing(&state.profile, data).map(Message::Profile)
 }
 
+/// Whether `message` leaves the page open below a section for the section's own ("‹ Back" from a
+/// bot, the profile or the memory): what a row of the host's section menu sends of these pages, after
+/// which the app closes the menu (`Host::close_menu`, issue #473). Ticks and typing never do.
+pub fn leaves_page(message: &Message) -> bool {
+    matches!(message, Message::Access(access::Message::Back) | Message::Profile(profile::Message::Back))
+}
+
 /// One section's page with its messages wrapped in [`Message`].
 fn wrap<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> Message) -> Page<'a, Message> {
-    Page {
-        body: page.body.map(into),
-        sub_page: page.sub_page.map(|(name, back)| (name, into(back))),
-        actions: page.actions.into_iter().map(|action| action.map(into)).collect(),
-        save_bar: page.save_bar.map(|bar| bar.map(into)),
-        max_width: page.max_width,
-    }
+    page.map(into)
 }
 
 /// The assistant's client as the daemon lists it (one client of the kind `assistant`, decision 5

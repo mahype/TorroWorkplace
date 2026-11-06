@@ -541,6 +541,44 @@ pub fn crumb_button<'a, M: Clone + 'a>(
     tip(b, hint, tooltip::Position::Bottom)
 }
 
+/// One step of the path in a header ("Settings › Accounts › …", issue #264): `label` in `BODY` on a
+/// [`style::button::path_step`] button as high as an icon button, [`space::xs()`] at the sides, which
+/// leads where `on_press` says. Without `on_press` (the step shows what is open already) it is only the
+/// text in `text_3` with the same room around it, so the path keeps its spacing – not a disabled
+/// button, which would read as faded.
+///
+/// ```ignore
+/// row![widgets::path_step(tr("Settings"), Some(m)), chevron, widgets::path_step(tr("Accounts"), None)]
+/// ```
+pub fn path_step<'a, M: Clone + 'a>(label: impl IntoFragment<'a>, on_press: Option<M>) -> Element<'a, M> {
+    let text = typo::text(typo::body(), label).wrapping(Wrapping::None);
+    let Some(on_press) = on_press else {
+        return container(text.style(theme::text_3))
+            .height(size::control_sm())
+            .padding([0.0, space::xs()])
+            .center_y(size::control_sm())
+            .into();
+    };
+    button(container(text).center_y(Fill))
+        .height(size::control_sm())
+        .padding([0.0, space::xs()])
+        .style(style::button::path_step)
+        .on_press(on_press)
+        .into()
+}
+
+/// The last step of a path in a header, what is open (issue #264): `label` in `BODY_STRONG` with the
+/// room of a [`path_step`] at its sides, so the chevron before it stands as far from both steps; cut
+/// with "…" (the whole as tooltip) where the header leaves too little room, and taking all of it.
+pub fn path_here<'a, M: 'a>(label: impl IntoFragment<'a>) -> Element<'a, M> {
+    let line = ellipsized(typo::body_strong(), label, theme::text);
+    container(line).padding([0.0, space::xs()]).width(Length::FillPortion(PATH_PORTION)).into()
+}
+
+/// How much more of the free room of a header the last step of a path takes than the gap behind it
+/// ([`path_here`]): the step should get nearly all of it before it is cut.
+const PATH_PORTION: u16 = 1000;
+
 /// An icon button that can be switched on, 28 × 28: ghost while `on` is false, the surface of a
 /// choice (`style::button::icon_chosen`) while it is true – the filter icon on the mail search field
 /// shows an active quick filter this way. Like [`icon_button`] it needs a tooltip; `None` disables it.
@@ -1308,6 +1346,9 @@ fn sidebar_row<'a, M: Clone + 'a>(
                     let content = column![first, second].width(Fill);
                     return row_button(container(content).center_y(Fill).into(), style::ITEM_PADDING, height).into();
                 }
+                // A child (an account under "Accounts", issue #472) is cut with "…" to the row's
+                // width: the names beside the open one are long addresses.
+                (None, None) if matches!(parts.scale, Scale::Small) => cut_label(label.into_fragment()),
                 (None, None) => line_label(typo::body(), label),
                 (Some(open), _) => {
                     // The chevron follows the name instead of the row's end, so the label takes
@@ -2288,7 +2329,9 @@ fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
         Some(detail) => column![menu_label(item.label), detail_line(detail)].width(Fill).into(),
         // Without tags nothing takes from the label's width: clip it as every menu did before
         // (task M12.5 must not move the entries of the suite's other menus).
-        None if item.tags.is_empty() => line_label(typo::body(), item.label),
+        // A nested entry (an account under "Accounts", issue #475) is cut with "…" as in the sidebar.
+        None if item.tags.is_empty() && !item.nested => line_label(typo::body(), item.label),
+        None if item.nested => cut_label(item.label),
         None => menu_label(item.label),
     };
     let scale = if item.nested { Scale::Small } else { Scale::Row };
@@ -2336,6 +2379,18 @@ fn menu_label<'a, M: 'a>(label: iced::widget::text::Fragment<'a>) -> Element<'a,
     measured_line(typo::body(), move |size| {
         let shown = typo::ellipsize(&label, typo::body(), size.width);
         typo::text(typo::body(), shown).wrapping(Wrapping::None).into()
+    })
+}
+
+/// A [`menu_label`] that shows its whole text as tooltip once it is cut (issue #472): for the
+/// accounts under "Accounts" in the sidebar and the menu, whose long addresses may end alike.
+fn cut_label<'a, M: 'a>(label: iced::widget::text::Fragment<'a>) -> Element<'a, M> {
+    let label = label.to_string();
+    measured_line(typo::body(), move |size| {
+        let shown = typo::ellipsize(&label, typo::body(), size.width);
+        let cut = shown != label;
+        let line = typo::text(typo::body(), shown).wrapping(Wrapping::None);
+        if cut { with_tooltip(line, label.clone()) } else { line.into() }
     })
 }
 
@@ -2495,11 +2550,47 @@ pub fn menu_button<'a, M: Clone + 'a>(
     label: impl IntoFragment<'a>,
     on_press: M,
 ) -> Element<'a, M> {
+    menu_button_in(anchor, icon, label, on_press, Tone::Text)
+}
+
+/// A [`menu_button`] as a step of a path in front of what is open ("‹ [☁ Accounts ▾] › an account",
+/// issue #473): icon and label in `text_2`, so the open page after it stays the strongest step.
+/// `label` is cut with "…" to [`PATH_MENU_ROOM`] in front of the window's other buttons.
+pub fn path_menu_button<'a, M: Clone + 'a>(
+    anchor: &Anchor,
+    icon: Option<Icon>,
+    label: impl IntoFragment<'a>,
+    on_press: M,
+) -> Element<'a, M> {
+    menu_button_in(anchor, icon, label, on_press, Tone::Text2)
+}
+
+/// The most a label of a menu button stands for what is open in a narrow header ("‹ [☁ an account ▾]",
+/// issue #473), as wide as the sidebar: a long address must not run under the settings button.
+pub const PATH_MENU_ROOM: f32 = 240.0;
+
+/// `label` cut with "…" to [`PATH_MENU_ROOM`], for the menu button of a narrow header.
+pub fn path_menu_label(label: &str) -> String {
+    typo::ellipsize(label, typo::body(), PATH_MENU_ROOM)
+}
+
+/// A [`menu_button`] with its icon and label in `tone`.
+fn menu_button_in<'a, M: Clone + 'a>(
+    anchor: &Anchor,
+    icon: Option<Icon>,
+    label: impl IntoFragment<'a>,
+    on_press: M,
+    tone: Tone,
+) -> Element<'a, M> {
+    let colour = match tone {
+        Tone::Text2 => theme::text_2,
+        _ => theme::text,
+    };
     let mut content = row![].spacing(ICON_GAP).align_y(Alignment::Center);
     if let Some(which) = icon {
-        content = content.push(toned(which, icon::SIZE_SM, Tone::Text));
+        content = content.push(toned(which, icon::SIZE_SM, tone));
     }
-    content = content.push(typo::text(typo::body(), label).style(theme::text).wrapping(Wrapping::None)).push(toned(
+    content = content.push(typo::text(typo::body(), label).style(colour).wrapping(Wrapping::None)).push(toned(
         Icon::ChevronDown,
         icon::SIZE_SM,
         Tone::Text3,

@@ -26449,14 +26449,16 @@ mod tests {
         assert_eq!(category_pace(&core.ai, ("ai:gone", "nimble")).await, CategoryPace::CAREFUL, "no account");
     }
 
-    /// Issue #420: a sorting job asks Jev several mails at once – 16 mails at 300 ms an answer take two
-    /// rounds of 8, not 16 one after the other (4.8 s) –, sorts all of them and leaves the cursor at the
-    /// end.
+    /// Issue #420: a sorting job asks Jev several mails at once – 16 mails at 600 ms an answer take two
+    /// rounds of 8 (1.2 s), not 16 one after the other (9.6 s) –, sorts all of them and leaves the
+    /// cursor at the end.
     #[tokio::test]
     async fn a_sorting_job_asks_jev_several_mails_at_once() {
         let dir = tempfile::tempdir().expect("temp dir");
         let jev = httpmock::MockServer::start_async().await;
-        let decides = mock_jev_after(&jev, std::time::Duration::from_millis(300), None).await;
+        // 600 ms an answer (not 300): the gap between both ways is 8.4 s, which a machine busy with the
+        // whole test suite does not close (it closed the 4.2 s of 300 ms, #472).
+        let decides = mock_jev_after(&jev, std::time::Duration::from_millis(600), None).await;
         let subjects: Vec<String> = (1..=16).map(|n| format!("Hello {n}")).collect();
         let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &subjects).await;
         let probes = decides.calls_async().await;
@@ -26469,9 +26471,9 @@ mod tests {
         assert_eq!((progress.eligible, progress.processed, progress.changed, progress.failed), (16, 16, 16, 0));
         assert_eq!(progress.cursor, progress.max_sequence, "the cursor at the end");
         assert_eq!(decides.calls_async().await - probes, 16, "each mail asked once");
-        // One after the other cannot take less than 16 answers of 300 ms, however idle the machine;
-        // two rounds take 0.6 s. The bound leaves room for a machine busy with the whole test suite.
-        assert!(took < std::time::Duration::from_millis(16 * 300), "took {took:?}");
+        // One after the other cannot take less than 16 answers of 600 ms, however idle the machine;
+        // two rounds take 1.2 s. The bound leaves room for a machine busy with the whole test suite.
+        assert!(took < std::time::Duration::from_millis(16 * 600), "took {took:?}");
     }
 
     /// Issue #420: a pause while Jev has mails in hand drops their answers and the count stands still;

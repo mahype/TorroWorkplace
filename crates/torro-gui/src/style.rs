@@ -250,6 +250,16 @@ pub mod button {
         }
     }
 
+    /// A step of the path in a header that leads back ("Settings › Accounts › …", issue #264): a
+    /// [`ghost`] button whose text rests in `text_3`, the colour of the path's earlier steps, so the
+    /// path reads as before; on hover and pressed `hover` and `text`, which marks it as pressable.
+    pub fn path_step(theme: &Theme, status: Status) -> Style {
+        let p = palette(theme);
+        let rest =
+            Rest { background: Color::TRANSPARENT, text: p.text_3, border: Color::TRANSPARENT, radius: radius::sm() };
+        neutral(&p, status, rest, p.text)
+    }
+
     /// A destructive action ("Delete event"): a [`ghost`] button with the text in
     /// [`Palette::error_text`] (≥ 4.5:1 on every surface, both modes), in every state.
     pub fn danger(theme: &Theme, status: Status) -> Style {

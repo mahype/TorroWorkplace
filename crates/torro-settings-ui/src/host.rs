@@ -83,7 +83,6 @@
 //! [`Message::Sent`]) still hear them: once a load's every request that is not in the background
 //! is back, the host hands one of them back through the app, with the data as it stands.
 
-use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row, rule, scrollable, svg};
 use iced::{Alignment, Element, Fill, Padding, Task, Theme};
 
@@ -91,9 +90,9 @@ use torro_core::AppId;
 use torro_core::i18n::tr;
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::theme::{self, palette, size, space};
+use torro_gui::theme::{palette, size, space};
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
-use torro_gui::{shell, style, typo};
+use torro_gui::{shell, style};
 use torro_ipc::{Request, Response};
 
 use crate::accounts::{self, Group};
@@ -227,6 +226,11 @@ pub struct Page<'a, M> {
     /// and the arrow in front of the path goes back to the section's own page instead of closing
     /// the settings. `None` on the section's own page.
     pub sub_page: Option<(String, M)>,
+    /// The pages beside the [`Page::sub_page`] under the same section (every account under
+    /// "Accounts", issue #475), in their order: each with its icon (the provider's), its name and what
+    /// opens it, the open one with `None`. The list and the menu show them all under the section;
+    /// empty, they show the open page alone, with the section's icon.
+    pub siblings: Vec<(Icon, String, Option<M>)>,
     /// The page's buttons at the right of the header bar, left to right; at most one primary.
     pub actions: Vec<Element<'a, M>>,
     /// The bar that saves a page that does not save itself (`torro_gui::widgets::save_bar`), only
@@ -240,7 +244,30 @@ pub struct Page<'a, M> {
 impl<'a, M> Page<'a, M> {
     /// The section's own page.
     pub fn new(body: impl Into<Element<'a, M>>) -> Self {
-        Page { body: body.into(), sub_page: None, actions: Vec::new(), save_bar: None, max_width: None }
+        Page {
+            body: body.into(),
+            sub_page: None,
+            siblings: Vec::new(),
+            actions: Vec::new(),
+            save_bar: None,
+            max_width: None,
+        }
+    }
+
+    /// The same page with its messages turned into `N` by `into`: how an app wraps a section's page
+    /// in its own message before it hands it to [`Host::view`].
+    pub fn map<N: 'a>(self, into: fn(M) -> N) -> Page<'a, N>
+    where
+        M: 'a,
+    {
+        Page {
+            body: self.body.map(into),
+            sub_page: self.sub_page.map(|(name, back)| (name, into(back))),
+            siblings: self.siblings.into_iter().map(|(mark, name, open)| (mark, name, open.map(into))).collect(),
+            actions: self.actions.into_iter().map(|action| action.map(into)).collect(),
+            save_bar: self.save_bar.map(|bar| bar.map(into)),
+            max_width: self.max_width,
+        }
     }
 
     /// Cap this page at `width`, at the left; narrower windows still use their available width.
@@ -252,6 +279,13 @@ impl<'a, M> Page<'a, M> {
     /// A page below the section: `name` follows in the path, `back` leads up to the section.
     pub fn sub_page(mut self, name: impl Into<String>, back: M) -> Self {
         self.sub_page = Some((name.into(), back));
+        self
+    }
+
+    /// The pages beside the one below the section ([`Page::siblings`]): icon, name and what opens
+    /// each, `None` for the open one.
+    pub fn siblings(mut self, siblings: Vec<(Icon, String, Option<M>)>) -> Self {
+        self.siblings = siblings;
         self
     }
 
@@ -672,10 +706,16 @@ impl Host {
         (on_appearance && suite::unlisted(state) && !self.looks_asked).then(|| self.list_looks())
     }
 
-    /// How many rows of the list or the menu are the app's own: its sections, and the page open below
-    /// one of them (`child`), which follows it.
-    fn own_rows(&self, child: bool) -> usize {
-        self.own + usize::from(child && self.current < self.own)
+    /// How many rows of [`Host::section_rows`] are the app's own: its sections, and the `children`
+    /// open below one of them, which follow it; the suite's part starts behind the last child.
+    fn own_rows(&self, children: usize) -> usize {
+        self.own + if self.current < self.own { children } else { 0 }
+    }
+
+    /// Closes the section menu (issue #473): what an app calls when a row the menu shows of its own
+    /// page was pressed (another mail account), since only the host's own messages close it.
+    pub fn close_menu(&mut self) {
+        self.menu = false;
     }
 
     /// Whether the section on screen is one of the suite's pages the host shows itself.
@@ -983,6 +1023,11 @@ impl Host {
             }
             Message::Apps => work(self.suite_arrived().into_iter().collect()),
             Message::Accounts(message) => {
+                // A row of the menu (another account, the section's way up) ends the menu too; the
+                // ticks of a download that also come this way leave it open.
+                if matches!(*message, accounts::Message::Open(_) | accounts::Message::Back) {
+                    self.menu = false;
+                }
                 let Some(state) = self.accounts.as_mut() else { return Outcome::None };
                 let action = accounts::update(state, *message, &self.data);
                 self.accounts_act(action)
@@ -1134,16 +1179,24 @@ impl Host {
                 None => page,
             },
         };
-        let Page { body, sub_page, actions, save_bar, max_width } = page;
-        // The object open below the section, as the list and the menu show it: its name and the
-        // way back up.
-        let child = sub_page.clone();
+        let Page { body, sub_page, siblings, actions, save_bar, max_width } = page;
+        // What is open below the section, as the list and the menu show it under the section: the
+        // page and those beside it (issue #475), else the open page alone; and the way back up.
+        let children = match &sub_page {
+            Some(_) if !siblings.is_empty() => siblings,
+            Some((name, _)) => vec![(self.current().icon, name.clone(), None)],
+            None => Vec::new(),
+        };
+        let up = sub_page.as_ref().map(|(_, back)| back.clone());
+        // On a page below the section the section's name opens the menu in every form but the list
+        // (issue #473), so the section's navigation stays at hand.
+        let menu_form = form == Form::Menu || (form == Form::Steps && sub_page.is_some() && !on_list);
         let header = self.header(form, on_list, sub_page, actions, &anchor, wrap);
         let body = match (form, on_list) {
-            (Form::Steps, true) => self.page_area(class, self.list_rows(false, None, wrap), None, None),
+            (Form::Steps, true) => self.page_area(class, self.list_rows(false, &[], None, wrap), None, None),
             (Form::Steps | Form::Menu, _) => self.page_area(class, body, save_bar, max_width),
             (Form::List, _) => {
-                let list = container(self.list_rows(true, child.clone(), wrap))
+                let list = container(self.list_rows(true, &children, up.clone(), wrap))
                     .width(size::sidebar())
                     .height(Fill)
                     .padding(Padding::new(space::s()));
@@ -1151,11 +1204,11 @@ impl Host {
                     .into()
             }
         };
-        let overlay = (form == Form::Menu && self.menu).then(|| {
+        let overlay = (menu_form && self.menu).then(|| {
             widgets::floating(
                 &anchor,
                 Placement::Below(Align::Start),
-                self.menu_card(child, wrap),
+                self.menu_card(&children, up, wrap),
                 wrap(Message::Close),
             )
         });
@@ -1187,8 +1240,10 @@ impl Host {
             false => accounts::app_view(state, &self.data, class),
         };
         let page = Page::new(body.map(inner));
+        let siblings =
+            accounts::siblings(state, &self.data).into_iter().map(|(mark, name, open)| (mark, name, open.map(inner)));
         match accounts::sub_page(state, &self.data) {
-            Some((name, back)) => page.sub_page(name, inner(back)),
+            Some((name, back)) => page.sub_page(name, inner(back)).siblings(siblings.collect()),
             None => page,
         }
     }
@@ -1212,60 +1267,75 @@ impl Host {
             _ => (tr("Close settings"), wrap(Message::Back)),
         };
         let leading = vec![widgets::icon_button(Icon::ChevronLeft, label, Some(back))];
+        let menu = || wrap(Message::Menu);
         let title: Element<'a, M> = match (form, on_list) {
-            // Narrow: the path has no room; the name of what is open is enough.
+            // Narrow: the path has no room; the name of what is open is enough. On a page below the
+            // section it opens the section's menu, as in the medium form (issue #473).
             (Form::Steps, true) => shell::header_title(Some(shell::SETTINGS_ICON), tr("Settings"), None),
             (Form::Steps, false) => match sub_page {
-                Some((name, _)) => shell::header_title(None, name, None),
+                Some((name, _)) => {
+                    widgets::menu_button(anchor, Some(section.icon), widgets::path_menu_label(&name), menu())
+                }
                 None => shell::header_title(Some(section.icon), section.name(), None),
             },
+            // Medium: the section's menu stays in front of the page below it (issue #473).
             (Form::Menu, _) => match sub_page {
-                Some((name, _)) => shell::header_title(None, name, None),
-                None => widgets::menu_button(anchor, Some(section.icon), section.name(), wrap(Message::Menu)),
+                Some((name, _)) => row![
+                    widgets::path_menu_button(anchor, Some(section.icon), section.name(), menu()),
+                    chevron(),
+                    widgets::path_here(name),
+                ]
+                .spacing(space::xs())
+                .align_y(Alignment::Center)
+                .into(),
+                None => widgets::menu_button(anchor, Some(section.icon), section.name(), menu()),
             },
-            (Form::List, _) => path(section, sub_page.map(|(name, _)| name)),
+            (Form::List, _) => path(self.path_steps(sub_page.as_ref(), wrap)),
         };
         shell::header_bar(leading, title, actions)
+    }
+
+    /// The steps of the wide form's path (issue #264), each with where it leads: "Settings" to the
+    /// first section, the section up from the page below it; what is open (the last step), and a step
+    /// that leads to what is shown already, lead nowhere.
+    fn path_steps<M: Clone>(&self, sub_page: Option<&(String, M)>, wrap: fn(Message) -> M) -> Vec<(String, Option<M>)> {
+        let section = self.current();
+        let up = sub_page.map(|(_, back)| back.clone());
+        let settings = match (self.current, &up) {
+            (0, None) => None,
+            (0, Some(back)) => Some(back.clone()),
+            _ => self.sections.first().map(|first| wrap(Message::Select(first.id))),
+        };
+        let mut steps = vec![(tr("Settings").to_string(), settings), (section.name().to_string(), up)];
+        if let Some((name, _)) = sub_page {
+            steps.push((name.clone(), None));
+        }
+        steps
     }
 
     /// The sections as rows, and under them the two ways into the control centre. `highlight`
     /// marks the open one – in the narrow list nothing is open yet.
     ///
-    /// With a `child` (a page below the open section, task DS.5) its name stands under the section
-    /// as the active row of a quiet branch, with the section's icon; the section itself is then not
-    /// active, and a click on it goes back up to its own page (the `back` of the page below).
+    /// With `children` (what is open below the open section and beside it, task DS.5, issue #475)
+    /// they stand under the section as the rows of a quiet branch, each with its own icon, the open
+    /// one active; the section itself is then not active, and a click on it goes back up to its own
+    /// page (`up`, the `back` of the page below).
     fn list_rows<'a, M: Clone + 'a>(
         &'a self,
         highlight: bool,
-        child: Option<(String, M)>,
+        children: &[(Icon, String, Option<M>)],
+        up: Option<M>,
         wrap: fn(Message) -> M,
     ) -> Element<'a, M> {
-        let rows = self.section_rows(highlight, child.is_some()).into_iter().filter_map(|row| match row {
-            SectionRow::Section { at, active, back } => {
-                let section = self.sections.get(at).copied()?;
-                let press = match (&child, back) {
-                    (Some((_, up)), true) => up.clone(),
-                    _ => wrap(Message::Select(section.id)),
-                };
-                Some(widgets::sidebar_item(section.icon, section.name(), Trail::None, active, press))
-            }
-            SectionRow::Child => {
-                // The open page itself: a click on it stays where it is.
-                let (name, _) = child.clone()?;
-                let section = self.current();
-                let row =
-                    widgets::sidebar_child(section.icon, name, Trail::None, true, wrap(Message::Select(section.id)));
-                Some(widgets::sidebar_branch_quiet(vec![row]))
-            }
-        });
         let link = |(at, (_, icon, label)): (usize, &(&str, Icon, &'static str))| {
             widgets::sidebar_item(*icon, tr(label), Trail::Icon(Icon::ArrowUpRight), false, wrap(Message::Link(at)))
         };
         // The suite's pages follow the app's own behind the line the links stand behind otherwise:
         // they hold for every app (issue #408).
-        let mut rows: Vec<Element<'a, M>> = rows.collect();
-        let suite_rows = rows.split_off(self.own_rows(child.is_some()).min(rows.len()));
-        let sections = column(rows).spacing(space::xs());
+        let rows = self.section_rows(highlight, children.len());
+        let (own, suite_rows) = rows.split_at(self.own_rows(children.len()).min(rows.len()));
+        let sections = column(self.row_elements(own, children, up.clone(), wrap)).spacing(space::xs());
+        let suite_rows = self.row_elements(suite_rows, children, up, wrap);
         if self.suite.is_some() {
             return column![
                 sections,
@@ -1287,46 +1357,101 @@ impl Host {
         .into()
     }
 
+    /// The list's elements of `rows`: a section as a sidebar row, the children that follow it
+    /// together in one quiet branch, each leading where its press says and the open one (`None`)
+    /// staying where it is.
+    fn row_elements<'a, M: Clone + 'a>(
+        &'a self,
+        rows: &[SectionRow],
+        children: &[(Icon, String, Option<M>)],
+        up: Option<M>,
+        wrap: fn(Message) -> M,
+    ) -> Vec<Element<'a, M>> {
+        let section = self.current();
+        let mut elements = Vec::new();
+        let mut branch: Vec<Element<'a, M>> = Vec::new();
+        for row in rows {
+            match *row {
+                SectionRow::Section { at, active, back } => {
+                    if !branch.is_empty() {
+                        elements.push(widgets::sidebar_branch_quiet(std::mem::take(&mut branch)));
+                    }
+                    let Some(shown) = self.sections.get(at).copied() else { continue };
+                    let press = match (&up, back) {
+                        (Some(up), true) => up.clone(),
+                        _ => wrap(Message::Select(shown.id)),
+                    };
+                    elements.push(widgets::sidebar_item(shown.icon, shown.name(), Trail::None, active, press));
+                }
+                SectionRow::Child { at } => {
+                    let Some((mark, name, press)) = children.get(at).cloned() else { continue };
+                    let active = press.is_none();
+                    let press = press.unwrap_or_else(|| wrap(Message::Select(section.id)));
+                    branch.push(widgets::sidebar_child(mark, name, Trail::None, active, press));
+                }
+            }
+        }
+        if !branch.is_empty() {
+            elements.push(widgets::sidebar_branch_quiet(branch));
+        }
+        elements
+    }
+
     /// The rows of the section list: one per section, the open one `active` while `highlight`; with
-    /// a `child` open below it (task DS.5) the section is not active but leads `back` up, and the
-    /// child follows it.
-    fn section_rows(&self, highlight: bool, child: bool) -> Vec<SectionRow> {
+    /// `children` open below it (task DS.5, issue #475) the section is not active but leads `back`
+    /// up, and the children follow it.
+    fn section_rows(&self, highlight: bool, children: usize) -> Vec<SectionRow> {
         let mut rows = Vec::new();
         for at in 0..self.sections.len() {
             let open = highlight && at == self.current;
-            rows.push(SectionRow::Section { at, active: open && !child, back: open && child });
-            if open && child {
-                rows.push(SectionRow::Child);
+            let below = open && children > 0;
+            rows.push(SectionRow::Section { at, active: open && !below, back: below });
+            if below {
+                rows.extend((0..children).map(|at| SectionRow::Child { at }));
             }
         }
         rows
     }
 
-    /// The section menu of the medium form, with the two links in a part of their own – the same
-    /// rows as the list, as a menu; a `child` open below the section follows it as a nested entry.
-    fn menu_card<'a, M: Clone + 'a>(&'a self, child: Option<(String, M)>, wrap: fn(Message) -> M) -> Element<'a, M> {
-        let current = self.current().id;
-        let mut entries = Vec::new();
-        for section in &self.sections {
-            let open = section.id == current;
-            match child.clone().filter(|_| open) {
-                // Both entries stay on the open page: a choice must close the menu, which only the
-                // host's own message does; the way up is the arrow in front of the path.
-                Some((name, _)) => {
-                    let stay = wrap(Message::Select(section.id));
-                    entries.push(MenuItem::new(section.icon, section.name(), stay.clone()));
-                    entries.push(MenuItem::new(section.icon, name, stay).current(true).nested());
+    /// The section menu of the medium form (and of a page below a section in the narrow one), with
+    /// the two links in a part of their own – the same rows as the list ([`Host::section_rows`]), as a
+    /// menu: the `children` follow the open section as nested entries, the section leads `up`.
+    fn menu_card<'a, M: Clone + 'a>(
+        &'a self,
+        children: &[(Icon, String, Option<M>)],
+        up: Option<M>,
+        wrap: fn(Message) -> M,
+    ) -> Element<'a, M> {
+        let section = self.current();
+        let rows = self.section_rows(true, children.len());
+        // A choice must close the menu: the host's own messages do, and an app closes it for a row
+        // of its own page ([`Host::close_menu`]).
+        let entry = |row: &SectionRow| -> Option<MenuItem<'a, M>> {
+            match *row {
+                SectionRow::Section { at, active, back } => {
+                    let shown = self.sections.get(at).copied()?;
+                    let press = match (&up, back) {
+                        (Some(up), true) => up.clone(),
+                        _ => wrap(Message::Select(shown.id)),
+                    };
+                    Some(MenuItem::new(shown.icon, shown.name(), press).current(active))
                 }
-                None => entries
-                    .push(MenuItem::new(section.icon, section.name(), wrap(Message::Select(section.id))).current(open)),
+                SectionRow::Child { at } => {
+                    let (mark, name, press) = children.get(at).cloned()?;
+                    let open = press.is_none();
+                    let press = press.unwrap_or_else(|| wrap(Message::Select(section.id)));
+                    Some(MenuItem::new(mark, name, press).current(open).nested())
+                }
             }
-        }
+        };
+        let (own, suite) = rows.split_at(self.own_rows(children.len()).min(rows.len()));
+        let entries: Vec<MenuItem<'a, M>> = own.iter().filter_map(entry).collect();
         let link = |(at, (_, icon, label)): (usize, &(&str, Icon, &'static str))| {
             MenuItem::new(*icon, tr(label), wrap(Message::Link(at))).trail(Trail::Icon(Icon::ArrowUpRight))
         };
         if self.suite.is_some() {
             // The suite's pages in a part of their own, as the links otherwise.
-            let suite = entries.split_off(self.own_rows(child.is_some()).min(entries.len()));
+            let suite = suite.iter().filter_map(entry).collect();
             return widgets::menu(vec![MenuSection::new(entries), MenuSection::new(suite)]);
         }
         widgets::menu(vec![MenuSection::new(entries), MenuSection::new(LINKS.iter().enumerate().map(link).collect())])
@@ -1401,24 +1526,31 @@ fn work<A>(tasks: Vec<Task<Message>>) -> Outcome<A> {
 enum SectionRow {
     /// The section at `at`; `back` sends the open page below it back up instead of selecting it.
     Section { at: usize, active: bool, back: bool },
-    /// The page open below the section above, as the active row of a quiet branch.
-    Child,
+    /// The page at `at` of what is open below the section above (and beside it), as a row of a quiet
+    /// branch.
+    Child { at: usize },
 }
 
-/// "Settings › Reminders › Work": what is open in `BODY_STRONG`, the way to it in `text_3`.
-fn path<'a, M: 'a>(section: Section, sub_page: Option<String>) -> Element<'a, M> {
-    let quiet = |text: &'static str| typo::text(typo::body(), text).style(theme::text_3).wrapping(Wrapping::None);
-    let step = || {
-        icon::icon(Icon::ChevronRight, icon::SIZE_SM)
-            .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
-    };
-    let mut crumbs = row![quiet(tr("Settings")), step()].spacing(space::xs()).align_y(Alignment::Center);
-    match sub_page {
-        Some(name) => {
-            crumbs = crumbs.push(quiet(section.name())).push(step());
-            crumbs = crumbs.push(typo::text(typo::body_strong(), name).wrapping(Wrapping::None));
+/// The chevron between two steps of a path, in `text_3`.
+fn chevron<'a, M: 'a>() -> Element<'a, M> {
+    icon::icon(Icon::ChevronRight, icon::SIZE_SM)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
+        .into()
+}
+
+/// "Settings › Reminders › Work" ([`Host::path_steps`]): what is open, the last step, in
+/// `BODY_STRONG`; the way to it in `text_3`, each step that leads somewhere pressable (issue #264).
+fn path<'a, M: Clone + 'a>(steps: Vec<(String, Option<M>)>) -> Element<'a, M> {
+    let last = steps.len().saturating_sub(1);
+    let mut crumbs = row![].spacing(space::xs()).align_y(Alignment::Center);
+    for (at, (name, press)) in steps.into_iter().enumerate() {
+        if at > 0 {
+            crumbs = crumbs.push(chevron());
         }
-        None => crumbs = crumbs.push(typo::text(typo::body_strong(), section.name()).wrapping(Wrapping::None)),
+        crumbs = match at == last && press.is_none() {
+            true => crumbs.push(widgets::path_here(name)),
+            false => crumbs.push(widgets::path_step(name, press)),
+        };
     }
     crumbs.into()
 }
@@ -1469,13 +1601,13 @@ mod tests {
         let mut host = host();
         host.open("reminders");
         let section = |at, active, back| SectionRow::Section { at, active, back };
-        assert_eq!(host.section_rows(true, false), vec![section(0, false, false), section(1, true, false)]);
+        assert_eq!(host.section_rows(true, 0), vec![section(0, false, false), section(1, true, false)]);
         assert_eq!(
-            host.section_rows(true, true),
-            vec![section(0, false, false), section(1, false, true), SectionRow::Child]
+            host.section_rows(true, 1),
+            vec![section(0, false, false), section(1, false, true), SectionRow::Child { at: 0 }]
         );
         // The narrow list highlights nothing and so shows no child.
-        assert_eq!(host.section_rows(false, true), vec![section(0, false, false), section(1, false, false)]);
+        assert_eq!(host.section_rows(false, 1), vec![section(0, false, false), section(1, false, false)]);
         let below = page().sub_page("Work", Message::Back);
         let _: Frame<'_, Message> = host.view(SizeClass::Wide, below, |m| m);
         host.menu = true;
@@ -1484,6 +1616,89 @@ mod tests {
         // The section's entry in the menu selects it, so the menu closes.
         let _: Outcome<()> = host.update(Message::Select("reminders"));
         assert!(!host.menu, "a choice closes the menu");
+    }
+
+    /// Issue #475: the pages beside the open one stand under the section with it, in their order, and
+    /// the app's own rows end behind the last of them, so the suite's part starts after it.
+    #[test]
+    fn the_pages_beside_the_open_one_stand_under_the_section() {
+        let mut host = host();
+        host.open("calendars");
+        let section = |at, active, back| SectionRow::Section { at, active, back };
+        assert_eq!(
+            host.section_rows(true, 3),
+            vec![
+                section(0, false, true),
+                SectionRow::Child { at: 0 },
+                SectionRow::Child { at: 1 },
+                SectionRow::Child { at: 2 },
+                section(1, false, false),
+            ]
+        );
+        assert_eq!(host.own_rows(3), host.own + 3);
+        let siblings =
+            || vec![(Icon::Mail, "Home".to_string(), Some(Message::List)), (Icon::Mail, "Work".to_string(), None)];
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
+            host.menu = class != SizeClass::Wide;
+            let below = page().sub_page("Work", Message::Back).siblings(siblings());
+            let frame = host.view(class, below, |m| m);
+            assert_eq!(frame.overlay.is_some(), host.menu, "{class:?}: the menu over the page below");
+        }
+        // A page wrapped in an app's message keeps the pages beside it.
+        let wrapped = page().sub_page("Work", Message::Back).siblings(siblings()).map(Some);
+        assert_eq!(wrapped.siblings[0].2, Some(Some(Message::List)));
+    }
+
+    /// Issue #264: every step of the wide form's path leads somewhere but what is open – "Settings"
+    /// to the first section, the section up from the page below it.
+    #[test]
+    fn the_steps_of_the_path_lead_up() {
+        let mut host = host();
+        let up = ("Work".to_string(), Message::Back);
+        let names =
+            |steps: &[(String, Option<Message>)]| steps.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
+        // On the first section itself: nothing to lead to.
+        let steps = host.path_steps::<Message>(None, |m| m);
+        assert_eq!(names(&steps), [tr("Settings"), tr("Calendars")]);
+        assert_eq!(steps.iter().map(|(_, press)| press.clone()).collect::<Vec<_>>(), [None, None]);
+        // Below the first section "Settings" leads to it as the section does: up.
+        let steps = host.path_steps(Some(&up), |m| m);
+        assert_eq!(names(&steps), [tr("Settings"), tr("Calendars"), "Work"]);
+        assert_eq!(steps[0].1, Some(Message::Back));
+        assert_eq!(steps[1].1, Some(Message::Back));
+        assert_eq!(steps[2].1, None, "what is open leads nowhere");
+        // On another section "Settings" opens the first one.
+        host.open("reminders");
+        let steps = host.path_steps::<Message>(None, |m| m);
+        assert_eq!(steps[0].1, Some(Message::Select("calendars")));
+        assert_eq!(steps[1].1, None);
+        let steps = host.path_steps(Some(&up), |m| m);
+        assert_eq!(steps[0].1, Some(Message::Select("calendars")));
+        assert_eq!(steps[1].1, Some(Message::Back), "the section leads up from the page below it");
+    }
+
+    /// Issue #473: in the narrow form a page below a section keeps the section's menu in the header,
+    /// and the menu opens over it; on the section's own page the narrow form has none.
+    #[test]
+    fn a_narrow_page_below_a_section_keeps_its_menu() {
+        let mut host = host();
+        host.open("reminders");
+        host.menu = true;
+        let below = page().sub_page("Work", Message::Back);
+        assert!(host.view(SizeClass::Narrow, below, |m| m).overlay.is_some(), "the menu over the page");
+        assert!(host.view(SizeClass::Narrow, page(), |m| m).overlay.is_none(), "no menu on the section");
+        host.list = true;
+        let below = page().sub_page("Work", Message::Back);
+        assert!(host.view(SizeClass::Narrow, below, |m| m).overlay.is_none(), "none over the list");
+        // An app closes the menu for a row of its own page; the host's own rows close it themselves.
+        host.list = false;
+        host.close_menu();
+        assert!(!host.menu);
+        host.menu = true;
+        let _: Outcome<()> = host.update(Message::Accounts(Box::new(accounts::Message::PollPulls)));
+        assert!(host.menu, "the tick of a download leaves it open");
+        let _: Outcome<()> = host.update(Message::Accounts(Box::new(accounts::Message::Back)));
+        assert!(!host.menu, "a row of Accounts closes the menu");
     }
 
     /// DS.5: a page with a save bar builds in every form.

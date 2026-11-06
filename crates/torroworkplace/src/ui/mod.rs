@@ -1183,6 +1183,12 @@ impl Ui {
                 let open = self.target.take().map_or_else(Task::none, |target| send(target.request()));
                 return Task::batch([self.reload(), open]);
             }
+            // The open section again, from the sidebar or the menu, with a page open below it: back up to
+            // the section's own page (issue #264), the menus closed.
+            Message::Select(section) if section == self.section && self.page_back().is_some() => {
+                self.close_menus();
+                return self.page_back().map_or_else(Task::none, |back| self.update(back));
+            }
             Message::Select(section) => {
                 self.select(section);
                 self.notice = None;
@@ -1460,7 +1466,13 @@ impl Ui {
                 if ai { Action::Select(Section::Ai) } else { Action::Select(Section::Accounts) }
             }
             Message::Overview(m) => overview::update(&mut self.overview, m, &self.data),
-            Message::Accounts(m) => accounts::act(accounts::update(&mut self.accounts, m, &self.data)),
+            Message::Accounts(m) => {
+                // Another account from the sidebar or the menu, or the way up (issue #475): the menus close.
+                if matches!(m, accounts::Message::Open(_) | accounts::Message::Back) {
+                    self.close_menus();
+                }
+                accounts::act(accounts::update(&mut self.accounts, m, &self.data))
+            }
             Message::Workspaces(m) => workspaces::update(&mut self.workspaces, m, &self.data),
             Message::Api(m) => api::update(&mut self.api, m, &self.data),
             Message::Mcp(m) => mcp::update(&mut self.mcp, m, &self.data),
@@ -1484,6 +1496,25 @@ impl Ui {
     fn close_menus(&mut self) {
         self.menu = None;
         self.drawer = false;
+    }
+
+    /// The way up from the page open below the section, as the header's arrow sends it; `None` on the
+    /// section's own page.
+    fn page_back(&self) -> Option<Message> {
+        self.page_header(layout::of(self.size)).sub_page.map(|(_, back)| back)
+    }
+
+    /// What is open below the section and beside it (issue #475), as the sidebar and the section
+    /// menu show it under the section: every account under Accounts or AI while one is open, each
+    /// with what opens it, the open one with `None`. Empty on every other page.
+    fn children(&self) -> Vec<(Icon, String, Option<Message>)> {
+        match self.section {
+            Section::Accounts | Section::Ai => accounts::siblings(&self.accounts, &self.data)
+                .into_iter()
+                .map(|(mark, name, open)| (mark, name, open.map(Message::Accounts)))
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 
     /// What the app switcher's buttons do in the control centre.
@@ -1850,15 +1881,28 @@ impl Ui {
     fn sidebar(&self, mode: SidebarMode) -> Element<'_, Message> {
         // The sidebar may draw in a theme of its own (a design pack's sidebar colours).
         let palette = palette(&theme::sidebar_theme(&self.theme()));
-        let item = |section: Section| {
-            widgets::sidebar_item_in(
+        // The expanded sidebar lists what is open below the section under it (issue #475); the section
+        // is then not the active row, and a click on it leads back up ([`Message::Select`]).
+        let children = if mode == SidebarMode::Expanded { self.children() } else { Vec::new() };
+        let item = |section: Section| -> Vec<Element<'_, Message>> {
+            let open = section == self.section;
+            let below = open && !children.is_empty();
+            let row = widgets::sidebar_item_in(
                 mode,
                 self.mark(section, &palette),
                 section.label(),
                 self.trail(section),
-                section == self.section,
+                open && !below,
                 Message::Select(section),
-            )
+            );
+            if !below {
+                return vec![row];
+            }
+            let rows = children.iter().cloned().map(|(mark, name, press)| {
+                let active = press.is_none();
+                widgets::sidebar_child(mark, name, Trail::None, active, press.unwrap_or(Message::CloseMenu))
+            });
+            vec![row, widgets::sidebar_branch_quiet(rows.collect())]
         };
         let version = format!("Torro Workplace · {} {}", tr("Version"), env!("CARGO_PKG_VERSION"));
         let version = container(typo::text(typo::meta(), version).style(theme::text_3).wrapping(Wrapping::None))
@@ -1869,7 +1913,11 @@ impl Ui {
         if mode == SidebarMode::Expanded {
             footer.push(version.into());
         }
-        shell::sidebar(shell::sidebar_tools(mode, true, Message::Switcher), Section::nav().map(item).collect(), footer)
+        shell::sidebar(
+            shell::sidebar_tools(mode, true, Message::Switcher),
+            Section::nav().flat_map(item).collect(),
+            footer,
+        )
     }
 
     /// What stands in front of a section in the sidebar and the section menu: its icon, for MCP
@@ -1891,14 +1939,26 @@ impl Ui {
     /// part of its own as at the sidebar's foot.
     fn nav_menu(&self) -> Element<'_, Message> {
         let palette = palette(&self.theme());
-        let entry = |section: Section| {
-            MenuItem::new(self.mark(section, &palette), section.label(), Message::Select(section))
+        // What is open below the section follows it as nested entries (issue #475), as in the sidebar.
+        let children = self.children();
+        let entry = |section: Section| -> Vec<MenuItem<'_, Message>> {
+            let open = section == self.section;
+            let below = open && !children.is_empty();
+            let item = MenuItem::new(self.mark(section, &palette), section.label(), Message::Select(section))
                 .trail(self.trail(section))
-                .current(section == self.section)
+                .current(open && !below);
+            if !below {
+                return vec![item];
+            }
+            let nested = children.iter().cloned().map(|(mark, name, press)| {
+                let open = press.is_none();
+                MenuItem::new(mark, name, press.unwrap_or(Message::CloseMenu)).current(open).nested()
+            });
+            std::iter::once(item).chain(nested).collect()
         };
         widgets::menu(vec![
-            MenuSection::new(Section::nav().map(entry).collect()),
-            MenuSection::new(vec![entry(Section::General)]),
+            MenuSection::new(Section::nav().flat_map(entry).collect()),
+            MenuSection::new(entry(Section::General)),
         ])
     }
 
@@ -1939,18 +1999,30 @@ impl Ui {
     fn header(&self, class: SizeClass, nav: &Anchor) -> Element<'_, Message> {
         let Header { sub_page, actions } = self.page_header(class);
         let section = self.section;
-        let wide = shell::has_sidebar(class);
-        let (leading, title): (Vec<Element<'_, Message>>, Element<'_, Message>) = match sub_page {
-            Some((name, back)) => {
-                let back = widgets::icon_button(Icon::ChevronLeft, tr("Back"), Some(back));
-                let title = if wide { crumb(section, name) } else { shell::header_title(None, name, None) };
-                (vec![back], title)
+        let menu = Message::ToggleMenu(Menu::Nav);
+        let form = head_form(class, sub_page.is_some());
+        let (leading, title): (Vec<Element<'_, Message>>, Element<'_, Message>) = match (form, sub_page) {
+            (HeadForm::Path, Some((name, back))) => {
+                let arrow = widgets::icon_button(Icon::ChevronLeft, tr("Back"), Some(back.clone()));
+                (vec![arrow], crumb(section, name, back))
             }
-            None if wide => (vec![], shell::header_title(Some(section.icon()), section.label(), None)),
-            None => (
-                vec![],
-                widgets::menu_button(nav, Some(section.icon()), section.label(), Message::ToggleMenu(Menu::Nav)),
-            ),
+            (HeadForm::MenuThenPage, Some((name, back))) => {
+                let arrow = widgets::icon_button(Icon::ChevronLeft, tr("Back"), Some(back));
+                let title = row![
+                    widgets::path_menu_button(nav, Some(section.icon()), section.label(), menu),
+                    path_chevron(),
+                    widgets::path_here(name),
+                ]
+                .spacing(space::xs())
+                .align_y(Alignment::Center);
+                (vec![arrow], title.into())
+            }
+            (HeadForm::MenuOfPage, Some((name, back))) => {
+                let arrow = widgets::icon_button(Icon::ChevronLeft, tr("Back"), Some(back));
+                (vec![arrow], widgets::menu_button(nav, Some(section.icon()), widgets::path_menu_label(&name), menu))
+            }
+            (HeadForm::Title, _) => (vec![], shell::header_title(Some(section.icon()), section.label(), None)),
+            (_, _) => (vec![], widgets::menu_button(nav, Some(section.icon()), section.label(), menu)),
         };
         shell::header_bar(leading, title, actions)
     }
@@ -2020,18 +2092,48 @@ fn page_margin(class: SizeClass) -> Padding {
     }
 }
 
-/// "Accounts › cloud.example.org": the section in `text_3`, the page below it in `BODY_STRONG`.
-fn crumb<'a>(section: Section, name: String) -> Element<'a, Message> {
-    let chevron = icon::icon(Icon::ChevronRight, icon::SIZE_SM)
-        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
-    row![
-        typo::text(typo::body(), section.label()).style(theme::text_3).wrapping(Wrapping::None),
-        chevron,
-        typo::text(typo::body_strong(), name).wrapping(Wrapping::None),
-    ]
-    .spacing(space::xs())
-    .align_y(Alignment::Center)
-    .into()
+/// What the header shows of the section ([`Ui::header`]): the title or the path where the sidebar
+/// stands (wide), else the section's menu – on a page below the section too (issue #473), so its
+/// navigation never leaves the header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeadForm {
+    /// Wide, the section's own page: its icon and name.
+    Title,
+    /// Wide, a page below the section: "‹ Accounts › an account", the section pressable.
+    Path,
+    /// Medium and narrow, the section's own page: "[☁ Accounts ▾]".
+    Menu,
+    /// Medium, a page below the section: "‹ [☁ Accounts ▾] › an account".
+    MenuThenPage,
+    /// Narrow, a page below the section: "‹ [☁ an account ▾]".
+    MenuOfPage,
+}
+
+/// The [`HeadForm`] of a window of `class`, on a page below the section while `sub_page`.
+fn head_form(class: SizeClass, sub_page: bool) -> HeadForm {
+    match (shell::has_sidebar(class), class, sub_page) {
+        (true, _, false) => HeadForm::Title,
+        (true, _, true) => HeadForm::Path,
+        (false, _, false) => HeadForm::Menu,
+        (false, SizeClass::Medium, true) => HeadForm::MenuThenPage,
+        (false, _, true) => HeadForm::MenuOfPage,
+    }
+}
+
+/// The chevron between two steps of a path, in `text_3`.
+fn path_chevron<'a>() -> Element<'a, Message> {
+    icon::icon(Icon::ChevronRight, icon::SIZE_SM)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
+        .into()
+}
+
+/// "Accounts › cloud.example.org": the section in `text_3`, pressable, leading `back` up to its own
+/// page (issue #264); the page below it in `BODY_STRONG`.
+fn crumb<'a>(section: Section, name: String, back: Message) -> Element<'a, Message> {
+    row![widgets::path_step(section.label(), Some(back)), path_chevron(), widgets::path_here(name),]
+        .spacing(space::xs())
+        .align_y(Alignment::Center)
+        .into()
 }
 
 // ----- Building blocks of the pages -----------------------------------------------------------
@@ -2351,6 +2453,41 @@ mod tests {
     fn started(words: &[&str]) -> Ui {
         let args: Vec<String> = words.iter().map(|word| word.to_string()).collect();
         Ui::new(Launch::parse(&args).expect("valid parameters")).0
+    }
+
+    /// Issues #264, #473, #475: on an account's page the sidebar and the menu list every account
+    /// beside it; the open section again leads back up to the list, another account opens its page,
+    /// and either closes the menu.
+    #[test]
+    fn an_accounts_page_keeps_the_sections_navigation() {
+        let mut ui = started(&["--demo", "--open", "account-detail"]);
+        let open = ui.accounts.selected.clone().expect("an account is open");
+        let children = ui.children();
+        assert!(children.len() > 1, "the accounts beside it");
+        assert!(children.iter().filter(|(_, _, press)| press.is_none()).count() == 1, "the open one marked");
+        // Issue #473: the section's menu stays in the header of medium and narrow windows.
+        assert!(ui.page_back().is_some(), "a page below the section");
+        let forms: Vec<HeadForm> =
+            [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow].map(|class| head_form(class, true)).to_vec();
+        assert_eq!(forms, [HeadForm::Path, HeadForm::MenuThenPage, HeadForm::MenuOfPage]);
+        assert_eq!(head_form(SizeClass::Narrow, false), HeadForm::Menu);
+        assert_eq!(head_form(SizeClass::Wide, false), HeadForm::Title);
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
+            let _ = ui.header(class, &Anchor::new());
+        }
+        let _ = (ui.sidebar(SidebarMode::Expanded), ui.nav_menu());
+        // Another account from the menu: its page, the menu closed.
+        let other = children.iter().find_map(|(_, _, press)| press.clone()).expect("another account");
+        ui.menu = Some(Menu::Nav);
+        let _ = ui.update(other);
+        assert!(ui.menu.is_none(), "the menu closes");
+        assert!(ui.accounts.selected.as_ref().is_some_and(|id| *id != open), "the other account is open");
+        // The open section again: back to the list, the menu closed.
+        ui.menu = Some(Menu::Nav);
+        let _ = ui.update(Message::Select(Section::Accounts));
+        assert!(ui.menu.is_none() && ui.accounts.selected.is_none(), "up to the list");
+        assert_eq!(ui.section, Section::Accounts);
+        assert!(ui.children().is_empty(), "the list has no children");
     }
 
     /// Issue #279: the control centre itself is one per person. A start with a target (a page, the

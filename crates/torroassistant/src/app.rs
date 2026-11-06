@@ -1063,6 +1063,11 @@ impl App {
             Message::SettingsPage(message) => {
                 let outcome = {
                     let Some(pane) = self.settings.as_mut() else { return Task::none() };
+                    // A row of the section menu that the page drew itself (the way up from a bot,
+                    // issue #473) ends the menu, as the host's own rows do; ticks leave it open.
+                    if settings::leaves_page(&message) {
+                        pane.host.close_menu();
+                    }
                     let action = settings::update(&mut pane.sections, message, pane.host.data());
                     pane.host.act(action)
                 };

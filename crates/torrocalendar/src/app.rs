@@ -273,13 +273,7 @@ fn settings_page<'a>(data: &'a torro_settings_ui::Data, section: &str) -> Page<'
 
 /// One section's page with its messages wrapped in [`SettingsMessage`].
 fn wrap<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> SettingsMessage) -> Page<'a, SettingsMessage> {
-    Page {
-        body: page.body.map(into),
-        sub_page: page.sub_page.map(|(name, back)| (name, into(back))),
-        actions: page.actions.into_iter().map(|action| action.map(into)).collect(),
-        save_bar: page.save_bar.map(|bar| bar.map(into)),
-        max_width: page.max_width,
-    }
+    page.map(into)
 }
 
 /// A state the window can start in (`--demo --open <state>`), so that every state can be
@@ -2249,13 +2243,7 @@ impl App {
     /// The header bar and the content area of the open settings, as the host draws them.
     fn settings_frame<'a>(&'a self, pane: &'a SettingsPane, class: SizeClass) -> torro_settings_ui::Frame<'a, Message> {
         let page = settings_page(pane.host.data(), pane.host.current().id);
-        let page = Page {
-            body: page.body.map(Message::SettingsPage),
-            sub_page: page.sub_page.map(|(name, back)| (name, Message::SettingsPage(back))),
-            actions: page.actions.into_iter().map(|action| action.map(Message::SettingsPage)).collect(),
-            save_bar: page.save_bar.map(|bar| bar.map(Message::SettingsPage)),
-            max_width: page.max_width,
-        };
+        let page = page.map(Message::SettingsPage);
         pane.host.view(class, page, Message::SettingsHost)
     }
 

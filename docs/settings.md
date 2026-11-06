@@ -68,7 +68,8 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
   nur für viele gleichartige Dinge; die Wertspalten bleiben so breit wie bei `content_max`, #464) · Einstellungspaare (`setting_pairs`, links Titel und Warum-Satz,
   rechts das Bedienelement) · Speicherleiste. Keine Statistik als Einstellungszeile, jede Zahl nur
   einmal. In der linken Liste steht das offene Objekt als Kind seines Abschnitts
-  (`sidebar_branch_quiet`); ein Klick auf den Abschnitt führt zur Liste zurück. Größen,
+  (`sidebar_branch_quiet`), unter Accounts und AI mit allen Konten daneben (`Page::siblings`, #475;
+  das offene markiert, ein Klick öffnet ein anderes); ein Klick auf den Abschnitt führt zur Liste zurück. Größen,
   Zeitpunkte und Zahlen kommen aus `torro_gui::units` (`format_bytes`, `format_count`) und
   `torro_gui::datetime` (`format_moment`, den genauen Wert mit `format_exact` als Tooltip). Erste
   Seite nach diesem Muster: Mail › Accounts › Konto (Overview · Writing · Folders · Backup); die
@@ -131,7 +132,10 @@ Warum: Bis dahin öffnete das Zahnrad jeder App die Steuerzentrale als eigenes F
   ein Klick dort (ein Chat, ein Kalender, eine Liste) schließt die Einstellungen und öffnet ihn.
 - **Kopfleiste** (44): „← Settings › <Abschnitt>“. Der Pfeil, Esc oder ein zweiter Klick aufs
   Zahnrad führen zurück dorthin, wo man war. Das Zahnrad ist hervorgehoben, solange die
-  Einstellungen offen sind.
+  Einstellungen offen sind; es steht oben, rechts und zur Linie darunter gleich weit vom Rand (#474).
+  Jeder Schritt des Pfads vor dem letzten ist klickbar (`widgets::path_step`, #264): „Settings“ öffnet
+  den ersten Abschnitt, der Abschnitt führt von einer Unterseite zu seiner Seite zurück; was offen ist,
+  steht fett und führt nirgends hin. Ebenso in der Steuerzentrale („Accounts › ein Konto“).
 - **Links im Inhalt die Abschnitte** als ruhige Liste (Zeilen wie in der Seitenleiste, ohne
   Rahmen), rechts die Seite. Eine Seite besteht aus Gruppen wie in der Steuerzentrale (Überschrift,
   Zeilen, erklärender Satz). Unterseiten öffnen sich an derselben Stelle, der Pfad wird länger.
@@ -139,7 +143,10 @@ Warum: Bis dahin öffnete das Zahnrad jeder App die Steuerzentrale als eigenes F
   Design und Zoom gelten für alle Apps) und „All settings ↗“ (öffnet die Steuerzentrale bei General).
 - **Kleiner werden** wie überall (Design-Skill, Abschnitt 0): Mittel zeigt die Abschnitte als Menü
   in der Kopfleiste („Reminders ▾“), Schmal als Liste, aus der ein Abschnitt als eigene Seite mit
-  „‹ Back“ aufgeht.
+  „‹ Back“ aufgeht. Auf einer Unterseite bleibt das Menü erreichbar (#473): Mittel „‹ [Accounts ▾] ›
+  ein Konto“, Schmal „‹ [ein Konto ▾]“. Das Menü zeigt die Abschnitte und unter dem offenen dieselben
+  Kinder wie die Liste; ein Klick auf den offenen Abschnitt führt zu seiner Seite zurück. Gleich in der
+  Steuerzentrale.
 - **Direkt öffnen**: `--settings <abschnitt>` in jeder App (auch mit `--demo`, für die
   Sichtprüfung), seit #408 auch `appearance` und `general` (im Assistenten `suite-general`), die eine App
   ohne Hauptanwendung zeigt ([einzelne-apps.md](einzelne-apps.md)); mit Hauptanwendung bleibt das Wort ohne

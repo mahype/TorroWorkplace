@@ -2530,13 +2530,7 @@ fn settings_page<'a>(
 
 /// One section's page with its messages wrapped in [`SettingsMessage`].
 fn wrap_settings<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> SettingsMessage) -> Page<'a, SettingsMessage> {
-    Page {
-        body: page.body.map(into),
-        sub_page: page.sub_page.map(|(name, back)| (name, into(back))),
-        actions: page.actions.into_iter().map(|action| action.map(into)).collect(),
-        save_bar: page.save_bar.map(|bar| bar.map(into)),
-        max_width: page.max_width,
-    }
+    page.map(into)
 }
 
 /// Today in the computer's zone, for the dates the period filters of the search write (issue #336);
@@ -5209,6 +5203,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 return Task::batch(tasks);
             }
             Message::SettingsPage(message) => {
+                // A row of the section menu that the page drew itself (another account, the way up,
+                // issue #473) ends the menu, as the host's own rows do; ticks and typing leave it.
+                if let SettingsMessage::Mail(mail) = &message
+                    && settings_mail::leaves_page(mail)
+                    && let Some(pane) = self.settings.as_mut()
+                {
+                    pane.host.close_menu();
+                }
                 // "Choose…" on a backup page: the window opens the system's chooser, never the page.
                 if let SettingsMessage::Mail(mail) = &message
                     && let Some(chooser) = settings_mail::backup_chooser(mail)
@@ -8128,13 +8130,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// The header bar and the content area of the open settings, as the host draws them.
     fn settings_frame<'a>(&'a self, pane: &'a SettingsPane, class: SizeClass) -> torro_settings_ui::Frame<'a, Message> {
         let page = settings_page(&pane.sections, pane.host.data(), pane.host.current().id);
-        let page = Page {
-            body: page.body.map(Message::SettingsPage),
-            sub_page: page.sub_page.map(|(name, back)| (name, Message::SettingsPage(back))),
-            actions: page.actions.into_iter().map(|action| action.map(Message::SettingsPage)).collect(),
-            save_bar: page.save_bar.map(|bar| bar.map(Message::SettingsPage)),
-            max_width: page.max_width,
-        };
+        let page = page.map(Message::SettingsPage);
         pane.host.view(class, page, Message::SettingsHost)
     }
 
