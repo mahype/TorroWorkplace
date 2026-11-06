@@ -1,7 +1,8 @@
 # Release-Pipeline
 
-Stand: 2026-10-22 (Apps eigenständig, #279; Entwurf von 2026-10-11, Aufgabe K.16). Nichts davon ist veröffentlicht: kein Tag, keine Repositories,
-keine Secrets. Alles, was ein Secret braucht, ist abgeschaltet, bis die Checkliste unten abgehakt ist.
+Stand: 2026-11-06 (Pakete je App, #411/#478; Apps eigenständig, #279; Entwurf von 2026-10-11, Aufgabe K.16). Nichts
+davon ist veröffentlicht: kein Tag, keine Repositories, keine Secrets. Alles, was ein Secret braucht, ist abgeschaltet,
+bis die Checkliste unten abgehakt ist.
 
 **Schritt für Schritt für 0.1.0:** [release-0.1.0.md](release-0.1.0.md).
 
@@ -9,8 +10,8 @@ Ziel: `git tag v0.1.0 && git push --tags` baut die ganze Suite (`torroworkplace`
 `torro-inbox-notifications`, `torrocalendar`, `torrotasks`, `torroassistant`) für Linux, macOS und Windows, legt sie in ein GitHub Release und aktualisiert die
 Paketquellen.
 
-Künftig ist jede App auch einzeln herunterladbar und läuft ohne Hauptanwendung; Pakete je App, das
-Release-Skript dafür und der App-Katalog kommen mit #411 ([einzelne-apps.md](einzelne-apps.md)).
+Jede App ist einzeln installierbar und läuft ohne Hauptanwendung: Jedes Paket bringt den Hintergrunddienst mit
+(#411, [einzelne-apps.md](einzelne-apps.md)). Welche Pakete es je System gibt, steht unter „Pakete je App“.
 
 ## Empfehlung
 
@@ -19,9 +20,9 @@ Release-Skript dafür und der App-Katalog kommen mit #411 ([einzelne-apps.md](ei
 | Baustein | Aufgabe | Wer |
 |---|---|---|
 | `dist-workspace.toml` + `.github/workflows/release.yml` | Binärarchive für 5 Ziele, Shell-/PowerShell-Installer, Homebrew-Formeln, GitHub Release | `dist` (Workflow ist generiert, nicht von Hand ändern) |
-| `.github/workflows/publish-aur.yml` | sieben AUR-Pakete `-bin` und `torro-suite` aktualisieren | automatisch nach dem Release („custom publish job“) oder von Hand |
-| `.github/workflows/publish-macos-app.yml` | signierte, notarisierte `.app`-Bündel: sieben Apps, das Service-Bündel im Workplace-Bündel und die Erinnerung | automatisch nach dem Release („custom publish job“) oder von Hand |
-| `packaging/` | `.desktop`-Dateien, Icons, PKGBUILD-Vorlagen, Meta-Formel, Brewfile, Scoop-Manifest der Suite | von Hand |
+| `.github/workflows/publish-aur.yml` | AUR-Pakete aktualisieren: Dienst `torroworkplace-bin`, sechs App-Pakete `-bin`, Hauptanwendung `torro-workplace`, `torro-suite` | automatisch nach dem Release („custom publish job“), erst mit der Variable `AUR_ENABLED=true` |
+| `.github/workflows/publish-macos-app.yml` | signierte, notarisierte `.app`-Bündel: sieben Apps, jede mit dem Service-Bündel, und die Erinnerung | automatisch nach dem Release („custom publish job“) oder von Hand |
+| `packaging/` | `.desktop`-Dateien, Icons, PKGBUILD-Vorlagen, Meta-Formel, Brewfile, Scoop-Manifeste je App | von Hand |
 
 Gründe:
 
@@ -58,20 +59,64 @@ Gründe:
 | 5 | CI `build-local-artifacts` | Baut je Ziel `.tar.xz` (Windows `.zip`) mit Binary, Lizenzen, README: macOS arm64 (`macos-14`), macOS x86_64 (`macos-15-intel`), Linux x86_64 (`ubuntu-22.04`), Linux arm64 (`ubuntu-22.04-arm`), Windows (`windows-2022`). |
 | 6 | CI `build-global-artifacts` | Erzeugt Shell-/PowerShell-Installer je App, Homebrew-Formeln, `sha256.sum`, `source.tar.gz`. |
 | 7 | CI `host` | Legt das GitHub Release an und lädt alle Dateien hoch. |
-| 8 | CI Publish-Jobs | macOS-`.app.zip` (signiert, notarisiert) ans Release. Noch abgeschaltet: Homebrew-Tap, AUR. |
+| 8 | CI Publish-Jobs | macOS-`.app.zip` (signiert, notarisiert) ans Release; AUR, sobald `AUR_ENABLED=true` gesetzt ist (sonst überspringt der Job alles). Noch abgeschaltet: Homebrew-Tap. |
 | 9 | CI `announce` | Schließt den Lauf ab. |
 
 Wo die Artefakte landen: GitHub Release `v0.1.0` im Repository (Archive, Installer, Formeln, Prüfsummen);
-Tap `mahype/homebrew-torro` (`Formula/*.rb`); AUR-Repositories `torroworkplace-bin`, `torroinbox-bin`, `torro-inbox-mail-bin`,
-`torro-inbox-notifications-bin`, `torrocalendar-bin`, `torrotasks-bin`, `torroassistant-bin` und `torro-suite`.
+Tap `mahype/homebrew-torro` (`Formula/*.rb`); AUR-Repositories `torroworkplace-bin`, `torro-workplace`, `torroinbox-bin`,
+`torro-inbox-mail-bin`, `torro-inbox-notifications-bin`, `torrocalendar-bin`, `torrotasks-bin`, `torroassistant-bin` und
+`torro-suite`.
 
 Pull Requests und Merges starten keinen Workflow (`pr-run-mode = "skip"`, `ci.yml` nur bei Tags und von
 Hand): Jede Minute auf GitHub Actions kostet Geld, macOS- und Windows-Runner ein Vielfaches. Die Prüfungen
 laufen lokal mit `scripts/ci-local.sh`, automatisch über die Git-Hooks in `.githooks/`. Ein Tag startet das
 Release, und das ruft zuerst `ci.yml` auf (`plan-jobs`: clippy, Design-Check und Tests auf Linux, macOS,
 Windows). Schlägt eine Prüfung fehl, baut es nichts und veröffentlicht nichts; `release.yml` trägt dafür eine
-Handänderung am Job `host` (`allow-dirty = ["ci"]`, nach `dist generate` wieder einsetzen). Vor einem Tag
+Handänderung am Job `host` (`allow-dirty = ["ci"]`). Solange diese Zeile gilt, lässt `dist generate` die
+`release.yml` unverändert. Zum Neuerzeugen die Zeile kurz auskommentieren, `dist generate`, Zeile zurück,
+Handänderung (`host` braucht `custom-ci`) wieder einsetzen, `dist plan --tag v<version>`. Vor einem Tag
 lässt sich die CI von Hand starten: `gh workflow run CI --ref main`. Eine geänderte `dist`-Konfiguration prüft `dist plan` lokal.
+
+## Pakete je App
+
+Seit #411 (#478) ist jede App ein eigenes Paket, das den Hintergrunddienst (`torroworkplace`) mitbringt. Die
+Hauptanwendung (Tray-Icon, Steuerzentrale, App-Katalog) ist ein Paket für sich; wer nur eine App installiert,
+bekommt den Dienst ohne Tray-Icon ([einzelne-apps.md](einzelne-apps.md), Entscheidung 1). Mail und App Feed bringen
+zusätzlich den Notification Hub mit, weil sie dessen Fenster zum Verfassen öffnen.
+
+| System | eine App | Hauptanwendung | ganze Suite |
+|---|---|---|---|
+| macOS (Bündel) | `<App>.app` mit eingebettetem `Torro Workplace Service.app` | `Torro Workplace.app` (ebenfalls mit Service-Bündel) | alle Bündel |
+| AUR | `<bin>-bin`, hängt an `torroworkplace-bin` (Mail, App Feed auch an `torroinbox-bin`) | `torro-workplace` (`arch=any`, `.desktop` und Icon, hängt an `torroworkplace-bin`) | `torro-suite` |
+| Homebrew | `mahype/torro/<bin>`, `depends_on "mahype/torro/torroworkplace"` (Mail, App Feed auch `torroinbox`) | `mahype/torro/torroworkplace` | `torro-suite` oder Brewfile |
+| Scoop | `<bin>`: eigene `.zip` plus die von `torroworkplace` (Mail, App Feed auch `torroinbox`) in einem Ordner | `torroworkplace` | `torro-suite` |
+
+- **AUR:** `torroworkplace-bin` enthält nur das Programm und die systemd-Einheit, keinen Starter-Eintrag. Der
+  Eintrag `torro-workplace.desktop` kommt allein mit `torro-workplace`; an ihm erkennt der Dienst die
+  Hauptanwendung. Vorlagen: `PKGBUILD.core.in` (Dienst), `PKGBUILD.in` (Apps), `PKGBUILD.main.in`
+  (Hauptanwendung), `PKGBUILD.suite.in`.
+- **Homebrew:** Die Abhängigkeit steht in `[package.metadata.dist.dependencies.homebrew]` der sechs App-Crates, mit
+  `stage = ["run"]`: Ohne Stufe installierte `dist` das Paket auf den Build-Runnern, statt es in die Formel zu
+  schreiben. `dist build --artifacts=global` zeigt die Formeln mit `depends_on`. Auf macOS liefert Homebrew nur
+  die Programme für das Terminal; Bündel kommen aus dem Release oder dem App-Katalog.
+- **Scoop:** Jedes App-Manifest legt `bin` und Startmenü-Eintrag nur für das eigene Programm an, damit sich die
+  Kopien des Dienstes nicht in die Quere kommen. Der Eintrag „Torro Workplace“ kommt nur mit `torroworkplace.json`.
+- **macOS:** Jede Kopie des Service-Bündels ist gleich (`io.github.mahype.torro-workplace-service`, dasselbe
+  Team), sonst fragte der Schlüsselbund je Kopie neu. Die Suite startet die Kopie mit der höchsten
+  `CFBundleShortVersionString` in `<App>.app/Contents/Library/LoginItems/Torro Workplace Service.app/Contents/Info.plist`.
+- Die nackten Archive und Installer je Programm bleiben ohne Dienst: Wer unter Linux oder Windows eine App so von
+  Hand lädt, braucht `torroworkplace` dazu, und es entsteht kein Starter-Eintrag.
+
+**Dateinamen im Release** (der App-Katalog sucht genau diese, `<bin>` = `AppId::program_file`):
+
+| System | Datei | Prüfsumme |
+|---|---|---|
+| Linux | `<bin>-x86_64-unknown-linux-gnu.tar.xz`, `<bin>-aarch64-unknown-linux-gnu.tar.xz` (ein Ordner `<bin>-<ziel>/` mit Programm, Lizenzen, README) | `<datei>.sha256` |
+| Windows | `<bin>-x86_64-pc-windows-msvc.zip` (Programm, Lizenzen, README ohne Ordner) | `<datei>.sha256` |
+| macOS, Terminal | `<bin>-aarch64-apple-darwin.tar.xz`, `<bin>-x86_64-apple-darwin.tar.xz` | `<datei>.sha256` |
+| macOS, Bündel | `<bin>-aarch64-apple-darwin.app.zip`, `<bin>-x86_64-apple-darwin.app.zip`; für die Erinnerung `torro-reminder-<arch>-apple-darwin.app.zip` | `<datei>.sha256` |
+
+Dazu je Programm `<bin>-installer.sh`, `<bin>-installer.ps1`, `<bin>.rb` und für alle `sha256.sum`, `source.tar.gz`.
 
 ## Pro Betriebssystem
 
@@ -99,14 +144,16 @@ Suite heißt also sieben Aufrufe oder das geplante `install.sh` (siehe `docs/res
   (`AppId::window_class`), damit Hyprland-Regeln und Launcher das Fenster zuordnen. Die Icons sind die echten
   (`packaging/linux/icons/*.svg`, Variante „red“, flach mit 4 % Rand).
 - systemd-Nutzereinheit für den Kern: `packaging/linux/torroworkplace.service` (`/usr/bin/torroworkplace daemon`).
-- AUR: sieben `-bin`-Pakete, eines je Programm: `torroworkplace-bin`, `torroinbox-bin`, `torro-inbox-mail-bin`,
-  `torro-inbox-notifications-bin`, `torrocalendar-bin`, `torrotasks-bin`, `torroassistant-bin` (je `x86_64` und
-  `aarch64`, Quelle ist das Release-Archiv, Prüfsummen setzt `updpkgsums`). Mail und App Feed hängen an
-  `torroinbox-bin`, weil sie das Verfassen dort öffnen. Das Metapaket `torro-suite` (`arch=any`, nur `depends`)
-  hängt an allen sieben.
-  Vorlagen: `packaging/aur/PKGBUILD.in`, `PKGBUILD.suite.in`. Der Job nutzt
+- AUR: sieben `-bin`-Pakete, eines je Programm: `torroworkplace-bin` (nur der Dienst: Programm und
+  systemd-Einheit), `torroinbox-bin`, `torro-inbox-mail-bin`, `torro-inbox-notifications-bin`, `torrocalendar-bin`,
+  `torrotasks-bin`, `torroassistant-bin` (je `x86_64` und `aarch64`, Quelle ist das Release-Archiv, Prüfsummen setzt
+  `updpkgsums`). Jedes App-Paket hängt an `torroworkplace-bin`; Mail und App Feed auch an `torroinbox-bin`, weil sie
+  das Verfassen dort öffnen. Die Hauptanwendung ist das Paket `torro-workplace` (`arch=any`, `.desktop`-Eintrag und
+  Icon, hängt an `torroworkplace-bin`). Das Metapaket `torro-suite` (`arch=any`, nur `depends`) hängt an allen.
+  Vorlagen: `packaging/aur/PKGBUILD.core.in`, `PKGBUILD.in`, `PKGBUILD.main.in`, `PKGBUILD.suite.in`. Der Job nutzt
   `KSXGitHub/github-actions-deploy-aur` (Eingaben `pkgname`, `pkgbuild`, `updpkgsums`, `test`,
-  `ssh_private_key`, `commit_username`, `commit_email`).
+  `ssh_private_key`, `commit_username`, `commit_email`). Er hängt am Release (`publish-jobs`), jeder seiner Jobs
+  läuft aber nur mit der Repository-Variable `AUR_ENABLED=true`.
 
 ### macOS
 
@@ -121,16 +168,20 @@ Suite heißt also sieben Aufrufe oder das geplante `install.sh` (siehe `docs/res
   Release, `packaging/macos/make-app.sh` baut das Bündel (Info.plist aus `Info.plist.in`, `.icns` aus dem
   1024-px-PNG in `packaging/macos/icons/`), dann `codesign --options runtime`, `xcrun notarytool submit --wait`,
   `xcrun stapler staple`, `ditto` zu `<bin>-<arch>-apple-darwin.app.zip`, Upload ans Release.
-- **Sieben Bündel, dazu Service-Bündel und Reminder** (#279, [lebenszyklus.md](lebenszyklus.md)): Torro Workplace,
-  Torro Notification Hub, Torro Workplace Mail, Torro App Feed, Torro Calendar, Torro Tasks und Torro Assistant,
-  je mit der Bundle-ID `io.github.mahype.<fensterklasse>`. In „Torro Workplace.app“ steckt unter
-  `Contents/Library/LoginItems/` das Service-Bündel „Torro Workplace Service.app“ (`io.github.mahype.torro-workplace-service`,
-  `LSUIElement`, ohne Dock-Icon): Aus ihm läuft der Dienst, damit ein Doppelklick auf „Torro Workplace“ bei
-  laufendem Dienst die Steuerzentrale öffnet. Dazu kommt „Torro Reminder.app“ (Agent, das Binary des Kalenders
-  als `torro-reminder`). Die Matrix des Workflows hat je Eintrag zwei Zeilen (arm64 und x86_64).
-- **Signaturreihenfolge:** erst das eingebettete Service-Bündel (sein Programm, dann das Bündel), dann das
-  Programm des äußeren Bündels, zuletzt das äußere Bündel; sonst bricht dessen Siegel. `codesign --verify --deep
-  --strict` prüft alles zusammen. Notarisiert wird das äußere Bündel mit dem eingebetteten.
+- **Sieben Bündel, jedes mit Service-Bündel, dazu der Reminder** (#279, #411, [lebenszyklus.md](lebenszyklus.md)):
+  Torro Workplace, Torro Notification Hub, Torro Workplace Mail, Torro App Feed, Torro Calendar, Torro Tasks und
+  Torro Assistant, je mit der Bundle-ID `io.github.mahype.<fensterklasse>`. In jedem steckt unter
+  `Contents/Library/LoginItems/` das Service-Bündel „Torro Workplace Service.app“
+  (`io.github.mahype.torro-workplace-service`, `LSUIElement`, ohne Dock-Icon, gebaut aus dem Archiv
+  `torroworkplace-<arch>-apple-darwin.tar.xz`): Aus ihm läuft der Dienst, damit jede App ohne Hauptanwendung
+  läuft und ein Doppelklick auf „Torro Workplace“ bei laufendem Dienst die Steuerzentrale öffnet. Dazu kommt
+  „Torro Reminder.app“ (Agent, das Binary des Kalenders als `torro-reminder`, ohne Service-Bündel, das bringt der
+  Kalender mit). Die Matrix des Workflows hat je Eintrag zwei Zeilen (arm64 und x86_64); Einträge mit
+  `service: "1"` laden das Archiv des Dienstes dazu. Jedes Bündel wird um das Programm des Dienstes größer.
+- **Signaturreihenfolge** (von innen nach außen): erst das eingebettete Service-Bündel (sein Programm, dann das
+  Bündel), dann das Programm des äußeren Bündels, zuletzt das äußere Bündel; sonst bricht dessen Siegel.
+  `codesign --verify --deep --strict` prüft alles zusammen. Notarisiert wird jedes äußere Bündel einzeln, mit dem
+  eingebetteten.
 - **Icons:** die echten, Variante „red“ aus `docs/prototypes/icons/red/` (AP.6/AP.7). macOS mit Big-Sur-Rand und
   Schatten (`packaging/macos/icons/*.png`, 1024 px), Linux und Windows flach mit 4 % Rand
   (`packaging/linux/icons/*.svg`, `packaging/windows/*.ico`). Das Service-Bündel trägt das Icon des Workplace,
@@ -159,9 +210,9 @@ Suite heißt also sieben Aufrufe oder das geplante `install.sh` (siehe `docs/res
   signiert `cargo run` über den Runner in `.cargo/config.toml` jedes Programm mit diesem Zertifikat und der
   Kennung `io.github.mahype.dev.<name>`; wer die Binaries anders startet, signiert sie mit
   `scripts/macos-dev-sign.sh`. Ohne das Zertifikat (CI, andere Rechner) tun beide nichts.
-  Die Entwicklungs-Bündel baut `scripts/macos-dev-bundles.sh` aus `target/debug` (neun Bündel, auch in einen
-  übergebenen Ordner); es signiert mit diesem Zertifikat und ohne es ad hoc als Ganzes, damit `codesign
-  --verify` die Bündel annimmt. Der Dienst im Service-Bündel behält dabei die Kennung des Programms
+  Die Entwicklungs-Bündel baut `scripts/macos-dev-bundles.sh` aus `target/debug` (acht Bündel, sieben davon mit dem
+  Service-Bündel, auch in einen übergebenen Ordner); es signiert mit diesem Zertifikat und ohne es ad hoc als
+  Ganzes, damit `codesign --verify` die Bündel annimmt. Der Dienst im Service-Bündel behält dabei die Kennung des Programms
   `torroworkplace` (`io.github.mahype.dev.torroworkplace`), damit die Schlüsselbund-Einträge lesbar bleiben.
 - Homebrew: `dist` erzeugt nur Formeln (kein Cask). Ein Cask für die `.app.zip` kann später von Hand in
   `Casks/` des Taps liegen; Versions- und Prüfsummen-Update müsste ein eigener Schritt übernehmen.
@@ -174,18 +225,22 @@ Suite heißt also sieben Aufrufe oder das geplante `install.sh` (siehe `docs/res
   GitHub-Environment `release`); früher nur SSL.com eSigner. Für 0.1.0 nicht eingeschaltet.
 - Der Tray-Dienst ist unter Windows noch nicht implementiert (`tray/` kennt nur Linux). Das Release baut
   trotzdem, die CI ist auf allen drei Systemen grün.
-- Scoop später: ein Bucket `mahype/scoop-torro` mit **einem Manifest für die ganze Suite**
-  (`packaging/scoop/torroworkplace.json`, `checkver`/`autoupdate`): alle sieben Programme landen in einem Ordner,
-  wo Apps und Dienst einander finden, und `shortcuts` legt sieben Startmenü-Einträge an. Installieren:
-  `scoop install torroworkplace`. Mail und App Feed sind eigene Programme, weil Windows die Taskleiste nach
-  `.exe` gruppiert und das eingebettete Icon zeigt ([lebenszyklus.md](lebenszyklus.md), Entscheidung 8).
+- Scoop später: ein Bucket `mahype/scoop-torro` mit **einem Manifest je App** (#411, `packaging/scoop/`,
+  `checkver`/`autoupdate`): Jedes lädt die `.zip` seiner App und die von `torroworkplace` (Mail und App Feed auch
+  `torroinbox`) in einen Ordner, wo die App den Dienst findet; `bin` und `shortcuts` gelten nur für das eigene
+  Programm. `torroworkplace.json` ist die Hauptanwendung, `torro-suite.json` hängt an allen. Installieren:
+  `scoop install torrocalendar`, `scoop install torroworkplace` oder `scoop install torro-suite`. Mail und App
+  Feed sind eigene Programme, weil Windows die Taskleiste nach `.exe` gruppiert und das eingebettete Icon zeigt
+  ([lebenszyklus.md](lebenszyklus.md), Entscheidung 8).
 - Die Programme sind GUI-Programme ohne Konsolenfenster; die Apps starten den Dienst selbst, losgelöst.
 
 ### Homebrew-Tap
 
 - Repository `mahype/homebrew-torro` (Name muss mit `homebrew-` beginnen). `dist` schreibt
   `Formula/torroworkplace.rb`, `torroinbox.rb`, `torro-inbox-mail.rb`, `torro-inbox-notifications.rb`,
-  `torrocalendar.rb`, `torrotasks.rb`, `torroassistant.rb` bei jedem Release.
+  `torrocalendar.rb`, `torrotasks.rb`, `torroassistant.rb` bei jedem Release. Jede App-Formel trägt
+  `depends_on "mahype/torro/torroworkplace"` (Mail und App Feed auch `torroinbox`), aus
+  `[package.metadata.dist.dependencies.homebrew]` im `Cargo.toml` des Crates.
 - Die Suite als Ganzes: Meta-Formel `torro-suite` (`packaging/homebrew/torro-suite.rb`, einmal von Hand in den
   Tap legen) oder das Brewfile (`brew bundle --file=packaging/homebrew/Brewfile`).
 - Formeln sind nur für fertige Archive möglich (kein Bauen aus dem Quelltext). Linux-Nutzer von Homebrew
@@ -204,7 +259,8 @@ Reihenfolge ist egal, außer wo vermerkt. Erst wenn ein Punkt erledigt ist, die 
 - [ ] Im Repository: Settings → Actions → „Workflow permissions“ auf Lesen und Schreiben (Release anlegen).
 - [ ] Eine `dist`-Version ≥ 0.33 prüfen: `dist init` aktualisiert Konfiguration und Workflow. Vorsicht:
       0.33 liegt nicht auf crates.io, sondern nur als GitHub-Release.
-- [ ] `release.yml` nicht von Hand ändern, immer `dist generate` nach Änderungen an `dist-workspace.toml`.
+- [ ] `release.yml` nicht von Hand ändern (außer der Handänderung am Job `host`), immer `dist generate` nach
+      Änderungen an `dist-workspace.toml`, wie oben unter „Ablauf eines Releases“ beschrieben.
 
 ### Homebrew-Tap
 
@@ -219,11 +275,13 @@ Reihenfolge ist egal, außer wo vermerkt. Erst wenn ein Punkt erledigt ist, die 
 
 - [ ] AUR-Konto, SSH-Schlüsselpaar nur für CI erzeugen, öffentlichen Teil im AUR-Konto eintragen.
 - [ ] Secrets `AUR_SSH_PRIVATE_KEY`, `AUR_USERNAME`, `AUR_EMAIL`.
-- [ ] Prüfen, ob die Paketnamen `torroworkplace-bin`, `torroinbox-bin`, `torro-inbox-mail-bin`,
+- [ ] Prüfen, ob die Paketnamen `torroworkplace-bin`, `torro-workplace`, `torroinbox-bin`, `torro-inbox-mail-bin`,
       `torro-inbox-notifications-bin`, `torrocalendar-bin`, `torrotasks-bin`, `torroassistant-bin`, `torro-suite` frei sind.
 - [ ] Neuesten Tag von `KSXGitHub/github-actions-deploy-aur` prüfen und in `publish-aur.yml` eintragen
       (Entwurf nutzt `v4.1.1`, nicht verifiziert).
-- [ ] In `dist-workspace.toml` `publish-jobs` um `"./publish-aur"` erweitern, `dist generate`.
+- [x] `publish-jobs` in `dist-workspace.toml` um `"./publish-aur"` erweitert, `dist generate` (#478).
+- [ ] Repository-Variable `AUR_ENABLED` auf `true` setzen (`gh variable set AUR_ENABLED --body true`), erst wenn die
+      Punkte oben erledigt sind; bis dahin überspringt das Release die AUR-Jobs.
 - [ ] Erste Version einmal von Hand pushen oder dem Action-Lauf überlassen (er legt das Repository an).
 
 ### macOS
@@ -246,8 +304,8 @@ Achtung: Die `.p12` muss „Developer ID Application“ enthalten, nicht „Appl
 - [x] Die fünf Secrets oben in diesem Repository eingetragen (2026-10-11).
 - [x] Repository-Variable `MACOS_APP_ENABLED` auf `true` gesetzt (2026-10-11, Schalter im Workflow).
 - [x] `publish-jobs` um `"./publish-macos-app"` erweitert: Nach jedem Release entstehen signierte und
-      notarisierte Bündel (arm64 und x86_64) für alle sieben Apps und die Erinnerung; „Torro Workplace.app“ trägt
-      das Service-Bündel (#279).
+      notarisierte Bündel (arm64 und x86_64) für alle sieben Apps und die Erinnerung; jedes App-Bündel trägt
+      das Service-Bündel (#279, #411).
 - [x] Echte Icons (1024-px-PNG) in `packaging/macos/icons/`, im Workflow und in `scripts/macos-dev-bundles.sh`
       an `make-app.sh` übergeben (AP.7, #279).
 - [ ] Vor 2027-02-01: Zertifikat erneuern (siehe oben).
