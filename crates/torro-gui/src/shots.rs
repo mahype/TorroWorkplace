@@ -43,7 +43,7 @@ pub const SIZES: [(&str, Size); 6] = [
 pub const SCALE: f32 = 2.0;
 
 /// The flags whose values name the view in a file, in this order.
-const NAMING_FLAGS: [&str; 25] = [
+const NAMING_FLAGS: [&str; 24] = [
     "--view",
     "--section",
     "--settings",
@@ -65,7 +65,6 @@ const NAMING_FLAGS: [&str; 25] = [
     "--reply-all",
     "--forward",
     "--account",
-    "--setup",
     "--step",
     "--mail-view",
     "--mail-colors",
@@ -251,6 +250,10 @@ impl Shots {
                 prefix.push('-');
                 prefix.push_str(value);
             }
+        }
+        // The setup of the control centre is a switch without a value, and a window of its own.
+        if args.iter().any(|arg| arg == "--setup") {
+            prefix.push_str("-setup");
         }
         Ok(Some(Shots { dir: PathBuf::from(dir), prefix: file_safe(&prefix), sizes, index }))
     }
@@ -475,6 +478,16 @@ mod tests {
         let line = ["--demo", "--shots", "a", "--open", "detail", "--shots", "b", "--open", "pr", "--chat=new"];
         let shots = Shots::from_args("torroassistant", &args(&line)).expect("valid").expect("asked for");
         assert_eq!((shots.dir(), shots.prefix.as_str()), (Path::new("a"), "torroassistant-detail-new"));
+    }
+
+    /// PR review of #492: `--setup` of the control centre is a switch without a value; it is named as
+    /// one and must not take the next word as its value.
+    #[test]
+    fn a_switch_is_no_naming_flag() {
+        for line in [&["--demo", "--shots", "d", "--setup"][..], &["--demo", "--setup", "--shots", "d"]] {
+            let named = Shots::from_args("torroworkplace", &args(line)).expect("valid").expect("asked for");
+            assert_eq!((named.dir(), named.prefix.as_str()), (Path::new("d"), "torroworkplace-setup"), "{line:?}");
+        }
     }
 
     /// Review of #492: one size per process, an empty folder is no folder.
