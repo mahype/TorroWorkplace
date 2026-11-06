@@ -468,9 +468,9 @@ async fn serve(shows: Shows, takeover: bool) -> Result<(), String> {
     // channel as a quit. The job runner of the app catalog (#479) calls it after a job, and finds the
     // newest copy the way the apps do when they start the service (#477).
     core.catalog().set_hand_over(hand_over_fn(quit_tx.clone()));
-    core.catalog().set_newest_service(Arc::new(|| {
+    core.catalog().set_newest_service(Arc::new(|except: Option<&std::path::Path>| {
         let exe = std::env::current_exe().ok();
-        torro_gui::source::newest_service(exe.as_deref(), torro_gui::source::home_dir().as_deref())
+        torro_gui::source::newest_service_except(exe.as_deref(), torro_gui::source::home_dir().as_deref(), except)
     }));
 
     let daemon = Arc::new(Daemon {

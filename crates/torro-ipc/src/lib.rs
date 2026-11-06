@@ -5827,7 +5827,8 @@ pub struct ManagedBy {
 pub struct AppJobInfo {
     /// The job's id, for [`Request::AppJob`] and [`Request::CancelAppJob`].
     pub id: String,
-    /// Window classes of the apps it handles; `torroworkplace` is the main application.
+    /// Window classes of the apps it was asked for (`torro-workplace` is the main application); what
+    /// they bring along (the Notification Hub for Mail) has steps of its own but is not listed here.
     pub apps: Vec<String>,
     pub kind: AppJobKind,
     /// The steps in order, for every app of the job.
@@ -5839,8 +5840,9 @@ pub struct AppJobInfo {
     /// `cancelled` or `error`. Never the output of a program the core ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// The service restarts when the job is done (the main application was updated, or the service
-    /// ran from a bundle that was removed): the control centre waits for the new one.
+    /// The service restarts with the main application when the job is done (it was updated): the
+    /// control centre waits for the new one. Other jobs may hand the service over to a newer copy
+    /// too; its clients just reconnect.
     #[serde(default)]
     pub restart: bool,
 }

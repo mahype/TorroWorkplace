@@ -45,8 +45,9 @@ use releases::{Asset, Releases, Stored};
 pub type HandOver = Arc<dyn Fn(PathBuf) + Send + Sync>;
 
 /// The newest copy of the service on this computer with its version (issue #477): on macOS the
-/// service bundles inside the apps' bundles. Wired by the daemon; by default none is known.
-pub type NewestService = Arc<dyn Fn() -> Option<(PathBuf, Version)> + Send + Sync>;
+/// service bundles inside the apps' bundles. Copies below the path given do not count (what an
+/// uninstall is about to remove). Wired by the daemon; by default none is known.
+pub type NewestService = Arc<dyn Fn(Option<&Path>) -> Option<(PathBuf, Version)> + Send + Sync>;
 
 /// How long after the start the first check runs (decision 2): late enough not to slow the start.
 const FIRST_CHECK: Duration = Duration::from_secs(60);
@@ -208,7 +209,7 @@ impl Default for Hooks {
             hand_over: Arc::new(|program: PathBuf| {
                 eprintln!("torroworkplace: a newer service is at {}; no hand-over is wired", program.display());
             }),
-            newest_service: Arc::new(|| None),
+            newest_service: Arc::new(|_| None),
         }
     }
 }
@@ -305,7 +306,7 @@ impl Catalog {
         let mut apps: Vec<AppId> = requires(app).into_iter().filter(|needed| scan.found(*needed).is_none()).collect();
         apps.push(app);
         let items = apps.iter().map(|app| self.item(*app, None, &stored)).collect::<Result<Vec<_>, _>>()?;
-        self.start(AppJobKind::Install, items, app, false)
+        self.start(AppJobKind::Install, items, &[app], app, false)
     }
 
     /// `apps.update_apps`: updates `names` in one job, the main application last.
@@ -345,7 +346,7 @@ impl Catalog {
             items.push(self.item(*app, Some(found.clone()), &stored)?);
         }
         let last = apps.last().copied().unwrap_or(AppId::WORKPLACE);
-        self.start(AppJobKind::Update, items, last, false)
+        self.start(AppJobKind::Update, items, &apps, last, false)
     }
 
     /// `apps.uninstall_app`: moves `name` to the trash, with `remove_data` its own files too.
@@ -368,6 +369,17 @@ impl Catalog {
                 &[("app", &app.display_name), ("other", &user.display_name)],
             )));
         }
+        // The service runs from this app's bundle: it hands over to the newest copy left, which must not
+        // be older than this one, or it would refuse the data this one used and no service would be left.
+        if self.inner.env.exe.as_deref().is_some_and(|exe| exe.starts_with(&found.path)) {
+            let hook = Arc::clone(&self.inner.hooks.read().unwrap_or_else(PoisonError::into_inner).newest_service);
+            if hook(Some(&found.path)).is_none_or(|(_, version)| version < Version::current()) {
+                return Err(CatalogError::Conflict(trf(
+                    "{app} brings the newest copy of the service; update Torro Workplace first.",
+                    &[("app", &app.display_name)],
+                )));
+            }
+        }
         let item = Item { app, parts: Vec::new(), found: Some(found.clone()), shared: Vec::new() };
         // Its own files, but none another installed app keeps using (the inbox's three share one).
         let shared = AppId::ALL
@@ -376,7 +388,7 @@ impl Catalog {
             .flat_map(|other| (self.inner.env.app_dirs)(*other))
             .collect();
         let item = Item { shared, ..item };
-        self.start(AppJobKind::Uninstall, vec![item], app, remove_data)
+        self.start(AppJobKind::Uninstall, vec![item], &[app], app, remove_data)
     }
 
     /// Checks on GitHub every [`WATCH_TICK`] whether the last check is a day old (decision 2), first
@@ -439,6 +451,7 @@ impl Catalog {
         &self,
         kind: AppJobKind,
         items: Vec<Item>,
+        requested: &[AppId],
         connect: AppId,
         remove_data: bool,
     ) -> Result<AppJobInfo, CatalogError> {
@@ -456,7 +469,9 @@ impl Catalog {
             }
         }
         steps.push((connect.window_class.to_string(), AppStep::Connect));
-        let apps = items.iter().map(|item| item.app.window_class.to_string()).collect();
+        // The apps asked for: what they bring along has steps of its own, but the job is about them, and
+        // a retry asks for them again.
+        let apps = requested.iter().map(|app| app.window_class.to_string()).collect();
         let job = self.inner.jobs.begin(kind, apps, steps)?;
         let info = job.info();
         let inner = Arc::clone(&self.inner);
@@ -588,9 +603,12 @@ struct Done {
 /// Runs `work` as `job` to its end, then hands the service over when that is due.
 async fn run(inner: Arc<Inner>, work: Work, job: Job) {
     let outcome = run_steps(&inner, &work, &job).await;
+    // Only the main application's update or install restarts what people see (the control centre);
+    // any other hand-over is the service's own business, its clients reconnect.
+    let main = work.kind != AppJobKind::Uninstall && work.items.iter().any(|item| item.app == AppId::WORKPLACE);
     let hand_over = match outcome {
         Ok(target) => {
-            job.finish(target.is_some());
+            job.finish(main && target.is_some());
             target
         }
         Err((app, step, fail)) => {
@@ -629,7 +647,7 @@ async fn run_steps(inner: &Arc<Inner>, work: &Work, job: &Job) -> Result<Option<
     }
     let newest = {
         let hook = Arc::clone(&inner.hooks.read().unwrap_or_else(PoisonError::into_inner).newest_service);
-        hook()
+        hook(None)
     };
     let target = hand_over_target(inner.env.exe.as_deref(), &done, newest, &Version::current());
     let detail = target.as_ref().and_then(|(_, version)| version.as_ref().map(Version::to_string));
@@ -1033,7 +1051,8 @@ pub(crate) mod tests {
         serve(&server, "0.2.0", &files).await;
         let catalog = catalog_at(env, &server);
         let started = catalog.install("torro-inbox-mail").await.expect("started");
-        assert_eq!(started.apps, ["torro-inbox", "torro-inbox-mail"]);
+        assert_eq!(started.apps, ["torro-inbox-mail"], "the job is about Mail; the hub has steps of its own");
+        assert!(started.steps.iter().any(|step| step.app == "torro-inbox" && step.step == AppStep::Install));
         assert_eq!(started.kind, AppJobKind::Install);
         assert!(started.id.len() == 16 && started.id.chars().all(|c| c.is_ascii_hexdigit()));
         let job = ended(&catalog, &started.id).await;
@@ -1136,13 +1155,13 @@ pub(crate) mod tests {
         let catalog = catalog_at(env, &server);
         let newer = dir.path().join("newer/torroworkplace.exe");
         let found = newer.clone();
-        catalog.set_newest_service(Arc::new(move || Some((found.clone(), "9.0.0".parse().expect("version")))));
+        catalog.set_newest_service(Arc::new(move |_| Some((found.clone(), "9.0.0".parse().expect("version")))));
         let handed: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
         let record = Arc::clone(&handed);
         catalog.set_hand_over(Arc::new(move |program| record.lock().expect("lock").push(program)));
         let started = catalog.update(&["torrotasks".into()]).await.expect("started");
         let job = ended(&catalog, &started.id).await;
-        assert!(job.restart, "{job:?}");
+        assert!(!job.restart, "a newer copy takes over; the control centre stays: {job:?}");
         let connect = job.steps.iter().find(|step| step.step == AppStep::Connect).and_then(|step| step.detail.clone());
         assert_eq!(connect.as_deref(), Some("9.0.0"));
         for _ in 0..100 {
@@ -1215,6 +1234,33 @@ pub(crate) mod tests {
         let kinds: Vec<_> = job.steps.iter().map(|step| step.step).collect();
         assert_eq!(kinds, [AppStep::Remove, AppStep::Connect], "no launcher entry on macOS");
         assert!(!calendar.exists() && !reminder.exists());
+    }
+
+    /// Review of #411: removing the bundle the service runs from is refused when every copy left is
+    /// older (it would refuse the data, and no service would be left); with a copy as new it goes on.
+    #[tokio::test]
+    async fn the_bundle_of_the_running_service_goes_only_with_a_copy_as_new_left() {
+        let dir = tempfile::tempdir().expect("dir");
+        let mut env = env_in(dir.path(), Platform::MacOs, &[], false);
+        let assistant = installed::tests::put_bundle(&env, "Torro Assistant", "torroassistant", "9.0.0");
+        env.exe = Some(
+            assistant.join("Contents/Library/LoginItems/Torro Workplace Service.app/Contents/MacOS/torroworkplace"),
+        );
+        let server = MockServer::start_async().await;
+        let catalog = catalog_at(env, &server);
+        let older = dir.path().join("Applications/Torro Workplace.app/Contents/MacOS/torroworkplace");
+        let left = older.clone();
+        catalog.set_newest_service(Arc::new(move |except| {
+            assert!(except.is_some_and(|except| except.ends_with("Torro Assistant.app")), "{except:?}");
+            Some((left.clone(), "0.0.1".parse().expect("version")))
+        }));
+        assert_eq!(code(catalog.uninstall("torro-assistant", false).await), Some("conflict"));
+        assert!(assistant.exists(), "nothing removed");
+        let current = Version::current();
+        catalog.set_newest_service(Arc::new(move |_| Some((older.clone(), current.clone()))));
+        let started = catalog.uninstall("torro-assistant", false).await.expect("started");
+        assert_eq!(ended(&catalog, &started.id).await.state, AppJobState::Done);
+        assert!(!assistant.exists());
     }
 
     #[tokio::test]

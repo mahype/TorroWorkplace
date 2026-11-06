@@ -221,7 +221,8 @@ impl Job {
         running.info.error = Some(code.to_string());
     }
 
-    /// Every step is done; `restart` when the service hands over now.
+    /// Every step is done; `restart` when the main application was updated and the service hands over
+    /// to its new copy now.
     pub fn finish(&self, restart: bool) {
         let mut board = self.board.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(running) = board.running.as_mut().filter(|running| running.info.id == self.id) else { return };
