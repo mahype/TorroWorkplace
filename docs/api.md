@@ -894,7 +894,9 @@ alle außer `apply_filter` als lokal (sie ändern nichts auf einem Server).
 
 ²⁹ **„Nicht eingeordnet“ hält nur „Sonstiges“** (#402): `create_category`, `update_category` und `move_category` mit der
 Gruppe `unsorted` sind für jede andere Kategorie als `other` ein `error`, bei `move_category` schon vor der Freigabe. Eine
-Kategorie, die vor dieser Regel dort lag, bleibt und lässt sich weiter ändern. **Vorrang zwischen Kategorien** (Issue #481, Konzept [kategorien.md](kategorien.md#vorrang)): Passen Sortierregeln
+Kategorie, die vor dieser Regel dort lag, bleibt und lässt sich weiter ändern.
+
+**Vorrang zwischen Kategorien** (Issue #481, Konzept [kategorien.md](kategorien.md#vorrang)): Passen Sortierregeln
 oder Mail-Filter mehrerer Kategorien auf eine Mail, gewinnt die Kategorie, die in `inbox.list_categories` weiter oben
 steht (Gruppen von oben, darin Kategorien von oben); eine gemerkte Regel „Always for this sender?“ geht allen vor, die
 eingebaute Regel der Kontakte greift erst nach allen. `inbox.move_category { category, group, position }` setzt eine

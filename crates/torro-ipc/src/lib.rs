@@ -2868,8 +2868,8 @@ pub enum Request {
         /// "Later" (task E9.1): `false` leaves out messages whose inbox entry is snoozed now and
         /// puts messages that came back from it (their `back`) by the time
         /// they came back instead of their date (not with `sort: relevance`); such mail comes from any
-        /// folder but archive, trash and spam whatever `in:` the query says (a `folder` still holds),
-        /// and `total_estimate` does not count it from other folders. `true` gives only the snoozed
+        /// folder but archive, trash and spam when the query asks for `in:inbox`; any other `in:` or
+        /// none holds for it too, and so does a `folder` given. `total_estimate` does not count it from other folders. `true` gives only the snoozed
         /// ones. Left out: every message, by date. Filtered before paging, so pages and
         /// `cursor` hold; a cursor belongs to this field as well. Only for accounts whose inbox
         /// entries the caller sees (read access to `inbox`, the account among `inbox_sources`);
