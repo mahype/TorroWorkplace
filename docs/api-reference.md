@@ -2956,7 +2956,7 @@ Hides one announcement (an `id` from list_announcements) for good, in every wind
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `id` | string | ja |  |
+| `id` | string | ja | The announcement's id, from `apps.list_announcements`. |
 
 ### `apps.open_app`
 

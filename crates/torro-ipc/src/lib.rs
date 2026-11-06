@@ -1647,7 +1647,10 @@ pub enum Request {
     /// [`Response::Ok`]; `not-found` for an id of no announcement, `error` when the list of hidden
     /// ones cannot be read or written.
     #[serde(rename = "apps.dismiss_announcement")]
-    DismissAnnouncement { id: String },
+    DismissAnnouncement {
+        /// The announcement's id, from `apps.list_announcements`.
+        id: String,
+    },
 
     // Agents and scripts. Only the app key may send these; a client key gets `forbidden`.
     /// All clients with their rights, never with keys ([`Response::Clients`]).
