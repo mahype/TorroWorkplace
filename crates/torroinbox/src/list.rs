@@ -401,7 +401,7 @@ impl LineWords {
             Some(name) if mailbox => (Some(name.to_owned()), most),
             Some(name) => {
                 let room = account_width(name).min(most);
-                let name_room = room - cell_gap() - account_air();
+                let name_room = room - account_width("");
                 (Some(typo::ellipsize(name, typo::meta(), name_room)).filter(|a| !a.is_empty()), room)
             }
             None => (None, 0.0),
@@ -1741,7 +1741,8 @@ impl MailboxForm {
             .into_iter()
             .find(|form| column(*form) <= room)
             .unwrap_or(MailboxForm::Dot);
-        (form, column(form))
+        // Even the dot keeps to the room: in a line too narrow for it the subject comes first.
+        (form, column(form).min(room.max(0.0)))
     }
 
     /// `mailbox` in this form: the address, its domain, or nothing beside the dot.
@@ -2612,9 +2613,17 @@ mod tests {
                 last = form;
                 for (mailbox, (columns, shown)) in &rows {
                     assert_eq!(shown.domain, None, "{width}: no mailbox after the recipients");
-                    assert_eq!(shown.account_column, Some(column), "{width}: one column, the dots on one axis");
+                    assert_eq!(shown.account_column, Some(column), "{width}: one column for every row");
+                    if !line_narrow(width) {
+                        // The column ends where the title cell does, the same in every row of a wide
+                        // line, so the dots stand on one axis; a narrow line gives each row's time its
+                        // own width (issue #291), and the column moves with it.
+                        let end = columns.starts()[2] + columns.title;
+                        let first = rows[0].1.0.starts()[2] + rows[0].1.0.title;
+                        assert_eq!(end, first, "{width}: the dots on one axis");
+                    }
                     let account = shown.account.clone().expect("the account's dot always stands");
-                    assert!(typo::text_width(&account, meta) < column, "{width}: in its column");
+                    assert!(account_width(&account) <= column, "{width}: {account:?} in its column");
                     assert!(column <= columns.title * LINE_MAILBOX_SHARE, "{width}: at most half the title cell");
                     let tip = (account != *mailbox).then(|| (*mailbox).to_owned());
                     assert_eq!(shown.account_tip, tip, "{width}: shorter, the address as tooltip");
