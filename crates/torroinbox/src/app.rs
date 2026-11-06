@@ -5408,8 +5408,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::ContextAction(action) => {
                 self.menu = None;
-                self.context_point = None;
+                let point = self.context_point.take();
                 let result = self.handle(*action);
+                // "Save mail as" (issue #501): its formats open where the context menu stood.
+                if self.menu == Some(Menu::SaveMailFormat) {
+                    self.context_point = point;
+                }
                 self.menu_at = MenuAt::Row;
                 return result;
             }
@@ -6291,6 +6295,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// a target, or asks the system's save dialog first ([`Message::SaveMailChosen`]).
     fn save_mail_act(&mut self, id: String, format: ExportFormat, act: mail::FileAct) -> Task<Message> {
         self.menu = None;
+        self.context_point = None;
         match act {
             mail::FileAct::Downloads => self.save_mail(id, format, SaveTo::Downloads),
             mail::FileAct::Target(target) => self.save_mail(id, format, SaveTo::Target(target)),
@@ -10800,11 +10805,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.file_menu(None).map(|card| widgets::floating(&save_rail_at, below, card, Message::CloseMenu))
             }
             // Issue #501: the formats of the context menu's "Save mail as", at the row.
-            // Only the wide window keeps the row in view beside the reader; medium and narrow open the
-            // reader over it, so there they hang at the rail's floppy disk (design review of #501).
-            Some(Menu::SaveMailFormat) => self.save_format_menu().map(|menu| {
-                let at = if class == SizeClass::Wide { &rows.row } else { &anchors.rail.save };
-                widgets::floating(at, Placement::Beside, menu, Message::CloseMenu)
+            // Where the context menu stood (issue #497) in the wide window, which keeps the row in view
+            // beside the reader; medium and narrow open the reader over it, so there they hang at the
+            // rail's floppy disk (design review of #501).
+            Some(Menu::SaveMailFormat) => self.save_format_menu().map(|menu| match class == SizeClass::Wide {
+                true => {
+                    let (spot, placement) = context_spot(self.context_point, &rows.row);
+                    widgets::floating(&spot, placement, menu, Message::CloseMenu)
+                }
+                false => widgets::floating(&anchors.rail.save, Placement::Beside, menu, Message::CloseMenu),
             }),
             // At its item of the rail beside it, as "Save attachments (n)"; from the context menu where
             // the formats' menu was.
@@ -10813,9 +10822,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     ExportFormat::Pdf => &save_pdf_at,
                     ExportFormat::Png => &save_image_at,
                 };
-                match from_panel || class == SizeClass::Wide {
-                    true => widgets::floating(at, below, card, Message::CloseMenu),
-                    false => widgets::floating(&anchors.rail.save, Placement::Beside, card, Message::CloseMenu),
+                match (from_panel, class == SizeClass::Wide) {
+                    (true, _) => widgets::floating(at, below, card, Message::CloseMenu),
+                    (false, true) => {
+                        let (spot, placement) = context_spot(self.context_point, &rows.row);
+                        widgets::floating(&spot, placement, card, Message::CloseMenu)
+                    }
+                    (false, false) => {
+                        widgets::floating(&anchors.rail.save, Placement::Beside, card, Message::CloseMenu)
+                    }
                 }
             }),
         };
@@ -17349,7 +17364,8 @@ mod tests {
         assert_eq!(app.sent.last(), Some(&Sent::SaveTargets("m:p3".into())));
         let _ = app.update(Message::CloseMenu);
 
-        let _ = app.update(Message::ContextMail("m:p3".into()));
+        let point = Point::new(40.0, 20.0);
+        let _ = app.update(Message::ContextMail("m:p3".into(), point));
         assert_eq!(app.menu, Some(Menu::MailContext));
         let groups = app.rail_groups(SizeClass::Wide, &detail::Anchors::default()).expect("the rail");
         let context = mail::context_groups(groups, "m:p3");
@@ -17366,6 +17382,7 @@ mod tests {
         draw_everywhere(&mut app);
         let _ = app.update(Message::ContextAction(Box::new(Message::AskSaveMailFormat("m:p3".into()))));
         assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::SaveMailFormat), false), "at the row");
+        assert_eq!(app.context_point, Some(point), "where the context menu stood (issue #497)");
         draw_everywhere(&mut app);
         let _ = app.update(Message::AskSaveMailAs("m:p3".into(), ExportFormat::Png));
         assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::SaveMail(ExportFormat::Png)), false), "same place");
