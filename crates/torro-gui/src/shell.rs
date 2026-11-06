@@ -978,13 +978,21 @@ fn header_padded<'a, M: 'a>(header: Element<'a, M>, class: SizeClass) -> Element
     container(header).width(Fill).height(Fill).center_y(Fill).padding(Padding::new(0.0).left(left).right(right)).into()
 }
 
-/// `header`, then the settings button and the gap to the window's edge.
+/// `header`, then the settings button and the gap to the window's edge ([`settings_gap`]).
 fn head_row<'a, M: Clone + 'a>(top: &TopRow<M>, header: Element<'a, M>) -> iced::widget::Row<'a, M> {
     let mut row = row![header];
     if let Some(on_press) = top.settings.clone() {
-        row = row.push(settings_button(on_press, top.settings_open)).push(blank().width(space::s()));
+        row = row.push(settings_button(on_press, top.settings_open)).push(blank().width(settings_gap(top.zoom)));
     }
     row.align_y(Alignment::Center)
+}
+
+/// The gap right of the settings button, in layout units, at the zoom factor `zoom` (issue #474): as
+/// wide as the room above and below the button, which sits in the middle of the row over the line, so
+/// it stands the same distance from the top, the right edge and the line. The button keeps the size of
+/// every icon button; the gap shrinks to nothing rather than below.
+fn settings_gap(zoom: f32) -> f32 {
+    ((TOP_ROW / zoom - LINE - size::control_sm()) / 2.0).max(0.0)
 }
 
 /// The settings button of the top row: [`SETTINGS_ICON`], "Settings", marked while `open` like a
@@ -1614,6 +1622,17 @@ mod tests {
     enum Msg {
         Switcher(Switcher),
         Close,
+    }
+
+    #[test]
+    fn the_settings_button_stands_as_far_from_the_right_edge_as_from_the_top_and_the_line() {
+        // At zoom 1 the row is TOP_ROW high: the button in its middle over the line leaves the same
+        // room above and below, and the gap to the right edge matches it.
+        let gap = settings_gap(1.0);
+        assert!(gap > 0.0);
+        assert!((gap + size::control_sm() + gap + LINE - TOP_ROW).abs() < 0.001, "{gap}");
+        // A zoom that leaves no room above and below leaves none to the right either.
+        assert_eq!(settings_gap(10.0), 0.0);
     }
 
     #[test]
