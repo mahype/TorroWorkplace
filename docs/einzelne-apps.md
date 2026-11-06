@@ -1,8 +1,8 @@
 # Einzelne Apps: jede App ohne Hauptanwendung
 
 Stand: 2026-10-30, entschieden in der Planung von Issue #408 (Themen-Issue mit den Sub-Issues #412–#415).
-Konten in den Apps kamen mit #410, Pakete, Release und App-Katalog folgen mit #411; was dort noch zu planen ist, steht unter
-„Drei Themen“.
+Konten in den Apps kamen mit #410, Pakete, Release und App-Katalog mit #411 (Abschnitte „Pakete je App“,
+„App-Katalog“ und „Mehrere Kopien des Dienstes“).
 
 ## Ziel
 
@@ -68,7 +68,9 @@ Der Dienst entscheidet das selbst (`apps::main_app_installed`), der Reihe nach:
 3. **Linux und übriges Unix:** `applications/torro-workplace.desktop` liegt unter `$XDG_DATA_HOME` (leer oder
    ungesetzt: `$HOME/.local/share`) oder unter einem Eintrag von `$XDG_DATA_DIRS` (leer oder ungesetzt:
    `/usr/local/share:/usr/share`).
-4. **Windows:** gilt als installiert, bis #411 die Pakete je App bringt.
+4. **Windows:** Der Startmenü-Eintrag `Torro Workplace.lnk` liegt bis zwei Ordner tief unter
+   `%APPDATA%\Microsoft\Windows\Start Menu\Programs` oder `%ProgramData%\Microsoft\Windows\Start Menu\Programs`
+   (#411; ihn legen das Scoop-Manifest `torroworkplace.json` und der App-Katalog an).
 
 `apps.list_apps` meldet das Ergebnis im Feld `main_app`. Fehlt das Feld (ein älterer Kern), gilt `true`, damit
 nichts umschaltet. Die Apps lesen `main_app` **nur aus der Antwort des Dienstes**: Startet der Dienst eine App über
@@ -93,10 +95,73 @@ Hyprland-Konfiguration. Wer so arbeitet, setzt `TORRO_MAIN_APP=1` dort, wo der D
 Die Seiten Appearance und General stehen einmal in `torro-settings-ui` (`suite.rs`); Steuerzentrale und Apps
 nutzen dieselben Seiten.
 
+## Pakete je App (#411)
+
+Jede App gibt es einzeln, und jede bringt den Dienst mit. Einzelheiten zum Bauen: [release.md](release.md).
+
+| System | Was eine App mitbringt |
+|---|---|
+| macOS | Ihr Bündel enthält „Torro Workplace Service.app“ unter `Contents/Library/LoginItems/`; signiert und notarisiert wird je Bündel, von innen nach außen. Der Kalender bringt zusätzlich „Torro Reminder.app“ mit. |
+| Linux (AUR) | Jedes App-Paket hängt an `torroworkplace-bin` (nur Dienst und systemd-Einheit), Mail und App Feed auch an `torroinbox-bin`. Die Hauptanwendung ist das eigene Paket `torro-workplace` (Starter-Eintrag und Icon), `torro-suite` zieht alle. |
+| Homebrew | Jede Formel hängt an `mahype/torro/torroworkplace`, Mail und App Feed auch an `torroinbox`. |
+| Windows (Scoop) | Jedes Manifest lädt die eigene `.zip` und `torroworkplace` dazu (Mail und App Feed auch `torroinbox`), Verknüpfung nur für die eigene App. `torroworkplace.json` ist die Hauptanwendung, `torro-suite.json` alle. |
+
+Die Archive und Installer je Programm im Release bleiben ohne Dienst: Wer unter Linux oder Windows eine App so von
+Hand lädt, braucht `torroworkplace` dazu. Diese Archive legen auch keinen Starter-Eintrag bzw. keine
+Startmenü-Verknüpfung an; ohne sie gilt die Hauptanwendung als nicht installiert, und der Dienst läuft still.
+
+## Mehrere Kopien des Dienstes (#411)
+
+Bringt jede App den Dienst mit, liegen oft mehrere Kopien auf dem Rechner. Es startet immer die neueste, und eine
+ältere arbeitet nie auf Daten, die eine neuere schon benutzt hat ([lebenszyklus.md](lebenszyklus.md),
+Entscheidung 10):
+
+- **Welche startet:** macOS die Kopie mit der höchsten Version aus den Bündeln aller Apps (neben dem eigenen Bündel,
+  in `/Applications`, in `~/Applications`); bei Gleichstand die in „Torro Workplace.app“, dann die im eigenen Bündel.
+  Linux und Windows haben nur die eine Kopie aus dem Paket.
+- **Datenschutz:** `<state>/service-version` hält die höchste Version, die auf den Daten lief. Ein älterer Dienst
+  startet nicht und nennt beide Versionen.
+- **Ablösen:** Nach einer Installation oder einem Update mit neuerer Kopie startet der laufende Dienst die neue mit
+  `daemon --takeover` und endet ohne Quit-Marke.
+- **Start beim Anmelden** zeigt nach jedem Start auf den laufenden Dienst.
+
+## App-Katalog (#411)
+
+Der Abschnitt **Apps** der Steuerzentrale (gleich nach Overview, `--section apps`) zeigt die Hauptanwendung und jede
+App mit Icon, Frage, Beschreibung und Version: installierte oben, fehlende darunter. Entwurf:
+[prototypes/app-catalog/index.html](prototypes/app-catalog/index.html); wo der Plan zu #411 abweicht, gilt der Plan
+(kein Sortieren, keine Listenansicht, kein „Reinstall“, keine Karte „Coming soon“).
+
+Entschieden mit dem Plan zu #411:
+
+1. **Installieren wie die Hauptanwendung.** Kam sie über AUR, Homebrew oder Scoop (erkannt am Pfad des Programms),
+   zeigt jede Karte „Managed by …“ mit dem Befehl zum Kopieren, statt selbst zu installieren. Sonst installiert der
+   Katalog selbst; auf macOS immer selbst.
+2. **Prüfen ohne Schalter:** Der Dienst fragt 60 s nach dem Start, dann täglich und beim Öffnen von Apps die
+   Releases auf GitHub (`releases/latest`). Innerhalb von fünf Minuten antwortet er aus dem letzten Stand (Grenze von
+   GitHub). Ohne Netz bleibt der letzte Stand mit dem Hinweis „Couldn't reach GitHub.“
+3. **Ein/Aus** einer App (die Komponente) steht im Menü „…“ ihrer Karte; eine ausgeschaltete App zeigt „Turned off“.
+4. **Mail und App Feed bringen den Notification Hub mit,** weil sie dessen Programm zum Verfassen brauchen. Den Hub
+   entfernen geht erst, wenn beide fehlen. Verworfen: das Verfassen in Mail einbauen (baut den Eingang um).
+5. **Ein Update ersetzt eine laufende App sofort;** offene Fenster nutzen die neue Version nach dem Schließen.
+   Verworfen: auf das Schließen warten, weil die Kacheln dauernd offen sind.
+
+Installieren, Aktualisieren und Entfernen laufen als **Auftrag** im Dienst, einer zur Zeit, mit den Schritten
+Download, Check signature (macOS: `codesign`, Team `2GA7DQ3P3Z`; sonst SHA-256), Install und Connect to the service.
+Abbrechen geht nur beim Download. Die Steuerzentrale zeigt den Auftrag in einem kleinen eigenen Fenster ohne Rahmen
+(`torroworkplace ui --app-job=<id>`); Entfernen fragt vorher, ob auch die Daten der App auf diesem Rechner gehen
+(Konten bleiben, andere Apps nutzen sie). Entfernte Apps gehen in den Papierkorb. Das Update der Hauptanwendung
+startet danach Dienst und Steuerzentrale neu. In Entwicklungs-Builds antworten Installieren, Aktualisieren und
+Entfernen mit `unsupported`.
+
 ## Oberfläche, API, MCP
 
 | Funktion | Oberfläche | API | MCP |
 |---|---|---|---|
 | Ist die Hauptanwendung installiert? | Apps entscheiden danach, was sie zeigen | `apps.list_apps`, Feld `main_app` | `apps_list_apps` |
 | Aussehen, Sprache, Start beim Anmelden | Steuerzentrale bzw. App | `settings.set_setting`, Listen der Designs, Schriften, Farbschemata | `settings_*` (vorhanden) |
+| Apps mit Versionen, auf Updates prüfen | Abschnitt Apps | `apps.list_catalog`, `apps.check_updates` | `apps_list_catalog`, `apps_check_updates` |
+| Stand eines Auftrags, Abbrechen | Fenster des Auftrags | `apps.app_job`, `apps.cancel_app_job` | `apps_app_job`, `apps_cancel_app_job` |
+| App entfernen | Menü „…“ › Uninstall… | `apps.uninstall_app` (Admin) | `apps_uninstall_app`, immer mit Freigabe |
+| App installieren, aktualisieren (auch „Update all“ und die Hauptanwendung) | Knopf der Karte, „Update all“ | `apps.install_app`, `apps.update_apps` (nur App-Schlüssel) | keins: Wer installiert, entscheidet, welcher Code läuft (Punkt 11 in „Was nie nach außen geht“, [api.md](api.md)) |
 | Dienst beenden | Tray › Quit bzw. App › General › Background service › „Quit…“ | `system.quit` (nur App-Schlüssel) | keins, siehe „Was nie nach außen geht“ in [api.md](api.md) |
