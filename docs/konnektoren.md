@@ -50,8 +50,9 @@ Wie jede Funktion gibt es das dreimal: in der Oberfläche, über die API und üb
 4. **Wieder einschalten nur ein Mensch.** `connectors.set_enabled` mit `enabled: true` hält
    `Request::kept_for_people`: Jeder Client bekommt `forbidden`, auch mit Admin-Rechten; ausschalten darf
    ein Agent, als gewöhnliche Admin-Änderung mit Freigabe (wie das Mikrofon). Kippt der Schalter, während das
-   Teilen-Blatt offen ist, antwortet `send_message` `forbidden` und das Blatt zeigt „Sending is switched off“. Wie das Mikrofon und die MCP-Server ([api.md](api.md), „Was nie nach außen geht“, Punkte 6
-   und 10). Neuer **Punkt 12** der Liste.
+   Teilen-Blatt offen ist, antwortet `send_message` `forbidden` und das Blatt zeigt „Sending is switched off“.
+   Das gilt wie beim Mikrofon und bei den MCP-Servern ([api.md](api.md), „Was nie nach außen geht“, Punkte 6
+   und 10); der Fall wird als neuer **Punkt 12** der Liste vorgeschlagen.
 5. **Discord: nur Webhook oder Bot** (offen bis K2). Discord erlaubt kein Senden über das eigene
    Benutzerkonto ([eingang.md](eingang.md): „Discord als Benutzer: kein erlaubter Weg“).
 6. **Ziele werden beim Senden gemerkt,** es gibt keine eigene Einstellungsseite dafür (siehe „Gemerkte
@@ -222,3 +223,11 @@ Erläuterungen:
 **Später und ausgeklammert:** eingehende Nachrichten (gehören in den Eingang), Warteschlange bei Fehlern,
 Format-Umbau je Dienst (Markdown nach Slack-mrkdwn), Größenwarnungen, weitere Dienste (Matrix, Teams,
 Mattermost), Threads als Ziel, Anmeldung per OAuth.
+
+## Offen
+
+- **Kennung des Slack-Kontos:** `slack:<team_id>:<user_id>` muss mit der Kennung der Eingangsquelle `slack:<x>`
+  ([eingang.md](eingang.md)) abgestimmt werden, bevor K1 die Rechte-Auswahlen `Rights::connectors` und
+  `inbox_sources` für dasselbe Konto anlegt; sonst führt ein Konto zwei Schreibweisen.
+- **Anmeldung per Browser (OAuth)** für Slack: höchstens später (Entscheidung 2).
+- **Discord:** Webhook oder Bot, entschieden zu Beginn von K2 (Entscheidung 5).
