@@ -1,0 +1,173 @@
+/* Entwürfe des Chats (#470): Seite und Fenster. Farben und Schrift aus ../linear/torro.css (dort dunkel als
+   Standard, [data-theme="light"] hell); Maße nach dem Standard-Design seit #291 (Text 14/22, Knöpfe 36, obere
+   Zeile 40, Radius 4), weil torro.css noch die älteren Maße trägt. Status wie torro-core/src/theme.rs. */
+
+:root{ --ok:#28CD41; --attention:#FF9500; --error:#FF3B30; --line-selected:rgba(255,255,255,.28); --on-accent:#fff;
+  --scrim:rgba(0,0,0,.62); --video:#1A1C20; --video-2:#23262B; }
+:root[data-theme="light"]{ --ok:#1F9D3A; --attention:#B86A00; --error:#D12A20; --line-selected:rgba(0,0,0,.32);
+  --scrim:rgba(0,0,0,.30); --video:#2A2D33; --video-2:#363A41; }
+
+html,body{height:auto}
+body{overflow:auto;font:400 14px/22px Inter,system-ui,sans-serif}
+
+/* ---------- Seite (deutsche Beschriftung) ---------- */
+.page{max-width:1180px;margin:0 auto;padding-block:40px 96px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.page h1{font-size:28px;line-height:36px;font-weight:600;margin:0 0 8px;text-wrap:balance}
+.page h2{font-size:22px;line-height:28px;font-weight:600;margin:0 0 6px;text-wrap:balance}
+.page p{margin:0 0 10px;max-width:72ch;color:var(--text2)}
+.page .lead{font-size:16px;line-height:26px}
+.page section{margin-top:56px;display:flex;flex-direction:column;gap:6px}
+.page code{font:500 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text);background:var(--raised);border:1px solid var(--line-strong);border-radius:4px;padding:2px 5px}
+.notes{margin:4px 0 0;padding:0 0 0 18px;color:var(--text2);max-width:80ch}
+.notes li{margin:4px 0}
+
+.controls{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;margin-top:24px;padding:12px 0;background:var(--bg);border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:12px 28px}
+.crow{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.crow .olbl{font-size:12px;font-weight:500;color:var(--text3);margin-right:4px}
+.crow button{height:30px;padding:0 12px;border-radius:4px;border:1px solid var(--line-strong);background:var(--raised);color:var(--text2);font:500 12px/1 Inter,sans-serif;cursor:pointer}
+.crow button:hover{background:var(--hover);color:var(--text)}
+.crow button[aria-pressed="true"]{background:var(--selected);border-color:var(--line-selected);color:var(--text)}
+.crow button:focus-visible,.win button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+
+.stage{display:flex;flex-wrap:wrap;gap:32px;align-items:flex-start;margin-top:14px;overflow-x:auto;padding:4px 2px 12px}
+.cap{font-size:12px;line-height:16px;font-weight:500;color:var(--text3);margin:0 0 8px}
+.desk{position:relative;border-radius:8px;background:repeating-linear-gradient(135deg,var(--raised) 0 12px,var(--bg) 12px 24px);border:1px solid var(--line);padding:24px}
+
+/* ---------- Fenster (englische Oberfläche wie in der App) ---------- */
+.win{position:relative;flex:none;background:var(--panel);color:var(--text);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;user-select:none}
+svg[data-i]{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+svg[data-i].s14{width:14px;height:14px}
+.top{height:40px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;border-bottom:1px solid var(--line)}
+.lights{display:flex;gap:8px;margin-right:6px}
+.lights i{width:12px;height:12px;border-radius:50%;background:var(--line-strong)}
+.top b{font-weight:500}
+.grow{flex:1;min-width:0}
+.ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.ibtn{width:36px;height:36px;display:grid;place-items:center;border-radius:4px;border:0;background:none;color:var(--text2);padding:0;cursor:pointer}
+.ibtn:hover{background:var(--hover);color:var(--text)}
+.ibtn.on{background:var(--selected);color:var(--text)}
+.cbtn{height:36px;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 12px;border-radius:4px;border:1px solid var(--line-strong);background:var(--raised);color:var(--text);font:500 12px/1 Inter,sans-serif;white-space:nowrap;cursor:pointer}
+.cbtn:hover{background:var(--hover);border-color:var(--line-selected)}
+.cbtn.ghost{border-color:transparent;background:none;color:var(--text2)}
+.cbtn.ghost:hover{background:var(--hover);color:var(--text)}
+.cbtn.primary{background:var(--accent);border-color:transparent;color:var(--on-accent)}
+.cbtn.primary:hover{filter:brightness(.92)}
+.cbtn.lg{height:40px;padding:0 16px}
+.cbtn.round{width:48px;height:48px;padding:0;border-radius:50%}
+.cbtn.round svg{width:20px;height:20px}
+.cbtn.off{background:var(--selected);border-color:var(--line-selected)}
+kbd.k{font:500 11px/1 Inter,sans-serif;color:var(--text3);border:1px solid var(--line-strong);border-radius:4px;padding:2px 4px}
+
+.field{height:38px;display:flex;align-items:center;gap:8px;padding:0 12px;border-radius:4px;background:var(--raised);border:1px solid var(--line-strong);color:var(--text3)}
+.field.flat{background:none;border-color:transparent}
+.seg{display:flex;height:36px;padding:2px;border-radius:4px;background:var(--bg);border:1px solid var(--line)}
+.seg span{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;border-radius:4px;font-size:12px;font-weight:500;color:var(--text3)}
+.seg span.on{background:var(--selected);color:var(--text);box-shadow:0 0 0 1px var(--line-selected)}
+
+/* Avatar mit Status-Marke. Status nie nur über Farbe: jede Marke hat ihre eigene Form,
+   und Gruppenkopf bzw. Wort nennen ihn. */
+.av{position:relative;width:32px;height:32px;border-radius:50%;flex:none;display:grid;place-items:center;font:600 12px/1 Inter,sans-serif;color:var(--text);background:color-mix(in srgb,var(--c,#5B8CFF) 26%,var(--panel))}
+.av.lg{width:48px;height:48px;font-size:16px}
+.av.xl{width:96px;height:96px;font-size:32px}
+.av .st{position:absolute;right:-2px;bottom:-2px}
+.av.lg .st{right:0;bottom:0}
+.av.xl .st{right:6px;bottom:6px}
+.st{width:12px;height:12px;border-radius:50%;flex:none;border:2px solid var(--panel);box-sizing:content-box;background:var(--ok)}
+.st.inl{border:0;width:10px;height:10px}
+.st.away{background:var(--attention);-webkit-mask:radial-gradient(circle at 28% 28%,transparent 34%,#000 36%);mask:radial-gradient(circle at 28% 28%,transparent 34%,#000 36%)}
+.st.dnd{background:linear-gradient(var(--panel),var(--panel)) center/60% 2px no-repeat,var(--error)}
+.st.off{background:none;box-shadow:inset 0 0 0 2px var(--text3)}
+.st.away:not(.inl){border:0;width:14px;height:14px}
+
+/* ---------- Kontaktliste ---------- */
+.list{flex:1;overflow:hidden;padding:4px 8px 8px}
+.ghead{display:flex;align-items:center;gap:6px;height:32px;padding:0 8px;margin-top:8px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.ghead svg{width:12px;height:12px}
+.ghead .tab{margin-left:2px}
+.person{display:flex;align-items:center;gap:10px;min-height:48px;padding:6px 8px;border-radius:4px}
+.person:hover{background:var(--hover)}
+.person.sel{background:var(--selected)}
+.person .who{display:flex;flex-direction:column;min-width:0;flex:1}
+.person .who b{font-weight:500}
+.person .who span{font-size:13px;line-height:18px;color:var(--text3)}
+.person.dim .who b{color:var(--text2)}
+.badge{min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:var(--selected);color:var(--text);font:500 12px/20px "Inter Tabular",Inter,sans-serif;text-align:center}
+.gtile{width:32px;height:32px;border-radius:4px;flex:none;display:grid;place-items:center;background:var(--selected);border:1px solid var(--line-strong);color:var(--text)}
+.foot{flex:none;border-top:1px solid var(--line);padding:8px;display:flex;flex-direction:column;gap:4px}
+.me{display:flex;align-items:center;gap:10px;height:44px;padding:0 8px;border-radius:4px}
+.me:hover{background:var(--hover)}
+.me .who{display:flex;flex-direction:column;min-width:0;flex:1}
+.me .who b{font-weight:500;font-size:13px;line-height:18px}
+.me .who span{font-size:12px;line-height:16px;color:var(--text3)}
+.pop{position:absolute;background:var(--menu);border:1px solid var(--line-strong);border-radius:8px;box-shadow:var(--shadow);padding:4px;z-index:5}
+.mi{display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;border-radius:4px;color:var(--text);white-space:nowrap}
+.mi:hover,.mi.hl{background:var(--hover)}
+.mlabel{font-size:12px;line-height:16px;font-weight:500;color:var(--text3);padding:8px 8px 4px}
+
+/* ---------- Chatfenster ---------- */
+.chead{height:56px;flex:none;display:flex;align-items:center;gap:10px;padding:0 8px 0 12px;border-bottom:1px solid var(--line)}
+.chead .who{display:flex;flex-direction:column;min-width:0}
+.chead .who b{font-weight:500}
+.chead .who span{display:flex;align-items:center;gap:6px;font-size:13px;line-height:18px;color:var(--text3)}
+.msgs{flex:1;overflow:hidden;padding:12px 16px;display:flex;flex-direction:column;gap:4px}
+.day{align-self:center;font-size:12px;line-height:16px;font-weight:500;color:var(--text3);margin:8px 0}
+.msg{max-width:78%;display:flex;flex-direction:column;gap:2px}
+.msg .bub{padding:8px 12px;border-radius:8px;background:var(--raised);border:1px solid var(--line)}
+.msg .meta{font:400 11px/14px "Inter Tabular",Inter,sans-serif;color:var(--text3);padding:0 4px;display:flex;gap:4px;align-items:center}
+.msg.mine{align-self:flex-end;align-items:flex-end}
+.msg.mine .bub{background:var(--selected);border-color:var(--line-strong)}
+.msg + .msg.mine,.msg.mine + .msg:not(.mine){margin-top:8px}
+.sys{align-self:center;display:flex;align-items:center;gap:6px;font-size:12px;line-height:16px;color:var(--text3);margin:6px 0}
+.newline{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500;color:var(--text2);margin:8px 0}
+.newline::before,.newline::after{content:"";flex:1;height:1px;background:var(--line-strong)}
+.compose{flex:none;border-top:1px solid var(--line);padding:10px 12px;display:flex;align-items:flex-end;gap:8px}
+.compose .input{flex:1;min-height:38px;display:flex;align-items:center;padding:8px 12px;border-radius:4px;background:var(--raised);border:1px solid var(--line-strong);color:var(--text3)}
+.compose .input.typed{color:var(--text);border-color:var(--focus)}
+
+/* ---------- Anrufe ---------- */
+.notif{width:360px;background:var(--menu);border:1px solid var(--line-strong);border-radius:12px;box-shadow:var(--shadow);padding:14px;display:flex;flex-direction:column;gap:12px}
+.notif .row{display:flex;align-items:center;gap:12px}
+.notif .who{display:flex;flex-direction:column;min-width:0;flex:1}
+.notif .who b{font-weight:500}
+.notif .who span{font-size:13px;line-height:18px;color:var(--text3)}
+.notif .acts{display:flex;gap:8px}
+.notif .acts .cbtn{flex:1}
+.ringing{display:flex;flex-direction:column;align-items:center;gap:6px;padding:28px 24px 20px;text-align:center}
+.ringing b{font-size:22px;line-height:28px;font-weight:600}
+.ringing span{color:var(--text3);font-size:13px;line-height:18px}
+.ringing .acts{display:flex;gap:8px;width:100%;margin-top:18px}
+.ringing .acts .cbtn{flex:1}
+.pulse{box-shadow:0 0 0 6px color-mix(in srgb,var(--text) 6%,transparent),0 0 0 14px color-mix(in srgb,var(--text) 3%,transparent)}
+
+.stagev{position:relative;flex:1;background:var(--video);overflow:hidden}
+.tile{position:absolute;border-radius:8px;background:radial-gradient(120% 90% at 50% 35%,var(--video-2),var(--video));display:grid;place-items:center;overflow:hidden}
+.tile .av{color:#fff;background:color-mix(in srgb,var(--c,#5B8CFF) 40%,var(--video))}
+.tile .name{position:absolute;left:10px;bottom:10px;display:flex;align-items:center;gap:6px;height:26px;padding:0 8px;border-radius:4px;background:rgba(0,0,0,.55);color:#fff;font-size:12px;font-weight:500}
+.tile .name svg{width:14px;height:14px}
+.tile .hint{position:absolute;top:10px;left:10px;font-size:11px;line-height:14px;color:rgba(255,255,255,.6)}
+.tile.self{border:1px solid rgba(255,255,255,.18);box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.callbar{flex:none;height:72px;display:flex;align-items:center;justify-content:center;gap:10px;border-top:1px solid var(--line);position:relative}
+.callbar .left{position:absolute;left:16px;display:flex;align-items:center;gap:8px;color:var(--text3);font-size:13px}
+.callbar .right{position:absolute;right:12px}
+
+/* Gerätewahl */
+.form{padding:16px;display:flex;flex-direction:column;gap:20px;flex:1}
+.fgroup{display:flex;flex-direction:column;gap:8px}
+.flabel{font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.select{height:38px;display:flex;align-items:center;gap:8px;padding:0 10px 0 12px;border-radius:4px;background:var(--raised);border:1px solid var(--line-strong);color:var(--text)}
+.select svg.ch{margin-left:auto;color:var(--text3)}
+.preview{aspect-ratio:16/9;max-width:100%;border-radius:8px;background:radial-gradient(120% 90% at 50% 35%,var(--video-2),var(--video));display:grid;place-items:center;position:relative}
+.preview .hint{position:absolute;left:10px;bottom:8px;font-size:11px;line-height:14px;color:rgba(255,255,255,.65);display:flex;gap:6px;align-items:center}
+.meter{display:flex;gap:3px;align-items:center;height:16px}
+.meter i{width:6px;height:12px;border-radius:2px;background:var(--line-strong)}
+.meter i.on{background:var(--ok)}
+.switch{display:flex;align-items:center;gap:10px}
+.switch .tg{width:32px;height:20px;border-radius:10px;background:var(--line-strong);position:relative;flex:none}
+.switch .tg::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--text2)}
+.switch .tg.on{background:var(--ok)}
+.switch .tg.on::after{left:14px;background:#fff}
+.dfoot{flex:none;display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--line)}
+
+@media (prefers-reduced-motion:no-preference){.crow button,.cbtn,.ibtn{transition:background-color .12s ease-out}}
+@media (max-width:640px){.page h1{font-size:24px;line-height:30px}.controls{position:static}}
