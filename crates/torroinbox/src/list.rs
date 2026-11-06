@@ -2114,7 +2114,6 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
         | View::Search(_)
         | View::All
         | View::Sent
-        | View::Archive
         | View::Trash
         | View::ReplyLater
         | View::SetAside => (tr("No messages here."), tr("Mail in this folder shows up here.")),

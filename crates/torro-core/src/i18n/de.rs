@@ -6987,6 +6987,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("filter|Read", "Gelesen"),
     ("Not flagged", "Nicht markiert"),
     ("Last 7 days", "Letzte 7 Tage"),
+    // The group "Archive" of the quick filters (issue #476).
+    ("Without archive", "Ohne Archiv"),
+    ("With archive", "Mit Archiv"),
+    ("Only archive", "Nur Archiv"),
+    ("Default", "Standard"),
     // Contacts in the core (issue #351)
     ("(empty)", "(leer)"),
     (

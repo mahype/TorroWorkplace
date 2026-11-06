@@ -293,7 +293,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Standard-Absender neuer Mails (#343) | Mail-Einstellungen › Reading & writing | `settings.set_setting` mit `mail_sender` · Admin; ein Client sieht und setzt nur Konten seiner Auswahl | `settings_set_setting` |
 | Zugangsdaten prüfen und speichern (#343) | Mail-Einstellungen › Accounts, im Konto › Settings: „Test credentials“, „Save connection“ | `accounts.reconfigure_mail` · Admin, nur App-Schlüssel | **Never** (Liste Punkt 5: ein Passwort geht hinein) |
 | Ordner auflisten | Mail-Seitenleiste | `mail.list_folders` · Read | `mail_list_folders` |
-| Suchen / Liste | Mail-Liste, Suche, Filter-Icon im Suchfeld (#336) | `mail.search_messages` · Read | `mail_search_messages` |
+| Suchen / Liste | Mail-Liste, Suche, Filter-Icon im Suchfeld (#336), dort die Gruppe „Archive“ ohne, mit oder nur Archiv (#476: `-in:archive`, `in:inbox OR in:archive`, `in:archive`) | `mail.search_messages` · Read | `mail_search_messages` |
 | Stand des Suchindex (#136) | Suchfeld: Hinweis „12 400 von 18 000 indiziert“ (Schritt 5 von #136) | `mail.index_status` · Read | `mail_index_status` |
 | Bestand und lokaler Cache (#263) | Mail-Einstellungen › Accounts, im Konto › Storage & search (#343) | `mail.account_stats`, `mail.get_cache_policy`, `mail.preview_cache` · Read; `mail.set_cache_policy` · Admin | entsprechende `mail_*`-Tools |
 | Cache und Index warten (#263) | Mail-Einstellungen › Accounts, im Konto › Storage & search (#343) | `mail.start_cache_job`, `mail.control_cache_job` · Write; `mail.cache_job_status` · Read | entsprechende `mail_*`-Tools |

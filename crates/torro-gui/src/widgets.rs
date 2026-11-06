@@ -1128,9 +1128,11 @@ pub fn sidebar_item_in<'a, M: Clone + 'a>(
 /// A sidebar row ([`sidebar_item_in`]) with `detail` as a second, quieter line under the label (a
 /// pinned folder with its account's address, issue #398): `typo::meta()` in `text_3`, label and
 /// detail each cut with "…" to the width the row has, so a long address never widens the sidebar.
-/// The row is one line of `typo::meta()` higher than a [`sidebar_item_in`] (like a [`MenuItem`]
-/// with [`MenuItem::detail`]). In the rail exactly a [`sidebar_item_in`], with the detail under the
-/// label in the tooltip.
+/// The mark and the trail stand on the label's line, the detail under the label where the label
+/// starts (issue #476), so the icons of every row stay on one axis with their names. The row is one
+/// line of `typo::meta()` higher than a [`sidebar_item_in`] (like a [`MenuItem`] with
+/// [`MenuItem::detail`]). In the rail exactly a [`sidebar_item_in`], with the detail under the label
+/// in the tooltip.
 ///
 /// ```ignore
 /// widgets::sidebar_item_detail_in(mode, Icon::Folder, "Invoices", "anna@work.example", Trail::Count(3), shown, Message::ShowFolder(id))
@@ -1236,6 +1238,12 @@ pub fn sidebar_child<'a, M: Clone + 'a>(
     sidebar_row(SidebarMode::Expanded, row, label, trail, active, on_press)
 }
 
+/// How far the second line of a sidebar row stands in ([`sidebar_item_detail_in`]): one icon and the
+/// gap after it, so the line starts under the label rather than under the mark.
+fn detail_indent() -> f32 {
+    icon::SIZE + space::s()
+}
+
 /// How far the children of a group stand in ([`sidebar_branch`], nested [`MenuItem`]s): one icon
 /// and the gap after it, so a child's mark starts where the group's label does.
 fn branch_indent() -> f32 {
@@ -1287,9 +1295,18 @@ fn sidebar_row<'a, M: Clone + 'a>(
             let height = sidebar_row_height(parts.detail.is_some());
             let name = match (parts.fold, parts.detail) {
                 // Both lines cut with "…" to the row's width: the address under a pinned folder
-                // must not make the sidebar wider (issue #398).
+                // must not make the sidebar wider (issue #398). Mark, name and trail on the first
+                // line, the address under the name (issue #476).
                 (None, Some(detail)) => {
-                    column![menu_label(label.into_fragment()), detail_line(detail.into_fragment())].width(Fill).into()
+                    let first = row![mark, menu_label(label.into_fragment())]
+                        .push(trail_view(trail))
+                        .spacing(space::s())
+                        .align_y(Alignment::Center);
+                    let second = container(detail_line(detail.into_fragment()))
+                        .width(Fill)
+                        .padding(Padding::new(0.0).left(detail_indent()));
+                    let content = column![first, second].width(Fill);
+                    return row_button(container(content).center_y(Fill).into(), style::ITEM_PADDING, height).into();
                 }
                 (None, None) => line_label(typo::body(), label),
                 (Some(open), _) => {
@@ -4220,6 +4237,28 @@ pub fn kbd<'a, M: 'a>(key: impl IntoFragment<'a>) -> Element<'a, M> {
     container(typo::text(typo::caption(), key)).padding(style::KBD_PADDING).style(style::container::kbd).into()
 }
 
+/// A key hint ([`kbd`]) on the accent surface of a primary button ("New email" of the mail window,
+/// issue #476): the key in `on_accent`, its frame `on_accent` at half strength, so the hint stays light
+/// on red at rest and on hover, where `text_3` would sink into it. While the button is off (`on` is
+/// false) both are faded to [`style::DISABLED_ALPHA`] like the button's word.
+pub fn kbd_on_accent<'a, M: 'a>(key: impl IntoFragment<'a>, on: bool) -> Element<'a, M> {
+    container(typo::text(typo::caption(), key))
+        .padding(style::KBD_PADDING)
+        .style(move |t| kbd_on_accent_style(t, on))
+        .into()
+}
+
+/// The style of [`kbd_on_accent`] in `theme`.
+fn kbd_on_accent_style(theme: &Theme, on: bool) -> container::Style {
+    let p = palette(theme);
+    let fade = if on { 1.0 } else { style::DISABLED_ALPHA };
+    container::Style {
+        text_color: Some(p.on_accent.scale_alpha(fade)),
+        border: border::rounded(radius::xs()).color(p.on_accent.scale_alpha(0.5 * fade)).width(LINE),
+        ..container::Style::default()
+    }
+}
+
 /// A row in the properties column or a floating card: 32 high, `mark` 16 in `text_3`, then
 /// `value` (text in `BODY`, pills, avatars …). With `on_press` it is a button with a hover surface
 /// that opens the editor. Its 8 inner margin is meant to stick out of the column's text edge, as
@@ -6642,6 +6681,23 @@ mod badge {
 
 #[cfg(test)]
 mod tests {
+    /// Issue #476: the key hint on a primary button is light on red in both modes – the key in
+    /// `on_accent`, its frame at half of it – and fades like the button when it is off.
+    #[test]
+    fn the_key_on_the_accent_is_light_in_both_modes() {
+        use crate::style::DISABLED_ALPHA;
+        for theme in [crate::theme::theme(), crate::theme::light()] {
+            let p = crate::theme::palette(&theme);
+            let on = super::kbd_on_accent_style(&theme, true);
+            assert_eq!(on.text_color, Some(p.on_accent));
+            assert_eq!(on.border.color, p.on_accent.scale_alpha(0.5));
+            assert!(on.border.width > 0.0, "framed like a key");
+            let off = super::kbd_on_accent_style(&theme, false);
+            assert_eq!(off.text_color, Some(p.on_accent.scale_alpha(DISABLED_ALPHA)));
+            assert_eq!(off.border.color, p.on_accent.scale_alpha(0.5 * DISABLED_ALPHA));
+        }
+    }
+
     /// Issue #422: the arrows turn once per 1.2 s and start over; a clock before the start is the
     /// start.
     #[test]

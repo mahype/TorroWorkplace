@@ -375,11 +375,9 @@ im Eingang, nur die Oberfläche teilt sich auf.
 - **Agenten und Freigaben** zeigt die Zentrale. Im App Feed lassen sie sich als Quelle zuschalten.
 - **Keine Links zu anderen Apps unten in der Seitenleiste.** Die anderen Fenster erreicht man über den
   App-Umschalter, das Tray und die Tastatur. Weniger zeigen, damit das Wichtige übersichtlich bleibt.
-- **Seitenleiste des Mail-Fensters** (E18.4, E19.4, #337, #398, #445, #455): ganz oben das **Kontenfeld** (zwei Zeilen
-  ohne Avatare: „All accounts“ über den Domains, „{n} accounts“ über den gewählten Domains oder die Domain des einen
-  Kontos über seiner Adresse; sein Menü „Show accounts“ wählt eines, mehrere oder alle, je Zeile mit der Zahl
-  ungelesener Mails in „All“ und „Only this“, unten „Manage accounts…“; die Wahl bleibt in `ui.json`), darunter
-  **New email** (Kasten-Knopf mit Taste), dann **All** (bis #445 „Unfiltered“, bis #337 „All“: der Posteingang aller
+- **Seitenleiste des Mail-Fensters** (E18.4, E19.4, #337, #398, #445, #455, #476): ganz oben **New email**, der eine
+  Primärknopf des Fensters (Akzentfarbe, Stift, Wort und Taste hell darauf; in der Leiste der Stift auf Rot; ohne
+  Mail-Konto gerahmt und abgeschaltet wie vor #476), dann **All** (bis #445 „Unfiltered“, bis #337 „All“: der Posteingang aller
   gezeigten Konten, mit der Zahl ungelesener Mails). Ein Klick auf „All“ zeigt die Liste und im breiten Fenster rechts
   die Übersicht; der Eintrag „Overview“ der Leiste (#409) entfällt, mittel und schmal öffnet sie der Knopf „Show
   overview“ in der oberen Zeile (#459, kein Pfad mehr über der Liste). Direkt darunter die **Kategorien** ohne Überschrift (die Gruppen mit
@@ -388,13 +386,25 @@ im Eingang, nur die Oberfläche teilt sich auf.
   Abstand getrennt (in der Leiste durch eine Linie), **Reply later** und **Set aside** (die beiden Stapel, mit der
   Zahl ihrer Mails), **Follow up** (ohne Zahl, an der Stelle des früheren „Later“; „Hidden“ darunter ist mit #339 entfallen), dann **Folders**
   mit **Sent** (deutsch „Gesendet“: die gesendeten Mails aller gezeigten Konten, ohne Zahl; jede Zeile nennt den
-  Empfänger und das Postfach), Archive (nur wenn ein Konto einen Archivordner hat), **Trash** (#455, „Papierkorb“: die
+  Empfänger und das Postfach), **Trash** (#455, „Papierkorb“: die
   Mails im Papierkorb aller gezeigten Konten über die Ordnerrolle, ohne Zahl; nur wenn ein Konto einen hat), den
-  angehefteten Ordnern (der Ordnername, darunter klein die Adresse des Kontos, wenn das Fenster Ordner aus mehr
-  als einem Konto hat) und **Pin folders ›** (deutsch „Ordner pinnen“). Das Menü
+  angehefteten Ordnern (Symbol und Ordnername auf einer Zeile, darunter klein die Adresse des Kontos, wenn das Fenster
+  Ordner aus mehr als einem Konto hat) und **Pin folders ›** (deutsch „Ordner pinnen“). Einen Punkt „Archive“ gibt es
+  dort seit #476 nicht mehr: Das Archiv ist die Gruppe „Archive“ im Filtermenü des Suchfelds (siehe unten). Am
+  **unteren Rand** steht das **Kontenfeld** (#476, bis dahin ganz oben; zwei Zeilen ohne Avatare: „All accounts“ über
+  den Domains, „{n} accounts“ über den gewählten Domains oder die Domain des einen Kontos über seiner Adresse; sein
+  Menü „Show accounts“ öffnet nach oben, wählt eines, mehrere oder alle, je Zeile mit der Zahl ungelesener Mails in
+  „All“ und „Only this“, unten „Manage accounts…“; die Wahl bleibt in `ui.json`), in der Leiste sein Symbol unten;
+  ohne Mail-Konto fehlt es. Das Menü
   der mittleren und schmalen Kopfleiste ordnet genauso. Das Mail-Fenster startet in „All“. Die Smart views
   „Invitations“ und „With attachments“ gibt es seit #337 nicht mehr: Einladungen sind die Kategorie „Invitation“,
-  Mail mit Anhang findet das Filter-Icon im Suchfeld (#336). Die ausgeklappte Seitenleiste lässt sich am rechten
+  Mail mit Anhang findet das Filter-Icon im Suchfeld (#336). Dessen Menü hat seit #476 am Ende der Filter die Gruppe
+  **Archive** mit drei Auswahlpunkten, von denen genau einer gilt: „Without archive“ (`-in:archive`), „With archive“
+  (ohne Suchwort `in:inbox OR in:archive`) und „Only archive“ (`in:archive`, ohne Suchwort das Archiv aller gezeigten
+  Konten, seitenweise). Standard ist in den Listen „Without archive“, sobald etwas im Suchfeld steht (auch nur ein
+  Schnellfilter) „With archive“; der geltende Punkt trägt „Default“. Wie die anderen Filter steht die Wahl als
+  Suchbegriff im Feld, „Clear filters“ setzt auf den Standard zurück. Bei „With archive“ trägt jede archivierte Mail in
+  der Zeile ein Archiv-Zeichen. Die ausgeklappte Seitenleiste lässt sich am rechten
   Rand mit der Maus breiter und schmaler ziehen (#376): zwischen drei Vierteln und dem Doppelten der Breite des
   Designs, Liste und Lesebereich behalten ihre Mindestbreite; ein Doppelklick auf den Rand stellt die Standardbreite
   her. Die Breite gilt für alle Fenster des Eingangs und bleibt in `ui.json` (Schlüssel `split.sidebar`), wie die

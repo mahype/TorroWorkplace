@@ -294,7 +294,12 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   Standard in Kopfleisten), `icon` (28×28 ghost), `boxed` (Icon-Knopf mit Rand, für „Neu“ in der
   Seitenleiste), `danger` (ghost mit `STATUS_ERROR`-Text). Wird der Primärknopf in Schmal zum Icon
   (`widgets::compact_button`), ist er 28×28 mit Icon 16 in `on_accent` – so bleibt das „+“ auf Rot
-  kräftig (5,4:1). Ansichten wechseln: `segmented` (Grund
+  kräftig (5,4:1). **Primärknopf des Mail-Fensters** ist „New email“ ganz oben in der Seitenleiste (#476): `primary`
+  über die Breite der Leiste, Stift und Wort in `on_accent`, die Taste als `widgets::kbd_on_accent` (Schrift
+  `on_accent`, Rand `on_accent` zur Hälfte), in der Leiste `compact_button` mit `primary`. Ohne Mail-Konto bleibt er
+  `boxed` und abgeschaltet – ein blasses Rot wäre hell kaum lesbar. Die rote Antworten-Gruppe der Aktionsleiste
+  (`RailGroup::accent`) steht daneben als Hauptgruppe der geöffneten Mail, nicht als zweiter Primärknopf. Ansichten
+  wechseln: `segmented` (Grund
   `BG`, aktives Segment `SELECTED` mit `LINE_SELECTED`-Kante). Speichert ein Knopf, zeigt er
   `widgets::busy_button(tr("Creating…"), style)`: volle Farbe, Icon, nimmt keinen zweiten Klick.
 - **Knopfleisten auf Karten** (E8.12): alle Knöpfe mit Wort oder keiner (`widgets::bar_words`, Schätzung
@@ -456,7 +461,8 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   Gruppe mittig unter deren Icon; die Leiste zeigt keine Kinder. Im Menü sind Kinder `MenuItem::nested()`
   (gleich eingerückt, kleineres Icon, ohne Linie).
   Eine zweite, leisere Zeile unter dem Namen (gepinnter Ordner mit der Adresse seines Kontos, #398) gibt
-  `widgets::sidebar_item_detail_in`: Unterzeile `typo::meta()` in `TEXT_3`, beide Zeilen mit „…“ gekürzt, damit die
+  `widgets::sidebar_item_detail_in`: Icon, Name und Zahl auf der ersten Zeile, die Unterzeile `typo::meta()` in `TEXT_3`
+  darunter, eingerückt bis zum Namen (#476), beide Zeilen mit „…“ gekürzt, damit die
   Seitenleiste nicht breiter wird; die Zeile ist um eine Metazeile höher; in der Leiste steht die Unterzeile im Tooltip.
 - **Aufgabenzeile:** `size::row()` hoch (48), Kreis 16 (abgehakt gefüllt in Listenfarbe mit Häkchen), Priorität als
   drei Balken (dringend: oranges Quadrat mit „!“), Titel einzeilig, rechts Listen-Etikett (Pille mit
