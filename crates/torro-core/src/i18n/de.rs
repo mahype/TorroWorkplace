@@ -7235,6 +7235,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{n} of {total}+", "{n} von {total}+"),
     ("mail|Display", "Darstellung"),
     // App catalog (issue #411)
+    ("The newest release has no apps for this system.", "Das neueste Release hat keine Apps für dieses System."),
     ("Uninstall an unknown app", "Eine unbekannte App entfernen"),
     (
         "Another app is being installed, updated or uninstalled.",
