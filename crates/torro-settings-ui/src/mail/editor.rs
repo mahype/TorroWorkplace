@@ -69,6 +69,8 @@ pub struct State {
     back_to: Option<Category>,
     /// The popover open on a category's page.
     popover: Option<Popover>,
+    /// What "Discard" goes on with: the rule a person opened from a category's page with changes.
+    then: Option<Box<Message>>,
     icon_anchor: Anchor,
     group_anchor: Anchor,
     rule_anchor: Anchor,
@@ -146,6 +148,8 @@ struct RuleForm {
     exceptions: Vec<SortCondition>,
     enabled: bool,
     tried: bool,
+    /// The category a new rule started with on a category's page (issue #481): no change yet.
+    preset: Option<Category>,
 }
 
 /// What the editor's rows and pages report.
@@ -178,6 +182,12 @@ pub enum Message {
     RuleSwitched(String, bool),
     /// "From someone in your address books" on Personal's page (issue #390): stored at once.
     ContactsPersonal(bool),
+    /// "Move up" (`up: true`) or "Move down" on a category's page: one place in its group, sent at
+    /// once.
+    Shift {
+        category: Category,
+        up: bool,
+    },
     /// For the filter dialog ([`super::filters`]): a filter's row, its switch, "Filter from a
     /// search…". [`super::categorization`] hands it on.
     Filter(filters::Message),
@@ -358,20 +368,32 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
                 exceptions: Vec::new(),
                 enabled: true,
                 tried: false,
+                preset: None,
             }));
             Action::None
         }
         Message::NewRuleIn(category) => {
             state.popover = None;
+            if state.form.as_ref().is_some_and(|form| form.dirty(data)) {
+                state.asking = Some(Ask::Discard);
+                state.then = Some(Box::new(Message::NewRuleIn(category)));
+                return Action::None;
+            }
             let back = state.open_category();
             let action = update(state, Message::NewRule, data);
             if let Some(Form::Rule(form)) = &mut state.form {
                 form.category = Some(category);
+                form.preset = Some(category);
                 state.back_to = back;
             }
             action
         }
         Message::EditRule(id) => {
+            if state.form.as_ref().is_some_and(|form| form.dirty(data)) {
+                state.asking = Some(Ask::Discard);
+                state.then = Some(Box::new(Message::EditRule(id)));
+                return Action::None;
+            }
             let back = state.open_category();
             let action = edit_rule(state, id, data);
             if matches!(state.form, Some(Form::Rule(_))) && back.is_some() {
@@ -390,6 +412,10 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
         Message::ContactsPersonal(on) => {
             Action::send(Request::SetSetting { key: SettingKey::MailContactsPersonal, value: serde_json::json!(on) })
         }
+        Message::Shift { category, up } => match shifted(data, category, up) {
+            Some(request) => Action::send(request),
+            None => Action::None,
+        },
         // Handed on by the categorization before it gets here.
         Message::Filter(_) => Action::None,
         Message::Shown(category, shown) => Action::send(shown_request(data, category, shown)),
@@ -413,6 +439,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
                 return Action::None;
             }
             // A question open: Escape and "‹ Back" take it back first.
+            state.then = None;
             if state.asking.take().is_some() {
                 return Action::None;
             }
@@ -432,9 +459,20 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             Action::None
         }
         Message::Answer(go) => {
+            let then = state.then.take();
             let Some(asked) = state.asking.take() else { return Action::None };
             if !go {
                 return Action::None;
+            }
+            // Discarded to open a rule from a category's page: the rule opens, and goes back there.
+            if let (Ask::Discard, Some(then)) = (asked, then) {
+                let back = state.open_category();
+                state.form = None;
+                let action = update(state, *then, data);
+                if matches!(state.form, Some(Form::Rule(_))) {
+                    state.back_to = back;
+                }
+                return action;
             }
             let action = match (asked, &state.form) {
                 (Ask::Discard, _) => Action::None,
@@ -677,7 +715,7 @@ impl Form {
             },
             Form::Rule(form) => match &form.id {
                 None => {
-                    form.category.is_some()
+                    form.category != form.preset
                         || form.conditions.iter().chain(&form.exceptions).any(|condition| {
                             !condition.value.trim().is_empty() || condition.field == SortField::Attachment
                         })
@@ -812,6 +850,7 @@ impl RuleForm {
             exceptions: rule.exceptions.clone(),
             enabled: rule.enabled,
             tried: false,
+            preset: None,
         }
     }
 
@@ -1077,7 +1116,10 @@ fn category_page<'a>(state: &'a State, form: &'a CategoryForm, data: &'a Data) -
         group_words(data, form.group),
         toggle(Popover::Group),
     );
-    let head = row![symbol, container(name).width(Fill), group].spacing(space::s()).align_y(Alignment::Center);
+    // A short field is never stretched: the name at most a form wide, the group right beside it.
+    let head = row![symbol, container(name).width(Fill).max_width(size::form_max()), group, blank().width(Fill)]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
     let mut head = column![head].spacing(space::s());
     if let Some(mistake) = note_or_mistake(form.tried, form.name_mistake(data), None) {
         head = head.push(mistake);
@@ -1105,13 +1147,14 @@ fn category_page<'a>(state: &'a State, form: &'a CategoryForm, data: &'a Data) -
         .wrapping(Wrapping::WordOrGlyph),
     ]
     .spacing(space::xs())
-    .align_y(Alignment::Center);
+    .align_y(Alignment::Start);
+    let hint = widgets::reading_cell(hint);
     let mut about = column![typo::text(typo::caption(), tr("Description for the AI")).style(torro_gui::theme::text_3)]
         .spacing(space::s())
         .push(description);
     about = about.push(match note_or_mistake(form.tried, form.description_mistake(data), None) {
         Some(mistake) => mistake,
-        None => hint.into(),
+        None => hint,
     });
     let mut page = column![head, about].spacing(layout::section_gap());
     // A new category has no rules yet: they name it by its key, which it gets when it is saved.
@@ -1132,6 +1175,14 @@ fn category_page<'a>(state: &'a State, form: &'a CategoryForm, data: &'a Data) -
         page = page.push(removal(form, data));
     } else {
         let mut end = row![].spacing(space::s()).align_y(Alignment::Center);
+        // The way without a mouse to the place a grip drags to (design review of #481): one up or
+        // down in its group, which decides between the rules of several categories.
+        if let Some(category) = form.category {
+            let up = shifted(data, category, true).map(|_| Message::Shift { category, up: true });
+            let down = shifted(data, category, false).map(|_| Message::Shift { category, up: false });
+            end = end.push(widgets::text_button(Some(Icon::ChevronUp), tr("Move up"), style::button::ghost, up));
+            end = end.push(widgets::text_button(Some(Icon::ChevronDown), tr("Move down"), style::button::ghost, down));
+        }
         if changed {
             end = end.push(widgets::text_button(
                 Some(Icon::History),
@@ -1149,11 +1200,26 @@ fn category_page<'a>(state: &'a State, form: &'a CategoryForm, data: &'a Data) -
                 Some(Message::Remove),
             ));
         }
-        if changed || (form.category.is_some() && built_in.is_none()) {
+        if changed || form.category.is_some() {
             page = page.push(end);
         }
     }
     page.into()
+}
+
+/// `inbox.move_category` one place up or down within the stored group of `category`; `None` at
+/// the end it would leave.
+fn shifted(data: &Data, category: Category, up: bool) -> Option<Request> {
+    let group = data.categories.iter().find(|info| info.category == category)?.group;
+    let members: Vec<Category> =
+        data.categories.iter().filter(|info| info.group == group).map(|info| info.category).collect();
+    let at = members.iter().position(|held| *held == category)?;
+    let position = match up {
+        true => at.checked_sub(1)?,
+        false if at + 1 < members.len() => at + 1,
+        false => return None,
+    };
+    Some(Request::MoveCategory { category, group, position: position as u32 })
 }
 
 /// The colour of `group` in the group palette, 0–4.
@@ -1204,7 +1270,7 @@ fn fixed_rules<'a>(state: &'a State, data: &'a Data, category: Category) -> Elem
     }
     if rows.is_empty() {
         let none = typo::text(typo::body(), tr("No fixed rules yet.")).style(torro_gui::theme::text_2);
-        rows.push(row_frame(none, false));
+        rows.push(container(none).width(Fill).center_y(size::row()).padding([0.0, space::l()]).into());
     }
     widgets::group_with(Some(widgets::group_title(tr("Fixed rules · go before the AI"), vec![add])), rows, None)
 }
@@ -1235,7 +1301,9 @@ fn fixed_line<'a>(
         None => blank().width(torro_gui::icon::SIZE).into(),
     };
     line = line.push(chevron);
-    pressable(row_frame(line, false), open)
+    // As high as a category's row, so four rules fit on the page without scrolling.
+    let line = container(line).width(Fill).center_y(size::row()).padding([0.0, space::l()]);
+    pressable(line.into(), open)
 }
 
 /// "Show in the sidebar" (stored at once) and "AI may not file mail here" (saved with the page) as
@@ -1719,6 +1787,44 @@ mod tests {
     use super::*;
 
     /// The suite's catalogue and one category of the person's own, "Tax" in "Paper trail".
+    /// Issue #481: a category's page opens its rules and goes back there; a new rule it starts is
+    /// no change yet; with changes on the page "Discard" opens the rule all the same; "Move up" and
+    /// "Move down" move it one place in its group, and stop at its ends; the popovers close on Escape.
+    #[test]
+    fn a_categorys_page_leads_to_its_rules_and_back() {
+        let (data, mut state) = (data(), State::default());
+        let invoice = Category::Invoice;
+        let _: Action<()> = update(&mut state, Message::EditCategory(invoice), &data);
+        let _ = page(&state, &data);
+        let _: Action<()> = update(&mut state, Message::NewRuleIn(invoice), &data);
+        assert!(matches!(&state.form, Some(Form::Rule(form)) if form.category == Some(invoice)));
+        let _: Action<()> = update(&mut state, Message::Back, &data);
+        assert!(state.asking.is_none(), "nothing typed, nothing to discard");
+        assert_eq!(state.open_category(), Some(invoice), "back on the category's page");
+        let _: Action<()> = update(&mut state, Message::EditRule("r1".into()), &data);
+        let _: Action<()> = update(&mut state, Message::Back, &data);
+        assert_eq!(state.open_category(), Some(invoice));
+        // Changes on the page: asked first, then the rule opens and comes back to the category.
+        let _: Action<()> = update(&mut state, typed("Changed."), &data);
+        let _: Action<()> = update(&mut state, Message::EditRule("r1".into()), &data);
+        assert_eq!(state.asking, Some(Ask::Discard));
+        let _: Action<()> = update(&mut state, Message::Answer(true), &data);
+        assert!(matches!(&state.form, Some(Form::Rule(form)) if form.id.as_deref() == Some("r1")));
+        let _: Action<()> = update(&mut state, Message::Back, &data);
+        assert_eq!(state.open_category(), Some(invoice));
+        // One place down in its group; the first has no place above.
+        let first = data.categories.iter().find(|info| info.group == CategoryGroup::PaperTrail).expect("one");
+        let down = sent(&mut state, &data, vec![Message::Shift { category: first.category, up: false }]);
+        assert_eq!(
+            down,
+            vec![Request::MoveCategory { category: first.category, group: CategoryGroup::PaperTrail, position: 1 }]
+        );
+        assert!(sent(&mut state, &data, vec![Message::Shift { category: first.category, up: true }]).is_empty());
+        let _: Action<()> = update(&mut state, Message::Popover(Some(Popover::Group)), &data);
+        assert!(overlay(&state, &data).is_some());
+        assert!(matches!(escape(&state), Some(Message::Popover(None))));
+    }
+
     fn data() -> Data {
         let mut defs = CategoryDef::defaults();
         defs.push(CategoryDef {

@@ -4976,6 +4976,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Die Mail-Kategorie {category} nach {group} verschieben, vor {next}",
     ),
     ("No fixed rules yet.", "Noch keine festen Regeln."),
+    ("Move up", "Nach oben"),
+    ("Move down", "Nach unten"),
     (
         "The order of rules and filters no longer exists; categories are ordered instead.",
         "Die Reihenfolge von Regeln und Filtern gibt es nicht mehr; stattdessen werden Kategorien geordnet.",

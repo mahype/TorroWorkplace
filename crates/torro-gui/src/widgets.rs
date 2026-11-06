@@ -2784,8 +2784,10 @@ pub fn select_button_marked<'a, M: Clone + 'a>(
 
 /// A tile with a title, a detail line under it and a switch at the right (issue #481), for two
 /// settings that stand side by side: "Show in the sidebar", "AI may not file mail here". `raised`
-/// with a `line_strong` edge, radius [`radius::sm()`]. Without `on_toggle` the switch is not drawn
-/// and the tile reads at 40 % – the setting does not apply here, and the detail says why.
+/// with a `line_strong` edge, radius [`radius::sm()`], always room for two lines of detail, so two
+/// tiles in a row stand equally high. Without `on_toggle` the switch shows disabled and the title
+/// reads at 40 % – the setting does not apply here; the detail keeps its full `text_2`, as it says
+/// why.
 pub fn switch_tile<'a, M: Clone + 'a>(
     title: impl IntoFragment<'a>,
     detail: Option<String>,
@@ -2793,27 +2795,26 @@ pub fn switch_tile<'a, M: Clone + 'a>(
     on_toggle: Option<Box<dyn Fn(bool) -> M + 'a>>,
 ) -> Element<'a, M> {
     let usable = on_toggle.is_some();
-    let fade = move |colour: Color| if usable { colour } else { Color { a: colour.a * 0.4, ..colour } };
-    let tone = move |pick: fn(&Palette) -> Color| {
-        move |t: &Theme| iced::widget::text::Style { color: Some(fade(pick(&palette(t)))) }
-    };
-    let mut lines = column![typo::text(typo::body(), title).style(tone(|p| p.text)).wrapping(Wrapping::WordOrGlyph)];
+    let title = typo::text(typo::body(), title).wrapping(Wrapping::WordOrGlyph).style(move |t: &Theme| {
+        let colour = palette(t).text;
+        iced::widget::text::Style { color: Some(if usable { colour } else { Color { a: colour.a * 0.4, ..colour } }) }
+    });
+    let mut lines = column![title];
     if let Some(detail) = detail {
-        lines = lines.push(typo::text(typo::meta(), detail).style(tone(|p| p.text_2)).wrapping(Wrapping::WordOrGlyph));
+        lines = lines.push(typo::text(typo::meta(), detail).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
     }
-    let mut content = row![lines.width(Fill)].spacing(space::m()).align_y(Alignment::Center);
-    if let Some(change) = on_toggle {
-        content =
-            content.push(iced::widget::toggler(on).size(style::CHECK_SIZE).style(style::toggler).on_toggle(change));
-    }
+    let room = typo::line_height(typo::body()) + 2.0 * typo::line_height(typo::meta());
+    let lines = container(lines.width(Fill)).center_y(room);
+    let switch = iced::widget::toggler(on).size(style::CHECK_SIZE).style(style::toggler).on_toggle_maybe(on_toggle);
+    let content = row![lines, switch].spacing(space::m()).align_y(Alignment::Center);
     container(content)
         .width(Fill)
         .padding(crate::layout::panel_padding())
-        .style(move |t: &Theme| {
+        .style(|t: &Theme| {
             let p = palette(t);
             container::Style {
-                background: Some(Background::Color(fade(p.raised))),
-                border: iced::Border { color: fade(p.line_strong), width: LINE, radius: radius::sm().into() },
+                background: Some(Background::Color(p.raised)),
+                border: iced::Border { color: p.line_strong, width: LINE, radius: radius::sm().into() },
                 ..container::Style::default()
             }
         })

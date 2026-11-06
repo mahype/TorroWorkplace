@@ -832,7 +832,13 @@ fn chosen(data: &Data) -> Chosen {
 pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
     if let Some((name, body, save)) = editor::page(&state.editor, data) {
         let back = Message::Editor(editor::Message::Back);
-        return Page::new(body.map(Message::Editor)).sub_page(name, back).actions(vec![save.map(Message::Editor)]);
+        let body = body.map(Message::Editor);
+        // The run of a filter saved with "Also apply…" on a category's page shows there too.
+        let body = match filters::apply_view(&state.filters) {
+            Some(result) => column![result.map(Message::Filters), body].spacing(layout::section_gap()).into(),
+            None => body,
+        };
+        return Page::new(body).sub_page(name, back).actions(vec![save.map(Message::Editor)]);
     }
     // A run at a time: while one goes or categories are being removed, it waits.
     let busy = data.category_job.as_ref().is_some_and(|job| job.state == CategoryJobState::Running)
@@ -843,8 +849,8 @@ pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
         style::button::secondary,
         (!busy).then_some(Message::OpenSort { rules_only: false }),
     );
-    // Every tab spans the whole width (issue #464), so head and tabs never move; the categories take
-    // two columns where there is room, the rows of the other tabs keep their text at the reading width.
+    // Every tab spans the whole width (issue #464), so head and tabs never move; the categories stand
+    // in one column (issue #481), the rows of the other tabs keep their text at the reading width.
     Page::new(view(state, data)).actions(vec![sort])
 }
 
@@ -1115,7 +1121,15 @@ fn categories_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> 
         Some(Message::Editor(editor::Message::NewGroup)),
     );
     // "New group…" belongs to the groups: at the right of their title line.
-    let mut page = column![widgets::group_title(tr("Groups"), vec![new])].spacing(layout::section_gap());
+    // What the order means stands before the first card, where the grips are seen.
+    let order = typo::text(
+        typo::meta(),
+        tr("The numbers count mail in Inbox. Where fixed rules of several categories match, the one higher up wins: drag a category by its grip to change the order."),
+    )
+    .style(theme::text_2)
+    .wrapping(Wrapping::WordOrGlyph);
+    let head = column![widgets::group_title(tr("Groups"), vec![new]), widgets::reading_cell(order)].spacing(space::s());
+    let mut page = column![head].spacing(layout::section_gap());
     if let Some(result) = filters::apply_view(&state.filters) {
         page = page.push(result.map(Message::Filters));
     }
@@ -1129,14 +1143,6 @@ fn categories_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> 
     for group in groups {
         page = page.push(group_card(state, data, group));
     }
-    page = page.push(
-        typo::text(
-            typo::meta(),
-            tr("The numbers count mail in Inbox. Where fixed rules of several categories match, the one higher up wins: drag a category by its grip to change the order."),
-        )
-        .style(theme::text_3)
-        .wrapping(Wrapping::WordOrGlyph),
-    );
     page = page.push(other_filters(data));
     let count = data.category_clear_preview.as_ref().map(|preview| preview.total).unwrap_or(0);
     let busy = data.categorization.clear_job.as_ref().is_some_and(|job| {
@@ -1167,7 +1173,7 @@ fn categories_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> 
 }
 
 /// A group's card: its head (fold, mark, how many categories – the first names while folded –, how
-/// many mails, "…") and, unfolded, its categories in two columns with "+ New category in …".
+/// many mails, "…") and, unfolded, its categories in one column with "+ New category in …".
 fn group_card<'a>(
     state: &'a State,
     data: &'a Data,
@@ -1227,10 +1233,12 @@ fn group_card<'a>(
         let add = trf("New category in {group}", &[("group", &group.label)]);
         let plus =
             icon::icon(Icon::Plus, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) });
-        let add = pressable(
-            setting_row(Some(plus.into()), add, None, blank()),
-            Some(Message::Editor(editor::Message::NewCategoryInGroup(id))),
-        );
+        // As high as the categories above it.
+        let add = row![plus, typo::text(typo::body(), add).style(theme::text_2)]
+            .spacing(space::m())
+            .align_y(Alignment::Center);
+        let add = container(add).width(Fill).center_y(size::row()).padding([0.0, space::l()]);
+        let add = pressable(add.into(), Some(Message::Editor(editor::Message::NewCategoryInGroup(id))));
         // Over the last row of the card the category goes to the end of the group.
         rows.push(match dragging {
             Some(_) => mouse_area(add).on_enter(Message::OverSlot(id, count)).into(),
@@ -1239,9 +1247,8 @@ fn group_card<'a>(
     } else if state.category_drag.is_some() {
         // A folded group takes a category at its end, over its head.
         let len = data.categories.iter().filter(|info| info.group == id).count();
-        if let Some(head) = rows.pop() {
-            rows.push(mouse_area(head).on_enter(Message::OverSlot(id, len)).into());
-        }
+        let head = rows.remove(0);
+        rows.insert(0, mouse_area(head).on_enter(Message::OverSlot(id, len)).into());
     }
     let card = widgets::group_with(None, rows, None);
     match state.category_drag {
@@ -1251,26 +1258,30 @@ fn group_card<'a>(
 }
 
 /// "Other filters" (issue #481): the mail filters that set no category – they mark mail read or
-/// move it to the trash –, each with its switch and a chevron that opens its dialog, and "New
+/// move it to the trash – or one no longer in the catalogue, each with its switch and a chevron that opens its dialog, and "New
 /// filter…". The filters that set a category stand on that category's page.
 fn other_filters<'a>(data: &'a Data) -> Element<'a, Message> {
     let new =
         widgets::text_button(Some(Icon::Plus), tr("New filter…"), style::button::secondary, Some(Message::NewFilter));
     let mut rows: Vec<Element<'a, Message>> = Vec::new();
-    for filter in data.mail_filters.iter().filter(|filter| filter.category.is_none()) {
+    // A filter whose category was removed stands here too, so it can still be changed or switched off.
+    let elsewhere = |filter: &&torro_mail::MailFilter| {
+        filter.category.is_some_and(|category| data.categories.iter().any(|info| info.category == category))
+    };
+    for filter in data.mail_filters.iter().filter(|filter| !elsewhere(filter)) {
         let id = filter.id.clone();
         let switch = switch(filter.enabled, move |on| Message::Filters(filters::Message::Enabled(id.clone(), on)));
         let title: fn(&Theme) -> iced::widget::text::Style = if filter.enabled { theme::text } else { theme::text_2 };
-        let mut then = filters::actions_line(filter, data);
-        if !filter.enabled {
-            then = trf("Off · {rule}", &[("rule", &then)]);
-        }
         let lines = column![
             widgets::ellipsized(typo::body(), filter.query.clone(), title),
-            widgets::ellipsized(typo::meta(), then, theme::text_2),
+            widgets::ellipsized(typo::meta(), filters::actions_line(filter, data), theme::text_2),
         ];
-        let line =
-            row![lines.width(Fill), switch, crate::parts::chevron()].spacing(space::m()).align_y(Alignment::Center);
+        // Off as on a category's page: the word at the right, beside the switch.
+        let mut line = row![lines.width(Fill)].spacing(space::m()).align_y(Alignment::Center);
+        if !filter.enabled {
+            line = line.push(typo::text(typo::meta(), tr("Off")).style(theme::text_3));
+        }
+        let line = line.push(switch).push(crate::parts::chevron());
         let open = Message::Filters(filters::Message::Edit(filter.id.clone()));
         rows.push(pressable(row_frame(line, true), Some(open)));
     }
@@ -1289,11 +1300,7 @@ fn other_filters<'a>(data: &'a Data) -> Element<'a, Message> {
 /// decide, how many mails, "Show in the sidebar"; a click opens its page.
 fn category_cell<'a>(data: &'a Data, info: &'a CategoryInfo, color: usize, dragged: bool) -> Element<'a, Message> {
     let category = info.category;
-    let dot = container(blank().width(space::s()).height(space::s())).style(move |t: &Theme| container::Style {
-        background: Some(iced::Background::Color(palette(t).category[color])),
-        border: iced::border::rounded(space::s()),
-        ..container::Style::default()
-    });
+    let dot = widgets::category_dot(color);
     let mut name = row![widgets::ellipsized(typo::body(), info.label.clone(), theme::text)]
         .spacing(space::s())
         .align_y(Alignment::Center);
@@ -1308,7 +1315,13 @@ fn category_cell<'a>(data: &'a Data, info: &'a CategoryInfo, color: usize, dragg
         lead,
         container(name).width(Fill),
         typo::text(typo::meta().tabular(), format_count(u64::from(info.messages))).style(theme::text_3),
-        widgets::with_tooltip(switch(shown, move |on| Message::Shown(category, on)), tr("Show in the sidebar")),
+        // The eye says what the switch is for, without a tooltip.
+        row![
+            icon::icon(Icon::Eye, icon::SIZE_SM).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) }),
+            widgets::with_tooltip(switch(shown, move |on| Message::Shown(category, on)), tr("Show in the sidebar")),
+        ]
+        .spacing(space::xs())
+        .align_y(Alignment::Center),
     ]
     .spacing(space::m())
     .align_y(Alignment::Center);
