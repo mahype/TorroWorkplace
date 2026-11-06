@@ -619,11 +619,12 @@ async fn run(inner: Arc<Inner>, work: Work, job: Job) {
             target
         }
         Err((app, step, fail)) => {
-            job.fail(app.window_class, step, fail.code());
             // A later step failed after the bundle this service runs from was replaced or removed
-            // (review of #411): it would go on from the trash, so it hands over all the same.
+            // (review of #411): it would go on from the trash, so it hands over all the same. Only when
+            // its program is really gone: a removal that failed on its first bundle moved nothing.
             let exe = inner.env.exe.as_deref();
-            let gone = exe.is_some_and(|exe| done.removed.iter().any(|removed| exe.starts_with(removed)));
+            let noted = exe.is_some_and(|exe| done.removed.iter().any(|removed| exe.starts_with(removed)));
+            let gone = noted && exe.is_some_and(|exe| !exe.exists());
             let target = match gone {
                 true => {
                     let newest = Arc::clone(&inner.hooks.read().unwrap_or_else(PoisonError::into_inner).newest_service);
@@ -632,10 +633,12 @@ async fn run(inner: Arc<Inner>, work: Work, job: Job) {
                 false => None,
             };
             // The main application is in place already (a later step failed): the control centre waits
-            // for the service's restart as after a whole update.
-            if main && target.is_some() {
+            // for the service's restart as after a whole update. Marked before the failure, so no poll
+            // sees the failed job without it.
+            if done.main_service.is_some() && target.is_some() {
                 job.mark_restart();
             }
+            job.fail(app.window_class, step, fail.code());
             target
         }
     };
