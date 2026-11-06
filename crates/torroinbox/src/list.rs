@@ -81,7 +81,7 @@
 //! entry done then.
 //!
 //! Titles and bodies of other sources are foreign text (`Item::untrusted`). Iced draws text as it
-//! is, so nothing in it is ever interpreted; [`one_line`] and [`plain`] also drop control and
+//! is, so nothing in it is ever interpreted; [`line_design`] and [`plain`] also drop control and
 //! direction characters, so a title can neither break the row into lines nor turn its text around.
 
 use std::ops::Range;
@@ -1915,7 +1915,7 @@ fn facet_value(item: &Item, key: FacetKey) -> Option<&str> {
 /// - ntfy: the topic's label and the priority, unless it is ntfy's default 3.
 ///
 /// Nothing for every other source. Repository, app id and person are foreign text, shown as plain
-/// text (Iced interprets nothing, [`one_line`] drops control characters).
+/// text (Iced interprets nothing, [`line_design`] drops control characters).
 pub fn facet_words(item: &Item) -> Vec<(Icon, String)> {
     let value = |key| facet_value(item, key);
     let mut words = Vec::new();
@@ -1994,7 +1994,7 @@ pub fn waiting_word(item: &Item) -> &'static str {
     if item.kind == Kind::Alert { tr("Urgent") } else { tr("Waiting for you") }
 }
 
-/// The title and the preview of `item`'s row, on one line each ([`one_line`]): for a coding agent's
+/// The title and the preview of `item`'s row, on one line each ([`line_design`]): for a coding agent's
 /// session with a name ([`session_name`]) the name, and below or beside it [`agent_line`]; for
 /// every other entry its title and the first line of its body ([`preview`]) – or, for a service's
 /// entry without one (GitHub sends no text), what its traits say ([`facet_line`], task E5.15).
@@ -2026,7 +2026,7 @@ pub fn agent_line(item: &Item) -> String {
         .join(" · ")
 }
 
-/// The first line of the body that has text, on one line ([`one_line`]); `None` without a body.
+/// The first line of the body that has text, on one line ([`line_design`]); `None` without a body.
 pub fn preview(item: &Item) -> Option<String> {
     let body = item.body.as_deref()?;
     body.lines().map(one_line).find(|line| !line.is_empty())
@@ -2816,21 +2816,37 @@ mod tests {
     /// A built-in design (issue #291) from its embedded file: the process draws with the standard, and
     /// the tests of this binary share it, so the others are read, never switched to.
     fn built_in(id: &str) -> torro_core::design::Design {
-        torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design")
+        torro_core::design::load(id).expect("a built-in design")
+    }
+
+    /// The old Console's list (issue #291): one line of 24 per entry, no hairlines, the chosen row
+    /// filled, no avatar. No built-in level draws it since issue #484, but the list still can.
+    fn line_design() -> torro_core::design::Design {
+        let mut d = built_in("dense");
+        d.id = "line".into();
+        d.list = ListLook {
+            style: torro_core::design::ListStyle::Line,
+            separators: false,
+            selection: torro_core::design::ListSelection::Fill,
+            avatar: 0.0,
+            preview_lines: 1,
+        };
+        (d.size.row_message, d.size.row_notice) = (24.0, 24.0);
+        d
     }
 
     /// Issue #291 (task L.35): how a row shows its selection and its line follows the design – a bar
-    /// and hairlines in Standard and Compact, the whole row in the accent without lines in Console –,
-    /// and only the chosen row is marked.
+    /// and hairlines in every level, the whole row in the accent without lines in [`line_design`] –, and
+    /// only the chosen row is marked.
     #[test]
     fn a_row_shows_its_selection_as_the_design_says() {
         assert_eq!(layout::list(), built_in("torro").list, "the process draws with the standard");
-        for id in ["torro", "compact"] {
+        for id in torro_core::design::BUILT_IN_IDS {
             let look = built_in(id).list;
             assert_eq!(RowLook::of(look, true), RowLook { bar: true, fill: false, line: true }, "{id}");
             assert_eq!(RowLook::of(look, false), RowLook { bar: false, fill: false, line: true }, "{id}");
         }
-        let console = built_in("console").list;
+        let console = line_design().list;
         assert_eq!(RowLook::of(console, true), RowLook { bar: false, fill: true, line: false });
         assert_eq!(RowLook::of(console, false), RowLook { bar: false, fill: false, line: false });
         // The bar takes its width from the marker slot: the dot and the text stay where they are.
@@ -2878,7 +2894,9 @@ mod tests {
     fn without_an_avatar_the_text_starts_at_the_rows_edge() {
         let standard = layout::list();
         assert_eq!((lead_in(standard, true), lead_in(standard, false)), (40.0, 40.0), "the standard's avatar");
-        assert_eq!(lead_in(built_in("compact").list, true), 28.0, "Compact's");
+        for id in torro_core::design::BUILT_IN_IDS {
+            assert_eq!(lead_in(built_in(id).list, true), 40.0, "{id}: a level keeps the standard's avatar");
+        }
         let none = ListLook { avatar: 0.0, ..standard };
         assert_eq!(lead_in(none, true), 0.0, "no avatar, no lead");
         assert_eq!(lead_room_in(none, true), 0.0, "and no gap after it");
@@ -2888,17 +2906,17 @@ mod tests {
             assert_eq!(gained, 40.0 + space::m(), "at {width}: the avatar's place goes to the text");
         }
         assert_eq!(strip_indent_in(none, true), 0.0, "the strip starts where the text does");
-        assert_eq!(built_in("console").list.avatar, 0.0, "Console draws none");
+        assert_eq!(line_design().list.avatar, 0.0, "one line draws none");
     }
 
     /// Issue #291 (task L.35): row heights and the cursor's spans per list style – rows of three lines
-    /// (the preview on `preview_lines`) in Standard and Compact, one line of `row_message` (24) for mail
-    /// and notices in Console, under the same heads, bare or with the hub's strip.
+    /// (the preview on `preview_lines`) in every level, one line of `row_message` (24) for mail and
+    /// notices in [`line_design`], under the same heads, bare or with the hub's strip.
     #[test]
     fn rows_and_lines_have_their_heights_and_spans() {
         let notice = demo::sample(now()).remove(0);
         let entry = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
-        let (standard, console) = (built_in("torro"), built_in("console"));
+        let (standard, console) = (built_in("torro"), line_design());
         assert_eq!(line_count_in(standard.list, &entry), 3, "sender, subject, one line of preview");
         assert_eq!(line_count_in(ListLook { preview_lines: 2, ..standard.list }, &entry), 4, "two of preview");
         assert_eq!(line_count_in(standard.list, &notice), 2, "a notice with a text");
@@ -2906,7 +2924,7 @@ mod tests {
         assert_eq!(line_count_in(console.list, &notice), 1, "a notice on one line");
         assert_eq!(line_count(&entry), 3, "the process draws the standard");
 
-        // Console: every row one line of 24, which holds the line of text (18).
+        // One line: every row one line of 24, which holds the line of text (22).
         let (message, notice_height) = (console.size.row_message, console.size.row_notice);
         assert_eq!((message, notice_height), (24.0, 24.0));
         assert!(console.size.row_message >= console.typo.body.line, "the line fits");
@@ -3041,8 +3059,8 @@ mod tests {
         let entry = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
         let looks = [
             layout::list(),
-            built_in("compact").list,
-            built_in("console").list,
+            built_in("dense").list,
+            line_design().list,
             ListLook { avatar: 0.0, preview_lines: 2, ..layout::list() },
         ];
         for look in looks {

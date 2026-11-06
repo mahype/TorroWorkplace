@@ -4653,35 +4653,22 @@ mod tests {
         assert_eq!(Launch::parse(&args(&["--demo", "--design"])), Err(LaunchError::MissingValue("--design")));
     }
 
-    /// The message "design changed" (task L.3): the stored setting arrives and the window draws
-    /// with that pack from the next frame; a broken one gives the standard.
+    /// The message "design changed" (task L.3, issue #484): the stored setting arrives and the window
+    /// follows it; an id that is no spacing level (an old design of the designs folder) gives the
+    /// standard. Dense itself is only read here the way the window reads it, not switched to: it has
+    /// other values, and the tests beside this one read the standard's tokens.
     #[test]
-    fn the_stored_design_is_drawn_and_a_broken_one_gives_the_standard() {
-        let dir = std::env::temp_dir().join(format!("torrotasks-designs-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        // The standard's values under another id, so the tests beside this one see the same tokens.
-        for (id, toml) in [
-            ("twin", "format = 1\n[about]\nname = \"Torro\"\nversion = \"1.0.0\"\n"),
-            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n"),
-        ] {
-            std::fs::create_dir_all(dir.join(id)).expect("pack folder");
-            std::fs::write(dir.join(id).join("design.toml"), toml).expect("design.toml");
-        }
+    fn the_stored_design_is_drawn_and_an_unknown_one_gives_the_standard() {
         let mut app = launched(&["--demo"]);
-        app.design = Follow::new(None).in_dir(dir.clone());
-        // Only the design changes (there is no font `twin`), so no font is loaded (task L.21).
+        app.design = Follow::new(None).in_folders(design::Folders::default());
         let _ = app.update(Message::Design(design::Message::Stored(Ok(design::Chosen {
-            design: "twin".into(),
+            design: "console".into(),
             ..design::Chosen::standard()
         }))));
-        assert_eq!(design::active().id, "twin");
+        assert!(design::active().is_standard(), "an old design is no level: the standard");
         let _: Element<'_, Message> = app.view();
-        let _ = app.update(Message::Design(design::Message::Stored(Ok(design::Chosen {
-            design: "pale".into(),
-            ..design::Chosen::standard()
-        }))));
-        assert!(design::active().is_standard(), "a broken pack is never drawn");
-        let _ = std::fs::remove_dir_all(dir);
+        let chosen = design::Chosen { design: "dense".into(), ..design::Chosen::standard() };
+        assert_eq!(design::Folders::default().select(&chosen).design.id, "dense", "what the window would draw");
     }
 
     #[test]

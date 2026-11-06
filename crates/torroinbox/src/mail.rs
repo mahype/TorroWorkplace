@@ -5155,9 +5155,9 @@ mod tests {
         assert_eq!(reader_widths(500.0), ReaderWidths { head: 372.0, mail: 372.0, html: 500.0 });
         assert_eq!(reader_widths(10.0), ReaderWidths { head: 0.0, mail: 0.0, html: 10.0 }, "a HTML fills it");
         assert_eq!(reader_widths(-5.0).html, 0.0, "never below nothing");
-        // Compact and Console from their files: Console's column is as wide as the reader allows.
-        for (id, column, margins) in [("compact", 640.0, 80.0), ("console", 1200.0, 36.0)] {
-            let design = torro_core::design::load(std::path::Path::new(""), id).expect("built in");
+        // Comfort and Dense from their files (issue #484): the column stays, the margins follow the level.
+        for (id, column, margins) in [("comfort", 600.0, 160.0), ("dense", 600.0, 80.0)] {
+            let design = torro_core::design::load(id).expect("built in");
             let sides = 2.0 * design.layout.reading_padding.horizontal;
             assert_eq!((design.size.reading_max, sides), (column, margins), "{id}");
             assert_eq!(reading_width_in(2000.0, sides, column), column, "{id}: the column at most");
@@ -5183,8 +5183,12 @@ mod tests {
     #[test]
     fn the_readers_avatar_follows_the_rows() {
         assert_eq!(head_avatar_in(layout::list()), size::pill(), "the standard shows it");
-        let console = torro_core::design::load(std::path::Path::new(""), "console").expect("built in");
-        assert_eq!(head_avatar_in(console.list), 0.0, "Console: none");
+        for id in torro_core::design::BUILT_IN_IDS {
+            let level = torro_core::design::load(id).expect("built in");
+            assert_eq!(head_avatar_in(level.list), size::pill(), "{id}: every level has avatars");
+        }
+        let none = torro_core::design::ListLook { avatar: 0.0, ..layout::list() };
+        assert_eq!(head_avatar_in(none), 0.0, "a list without avatars: none in the head either");
     }
 
     #[test]

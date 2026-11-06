@@ -886,7 +886,7 @@ mod tests {
     #[test]
     fn a_suggestions_row_holds_its_mute_button_in_every_design() {
         for id in torro_core::design::BUILT_IN_IDS {
-            let d = torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design");
+            let d = torro_core::design::load(id).expect("a built-in design");
             let pad = d.layout.row_padding;
             let full =
                 iced::Padding { top: pad.vertical, right: pad.horizontal, bottom: pad.vertical, left: pad.horizontal };

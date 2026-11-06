@@ -13580,60 +13580,50 @@ mod tests {
     /// lock is taken anyway: the panic of another test is reported by that test, not by this one.
     static DESIGN: Mutex<()> = Mutex::new(());
 
-    /// The message "design changed" (task L.3): the stored setting arrives and the window draws
-    /// with that pack from the next frame; a broken one gives the standard.
+    /// The message "design changed" (task L.3, issue #484): the stored spacing level arrives and the
+    /// window draws with it from the next frame; an id that is no level (an old design of the designs
+    /// folder) gives the standard.
     #[test]
-    fn the_stored_design_is_drawn_and_a_broken_one_gives_the_standard() {
+    fn the_stored_design_is_drawn_and_an_unknown_one_gives_the_standard() {
         let _design = DESIGN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = tempfile::tempdir().expect("temp dir");
-        // The standard's values under another id, so the tests beside this one see the same tokens.
-        for (id, toml) in [
-            ("twin", "format = 1\n[about]\nname = \"Torro\"\nversion = \"1.0.0\"\n"),
-            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n"),
-        ] {
-            std::fs::create_dir_all(dir.path().join(id)).expect("pack folder");
-            std::fs::write(dir.path().join(id).join("design.toml"), toml).expect("design.toml");
-        }
         let mut app = loaded(&[]);
-        app.design = Follow::new(None).in_dir(dir.path().to_path_buf());
-        // Only the design changes (there is no font `twin`), so no font is loaded (task L.21).
-        let _ = app.update(Message::Design(design::Message::Stored(Ok(design::Chosen {
-            design: "twin".into(),
-            ..design::Chosen::standard()
-        }))));
-        assert_eq!(design::active().id, "twin");
+        app.design = Follow::new(None).in_folders(design::Folders::default());
+        let stored = |id: &str| {
+            Message::Design(design::Message::Stored(Ok(design::Chosen {
+                design: id.into(),
+                ..design::Chosen::standard()
+            })))
+        };
+        // Only the design changes, so no font is loaded (task L.21).
+        let _ = app.update(stored("dense"));
+        assert_eq!(design::active().id, "dense");
         let _ = app.view();
-        let _ = app.update(Message::Design(design::Message::Stored(Ok(design::Chosen {
-            design: "pale".into(),
-            ..design::Chosen::standard()
-        }))));
-        assert!(design::active().is_standard(), "a broken pack is never drawn");
+        let _ = app.update(stored("console"));
+        assert!(design::active().is_standard(), "an old design is no level: the standard");
+        design::set(torro_core::design::Design::standard());
     }
 
     /// Task E13.2: the window takes its density from the active design – at start, and again when
-    /// another design arrives. Holds [`DESIGN`] while a pack with cards is active and puts the
-    /// standard back at the end, because every other test expects "Torro".
+    /// another design arrives. No built-in level draws cards (issue #484), so the test sets a design
+    /// with cards itself. Holds [`DESIGN`] while it is active and puts the standard back at the end,
+    /// because every other test expects "Torro".
     #[test]
     fn the_density_follows_the_design() {
         let _design = DESIGN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = tempfile::tempdir().expect("temp dir");
-        let toml = "format = 1\n[about]\nname = \"Roomy\"\nversion = \"1.0.0\"\n[list]\nstyle = \"cards\"\n";
-        std::fs::create_dir_all(dir.path().join("roomy")).expect("pack folder");
-        std::fs::write(dir.path().join("roomy").join("design.toml"), toml).expect("design.toml");
-
         let mut app = loaded(&["--view", "mail"]);
         assert_eq!(app.density(), Density::Compact, "the standard design \"Torro\" shows rows");
-        app.design = Follow::new(None).in_dir(dir.path().to_path_buf());
-        let _ = app.update(Message::Design(design::Message::Stored(Ok(design::Chosen {
-            design: "roomy".into(),
-            ..design::Chosen::standard()
-        }))));
+        let mut roomy = torro_core::design::Design::standard();
+        roomy.id = "roomy".into();
+        roomy.list.style = torro_core::design::ListStyle::Cards;
+        design::set(roomy);
+        // Any message of the design follow re-reads the density, here one of a core that does not answer.
+        let _ = app.update(Message::Design(design::Message::Stored(Err("core is not running".into()))));
         assert_eq!(design::active().id, "roomy");
-        assert_eq!(app.density(), Density::Comfortable, "the pack asks for cards, so the window draws cards");
+        assert_eq!(app.density(), Density::Comfortable, "the design asks for cards, so the window draws cards");
         assert_eq!(app.look(), Look::Cards);
         let _ = app.view();
 
-        // A window that starts while the pack is active comes up with cards: this is the only
+        // A window that starts while the design is active comes up with cards: this is the only
         // proof that `App::new` reads `layout::density()`, since `demo` pins the field afterwards.
         let launch = Launch::parse(&args(&["--demo", "--view", "mail"])).expect("valid parameters");
         let inbox = Arc::new(DemoSource::new(launch.start()));
@@ -19808,7 +19798,7 @@ mod tests {
     #[test]
     fn the_sidebars_bounds_hold_in_every_design() {
         for id in torro_core::design::BUILT_IN_IDS {
-            let d = torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design");
+            let d = torro_core::design::load(id).expect("a built-in design");
             let (least, most) = (0.75 * d.size.sidebar, 2.0 * d.size.sidebar);
             // As `App::sidebar_limits`: list and reader and the divider; the rail floats (issue #456).
             let rest = 2.0 * d.size.props + d.space.s;

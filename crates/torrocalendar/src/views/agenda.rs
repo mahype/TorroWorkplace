@@ -1513,7 +1513,7 @@ mod tests {
     }
 
     fn built_in(id: &str) -> torro_core::design::Design {
-        torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design")
+        torro_core::design::load(id).expect("a built-in design")
     }
 
     /// [`Base::current`] as it would read in the design `d`.
@@ -1536,37 +1536,64 @@ mod tests {
         }
     }
 
+    /// Dense with lists drawn as one line without hairlines and the chosen row filled: the old
+    /// Console's list (issue #291), which no built-in level switches on since issue #484 but the
+    /// agenda still draws.
+    fn one_line() -> torro_core::design::Design {
+        let mut d = built_in("dense");
+        d.id = "line".into();
+        d.list = torro_core::design::ListLook {
+            style: torro_core::design::ListStyle::Line,
+            separators: false,
+            selection: ListSelection::Fill,
+            avatar: 0.0,
+            preview_lines: 1,
+        };
+        d
+    }
+
+    /// The built-in levels and [`one_line`].
+    fn designs() -> Vec<torro_core::design::Design> {
+        let mut all: Vec<torro_core::design::Design> = torro_core::design::BUILT_IN_IDS.map(built_in).to_vec();
+        all.push(one_line());
+        all
+    }
+
+    fn metrics_of(d: &torro_core::design::Design) -> Metrics {
+        Metrics::of(base(d), d.size.content_max, false)
+    }
+
     fn metrics(id: &str) -> Metrics {
-        let d = built_in(id);
-        Metrics::of(base(&d), d.size.content_max, false)
+        metrics_of(&built_in(id))
     }
 
     /// Issue #291 (task L.36, draft L.32): the agenda's columns and lines follow the design – sides
     /// as the list rows', date column and today's circle from the day number, rows of two lines in
-    /// Standard and Compact and of one line without hairlines in Console.
+    /// every level (issue #484) and of one line without hairlines where a design draws lists that way.
     #[test]
     fn columns_and_lines_follow_the_design() {
         // (side, date, circle, time, event, head, free, empty)
-        // The draft's event rows are a task row + 4 (52 / 44): `xs` is 4 in Standard and Compact.
-        assert_eq!((built_in("torro").space.xs, built_in("compact").space.xs), (4.0, 4.0));
+        // The draft's event rows are a task row + 4 (52 / 44): `xs` is 4 in Standard and Comfort.
+        assert_eq!((built_in("torro").space.xs, built_in("comfort").space.xs), (4.0, 4.0));
         let measures = |m: Metrics| (m.side, m.date, m.circle, m.time, m.event, m.head, m.free, m.empty);
         assert_eq!(measures(metrics("torro")), (24.0, 64.0, 40.0, 52.0, 52.0, 28.0, 32.0, 40.0));
-        assert_eq!(measures(metrics("compact")), (16.0, 56.0, 32.0, 52.0, 44.0, 24.0, 28.0, 36.0));
-        assert_eq!(measures(metrics("console")), (8.0, 56.0, 20.0, 96.0, 24.0, 24.0, 24.0, 24.0));
+        assert_eq!(measures(metrics("comfort")), (32.0, 72.0, 40.0, 52.0, 60.0, 32.0, 36.0, 44.0));
+        assert_eq!(measures(metrics("dense")), (16.0, 54.0, 38.0, 52.0, 44.0, 26.0, 28.0, 36.0));
         let lines = |m: Metrics| (m.line, m.separators, m.selection, m.below_head);
         assert_eq!(lines(metrics("torro")), (false, true, ListSelection::Bar, 4.0));
-        assert_eq!(lines(metrics("compact")), (false, true, ListSelection::Bar, 4.0));
-        assert_eq!(lines(metrics("console")), (true, false, ListSelection::Fill, 0.0));
+        assert_eq!(lines(metrics("comfort")), (false, true, ListSelection::Bar, 4.0));
+        assert_eq!(lines(metrics("dense")).0, false, "two lines in every level");
+        assert_eq!(lines(metrics_of(&one_line())), (true, false, ListSelection::Fill, 0.0));
         assert_eq!(Metrics::new(size::content_max(), false), metrics("torro"), "the process draws with the standard");
     }
 
     /// Issue #291: every line holds its text – start over length in an event row with `xs` above and
-    /// below, one line in Console –, and today's circle holds the day number.
+    /// below, one line where a design draws lists so –, and today's circle holds the day number.
     #[test]
     fn every_line_holds_its_text_in_every_design() {
-        for id in ["torro", "compact", "console"] {
-            let d = built_in(id);
-            let m = metrics(id);
+        for d in designs() {
+            let id = d.id.as_str();
+            let m = metrics_of(&d);
             let t = &d.typo;
             let inside = m.event - 2.0 * d.space.xs;
             let needed = if m.line { t.body_strong.line } else { t.body_strong.line + t.meta.line };
@@ -1577,7 +1604,7 @@ mod tests {
             assert!(m.date >= m.circle, "{id}: date column");
         }
         // In one line the weekday stands beside the circle.
-        let console = metrics("console");
+        let console = metrics_of(&one_line());
         assert!(console.date >= console.circle + text_width("Wed", typo::caption()), "weekday and day side by side");
     }
 
@@ -1634,8 +1661,7 @@ mod tests {
             Event { status: Some(EventStatus::Tentative), ..event("trip", date(14), Some(date(15))) },
         ];
         let blocks = planned(&events, 13, 30, local(13, 10, 0));
-        for id in ["torro", "compact", "console"] {
-            let d = built_in(id);
+        for d in designs() {
             for narrow in [false, true] {
                 for chosen in [None, Some(0), Some(1), Some(2), Some(4), Some(5), Some(6)] {
                     let _ = list(&blocks, Metrics::of(base(&d), d.size.content_max, narrow), day(13), chosen);
