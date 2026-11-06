@@ -16814,6 +16814,26 @@ mod tests {
         assert_eq!(code(&core.handle(Request::CancelAppJob { id: "0123456789abcdef".into() }).await), "not-found");
     }
 
+    /// Issue #411, point 11 of "Was nie nach außen geht": a client key with every right in `apps`
+    /// reads the catalog and jobs, waits for a person to uninstall, and never installs or updates.
+    #[tokio::test]
+    async fn a_client_reads_the_catalog_asks_to_uninstall_and_never_installs() {
+        let dir = tempfile::tempdir().expect("dir");
+        let core = core(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Apps, AreaRights { level: Level::Full, admin: true });
+        let (_, key) = client(&core, rights).await;
+        assert!(matches!(ask(&core, Some(&key), Request::ListAppCatalog).await, Response::AppCatalog { .. }));
+        let job = ask(&core, Some(&key), Request::AppJob { id: "0123456789abcdef".into() }).await;
+        assert_eq!(code(&job), "not-found");
+        let uninstall = Request::UninstallApp { app: "torro-tasks".into(), remove_data: true };
+        assert!(matches!(ask(&core, Some(&key), uninstall).await, Response::Pending { .. }), "waits for a person");
+        let install = ask(&core, Some(&key), Request::InstallApp { app: "torro-assistant".into() }).await;
+        assert_eq!(code(&install), "forbidden");
+        let update = ask(&core, Some(&key), Request::UpdateApps { apps: vec!["torroworkplace".into()] }).await;
+        assert_eq!(code(&update), "forbidden");
+    }
+
     /// Issue #411: installing through the core starts a job that `apps.app_job` follows to its end.
     #[tokio::test]
     async fn an_app_is_installed_through_the_core_as_a_job() {

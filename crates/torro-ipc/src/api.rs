@@ -3489,8 +3489,8 @@ static CANCEL_APP_JOB: Command = Command {
     area: Area::Apps,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Cancels an app job while it still downloads; once it verifies or installs it runs to its end and \
-                  is answered as it stands.",
+    description: "Cancels an app job while it still downloads, also one a person started in the control centre; \
+                  once it verifies or installs it runs to its end and is answered as it stands.",
 };
 
 static UNINSTALL_APP: Command = Command {
@@ -3502,7 +3502,8 @@ static UNINSTALL_APP: Command = Command {
                   trash, with `remove_data` its own files on this computer too; accounts stay. Answers with the job \
                   (see app_job). Always waits for the person's approval. Apps looked after by a package manager, the \
                   main application and the Notification Hub while Mail or App Feed is installed cannot be \
-                  uninstalled here (`conflict`, `not-found`).",
+                  uninstalled here (`conflict`, `not-found`); `busy` while another app job runs, `unsupported` in \
+                  a development build.",
 };
 
 // Installing and updating decide which code runs on the person's computer: only the app key, never

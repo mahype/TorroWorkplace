@@ -3000,7 +3000,7 @@ Tells where an app job (installing, updating or uninstalling apps) stands: its s
 
 Zugriff `write` · MCP-Tool `apps_cancel_app_job`
 
-Cancels an app job while it still downloads; once it verifies or installs it runs to its end and is answered as it stands.
+Cancels an app job while it still downloads, also one a person started in the control centre; once it verifies or installs it runs to its end and is answered as it stands.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -3010,7 +3010,7 @@ Cancels an app job while it still downloads; once it verifies or installs it run
 
 Zugriff `admin` · MCP-Tool `apps_uninstall_app`
 
-Uninstalls an app of the suite (window class or binary from list_catalog): it goes to the system's trash, with `remove_data` its own files on this computer too; accounts stay. Answers with the job (see app_job). Always waits for the person's approval. Apps looked after by a package manager, the main application and the Notification Hub while Mail or App Feed is installed cannot be uninstalled here (`conflict`, `not-found`).
+Uninstalls an app of the suite (window class or binary from list_catalog): it goes to the system's trash, with `remove_data` its own files on this computer too; accounts stay. Answers with the job (see app_job). Always waits for the person's approval. Apps looked after by a package manager, the main application and the Notification Hub while Mail or App Feed is installed cannot be uninstalled here (`conflict`, `not-found`); `busy` while another app job runs, `unsupported` in a development build.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
