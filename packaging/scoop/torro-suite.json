@@ -1,0 +1,19 @@
+{
+    "version": "0.1.0",
+    "description": "TorroWorkplace suite: Torro Workplace with Notification Hub, Mail, App Feed, Calendar, Tasks and Assistant",
+    "homepage": "https://github.com/mahype/TorroWorkplace",
+    "license": "MIT OR Apache-2.0",
+    "##": [
+        "Meta manifest without files of its own: installs the main application and every app through `depends`.",
+        "Needs no version bump: the apps update through their own manifests (`scoop update *`)."
+    ],
+    "depends": [
+        "torroworkplace",
+        "torroinbox",
+        "torro-inbox-mail",
+        "torro-inbox-notifications",
+        "torrocalendar",
+        "torrotasks",
+        "torroassistant"
+    ]
+}
