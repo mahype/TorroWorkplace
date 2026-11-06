@@ -527,7 +527,7 @@ pub fn newest_service_except(
                 .map(|entries| entries.filter_map(|entry| entry.ok().map(|entry| entry.path())).collect())
                 .unwrap_or_default()
         };
-        if let Some(found) = choose_scoop_service(exe, &counts, folders, scoop_version) {
+        if let Some(found) = choose_scoop_service(exe, counts, folders, scoop_version) {
             return Some(found);
         }
         let name = format!("{}{}", torro_core::AppId::WORKPLACE.binary, std::env::consts::EXE_SUFFIX);
