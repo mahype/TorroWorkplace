@@ -92,7 +92,9 @@ aus einem Guss wirkt:
   und „In neuem Fenster“. Die **Aktionsleiste schwebt** als Karte (Menü-Stil, Radius `lg`) senkrecht mittig am rechten
   Rand über der Mail (`widgets::floating_rail`); der Text hält `widgets::floating_rail_room()` Abstand, der Kopf läuft
   darunter durch. Die **Mail-Zeile** hat zwei Zeilen (Absender · Büroklammer · Zeit, Betreff · Markierungen), Tagesköpfe
-  und vorn den Kreis des Absenders (`widgets::sender_circle`, Farbe aus `Palette::sender` über die Adresse).
+  und vorn den Kreis des Absenders (`widgets::sender_circle`, Farbe aus `Palette::sender` über die Adresse). Die **Anhänge**
+  stehen unter der Mail, nicht im Kopf (#491): breit als Kacheln (`widgets::split_file_chip`) in einem Block unten im
+  Leser, mit Abstand zur schwebenden Leiste, mittel und schmal als Zeilen im festen Fuß des Paneels.
 - **Eigenschaften-Spalte** 300 breit rechts (Linear „Properties“): Gruppen mit `typo::caption()`-Titel in
   `TEXT_3`, Zeilen 32 mit Icon und Wert.
 - **Kleiner werden** in dieser Reihenfolge, nie etwas Funktion verlieren: (1) Seitenleiste ins Menü
@@ -379,7 +381,7 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   (`widgets::command_bar` mit `command_split`, `command_cell`, `command_more`, `command_words`), die Leiste der
   gewählten Zeile (`widgets::row_strip`, `row_strip_words`), die Torro-Pillen (`widgets::pill_button`) und der versenkte
   Ansicht-Schalter (`widgets::view_switch`) gibt es nicht mehr; das Mail-Fenster hat dafür die Aktionsleiste der Mail
-  (oben). Geblieben sind die Anhänge als `widgets::file_chip` (32 hoch, Büroklammer in `TEXT_3`, Größe in
+  (oben). Geblieben sind die Anhänge als `widgets::split_file_chip` (32 hoch, Büroklammer in `TEXT_3`, Größe in
   `typo::meta()`) unten im Leser und das Suchfeld über der Liste `style::text_input_flat` (ohne Rand, Fokus bleibt
   sichtbar). Die Stile `style::button::cell`, `style::button::pill` und `style::container::track` stehen noch in
   `style.rs`, nutzt aber kein Baustein mehr. Anschauen: `cargo run -p torro-gui --example gallery -- --mailbar`.

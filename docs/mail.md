@@ -334,7 +334,9 @@ oder auf eine Freigabe wartet, entscheidet der Dienst nach den Rechten des Agent
 Konzept und Entscheidungen: Issue #290, Aufgaben M12 in [`tasks/mail.md`](tasks/mail.md). Ein Anhang lässt sich
 öffnen, nach Downloads sichern, über „Save as…“ sichern oder in ein **Ablageziel** legen: einen Ordner mit einem
 Schema für Unterordner und Dateinamen (`{year}/{month}`, `{name}.{ext}` …), einer Datumsquelle (Mail oder Datum im
-Dateinamen) und Bedingungen, wann es vorgeschlagen wird (Kategorie, Dateityp, Absender).
+Dateinamen) und Bedingungen, wann es vorgeschlagen wird (Kategorie, Dateityp, Absender). Im Mail-Fenster stehen die
+Anhänge unter der Mail (breit als Kacheln im Leser, mittel und schmal als Zeilen im Fuß des Paneels), jeder mit einem
+Dreieck für dieses Menü (#491).
 
 - Die Ziele gelten für alle Konten gleich und stehen in einer eigenen Datei `<data>/mail/save-targets.json` (0600),
   nicht in `settings.json`; Klick-Aktion (`mail_attachment_click`) und Downloads-Ordner (`mail_downloads_folder`)

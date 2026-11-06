@@ -1350,8 +1350,6 @@ pub enum Menu {
     MailAccounts,
     /// The card "Display" at the mail's action rail (issue #456): HTML or text, the mail's colours.
     MailDisplay,
-    /// The menu of "{n} attachments ▾" in the mail's head (issue #457).
-    Attachments,
     /// The quick filters at the end of the search field (issue #336).
     SearchFilters,
     /// The on-demand folder browser, grouped by mail account.
@@ -3214,8 +3212,6 @@ pub enum Message {
     RailTick(Instant),
     /// "Display" of the mail's action rail (issue #456): open or close its card.
     ToggleMailDisplay,
-    /// "{n} attachments ▾" in the head of the mail with this id (issue #457): open or close its menu.
-    AskAttachments(String),
     /// ⌃ / ⌄ over the reader (issue #457): the previous (`false`) or next mail of the list, as `k`/`j`.
     StepMail(bool),
     /// "Open in new window" over the reader (issue #457): the mail with this id in a mail window of its
@@ -5080,7 +5076,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.menu_at = MenuAt::Panel;
                 self.toggle_menu(Menu::MailDisplay);
             }
-            Message::AskAttachments(id) => self.ask_file_menu(&id, Menu::Attachments),
             Message::StepMail(forward) => return self.step(forward),
             Message::OpenMailWindow(id) => {
                 #[cfg(test)]
@@ -8441,7 +8436,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 | Menu::MailContext
                 | Menu::MailAccounts
                 | Menu::MailDisplay
-                | Menu::Attachments
                 | Menu::SearchFilters
                 | Menu::Folders
                 | Menu::Attachment(_)
@@ -10605,19 +10599,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Some(Menu::DeleteForGood | Menu::Unsubscribe | Menu::PhishingLink) => None,
             // At the triangle that opened it (task M12.6), its right edge in line, under it while
             // there is room – the reader's block stands at the bottom, so mostly over it.
-            // From the attachments' menu in the head (issue #457) at "{n} attachments ▾", which it replaced.
             Some(Menu::Attachment(at)) => self.file_menu(Some(at)).map(|card| {
-                let at = anchors.attachment.or(&anchors.files);
-                widgets::floating(&at, Placement::Below(Align::End), card, Message::CloseMenu)
+                widgets::floating(&anchors.attachment, Placement::Below(Align::End), card, Message::CloseMenu)
             }),
             Some(Menu::SaveAll { rail: false }) => self.file_menu(None).map(|card| {
-                let at = anchors.save_all.or(&anchors.files);
-                widgets::floating(&at, Placement::Below(Align::End), card, Message::CloseMenu)
-            }),
-            Some(Menu::Attachments) => self.reading().and_then(|reading| {
-                let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
-                let card = mail::attachments_menu(&reading, width)?;
-                Some(widgets::floating(&anchors.files, Placement::Below(Align::End), card, Message::CloseMenu))
+                widgets::floating(&anchors.save_all, Placement::Below(Align::End), card, Message::CloseMenu)
             }),
             // From the rail beside it, as Later…; from the list's context menu at the row.
             Some(Menu::SaveAll { rail: true }) => {
@@ -10634,7 +10620,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 focus,
                 reading: self.reading(),
                 narrow: !matches!(class, SizeClass::Wide | SizeClass::Medium),
-                anchors: anchors.clone(),
             });
             let placed = panel::place(class, page, None, layer);
             return shell::shell(class, sidebar, header, placed.body, None)
@@ -20054,7 +20039,6 @@ mod tests {
         assert_eq!(app.cursor.as_deref(), Some(id.as_str()), "and back");
         let _ = app.update(Message::OpenMailWindow(id.clone()));
         assert_eq!(app.sent.last(), Some(&Sent::Window(id.clone())));
-        let _ = app.update(Message::AskAttachments(id));
         let _ = app.view();
         // Without a mail open the reader's column holds the overview, and its head says so.
         let bare = mail_window(Density::Compact, &[]);
