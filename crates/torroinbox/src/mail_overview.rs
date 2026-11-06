@@ -13,14 +13,15 @@
 //! - **Blocks**, top down: the head (title, account, span, "As of", the switches, [`controls`]), "What
 //!   comes in" – columns per day by main category ([`series`], [`columns`]) and the categories with
 //!   their share ([`category_rows`]) – with "Details ›" to the statistics page in the settings, and
-//!   "What's new" (`news.rs`) in every state. The figures, the senders, the inbox and the day chart's
+//!   "What's new" (`news.rs`) once the numbers are there or failed. The figures, the senders, the inbox and the day chart's
 //!   table ([`day_table`]) are the statistics page's.
 
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
+use iced::widget::text::Wrapping;
 use iced::widget::{Space, column, container, pick_list, row, scrollable};
-use iced::{Alignment, Element, Fill, Length, Theme};
+use iced::{Alignment, Element, Fill, Theme};
 use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, ChartColor, palette, size, space};
@@ -474,7 +475,7 @@ pub fn is_empty(overview: &MailOverview) -> bool {
 /// Where the overview stands, which decides its head and its inset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place {
-    /// The reader's column of the wide window: its own title, the page inset.
+    /// The reader's column of the wide window: the page inset.
     Page,
     /// The panel of the medium window: the panel's head and title stand over it; lined up with the
     /// title.
@@ -520,7 +521,8 @@ pub(crate) fn numbers(state: &State) -> Numbers<'_> {
 }
 
 /// The overview: its head, then loading, the error with "Retry", the empty span, or "What comes in",
-/// and "What's new" under it in every state (`news::block`, left out without announcements), at most
+/// and "What's new" under it once the numbers are there or failed (`news::block`, left out without
+/// announcements), at most
 /// a reading width wide and scrolling. While another span or account loads the numbers stay with
 /// "Updating…" over them.
 pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
@@ -545,7 +547,10 @@ pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
             }
         }
     }
-    blocks.extend(news::block(data.news));
+    // While the numbers load, "What's new" waits too: the card would push it down once they came.
+    if !matches!(numbers(state), Numbers::Loading) {
+        blocks.extend(news::block(data.news));
+    }
     let content = column(blocks).spacing(layout::section_gap()).width(Fill).max_width(size::content_max());
     match data.place {
         // The panel scrolls its body itself; inset, the blocks line up with its title.
@@ -562,20 +567,13 @@ pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
     }
 }
 
-/// The head: "Overview" (not in the panel or the narrow window, whose title and header say it), the
-/// line of account, span and "As of" ([`head_line`]), and the switches ([`controls`]) – beside the
-/// title in the wide window, under the line elsewhere.
+/// The head: the line of account, span and "As of" ([`head_line`]), the switches ([`controls`]) under
+/// it, wrapping where the room is narrow. No title: the window's top row, the panel's title and the
+/// narrow header say "Overview" already (issue #485); the reader's column is too narrow for the line
+/// beside the switches.
 fn head<'a>(data: &OverviewData<'a>) -> Element<'a, Message> {
     let meta = typo::text(typo::meta(), head_line(data)).style(theme::text_3);
-    let controls = controls(data.state, &data.accounts);
-    match data.place {
-        Place::Page => {
-            let words = column![typo::text(typo::title(), tr("Overview")), meta].spacing(space::xs());
-            row![container(words).width(Fill), controls].spacing(space::m()).align_y(Alignment::Center).into()
-        }
-        // The panel's title and the narrow header say "Overview" already.
-        Place::Panel | Place::Narrow => column![meta, controls].spacing(space::s()).into(),
-    }
+    column![meta, controls(data.state, &data.accounts, true)].spacing(space::s()).into()
 }
 
 /// The line under the title: the account, the span and when the numbers were counted.
@@ -594,8 +592,9 @@ pub(crate) fn head_line(data: &OverviewData<'_>) -> String {
 }
 
 /// The switches of span ("7 days | 30 days | 90 days") and account, one choice for the overview and
-/// the statistics page (decision 2 of #485); they wrap when the room is narrow.
-pub fn controls<'a>(state: &State, accounts: &[(String, String)]) -> Element<'a, Message> {
+/// the statistics page (decision 2 of #485); with `wrap` they wrap when the room is narrow, else they
+/// stay one row (beside a line or in a header bar, which never wraps).
+pub fn controls<'a>(state: &State, accounts: &[(String, String)], wrap: bool) -> Element<'a, Message> {
     let choices = account_choices(accounts);
     let chosen = RANGES.iter().position(|range| *range == state.range).unwrap_or_default();
     let ranges = widgets::segmented(RANGES.map(|range| (range_name(range), Message::MailOverviewRange(range))), chosen);
@@ -608,7 +607,8 @@ pub fn controls<'a>(state: &State, accounts: &[(String, String)]) -> Element<'a,
         .style(style::pick_list)
         .menu_style(style::pick_list_menu)
         .into();
-    row![ranges, accounts].spacing(space::s()).align_y(Alignment::Center).wrap().into()
+    let controls = row![ranges, accounts].spacing(space::s()).align_y(Alignment::Center);
+    if wrap { controls.wrap().into() } else { controls.into() }
 }
 
 /// The note of the day chart: what a column is.
@@ -640,19 +640,31 @@ pub(crate) fn day_chart<'a>(
 fn comes_in_card<'a>(overview: &MailOverview, range: StatsRange, catalogue: &[CategoryInfo]) -> Element<'a, Message> {
     let rows = category_rows(overview, catalogue);
     let largest = rows.iter().map(|row| row.count).max().unwrap_or(0);
-    let details = widgets::text_button(
-        Some(Icon::ChevronRight),
-        tr("Details"),
-        style::button::ghost,
-        Some(Message::ShowMailStatistics),
-    );
+    let widths = NumberWidths::of(rows.iter().map(|row| (row.count, row.share.as_str())));
+    let details = details_button();
     let body = column![
         day_chart(overview, range, catalogue, None),
-        column(rows.into_iter().map(|row| category_line(row, largest))).spacing(space::xs()),
+        column(rows.into_iter().map(|row| category_line(row, largest, widths))).spacing(space::xs()),
         container(details).width(Fill).align_right(Fill),
     ]
     .spacing(space::l());
     widgets::chart_card(tr("What comes in"), chart_note(range), body)
+}
+
+/// "Details ›": a ghost button with the chevron after the word, since it leads on to the statistics
+/// page (`widgets::text_button` puts its icon in front).
+fn details_button<'a>() -> Element<'a, Message> {
+    let chevron = icon::icon(Icon::ChevronRight, icon::SIZE_SM).style(|t: &Theme, _| iced::widget::svg::Style {
+        color: Some(style::button::ghost(t, iced::widget::button::Status::Active).text_color),
+    });
+    let label = typo::text(typo::caption(), tr("Details")).wrapping(Wrapping::None);
+    let content = row![label, chevron].spacing(space::xs()).align_y(Alignment::Center);
+    iced::widget::button(container(content).center_y(Fill))
+        .height(size::control_sm())
+        .padding(style::button_padding())
+        .style(style::button::ghost)
+        .on_press(Message::ShowMailStatistics)
+        .into()
 }
 
 /// The mark of a category: its icon in its group's colour; room of the same width for "Other".
@@ -668,24 +680,53 @@ pub(crate) fn category_mark<'a>(mark: Option<(Icon, usize)>) -> Element<'a, Mess
     }
 }
 
-/// A category's line: its mark and name, a bar against the largest, the count and the share.
-fn category_line<'a>(row_: CategoryRow, largest: u32) -> Element<'a, Message> {
+/// How wide the columns of counts and shares of a list of categories are: as their widest entry, so
+/// the numbers line up and the name takes the rest of the line (issue #485: in a narrow window the
+/// names keep their room, in a wide one the numbers stay together at the right).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct NumberWidths {
+    pub count: f32,
+    pub share: f32,
+}
+
+impl NumberWidths {
+    /// The widths for these counts and shares.
+    pub(crate) fn of<'s>(entries: impl Iterator<Item = (u32, &'s str)>) -> NumberWidths {
+        entries.fold(NumberWidths { count: 0.0, share: 0.0 }, |widths, (count, share)| NumberWidths {
+            count: widths.count.max(typo::text_width(&format_count(u64::from(count)), typo::body().tabular())),
+            share: widths.share.max(typo::text_width(share, typo::meta().tabular())),
+        })
+    }
+}
+
+/// The numbers at the end of a category's line: its bar against the largest, the count and the share,
+/// in the columns of `widths`.
+pub(crate) fn category_numbers<'a>(
+    count: u32,
+    largest: u32,
+    share: String,
+    widths: NumberWidths,
+) -> [Element<'a, Message>; 3] {
+    [
+        widgets::share_bar(count, largest),
+        container(typo::text(typo::body().tabular(), format_count(u64::from(count))).wrapping(Wrapping::None))
+            .width(widths.count)
+            .align_right(widths.count)
+            .into(),
+        container(typo::text(typo::meta().tabular(), share).style(theme::text_3).wrapping(Wrapping::None))
+            .width(widths.share)
+            .align_right(widths.share)
+            .into(),
+    ]
+}
+
+/// A category's line: its mark and name, then the bar, the count and the share ([`category_numbers`]).
+fn category_line<'a>(row_: CategoryRow, largest: u32, widths: NumberWidths) -> Element<'a, Message> {
     let name = row![category_mark(row_.mark), widgets::ellipsized(typo::body(), row_.label, theme::text)]
         .spacing(space::s())
         .align_y(Alignment::Center);
-    row![
-        container(name).width(Length::FillPortion(2)),
-        container(widgets::share_bar(row_.count, largest)).width(Length::FillPortion(3)),
-        container(typo::text(typo::body().tabular(), format_count(u64::from(row_.count))))
-            .width(Length::FillPortion(1))
-            .align_right(Length::FillPortion(1)),
-        container(typo::text(typo::meta().tabular(), row_.share).style(theme::text_3))
-            .width(Length::FillPortion(1))
-            .align_right(Length::FillPortion(1)),
-    ]
-    .spacing(space::m())
-    .align_y(Alignment::Center)
-    .into()
+    let [bar, count, share] = category_numbers(row_.count, largest, row_.share, widths);
+    row![container(name).width(Fill), bar, count, share].spacing(space::m()).align_y(Alignment::Center).into()
 }
 
 // ---------------------------------------------------------------------------------------------

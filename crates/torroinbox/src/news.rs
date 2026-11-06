@@ -11,10 +11,10 @@ use std::future::Future;
 
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row};
-use iced::{Alignment, Element, Fill, Theme};
+use iced::{Alignment, Element, Fill, Padding, Theme};
 use torro_core::i18n::tr;
 use torro_gui::icon::{self, Icon};
-use torro_gui::theme::{self, palette, space};
+use torro_gui::theme::{self, palette, size, space};
 use torro_gui::{datetime, typo, widgets};
 use torro_inbox::demo::DemoSource;
 use torro_ipc::inbox::InboxClient;
@@ -168,10 +168,18 @@ fn line(announcement: &Announcement) -> Element<'_, Message> {
         .style(theme::text_3)
         .wrapping(Wrapping::None);
     let dismiss = widgets::icon_button(Icon::X, tr("Dismiss"), Some(Message::DismissNews(announcement.id.clone())));
-    row![container(mark).center_y(typo::line_height(typo::body_strong())), container(words).width(Fill), date, dismiss]
-        .spacing(space::m())
-        .align_y(Alignment::Start)
-        .into()
+    // Symbol, date and ✕ centred on the height of the button, the title's first line with them.
+    let edge = size::control_sm();
+    let lead = (edge - typo::line_height(typo::body_strong())).max(0.0) / 2.0;
+    row![
+        container(mark).center_y(edge),
+        container(words).width(Fill).padding(Padding::ZERO.top(lead)),
+        container(date).center_y(edge),
+        dismiss,
+    ]
+    .spacing(space::m())
+    .align_y(Alignment::Start)
+    .into()
 }
 
 #[cfg(test)]

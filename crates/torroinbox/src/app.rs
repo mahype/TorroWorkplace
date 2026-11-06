@@ -6269,7 +6269,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// Keeps the overview in step after every message (issue #409): an open mail closes its panel or
     /// page, a closed "Mute" menu lets go of its sender, and while it or the statistics page shows
     /// (issue #485) it asks for numbers that are missing, for another span or account, or older than a
-    /// minute, and once for the announcements under it. The forced demo states ask nothing.
+    /// minute, and once for the announcements under it. The forced demo states ask for no numbers;
+    /// the announcements they ask for too, since "What's new" stands under every state.
     fn follow_mail_overview(&mut self) -> Task<Message> {
         if self.panel_open() {
             self.mail_overview.open = false;
@@ -8156,11 +8157,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     ) -> torro_settings_ui::Frame<'a, Message> {
         let section = pane.host.current().id;
         let page = if section == STATISTICS_SECTION && self.launch.kind == Kind::Mail {
-            let place = if class == SizeClass::Wide || class == SizeClass::Medium {
-                mail_overview::Place::Page
-            } else {
-                mail_overview::Place::Narrow
-            };
+            // Only the wide header bar has room for span and account (issue #485).
+            let place =
+                if class == SizeClass::Wide { mail_overview::Place::Page } else { mail_overview::Place::Narrow };
             mail_statistics::page(self.overview_data(place, mute_at))
         } else {
             settings_page(&pane.sections, pane.host.data(), section).map(Message::SettingsPage)

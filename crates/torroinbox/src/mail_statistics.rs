@@ -193,16 +193,18 @@ pub fn category_columns(overview: &MailOverview, held: &OverviewCategory, range:
 
 /// The statistics page as the settings host takes it: the tabs, span and account, and the chosen
 /// tab's content – or loading, the error with "Retry", the empty span; while another span or account
-/// loads the numbers stay with "Updating…" over them. `data.place` is [`Place::Narrow`] in the
-/// narrow window: span and account stand under the tabs there, else in the head's buttons.
+/// loads the numbers stay with "Updating…" over them. `data.place` is [`Place::Page`] in the wide
+/// window, with span and account in the head's buttons, else [`Place::Narrow`], with them under the
+/// tabs and the figures two by two.
 pub fn page(data: OverviewData<'_>) -> Page<'_, Message> {
     let state = data.state;
     let labels = Tab::ALL.iter().map(|tab| (tab.label().to_owned(), None)).collect();
     let chosen = Tab::ALL.iter().position(|tab| *tab == state.tab).unwrap_or_default();
     let narrow = data.place == Place::Narrow;
     let mut blocks: Vec<Element<'_, Message>> = vec![widgets::tabs(labels, chosen, Message::MailStatisticsTab)];
+    // Below the wide window the header bar has no room for them (issue #485): under the tabs.
     if narrow {
-        blocks.push(mail_overview::controls(state, &data.accounts));
+        blocks.push(mail_overview::controls(state, &data.accounts, true));
     }
     blocks.push(typo::text(typo::meta(), mail_overview::head_line(&data)).style(theme::text_3).into());
     match mail_overview::numbers(state) {
@@ -226,7 +228,7 @@ pub fn page(data: OverviewData<'_>) -> Page<'_, Message> {
     }
     let body = column(blocks).spacing(layout::section_gap()).width(Fill);
     let page = Page::new(body);
-    if narrow { page } else { page.actions(vec![mail_overview::controls(state, &data.accounts)]) }
+    if narrow { page } else { page.actions(vec![mail_overview::controls(state, &data.accounts, false)]) }
 }
 
 /// What the chosen tab shows of `overview`.
@@ -234,10 +236,18 @@ fn tab_blocks<'a>(data: &OverviewData<'a>, overview: &MailOverview) -> Vec<Eleme
     let state = data.state;
     match state.tab {
         Tab::Overview => {
-            vec![
-                widgets::stat_grid(figures(overview).into()),
-                comes_in_table(overview, state.range, state.table, data.catalogue),
-            ]
+            // Below the wide window two by two: four tiles side by side cut their words (issue #485).
+            let [first, second, third, fourth] = figures(overview);
+            let mut blocks = match data.place {
+                Place::Page => vec![widgets::stat_grid(vec![first, second, third, fourth])],
+                Place::Panel | Place::Narrow => {
+                    let grids =
+                        column![widgets::stat_grid(vec![first, second]), widgets::stat_grid(vec![third, fourth])];
+                    vec![grids.spacing(space::m()).into()]
+                }
+            };
+            blocks.push(comes_in_table(overview, state.range, state.table, data.catalogue));
+            blocks
         }
         Tab::Senders => vec![senders_card(overview, state.muting.as_deref(), data.catalogue, &data.mute_at)],
         Tab::Inbox => vec![inbox_card(overview, data.catalogue)],
@@ -262,9 +272,20 @@ fn comes_in_table<'a>(
     let body: Element<'a, Message> = if table {
         let series = mail_overview::series(overview, catalogue);
         let (head, rows, total) = mail_overview::day_table(overview, range, &series);
-        column![container(switch).width(Fill).align_right(Fill), widgets::data_table(head, rows, Some(total))]
-            .spacing(space::l())
-            .into()
+        // The names of the main categories head columns as wide as the numbers: cut with "…" so they
+        // never run into each other in a narrow window.
+        let table = responsive(move |room| {
+            let values = head.len().saturating_sub(1);
+            let width = widgets::table_value_width(room.width, values);
+            let head = head
+                .iter()
+                .enumerate()
+                .map(|(i, name)| if i == 0 { name.clone() } else { typo::ellipsize(name, typo::caption(), width) })
+                .collect();
+            widgets::settings_table(head, rows.clone(), Some(total.clone()))
+        })
+        .height(Length::Shrink);
+        column![container(switch).width(Fill).align_right(Fill), table].spacing(space::l()).into()
     } else {
         mail_overview::day_chart(overview, range, catalogue, Some(switch))
     };
@@ -290,20 +311,24 @@ fn categories_tab<'a>(
     let lines = category_lines(overview);
     let largest = lines.iter().map(|held| held.count).max().unwrap_or(0);
     let whole = came_in(overview);
-    let rows =
-        lines.into_iter().map(|held| category_row(held, catalogue, largest, whole, held.category == chosen.category));
+    let shares: Vec<String> = lines.iter().map(|held| insights::percent(held.count, whole)).collect();
+    let widths =
+        mail_overview::NumberWidths::of(lines.iter().zip(&shares).map(|(held, share)| (held.count, share.as_str())));
+    let rows = lines
+        .into_iter()
+        .map(|held| category_row(held, catalogue, (largest, whole, widths), held.category == chosen.category));
     let note = trf("{n} mails", &[("n", &format_count(u64::from(whole)))]);
     blocks.push(widgets::chart_card(tr("By category"), note, column(rows).spacing(space::xs())));
     blocks
 }
 
-/// One line of "Categories": mark and name, a bar against the largest, the count, the share and
-/// "Opened x of y"; the whole line chooses the category, the chosen one `selected`.
+/// One line of "Categories": mark and name with "Opened x of y" under it, a bar against the largest,
+/// the count and the share in the columns of `widths`; the whole line chooses the category, the chosen
+/// one `selected`.
 fn category_row<'a>(
     held: &OverviewCategory,
     catalogue: &[CategoryInfo],
-    largest: u32,
-    whole: u32,
+    (largest, whole, widths): (u32, u32, mail_overview::NumberWidths),
     selected: bool,
 ) -> Element<'a, Message> {
     let mark = held.category.map(|category| {
@@ -315,31 +340,24 @@ fn category_row<'a>(
             .map_or_else(|| category.default_icon(), |info| info.icon);
         (mail::category_symbol(symbol), colour)
     });
-    let name = row![
-        mail_overview::category_mark(mark),
-        widgets::ellipsized(typo::body(), category_name(catalogue, held.category), theme::text)
-    ]
-    .spacing(space::s())
-    .align_y(Alignment::Center);
     let opened = trf(
         "Opened {n} of {total}",
         &[("n", &format_count(u64::from(held.opened))), ("total", &format_count(u64::from(held.count)))],
     );
-    let line = row![
-        container(name).width(Length::FillPortion(2)),
-        container(widgets::share_bar(held.count, largest)).width(Length::FillPortion(2)),
-        container(typo::text(typo::body().tabular(), format_count(u64::from(held.count))))
-            .width(Length::FillPortion(1))
-            .align_right(Length::FillPortion(1)),
-        container(typo::text(typo::meta().tabular(), insights::percent(held.count, whole)).style(theme::text_3))
-            .width(Length::FillPortion(1))
-            .align_right(Length::FillPortion(1)),
-        container(typo::text(typo::meta().tabular(), opened).style(theme::text_3).wrapping(Wrapping::None))
-            .width(Length::FillPortion(2))
-            .align_right(Length::FillPortion(2)),
-    ]
-    .spacing(space::m())
-    .align_y(Alignment::Center);
+    // What was opened under the name, lined up with it, so the line fits a narrow window too.
+    let name = column![
+        row![
+            mail_overview::category_mark(mark),
+            widgets::ellipsized(typo::body(), category_name(catalogue, held.category), theme::text)
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center),
+        container(widgets::ellipsized(typo::meta(), opened, theme::text_3))
+            .padding(Padding::ZERO.left(icon::SIZE_SM + space::s())),
+    ];
+    let [bar, count, share] =
+        mail_overview::category_numbers(held.count, largest, insights::percent(held.count, whole), widths);
+    let line = row![container(name).width(Fill), bar, count, share].spacing(space::m()).align_y(Alignment::Center);
     button(line)
         .width(Fill)
         .padding([space::xs(), space::s()])
@@ -401,11 +419,16 @@ fn sender_line<'a>(
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| list::one_line(&sender.address));
     let category = sender.category.map(|category| mail::category_look(catalogue, category).0);
+    let opened = trf(
+        "Opened {n} of {total}",
+        &[("n", &format_count(u64::from(sender.opened))), ("total", &format_count(u64::from(sender.count)))],
+    );
+    // Narrow, what was opened stands in the second line, as the card's note promises (issue #485).
     let detail = match (wide, category) {
         (true, Some(category)) => format!("{} · {category}", list::one_line(&sender.address)),
         (true, None) => list::one_line(&sender.address),
-        (false, Some(category)) => category,
-        (false, None) => list::one_line(&sender.address),
+        (false, Some(category)) => format!("{category} · {opened}"),
+        (false, None) => opened.clone(),
     };
     let who = column![
         widgets::ellipsized(typo::body_strong(), name.clone(), theme::text),
@@ -415,25 +438,23 @@ fn sender_line<'a>(
         .spacing(space::m())
         .align_y(Alignment::Center);
     if wide {
-        let opened = trf(
-            "Opened {n} of {total}",
-            &[("n", &format_count(u64::from(sender.opened))), ("total", &format_count(u64::from(sender.count)))],
-        );
-        let mut read = column![
-            typo::text(typo::meta().tabular(), opened).style(theme::text_2).wrapping(Wrapping::None),
-            widgets::share_bar(sender.opened, sender.count),
-        ]
-        .spacing(space::xs());
+        // "Rarely opened" beside the bar, so every row keeps two lines (issue #485).
+        let mut bar =
+            row![widgets::share_bar(sender.opened, sender.count)].spacing(space::s()).align_y(Alignment::Center);
         if rarely_opened(sender.count, sender.opened) {
-            let rare = row![
-                icon::icon(Icon::EyeOff, icon::SIZE_SM)
-                    .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) }),
-                typo::text(typo::meta(), tr("Rarely opened")).style(theme::text_3).wrapping(Wrapping::None),
-            ]
-            .spacing(space::xs())
-            .align_y(Alignment::Center);
-            read = read.push(rare);
+            bar = bar.push(
+                row![
+                    icon::icon(Icon::EyeOff, icon::SIZE_SM)
+                        .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) }),
+                    typo::text(typo::meta(), tr("Rarely opened")).style(theme::text_3).wrapping(Wrapping::None),
+                ]
+                .spacing(space::xs())
+                .align_y(Alignment::Center),
+            );
         }
+        let read =
+            column![typo::text(typo::meta().tabular(), opened).style(theme::text_2).wrapping(Wrapping::None), bar]
+                .spacing(space::xs());
         line = line.push(container(read).width(Length::FillPortion(2)));
     }
     let number = column![
