@@ -667,7 +667,7 @@ pub(crate) fn without_top<'a>(head: Element<'a, Message>) -> Element<'a, Message
 /// click opens it in the panel.
 pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
     let cursor = rows.selected == Some(item.id.as_str());
-    let selected = cursor || mail_selected(item, rows);
+    let selected = (cursor && rows.selected_mail.is_empty()) || mail_selected(item, rows);
     let actions = rows.anchors.mark(true, row_actions(item, rows));
     let height = entry_row_height(item, rows);
     let content = if item.source.kind == SourceKind::Mail {
@@ -697,7 +697,9 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
     if cursor { widgets::anchored(&rows.anchors.row, row) } else { row }
 }
 
-/// A bulk selection stores message ids, while these rows carry inbox entry ids.
+/// A bulk selection stores message ids, while these rows carry inbox entry ids. While it holds
+/// something, the cursor's row is chosen only when it belongs to it, as a folder's row (issue #507):
+/// a row taken out with Ctrl- or ⌘-click must not stay highlighted.
 fn mail_selected(item: &Item, rows: &Rows<'_>) -> bool {
     matches!(item.link.as_ref(), Some(Link::Mail { message }) if rows.selected_mail.contains(message))
 }
@@ -1052,7 +1054,7 @@ pub fn entry_card<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a
         return entry_row(item, rows, width);
     }
     let cursor = rows.selected == Some(item.id.as_str());
-    let selected = cursor || mail_selected(item, rows);
+    let selected = (cursor && rows.selected_mail.is_empty()) || mail_selected(item, rows);
     let lines = MailLines { preview: card_preview(item), ..MailLines::of(item, rows) };
     let card = MailCard {
         lines,
