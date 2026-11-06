@@ -452,7 +452,10 @@ fn the_scale_sets_device_pixels_not_the_layout() {
     let content = content(&fixture("invoice"));
     let one = content.height(500.0, 1.0, Scheme::Light);
     let two = content.height(500.0, 2.0, Scheme::Light);
-    assert!((one - two).abs() < 2.0, "{one} at 1x, {two} at 2x");
+    // Blitz lays text out quantized to device pixels (parley's `quantize`), so each line's height may
+    // round by up to half a CSS pixel differently at 1x and 2x: with Linux's fonts the invoice comes
+    // out 472 against 480. What must not happen is the layout following the scale (twice as tall).
+    assert!((one - two).abs() < one * 0.05, "{one} at 1x, {two} at 2x");
     let snapshot = content.snapshot(500.0, 2.0, Scheme::Light, 0.0, 100.0);
     assert_eq!((snapshot.width, snapshot.height), (1000, 200));
 }
