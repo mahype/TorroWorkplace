@@ -274,6 +274,23 @@ version = "1.0.0"
 bg = "#050607"
 ```
 
+### Knallige Farbschemata
+
+Ein Farbschema kann sich als knallig kennzeichnen (Issue #515): `vivid = true` oben in `color-scheme.toml`, neben
+`format`. Der Schlüssel ändert weder Farben noch Prüfung; er entscheidet nur, in welcher Gruppe die Steuerzentrale das
+Schema im Menü Appearance › Farbschema zeigt: „Vivid“ (deutsch „Knallig“), nach „Dark only“. Ein Schema mit
+`vivid = true` steht dort auch dann, wenn es zusätzlich `dark_only = true` hat. Fehlt der Schlüssel, bleibt das Schema
+in seiner Gruppe. Ein Wert, der kein `true` oder `false` ist (`vivid = "yes"`), ist ein Syntaxfehler.
+
+```toml
+format = 1
+vivid = true
+
+[about]
+name = "Nord Vivid"
+version = "1.0.0"
+```
+
 ### Diagrammfarben
 
 Für Diagramme (zuerst die Insights der Inbox-Zentrale, E8.8b) hat jeder Modus vier **Reihenfarben** in fester
@@ -359,15 +376,22 @@ Beispiel **Plex** (Aufgabe L.5): IBM Plex Sans und ein ruhiger Petrol-Akzent, im
 |---|---|---|---|
 | `designs/<id>/` | `design.toml`, nur im Repository (die drei Stufen, Issue #484) | `format`, `[about]`, `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]`, `[list]` | – |
 | `fonts/<id>/` | `font.toml` | `format`, `license`, `size_adjust` (optional), `kind` (optional: `sans`, `serif`, `mono`), `[about]`, `[fonts.text\|heading\|numbers]` | die Schriftdateien, `LICENSE.txt` |
-| `color-schemes/<id>/` | `color-scheme.toml` | `format`, `dark_only` (optional, [nur dunkel](#farbschema-nur-dunkel)), `[about]`, `[colors.light\|dark]` (mit Seitenleiste und Diagramm), `[logo] mark` | `logo.svg`, bei fremder Palette `LICENSE.txt` |
+| `color-schemes/<id>/` | `color-scheme.toml` | `format`, `dark_only` (optional, [nur dunkel](#farbschema-nur-dunkel)), `vivid` (optional, [knallig](#knallige-farbschemata)), `[about]`, `[colors.light\|dark]` (mit Seitenleiste und Diagramm), `[logo] mark` | `logo.svg`, bei fremder Palette `LICENSE.txt` |
 
 Jede Datei hat ihr eigenes `[about]` mit `name` und `version`; jeder Teil wird für sich geprüft. Wer nur einen Teil
 ändern will, legt nur dessen Ordner an: ein eigenes Farbschema braucht keine eigene Schrift.
 
+**Knallige Schwestern (Issue #515).** Fünf der Schemata gibt es ein zweites Mal mit leuchtendem Akzent, in der Gruppe
+„Vivid“ (`vivid = true`, [Knallige Farbschemata](#knallige-farbschemata)): Grund, Text und Statusfarben sind die der
+Vorlage, nur `accent`, `on_accent` und `focus_ring` sind neu. Die Töne sind so verteilt, dass keiner mit der Warn- oder
+OK-Farbe seiner Vorlage verwechselt wird. Im hellen Modus ist jeder Ton dunkler, damit Weiß auf dem Akzent 4,5:1 hält
+und Heute-Kreis und Jetzt-Linie auf `panel` und `selected` 3:1 erreichen; der Wunschton und der Grund stehen als
+Kommentar über `[colors.light]`. Name „<Vorlage> Vivid“, die Lizenz ist die der Vorlage.
+
 Die Suite legt ihre Beispiele in die Ordner `fonts/` und `color-schemes/` im Datenordner, der Dienst beim Start, die
 Steuerzentrale bei „Open fonts folder“ und „Open color schemes folder“: Plex, Commitr, Channelr, Guildr, Quattro und Ribbon als Schrift und Farbschema, die freien
 Schriften von Issue #299 nur als Schrift ([Mitgelieferte Schriften](#mitgelieferte-schriften)), Nord,
-Solarized, Catppuccin, Gruvbox, Dracula und Everforest nur als Farbschema, dazu 21 Farbschemata nach freien Paletten ([Mitgelieferte Farbschemata](#mitgelieferte-farbschemata)). Beispiel-Designs gibt es seit Issue #291
+Solarized, Catppuccin, Gruvbox, Dracula und Everforest nur als Farbschema, dazu 21 Farbschemata nach freien Paletten und fünf knallige Schwestern davon ([Mitgelieferte Farbschemata](#mitgelieferte-farbschemata)). Beispiel-Designs gibt es seit Issue #291
 nicht mehr: Die drei Designs der Suite sind eingebaut ([unten](#drei-abstandsstufen-komfort-standard-dicht)), und seit
 Issue #484 liest die Suite den Ordner `designs/` im Datenordner gar nicht mehr; eine Kopie der alten Beispiel-Designs
 dort bleibt liegen, wird aber nicht angezeigt. Jedes Beispiel wird **einmal angeboten**
@@ -514,7 +538,7 @@ Jeder Teil hat einen eigenen Ordner, jeder Eintrag ist ein Unterordner mit einer
 |---|---|---|---|
 | `designs/<id>/` (nur Repository) | `design.toml`: `[about]`, `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]`, `[list]` | ein **Design** | – |
 | `fonts/<id>/` | `font.toml`: `[about]`, `license`, `size_adjust`, `kind`, `[fonts.text\|heading\|numbers]` | eine **Schrift** | Schriftdateien, `LICENSE.txt` |
-| `color-schemes/<id>/` | `color-scheme.toml`: `dark_only` (optional), `[about]`, `[colors.light\|dark]` mit Seitenleiste und Diagramm, `[logo]` | ein **Farbschema** | `logo.svg`, bei fremder Palette `LICENSE.txt` |
+| `color-schemes/<id>/` | `color-scheme.toml`: `dark_only` (optional), `vivid` (optional), `[about]`, `[colors.light\|dark]` mit Seitenleiste und Diagramm, `[logo]` | ein **Farbschema** | `logo.svg`, bei fremder Palette `LICENSE.txt` |
 
 - Jede Datei hat ihr eigenes `[about]` (Name, Version, Autor, Beschreibung). Dieselbe id darf in mehreren Ordnern
   stehen (Commitr in allen dreien). `torro` ist alle drei, eingebaut, ohne Ordner.
@@ -658,6 +682,11 @@ kräftiger); `text` und `text_2` erreichen 4,5:1 auch auf den getönten Terminfl
 | Palenight | `palenight` | Dark only | github.com/whizkydee/vscode-palenight-theme | MIT | Akzent Lila `#C792EA`; gedämpfter Text (Kommentar `#697098`) stark aufgehellt, Rot und `merged` verschoben |
 | Poimandres | `poimandres` | Dark only | github.com/drcmda/poimandres-theme | MIT | Akzent Mint `#5DE4C7`; `bg` und `panel` beide `#1B1E28`, wie in der Quelle (der Entwurf hatte `panel` `#232733`, das dort nicht vorkommt); gedämpfter Text und Rot verschoben |
 | Sonokai | `sonokai` | Dark only | github.com/sainnhe/sonokai | MIT | Stil default, Akzent sein Blau `#76CCE0`; ohne Cyan und Magenta (Violett, Gelb im Kalender); gedämpfter Text und Rot verschoben |
+| Catppuccin Vivid | `catppuccin-vivid` | Vivid | wie Catppuccin | MIT (Text der Vorlage) | Magenta: dunkel `#FF4DB8`, hell `#D6008A`; sonst Catppuccin; ohne Logo |
+| Dracula Vivid | `dracula-vivid` | Vivid | wie Dracula | MIT (Text der Vorlage) | Cyan: dunkel `#00E5FF`, hell `#00798C`; Draculas Grün bleibt „OK“; ohne Logo |
+| Gruvbox Vivid | `gruvbox-vivid` | Vivid | wie Gruvbox | MIT (Text der Vorlage) | Grün: dunkel `#2EE66B`, hell `#00852B`; Orange bleibt der Warnfarbe; ohne Logo |
+| Nord Vivid | `nord-vivid` | Vivid | wie Nord | MIT (Text der Vorlage) | Orange: dunkel `#FF7A1A`, hell `#C24A00`; ohne Logo |
+| Tokyo Night Vivid | `tokyo-night-vivid` | Vivid | wie Tokyo Night | MIT (Text der Vorlage) | Gelb: dunkel `#FFE500`, hell dunkles Senfgelb `#827400` (knapp über 3:1 auf `selected`); ohne Logo |
 | Synthwave ’84 | `synthwave-84` | Dark only | github.com/robb0wen/synthwave-vscode | MIT | Akzent Pink `#FF7EDB`; Blau und Cyan sind ein Neon-Cyan (Gelb als fünfte Kalenderfarbe); gedämpfter Text und Rot verschoben |
 
 ### Schriften des Systems
