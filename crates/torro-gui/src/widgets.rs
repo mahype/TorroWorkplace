@@ -541,6 +541,32 @@ pub fn crumb_button<'a, M: Clone + 'a>(
     tip(b, hint, tooltip::Position::Bottom)
 }
 
+/// One step of the path in a header ("Settings › Accounts › …", issue #264): `label` in `BODY` on a
+/// [`style::button::path_step`] button as high as an icon button, [`space::xs()`] at the sides, which
+/// leads where `on_press` says. Without `on_press` (the step shows what is open already) it is only the
+/// text in `text_3` with the same room around it, so the path keeps its spacing – not a disabled
+/// button, which would read as faded.
+///
+/// ```ignore
+/// row![widgets::path_step(tr("Settings"), Some(m)), chevron, widgets::path_step(tr("Accounts"), None)]
+/// ```
+pub fn path_step<'a, M: Clone + 'a>(label: impl IntoFragment<'a>, on_press: Option<M>) -> Element<'a, M> {
+    let text = typo::text(typo::body(), label).wrapping(Wrapping::None);
+    let Some(on_press) = on_press else {
+        return container(text.style(theme::text_3))
+            .height(size::control_sm())
+            .padding([0.0, space::xs()])
+            .center_y(size::control_sm())
+            .into();
+    };
+    button(container(text).center_y(Fill))
+        .height(size::control_sm())
+        .padding([0.0, space::xs()])
+        .style(style::button::path_step)
+        .on_press(on_press)
+        .into()
+}
+
 /// An icon button that can be switched on, 28 × 28: ghost while `on` is false, the surface of a
 /// choice (`style::button::icon_chosen`) while it is true – the filter icon on the mail search field
 /// shows an active quick filter this way. Like [`icon_button`] it needs a tooltip; `None` disables it.
