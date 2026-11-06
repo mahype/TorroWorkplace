@@ -3078,6 +3078,8 @@ pub enum Message {
     AskLane(String),
     /// "Category ▸" on a mail (task E12.8): opens the list of categories.
     AskCategory(String),
+    /// "Category…" on a message `m:…` without an entry (issue #500): the list of categories for it.
+    AskMailCategory(String),
     /// A click on a group of "Categories" (task E12.8, issue #300): a folded group opens and is
     /// shown, an open group not shown is shown, the open group shown folds
     /// ([`App::toggle_category_group`]).
@@ -4829,6 +4831,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::AskCategory(id) => {
                 self.menu_at = MenuAt::Panel;
                 return self.ask_category(&id);
+            }
+            Message::AskMailCategory(id) => {
+                self.menu_at = MenuAt::Panel;
+                return self.ask_mail_category(&id);
             }
             // One category picked: ask whether it holds for this sender from now on (E12.8).
             Message::PickCategory(category) => {
@@ -8856,6 +8862,24 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if item.source.kind != torro_inbox::SourceKind::Mail {
             return Task::none();
         }
+        self.drawer = false;
+        self.picked_category = None;
+        self.subject = Some(item);
+        self.menu = Some(Menu::Category);
+        Task::none()
+    }
+
+    /// "Category…" on the message `id` without an entry (issue #500): the categories to file it
+    /// under, as for an entry ([`App::ask_category`]) – the message's stand-in
+    /// ([`torro_inbox::rules::message_stand_in`]) is the subject, so "Only this mail" and "Always for
+    /// <sender>" send its id `m:…`, which `inbox.set_item_category` takes as well. A message with an
+    /// entry goes through the entry.
+    fn ask_mail_category(&mut self, id: &str) -> Task<Message> {
+        if let Some(entry) = self.entry_of(id) {
+            return self.ask_category(&entry);
+        }
+        let Some(summary) = self.message_summary(id) else { return Task::none() };
+        let Some(item) = torro_inbox::rules::message_stand_in(&summary, None, false) else { return Task::none() };
         self.drawer = false;
         self.picked_category = None;
         self.subject = Some(item);
@@ -13007,6 +13031,7 @@ fn closes_rail(message: &Message) -> bool {
             | Message::AskMailTask(_)
             | Message::AskEvent(_)
             | Message::AskCategory(_)
+            | Message::AskMailCategory(_)
             | Message::Reclassify(_)
             | Message::AskHide(_)
             | Message::AskMuteMail(_)
@@ -20247,6 +20272,84 @@ mod tests {
         assert!(file.items.iter().any(|item| item.label == trc("action", "Archive")), "task E18.5: Archive");
         assert!(file.items.iter().all(|item| item.label != tr("Done")), "no Done for mail");
         let _ = overview.view();
+    }
+
+    /// Issue #500: a right click on a mail without an entry offers "Category…" in "Torro" beside
+    /// "Task"; it opens the list of categories for the mail's stand-in, whose question names the
+    /// sender ("Always for …"), and "Only this mail" files it by hand – the core takes the mail's
+    /// id `m:…` –, so the list and the sidebar's count follow once the window loads again.
+    #[test]
+    fn a_mail_without_an_entry_is_filed_by_hand_from_its_context_menu() {
+        // The context menu of the first mail of "All" (issue #497): "Category…" for any mail there.
+        let mut app = mail_window(Density::Compact, &["--open", "mail-context"]);
+        assert_eq!((app.menu, app.menu_at), (Some(Menu::MailContext), MenuAt::Row));
+        let id = app.cursor.clone().expect("a mail at the cursor");
+        let groups = app.rail_groups(SizeClass::Wide, &detail::Anchors::default()).expect("the mail's actions");
+        let torro = groups.iter().find(|group| group.label == tr("Torro")).expect("the group Torro");
+        let labels: Vec<String> = torro.items.iter().map(|item| item.label.to_string()).collect();
+        assert_eq!(labels, [tr("Task"), tr("Category…")], "no Re-categorize without an entry");
+        let ask = torro.items[1].on_press.clone();
+        assert!(matches!(&ask, Some(Message::AskMailCategory(asked)) if *asked == id), "{ask:?}");
+        drop(groups);
+        draw_everywhere(&mut app);
+
+        // A mail the demo holds no entry for at all (not even a done one), so the core answers
+        // with its stand-in.
+        let entries = block_on(app.inbox.list_items(torro_inbox::ItemFilter::default())).expect("the entries");
+        let id = app
+            .messages
+            .iter()
+            .find(|message| {
+                !entries.iter().any(|item| {
+                    item.thread_key == message.thread_id
+                        || matches!(&item.link, Some(Link::Mail { message: linked }) if *linked == message.id)
+                })
+            })
+            .map(|message| message.id.clone())
+            .expect("a mail without an entry");
+        let _ = app.update(Message::ContextMail(id.clone(), Point::new(24.0, 12.0)));
+        let _ = app.update(Message::ContextAction(Box::new(Message::AskMailCategory(id.clone()))));
+        assert_eq!(app.menu, Some(Menu::Category));
+        assert_eq!(app.subject.as_ref().map(|item| item.id.as_str()), Some(id.as_str()), "the mail's stand-in");
+        let summary = app.message_summary(&id).expect("the mail");
+        let had = summary.category.map(|held| held.category);
+        let counted = |app: &App<DemoSource>, category| {
+            app.categories.iter().find(|held| held.category == category).map_or(0, |held| held.messages)
+        };
+        let picked = app
+            .categories
+            .iter()
+            .find(|held| Some(held.category) != had && !(held.built_in && held.category.by_rule_only()))
+            .map(|held| held.category)
+            .expect("another category");
+        let before = counted(&app, picked);
+        let _ = app.view();
+        let _ = app.update(Message::PickCategory(picked));
+        assert_eq!(app.menu, Some(Menu::CategoryAlways));
+        let sender = summary.from.as_ref().map(|from| from.address.to_lowercase()).expect("a sender");
+        let choices = app.choices();
+        let labels: Vec<&str> = choices.iter().map(|choice| choice.label.as_str()).collect();
+        assert_eq!(labels, [tr("Only this mail"), trf("Always for {sender}", &[("sender", &sender)]).as_str()]);
+        assert!(
+            matches!(&choices[1].message, Message::SetCategory(at, category, true) if *at == id && *category == picked),
+            "Always for the sender"
+        );
+        let Message::SetCategory(at, category, false) = choices[0].message.clone() else { panic!("Only this mail") };
+        assert_eq!((at.as_str(), category), (id.as_str(), picked));
+        let _ = app.view();
+
+        // As the task of "Only this mail" does: the demo files the mail, the window loads again.
+        let _ = app.update(Message::SetCategory(at.clone(), category, false));
+        assert_eq!(app.menu, None);
+        let filed = block_on(MailSource::set_mail_category(app.inbox.as_ref(), at, category, false))
+            .map_err(|err| err.to_string());
+        assert_eq!(filed.as_ref().map(|item| item.id.as_str()), Ok(id.as_str()), "the stand-in comes back");
+        let _ = app.update(Message::Categorized(Box::new(filed)));
+        assert!(app.error.is_none(), "{:?}", app.error);
+        load(&mut app);
+        let held = app.message_summary(&id).and_then(|summary| summary.category).expect("filed");
+        assert_eq!(held, torro_mail::MailCategory::by_person(picked), "by hand, kept from the model");
+        assert_eq!(counted(&app, picked), before + 1, "the sidebar counts it");
     }
 
     /// Issue #456: the rail floats over the mail in every size of the mail window – the same groups,
