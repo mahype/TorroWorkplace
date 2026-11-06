@@ -3313,7 +3313,7 @@ fn head_avatar_in(look: torro_core::design::ListLook) -> f32 {
 ///    (`AskSaveMailAs`, each opening the menu of its ways and save targets), off while the mail loads,
 ///    and "Save attachments (n)" for a loaded mail with attachments (task M12.6,
 ///    `AskSaveAttachments`: the menu of "Save all"). The list's context menu shows the two formats as
-///    one "Save as" ([`context_groups`]).
+///    one "Save mail as" ([`context_groups`]).
 /// 6. **Mute** (at the foot): Mute… (`m`; `AskHide` for an entry that can be muted, `AskMuteMail`
 ///    for a folder's message). Its menu offers no popup and "Only Info"; mail is never hidden (issue
 ///    #339).
@@ -3442,13 +3442,13 @@ fn save_items<'a>(reading: &Reading<'_>, anchors: &detail::Anchors) -> Vec<RailI
     if let Some(files) = files_of(reading) {
         let words = trf("Save attachments ({n})", &[("n", &files.len())]);
         let save = Some(Message::AskSaveAttachments(reading.id.to_owned()));
-        items.push(RailItem::new(Icon::Download, words, "", save).at(&anchors.save_rail));
+        items.push(RailItem::new(Icon::Download, words, "", save).opens_menu().at(&anchors.save_rail));
     }
     items
 }
 
 /// `groups` of [`action_groups`] as the context menu of the mail's row shows them (issue #501): in
-/// "Save" the two formats become one "Save as" ([`Message::AskSaveMailFormat`]), whose menu of the
+/// "Save" the two formats become one "Save mail as" ([`Message::AskSaveMailFormat`]), whose menu of the
 /// formats opens at the row – then the ways and targets of the one chosen, at the same place. Off as
 /// the formats are while the mail loads.
 pub fn context_groups<'a>(groups: Vec<RailGroup<'a, Message>>, id: &str) -> Vec<RailGroup<'a, Message>> {
@@ -3462,7 +3462,7 @@ pub fn context_groups<'a>(groups: Vec<RailGroup<'a, Message>>, id: &str) -> Vec<
             let on = group.items.iter().any(|item| matches!(item.on_press, Some(Message::AskSaveMailAs(..))));
             group.items.retain(|item| !format(item));
             let ask = on.then(|| Message::AskSaveMailFormat(id.to_owned()));
-            group.items.insert(at, RailItem::new(Icon::Save, tr("Save as"), "", ask).opens_menu());
+            group.items.insert(at, RailItem::new(Icon::Save, tr("Save mail as"), "", ask).opens_menu());
             group
         })
         .collect()
@@ -4412,7 +4412,8 @@ pub struct ExportMenu<'a> {
 /// The sections of the menu of "Save as PDF" or "Save as image" (issue #501), as an attachment's
 /// ([`file_menu`]) without Open and without "Click":
 ///
-/// 1. Save to Downloads (`Download`) and Save as… (`Save`);
+/// 1. titled with the format ("Save as PDF", "Save as image"): Save to Downloads (`Download`) and
+///    Save as… (`Save`);
 /// 2. "Save to": the save targets (`Folder`), those suggested for the format first, each with where
 ///    the file would go ([`export_place_words`]) and "Suggested";
 /// 3. "Manage save targets…".
@@ -4422,8 +4423,12 @@ pub struct ExportMenu<'a> {
 pub fn export_menu<'a>(menu: ExportMenu<'_>) -> Vec<MenuSection<'a, Message>> {
     let send = |act: FileAct| Message::SaveMail(menu.id.to_owned(), menu.format, act);
     let entry = |icon: Icon, act: FileAct| MenuItem::new(icon, act_words(&act, menu.saving, false), send(act));
-    let mut sections =
-        vec![MenuSection::new(vec![entry(Icon::Download, FileAct::Downloads), entry(Icon::Save, FileAct::Choose)])];
+    let title = match menu.format {
+        ExportFormat::Pdf => tr("Save as PDF"),
+        ExportFormat::Png => tr("Save as image"),
+    };
+    let ways = vec![entry(Icon::Download, FileAct::Downloads), entry(Icon::Save, FileAct::Choose)];
+    let mut sections = vec![MenuSection::titled(title, ways)];
     if let Some(saving) = menu.saving.filter(|saving| !saving.targets.is_empty()) {
         let suggested: Vec<&str> = saving
             .export(menu.format)
@@ -4480,17 +4485,38 @@ pub fn saved_mail_text(saved: &SavedMail, place: &str) -> String {
     }
 }
 
-/// The name the save dialog of "Save as…" starts with for the mail as `format`: the plan's, else
-/// "<subject>.<ext>" cleaned, "Mail" for a mail without subject.
-pub fn export_dialog_name(saving: Option<&SaveTargets>, format: ExportFormat, subject: &str) -> String {
-    match saving.and_then(|saving| saving.export(format)) {
-        Some(plan) => plan.file_name.clone(),
-        None => {
-            let subject = torro_mail::save_target::clean_segment(subject.trim());
-            let subject = if subject.is_empty() { tr("Mail").to_owned() } else { subject };
-            format!("{subject}.{}", format.extension())
-        }
+/// The name the save dialog of "Save as…" starts with for the mail `summary` as `format`: the plan's,
+/// else made as the core makes it – "<YYYY-MM-DD> <subject>.<ext>" ([`export_file_name`]) –, "Mail"
+/// without the mail's headers.
+pub fn export_dialog_name(
+    saving: Option<&SaveTargets>,
+    format: ExportFormat,
+    summary: Option<&MessageSummary>,
+) -> String {
+    match (saving.and_then(|saving| saving.export(format)), summary) {
+        (Some(plan), _) => plan.file_name.clone(),
+        (None, Some(summary)) => export_file_name(summary, format),
+        (None, None) => format!("{}.{}", tr("Mail"), format.extension()),
     }
+}
+
+/// The subject as a file name takes it, as the core cuts it: one line, at most 60 characters, "Mail"
+/// for none.
+fn export_subject(subject: &str) -> String {
+    let one_line: String = subject.split_whitespace().collect::<Vec<_>>().join(" ");
+    let short: String = one_line.chars().take(60).collect();
+    match short.trim() {
+        "" => tr("Mail").to_owned(),
+        short => short.to_owned(),
+    }
+}
+
+/// "<YYYY-MM-DD> <subject>.<ext>" for the mail `summary` as `format`, by its day on this computer's
+/// clock, cleaned as the core cleans it (`export_plan` in the core's `mail/save.rs`).
+fn export_file_name(summary: &MessageSummary, format: ExportFormat) -> String {
+    let day = summary.date.with_timezone(&Local).format("%Y-%m-%d");
+    let name = format!("{day} {}.{}", export_subject(&summary.subject), format.extension());
+    torro_mail::save_target::clean_file_name(&name)
 }
 
 /// The demo's plans of `mail` itself in `targets` (issue #501), made as the core makes them
@@ -4499,9 +4525,7 @@ fn demo_exports(mail: &Mail, targets: &[torro_mail::SaveTarget]) -> Vec<ExportPl
     let summary = &mail.summary;
     let months: [String; 12] = std::array::from_fn(|at| datetime::month_name(at as u32 + 1).to_owned());
     let sender = summary.from.as_ref();
-    let one_line: String = summary.subject.split_whitespace().collect::<Vec<_>>().join(" ");
-    let subject: String = one_line.chars().take(60).collect();
-    let subject = if subject.trim().is_empty() { tr("Mail").to_owned() } else { subject.trim().to_owned() };
+    let subject = export_subject(&summary.subject);
     let day = summary.date.with_timezone(&Local);
     ExportFormat::ALL
         .iter()
@@ -4521,8 +4545,7 @@ fn demo_exports(mail: &Mail, targets: &[torro_mail::SaveTarget]) -> Vec<ExportPl
                 ExportFormat::Pdf => torro_mail::FileKind::Pdf,
                 ExportFormat::Png => torro_mail::FileKind::Image,
             };
-            let file_name =
-                torro_mail::save_target::clean_file_name(&format!("{} {subject}.{ext}", day.format("%Y-%m-%d")));
+            let file_name = export_file_name(summary, format);
             let mut plan = ExportPlan { format, file_name, places: Vec::new(), suggested: Vec::new() };
             for target in targets {
                 if let Ok(resolved) = torro_mail::save_target::resolve(&target.spec, &facts) {
@@ -6299,9 +6322,10 @@ mod tests {
             demo_saved_mail(&mail, ExportFormat::Pdf, &SaveTo::Target("gone".into())),
             Err(InboxError::NotFound)
         );
-        assert_eq!(export_dialog_name(None, ExportFormat::Png, " a/b "), "a_b.png");
-        assert_eq!(export_dialog_name(None, ExportFormat::Pdf, ""), format!("{}.pdf", tr("Mail")));
-        assert_eq!(export_dialog_name(Some(&saving), ExportFormat::Pdf, "x"), pdf.file_name);
+        let odd = MessageSummary { subject: " a/b ".into(), ..mail.summary.clone() };
+        assert_eq!(export_dialog_name(None, ExportFormat::Png, Some(&odd)), format!("{day} a_b.png"), "dated");
+        assert_eq!(export_dialog_name(None, ExportFormat::Pdf, None), format!("{}.pdf", tr("Mail")));
+        assert_eq!(export_dialog_name(Some(&saving), ExportFormat::Pdf, Some(&odd)), pdf.file_name);
 
         let menu = ExportMenu { id: "m:p3", format: ExportFormat::Pdf, saving: Some(&saving), category: None };
         let sections = export_menu(menu);

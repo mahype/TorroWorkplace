@@ -6172,7 +6172,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("PDF documents", "PDF-Dokumente"),
     ("PNG images", "PNG-Bilder"),
     ("Save an unknown mail", "Eine unbekannte E-Mail speichern"),
-    ("Save as", "Speichern als"),
+    ("Save mail as", "E-Mail speichern als"),
     ("Save as PDF", "Als PDF speichern"),
     ("Save as image", "Als Bild speichern"),
     ("Save mail as PDF", "E-Mail als PDF speichern"),

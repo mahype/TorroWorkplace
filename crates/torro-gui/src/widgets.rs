@@ -3559,7 +3559,12 @@ fn rail_row<'a, M: Clone + 'a>(item: RailItem<'a, M>, place: RailPlace, lit: boo
     };
     let mut content = row![mark, word].spacing(space::s()).align_y(Alignment::Center);
     if item.opens_menu {
-        content = content.push(toned(Icon::ChevronRight, GROUP_CHEVRON, Tone::Text3));
+        // Faded with the row while it is off, as its icon is.
+        let chevron: Element<'a, M> = icon(Icon::ChevronRight, GROUP_CHEVRON)
+            .style(|t, _| svg::Style { color: Some(Tone::Text3.of(&palette(t))) })
+            .opacity(icon_opacity(on))
+            .into();
+        content = content.push(chevron);
     } else if on && !item.key.is_empty() {
         content = content.push(kbd(item.key));
     }
