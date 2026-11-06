@@ -307,12 +307,12 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Ablageziel ändern (#290) | Einstellungen › Mail › Attachments | `mail.update_save_target` · Admin; anderer Ordner nur mit dem App-Schlüssel | `mail_update_save_target` (Ordner wie gespeichert) |
 | Ablageziel entfernen (#290) | Einstellungen › Mail › Attachments | `mail.remove_save_target` · Admin | `mail_remove_save_target` |
 | Anhänge speichern (#290) | Dreieck-Menü, „Save all ▾“, Kontextmenü der Liste, Klick auf den Namen | `mail.save_attachments` · Write; `to: file`/`folder` nur mit dem App-Schlüssel | `mail_save_attachments` (nur Downloads oder ein Ziel) |
-| Filter auflisten (#339) | Einstellungen › Categorization › Rules & filters (#454) | `mail.list_filters` · Read | `mail_list_filters` |
-| Filter anlegen, ändern, ein- und ausschalten (#339) | „New filter…“ und „Edit…“ unter Rules & filters, Schalter der Zeile; „Create filter…“ an einer Mail, „Create filter from search…“ am Suchfeld | `mail.create_filter`, `mail.update_filter` · Admin | `mail_create_filter`, `mail_update_filter` |
-| Filter entfernen (#339) | Menü der Zeile › „Delete…“, Dialog › „Delete filter“ | `mail.remove_filter` · Admin | `mail_remove_filter` |
+| Filter auflisten (#339) | Einstellungen › Categorization: auf der Seite der Kategorie, die er setzt, sonst unter „Other filters“ (#481) | `mail.list_filters` · Read | `mail_list_filters` |
+| Filter anlegen, ändern, ein- und ausschalten (#339) | „+ Rule“ › „Filter from a search…“ auf der Seite einer Kategorie, „New filter…“ unter Other filters, Klick auf die Zeile, Schalter der Zeile; „Create filter…“ an einer Mail, „Create filter from search…“ am Suchfeld | `mail.create_filter`, `mail.update_filter` · Admin | `mail_create_filter`, `mail_update_filter` |
+| Filter entfernen (#339) | Dialog › „Delete filter“ | `mail.remove_filter` · Admin | `mail_remove_filter` |
 | Treffer eines Filters zeigen (#339) | Dialog des Filters, „Finds {n} mails in Inbox now.“ | `mail.preview_filter` · Read | `mail_preview_filter` |
-| Filter auf vorhandene Mail anwenden (#339) | „Also apply to the {n} existing mails“ im Dialog, Menü der Zeile › „Apply to existing mail“ | `mail.apply_filter` · Admin | `mail_apply_filter` |
-| Reihenfolge von Regeln und Filtern (#454) | Rules & filters, ziehen am Griff | `inbox.list_sorting_order` · Read, `inbox.move_sorting_step` · Admin | `inbox_list_sorting_order`, `inbox_move_sorting_step` |
+| Filter auf vorhandene Mail anwenden (#339) | „Also apply to the {n} existing mails“ im Dialog | `mail.apply_filter` · Admin | `mail_apply_filter` |
+| Vorrang zwischen Kategorien (#481) | Tab Categories, ziehen am Griff | `inbox.move_category` · Admin | `inbox_move_category` |
 | Mail als HTML (M9) | Lesebereich der Inbox (Schalter HTML/Text, Taste `v`) | `mail.get_message` mit `include_html` · Read | `mail_get_message` mit `include_html` |
 | Flags setzen | Liste, Lesebereich | `mail.set_flags` · Write | `mail_set_flags` |
 | Entwurf speichern | Schreibfenster | `mail.save_draft` · Write | `mail_save_draft` |
@@ -403,14 +403,14 @@ bleibt das Ausblenden für alle anderen Quellen ([eingang.md](eingang.md#stummsc
 - Vorhandene Mail erreicht ein Filter nur über **Anwenden**, nach einer Vorschau der Treffer.
 
 **Mehrere Filter**: Jeder passende wirkt. Als gelesen markiert, sobald einer es verlangt; in den Papierkorb, sobald
-einer es verlangt (`FilterActions::of`). Die **Kategorie** entscheidet die gemeinsame Reihenfolge von Sortierregeln und
-Filtern (Issue #454, `inbox.list_sorting_order`, [kategorien.md](kategorien.md#vorrang)): der erste Schritt von oben,
-der gilt – eine Regel über dem Filter gewinnt also. Ein neuer Filter kommt unter den letzten Filter. Ausgeführt wird in
-der Folge gelesen → Kategorie → Papierkorb.
+einer es verlangt (`FilterActions::of`). Die **Kategorie** entscheidet der Vorrang der festen Regeln (Issue #481,
+[kategorien.md](kategorien.md#vorrang)): Passen Regeln oder Filter mehrerer Kategorien, gewinnt die Kategorie, die in
+der Liste weiter oben steht; eine gemerkte Regel „Always for this sender?“ geht allen vor. Ausgeführt wird in der
+Folge gelesen → Kategorie → Papierkorb.
 
 **Folgen im Notification Hub:** Mail, die ein Filter als gelesen markiert oder verschoben hat, wird kein Eintrag,
 denn der Abgleich legt nur ab, was noch ungelesen im Posteingang liegt. Setzt ein Filter nur eine Kategorie, kommt
-die Mail mit der Kategorie des ersten Schritts der Reihenfolge in den Hub, ohne das Modell zu fragen; eine von Hand
+die Mail mit der Kategorie, die nach diesem Vorrang gewinnt, in den Hub, ohne das Modell zu fragen; eine von Hand
 gesetzte Kategorie bleibt ([kategorien.md](kategorien.md#vorrang)). Eine Kategorie, die nicht mehr im Katalog steht,
 überspringt der Filter. Scheitert eine Aktion, schreibt der Dienst Konto und Fehlercode ins Protokoll, nie Suche oder
 Betreff. Die Mail bleibt dann in diesem Punkt, wie sie kam, und bekommt einen Eintrag, wenn sie noch ungelesen im
@@ -446,8 +446,8 @@ nicht nur das Löschen.
 - **Fehlende Kategorie:** Beim Ändern prüft der Dienst die Kategorie nur, wenn sie neu ist. Ein Filter, dessen
   Kategorie der Mensch gelöscht hat, lässt sich so weiter ausschalten und ändern. Beim Eintreffen und Anwenden
   überspringt er die fehlende Kategorie.
-- **Reihenfolge:** Einen Filter verschieben oder einen Schritt an ihm vorbei (`inbox.move_sorting_step`,
-  `inbox.move_sort_rule`) braucht die Rechte, ihn zu ändern ([kategorien.md](kategorien.md#vorrang)).
+- **Vorrang:** Eine Kategorie zu verschieben (`inbox.move_category`) ändert, welcher Filter gewinnt, aber keinen Filter;
+  dafür reicht seit #481 Admin im Bereich `inbox` ([kategorien.md](kategorien.md#vorrang)).
 - Die Freigabe nennt den gespeicherten Filter mit der Adresse des Kontos aus dem Speicher des Dienstes, nie die Worte des Clients außer der neuen Suche: beim Ändern alt und neu, beim Anwenden „up to n“. Sie
   ist an den gespeicherten Filter gebunden, beim Anwenden auch an die n Mails, die er da fand: Hat ihn jemand
   inzwischen geändert oder findet er bis zur Zustimmung andere Mail (ein ausgeschalteter Filter findet neue Mail
@@ -458,10 +458,11 @@ nicht nur das Löschen.
 
 **Oberfläche:**
 
-- **Einstellungen des Mail-Fensters › Categorization › Rules & filters** (seit #454; die Seite „Filters“ und
-  `--settings filters` gibt es nicht mehr): Regeln und Filter in ihrer gemeinsamen Reihenfolge, je Zeile Griff, Suche,
-  was der Filter tut, Schalter und Menü (Edit…, Apply to existing mail, Move up/down, Delete…); „New filter…“ legt einen
-  an.
+- **Einstellungen des Mail-Fensters › Categorization** (seit #481; die Seite „Filters“, `--settings filters` und der
+  Tab „Rules & filters“ gibt es nicht mehr): Ein Filter mit Kategorie steht auf der Seite dieser Kategorie unter
+  „Fixed rules“ (Chip „Search“, die Suche, Schalter, ein Klick öffnet den Dialog); „+ Rule“ › „Filter from a search…“
+  legt dort einen an. Filter ohne Kategorie stehen unter „Other filters“ am Ende des Tabs Categories, mit „New
+  filter…“.
 - **Dialog eines Filters:** die Suche, das Konto („All accounts“), was der Filter jetzt findet („Finds {n} mails in
   Inbox now.“), dann „Set category“ mit der Kategorie, „Mark as read“ und „Move to trash“, bei einem gespeicherten
   Filter „Filter is on“ und „Delete filter“ mit Rückfrage. Eine Kategorie, die es nicht mehr gibt, heißt „Unknown
