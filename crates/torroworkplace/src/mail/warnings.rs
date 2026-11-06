@@ -437,7 +437,7 @@ fn lookalike(domain: &str) -> Option<&'static Brand> {
                 let exact = folded == *word && !ordinary;
                 // A letter swapped or one more; one less only of a long word (`amazn`, `paypl` for
                 // words of six letters), never of a short one: `mail` is no `gmail`.
-                let shorter = folded.len() + 1 == word.len() && word.len() >= 6;
+                let shorter = word.len() >= 6 && inner_letter_left_out(&folded, word);
                 let near = !ordinary
                     && word.len() >= 5
                     && (folded.len() >= word.len() || shorter)
@@ -449,6 +449,18 @@ fn lookalike(domain: &str) -> Option<&'static Brand> {
             })
         })
     })
+}
+
+/// `label` is `word` with one letter inside it left out (`amazn`, `paypl`); a letter at its start
+/// or end does not count – `cloud` of `icloud` and `online` of `tonline` are words of their own.
+fn inner_letter_left_out(label: &str, word: &str) -> bool {
+    let letters: Vec<char> = word.chars().collect();
+    letters.len() >= 3
+        && (1..letters.len() - 1).any(|at| {
+            let mut without = letters.clone();
+            without.remove(at);
+            without.into_iter().collect::<String>() == label
+        })
 }
 
 /// Brand words that are ordinary words or names as well: in a domain they say nothing.
@@ -805,7 +817,18 @@ mod tests {
             let found = signs_of(&address("", &format!("info@{domain}")), "");
             assert!(found.iter().any(|sign| matches!(sign, WarningSign::Lookalike { .. })), "{domain}: {found:?}");
         }
-        for domain in ["paypal.com", "mail.amazon.de", "dpd.de", "shop.example", "github.com", "upsilon.example"] {
+        for domain in [
+            "paypal.com",
+            "mail.amazon.de",
+            "dpd.de",
+            "shop.example",
+            "github.com",
+            "upsilon.example",
+            // Words of their own, though a brand word without its first letter (review of #506).
+            "cloud.firma.example",
+            "shop-online.example",
+            "tunes.example",
+        ] {
             let found = signs_of(&address("", &format!("info@{domain}")), "");
             assert!(!found.iter().any(|sign| matches!(sign, WarningSign::Lookalike { .. })), "{domain}: {found:?}");
         }

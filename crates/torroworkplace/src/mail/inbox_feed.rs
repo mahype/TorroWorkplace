@@ -239,15 +239,26 @@ impl Judging {
     /// meanwhile (`set_category_if_unchanged`); else the mail is filed with what is there.
     async fn run(self, held: Vec<(NewMail, Vec<WarningSign>)>) {
         let deadline = tokio::time::Instant::now() + self.timeout;
+        let mut undecided = Vec::new();
         for (new, signs) in held {
             let message = new.message.clone();
-            self.one(new, signs, deadline).await;
+            if self.one(new, signs, deadline).await {
+                undecided.push((message.clone(), false));
+            }
             self.holding.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&message);
+        }
+        // The model sorts what came in without a category after the round, so its time takes nothing
+        // from the minute the others wait (review of #506).
+        if let Some(decide) = &self.decide
+            && !undecided.is_empty()
+        {
+            decide_later(Arc::clone(decide), Arc::clone(&self.inbox), self.account.clone(), undecided).await;
         }
     }
 
-    /// One mail of [`Judging::run`]: its verdict, until `deadline` at most, and what follows.
-    async fn one(&self, mut new: NewMail, signs: Vec<WarningSign>, deadline: tokio::time::Instant) {
+    /// One mail of [`Judging::run`]: its verdict, until `deadline` at most, and what follows. `true`
+    /// when it was filed without a category, for the model to sort.
+    async fn one(&self, mut new: NewMail, signs: Vec<WarningSign>, deadline: tokio::time::Instant) -> bool {
         let account = self.account.clone();
         {
             let asked = (self.judge)(account.clone(), new.message.clone(), signs);
@@ -268,7 +279,7 @@ impl Judging {
                 && self.keep(&new.message, category).await
             {
                 match self.mail.set_caught(&account, std::slice::from_ref(&new.message), true).await {
-                    Ok(()) => return,
+                    Ok(()) => return false,
                     // Not caught after all: it comes in with the category it has, and its band.
                     Err(err) => {
                         eprintln!("torroworkplace: inbox: cannot catch a mail of {account}: {}", err.code());
@@ -293,14 +304,9 @@ impl Judging {
             new.category = held.or(new.category);
             if let Err(err) = self.inbox.file_mail(&new, self.notify, Utc::now()) {
                 eprintln!("torroworkplace: inbox: cannot file the new mail of {account}: {err}");
-                return;
+                return false;
             }
-            if held.is_none()
-                && let Some(decide) = &self.decide
-            {
-                let one = vec![(new.message.clone(), false)];
-                decide_later(Arc::clone(decide), Arc::clone(&self.inbox), account.clone(), one).await;
-            }
+            held.is_none()
         }
     }
 
@@ -1175,12 +1181,8 @@ impl Feed {
             _ => Vec::new(),
         };
         mails.retain(|mail| !suspicious.iter().any(|(back, _)| back.message == mail.message));
-        for mail in &mails {
-            if let Err(err) = self.inbox.file_mail(mail, notify, now) {
-                eprintln!("torroworkplace: inbox: cannot file the new mail of {account}: {err}");
-                return;
-            }
-        }
+        // The judging starts before the rest is filed: a filing that fails ends this round, and what
+        // is held back must not wait for ever (review of #506).
         if let Some(guard) = &self.guard
             && !suspicious.is_empty()
         {
@@ -1195,6 +1197,12 @@ impl Feed {
                 holding: Arc::clone(&guard.holding),
             };
             tokio::spawn(judging.run(suspicious));
+        }
+        for mail in &mails {
+            if let Err(err) = self.inbox.file_mail(mail, notify, now) {
+                eprintln!("torroworkplace: inbox: cannot file the new mail of {account}: {err}");
+                return;
+            }
         }
         // What no rule could tell goes to the decision model – **after** the mail is filed, in a
         // task of its own (task E12.6). New mail must stand in the list at once; a local model

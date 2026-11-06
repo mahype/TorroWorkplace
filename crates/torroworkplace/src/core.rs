@@ -9430,9 +9430,11 @@ impl Core {
                 eprintln!("torroworkplace: inbox: cannot trust a sender of {account}: {err}");
                 return refusal("error", "the inbox cannot be written".into());
             }
-            // Filed like new mail whatever the account's `notify` says: the person asked for it.
+            // Filed like new mail whatever the account's `notify` says: the person asked for it. With
+            // the category the mail kept – none once Phishing or Spam went, a person's own else.
+            let kept = summary.category.filter(|_| !unwanted);
             let entry = match filing.map(|mut filing| {
-                filing.category = None;
+                filing.category = kept;
                 filing
             }) {
                 Some(filing) => self.inbox.file_mail(&filing, torro_mail::Notify::All, now),
@@ -9443,8 +9445,11 @@ impl Core {
                 Ok(Some(entry)) => self.inbox.opened(&entry, None, now),
                 // In the inbox already (filed as Phishing with its band): its entry loses the
                 // category as the mail did.
+                // Only while the entry's own category is the unwanted one: a conversation the person
+                // or a rule filed keeps what it has (review of #506).
                 Ok(None) if unwanted => {
                     if let Some(entry) = self.inbox.entry_of_message(account, message)
+                        && self.entry_category(&entry, now).is_some_and(automatic_unwanted)
                         && let Err(err) = self.inbox.set_category(&entry, None)
                     {
                         eprintln!("torroworkplace: inbox: cannot take the category off an entry of {account}: {err}");
@@ -9470,6 +9475,14 @@ impl Core {
             ));
         }
         Response::Ok
+    }
+
+    /// The category of the inbox entry `id` as stored; `None` without one or when it cannot be read.
+    fn entry_category(&self, id: &str, now: chrono::DateTime<Utc>) -> Option<torro_mail::MailCategory> {
+        match self.inbox.handle(Request::GetItem { id: id.to_string() }, None, now) {
+            Response::Item { item } => item.category,
+            _ => None,
+        }
     }
 
     /// `inbox.set_mail_pile` (task E19.2) for `reach`: the limits ([`torro_ipc::mail::limit_refusal`],
@@ -23210,6 +23223,15 @@ mod tests {
             panic!("the entry")
         };
         assert_eq!(item.category, None, "the entry lost Phishing");
+        // A conversation the person filed keeps its category on the entry (review of #506).
+        let invoice = torro_mail::MailCategory::by_person(torro_mail::Category::Invoice);
+        core.inbox.set_category(&entry, Some(invoice)).expect("by hand on the entry");
+        core.mail.set_category(ANNA_MAIL, &one, Some(phishing)).await.expect("Phishing on the mail");
+        assert_eq!(ask(&core, Some(&app_key), release(one.clone(), false)).await, Response::Ok);
+        let Response::Item { item } = ask(&core, Some(&app_key), Request::GetItem { id: entry.clone() }).await else {
+            panic!("the entry")
+        };
+        assert_eq!(item.category, Some(invoice), "the person's choice stays");
         let by_hand = torro_mail::MailCategory::by_person(torro_mail::Category::Phishing);
         core.mail.set_category(ANNA_MAIL, &one, Some(by_hand)).await.expect("by hand");
         assert_eq!(code(&ask(&core, Some(&app_key), release(one, false)).await), "unsupported");
