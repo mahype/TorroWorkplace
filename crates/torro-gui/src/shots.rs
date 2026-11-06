@@ -43,7 +43,7 @@ pub const SIZES: [(&str, Size); 6] = [
 pub const SCALE: f32 = 2.0;
 
 /// The flags whose values name the view in a file, in this order.
-const NAMING_FLAGS: [&str; 14] = [
+const NAMING_FLAGS: [&str; 25] = [
     "--view",
     "--section",
     "--settings",
@@ -60,6 +60,17 @@ const NAMING_FLAGS: [&str; 14] = [
     "--source",
     "--template",
     "--task",
+    "--message",
+    "--reply",
+    "--reply-all",
+    "--forward",
+    "--account",
+    "--setup",
+    "--step",
+    "--mail-view",
+    "--mail-colors",
+    "--density",
+    "--now",
 ];
 
 /// The largest edge `--shot-size` takes, in logical pixels.
@@ -79,6 +90,8 @@ pub struct Shots {
     prefix: String,
     /// The sizes with their class name; `None` for a size of `--shot-size`.
     sizes: Vec<(Option<&'static str>, Size)>,
+    /// `--shot-index <n>`: only the size at `n`, in a process that [`run`] started for it.
+    index: Option<usize>,
 }
 
 /// Why `--shots` was refused, or its pictures could not be written.
@@ -90,6 +103,12 @@ pub enum ShotError {
     NeedsDemo,
     /// A `--shot-size` that is not `WxH` with whole numbers from 1 to 4096.
     BadSize(String),
+    /// A `--shot-index` that names none of the sizes.
+    BadIndex(String),
+    /// The process for one size could not be started.
+    Spawn(io::Error),
+    /// The process for the size at `index` failed, with its exit code if it has one.
+    Size { index: usize, code: Option<i32> },
     /// The renderer's font store could not be reached (a thread panicked while holding it).
     Fonts,
     /// The folder or a picture could not be written.
@@ -109,6 +128,12 @@ impl fmt::Display for ShotError {
                     "--shot-size expects WxH with whole numbers from 1 to {MAX_EDGE}, e.g. 800x600; got {value:?}"
                 )
             }
+            ShotError::BadIndex(value) => write!(f, "--shot-index names no size; got {value:?}"),
+            ShotError::Spawn(err) => write!(f, "cannot start the process for a picture: {err}"),
+            ShotError::Size { index, code: Some(code) } => {
+                write!(f, "the picture of size {index} failed with exit code {code}")
+            }
+            ShotError::Size { index, code: None } => write!(f, "the picture of size {index} failed"),
             ShotError::Fonts => write!(f, "the fonts could not be loaded for the pictures"),
             ShotError::Write { path, source } => write!(f, "cannot write {}: {source}", path.display()),
             ShotError::Encode { path, source } => write!(f, "cannot encode {}: {source}", path.display()),
@@ -121,6 +146,7 @@ impl std::error::Error for ShotError {
         match self {
             ShotError::Write { source, .. } => Some(source),
             ShotError::Encode { source, .. } => Some(source),
+            ShotError::Spawn(source) => Some(source),
             _ => None,
         }
     }
@@ -192,20 +218,32 @@ impl Shots {
     /// [`SIZES`]. The files start with `name` and the value of each of `--view`, `--section`,
     /// `--settings`, `--open`, `--design`, `--font`, `--color-scheme`, `--appearance`, `--chat`, `--bot`,
     /// `--lane`, `--source`, `--template` and `--task` that is given, in this order, e.g.
-    /// `torrocalendar-week-dark`. A flag given twice counts with its first value, as in the apps' own
-    /// parsers, so the name says what the window shows.
+    /// `torrocalendar-week-dark`, and further flags that pick a window, an item or a look ([`NAMING_FLAGS`]).
+    /// A flag given twice counts with its first value, as in most of the apps' parsers. `--shot-index <n>`
+    /// keeps only the size at `n` (what [`run`] starts a process with).
     pub fn from_args(name: &str, args: &[String]) -> Result<Option<Shots>, ShotError> {
         let Some(dir) = values(args, "--shots")?.first().copied() else {
             return Ok(None);
         };
+        // An empty folder would put the pictures in the working directory.
+        if dir.is_empty() {
+            return Err(ShotError::MissingValue("--shots"));
+        }
         if !args.iter().any(|arg| arg == "--demo") {
             return Err(ShotError::NeedsDemo);
         }
         let own = values(args, "--shot-size")?.into_iter().map(parse_size).collect::<Result<Vec<_>, _>>()?;
-        let sizes = if own.is_empty() {
+        let sizes: Vec<(Option<&'static str>, Size)> = if own.is_empty() {
             SIZES.iter().map(|&(class, size)| (Some(class), size)).collect()
         } else {
             own.into_iter().map(|size| (None, size)).collect()
+        };
+        let index = match values(args, "--shot-index")?.first() {
+            None => None,
+            Some(value) => match value.parse::<usize>() {
+                Ok(index) if index < sizes.len() => Some(index),
+                _ => return Err(ShotError::BadIndex((*value).to_owned())),
+            },
         };
         let mut prefix = name.to_owned();
         for flag in NAMING_FLAGS {
@@ -214,7 +252,7 @@ impl Shots {
                 prefix.push_str(value);
             }
         }
-        Ok(Some(Shots { dir: PathBuf::from(dir), prefix: file_safe(&prefix), sizes }))
+        Ok(Some(Shots { dir: PathBuf::from(dir), prefix: file_safe(&prefix), sizes, index }))
     }
 
     /// The folder the pictures go to.
@@ -234,6 +272,10 @@ impl Shots {
 }
 
 /// Runs `application` as a window, or with `shots` renders it to pictures instead ([`write`]).
+///
+/// With more than one size each size gets a process of its own: this program again, with the same
+/// words and `--shot-index <n>`. A demo source lives in the process, and what one boot changes in it
+/// (a mail marked read when it opens) would otherwise show in the pictures of the next sizes.
 pub fn run<P>(application: iced::Application<P>, shots: Option<&Shots>) -> Result<(), RunError>
 where
     P: iced::Program<Theme = iced::Theme> + 'static,
@@ -241,8 +283,26 @@ where
 {
     match shots {
         None => Ok(application.run()?),
+        Some(shots) if shots.index.is_none() && shots.sizes.len() > 1 => Ok(each_size(shots.sizes.len())?),
         Some(shots) => write(&application, shots).map(|_| ()).map_err(RunError::from),
     }
+}
+
+/// Starts this program once per size, one after the other, with the words it got and
+/// `--shot-index <n>`; stops at the first that fails.
+fn each_size(count: usize) -> Result<(), ShotError> {
+    let program = std::env::current_exe().map_err(ShotError::Spawn)?;
+    for index in 0..count {
+        let status = std::process::Command::new(&program)
+            .args(std::env::args_os().skip(1))
+            .arg(format!("--shot-index={index}"))
+            .status()
+            .map_err(ShotError::Spawn)?;
+        if !status.success() {
+            return Err(ShotError::Size { index, code: status.code() });
+        }
+    }
+    Ok(())
 }
 
 /// The fonts of the program's settings are loaded once per process into the renderer's font store.
@@ -268,7 +328,8 @@ where
         }
     }
     let mut written = Vec::with_capacity(shots.sizes.len());
-    for &(class, size) in &shots.sizes {
+    let sizes = shots.sizes.iter().enumerate().filter(|(index, _)| shots.index.is_none_or(|only| only == *index));
+    for (_, &(class, size)) in sizes {
         let path = shots.file(class, size);
         let (sender, mut receiver) = mpsc::channel(100);
         let mut emulator = Emulator::new(sender, program, emulator::Mode::Patient, size);
@@ -414,6 +475,18 @@ mod tests {
         let line = ["--demo", "--shots", "a", "--open", "detail", "--shots", "b", "--open", "pr", "--chat=new"];
         let shots = Shots::from_args("torroassistant", &args(&line)).expect("valid").expect("asked for");
         assert_eq!((shots.dir(), shots.prefix.as_str()), (Path::new("a"), "torroassistant-detail-new"));
+    }
+
+    /// Review of #492: one size per process, an empty folder is no folder.
+    #[test]
+    fn an_index_keeps_one_size_and_an_empty_folder_is_refused() {
+        let one = shots(&["--demo", "--shots", "d", "--shot-index=2"]).expect("valid").expect("asked for");
+        assert_eq!(one.index, Some(2));
+        for bad in ["6", "-1", "x"] {
+            let result = shots(&["--demo", "--shots", "d", "--shot-index", bad]);
+            assert!(matches!(&result, Err(ShotError::BadIndex(value)) if value == bad), "{bad}: {result:?}");
+        }
+        assert!(matches!(shots(&["--demo", "--shots="]), Err(ShotError::MissingValue("--shots"))));
     }
 
     #[test]
