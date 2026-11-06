@@ -7,8 +7,9 @@
 //!    they never reach the list: the title field of "Make task" (task E3.5) takes letters, the
 //!    arrows and `Enter` (which creates the task through its `on_submit`).
 //! 2. [`command`] says what a [`Key`] does where the keys go ([`Focus`]): in the list `j`/`k` (and
-//!    ↓/↑) move, `Enter` opens, `e` done, `u` undo (as Ctrl + Z, ⌘ + Z on macOS, does in the whole
-//!    window while the toast offers it – `widgets::undo_key`, task E3.11, not a key of this map:
+//!    ↓/↑) move, Shift + ↓/↑ select the mail from where the cursor stood (issue #507: the plain
+//!    arrows drop that selection again), `Enter` opens, `e` done, `u` undo (as Ctrl + Z, ⌘ + Z on
+//!    macOS, does in the whole window while the toast offers it – `widgets::undo_key`, task E3.11, not a key of this map:
 //!    `ctrl_guard` takes ⌘ + Z before any widget, only a subscription still hears it), `s` snooze, `l` lane, `m` hide from the inbox
 //!    (task E3.10: its menu, which also mutes), `t` make a task; for mail (task E4.2) `r` reply, `a` reply all in the list (archive in an opened mail), `f` forward, `#` or Delete (⌫ on a Mac keyboard, issue #118) delete and `/` search
 //!    the folder (in a folder `e` archives: the app decides), `v` switches the mail in the panel or
@@ -78,6 +79,10 @@ pub enum Key {
     Down,
     /// `k` or ↑.
     Up,
+    /// Shift + ↓ (issue #507): select the mail below too. Elsewhere than in the list it is ↓.
+    ExtendDown,
+    /// Shift + ↑ (issue #507): select the mail above too. Elsewhere than in the list it is ↑.
+    ExtendUp,
     /// ← (in the overview also `h`).
     Left,
     /// →.
@@ -170,6 +175,12 @@ pub enum Command {
     Next,
     /// Move the cursor to the previous row; in "Focus & reply" the previous mail.
     Previous,
+    /// Shift + ↓ (issue #507): the selection of mail reaches one row further down from where it
+    /// started, or gives back its lowest row when it grew upwards.
+    ExtendNext,
+    /// Shift + ↑ (issue #507): the selection of mail reaches one row further up, or gives back its
+    /// highest row when it grew downwards.
+    ExtendPrevious,
     /// The overview: the cursor to the column at the left (`h`, ←).
     ColumnLeft,
     /// The overview: the cursor to the column at the right (`l`, →).
@@ -394,6 +405,9 @@ pub fn key_on(key: &Name, modifiers: keyboard::Modifiers, system: System) -> Opt
         return None;
     }
     Some(match key.as_ref() {
+        // Only the arrows select with Shift: `J` and `K` are no keys of the inbox.
+        Name::Named(Named::ArrowDown) if modifiers.shift() => Key::ExtendDown,
+        Name::Named(Named::ArrowUp) if modifiers.shift() => Key::ExtendUp,
         Name::Named(Named::ArrowDown) | Name::Character("j") => Key::Down,
         Name::Named(Named::ArrowUp) | Name::Character("k") => Key::Up,
         Name::Named(Named::ArrowLeft) => Key::Left,
@@ -477,6 +491,13 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::Picker, Key::Up) => Some(Command::EarlierTime),
         (Focus::Picker, Key::Down) => Some(Command::LaterTime),
         (Focus::Picker | Focus::Task | Focus::Question, Key::Enter) => Some(Command::Confirm),
+        // Only the list selects with Shift (issue #507); the overview and an opened mail reach it
+        // above. Everywhere else Shift + ↓/↑ are the plain arrows: the picker's time, the bell's
+        // menu, the next mail of "Focus & reply".
+        (Focus::List, Key::ExtendDown) => Some(Command::ExtendNext),
+        (Focus::List, Key::ExtendUp) => Some(Command::ExtendPrevious),
+        (focus, Key::ExtendDown) => command(focus, Key::Down),
+        (focus, Key::ExtendUp) => command(focus, Key::Up),
         _ => None,
     }
 }
@@ -551,6 +572,31 @@ mod tests {
         }
         assert_eq!(command(Focus::MailDetail, Key::A), Some(Command::Archive));
         assert_eq!(command(Focus::MailDetail, Key::R), Some(Command::Reply));
+    }
+
+    /// Issue #507: Shift + ↓/↑ select mail in the list – also in the overview and an opened mail –
+    /// and stay the plain arrows wherever something else takes them; `J` and `K` select nothing.
+    #[test]
+    fn shift_and_the_arrows_select_in_the_list_and_move_elsewhere() {
+        let down = Name::Named(Named::ArrowDown);
+        let up = Name::Named(Named::ArrowUp);
+        assert_eq!(heard(down.clone(), Modifiers::SHIFT, Status::Ignored), Some(Key::ExtendDown));
+        assert_eq!(heard(up.clone(), Modifiers::SHIFT, Status::Ignored), Some(Key::ExtendUp));
+        assert_eq!(heard(down, Modifiers::empty(), Status::Ignored), Some(Key::Down), "without Shift as before");
+        assert_eq!(heard(up, Modifiers::empty(), Status::Ignored), Some(Key::Up));
+        assert_eq!(heard(char("J"), Modifiers::SHIFT, Status::Ignored), None, "only the arrows select");
+        for focus in [Focus::List, Focus::Overview, Focus::MailDetail] {
+            assert_eq!(command(focus, Key::ExtendDown), Some(Command::ExtendNext), "{focus:?}");
+            assert_eq!(command(focus, Key::ExtendUp), Some(Command::ExtendPrevious), "{focus:?}");
+        }
+        assert_eq!(command(Focus::Picker, Key::ExtendDown), Some(Command::LaterTime));
+        assert_eq!(command(Focus::Picker, Key::ExtendUp), Some(Command::EarlierTime));
+        assert_eq!(command(Focus::Mute, Key::ExtendDown), Some(Command::MuteHow { stronger: true }));
+        assert_eq!(command(Focus::Replying, Key::ExtendDown), Some(Command::Next));
+        assert_eq!(command(Focus::Replying, Key::ExtendUp), Some(Command::Previous));
+        for focus in [Focus::Choices, Focus::Task, Focus::Elsewhere, Focus::Question] {
+            assert_eq!(command(focus, Key::ExtendDown), None, "{focus:?}");
+        }
     }
 
     /// Task E19.4: `w` and `b` put the mail on its pile from the list and – through the fallback – from
