@@ -7414,7 +7414,7 @@ mod tests {
     #[test]
     fn a_group_row_holds_its_control_in_every_design() {
         for id in torro_core::design::BUILT_IN_IDS {
-            let d = torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design");
+            let d = torro_core::design::load(id).expect("a built-in design");
             let pad = d.layout.row_padding;
             let full = Padding { top: pad.vertical, right: pad.horizontal, bottom: pad.vertical, left: pad.horizontal };
             let sides = group_row_padding(full);
@@ -7436,8 +7436,8 @@ mod tests {
         assert!(!RailToggle::<Msg>::Hidden.has_head());
         assert_eq!(RailToggle::from(Some(Msg::Go)), RailToggle::On(Msg::Go), "action_rail's on_toggle");
         assert_eq!(RailToggle::<Msg>::from(None), RailToggle::Hidden);
-        for id in ["torro", "compact", "console"] {
-            let d = torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design");
+        for id in torro_core::design::BUILT_IN_IDS {
+            let d = torro_core::design::load(id).expect("a built-in design");
             assert!(d.size.control_lg <= d.size.rail, "{id}: the toggle fits the collapsed rail, on or off");
         }
         for mode in [RailMode::Collapsed, RailMode::Expanded] {

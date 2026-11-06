@@ -20,8 +20,9 @@
 //! # Following the settings (tasks L.3, L.21 and L.22)
 //!
 //! The suite settings name the three parts apart (`Settings::design`, `font`, `color_scheme`:
-//! [`Chosen`]), and every window draws with each from its own folder ([`Folders::select`]): a part
-//! whose folder lacks the id, or that breaks a rule, is the standard's – never a crash. A window
+//! [`Chosen`]), and every window draws with each ([`Folders::select`]): the design is one of the three
+//! built-in spacing levels (issue #484), the font and colour scheme come from their own folders. A part
+//! that is not there, or that breaks a rule, is the standard's – never a crash. A window
 //! follows a change at once, the way the appearance and the zoom do, and reads only the part that
 //! changed. An app wires it up in four places:
 //!
@@ -62,7 +63,7 @@ use std::time::Duration;
 use iced::futures::Stream;
 use iced::{Font, Subscription, Task, Theme};
 use torro_core::design::{
-    DesignError, Face, FontRole, Level, Listed, Mode, STANDARD_ID, TypeScale, Weight, list, list_color_schemes,
+    BUILT_IN_IDS, DesignError, Face, FontRole, Level, Listed, Mode, STANDARD_ID, TypeScale, Weight, list_color_schemes,
     list_fonts, load, load_color_scheme, load_font,
 };
 use torro_core::settings::Settings;
@@ -408,14 +409,13 @@ fn stored_now(socket: &Path) -> Option<Chosen> {
     }
 }
 
-/// The three folders the parts are read from: the user's ([`Folders::user`]) or, in tests, others.
-/// A folder that is `None` (no home directory, or a test that leaves it out) lists only what is built
-/// in: the three designs (`torro_core::design::BUILT_IN_IDS`), the standard font and colour scheme.
-/// [`part`] still looks any other id up under the working directory then.
+/// The two folders the font and the colour scheme are read from: the user's ([`Folders::user`]) or, in
+/// tests, others. Designs have no folder since issue #484: they are the three built-in spacing levels
+/// ([`BUILT_IN_IDS`]). A folder that is `None` (no home directory, or a test that leaves it out) lists
+/// only the standard font and colour scheme; [`part`] still looks any other id up under the working
+/// directory then.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Folders {
-    /// The designs folder (`torro_core::design::dir`).
-    pub designs: Option<PathBuf>,
     /// The fonts folder (`torro_core::design::font_dir`).
     pub fonts: Option<PathBuf>,
     /// The colour schemes folder (`torro_core::design::color_scheme_dir`).
@@ -425,16 +425,12 @@ pub struct Folders {
 impl Folders {
     /// The user's folders in the core's data directory.
     pub fn user() -> Folders {
-        Folders {
-            designs: torro_core::design::dir(),
-            fonts: torro_core::design::font_dir(),
-            color_schemes: torro_core::design::color_scheme_dir(),
-        }
+        Folders { fonts: torro_core::design::font_dir(), color_schemes: torro_core::design::color_scheme_dir() }
     }
 
-    /// The design, font and colour scheme `chosen` names, each from its own folder (task L.22). A part
-    /// whose folder lacks its id is the standard's; one that breaks a rule too, said once on stderr
-    /// with every reason (the control centre shows them as well).
+    /// The design, font and colour scheme `chosen` names (task L.22): the built-in design, the font and
+    /// colour scheme each from its own folder. A part that is not there is the standard's; one that
+    /// breaks a rule too, said once on stderr with every reason (the control centre shows them as well).
     pub fn select(&self, chosen: &Chosen) -> Selection {
         Selection {
             design: self.design(&chosen.design),
@@ -450,9 +446,12 @@ impl Folders {
         self.select(&Chosen::of_ids(id, id, id))
     }
 
-    /// The design `id`, or the standard's.
+    /// The built-in design `id`, or the standard's.
     fn design(&self, id: &str) -> Design {
-        part(self.designs.as_deref(), id, "design", load, Design::standard)
+        match load(id) {
+            Ok(design) => design,
+            Err(_) => Design::standard(),
+        }
     }
 
     /// The font `id`, or the standard's.
@@ -465,9 +464,9 @@ impl Folders {
         part(self.color_schemes.as_deref(), id, "colour scheme", load_color_scheme, ColorScheme::standard)
     }
 
-    /// The ids `--design`, `--font` or `--color-scheme` take for `part` (task L.22): the standard
-    /// first, then the other built-in ones (the designs Compact and Console, issue #291, also without
-    /// a folder), then every id the folder of `part` holds a valid entry for, by name.
+    /// The ids `--design`, `--font` or `--color-scheme` take for `part` (task L.22): for designs the
+    /// three built-in spacing levels (issue #484), else the standard first, then every id the folder
+    /// of `part` holds a valid entry for, by name.
     pub fn choices(&self, part: Part) -> Vec<String> {
         fn valid<T>(dir: Option<&Path>, list: fn(&Path) -> Vec<Listed<T>>) -> Vec<String> {
             // A missing folder lists the built-in entries alone, as `part` reads them without one.
@@ -475,7 +474,7 @@ impl Folders {
             listed.into_iter().filter(|entry| entry.valid() && !entry.standard).map(|entry| entry.id).collect()
         }
         let mut ids = match part {
-            Part::Design => valid(self.designs.as_deref(), list),
+            Part::Design => return BUILT_IN_IDS.map(String::from).to_vec(),
             Part::Font => valid(self.fonts.as_deref(), list_fonts),
             Part::ColorScheme => valid(self.color_schemes.as_deref(), list_color_schemes),
         };
@@ -506,9 +505,9 @@ fn part<T>(
 }
 
 /// Whether `--design <id>` (`part` [`Part::Design`]), `--font <id>` ([`Part::Font`]) or
-/// `--color-scheme <id>` ([`Part::ColorScheme`]) names a part this process can draw with: the
-/// standard, or an id the user's folder of `part` holds a valid entry for (task L.22: `--design nord`
-/// is refused, `nord` is a colour scheme). [`choices`] lists them for the error.
+/// `--color-scheme <id>` ([`Part::ColorScheme`]) names a part this process can draw with: a built-in
+/// spacing level, the standard, or an id the user's folder of `part` holds a valid entry for (task
+/// L.22: `--design nord` is refused, `nord` is a colour scheme). [`choices`] lists them for the error.
 pub fn is_choice(part: Part, id: &str) -> bool {
     is_choice_in(&Folders::user(), part, id)
 }
@@ -575,13 +574,7 @@ impl Follow {
         }
     }
 
-    /// The same, with the designs read from `dir` instead of the user's designs folder, and the font
-    /// and colour scheme always the standard's: for tests, which never touch the user's data.
-    pub fn in_dir(self, dir: PathBuf) -> Follow {
-        self.in_folders(Folders { designs: Some(dir), fonts: None, color_schemes: None })
-    }
-
-    /// The same, with all three parts read from `folders`: for tests.
+    /// The same, with the font and colour scheme read from `folders`: for tests.
     pub fn in_folders(self, folders: Folders) -> Follow {
         Follow { folders, ..self }
     }
@@ -1089,24 +1082,21 @@ pub(crate) mod tests {
         std::fs::write(folder.join(id).join(file), text).expect("toml");
     }
 
-    /// Three part folders in a temp dir: the designs `twin` (the standard's values under its own id)
-    /// and `pale` (a pack from before task L.19 with `[colors.dark]`: an unknown key, refused), the
-    /// colour schemes `twin` and `harbor` (only a colour scheme). Every part that can be drawn has the
-    /// standard's values, so the tests running beside, which read the tokens, see no change.
-    /// The caller removes the returned root (no `tempfile` in this crate).
+    /// Two part folders in a temp dir: the colour schemes `twin` and `harbor` (the standard's values
+    /// under their own ids) and `pale` (with `[colors.dark] accent` too weak: refused). Designs have no
+    /// folder since issue #484. Every part that can be drawn has the standard's values, so the tests
+    /// running beside, which read the tokens, see no change; for the same reason the tests here never
+    /// switch to a design other than the standard (Comfort and Dense have other values) and leave the
+    /// design part to ids that are no design. The caller removes the returned root (no `tempfile` in
+    /// this crate).
     fn folders() -> (PathBuf, Folders) {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!("torro-gui-look-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let folders = Folders {
-            designs: Some(root.join("designs")),
-            fonts: Some(root.join("fonts")),
-            color_schemes: Some(root.join("color-schemes")),
-        };
-        let (designs, schemes) = (root.join("designs"), root.join("color-schemes"));
-        write(&designs, "twin", "design.toml", "");
-        write(&designs, "pale", "design.toml", "[colors.dark]\ntext = \"#202020\"\n");
+        let folders = Folders { fonts: Some(root.join("fonts")), color_schemes: Some(root.join("color-schemes")) };
+        let schemes = root.join("color-schemes");
+        write(&schemes, "pale", "color-scheme.toml", "[colors.dark]\ntext = \"#202020\"\n");
         write(&schemes, "twin", "color-scheme.toml", "");
         write(&schemes, "harbor", "color-scheme.toml", "");
         (root, folders)
@@ -1118,7 +1108,8 @@ pub(crate) mod tests {
     }
 
     /// Task L.21: each part from its own folder; only a switch of the font loads font files, and a
-    /// part that is gone or broken is the standard's.
+    /// part that is gone or broken is the standard's – a design that is no spacing level too (issue
+    /// #484: the old designs folder is not read).
     #[test]
     fn follow_takes_each_part_from_its_folder_and_loads_fonts_only_for_a_new_font() {
         let _switching = SWITCHING.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1127,18 +1118,18 @@ pub(crate) mod tests {
         // beside marks only the active font as loaded, never this one.
         let fresh = format!("fresh-{}", std::process::id());
         write(folders.fonts.as_deref().expect("fonts"), &fresh, "font.toml", "");
-        write(folders.designs.as_deref().expect("designs"), &fresh, "design.toml", "");
         mark_fonts_loaded(STANDARD_ID);
         let mut follow = Follow::new(None).in_folders(folders);
         assert!(follow.fetch().units() == 0, "without a socket nothing is asked");
 
-        let switched = follow.update(Message::Stored(Ok(all("twin")))).expect("the design and the scheme changed");
-        assert_eq!((active().id.as_str(), crate::scheme::active().id.as_str()), ("twin", "twin"));
+        let switched = follow.update(Message::Stored(Ok(all("twin")))).expect("the scheme changed");
+        assert_eq!(crate::scheme::active().id, "twin");
+        assert!(active().is_standard(), "no design `twin` (a folder is not read): the standard's");
         assert!(crate::font::active().is_standard(), "there is no font `twin`: the standard's");
         assert_eq!(switched.units(), 0, "design and colour scheme load nothing");
 
         let switched = follow.update(Message::Stored(Ok(all(&fresh)))).expect("the font changed");
-        assert_eq!((active().id.as_str(), crate::font::active().id.as_str()), (fresh.as_str(), fresh.as_str()));
+        assert_eq!(crate::font::active().id, fresh);
         assert!(crate::scheme::active().is_standard(), "there is no colour scheme of that id");
         assert!(switched.units() > 0, "a new font loads its files");
         assert!(follow.update(Message::Stored(Ok(all(&fresh)))).is_none(), "the same setting again");
@@ -1146,7 +1137,7 @@ pub(crate) mod tests {
         assert_eq!(crate::font::active().id, fresh, "a core that does not answer changes nothing");
 
         assert!(follow.update(Message::Stored(Ok(all("pale")))).is_some(), "back to the standard");
-        assert!(active().is_standard() && crate::font::active().is_standard(), "a broken design is never drawn");
+        assert!(crate::scheme::active().is_standard() && crate::font::active().is_standard(), "never drawn broken");
         assert!(follow.update(Message::Stored(Ok(all("gone")))).is_none(), "already the standard");
         assert!(follow.update(Message::Stored(Ok(Chosen::standard()))).is_none(), "already the standard");
         let _ = std::fs::remove_dir_all(root);
@@ -1201,12 +1192,13 @@ pub(crate) mod tests {
         assert_eq!(crate::font::active().id, fresh);
         assert!(Arc::ptr_eq(&design, &active()) && Arc::ptr_eq(&scheme, &crate::scheme::active()), "untouched");
 
-        assert!(follow.apply("twin").is_some(), "the design alone");
-        assert_eq!(Chosen::active(), chosen("twin", &fresh, "harbor"), "font and colour scheme stay");
-        assert!(follow.apply("twin").is_none(), "the same design again");
+        // The design alone: an id that is no spacing level draws the standard, so nothing changes on
+        // screen, but the window asks for exactly that design with the same font and colour scheme.
+        assert!(follow.apply("twin").is_none(), "no design `twin`: still the standard");
+        assert_eq!(follow.chosen, chosen("twin", &fresh, "harbor"), "font and colour scheme stay");
         assert!(follow.update(Message::Stored(Ok(chosen("twin", &fresh, "nord")))).is_some());
         assert!(crate::scheme::active().is_standard(), "no colour scheme `nord` there: the standard's");
-        assert_eq!(Chosen::active(), chosen("twin", &fresh, "torro"));
+        assert_eq!(Chosen::active(), chosen("torro", &fresh, "torro"));
 
         assert!(follow.follow(Chosen::standard()).is_some());
         assert_eq!(Chosen::active(), Chosen::standard());
@@ -1250,16 +1242,12 @@ pub(crate) mod tests {
     /// Task L.21: every example of the repository, as all three parts of its id, draws its levels as
     /// `Selection::level` gives them, in the families of its font and the colours of its colour
     /// scheme. Since issue #291 the examples are fonts and colour schemes only: the designs under
-    /// `designs/` are the built-in Standard, Compact and Console, so an example like Plex draws in the
+    /// `designs/` are the built-in spacing levels (issue #484), so an example like Plex draws in the
     /// standard's form.
     #[test]
     fn the_examples_draw_as_their_selection() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let folders = Folders {
-            designs: Some(repo.join("designs")),
-            fonts: Some(repo.join("fonts")),
-            color_schemes: Some(repo.join("color-schemes")),
-        };
+        let folders = Folders { fonts: Some(repo.join("fonts")), color_schemes: Some(repo.join("color-schemes")) };
         let mut ids = folders.choices(Part::Design);
         ids.extend(folders.choices(Part::Font));
         ids.extend(folders.choices(Part::ColorScheme));
@@ -1370,27 +1358,20 @@ pub(crate) mod tests {
     }
 
     /// `--design`, `--font` and `--color-scheme` each take the valid ids of their own folder (task
-    /// L.22): `--design harbor` is refused, `harbor` is only a colour scheme.
+    /// L.22): `--design harbor` is refused, `harbor` is only a colour scheme. Designs are the three
+    /// built-in spacing levels (issue #484), with or without folders.
     #[test]
     fn only_valid_parts_of_the_flags_folder_are_choices() {
         let (root, folders) = folders();
-        assert_eq!(
-            choices_in(&folders, Part::Design),
-            ["torro", "compact", "console", "twin"],
-            "the built-in designs first, never broken"
-        );
-        assert_eq!(choices_in(&folders, Part::ColorScheme), ["torro", "harbor", "twin"]);
+        assert_eq!(choices_in(&folders, Part::Design), ["torro", "comfort", "dense"], "the three levels");
+        assert_eq!(choices_in(&folders, Part::ColorScheme), ["torro", "harbor", "twin"], "never `pale`, broken");
         assert_eq!(choices_in(&folders, Part::Font), ["torro"]);
-        assert_eq!(
-            choices_in(&Folders::default(), Part::Design),
-            ["torro", "compact", "console"],
-            "the built-in designs need no folder (`--design console` with a fresh data folder)"
-        );
-        assert!(is_choice_in(&Folders::default(), Part::Design, "console"));
-        assert!(is_choice_in(&folders, Part::Design, "twin") && is_choice_in(&folders, Part::ColorScheme, "harbor"));
+        assert_eq!(choices_in(&Folders::default(), Part::Design), ["torro", "comfort", "dense"]);
+        assert!(is_choice_in(&Folders::default(), Part::Design, "dense"));
+        assert!(is_choice_in(&folders, Part::ColorScheme, "harbor"));
         assert!(!is_choice_in(&folders, Part::Design, "harbor"), "a colour scheme is no design");
         assert!(is_choice_in(&Folders::default(), Part::Font, "torro"), "the standard needs no folder");
-        for id in ["pale", "gone", "../twin"] {
+        for id in ["compact", "console", "twin", "gone", "../twin"] {
             assert!(!is_choice_in(&folders, Part::Design, id), "{id}");
         }
         let _ = std::fs::remove_dir_all(root);
