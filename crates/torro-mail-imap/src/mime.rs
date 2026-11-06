@@ -293,7 +293,9 @@ impl ReadMessage {
         let snippet = self.snippet();
         let has_attachments = self.has_attachments();
         Message {
+            warnings: Vec::new(),
             summary: MessageSummary {
+                caught: false,
                 id: place.id,
                 account: place.account,
                 folder: place.folder,
@@ -682,7 +684,68 @@ fn traits(message: &mail_parser::Message<'_>) -> MessageTraits {
             .and_then(|value| value.split(';').next().map(|keyword| keyword.trim().to_owned()))
             .filter(|keyword| !keyword.is_empty()),
         github: raw("X-GitHub-Reason").filter(|reason| github_reason(reason)),
+        auth: Some(first_raw(message, "Authentication-Results").map(|value| auth_results(&value)).unwrap_or_default()),
+        return_path: first_raw(message, "Return-Path").and_then(|value| return_path(&value)),
+        reply_ref: Some(message.header_raw("In-Reply-To").is_some() || message.header_raw("References").is_some()),
     }
+}
+
+/// The first header `name` of the message, top-most, unfolded and trimmed (issue #506): the one the
+/// last server wrote. `header_raw` gives the last one, which for `Authentication-Results` and
+/// `Return-Path` is the one a sender could have put in themselves.
+fn first_raw(message: &mail_parser::Message<'_>, name: &str) -> Option<String> {
+    message
+        .headers_raw()
+        .find(|(header, _)| header.eq_ignore_ascii_case(name))
+        .map(|(_, value)| one_line(value).trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// The sender checks an `Authentication-Results` value names (RFC 8601):
+/// `mx.example; spf=pass smtp.mailfrom=…; dkim=fail header.d=…; dmarc=none`. The first part is the
+/// server's name and says nothing; comments in parentheses are dropped. Of several results of one
+/// check (two DKIM signatures) a `pass` wins, else the first counts.
+pub fn auth_results(value: &str) -> torro_mail::AuthResults {
+    let mut results = torro_mail::AuthResults::default();
+    for part in without_comments(value).split(';').skip(1) {
+        let Some((method, rest)) = part.trim().split_once('=') else { continue };
+        let result = torro_mail::AuthResult::of_word(rest.split_whitespace().next().unwrap_or_default());
+        let slot = match method.trim().to_ascii_lowercase().as_str() {
+            "spf" => &mut results.spf,
+            "dkim" => &mut results.dkim,
+            "dmarc" => &mut results.dmarc,
+            _ => continue,
+        };
+        if slot.is_none() || result == torro_mail::AuthResult::Pass {
+            *slot = Some(result);
+        }
+    }
+    results
+}
+
+/// `text` without its comments in parentheses (nested ones too), as RFC 5322 allows them in headers.
+fn without_comments(text: &str) -> String {
+    let mut depth = 0usize;
+    text.chars()
+        .filter(|c| match c {
+            '(' => {
+                depth += 1;
+                false
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                false
+            }
+            _ => depth == 0,
+        })
+        .collect()
+}
+
+/// The address of a `Return-Path` value (`<bounce@mail.example>`), small letters; `None` for the
+/// empty path `<>` of bounces and for anything that is not one address.
+fn return_path(value: &str) -> Option<String> {
+    let address = value.trim().trim_start_matches('<').trim_end_matches('>').trim().to_lowercase();
+    valid_address(&address).then_some(address)
 }
 
 /// The headers `mail.unsubscribe` acts on (issue #416), as the message carries them: unfolded,
@@ -1470,5 +1533,32 @@ mod tests {
         assert_eq!(reply.references.first().map(String::as_str), Some("0@x"));
         assert_eq!(reply.references[1], "12@x", "31 ids: the first and the latest 19");
         assert_eq!(reply.references.last().map(String::as_str), Some("new@x"));
+    }
+
+    /// Issue #506: the top-most `Authentication-Results` counts – the one the receiving server
+    /// wrote, not one a sender put further down –, comments and the server's name are no checks, of
+    /// two DKIM results a `pass` wins; `Return-Path` and the reply reference are read, `<>` is none.
+    #[test]
+    fn sender_checks_return_path_and_the_reply_reference_are_read() {
+        use torro_mail::{AuthResult, AuthResults};
+        let raw = "Authentication-Results: mx.example.org; spf=softfail (sender not allowed) smtp.mailfrom=x.example;\r\n \
+                   dkim=fail header.d=x.example; dkim=pass header.d=y.example; dmarc=fail (p=reject)\r\n\
+                   Authentication-Results: forged.example; spf=pass; dkim=pass; dmarc=pass\r\n\
+                   Return-Path: <Bounce@Mail.Example>\r\nFrom: a@b.example\r\nSubject: Re: x\r\n\r\nText\r\n";
+        let first = read(raw.as_bytes()).expect("read");
+        let expected = AuthResults {
+            spf: Some(AuthResult::Softfail),
+            dkim: Some(AuthResult::Pass),
+            dmarc: Some(AuthResult::Fail),
+        };
+        assert_eq!(first.traits.auth, Some(expected));
+        assert_eq!(first.traits.return_path.as_deref(), Some("bounce@mail.example"));
+        assert_eq!(first.traits.reply_ref, Some(false), "no In-Reply-To, no References");
+
+        let raw = "Return-Path: <>\r\nIn-Reply-To: <x@b.example>\r\nFrom: a@b.example\r\n\r\nText\r\n";
+        let second = read(raw.as_bytes()).expect("read");
+        assert_eq!(second.traits.auth, Some(AuthResults::default()), "read, and no header");
+        assert_eq!((second.traits.return_path, second.traits.reply_ref), (None, Some(true)));
+        assert_eq!(auth_results("mx.example.org; none"), AuthResults::default());
     }
 }
