@@ -264,6 +264,14 @@ const LINE_SENDER_SHARE: f32 = 0.3;
 /// preview is cut rather than left out ([`line_title_room`]).
 const LINE_TITLE_SHARE: f32 = 0.6;
 
+/// The most of a line's title cell the account before the time takes ([`LineWords::of`]): a third,
+/// so the subject keeps the most.
+const LINE_ACCOUNT_SHARE: f32 = 1.0 / 3.0;
+
+/// [`LINE_ACCOUNT_SHARE`] for the mailbox of "Sent" (issue #449): half, so a whole address fits in a
+/// wide line – it is all that tells two accounts of one domain apart, and the line has no avatar.
+const LINE_MAILBOX_SHARE: f32 = 0.5;
+
 /// Width of the marks column of a line ([`mail_line`], [`notice_line`]): [`LINE_MARKS`] small icons
 /// with [`space::xs()`] between them; a notice's tile stands in it.
 pub(crate) fn line_marks_width() -> f32 {
@@ -366,23 +374,37 @@ pub(crate) struct LineWords {
 
 impl LineWords {
     /// The words of a line in `columns`: `who` in `who_level` with `domain` after it in what is left,
-    /// `title` in `level` (· `count`) and `preview` in `BODY`, the `account` before the time – as the
-    /// rows show them ([`mail_rows`], [`notice_rows`]).
+    /// `title` in `level` (· `count`) and `preview` in `BODY`, the `account` before the time in at most
+    /// `share` of the title column – as the rows show them ([`mail_rows`], [`notice_rows`]).
+    ///
+    /// A `mailbox` account (the address "Sent" went out by, issue #449) is cut in whole parts
+    /// ([`ellipsize_start`]: the address, else its domain) and, with no room for either, stays as an
+    /// empty name: its dot in the account's colour still tells the accounts apart.
     fn of(
         columns: LineColumns,
         (who, who_level, domain): (&str, Level, Option<&str>),
         (title, level, count): (&str, Level, Option<&str>),
         preview: Option<&str>,
-        account: Option<&str>,
+        (account, share, mailbox): (Option<&str>, f32, bool),
         time: &str,
     ) -> LineWords {
         let who_shown = ellipsize_who(who, who_level, columns.who);
         let left = columns.who - typo::text_width(&who_shown, who_level) - space::s();
         let domain = domain.map(|domain| typo::ellipsize(domain, typo::meta(), left)).filter(|d| !d.is_empty());
-        let account_room = account.map_or(0.0, |name| {
-            (typo::text_width(name, typo::meta()) + new_dot() + space::xs() + cell_gap()).min(columns.title / 3.0)
-        });
-        let account = account.map(|name| typo::ellipsize(name, typo::meta(), account_room - cell_gap()));
+        let account_width = |name: &str| typo::text_width(name, typo::meta()) + new_dot() + space::xs() + cell_gap();
+        let most = columns.title * share;
+        let (account, account_room) = match account {
+            Some(name) if mailbox => {
+                let shown = ellipsize_start(name, typo::meta(), most - new_dot() - space::xs() - cell_gap());
+                let room = account_width(&shown);
+                (Some(shown), room)
+            }
+            Some(name) => {
+                let room = account_width(name).min(most);
+                (Some(typo::ellipsize(name, typo::meta(), room - cell_gap())).filter(|a| !a.is_empty()), room)
+            }
+            None => (None, 0.0),
+        };
         let room = (columns.title - account_room - count.map_or(0.0, pill_width)).max(0.0);
         let preview = preview.filter(|text| !text.is_empty());
         let title_room = line_title_room(typo::text_width(title, level), preview.is_some(), room);
@@ -390,7 +412,7 @@ impl LineWords {
         let preview_room = room - typo::text_width(&title, level).ceil().min(title_room) - space::s();
         let preview = preview.map(|text| typo::ellipsize(text, typo::body(), preview_room)).filter(|t| !t.is_empty());
         let time = typo::ellipsize(time, typo::meta().tabular(), columns.time);
-        LineWords { who: who_shown, domain, title, preview, account: account.filter(|a| !a.is_empty()), time }
+        LineWords { who: who_shown, domain, title, preview, account, time }
     }
 }
 
@@ -1146,15 +1168,17 @@ pub(crate) struct MailLines<'a> {
     /// The account's place among the mail accounts, for its colour ([`account_index`]).
     pub account: Option<usize>,
     /// The account's name at the end of the preview's line; `None` with one account (or in a
-    /// folder, which is one account's).
+    /// folder, which is one account's). In "Sent" the mailbox it went out by, which only a line shows
+    /// (issue #449, [`MailLines::domain_tail`]).
     pub account_name: Option<String>,
     /// Where the words of a search matched (issue #136): stressed in the subject and the preview.
     pub hits: Option<Hits<'a>>,
     /// The text the avatar takes its initials from, when it is not the `name` – "Sent" shows the
     /// recipient as the name ("To: …"), the avatar the person themselves (issue #445). `None`: `name`.
     pub face: Option<String>,
-    /// The `domain` is cut at its start when it does not fit (the mailbox of "Sent", whose end tells
-    /// the accounts apart, issue #445).
+    /// "Sent": the `domain` is its mailbox ("via …"), cut at its start when it does not fit, as its end
+    /// tells the accounts apart (issue #445). A line leaves it out and shows the `account_name` – the
+    /// mailbox – in the account column instead (issue #449); rows show no account beside it.
     pub domain_tail: bool,
     /// No row of the list has a mark: a line leaves the column of the marks out ([`LineColumns::of_marks`]);
     /// "Sent" has few, and the column would only take the room of the names (issue #445).
@@ -1244,9 +1268,10 @@ impl<'a> MailLines<'a> {
     }
 }
 
-/// A mailbox ("via anna@work.example.org") shortened in whole parts only (issue #445): the address in
-/// full, else without its local part ("via work.example.org"), else nothing – never a piece of a
-/// domain, which would read as another account. Its first word ("via") stays.
+/// A mailbox ("via anna@work.example.org", or the bare address in the account column of a line, issue
+/// #449) shortened in whole parts only (issue #445): the address in full, else without its local part
+/// ("via work.example.org"), else nothing – never a piece of a domain, which would read as another
+/// account. Its first word ("via") stays.
 fn ellipsize_start(text: &str, level: typo::Level, max_width: f32) -> String {
     let (head, address) = text.split_at(text.find(' ').map_or(0, |at| at + 1));
     let domain = address.split_once('@').map(|(_, domain)| format!("{head}{domain}"));
@@ -1312,7 +1337,9 @@ fn mail_rows<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: boo
         domain_tail,
         no_marks: _,
     } = lines;
-    let account_name = account_shown(account_name, domain.as_deref());
+    // "Sent" names its mailbox after the recipient here ("via …"); the account a line shows at its
+    // end (issue #449) would name it twice.
+    let account_name = account_shown(account_name, domain.as_deref()).filter(|_| !domain_tail);
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
     // On the accent the matches keep the row's own colour (`on_accent`) and stand out by weight.
     let hit_colour = hits.map(|hits| hits.text).filter(|_| !parts.fill);
@@ -1565,25 +1592,24 @@ pub(crate) fn mail_line<'a>(look: ListLook, lines: MailLines<'a>, width: f32, se
         domain_tail,
         no_marks,
     } = lines;
-    let account_name = account_shown(account_name, domain.as_deref());
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
     let hit_colour = hits.map(|hits| hits.text).filter(|_| !parts.fill);
     let level = mail_text_level(new);
     let time_width = typo::text_width(&time, typo::meta().tabular());
     let columns = LineColumns::of_marks(width, time_width, if no_marks { 0.0 } else { line_marks_width() });
-    let mut shown = mail_line_words(
-        columns,
-        (&name, domain.as_deref()),
-        (&subject, new, count.as_deref()),
-        &preview,
-        &account_name,
-        &time,
-    );
-    if let Some(full) = domain.as_deref().filter(|_| domain_tail) {
-        // The mailbox of "Sent" is cut in whole parts, not at its end (issue #445).
-        let left = columns.who - typo::text_width(&shown.who, typo::body_strong()) - space::s();
-        shown.domain = Some(ellipsize_start(full, typo::meta(), left)).filter(|d| !d.is_empty());
-    }
+    let shown = if domain_tail {
+        sent_line_words(columns, &name, (&subject, new, count.as_deref()), &preview, &account_name, &time)
+    } else {
+        let account_name = account_shown(account_name, domain.as_deref());
+        mail_line_words(
+            columns,
+            (&name, domain.as_deref()),
+            (&subject, new, count.as_deref()),
+            &preview,
+            &account_name,
+            &time,
+        )
+    };
     let marks = row(marks.into_iter().map(|(mark, _)| mark)).spacing(space::xs()).align_y(Alignment::Center);
     let cells =
         line_cells(columns, shown, marks.into(), (level, theme::text), level, count, account, (&words, hit_colour));
@@ -1606,7 +1632,29 @@ fn mail_line_words(
         (name, typo::body_strong(), domain),
         (subject, mail_text_level(new), count),
         preview.as_deref(),
-        account.as_deref(),
+        (account.as_deref(), LINE_ACCOUNT_SHARE, false),
+        time,
+    )
+}
+
+/// What the cells of a line of "Sent" show in `columns` ([`LineWords`], issue #449): the recipients
+/// `name` without the mailbox after them, the `subject` with the `preview`, and the `mailbox` it went
+/// out by in the account column before the time – where it has room, and its dot tells two accounts
+/// apart; after the recipients the name column rarely left room for it.
+fn sent_line_words(
+    columns: LineColumns,
+    name: &str,
+    (subject, new, count): (&str, bool, Option<&str>),
+    preview: &Option<String>,
+    mailbox: &Option<String>,
+    time: &str,
+) -> LineWords {
+    LineWords::of(
+        columns,
+        (name, typo::body_strong(), None),
+        (subject, mail_text_level(new), count),
+        preview.as_deref(),
+        (mailbox.as_deref(), LINE_MAILBOX_SHARE, true),
         time,
     )
 }
@@ -1719,7 +1767,7 @@ fn notice_line_words(item: &Item, rows: &Rows<'_>, columns: LineColumns) -> Line
         (&item.source.label(), typo::body(), None),
         (&title, level, count.as_deref()),
         text.as_deref(),
-        None,
+        (None, LINE_ACCOUNT_SHARE, false),
         &time,
     )
 }
@@ -2427,6 +2475,62 @@ mod tests {
         let part = ellipsize_start(mailbox, meta, wide - 1.0);
         assert_eq!(part, "via work.example.org", "whole parts only");
         assert_eq!(ellipsize_start(mailbox, meta, typo::text_width("via work.example.or", meta)), "", "no stump");
+    }
+
+    /// Issue #449: a line of "Sent" shows its mailbox in the account column before the time, not after
+    /// the recipients – the whole address, else its domain, else only the account's dot (an empty
+    /// name), never a piece of a domain; in a wide line both addresses of one domain in full. Any other
+    /// line keeps at most a third of the title cell for its account.
+    #[test]
+    fn a_line_of_sent_shows_its_mailbox_in_the_account_column() {
+        let meta = typo::meta();
+        let preview = Some("Hello Maria, here is the offer we talked about on Monday.".to_owned());
+        let time = "09:41";
+        let words = |width: f32, mailbox: &str| {
+            let columns = LineColumns::of_marks(width, typo::text_width(time, meta.tabular()), 0.0);
+            let shown = sent_line_words(
+                columns,
+                "To: Maria Schulz +2",
+                ("Offer", false, None),
+                &preview,
+                &Some(mailbox.to_owned()),
+                time,
+            );
+            (columns, shown)
+        };
+        for mailbox in ["anna@work.example.org", "ben@work.example.org"] {
+            let mut last = f32::INFINITY;
+            for width in [1200.0, 700.0, 480.0, 360.0] {
+                let (columns, shown) = words(width, mailbox);
+                assert_eq!(shown.domain, None, "{width}: no mailbox after the recipients");
+                let account = shown.account.expect("the account's dot always stands");
+                assert!(
+                    [mailbox, "work.example.org", ""].contains(&account.as_str()),
+                    "{width}: whole parts only, not {account:?}"
+                );
+                let used = typo::text_width(&account, meta);
+                assert!(used <= columns.title * LINE_MAILBOX_SHARE, "{width}: at most half the title cell");
+                assert!(used <= last, "{width}: narrower never shows more");
+                last = used;
+            }
+            assert_eq!(words(1200.0, mailbox).1.account.as_deref(), Some(mailbox), "wide: the address in full");
+        }
+        assert_eq!(words(360.0, "anna@work.example.org").1.account.as_deref(), Some(""), "narrow: only the dot");
+
+        // Any other line: the account in at most a third, cut with "…".
+        let account = Some("a-rather-long-account-name.example.org".to_owned());
+        let columns = LineColumns::of_marks(480.0, typo::text_width(time, meta.tabular()), 0.0);
+        let shown = mail_line_words(
+            columns,
+            ("Jonas Weber", Some("example.org")),
+            ("Offer", false, None),
+            &preview,
+            &account,
+            time,
+        );
+        let cut = shown.account.expect("cut, not left out");
+        assert!(cut.ends_with('…'), "{cut}");
+        assert!(typo::text_width(&cut, meta) <= columns.title * LINE_ACCOUNT_SHARE, "a third");
     }
 
     #[test]

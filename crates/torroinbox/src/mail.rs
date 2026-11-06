@@ -1848,7 +1848,8 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
         count: None,
         preview: snippet,
         account,
-        account_name: None,
+        // "Sent" names the mailbox it went out by: a line shows it before the time (issue #449).
+        account_name: (*data.view == View::Sent).then(|| address(&message.account).to_owned()),
         hits: data.hits(&message.id),
         face,
         domain_tail: *data.view == View::Sent,
