@@ -9,9 +9,10 @@
 //! logical pixels wide at scale 2 and always in light colours: paper is light. Drawing waits for the
 //! pictures at most [`WAIT_FOR_PICTURES`]; a picture that comes later can move what follows, so the
 //! heights are measured again on every page and after the picture, and a mail that changed is marked
-//! shortened. [`Content`] is not `Send`, so everything happens on one blocking thread, and only one
-//! export runs at a time ([`EXPORTS`]): a PNG holds a few dozen MB while it is made, a PDF its pages
-//! uncompressed until it is written (about 9 MB a page, at most [`MAX_PAGES`]).
+//! shortened. [`Content`] is not `Send`, so everything happens on one thread with a large stack
+//! ([`DRAW_STACK`]), and only one export runs at a time ([`EXPORTS`]): a PNG holds a few dozen MB while
+//! it is made, a PDF its pages uncompressed until it is written (about 9 MB a page, at most
+//! [`MAX_PAGES`]).
 //!
 //! **PNG.** One long picture, written band by band (at most [`BAND_ROWS`] rows painted at once), at
 //! most [`MAX_PNG_ROWS`] rows; a longer mail is cut (decision 4). **PDF.** A4 pages with 12-mm margins,
@@ -66,6 +67,10 @@ const CUT_ROOM: f32 = 0.15;
 /// The most addresses shown per line of the head; the rest are "+{n} more".
 const MAX_ADDRESSES: usize = 10;
 
+/// The stack of the thread that draws: room for a deeply nested mail (the standard 2 MB of a
+/// blocking thread are not). Only what is used is taken from memory.
+const DRAW_STACK: usize = 64 * 1024 * 1024;
+
 /// One export at a time: each holds a mail drawn in memory.
 static EXPORTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -104,10 +109,22 @@ pub struct Drawn {
 /// Draws the mail with `head` and `body` as `format`. `online`: external pictures are loaded, as the
 /// reader loads them (the tests draw offline). `Err` when it cannot be drawn or written; the reason
 /// goes to the log without anything of the mail.
+///
+/// The drawing runs on a thread of its own with [`DRAW_STACK`]: the HTML comes from outside, and a
+/// deeply nested mail must not overflow the stack of the service (review of PR #514). The thread
+/// holds the turn of [`EXPORTS`] until it is done, even when the caller gave up waiting.
 pub async fn draw(head: Head, body: Body, format: ExportFormat, online: bool) -> Result<Drawn, ()> {
-    let _one = EXPORTS.lock().await;
-    let drawn = tokio::task::spawn_blocking(move || draw_now(&head, body, format, online)).await;
-    match drawn {
+    let turn = EXPORTS.lock().await;
+    let (answer, drawn) = tokio::sync::oneshot::channel();
+    let spawned = std::thread::Builder::new().name("mail-export".into()).stack_size(DRAW_STACK).spawn(move || {
+        let _turn = turn;
+        let _ = answer.send(draw_now(&head, body, format, online));
+    });
+    if let Err(err) = spawned {
+        eprintln!("torroworkplace: mail: cannot start drawing a mail: {}", err.kind());
+        return Err(());
+    }
+    match drawn.await {
         Ok(Ok(drawn)) => Ok(drawn),
         Ok(Err(reason)) => {
             eprintln!("torroworkplace: mail: a mail could not be drawn: {reason}");
