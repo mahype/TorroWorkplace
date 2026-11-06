@@ -1,0 +1,13 @@
+Authentication-Results: mx.example.org; spf=pass smtp.mailfrom=mailer-service.example; dkim=pass header.d=mailer-service.example; dmarc=none
+Return-Path: <bounce-123@mailer-service.example>
+From: Maria Schulz <maria.schulz@work.example.org>
+Reply-To: <maria.schulz@work.example.org>
+To: anna@example.org
+Subject: Our club evening on Friday
+Date: Thu, 05 Nov 2026 15:00:00 +0000
+Message-ID: <known-newsletter@mailer-service.example>
+Content-Type: text/html; charset=utf-8
+
+<p>Dear member,</p>
+<p>please confirm your account to see the programme within 48 hours:
+<a href="https://mailer-service.example/t/123">work.example.org/club</a></p>

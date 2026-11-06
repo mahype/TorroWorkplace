@@ -1,0 +1,9 @@
+Authentication-Results: mx.example.org; spf=none; dkim=none; dmarc=none
+From: Jonas Weber <jonas.weber@work.example.org>
+To: anna@example.org
+Subject: Budget review for Q4
+Date: Thu, 05 Nov 2026 16:00:00 +0000
+Message-ID: <known-no-spf@work.example.org>
+Content-Type: text/plain; charset=utf-8
+
+Hi Anna, could you look at the travel budget before Thursday? Thanks, Jonas

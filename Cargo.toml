@@ -93,6 +93,9 @@ ammonia = "4.2.3"
 # of ammonia and blitz-html) and second selectors/cssparser (0.38/0.37, beside Stylo's 0.41/0.38),
 # with older phf, string_cache, servo_arc and web_atoms. MIT.
 dom_query = { version = "0.28.0", default-features = false }
+# The hosts of the links of a mail, for its warning signs of fraud (torroworkplace, issue #506): IP addresses, Punycode
+# and the domain a link really goes to. Already in the build through reqwest. MIT OR Apache-2.0.
+url = "2.5"
 # The main content of a web page as Markdown for the tool web (torroworkplace, WEB.3, issue #305), Mozilla's
 # Readability ported to dom_query. On dom_query 0.28 above, so it adds no further html5ever: the second one (0.39)
 # came with dom_query already. No htmd (yet another html5ever). MIT.

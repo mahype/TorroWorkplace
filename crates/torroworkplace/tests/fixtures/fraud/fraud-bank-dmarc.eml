@@ -1,0 +1,12 @@
+Authentication-Results: mx.example.org; spf=fail smtp.mailfrom=sparkasse.example; dkim=fail header.d=sparkasse.example; dmarc=fail (p=reject)
+Return-Path: <x@bulk-sender.example>
+From: Sparkasse Online <info@sparkasse-online.example>
+To: anna@example.org
+Subject: Sicherheitsüberprüfung erforderlich
+Date: Thu, 05 Nov 2026 12:45:00 +0000
+Message-ID: <fraud-bank@sparkasse-online.example>
+Content-Type: text/html; charset=utf-8
+
+<p>Sehr geehrte Kundin,</p>
+<p>Ihr Konto wurde gesperrt. Bitte Zugangsdaten bestätigen:</p>
+<p><a href="http://203.0.113.9/sparkasse/login">https://www.sparkasse.de/login</a></p>
