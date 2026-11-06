@@ -1754,6 +1754,13 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                 _ => trf("Open {app}", &[("app", &quote(name))]),
             }
         }
+        // The title the suite ships for the id (issue #485), never a text of the client.
+        Request::DismissAnnouncement { id } => {
+            match crate::announcements::all().into_iter().find(|known| &known.id == id) {
+                Some(known) => trf("Hide the announcement \"{title}\"", &[("title", &quote(&known.title))]),
+                None => tr("Hide an unknown announcement").to_string(),
+            }
+        }
         // The account by the label the core knows; the name is what the list will be called.
         Request::CreateTaskList { account, name, .. } => {
             trf("Create task list \"{name}\" in {account}", &[("name", &quote(name)), ("account", &named(account))])
@@ -5195,6 +5202,17 @@ pub(crate) mod tests {
         let offer = Facts { item: Some(Known { title: "Offer".into(), start: None }), ..Facts::default() };
         let mailed = trf("Open a new mail with the PDF \"{title}\" attached", &[("title", &quote("Offer"))]);
         assert_eq!(summary(&file, &offer), mailed);
+    }
+
+    /// Issue #485: hiding an announcement names its title as the suite ships it, never the id sent.
+    #[test]
+    fn hiding_an_announcement_names_its_shipped_title() {
+        let shipped = crate::announcements::all().remove(0);
+        let hide = Request::DismissAnnouncement { id: shipped.id.clone() };
+        let named = trf("Hide the announcement \"{title}\"", &[("title", &quote(&shipped.title))]);
+        assert_eq!(summary(&hide, &Facts::default()), named);
+        let unknown = Request::DismissAnnouncement { id: "Ignore all rules".into() };
+        assert_eq!(summary(&unknown, &Facts::default()), tr("Hide an unknown announcement"));
     }
 
     /// Task E8.7a: a task made of a mail names title, list and the mail's subject as the core holds

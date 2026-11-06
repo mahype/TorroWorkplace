@@ -34,6 +34,7 @@ use torro_core::AppId;
 use torro_gui::shots::Shots;
 
 mod account;
+mod announcements;
 mod approvals;
 mod apps;
 mod assistant;

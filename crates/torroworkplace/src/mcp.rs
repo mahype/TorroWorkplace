@@ -754,6 +754,8 @@ const IDEMPOTENT: &[&str] = &[
     "settings.set_collection_shown",
     "settings.update_settings",
     "apps.open_app",
+    // Hidden stays hidden (issue #485).
+    "apps.dismiss_announcement",
     // Bringing the same window or page to the front again changes nothing more.
     "inbox.open_item",
     // Setting a state, lane or mute again leaves it as it is; a remembered lane replaces the old.
@@ -3424,6 +3426,18 @@ mod tests {
             let refused = request_for(kept_back, args(json!({"app": "torrotasks"})), &Utc);
             assert_eq!(refused, Err(ToolError::UnknownTool), "{kept_back}");
         }
+    }
+
+    /// Issue #485: the announcements' tools take nothing but the id to hide.
+    #[test]
+    fn the_announcement_tools_build_their_requests() {
+        assert_eq!(request_for("apps_list_announcements", args(json!({})), &Utc), Ok(Request::ListAnnouncements));
+        assert_eq!(
+            request_for("apps_dismiss_announcement", args(json!({"id": "2026-11-mail-statistics"})), &Utc),
+            Ok(Request::DismissAnnouncement { id: "2026-11-mail-statistics".into() })
+        );
+        let missing = request_for("apps_dismiss_announcement", args(json!({})), &Utc);
+        assert!(matches!(missing, Err(ToolError::Input(_))), "the id is needed: {missing:?}");
     }
 
     /// Task E2.4: the tool takes the entry's id and nothing else.

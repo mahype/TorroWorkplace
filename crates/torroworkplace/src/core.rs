@@ -2681,6 +2681,9 @@ pub struct Core {
     /// ([`crate::catalog::Catalog::system`]); tests ask no server and find no app unless they bring
     /// one ([`Core::with_catalog`]).
     catalog: crate::catalog::Catalog,
+    /// Which of the suite's announcements the person hid (issue #485): the user's list
+    /// ([`crate::announcements::Announcements::system`]); tests keep it in memory.
+    announcements: crate::announcements::Announcements,
 }
 
 /// How long a measurement without shared memory counts ([`Core::hardware`]): long enough that the
@@ -2777,6 +2780,7 @@ impl Core {
             pulls: crate::account::pull::Pulls::default(),
             contacts,
             catalog: if cfg!(test) { crate::catalog::Catalog::none() } else { crate::catalog::Catalog::system() },
+            announcements: crate::announcements::Announcements::system(),
         };
         let allowed = core.allowed_folders();
         Core { extensions: core.extensions.clone().with_allowed(allowed), ..core }
@@ -5783,6 +5787,14 @@ impl Core {
             Request::ListApps => {
                 Response::Apps { apps: crate::apps::list(), main_app: crate::apps::main_app_installed() }
             }
+            Request::ListAnnouncements => match self.announcements.list(Local::now().date_naive()) {
+                Ok(announcements) => Response::Announcements { announcements },
+                Err(err) => Response::Error { code: err.code().into(), message: err.to_string() },
+            },
+            Request::DismissAnnouncement { id } => match self.announcements.dismiss(&id) {
+                Ok(()) => Response::Ok,
+                Err(err) => Response::Error { code: err.code().into(), message: err.to_string() },
+            },
             Request::ListClients => Response::Clients { clients: self.clients.list() },
             // A bot's client is made with its bot (`bots.save_bot`, task B.1), never on its own.
             Request::CreateClient { kind, .. } if kind.trim() == torro_ipc::api::BOT_CLIENT => Response::Error {

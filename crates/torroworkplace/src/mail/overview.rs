@@ -153,6 +153,9 @@ pub fn count(
 
     let mut per_day: BTreeMap<NaiveDate, BTreeMap<(bool, Option<CategoryGroup>), u32>> = BTreeMap::new();
     let mut per_category: HashMap<Option<Category>, (u32, u32)> = HashMap::new();
+    // Per category, how much came in per day, parallel to `days` (issue #485).
+    let span = usize::try_from((today - from).num_days().saturating_add(1)).unwrap_or(0);
+    let mut category_days: HashMap<Option<Category>, Vec<u32>> = HashMap::new();
     for message in &messages {
         let group = group(message.category);
         // Mail without a group goes last on its day.
@@ -161,6 +164,11 @@ pub fn count(
         let (count, opened) = per_category.entry(message.category).or_default();
         *count = count.saturating_add(1);
         *opened = opened.saturating_add(u32::from(message.seen));
+        let index = usize::try_from((message.day - from).num_days()).ok();
+        let days = category_days.entry(message.category).or_insert_with(|| vec![0; span]);
+        if let Some(on_day) = index.and_then(|index| days.get_mut(index)) {
+            *on_day = on_day.saturating_add(1);
+        }
     }
 
     let days = from
@@ -182,7 +190,13 @@ pub fn count(
 
     let mut categories: Vec<OverviewCategory> = per_category
         .into_iter()
-        .map(|(category, (count, opened))| OverviewCategory { category, group: group(category), count, opened })
+        .map(|(category, (count, opened))| OverviewCategory {
+            category,
+            group: group(category),
+            count,
+            opened,
+            days: category_days.remove(&category).unwrap_or_default(),
+        })
         .collect();
     categories.sort_by_key(|entry| (Reverse(entry.count), order(entry.category)));
 
@@ -678,6 +692,25 @@ mod tests {
             [(Some(CategoryGroup::WaitingForMe), 2), (Some(CategoryGroup::Custom(3)), 1), (None, 1)],
             "mail without a group last"
         );
+    }
+
+    /// Issue #485: each category counts per day too, parallel to the overview's days, also the mail
+    /// without a category.
+    #[test]
+    fn each_category_counts_per_day() {
+        let came_in = vec![
+            row("n1", at(6, 9, 0), "a@x.org", Some(Category::Newsletter)),
+            row("n2", at(0, 9, 0), "a@x.org", Some(Category::Newsletter)),
+            row("n3", at(0, 9, 1), "a@x.org", Some(Category::Newsletter)),
+            row("u1", at(2, 9, 0), "a@x.org", None),
+        ];
+        let overview = counted(&[rows(ANNA, came_in)], StatsRange::Week).overview;
+        let days = |category: Option<Category>| {
+            overview.categories.iter().find(|entry| entry.category == category).map(|entry| entry.days.clone())
+        };
+        assert_eq!(days(Some(Category::Newsletter)), Some(vec![1, 0, 0, 0, 0, 0, 2]));
+        assert_eq!(days(None), Some(vec![0, 0, 0, 0, 1, 0, 0]));
+        assert!(overview.categories.iter().all(|entry| entry.days.len() == overview.days.len()));
     }
 
     /// The inbox by age: today, the six days before, older; the same message in two inboxes once.

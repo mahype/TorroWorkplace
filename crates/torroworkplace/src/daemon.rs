@@ -1066,6 +1066,9 @@ fn describe(request: &Request) -> String {
         Request::UninstallApp { app, .. } => format!("uninstall {app}"),
         Request::InstallApp { app } => format!("install {app}"),
         Request::UpdateApps { apps } => format!("update {}", apps.join(", ")),
+        Request::ListAnnouncements => "announcements".into(),
+        // The id is the suite's own (`announcements::all`) or refused with `not-found`.
+        Request::DismissAnnouncement { id } => format!("hide announcement {id}"),
         Request::ListDesigns => "designs".into(),
         Request::ListFonts => "fonts".into(),
         Request::ListColorSchemes => "colour schemes".into(),
