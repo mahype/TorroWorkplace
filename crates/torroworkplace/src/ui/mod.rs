@@ -1507,11 +1507,11 @@ impl Ui {
     /// What is open below the section and beside it (issue #475), as the sidebar and the section
     /// menu show it under the section: every account under Accounts or AI while one is open, each
     /// with what opens it, the open one with `None`. Empty on every other page.
-    fn children(&self) -> Vec<(String, Option<Message>)> {
+    fn children(&self) -> Vec<(Icon, String, Option<Message>)> {
         match self.section {
             Section::Accounts | Section::Ai => accounts::siblings(&self.accounts, &self.data)
                 .into_iter()
-                .map(|(name, open)| (name, open.map(Message::Accounts)))
+                .map(|(mark, name, open)| (mark, name, open.map(Message::Accounts)))
                 .collect(),
             _ => Vec::new(),
         }
@@ -1898,9 +1898,9 @@ impl Ui {
             if !below {
                 return vec![row];
             }
-            let rows = children.iter().cloned().map(|(name, press)| {
+            let rows = children.iter().cloned().map(|(mark, name, press)| {
                 let active = press.is_none();
-                widgets::sidebar_child(section.icon(), name, Trail::None, active, press.unwrap_or(Message::CloseMenu))
+                widgets::sidebar_child(mark, name, Trail::None, active, press.unwrap_or(Message::CloseMenu))
             });
             vec![row, widgets::sidebar_branch_quiet(rows.collect())]
         };
@@ -1950,9 +1950,9 @@ impl Ui {
             if !below {
                 return vec![item];
             }
-            let nested = children.iter().cloned().map(|(name, press)| {
+            let nested = children.iter().cloned().map(|(mark, name, press)| {
                 let open = press.is_none();
-                MenuItem::new(section.icon(), name, press.unwrap_or(Message::CloseMenu)).current(open).nested()
+                MenuItem::new(mark, name, press.unwrap_or(Message::CloseMenu)).current(open).nested()
             });
             std::iter::once(item).chain(nested).collect()
         };
@@ -2009,9 +2009,9 @@ impl Ui {
                 let title = match class {
                     _ if wide => crumb(section, name, back),
                     SizeClass::Medium => row![
-                        widgets::menu_button(nav, Some(section.icon()), section.label(), menu),
+                        widgets::path_menu_button(nav, Some(section.icon()), section.label(), menu),
                         path_chevron(),
-                        typo::text(typo::body_strong(), name).wrapping(Wrapping::None),
+                        widgets::path_here(name),
                     ]
                     .spacing(space::xs())
                     .align_y(Alignment::Center)
@@ -2101,14 +2101,10 @@ fn path_chevron<'a>() -> Element<'a, Message> {
 /// "Accounts › cloud.example.org": the section in `text_3`, pressable, leading `back` up to its own
 /// page (issue #264); the page below it in `BODY_STRONG`.
 fn crumb<'a>(section: Section, name: String, back: Message) -> Element<'a, Message> {
-    row![
-        widgets::path_step(section.label(), Some(back)),
-        path_chevron(),
-        typo::text(typo::body_strong(), name).wrapping(Wrapping::None),
-    ]
-    .spacing(space::xs())
-    .align_y(Alignment::Center)
-    .into()
+    row![widgets::path_step(section.label(), Some(back)), path_chevron(), widgets::path_here(name),]
+        .spacing(space::xs())
+        .align_y(Alignment::Center)
+        .into()
 }
 
 // ----- Building blocks of the pages -----------------------------------------------------------
@@ -2439,13 +2435,13 @@ mod tests {
         let open = ui.accounts.selected.clone().expect("an account is open");
         let children = ui.children();
         assert!(children.len() > 1, "the accounts beside it");
-        assert!(children.iter().filter(|(_, press)| press.is_none()).count() == 1, "the open one marked");
+        assert!(children.iter().filter(|(_, _, press)| press.is_none()).count() == 1, "the open one marked");
         for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
             let _ = ui.header(class, &Anchor::new());
         }
         let _ = (ui.sidebar(SidebarMode::Expanded), ui.nav_menu());
         // Another account from the menu: its page, the menu closed.
-        let other = children.iter().find_map(|(_, press)| press.clone()).expect("another account");
+        let other = children.iter().find_map(|(_, _, press)| press.clone()).expect("another account");
         ui.menu = Some(Menu::Nav);
         let _ = ui.update(other);
         assert!(ui.menu.is_none(), "the menu closes");

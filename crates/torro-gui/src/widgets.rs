@@ -567,6 +567,18 @@ pub fn path_step<'a, M: Clone + 'a>(label: impl IntoFragment<'a>, on_press: Opti
         .into()
 }
 
+/// The last step of a path in a header, what is open (issue #264): `label` in `BODY_STRONG` with the
+/// room of a [`path_step`] at its sides, so the chevron before it stands as far from both steps; cut
+/// with "…" (the whole as tooltip) where the header leaves too little room, and taking all of it.
+pub fn path_here<'a, M: 'a>(label: impl IntoFragment<'a>) -> Element<'a, M> {
+    let line = ellipsized(typo::body_strong(), label, theme::text);
+    container(line).padding([0.0, space::xs()]).width(Length::FillPortion(PATH_PORTION)).into()
+}
+
+/// How much more of the free room of a header the last step of a path takes than the gap behind it
+/// ([`path_here`]): the step should get nearly all of it before it is cut.
+const PATH_PORTION: u16 = 1000;
+
 /// An icon button that can be switched on, 28 × 28: ghost while `on` is false, the surface of a
 /// choice (`style::button::icon_chosen`) while it is true – the filter icon on the mail search field
 /// shows an active quick filter this way. Like [`icon_button`] it needs a tooltip; `None` disables it.
@@ -1317,6 +1329,9 @@ fn sidebar_row<'a, M: Clone + 'a>(
                 (None, Some(detail)) => {
                     column![menu_label(label.into_fragment()), detail_line(detail.into_fragment())].width(Fill).into()
                 }
+                // A child (an account under "Accounts", issue #472) is cut with "…" to the row's
+                // width, never silently: the names beside the open one are long addresses.
+                (None, None) if matches!(parts.scale, Scale::Small) => menu_label(label.into_fragment()),
                 (None, None) => line_label(typo::body(), label),
                 (Some(open), _) => {
                     // The chevron follows the name instead of the row's end, so the label takes
@@ -2504,11 +2519,37 @@ pub fn menu_button<'a, M: Clone + 'a>(
     label: impl IntoFragment<'a>,
     on_press: M,
 ) -> Element<'a, M> {
+    menu_button_in(anchor, icon, label, on_press, Tone::Text)
+}
+
+/// A [`menu_button`] as a step of a path in front of what is open ("‹ [☁ Accounts ▾] › an account",
+/// issue #473): icon and label in `text_2`, so the open page after it stays the strongest step.
+pub fn path_menu_button<'a, M: Clone + 'a>(
+    anchor: &Anchor,
+    icon: Option<Icon>,
+    label: impl IntoFragment<'a>,
+    on_press: M,
+) -> Element<'a, M> {
+    menu_button_in(anchor, icon, label, on_press, Tone::Text2)
+}
+
+/// A [`menu_button`] with its icon and label in `tone`.
+fn menu_button_in<'a, M: Clone + 'a>(
+    anchor: &Anchor,
+    icon: Option<Icon>,
+    label: impl IntoFragment<'a>,
+    on_press: M,
+    tone: Tone,
+) -> Element<'a, M> {
+    let colour = match tone {
+        Tone::Text2 => theme::text_2,
+        _ => theme::text,
+    };
     let mut content = row![].spacing(ICON_GAP).align_y(Alignment::Center);
     if let Some(which) = icon {
-        content = content.push(toned(which, icon::SIZE_SM, Tone::Text));
+        content = content.push(toned(which, icon::SIZE_SM, tone));
     }
-    content = content.push(typo::text(typo::body(), label).style(theme::text).wrapping(Wrapping::None)).push(toned(
+    content = content.push(typo::text(typo::body(), label).style(colour).wrapping(Wrapping::None)).push(toned(
         Icon::ChevronDown,
         icon::SIZE_SM,
         Tone::Text3,

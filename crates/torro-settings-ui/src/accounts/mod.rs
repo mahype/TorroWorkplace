@@ -2306,27 +2306,34 @@ pub fn sub_page(state: &State, data: &dyn Seen) -> Option<(String, Message)> {
 
 /// The accounts beside the open one (issue #475), as the settings list them under the section: the
 /// AI accounts for an AI account, else the accounts of the providers this page offers, in their
-/// order. Each with its label and what opens its page, the open one without; empty while the list
-/// is shown, or when the open account is not among them (then the open one stands alone).
-pub fn siblings(state: &State, data: &dyn Seen) -> Vec<(String, Option<Message>)> {
+/// order. Each with its provider's icon (so two accounts of one address tell apart), its label and
+/// what opens its page, the open one without; empty while the list is shown, or when the open
+/// account is not among them (then the open one stands alone).
+pub fn siblings(state: &State, data: &dyn Seen) -> Vec<(Icon, String, Option<Message>)> {
     let Some(open) = selected(state, data) else { return Vec::new() };
-    let accounts: Vec<&AccountInfo> = if open.kind == AI_KIND {
-        ai_accounts(data).collect()
+    let accounts: Vec<(Icon, &AccountInfo)> = if open.kind == AI_KIND {
+        ai_accounts(data).map(|account| (Listed::Fixed(Group::Ai).icon(), account)).collect()
     } else {
         let entries: Vec<&AccountInfo> = listed(data.accounts()).collect();
         account_providers(state, &entries)
             .into_iter()
-            .flat_map(|group| entries.iter().copied().filter(move |account| group.holds(&account.kind)))
+            .flat_map(|group| {
+                entries
+                    .iter()
+                    .copied()
+                    .filter(move |account| group.holds(&account.kind))
+                    .map(move |a| (group.icon(), a))
+            })
             .collect()
     };
-    if !accounts.iter().any(|account| account.id == open.id) {
+    if !accounts.iter().any(|(_, account)| account.id == open.id) {
         return Vec::new();
     }
     accounts
         .into_iter()
-        .map(|account| {
+        .map(|(mark, account)| {
             let press = (account.id != open.id).then(|| Message::Open(account.id.clone()));
-            (account.label.clone(), press)
+            (mark, account.label.clone(), press)
         })
         .collect()
 }
@@ -5894,9 +5901,9 @@ mod tests {
             .filter(|account| Group::Nextcloud.kinds().contains(&account.kind.as_str()))
             .chain(listed(&data.accounts).filter(|account| Group::Mail.kinds().contains(&account.kind.as_str())))
             .collect();
-        let names: Vec<&str> = beside.iter().map(|(name, _)| name.as_str()).collect();
+        let names: Vec<&str> = beside.iter().map(|(_, name, _)| name.as_str()).collect();
         assert_eq!(names, offered.iter().map(|account| account.label.as_str()).collect::<Vec<_>>());
-        for ((_, press), account) in beside.iter().zip(&offered) {
+        for ((_, _, press), account) in beside.iter().zip(&offered) {
             match account.id == caldav.id {
                 true => assert_eq!(press, &None, "the open one stays"),
                 false => assert_eq!(press, &Some(Message::Open(account.id.clone()))),
@@ -5906,7 +5913,9 @@ mod tests {
         let open = State { selected: Some(ai.id.clone()), ..State::default() };
         let beside = siblings(&open, &data);
         assert_eq!(beside.len(), ai_accounts(&data).count());
-        assert!(beside.iter().any(|(name, press)| *name == ai.label && press.is_none()));
+        assert!(
+            beside.iter().any(|(mark, name, press)| *name == ai.label && press.is_none() && *mark == Icon::Sparkles)
+        );
     }
 
     /// Issue #410: an account's page says which installed apps use it, by name in alphabetical

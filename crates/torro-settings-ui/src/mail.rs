@@ -1309,12 +1309,12 @@ pub mod accounts {
     /// Every mail account beside the open one `open` (issue #475), as the list and the menu of the
     /// settings show them under "Accounts": each with its label and what opens it, the open one
     /// without.
-    fn siblings(data: &Data, open: &str) -> Vec<(String, Option<Message>)> {
+    fn siblings(data: &Data, open: &str) -> Vec<(Icon, String, Option<Message>)> {
         mail_accounts(data)
             .into_iter()
             .map(|(account, _)| {
                 let press = (account.id != open).then(|| Message::Open(account.id.clone()));
-                (account_label(data, &account.id), press)
+                (Icon::Mail, account_label(data, &account.id), press)
             })
             .collect()
     }
@@ -2362,7 +2362,7 @@ pub mod accounts {
             let mail = mail_accounts(&data);
             assert_eq!(beside.len(), 2);
             assert_eq!(beside.len(), mail.len());
-            for ((name, press), (account, _)) in beside.iter().zip(&mail) {
+            for ((_, name, press), (account, _)) in beside.iter().zip(&mail) {
                 assert_eq!(name, &account_label(&data, &account.id));
                 match account.id == "mail:anna@example.org" {
                     true => assert!(press.is_none(), "the open one stays"),
