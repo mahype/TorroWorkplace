@@ -1,35 +1,31 @@
-//! The overview of the mail window (issue #409, `docs/mail.md`, draft
+//! The overview of the mail window (issue #409, slimmed in #485, `docs/mail.md`, draft
 //! `docs/prototypes/mail-uebersicht/index.html`): what stands at the right while no mail is open – how
-//! much mail comes in, of which kind, from whom and how much of it is read, the latest mail of people
-//! and what lies in the inbox –, so the person sees where tidying up pays off.
+//! much mail comes in and of which kind, the way to the details, and what is new in the suite –, so
+//! the person sees what comes in without being buried in numbers.
 //!
 //! - **Where** (the app places it, `app.rs`): in the wide window in the reader's column while no mail
 //!   is open; in the medium window as a panel over the list and in the narrow one in place of the
 //!   list, while [`State::open`]. Mini and strip never show it.
-//! - **Asked:** `mail.overview` for the chosen span and account ([`MailSource::mail_overview`]) and
-//!   the latest mail of people ([`MailSource::latest_from_people`]). The numbers stay while another
-//!   span or account loads ("Updating…") and are asked anew once they are older than [`FRESH`].
-//! - **Blocks**, top down: the head (title, account, span, "As of", the switches), four figures
-//!   ([`figures`]), "Latest from people", "What comes in" – columns per day by main category
-//!   ([`series`], [`columns`]) or the same numbers as a table ([`day_table`]), and the categories
-//!   with their share ([`category_rows`]) –, "Who sends the most" (with "Opened x of y" and
-//!   [`rarely_opened`], "Show mails" and "Mute" on hover) and "What is in your inbox" ([`inbox_parts`],
-//!   [`by_age`] and at most one suggestion to tidy up, [`tidy`]). The page only shows: "Show them"
-//!   lists the mail, nothing is archived by itself.
-//!
-//! Names, addresses and subjects come from mail (`untrusted`) and are drawn as plain text.
+//! - **Asked:** `mail.overview` for the chosen span and account ([`MailSource::mail_overview`]). The
+//!   numbers stay while another span or account loads ("Updating…") and are asked anew once they are
+//!   older than [`FRESH`]. Span and account hold for the statistics page too (`mail_statistics.rs`),
+//!   which keeps its tab and chosen category here ([`State::tab`], [`State::category`]).
+//! - **Blocks**, top down: the head (title, account, span, "As of", the switches, [`controls`]), "What
+//!   comes in" – columns per day by main category ([`series`], [`columns`]) and the categories with
+//!   their share ([`category_rows`]) – with "Details ›" to the statistics page in the settings, and
+//!   "What's new" (`news.rs`) in every state. The figures, the senders, the inbox and the day chart's
+//!   table ([`day_table`]) are the statistics page's.
 
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
-use iced::widget::text::Wrapping;
-use iced::widget::{Space, button, column, container, pick_list, responsive, row, scrollable};
-use iced::{Alignment, Background, Element, Fill, Length, Padding, Theme, border};
-use torro_core::i18n::{Lang, lang, tr, trf};
+use iced::widget::{Space, column, container, pick_list, row, scrollable};
+use iced::{Alignment, Element, Fill, Length, Theme};
+use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, ChartColor, palette, size, space};
 use torro_gui::units::format_count;
-use torro_gui::widgets::{self, Anchor, ChartColumn, ChartSeries, PageAction, RowAction, SharePart, StatFigure};
+use torro_gui::widgets::{self, Anchor, ChartColumn, ChartSeries};
 use torro_gui::{datetime, layout, style, typo};
 use torro_ipc::StatsRange;
 use torro_ipc::inbox::CategoryInfo;
@@ -38,25 +34,16 @@ use torro_ipc::mail::{
 };
 use torro_mail::{Category, CategoryGroup, MessageSummary};
 
-use crate::app::{Message, UnsubscribeAsk};
+use crate::app::Message;
 #[cfg(doc)]
 use crate::mail::MailSource;
-use crate::{insights, list, mail};
-
-/// How many mails "Latest from people" lists.
-pub const PEOPLE: u32 = 5;
+use crate::{insights, mail, news};
 
 /// How old the numbers may grow before the overview asks for them anew when it shows.
 pub const FRESH: Duration = Duration::from_secs(60);
 
 /// How many categories "What comes in" names; the rest is "Other".
 const CATEGORIES: usize = 6;
-
-/// From how many mails a sender can be "Rarely opened".
-const RARELY_FROM: u32 = 5;
-
-/// Below this share in percent of a sender's mail opened, it is "Rarely opened".
-const RARELY_BELOW: u32 = 15;
 
 /// The spans to choose, in the order of the switch.
 pub const RANGES: [StatsRange; 3] = insights::RANGES;
@@ -82,11 +69,37 @@ pub struct Loaded {
     pub result: Result<MailOverview, String>,
 }
 
-/// The latest mail of people as it came: for which account (or every one), and the mail or the error.
-pub type People = (Option<String>, Result<Vec<MessageSummary>, String>);
+/// The tabs of the statistics page (issue #485), in their order.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Tab {
+    /// The four figures and the day chart with its table.
+    #[default]
+    Overview,
+    /// Who sends the most.
+    Senders,
+    /// What lies in the inbox.
+    Inbox,
+    /// Each category over the span.
+    Categories,
+}
+
+impl Tab {
+    pub const ALL: [Tab; 4] = [Tab::Overview, Tab::Senders, Tab::Inbox, Tab::Categories];
+
+    /// The tab's word.
+    pub fn label(self) -> &'static str {
+        match self {
+            Tab::Overview => tr("Overview"),
+            Tab::Senders => tr("Senders"),
+            // "Posteingang" in German: the window's "Eingang" would read like the hub.
+            Tab::Inbox => trc("statistics", "Inbox"),
+            Tab::Categories => tr("Categories"),
+        }
+    }
+}
 
 /// The overview's window state: whether it is open where it has to be opened (medium, narrow), what
-/// is chosen, and the answers.
+/// is chosen – for the statistics page too –, and the answers.
 #[derive(Debug, Clone)]
 pub struct State {
     /// Shown in the medium and the narrow window ("Overview" in the path or the sidebar); the wide
@@ -95,12 +108,15 @@ pub struct State {
     pub range: StatsRange,
     /// One account (`mail:<address>`), or `None` for every one.
     pub account: Option<String>,
-    /// "Table": the day chart's numbers as a table.
+    /// "Table" of the statistics page: the day chart's numbers as a table.
     pub table: bool,
+    /// The tab of the statistics page.
+    pub tab: Tab,
+    /// The category the tab "Categories" charts: `None` for the one with the most mail,
+    /// `Some(None)` for the mail not sorted yet.
+    pub category: Option<Option<Category>>,
     /// The last answer; it stays while another span or account loads.
     pub data: Option<Loaded>,
-    /// The latest mail of people, for the account it was asked for.
-    pub people: Option<People>,
     /// What is on its way: an answer for anything else is dropped.
     pub asked: Option<Key>,
     /// The sender (its address) whose "Mute" menu is open: its row keeps its bar, so the menu hangs
@@ -108,7 +124,8 @@ pub struct State {
     pub muting: Option<String>,
     /// "Refresh" asked for the numbers anew, however fresh they are.
     pub stale: bool,
-    /// The overview showed at the last look: coming into view again checks the age of its numbers.
+    /// The overview or the statistics page showed at the last look: coming into view again checks the
+    /// age of the numbers.
     pub showing: bool,
 }
 
@@ -119,8 +136,9 @@ impl Default for State {
             range: StatsRange::Month,
             account: None,
             table: false,
+            tab: Tab::Overview,
+            category: None,
             data: None,
-            people: None,
             asked: None,
             muting: None,
             stale: false,
@@ -185,14 +203,6 @@ impl State {
     pub fn sender(&self, address: &str) -> Option<&OverviewSender> {
         self.overview()?.senders.iter().find(|sender| sender.address == address)
     }
-
-    /// The latest mail of people for the account chosen, if it came.
-    pub fn people(&self) -> Option<&[MessageSummary]> {
-        match &self.people {
-            Some((account, Ok(people))) if *account == self.account => Some(people),
-            _ => None,
-        }
-    }
 }
 
 /// One choice of the account menu: every account, or one.
@@ -226,7 +236,7 @@ pub fn range_name(range: StatsRange) -> &'static str {
 }
 
 /// The span in the head's line: "Last 30 days".
-fn range_words(range: StatsRange) -> &'static str {
+pub(crate) fn range_words(range: StatsRange) -> &'static str {
     match range {
         StatsRange::Week => tr("Last 7 days"),
         StatsRange::Month => tr("Last 30 days"),
@@ -243,54 +253,12 @@ pub fn came_in(overview: &MailOverview) -> u32 {
     overview.categories.iter().map(|category| category.count).sum()
 }
 
-/// How much of what came in is of `categories`.
-fn of_categories(overview: &MailOverview, categories: &[Category]) -> u32 {
-    overview
-        .categories
-        .iter()
-        .filter(|held| held.category.is_some_and(|category| categories.contains(&category)))
-        .map(|held| held.count)
-        .sum()
-}
-
-/// What newsletters and ads are: the categories the suggestion to tidy up and the fourth figure
-/// count.
-pub const NEWSLETTERS_AND_ADS: [Category; 2] = [Category::Newsletter, Category::Promotion];
-
 /// The mail in the inbox by age: today, the six days before, older.
 pub fn by_age(overview: &MailOverview) -> (u32, u32, u32) {
     overview
         .inbox
         .iter()
         .fold((0, 0, 0), |(today, week, older), held| (today + held.today, week + held.week, older + held.older))
-}
-
-/// The four figures: what lies in the inbox (with what is older than a week), what came in (with
-/// about how much a day), how much of it came from people ("Personal") and the share of newsletters
-/// and ads.
-pub fn figures(overview: &MailOverview) -> [StatFigure; 4] {
-    let (today, week, older) = by_age(overview);
-    let inbox = today + week + older;
-    let came = came_in(overview);
-    let days = u32::try_from(overview.days.len()).unwrap_or(1).max(1);
-    let per_day = (f64::from(came) / f64::from(days)).round() as u32;
-    let people = of_categories(overview, &[Category::Personal]);
-    let ads = of_categories(overview, &NEWSLETTERS_AND_ADS);
-    let count = |n: u32| format_count(u64::from(n));
-    [
-        StatFigure::new(tr("In your inbox"), count(inbox), trf("{n} older than a week", &[("n", &count(older))])),
-        StatFigure::new(tr("Came in"), count(came), trf("about {n} a day", &[("n", &count(per_day))])),
-        StatFigure::new(
-            tr("From people"),
-            count(people),
-            trf("{share} of what came in", &[("share", &insights::percent(people, came))]),
-        ),
-        StatFigure::new(
-            tr("Newsletters and ads"),
-            insights::percent(ads, came),
-            trf("{n} of {total} mails", &[("n", &count(ads)), ("total", &count(came))]),
-        ),
-    ]
 }
 
 /// The colour slot of the main category `group` in the charts ([`GROUPS`]).
@@ -302,7 +270,7 @@ pub fn slot(group: Option<CategoryGroup>) -> ChartColor {
 }
 
 /// What a person reads for the main category `group`: the catalogue's name, else the suite's.
-fn group_name(catalogue: &[CategoryInfo], group: CategoryGroup) -> String {
+pub(crate) fn group_name(catalogue: &[CategoryInfo], group: CategoryGroup) -> String {
     catalogue
         .iter()
         .find(|held| held.group == group)
@@ -328,8 +296,13 @@ pub fn series(overview: &MailOverview, catalogue: &[CategoryInfo]) -> Vec<ChartS
     series
 }
 
+/// The main category with the colour slot `at` ([`GROUPS`]); `None` past the four.
+pub(crate) fn group_at(at: usize) -> Option<CategoryGroup> {
+    GROUPS.get(at).copied()
+}
+
 /// Where a colour slot sums up in [`series`]: the four series, then "Other".
-fn slot_index(color: ChartColor) -> usize {
+pub(crate) fn slot_index(color: ChartColor) -> usize {
     match color {
         ChartColor::Series(at) => at.min(3),
         ChartColor::Other => 4,
@@ -371,7 +344,7 @@ pub fn buckets(overview: &MailOverview, range: StatsRange, series: &[ChartSeries
 }
 
 /// A bucket's name in its tooltip and table row: the day ("Tue, 13 Oct"), or the days of a week.
-fn bucket_title(bucket: &Bucket, today: NaiveDate) -> String {
+pub(crate) fn bucket_title(bucket: &Bucket, today: NaiveDate) -> String {
     if bucket.from == bucket.until {
         datetime::format_short_date(bucket.until, today)
     } else {
@@ -384,7 +357,7 @@ fn bucket_title(bucket: &Bucket, today: NaiveDate) -> String {
 
 /// The label under a bucket's column: the weekday for 7 days, the day of the month for 30, the first
 /// day for a week of 90.
-fn bucket_label(bucket: &Bucket, range: StatsRange) -> String {
+pub(crate) fn bucket_label(bucket: &Bucket, range: StatsRange) -> String {
     match range {
         StatsRange::Week => datetime::weekday_name(bucket.until, true).to_owned(),
         StatsRange::Month => bucket.until.day().to_string(),
@@ -488,54 +461,6 @@ pub fn category_rows(overview: &MailOverview, catalogue: &[CategoryInfo]) -> Vec
     rows
 }
 
-/// A sender is "Rarely opened" with at least [`RARELY_FROM`] mails of which less than
-/// [`RARELY_BELOW`] percent were opened.
-pub fn rarely_opened(count: u32, opened: u32) -> bool {
-    count >= RARELY_FROM && u64::from(opened) * 100 < u64::from(count) * u64::from(RARELY_BELOW)
-}
-
-/// How many mails `count` over `days` days are a week, with one decimal in the language's way:
-/// "7.5 a week", German "7,5 pro Woche".
-pub fn per_week(count: u32, days: usize) -> String {
-    let days = days.max(1) as f64;
-    let digits = format!("{:.1}", f64::from(count) * 7.0 / days);
-    let digits = if lang() == Lang::De { digits.replace('.', ",") } else { digits };
-    trf("{n} a week", &[("n", &digits)])
-}
-
-/// What lies in the inbox, as parts of a strip: the four main categories with a colour of their own
-/// and "Other", each only with mail.
-pub fn inbox_parts(overview: &MailOverview, catalogue: &[CategoryInfo]) -> Vec<SharePart> {
-    let mut sums = [0u64; 5];
-    for held in &overview.inbox {
-        sums[slot_index(slot(held.group))] += u64::from(held.today + held.week + held.older);
-    }
-    let mut parts: Vec<SharePart> = GROUPS
-        .iter()
-        .enumerate()
-        .filter(|(at, _)| sums[*at] > 0)
-        .map(|(at, group)| {
-            SharePart::new(group_name(catalogue, *group), sums[at], format_count(sums[at]), ChartColor::Series(at))
-        })
-        .collect();
-    if sums[4] > 0 {
-        parts.push(SharePart::new(tr("Other"), sums[4], format_count(sums[4]), ChartColor::Other));
-    }
-    parts
-}
-
-/// The one suggestion to tidy up: how many newsletters and ads in the inbox are older than a week;
-/// `None` when none are.
-pub fn tidy(overview: &MailOverview) -> Option<u32> {
-    let older: u32 = overview
-        .inbox
-        .iter()
-        .filter(|held| held.category.is_some_and(|category| NEWSLETTERS_AND_ADS.contains(&category)))
-        .map(|held| held.older)
-        .sum();
-    (older > 0).then_some(older)
-}
-
 /// Nothing came over the span and the inbox is empty: the empty state stands under the head.
 pub fn is_empty(overview: &MailOverview) -> bool {
     let (today, week, older) = by_age(overview);
@@ -558,7 +483,7 @@ pub enum Place {
     Narrow,
 }
 
-/// What the page needs from the window.
+/// What the page – and the statistics page – needs from the window.
 pub struct OverviewData<'a> {
     pub state: &'a State,
     /// The catalogue of categories, for their names, icons and groups.
@@ -566,43 +491,61 @@ pub struct OverviewData<'a> {
     /// The mail accounts: id and name, for the account menu.
     pub accounts: Vec<(String, String)>,
     pub now: DateTime<Utc>,
+    /// Where it stands; the statistics page takes [`Place::Narrow`] in the narrow window.
     pub place: Place,
     /// Where the menu of "Mute" hangs: at the button of the sender in [`State::muting`].
     pub mute_at: Anchor,
+    /// The suite's announcements, for "What's new".
+    pub news: &'a news::State,
 }
 
-/// The overview: its head, then loading, the error with "Retry", the empty span, or the blocks, at
-/// most a reading width wide and scrolling. While another span or account loads the numbers stay
-/// with "Updating…" over them.
+/// How the numbers of a [`State`] stand.
+pub(crate) enum Numbers<'a> {
+    /// None yet, or an error while another span or account loads.
+    Loading,
+    /// They could not be counted: the error with "Retry".
+    Failed,
+    /// Counted; `updating` while another span's or account's are on their way.
+    Ready { overview: &'a MailOverview, updating: bool },
+}
+
+/// How the numbers of `state` stand now.
+pub(crate) fn numbers(state: &State) -> Numbers<'_> {
+    match &state.data {
+        None => Numbers::Loading,
+        Some(Loaded { result: Err(_), .. }) if state.updating() => Numbers::Loading,
+        Some(Loaded { result: Err(_), .. }) => Numbers::Failed,
+        Some(Loaded { result: Ok(overview), .. }) => Numbers::Ready { overview, updating: state.updating() },
+    }
+}
+
+/// The overview: its head, then loading, the error with "Retry", the empty span, or "What comes in",
+/// and "What's new" under it in every state (`news::block`, left out without announcements), at most
+/// a reading width wide and scrolling. While another span or account loads the numbers stay with
+/// "Updating…" over them.
 pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
     let state = data.state;
     let mut blocks: Vec<Element<'_, Message>> = vec![head(&data)];
-    match &state.data {
-        None => blocks.push(widgets::loading()),
-        Some(Loaded { result: Err(_), .. }) if state.updating() => blocks.push(widgets::loading()),
-        Some(Loaded { result: Err(_), .. }) => {
+    match numbers(state) {
+        Numbers::Loading => blocks.push(widgets::loading()),
+        Numbers::Failed => {
             blocks.push(widgets::error_state(tr("Couldn't load the overview."), Message::MailOverviewRetry));
         }
-        Some(Loaded { result: Ok(overview), .. }) => {
-            if state.updating() {
+        Numbers::Ready { overview, updating } => {
+            if updating {
                 blocks.push(widgets::refresh_note(tr("Updating…")));
             }
             if is_empty(overview) {
                 blocks.push(widgets::empty_state(
                     tr("No mail in this span."),
-                    tr("What comes in, who sends it and what you open shows up here."),
+                    tr("What comes in and of which kind shows up here."),
                 ));
             } else {
-                blocks.push(widgets::stat_grid(figures(overview).into()));
-                if let Some(people) = people_card(&data) {
-                    blocks.push(people);
-                }
-                blocks.push(comes_in_card(overview, state, data.catalogue));
-                blocks.push(senders_card(overview, state, data.catalogue, &data.mute_at));
-                blocks.push(inbox_card(overview, data.catalogue));
+                blocks.push(comes_in_card(overview, state.range, data.catalogue));
             }
         }
     }
+    blocks.extend(news::block(data.news));
     let content = column(blocks).spacing(layout::section_gap()).width(Fill).max_width(size::content_max());
     match data.place {
         // The panel scrolls its body itself; inset, the blocks line up with its title.
@@ -620,9 +563,23 @@ pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
 }
 
 /// The head: "Overview" (not in the panel or the narrow window, whose title and header say it), the
-/// line of account, span and "As of", and the switches – beside the title in the wide window, under
-/// the line elsewhere.
+/// line of account, span and "As of" ([`head_line`]), and the switches ([`controls`]) – beside the
+/// title in the wide window, under the line elsewhere.
 fn head<'a>(data: &OverviewData<'a>) -> Element<'a, Message> {
+    let meta = typo::text(typo::meta(), head_line(data)).style(theme::text_3);
+    let controls = controls(data.state, &data.accounts);
+    match data.place {
+        Place::Page => {
+            let words = column![typo::text(typo::title(), tr("Overview")), meta].spacing(space::xs());
+            row![container(words).width(Fill), controls].spacing(space::m()).align_y(Alignment::Center).into()
+        }
+        // The panel's title and the narrow header say "Overview" already.
+        Place::Panel | Place::Narrow => column![meta, controls].spacing(space::s()).into(),
+    }
+}
+
+/// The line under the title: the account, the span and when the numbers were counted.
+pub(crate) fn head_line(data: &OverviewData<'_>) -> String {
     let state = data.state;
     let choices = account_choices(&data.accounts);
     let account_label = choices
@@ -633,7 +590,13 @@ fn head<'a>(data: &OverviewData<'a>) -> Element<'a, Message> {
     if let Some(overview) = state.overview() {
         line.push(trf("As of {time}", &[("time", &datetime::format_moment(overview.as_of, data.now))]));
     }
-    let meta = typo::text(typo::meta(), line.join(" · ")).style(theme::text_3);
+    line.join(" · ")
+}
+
+/// The switches of span ("7 days | 30 days | 90 days") and account, one choice for the overview and
+/// the statistics page (decision 2 of #485); they wrap when the room is narrow.
+pub fn controls<'a>(state: &State, accounts: &[(String, String)]) -> Element<'a, Message> {
+    let choices = account_choices(accounts);
     let chosen = RANGES.iter().position(|range| *range == state.range).unwrap_or_default();
     let ranges = widgets::segmented(RANGES.map(|range| (range_name(range), Message::MailOverviewRange(range))), chosen);
     let selected = choices.iter().find(|choice| choice.account == state.account).cloned();
@@ -645,106 +608,56 @@ fn head<'a>(data: &OverviewData<'a>) -> Element<'a, Message> {
         .style(style::pick_list)
         .menu_style(style::pick_list_menu)
         .into();
-    let controls = row![ranges, accounts].spacing(space::s()).align_y(Alignment::Center);
-    match data.place {
-        Place::Page => {
-            let words = column![typo::text(typo::title(), tr("Overview")), meta].spacing(space::xs());
-            row![container(words).width(Fill), controls].spacing(space::m()).align_y(Alignment::Center).into()
-        }
-        // The panel's title and the narrow header say "Overview" already.
-        Place::Panel | Place::Narrow => column![meta, controls.wrap()].spacing(space::s()).into(),
-    }
+    row![ranges, accounts].spacing(space::s()).align_y(Alignment::Center).wrap().into()
 }
 
-/// "Latest from people": the newest mails of "Personal", unread ones with a dot, a click opens one,
-/// "Show all" the category. Left out while none came or the search failed.
-fn people_card<'a>(data: &OverviewData<'a>) -> Option<Element<'a, Message>> {
-    let people = data.state.people().filter(|people| !people.is_empty())?;
-    let unread = people.iter().filter(|mail| !mail.flags.contains(&torro_mail::Flag::Seen)).count();
-    let note = if unread > 0 { trf("{n} unread", &[("n", &unread)]) } else { String::new() };
-    let more = widgets::text_button(
-        Some(Icon::ChevronRight),
-        tr("Show all"),
-        style::button::ghost,
-        Some(Message::MailOverviewAllPeople),
-    );
-    let lines = column(people.iter().map(|mail| person_line(mail, data.now))).spacing(space::xs());
-    let body = column![lines, container(more).width(Fill).align_right(Fill)].spacing(space::s());
-    Some(widgets::chart_card(tr("Latest from people"), note, body))
+/// The note of the day chart: what a column is.
+pub(crate) fn chart_note(range: StatsRange) -> &'static str {
+    if range == StatsRange::Quarter { tr("per week, by main category") } else { tr("per day, by main category") }
 }
 
-/// One mail of a person: avatar, name with the dot of unread mail, the subject, the time; a click
-/// opens it.
-fn person_line<'a>(mail: &MessageSummary, now: DateTime<Utc>) -> Element<'a, Message> {
-    let name = mail::sender_name(mail.from.as_ref());
-    let unread = !mail.flags.contains(&torro_mail::Flag::Seen);
-    let mut who = row![].spacing(space::s()).align_y(Alignment::Center);
-    if unread {
-        who = who.push(unread_mark());
-    }
-    let who = who.push(widgets::ellipsized(typo::body_strong(), name.clone(), theme::text));
-    let words = column![who, widgets::ellipsized(typo::meta(), list::one_line(&mail.subject), theme::text_3)];
-    let time =
-        typo::text(typo::meta().tabular(), list::stamp(mail.date, now)).style(theme::text_3).wrapping(Wrapping::None);
-    let line = row![list::avatar(&name, None, size::tile()), container(words).width(Fill), time]
-        .spacing(space::m())
-        .align_y(Alignment::Center);
-    button(line)
-        .width(Fill)
-        .padding([space::xs(), space::s()])
-        .style(style::button::ghost)
-        .on_press(Message::MailOverviewPerson(mail.id.clone()))
-        .into()
-}
-
-/// The dot of unread mail, as the rows of the list have it.
-fn unread_mark<'a>() -> Element<'a, Message> {
-    container(Space::new().width(space::s()).height(space::s()))
-        .style(|t: &Theme| iced::widget::container::Style {
-            background: Some(Background::Color(palette(t).unread)),
-            border: border::rounded(space::s() / 2.0),
-            ..iced::widget::container::Style::default()
-        })
-        .into()
-}
-
-/// "What comes in": the columns per day by main category (or their table) and the categories with
-/// their share.
-fn comes_in_card<'a>(overview: &MailOverview, state: &State, catalogue: &[CategoryInfo]) -> Element<'a, Message> {
+/// The day chart: the legend from two series on, the columns per day (per week of 90 days) by main
+/// category. `switch` stands at the legend's right (the statistics page's "Table").
+pub(crate) fn day_chart<'a>(
+    overview: &MailOverview,
+    range: StatsRange,
+    catalogue: &[CategoryInfo],
+    switch: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
     let series = series(overview, catalogue);
-    let note = if state.range == StatsRange::Quarter {
-        tr("per week, by main category")
-    } else {
-        tr("per day, by main category")
-    };
-    let table = widgets::choice_chip(
-        tr("Table"),
-        Some(widgets::Mark::Icon(Icon::Table)),
-        state.table,
-        Some(Message::MailOverviewTable(!state.table)),
-    );
-    let mut body = column![].spacing(space::l());
-    if state.table {
-        let (head, rows, total) = day_table(overview, state.range, &series);
-        body = body.push(container(table).width(Fill).align_right(Fill));
-        body = body.push(widgets::data_table(head, rows, Some(total)));
-    } else {
-        let columns = columns(overview, state.range, &series);
-        // The legend from two series on, the switch to the table at its right.
-        let legend: Element<'a, Message> =
-            if series.len() > 1 { widgets::chart_legend(&series) } else { Space::new().into() };
-        let top = row![container(legend).width(Fill), table].spacing(space::m()).align_y(Alignment::Center);
-        body = body.push(column![top, widgets::column_chart(series, columns)].spacing(space::m()));
+    let columns = columns(overview, range, &series);
+    let legend: Element<'a, Message> =
+        if series.len() > 1 { widgets::chart_legend(&series) } else { Space::new().into() };
+    let mut top = row![container(legend).width(Fill)].spacing(space::m()).align_y(Alignment::Center);
+    if let Some(switch) = switch {
+        top = top.push(switch);
     }
+    column![top, widgets::column_chart(series, columns)].spacing(space::m()).into()
+}
+
+/// "What comes in": the columns per day by main category, the categories with their share and
+/// "Details ›" at the right under them, to the statistics page (issue #485).
+fn comes_in_card<'a>(overview: &MailOverview, range: StatsRange, catalogue: &[CategoryInfo]) -> Element<'a, Message> {
     let rows = category_rows(overview, catalogue);
     let largest = rows.iter().map(|row| row.count).max().unwrap_or(0);
-    body = body.push(column(rows.into_iter().map(|row| category_line(row, largest))).spacing(space::xs()));
-    widgets::chart_card(tr("What comes in"), note, body)
+    let details = widgets::text_button(
+        Some(Icon::ChevronRight),
+        tr("Details"),
+        style::button::ghost,
+        Some(Message::ShowMailStatistics),
+    );
+    let body = column![
+        day_chart(overview, range, catalogue, None),
+        column(rows.into_iter().map(|row| category_line(row, largest))).spacing(space::xs()),
+        container(details).width(Fill).align_right(Fill),
+    ]
+    .spacing(space::l());
+    widgets::chart_card(tr("What comes in"), chart_note(range), body)
 }
 
-/// A category's line: its mark and name, a bar against the largest, the count and the share.
-fn category_line<'a>(row_: CategoryRow, largest: u32) -> Element<'a, Message> {
-    let mark: Element<'a, Message> = match row_.mark {
+/// The mark of a category: its icon in its group's colour; room of the same width for "Other".
+pub(crate) fn category_mark<'a>(mark: Option<(Icon, usize)>) -> Element<'a, Message> {
+    match mark {
         Some((symbol, colour)) => icon::icon(symbol, icon::SIZE_SM)
             .style(move |t: &Theme, _| {
                 let p = palette(t);
@@ -752,8 +665,12 @@ fn category_line<'a>(row_: CategoryRow, largest: u32) -> Element<'a, Message> {
             })
             .into(),
         None => Space::new().width(icon::SIZE_SM).into(),
-    };
-    let name = row![mark, widgets::ellipsized(typo::body(), row_.label, theme::text)]
+    }
+}
+
+/// A category's line: its mark and name, a bar against the largest, the count and the share.
+fn category_line<'a>(row_: CategoryRow, largest: u32) -> Element<'a, Message> {
+    let name = row![category_mark(row_.mark), widgets::ellipsized(typo::body(), row_.label, theme::text)]
         .spacing(space::s())
         .align_y(Alignment::Center);
     row![
@@ -769,176 +686,6 @@ fn category_line<'a>(row_: CategoryRow, largest: u32) -> Element<'a, Message> {
     .spacing(space::m())
     .align_y(Alignment::Center)
     .into()
-}
-
-/// "Who sends the most": a line per sender with how much it sends, how much of it is opened and –
-/// on hover – "Show mails" and "Mute". Below a form's width the column of what is opened goes, and
-/// the category stands without the address.
-fn senders_card<'a>(
-    overview: &MailOverview,
-    state: &State,
-    catalogue: &[CategoryInfo],
-    mute_at: &Anchor,
-) -> Element<'a, Message> {
-    let senders = overview.senders.clone();
-    let catalogue = catalogue.to_vec();
-    let days = overview.days.len();
-    let muting = state.muting.clone();
-    let mute_at = mute_at.clone();
-    let body: Element<'a, Message> = if senders.is_empty() {
-        typo::text(typo::body(), tr("No sender stands out yet.")).style(theme::text_2).into()
-    } else {
-        responsive(move |room| {
-            let wide = room.width >= size::form_max();
-            // Words or icons once for the whole card, by the widest bar a row can have, so the bars do
-            // not switch between rows; measured at the row's real width (the panel's is 400).
-            let words = widgets::row_actions_words(&widest_actions(), room.width);
-            let lines = senders.iter().map(|sender| {
-                let muting = muting.as_deref() == Some(sender.address.as_str());
-                sender_line(sender, &catalogue, days, (wide, words), muting, &mute_at)
-            });
-            column(lines).spacing(space::xs()).into()
-        })
-        .height(Length::Shrink)
-        .into()
-    };
-    widgets::chart_card(tr("Who sends the most"), tr("and how much of it you open"), body)
-}
-
-/// One sender: avatar, name, address and usual category; "Opened x of y" with its bar and "Rarely
-/// opened" (wide only); how many and how many a week; on hover the bar with "Show mails",
-/// "Unsubscribe…" (issue #416, only for a sender with a mail that offers it) and "Mute", with words
-/// as the card decided (`words`).
-fn sender_line<'a>(
-    sender: &OverviewSender,
-    catalogue: &[CategoryInfo],
-    days: usize,
-    (wide, words): (bool, bool),
-    muting: bool,
-    mute_at: &Anchor,
-) -> Element<'a, Message> {
-    let name = sender
-        .name
-        .as_deref()
-        .map(list::one_line)
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| list::one_line(&sender.address));
-    let category = sender.category.map(|category| mail::category_look(catalogue, category).0);
-    let detail = match (wide, category) {
-        (true, Some(category)) => format!("{} · {category}", list::one_line(&sender.address)),
-        (true, None) => list::one_line(&sender.address),
-        (false, Some(category)) => category,
-        (false, None) => list::one_line(&sender.address),
-    };
-    let who = column![
-        widgets::ellipsized(typo::body_strong(), name.clone(), theme::text),
-        widgets::ellipsized(typo::meta(), detail, theme::text_3),
-    ];
-    let mut line = row![list::avatar(&name, None, size::tile()), container(who).width(Length::FillPortion(3))]
-        .spacing(space::m())
-        .align_y(Alignment::Center);
-    if wide {
-        let opened = trf(
-            "Opened {n} of {total}",
-            &[("n", &format_count(u64::from(sender.opened))), ("total", &format_count(u64::from(sender.count)))],
-        );
-        let mut read = column![
-            typo::text(typo::meta().tabular(), opened).style(theme::text_2).wrapping(Wrapping::None),
-            widgets::share_bar(sender.opened, sender.count),
-        ]
-        .spacing(space::xs());
-        if rarely_opened(sender.count, sender.opened) {
-            let rare = row![
-                icon::icon(Icon::EyeOff, icon::SIZE_SM)
-                    .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) }),
-                typo::text(typo::meta(), tr("Rarely opened")).style(theme::text_3).wrapping(Wrapping::None),
-            ]
-            .spacing(space::xs())
-            .align_y(Alignment::Center);
-            read = read.push(rare);
-        }
-        line = line.push(container(read).width(Length::FillPortion(2)));
-    }
-    let number = column![
-        typo::text(typo::body_strong().tabular(), format_count(u64::from(sender.count))),
-        typo::text(typo::meta(), per_week(sender.count, days)).style(theme::text_3).wrapping(Wrapping::None),
-    ]
-    .align_x(Alignment::End);
-    line = line.push(number);
-    let row_ = container(line).width(Fill).padding(Padding::new(space::xs()).left(space::s()).right(space::s()));
-    let actions = sender_actions(&sender.address, sender.unsubscribe.as_ref(), &name, muting, mute_at);
-    widgets::row_actions(row_, actions, muting, words)
-}
-
-/// The bar of a sender's row: "Show mails", "Unsubscribe…" (issue #416, only with a mail to
-/// unsubscribe by, asked about under the sender's `name`) and "Mute", whose menu hangs at its button
-/// while `muting`.
-fn sender_actions<'a>(
-    address: &str,
-    unsubscribe: Option<&UnsubscribeTarget>,
-    name: &str,
-    muting: bool,
-    mute_at: &Anchor,
-) -> Vec<RowAction<'a, Message>> {
-    let mute = RowAction::new(Icon::BellOff, tr("Mute"), "", Message::MailOverviewMute(address.to_owned()));
-    let mut actions =
-        vec![RowAction::new(Icon::Search, tr("Show mails"), "", Message::MailOverviewSender(address.to_owned()))];
-    if let Some(target) = unsubscribe {
-        let ask = UnsubscribeAsk {
-            account: target.account.clone(),
-            id: target.id.clone(),
-            sender: name.to_owned(),
-            address: address.to_owned(),
-        };
-        actions.push(RowAction::new(Icon::MailX, tr("Unsubscribe…"), "", Message::AskUnsubscribe(ask)));
-    }
-    actions.push(if muting { mute.at(mute_at) } else { mute });
-    actions
-}
-
-/// The widest bar a sender's row can have: with "Unsubscribe…", for [`widgets::row_actions_words`].
-fn widest_actions<'a>() -> Vec<RowAction<'a, Message>> {
-    let target = UnsubscribeTarget { account: String::new(), id: String::new() };
-    sender_actions("", Some(&target), "", false, &Anchor::new())
-}
-
-/// "What is in your inbox": the inbox by main category as a strip, by age, and at most one
-/// suggestion to tidy up, which only lists the mail.
-fn inbox_card<'a>(overview: &MailOverview, catalogue: &[CategoryInfo]) -> Element<'a, Message> {
-    let (today, week, older) = by_age(overview);
-    let total = today + week + older;
-    let mut body = column![].spacing(space::m());
-    if total == 0 {
-        body = body.push(typo::text(typo::body(), tr("Your inbox is empty.")).style(theme::text_2));
-    } else {
-        body = body.push(widgets::share_strip(inbox_parts(overview, catalogue), None));
-        let age = |label: &'static str, n: u32| {
-            row![
-                typo::text(typo::meta(), label).style(theme::text_3),
-                typo::text(typo::meta().tabular(), format_count(u64::from(n))).style(theme::text),
-            ]
-            .spacing(space::xs())
-            .align_y(Alignment::Center)
-        };
-        let ages = row![
-            typo::text(typo::meta(), tr("By age")).style(theme::text_3),
-            age(tr("Today"), today),
-            age(tr("This week"), week),
-            age(tr("Older"), older),
-        ]
-        .spacing(space::l())
-        .align_y(Alignment::Center)
-        .wrap();
-        body = body.push(ages);
-    }
-    if let Some(old) = tidy(overview) {
-        let title = trf("{n} newsletters and ads are older than a week", &[("n", &format_count(u64::from(old)))]);
-        let show = PageAction::new(tr("Show them"), Some(Message::MailOverviewTidy));
-        body =
-            body.push(widgets::question_card(Icon::Archive, title, tr("Nothing is archived by itself."), vec![show]));
-    }
-    let note = trf("{n} mails", &[("n", &format_count(u64::from(total)))]);
-    widgets::chart_card(tr("What is in your inbox"), note, body)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -989,11 +736,15 @@ pub fn demo(today: NaiveDate, range: StatsRange, one: bool, inbox: &[MessageSumm
         .iter()
         .map(|(category, share, opened)| {
             let count = came * share / 1000;
+            // Per day the category's share of that day (issue #485), so its chart follows the week.
+            let per_day =
+                days.iter().map(|day| day.groups.iter().map(|counted| counted.count).sum::<u32>() * share / 1000);
             OverviewCategory {
                 category: *category,
                 group: category.and_then(Category::default_group),
                 count,
                 opened: count * opened / 1000,
+                days: per_day.collect(),
             }
         })
         .collect();
@@ -1074,15 +825,16 @@ pub fn from_query(address: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use torro_mail::{MailAddress, MailCategory};
 
-    fn day(n: u32) -> NaiveDate {
+    pub(crate) fn day(n: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, n).expect("a day")
     }
 
-    fn overview() -> MailOverview {
+    /// A week of made-up numbers, also for the statistics page's tests.
+    pub(crate) fn overview() -> MailOverview {
         let counted = |group, count| OverviewGroupCount { group, count };
         MailOverview {
             from: day(24),
@@ -1104,20 +856,23 @@ mod tests {
                     group: Some(CategoryGroup::Info),
                     count: 50,
                     opened: 5,
+                    days: vec![5, 5, 10, 5, 5, 10, 10],
                 },
                 OverviewCategory {
                     category: Some(Category::Promotion),
                     group: Some(CategoryGroup::Info),
                     count: 20,
                     opened: 0,
+                    days: Vec::new(),
                 },
                 OverviewCategory {
                     category: Some(Category::Personal),
                     group: Some(CategoryGroup::WaitingForMe),
                     count: 14,
                     opened: 14,
+                    days: vec![2; 7],
                 },
-                OverviewCategory { category: None, group: None, count: 7, opened: 1 },
+                OverviewCategory { category: None, group: None, count: 7, opened: 1, days: vec![1; 7] },
             ],
             senders: Vec::new(),
             inbox: vec![
@@ -1137,46 +892,6 @@ mod tests {
                 },
             ],
         }
-    }
-
-    #[test]
-    fn the_figures_count_the_inbox_what_came_people_and_ads() {
-        let [inbox, came, people, ads] = figures(&overview());
-        assert_eq!((inbox.label.as_str(), inbox.value.as_str()), (tr("In your inbox"), "17"));
-        assert_eq!(inbox.note, trf("{n} older than a week", &[("n", &"10")]));
-        assert_eq!(came.value, "91");
-        assert_eq!(came.note, trf("about {n} a day", &[("n", &"13")]));
-        assert_eq!(people.value, "14");
-        assert_eq!(people.note, trf("{share} of what came in", &[("share", &insights::percent(14, 91))]));
-        assert_eq!(ads.value, insights::percent(70, 91));
-        assert_eq!(ads.note, trf("{n} of {total} mails", &[("n", &"70"), ("total", &"91")]));
-    }
-
-    /// Issue #416: a sender's bar offers "Unsubscribe" between "Show mails" and "Mute" only with a
-    /// mail to unsubscribe by, which it asks about under the sender's name; the demo's newsletters
-    /// have one, people do not.
-    #[test]
-    fn unsubscribe_stands_only_for_a_sender_with_a_mail_to_unsubscribe_by() {
-        let today = day(30);
-        let source = torro_inbox::demo::DemoSource::new(chrono::Utc::now());
-        let inbox = source.by_role(torro_mail::Role::Inbox, None, None, torro_mail::Order::NewestFirst);
-        let demo = demo(today, StatsRange::Month, false, &inbox);
-        let words = |sender: &OverviewSender| {
-            sender_actions(&sender.address, sender.unsubscribe.as_ref(), "Shop", false, &Anchor::new())
-                .iter()
-                .map(|action| action.label.to_string())
-                .collect::<Vec<_>>()
-        };
-        let with = demo.senders.iter().find(|sender| sender.unsubscribe.is_some()).expect("a newsletter");
-        assert_eq!(words(with), [tr("Show mails"), tr("Unsubscribe…"), tr("Mute")]);
-        assert_eq!(widest_actions().len(), 3, "the card measures its bars with Unsubscribe…");
-        let actions = sender_actions(&with.address, with.unsubscribe.as_ref(), "Shop", false, &Anchor::new());
-        let Message::AskUnsubscribe(ask) = &actions[1].on_press else { panic!("it asks") };
-        let target = with.unsubscribe.clone().expect("a target");
-        assert_eq!((&ask.account, &ask.id, ask.sender.as_str()), (&target.account, &target.id, "Shop"));
-        assert_eq!(ask.address, with.address);
-        let without = demo.senders.iter().find(|sender| sender.unsubscribe.is_none()).expect("a person");
-        assert_eq!(words(without), [tr("Show mails"), tr("Mute")]);
     }
 
     #[test]
@@ -1227,6 +942,7 @@ mod tests {
                 group: category.default_group(),
                 count: 4 - i as u32,
                 opened: 0,
+                days: Vec::new(),
             });
         }
         let rows = category_rows(&many, &[]);
@@ -1236,31 +952,6 @@ mod tests {
         // Social (1) and the mail without a category (7).
         assert_eq!((other.label.as_str(), other.count, other.mark), (tr("Other"), 8, None));
         assert!(category_rows(&nothing(day(30), StatsRange::Week), &[]).is_empty());
-    }
-
-    #[test]
-    fn a_sender_is_rarely_opened_from_five_mails_under_fifteen_percent() {
-        assert!(rarely_opened(30, 2));
-        assert!(!rarely_opened(4, 0), "too few to say");
-        assert!(!rarely_opened(20, 3), "15% is not rarely");
-        assert!(rarely_opened(20, 2));
-        assert_eq!(per_week(30, 30), trf("{n} a week", &[("n", &if lang() == Lang::De { "7,0" } else { "7.0" })]));
-    }
-
-    #[test]
-    fn the_inbox_shows_its_groups_ages_and_one_suggestion() {
-        let o = overview();
-        assert_eq!(by_age(&o), (3, 4, 10));
-        let parts = inbox_parts(&o, &[]);
-        assert_eq!(parts.iter().map(|part| part.value).collect::<Vec<_>>(), [2, 15]);
-        assert_eq!(parts[1].color, ChartColor::Series(2));
-        assert_eq!(tidy(&o), Some(10));
-        let mut tidy_already = o.clone();
-        tidy_already.inbox.retain(|held| held.category == Some(Category::Personal));
-        assert_eq!(tidy(&tidy_already), None, "no suggestion without old newsletters and ads");
-        assert!(!is_empty(&o));
-        assert!(is_empty(&nothing(day(30), StatsRange::Month)));
-        assert_eq!(nothing(day(30), StatsRange::Month).days.len(), 30, "every day stays");
     }
 
     #[test]
@@ -1318,6 +1009,7 @@ mod tests {
         assert_eq!(demo.senders.len(), 2, "one sender per address");
         assert_eq!(demo.senders[0].latest.id, "m:1");
         assert_eq!(by_age(&demo), (1, 1, 1));
-        assert!(figures(&demo)[1].value != "0");
+        let newsletter = demo.categories.first().expect("a category");
+        assert_eq!(newsletter.days.len(), demo.days.len(), "issue #485: per day too");
     }
 }
