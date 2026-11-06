@@ -107,7 +107,9 @@ pub fn to_text(html: &str) -> String {
 /// `blockquote` with `> ` before its lines. Characters the markup would read as marks are written
 /// with `\` in front. The element with the class [`QUOTE_CLASS`] is the history: its lines as
 /// [`to_text`] writes them, without marks, and its first line is the second value (`None` without
-/// one). Everything else (headings, tables, code, rules) is text as [`to_text`] writes it.
+/// one). Everything else (headings, tables, code, rules) is text as [`to_text`] writes it. Bold,
+/// italic and underline right at a letter keep only their text, as the markup has no mark there; a
+/// line that starts like a numbered item (`3. `) cannot be escaped and reads as one again.
 pub fn to_markup(html: &str) -> (String, Option<String>) {
     let nodes = parse(html);
     let start = nodes.iter().position(|node| matches!(node, Node::Element(element) if element.has_class(QUOTE_CLASS)));
@@ -743,11 +745,12 @@ const MARKS: &str = "\\*_[]()>-#`";
 fn marked_lines(nodes: &[Node]) -> Vec<String> {
     let mut out = Vec::new();
     let mut line = String::new();
-    for node in nodes {
+    for (at, node) in nodes.iter().enumerate() {
         match node {
             Node::Text(text) => line.push_str(&marked_text(text)),
             Node::Element(element) if !is_block(element.name) && element.name != "li" => {
-                line.push_str(&marked_inline(element));
+                let piece = marked_piece(element, &line, nodes.get(at + 1));
+                line.push_str(&piece);
             }
             Node::Element(element) => {
                 end_lines(&mut line, &mut out);
@@ -855,7 +858,7 @@ fn marked_inline(element: &Element) -> String {
 /// The markup of inline content.
 fn marked_children(nodes: &[Node]) -> String {
     let mut out = String::new();
-    for node in nodes {
+    for (at, node) in nodes.iter().enumerate() {
         match node {
             Node::Text(text) => out.push_str(&marked_text(text)),
             Node::Element(element) if is_block(element.name) || element.name == "li" => {
@@ -863,10 +866,24 @@ fn marked_children(nodes: &[Node]) -> String {
                 out.push_str(&marked_children(&element.children));
                 out.push(' ');
             }
-            Node::Element(element) => out.push_str(&marked_inline(element)),
+            Node::Element(element) => {
+                let piece = marked_piece(element, &out, nodes.get(at + 1));
+                out.push_str(&piece);
+            }
         }
     }
     out
+}
+
+/// The inline `element` after the markup `before` and before the node `next`: with its marks
+/// ([`marked_inline`]), but bold, italic and underline right at a letter or digit only as their
+/// text. The markup reads a mark only at a word's edge, so `**Bold**text` would stay as stars.
+fn marked_piece(element: &Element, before: &str, next: Option<&Node>) -> String {
+    let wrapping = matches!(element.name, "strong" | "b" | "em" | "i" | "u");
+    let after = next.map(|node| text_of(std::slice::from_ref(node))).unwrap_or_default();
+    let glued = before.chars().next_back().is_some_and(char::is_alphanumeric)
+        || after.chars().next().is_some_and(char::is_alphanumeric);
+    if wrapping && glued { marked_children(&element.children) } else { marked_inline(element) }
 }
 
 /// The text inside `nodes`, without any marks.
@@ -1115,8 +1132,8 @@ mod tests {
         let (text, history) = to_markup(html);
         assert_eq!(history, None);
         assert_eq!(to_html(&text, None), html, "{text}");
-        let (heading, _) = to_markup("<h1>Title</h1><p><b>Bold</b>text</p>");
-        assert!(heading.starts_with("Title\n\n"), "{heading}");
+        let (heading, _) = to_markup("<h1>Title</h1><p><b>Bold</b>text and x<em>y</em></p>");
+        assert_eq!(heading, "Title\n\nBoldtext and xy", "marks at a letter would stay stars");
         assert_eq!(to_markup("").0, "");
     }
 }
