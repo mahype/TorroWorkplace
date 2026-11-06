@@ -65,6 +65,12 @@ fn main() -> ExitCode {
         args.insert(0, "--reminders".to_string());
     }
     if reminder::Launch::wanted(&args) {
+        // The reminder is a window of its own per screen and no tile: `--shots` does not draw it
+        // (issue #492), and its window must not open in its place.
+        if args.iter().any(|arg| arg == "--shots" || arg.starts_with("--shots=")) {
+            report_start_error("--shots does not draw the reminder; leave out --reminders and its --open states");
+            return ExitCode::from(64);
+        }
         return match reminder::run(&args) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
