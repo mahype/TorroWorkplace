@@ -616,12 +616,14 @@ async fn run(inner: Arc<Inner>, work: Work, job: Job) {
             None
         }
     };
-    job.end();
+    // Until the service handed over the runner stays at work, so no job begins that the ending service
+    // would break off halfway (review of #411): another one meanwhile is `busy`.
     if let Some(program) = hand_over {
         tokio::time::sleep(inner.hand_over_delay).await;
         let hook = Arc::clone(&inner.hooks.read().unwrap_or_else(PoisonError::into_inner).hand_over);
         hook(program);
     }
+    job.end();
 }
 
 type StepFail = (AppId, AppStep, Fail);
@@ -1152,7 +1154,9 @@ pub(crate) mod tests {
         put_program(&env, "torrotasks");
         let server = MockServer::start_async().await;
         serve(&server, "9.0.0", &[windows_file("torrotasks", b"MZ t")]).await;
-        let catalog = catalog_at(env, &server);
+        // A pause before the hand-over, as the service has, to see that no job begins in it.
+        let releases = Releases::new(Some(server.base_url()), server.url("/download/"), None);
+        let catalog = Catalog::new(releases, env, false, Duration::from_millis(300));
         let newer = dir.path().join("newer/torroworkplace.exe");
         let found = newer.clone();
         catalog.set_newest_service(Arc::new(move |_| Some((found.clone(), "9.0.0".parse().expect("version")))));
@@ -1160,10 +1164,20 @@ pub(crate) mod tests {
         let record = Arc::clone(&handed);
         catalog.set_hand_over(Arc::new(move |program| record.lock().expect("lock").push(program)));
         let started = catalog.update(&["torrotasks".into()]).await.expect("started");
-        let job = ended(&catalog, &started.id).await;
+        let mut job = catalog.job(&started.id).expect("job");
+        for _ in 0..500 {
+            if job.state != AppJobState::Running {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            job = catalog.job(&started.id).expect("job");
+        }
+        assert_eq!(job.state, AppJobState::Done, "{job:?}");
         assert!(!job.restart, "a newer copy takes over; the control centre stays: {job:?}");
         let connect = job.steps.iter().find(|step| step.step == AppStep::Connect).and_then(|step| step.detail.clone());
         assert_eq!(connect.as_deref(), Some("9.0.0"));
+        // Review of #411: until the service handed over, another job would be broken off by its end.
+        assert_eq!(code(catalog.uninstall("torro-tasks", false).await), Some("busy"));
         for _ in 0..100 {
             if !handed.lock().expect("lock").is_empty() {
                 break;
@@ -1171,6 +1185,7 @@ pub(crate) mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(*handed.lock().expect("lock"), [newer]);
+        ended(&catalog, &started.id).await;
     }
 
     #[tokio::test]
