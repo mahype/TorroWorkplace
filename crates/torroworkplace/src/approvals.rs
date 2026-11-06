@@ -1891,6 +1891,8 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         // target's name from the core's stores ([`MailFacts`], [`Facts::name`]), never the client's
         // text; only a new name of a target is the client's, and shown as such.
         Request::SaveMailAttachments { to, .. } => attachments_saved(to, facts),
+        // The mail itself as PDF or picture (issue #501), by the same rules.
+        Request::SaveMailAs { format, to, .. } => mail_saved_as(*format, to, facts),
         Request::UpdateSaveTarget { target, .. } => match &facts.name {
             Some(name) if name.trim() != target.name.trim() => trf(
                 "Change save target \"{name}\" (renamed to \"{new}\")",
@@ -3717,6 +3719,27 @@ fn attachments_saved(to: &torro_ipc::mail::SaveTo, facts: &Facts) -> String {
         0 => trf("Save the attachments of the mail {subject} to {target}", &args),
         1 => trf("Save an attachment of the mail {subject} to {target}", &args),
         _ => trf("Save {n} attachments of the mail {subject} to {target}", &args),
+    }
+}
+
+/// The summary of `mail.save_message_as` (issue #501): the subject and the target's name from the
+/// core's stores ([`MailFacts`], [`Facts::name`]), never the client's text.
+fn mail_saved_as(format: torro_ipc::mail::ExportFormat, to: &torro_ipc::mail::SaveTo, facts: &Facts) -> String {
+    use torro_ipc::mail::{ExportFormat, SaveTo};
+    let Some(text) = facts.mail.as_ref().and_then(|mail| mail.subjects.first()) else {
+        return tr("Save an unknown mail").to_string();
+    };
+    let subject = subject(text);
+    let target = match (to, &facts.name) {
+        (SaveTo::Downloads, _) => tr("Downloads").to_string(),
+        (SaveTo::Target(_), Some(name)) => format!("\"{}\"", quote(name)),
+        (SaveTo::Target(_), None) => tr("an unknown save target").to_string(),
+        (SaveTo::File(_) | SaveTo::Folder(_), _) => tr("a folder chosen in the app").to_string(),
+    };
+    let args: [(&str, &dyn std::fmt::Display); 2] = [("subject", &subject), ("target", &target)];
+    match format {
+        ExportFormat::Pdf => trf("Save the mail {subject} as PDF to {target}", &args),
+        ExportFormat::Png => trf("Save the mail {subject} as an image to {target}", &args),
     }
 }
 

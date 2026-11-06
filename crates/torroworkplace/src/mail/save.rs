@@ -1,6 +1,8 @@
 //! Saving attachments (task M12.3, issue #290): the save targets in `<data>/mail/save-targets.json`
 //! ([`SaveTargets`]) and the handlers of `mail.list_save_targets`, `mail.create_save_target`,
 //! `mail.update_save_target`, `mail.remove_save_target` and `mail.save_attachments` ([`answer`]).
+//! Issue #501 adds `mail.save_message_as`: the mail itself drawn as PDF or picture
+//! ([`super::export`]) and written to the same places by the same rules ([`export_plan`]).
 //!
 //! **Targets** are the same for every mail account and live in their own file, not in the
 //! settings, so `settings.update_settings` never writes them. Only a person sets a folder (point 9
@@ -27,14 +29,16 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use chrono::{Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 use torro_core::i18n::{tr, trf};
 use torro_ipc::Request;
 use torro_ipc::Response;
-use torro_ipc::mail::{AttachmentPlan, FailedFile, PlannedPlace, SaveTo, SavedFile, limit_refusal};
+use torro_ipc::mail::{
+    AttachmentPlan, ExportFormat, ExportPlan, FailedFile, PlannedPlace, SaveTo, SavedFile, limit_refusal,
+};
 use torro_mail::save_target::{resolve, suggestion};
 use torro_mail::{
     AttachmentInfo, Category, FileFacts, FileKind, MessageSummary, OnConflict, SaveTarget, SaveTargetSpec, SchemaError,
@@ -377,7 +381,7 @@ pub async fn answer(mail: &MailService, reach: Reach<'_>, context: &Context, req
     let answered = match request {
         Request::ListSaveTargets { id } => list(mail, reach, id.as_deref())
             .await
-            .map(|(targets, files)| Response::SaveTargets { targets, downloads: downloads(), files }),
+            .map(|(targets, files, exports)| Response::SaveTargets { targets, downloads: downloads(), files, exports }),
         Request::CreateSaveTarget { target } => {
             targets.create(target, &context.categories).map(|target| Response::SaveTarget { target }).map_err(boxed)
         }
@@ -389,9 +393,15 @@ pub async fn answer(mail: &MailService, reach: Reach<'_>, context: &Context, req
         .map_err(boxed),
         Request::RemoveSaveTarget { id } => targets
             .remove(&id)
-            .map(|targets| Response::SaveTargets { targets, downloads: downloads(), files: Vec::new() })
+            .map(|targets| Response::SaveTargets {
+                targets,
+                downloads: downloads(),
+                files: Vec::new(),
+                exports: Vec::new(),
+            })
             .map_err(boxed),
         Request::SaveMailAttachments { id, parts, to } => save(mail, reach, context, &id, &parts, &to).await,
+        Request::SaveMailAs { id, format, to } => save_message(mail, reach, context, &id, format, &to).await,
         other => {
             let message = format!("{} is not a command for saving attachments", other.operation().name());
             Err(Box::new(Response::Error { code: "unsupported".into(), message }))
@@ -406,14 +416,15 @@ fn boxed(err: TargetError) -> Box<Response> {
 
 /// What the core checks of a client's save target request before anyone is asked to approve it
 /// (`Core::handle_client`): an unknown target is `not-found` (`mail.update_save_target`,
-/// `mail.remove_save_target`, `mail.save_attachments` to a target), and a target that could not
+/// `mail.remove_save_target`, `mail.save_attachments` and `mail.save_message_as` to a target), and a target that could not
 /// be stored is `error` ([`check`], with the stored folder). `None` when it may go on, and for
 /// every other request.
 pub fn client_refusal(mail: &MailService, request: &Request, categories: &[Category]) -> Option<Response> {
     let id = match request {
         Request::UpdateSaveTarget { id, .. }
         | Request::RemoveSaveTarget { id }
-        | Request::SaveMailAttachments { to: SaveTo::Target(id), .. } => id,
+        | Request::SaveMailAttachments { to: SaveTo::Target(id), .. }
+        | Request::SaveMailAs { to: SaveTo::Target(id), .. } => id,
         _ => return None,
     };
     let stored = match mail.save_targets().get(id) {
@@ -470,6 +481,16 @@ pub async fn to_approve(mail: &MailService, reach: Reach<'_>, id: &str, parts: &
     Ok(ToApprove { account: located.account, subject: message.summary.subject, count })
 }
 
+/// For the approval of `mail.save_message_as` of the message `id` (issue #501): its account and
+/// subject as the stores `reach` sees hold them, without fetching anything, `count` 1; the answer when
+/// it is out of reach or gone (`not-found`).
+pub async fn message_to_approve(mail: &MailService, reach: Reach<'_>, id: &str) -> Answer<ToApprove> {
+    let stores = mail.stores(reach).await;
+    let located = read::locate(&stores, id).await?;
+    let message = read::stored_message(&located).await?;
+    Ok(ToApprove { account: located.account, subject: message.summary.subject, count: 1 })
+}
+
 /// The attachments of the stored `message`, `inline` ones included: the store's once it has read the
 /// message's text, else those of the message fetched once ([`read::fetch_raw`]). Not only a mail
 /// whose text is on its way lacks it: the store drops the text again (`prune_bodies_for` after
@@ -495,29 +516,34 @@ async fn known_attachments(
 // ----- mail.list_save_targets -----
 
 /// The targets and, for `id`, the plan of each attachment of the message that is not `inline`
-/// ([`plan`], the attachments from [`known_attachments`]); no plans when they cannot be read, the
-/// targets all the same.
+/// ([`plan`], the attachments from [`known_attachments`]) and of the mail itself as PDF and picture
+/// ([`export_plan`], issue #501); no attachment plans when they cannot be read, the targets and the
+/// mail's plans all the same.
 async fn list(
     mail: &MailService,
     reach: Reach<'_>,
     id: Option<&str>,
-) -> Answer<(Vec<SaveTarget>, Vec<AttachmentPlan>)> {
+) -> Answer<(Vec<SaveTarget>, Vec<AttachmentPlan>, Vec<ExportPlan>)> {
     let targets = mail.save_targets().list().map_err(boxed)?;
-    let Some(id) = id else { return Ok((targets, Vec::new())) };
+    let Some(id) = id else { return Ok((targets, Vec::new(), Vec::new())) };
     let stores = mail.stores(reach).await;
     let located = read::locate(&stores, id).await?;
     let message = read::stored_message(&located).await?;
-    let Some(attachments) = known_attachments(mail, &located, &message).await else {
-        return Ok((targets, Vec::new()));
-    };
     let account = account_name(mail, &located.account).await;
     let months = month_names();
+    let exports = ExportFormat::ALL
+        .iter()
+        .map(|&format| export_plan(&targets, &message.summary, format, &account, &months))
+        .collect();
+    let Some(attachments) = known_attachments(mail, &located, &message).await else {
+        return Ok((targets, Vec::new(), exports));
+    };
     let files = attachments
         .iter()
         .filter(|attachment| !attachment.inline)
         .map(|attachment| plan(&targets, &message.summary, attachment, &account, &months))
         .collect();
-    Ok((targets, files))
+    Ok((targets, files, exports))
 }
 
 /// The account's name for `{account}`: its display name, else its address.
@@ -964,6 +990,157 @@ fn replace(path: &Path, bytes: &[u8]) -> Result<Written, Problem> {
     }
     fs::write(path, bytes).map_err(|err| Problem::of(&err))?;
     Ok(Written::Saved(path.to_path_buf()))
+}
+
+// ----- mail.save_message_as (issue #501) -----
+
+/// The most characters of the subject in a file name.
+const MAX_SUBJECT_CHARS: usize = 60;
+
+/// The subject as a file name takes it: one line, at most [`MAX_SUBJECT_CHARS`], "Mail" for none.
+fn name_subject(subject: &str) -> String {
+    let one_line: String = subject.split_whitespace().collect::<Vec<_>>().join(" ");
+    let short: String = one_line.chars().take(MAX_SUBJECT_CHARS).collect();
+    match short.trim() {
+        "" => tr("Mail").to_string(),
+        short => short.to_string(),
+    }
+}
+
+/// The kind of file `format` makes, for a target's "Suggest when" (decision 5 of issue #501).
+fn export_kind(format: ExportFormat) -> FileKind {
+    match format {
+        ExportFormat::Pdf => FileKind::Pdf,
+        ExportFormat::Png => FileKind::Image,
+    }
+}
+
+/// The facts a target's schemes are filled with for the mail `summary` saved as `format`: the file is
+/// "<subject>.<ext>" for `{name}` and `{ext}`.
+fn export_facts(summary: &MessageSummary, format: ExportFormat, account: &str, months: &[String; 12]) -> FileFacts {
+    let name = format!("{}.{}", name_subject(&summary.subject), format.extension());
+    facts_of(summary, Some(&name), format.content_type(), account, months)
+}
+
+/// Where the mail `summary` saved as `format` would go (decision 5 of issue #501): in Downloads or a
+/// chosen folder "<YYYY-MM-DD> <subject>.<ext>" by the mail's day on this computer's clock, in each of
+/// `targets` after its schemes, and the targets whose "Suggest when" holds for a PDF or a picture.
+pub fn export_plan(
+    targets: &[SaveTarget],
+    summary: &MessageSummary,
+    format: ExportFormat,
+    account: &str,
+    months: &[String; 12],
+) -> ExportPlan {
+    let day = summary.date.with_timezone(&Local).format("%Y-%m-%d");
+    let file_name = torro_mail::save_target::clean_file_name(&format!(
+        "{day} {}.{}",
+        name_subject(&summary.subject),
+        format.extension()
+    ));
+    let facts = export_facts(summary, format, account, months);
+    let mut plan = ExportPlan { format, file_name, places: Vec::new(), suggested: Vec::new() };
+    for target in targets {
+        if let Ok(resolved) = resolve(&target.spec, &facts) {
+            plan.places.push(PlannedPlace {
+                target: target.id.clone(),
+                folders: resolved.folders,
+                file: resolved.file,
+            });
+        }
+        if suggestion(&target.spec.suggest, summary.category, Some(export_kind(format)), &facts.sender_address)
+            .is_some()
+        {
+            plan.suggested.push(target.id.clone());
+        }
+    }
+    plan
+}
+
+/// `mail.save_message_as`: in this order the path of `to: file | folder` (`error` unless absolute, one
+/// line, at most [`MAX_PATH_BYTES`]), the message in the stores `reach` sees (`not-found`), the place
+/// (an unknown target, a missing folder: `not-found`), then the message fetched once, drawn
+/// ([`super::export::draw`], `error` when it cannot be) and written by the rules of attachments.
+async fn save_message(
+    mail: &MailService,
+    reach: Reach<'_>,
+    context: &Context,
+    id: &str,
+    format: ExportFormat,
+    to: &SaveTo,
+) -> Answer<Response> {
+    if let SaveTo::File(path) | SaveTo::Folder(path) = to
+        && !path_fits(path)
+    {
+        return Err(failed("error", tr("The path must be a full path of at most 4096 bytes on one line.")));
+    }
+    let stores = mail.stores(reach).await;
+    let located = read::locate(&stores, id).await?;
+    let message = read::stored_message(&located).await?;
+    let place = place_of(mail, context, to)?;
+    let raw = read::fetch_raw(mail, &located).await?;
+    let read = mime::read(&raw).map_err(|_| read::unreadable())?;
+    let summary = &message.summary;
+    let head = super::export::Head {
+        subject: summary.subject.clone(),
+        from: summary.from.clone(),
+        to: summary.to.clone(),
+        cc: message.cc.clone(),
+        date: summary.date,
+    };
+    let body = match read.html {
+        Some(html) => super::export::Body::Html { html, raw: Arc::new(raw), parts: read.attachments },
+        None => super::export::Body::Text(read.text),
+    };
+    let drawn = super::export::draw(head, body, format, true)
+        .await
+        .map_err(|()| failed("error", tr("The mail could not be drawn.")))?;
+    let (account, months) = (account_name(mail, &located.account).await, month_names());
+    let job = export_destination(&place, summary, format, &account, &months).map_err(|problem| problem.failed())?;
+    let bytes = drawn.bytes;
+    let written = tokio::task::spawn_blocking(move || job.run(&bytes)).await.unwrap_or(Err(Problem::Write));
+    let shortened = drawn.shortened;
+    match written {
+        Ok(Written::Saved(path)) => Ok(Response::SavedMail { path: shown(&path), skipped: false, shortened }),
+        Ok(Written::Skipped(path)) => Ok(Response::SavedMail { path: shown(&path), skipped: true, shortened }),
+        Err(problem) => Err(problem.failed()),
+    }
+}
+
+/// The file the mail `summary` saved as `format` becomes at `place`.
+fn export_destination(
+    place: &Place,
+    summary: &MessageSummary,
+    format: ExportFormat,
+    account: &str,
+    months: &[String; 12],
+) -> Result<Job, Problem> {
+    match place {
+        Place::Folder(dir) => Ok(Job::New {
+            dir: dir.clone(),
+            below: None,
+            name: export_plan(&[], summary, format, account, months).file_name,
+            rule: OnConflict::KeepBoth,
+        }),
+        Place::Target(spec) => {
+            let resolved =
+                resolve(spec, &export_facts(summary, format, account, months)).map_err(|_| Problem::Scheme)?;
+            Ok(Job::New {
+                dir: PathBuf::from(&spec.folder),
+                below: Some((PathBuf::from(&spec.folder), resolved.folders)),
+                name: resolved.file,
+                rule: spec.on_conflict,
+            })
+        }
+        Place::File(file) => Ok(Job::Replace(file.clone())),
+    }
+}
+
+impl Problem {
+    /// The problem as the answer of a call that saves one file.
+    fn failed(&self) -> Box<Response> {
+        Box::new(Response::Error { code: self.code().into(), message: self.message() })
+    }
 }
 
 fn failed(code: &str, message: &str) -> Box<Response> {
@@ -1419,7 +1596,9 @@ pub(crate) mod tests {
         let made = service.save_targets().create(spec("Invoices", &base), &context.categories).expect("stored");
 
         let listed = answer(&service, Reach::Suite, &context, Request::ListSaveTargets { id: Some(id.clone()) }).await;
-        let Response::SaveTargets { targets, downloads: shown, files } = listed else { panic!("targets: {listed:?}") };
+        let Response::SaveTargets { targets, downloads: shown, files, .. } = listed else {
+            panic!("targets: {listed:?}")
+        };
         assert_eq!((targets, shown), (vec![made.clone()], downloads.to_string_lossy().into_owned()));
         assert_eq!(
             files.iter().map(|plan| plan.file_name.as_str()).collect::<Vec<_>>(),
@@ -1462,6 +1641,108 @@ pub(crate) mod tests {
         let save = Request::SaveMailAttachments { id, parts: Vec::new(), to: SaveTo::Downloads };
         assert_eq!(code(&answer(&service, client, &context, save).await), "not-found");
         assert_eq!(fs::read_dir(&downloads).expect("readable").count(), 1, "nothing more was saved");
+    }
+
+    /// Issue #501: the mail itself is named "<date> <subject>" in Downloads, by its subject in a
+    /// target's schemes, and suggested where a target asks for PDFs or pictures.
+    #[test]
+    fn a_mail_is_planned_by_its_date_and_subject() {
+        let folder = Path::new("/Users/anna/Rechnungen");
+        let pdfs = SuggestWhen { kinds: vec![FileKind::Pdf], ..SuggestWhen::default() };
+        let targets = vec![
+            SaveTarget {
+                id: "pdf".into(),
+                spec: SaveTargetSpec { suggest: pdfs, subfolders: "{sender}/{year}".into(), ..spec("PDFs", folder) },
+            },
+            SaveTarget {
+                id: "named".into(),
+                spec: SaveTargetSpec { file_name: "{date} {name}.{ext}".into(), ..spec("Named", folder) },
+            },
+        ];
+        let months = month_names();
+        let pdf = export_plan(&targets, &summary(), ExportFormat::Pdf, "Privat", &months);
+        assert_eq!((pdf.format, pdf.file_name.as_str()), (ExportFormat::Pdf, "2026-03-28 Ihre Rechnung.pdf"));
+        assert_eq!(pdf.places[0].folders, ["Stadtwerke Bonn", "2026"]);
+        assert_eq!(pdf.places[0].file, "Ihre Rechnung.pdf", "the subject stands for the name");
+        assert_eq!(pdf.places[1].file, "2026-03-28 Ihre Rechnung.pdf");
+        assert_eq!(pdf.suggested, ["pdf"]);
+        let png = export_plan(&targets, &summary(), ExportFormat::Png, "Privat", &months);
+        assert_eq!(png.file_name, "2026-03-28 Ihre Rechnung.png");
+        assert!(png.suggested.is_empty(), "a picture is no PDF");
+
+        let odd = MessageSummary { subject: format!("  Re: a/b\n{}", "x".repeat(80)), ..summary() };
+        let named = export_plan(&[], &odd, ExportFormat::Pdf, "Privat", &months).file_name;
+        assert!(named.starts_with("2026-03-28 Re_ a_b x") && named.ends_with(".pdf"), "{named}");
+        assert!(named.chars().count() <= "2026-03-28 ".len() + MAX_SUBJECT_CHARS + ".pdf".len());
+        let blank = MessageSummary { subject: " ".into(), ..summary() };
+        let named = export_plan(&[], &blank, ExportFormat::Png, "Privat", &months).file_name;
+        assert_eq!(named, format!("2026-03-28 {}.png", tr("Mail")));
+    }
+
+    /// Issue #501, the whole way through the service: the plans come with the targets, the mail is
+    /// drawn and saved to a target after its schemes, a second save is numbered and with "Skip if
+    /// identical" found there; a client without the account finds no mail.
+    #[tokio::test]
+    async fn a_mail_is_saved_as_pdf_and_picture() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &raw_with(&[]), &[]);
+        let service = synced(dir.path(), &server).await;
+        let id = message_id(&service, "Ihre Rechnung").await;
+        let base = dir.path().join("Rechnungen");
+        fs::create_dir(&base).expect("the folder");
+        let downloads = dir.path().join("Downloads");
+        fs::create_dir(&downloads).expect("downloads");
+        let context = Context { downloads: Some(downloads.clone()), categories: Category::BUILT_IN.to_vec() };
+        let target = SaveTargetSpec { subfolders: "{year}".into(), ..spec("Invoices", &base) };
+        let made = service.save_targets().create(target, &context.categories).expect("stored");
+
+        let listed = answer(&service, Reach::Suite, &context, Request::ListSaveTargets { id: Some(id.clone()) }).await;
+        let Response::SaveTargets { exports, .. } = listed else { panic!("targets: {listed:?}") };
+        assert_eq!(exports.iter().map(|plan| plan.format).collect::<Vec<_>>(), ExportFormat::ALL);
+        assert_eq!(exports[0].places[0].file, "Ihre Rechnung.pdf");
+
+        let to_target = Request::SaveMailAs { id: id.clone(), format: ExportFormat::Pdf, to: SaveTo::Target(made.id) };
+        let saved = answer(&service, Reach::Suite, &context, to_target.clone()).await;
+        let Response::SavedMail { path, skipped: false, shortened: false } = saved else { panic!("saved: {saved:?}") };
+        let folder = base.canonicalize().expect("the folder").join("2026");
+        assert_eq!(PathBuf::from(&path), folder.join("Ihre Rechnung.pdf"));
+        assert!(fs::read(&path).expect("written").starts_with(b"%PDF"));
+        let again = answer(&service, Reach::Suite, &context, to_target).await;
+        let Response::SavedMail { path, .. } = again else { panic!("saved: {again:?}") };
+        assert_eq!(PathBuf::from(&path), folder.join("Ihre Rechnung (2).pdf"), "never overwritten");
+
+        let picture = Request::SaveMailAs { id: id.clone(), format: ExportFormat::Png, to: SaveTo::Downloads };
+        let saved = answer(&service, Reach::Suite, &context, picture).await;
+        let Response::SavedMail { path, .. } = saved else { panic!("saved: {saved:?}") };
+        assert_eq!(PathBuf::from(&path), downloads.join("2026-03-28 Ihre Rechnung.png"));
+        assert!(fs::read(&path).expect("written").starts_with(b"\x89PNG"));
+
+        let gone = Request::SaveMailAs { id: id.clone(), format: ExportFormat::Pdf, to: SaveTo::Target("nope".into()) };
+        assert_eq!(code(&answer(&service, Reach::Suite, &context, gone).await), "not-found");
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.mail_accounts = Selection::Only(Vec::new());
+        let save = Request::SaveMailAs { id, format: ExportFormat::Pdf, to: SaveTo::Downloads };
+        assert_eq!(code(&answer(&service, Reach::Client(&rights), &context, save).await), "not-found");
+        assert_eq!(fs::read_dir(&downloads).expect("readable").count(), 1, "nothing more was saved");
+    }
+
+    /// Issue #501: "Skip if identical" finds the same drawing of the mail there and writes nothing.
+    #[tokio::test]
+    async fn the_same_mail_is_skipped_in_a_target_that_skips_identical_files() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &raw_with(&[]), &[]);
+        let service = synced(dir.path(), &server).await;
+        let id = message_id(&service, "Ihre Rechnung").await;
+        let context = Context { downloads: None, categories: Category::BUILT_IN.to_vec() };
+        let target = SaveTargetSpec { on_conflict: OnConflict::SkipIdentical, ..spec("Skip", dir.path()) };
+        let made = service.save_targets().create(target, &context.categories).expect("stored");
+        let save = Request::SaveMailAs { id, format: ExportFormat::Png, to: SaveTo::Target(made.id) };
+        let first = answer(&service, Reach::Suite, &context, save.clone()).await;
+        let Response::SavedMail { path, skipped: false, .. } = first else { panic!("saved: {first:?}") };
+        let second = answer(&service, Reach::Suite, &context, save).await;
+        assert_eq!(second, Response::SavedMail { path, skipped: true, shortened: false });
     }
 
     /// The store drops the text of an older mail again (`prune_bodies_for`: at once with headers only,
