@@ -311,11 +311,13 @@ pub fn run(headless: bool, takeover: bool) -> ExitCode {
         }
     };
     if headless {
-        return finish(runtime.block_on(serve(Shows::Nothing, takeover)));
+        let code = finish(runtime.block_on(serve(Shows::Nothing, takeover)));
+        return wind_down(runtime, code);
     }
     #[cfg(target_os = "linux")]
     {
-        finish(runtime.block_on(serve(Shows::Ksni, takeover)))
+        let code = finish(runtime.block_on(serve(Shows::Ksni, takeover)));
+        wind_down(runtime, code)
     }
     #[cfg(any(target_os = "macos", windows))]
     {
@@ -324,8 +326,20 @@ pub fn run(headless: bool, takeover: bool) -> ExitCode {
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         eprintln!("torroworkplace: no tray icon on this system; running headless");
-        finish(runtime.block_on(serve(Shows::Nothing, takeover)))
+        let code = finish(runtime.block_on(serve(Shows::Nothing, takeover)));
+        wind_down(runtime, code)
     }
+}
+
+/// How long the end waits for the runtime's tasks: the service's lock ([`HELD_LOCK`]) falls only when
+/// the process ends, and a service taking over waits [`TAKEOVER_WAIT`] for it, so a blocking task that
+/// hangs (a notification, a file) must not keep the process (review of #411).
+const WIND_DOWN: Duration = Duration::from_secs(3);
+
+/// Ends the runtime within [`WIND_DOWN`] and answers `code`.
+fn wind_down(runtime: tokio::runtime::Runtime, code: ExitCode) -> ExitCode {
+    runtime.shutdown_timeout(WIND_DOWN);
+    code
 }
 
 /// How long the main thread waits for the service once the event loop has ended. Normally the
@@ -342,7 +356,8 @@ fn run_with_event_loop(runtime: tokio::runtime::Runtime, takeover: bool) -> Exit
         Ok(shell) => shell,
         Err(err) => {
             eprintln!("torroworkplace: {err}; running headless");
-            return finish(runtime.block_on(serve(Shows::Nothing, takeover)));
+            let code = finish(runtime.block_on(serve(Shows::Nothing, takeover)));
+            return wind_down(runtime, code);
         }
     };
     let handle = shell.handle();
@@ -354,14 +369,16 @@ fn run_with_event_loop(runtime: tokio::runtime::Runtime, takeover: bool) -> Exit
     if let Err(err) = shell.run() {
         // The service does not need the icon: keep it running until it is told to quit.
         eprintln!("torroworkplace: {err}; running headless");
-        return finish(runtime.block_on(service).unwrap_or_else(|err| Err(format!("service task: {err}"))));
+        let code = finish(runtime.block_on(service).unwrap_or_else(|err| Err(format!("service task: {err}"))));
+        return wind_down(runtime, code);
     }
     // The timer must be made inside the runtime, hence the async block.
-    match runtime.block_on(async { tokio::time::timeout(SERVICE_WAIT, service).await }) {
+    let code = match runtime.block_on(async { tokio::time::timeout(SERVICE_WAIT, service).await }) {
         Ok(Ok(result)) => finish(result),
         Ok(Err(err)) => finish(Err(format!("service task: {err}"))),
         Err(_) => finish(Err("the tray event loop ended before the service".into())),
-    }
+    };
+    wind_down(runtime, code)
 }
 
 /// The exit code for the service's result; the error goes to stderr.
