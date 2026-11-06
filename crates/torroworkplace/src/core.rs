@@ -3973,10 +3973,13 @@ impl Core {
             return Err(lack.map_or(Refused::Forbidden { command }, |lack| Refused::Lacks { command, lack }));
         }
         // An unknown save target, or a change that could not be stored, is nothing to approve
-        // (task M12.3).
+        // (task M12.3); nor is saving a mail as PDF or picture to one (issue #501).
         if matches!(
             request,
-            Request::UpdateSaveTarget { .. } | Request::RemoveSaveTarget { .. } | Request::SaveMailAttachments { .. }
+            Request::UpdateSaveTarget { .. }
+                | Request::RemoveSaveTarget { .. }
+                | Request::SaveMailAttachments { .. }
+                | Request::SaveMailAs { .. }
         ) && let Some(refused) =
             crate::mail::save::client_refusal(&self.mail, &request, &self.save_context().categories)
         {
@@ -4552,6 +4555,33 @@ impl Core {
                     return Err(Refused::Forbidden { command });
                 }
                 let (found, pinned) = match self.attachments_to_approve(id, parts, rights).await {
+                    Ok(found) => found,
+                    Err(refused) => return Ok(*refused),
+                };
+                let target = match to {
+                    torro_ipc::mail::SaveTo::Target(target) => {
+                        self.mail.save_targets().get(target).ok().flatten().map(|target| target.spec.name)
+                    }
+                    _ => None,
+                };
+                let mail = crate::approvals::MailFacts {
+                    account: found.account.strip_prefix(torro_mail::ACCOUNT_PREFIX).map(str::to_string),
+                    count: found.count,
+                    subjects: vec![found.subject],
+                    ..crate::approvals::MailFacts::default()
+                };
+                let facts = Facts { name: target, mail: Some(mail), ..Facts::default() };
+                fingerprint = Some((pinned, Vec::new()));
+                let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
+            // Saving a mail as PDF or picture (issue #501): its subject and the target by what the
+            // core's stores hold, the approval pinned to the mail as saving its attachments is.
+            (Request::SaveMailAs { id, to, .. }, _) => {
+                if info.is_none() {
+                    return Err(Refused::Forbidden { command });
+                }
+                let (found, pinned) = match self.mail_as_to_approve(id, rights).await {
                     Ok(found) => found,
                     Err(refused) => return Ok(*refused),
                 };
@@ -5211,6 +5241,17 @@ impl Core {
         // without a fingerprint matches no mail.
         if let Request::SaveMailAttachments { id, parts, .. } = &request {
             match self.attachments_to_approve(id, parts, rights).await {
+                Ok((_, now)) if Some(now.as_str()) == fingerprint => {}
+                Ok(_) => {
+                    let message = "the mail changed after the approval was asked for; nothing was saved, ask again";
+                    return Response::Error { code: "conflict".into(), message: message.into() };
+                }
+                Err(refused) => return *refused,
+            }
+        }
+        // A mail is saved as PDF or picture only as the person was shown it (issue #501).
+        if let Request::SaveMailAs { id, .. } = &request {
+            match self.mail_as_to_approve(id, rights).await {
                 Ok((_, now)) if Some(now.as_str()) == fingerprint => {}
                 Ok(_) => {
                     let message = "the mail changed after the approval was asked for; nothing was saved, ask again";
@@ -6036,7 +6077,8 @@ impl Core {
             | Request::CreateSaveTarget { .. }
             | Request::UpdateSaveTarget { .. }
             | Request::RemoveSaveTarget { .. }
-            | Request::SaveMailAttachments { .. }) => Box::pin(self.save_request(request, reach)).await,
+            | Request::SaveMailAttachments { .. }
+            | Request::SaveMailAs { .. }) => Box::pin(self.save_request(request, reach)).await,
             // Running a mail filter (issue #339) also puts the category it set on the inbox entries
             // of those mails, as the category jobs do.
             request @ Request::ApplyMailFilter { .. } => self.apply_mail_filter(request, reach).await,
@@ -8506,6 +8548,20 @@ impl Core {
         rights: &torro_ipc::api::Rights,
     ) -> Result<(crate::mail::save::ToApprove, String), Box<Response>> {
         let found = crate::mail::save::to_approve(&self.mail, Reach::Client(rights), id, parts).await?;
+        let mail = self.mail_to_approve(&found.account, id, rights).await?;
+        Ok((found, mail_fingerprint(&mail)))
+    }
+
+    /// For `mail.save_message_as` of a client (issue #501): what its approval shows, from the message
+    /// `id` as the stores `rights` reach hold it ([`crate::mail::save::message_to_approve`]), and the
+    /// fingerprint of the mail it is pinned to ([`mail_fingerprint`]). The answer when the mail is out
+    /// of reach or gone (`not-found`).
+    async fn mail_as_to_approve(
+        &self,
+        id: &str,
+        rights: &torro_ipc::api::Rights,
+    ) -> Result<(crate::mail::save::ToApprove, String), Box<Response>> {
+        let found = crate::mail::save::message_to_approve(&self.mail, Reach::Client(rights), id).await?;
         let mail = self.mail_to_approve(&found.account, id, rights).await?;
         Ok((found, mail_fingerprint(&mail)))
     }
@@ -15262,6 +15318,96 @@ mod tests {
         let plan = Request::ListSaveTargets { id: Some(id.clone()) };
         assert_eq!(code(&ask(&core, Some(&stranger), plan).await), "not-found");
         let save = Request::SaveMailAttachments { id, parts: Vec::new(), to: SaveTo::Downloads };
+        assert_eq!(code(&ask(&core, Some(&stranger), save).await), "not-found");
+        assert_eq!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().len(), before, "nobody asked");
+    }
+
+    /// Issue #501: a client's "save as PDF" waits for a person as its rights say, the approval names
+    /// the subject and the target as the core stores them, and allowed the file lands there; a mail
+    /// that changed while the approval waited ends `conflict` and nothing is saved. A path is only the
+    /// person's, and a client without the account finds no such mail.
+    #[tokio::test]
+    async fn saving_a_mail_as_pdf_is_approved_by_what_the_core_stores() {
+        use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake::FakeImap;
+        use torro_ipc::mail::{ExportFormat, SaveTo};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &crate::mail::save::tests::raw_on(Utc::now(), "Recent", &[]), &[]);
+        let secrets = crate::account::github::tests::MemoryTokens::default();
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&account, PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let core = core(dir.path()).with_mail(mail);
+        let id = crate::mail::save::tests::message_id(&core.mail, "Recent").await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let base = dir.path().join("Rechnungen");
+        std::fs::create_dir(&base).expect("the folder");
+        let target = torro_mail::SaveTargetSpec::new("Invoices", base.to_string_lossy());
+        let made = save_target(ask(&core, Some(&app_key), Request::CreateSaveTarget { target }).await);
+
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, key) = client(&core, rights.clone()).await;
+        let pdf =
+            Request::SaveMailAs { id: id.clone(), format: ExportFormat::Pdf, to: SaveTo::Target(made.id.clone()) };
+        let asked = waits(ask(&core, Some(&key), pdf.clone()).await);
+        let args: [(&str, &dyn std::fmt::Display); 2] = [("subject", &"\"Recent\""), ("target", &"\"Invoices\"")];
+        assert_eq!(asked.summary, trf("Save the mail {subject} as PDF to {target}", &args));
+        assert_eq!(std::fs::read_dir(&base).expect("readable").count(), 0, "not before a person allows it");
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        let Response::SavedMail { path, .. } = *response else { panic!("saved: {response:?}") };
+        assert!(std::path::Path::new(&path).starts_with(base.canonicalize().expect("base")), "{path}");
+
+        // The mail changes in the store while the approval waits: nothing is saved.
+        let asked = waits(ask(&core, Some(&key), pdf).await);
+        let (_, store) = core.mail.stores(Reach::Suite).await.into_iter().next().expect("Anna's store");
+        let changed = id.clone();
+        store
+            .run(move |store| {
+                let place = store.resolve_message(&changed)?.expect("there");
+                let summary = store.summary(&changed)?.expect("there");
+                let new = crate::mail::store::NewMessage {
+                    id: None,
+                    uid: place.uid,
+                    rfc_message_id: place.rfc_message_id,
+                    thread_id: summary.thread_id,
+                    from: summary.from,
+                    to: summary.to,
+                    cc: Vec::new(),
+                    reply_to: Vec::new(),
+                    subject: "Changed".into(),
+                    date: summary.date,
+                    snippet: summary.snippet,
+                    flags: summary.flags,
+                    has_attachments: summary.has_attachments,
+                    traits: torro_mail::MessageTraits::default(),
+                    invitation: false,
+                };
+                store.upsert_message(&place.folder, place.uidvalidity, &new)
+            })
+            .await
+            .expect("changed");
+        let late = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = late.state else { panic!("ran: {late:?}") };
+        assert_eq!(code(&response), "conflict");
+        assert_eq!(std::fs::read_dir(&base).expect("readable").count(), 1, "nothing more was saved");
+
+        // A path is the person's only, and a mail out of reach is nothing to approve.
+        let to_file = Request::SaveMailAs {
+            id: id.clone(),
+            format: ExportFormat::Png,
+            to: SaveTo::File(dir.path().join("a.png").to_string_lossy().into_owned()),
+        };
+        assert_eq!(code(&ask(&core, Some(&key), to_file).await), "forbidden");
+        let mut outside = rights;
+        outside.mail_accounts = Selection::Only(Vec::new());
+        let (_, stranger) = client(&core, outside).await;
+        let before = core.approvals.list(None, Utc::now()).await.unwrap_or_default().len();
+        let save = Request::SaveMailAs { id, format: ExportFormat::Png, to: SaveTo::Downloads };
         assert_eq!(code(&ask(&core, Some(&stranger), save).await), "not-found");
         assert_eq!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().len(), before, "nobody asked");
     }
