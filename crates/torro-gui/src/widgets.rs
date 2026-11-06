@@ -70,6 +70,8 @@ use iced::{
 };
 use iced::{border, keyboard, mouse};
 
+mod context_area;
+
 use torro_core::design::{ListLook, ListSelection};
 use torro_core::i18n::tr;
 use torro_core::shortcuts::{Held, System};
@@ -2111,6 +2113,21 @@ pub fn anchored_if<'a, M: 'a>(anchor: Option<&Anchor>, content: impl Into<Elemen
     }
 }
 
+/// `content` that sends `on_right_press(point)` when it is right-clicked, with the point of the
+/// click relative to the content's top-left corner (issue #497). For rows with a context menu: the
+/// menu floats at the pointer with [`Placement::At`] at `anchor.area(Rectangle::new(point,
+/// Size::ZERO))`, where `anchor` is [`anchored`] around this same content (same bounds).
+///
+/// ```ignore
+/// widgets::anchored(&row_anchor, widgets::context_area(row, move |at| Message::Context(id.clone(), at)))
+/// ```
+pub fn context_area<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+    on_right_press: impl Fn(Point) -> M + 'a,
+) -> Element<'a, M> {
+    context_area::ContextArea { content: content.into(), on_right_press: Box::new(on_right_press) }.into()
+}
+
 /// Which edge of the anchor a card below it lines up with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Align {
@@ -2128,6 +2145,11 @@ pub enum Placement {
     Below(Align),
     /// 8 right of the anchor, top edges in line; left of it when there is no room (event cards).
     Beside,
+    /// The card's top-left corner at the anchor's top-left corner, no gap: a context menu at the
+    /// pointer, anchored to a zero-sized area where the click was ([`context_area`], issue #497).
+    /// Left of the point when there is no room on the right, above it when there is none below –
+    /// like the context menus of macOS, Windows and GNOME.
+    At,
 }
 
 /// The top-left corner of a card of `card` size placed at `target` inside `viewport`; the card
@@ -2144,6 +2166,19 @@ fn place(target: Rectangle, card: Size, viewport: Rectangle, placement: Placemen
                 target.x - beside_gap() - card.width
             };
             (x, target.y)
+        }
+        Placement::At => {
+            let fits = |start: f32, extent: f32, view_start: f32, view_length: f32| {
+                start + extent <= view_start + view_length - beside_gap()
+            };
+            let x =
+                if fits(target.x, card.width, viewport.x, viewport.width) { target.x } else { target.x - card.width };
+            let y = if fits(target.y, card.height, viewport.y, viewport.height) {
+                target.y
+            } else {
+                target.y - card.height
+            };
+            (x, y)
         }
     };
     let clamp = |value: f32, start: f32, length: f32, extent: f32| {
@@ -2177,7 +2212,9 @@ fn below_or_above(target: Rectangle, card: Size, viewport: Rectangle) -> f32 {
 /// with [`escape`].
 ///
 /// The card stays inside the window: it moves in from the edges and flips to the other side of
-/// the anchor for [`Placement::Beside`]. While the anchor (and its fallbacks, [`Anchor::or`]) was
+/// the anchor for [`Placement::Beside`], to the left of and above the point for [`Placement::At`]
+/// (a context menu at the pointer: anchor `row.area(Rectangle::new(point, Size::ZERO))` with the
+/// point from [`context_area`]). While the anchor (and its fallbacks, [`Anchor::or`]) was
 /// not laid out, the card stands in the middle of the window.
 pub fn floating<'a, M: Clone + 'a>(
     anchor: &Anchor,
@@ -2508,6 +2545,8 @@ fn search_results<M>(items: Vec<Element<'_, M>>) -> Result<Vec<Element<'_, M>>, 
 
 /// The action rail as a context menu: its groups form vertical sections with separators.
 /// Uses the rail's item rows so disabled actions and key hints have the same appearance.
+/// A group of one entry has no title: the separator sets it apart, and the menu stays short
+/// enough to open at the pointer rather than move in over the row (issue #497).
 pub fn rail_context_menu<'a, M: Clone + 'a, N: Clone + 'a>(
     groups: Vec<RailGroup<'a, M>>,
     on_action: impl Fn(M) -> N,
@@ -2518,8 +2557,10 @@ pub fn rail_context_menu<'a, M: Clone + 'a, N: Clone + 'a>(
         if index > 0 {
             list = list.push(container(rule::horizontal(LINE).style(style::rule)).padding([space::xs(), 0.0]));
         }
-        let title = typo::text(typo::caption(), group.label).style(theme::text_3).wrapping(Wrapping::None);
-        list = list.push(container(title).padding(flyout_title_padding()));
+        if rail_menu_titled(group.items.len()) {
+            let title = typo::text(typo::caption(), group.label).style(theme::text_3).wrapping(Wrapping::None);
+            list = list.push(container(title).padding(flyout_title_padding()));
+        }
         for item in group.items {
             let item = RailItem {
                 icon: item.icon,
@@ -2540,6 +2581,11 @@ pub fn rail_context_menu<'a, M: Clone + 'a, N: Clone + 'a>(
         .padding(style::MENU_INSET)
         .style(style::container::menu)
         .into()
+}
+
+/// Whether a group of `entries` in a [`rail_context_menu`] shows its title: only with more than one.
+fn rail_menu_titled(entries: usize) -> bool {
+    entries > 1
 }
 
 /// A header button that opens a menu, with a chevron: the navigation menu of the medium and
@@ -7580,6 +7626,60 @@ mod tests {
         // A card larger than the window keeps its top-left corner on screen.
         let huge = place(rect(10.0, 10.0, 10.0, 10.0), Size::new(2000.0, 2000.0), WINDOW, Placement::Beside);
         assert_eq!(huge, Point::new(beside_gap(), beside_gap()));
+    }
+
+    /// Issue #497: a context menu opens with its top-left corner at the pointer, flips left of it
+    /// at the right edge and above it at the bottom, and moves in when it fits on neither side.
+    #[test]
+    fn a_context_menu_opens_at_the_pointer_and_flips_at_the_edges() {
+        let menu = menu_size();
+        let at = |x: f32, y: f32, card: Size| place(rect(x, y, 0.0, 0.0), card, WINDOW, Placement::At);
+        assert_eq!(at(200.0, 150.0, menu), Point::new(200.0, 150.0), "top-left corner at the pointer");
+        let right = at(800.0, 150.0, menu);
+        assert_eq!(right, Point::new(800.0 - menu.width, 150.0), "no room on the right: left of the pointer");
+        let low = at(200.0, 600.0, menu);
+        assert_eq!(low, Point::new(200.0, 600.0 - menu.height), "no room below: above the pointer");
+        let corner = at(800.0, 600.0, menu);
+        assert_eq!(corner, Point::new(800.0 - menu.width, 600.0 - menu.height), "both edges at once");
+        // Exactly the margin left on the right still opens there.
+        let edge = 900.0 - beside_gap() - menu.width;
+        assert_eq!(at(edge, 150.0, menu).x, edge);
+        // Too tall for either side of a pointer in the middle: moved in, 8 from the window edge.
+        let tall = Size::new(menu.width, 500.0);
+        assert_eq!(at(200.0, 350.0, tall).y, beside_gap(), "above would leave the window: from the top margin");
+        let wide = Size::new(600.0, 200.0);
+        assert_eq!(at(450.0, 150.0, wide).x, beside_gap(), "left would leave the window: from the left margin");
+    }
+
+    /// Issue #497: a right-click on a [`context_area`] reports where it was, relative to the area's
+    /// top-left corner – also when the area does not start at the window's corner –, and nothing
+    /// else does: a left click, or a right-click beside the area.
+    #[test]
+    fn a_context_area_reports_the_point_of_a_right_click_inside_it() {
+        let right = || iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right));
+        let left = || iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        let ui = || {
+            // The area 200 × 40 starts at (10, 40): 10 of padding, then 30 of space above it.
+            let area = context_area(container(blank()).width(200.0).height(40.0), |point| point);
+            iced::widget::column![blank().height(30.0), area].padding(10.0)
+        };
+        let mut inside = iced_test::simulator(ui());
+        inside.point_at(Point::new(60.0, 55.0));
+        let statuses = inside.simulate([left(), right()]);
+        assert_eq!(statuses[1], iced::event::Status::Captured, "the right press is taken");
+        let points: Vec<Point> = inside.into_messages().collect();
+        assert_eq!(points, [Point::new(50.0, 15.0)], "one point, relative to the area; the left click sends nothing");
+        let mut beside = iced_test::simulator(ui());
+        beside.point_at(Point::new(260.0, 55.0));
+        let _ = beside.simulate([right()]);
+        assert_eq!(beside.into_messages().count(), 0, "beside the area: no menu");
+    }
+
+    /// Issue #497: a group of one entry in the context menu goes without its title.
+    #[test]
+    fn a_context_menu_titles_only_groups_of_several_entries() {
+        assert!(!rail_menu_titled(1), "one entry: the separator is enough");
+        assert!(rail_menu_titled(2));
     }
 
     /// Task E8.12 (finding 4): a bar of buttons shows all words or none – only its lead may keep its

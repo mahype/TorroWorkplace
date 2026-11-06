@@ -88,9 +88,7 @@ use std::ops::Range;
 
 use chrono::{DateTime, Local, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{
-    button, center, column, container, mouse_area, responsive, row, rule, scrollable, space as blank, svg,
-};
+use iced::widget::{button, center, column, container, responsive, row, rule, scrollable, space as blank, svg};
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border};
 use torro_core::design::{ListLook, ListSelection, ListStyle};
 use torro_core::i18n::{tr, trf};
@@ -642,7 +640,8 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
         height,
     );
     let row = if rows.bare && item.source.kind == SourceKind::Mail {
-        mouse_area(row).on_right_press(Message::ContextEntry(item.id.clone())).into()
+        let id = item.id.clone();
+        widgets::context_area(row, move |at| Message::ContextEntry(id.clone(), at))
     } else {
         row
     };
@@ -1013,8 +1012,8 @@ pub fn entry_card<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a
         selected,
         on_press: Message::Select(item.id.clone()),
     };
-    let card: Element<'a, Message> =
-        mouse_area(mail_card(card, width)).on_right_press(Message::ContextEntry(item.id.clone())).into();
+    let id = item.id.clone();
+    let card = widgets::context_area(mail_card(card, width), move |at| Message::ContextEntry(id.clone(), at));
     if cursor { widgets::anchored(&rows.anchors.row, card) } else { card }
 }
 

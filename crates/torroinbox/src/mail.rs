@@ -74,7 +74,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use iced::keyboard;
 use iced::widget::text::Wrapping;
-use iced::widget::{center, column, container, mouse_area, responsive, row, rule, scrollable, svg, text_editor};
+use iced::widget::{center, column, container, responsive, row, rule, scrollable, svg, text_editor};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trc, trf};
@@ -1885,15 +1885,17 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     // Below the lines, as the rows of entries (`list::entry_row`): nothing covers the row.
     let strip = if actions.is_empty() { 0.0 } else { list::strip_height() };
     let content = list::with_strip(list::mail_content(lines, width, selected), actions, width, Some(selected));
-    let row: Element<'a, Message> = mouse_area(list::sized_row(
-        content,
-        selected,
-        Some(!message.flags.contains(&Flag::Seen)),
-        on_press,
-        list::message_height() + strip,
-    ))
-    .on_right_press(Message::ContextMail(message.id.clone()))
-    .into();
+    let id = message.id.clone();
+    let row = widgets::context_area(
+        list::sized_row(
+            content,
+            selected,
+            Some(!message.flags.contains(&Flag::Seen)),
+            on_press,
+            list::message_height() + strip,
+        ),
+        move |at| Message::ContextMail(id.clone(), at),
+    );
     // The menus and dialogs of the keys hang at the selected row – in a bare list it has nothing else.
     if data.selected == Some(message.id.as_str()) { widgets::anchored(&data.anchors.row, row) } else { row }
 }
@@ -2003,15 +2005,17 @@ fn slim_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) ->
     let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
         || data.selected_ids.contains(&message.id);
     let content = list::slim_mail_content(lines, width, selected);
-    let row: Element<'a, Message> = mouse_area(list::sized_row(
-        content,
-        selected,
-        Some(!message.flags.contains(&Flag::Seen)),
-        Message::SelectMail(message.id.clone()),
-        list::slim_message_height(),
-    ))
-    .on_right_press(Message::ContextMail(message.id.clone()))
-    .into();
+    let id = message.id.clone();
+    let row = widgets::context_area(
+        list::sized_row(
+            content,
+            selected,
+            Some(!message.flags.contains(&Flag::Seen)),
+            Message::SelectMail(message.id.clone()),
+            list::slim_message_height(),
+        ),
+        move |at| Message::ContextMail(id.clone(), at),
+    );
     if data.selected == Some(message.id.as_str()) { widgets::anchored(&data.anchors.row, row) } else { row }
 }
 
@@ -2070,8 +2074,8 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
         || data.selected_ids.contains(&message.id);
     let card = list::MailCard { lines, chips, selected, on_press: Message::SelectMail(message.id.clone()) };
-    let card: Element<'a, Message> =
-        mouse_area(list::mail_card(card, width)).on_right_press(Message::ContextMail(message.id.clone())).into();
+    let id = message.id.clone();
+    let card = widgets::context_area(list::mail_card(card, width), move |at| Message::ContextMail(id.clone(), at));
     if data.selected == Some(message.id.as_str()) { widgets::anchored(&data.anchors.row, card) } else { card }
 }
 
