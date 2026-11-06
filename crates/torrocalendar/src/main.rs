@@ -67,7 +67,7 @@ fn main() -> ExitCode {
     if reminder::Launch::wanted(&args) {
         // The reminder is a window of its own per screen and no tile: `--shots` does not draw it
         // (issue #492), and its window must not open in its place.
-        if args.iter().any(|arg| arg == "--shots" || arg.starts_with("--shots=")) {
+        if asks_for_shots(&args) {
             report_start_error("--shots does not draw the reminder; leave out --reminders and its --open states");
             return ExitCode::from(64);
         }
@@ -127,6 +127,11 @@ fn main() -> ExitCode {
 fn instance_of(args: &[String], launch: &app::Launch) -> Option<AppId> {
     let own_window = args.iter().any(|arg| arg == "--demo") || reminder::Launch::wanted(args);
     (!own_window && launch.settings.is_none()).then_some(APP)
+}
+
+/// The start asks for pictures (`--shots <dir>` or `--shots=<dir>`, issue #492), which the reminder has none of.
+fn asks_for_shots(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--shots" || arg.starts_with("--shots="))
 }
 
 /// The binary runs as `torro-reminder`: the reminder window's agent app on macOS.
@@ -193,6 +198,20 @@ mod tests {
         assert_eq!(file, dir.join(START_ERROR_FILE));
         assert_eq!(std::fs::read_to_string(&file).expect("read"), "second\n");
         std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    /// PR review of #492: a reminder start with `--shots` is refused before its window opens; other words
+    /// are no request for pictures.
+    #[test]
+    fn a_reminder_start_with_shots_is_recognised() {
+        let words = |line: &[&str]| -> Vec<String> { line.iter().map(|arg| (*arg).to_string()).collect() };
+        for line in [&["--demo", "--open", "reminder", "--shots", "d"][..], &["--reminders", "--demo", "--shots=d"]] {
+            let args = words(line);
+            assert!(reminder::Launch::wanted(&args) && asks_for_shots(&args), "{line:?}");
+        }
+        for line in [&["--demo", "--open", "reminder"][..], &["--demo", "--shot-size", "40x30"], &["--shotsx"]] {
+            assert!(!asks_for_shots(&words(line)), "{line:?}");
+        }
     }
 
     /// Issue #279: only the plain calendar window is one per person.

@@ -16,6 +16,7 @@
 //! at [`SCALE`] times that), `<dir>/<prefix>-<W>x<H>.png` for sizes of `--shot-size WxH`. The prefix
 //! is the program's name and the values of the flags that pick a view ([`Shots::from_args`]).
 
+use std::ffi::OsString;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufWriter};
@@ -295,14 +296,25 @@ where
 /// `--shot-index <n>`; stops at the first that fails.
 fn each_size(count: usize) -> Result<(), ShotError> {
     let program = std::env::current_exe().map_err(ShotError::Spawn)?;
+    let words: Vec<OsString> = std::env::args_os().skip(1).collect();
+    each_size_with(count, &words, |words| {
+        let status = std::process::Command::new(&program).args(words).status()?;
+        Ok(if status.success() { Ok(()) } else { Err(status.code()) })
+    })
+}
+
+/// [`each_size`] with the way a process is started given as `start`: it gets the words of one size and
+/// answers `Ok(())` for a process that succeeded, `Err(exit code)` for one that failed.
+fn each_size_with(
+    count: usize,
+    words: &[OsString],
+    mut start: impl FnMut(&[OsString]) -> io::Result<Result<(), Option<i32>>>,
+) -> Result<(), ShotError> {
     for index in 0..count {
-        let status = std::process::Command::new(&program)
-            .args(std::env::args_os().skip(1))
-            .arg(format!("--shot-index={index}"))
-            .status()
-            .map_err(ShotError::Spawn)?;
-        if !status.success() {
-            return Err(ShotError::Size { index, code: status.code() });
+        let mut line = words.to_vec();
+        line.push(format!("--shot-index={index}").into());
+        if let Err(code) = start(&line).map_err(ShotError::Spawn)? {
+            return Err(ShotError::Size { index, code });
         }
     }
     Ok(())
@@ -488,6 +500,33 @@ mod tests {
             let named = Shots::from_args("torroworkplace", &args(line)).expect("valid").expect("asked for");
             assert_eq!((named.dir(), named.prefix.as_str()), (Path::new("d"), "torroworkplace-setup"), "{line:?}");
         }
+    }
+
+    /// PR review of #492: each size gets a process with the same words and its index; the first that
+    /// fails stops the rest with its exit code.
+    #[test]
+    fn each_size_runs_in_a_process_of_its_own() {
+        let words: Vec<OsString> = ["ui", "--demo", "--shots", "d"].into_iter().map(OsString::from).collect();
+        let mut started = Vec::new();
+        each_size_with(3, &words, |line| {
+            started.push(line.to_vec());
+            Ok(Ok(()))
+        })
+        .expect("all succeed");
+        let want = |index: usize| {
+            let mut line = words.clone();
+            line.push(format!("--shot-index={index}").into());
+            line
+        };
+        assert_eq!(started, [want(0), want(1), want(2)]);
+
+        let mut count = 0;
+        let failed = each_size_with(3, &words, |_| {
+            count += 1;
+            Ok(if count == 2 { Err(Some(3)) } else { Ok(()) })
+        });
+        assert!(matches!(failed, Err(ShotError::Size { index: 1, code: Some(3) })), "{failed:?}");
+        assert_eq!(count, 2, "the third size is not started");
     }
 
     /// Review of #492: one size per process, an empty folder is no folder.
