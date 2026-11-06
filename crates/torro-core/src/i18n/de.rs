@@ -5975,6 +5975,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Wie viel Platz alle Torro-Apps zwischen ihren Elementen lassen. Schrift und Farben bleiben, wie sie sind; für größeren Text gibt es den Zoom.",
     ),
     ("Lots of room around text and elements", "Viel Platz um Text und Elemente"),
+    ("Mail row {mail} · Button {button} · Page margin {page}", "Mailzeile {mail} · Knopf {button} · Seitenrand {page}"),
     ("Spacing", "Abstände"),
     ("Standard", "Standard"),
     ("The spacing levels can't be listed.", "Die Abstände lassen sich nicht auflisten."),

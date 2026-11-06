@@ -69,7 +69,7 @@ use torro_core::design::{
     ColorScheme, Design, FontKind, FontRole, FontSet, Level, ListSelection, ListStyle, Mode, Part, STANDARD_ID,
     SYSTEM_ID, Weight,
 };
-use torro_core::i18n::tr;
+use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Language, Settings, Zoom};
 use torro_core::theme::Appearance;
 use torro_gui::icon::{self, Icon};
@@ -671,8 +671,7 @@ fn mode_words_need() -> f32 {
 /// shows the level as well.
 fn spacing<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<'a, Message> {
     // As high as the headings with buttons beside it, so the groups of both columns start on one line.
-    let heading =
-        container(widgets::group_heading(tr("Spacing"), Vec::new())).height(size::control_sm()).center_y(Fill);
+    let heading = container(widgets::group_heading(tr("Spacing"), Vec::new())).center_y(size::control_sm());
     let mut block = column![heading].spacing(layout::item_gap());
     match listed_or(&state.designs, tr("The spacing levels can't be listed.")) {
         Ok(entries) => {
@@ -682,12 +681,15 @@ fn spacing<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<
             let options = levels
                 .iter()
                 .map(|entry| (entry.info.name.as_str(), Message::Choose(Part::Design, entry.info.id.clone())));
-            let segment = container(widgets::segmented(options, active)).width(Fill).padding(layout::panel_padding());
-            let mut rows: Vec<Element<'a, Message>> = vec![segment.into()];
+            let mut inside = column![widgets::segmented(options, active)].spacing(layout::item_gap());
             if let Some(design) = entries.iter().find(|entry| entry.info.id == drawn).and_then(|e| e.part.clone()) {
-                rows.push(preview(design, width));
+                inside =
+                    inside.push(typo::text(typo::meta().tabular(), measures(&design)).style(torro_gui::theme::text_3));
+                let pad = layout::panel_padding();
+                let room = width - pad.left - pad.right;
+                inside = inside.push(preview(design, room));
             }
-            block = block.push(card(rows));
+            block = block.push(card(vec![container(inside).width(Fill).padding(layout::panel_padding()).into()]));
         }
         Err(placeholder) => block = block.push(card(vec![placeholder])),
     }
@@ -707,15 +709,42 @@ fn level_order(entries: &[DesignEntry]) -> Vec<&DesignEntry> {
     levels
 }
 
-/// The small mail window of `design` under the segment, in the proportions of [`MAIL_WINDOW`]: as
-/// wide as the card in a column `width` wide, but at most [`size::panel()`] high, then centred in the
-/// card – a whole window, never a cut-out of one that is drawn too large.
-fn preview<'a>(design: Arc<Design>, width: f32) -> Element<'a, Message> {
-    let wide = width.min(size::panel() * MAIL_WINDOW.width / MAIL_WINDOW.height);
-    let high = wide * MAIL_WINDOW.height / MAIL_WINDOW.width;
-    let window = container(canvas(MailPreview { design }).width(Fill).height(Fill)).width(wide).height(high).clip(true);
-    container(window).center_x(Fill).into()
+/// What a level measures, in the words of the draft: "Mail row 100 · Button 36 · Page margin 24", so
+/// the levels differ in numbers too and not only in the picture.
+fn measures(design: &Design) -> String {
+    let number = |value: f32| format!("{value:.0}");
+    trf(
+        "Mail row {mail} · Button {button} · Page margin {page}",
+        &[
+            ("mail", &number(design.size.row_message)),
+            ("button", &number(design.size.control_sm)),
+            ("page", &number(design.layout.page_padding.horizontal)),
+        ],
+    )
 }
+
+/// The small mail window of `design` under the segment, in the proportions of [`MAIL_WINDOW`]: as
+/// wide as the `width` it has, but at most [`PREVIEW_MAX`] high – a whole window, never a cut-out of
+/// one that is drawn too large –, on the axis of the segment and framed by a hairline, so it reads as
+/// a window of its own also where its sidebar has the card's colour.
+fn preview<'a>(design: Arc<Design>, width: f32) -> Element<'a, Message> {
+    let wide = width.clamp(0.0, PREVIEW_MAX * MAIL_WINDOW.width / MAIL_WINDOW.height);
+    let high = wide * MAIL_WINDOW.height / MAIL_WINDOW.width;
+    container(canvas(MailPreview { design }).width(Fill).height(Fill))
+        .width(wide)
+        .height(high)
+        .padding(size::HAIRLINE)
+        .clip(true)
+        .style(|t: &Theme| container::Style {
+            border: Border { color: palette(t).line_strong, width: size::HAIRLINE, radius: radius::xs().into() },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// The highest the preview stands: as high as the draft's (300), so the groups below stay in sight on
+/// a medium window.
+const PREVIEW_MAX: f32 = 300.0;
 
 /// `rows` in the framed card of a settings group with a line between them, as `widgets::group` draws
 /// them, for a group whose heading carries actions ([`widgets::group_heading`]).
