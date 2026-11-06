@@ -961,8 +961,15 @@ pub async fn on_arrival(
                 };
                 sorting.category(&input, &category_hits(&by, categories))
             }
-            // Without what the rules look at, the filters decide in their own order.
-            _ => actions.category,
+            // Without what the rules look at, the filters decide alone, still by the order of the
+            // categories (issue #481).
+            _ => torro_inbox::rules::ranked_category(
+                &sorting.rank,
+                &[],
+                &[],
+                &torro_inbox::rules::SortInput::default(),
+                &category_hits(&by, categories),
+            ),
         };
         actions.category = actions.category.filter(|category| categories.contains(category));
         let Some(message) = arrived.iter().find(|message| message.id == id) else { continue };

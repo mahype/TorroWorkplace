@@ -794,16 +794,22 @@ pub(super) fn kept_rules(db: &Connection) -> Result<Vec<Rule>, Failure> {
     Ok(kept)
 }
 
+/// A rule "Always for this sender?" made that still is one: one sender or one domain, compared as
+/// a whole, without exception (issue #481). Changed into more in the editor, it is the editor's.
+pub(super) fn still_kept(rule: &SortRule) -> bool {
+    let [condition] = rule.conditions.as_slice() else { return false };
+    rule.exceptions.is_empty()
+        && matches!(condition.field, SortField::Sender | SortField::Domain)
+        && matches!(condition.comparison, torro_inbox::SortComparison::Auto | torro_inbox::SortComparison::Is)
+}
+
 /// `rule` as a [`Rule`] of the mail account `source`, if it is one sender or one domain, on and
 /// without exception.
 fn as_rule(rule: &SortRule, source: &str) -> Option<Rule> {
-    if !rule.enabled || !rule.exceptions.is_empty() {
+    if !rule.enabled || !still_kept(rule) {
         return None;
     }
     let [condition] = rule.conditions.as_slice() else { return None };
-    if !matches!(condition.comparison, torro_inbox::SortComparison::Auto | torro_inbox::SortComparison::Is) {
-        return None;
-    }
     let (sender, domain) = match condition.field {
         SortField::Sender => (Some(condition.value.clone()), None),
         SortField::Domain => (None, Some(condition.value.clone())),

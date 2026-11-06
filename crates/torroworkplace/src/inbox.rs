@@ -4949,13 +4949,16 @@ fn visible_sort_rule(db: &Connection, id: &str, client: Option<&ClientInfo>) -> 
 // ----- the order of the categories (issue #481) -----
 
 /// What decides the category of a mail ([`rules::Sorting`]): the catalogue's order, the rules
-/// "Always for this sender?" made (they have a mail account, [`catalogue::source_of`]) and every rule.
+/// "Always for this sender?" made (they have a mail account, [`catalogue::source_of`], and still are
+/// one sender or domain) and every rule.
 fn sorting_in(db: &Connection) -> Result<rules::Sorting, Failure> {
     let rank = catalogue::catalogue_in(db)?.into_iter().map(|def| def.category).collect();
     let rules = catalogue::sort_rules_in(db)?;
     let mut kept = Vec::new();
     for rule in &rules {
-        if catalogue::source_of(db, &rule.id)?.is_some() {
+        // Changed in the editor into more than one sender or domain, it is only the editor's, as
+        // `inbox.list_rules` sees it ([`catalogue::kept_rules`]): the order of the categories decides.
+        if catalogue::still_kept(rule) && catalogue::source_of(db, &rule.id)?.is_some() {
             kept.push(rule.id.clone());
         }
     }
@@ -7683,14 +7686,35 @@ pub(crate) mod tests {
         assert_eq!(category(&inbox), Some(Category::Invoice));
 
         // "Always for this sender?" wins over every other rule.
-        inbox
+        let kept = inbox
             .with(|db| {
                 let source = SourceRef::mail("anna@example.org");
-                catalogue::keep_sender(db, "billing@shop.example", Category::Personal, &source, at(8, 2), |_| true)?;
-                Ok(())
+                let made = "billing@shop.example";
+                Ok(catalogue::keep_sender(db, made, Category::Personal, &source, at(8, 2), |_| true)?.0)
             })
             .expect("kept");
         assert_eq!(category(&inbox), Some(Category::Personal));
+        // Changed in the editor into more than one sender, it is the editor's: the order decides.
+        let changed = Request::UpdateSortRule {
+            id: kept.id.clone(),
+            category: Category::Personal,
+            conditions: vec![
+                torro_inbox::SortCondition {
+                    comparison: torro_inbox::SortComparison::Auto,
+                    field: SortField::Sender,
+                    value: "billing@shop.example".into(),
+                },
+                torro_inbox::SortCondition {
+                    comparison: torro_inbox::SortComparison::Auto,
+                    field: SortField::Subject,
+                    value: "invoice".into(),
+                },
+            ],
+            exceptions: None,
+            enabled: None,
+        };
+        assert!(matches!(inbox.handle(changed, None, at(8, 3)), Response::SortRule { .. }));
+        assert_eq!(category(&inbox), Some(Category::Invoice), "Invoice stands above Personal now");
 
         // A plan pins the order the person was shown; another order since is `conflict`.
         let plan = inbox.plan_category_move(Category::Order, CategoryGroup::PaperTrail, 0).expect("planned");
