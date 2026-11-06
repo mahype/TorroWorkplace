@@ -359,9 +359,22 @@ async fn check_senders(
     let todo = store.run(move |store| store.unchecked_senders(limit, since)).await?;
     let mut checked = 0;
     for place in todo {
+        // Switched off meanwhile: what is left stays unchecked, for when logos are on again.
+        if !mailbox.logos().on() {
+            break;
+        }
         let raw = fetch_text(mailbox, &place).await?;
         let found = match &raw {
-            Some(raw) => check_sender(mailbox, raw, now).await.flatten(),
+            Some(raw) => match mailbox.sender_check().verified_domain(raw).await {
+                Checked::Domain(domain) => {
+                    mailbox.logos().want(&domain, now);
+                    Some(domain)
+                }
+                // Its one chance (doc above).
+                Checked::None | Checked::Retry => None,
+                // Nothing was asked for it: it stays unchecked, and the rest waits for the next run.
+                Checked::Resting => break,
+            },
             // Gone from the server, or too large to read: nothing to check.
             None => None,
         };
@@ -385,7 +398,7 @@ async fn check_sender(mailbox: &Mailbox, raw: &[u8], now: DateTime<Utc>) -> Opti
             Some(Some(domain))
         }
         Checked::None => Some(None),
-        Checked::Retry => None,
+        Checked::Retry | Checked::Resting => None,
     }
 }
 

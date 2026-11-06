@@ -51,6 +51,9 @@ pub enum Checked {
     None,
     /// The DNS could not be asked: check the message again later.
     Retry,
+    /// Not asked: every signing domain's DNS did not answer within [`UNANSWERED_REST`]. Check the
+    /// message again later, as for [`Checked::Retry`], but nothing was tried for it yet.
+    Resting,
 }
 
 /// The core's DKIM check, one for all mail accounts.
@@ -121,7 +124,7 @@ impl SenderCheck {
         let signers: Vec<String> =
             message.dkim_headers.iter().map(|header| header.header.d.to_ascii_lowercase()).collect();
         if signers.iter().all(|signer| self.resting(signer)) {
-            return Checked::Retry;
+            return Checked::Resting;
         }
         let parameters = Parameters::new(&message).with_txt_cache(&self.txt);
         let checked = tokio::time::timeout(CHECK_DEADLINE, authenticator.verify_dkim(parameters)).await;
@@ -366,7 +369,7 @@ pub(crate) mod tests {
         assert_eq!(check.verified_domain(&raw).await, Checked::Retry);
         // The key there now, the domain still rests: a sync with many of its mails does not wait for each.
         check.know("torro._domainkey.paypal.example", &key_record());
-        assert_eq!(check.verified_domain(&raw).await, Checked::Retry, "resting");
+        assert_eq!(check.verified_domain(&raw).await, Checked::Resting, "resting");
         check.unanswered.lock().expect("lock").clear();
         assert_eq!(check.verified_domain(&raw).await, Checked::Domain("paypal.example".into()), "asked again");
     }
