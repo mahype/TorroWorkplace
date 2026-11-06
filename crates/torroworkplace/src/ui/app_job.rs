@@ -540,7 +540,9 @@ impl Window {
         self.last = Some(job.clone());
         match job.state {
             AppJobState::Cancelled => Step::Exit,
-            AppJobState::Done if job.restart => {
+            // A job that put the main application in place restarts the service even when a later step
+            // failed (review of #411).
+            AppJobState::Done | AppJobState::Failed if job.restart => {
                 self.restarting();
                 Step::None
             }
@@ -1180,6 +1182,18 @@ mod tests {
         let mut late = started(&updating);
         let _ = late.update(Event::Answer(Reply::Polled, gone()));
         assert!(matches!(late.stage, Stage::Restarting { .. }));
+    }
+
+    /// Review of #411: a job that put the main application in place and failed later restarts the
+    /// service all the same; the window waits for it instead of stopping at the failure.
+    #[test]
+    fn a_failed_job_that_restarts_waits_for_the_service() {
+        let mut window = window(Target::SelfUpdate);
+        let _ = window.update(Event::Confirm);
+        let mut failed = job(AppJobState::Failed, AppJobKind::Update, true);
+        failed.error = Some("error".into());
+        let _ = window.update(Event::Answer(Reply::Started, Ok(Response::AppJob { job: failed })));
+        assert!(matches!(window.stage, Stage::Restarting { .. }), "{:?}", window.stage);
     }
 
     /// "Cancel" works while the download runs; a refused start says why and offers to try again
