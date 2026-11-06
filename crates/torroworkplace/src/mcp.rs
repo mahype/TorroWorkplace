@@ -2315,6 +2315,7 @@ mod tests {
             "mail_get_thread",
             "mail_get_attachment",
             "mail_overview",
+            "mail_get_draft",
         ];
         let status = tools().iter().find(|tool| tool.name == "mail_index_status").cloned().expect("a tool");
         assert_eq!(status.annotations.and_then(|hints| hints.read_only_hint), Some(true));

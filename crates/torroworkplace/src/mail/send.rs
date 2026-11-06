@@ -98,6 +98,8 @@ pub(crate) enum SendError {
     Changed,
     /// `error`: the draft cannot be built into a message (no recipient, an address that is none).
     Unbuildable(MimeError),
+    /// `error`: the stored draft cannot be read back as a message (issue #502).
+    Unreadable,
     /// The SMTP server did not take the message, or was not reached; nothing went out.
     NotAccepted(SmtpError),
     /// The send journal could not be used; nothing went out. `busy` while the same draft is being
@@ -126,6 +128,7 @@ impl SendError {
             SendError::Unbuildable(_) => {
                 refused("error", tr("The draft could not be built: an address is not valid.").into())
             }
+            SendError::Unreadable => refused("error", tr("The draft could not be read.").into()),
             SendError::NotAccepted(error) => smtp_refusal(*error),
             SendError::Journal(JournalError::Busy) => refused("busy", tr("This draft is being sent right now.").into()),
             SendError::Journal(_) => {
@@ -599,7 +602,7 @@ pub(crate) async fn get_draft(mail: &MailService, reach: Reach<'_>, author: &Dra
 async fn read_draft(mail: &MailService, reach: Reach<'_>, author: &DraftAuthor, id: &str) -> Result<Draft, SendError> {
     let (draft, _) = find_draft(mail, reach, author, id).await?;
     let raw = fetch_draft(mail, &draft).await?;
-    let read = mime::read(&raw).map_err(SendError::Unbuildable)?;
+    let read = mime::read(&raw).map_err(|_| SendError::Unreadable)?;
     let in_reply_to = match read.in_reply_to.clone() {
         Some(rfc) => {
             let store = mail.store(&draft.account).await?;

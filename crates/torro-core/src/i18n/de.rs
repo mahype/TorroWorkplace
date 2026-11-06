@@ -6740,6 +6740,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Drafts you save show up here.", "Entwürfe, die du speicherst, erscheinen hier."),
     ("Continue writing", "Weiterschreiben"),
     ("Couldn't load the draft.", "Der Entwurf konnte nicht geladen werden."),
+    ("The draft could not be read.", "Der Entwurf konnte nicht gelesen werden."),
     // Mail settings: an account's detail page (DS.6, issue #314)
     ("In use", "Belegt"),
     ("Not counted by folder", "Keinem Ordner zugeordnet"),
