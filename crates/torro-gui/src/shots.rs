@@ -43,11 +43,28 @@ pub const SIZES: [(&str, Size); 6] = [
 pub const SCALE: f32 = 2.0;
 
 /// The flags whose values name the view in a file, in this order.
-const NAMING_FLAGS: [&str; 8] =
-    ["--view", "--section", "--settings", "--open", "--design", "--font", "--color-scheme", "--appearance"];
+const NAMING_FLAGS: [&str; 14] = [
+    "--view",
+    "--section",
+    "--settings",
+    "--open",
+    "--design",
+    "--font",
+    "--color-scheme",
+    "--appearance",
+    // Flags that pick another window or item: without them in the name its pictures would replace
+    // those of the main window.
+    "--chat",
+    "--bot",
+    "--lane",
+    "--source",
+    "--template",
+    "--task",
+];
 
 /// The largest edge `--shot-size` takes, in logical pixels.
-const MAX_EDGE: u32 = 8192;
+/// At [`SCALE`] that is a picture of 8192 pixels, the largest texture wgpu guarantees.
+const MAX_EDGE: u32 = 4096;
 
 /// How long the program must stay quiet after it booted before its picture is taken.
 const QUIET: Duration = Duration::from_millis(300);
@@ -71,7 +88,7 @@ pub enum ShotError {
     MissingValue(&'static str),
     /// `--shots` without `--demo`: pictures are of sample data only.
     NeedsDemo,
-    /// A `--shot-size` that is not `WxH` with whole numbers from 1 to 8192.
+    /// A `--shot-size` that is not `WxH` with whole numbers from 1 to 4096.
     BadSize(String),
     /// The renderer's font store could not be reached (a thread panicked while holding it).
     Fonts,
@@ -158,7 +175,7 @@ fn parse_size(value: &str) -> Result<Size, ShotError> {
     let edge = |part: &str| part.parse::<u32>().ok().filter(|n| (1..=MAX_EDGE).contains(n));
     let (width, height) = value.split_once('x').ok_or_else(|| ShotError::BadSize(value.to_owned()))?;
     match (edge(width), edge(height)) {
-        // Both at most 8192, so exact as f32.
+        // Both at most 4096, so exact as f32.
         (Some(width), Some(height)) => Ok(Size::new(width as f32, height as f32)),
         _ => Err(ShotError::BadSize(value.to_owned())),
     }
@@ -173,10 +190,12 @@ impl Shots {
     /// Reads `--shots <dir>` (or `--shots=<dir>`) from `args`, the words after the program name;
     /// `Ok(None)` without it. It needs `--demo`. `--shot-size WxH` (several times) replaces the
     /// [`SIZES`]. The files start with `name` and the value of each of `--view`, `--section`,
-    /// `--settings`, `--open`, `--design`, `--font`, `--color-scheme` and `--appearance` that is given,
-    /// in this order, e.g. `torrocalendar-week-dark`.
+    /// `--settings`, `--open`, `--design`, `--font`, `--color-scheme`, `--appearance`, `--chat`, `--bot`,
+    /// `--lane`, `--source`, `--template` and `--task` that is given, in this order, e.g.
+    /// `torrocalendar-week-dark`. A flag given twice counts with its first value, as in the apps' own
+    /// parsers, so the name says what the window shows.
     pub fn from_args(name: &str, args: &[String]) -> Result<Option<Shots>, ShotError> {
-        let Some(dir) = values(args, "--shots")?.last().copied() else {
+        let Some(dir) = values(args, "--shots")?.first().copied() else {
             return Ok(None);
         };
         if !args.iter().any(|arg| arg == "--demo") {
@@ -190,7 +209,7 @@ impl Shots {
         };
         let mut prefix = name.to_owned();
         for flag in NAMING_FLAGS {
-            if let Some(value) = values(args, flag)?.last() {
+            if let Some(value) = values(args, flag)?.first() {
                 prefix.push('-');
                 prefix.push_str(value);
             }
@@ -346,16 +365,16 @@ mod tests {
 
     #[test]
     fn own_sizes_replace_the_classes() {
-        let shots = shots(&["--demo", "--shots", "d", "--shot-size", "40x30", "--shot-size=8192x1"])
+        let shots = shots(&["--demo", "--shots", "d", "--shot-size", "40x30", "--shot-size=4096x1"])
             .expect("valid")
             .expect("asked for");
-        assert_eq!(shots.sizes, [(None, Size::new(40.0, 30.0)), (None, Size::new(8192.0, 1.0))]);
+        assert_eq!(shots.sizes, [(None, Size::new(40.0, 30.0)), (None, Size::new(4096.0, 1.0))]);
         assert_eq!(shots.file(None, Size::new(40.0, 30.0)), Path::new("d/torrocalendar-40x30.png"));
     }
 
     #[test]
     fn bad_sizes_are_refused() {
-        for bad in ["0x10", "10x0", "8193x10", "10", "10x", "x10", "1.5x2", "-1x2", "10X10", "axb"] {
+        for bad in ["0x10", "10x0", "4097x10", "10", "10x", "x10", "1.5x2", "-1x2", "10X10", "axb"] {
             let result = shots(&["--demo", "--shots", "d", "--shot-size", bad]);
             assert!(matches!(&result, Err(ShotError::BadSize(value)) if value == bad), "{bad}: {result:?}");
         }
@@ -387,6 +406,14 @@ mod tests {
         assert_eq!(shots.file(Some("wide"), Size::new(1600.0, 1000.0)), {
             Path::new("d/torrocalendar-mail-accounts-night-week-linear-inter-nord-dark-wide-1600x1000.png")
         });
+    }
+
+    /// Review of #492: the first value counts, as for the apps; windows of their own are named apart.
+    #[test]
+    fn the_first_value_and_the_window_name_the_files() {
+        let line = ["--demo", "--shots", "a", "--open", "detail", "--shots", "b", "--open", "pr", "--chat=new"];
+        let shots = Shots::from_args("torroassistant", &args(&line)).expect("valid").expect("asked for");
+        assert_eq!((shots.dir(), shots.prefix.as_str()), (Path::new("a"), "torroassistant-detail-new"));
     }
 
     #[test]
