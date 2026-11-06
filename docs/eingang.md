@@ -459,7 +459,7 @@ Design „Torro“ zeigt **kompakt**.
 Im Mail-Fenster stehen alle Aktionen einer Mail in **einer Leiste am rechten Rand** der Mail, über ihre ganze Höhe
 (Entwurf D in [`prototypes/inbox/mail-aktionsleiste.html`](prototypes/inbox/mail-aktionsleiste.html#d)). Der Leser hat
 keine Befehlsleiste, keine Pillen im Kopf und keinen Fuß mehr; die Liste zeigt keine Knöpfe (E14.2), es bleiben die
-Tasten. Die Anhänge stehen seit #457 im Kopf der Mail (einer mit Namen, ab zwei „{n} attachments ▾“ mit Menü). Zentrale und App Feed behalten ihre Zeilenleiste und das Paneel
+Tasten. Die Anhänge stehen (#491) unter der Mail: im breiten Fenster als Kacheln in einem Block unten im Leser, in mittlerer und schmaler Größe als Zeilen im festen Fuß des Paneels, jeder mit Dreieck und dem Menü der Ablageziele; der Kopf zeigt keine. Zentrale und App Feed behalten ihre Zeilenleiste und das Paneel
 aus E9.4.
 
 - **Gruppen** in dieser Reihenfolge, jede nur mit dem, was für die Mail geht; leere Gruppen fallen weg:

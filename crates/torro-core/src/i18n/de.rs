@@ -7220,7 +7220,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Mail you delete shows up here.", "Mails, die du löschst, erscheinen hier."),
     ("Manage accounts…", "Konten verwalten…"),
     ("Megaphone", "Megafon"),
-    ("More ways to save", "Weitere Wege zum Sichern"),
     ("New email", "Neue E-Mail"),
     ("Newspaper", "Zeitung"),
     ("Next mail", "Nächste E-Mail"),
@@ -7234,7 +7233,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Skull", "Totenkopf"),
     ("The trash is empty.", "Der Papierkorb ist leer."),
     ("Warning", "Warnschild"),
-    ("{n} attachments", "{n} Anhänge"),
     ("{n} of {total}+", "{n} von {total}+"),
     ("mail|Display", "Darstellung"),
 ];
