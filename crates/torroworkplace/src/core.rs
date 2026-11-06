@@ -4116,7 +4116,8 @@ impl Core {
         // A client reads back only its own drafts, as it replaces and sends only those (issue #502).
         if let Request::GetDraft { id: draft } = &request {
             let author = DraftAuthor::Client(id.clone());
-            return Ok(crate::mail::send::get_draft(&self.mail, reach, &author, draft).await);
+            // Boxed, as reading mail is: the future is large and this function is on the stack.
+            return Ok(Box::pin(crate::mail::send::get_draft(&self.mail, reach, &author, draft)).await);
         }
         if let Some(info) = inbox_client {
             return Ok(self.inbox_request(request, Some(&info), None).await);
@@ -6066,7 +6067,8 @@ impl Core {
             request @ Request::GetDraft { .. } => match (torro_ipc::mail::limit_refusal(&request), &request, reach) {
                 (Some(refused), _, _) => refused,
                 (None, Request::GetDraft { id }, Reach::Suite) => {
-                    crate::mail::send::get_draft(&self.mail, reach, &DraftAuthor::App, id).await
+                    // Boxed, as reading mail is: the future is large and this function is on the stack.
+                    Box::pin(crate::mail::send::get_draft(&self.mail, reach, &DraftAuthor::App, id)).await
                 }
                 _ => refusal("forbidden", "a client's draft is read with its own id as the author".into()),
             },
