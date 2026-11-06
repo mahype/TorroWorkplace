@@ -43,6 +43,12 @@
 //! only drafts it wrote itself ([`DraftAuthor`]); any other is `not-found`, checked before anyone
 //! is asked ([`client_refusal`]) and again when it runs.
 //!
+//! **Reading a draft back** (`mail.get_draft`, issue #502): [`get_draft`] reads a stored draft the
+//! same way, with the same rule of who may, so it can be written on and saved again. What the
+//! message store does not keep comes from the draft's bytes: the Bcc recipients ([`bcc_of`]), the
+//! HTML and the message it answers. Its attachments come back as parts of the draft itself, which
+//! `mail.save_draft` fetches before it replaces the draft, so saving it again keeps them.
+//!
 //! Nothing here logs an address, a subject or text: the log names sends by their id only.
 
 use std::fs;
@@ -57,7 +63,7 @@ use torro_core::i18n::{tr, trf};
 use torro_ipc::Request;
 use torro_ipc::Response;
 use torro_ipc::mail::Delivery;
-use torro_mail::{Flag, MailAddress, Role, html};
+use torro_mail::{Draft, DraftAttachment, Flag, MailAddress, Role, html};
 use torro_mail_imap::folders::keeps_sent_copies;
 use torro_mail_imap::imap::ImapError;
 use torro_mail_imap::mime::{self, Built, MimeError, Outgoing, OutgoingAttachment, Reply};
@@ -574,6 +580,57 @@ async fn fetch_draft(mail: &MailService, draft: &MessageRef) -> Result<Vec<u8>, 
     let raw = command.session().fetch_message(draft.uid).await?;
     command.release();
     raw.ok_or(SendError::NoDraft)
+}
+
+// ----- reading a draft back -----
+
+/// `mail.get_draft`: the draft `id` (in an account `reach` sees, in its drafts folder; a client's
+/// only when `author` wrote it, like [`find_draft`]) as a [`Draft`] to write on and save again,
+/// answered as [`Response::MailDraft`]. To, Cc, Bcc, subject and text come from the draft's bytes,
+/// the HTML cleaned as a saved draft's is (`None` when it holds nothing). `in_reply_to` is the
+/// first message of the account with the draft's `In-Reply-To` outside the drafts folder, `None`
+/// when the store holds none. Attachments (not the inline parts of HTML) are parts of the draft
+/// itself (`DraftAttachment::MailPart`). Errors as for sending ([`SendError::response`]):
+/// `not-found`, `conflict`, `auth`, `offline`, `error`.
+pub(crate) async fn get_draft(mail: &MailService, reach: Reach<'_>, author: &DraftAuthor, id: &str) -> Response {
+    read_draft(mail, reach, author, id).await.map_or_else(|err| err.response(), |draft| Response::MailDraft { draft })
+}
+
+async fn read_draft(mail: &MailService, reach: Reach<'_>, author: &DraftAuthor, id: &str) -> Result<Draft, SendError> {
+    let (draft, _) = find_draft(mail, reach, author, id).await?;
+    let raw = fetch_draft(mail, &draft).await?;
+    let read = mime::read(&raw).map_err(SendError::Unbuildable)?;
+    let in_reply_to = match read.in_reply_to.clone() {
+        Some(rfc) => {
+            let store = mail.store(&draft.account).await?;
+            let drafts = draft.folder.clone();
+            store
+                .run(move |store| {
+                    let copies = store.messages_by_rfc_id(&rfc)?;
+                    Ok(copies.into_iter().find(|copy| copy.folder != drafts).map(|copy| copy.id))
+                })
+                .await?
+        }
+        None => None,
+    };
+    let attachments = read
+        .attachments
+        .iter()
+        .filter(|info| !info.inline)
+        .map(|info| DraftAttachment::MailPart { message: draft.id.clone(), part: info.part.clone() })
+        .collect();
+    Ok(Draft {
+        id: Some(draft.id.clone()),
+        account: draft.account.clone(),
+        to: read.to.clone(),
+        cc: read.cc.clone(),
+        bcc: bcc_of(&raw),
+        subject: read.subject.clone(),
+        body: read.text.clone(),
+        html: read.html_source.as_deref().map(html::sanitize).filter(|markup| !markup.trim().is_empty()),
+        in_reply_to,
+        attachments,
+    })
 }
 
 /// The Bcc recipients of the raw draft `raw`: every `Bcc:` header of its header block, unfolded,
@@ -1328,6 +1385,79 @@ pub(crate) mod tests {
         assert_eq!(client_refusal(&room.mail, "c1", Reach::Suite, &Request::SendDraft { id: own.clone() }).await, None);
         let sent = send_draft(&room.mail, Reach::Suite, &agent, &own, None).await;
         assert_eq!(sent, Response::MailSent { delivery: Delivery::Accepted });
+    }
+
+    /// Issue #502: a draft saved formatted, as an answer, with Bcc and a file, read back.
+    async fn offer(room: &Room, author: DraftAuthor) -> (String, torro_mail::Draft) {
+        // From the attachment folder, which a client may attach from too.
+        let cache = room.mail.attachment_cache().expect("a managed folder");
+        let file = cache.store("offer.pdf", b"%PDF-1.7 offer").expect("stored");
+        let hello = crate::mail::write::tests::id_of(&room.mail, "Hello").await;
+        let mut offer = draft("Re: Hello");
+        offer.cc = vec![MailAddress { name: None, address: "dora@example.com".into() }];
+        offer.bcc = vec![MailAddress { name: Some("Carla".into()), address: "carla@example.net".into() }];
+        offer.html = Some("<p>Here is <strong>the offer</strong>.</p>".into());
+        offer.in_reply_to = Some(hello);
+        offer.attachments = vec![DraftAttachment::File { path: file.display().to_string() }];
+        let id = saved(save_draft(&room.mail, Reach::Suite, offer.clone(), author).await).id.expect("an id");
+        (id, offer)
+    }
+
+    fn read_back(response: Response) -> torro_mail::Draft {
+        match response {
+            Response::MailDraft { draft } => draft,
+            other => panic!("expected a draft, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_person_reads_a_draft_back_with_every_field_and_saving_it_again_keeps_the_file() {
+        let room = room().await;
+        let (id, offer) = offer(&room, DraftAuthor::App).await;
+        let back = read_back(get_draft(&room.mail, Reach::Suite, &DraftAuthor::App, &id).await);
+        assert_eq!(back.id.as_deref(), Some(id.as_str()));
+        assert_eq!((back.account.as_str(), back.subject.as_str()), (ANNA, "Re: Hello"));
+        assert_eq!((&back.to, &back.cc), (&offer.to, &offer.cc));
+        // A draft keeps its Bcc as addresses only (`write::build_draft`).
+        let bcc: Vec<&str> = back.bcc.iter().map(|address| address.address.as_str()).collect();
+        assert_eq!(bcc, ["carla@example.net"], "Bcc comes back too");
+        assert_eq!(back.in_reply_to, offer.in_reply_to, "the conversation it answers");
+        let markup = back.html.clone().expect("formatted");
+        assert!(markup.contains("<strong>the offer</strong>"), "{markup}");
+        assert!(back.body.contains("Here is the offer."), "{}", back.body);
+        let [DraftAttachment::MailPart { message, part }] = back.attachments.as_slice() else {
+            panic!("one part of the draft itself: {:?}", back.attachments);
+        };
+        assert_eq!(message, &id);
+        assert!(!part.is_empty());
+
+        // Saved again as read, with a new subject: one draft, the file still in it.
+        let again = torro_mail::Draft { subject: "Re: Hello (2)".into(), ..back };
+        let filed = saved(save_draft(&room.mail, Reach::Suite, again, DraftAuthor::App).await);
+        assert_eq!(filed.id.as_deref(), Some(id.as_str()), "replaced under the same id");
+        let drafts = drafts_on_server(&room.server);
+        assert_eq!(drafts.len(), 1, "no second draft");
+        assert!(drafts[0].1.contains("offer.pdf") && drafts[0].1.contains("Bcc: carla@example.net"), "{}", drafts[0].1);
+        let reread = read_back(get_draft(&room.mail, Reach::Suite, &DraftAuthor::App, &id).await);
+        assert_eq!((reread.subject.as_str(), reread.attachments.len()), ("Re: Hello (2)", 1));
+    }
+
+    #[tokio::test]
+    async fn a_client_reads_back_only_its_own_drafts() {
+        let room = room().await;
+        let agent = DraftAuthor::Client("c1".into());
+        let persons = lunch(&room, DraftAuthor::App).await;
+        assert_eq!(code(&get_draft(&room.mail, Reach::Suite, &agent, &persons).await), "not-found");
+        let hello = crate::mail::write::tests::id_of(&room.mail, "Hello").await;
+        assert_eq!(code(&get_draft(&room.mail, Reach::Suite, &DraftAuthor::App, &hello).await), "not-found");
+
+        let (own, _) = offer(&room, agent.clone()).await;
+        let back = read_back(get_draft(&room.mail, Reach::Suite, &agent, &own).await);
+        assert_eq!(back.subject, "Re: Hello");
+        // An account the client's rights do not reach holds nothing it can read.
+        let mut rights = torro_ipc::api::RightsTemplate::ReadAndWrite.rights();
+        rights.mail_accounts = torro_ipc::api::Selection::Only(vec!["mail:bernd@example.com".into()]);
+        assert_eq!(code(&get_draft(&room.mail, Reach::Client(&rights), &agent, &own).await), "not-found");
     }
 
     /// Writes a journal entry for `id` as a send the fake answers with `answer` would leave it.

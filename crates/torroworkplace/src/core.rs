@@ -4113,6 +4113,11 @@ impl Core {
             let author = DraftAuthor::Client(id.clone());
             return Ok(crate::mail::send::send_draft(&self.mail, reach, &author, draft, None).await);
         }
+        // A client reads back only its own drafts, as it replaces and sends only those (issue #502).
+        if let Request::GetDraft { id: draft } = &request {
+            let author = DraftAuthor::Client(id.clone());
+            return Ok(crate::mail::send::get_draft(&self.mail, reach, &author, draft).await);
+        }
         if let Some(info) = inbox_client {
             return Ok(self.inbox_request(request, Some(&info), None).await);
         }
@@ -6055,6 +6060,15 @@ impl Core {
                     crate::mail::send::send_draft(&self.mail, reach, &DraftAuthor::App, id, None).await
                 }
                 _ => refusal("forbidden", "a client's draft is sent with its own id as the author".into()),
+            },
+            // Reading a draft back (issue #502): the person reads any draft; a client's read carries
+            // its id and never reaches here unnamed (`Core::handle_client`).
+            request @ Request::GetDraft { .. } => match (torro_ipc::mail::limit_refusal(&request), &request, reach) {
+                (Some(refused), _, _) => refused,
+                (None, Request::GetDraft { id }, Reach::Suite) => {
+                    crate::mail::send::get_draft(&self.mail, reach, &DraftAuthor::App, id).await
+                }
+                _ => refusal("forbidden", "a client's draft is read with its own id as the author".into()),
             },
             request @ (Request::SetMailFlags { .. }
             | Request::MoveMail { .. }
@@ -24039,10 +24053,16 @@ mod tests {
         let (core, server, app_key, smtp) = sending_core(dir.path()).await;
         let (_, key) = client(&core, sender(Outbound::WithApproval, Confirm::Never)).await;
         let persons = lunch_draft(&core, &app_key, "The person's").await;
+        // Issue #502: reading a draft back follows the same rule; the person reads any.
+        assert_eq!(code(&ask(&core, Some(&key), Request::GetDraft { id: persons.clone() }).await), "not-found");
+        let read = ask(&core, Some(&app_key), Request::GetDraft { id: persons.clone() }).await;
+        assert_eq!(saved_draft(read).subject, "The person's");
         assert_eq!(code(&ask(&core, Some(&key), Request::SendDraft { id: persons }).await), "not-found");
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
 
         let own = lunch_draft(&core, &key, "Lunch").await;
+        let read = ask(&core, Some(&key), Request::GetDraft { id: own.clone() }).await;
+        assert_eq!(saved_draft(read).id.as_deref(), Some(own.as_str()), "its own draft");
         let asked = waits(ask(&core, Some(&key), Request::SendDraft { id: own.clone() }).await);
         let changed = torro_mail::Draft { id: Some(own.clone()), ..draft("Lunch, and bring Eve") };
         saved_draft(ask(&core, Some(&key), Request::SaveDraft { draft: changed }).await);

@@ -1168,6 +1168,7 @@ fn describe(request: &Request) -> String {
         Request::DeleteMail { ids, .. } => format!("delete {} messages", ids.len()),
         Request::SaveDraft { .. } => "save draft".into(),
         Request::SendDraft { .. } => "send draft".into(),
+        Request::GetDraft { .. } => "get draft".into(),
         // Never the answer, the account or the mail (task E8.3b).
         Request::RespondToInvitation { .. } => "answer an invitation".into(),
         // Never the account, the mail or the sender (issue #416).
