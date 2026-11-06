@@ -118,7 +118,11 @@ Entscheidung 10):
 
 - **Welche startet:** macOS die Kopie mit der höchsten Version aus den Bündeln aller Apps (neben dem eigenen Bündel,
   in `/Applications`, in `~/Applications`); bei Gleichstand die in „Torro Workplace.app“, dann die im eigenen Bündel.
-  Linux und Windows haben nur die eine Kopie aus dem Paket.
+  Unter Scoop bringt jede App eine eigene Kopie mit (`<scoop>/apps/<app>/current/torroworkplace.exe`); dort startet
+  die mit der höchsten Version laut `manifest.json`. AUR und Homebrew haben nur die eine Kopie aus dem Paket.
+- **Entfernen:** Liegt der laufende Dienst im Bündel der App, die entfernt werden soll, und ist jede verbleibende
+  Kopie älter, lehnt der Katalog ab („update Torro Workplace first“): Die ältere Kopie würde die Daten verweigern,
+  und es bliebe kein Dienst.
 - **Datenschutz:** `<state>/service-version` hält die höchste Version, die auf den Daten lief. Ein älterer Dienst
   startet nicht und nennt beide Versionen.
 - **Ablösen:** Nach einer Installation oder einem Update mit neuerer Kopie startet der laufende Dienst die neue mit
@@ -130,7 +134,9 @@ Entscheidung 10):
 Der Abschnitt **Apps** der Steuerzentrale (gleich nach Overview, `--section apps`) zeigt die Hauptanwendung und jede
 App mit Icon, Frage, Beschreibung und Version: installierte oben, fehlende darunter. Entwurf:
 [prototypes/app-catalog/index.html](prototypes/app-catalog/index.html); wo der Plan zu #411 abweicht, gilt der Plan
-(kein Sortieren, keine Listenansicht, kein „Reinstall“, keine Karte „Coming soon“).
+(kein Sortieren, keine Listenansicht, kein „Reinstall“, keine Karte „Coming soon“). Nach der Design-Prüfung
+abweichend vom Plan: In mittlerer Breite stehen die Karten zweispaltig, sobald zwei Karten nebeneinander passen; die
+Version steht in der unteren Zeile der Karte, „Release notes“ nur im Menü „…“.
 
 Entschieden mit dem Plan zu #411:
 

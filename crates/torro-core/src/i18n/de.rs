@@ -7235,6 +7235,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{n} of {total}+", "{n} von {total}+"),
     ("mail|Display", "Darstellung"),
     // App catalog (issue #411)
+    (
+        "{app} brings the newest copy of the service; update Torro Workplace first.",
+        "{app} bringt die neueste Kopie des Dienstes mit; aktualisiere zuerst Torro Workplace.",
+    ),
     ("The newest release has no apps for this system.", "Das neueste Release hat keine Apps für dieses System."),
     ("Uninstall an unknown app", "Eine unbekannte App entfernen"),
     (
