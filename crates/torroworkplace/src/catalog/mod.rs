@@ -1313,6 +1313,38 @@ pub(crate) mod tests {
         assert!(!assistant.exists());
     }
 
+    /// Review of #411: an uninstall that moved the service's bundle away and failed on the next still hands
+    /// the service over; one that failed before moving anything does not.
+    #[tokio::test]
+    async fn a_removal_that_failed_halfway_still_hands_over() {
+        let dir = tempfile::tempdir().expect("dir");
+        let mut env = env_in(dir.path(), Platform::MacOs, &[], false);
+        let calendar = installed::tests::put_bundle(&env, "Torro Calendar", "torrocalendar", "0.1.0");
+        let reminder = installed::tests::put_bundle(&env, "Torro Reminder", "torro-reminder", "0.1.0");
+        let service = calendar.join("Contents/Library/LoginItems/Torro Workplace Service.app/Contents/MacOS");
+        std::fs::create_dir_all(&service).expect("service");
+        std::fs::write(service.join("torroworkplace"), "service").expect("program");
+        env.exe = Some(service.join("torroworkplace"));
+        // The trash takes the calendar but refuses the reminder.
+        env.discard = Arc::new(|path: &Path| match path.ends_with("Torro Reminder.app") {
+            true => Err(std::io::Error::other("refused")),
+            false => std::fs::remove_dir_all(path),
+        });
+        let server = MockServer::start_async().await;
+        let catalog = catalog_at(env, &server);
+        let other = dir.path().join("Applications/Torro Workplace.app/Contents/MacOS/torroworkplace");
+        let found = other.clone();
+        catalog.set_newest_service(Arc::new(move |_| Some((found.clone(), Version::current()))));
+        let handed: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+        let record = Arc::clone(&handed);
+        catalog.set_hand_over(Arc::new(move |program| record.lock().expect("lock").push(program)));
+        let started = catalog.uninstall("torro-calendar", false).await.expect("started");
+        let job = ended(&catalog, &started.id).await;
+        assert_eq!(job.state, AppJobState::Failed, "{job:?}");
+        assert!(!calendar.exists() && reminder.exists());
+        assert_eq!(*handed.lock().expect("lock"), [other], "the service ran from the trashed bundle");
+    }
+
     #[tokio::test]
     async fn a_development_build_installs_nothing() {
         let catalog = Catalog::none();
