@@ -7,19 +7,18 @@ use std::fmt;
 
 use crate::i18n::{tr, trf};
 
-use super::{BUILT_IN_IDS, Mode, Part, STANDARD_ID, SYSTEM_ID};
+use super::{Mode, Part, SYSTEM_ID};
 
 /// One reason a design, a font or a colour scheme can't be used. [`super::load`],
 /// [`super::load_font`] and [`super::load_color_scheme`] collect every reason they find.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DesignError {
-    /// The folder name is not a valid id (`a-z`, `0-9`, `-`, at most 32) or is the standard's; for a
-    /// design also the id of a built-in design (`compact`, `console`, issue #291).
+    /// The folder name of a font or colour scheme is not a valid id (`a-z`, `0-9`, `-`, at most 32) or
+    /// is the standard's.
     BadId { id: String },
-    /// There is no folder for this id in the folder of `part`.
+    /// There is no folder for this id in the folder of `part`; for a design, no built-in design of
+    /// this id (issue #484).
     NotFound { part: Part, id: String },
-    /// `[about] font` of a design names something that can't be an id.
-    BadSuggestion { key: String, id: String },
     /// The widest figure of the `numbers` font is wider than the time axis of a design is made for
     /// ([`super::DIGIT_MAX_EM`]), in em after the size adjustment.
     DigitsTooWide { family: String, width: f32, max: f32 },
@@ -79,8 +78,6 @@ pub enum DesignError {
     FontFamily { file: String, family: String, found: Vec<String> },
     /// Font files without `LICENSE.txt` beside `font.toml`.
     FontLicense,
-    /// `preview.png` is larger than 1200 × 800.
-    PreviewSize { width: u32, height: u32 },
     /// A font of the computer (issue #299) has no regular face (weight 400, upright) to set running
     /// text in. Names the family only, never a file: the path would tell a user name.
     SystemNoRegular { family: String },
@@ -92,9 +89,6 @@ impl fmt::Display for DesignError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ratio = |r: &f32| format!("{r:.2}");
         let text = match self {
-            DesignError::BadId { id } if id != STANDARD_ID && BUILT_IN_IDS.contains(&id.as_str()) => {
-                trf("“{id}” is the name of a design built into the suite. Give the folder another name.", &[("id", id)])
-            }
             DesignError::BadId { id } if id == SYSTEM_ID => {
                 trf("“{id}” stands for the font of the operating system. Give the folder another name.", &[("id", id)])
             }
@@ -107,10 +101,6 @@ impl fmt::Display for DesignError {
             DesignError::NotFound { part: Part::ColorScheme, id } => {
                 trf("There is no color scheme “{id}”.", &[("id", id)])
             }
-            DesignError::BadSuggestion { key, id } => trf(
-                "“{key}” suggests “{id}”, which can't be an id. Use up to 32 characters a–z, 0–9 and -.",
-                &[("key", key), ("id", id)],
-            ),
             DesignError::DigitsTooWide { family, width, max } => trf(
                 "The figures of “{family}” are {width} em wide after the size adjustment; the time axis fits at most {max} em.",
                 &[("family", family), ("width", &format!("{width:.2}")), ("max", &format!("{max:.2}"))],
@@ -203,10 +193,6 @@ impl fmt::Display for DesignError {
                 &[("file", file), ("family", family), ("found", &found.join(", "))],
             ),
             DesignError::FontLicense => tr("Fonts need their license in LICENSE.txt.").to_string(),
-            DesignError::PreviewSize { width, height } => trf(
-                "preview.png is {width} × {height}; at most 1200 × 800 is allowed.",
-                &[("width", width), ("height", height)],
-            ),
             DesignError::SystemNoRegular { family } => {
                 trf("“{family}” has no regular style to set running text in.", &[("family", family)])
             }
@@ -238,18 +224,9 @@ mod tests {
         assert_eq!(DesignError::FontLicense.to_string(), tr("Fonts need their license in LICENSE.txt."));
     }
 
-    /// Issue #291: a folder named like a built-in design is told so; the standard's id keeps the old
-    /// sentence, because it is refused in every folder.
+    /// The standard's id is refused in every folder of fonts and colour schemes.
     #[test]
-    fn a_built_in_id_is_named_as_such() {
-        let taken = DesignError::BadId { id: "console".into() }.to_string();
-        assert_eq!(
-            taken,
-            trf(
-                "“{id}” is the name of a design built into the suite. Give the folder another name.",
-                &[("id", &"console")]
-            )
-        );
+    fn the_standards_id_is_no_folder_name() {
         let torro = DesignError::BadId { id: "torro".into() }.to_string();
         assert!(torro.contains("a–z"), "{torro}");
         let avatar = DesignError::OffOrRange { key: "list.avatar".into(), value: 12.0, min: 20.0, max: 48.0 };

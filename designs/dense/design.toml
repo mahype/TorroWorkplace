@@ -1,0 +1,56 @@
+# Dense, built into the suite (issue #484): tightly packed, more on the screen. It replaces Compact
+# and Console; a saved choice of either becomes Dense (`torro_core::design::known_id`).
+#
+# A spacing level only. It sets the spacing scale, the gaps by role and the heights of rows and
+# controls; everything else – text levels, radii, the widths of regions, how lists are drawn – it takes
+# from the standard (`designs/torro/design.toml`), so the font, the colours and the mail view stay as
+# they were chosen. Embedded at build time; the id `dense` is what settings and the API name.
+
+format = 1
+
+[about]
+name = "Dense"
+version = "1.0.0"   # a built-in design shows the suite's version instead
+author = "Torro"
+description = "Tightly packed, more on the screen"
+
+# ------------------------------------------------------------------------------------------------
+# Spacing: tighter than the standard's [4, 8, 12, 16, 24, 32]. xs 2 is the gap inside building
+# blocks (segments, chips) the design rules allow.
+# ------------------------------------------------------------------------------------------------
+
+[space]             # xs s m l xl xxl, growing
+scale = [2, 6, 8, 12, 16, 24]
+
+[layout]
+page_padding = [16, 16]     # content and pages
+panel_padding = [12, 12]    # panels, floating cards, dialogs
+row_padding = [6, 16]       # list rows: rows of a fixed height take only the sides
+control_padding = [0, 8]    # buttons, chips, inputs
+section_gap = 16            # between groups and sections
+item_gap = 6                # between elements inside a group
+reading_padding = [32, 40]  # a mail in the reader, inside the reading column
+
+# ------------------------------------------------------------------------------------------------
+# Heights: rows and controls shrink, the text in them keeps its size (a line of 22), so only the
+# margins around it get smaller.
+# ------------------------------------------------------------------------------------------------
+
+[size]
+control_sm = 30     # buttons, icon buttons, segments
+control = 32        # inputs, property rows
+control_lg = 36     # quick entry, primary button in a dialog, the action rail's button
+control_xl = 44     # buttons of a reminder over the whole screen
+row = 40            # a task row
+row_two = 48        # two lines of 22 and 4 around them
+row_message = 78    # a mail row: three lines of 22 with 5.5 to spare above and below
+row_notice = 56     # any other inbox row: two lines of 22 with 5.5 to spare above and below
+row_sidebar = 28    # sidebar and menu rows
+row_group = 32      # the head of a group: holds its "+" button (control_sm 30)
+header = 48         # the header bar
+hour = 40           # an hour in the calendar
+card_gap = 8        # between cards and the parts of a card
+command = 40        # kept in the format, no building block uses it any more
+pill = 36           # the sender's avatar in the reader's head: as large as the rail's button
+rail = 52           # collapsed sidebar and action rail: control_lg and 8 at either side
+rail_wide = 232     # expanded action rail

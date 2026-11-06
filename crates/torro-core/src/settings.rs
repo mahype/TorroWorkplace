@@ -73,11 +73,14 @@ pub struct Settings {
     /// stays with its rights. Off unless turned on.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub contacts_show_hidden_books: bool,
-    /// The design pack every window draws with (task L.3, `docs/design-pakete.md`): its id, the
-    /// folder name under `<data>/designs/`, or `"torro"` ([`crate::design::STANDARD_ID`]) for the
-    /// standard. Kept as written even when the pack is gone or broken: the apps then draw with
-    /// the standard, and the control centre shows why.
-    #[serde(default = "standard_design")]
+    /// The spacing level every window draws with (issue #484, `docs/design-pakete.md`): `"torro"`
+    /// ([`crate::design::STANDARD_ID`], the standard), `"comfort"` or `"dense"`. It sets only spacing;
+    /// the font, the colour scheme and the mail view are settings of their own.
+    ///
+    /// Read through [`crate::design::known_id`]: a stored `"compact"` or `"console"` (issue #291)
+    /// becomes `"dense"`, any other id – a design of the old designs folder – the standard. The same
+    /// holds for `settings.update_settings`.
+    #[serde(default = "standard_design", deserialize_with = "known_design")]
     pub design: String,
     /// The font every window draws with (task L.22, `docs/design-pakete.md` "Wählen"): its id, the folder
     /// name under `<data>/fonts/`, or `"torro"` ([`crate::design::STANDARD_ID`]) for the standard. Kept as
@@ -710,6 +713,15 @@ fn known_names<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned + Ord>(
 /// The id of the standard design, font and colour scheme, for settings from before design packs.
 fn standard_design() -> String {
     crate::design::STANDARD_ID.to_string()
+}
+
+/// [`Settings::design`] as one of the built-in levels (issue #484): [`crate::design::known_id`], else
+/// the standard. Anything but a string reads as the standard too, so an odd value never makes the
+/// whole settings file unreadable.
+fn known_design<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let id = value.as_str().and_then(crate::design::known_id).unwrap_or(crate::design::STANDARD_ID);
+    Ok(id.to_string())
 }
 
 impl Settings {
@@ -2922,8 +2934,17 @@ mod tests {
         assert_eq!(Settings::default().design, crate::design::STANDARD_ID);
         fs::write(&path, r#"{"language":"german"}"#).expect("write");
         assert_eq!(load_from(&path).design, "torro", "a file from before design packs");
-        fs::write(&path, r#"{"design":"plex"}"#).expect("write");
-        assert_eq!(load_from(&path).design, "plex", "kept as written, whether the pack exists or not");
+        // Issue #484: only the three levels are left; the old dense designs become Dense, every
+        // other id (a design of the old designs folder) the standard.
+        for (stored, read) in
+            [("comfort", "comfort"), ("dense", "dense"), ("console", "dense"), ("compact", "dense"), ("plex", "torro")]
+        {
+            fs::write(&path, format!(r#"{{"design":"{stored}"}}"#)).expect("write");
+            assert_eq!(load_from(&path).design, read, "{stored}");
+        }
+        fs::write(&path, r#"{"design":7,"language":"german"}"#).expect("write");
+        let odd = load_from(&path);
+        assert_eq!((odd.design.as_str(), odd.language), ("torro", Language::German), "the rest still reads");
     }
 
     /// Task L.22: font and colour scheme are settings of their own, the standard unless chosen, never
@@ -2941,7 +2962,7 @@ mod tests {
         let read = load_from(&path);
         assert_eq!(
             (read.design.as_str(), read.font.as_str(), read.color_scheme.as_str()),
-            ("plex", "channelr", "nord")
+            ("torro", "channelr", "nord")
         );
         let json = serde_json::to_value(&read).expect("json");
         assert_eq!((json["font"].as_str(), json["colorScheme"].as_str()), (Some("channelr"), Some("nord")));
@@ -3000,7 +3021,7 @@ mod tests {
             list_orders: BTreeMap::from([("work".to_string(), ListOrder::Manual)]),
             quiet_when_busy: false,
             contacts_show_hidden_books: false,
-            design: "plex".into(),
+            design: "comfort".into(),
             font: "channelr".into(),
             color_scheme: "nord".into(),
             assistant_retention: Retention::Days(90),

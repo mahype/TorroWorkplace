@@ -1,20 +1,16 @@
-//! Reading the folders of the three parts, and the designs folder itself.
+//! Reading the folders of fonts and colour schemes, and the built-in designs.
 //!
-//! Shared by all three: [`Listed`], the listing of a folder ([`listing`]), opening one entry
-//! ([`open`]), the three passes over a TOML file ([`parse`]: TOML at all, then every unknown key, then
-//! the typed values with their positions) and `[about]` ([`AboutFile`]). Fonts are read in `font.rs`,
-//! colour schemes in `scheme.rs`.
+//! Shared by fonts and colour schemes: [`Listed`], the listing of a folder ([`listing`]), opening one
+//! entry ([`open`]), the three passes over a TOML file ([`parse`]: TOML at all, then every unknown key,
+//! then the typed values with their positions) and `[about]` ([`AboutFile`]). Fonts are read in
+//! `font.rs`, colour schemes in `scheme.rs`.
 //!
-//! A `design.toml` is merged into [`Design::standard`] and held to the design rules. It holds the form
-//! only: fonts and colours have folders of their own, so `[fonts.*]`, `[colors.*]`, `[logo]` and
-//! `[about] font_license` of a pack from before task L.19 are unknown keys like any other (task L.21,
-//! no carry-over of old packs). `layout.density` is unknown since issue #291: `[list] style = "cards"`
-//! took its place.
-//!
-//! The built-in designs (issue #291, [`BUILT_IN_IDS`]) are read here too, from the files
-//! `designs/<id>/design.toml` of the repository embedded at build time ([`BUILT_IN_FILES`]): the
-//! standard must set every key and is read onto nothing ([`built_in_standard`]), Compact and Console
-//! are merged into the standard like a folder's design.
+//! Designs are built in only (issue #484, [`BUILT_IN_IDS`]): the files `designs/<id>/design.toml` of
+//! the repository, embedded at build time ([`BUILT_IN_FILES`]). No designs folder is read any more.
+//! The standard must set every key and is read onto nothing ([`built_in_standard`]); Comfort and Dense
+//! are merged into the standard and set only spacing. A `design.toml` holds the form only and is held
+//! to the design rules: `[fonts.*]`, `[colors.*]`, `[logo]`, `[about] font_license`, `[about] font` and
+//! `[about] mail_view` are unknown keys like any other.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -25,11 +21,10 @@ use serde::de::DeserializeOwned;
 
 use super::files::Root;
 use super::{
-    About, BUILT_IN_IDS, Design, DesignError, FontRole, Layout, Level, ListLook, ListSelection, ListStyle, Pad, Part,
-    Radius, STANDARD_ID, Size, Space, TypeScale, Weight, is_valid_id, rules,
+    About, Design, DesignError, FontRole, Layout, Level, ListLook, ListSelection, ListStyle, Pad, Part, Radius,
+    STANDARD_ID, Size, Space, TypeScale, Weight, is_valid_id, rules,
 };
 use crate::i18n::tr;
-use crate::settings::MailFormat;
 
 /// One entry of [`list`], [`super::list_fonts`] or [`super::list_color_schemes`]: a part (`T` is
 /// [`Design`], [`FontSet`] or [`ColorScheme`]) and whether it can be used.
@@ -58,37 +53,40 @@ impl<T> Listed<T> {
     }
 }
 
-/// Every design: the built-in ones first in the order of [`BUILT_IN_IDS`] (Standard, Compact,
-/// Console; only the standard has `standard: true`), then each folder under `dir` (the designs
-/// folder, see [`super::dir`]) by name, valid or with its reasons. Hidden folders (`.git`) and folder
-/// names that are not UTF-8 are left out; a missing `dir` lists only the built-in designs. A folder
-/// with a built-in id is listed with [`DesignError::BadId`].
-pub fn list(dir: &Path) -> Vec<Listed<Design>> {
-    let standard = Design::standard();
-    let mut listed = listing(dir, standard.about.clone(), standard, read);
-    let others = BUILT_IN_FILES.iter().filter(|(id, _)| *id != STANDARD_ID).map(|(id, text)| {
-        let mut about = About { name: id.to_string(), ..About::default() };
-        let result = built_in(id, text, &mut about);
-        Listed { id: id.to_string(), about, standard: false, result }
-    });
-    listed.splice(1..1, others);
-    listed
+/// Every design, in the order of [`BUILT_IN_IDS`] (Standard, Comfort, Dense; only the standard has
+/// `standard: true`). All are built in (issue #484), so each is valid; nothing is read from the disk.
+///
+/// [`BUILT_IN_IDS`]: super::BUILT_IN_IDS
+pub fn list() -> Vec<Listed<Design>> {
+    BUILT_IN_FILES
+        .iter()
+        .map(|(id, text)| {
+            let mut about = About { name: id.to_string(), ..About::default() };
+            let result = if *id == STANDARD_ID { Ok(Design::standard()) } else { built_in(id, text, &mut about) };
+            if let Ok(design) = &result {
+                about = design.about.clone();
+            }
+            Listed { id: id.to_string(), about, standard: *id == STANDARD_ID, result }
+        })
+        .collect()
 }
 
-/// The design `id` from the designs folder `dir`, merged with the standard and checked. A built-in id
-/// ([`BUILT_IN_IDS`]) gives the built-in design without touching the disk; [`STANDARD_ID`] gives
-/// [`Design::standard`].
+/// The built-in design `id` ([`BUILT_IN_IDS`]); [`STANDARD_ID`] gives [`Design::standard`]. Another
+/// id – also `compact` or `console`, which [`super::known_id`] maps first – is
+/// [`DesignError::NotFound`].
 ///
 /// `Err` holds every reason the design can't be used (at least one); the caller then keeps the design
 /// it has (the concept: a part is never applied in part).
-pub fn load(dir: &Path, id: &str) -> Result<Design, Vec<DesignError>> {
+///
+/// [`BUILT_IN_IDS`]: super::BUILT_IN_IDS
+pub fn load(id: &str) -> Result<Design, Vec<DesignError>> {
     if id == STANDARD_ID {
         return Ok(Design::standard());
     }
-    if let Some((id, text)) = BUILT_IN_FILES.iter().find(|(built_in, _)| *built_in == id) {
-        return built_in(id, text, &mut About::default());
+    match BUILT_IN_FILES.iter().find(|(built_in, _)| *built_in == id) {
+        Some((id, text)) => built_in(id, text, &mut About::default()),
+        None => Err(vec![DesignError::NotFound { part: Part::Design, id: id.to_string() }]),
     }
-    read(dir, id, &mut About::default())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -96,19 +94,25 @@ pub fn load(dir: &Path, id: &str) -> Result<Design, Vec<DesignError>> {
 // ---------------------------------------------------------------------------------------------
 
 /// The files of the built-in designs, in the order of [`BUILT_IN_IDS`]: `(id, design.toml)`.
+///
+/// [`BUILT_IN_IDS`]: super::BUILT_IN_IDS
 pub(super) const BUILT_IN_FILES: [(&str, &str); 3] = [
     (STANDARD_ID, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../designs/torro/design.toml"))),
-    ("compact", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../designs/compact/design.toml"))),
-    ("console", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../designs/console/design.toml"))),
+    ("comfort", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../designs/comfort/design.toml"))),
+    ("dense", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../designs/dense/design.toml"))),
 ];
 
-/// The descriptions of the built-in designs, English as their files say them: each is handed to
-/// `tr()`, so the translation in `i18n/de.rs` finds it ([`built_in_about`]). A description that is not
-/// here is shown as written. Names are not translated: they are names.
-const BUILT_IN_DESCRIPTIONS: [&str; 3] = [
-    "Calm and open: flush content, hairlines, a reading column with wide margins",
-    "Standard, built tighter",
-    "Very dense and square, one line per mail",
+/// The names and descriptions of the built-in designs, English as their files say them: each is handed
+/// to `tr()`, so the translation in `i18n/de.rs` finds it ([`built_in_about`]); since issue #484 the
+/// names are words of the suite ("Dense" is "Dicht"), not names of packs. A text that is not here is
+/// shown as written.
+const BUILT_IN_TEXTS: [&str; 6] = [
+    "Standard",
+    "Comfort",
+    "Dense",
+    "The suite's standard spacing",
+    "Lots of room around text and elements",
+    "Tightly packed, more on the screen",
 ];
 
 /// The standard design from its embedded file ([`Design::standard`] keeps it). The file must set every
@@ -139,15 +143,17 @@ fn built_in(id: &str, text: &str, about: &mut About) -> Result<Design, Vec<Desig
 }
 
 /// What a built-in design says about itself: its file's `[about]` with the suite's version (it ships
-/// with the suite) and its description in the language of the process ([`BUILT_IN_DESCRIPTIONS`]).
+/// with the suite), and its name and description in the language of the process ([`BUILT_IN_TEXTS`]).
 fn built_in_about(about: About) -> About {
-    let description = about.description.map(|english| {
-        BUILT_IN_DESCRIPTIONS
-            .iter()
-            .find(|known| **known == english)
-            .map_or(english.clone(), |known| tr(known).to_string())
-    });
-    About { version: env!("CARGO_PKG_VERSION").to_string(), description, ..about }
+    let translated = |english: String| {
+        BUILT_IN_TEXTS.iter().find(|known| **known == english).map_or(english.clone(), |known| tr(known).to_string())
+    };
+    About {
+        name: translated(about.name),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        description: about.description.map(translated),
+        ..about
+    }
 }
 
 /// A design with every value zero: the ground the complete standard is read onto.
@@ -161,7 +167,6 @@ fn blank(id: &str) -> Design {
         layout: Layout::default(),
         size: Size::default(),
         list: ListLook::default(),
-        preview: None,
     }
 }
 
@@ -271,12 +276,6 @@ pub(super) struct AboutFile {
     pub(super) version: Option<String>,
     pub(super) author: Option<String>,
     pub(super) description: Option<String>,
-    /// Designs only: the suggested font. (`color_scheme` is unknown since task L.33: colours never
-    /// belong to a design.)
-    pub(super) font: Option<String>,
-    /// Designs only: the suggested way to show mail (`"html"`, `"text"`); another word fails in the
-    /// third pass with its line.
-    pub(super) mail_view: Option<MailFormat>,
 }
 
 impl AboutFile {
@@ -287,8 +286,6 @@ impl AboutFile {
             version: self.version.clone().unwrap_or_default(),
             author: self.author.clone(),
             description: self.description.clone(),
-            font: self.font.clone(),
-            mail_view: self.mail_view,
         }
     }
 }
@@ -433,7 +430,8 @@ fn known(path: &str, key: &str) -> Option<bool> {
             "about" | "type" | "space" | "radius" | "layout" | "size" | "list" => TABLE,
             _ => None,
         },
-        "about" => value(["name", "version", "author", "description", "font", "mail_view"].contains(&key)),
+        // `font` and `mail_view` are unknown since issue #484: a design suggests nothing any more.
+        "about" => value(["name", "version", "author", "description"].contains(&key)),
         "type" => LEVEL_KEYS.contains(&key).then_some(true),
         p if p.strip_prefix("type.").is_some_and(|level| LEVEL_KEYS.contains(&level)) => {
             value(["font", "size", "line", "weight"].contains(&key))
@@ -447,36 +445,13 @@ fn known(path: &str, key: &str) -> Option<bool> {
     }
 }
 
-fn read(dir: &Path, id: &str, about: &mut About) -> Result<Design, Vec<DesignError>> {
-    // `torro` is no valid id at all; the other built-in ids are valid names, but taken.
-    if BUILT_IN_IDS.contains(&id) {
-        return Err(vec![DesignError::BadId { id: id.to_string() }]);
-    }
-    let root = open(dir, id, Part::Design)?;
-    let text = root.toml(Part::Design.file()).map_err(|err| vec![err])?;
-    let (file, mut problems) = from_text(id, &text, about)?;
-    let mut design = merge(Design::standard(), &file);
-    design.id = id.to_string();
-    design.about = about.clone();
-    match root.preview() {
-        Ok(preview) => design.preview = preview,
-        Err(found) => problems.extend(found),
-    }
-    finish(design, problems)
-}
-
-/// The three passes over the `design.toml` `text` of `id`, then `about` (as far as it was read), the
-/// header and the suggestions; the file and what it breaks so far. `Err` when it can't be read at all.
+/// The three passes over the `design.toml` `text` of `id`, then `about` (as far as it was read) and the
+/// header; the file and what it breaks so far. `Err` when it can't be read at all.
 fn from_text(id: &str, text: &str, about: &mut About) -> Result<(DesignFile, Vec<DesignError>), Vec<DesignError>> {
     let file: DesignFile = parse(Part::Design.file(), text, known)?;
     *about = file.about.about(id);
     let mut problems = Vec::new();
     header(file.format, &file.about, &mut problems);
-    if let Some(suggested) = &file.about.font
-        && !(is_valid_id(suggested) || suggested == STANDARD_ID)
-    {
-        problems.push(DesignError::BadSuggestion { key: "about.font".into(), id: suggested.clone() });
-    }
     Ok((file, problems))
 }
 
@@ -551,57 +526,67 @@ fn merge_layout(design: &mut Design, file: &LayoutFile) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::design::testdata::{Data, fixture_names, standard_of_the_table};
-    use crate::design::{Density, DensityLevel};
+    use crate::design::testdata::standard_of_the_table;
+    use crate::design::{BUILT_IN_IDS, Density, DensityLevel};
 
-    fn problems(dir: &Path, id: &str) -> Vec<DesignError> {
-        match load(dir, id) {
+    /// The design `id` read from `body` after `format` and `[about]`, as a built-in file is read: merged
+    /// into the standard and held to the rules. The rules and the format are tested this way since
+    /// issue #484, when the designs folder went away.
+    fn from_toml(id: &str, body: &str) -> Result<Design, Vec<DesignError>> {
+        let toml = format!("format = 1\n[about]\nname = \"{id}\"\nversion = \"1.0.0\"\n{body}");
+        built_in(id, &toml, &mut About::default())
+    }
+
+    fn problems(id: &str, body: &str) -> Vec<DesignError> {
+        match from_toml(id, body) {
             Ok(_) => panic!("{id} must be refused"),
             Err(problems) => problems,
         }
     }
 
-    /// A design `id` with `body` after `[about]`, in a temporary designs folder.
-    fn written(data: &Data, id: &str, body: &str) {
-        let toml = format!("format = 1\n[about]\nname = \"{id}\"\nversion = \"1.0.0\"\n{body}");
-        data.write(Part::Design, id, &toml);
-    }
-
+    /// Issue #484: the three levels, in their order, each valid, only the standard the standard; their
+    /// names are words of the suite and translated.
     #[test]
-    fn the_standard_is_loaded_without_a_folder_and_listed_first() {
-        let data = Data::new();
-        assert_eq!(load(&data.dir(Part::Design), STANDARD_ID), Ok(Design::standard()));
-        let listed = list(&data.dir(Part::Design));
+    fn the_three_levels_are_listed_in_order() {
+        assert_eq!(load(STANDARD_ID), Ok(Design::standard()));
+        let listed = list();
         let ids: Vec<&str> = listed.iter().map(|entry| entry.id.as_str()).collect();
-        assert_eq!(ids, BUILT_IN_IDS, "a missing folder lists only the built-in designs");
+        assert_eq!(ids, BUILT_IN_IDS);
         assert!(listed.iter().all(|entry| entry.valid() && entry.problems().is_empty()));
         let standard: Vec<bool> = listed.iter().map(|entry| entry.standard).collect();
         assert_eq!(standard, [true, false, false], "only the standard is the standard");
         let names: Vec<&str> = listed.iter().map(|entry| entry.about.name.as_str()).collect();
-        assert_eq!(names, ["Standard", "Compact", "Console"]);
+        assert_eq!(names, [tr("Standard"), tr("Comfort"), tr("Dense")]);
     }
 
-    /// Issue #291: the three built-in designs load from their embedded files without a reason, in the
-    /// order of [`BUILT_IN_IDS`], without touching the disk; the standard's file sets every key.
+    /// Issue #484: an id that is no built-in design is not there – also the old `compact` and
+    /// `console` (`known_id` maps them before anything is loaded).
+    #[test]
+    fn other_designs_are_not_found() {
+        for id in ["compact", "console", "plex", "../etc"] {
+            assert_eq!(load(id), Err(vec![DesignError::NotFound { part: Part::Design, id: id.into() }]), "{id}");
+        }
+    }
+
+    /// Issue #291: the built-in designs load from their embedded files without a reason, in the order
+    /// of [`BUILT_IN_IDS`], without touching the disk; the standard's file sets every key.
     #[test]
     fn the_built_in_designs_load_without_reasons() {
         let ids: Vec<&str> = BUILT_IN_FILES.iter().map(|(id, _)| *id).collect();
         assert_eq!(ids, BUILT_IN_IDS);
-        let nowhere = Path::new("/nonexistent/torro-designs");
         for (id, text) in BUILT_IN_FILES {
-            let loaded = load(nowhere, id);
+            let loaded = load(id);
             let Ok(design) = &loaded else { panic!("{id}: {:?}", loaded.err()) };
             assert_eq!(design.id, id);
             assert_eq!(design.about.version, env!("CARGO_PKG_VERSION"), "{id}: ships with the suite");
-            let file = parse_only(text).expect("readable");
-            assert_eq!(missing(&file), [], "{id} sets every key, so it does not move with the standard");
+            // Names and descriptions are translatable texts (`BUILT_IN_TEXTS`).
+            let about = parse_only(text).expect("readable").about;
+            let english = [about.name.expect("a name"), about.description.expect("a description")];
+            assert!(english.iter().all(|text| BUILT_IN_TEXTS.contains(&text.as_str())), "{english:?}");
         }
+        let file = parse_only(BUILT_IN_FILES[0].1).expect("readable");
+        assert_eq!(missing(&file), [], "the standard sets every key");
         assert_eq!(built_in_standard(), Ok(Design::standard()));
-        // The descriptions are translatable texts (`BUILT_IN_DESCRIPTIONS`).
-        for (_, text) in BUILT_IN_FILES {
-            let english = parse_only(text).expect("readable").about.description.expect("a description");
-            assert!(BUILT_IN_DESCRIPTIONS.contains(&english.as_str()), "{english}");
-        }
     }
 
     /// Issue #291, task L.34: the standard gives exactly the values of the table, read from its file;
@@ -633,120 +618,106 @@ mod tests {
         assert_eq!(keys.len(), 2 + 5, "nothing else: {keys:?}");
     }
 
-    /// Issue #291: Compact and Console have the values of the table in `docs/tasks/design-pakete.md`.
-    #[test]
-    fn compact_and_console_have_the_values_of_the_table() {
-        let nowhere = Path::new("/nonexistent/torro-designs");
-        let level = |l: Level| (l.size, l.line);
-        let compact = load(nowhere, "compact").expect("compact");
-        let t = compact.typo;
-        assert_eq!([level(t.body), level(t.body_strong)], [(13.0, 20.0); 2]);
-        assert_eq!([level(t.meta), level(t.caption), level(t.read)], [(12.0, 16.0), (11.0, 16.0), (14.0, 22.0)]);
-        assert_eq!([level(t.title), level(t.headline)], [(17.0, 24.0), (22.0, 28.0)]);
-        let s = compact.size;
-        assert_eq!(
-            [s.row_message, s.row_sidebar, s.header, s.control_sm, s.control_lg],
-            [76.0, 28.0, 48.0, 30.0, 36.0]
-        );
-        assert_eq!([s.sidebar, s.list, s.rail, s.rail_wide, s.reading_max], [216.0, 400.0, 52.0, 232.0, 640.0]);
-        let l = compact.layout;
-        assert_eq!(
-            (l.inset, l.reading_padding, l.row_padding, l.item_gap),
-            (0.0, pad(32.0, 40.0), pad(10.0, 16.0), 8.0)
-        );
-        assert_eq!(compact.radius, Radius { xs: 4.0, sm: 4.0, md: 4.0, lg: 4.0 });
-        let look = ListLook {
-            style: ListStyle::Rows,
-            separators: true,
-            selection: ListSelection::Bar,
-            avatar: 28.0,
-            preview_lines: 1,
-        };
-        assert_eq!(compact.list, look);
-        assert_eq!((compact.about.font.as_deref(), compact.about.mail_view), (None, None));
-        assert_eq!(compact.density_level(), DensityLevel::Dense);
+    /// The sizes a spacing level may set (issue #484): the heights of rows and controls and the gaps
+    /// of cards; widths of regions, text and the avatars stay the standard's.
+    const SPACING_SIZES: [&str; 17] = [
+        "control_sm",
+        "control",
+        "control_lg",
+        "control_xl",
+        "row",
+        "row_two",
+        "row_message",
+        "row_notice",
+        "row_sidebar",
+        "row_group",
+        "header",
+        "hour",
+        "card_gap",
+        "command",
+        "pill",
+        "rail",
+        "rail_wide",
+    ];
 
-        let console = load(nowhere, "console").expect("console");
-        let t = console.typo;
+    /// Issue #484: Comfort and Dense set only `[about]`, `[space]`, `[layout]` (without the inset) and
+    /// the spacing sizes; text, radii, widths and how lists are drawn are the standard's.
+    #[test]
+    fn comfort_and_dense_set_only_spacing() {
+        let standard = Design::standard();
+        for (id, text) in &BUILT_IN_FILES[1..] {
+            let file = parse_only(text).expect("readable");
+            assert!(file.typo.is_empty() && file.radius.is_none() && file.list.is_none(), "{id}: spacing only");
+            assert!(file.layout.as_ref().is_some_and(|l| l.inset.is_none()), "{id}: content stays flush");
+            let foreign: Vec<&String> = file.size.keys().filter(|key| !SPACING_SIZES.contains(&key.as_str())).collect();
+            assert!(foreign.is_empty(), "{id}: {foreign:?}");
+            let design = load(id).expect("built in");
+            assert_eq!((design.typo, design.radius, &design.list), (standard.typo, standard.radius, &standard.list));
+            let widths = |s: &Size| [s.sidebar, s.props, s.panel, s.list, s.list_medium, s.content_max, s.reading_max];
+            assert_eq!(widths(&design.size), widths(&standard.size), "{id}");
+            assert_eq!(design.layout.inset, 0.0);
+        }
+    }
+
+    /// Issue #484: the values of the plan for Comfort and Dense.
+    #[test]
+    fn comfort_and_dense_have_the_values_of_the_plan() {
+        let comfort = load("comfort").expect("comfort");
+        assert_eq!(comfort.space, Space { xs: 4.0, s: 10.0, m: 16.0, l: 20.0, xl: 32.0, xxl: 40.0 });
+        let l = comfort.layout;
         assert_eq!(
-            [level(t.body), level(t.body_strong), level(t.read), level(t.title), level(t.headline)],
-            [(12.0, 18.0); 5]
+            [l.page_padding, l.panel_padding, l.row_padding, l.control_padding, l.reading_padding],
+            [pad(32.0, 32.0), pad(20.0, 20.0), pad(24.0, 32.0), pad(0.0, 16.0), pad(64.0, 80.0)]
         );
-        assert_eq!([level(t.meta), level(t.caption)], [(11.0, 16.0); 2]);
-        assert_eq!([t.body_strong.weight, t.title.weight, t.headline.weight], [Weight::Bold; 3]);
-        let s = console.size;
+        assert_eq!((l.section_gap, l.item_gap), (32.0, 14.0));
+        let s = comfort.size;
+        assert_eq!([s.control_sm, s.control, s.control_lg, s.control_xl], [40.0, 42.0, 44.0, 52.0]);
+        assert_eq!([s.row, s.row_two, s.row_message, s.row_notice], [56.0, 64.0, 116.0, 92.0]);
+        assert_eq!([s.row_sidebar, s.row_group, s.header, s.hour, s.card_gap], [36.0, 44.0, 64.0, 56.0, 16.0]);
+        assert_eq!([s.command, s.pill, s.rail, s.rail_wide], [50.0, 44.0, 64.0, 264.0]);
+        assert_eq!(comfort.density_level(), DensityLevel::Airy);
+
+        let dense = load("dense").expect("dense");
+        assert_eq!(dense.space, Space { xs: 2.0, s: 6.0, m: 8.0, l: 12.0, xl: 16.0, xxl: 24.0 });
+        let l = dense.layout;
         assert_eq!(
-            [s.row_message, s.row_notice, s.row_sidebar, s.header, s.control_sm, s.control_lg],
-            [24.0, 24.0, 24.0, 32.0, 24.0, 28.0]
+            [l.page_padding, l.panel_padding, l.row_padding, l.control_padding, l.reading_padding],
+            [pad(16.0, 16.0), pad(12.0, 12.0), pad(6.0, 16.0), pad(0.0, 8.0), pad(32.0, 40.0)]
         );
-        assert_eq!([s.sidebar, s.list, s.rail, s.rail_wide, s.reading_max], [196.0, 600.0, 40.0, 200.0, 1200.0]);
-        let l = console.layout;
-        assert_eq!((l.inset, l.reading_padding, l.row_padding, l.item_gap), (0.0, pad(14.0, 18.0), pad(0.0, 8.0), 4.0));
-        assert_eq!(console.radius, Radius { xs: 0.0, sm: 0.0, md: 0.0, lg: 0.0 });
-        let look = ListLook {
-            style: ListStyle::Line,
-            separators: false,
-            selection: ListSelection::Fill,
-            avatar: 0.0,
-            preview_lines: 1,
-        };
-        assert_eq!(console.list, look);
-        assert_eq!(
-            (console.about.font.as_deref(), console.about.mail_view),
-            (Some("jetbrains-mono"), Some(MailFormat::Text))
-        );
-        assert_eq!(console.density_level(), DensityLevel::VeryDense);
+        assert_eq!((l.section_gap, l.item_gap), (16.0, 6.0));
+        let s = dense.size;
+        assert_eq!([s.control_sm, s.control, s.control_lg, s.control_xl], [30.0, 32.0, 36.0, 44.0]);
+        assert_eq!([s.row, s.row_two, s.row_message, s.row_notice], [40.0, 48.0, 78.0, 56.0]);
+        assert_eq!([s.row_sidebar, s.row_group, s.header, s.hour, s.card_gap], [28.0, 32.0, 48.0, 40.0, 8.0]);
+        assert_eq!([s.command, s.pill, s.rail, s.rail_wide], [40.0, 36.0, 52.0, 232.0]);
+        assert_eq!(dense.density_level(), DensityLevel::Dense);
+        assert_eq!(dense.list.density(), Density::Compact, "rows, never the old single line");
     }
 
     fn pad(vertical: f32, horizontal: f32) -> Pad {
         Pad { vertical, horizontal }
     }
 
-    /// Issue #291: a folder with the id of a built-in design is refused like `torro`, and loading that
-    /// id never reads the folder.
-    #[test]
-    fn a_folder_named_like_a_built_in_design_is_refused() {
-        let data = Data::new();
-        let dir = data.dir(Part::Design);
-        for id in ["console", "compact"] {
-            written(&data, id, "[size]\nrow = 44\n");
-        }
-        let listed = list(&dir);
-        let entries: Vec<(&str, bool, Vec<DesignError>)> =
-            listed.iter().map(|l| (l.id.as_str(), l.valid(), l.problems().to_vec())).collect();
-        let bad = |id: &str| vec![DesignError::BadId { id: id.into() }];
-        assert_eq!(
-            entries,
-            [
-                (STANDARD_ID, true, vec![]),
-                ("compact", true, vec![]),
-                ("console", true, vec![]),
-                ("compact", false, bad("compact")),
-                ("console", false, bad("console")),
-            ]
-        );
-        assert_eq!(load(&dir, "console").expect("built in").size.row, 24.0, "the built-in one, not the folder");
-    }
-
     /// Task L.19: a `design.toml` with nothing but `[about]` is a design that looks like Torro.
     #[test]
     fn only_about_is_the_standards_form() {
-        let data = Data::new();
-        written(&data, "plain", "");
-        let design = load(&data.dir(Part::Design), "plain").expect("valid");
+        let design = from_toml("plain", "").expect("valid");
         let mut expected = Design::standard();
         expected.id = "plain".into();
-        expected.about = About { name: "plain".into(), version: "1.0.0".into(), ..About::default() };
+        expected.about = About { name: "plain".into(), version: env!("CARGO_PKG_VERSION").into(), ..About::default() };
         assert_eq!(design, expected);
     }
 
+    /// Every key of the format is read and merged.
     #[test]
     fn a_design_with_every_key_loads() {
-        let data = Data::with(Part::Design, &["form"]);
-        let design = load(&data.dir(Part::Design), "form").expect("valid");
-        assert_eq!((design.about.version.as_str(), design.about.author.as_deref()), ("2.1.0", Some("Torro tests")));
-        assert_eq!(design.about.font.as_deref(), Some("plex"));
-        assert_eq!(design.about.mail_view, Some(MailFormat::Text));
+        let body = "[type.title]\nfont = \"heading\"\nsize = 16\nline = 22\nweight = \"semibold\"\n\
+                    [type.hero]\nsize = 44\nline = 52\nweight = \"bold\"\n\
+                    [radius]\nscale = [3, 5, 7, 9]\n\
+                    [layout]\ninset = 10\npage_padding = [24, 32]\nitem_gap = 10\nreading_padding = [40, 48]\n\
+                    [size]\nrow = 44\nsidebar = 248\naxis = 56\nrail = 56\nrail_wide = 240\nreading_max = 680\n\
+                    [list]\nstyle = \"cards\"\nseparators = false\nselection = \"fill\"\navatar = 36\npreview_lines = 2\n";
+        let design = from_toml("form", body).expect("valid");
         assert_eq!(
             design.typo.title,
             Level { font: FontRole::Heading, weight: Weight::Semibold, size: 16.0, line: 22.0 }
@@ -772,11 +743,9 @@ mod tests {
     /// Task E8.2: the reading level and the sizes of the comfortable density are keys of the format.
     #[test]
     fn the_comfortable_tokens_are_read() {
-        let data = Data::new();
         let body = "[type.read]\nsize = 15\nline = 24\n\
                     [size]\ncard_gap = 16\navatar = 40\navatar_lg = 44\ntile_sm = 22\ntile = 30\ntile_lg = 40\n";
-        written(&data, "roomy", body);
-        let design = load(&data.dir(Part::Design), "roomy").expect("valid");
+        let design = from_toml("roomy", body).expect("valid");
         assert_eq!(design.typo.read, Level { font: FontRole::Text, weight: Weight::Regular, size: 15.0, line: 24.0 });
         let s = design.size;
         assert_eq!(
@@ -787,135 +756,101 @@ mod tests {
 
     /// Issue #291: the density follows `[list] style` – `cards` gives cards, a design that leaves the
     /// style out keeps the standard's rows – and `layout.density` is an unknown key. A word the format
-    /// does not know is refused with its line, for `style`, `selection` and `about.mail_view` alike.
+    /// does not know is refused with its line.
     #[test]
     fn the_list_style_gives_the_density_and_layout_density_is_gone() {
-        let data = Data::new();
-        let dir = data.dir(Part::Design);
-        written(&data, "cards", "[list]\nstyle = \"cards\"\n");
-        assert_eq!(load(&dir, "cards").expect("valid").list.density(), Density::Comfortable);
+        let cards = from_toml("cards", "[list]\nstyle = \"cards\"\n").expect("valid");
+        assert_eq!(cards.list.density(), Density::Comfortable);
 
-        written(&data, "rows", "[layout]\nitem_gap = 10\n");
-        let rows = load(&dir, "rows").expect("valid");
+        let rows = from_toml("rows", "[layout]\nitem_gap = 10\n").expect("valid");
         assert_eq!(rows.list, Design::standard().list, "left out: the standard's list stands");
         assert_eq!(rows.list.density(), Density::Compact);
         assert_eq!(rows.layout.item_gap, 10.0, "the rest of the table is still read");
 
-        written(&data, "old", "[layout]\ndensity = \"comfortable\"\n");
-        assert_eq!(problems(&dir, "old"), [DesignError::UnknownKey { key: "layout.density".into() }]);
+        let old = problems("old", "[layout]\ndensity = \"comfortable\"\n");
+        assert_eq!(old, [DesignError::UnknownKey { key: "layout.density".into() }]);
 
-        written(&data, "grid", "[list]\nstyle = \"grid\"\n");
-        written(&data, "outline", "[list]\nselection = \"outline\"\n");
-        let markdown = "format = 1\n[about]\nname = \"x\"\nversion = \"1\"\nmail_view = \"markdown\"\n";
-        data.write(Part::Design, "markdown", markdown);
-        for id in ["grid", "outline", "markdown"] {
-            let refused = problems(&dir, id);
-            assert!(matches!(&refused[..], [DesignError::Syntax { line: Some(_), .. }]), "{id}: {refused:?}");
+        for body in ["[list]\nstyle = \"grid\"\n", "[list]\nselection = \"outline\"\n"] {
+            let refused = problems("word", body);
+            assert!(matches!(&refused[..], [DesignError::Syntax { line: Some(_), .. }]), "{body}: {refused:?}");
         }
-
-        written(&data, "misspelt", "[list]\nstyles = \"rows\"\n");
-        assert_eq!(problems(&dir, "misspelt"), [DesignError::UnknownKey { key: "list.styles".into() }]);
+        let misspelt = problems("misspelt", "[list]\nstyles = \"rows\"\n");
+        assert_eq!(misspelt, [DesignError::UnknownKey { key: "list.styles".into() }]);
     }
 
-    /// Task L.33: colours never belong to a design, so `[about] color_scheme` is an unknown key; the
-    /// font and the mail view are still suggested.
+    /// Issue #484 (task L.33 for the colours): a design suggests nothing – neither a colour scheme, nor
+    /// a font, nor a mail view; each is an unknown key.
     #[test]
-    fn a_design_suggests_no_colour_scheme() {
-        let data = Data::new();
-        let dir = data.dir(Part::Design);
-        let text = "format = 1\n[about]\nname = \"x\"\nversion = \"1\"\ncolor_scheme = \"nord\"\n";
-        data.write(Part::Design, "tinted", text);
-        assert_eq!(problems(&dir, "tinted"), [DesignError::UnknownKey { key: "about.color_scheme".into() }]);
-        let text = "format = 1\n[about]\nname = \"x\"\nversion = \"1\"\nfont = \"plain\"\nmail_view = \"text\"\n";
-        data.write(Part::Design, "plain", text);
-        let about = load(&dir, "plain").expect("valid").about;
-        assert_eq!((about.font.as_deref(), about.mail_view), (Some("plain"), Some(MailFormat::Text)));
+    fn a_design_suggests_nothing() {
+        for key in ["color_scheme = \"nord\"", "font = \"plex\"", "mail_view = \"text\""] {
+            let toml = format!("format = 1\n[about]\nname = \"x\"\nversion = \"1\"\n{key}\n");
+            let Err(problems) = built_in("x", &toml, &mut About::default()) else { panic!("{key} must be refused") };
+            let name = key.split(' ').next().unwrap_or_default();
+            assert_eq!(problems, [DesignError::UnknownKey { key: format!("about.{name}") }]);
+        }
     }
 
     /// Issue #291: the numbers of `[list]` are held to their rules when read from a file.
     #[test]
     fn the_list_numbers_are_checked() {
-        let data = Data::new();
-        let dir = data.dir(Part::Design);
-        written(&data, "odd", "[list]\navatar = 12\npreview_lines = 3\n");
         assert_eq!(
-            problems(&dir, "odd"),
+            problems("odd", "[list]\navatar = 12\npreview_lines = 3\n"),
             [
                 DesignError::OffOrRange { key: "list.avatar".into(), value: 12.0, min: 20.0, max: 48.0 },
                 DesignError::OutOfRange { key: "list.preview_lines".into(), value: 3.0, min: 1.0, max: 2.0 },
             ]
         );
-        written(&data, "off", "[list]\navatar = 0\n");
-        assert_eq!(load(&dir, "off").expect("valid").list.avatar, 0.0, "0 switches the avatar off");
+        let off = from_toml("off", "[list]\navatar = 0\n").expect("valid");
+        assert_eq!(off.list.avatar, 0.0, "0 switches the avatar off");
     }
 
     /// Task L.21: no carry-over of old packs. The fonts, colours and logo of a pack from before task
-    /// L.19 are unknown keys in `design.toml` like any other, so such a pack can't be used and is
-    /// listed with its reasons – a complete one as well as one that held only colours or fonts.
+    /// L.19 are unknown keys in `design.toml` like any other.
     #[test]
     fn the_sections_of_an_old_pack_are_unknown_keys() {
-        let data = Data::with(Part::Design, &["full", "accent-only", "font-only"]);
-        let dir = data.dir(Part::Design);
         let unknown = |keys: &[&str]| -> Vec<DesignError> {
             keys.iter().map(|key| DesignError::UnknownKey { key: (*key).into() }).collect()
         };
-        assert_eq!(problems(&dir, "full"), unknown(&["about.font_license", "colors", "fonts", "logo"]));
-        assert_eq!(problems(&dir, "accent-only"), unknown(&["colors"]));
-        assert_eq!(problems(&dir, "font-only"), unknown(&["about.font_license", "fonts"]));
-
-        written(&data, "dark", "[size]\nrow = 44\n[colors.dark]\naccent = \"#0E7C7B\"\n");
-        let dark = problems(&dir, "dark");
+        let toml = "format = 1\n[about]\nname = \"Full\"\nversion = \"1\"\nfont_license = \"OFL\"\n\
+                    [fonts.text]\nfamily = \"Inter\"\n[colors.dark]\naccent = \"#0E7C7B\"\n[logo]\nmark = \"logo.svg\"\n";
+        let Err(full) = built_in("full", toml, &mut About::default()) else { panic!("must be refused") };
+        assert_eq!(full, unknown(&["about.font_license", "colors", "fonts", "logo"]));
+        let dark = problems("dark", "[size]\nrow = 44\n[colors.dark]\naccent = \"#0E7C7B\"\n");
         assert_eq!(dark, unknown(&["colors"]), "a design with colours is unusable, whatever else it holds");
-        assert_eq!(dark[0].to_string(), DesignError::UnknownKey { key: "colors".into() }.to_string());
-
-        let listed: Vec<(String, bool)> =
-            list(&dir).into_iter().map(|entry| (entry.id.clone(), entry.valid())).collect();
-        let expected = [
-            (STANDARD_ID, true),
-            ("compact", true),
-            ("console", true),
-            ("accent-only", false),
-            ("dark", false),
-            ("font-only", false),
-            ("full", false),
-        ];
-        assert_eq!(listed, expected.map(|(id, valid)| (id.to_string(), valid)), "listed, with their reasons");
     }
 
     #[test]
     fn each_design_rule_has_a_broken_example() {
-        let data = Data::with(
-            Part::Design,
-            &["tiny-type", "short-row", "unknown-key", "format-2", "narrow-axis", "bad-suggestion"],
-        );
-        let dir = data.dir(Part::Design);
         assert_eq!(
-            problems(&dir, "tiny-type"),
+            problems("tiny-type", "[type.caption]\nsize = 9\n"),
             [DesignError::OutOfRange { key: "type.caption.size".into(), value: 9.0, min: 11.0, max: 40.0 }]
         );
         assert_eq!(
-            problems(&dir, "short-row"),
+            problems("short-row", "[size]\nrow = 20\n"),
             [DesignError::OutOfRange { key: "size.row".into(), value: 20.0, min: 24.0, max: 64.0 }]
         );
-        assert_eq!(problems(&dir, "unknown-key"), [DesignError::UnknownKey { key: "size.rowx".into() }]);
-        assert_eq!(problems(&dir, "format-2"), [DesignError::UnsupportedFormat { found: 2 }]);
         assert_eq!(
-            problems(&dir, "narrow-axis"),
-            [DesignError::OutOfRange { key: "size.axis_narrow".into(), value: 40.0, min: 44.0, max: 120.0 }]
+            problems("unknown-key", "[size]\nrowx = 44\n"),
+            [DesignError::UnknownKey { key: "size.rowx".into() }]
         );
+        let Err(format_2) =
+            built_in("format-2", "format = 2\n[about]\nname = \"F\"\nversion = \"1\"\n", &mut About::default())
+        else {
+            panic!("format 2 must be refused")
+        };
+        assert_eq!(format_2, [DesignError::UnsupportedFormat { found: 2 }]);
         assert_eq!(
-            problems(&dir, "bad-suggestion"),
-            [DesignError::BadSuggestion { key: "about.font".into(), id: "IBM Plex".into() }],
-            "a suggestion is only checked to be an id, not to exist"
+            problems("narrow-axis", "[size]\naxis_narrow = 40\n"),
+            [DesignError::OutOfRange { key: "size.axis_narrow".into(), value: 40.0, min: 44.0, max: 120.0 }]
         );
     }
 
     #[test]
     fn required_keys_are_named() {
-        let data = Data::new();
-        let dir = data.dir(Part::Design);
-        data.write(Part::Design, "bare", "[about]\nauthor = \"Nobody\"\n");
-        let keys: Vec<String> = problems(&dir, "bare")
+        let Err(problems) = built_in("bare", "[about]\nauthor = \"Nobody\"\n", &mut About::default()) else {
+            panic!("must be refused")
+        };
+        let keys: Vec<String> = problems
             .into_iter()
             .map(|p| match p {
                 DesignError::MissingKey { key } => key,
@@ -923,74 +858,6 @@ mod tests {
             })
             .collect();
         assert_eq!(keys, ["format", "about.name", "about.version"]);
-        fs::create_dir_all(dir.join("empty")).expect("dir");
-        assert_eq!(
-            problems(&dir, "empty"),
-            [DesignError::MissingFile { key: "design.toml".into(), path: "design.toml".into() }]
-        );
-        assert_eq!(problems(&dir, "gone"), [DesignError::NotFound { part: Part::Design, id: "gone".into() }]);
-        assert_eq!(problems(&dir, "../etc"), [DesignError::BadId { id: "../etc".into() }]);
-    }
-
-    #[test]
-    fn files_are_size_checked_before_reading() {
-        let data = Data::with(Part::Design, &["short-row"]);
-        let toml = data.entry(Part::Design, "short-row").join("design.toml");
-        let mut text = fs::read_to_string(&toml).expect("read");
-        text.push_str(&format!("# {}\n", "x".repeat(70 * 1024)));
-        fs::write(toml, &text).expect("write");
-        assert_eq!(
-            problems(&data.dir(Part::Design), "short-row"),
-            [DesignError::TooLarge { file: "design.toml".into(), limit: "64 KB".into() }]
-        );
-    }
-
-    #[test]
-    fn the_preview_is_a_small_png() {
-        let data = Data::with(Part::Design, &["form"]);
-        let dir = data.dir(Part::Design);
-        let png = |w: u32, h: u32| {
-            let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
-            bytes.extend(w.to_be_bytes());
-            bytes.extend(h.to_be_bytes());
-            bytes
-        };
-        let preview = data.entry(Part::Design, "form").join("preview.png");
-        fs::write(&preview, png(1200, 800)).expect("write");
-        let design = load(&dir, "form").expect("valid");
-        assert_eq!(design.preview, Some(fs::canonicalize(&preview).expect("canonical")));
-        fs::write(&preview, png(1600, 900)).expect("write");
-        assert_eq!(problems(&dir, "form"), [DesignError::PreviewSize { width: 1600, height: 900 }]);
-        fs::write(&preview, b"GIF89a").expect("write");
-        assert!(matches!(problems(&dir, "form")[..], [DesignError::Unreadable { .. }]));
-    }
-
-    #[test]
-    fn list_shows_valid_and_broken_designs_with_reasons() {
-        let data = Data::with(Part::Design, &["form", "short-row", "unknown-key"]);
-        let dir = data.dir(Part::Design);
-        fs::create_dir(dir.join("Bad_Name")).expect("dir");
-        fs::create_dir(dir.join(".hidden")).expect("dir");
-        fs::create_dir(dir.join(STANDARD_ID)).expect("dir");
-        fs::write(dir.join("notes.txt"), "not a design").expect("write");
-        let listed = list(&dir);
-        let ids: Vec<&str> = listed.iter().map(|l| l.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            [STANDARD_ID, "compact", "console", "Bad_Name", "form", "short-row", STANDARD_ID, "unknown-key"],
-            "the built-in designs before the folders"
-        );
-        let valid: Vec<bool> = listed.iter().map(Listed::valid).collect();
-        assert_eq!(valid, [true, true, true, false, true, false, false, false]);
-        assert_eq!(listed[4].about.name, "Form");
-        assert_eq!(listed[5].about.name, "Short row", "a broken design still shows its name");
-        assert_eq!(
-            listed[5].problems(),
-            [DesignError::OutOfRange { key: "size.row".into(), value: 20.0, min: 24.0, max: 64.0 }]
-        );
-        assert_eq!(listed[6].problems(), [DesignError::BadId { id: STANDARD_ID.into() }]);
-        assert_eq!(listed[7].about.name, "unknown-key", "unreadable: the id stands in for the name");
-        assert!(listed.iter().skip(1).all(|l| !l.standard));
     }
 
     fn parse_only(text: &str) -> Result<DesignFile, Vec<DesignError>> {
@@ -1041,15 +908,5 @@ mod tests {
         assert_eq!(file.typo["body"].size, Some(14.0));
         assert_eq!(file.typo["body"].line, Some(21.5));
         assert_eq!(file.size["row"], 44.0);
-    }
-
-    /// The fixture designs as the table test in `design.rs` sees them: every one listed, the old
-    /// packs among them too (task L.21).
-    #[test]
-    fn every_fixture_design_is_listed() {
-        let data = Data::all();
-        let listed: Vec<String> =
-            list(&data.dir(Part::Design)).into_iter().skip(BUILT_IN_IDS.len()).map(|entry| entry.id).collect();
-        assert_eq!(listed, fixture_names(Part::Design));
     }
 }
