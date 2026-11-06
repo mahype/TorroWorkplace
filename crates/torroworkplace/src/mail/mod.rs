@@ -52,6 +52,7 @@ use torro_core::AppId;
 use torro_core::paths::AppPaths;
 
 pub mod backup;
+pub mod check;
 pub mod export;
 pub mod filters;
 pub mod fold;
