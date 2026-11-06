@@ -602,7 +602,8 @@ struct Done {
 
 /// Runs `work` as `job` to its end, then hands the service over when that is due.
 async fn run(inner: Arc<Inner>, work: Work, job: Job) {
-    let outcome = run_steps(&inner, &work, &job).await;
+    let mut done = Done::default();
+    let outcome = run_steps(&inner, &work, &job, &mut done).await;
     // Only the main application's update or install restarts what people see (the control centre);
     // any other hand-over is the service's own business, its clients reconnect.
     let main = work.kind != AppJobKind::Uninstall && work.items.iter().any(|item| item.app == AppId::WORKPLACE);
@@ -613,7 +614,16 @@ async fn run(inner: Arc<Inner>, work: Work, job: Job) {
         }
         Err((app, step, fail)) => {
             job.fail(app.window_class, step, fail.code());
-            None
+            // A later step failed after the bundle this service runs from was replaced or removed
+            // (review of #411): it would go on from the trash, so it hands over all the same.
+            let exe = inner.env.exe.as_deref();
+            let gone = exe.is_some_and(|exe| done.removed.iter().any(|removed| exe.starts_with(removed)));
+            if gone {
+                let newest = Arc::clone(&inner.hooks.read().unwrap_or_else(PoisonError::into_inner).newest_service);
+                hand_over_target(exe, &done, newest(None), &Version::current()).map(|(program, _)| program)
+            } else {
+                None
+            }
         }
     };
     // Until the service handed over the runner stays at work, so no job begins that the ending service
@@ -628,19 +638,19 @@ async fn run(inner: Arc<Inner>, work: Work, job: Job) {
 
 type StepFail = (AppId, AppStep, Fail);
 
-/// The steps of `work`; `Ok` with the program to hand over to, if one is due.
-async fn run_steps(inner: &Arc<Inner>, work: &Work, job: &Job) -> Result<Option<PathBuf>, StepFail> {
+/// The steps of `work`; `Ok` with the program to hand over to, if one is due. What the steps moved
+/// away is noted in `done`, also when a later step fails.
+async fn run_steps(inner: &Arc<Inner>, work: &Work, job: &Job, done: &mut Done) -> Result<Option<PathBuf>, StepFail> {
     let scratch = tempfile::Builder::new()
         .prefix("torro-apps-")
         .tempdir()
         .map_err(|err| (work.connect, AppStep::Download, install::io_fail(&err)))?;
-    let mut done = Done::default();
     for item in &work.items {
         match work.kind {
             AppJobKind::Install | AppJobKind::Update => {
-                install_item(inner, item, job, scratch.path(), &mut done).await?;
+                install_item(inner, item, job, scratch.path(), done).await?;
             }
-            AppJobKind::Uninstall => uninstall_item(inner, item, job, work.remove_data, &mut done).await?,
+            AppJobKind::Uninstall => uninstall_item(inner, item, job, work.remove_data, done).await?,
         }
     }
     let connect = work.connect;
@@ -651,7 +661,7 @@ async fn run_steps(inner: &Arc<Inner>, work: &Work, job: &Job) -> Result<Option<
         let hook = Arc::clone(&inner.hooks.read().unwrap_or_else(PoisonError::into_inner).newest_service);
         hook(None)
     };
-    let target = hand_over_target(inner.env.exe.as_deref(), &done, newest, &Version::current());
+    let target = hand_over_target(inner.env.exe.as_deref(), done, newest, &Version::current());
     let detail = target.as_ref().and_then(|(_, version)| version.as_ref().map(Version::to_string));
     job.done(connect.window_class, AppStep::Connect, detail);
     Ok(target.map(|(program, _)| program))

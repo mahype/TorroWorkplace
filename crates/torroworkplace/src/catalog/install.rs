@@ -247,24 +247,57 @@ pub fn bundle_folder(env: &Env) -> Option<PathBuf> {
     Some(applications)
 }
 
-/// macOS: puts the bundle `new` at `target`; what lay there (`old`, and anything else at `target`) goes
-/// to the trash first. Moved when on the same disk, else copied with `ditto`, which keeps the signature.
+/// macOS: puts the bundle `new` at `target`, so that a failure leaves what was there (review of #411):
+/// `new` first goes beside `target` (`.<name>.new`, moved when on the same disk, else copied with
+/// `ditto`, which keeps the signature), what lies at `target` is renamed aside (`.<name>.old`), then the
+/// new one takes its place; when that fails the old one goes back. Only then do the old one and `old`
+/// (an earlier bundle elsewhere) go to the trash; a bundle the trash refuses stays aside, hidden.
 pub fn place_bundle(
     new: &Path,
     target: &Path,
     old: Option<&Path>,
     discard: &dyn Fn(&Path) -> io::Result<()>,
 ) -> Result<(), Fail> {
-    for gone in old.into_iter().chain([target]) {
-        if std::fs::symlink_metadata(gone).is_ok() {
-            discard(gone).map_err(|err| io_fail(&err))?;
+    let dir = target.parent().ok_or(Fail::Error)?;
+    let name = target.file_name().ok_or(Fail::Error)?.to_string_lossy().into_owned();
+    let there = |path: &Path| std::fs::symlink_metadata(path).is_ok();
+    let clear = |path: &Path| {
+        if there(path) {
+            let _ = std::fs::remove_dir_all(path).or_else(|_| std::fs::remove_file(path));
+        }
+    };
+    let staged = dir.join(format!(".{name}.new"));
+    clear(&staged);
+    if std::fs::rename(new, &staged).is_err() {
+        let copied = quiet("/usr/bin/ditto").arg(new).arg(&staged).status();
+        if !copied.is_ok_and(|status| status.success()) {
+            clear(&staged);
+            return Err(Fail::Error);
         }
     }
-    if std::fs::rename(new, target).is_ok() {
-        return Ok(());
+    let aside = dir.join(format!(".{name}.old"));
+    let had = there(target);
+    if had {
+        clear(&aside);
+        if let Err(err) = std::fs::rename(target, &aside) {
+            clear(&staged);
+            return Err(io_fail(&err));
+        }
     }
-    let copied = quiet("/usr/bin/ditto").arg(new).arg(target).status();
-    if copied.is_ok_and(|status| status.success()) { Ok(()) } else { Err(Fail::Error) }
+    if let Err(err) = std::fs::rename(&staged, target) {
+        if had {
+            let _ = std::fs::rename(&aside, target);
+        }
+        clear(&staged);
+        return Err(io_fail(&err));
+    }
+    let gone = old.filter(|old| *old != target && there(old));
+    for away in had.then_some(aside.as_path()).into_iter().chain(gone) {
+        if let Err(err) = discard(away) {
+            eprintln!("torroworkplace: the old bundle {} stays, the trash refused it: {err}", away.display());
+        }
+    }
+    Ok(())
 }
 
 /// The plain file `program` in `folder` or in a folder directly below it (dist's archives hold one
@@ -331,12 +364,17 @@ pub fn place_program(new: &Path, target: &Path, platform: Platform) -> Result<()
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).map_err(|err| io_fail(&err))?;
     }
-    if platform == Platform::Windows && std::fs::symlink_metadata(target).is_ok() {
-        move_aside(target).inspect_err(|_| {
+    let aside = match platform == Platform::Windows && std::fs::symlink_metadata(target).is_ok() {
+        true => Some(move_aside(target).inspect_err(|_| {
             let _ = std::fs::remove_file(&staged);
-        })?;
-    }
+        })?),
+        false => None,
+    };
     std::fs::rename(&staged, target).map_err(|err| {
+        // The old program goes back, so a failure leaves what was there (review of #411).
+        if let Some(aside) = &aside {
+            let _ = std::fs::rename(aside, target);
+        }
         let _ = std::fs::remove_file(&staged);
         io_fail(&err)
     })
@@ -344,7 +382,7 @@ pub fn place_program(new: &Path, target: &Path, platform: Platform) -> Result<()
 
 /// Windows: renames `program` to `<program>.old` (an older `.old` is deleted, or, while it still runs,
 /// the next free `<program>.<n>.old` is taken). [`sweep_old`] deletes them at the next start.
-fn move_aside(program: &Path) -> Result<(), Fail> {
+fn move_aside(program: &Path) -> Result<PathBuf, Fail> {
     let name = program.file_name().ok_or(Fail::Error)?.to_string_lossy().into_owned();
     let dir = program.parent().ok_or(Fail::Error)?;
     let first = dir.join(format!("{name}.old"));
@@ -353,7 +391,8 @@ fn move_aside(program: &Path) -> Result<(), Fail> {
         .chain((1..10).map(|n| dir.join(format!("{name}.{n}.old"))))
         .find(|path| std::fs::symlink_metadata(path).is_err())
         .ok_or(Fail::Error)?;
-    std::fs::rename(program, free).map_err(|err| io_fail(&err))
+    std::fs::rename(program, &free).map_err(|err| io_fail(&err))?;
+    Ok(free)
 }
 
 /// Windows: deletes what updates renamed aside in `dir` ([`move_aside`]): `<program>.exe.old` and
@@ -563,7 +602,7 @@ pub fn remove(
         let Ok(meta) = std::fs::symlink_metadata(path) else { continue };
         if let Err(err) = discard(path) {
             match platform == Platform::Windows && meta.is_file() {
-                true => move_aside(path)?,
+                true => drop(move_aside(path)?),
                 false => return Err(io_fail(&err)),
             }
         }
@@ -750,6 +789,38 @@ pub(crate) mod tests {
     fn sizes_are_handed_on_as_bytes() {
         assert_eq!(byte_count(24_600_000), "24600000");
         assert_eq!(byte_count(0), "0");
+    }
+
+    /// Review of #411: the new bundle takes the old one's place, the old one and an earlier one elsewhere
+    /// go to the trash afterwards, and nothing is left beside it; with no new bundle the old one stays.
+    #[test]
+    fn a_bundle_replaces_the_old_one_only_once_it_is_in_place() {
+        let dir = tempfile::tempdir().expect("dir");
+        let bundle = |at: &Path, text: &str| {
+            std::fs::create_dir_all(at.join("Contents")).expect("bundle");
+            std::fs::write(at.join("Contents/Info.plist"), text).expect("plist");
+        };
+        let target = dir.path().join("Applications/Torro Tasks.app");
+        let earlier = dir.path().join("home/Applications/Torro Tasks.app");
+        let new = dir.path().join("scratch/Torro Tasks.app");
+        bundle(&target, "old");
+        bundle(&earlier, "earlier");
+        bundle(&new, "new");
+        let trashed: std::cell::RefCell<Vec<PathBuf>> = std::cell::RefCell::default();
+        let discard = |path: &Path| {
+            trashed.borrow_mut().push(path.to_path_buf());
+            std::fs::remove_dir_all(path)
+        };
+        place_bundle(&new, &target, Some(&earlier), &discard).expect("placed");
+        assert_eq!(std::fs::read_to_string(target.join("Contents/Info.plist")).expect("plist"), "new");
+        let aside = dir.path().join("Applications/.Torro Tasks.app.old");
+        assert_eq!(*trashed.borrow(), [aside.clone(), earlier.clone()], "the old ones, after the new one lies");
+        let left: Vec<_> = std::fs::read_dir(dir.path().join("Applications")).expect("dir").flatten().collect();
+        assert_eq!(left.len(), 1, "no staged or aside bundle stays: {left:?}");
+        // Nothing to place: the bundle there stays as it is.
+        let missing = dir.path().join("scratch/gone.app");
+        assert!(place_bundle(&missing, &target, None, &discard).is_err());
+        assert_eq!(std::fs::read_to_string(target.join("Contents/Info.plist")).expect("plist"), "new");
     }
 
     /// Review of #411: the requirement asks for Apple's Developer ID chain and the suite's team, not a
