@@ -241,21 +241,30 @@ pub fn refusal(code: &str) -> &'static str {
     }
 }
 
-/// The apps "Update all" updates: every app the catalog has an update for, never the main
-/// application, whose update restarts the service and asks first ([`Message::SelfUpdate`]).
 /// The entry of `class` in `catalog`: an app or the main application.
 fn entry_of<'a>(catalog: &'a AppCatalog, class: &str) -> Option<&'a CatalogApp> {
     std::iter::once(&catalog.main).chain(&catalog.apps).find(|app| app.window_class == class)
 }
 
+/// The apps "Update all" updates: every app the catalog has an update for, never the main
+/// application, whose update restarts the service and asks first ([`Message::SelfUpdate`]).
 pub fn updatable(catalog: &AppCatalog) -> Vec<String> {
     catalog.apps.iter().filter(|app| app.state == CatalogState::Update).map(|app| app.window_class.clone()).collect()
 }
 
-/// How many updates wait: the apps' and the main application's, for the sidebar's count.
+/// How many updates "Update all" takes, for the sidebar's count: the same number as the button, so
+/// the two never disagree. The main application's update is not counted; its question card says
+/// it, and the sidebar's dot ([`waiting`]).
 pub fn updates(data: &Data) -> usize {
-    let Some(catalog) = data.app_catalog.catalog.listed() else { return 0 };
-    updatable(catalog).len() + usize::from(catalog.main.state == CatalogState::Update)
+    data.app_catalog.catalog.listed().map_or(0, |catalog| updatable(catalog).len())
+}
+
+/// Whether any update waits, the main application's too: the dot on the section's icon.
+pub fn waiting(data: &Data) -> bool {
+    data.app_catalog
+        .catalog
+        .listed()
+        .is_some_and(|catalog| !updatable(catalog).is_empty() || catalog.main.state == CatalogState::Update)
 }
 
 /// Whether a job runs now, so the shell reloads faster and the card follows it.
@@ -447,7 +456,6 @@ fn summary(catalog: &AppCatalog) -> String {
     }
 }
 
-/// "Search apps".
 /// "Search apps", `width` wide: as wide as the sidebar in the header, the page's width over the cards.
 fn search(state: &State, width: Length) -> Element<'_, Message> {
     let field = text_input(tr("Search apps"), &state.query)
@@ -464,8 +472,8 @@ fn search(state: &State, width: Length) -> Element<'_, Message> {
 /// The page: the main application's update when there is one, the installed apps, the missing ones
 /// and the footer with when the catalog was checked; loading and failing as every page.
 ///
-/// `width` is the room of the page inside its margin: wide pages lay the cards out in as many
-/// columns as fit ([`columns`]), medium and narrow ones in one.
+/// `width` is the room of the page inside its margin: the cards stand in as many columns as fit
+/// ([`columns_for`]). A failed check of GitHub says so at the top, over the cards, with "Retry".
 pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass, width: f32) -> Element<'a, Message> {
     let catalog = match &data.app_catalog.catalog {
         Catalog::Loading => return widgets::loading(),
@@ -477,6 +485,9 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass, width: f32) 
     if !matches!(class, SizeClass::Wide | SizeClass::Medium) {
         page = page.push(search(state, Fill));
     }
+    if let Some(code) = catalog.error.as_deref() {
+        page = page.push(check_failed(code));
+    }
     if catalog.main.state == CatalogState::Update {
         page = page.push(main_update(&catalog.main));
     }
@@ -484,7 +495,9 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass, width: f32) 
     let (installed, missing): (Vec<&CatalogApp>, Vec<&CatalogApp>) =
         shown.into_iter().partition(|app| is_installed(app));
     if installed.is_empty() && missing.is_empty() {
-        let hint = if catalog.apps.is_empty() {
+        let hint = if catalog.apps.is_empty() && catalog.checked.is_some() {
+            tr("The newest release has no apps for this system.")
+        } else if catalog.apps.is_empty() {
             tr("The catalog lists the apps of the newest release once it has been checked.")
         } else {
             tr("Try another word, or clear the search.")
@@ -492,14 +505,13 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass, width: f32) 
         let title = if catalog.apps.is_empty() { tr("No apps yet") } else { tr("No app matches") };
         page = page.push(widgets::empty_state(title, hint));
     }
-    let count = |cards: usize| if class == SizeClass::Wide { columns(width, cards) } else { 1 };
+    let columns = columns_for(class, width, catalog.apps.len());
     for (title, apps) in [(tr("Installed"), installed), (trc("app", "Available"), missing)] {
         if apps.is_empty() {
             continue;
         }
         let cards: Vec<Element<'a, Message>> =
             apps.iter().map(|app| card(app, catalog, &data.settings, job, state)).collect();
-        let columns = count(catalog.apps.len());
         page = page.push(column![heading(title, cards.len()), grid(cards, columns)].spacing(space::m()));
     }
     page.push(footer(state, catalog)).into()
@@ -516,10 +528,12 @@ fn heading<'a>(title: &'a str, count: usize) -> Element<'a, Message> {
     .into()
 }
 
-/// The cards in rows of `columns`; a last row that is not full keeps the width of the others.
+/// The cards in rows of `columns`; a last row that is not full keeps the width of the others. One
+/// column is never wider than [`size::content_max()`]: a card stretched over a medium window reads
+/// badly.
 fn grid<'a>(cards: Vec<Element<'a, Message>>, columns: usize) -> Element<'a, Message> {
     if columns <= 1 {
-        return column(cards).spacing(size::card_gap()).into();
+        return column(cards).spacing(size::card_gap()).max_width(size::content_max()).into();
     }
     let mut rows = column![].spacing(size::card_gap());
     let mut cards = cards.into_iter().peekable();
@@ -540,9 +554,39 @@ fn grid<'a>(cards: Vec<Element<'a, Message>>, columns: usize) -> Element<'a, Mes
 /// each with the gaps, at least two, never more than there are cards (and at least one). Both groups
 /// take the count of all apps, so their cards are equally wide.
 pub fn columns(width: f32, cards: usize) -> usize {
+    fit(width).max(2).min(cards.max(1))
+}
+
+/// How many cards of at least [`size::panel()`] fit side by side in `width`, with the gaps.
+fn fit(width: f32) -> usize {
     let gap = size::card_gap();
-    let fit = ((width + gap) / (size::panel() + gap)).floor().max(0.0) as usize;
-    fit.max(2).min(cards.max(1))
+    ((width + gap) / (size::panel() + gap)).floor().max(0.0) as usize
+}
+
+/// The columns of the page in `class`: wide ones [`columns`]; medium ones two (or more) where two
+/// cards of [`size::panel()`] fit, else one; narrow ones one.
+pub fn columns_for(class: SizeClass, width: f32, cards: usize) -> usize {
+    match class {
+        SizeClass::Wide => columns(width, cards),
+        SizeClass::Medium if fit(width) >= 2 => columns(width, cards),
+        _ => 1,
+    }
+}
+
+/// A failed check of GitHub, at the top of the page: the attention mark, what happened and "Retry".
+/// The catalog of the last check stays under it.
+fn check_failed<'a>(code: &str) -> Element<'a, Message> {
+    let what = if code == "offline" { tr("Couldn't reach GitHub.") } else { tr("GitHub's answer couldn't be read.") };
+    let mark = torro_gui::icon::icon(Icon::TriangleAlert, torro_gui::icon::SIZE)
+        .style(|t, _| iced::widget::svg::Style { color: Some(theme::palette(t).attention_text) });
+    row![
+        mark,
+        typo::text(typo::body(), what).style(theme::text_2),
+        widgets::text_button(Some(Icon::RefreshCw), tr("Retry"), style::button::ghost, Some(Message::Check)),
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center)
+    .into()
 }
 
 /// The question card of the main application's update: "Torro Workplace 0.2.0 is available", what
@@ -560,9 +604,10 @@ fn main_update<'a>(main: &CatalogApp) -> Element<'a, Message> {
     widgets::question_card(Icon::Download, title, detail, actions)
 }
 
-/// One app's card, after the target picture: its version and "Release notes" at the top, icon, name
-/// and question, its state, its sentence, its window class (what a window rule needs), and its one
-/// button with the menu "…".
+/// One app's card: icon, name and question on top, its state, its sentence, a quiet line with its
+/// version ("0.1.0 › 0.2.0"), its window class (what a window rule needs) and more, and its one
+/// button with the menu "…". "Release notes" is in that menu: every card would point to the same
+/// release.
 fn card<'a>(
     app: &'a CatalogApp,
     catalog: &'a AppCatalog,
@@ -571,16 +616,6 @@ fn card<'a>(
     state: &'a State,
 ) -> Element<'a, Message> {
     let offer = offer(app, settings, job);
-    let mut top = row![version_line(app)].spacing(space::s()).align_y(Alignment::Center);
-    top = top.push(blank::horizontal());
-    if catalog.release_url.is_some() && app.available.is_some() {
-        top = top.push(widgets::text_button(
-            Some(Icon::ArrowUpRight),
-            tr("Release notes"),
-            style::button::ghost,
-            Some(Message::ReleaseNotes),
-        ));
-    }
     let (question, sentence) = words(&app.window_class);
     let icon = app_id(app).map_or(Icon::LayoutGrid, shell::app_icon);
     let ident = row![
@@ -593,17 +628,23 @@ fn card<'a>(
     ]
     .spacing(space::m())
     .align_y(Alignment::Center);
-    let mut parts: Vec<Element<'a, Message>> =
-        vec![top.into(), ident.into(), widgets::chip_row(vec![pill(app, &offer, settings)])];
+    let mut parts: Vec<Element<'a, Message>> = vec![ident.into(), widgets::chip_row(vec![pill(app, &offer, settings)])];
     if !sentence.is_empty() {
         parts.push(typo::text(typo::meta(), sentence).style(theme::text_2).wrapping(Wrapping::WordOrGlyph).into());
     }
-    parts.push(typo::text(typo::meta(), meta_line(app, catalog)).style(theme::text_3).into());
+    let meta = typo::text(typo::meta(), format!("· {}", meta_line(app))).style(theme::text_3);
+    let mut quiet = column![row![version_line(app), meta].spacing(space::xs()).align_y(Alignment::Center).wrap()]
+        .spacing(space::xs());
+    if let Some(needed) = needed_line(app, catalog) {
+        quiet = quiet.push(typo::text(typo::meta(), needed).style(theme::text_3).wrapping(Wrapping::WordOrGlyph));
+    }
+    parts.push(quiet.into());
     parts.push(actions(app, &offer, state));
     widgets::card(parts, false, None)
 }
 
-/// "0.1.0 → 0.2.0" for an update, else the installed version, or "Version 0.2.0" for a missing app.
+/// "0.1.0 › 0.2.0" for an update (the chevron an icon, the new version in `text`), else the installed
+/// version, or the release's for a missing app.
 fn version_line<'a>(app: &CatalogApp) -> Element<'a, Message> {
     let figure = |text: String| typo::text(typo::meta().tabular(), text).style(theme::text_3).wrapping(Wrapping::None);
     match (&app.installed, &app.available) {
@@ -617,7 +658,7 @@ fn version_line<'a>(app: &CatalogApp) -> Element<'a, Message> {
         .align_y(Alignment::Center)
         .into(),
         (Some(installed), _) => figure(installed.clone()).into(),
-        (None, Some(available)) => figure(trf("Version {version}", &[("version", available)])).into(),
+        (None, Some(available)) => figure(available.clone()).into(),
         (None, None) => figure(String::new()).into(),
     }
 }
@@ -647,20 +688,23 @@ fn pill<'a>(app: &CatalogApp, offer: &Offer<'_>, settings: &Settings) -> Element
     }
 }
 
-/// The quiet line under the sentence: the window class (for window rules), the download's size of
-/// a missing app, and which installed apps need it.
-fn meta_line(app: &CatalogApp, catalog: &AppCatalog) -> String {
+/// The quiet line under the sentence, after the version: the window class (for window rules) and the
+/// download's size of a missing app.
+fn meta_line(app: &CatalogApp) -> String {
     let mut parts = vec![app.window_class.clone()];
     if !is_installed(app)
         && let Some(bytes) = app.size
     {
         parts.push(units::format_bytes(bytes));
     }
-    let needed = needed_by(app, catalog);
-    if !needed.is_empty() {
-        parts.push(trf("Needed by {apps}", &[("apps", &needed.join(", "))]));
-    }
     parts.join(" · ")
+}
+
+/// "Needed by Torro Mail, Torro App Feed" under the meta line of an app others bring along, on a
+/// line of its own so the version line never breaks in the middle.
+fn needed_line(app: &CatalogApp, catalog: &AppCatalog) -> Option<String> {
+    let needed = needed_by(app, catalog);
+    (!needed.is_empty()).then(|| trf("Needed by {apps}", &[("apps", &needed.join(", "))]))
 }
 
 /// The card's one button (or the command of its package manager, or how far its job is) and "…".
@@ -730,47 +774,23 @@ fn command_field<'a>(command: &'a str) -> Element<'a, Message> {
     row![field, copy].spacing(space::s()).align_y(Alignment::Center).width(Fill).into()
 }
 
-/// The footer: when the catalog was checked and where from, or that GitHub could not be reached,
-/// with "Retry".
+/// The footer: when the catalog was last checked and where from, calm also after a failed check
+/// (that one is said at the top, [`check_failed`]), or "Checking…" while it is asked.
 fn footer<'a>(state: &'a State, catalog: &'a AppCatalog) -> Element<'a, Message> {
-    let now = Utc::now();
-    let mark = |which: Icon, attention: bool| {
-        torro_gui::icon::icon(which, torro_gui::icon::SIZE_SM).style(move |t, _| {
-            let p = theme::palette(t);
-            iced::widget::svg::Style { color: Some(if attention { p.attention_text } else { p.text_3 }) }
-        })
-    };
-    let quiet = |text: String| typo::text(typo::meta(), text).style(theme::text_3);
     if state.checking {
         return widgets::refresh_note(tr("Checking for updates…"));
     }
-    let checked = catalog.checked.map(|at| checked_words(at, now));
-    let line: Element<'a, Message> = match catalog.error.as_deref() {
-        Some(code) => {
-            let what =
-                if code == "offline" { tr("Couldn't reach GitHub.") } else { tr("GitHub's answer couldn't be read.") };
-            let mut words = vec![what.to_string()];
-            words.extend(checked);
-            row![
-                mark(Icon::TriangleAlert, true),
-                quiet(words.join(" ")),
-                widgets::text_button(Some(Icon::RefreshCw), tr("Retry"), style::button::ghost, Some(Message::Check)),
-            ]
-            .spacing(space::s())
-            .align_y(Alignment::Center)
-            .into()
-        }
-        None => {
-            let checked = checked.unwrap_or_else(|| tr("Not checked yet").to_string());
-            let text = format!("{checked} · {}", tr("from the releases on GitHub"));
-            let text: Element<'a, Message> = match catalog.checked {
-                Some(at) => widgets::with_tooltip(quiet(text), format_exact(at)),
-                None => quiet(text).into(),
-            };
-            row![mark(Icon::Check, false), text].spacing(space::s()).align_y(Alignment::Center).into()
-        }
+    let quiet = |text: String| typo::text(typo::meta(), text).style(theme::text_3);
+    let checked = catalog.checked.map_or_else(|| tr("Not checked yet").to_string(), |at| checked_words(at, Utc::now()));
+    let text = format!("{checked} · {}", tr("from the releases on GitHub"));
+    let text: Element<'a, Message> = match catalog.checked {
+        Some(at) => widgets::with_tooltip(quiet(text), format_exact(at)),
+        None => quiet(text).into(),
     };
-    line
+    let which = if catalog.error.is_some() { Icon::Clock } else { Icon::Check };
+    let mark = torro_gui::icon::icon(which, torro_gui::icon::SIZE_SM)
+        .style(|t, _| iced::widget::svg::Style { color: Some(theme::palette(t).text_3) });
+    row![mark, text].spacing(space::s()).align_y(Alignment::Center).into()
 }
 
 /// "Checked just now" within a minute, else "Checked Today 15:39" ([`format_moment`]).
@@ -959,7 +979,7 @@ pub fn demo_job(done: bool) -> AppJobInfo {
         apps: vec![app.clone()],
         kind: AppJobKind::Install,
         steps: vec![
-            step(AppStep::Download, StepStatus::Done, Some("24.6 MB")),
+            step(AppStep::Download, StepStatus::Done, Some("25795000")),
             step(AppStep::Verify, StepStatus::Done, Some(signed)),
             step(AppStep::Install, install, Some(folder)),
             step(AppStep::Connect, connect, None),
@@ -1155,7 +1175,13 @@ mod tests {
         );
         assert_eq!(updates(&data_with(catalog.clone())), 2);
         catalog.main.state = CatalogState::Update;
-        assert_eq!(updates(&data_with(catalog.clone())), 3, "the main application's update counts");
+        // The sidebar counts what "Update all" takes; the main application's update gives the dot.
+        assert_eq!(updates(&data_with(catalog.clone())), 2, "as many as Update all");
+        assert!(waiting(&data_with(catalog.clone())));
+        let mut only_main = catalog.clone();
+        only_main.apps.iter_mut().for_each(|app| app.state = CatalogState::Installed);
+        assert_eq!(updates(&data_with(only_main.clone())), 0);
+        assert!(waiting(&data_with(only_main)), "the dot alone");
         let data = data_with(catalog.clone());
         let state = State::default();
         assert_eq!(header(&state, &data, SizeClass::Wide).actions.len(), 3, "check, search, update all");
@@ -1172,6 +1198,12 @@ mod tests {
         assert_eq!(columns(3.0 * size::panel() + 2.0 * size::card_gap(), 6), 3);
         assert_eq!(columns(5000.0, 3), 3);
         assert_eq!(columns(5000.0, 0), 1);
+        // Medium: two columns once two cards fit, else one (capped at the content's width).
+        let two = 2.0 * size::panel() + size::card_gap();
+        assert_eq!(columns_for(SizeClass::Medium, two, 6), 2);
+        assert_eq!(columns_for(SizeClass::Medium, two - 1.0, 6), 1);
+        assert_eq!(columns_for(SizeClass::Narrow, 5000.0, 6), 1);
+        assert_eq!(columns_for(SizeClass::Wide, 700.0, 6), 2);
     }
 
     /// A refused job says why in words for people; the job's id comes back otherwise.

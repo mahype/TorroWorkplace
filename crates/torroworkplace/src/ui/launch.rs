@@ -221,6 +221,14 @@ pub enum Open {
     AppsManaged,
     /// The section after GitHub could not be reached: the catalog of three days ago, "Retry".
     AppsOffline,
+    /// The section with the main application's update waiting: its question card over the cards.
+    AppsMainUpdate,
+    /// The section with a catalog that lists no app: its empty state.
+    AppsEmpty,
+    /// The section with "Photoshop" in the search: no app matches.
+    AppsNoMatch,
+    /// The section when the catalog could not be loaded: the error state with "Retry".
+    AppsError,
     /// The window of a job (`ui --app-job`): the Assistant being installed, at its step "Install".
     AppsInstall,
     /// That window once the Assistant is installed: "Close" and "Open Torro Assistant".
@@ -240,7 +248,7 @@ impl Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 119] = [
+    pub const ALL: [(&'static str, Open); 123] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -356,6 +364,10 @@ impl Open {
         ("apps-installing", Open::AppsInstalling),
         ("apps-managed", Open::AppsManaged),
         ("apps-offline", Open::AppsOffline),
+        ("apps-main-update", Open::AppsMainUpdate),
+        ("apps-empty", Open::AppsEmpty),
+        ("apps-nomatch", Open::AppsNoMatch),
+        ("apps-error", Open::AppsError),
         ("apps-install", Open::AppsInstall),
         ("apps-installed", Open::AppsInstalled),
         ("apps-uninstall", Open::AppsUninstall),

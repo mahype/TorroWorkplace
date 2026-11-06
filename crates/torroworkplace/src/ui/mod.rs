@@ -1158,6 +1158,30 @@ impl Ui {
                 }
                 vec![Message::Select(Section::Apps)]
             }
+            // The main application's update waits: its question card over the cards.
+            Open::AppsMainUpdate => {
+                if let apps::Catalog::Listed(catalog) = &mut self.data.app_catalog.catalog {
+                    catalog.main.installed = Some("0.1.0".into());
+                    catalog.main.state = torro_ipc::CatalogState::Update;
+                }
+                vec![Message::Select(Section::Apps)]
+            }
+            Open::AppsEmpty => {
+                if let apps::Catalog::Listed(catalog) = &mut self.data.app_catalog.catalog {
+                    catalog.apps.clear();
+                }
+                vec![Message::Select(Section::Apps)]
+            }
+            Open::AppsNoMatch => {
+                vec![Message::Select(Section::Apps), Message::Apps(apps::Message::Query("Photoshop".into()))]
+            }
+            Open::AppsError => {
+                self.data.app_catalog = apps::Loaded {
+                    catalog: apps::Catalog::Failed("the core refused apps.list_catalog".into()),
+                    job: None,
+                };
+                vec![Message::Select(Section::Apps)]
+            }
             Open::AppsOffline => {
                 if let apps::Catalog::Listed(catalog) = &mut self.data.app_catalog.catalog {
                     catalog.error = Some("offline".into());
@@ -2111,8 +2135,9 @@ impl Ui {
                 widgets::Mark::Badged(section.icon(), palette.error_text)
             }
             (Section::Connections, Some(_)) => widgets::Mark::Badged(section.icon(), palette.attention_text),
-            // Updates wait (issue #411): the dot as for an account that needs the person.
-            (Section::Apps, _) if apps::updates(&self.data) > 0 => {
+            // Updates wait, the main application's too (issue #411): the dot as for an account that
+            // needs the person; the count beside it is that of "Update all".
+            (Section::Apps, _) if apps::waiting(&self.data) => {
                 widgets::Mark::Badged(section.icon(), palette.attention_text)
             }
             _ => widgets::Mark::Icon(section.icon()),

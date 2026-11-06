@@ -38,7 +38,7 @@ use torro_gui::shell;
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, TileFace, TileSize};
 use torro_gui::zoom::{self, Zoom};
-use torro_gui::{style, typo};
+use torro_gui::{style, typo, units};
 use torro_ipc::{
     AppCatalog, AppJobInfo, AppJobKind, AppJobState, AppJobStep, AppStep, Request, Response, StepStatus, client,
 };
@@ -174,6 +174,9 @@ pub enum Event {
     WhatsNew,
     /// "Try again" after a failed install or update.
     Retry,
+    /// Enter: the primary button of the offer ("Update and restart") and of a finished job ("Open
+    /// <app>"); never the uninstall, which is confirmed with a click.
+    Enter,
     SystemMode(SystemMode),
     Zoom(zoom::Message),
     DragWindow,
@@ -225,17 +228,11 @@ fn target_of(launch: &Launch) -> Target {
 }
 
 /// The window for `target`: [`size::panel()`] wide, borderless, in the middle of the screen, not
-/// resizable; on Linux with the dialog's class, which Hyprland floats. As high as its stage needs: a
-/// job's steps take [`size::panel()`], the question before an uninstall [`size::props()`], the offer
-/// of the main application's update [`size::sidebar()`].
+/// resizable; on Linux with the dialog's class, which Hyprland floats. As high as its stage needs
+/// ([`window_height`]).
 pub fn window_settings(target: &Target) -> iced::window::Settings {
     let mut settings = torro_gui::window(AppId::WORKPLACE);
-    let height = match target {
-        Target::Follow(_) => size::panel(),
-        Target::Uninstall(_) => size::props(),
-        Target::SelfUpdate => size::sidebar(),
-    };
-    settings.size = Size::new(size::panel(), height);
+    settings.size = Size::new(size::panel(), window_height(target));
     settings.decorations = false;
     settings.resizable = false;
     settings.position = iced::window::Position::Centered;
@@ -244,6 +241,30 @@ pub fn window_settings(target: &Target) -> iced::window::Settings {
         settings.platform_specific.application_id = torro_core::app::WORKPLACE_DIALOG_CLASS.to_string();
     }
     settings
+}
+
+/// How high the window of `target` is: what its stage shows, from the design's tokens, so every
+/// design gets the room its type and rows need – the margin, the hero (title and sentence, with a line
+/// to spare for longer words in other languages), the middle (a job's four steps and its progress, the
+/// check box of an uninstall, the link "What's new" of the offer) and the row of buttons.
+pub fn window_height(target: &Target) -> f32 {
+    let line = typo::line_height;
+    let hero = |titles: f32, lines: f32| titles * line(typo::title()) + space::xs() + lines * line(typo::body());
+    let gap = space::l();
+    let content = match target {
+        Target::Follow(_) => {
+            let steps = 4.0 * size::row_sidebar() + 3.0 * space::xs();
+            let progress = line(typo::meta()) + space::s() + space::xs();
+            hero(1.0, 2.0) + gap + steps + gap + progress
+        }
+        Target::Uninstall(_) => {
+            let option = line(typo::body_strong()) + space::xs() + 3.0 * line(typo::meta());
+            hero(2.0, 3.0) + gap + option
+        }
+        // The link under the sentence (with its gap and padding), then the empty middle's gap.
+        Target::SelfUpdate => hero(2.0, 3.0) + space::xs() + space::s() + size::control_sm() + gap,
+    };
+    2.0 * space::xl() + content + gap + size::control_sm()
 }
 
 /// The target of a demo state of the window (`--demo --open apps-install` …).
@@ -419,6 +440,11 @@ impl Window {
                 Some(app) => Step::Send(Request::OpenApp { app: app.clone(), target: None }, Reply::Opened),
                 None => Step::Exit,
             },
+            Event::Enter => match &self.stage {
+                Stage::Offer => self.update(Event::Confirm),
+                Stage::Job(job) if job.state == AppJobState::Done => self.update(Event::OpenApp),
+                _ => Step::None,
+            },
             Event::WhatsNew => match self.catalog.as_ref().and_then(|catalog| catalog.release_url.clone()) {
                 Some(url) => Step::OpenUrl(url),
                 None => Step::None,
@@ -556,7 +582,7 @@ impl Window {
     fn view(&self) -> Element<'_, Event> {
         let body = match &self.stage {
             Stage::Loading | Stage::Starting => {
-                self.frame(self.hero(self.status_line()), None, vec![], widgets::loading())
+                self.frame(self.hero(self.status_line(), None), None, vec![], widgets::loading())
             }
             Stage::Ask { remove_data } => self.ask(*remove_data),
             Stage::Offer => self.offer(),
@@ -574,15 +600,19 @@ impl Window {
         if app == AppId::WORKPLACE { "Torro Workplace".into() } else { format!("Torro {}", shell::app_name(app)) }
     }
 
-    /// The big icon and the name, and the line under it; the window is dragged by it.
-    fn hero<'a>(&self, line: String) -> Element<'a, Event> {
+    /// The big icon and the name, the line under it and, where there is one, a link under that
+    /// ("What's new"); the window is dragged by it.
+    fn hero<'a>(&self, line: String, link: Option<Element<'a, Event>>) -> Element<'a, Event> {
         let tile = widgets::source_tile(TileFace::Icon(shell::app_icon(self.app())), TileSize::Large, None);
-        let words = column![
+        let mut words = column![
             typo::text(typo::title(), self.headline()).wrapping(Wrapping::WordOrGlyph),
             typo::text(typo::body(), line).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
         ]
         .spacing(space::xs())
         .width(Fill);
+        if let Some(link) = link {
+            words = words.push(container(link).padding([space::xs(), 0.0]));
+        }
         let hero = row![tile, words].spacing(space::l()).align_y(Alignment::Start);
         mouse_area(hero).on_press(Event::DragWindow).into()
     }
@@ -661,20 +691,27 @@ impl Window {
             widgets::text_button(None, tr("Uninstall app"), style::button::danger, Some(Event::Confirm)),
         ];
         let line = tr("It moves to the trash and leaves the app switcher.").to_string();
-        self.frame(self.hero(line), None, buttons, option.into())
+        self.frame(self.hero(line, None), None, buttons, option.into())
     }
 
-    /// "Torro Workplace 0.2.0 is available": what restarts, "What's new", "Later", "Update and restart".
+    /// "Torro Workplace 0.2.0 is available": what restarts, "What's new" as a quiet link under the
+    /// sentence (never in the row of buttons, where long words would push it under them), "Later" and
+    /// "Update and restart".
     fn offer(&self) -> Element<'_, Event> {
         let line = tr("The service and this window restart; your apps stay open and reconnect.").to_string();
-        let whats_new = self.catalog.as_ref().and_then(|catalog| catalog.release_url.as_ref()).map(|_| Event::WhatsNew);
-        let whats_new =
-            widgets::text_button(Some(Icon::ArrowUpRight), tr("What's new"), style::button::ghost, whats_new);
+        let whats_new = self.catalog.as_ref().and_then(|catalog| catalog.release_url.as_ref()).map(|_| {
+            widgets::text_button(
+                Some(Icon::ArrowUpRight),
+                tr("What's new"),
+                style::button::ghost,
+                Some(Event::WhatsNew),
+            )
+        });
         let buttons = vec![
             widgets::text_button(None, tr("Later"), style::button::secondary, Some(Event::Close)),
             widgets::text_button(None, tr("Update and restart"), style::button::primary, Some(Event::Confirm)),
         ];
-        self.frame(self.hero(line), Some(whats_new), buttons, Space::new().into())
+        self.frame(self.hero(line, whats_new), None, buttons, Space::new().into())
     }
 
     /// A running or finished job: its steps, the progress, and "Cancel" or "Close" and "Open <app>".
@@ -695,14 +732,13 @@ impl Window {
         .spacing(space::s());
         let middle = column![steps(job), progress].spacing(space::l());
         let (note, buttons) = match job.state {
+            // "Cancel" only while it can stop the job: once it checks or installs, it runs to its end.
             AppJobState::Running => (
                 Some(tr("You can keep working while it runs.").to_string()),
-                vec![widgets::text_button(
-                    None,
-                    tr("Cancel"),
-                    style::button::secondary,
-                    cancellable(job).then_some(Event::Cancel),
-                )],
+                cancellable(job)
+                    .then(|| widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Event::Cancel)))
+                    .into_iter()
+                    .collect(),
             ),
             AppJobState::Done => {
                 let open = trf("Open {app}", &[("app", &self.name())]);
@@ -728,7 +764,7 @@ impl Window {
                 (None, buttons)
             }
         };
-        self.frame(self.hero(line), note.map(quiet), buttons, middle.into())
+        self.frame(self.hero(line, None), note.map(quiet), buttons, middle.into())
     }
 
     /// The main application restarts: its steps done, and that the control centre opens again.
@@ -739,7 +775,7 @@ impl Window {
             None => Space::new().into(),
         };
         let note = quiet(tr("Your apps stay open and reconnect by themselves.").to_string());
-        self.frame(self.hero(line.to_string()), Some(note), vec![], middle)
+        self.frame(self.hero(line.to_string(), None), Some(note), vec![], middle)
     }
 
     /// The job could not start or is lost: why, "Close", and "Try again" where it can.
@@ -754,7 +790,7 @@ impl Window {
             row![mark, typo::text(typo::body(), why).style(theme::text_2).wrapping(Wrapping::WordOrGlyph).width(Fill)]
                 .spacing(space::s())
                 .align_y(Alignment::Start);
-        self.frame(self.hero(self.name()), None, buttons, middle.into())
+        self.frame(self.hero(self.name(), None), None, buttons, middle.into())
     }
 }
 
@@ -784,10 +820,21 @@ fn steps<'a>(job: &'a AppJobInfo) -> Element<'a, Event> {
     } else {
         job.steps
             .iter()
-            .map(|step| step_row(step.status, step_label(step.step, job.kind).to_string(), step.detail.clone()))
+            .map(|step| step_row(step.status, step_label(step.step, job.kind).to_string(), step_detail(step)))
             .collect()
     };
     column(rows).spacing(space::xs()).into()
+}
+
+/// The detail at the right of a step: the size of the download formatted here from the core's byte
+/// count ([`units::format_bytes`], as the card formats the release's size), the rest as the core
+/// gave it. A Download detail that is no count is shown as it came.
+pub fn step_detail(step: &AppJobStep) -> Option<String> {
+    let detail = step.detail.as_ref()?;
+    match (step.step, detail.parse::<u64>()) {
+        (AppStep::Download, Ok(bytes)) => Some(units::format_bytes(bytes)),
+        _ => Some(detail.clone()),
+    }
 }
 
 /// How one app of a job with several stands: failed when a step failed, done when all are, at
@@ -906,6 +953,7 @@ pub fn is_new(version: &str, expected: Option<&str>) -> bool {
 fn keys(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Event> {
     match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Escape), .. }) => Some(Event::Close),
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Enter), .. }) => Some(Event::Enter),
         _ => None,
     }
 }
@@ -1114,6 +1162,40 @@ mod tests {
         assert_eq!(retry_request(&uninstall), None, "an uninstall asks again instead");
     }
 
+    /// The size of a download comes from the core as bytes and is formatted here, as on the card;
+    /// other details stay as they came.
+    #[test]
+    fn the_download_size_is_formatted_here() {
+        let step = |step: AppStep, detail: &str| AppJobStep {
+            app: "torro-assistant".into(),
+            step,
+            status: StepStatus::Done,
+            detail: Some(detail.into()),
+        };
+        assert_eq!(step_detail(&step(AppStep::Download, "25795000")), Some(units::format_bytes(25_795_000)));
+        assert_eq!(step_detail(&step(AppStep::Install, "/Applications")).as_deref(), Some("/Applications"));
+        assert_eq!(step_detail(&step(AppStep::Download, "24.6 MB")).as_deref(), Some("24.6 MB"), "an older core");
+    }
+
+    /// Enter is the primary button of the offer and of a finished job, never of the uninstall.
+    #[test]
+    fn enter_presses_the_primary_button() {
+        let mut offer = window(Target::SelfUpdate);
+        assert_eq!(
+            offer.update(Event::Enter),
+            Step::Send(Request::UpdateApps { apps: vec![MAIN_APP.into()] }, Reply::Started)
+        );
+        let mut ask = window_for_uninstall();
+        assert_eq!(ask.update(Event::Enter), Step::None);
+        let mut done = window(Target::Follow("j".into()));
+        let finished = job(AppJobState::Done, AppJobKind::Install, false);
+        let _ = done.update(Event::Answer(Reply::Polled, Ok(Response::AppJob { job: finished })));
+        assert_eq!(
+            done.update(Event::Enter),
+            Step::Send(Request::OpenApp { app: "torro-assistant".into(), target: None }, Reply::Opened)
+        );
+    }
+
     /// The restarted service is the one with the expected version, or any other than this one.
     #[test]
     fn the_new_service_is_told_by_its_version() {
@@ -1152,7 +1234,8 @@ mod tests {
         assert_eq!(demo_target(Some(Open::Menu)), None);
         let settings = window_settings(&Target::Follow("j".into()));
         assert!(!settings.decorations && !settings.resizable);
-        assert_eq!(settings.size, Size::new(size::panel(), size::panel()));
+        assert_eq!(settings.size, Size::new(size::panel(), window_height(&Target::Follow("j".into()))));
         assert!(window_settings(&Target::SelfUpdate).size.height < settings.size.height);
+        assert!(window_height(&Target::Uninstall("a".into())) < window_height(&Target::Follow("j".into())));
     }
 }
