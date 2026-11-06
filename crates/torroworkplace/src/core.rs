@@ -3446,6 +3446,9 @@ impl Core {
     /// from `accounts_file` (task E4.1, [`crate::mail::inbox_feed`]). Part of [`Core::start`],
     /// before the mail sync starts, so no change is missed.
     pub(crate) fn start_mail_feed(&self, accounts_file: Option<std::path::PathBuf>) {
+        // "Logos of known senders" (issue #453), read afresh for every mail and every answer.
+        let settings = self.settings.clone();
+        self.mail.set_logo_switch(Arc::new(move || settings.current().mail_sender_logos));
         crate::mail::inbox_feed::start_with(
             Arc::clone(&self.inbox),
             Arc::clone(&self.mail),
