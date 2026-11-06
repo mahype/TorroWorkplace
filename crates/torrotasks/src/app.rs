@@ -1935,7 +1935,23 @@ impl App {
             widgets::icon_button(Icon::ListFilter, tr("Display"), Some(Message::ToggleDisplay))
         };
         let narrow = !matches!(class, SizeClass::Wide | SizeClass::Medium);
-        let new_button = if narrow {
+        // Issue #484: "New task" keeps its word only while the head holds it beside the title, "{n}
+        // open" and Display – beside the detail the list is narrow, and a roomier level wider.
+        let open = trf("{n} open", &[("n", &list::open_count(&self.todos, &self.filter, self.today))]);
+        let display_width = match width >= HEAD_LABELS_FROM {
+            true => widgets::text_button_width(true, tr("Display")),
+            false => size::control_sm(),
+        };
+        let title_width = icon::SIZE
+            + 6.0
+            + typo::text_width(&name, typo::body_strong())
+            + 6.0
+            + typo::text_width(&open, typo::body());
+        let needed = title_width + display_width + widgets::text_button_width(true, tr("New task")) + 3.0 * space::s();
+        // The head stands where `header` puts it: after the top row's lead, 16 and 12 from its edges.
+        let room = width - space::l() - space::m() - shell::head_inset(class, self.sidebar, self.zoom.factor());
+        let words = room >= needed;
+        let new_button = if narrow || !words {
             widgets::compact_button(Icon::Plus, tr("New task"), style::button::primary, Some(new_task))
         } else {
             widgets::text_button(Some(Icon::Plus), tr("New task"), style::button::primary, Some(new_task))
@@ -1949,7 +1965,6 @@ impl App {
         }
         if !narrow {
             // Wide and medium have the sidebar or the rail for the navigation.
-            let open = trf("{n} open", &[("n", &list::open_count(&self.todos, &self.filter, self.today))]);
             return shell::header_bar([], shell::header_title(icon, name, Some(open)), trailing);
         }
         // The top row has the panel button beside the lights (issue #459): a narrow window has no room
