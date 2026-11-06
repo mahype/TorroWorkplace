@@ -313,6 +313,115 @@ fn query_words(query: &str) -> Vec<&str> {
     words
 }
 
+/// The group "Archive" of the filter menu (issue #476): whether the search leaves the archive out,
+/// takes it with the rest or looks only there. Exactly one holds; it is written into the field as
+/// the search language says it (`-in:archive`, `in:inbox OR in:archive`, `in:archive`) and read back
+/// from there, like the other quick filters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Archive {
+    /// Without the archive: `-in:archive`.
+    Without,
+    /// The archive with the rest: with words, what the search finds anyway; without, the inboxes and
+    /// the archives (`in:inbox OR in:archive`).
+    With,
+    /// Only the archive: `in:archive`.
+    Only,
+}
+
+impl Archive {
+    /// The choices in the order of the menu.
+    pub const ALL: [Archive; 3] = [Archive::Without, Archive::With, Archive::Only];
+
+    /// What the menu says.
+    pub fn label(self) -> &'static str {
+        match self {
+            Archive::Without => tr("Without archive"),
+            Archive::With => tr("With archive"),
+            Archive::Only => tr("Only archive"),
+        }
+    }
+}
+
+/// The words "Only archive" and "Without archive" write.
+const IN_ARCHIVE: &str = "in:archive";
+const NOT_IN_ARCHIVE: &str = "-in:archive";
+
+/// The three words "With archive" writes when nothing else is in the field.
+const WITH_ARCHIVE: [&str; 3] = ["in:inbox", "OR", "in:archive"];
+
+/// The archive's words in `words` as `(index, length)` spans with the choice they mean, in any case:
+/// `-in:archive`, the three words of "With archive" in a row, or a single `in:archive`.
+fn archive_spans(words: &[&str]) -> Vec<(usize, usize, Archive)> {
+    let is = |word: &str, wanted: &str| word.eq_ignore_ascii_case(wanted);
+    let mut spans = Vec::new();
+    let mut at = 0;
+    while at < words.len() {
+        let with = words.len() - at >= WITH_ARCHIVE.len()
+            && is(words[at], WITH_ARCHIVE[0])
+            // `OR` joins only in capitals, as the core reads it.
+            && words[at + 1] == WITH_ARCHIVE[1]
+            && is(words[at + 2], WITH_ARCHIVE[2]);
+        if with {
+            spans.push((at, WITH_ARCHIVE.len(), Archive::With));
+            at += WITH_ARCHIVE.len();
+            continue;
+        }
+        if is(words[at], NOT_IN_ARCHIVE) {
+            spans.push((at, 1, Archive::Without));
+        } else if is(words[at], IN_ARCHIVE) {
+            spans.push((at, 1, Archive::Only));
+        }
+        at += 1;
+    }
+    spans
+}
+
+/// The words of `query` without the archive's ([`archive_spans`]).
+fn without_archive_words(query: &str) -> Vec<&str> {
+    let words = query_words(query);
+    let spans = archive_spans(&words);
+    words
+        .into_iter()
+        .enumerate()
+        .filter(|(at, _)| !spans.iter().any(|&(from, len, _)| (from..from + len).contains(at)))
+        .map(|(_, word)| word)
+        .collect()
+}
+
+/// Whether `query` names the archive at all (one of [`Archive`]'s words): the filter icon is lit then.
+pub fn has_archive(query: &str) -> bool {
+    !archive_spans(&query_words(query)).is_empty()
+}
+
+/// What holds for the archive without a word of its own in `query` (issue #476, decision 1 of the
+/// plan): the archive is in a search – anything in the field, words or other quick filters, makes one
+/// –, so "With archive"; the list without a search leaves it out, "Without archive".
+pub fn archive_default(query: &str) -> Archive {
+    if without_archive_words(query).is_empty() { Archive::Without } else { Archive::With }
+}
+
+/// What holds for the archive in `query`: its word, the first if there are several, else
+/// [`archive_default`].
+pub fn archive(query: &str) -> Archive {
+    archive_spans(&query_words(query)).first().map_or_else(|| archive_default(query), |&(_, _, chosen)| chosen)
+}
+
+/// `query` with `chosen` for the archive: its words taken out, then only what differs from the
+/// default appended – "Only archive" always `in:archive`, "Without archive" `-in:archive` while other
+/// words stay (an empty field is the list without it), "With archive" the inboxes and archives only
+/// while no other word stays (a search takes the archive anyway). The other words stay as typed.
+pub fn set_archive(query: &str, chosen: Archive) -> String {
+    let mut kept = without_archive_words(query);
+    let rest = !kept.is_empty();
+    match chosen {
+        Archive::Only => kept.push(IN_ARCHIVE),
+        Archive::Without if rest => kept.push(NOT_IN_ARCHIVE),
+        Archive::With if !rest => kept.extend(WITH_ARCHIVE),
+        Archive::Without | Archive::With => {}
+    }
+    join(kept.into_iter())
+}
+
 /// The quick filters set in `query`, in the order of the menu.
 pub fn active(query: &str, today: NaiveDate) -> Vec<QuickFilter> {
     let words = query_words(query);
@@ -337,10 +446,12 @@ pub fn toggle(query: &str, filter: QuickFilter, today: NaiveDate) -> String {
     join(kept.into_iter())
 }
 
-/// `query` without the operators of its active quick filters; an `after:` with another date stays.
+/// `query` without the operators of its active quick filters and the archive's words (issue #476:
+/// back to the default); an `after:` with another date stays.
 pub fn without_filters(query: &str, today: NaiveDate) -> String {
     let set = active(query, today);
-    join(query_words(query).into_iter().filter(|word| !set.iter().any(|filter| filter.is_set(word, today))))
+    let rest = join(without_archive_words(query).into_iter());
+    join(query_words(&rest).into_iter().filter(|word| !set.iter().any(|filter| filter.is_set(word, today))))
 }
 
 fn join<'a>(words: impl Iterator<Item = &'a str>) -> String {
@@ -593,13 +704,16 @@ fn field_row<'a>(bar: &Bar<'a>, icon: bool) -> Element<'a, Message> {
     }
     // Always there, so the icon does not jump when "Clear search" comes and goes.
     let set = active(bar.input, bar.today);
-    let tip = if set.is_empty() {
+    // The archive's word lights it too (issue #476), named as the menu names its choice.
+    let archive = has_archive(bar.input).then(|| archive(bar.input).label());
+    let mut names: Vec<&str> = set.iter().map(|filter| filter.label()).collect();
+    names.extend(archive);
+    let tip = if names.is_empty() {
         tr("Filters").to_owned()
     } else {
-        let names: Vec<&str> = set.iter().map(|filter| filter.label()).collect();
         trf("Filtered: {filters}", &[("filters", &names.join(", "))])
     };
-    let toggle = widgets::icon_toggle(Icon::Filter, tip, !set.is_empty(), Some(Message::ToggleSearchFilters));
+    let toggle = widgets::icon_toggle(Icon::Filter, tip, !names.is_empty(), Some(Message::ToggleSearchFilters));
     top.push(widgets::anchored(&bar.filters, toggle)).into()
 }
 
@@ -736,6 +850,10 @@ pub fn status_line<'a>(shown: usize, more: bool, found: &Found) -> Element<'a, M
 /// The empty states of a search: before the first word, what can be searched for; without a
 /// match, to try other words – and, while the index is incomplete, that older mail may still come.
 pub fn empty_texts(search: &SearchView) -> (Icon, &'static str, &'static str) {
+    // "Only archive" without a word (issue #476): the archive, as its own view said before.
+    if search.query.eq_ignore_ascii_case(IN_ARCHIVE) {
+        return (Icon::Archive, tr("No archived mail."), tr("Mail you archive shows up here."));
+    }
     if search.query.is_empty() {
         (
             Icon::Search,
@@ -820,7 +938,10 @@ struct DemoQuery {
     from: Vec<String>,
     to: Vec<String>,
     subject: Vec<String>,
-    folder: Option<String>,
+    /// The folders of `in:` (issue #476: `in:inbox OR in:archive`): one of them must hold the mail.
+    folders: Vec<String>,
+    /// The folders of `-in:`: none of them may hold it.
+    not_folders: Vec<String>,
     attachment: bool,
     flags: Vec<(Flag, bool)>,
     /// The days mail must be from, or later (`after:`); like the core, from midnight UTC.
@@ -836,14 +957,17 @@ impl DemoQuery {
                 continue;
             }
             if let Some(word) = token.strip_prefix('-') {
-                parsed.without.push(word.to_owned());
+                match word.split_once(':') {
+                    Some(("in", folder)) => parsed.not_folders.push(folder.to_owned()),
+                    _ => parsed.without.push(word.to_owned()),
+                }
                 continue;
             }
             match token.split_once(':') {
                 Some(("from", who)) => parsed.from.push(who.to_owned()),
                 Some(("to", who)) => parsed.to.push(who.to_owned()),
                 Some(("subject", word)) => parsed.subject.push(word.to_owned()),
-                Some(("in", folder)) => parsed.folder = Some(folder.to_owned()),
+                Some(("in", folder)) => parsed.folders.push(folder.to_owned()),
                 Some(("has", "attachment" | "attachments")) => parsed.attachment = true,
                 Some(("is", "unread")) => parsed.flags.push((Flag::Seen, false)),
                 Some(("is", "read")) => parsed.flags.push((Flag::Seen, true)),
@@ -874,10 +998,8 @@ impl DemoQuery {
             && self.from.iter().all(|who| from.contains(who))
             && self.to.iter().all(|who| to.contains(who))
             && self.subject.iter().all(|word| subject.contains(word))
-            && self.folder.as_ref().is_none_or(|wanted| {
-                folder_word(folder).trim_matches('"').eq_ignore_ascii_case(wanted)
-                    || folder.name.eq_ignore_ascii_case(wanted)
-            })
+            && (self.folders.is_empty() || self.folders.iter().any(|wanted| names_folder(folder, wanted)))
+            && !self.not_folders.iter().any(|wanted| names_folder(folder, wanted))
             && (!self.attachment || summary.has_attachments)
             && self.flags.iter().all(|(flag, set)| summary.flags.contains(flag) == *set)
             && self.after.iter().all(|day| summary.date.date_naive() >= *day)
@@ -891,6 +1013,11 @@ impl DemoQuery {
             .map(|word| 3 * subject.matches(word.as_str()).count() + text.matches(word.as_str()).count())
             .sum()
     }
+}
+
+/// Whether `wanted` (the value of an `in:`, small letters) names `folder`: its role's word or its name.
+fn names_folder(folder: &Folder, wanted: &str) -> bool {
+    folder_word(folder).trim_matches('"').eq_ignore_ascii_case(wanted) || folder.name.eq_ignore_ascii_case(wanted)
 }
 
 /// The account the demo still indexes, so the line on missing matches can be seen.
@@ -1271,6 +1398,91 @@ mod tests {
         assert_eq!(without_filters("is:unread", today), "");
         assert_eq!(without_filters("budget after:2026-01 after:2026-10-20", today), "budget after:2026-01");
         assert_eq!(without_filters("budget -is:unread", today), "budget -is:unread");
+    }
+
+    /// Issue #476: the archive's choice is read from the field – its words in any case, else the
+    /// default: without the archive in a list, with it in a search (also one of filters alone).
+    #[test]
+    fn the_archive_is_read_from_the_field_with_its_default() {
+        assert_eq!(archive(""), Archive::Without, "the list leaves it out");
+        assert_eq!(archive("budget"), Archive::With, "a search takes it");
+        assert_eq!(archive("is:flagged"), Archive::With, "filters alone are a search too");
+        assert_eq!(archive("in:archive"), Archive::Only);
+        assert_eq!(archive("budget IN:Archive"), Archive::Only, "any case");
+        assert_eq!(archive("budget -in:archive"), Archive::Without);
+        assert_eq!(archive("in:inbox OR in:archive"), Archive::With);
+        assert_eq!(archive_default("in:inbox OR in:archive"), Archive::Without, "nothing else in the field");
+        assert_eq!(archive_default("in:archive budget"), Archive::With);
+        assert_eq!(archive("in:inbox or in:archive"), Archive::Only, "a small `or` joins nothing");
+        assert_eq!(archive("offer OR in:archive"), Archive::Only, "another OR leaves a single in:archive");
+        assert!(has_archive("x in:archive") && has_archive("-in:archive x") && !has_archive("budget"));
+        assert!(!has_archive("in:archived") && !has_archive("subject:\"in:archive\""), "only the whole word");
+        for chosen in Archive::ALL {
+            assert!(!chosen.label().is_empty());
+        }
+    }
+
+    /// Issue #476: choosing writes only what differs from the default – an empty field stays the
+    /// list, a search with words takes the archive without a word – and takes the other choices out.
+    #[test]
+    fn choosing_the_archive_writes_only_what_differs_from_the_default() {
+        assert_eq!(set_archive("", Archive::Only), "in:archive");
+        assert_eq!(set_archive("", Archive::With), "in:inbox OR in:archive");
+        assert_eq!(set_archive("", Archive::Without), "", "the list itself");
+        assert_eq!(set_archive("budget", Archive::Only), "budget in:archive");
+        assert_eq!(set_archive("budget", Archive::With), "budget", "a search takes it anyway");
+        assert_eq!(set_archive("budget", Archive::Without), "budget -in:archive");
+        assert_eq!(set_archive("budget in:archive", Archive::Without), "budget -in:archive");
+        assert_eq!(set_archive("in:archive", Archive::With), "in:inbox OR in:archive");
+        assert_eq!(set_archive("in:inbox OR in:archive", Archive::Without), "");
+        assert_eq!(set_archive("in:inbox OR in:archive is:unread", Archive::Only), "is:unread in:archive");
+        assert_eq!(set_archive("is:unread in:inbox OR in:archive", Archive::With), "is:unread");
+        for chosen in Archive::ALL {
+            for query in ["", "budget", "is:flagged from:anna"] {
+                assert_eq!(archive(&set_archive(query, chosen)), chosen, "{query:?} → {chosen:?}");
+            }
+        }
+        // "Clear filters" goes back to the default.
+        assert_eq!(without_filters("budget -in:archive is:unread", today()), "budget");
+        assert_eq!(without_filters("in:inbox OR in:archive", today()), "");
+        assert_eq!(without_filters("in:archive", today()), "");
+    }
+
+    /// Issue #476: the demo reads `in:` with `OR` as one of the folders and `-in:` as none of them, so
+    /// the three choices find what the core would.
+    #[test]
+    fn the_demo_reads_the_archive_choices() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("a time");
+        let source = DemoSource::new(now);
+        let find = |query: &str| MailFind {
+            account: None,
+            folder: None,
+            query: query.into(),
+            sort: MailSort::Date,
+            order: Order::NewestFirst,
+            limit: u32::MAX,
+            cursor: None,
+        };
+        let folders = source.mail_folders().expect("folders");
+        let role = |message: &MessageSummary| {
+            folders.iter().find(|folder| folder.id == message.folder).and_then(|folder| folder.role)
+        };
+        let only = demo_find(&source, find("in:archive")).expect("found").messages;
+        assert!(!only.is_empty() && only.iter().all(|message| role(message) == Some(Role::Archive)));
+        let with = demo_find(&source, find("in:inbox OR in:archive")).expect("found").messages;
+        assert!(with.iter().any(|message| role(message) == Some(Role::Archive)), "the archive");
+        assert!(with.iter().any(|message| role(message) == Some(Role::Inbox)), "and the inboxes");
+        assert!(with.iter().all(|message| matches!(role(message), Some(Role::Inbox | Role::Archive))));
+        let without = demo_find(&source, find("-in:archive")).expect("found").messages;
+        assert!(!without.is_empty() && without.iter().all(|message| role(message) != Some(Role::Archive)));
+        // "Only archive" a page at a time, as the archive's view was: the first page's cursor goes on.
+        let first = demo_find(&source, MailFind { limit: 1, ..find("in:archive") }).expect("found");
+        assert_eq!(first.messages.len(), 1);
+        let cursor = first.cursor.expect("a second page");
+        let second = demo_find(&source, MailFind { limit: 1, cursor: Some(cursor), ..find("in:archive") });
+        let second = second.expect("found").messages;
+        assert_eq!(second.len(), 1);
+        assert_ne!(second[0].id, first.messages[0].id, "the next one");
     }
 
     #[test]
