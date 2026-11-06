@@ -131,6 +131,28 @@ pub fn to_markup(html: &str) -> (String, Option<String>) {
     (tidy(lines).join("\n"), history)
 }
 
+/// Plain `text` as the compose window's markup ([`crate::markup`]), so that the marks it reads
+/// stay text (issue #502, writing on a draft saved without HTML in an account that writes
+/// formatted mail): characters that would be marks get a `\` in front, and a line that would start
+/// a list item too. Quoted lines (`>`) stay quotes, their text escaped the same way. White space in
+/// a line is collapsed, as HTML shows it.
+pub fn plain_to_markup(text: &str) -> String {
+    let text = text.replace("\r\n", "\n");
+    let mut out = Vec::new();
+    for line in text.split('\n') {
+        let rest = line.trim_start();
+        let marks = rest.find(|c: char| c != '>' && c != ' ').filter(|_| rest.starts_with('>')).unwrap_or(0);
+        let (quote, words) = rest.split_at(if rest.starts_with('>') && marks == 0 { rest.len() } else { marks });
+        let mut gathered = marked_text(words);
+        let mut lines = Vec::new();
+        end_lines(&mut gathered, &mut lines);
+        let words = lines.concat();
+        let quote = quote.trim_end();
+        out.push(if quote.is_empty() { words } else { format!("{quote} {words}").trim_end().to_owned() });
+    }
+    out.join("\n")
+}
+
 /// `html`, cleaned ([`sanitize`]), with `signature` as `<div class="torro-signature">-- <br>…</div>`
 /// (each line of it escaped, line breaks as `<br>`) in front of the first top-level element with
 /// the class [`QUOTE_CLASS`], else at the end. A missing or blank signature adds nothing.
@@ -749,7 +771,8 @@ fn marked_lines(nodes: &[Node]) -> Vec<String> {
         match node {
             Node::Text(text) => line.push_str(&marked_text(text)),
             Node::Element(element) if !is_block(element.name) && element.name != "li" => {
-                let piece = marked_piece(element, &line, nodes.get(at + 1));
+                let next = nodes.get(at + 1).and_then(|node| text_of(std::slice::from_ref(node)).chars().next());
+                let piece = marked_piece(element, line.chars().next_back(), next);
                 line.push_str(&piece);
             }
             Node::Element(element) => {
@@ -821,17 +844,19 @@ fn marked_block(element: &Element) -> Vec<String> {
 }
 
 /// An inline element as markup: the marks around its content, white space at its edges outside
-/// them (the markup wants text right inside a mark).
-fn marked_inline(element: &Element) -> String {
-    let inner = marked_children(&element.children);
+/// them (the markup wants text right inside a mark). `before` and `after` are the characters
+/// around it, which its content sees where it has none of its own beside it.
+fn marked_inline(element: &Element, before: Option<char>, after: Option<char>) -> String {
+    let marked = |inside: Option<char>| marked_children(&element.children, inside, inside);
     let wrap = |mark: &str| {
+        let inner = marked(mark.chars().next());
         let trimmed = inner.trim();
         if trimmed.is_empty() || trimmed.contains('\n') {
             return inner.clone();
         }
-        let before = &inner[..inner.len() - inner.trim_start().len()];
-        let after = &inner[inner.trim_end().len()..];
-        format!("{before}{mark}{trimmed}{mark}{after}")
+        let lead = &inner[..inner.len() - inner.trim_start().len()];
+        let tail = &inner[inner.trim_end().len()..];
+        format!("{lead}{mark}{trimmed}{mark}{tail}")
     };
     match element.name {
         "br" => "\n".to_owned(),
@@ -839,35 +864,42 @@ fn marked_inline(element: &Element) -> String {
         "em" | "i" => wrap("*"),
         "u" => wrap("__"),
         "a" => {
-            let Some(href) = element.attr("href") else { return inner };
+            let Some(href) = element.attr("href") else { return marked_children(&element.children, before, after) };
             let shown = text_of(&element.children);
             // An address shown as itself became a link by itself (`markup::to_html`).
             if shown.trim() == href && (href.starts_with("http://") || href.starts_with("https://")) {
                 return href.to_owned();
             }
+            let inner = marked(Some('['));
             let label = inner.trim();
             if label.is_empty() || href.contains([')', ' ']) {
-                return inner;
+                return marked_children(&element.children, before, after);
             }
             format!("[{label}]({href})")
         }
-        _ => inner,
+        // No mark of its own: its content stands where it stands.
+        _ => marked_children(&element.children, before, after),
     }
 }
 
-/// The markup of inline content.
-fn marked_children(nodes: &[Node]) -> String {
+/// The markup of inline content between the characters `before` and `after` (`None`: an edge).
+fn marked_children(nodes: &[Node], before: Option<char>, after: Option<char>) -> String {
     let mut out = String::new();
     for (at, node) in nodes.iter().enumerate() {
+        let next = match nodes.get(at + 1) {
+            Some(node) => text_of(std::slice::from_ref(node)).chars().next(),
+            None => after,
+        };
+        let prev = out.chars().next_back().or(before);
         match node {
             Node::Text(text) => out.push_str(&marked_text(text)),
             Node::Element(element) if is_block(element.name) || element.name == "li" => {
                 out.push(' ');
-                out.push_str(&marked_children(&element.children));
+                out.push_str(&marked_children(&element.children, None, None));
                 out.push(' ');
             }
             Node::Element(element) => {
-                let piece = marked_piece(element, &out, nodes.get(at + 1));
+                let piece = marked_piece(element, prev, next);
                 out.push_str(&piece);
             }
         }
@@ -875,15 +907,22 @@ fn marked_children(nodes: &[Node]) -> String {
     out
 }
 
-/// The inline `element` after the markup `before` and before the node `next`: with its marks
-/// ([`marked_inline`]), but bold, italic and underline right at a letter or digit only as their
-/// text. The markup reads a mark only at a word's edge, so `**Bold**text` would stay as stars.
-fn marked_piece(element: &Element, before: &str, next: Option<&Node>) -> String {
+/// The inline `element` between the characters `before` and `after`: with its marks
+/// ([`marked_inline`]), but bold, italic and underline whose text starts or ends right at a letter
+/// or digit outside only as their text. The markup reads a mark only at a word's edge, so
+/// `**Bold**text` would stay as stars; white space inside the element keeps it apart.
+fn marked_piece(element: &Element, before: Option<char>, after: Option<char>) -> String {
     let wrapping = matches!(element.name, "strong" | "b" | "em" | "i" | "u");
-    let after = next.map(|node| text_of(std::slice::from_ref(node))).unwrap_or_default();
-    let glued = before.chars().next_back().is_some_and(char::is_alphanumeric)
-        || after.chars().next().is_some_and(char::is_alphanumeric);
-    if wrapping && glued { marked_children(&element.children) } else { marked_inline(element) }
+    let inner = text_of(&element.children);
+    let starts_word = inner.chars().next().is_some_and(|c| !c.is_whitespace());
+    let ends_word = inner.chars().next_back().is_some_and(|c| !c.is_whitespace());
+    let glued = (starts_word && before.is_some_and(char::is_alphanumeric))
+        || (ends_word && after.is_some_and(char::is_alphanumeric));
+    if wrapping && glued {
+        marked_children(&element.children, before, after)
+    } else {
+        marked_inline(element, before, after)
+    }
 }
 
 /// The text inside `nodes`, without any marks.
@@ -898,7 +937,8 @@ fn text_of(nodes: &[Node]) -> String {
 }
 
 /// `text` with white space as single spaces and every character the markup would read as a mark
-/// escaped: `\`, `*`, `[`, `]` and `_` next to another `_` (only `__` is a mark).
+/// escaped: `\`, `*`, `[`, `]`, and `_` next to another `_` or at the text's edge, where the
+/// next node may bring one (only `__` is a mark).
 fn marked_text(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -909,7 +949,8 @@ fn marked_text(text: &str) -> String {
             }
             continue;
         }
-        let doubled = c == '_' && (chars.get(at + 1) == Some(&'_') || at > 0 && chars[at - 1] == '_');
+        let edge = at == 0 || at + 1 == chars.len();
+        let doubled = c == '_' && (edge || chars.get(at + 1) == Some(&'_') || at > 0 && chars[at - 1] == '_');
         if (matches!(c, '\\' | '*' | '[' | ']') || doubled) && MARKS.contains(c) {
             out.push('\\');
         }
@@ -1134,6 +1175,31 @@ mod tests {
         assert_eq!(to_html(&text, None), html, "{text}");
         let (heading, _) = to_markup("<h1>Title</h1><p><b>Bold</b>text and x<em>y</em></p>");
         assert_eq!(heading, "Title\n\nBoldtext and xy", "marks at a letter would stay stars");
+        // Issue #502, second review: nested and wrapped marks see the letters outside them, white
+        // space inside keeps them apart, and an underscore before an underline stays text.
+        for (html, markup) in [
+            ("<p>x<b><i>y</i></b></p>", "xy"),
+            ("<p><s><b>y</b></s>z</p>", "yz"),
+            ("<p>Hello<b> world</b></p>", "Hello **world**"),
+            ("<p><b>x </b>y</p>", "**x** y"),
+            ("<p>_<u>x</u></p>", "\\___x__"),
+        ] {
+            assert_eq!(to_markup(html).0, markup, "{html}");
+        }
+        assert_eq!(to_html(&to_markup("<p>_<u>x</u></p>").0, None), "<p>_<u>x</u></p>");
+        let plain = "Price 2 * 3, see *the file*.\n- not a list\n> quoted **text**\n>\n>> deeper";
+        let markup = plain_to_markup(plain);
+        assert_eq!(
+            markup,
+            "Price 2 \\* 3, see \\*the file\\*.\n\\- not a list\n> quoted \\*\\*text\\*\\*\n>\n>> deeper"
+        );
+        assert_eq!(
+            to_html(&markup, None),
+            concat!(
+                "<p>Price 2 * 3, see *the file*.<br>- not a list</p>",
+                "<blockquote><p>quoted **text**</p><blockquote><p>deeper</p></blockquote></blockquote>",
+            )
+        );
         assert_eq!(to_markup("").0, "");
     }
 }
