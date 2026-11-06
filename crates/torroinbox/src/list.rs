@@ -1494,6 +1494,39 @@ pub(crate) fn flag_field<'a>() -> (Element<'a, Message>, f32) {
     (widgets::with_tooltip(field, tr("Flagged")), edge)
 }
 
+/// The field of a mail's category beside the flag in the slim list (issue #485), with its width: as
+/// high and round as [`flag_field`], the category's `symbol` dark on the colour of its main category
+/// (`group`, the place in `Palette::category`) like the flag on `attention`, since white would read
+/// too weakly on the light group colours. A category a model only `suggested` gets no fill, a frame
+/// and the symbol in the group colour. `tip` names the category.
+pub(crate) fn category_field<'a>(
+    symbol: Icon,
+    group: usize,
+    suggested: bool,
+    tip: String,
+) -> (Element<'a, Message>, f32) {
+    let edge = typo::line_height(typo::body());
+    let colour = move |t: &Theme| {
+        let p = palette(t);
+        p.category[group.min(p.category.len() - 1)]
+    };
+    let mark = icon::icon(symbol, icon::SIZE_SM).style(move |t: &Theme, _| svg::Style {
+        color: Some(if suggested { mark_colour(t, colour(t)) } else { theme::Palette::dark().bg }),
+    });
+    let field = container(mark).center(edge).style(move |t: &Theme| match suggested {
+        true => container::Style {
+            border: border::rounded(radius::xs()).color(mark_colour(t, colour(t))).width(size::HAIRLINE),
+            ..container::Style::default()
+        },
+        false => container::Style {
+            background: Some(Background::Color(colour(t))),
+            border: border::rounded(radius::xs()),
+            ..container::Style::default()
+        },
+    });
+    (widgets::with_tooltip(field, tip), edge)
+}
+
 /// The marker slot of a mail row ([`mail_row_left`] wide, `height` high): the unread dot centred in it
 /// while the mail is `new`. The selection's `bar` takes its width from this slot; the dot stays at the
 /// same x.
