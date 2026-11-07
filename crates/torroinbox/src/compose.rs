@@ -1652,7 +1652,7 @@ pub struct Window<S> {
     show_bcc: bool,
     subject: String,
     body: Document,
-    clipboard_busy: bool,
+    clipboard_busy: Option<u64>,
     pending_paste: Option<(u64, u64)>,
     edit_generation: u64,
     paste_hint: Option<PasteHint>,
@@ -1760,7 +1760,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             show_bcc: false,
             subject: String::new(),
             body: Content::new().into(),
-            clipboard_busy: false,
+            clipboard_busy: None,
             pending_paste: None,
             edit_generation: 0,
             paste_hint: None,
@@ -1899,9 +1899,21 @@ impl<S: ComposeSource + 'static> Window<S> {
     }
 
     fn image_loaded(&mut self, id: u64, account: String, result: Result<PreparedImage, ComposeError>) -> Task<Message> {
+        if self.pending_paste.is_some_and(|(pending, _)| pending == id)
+            && let Some(error) = result.as_ref().err().cloned()
+        {
+            // Clipboard image failures restore the selection just like reader/conversion
+            // failures. Query actual widget focus before merging the reserved text blocks.
+            return self
+                .body
+                .focused_text()
+                .map(move |focused| Message::ClipboardFocused(id, account.clone(), Err(error.clone()), focused));
+        }
         if self.pending_paste.is_some_and(|(pending, _)| pending == id) {
             self.pending_paste = None;
-            self.clipboard_busy = false;
+        }
+        if self.clipboard_busy == Some(id) {
+            self.clipboard_busy = None;
         }
         if self.sender().is_none_or(|s| s.account != account) || self.body.picture(id).is_none() {
             return result.map_or_else(|_| Task::none(), |image| self.release(account, vec![image.id]));
@@ -1939,14 +1951,16 @@ impl<S: ComposeSource + 'static> Window<S> {
         result: Result<images::Clipboard, ComposeError>,
         focused: Option<u64>,
     ) -> Task<Message> {
-        self.clipboard_busy = false;
+        if self.clipboard_busy == Some(id) {
+            self.clipboard_busy = None;
+        }
         if self.sender().is_none_or(|s| s.account != account) || self.body.picture(id).is_none() {
             self.pending_paste = None;
             return Task::none();
         }
         match result {
             Ok(images::Clipboard::Unavailable) => {
-                self.clipboard_busy = true;
+                self.clipboard_busy = Some(id);
                 iced::clipboard::read().map(move |text| {
                     Message::ClipboardRead(
                         id,
@@ -1956,7 +1970,7 @@ impl<S: ComposeSource + 'static> Window<S> {
                 })
             }
             Ok(images::Clipboard::Html { html, text }) => {
-                self.clipboard_busy = true;
+                self.clipboard_busy = Some(id);
                 let generation = self.pending_paste.map_or(self.edit_generation, |(_, generation)| generation);
                 let suite = self.suite.clone();
                 Task::perform(prepare_clipboard(suite, html, text), move |result| {
@@ -1976,19 +1990,21 @@ impl<S: ComposeSource + 'static> Window<S> {
                 self.finish_import(!failed, focus)
             }
             Ok(images::Clipboard::Image(bytes)) => {
-                self.pending_paste = None;
                 if self.attachments.len() + self.body.pictures().count() > MAX_ATTACHMENTS
                     || self.body.pictures().any(|p| p.block != id && p.loading)
                 {
                     // The image limits must not swallow ordinary text paste. The placeholder
                     // was reserved regardless of those limits; only actual image data is refused.
                     let focus = self.body.restore_reservation(id);
+                    self.pending_paste = None;
                     self.notice = Some(Notice::plain(tr("Too many images are being prepared. Try again later.")));
                     self.touch();
                     return self.finish_import(false, focus && focused.is_some());
                 }
                 let source = self.source.clone();
                 let ask = account.clone();
+                self.clipboard_busy = Some(id);
+                self.pending_paste.get_or_insert((id, self.edit_generation));
                 Task::perform(async move { upload_pixels(source, ask, bytes).await }, move |result| {
                     Message::ImageLoaded(id, account.clone(), result)
                 })
@@ -2051,7 +2067,9 @@ impl<S: ComposeSource + 'static> Window<S> {
         result: Result<html::Paste, ComposeError>,
         focused: Option<u64>,
     ) -> Task<Message> {
-        self.clipboard_busy = false;
+        if self.clipboard_busy == Some(id) {
+            self.clipboard_busy = None;
+        }
         self.pending_paste = None;
         if self.sender().is_none_or(|s| s.account != account) || self.body.picture(id).is_none() {
             return Task::none();
@@ -2326,14 +2344,14 @@ impl<S: ComposeSource + 'static> Window<S> {
             }
             Message::PasteImage | Message::PastePlain => {
                 if self.editable() {
-                    if self.clipboard_busy {
+                    if self.clipboard_busy.is_some() {
                         self.notice = Some(Notice::plain(tr("A paste is still being prepared. Try again shortly.")));
                         return Task::none();
                     }
                     let plain = matches!(message, Message::PastePlain);
                     let account = self.sender().map(|s| s.account.clone()).unwrap_or_default();
                     let id = self.body.reserve();
-                    self.clipboard_busy = true;
+                    self.clipboard_busy = Some(id);
                     self.pending_paste = Some((id, self.edit_generation));
                     self.reveal_caret();
                     self.touch();
@@ -6002,6 +6020,38 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_image_upload_failure_restores_selection_and_account_switch_discards_its_reply() {
+        for switch in [false, true] {
+            let mut window = ready(&[]);
+            type_in(&mut window, "bob@example.org", "Subject", "Keep me");
+            window.body.move_to(Cursor {
+                position: Position { line: 0, column: 0 },
+                selection: Some(Position { line: 0, column: 7 }),
+            });
+            let _ = window.update(Message::PasteImage);
+            let id = window.body.selected.expect("reservation");
+            let account = window.sender().expect("sender").account.clone();
+            let _ = window.update(Message::Clipboard(id, account.clone(), Ok(images::Clipboard::Image(vec![0]))));
+            assert_eq!(window.clipboard_busy, Some(id));
+            if switch {
+                let _ = window.update(Message::PickFrom(1));
+                assert_eq!(window.body.text(), "Keep me");
+                let _ = window.update(Message::ImageLoaded(id, account, Ok(demo_image())));
+                assert!(window.body.pictures().next().is_none());
+                assert!(window.clipboard_busy.is_none());
+            } else {
+                let _ = window.update(Message::Send);
+                let focus = window.update(Message::ImageLoaded(id, account.clone(), Err(ComposeError::Offline)));
+                assert!(focus.units() > 0, "query widget focus before recovery");
+                let _ = window.update(Message::ClipboardFocused(id, account, Err(ComposeError::Offline), None));
+                assert_eq!(window.body.text(), "Keep me");
+                assert!(!window.body.pending() && window.clipboard_busy.is_none());
+                assert!(!window.sending && window.after == After::Nothing);
+            }
+        }
+    }
+
+    #[test]
     fn failed_paste_restores_all_selected_text_even_if_later_typing_filled_the_budget() {
         let mut window = ready(&[]);
         type_in(&mut window, "bob@example.org", "Subject", &"x".repeat(600_000));
@@ -6133,7 +6183,7 @@ mod tests {
         let converted = html::prepare_paste(Some("<b>Stale</b>"), None).expect("paste");
         let _ = window.update(Message::PasteReady(id, account, generation, Ok(converted), None));
         assert_eq!(window.draft(), before);
-        assert!(!window.clipboard_busy);
+        assert!(window.clipboard_busy.is_none());
     }
 
     #[test]
