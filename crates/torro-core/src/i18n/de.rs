@@ -4714,7 +4714,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("All known mail", "Alle bekannten E-Mails"),
     ("All emails", "Alle E-Mails"),
     ("Last 30 days", "Letzte 30 Tage"),
-    ("Last year", "Letztes Jahr"),
     ("Start sorting", "Sortierung starten"),
     (
         "The preview and progress count all selected mail. Sidebar badges count unread mail only.",
