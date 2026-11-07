@@ -1706,7 +1706,7 @@ Fetches one attachment of a message (`attachment` is its `part` from get_message
 
 Zugriff `read` · MCP-Tool `mail_get_sender_logo`
 
-Returns the logo of a message's sender as PNG (Base64, 128 pixels on white), from the core's own copy: only for mail whose DKIM signature the core checked and found to belong to the sender's domain, so forged mail never gets the real logo. Messages whose summary has a `logo` (the domain) have one; `not-found` for every other message and while the person turned logos off. The logo shows the domain sent it, not that the brand is who it claims to be.
+Returns the logo of a message's sender as PNG (Base64, 128 pixels, circular with a white or uniform publisher background), from the core's own copy: only for mail whose DKIM signature the core checked and found to belong to the sender's domain, so forged mail never gets the real logo. Messages whose summary has a `logo` (the domain) have one; `not-found` for every other message and while the person turned logos off. The logo shows the domain sent it, not that the brand is who it claims to be.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
