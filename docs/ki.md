@@ -33,12 +33,18 @@ benutzt nie den Schlüssel eines Agenten.
    eine Erlaubnis (Aufgabe C.17 und #325, Abschnitt „Erlaubnis je Platz“): `mail_to_cloud` für Chat, ein
    Schalter unter „Data rule“ in der Steuerzentrale › AI, und `decide_mail_to_cloud` für Sortieren, die die
    Wahl eines Modells in der Cloud nach einer Rückfrage gibt (#424). Einschalten kann nur die Person selbst;
-   dann lesen auch Modelle außerhalb der eigenen Rechner Mail, soweit die Rechte sie geben. Für Cloud-Modelle bleiben Einträge von Nextcloud und Talk weiter lokal.
+   dann lesen auch Modelle außerhalb dieses Rechners Mail, soweit die Rechte sie geben. Für entfernte Modelle bleiben Einträge von Nextcloud und Talk weiter lokal.
    Der Schalter hieß bis Issue #219 „Mail an Claude Code und Cloud-Modelle“; Agenten als Antrieb
    (Antrieb B in [assistent.md](assistent.md)) werden nicht mehr angeboten, die Sperre gilt aber
    weiter für jeden Agenten-Antrieb, falls einer zurückkommt.
    Die Regel gilt ab der nächsten Antwort; eine laufende Antwort behält, was beim Start galt.
-   **Lokal heißt: das Modell rechnet auf einem eigenen Rechner**, nicht „der Server ist lokal“. Modelle
+   **Lokal heißt: das Modell rechnet auf diesem Rechner über Loopback**, nicht auf einem anderen eigenen
+   Gerät (#359, einschließlich Strata aus #334). Nur `localhost`, Namen unter `.localhost`, `127.0.0.0/8`
+   und `::1` zählen als hier. LAN-Adressen wie `192.168.1.20`, öffentliche Adressen, andere Rechnernamen
+   und eigene Nicht-Loopback-Adressen zählen als anderswo; eine fehlende Adresse ebenfalls. Es gibt keine
+   DNS- oder Netzwerkkarten-Erkennung. Für Ollama und Strata muss das Modell außerdem `remote: false`
+   tragen, bei Ollama ohne Cloudnamen; LM Studio und andere OpenAI-kompatible Server auf Loopback dürfen
+   nicht `remote: true` melden. `remote` beschreibt den Ort relativ zum Server, nicht zu diesem Rechner. Modelle
    von Ollama mit `:cloud` laufen über das lokale Ollama auf `ollama.com` und gelten als entfernt
    (`remote` in `ai.list_models`, Aufgabe S.23 in [tasks/steuerzentrale.md](tasks/steuerzentrale.md)).
    Jede KI-Funktion bestimmt den Ort über Konto **und** Modell (`data_rule::place_of`), nachdem das
@@ -184,12 +190,14 @@ Der eine Schalter aus Grundsatz 4 gilt jetzt je Platz:
   Modell anderswo (Cloud, Server im Netz), wird sie eingeschaltet (`ai.set_slot` setzt sie mit); wählt man ein
   Modell hier oder „None“, wird sie zurückgenommen. Einen eigenen Schalter hat sie nicht mehr (#424): Beide
   Auswahlen (Mail-Fenster › Categorization und Steuerzentrale › AI › Sorting) bieten alle Modelle an, die
-  in der Cloud unter „In the cloud – mail leaves this computer“ (im Menü von Sorting kurz „In the cloud“) mit Wolke. Ein Modell dort fragt vorher
-  („Sort mail in the cloud?“, „Use“/„Cancel“), auch beim Wechsel auf ein anderes, weil die Zustimmung einem
+   anderswo unter „Elsewhere · mail leaves this computer“ (im Menü von Sorting kurz „Elsewhere“) mit Wolke. Ein Modell dort fragt vorher
+   („Send mail outside this computer?“, „Use“/„Cancel“), auch beim Wechsel auf ein anderes, weil die Zustimmung einem
   Anbieter gilt; erst „Use“ setzt Modell und Erlaubnis. Steht ein Modell in der Cloud im Platz, aber die
   Erlaubnis ist aus (alte Einstellung, oder ein Agent hat sie abgeschaltet), zeigen beide Orte „Waiting for
   your OK – mail stays here“; es noch einmal zu wählen fragt wieder. Dieselbe Rückfrage stellt die Einrichtung,
-  wenn ihr Schalter „Sort mail“ ein ausgeschaltetes Modell in der Cloud wieder einschalten würde. Wohin Mail geht, sagt die Zeile unter
+   wenn ihr Schalter „Sort mail“ ein ausgeschaltetes Modell anderswo wieder einschalten würde oder ein neues
+   Modell anderswo gewählt wird, auch mit vorhandener Erlaubnis. Abbrechen behält die bisherige Auswahl;
+   „Continue“ umgeht eine ausstehende Zustimmung nicht. Wohin Mail geht, sagt die Zeile unter
   *Sortieren* in „Models“, solange das Modell, das gerade sortiert (Ausnahme vor Platz), anderswo rechnet.
 - **Einschalten nur Menschen**; ausschalten darf jeder Client mit Rechten.
 - **Ein Modell anderswo für Mail-Funktionen setzt nur ein Mensch**: als Platz *Sortieren* wie als Ausnahme
@@ -206,6 +214,11 @@ Der eine Schalter aus Grundsatz 4 gilt jetzt je Platz:
   Darum gilt so eine Wahl als Platz wie als Ausnahme als „hier“ (auch für Clients), und eine zurückgenommene
   Ausnahme oder ein ausgeschaltetes lokales Modell lassen die Mail nie in die Cloud fallen: Es rechnet das
   nächste Modell hier, sonst keines.
+- **„Automatic“ im LAN ist anderswo.** Nur Ollama, LM Studio und Strata auf Loopback haben die obige
+  Einschränkung. An LAN-Konten darf Automatic mit Sortiererlaubnis auch ein Cloud-Modell desselben Kontos
+  wählen. Vorhandene gespeicherte Mail-Erlaubnisse und Modellschalter bleiben unverändert; es gibt keine
+  Migration oder automatische Rücknahme. Ohne Erlaubnis geht keine Mail an das LAN-Konto. Diese Grenze
+  ist keine allgemeine Absicherung beliebiger lokaler Proxys oder Weiterleitungen.
 - **Geprüft wird zweimal:** beim Setzen und beim Aufruf. Ist die Erlaubnis aus, fragt das Einordnen kein Modell
   anderswo; es bleibt bei `NotLocal` und ändert nichts.
 

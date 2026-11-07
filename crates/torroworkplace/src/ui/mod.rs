@@ -793,7 +793,8 @@ impl Ui {
                 messages
             }
             Open::AiDetail => {
-                let ai = accounts::listed(&self.data.accounts).find(|account| account.kind == "ai");
+                let ai =
+                    accounts::listed(&self.data.accounts).find(|account| account.id == accounts::demo::DEMO_NETWORK);
                 let mut messages = vec![Message::Select(Section::Ai)];
                 messages.extend(ai.map(|account| Message::Accounts(accounts::Message::Open(account.id.clone()))));
                 messages
@@ -821,9 +822,9 @@ impl Ui {
                 // Issue #424: another model of OpenRouter than the one that sorts asks before it does.
                 if matches!(open, Open::SortingCloud) {
                     let choice = accounts::SlotChoice {
-                        engine: Some(accounts::demo::DEMO_OPENROUTER.into()),
-                        model: Some("deepseek/deepseek-chat-v3.1".into()),
-                        label: "DeepSeek V3.1".into(),
+                        engine: Some(accounts::demo::DEMO_NETWORK.into()),
+                        model: Some("nimble:latest".into()),
+                        label: "nimble".into(),
                     };
                     let pick = accounts::Message::PickSlot(torro_core::ai::AiSlot::Decide, choice);
                     messages.push(Message::Accounts(pick));
@@ -1107,7 +1108,13 @@ impl Ui {
             // Entering the step sends the search, which the demo answers itself.
             Open::SetupAi => {
                 self.setup = Some(setup::State::new(setup::Step::Inbox, &self.data.settings));
-                vec![Message::Setup(setup::Message::Next)]
+                vec![
+                    Message::Setup(setup::Message::Next),
+                    Message::Setup(setup::Message::SortModel(
+                        accounts::demo::DEMO_NETWORK.into(),
+                        "nimble:latest".into(),
+                    )),
+                ]
             }
             Open::SetupMailAdd => {
                 self.setup = Some(setup::State::new(setup::Step::Mail, &self.data.settings));
@@ -3678,7 +3685,7 @@ mod tests {
         assert!(empty.page_overlay().is_none());
         let ai = started(&["--demo", "--open", "accounts-ai"]);
         assert_eq!(ai.section, Section::Ai);
-        assert_eq!(ai.trail(Section::Ai), Trail::Count(1));
+        assert_eq!(ai.trail(Section::Ai), Trail::Count(2));
         let mut wizard_ai = started(&["--demo", "--open", "wizard-ai"]);
         assert!(wizard_ai.accounts.wizard.is_some());
         let _ = wizard_ai.update(Message::Select(Section::Accounts));
@@ -3739,8 +3746,8 @@ mod tests {
         // Its models come with the page (task S.31), from the demo's own answer.
         let ai = started(&["--demo", "--open", "account-detail-ai"]);
         assert_eq!(ai.section, Section::Ai);
-        assert_eq!(ai.accounts.selected.as_deref(), Some("ai:openrouter@openrouter.ai"));
-        assert!(ai.accounts.models.contains_key("ai:openrouter@openrouter.ai") && !ai.accounts.models_page.loading);
+        assert_eq!(ai.accounts.selected.as_deref(), Some(accounts::demo::DEMO_NETWORK));
+        assert!(ai.accounts.models.contains_key(accounts::demo::DEMO_NETWORK) && !ai.accounts.models_page.loading);
         // Task MW.8: the group "Models" with the chat's download running and its chain waiting for it.
         let models = started(&["--demo", "--open", "ai-models"]);
         assert_eq!(models.section, Section::Ai);

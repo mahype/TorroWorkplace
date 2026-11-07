@@ -12,7 +12,7 @@
 //! its own. Mail also offers "Import from TorroMail…" ([`Message::ImportTorroMail`]) while
 //! TorroMail has an account to take over: the page asks for TorroMail's accounts when it opens
 //! ([`opened`]) and after the dialog closes, not with every reload. Under AI stands the data rule
-//! "Chat may read mail in the cloud" (`settings.set_setting mail_to_cloud`, task C.17), for the
+//! "Chat may read mail outside this computer" (`settings.set_setting mail_to_cloud`, task C.17), for the
 //! assistant and all its bots.
 //!
 //! **One page, many doors (issue #410).** The page, the add-account dialog ([`wizard`]) and the
@@ -28,7 +28,7 @@
 //! `ai.set_slot`) – *Sorting* as a button with a menu in sections instead (issue #421,
 //! [`sorting_menu`]): the decision models first under "Decision models (fast)", then "Other models",
 //! which sort through a slower chat round; the group's footer says why; then the models in the cloud
-//! under "In the cloud" (issue #424) –, and under it what Torro suggests (`ai.recommend`) with "Use suggestion". That button
+//! under "Elsewhere" (issue #424, #359) –, and under it what Torro suggests (`ai.recommend`) with "Use suggestion". That button
 //! runs a chain ([`Using`]): a local model the account does not list yet is downloaded first
 //! (`ai.pull_model`, then `ai.list_pulls` every second while it runs, "Cancel" with `ai.cancel_pull`),
 //! then the account's models are read again (`ai.list_models`), the model turned on if it is off
@@ -122,8 +122,8 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
-use iced::widget::{Space, column, container, responsive, row, scrollable, svg, text, toggler};
-use iced::{Alignment, Element, Fill, Subscription, Theme};
+use iced::widget::{Space, column, container, responsive, row, rule, scrollable, svg, text, toggler};
+use iced::{Alignment, Element, Fill, Padding, Subscription, Theme};
 use torro_core::AppId;
 use torro_core::account::Secret;
 use torro_core::ai::hardware::Hardware;
@@ -1342,13 +1342,7 @@ fn picks_cloud(state: &State, data: &dyn Seen, slot: AiSlot, choice: &SlotChoice
     let Some(engine) = choice.engine.as_deref().filter(|_| slot == AiSlot::Decide) else { return false };
     let consented =
         holds(data, slot, Some(engine), choice.model.as_deref()) && data.settings().mail_to_cloud_in(AiSlot::Decide);
-    // A model its account does not list (yet) at Ollama asks in doubt, as the core counts it elsewhere
-    // without its server's word: a copy of a cloud model may carry no `:cloud` in its name.
-    let unlisted = choice.model.as_deref().is_some_and(|id| {
-        let here = ai_provider(engine).is_some_and(|provider| provider.seat() == Seat::ThisComputer);
-        here && !state.models.get(engine).is_some_and(|models| models.iter().any(|known| same_model(&known.id, id)))
-    });
-    (unlisted || sorts_elsewhere(data, &state.models, engine, choice.model.as_deref())) && !consented
+    sorts_elsewhere(data, &state.models, engine, choice.model.as_deref()) && !consented
 }
 
 /// A choice in a slot's list: `ai.set_slot` at once – for Sorting the stored exception taken back first,
@@ -2772,8 +2766,8 @@ fn add_row<'a>(group: Group, import: bool) -> Element<'a, Message> {
     row_frame(on_axis(buttons.into()), false)
 }
 
-/// The data rule in the AI section (task C.17, here since S.30): "Chat may read mail in the cloud" –
-/// off, the chat reads mail only with AI on the person's own computers; on, with models elsewhere too.
+/// The data rule in the AI section (task C.17, here since S.30): mail outside this computer –
+/// off, the chat reads mail only with AI on this computer via loopback; on, with models elsewhere too.
 /// The sentence under the group says that the switch holds for the assistant and every bot. *Sorting*
 /// has no switch of its own (issue #424): choosing a model in the cloud for it, after its question, is
 /// the consent, and a model here or "None" keeps the mail here again.
@@ -2782,10 +2776,11 @@ fn data_rule_group<'a>(data: &dyn Seen) -> Element<'a, Message> {
     let switch =
         toggler(settings.mail_to_cloud).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::MailToCloud);
     let detail = match settings.mail_to_cloud {
-        false => tr("Off: the chat reads mail only with AI on your own computers"),
+        false => tr("Off: the chat reads mail only with AI on this computer"),
         true => tr("Mail goes to the model's provider and can't be taken back"),
     };
-    let rows = vec![setting_row(None, tr("Chat may read mail in the cloud"), Some(detail.to_string()), switch)];
+    let rows =
+        vec![setting_row(None, tr("Chat may read mail outside this computer"), Some(detail.to_string()), switch)];
     let footer = tr("The switch holds for the assistant and all its bots, whatever their rights allow.");
     widgets::group(tr("Data rule"), rows, Some(footer.to_string()))
 }
@@ -2846,10 +2841,9 @@ fn sorting_place<'a>(data: &'a dyn Seen, models: &BTreeMap<String, Vec<AiModel>>
 }
 
 /// Whether mail sorted with `model` of the AI account `engine` leaves this computer, as the core weighs
-/// it (`elsewhere_of`): a model the account lists by where it computes ([`place_of`]); one not listed
-/// yet at an account on this computer only by a cloud name (`:cloud`), elsewhere as the rule assumes in
-/// doubt; naming no model ("Automatic") by the account's seat – at an account here it picks only models
-/// here (review of #325). An unknown provider computes elsewhere.
+/// it (`elsewhere_of`): model evidence and the account's server address ([`place_of`]); an unlisted
+/// model has only its name, and "Automatic" uses [`torro_core::ai::automatic_place_of`]. Unknown
+/// accounts or addresses count as elsewhere, not as a local runtime's usual seat.
 fn sorts_elsewhere(
     data: &dyn Seen,
     models: &BTreeMap<String, Vec<AiModel>>,
@@ -2857,18 +2851,17 @@ fn sorts_elsewhere(
     model: Option<&str>,
 ) -> bool {
     let Some(provider) = ai_provider(engine) else { return true };
-    let Some(id) = model else { return provider.seat() != Seat::ThisComputer };
     let server = data.accounts().iter().find(|account| account.id == engine).map_or("", account_server);
+    let Some(id) = model else { return torro_core::ai::automatic_place_of(provider, server) != Place::Local };
     let listed = models.get(engine).and_then(|models| models.iter().find(|known| same_model(&known.id, id)));
     match listed {
         Some(known) => place_of(provider, server, known) != Place::Local,
-        None if provider.seat() == Seat::ThisComputer => torro_core::ai::openai::ollama_cloud_name(id),
         None => place_of(provider, server, &AiModel::named(id)) != Place::Local,
     }
 }
 
 /// The base address of an AI account as its state names it; empty while it is not connected.
-fn account_server(account: &AccountInfo) -> &str {
+pub(crate) fn account_server(account: &AccountInfo) -> &str {
     match &account.state {
         AccountState::Connected { server, .. } | AccountState::SigningIn { server, .. } => server.as_str(),
         AccountState::NotConnected => "",
@@ -2963,10 +2956,10 @@ fn attention_mark<'a>(size: f32) -> Element<'a, Message> {
 }
 
 /// Where a model of `provider` runs, for a sentence about mail: the provider's seat ("Cloud · US"),
-/// and "Cloud" for a model elsewhere of a provider whose seat is this computer (an Ollama cloud model).
+/// and "Outside this computer" for runtimes and self-hosted servers elsewhere.
 fn seat_of(provider: AiProvider, local: bool) -> &'static str {
     match provider.seat() {
-        Seat::ThisComputer if !local => tr("Cloud"),
+        Seat::ThisComputer | Seat::OwnServer if !local => tr("Outside this computer"),
         seat => seat.label(),
     }
 }
@@ -3258,8 +3251,7 @@ fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
             .into_iter()
             .map(|choice| {
                 let current = choice == chosen;
-                // The account as a quiet word after the name ("Qwen3 235B A22B  OpenRouter"): the menu is
-                // narrower than the list was, and a name with a word behind it is cut with "…".
+                // The account gets its own line: a LAN address must not crowd out the model name.
                 // The label names the account after the model whenever there are several; it is taken
                 // off the name either way, and stands as the word only where `tagged` asks for it.
                 let account = choice
@@ -3281,7 +3273,7 @@ fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
                 let mut item = MenuItem::new(Icon::Check, name, Message::PickSlot(AiSlot::Decide, choice));
                 item.mark = None;
                 if let Some(account) = account.filter(|_| tagged) {
-                    item = item.tag(account, false);
+                    item = item.detail(account);
                 }
                 item.trail(trail).current(current)
             })
@@ -3299,11 +3291,34 @@ fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
     if !cloud.is_empty() {
         // Short in the narrow menu, where the long head would wrap: that mail leaves this computer says
         // the question before one is set (design review of #424).
-        sections.push(MenuSection::titled(tr("In the cloud"), items(cloud, Trail::Icon(Icon::Cloud), cloud_tagged)));
+        sections.push(MenuSection::titled(tr("Elsewhere"), items(cloud, Trail::Icon(Icon::Cloud), cloud_tagged)));
     }
     // Many models turned on (OpenRouter) would reach past the window: past a panel's height it scrolls,
     // as the pick list it replaces did.
-    let menu = scrollable(widgets::menu(sections))
+    // The standard entry renderer has no per-entry tooltip parameter. Compose its existing
+    // entries here so both long model names and account addresses remain fully accessible.
+    let mut entries = column![];
+    for (index, section) in sections.into_iter().enumerate() {
+        if index > 0 {
+            entries = entries
+                .push(container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]));
+        }
+        if let Some(title) = section.title {
+            entries = entries.push(
+                container(typo::text(typo::caption(), title).style(theme::text_3))
+                    .padding(Padding::new(space::s()).bottom(space::xs())),
+            );
+        }
+        for item in section.items {
+            let hint = match &item.detail {
+                Some(account) => format!("{} · {account}", item.label),
+                None => item.label.to_string(),
+            };
+            entries = entries.push(widgets::with_tooltip(widgets::menu_item(item), hint));
+        }
+    }
+    let card = container(entries).width(size::panel()).padding(style::MENU_INSET).style(style::container::menu);
+    let menu = scrollable(card)
         .direction(scrollable::Direction::Vertical(style::scrollbar()))
         .style(style::scrollable)
         .height(iced::Length::Shrink);
@@ -3987,14 +4002,19 @@ pub fn ai_provider(id: &str) -> Option<AiProvider> {
 /// Where `model` of an AI account of `provider` at the base address `server` computes, in the words
 /// of its row (`docs/settings.md` › KI): "On this computer" where the data rule counts it as local
 /// ([`torro_core::ai::place_of`], so the page says what the rule does), else "Ollama Cloud" for
-/// Ollama's cloud models, "Cloud (Anthropic)" for Anthropic and "Cloud" for everything else. An
+/// Ollama's cloud models behind loopback, "Cloud (Anthropic)" for Anthropic; network runtimes
+/// say "Outside this computer", not "Ollama Cloud". An
 /// unknown provider computes elsewhere, as the rule assumes in doubt.
 pub fn model_place(provider: Option<AiProvider>, server: &str, model: &AiModel) -> &'static str {
-    let Some(provider) = provider else { return tr("Cloud") };
+    let Some(provider) = provider else { return tr("Outside this computer") };
     match (place_of(provider, server, model), provider) {
         (Place::Local, _) => tr("On this computer"),
-        (Place::Remote, AiProvider::Ollama) => tr("Ollama Cloud"),
+        (Place::Remote, AiProvider::Ollama) if torro_core::ai::is_this_computer(server) => tr("Ollama Cloud"),
         (Place::Remote, AiProvider::Anthropic) => tr("Cloud (Anthropic)"),
+        (
+            Place::Remote,
+            AiProvider::Ollama | AiProvider::LmStudio | AiProvider::Strata | AiProvider::OpenAiCompatible,
+        ) => tr("Outside this computer"),
         (Place::Remote, _) => tr("Cloud"),
     }
 }
@@ -5620,8 +5640,54 @@ mod tests {
         assert_eq!(model_place(Some(AiProvider::OpenRouter), "https://openrouter.ai/api/v1", &any), tr("Cloud"));
         let compatible = Some(AiProvider::OpenAiCompatible);
         assert_eq!(model_place(compatible, "http://localhost:8000/v1", &any), tr("On this computer"));
-        assert_eq!(model_place(compatible, "https://llm.example.org/v1", &any), tr("Cloud"));
-        assert_eq!(model_place(None, "http://localhost:11434/v1", &local), tr("Cloud"), "unknown: elsewhere");
+        assert_eq!(model_place(compatible, "https://llm.example.org/v1", &any), tr("Outside this computer"));
+        assert_eq!(
+            model_place(None, "http://localhost:11434/v1", &local),
+            tr("Outside this computer"),
+            "unknown: elsewhere"
+        );
+        for provider in AiProvider::LOCAL {
+            assert_eq!(model_place(Some(provider), "http://192.168.1.20:8080/v1", &local), tr("Outside this computer"));
+        }
+    }
+
+    #[test]
+    fn network_sorting_uses_the_account_address_and_asks_before_a_new_choice() {
+        for provider in AiProvider::LOCAL {
+            let mut data = super::demo::demo_data();
+            let mut account = data.accounts.iter().find(|account| account.kind == "ai").expect("AI account").clone();
+            account.id = format!("ai:{}@192.168.1.20:8080", provider.id());
+            account.label = format!("{} (192.168.1.20:8080)", provider.name());
+            account.state = AccountState::Connected {
+                server: "http://192.168.1.20:8080/v1".into(),
+                login_name: String::new(),
+                last_sync: None,
+                problem: None,
+            };
+            let engine = account.id.clone();
+            data.accounts.push(account);
+            let model =
+                AiModel { remote: Some(false), decision: Some(true), enabled: true, ..AiModel::named("nimble") };
+            let mut state = State::default();
+            state.models.insert(engine.clone(), vec![model]);
+            for id in [Some("nimble"), Some("unlisted"), None] {
+                assert!(sorts_elsewhere(&data, &state.models, &engine, id));
+                let choice =
+                    SlotChoice { engine: Some(engine.clone()), model: id.map(str::to_string), label: "LAN".into() };
+                assert!(picks_cloud(&state, &data, AiSlot::Decide, &choice));
+                assert!(matches!(
+                    update(&mut state, Message::PickSlot(AiSlot::Decide, choice.clone()), &data),
+                    Action::None
+                ));
+                assert!(state.cloud_consent.is_some());
+                assert!(matches!(update(&mut state, Message::CancelCloud, &data), Action::None));
+                assert!(state.cloud_consent.is_none());
+                update(&mut state, Message::PickSlot(AiSlot::Decide, choice), &data);
+                assert!(matches!(update(&mut state, Message::ConfirmCloud, &data), Action::AskAi(..)));
+                state.slots.using = None;
+            }
+            assert!(sorts_elsewhere(&data, &state.models, "ai:ollama@unknown", None));
+        }
     }
 
     /// Every AI account's page searches name and id; only OpenRouter's hides closed models until
@@ -6016,7 +6082,15 @@ mod tests {
         let mut data = demo_data();
         let mut state = State::default();
         let first: Vec<Asked> = asks(ai_shown(&mut state, &data)).into_iter().map(|(asked, _)| asked).collect();
-        assert_eq!(first, [Asked::Recommend, Asked::Pulls, Asked::Models(OPENROUTER.into())]);
+        assert_eq!(
+            first,
+            [
+                Asked::Recommend,
+                Asked::Pulls,
+                Asked::Models(OPENROUTER.into()),
+                Asked::Models(super::demo::DEMO_NETWORK.into())
+            ]
+        );
         assert!(state.slots.recommending);
         assert!(asks(ai_shown(&mut state, &data)).is_empty(), "a reload asks nothing again");
         demo_ollama(&mut data);
@@ -6028,7 +6102,14 @@ mod tests {
         leave(&mut state);
         // Opened again while the first answers are out: only the models, whose lists never came.
         let again: Vec<Asked> = asks(ai_shown(&mut state, &data)).into_iter().map(|(asked, _)| asked).collect();
-        assert_eq!(again, [Asked::Models(OPENROUTER.into()), Asked::Models(DEMO_OLLAMA.into())]);
+        assert_eq!(
+            again,
+            [
+                Asked::Models(OPENROUTER.into()),
+                Asked::Models(super::demo::DEMO_NETWORK.into()),
+                Asked::Models(DEMO_OLLAMA.into())
+            ]
+        );
         let _ = ai_answered(&mut state, Asked::Recommend, &Err("No answer".into()));
         let _ = ai_answered(&mut state, Asked::Pulls, &Err("No answer".into()));
         leave(&mut state);
@@ -6278,6 +6359,7 @@ mod tests {
     #[test]
     fn the_lists_offer_what_serves_the_slot() {
         let (state, mut data) = shown(false);
+        data.accounts.retain(|account| account.id != super::demo::DEMO_NETWORK);
         let (chat, chosen) = slot_choices(&state, &data, AiSlot::Chat);
         assert_eq!(chosen.model.as_deref(), Some("qwen/qwen3-32b"), "not listed, still shown");
         assert_eq!(chat[1], chosen);
@@ -6598,13 +6680,17 @@ mod tests {
             torro_core::ai::SlotModel { engine: DEMO_OLLAMA.into(), model: Some("nimble:latest".into()), effort: None };
         data.settings.ai_slots.decide = Some(nimble.clone());
         assert_eq!(sorting_place(&data, &state.models), None, "nimble computes here");
-        assert_eq!(sorting_place(&data, &BTreeMap::new()), None, "also before the models are in");
+        assert_eq!(
+            sorting_place(&data, &BTreeMap::new()),
+            Some(("Ollama", tr("Outside this computer"))),
+            "unlisted: remote in doubt"
+        );
         // "Automatic" at the Ollama here stays here; a `:cloud` model named goes out.
         data.settings.ai_slots.decide = Some(torro_core::ai::SlotModel { model: None, ..nimble.clone() });
         assert_eq!(sorting_place(&data, &state.models), None, "Automatic here");
         let named_cloud = torro_core::ai::SlotModel { model: Some("glm-5.3:cloud".into()), ..nimble.clone() };
         data.settings.ai_slots.decide = Some(named_cloud);
-        assert_eq!(sorting_place(&data, &BTreeMap::new()), Some(("Ollama", tr("Cloud"))));
+        assert_eq!(sorting_place(&data, &BTreeMap::new()), Some(("Ollama", tr("Outside this computer"))));
         // An exception goes before the slot: on elsewhere it is where mail goes, off nothing sorts.
         data.settings.ai_slots.decide = Some(nimble);
         with_exception(&mut data, DEMO_OPENROUTER, "qwen/qwen3-235b-a22b", true);

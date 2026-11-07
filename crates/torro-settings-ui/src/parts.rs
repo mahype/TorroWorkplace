@@ -140,7 +140,7 @@ pub fn confirm<'a, M: Clone + 'a>(
 /// primary button, not a danger one – nothing is removed. A click next to it cancels.
 pub fn cloud_consent<'a, M: Clone + 'a>(model: &str, provider: &str, on_use: M, on_cancel: M) -> Element<'a, M> {
     let question = trf(
-        "{model} reads your mail at {provider} in the cloud. Use it?",
+        "{model} reads your mail at {provider} outside this computer. Use it?",
         &[("model", &model), ("provider", &provider)],
     );
     let buttons = row![
@@ -151,7 +151,7 @@ pub fn cloud_consent<'a, M: Clone + 'a>(model: &str, provider: &str, on_use: M, 
     .spacing(space::s())
     .align_y(Alignment::Center);
     let content = column![
-        typo::text(typo::title(), tr("Sort mail in the cloud?")),
+        typo::text(typo::title(), tr("Send mail outside this computer?")),
         typo::text(typo::body(), question).style(theme::text_2),
         buttons
     ]

@@ -115,6 +115,19 @@ pub struct Demo {
 }
 
 impl Demo {
+    /// A saved LAN sorting choice with mail permission off (#359): the Mail AI page must show
+    /// Waiting rather than imply that a server on another device is local. Demo data only.
+    pub fn with_network_sorting() -> Demo {
+        let mut demo = Demo::new();
+        demo.settings.ai_slots.decide = Some(AssistantDefault {
+            engine: crate::accounts::demo::DEMO_NETWORK.into(),
+            model: Some("nimble:latest".into()),
+            effort: None,
+        });
+        demo.settings.decide_mail_to_cloud = Some(false);
+        demo
+    }
+
     /// The sample demo whose mail account does not sync, for `problem` (task DS.6: the open question
     /// of a sync problem on the account's page, `torroinbox --open account-question`).
     pub fn with_mail_problem(problem: impl Into<String>) -> Demo {
@@ -298,6 +311,8 @@ impl Demo {
         accounts.extend(of("mail:anna@work.example.net"));
         accounts.push(self.ntfy_account());
         accounts.extend(of(crate::accounts::demo::DEMO_OPENROUTER));
+        // #359: a saved, explicitly enabled LAN model must be shown as elsewhere in Mail too.
+        accounts.extend(of(crate::accounts::demo::DEMO_NETWORK));
         // The local AI, so the mail window's "Categorization" has a model to offer.
         accounts.push(account(
             "ai:ollama@localhost:11434",
@@ -1155,6 +1170,7 @@ impl Backend for Demo {
             Request::AiModels { account, .. } => {
                 let models = match account.as_str() {
                     crate::accounts::demo::DEMO_OPENROUTER => crate::accounts::demo::demo_models(),
+                    crate::accounts::demo::DEMO_NETWORK => crate::accounts::demo::demo_network_models(),
                     _ => self.models(),
                 };
                 Response::AiModels { account: account.clone(), models }

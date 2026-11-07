@@ -92,11 +92,11 @@ pub enum AiProvider {
     Jev,
 }
 
-/// Where a provider's servers are (task W.3, `docs/einrichtung.md`): shown with each provider, so
+/// Where a provider's servers usually are (task W.3, `docs/einrichtung.md`): shown with each provider, so
 /// the choice where data goes is made knowingly. Neutral, never a warning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Seat {
-    /// On this computer or a machine of the person's own (Ollama, LM Studio, Strata).
+    /// Usually on this computer (Ollama, LM Studio, Strata), not evidence for the data rule.
     ThisComputer,
     /// Wherever the person's own server is.
     OwnServer,
@@ -273,7 +273,7 @@ impl AiProvider {
         }
     }
 
-    /// Where the provider's servers are ([`Seat`]).
+    /// Where the provider's servers usually are ([`Seat`]); use [`place_of`] for an actual model.
     pub fn seat(self) -> Seat {
         match self {
             AiProvider::Ollama | AiProvider::LmStudio | AiProvider::Strata => Seat::ThisComputer,
@@ -348,8 +348,8 @@ pub struct AiModel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<bool>,
     /// The model's weights are published: `true` or `false` where the server says so (OpenRouter,
-    /// from its Hugging Face id), `null` where it does not tell. Models on a local server run on
-    /// your own computer either way.
+    /// from its Hugging Face id), `null` where it does not tell. Published weights do not prove
+    /// where a model computes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_weights: Option<bool>,
     /// How many tokens fit into one conversation, when the server tells.
@@ -378,8 +378,8 @@ pub struct AiModel {
     /// server says it computes somewhere else (Ollama's cloud models, `remote_host` in `/api/tags`,
     /// or a name ending in `:cloud` or `-cloud`; every Ollama model when `/api/tags` does not
     /// answer), `false` for a model of Ollama that runs on its own machine, `null` where nobody
-    /// tells. The data rule reads it (`docs/ki.md`, principle 4): local means the model computes on
-    /// the person's computer, not that its server does.
+    /// tells. This is relative to the server, not this computer: the data rule also checks the
+    /// server address ([`place_of`], `docs/ki.md`, principle 4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<bool>,
     /// The model decides instead of writing (task E12.3, `docs/kategorien.md`): it answers named
@@ -1085,16 +1085,17 @@ fn is_this_computer_host(host: &str) -> bool {
 /// (issue #410).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place {
-    /// On a computer of the person: a model of a local server (Ollama, LM Studio, Strata) that computes
-    /// there, or of another OpenAI-compatible server at an address of this computer.
+    /// On this computer: a model that computes at a loopback server, never another LAN device.
     Local,
-    /// Anywhere else: OpenRouter, a server of a provider, a server in the network that is no
-    /// Ollama, LM Studio or Strata, a cloud model of Ollama (task S.23).
+    /// Anywhere else, including every LAN server and Ollama's cloud models (task S.23).
     Remote,
 }
 
 /// Where `model` of an AI account of `provider` at the base address `server` runs (task S.23: local
 /// means the model computes on the person's computer, not that its server is there):
+///
+/// All local cases require a loopback address ([`is_this_computer`]); no DNS or network-interface
+/// lookup is done, and a missing address counts as remote.
 ///
 /// - Ollama: local only for a model it says runs on its own machine ([`AiModel::remote`] `false`)
 ///   and whose name is no cloud name ([`openai::ollama_cloud_name`]); a model it did not describe
@@ -1102,8 +1103,7 @@ pub enum Place {
 /// - Strata (issue #322): local for a model marked [`AiModel::remote`] `false`. Strata says nothing
 ///   about where a model runs; the core sets the mark for every model of a Strata account, so a
 ///   model of an unknown origin stays remote;
-/// - LM Studio: local wherever it runs (on the person's own machines), unless the model is known to
-///   run elsewhere;
+/// - LM Studio: local on loopback unless the model is known to run elsewhere;
 /// - OpenRouter and the other cloud providers (task W.3): never (an address of this computer would
 ///   be a proxy to one);
 /// - any other server: only at an address of this computer (`localhost`, `127.0.0.1`, `::1`), and
@@ -1111,6 +1111,9 @@ pub enum Place {
 ///
 /// Ask it once the model is chosen, "Automatic" too (the assistant's `ModelAccess::automatic`).
 pub fn place_of(provider: AiProvider, server: &str, model: &AiModel) -> Place {
+    if !is_this_computer(server) {
+        return Place::Remote;
+    }
     let elsewhere = model.remote == Some(true);
     match provider {
         AiProvider::Ollama if model.remote == Some(false) && !openai::ollama_cloud_name(&model.id) => Place::Local,
@@ -1120,6 +1123,14 @@ pub fn place_of(provider: AiProvider, server: &str, model: &AiModel) -> Place {
         // Every cloud provider (task W.3), and any other server elsewhere.
         _ => Place::Remote,
     }
+}
+
+/// Where sorting's "Automatic" selection counts before a concrete model is chosen. Only the
+/// three local runtimes on loopback restrict Automatic to local models even with mail permission.
+/// Other accounts, including OpenAI-compatible ones, require permission for a remote selection;
+/// the chosen model is still checked separately with [`place_of`].
+pub fn automatic_place_of(provider: AiProvider, server: &str) -> Place {
+    if AiProvider::LOCAL.contains(&provider) && is_this_computer(server) { Place::Local } else { Place::Remote }
 }
 
 /// The base address `url` may carry an API key: over https, or to this computer.
@@ -1158,7 +1169,7 @@ mod tests {
         let local = placed("qwen3:8b", Some(false));
         let unknown = placed("qwen3:8b", None);
         assert_eq!(place_of(AiProvider::Ollama, "http://localhost:11434/v1", &local), Place::Local);
-        assert_eq!(place_of(AiProvider::Ollama, "http://gpu.local:11434/v1", &local), Place::Local);
+        assert_eq!(place_of(AiProvider::Ollama, "http://gpu.local:11434/v1", &local), Place::Remote);
         assert_eq!(place_of(AiProvider::LmStudio, "http://localhost:1234/v1", &unknown), Place::Local);
         assert_eq!(place_of(AiProvider::OpenAiCompatible, "http://127.0.0.1:8000/v1", &unknown), Place::Local);
         assert_eq!(place_of(AiProvider::OpenAiCompatible, "http://[::1]:8000/v1", &unknown), Place::Local);
@@ -1182,6 +1193,46 @@ mod tests {
         assert_eq!(place_of(AiProvider::Strata, strata, &placed("qwen3.8-flash-next", Some(false))), Place::Local);
         assert_eq!(place_of(AiProvider::Strata, strata, &placed("qwen3.8-flash-next", None)), Place::Remote);
         assert_eq!(place_of(AiProvider::Strata, strata, &placed("qwen3.8-flash-next", Some(true))), Place::Remote);
+        for server in ["http://192.168.1.20:8080/v1", "https://gpu.example.org/v1"] {
+            assert_eq!(place_of(AiProvider::Strata, server, &placed("qwen3.8-flash-next", Some(false))), Place::Remote);
+        }
+    }
+
+    #[test]
+    fn model_places_require_loopback_and_the_models_own_evidence() {
+        let addresses = [
+            ("http://localhost:8080/v1", true),
+            ("http://gpu.localhost:8080/v1", true),
+            ("http://127.24.3.2:8080/v1", true),
+            ("http://[::1]:8080/v1", true),
+            ("http://192.168.1.20:8080/v1", false),
+            ("https://203.0.113.20/v1", false),
+            ("https://[2001:db8::20]/v1", false),
+            ("http://gpu.example.test:8080/v1", false),
+            ("http://localhost.example.test/v1", false),
+            ("", false),
+        ];
+        for provider in AiProvider::ALL {
+            for (server, loopback) in addresses {
+                for remote in [Some(true), Some(false), None] {
+                    let model_here = match provider {
+                        AiProvider::Ollama | AiProvider::Strata => remote == Some(false),
+                        AiProvider::LmStudio | AiProvider::OpenAiCompatible => remote != Some(true),
+                        _ => false,
+                    };
+                    let expected = if loopback && model_here { Place::Local } else { Place::Remote };
+                    assert_eq!(
+                        place_of(provider, server, &placed("model", remote)),
+                        expected,
+                        "{provider:?} {server} {remote:?}"
+                    );
+                }
+                let automatic =
+                    if loopback && AiProvider::LOCAL.contains(&provider) { Place::Local } else { Place::Remote };
+                assert_eq!(automatic_place_of(provider, server), automatic, "{provider:?} {server}");
+                assert_eq!(place_of(AiProvider::Ollama, server, &placed("model:cloud", Some(false))), Place::Remote);
+            }
+        }
     }
 
     /// Task S.23: Ollama's cloud models run on `ollama.com`, though Ollama runs here.
