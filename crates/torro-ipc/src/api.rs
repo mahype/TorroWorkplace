@@ -2130,7 +2130,6 @@ pub static CATALOGUE: &[&Command] = &[
     &DELETE_MESSAGES,
     &SAVE_DRAFT,
     &PREPARE_MAIL_IMAGE,
-    &PREPARE_MAIL_PASTE,
     &UPLOAD_MAIL_IMAGE,
     &RELEASE_MAIL_IMAGES,
     &SEND_DRAFT,
@@ -2185,6 +2184,9 @@ pub static CATALOGUE: &[&Command] = &[
     &COPY_FILE,
     &MOVE_FILE,
     &TRASH_FILE,
+    // Tool preselection is bounded and follows catalogue order. An additive pure helper
+    // must not displace an existing first-step tool (notably web search for mail-reading bots).
+    &PREPARE_MAIL_PASTE,
 ];
 
 /// The commands that send something out of the computer on the person's behalf

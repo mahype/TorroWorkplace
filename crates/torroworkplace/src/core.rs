@@ -6228,22 +6228,7 @@ impl Core {
             // Boxed: `change_mail` is a large future (about 10 KB in a debug build), and an approved
             // move into the trash reaches it in the second pass through this function.
             | Request::SaveDraft { .. }) => Box::pin(self.change_mail(request, reach)).await,
-            request @ Request::PrepareMailPaste { .. } => {
-                if let Some(refused) = torro_ipc::mail::limit_refusal(&request) {
-                    return refused;
-                }
-                let Request::PrepareMailPaste { html, text } = request else { unreachable!() };
-                match torro_mail::html::prepare_paste(html.as_deref(), text.as_deref()) {
-                    Ok(paste) => Response::MailPaste {
-                        markup: paste.markup,
-                        plain: paste.plain,
-                        plain_markup: paste.plain_markup,
-                        formatted: paste.formatted,
-                        untrusted: true,
-                    },
-                    Err(error) => refusal("error", error.to_string()),
-                }
-            }
+            request @ Request::PrepareMailPaste { .. } => prepare_mail_paste(&request),
             request @ (Request::PrepareMailImage { .. } | Request::UploadMailImage { .. } | Request::ReleaseMailImages { .. }) => {
                 self.image_request(request, reach, caller).await
             }
@@ -12224,6 +12209,26 @@ async fn list_screens(wm: &impl WindowManager) -> Response {
         })
         .collect();
     Response::Screens { screens }
+}
+
+/// Keep the pure converter's temporaries out of the already-large async dispatch frame.
+fn prepare_mail_paste(request: &Request) -> Response {
+    if let Some(refused) = torro_ipc::mail::limit_refusal(request) {
+        return refused;
+    }
+    let Request::PrepareMailPaste { html, text } = request else {
+        return refusal("error", "expected a paste request".into());
+    };
+    match torro_mail::html::prepare_paste(html.as_deref(), text.as_deref()) {
+        Ok(paste) => Response::MailPaste {
+            markup: paste.markup,
+            plain: paste.plain,
+            plain_markup: paste.plain_markup,
+            formatted: paste.formatted,
+            untrusted: true,
+        },
+        Err(error) => refusal("error", error.to_string()),
+    }
 }
 
 /// A failure as a response with a stable code for scripts.
