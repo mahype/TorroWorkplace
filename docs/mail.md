@@ -127,6 +127,55 @@ spricht nur über IPC mit dem Dienst wie Kalender und Aufgaben.
   Plugins, eingebettete Fremd-Apps, HTML-Editor im ersten Schritt (Text und einfache
   Formatierung reichen).
 
+## Absenderlogos
+
+„Logos of known senders“ (`mail_sender_logos`, seit #453; Aufbereitung seit #526) zeigt in Nachrichtenliste
+und Mailkopf dasselbe runde Bild. Der Dienst prüft dafür die DKIM-Signatur der Mail und deren Bezug zur
+Absenderdomain. Ein Logo bedeutet **„Domain geprüft“, keine Markenbestätigung**: Weder ein Markenregister noch
+das Zertifikat eines BIMI-Eintrags wird geprüft. Es gibt keine mitgelieferte Markensammlung und keinen fremden
+Logo-Suchdienst. Kontaktfotos sind nicht Teil dieser Auswahl.
+
+**Quellen, in dieser Reihenfolge:**
+
+1. Das SVG aus `l=` des DNS-Eintrags `default._bimi.<domain>` (`v=BIMI1`), nur bei durchgesetztem DMARC
+   (`p=quarantine` oder `p=reject`, `pct` fehlt oder ist 100).
+2. `https://<domain>/apple-touch-icon.png`.
+3. Die eigene Startseite, auch nach Weiterleitung auf eine Unterdomain: zuerst Touch-Icons nach Größe, dann
+   SVG-Icons, dann PNG-Icons nach Größe. Bei gleicher Größe gilt die Reihenfolge im Dokument. Höchstens vier
+   dieser Seitenkandidaten werden versucht. Ein ungültiges, leeres oder unsicheres Bild wird übersprungen;
+   bleibt keines übrig, gibt es kein Logo.
+
+Nur die Domain und von ihr benannte Adressen werden gefragt, auch eigene CDNs. Jeder Abruf und jede der höchstens
+drei Weiterleitungen braucht HTTPS und öffentliche DNS-Adressen, ohne Proxy, mit kurzen Zeit- und Bytegrenzen.
+SVGs mit Skripten, Entitäten, Fremdobjekten oder eingebetteten/externen Bildern werden abgelehnt. Rasterbilder
+(PNG, JPEG, WebP, GIF) werden größen- und speicherbegrenzt dekodiert.
+
+**Motiv statt Außenrand:** SVGs werden proportional mit längster Kante 512 Pixel transparent gerastert.
+Transparente und nahezu weiße Außenränder zählen nicht zum Motiv: Ein Pixel zählt bei ursprünglichem Alpha >8
+und mindestens einem Farbkanal <243 nach Verrechnung auf Weiß. Das begrenzende Rechteck dieses Motivs wird
+zentriert; seine äußerste Pixelfläche passt proportional in Radius 57 eines weißen 128-Pixel-Kreises.
+Runde Motive werden dadurch größer als flächige Quadrate; breite und hohe Rechtecke bleiben vollständig.
+Dunkle oder farbige Hintergründe sind Inhalt und bleiben erhalten, ebenso weiße Details innerhalb des Motivs.
+Es gibt weder Verzerrung noch Umfärbung noch eine Sondergröße je Quelle. Ein Bild ohne Motiv zählt als fehlend.
+
+**Ersatzanzeige:** Gesendete Mail zeigt weiterhin den Empfänger-Kreis, unerwünschte Mail ihr Warnsymbol.
+Sonst hat ein vorhandenes Logo Vorrang vor Kategoriezeichen, Personenzeichen und Umschlag. Ohne geprüfte
+Domain, während des Ladens, nach einem Fehler, bei fehlendem oder beschädigtem Bild und bei ausgeschalteter
+Einstellung bleibt derselbe bisherige Ersatzkreis. API `mail.get_sender_logo` / MCP `mail_get_sender_logo`
+lesen nur den lokalen Cache und liefern Base64-PNG 128×128 oder `not-found`; der Kontenzugriff wird vorher geprüft.
+
+**Cache und Erneuerung:** Originalbilder werden nicht gespeichert. Vorhandene positive Cache-Einträge ohne
+aktuelle Aufbereitungsrevision werden beim Laden eines laufberechtigten Mailkontos im Hintergrund erneuert,
+auch ohne neue Mail. Pausierte/ausgeschaltete Mail und fehlendes Passwort, Cache-Verzeichnis oder Home lösen
+das nicht aus. Die vorhandene Queue fragt eine Domain nach der anderen mit einer Sekunde Abstand. Ein
+verwendbares Altbild bleibt bis zum Ergebnis und offline erhalten. Offline wird frühestens nach einer Stunde
+erneut versucht, ohne den Index zu ändern. Nach einer beantworteten Anfrage gilt die neue Revision auch bei
+behaltenem Altbild: Erfolg wartet 30 Tage, fehlendes Logo sieben Tage, unerreichbare Website einen Tag. Ein
+Logo übersteht einen erfolglosen Neuabruf, beim zweiten fehlenden Ergebnis entfällt es; eine unerreichbare
+Website zählt nicht als fehlendes Ergebnis. Fehlender/kaputter Index ist leer, ungültige PNG-Dateien werden
+nicht ausgegeben. Beim Lesen wird nichts abgerufen, auch keine Original-Mail. Bereits geöffnete Mailfenster
+übernehmen erneuerte Logos beim erneuten Öffnen; es gibt dafür keine neue Liveaktualisierung.
+
 ## Ordner: Entscheidungen statt Optionen
 
 **Warum TorroMail Ordner zuordnen lässt:** Bis September hat TorroMail beim Versand gar keine
