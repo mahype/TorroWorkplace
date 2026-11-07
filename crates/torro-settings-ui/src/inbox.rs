@@ -350,7 +350,7 @@ pub mod sources {
             .map(|choice| (choice.to_string(), Message::Notify { account: account.id.clone(), notify: choice.0 }))
             .collect();
         let active = NOTIFY_CHOICES.iter().position(|choice| choice.0 == chosen).unwrap_or(0);
-        crate::mail::segmented_row(tr("Show new mail"), None, options, active)
+        crate::parts::segmented_row(tr("Show new mail"), None, options, active)
     }
 
     /// What a group says under its rows beyond what muting means everywhere ([`view`]): only the

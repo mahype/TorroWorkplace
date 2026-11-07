@@ -3194,28 +3194,6 @@ pub mod accounts {
     }
 }
 
-/// A row of a settings group whose choice of up to four options is a [`torro_gui::widgets::segmented`]
-/// control (issue #554, the rule of choices): beside `label` (and its `detail`) while both fit, under
-/// them where they do not (`widgets::segment_column`). `options` are the words and what each sends,
-/// `active` the one chosen. Shared by the mail pages and the Notification Hub's "Show new mail".
-pub(crate) fn segmented_row<'a, M: Clone + 'a>(
-    label: &'a str,
-    detail: Option<String>,
-    options: Vec<(String, M)>,
-    active: usize,
-) -> Element<'a, M> {
-    use torro_gui::widgets;
-    let words: Vec<String> = options.iter().map(|(word, _)| word.clone()).collect();
-    iced::widget::responsive(move |room| {
-        let labels: Vec<&str> = words.iter().map(String::as_str).collect();
-        let slot = widgets::segmented_width(&labels);
-        let column = widgets::segment_column(slot, [(label, detail.as_deref())], room.width);
-        widgets::segment_row(label, detail.clone(), widgets::segmented(options.clone(), active), column)
-    })
-    .height(iced::Length::Shrink)
-    .into()
-}
-
 /// "Reading": how a mail shows in the reader and its colours there (task M9.8). Only the mail's
 /// content follows "Mail colors", never the rest of the window.
 pub mod reading {
@@ -3420,8 +3398,8 @@ pub mod reading {
         let group = widgets::group(
             tr("Reading"),
             vec![
-                segmented_row(tr("Show mail as"), None, show, shown),
-                segmented_row(tr("Mail colors"), None, colors, coloured),
+                crate::parts::segmented_row(tr("Show mail as"), None, show, shown),
+                crate::parts::segmented_row(tr("Mail colors"), None, colors, coloured),
                 // Issue #453: the switch is on unless turned off, and it reaches out to senders' domains.
                 setting_row(
                     None,
@@ -3475,7 +3453,7 @@ pub mod reading {
             .spacing(space::s());
             let mut rows = vec![setting_row(None, tr("Default sender address"), None, sender)];
             if let Some((options, active)) = compose {
-                rows.push(segmented_row(tr("Write new mail as"), None, options, active));
+                rows.push(crate::parts::segmented_row(tr("Write new mail as"), None, options, active));
                 rows.push(
                     container(
                         column![typo::text(typo::body_strong(), tr("Signature")), toolbar, signature, controls]

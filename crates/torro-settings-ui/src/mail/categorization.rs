@@ -1395,7 +1395,7 @@ fn sort_dialog<'a>(
             None,
             choice_box(widgets::select_button_fill(&anchors.folders, folders, toggle(SortMenu::Folders))),
         ),
-        crate::mail::segmented_row(
+        crate::parts::segmented_row(
             tr("Time span"),
             None,
             Period::ALL.iter().map(|period| (period.to_string(), Message::Period(*period))).collect(),

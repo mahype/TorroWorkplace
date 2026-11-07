@@ -172,47 +172,25 @@ pub fn switch<'a, M: Clone + 'a>(on: bool, change: impl Fn(bool) -> M + 'a) -> E
     iced::widget::toggler(on).size(style::CHECK_SIZE).style(style::toggler).on_toggle(change).into()
 }
 
-/// A row's choice as a pick list in the look of a secondary button ("Show new mail", "Mail
-/// colors"): `options` as their `Display` says, `chosen` in the closed list.
-pub fn picker<'a, T, L, M>(options: L, chosen: T, on_pick: impl Fn(T) -> M + 'a) -> Element<'a, M>
-where
-    T: std::fmt::Display + PartialEq + Clone + 'a,
-    L: std::borrow::Borrow<[T]> + 'a,
-    M: Clone + 'a,
-{
-    styled_pick_list(options, chosen, on_pick).into()
-}
-
-/// [`picker`] as wide as its row: for a narrow page where the list stands under its label and
-/// several lists should line up (the slots of the control centre's AI section). Never a fixed width:
-/// a pick list cuts a value that does not fit without "…".
-pub fn picker_fill<'a, T, L, M>(options: L, chosen: T, on_pick: impl Fn(T) -> M + 'a) -> Element<'a, M>
-where
-    T: std::fmt::Display + PartialEq + Clone + 'a,
-    L: std::borrow::Borrow<[T]> + 'a,
-    M: Clone + 'a,
-{
-    styled_pick_list(options, chosen, on_pick).width(Fill).into()
-}
-
-/// The pick list of [`picker`] and [`picker_fill`] in the suite's look.
-fn styled_pick_list<'a, T, L, M>(
-    options: L,
-    chosen: T,
-    on_pick: impl Fn(T) -> M + 'a,
-) -> iced::widget::PickList<'a, T, L, T, M>
-where
-    T: std::fmt::Display + PartialEq + Clone + 'a,
-    L: std::borrow::Borrow<[T]> + 'a,
-    M: Clone + 'a,
-{
-    iced::widget::pick_list(options, Some(chosen), on_pick)
-        .padding(style::pick_list_padding())
-        .text_size(typo::caption().size)
-        .text_line_height(typo::caption().line_height)
-        .font(typo::caption().font)
-        .style(style::pick_list)
-        .menu_style(style::pick_list_menu)
+/// A row of a settings group whose choice of up to four options is a [`widgets::segmented`] control
+/// (issue #554, the rule of choices): beside `label` (and its `detail`) while both fit, under them
+/// where they do not (`widgets::segment_column`). `options` are the words and what each sends,
+/// `active` the one chosen. More options take a `widgets::Dropdown`.
+pub fn segmented_row<'a, M: Clone + 'a>(
+    label: &'a str,
+    detail: Option<String>,
+    options: Vec<(String, M)>,
+    active: usize,
+) -> Element<'a, M> {
+    let words: Vec<String> = options.iter().map(|(word, _)| word.clone()).collect();
+    iced::widget::responsive(move |room| {
+        let labels: Vec<&str> = words.iter().map(String::as_str).collect();
+        let slot = widgets::segmented_width(&labels);
+        let column = widgets::segment_column(slot, [(label, detail.as_deref())], room.width);
+        widgets::segment_row(label, detail.clone(), widgets::segmented(options.clone(), active), column)
+    })
+    .height(iced::Length::Shrink)
+    .into()
 }
 
 /// "131K context", "1M context": how much fits into one conversation, rounded to thousands or, from
