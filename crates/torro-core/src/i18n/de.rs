@@ -52,6 +52,22 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The embedded image references are invalid.", "Die Verweise auf eingebettete Bilder sind ungültig."),
     ("The saved image part could not be found.", "Der gespeicherte Bildteil wurde nicht gefunden."),
     ("Prepare images before attaching them.", "Bereite Bilder vor dem Anhängen vor."),
+    // Mail data rule: Loopback only (#359, #334).
+    ("{model} · outside this computer", "{model} · außerhalb dieses Computers"),
+    ("Chat may read mail outside this computer", "Chat darf Mail außerhalb dieses Computers lesen"),
+    ("Elsewhere", "Anderswo"),
+    ("Elsewhere · mail leaves this computer", "Anderswo · Mails verlassen diesen Computer"),
+    (
+        "Off: the chat reads mail only with AI on this computer",
+        "Aus: Der Chat liest Mail nur mit KI auf diesem Computer",
+    ),
+    ("Outside this computer", "Außerhalb dieses Computers"),
+    ("Outside this computer at {provider}", "Außerhalb dieses Computers bei {provider}"),
+    ("Send mail outside this computer?", "E-Mails außerhalb dieses Computers senden?"),
+    (
+        "{model} reads your mail at {provider} outside this computer. Use it?",
+        "{model} liest deine E-Mails bei {provider} außerhalb dieses Computers. Verwenden?",
+    ),
     // Control centre (torroworkplace ui)
     ("1 needs attention", "1 braucht Aufmerksamkeit"),
     ("1 problem", "1 Problem"),

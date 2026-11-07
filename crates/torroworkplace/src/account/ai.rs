@@ -1219,7 +1219,7 @@ impl AiAccounts {
         let mut changed = switches.clone();
         changed.automatic.remove(id);
         let mut kept = 0;
-        let seat_here = provider.seat() == torro_core::ai::Seat::ThisComputer;
+        let seat_here = torro_core::ai::automatic_place_of(provider, &base) == crate::assistant::Place::Local;
         for model in automatic.picks(models, place, seat_here) {
             if !changed.held.is_on(id, &model, place(&model) == crate::assistant::Place::Local) {
                 changed.held.turn_on(id, &model.id);
@@ -1654,6 +1654,70 @@ pub(crate) mod tests {
     /// sees the fake servers.
     pub(crate) fn http() -> reqwest::Client {
         reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build().expect("http client")
+    }
+
+    /// A non-loopback account whose reserved test hostname resolves only to the local mock.
+    pub(crate) fn network_http(server: &MockServer) -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve("gpu.example.test", ([127, 0, 0, 1], server.port()).into())
+            .build()
+            .expect("mock-only http client")
+    }
+
+    #[tokio::test]
+    async fn network_models_start_off_and_keep_saved_switches_and_automatic_choices() {
+        for provider in AiProvider::LOCAL {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let keys = MemoryTokens::default();
+            let mock = fake_ollama().await;
+            mock.mock_async(|when, then| {
+                when.method("GET").path("/health");
+                then.status(200).json_body(json!({"status":"ok", "service":"strata"}));
+            })
+            .await;
+            let make = || {
+                AiAccounts::new(
+                    Some(accounts_file(dir.path())),
+                    Arc::new(keys.clone()),
+                    Some(network_http(&mock)),
+                    Vec::new(),
+                )
+            };
+            let ai = make();
+            let base = format!("http://gpu.example.test:{}/v1", mock.port());
+            let account = ai.connect(provider, Some(&base), Secret::default()).await.expect("network account");
+            assert!(on(&ai, &account.id).await.is_empty(), "{provider:?}: new LAN models start off");
+            assert_eq!(ai.runs_elsewhere(&account.id, "qwen3:8b").await, Ok(true));
+            let connected = ai.connected().await;
+            assert!(connected.iter().all(|account| !account.local), "never a local recommendation");
+            ai.set_enabled(&account.id, "qwen3:8b", true).await.expect("person turns on");
+            ai.set_enabled(&account.id, "broken:1b", false).await.expect("person turns off");
+            drop(ai);
+            let ai = make();
+            ai.load().await.expect("reopened accounts");
+            assert_eq!(on(&ai, &account.id).await, ["qwen3:8b"], "saved switches stay");
+            ai.set_enabled(&account.id, "qwen3:8b", false).await.expect("off");
+            assert!(on(&ai, &account.id).await.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn network_automatic_takeover_respects_the_saved_mail_rule() {
+        for allowed in [false, true] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let keys = MemoryTokens::default();
+            let mock = fake_deciding_ollama().await;
+            let ai =
+                AiAccounts::new(Some(accounts_file(dir.path())), Arc::new(keys), Some(network_http(&mock)), Vec::new());
+            let base = format!("http://gpu.example.test:{}/v1", mock.port());
+            let account = ai.connect(AiProvider::Ollama, Some(&base), Secret::default()).await.expect("LAN account");
+            let automatic = Automatic::for_slot(ai::AiSlot::Decide, allowed);
+            ai.keep_used_models_on(Vec::new(), vec![(account.id.clone(), automatic)]).await.expect("noted Automatic");
+            let enabled = on(&ai, &account.id).await;
+            assert_eq!(enabled, if allowed { vec!["nimble".to_string()] } else { Vec::new() });
+        }
     }
 
     /// The service on `dir/config/accounts.json` and `keys`, looking for local servers at `local`.

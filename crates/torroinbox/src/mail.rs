@@ -664,10 +664,14 @@ impl MailSource for DemoSource {
         DemoSource::mail_folders(self)
     }
 
-    /// The demo's one known sender, `github.example`, has a made-up mark; no other mail names a logo.
+    /// The demo's two known domains have made-up round and rectangular marks, never real brands.
     async fn sender_logo(&self, id: String) -> Result<Option<Vec<u8>>, InboxError> {
         let named = DemoSource::get_mail(self, &id)?.summary.logo;
-        Ok(named.filter(|domain| domain == DEMO_LOGO_DOMAIN).map(|_| demo_logo()))
+        Ok(match named.as_deref() {
+            Some(DEMO_LOGO_DOMAIN) => Some(demo_logo()),
+            Some(DEMO_RECTANGLE_DOMAIN) => Some(demo_mark(true)),
+            _ => None,
+        })
     }
 
     async fn list_categories(&self, account: Option<String>) -> Result<Vec<CategoryInfo>, InboxError> {
@@ -2025,16 +2029,28 @@ pub fn slim_span(messages: &[MessageSummary], index: usize, heads: bool) -> Opti
 
 /// The demo's sender with a logo ([`DemoSource::sender_logo`]).
 const DEMO_LOGO_DOMAIN: &str = "github.example";
+const DEMO_RECTANGLE_DOMAIN: &str = "work.example.org";
 
 /// A made-up mark for the demo's known sender: a dark ring on a white disc, cut round as the core
 /// cuts every logo (`mail::logos` of the core), never anyone's real logo.
 fn demo_logo() -> Vec<u8> {
+    demo_mark(false)
+}
+
+/// Normalized synthetic examples, not a substitute for the core's renderer regression tests.
+fn demo_mark(rectangle: bool) -> Vec<u8> {
     let edge = 128u32;
     let mut picture = image::RgbaImage::from_pixel(edge, edge, image::Rgba([255, 255, 255, 255]));
     let centre = edge as f32 / 2.0;
     for (x, y, pixel) in picture.enumerate_pixels_mut() {
         let distance = ((x as f32 + 0.5 - centre).powi(2) + (y as f32 + 0.5 - centre).powi(2)).sqrt();
-        if (24.0..=44.0).contains(&distance) {
+        let (dx, dy) = ((x as f32 + 0.5 - centre).abs(), (y as f32 + 0.5 - centre).abs());
+        let ink = if rectangle {
+            dx <= 51.0 && dy <= 25.0 && !(dx < 36.0 && dy < 12.0)
+        } else {
+            (31.0..=57.0).contains(&distance)
+        };
+        if ink {
             *pixel = image::Rgba([0x24, 0x29, 0x2F, 255]);
         }
         pixel.0[3] = ((centre - distance + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -6771,9 +6787,106 @@ mod tests {
         assert!(logo_for(&logos, &message, mail, false).is_none(), "not in yet");
         logos.insert("github.example".into(), Logo::Failed(std::time::Instant::now()));
         assert!(logo_for(&logos, &message, mail, false).is_none(), "could not be asked");
+        logos.insert("github.example".into(), Logo::Missing);
+        assert!(logo_for(&logos, &message, mail, false).is_none(), "missing leaves the same circle");
+        logos.clear();
+        assert!(logo_for(&logos, &message, widgets::Face::Portrait, false).is_none(), "not asked yet");
         message.logo = None;
         assert!(logo_for(&logos, &message, mail, false).is_none(), "the core named none");
         assert!(image::load_from_memory(&demo_logo()).is_ok(), "the demo's mark is a picture");
+    }
+
+    #[tokio::test]
+    async fn demo_has_round_and_rectangular_logos_but_no_logo_without_a_domain() {
+        let demo = DemoSource::new(now());
+        let round = demo.sender_logo("m:w3".into()).await.expect("round sender").expect("a logo");
+        let rectangle = demo.sender_logo("m:w1".into()).await.expect("rectangular sender").expect("a logo");
+        assert_ne!(round, rectangle);
+        for bytes in [round, rectangle] {
+            let image = image::load_from_memory(&bytes).expect("PNG").to_rgba8();
+            assert_eq!(image.dimensions(), (128, 128));
+            assert_eq!(image.get_pixel(0, 0)[3], 0);
+        }
+        assert!(demo.sender_logo("m:p1".into()).await.expect("other sender").is_none());
+    }
+
+    /// Opt-in integration proof: PNGs emitted by the core's processing_proofs test pass through
+    /// the real circle_of widget, not a synthetic demo substitute. Each source is shown at the
+    /// list and reader sizes. Run with WGPU_BACKEND=gl for synchronous headless image loading.
+    #[test]
+    fn published_pipeline_logos_draw_in_the_real_circle_widget() {
+        use iced::widget::image::Handle;
+        use torro_gui::shots::{Shots, write};
+        let Some(dir) = std::env::var_os("TORRO_LOGO_INPUTS").map(std::path::PathBuf::from) else { return };
+        let handles = ["github-mark-result.png", "published-black-tile-result.png"].map(|name| {
+            let bytes = std::fs::read(dir.join(name)).expect("fresh core pipeline result");
+            assert_eq!(image::load_from_memory(&bytes).expect("core PNG").width(), 128);
+            Handle::from_bytes(bytes)
+        });
+        fn view(handles: &[Handle; 2]) -> Element<'_, ()> {
+            let [github, tile] = handles;
+            let face = widgets::Face::Icon(Icon::Mail);
+            container(
+                row![
+                    circle_of(face, None, Some(github), layout::list().avatar),
+                    circle_of(face, None, Some(github), size::avatar_lg()),
+                    circle_of(face, None, Some(tile), layout::list().avatar),
+                    circle_of(face, None, Some(tile), size::avatar_lg())
+                ]
+                .spacing(space::l()),
+            )
+            .padding(space::m())
+            .width(Fill)
+            .height(Fill)
+            .style(style::container::panel)
+            .into()
+        }
+        for (name, theme) in [("light", Theme::Light), ("dark", Theme::Dark)] {
+            let handles = handles.clone();
+            let app = iced::application(move || handles.clone(), |_: &mut [Handle; 2], _: ()| iced::Task::none(), view)
+                .theme(move |_: &[Handle; 2]| theme.clone())
+                .settings(torro_gui::settings());
+            let args = [
+                "--demo".to_string(),
+                "--shots".into(),
+                dir.join("widgets").to_str().expect("path").into(),
+                "--shot-size".into(),
+                "320x120".into(),
+                "--appearance".into(),
+                name.into(),
+            ];
+            let shots = Shots::from_args("published-sender-logos", &args).expect("valid shots").expect("requested");
+            let files = write(&app, &shots).expect("real widget rendered");
+            assert_eq!(files.len(), 1);
+            let proof = image::open(&files[0]).expect("widget PNG").to_rgb8();
+            let scale = proof.width() as f32 / 320.0;
+            let mut x = space::m();
+            for (index, edge) in [layout::list().avatar, size::avatar_lg(), layout::list().avatar, size::avatar_lg()]
+                .into_iter()
+                .enumerate()
+            {
+                let (left, top, side) = ((x * scale) as u32, (space::m() * scale) as u32, (edge * scale) as u32);
+                let (mut dark, mut bright, mut green) = (0, 0, 0);
+                for y in top..top + side {
+                    for x in left..left + side {
+                        let p = proof.get_pixel(x, y);
+                        dark += usize::from(p.0.iter().all(|c| *c < 90));
+                        bright += usize::from(p.0.iter().all(|c| *c > 200));
+                        green += usize::from(p[1] > p[0].saturating_add(25) && p[1] > p[2].saturating_add(5));
+                    }
+                }
+                let area = (side * side) as usize;
+                assert!(dark > area / 6, "{name} avatar {index}: the dark mark/carrier is loaded");
+                assert!(
+                    bright > area / if index < 2 { 8 } else { 40 },
+                    "{name} avatar {index}: the cat/globe is visible"
+                );
+                if index >= 2 {
+                    assert!(green > area / 200, "{name} avatar {index}: the coloured ring is visible");
+                }
+                x += edge + space::l();
+            }
+        }
     }
 
     /// The source of the function `name` in this file, up to its closing brace.

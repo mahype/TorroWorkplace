@@ -167,6 +167,7 @@ pub fn demo_data() -> Data {
             ntfy: None,
             services: None,
         },
+        demo_network_account(),
     ];
     let sources = vec![
         SourceInfo { source: SourceRef::suite(), open: 2, muted: false, health: None },
@@ -238,6 +239,9 @@ pub fn demo_answer(request: &Request, data: &dyn Seen) -> Option<Response> {
         }),
         // The models of an AI account (task S.31), the same for every account but Ollama (task MW.8); a
         // switch is taken, nothing is stored.
+        Request::AiModels { account, .. } if account == DEMO_NETWORK => {
+            Some(Response::AiModels { account: account.clone(), models: demo_network_models() })
+        }
         Request::AiModels { account, .. } if account == DEMO_OLLAMA => {
             Some(Response::AiModels { account: account.clone(), models: demo_ollama_models() })
         }
@@ -501,6 +505,33 @@ pub const DEMO_OPENROUTER: &str = "ai:openrouter@openrouter.ai";
 
 /// The id of the demo's Ollama on this computer ([`demo_ollama`], task MW.8).
 pub const DEMO_OLLAMA: &str = "ai:ollama@localhost:11434";
+
+/// The same runtime on another device: remote for mail even though its model says remote=false.
+pub const DEMO_NETWORK: &str = "ai:ollama@192.168.1.20:11434";
+
+pub fn demo_network_account() -> AccountInfo {
+    let mut account = demo_ollama_account();
+    account.id = DEMO_NETWORK.into();
+    account.label = "Ollama (192.168.1.20:11434)".into();
+    account.state = AccountState::Connected {
+        server: "http://192.168.1.20:11434/v1".into(),
+        login_name: String::new(),
+        last_sync: None,
+        problem: None,
+    };
+    account
+}
+
+/// Saved switches are retained: nimble was explicitly enabled by the person, Qwen was not.
+pub fn demo_network_models() -> Vec<AiModel> {
+    demo_ollama_models()
+        .into_iter()
+        .map(|mut model| {
+            model.enabled = model.decision == Some(true);
+            model
+        })
+        .collect()
+}
 
 /// Ollama on this computer as an AI account (task MW.8, `--open ai-models`): the suggestions then run
 /// there, one after a download. Not in [`demo_data`] itself: the add-account dialog's demo finds Ollama

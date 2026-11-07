@@ -3256,7 +3256,7 @@ pub(crate) mod tests {
 
     /// Review of #506: the minute holds for the whole round, not for each mail; and a mail held back
     /// is filed by nobody else meanwhile – not by a catch-up after a gap.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn the_round_waits_one_minute_and_nobody_files_what_is_held() {
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(PASSWORD).await;
@@ -3278,10 +3278,33 @@ pub(crate) mod tests {
         assert!(titles(&inbox).is_empty(), "a catch-up files nothing held back");
 
         let filing = crate::mail::read::tests::filing;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct PendingVerdict(Arc<AtomicUsize>);
+        impl Drop for PendingVerdict {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let cancelled = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(AtomicUsize::new(0));
+        let second = Arc::new(tokio::sync::Notify::new());
+        let judge: Judge = {
+            let cancelled = Arc::clone(&cancelled);
+            let second = Arc::clone(&second);
+            Arc::new(move |_account: String, _message: String, _signs: Vec<WarningSign>| {
+                let pending = PendingVerdict(Arc::clone(&cancelled));
+                if started.fetch_add(1, Ordering::SeqCst) == 1 {
+                    second.notify_one();
+                }
+                Box::pin(async move {
+                    let _pending = pending;
+                    std::future::pending::<Option<Verdict>>().await
+                })
+            })
+        };
         let judging = Judging {
-            judge: Arc::new(|_account: String, _message: String, _signs: Vec<WarningSign>| {
-                Box::pin(std::future::pending::<Option<Verdict>>())
-            }),
+            judge,
             decide: None,
             inbox: Arc::clone(&inbox),
             mail: Arc::clone(&mail),
@@ -3290,10 +3313,15 @@ pub(crate) mod tests {
             timeout: Duration::from_millis(300),
             holding: Holding::default(),
         };
-        let started = std::time::Instant::now();
         let held: Vec<(NewMail, Vec<WarningSign>)> = new.iter().map(|m| (filing(m), Vec::new())).collect();
-        judging.run(held).await;
-        assert!(started.elapsed() < Duration::from_millis(550), "one deadline for the round: {:?}", started.elapsed());
+        let run = tokio::spawn(judging.run(held));
+        tokio::time::timeout(Duration::from_secs(30), second.notified()).await.expect("the second mail was judged");
+        // On this single-thread runtime the observer runs only after Judging yields. Its shared
+        // deadline has already expired: the second pending verdict must be dropped in that same
+        // poll, before the observer runs. A fresh per-mail timeout leaves it alive and fails here.
+        // Filing and scheduler delays no longer count against a narrow wall-clock budget (#359).
+        assert_eq!(cancelled.load(Ordering::SeqCst), 2, "one deadline for the round, not a fresh wait per mail");
+        run.await.expect("the round completed");
         assert_eq!(titles(&inbox).len(), 2);
     }
 

@@ -828,14 +828,22 @@ mod tests {
 
     #[test]
     fn an_ollama_on_another_computer_runs_no_local_model() {
-        let elsewhere =
-            account("ai:ollama@nas:11434", AiProvider::Ollama, false, Some(vec![model("qwen3:4b", None, None)]));
-        let got = suggest(&pc(8 * GIB_U64, None), builtin(), &[elsewhere], false);
-        let chat = slot(&got, AiSlot::Chat).expect("chat");
-        assert_eq!(
-            (chat.engine.as_deref(), chat.reason.clone()),
-            (None, trf("Needs {program}", &[("program", &"Ollama")]))
-        );
+        for provider in AiProvider::LOCAL {
+            let elsewhere = account(
+                &format!("ai:{}@192.168.1.20:8080", provider.id()),
+                provider,
+                false,
+                Some(vec![model("qwen3:4b", None, None), model("nimble", Some(true), Some(true))]),
+            );
+            let got = suggest(&pc(8 * GIB_U64, None), builtin(), &[elsewhere], true);
+            for kind in AiSlot::ALL {
+                let suggestion = slot(&got, kind).expect("suggestion");
+                assert_eq!(
+                    (suggestion.engine.as_deref(), suggestion.reason.clone()),
+                    (None, trf("Needs {program}", &[("program", &"Ollama")]))
+                );
+            }
+        }
     }
 
     #[test]

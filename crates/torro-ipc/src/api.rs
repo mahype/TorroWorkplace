@@ -1212,7 +1212,7 @@ impl Request {
     /// Whether this request may come from the app key only because of a value it carries, while
     /// its command is open to clients with the right rights ([`Rights::allows_request`]): setting
     /// `voice_enabled` (point 6, the microphone), `mail_to_cloud` (task C.17, mail to models
-    /// outside the person's computers) or `decide_mail_to_cloud` (issue #325, the same for the mail
+    /// outside this computer) or `decide_mail_to_cloud` (issue #325, the same for the mail
     /// the slot Sorting reads), `allow_api_keys` or `allow_mcp` (#231, a way a person
     /// closed) to anything but `false`, or `tool_enabled` (point 9, issue #225) or `search_provider`
     /// (point 6, issue #305, a web search provider) with `enabled` anything but `false`, or
@@ -3084,9 +3084,10 @@ static LIST_MODELS: Command = Command {
     mcp: Mcp::Tool,
     description: "Lists the models of an AI account (id `ai:…` from accounts_list_accounts), asked from its server \
                   now (Jev: a fixed list): id, name, whether it can call tools, whether its weights are open and whether it runs \
-                  elsewhere (`remote`: Ollama's cloud models compute on ollama.com), where the server tells. `context` is \
+                  elsewhere relative to its server (`remote`: Ollama's cloud models compute on ollama.com), where the server tells. \
+                  `remote: false` does not mean this computer: every LAN or public server counts as elsewhere for mail. `context` is \
                   the tokens of one conversation, where the server tells; Ollama also names `parameters` (`8.2B`), \
-                  `quantization` (`Q4_K_M`) and `size` (bytes on the disk, only for models on this computer, never \
+                  `quantization` (`Q4_K_M`) and `size` (bytes on the server's disk, only for models on that server, never \
                   estimated). \
                   By default only open-weights models and those the server says nothing about; `all: true` lists \
                   closed models too (OpenRouter); decision models are always listed. `decision` says the model \
@@ -3108,7 +3109,8 @@ static SET_MODEL_ENABLED: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Tool,
     description: "Turns a model of an AI provider on or off for the whole suite; modules offer only models that \
-                  are on. Turning on a model that runs elsewhere is kept for people. `account` is an id `ai:…` \
+                  are on. Only loopback models start on by default; models at LAN or public addresses start off. \
+                  Saved switches are kept. Turning on a model that runs elsewhere is kept for people. `account` is an id `ai:…` \
                   from accounts_list_accounts, `model` an id from ai_list_models. Needs the person's approval. A \
                   module set to a model turned off answers with another model of the same account that is on. \
                   `not-found` for an unknown account or for turning on a model the account does not offer; \
@@ -3148,9 +3150,10 @@ static SET_ASSIGNMENT: Command = Command {
                   mail is for a person, in the control centre: an agent gets `forbidden`, also while sorted \
                   mail may leave this computer, and also with `enabled: false` unless it names the account \
                   and model the function uses now (its exception, else its slot), so an agent can switch \
-                  that off but never prepare another. With no model named, an account on this computer \
+                  that off but never prepare another. With no model named, Ollama, LM Studio or Strata on loopback \
                   counts as here: its \"Automatic\" picks only models that run on this computer, never one \
-                  elsewhere such as Ollama's `:cloud` models; an account elsewhere counts as elsewhere. \
+                  elsewhere such as Ollama's `:cloud` models; every LAN or public account counts as elsewhere. \
+                  With existing sorting permission, Automatic there may also pick that account's cloud models. \
                   `not-found` for a function this version does not know or an account that does not exist; \
                   `error` for a model the account does not offer or one that cannot decide; `unsupported` \
                   while the assignment is on for a model that is turned off (`ai.set_model_enabled`), or, \
@@ -3173,7 +3176,8 @@ static SET_SLOT: Command = Command {
                   id `ai:…` from accounts_list_accounts, `model` an id from ai_list_models; ai_recommend \
                   suggests both; for `chat`, `engine` may also be an engine of assistant_list_engines. \
                   Choosing a model that runs elsewhere for `decide` is for a person, in the control centre: an \
-                  agent gets `forbidden`. Putting a model or account on this computer in `decide`, or emptying \
+                  agent gets `forbidden`, including LAN models and Automatic at LAN accounts. \
+                  Only loopback counts as this computer. Putting a model or account on this computer in `decide`, or emptying \
                   it, also switches off the permission for sorted mail to leave this computer \
                   (`decide_mail_to_cloud`); a person choosing one elsewhere switches it on. `not-found` for an \
                   unknown account; `error` for a model the account does not offer or one that cannot sort; \
@@ -3310,7 +3314,7 @@ static SET_SETTING: Command = Command {
                   starts) or `mail_appearance` (\"app\" like the suite, the default, \"light\" or \"dark\"; only \
                   the colours of the mail's content) or `compose_paper` (\"light\", the default, or \"dark\": the \
                   background of the text in the compose window; the mail sent stays the same) or `mail_to_cloud` (only false: keeps mail with models on the \
-                  person's own computers again; letting mail go to cloud models is for a person, true is \
+                  person's current computer again; letting mail go elsewhere, including LAN servers, is for a person, true is \
                   forbidden) or `decide_mail_to_cloud` (only false: the same for the mail the slot `decide` \
                   sorts) or `mail_contacts_personal` (true, the default, or false; while on, new mail from an \
                   address in the address books goes to the group Personal, after mail filters, sorting rules, \
@@ -4494,7 +4498,7 @@ static GET_SENDER_LOGO: Command = Command {
     area: Area::Mail,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Returns the logo of a message's sender as PNG (Base64, 128 pixels on white), from the core's own copy: \
+    description: "Returns the logo of a message's sender as PNG (Base64, 128 pixels, circular with a white or uniform publisher background), from the core's own copy: \
                   only for mail whose DKIM signature the core checked and found to belong to the sender's domain, \
                   so forged mail never gets the real logo. Messages whose summary has a `logo` (the domain) have \
                   one; `not-found` for every other message and while the person turned logos off. The logo shows \

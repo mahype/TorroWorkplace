@@ -7594,6 +7594,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "global-hotkey",
+ "html5ever 0.39.0",
  "httpmock",
  "iced",
  "image",

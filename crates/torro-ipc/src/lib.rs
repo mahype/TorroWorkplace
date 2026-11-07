@@ -2983,7 +2983,8 @@ pub enum Request {
         /// The attachment: its `part` from `attachments` of `mail.get_message`.
         attachment: String,
     },
-    /// The logo of the sender of a message as PNG, 128 pixels on white ([`Response::Image`], issue
+    /// The logo of the sender of a message as PNG, 128 pixels, circular with a white or uniform
+    /// publisher background ([`Response::Image`], issue
     /// #453): only when the core checked the mail's DKIM signature itself and it belongs to the
     /// sender's domain, and only from the core's own copy, so asking never goes out to the web. Its
     /// `logo` in the message's summary names the domain whose logo it is. `not-found` for an id the

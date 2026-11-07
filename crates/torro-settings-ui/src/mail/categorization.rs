@@ -582,12 +582,15 @@ fn use_model(data: &Data, engine: String, model: Option<String>) -> Vec<Request>
 
 /// The model `id` of `engine` when it computes in the cloud, as the question names it; `None` for one
 /// on this computer. A listed model by what its server says ([`stays_here`]); one the list lacks by
-/// its account alone. Naming no model ("Automatic"), by the account's seat as the core weighs it.
+/// its name with unknown evidence. "Automatic" uses the shared loopback rule as the core does.
 fn in_cloud(data: &Data, engine: &str, id: Option<&str>) -> Option<CloudPick> {
     let pick = |name: String| CloudPick { engine: engine.to_string(), name, requests: Vec::new() };
     let Some(id) = id else {
-        let here = crate::accounts::ai_provider(engine)
-            .is_some_and(|provider| provider.seat() == torro_core::ai::Seat::ThisComputer);
+        let server =
+            data.accounts.iter().find(|account| account.id == engine).map_or("", crate::accounts::account_server);
+        let here = crate::accounts::ai_provider(engine).is_some_and(|provider| {
+            torro_core::ai::automatic_place_of(provider, server) == torro_core::ai::Place::Local
+        });
         return (!here).then(|| pick(account_label(data, engine)));
     };
     let listed = data
@@ -595,7 +598,7 @@ fn in_cloud(data: &Data, engine: &str, id: Option<&str>) -> Option<CloudPick> {
         .iter()
         .find(|(account, model)| account == engine && crate::accounts::same_model(&model.id, id));
     let model = listed.map_or_else(|| AiModel::named(id), |(_, model)| model.clone());
-    (!stays_here(engine, &model)).then(|| pick(model.name))
+    (!stays_here(data, engine, &model)).then(|| pick(model.name))
 }
 
 /// `model` of `engine` sorts now with the person's consent that mail leaves this computer.
@@ -660,7 +663,7 @@ fn switched_on<A>(state: &mut State, data: &Data) -> Action<A> {
         let first = || {
             offered(data)
                 .into_iter()
-                .find(|(engine, model)| stays_here(engine, model))
+                .find(|(engine, model)| stays_here(data, engine, model))
                 .map(|(engine, model)| set_slot(engine, Some(model.id), None))
         };
         match from_exception.or_else(first) {
@@ -707,23 +710,12 @@ fn deciders(data: &Data) -> Vec<(String, AiModel)> {
     data.decider_models.iter().filter(|(_, model)| model.can_decide()).cloned().collect()
 }
 
-/// Whether `model` of the AI account `engine` computes on this computer, as far as the list tells: a
-/// provider in the cloud never, whatever a model says; else what its server says, else by the account
-/// – LM Studio, or a server of one's own at an address of this computer.
-fn stays_here(engine: &str, model: &AiModel) -> bool {
-    use torro_core::ai::Seat;
-    if crate::accounts::ai_provider(engine)
-        .is_some_and(|provider| !matches!(provider.seat(), Seat::ThisComputer | Seat::OwnServer))
-    {
-        return false;
-    }
-    if let Some(remote) = model.remote {
-        return !remote;
-    }
-    let (provider, host) = engine.strip_prefix("ai:").and_then(|rest| rest.split_once('@')).unwrap_or_default();
-    let lm_studio = torro_core::ai::AiProvider::LmStudio.id();
-    let own = torro_core::ai::AiProvider::OpenAiCompatible.id();
-    provider == lm_studio || (provider == own && torro_core::ai::is_this_computer(host))
+/// Whether `model` computes on this computer: the shared rule checks model evidence and the
+/// connected account's address. A missing account or address is never optimistically local.
+fn stays_here(data: &Data, engine: &str, model: &AiModel) -> bool {
+    let server = data.accounts.iter().find(|account| account.id == engine).map_or("", crate::accounts::account_server);
+    crate::accounts::ai_provider(engine)
+        .is_some_and(|provider| torro_core::ai::place_of(provider, server, model) == torro_core::ai::Place::Local)
 }
 
 /// The model assigned for sorting mail when sorting is on and that model of its AI account is turned
@@ -753,8 +745,11 @@ pub(super) type Parts = (Vec<Offered>, Vec<Offered>, Vec<Offered>);
 /// name, then model name.
 pub(super) fn grouped(data: &Data) -> Parts {
     let mut offered = offered(data);
-    let here: BTreeSet<String> =
-        offered.iter().filter(|(engine, model)| stays_here(engine, model)).map(|(engine, _)| engine.clone()).collect();
+    let here: BTreeSet<String> = offered
+        .iter()
+        .filter(|(engine, model)| stays_here(data, engine, model))
+        .map(|(engine, _)| engine.clone())
+        .collect();
     offered.sort_by(|(a_engine, a_model), (b_engine, b_model)| {
         (!here.contains(a_engine))
             .cmp(&!here.contains(b_engine))
@@ -764,7 +759,7 @@ pub(super) fn grouped(data: &Data) -> Parts {
     });
     let decides = |(_, model): &Offered| model.decision == Some(true);
     let (local, cloud): (Vec<Offered>, Vec<Offered>) =
-        offered.into_iter().partition(|(engine, model)| stays_here(engine, model));
+        offered.into_iter().partition(|(engine, model)| stays_here(data, engine, model));
     let (fast, other) = local.into_iter().partition(decides);
     let (cloud_fast, cloud_other): (Vec<Offered>, Vec<Offered>) = cloud.into_iter().partition(decides);
     (fast, other, cloud_fast.into_iter().chain(cloud_other).collect())
@@ -1011,7 +1006,9 @@ fn ai_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         (Chosen::Off, _) => None,
         (_, Some(_)) => Some(tr("Only for sorting mail").to_string()),
         (Chosen::Here(_), None) => Some(tr("On this computer").to_string()),
-        (Chosen::Cloud { provider, .. }, None) => Some(trf("In the cloud at {provider}", &[("provider", provider)])),
+        (Chosen::Cloud { provider, .. }, None) => {
+            Some(trf("Outside this computer at {provider}", &[("provider", provider)]))
+        }
     };
     rows.push(setting_row(None, tr("Sort with model"), detail, pick));
     // Only chat models on this computer (issue #421): the way to a fast one, which Settings › AI
@@ -1100,8 +1097,10 @@ fn model_menu<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         sections.push(MenuSection::titled(tr("On this computer · chat models"), items(other, tr("Slower"), false)));
     }
     if !cloud.is_empty() {
-        sections
-            .push(MenuSection::titled(tr("In the cloud · mail leaves this computer"), items(cloud, tr("Cloud"), true)));
+        sections.push(MenuSection::titled(
+            tr("Elsewhere · mail leaves this computer"),
+            items(cloud, tr("Elsewhere"), true),
+        ));
     }
     let more = MenuItem::new(torro_gui::shell::SETTINGS_ICON, tr("More models: Settings › AI"), Message::ManageModels);
     sections.push(MenuSection::new(vec![more]));
@@ -1401,7 +1400,7 @@ fn sort_dialog<'a>(
     let model_detail = match chosen(data) {
         Chosen::Off => tr("No model sorts mail now").to_string(),
         Chosen::Here(name) => name,
-        Chosen::Cloud { name, .. } => trf("{model} · in the cloud", &[("model", &name)]),
+        Chosen::Cloud { name, .. } => trf("{model} · outside this computer", &[("model", &name)]),
     };
     let apply = vec![
         check_row(
@@ -1593,6 +1592,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 pub fn scene(name: &str) -> Option<Vec<Message>> {
     Some(match name {
         "ai" => vec![Message::Tab(1)],
+        "waiting" => vec![Message::Tab(1)],
         "categories" => Vec::new(),
         "category" => vec![Message::Editor(editor::Message::EditCategory(Category::Invoice))],
         // Issue #506: the page of Phishing with its trusted senders.
@@ -1600,7 +1600,10 @@ pub fn scene(name: &str) -> Option<Vec<Message>> {
         "sort" => vec![Message::OpenSort { rules_only: false }],
         "filter" => vec![Message::NewFilter],
         "running" => vec![Message::OpenSort { rules_only: false }, Message::StartJob],
-        "model" => vec![Message::ModelMenu(true)],
+        "model" => vec![Message::Tab(1), Message::ModelMenu(true)],
+        "consent" => {
+            vec![Message::Tab(1), Message::Model(crate::accounts::demo::DEMO_NETWORK.into(), "nimble:latest".into())]
+        }
         _ => return None,
     })
 }
@@ -1651,6 +1654,33 @@ mod tests {
         assert!(scene("rules").is_none(), "no tab of rules any more");
         assert_eq!(scene("category").map(|messages| messages.len()), Some(1));
         assert!(scene("nope").is_none());
+    }
+
+    #[tokio::test]
+    async fn the_mail_demos_offer_network_models_and_show_consent_and_waiting() {
+        let data = demo().await;
+        let engine = crate::accounts::demo::DEMO_NETWORK;
+        let (_, _, elsewhere) = grouped(&data);
+        assert!(elsewhere.iter().any(|(account, model)| account == engine && model.id == "nimble:latest"));
+        let mut state = State::default();
+        for message in scene("model").expect("model menu") {
+            assert!(sent(update::<()>(&mut state, message, &data)).is_empty());
+        }
+        assert_eq!(state.tab, Tab::Ai);
+        assert!(state.model_menu);
+        let mut state = State::default();
+        for message in scene("consent").expect("consent scene") {
+            assert!(sent(update::<()>(&mut state, message, &data)).is_empty());
+        }
+        assert_eq!(state.tab, Tab::Ai);
+        assert!(asking_cloud(&state));
+        assert!(overlay(&state, &data).is_some());
+
+        let backend: Arc<dyn crate::Backend> = Arc::new(crate::demo::Demo::with_network_sorting());
+        let waiting = crate::load(backend, super::super::wanted()).await;
+        assert!(waiting.error.is_none(), "{:?}", waiting.error);
+        assert!(matches!(chosen(&waiting), Chosen::Cloud { waiting: true, .. }));
+        assert!(!waiting.settings.mail_to_cloud_in(AiSlot::Decide));
     }
 
     /// Issue #454: the model is chosen in a menu with "Off" first, no switch; "Off" keeps sorting
