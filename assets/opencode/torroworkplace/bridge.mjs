@@ -30,7 +30,8 @@ export async function send(program, keyFile, payload, signal, timeout = 2000) {
   });
 }
 
-export function bridge({ directory, session, report, signal, timeout = 2000 }) {
+export function bridge({ directory, session, report, signal, timeout = 2000,
+  loadPending = async () => [], savePending = async () => {} }) {
   const sessions = new Map();
   const seen = new Set();
   let closed = false;
@@ -59,7 +60,7 @@ export function bridge({ directory, session, report, signal, timeout = 2000 }) {
     let state = sessions.get(id);
     if (!state) {
       if (sessions.size >= 1024) return;
-      state = { pending: new Set(), tail: Promise.resolve(), info: undefined, queued: 0 };
+      state = { pending: new Set(), loaded: false, tail: Promise.resolve(), info: undefined, queued: 0 };
       sessions.set(id, state);
     }
     const run = async () => {
@@ -86,12 +87,21 @@ export function bridge({ directory, session, report, signal, timeout = 2000 }) {
           return;
         }
         if (!info || closed || signal?.aborted) return;
+        if (!state.loaded) {
+          // Durable plugin storage contains only namespaced question IDs, never prompts or keys.
+          // Restore before applying a closing event after a config/plugin reload.
+          const pending = await bounded(loadPending(id));
+          if (!Array.isArray(pending) || pending.length > 4096 || pending.some((key) =>
+            typeof key !== "string" || key.length > 500 || !/^(form|permission):/.test(key))) return;
+          state.pending = new Set(pending);
+          state.loaded = true;
+        }
         let intent;
         switch (event.type) {
           case "permission.asked":
           case "form.created": {
             const request = form?.id ?? data.id;
-            if (typeof request !== "string" || !request) return;
+            if (typeof request !== "string" || !request || request.length > 480 || state.pending.size >= 4096) return;
             const key = `${form ? "form" : "permission"}:${request}`;
             if (state.pending.has(key)) return;
             state.pending.add(key);
@@ -103,9 +113,11 @@ export function bridge({ directory, session, report, signal, timeout = 2000 }) {
           case "form.cancelled": {
             const permission = event.type === "permission.replied";
             const request = permission ? data.requestID : data.id;
-            if (!state.pending.delete(`${permission ? "permission" : "form"}:${request}`)) return;
-            if (state.pending.size) return;
-            intent = "resolved";
+            if (typeof request !== "string" || !request || request.length > 480) return;
+            state.pending.delete(`${permission ? "permission" : "form"}:${request}`);
+            // Unknown closures (for example from before installation) must not leave a stale
+            // inbox thread behind, but never resolve while another known question remains open.
+            if (!state.pending.size) intent = "resolved";
             break;
           }
           case "session.execution.started": state.pending.clear(); intent = "started"; break;
@@ -115,6 +127,8 @@ export function bridge({ directory, session, report, signal, timeout = 2000 }) {
             break;
           case "session.deleted": state.pending.clear(); intent = "deleted"; break;
         }
+        await bounded(savePending(id, [...state.pending]));
+        if (!intent) return;
         const payload = {
           hook_event_name: intent, session_id: id,
           title: typeof info.title === "string" ? info.title.slice(0, 500) : undefined,

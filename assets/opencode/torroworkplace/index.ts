@@ -8,10 +8,16 @@ export default Plugin.define({
     const controller = new AbortController();
     const program = __TORRO_PROGRAM__;
     const keyFile = __TORRO_KEY_FILE__;
+    const pendingKey = (sessionID: string) =>
+      `pending/${encodeURIComponent(ctx.location.directory)}/${encodeURIComponent(sessionID)}`;
     const receive = bridge({
       directory: ctx.location.directory,
       signal: controller.signal,
       session: (sessionID, signal) => ctx.session.get({ sessionID }, { signal }),
+      loadPending: (sessionID) => ctx.storage.get(pendingKey(sessionID)).then((value) => value ?? []),
+      savePending: (sessionID, pending) => pending.length
+        ? ctx.storage.set(pendingKey(sessionID), pending)
+        : ctx.storage.remove(pendingKey(sessionID)),
       report: (payload, signal) => send(program, keyFile, payload, signal),
     });
     void (async () => {

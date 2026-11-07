@@ -151,3 +151,27 @@ test("failed lookup keeps queued events on the same session tail", async () => {
   await Promise.all([oldDone, newStart, newQuestion]);
   assert.deepEqual(reports, ["done", "started", "waiting"]);
 });
+
+test("reload retains open question IDs and cancellation resolves only the final question", async () => {
+  const reports = [], stored = new Map();
+  const make = () => {
+    const controller = new AbortController();
+    const receive = bridge({ signal: controller.signal, session: async () => ({}),
+      loadPending: async (id) => stored.get(id) ?? [],
+      savePending: async (id, pending) => { if (pending.length) stored.set(id, pending); else stored.delete(id); },
+      report: async (p) => reports.push(p.hook_event_name),
+    });
+    return { controller, receive };
+  };
+  const first = make();
+  for (const id of ["a", "b"]) {
+    await first.receive({ id: `ask-${id}`, type: "form.created", data: { form: { sessionID: "s", id } } });
+  }
+  first.controller.abort();
+  const second = make();
+  await second.receive({ id: "cancel-a", type: "form.cancelled", data: { sessionID: "s", id: "a" } });
+  assert.deepEqual(reports, ["waiting", "waiting"], "the other form still waits after reload");
+  await second.receive({ id: "cancel-b", type: "form.cancelled", data: { sessionID: "s", id: "b" } });
+  assert.deepEqual(reports, ["waiting", "waiting", "resolved"]);
+  assert.equal(stored.size, 0);
+});
