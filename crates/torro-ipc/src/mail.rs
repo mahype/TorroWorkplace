@@ -179,6 +179,151 @@ pub const MAX_QUERY_CHARS: usize = 500;
 /// The largest file a draft may attach (`DraftAttachment::File`, security rule 1): 25 MiB.
 pub const MAX_FILE_BYTES: u64 = 25 * 1024 * 1024;
 
+/// Largest decoded image upload chunk; keeps requests below the unchanged 1-MiB IPC limit.
+pub const IMAGE_CHUNK_BYTES: usize = 256 * 1024;
+
+/// Shared RAM payload: cloning requests for approvals never clones image data. The service
+/// charges pending payloads against the same 100-MiB budget as its originals and previews.
+#[derive(Clone, JsonSchema)]
+#[schemars(transparent)]
+pub struct ImageData(#[schemars(with = "String")] std::sync::Arc<ImagePayload>);
+
+struct ImagePayload {
+    text: String,
+    charged: std::sync::Mutex<bool>,
+}
+
+static HELD_IMAGE_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Image payload bytes currently retained by requests (including pending approvals).
+pub fn held_image_bytes() -> usize {
+    HELD_IMAGE_BYTES.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// A service-side byte reservation, retained for as long as outgoing buffers/MIME scratch live.
+/// It contains no image data and is deliberately not clonable or serializable.
+pub struct ImageReservation(usize);
+
+impl ImageReservation {
+    /// Call under the image-store lock after checking the store and shared payload budget.
+    pub fn new(bytes: usize) -> Option<Self> {
+        HELD_IMAGE_BYTES
+            .fetch_update(std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire, |used| {
+                used.checked_add(bytes).filter(|sum| *sum <= 100 * 1024 * 1024)
+            })
+            .ok()
+            .map(|_| Self(bytes))
+    }
+
+    /// Releases unused worst-case space after encoding, without allocating another buffer.
+    pub fn shrink_to(&mut self, bytes: usize) {
+        let retained = self.0.min(bytes);
+        HELD_IMAGE_BYTES.fetch_sub(self.0 - retained, std::sync::atomic::Ordering::AcqRel);
+        self.0 = retained;
+    }
+}
+
+impl Drop for ImageReservation {
+    fn drop(&mut self) {
+        HELD_IMAGE_BYTES.fetch_sub(self.0, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+impl ImageData {
+    pub fn is_reserved(&self) -> bool {
+        *self.0.charged.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Called under the service's image-store lock, after checking the whole budget. A shared
+    /// payload is charged once, including while the approved request is executing.
+    pub fn reserve(&self) -> bool {
+        let mut charged = self.0.charged.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *charged {
+            return true;
+        }
+        let bytes = self.len();
+        let reserved = HELD_IMAGE_BYTES
+            .fetch_update(std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire, |used| {
+                used.checked_add(bytes).filter(|sum| *sum <= 100 * 1024 * 1024)
+            })
+            .is_ok();
+        *charged = reserved;
+        reserved
+    }
+}
+
+impl Drop for ImagePayload {
+    fn drop(&mut self) {
+        if *self.charged.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner) {
+            HELD_IMAGE_BYTES.fetch_sub(self.text.len(), std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+}
+
+impl From<String> for ImageData {
+    fn from(text: String) -> Self {
+        Self(std::sync::Arc::new(ImagePayload { text, charged: std::sync::Mutex::new(false) }))
+    }
+}
+impl From<&str> for ImageData {
+    fn from(text: &str) -> Self {
+        text.to_owned().into()
+    }
+}
+impl std::ops::Deref for ImageData {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0.text
+    }
+}
+impl AsRef<[u8]> for ImageData {
+    fn as_ref(&self) -> &[u8] {
+        self.0.text.as_bytes()
+    }
+}
+impl std::fmt::Debug for ImageData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ImageData(…)")
+    }
+}
+impl PartialEq for ImageData {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.text == other.0.text
+    }
+}
+impl Eq for ImageData {}
+impl Serialize for ImageData {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self)
+    }
+}
+impl<'de> Deserialize<'de> for ImageData {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Into::into)
+    }
+}
+
+/// A prepared image lease. Re-prepare its Prepared source to renew the one-hour idle lease.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedImage {
+    pub id: String,
+    pub width: u32,
+    pub height: u32,
+    pub original_width: u32,
+    pub original_height: u32,
+    /// PNG, base64, at most 256 KiB decoded.
+    pub preview: ImageData,
+}
+
+impl std::fmt::Debug for PreparedImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedImage")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Where `mail.move_messages` puts the messages: `{"folder": "<id>"}` or `{"role": "archive"}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -973,6 +1118,12 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
         return refuse(format!("an id, folder, cursor or attachment part may hold at most {MAX_ID_BYTES} bytes"));
     }
     match request {
+        Request::UploadMailImage { base64, .. } if base64.len() > IMAGE_CHUNK_BYTES.div_ceil(3) * 4 => {
+            refuse("an image upload chunk may hold at most 256 KiB".into())
+        }
+        Request::ReleaseMailImages { ids, .. } if ids.len() > MAX_IDS => {
+            refuse(format!("at most {MAX_IDS} image ids per call"))
+        }
         Request::MailBackupCreate { file_name: Some(file_name), .. } if !valid_backup_filename(file_name) => {
             refuse(tr("Backup file name must be a plain .zip name or absolute app path.").into())
         }
@@ -1020,6 +1171,9 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
             if draft.body.len() > MAX_BODY_BYTES {
                 return refuse("the text of a draft may hold at most 1 MiB".into());
             }
+            if draft.html.as_ref().is_some_and(|html| html.len() > MAX_BODY_BYTES) {
+                return refuse("the HTML of a draft may hold at most 1 MiB".into());
+            }
             None
         }
         _ => None,
@@ -1042,6 +1196,9 @@ fn valid_backup_filename(file_name: &str) -> bool {
 /// cursor and attachment part.
 fn mail_ids(request: &Request) -> impl Iterator<Item = &str> {
     let more: Vec<&str> = match request {
+        Request::PrepareMailImage { source, .. } => image_ids(source),
+        Request::UploadMailImage { upload, .. } => upload.iter().map(String::as_str).collect(),
+        Request::ReleaseMailImages { ids, .. } => ids.iter().map(String::as_str).collect(),
         Request::UpdateMailAccount { id, .. } | Request::ReconfigureMail { id, .. } => vec![id],
         Request::SearchMail { folder, cursor, .. } => folder.iter().chain(cursor).map(String::as_str).collect(),
         Request::MoveMail { to: MoveTarget::Folder(folder), .. } => vec![folder],
@@ -1068,14 +1225,27 @@ fn mail_ids(request: &Request) -> impl Iterator<Item = &str> {
         Request::SaveDraft { draft } => draft
             .attachments
             .iter()
-            .filter_map(|attachment| match attachment {
-                DraftAttachment::MailPart { part, .. } => Some(part.as_str()),
-                DraftAttachment::File { .. } => None,
+            .flat_map(|attachment| match attachment {
+                DraftAttachment::MailPart { part, .. } => vec![part.as_str()],
+                DraftAttachment::File { .. } => Vec::new(),
+                DraftAttachment::Image { id, source, .. } => {
+                    let mut ids = image_ids(source);
+                    ids.push(id);
+                    ids
+                }
             })
             .collect(),
         _ => Vec::new(),
     };
     request.mail_account().into_iter().chain(request.message_ids()).chain(more)
+}
+
+fn image_ids(source: &torro_mail::ImageSource) -> Vec<&str> {
+    match source {
+        torro_mail::ImageSource::File { .. } => Vec::new(),
+        torro_mail::ImageSource::MailPart { message, part } => vec![message, part],
+        torro_mail::ImageSource::Prepared { id } => vec![id],
+    }
 }
 
 impl Request {
@@ -1087,6 +1257,9 @@ impl Request {
     /// ([`Request::message_ids`]).
     pub fn mail_account(&self) -> Option<&str> {
         match self {
+            Request::PrepareMailImage { account, .. }
+            | Request::UploadMailImage { account, .. }
+            | Request::ReleaseMailImages { account, .. } => Some(account),
             // The sync's state (issue #422): without `account`, every account in reach.
             Request::MailSyncStatus { account, .. } => account.as_deref(),
             Request::MailFolders { account }
@@ -1122,6 +1295,9 @@ impl Request {
     /// before anything is read).
     pub fn message_ids(&self) -> Vec<&str> {
         match self {
+            Request::PrepareMailImage { source: torro_mail::ImageSource::MailPart { message, .. }, .. } => {
+                vec![message]
+            }
             Request::GetMail { id, .. }
             | Request::GetMailThread { id }
             | Request::GetMailAttachment { id, .. }
@@ -1140,6 +1316,10 @@ impl Request {
                 let parts = draft.attachments.iter().filter_map(|attachment| match attachment {
                     DraftAttachment::MailPart { message, .. } => Some(message.as_str()),
                     DraftAttachment::File { .. } => None,
+                    DraftAttachment::Image { source: torro_mail::ImageSource::MailPart { message, .. }, .. } => {
+                        Some(message.as_str())
+                    }
+                    DraftAttachment::Image { .. } => None,
                 });
                 draft.id.as_deref().into_iter().chain(draft.in_reply_to.as_deref()).chain(parts).collect()
             }

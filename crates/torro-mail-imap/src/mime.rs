@@ -204,6 +204,11 @@ pub struct Outgoing {
 /// A file to attach, already read by the core (security rule 1 of M2.1 checked there).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutgoingAttachment {
+    /// Compose display choice retained independently of image dimensions.
+    pub image_size: Option<torro_mail::ImageSize>,
+    /// Stable Content-ID, also retained when this image is an ordinary attachment.
+    pub content_id: Option<String>,
+    pub inline: bool,
     /// The name shown to the recipients; line breaks and path parts are not checked here.
     pub filename: String,
     /// `type/subtype`; anything else becomes `application/octet-stream`.
@@ -348,6 +353,61 @@ pub fn attachment(raw: &[u8], part: &str) -> Result<Attachment, MimeError> {
     })
 }
 
+/// Decodes a bounded standalone image entity fetched with `Session::fetch_image_part`. Check the
+/// decoded length before copying it, and never interpret a multipart or embedded message as an image.
+pub fn image_attachment(raw: &[u8], limit: usize) -> Result<Attachment, MimeError> {
+    standalone_attachment(raw, limit, true)
+}
+
+/// Decodes an ordinary standalone attachment with the same before-copy byte limit.
+pub fn bounded_attachment(raw: &[u8], limit: usize) -> Result<Attachment, MimeError> {
+    standalone_attachment(raw, limit, false)
+}
+
+fn standalone_attachment(raw: &[u8], limit: usize, image_only: bool) -> Result<Attachment, MimeError> {
+    let message = MessageParser::default().parse(raw).ok_or(MimeError::Unreadable)?;
+    let part = message.parts.first().ok_or(MimeError::NoSuchPart)?;
+    let kind = content_type(part);
+    if part.contents().len() > limit
+        || (image_only
+            && (!kind.starts_with("image/") || !matches!(part.body, PartType::Binary(_) | PartType::InlineBinary(_))))
+        || (!image_only && !message.attachments.contains(&0))
+    {
+        return Err(MimeError::NoSuchPart);
+    }
+    Ok(Attachment { filename: part.attachment_name().map(clean), content_type: kind, bytes: part.contents().to_vec() })
+}
+
+/// Builds `outgoing` into MIME bytes and its SMTP envelope. The same input gives the same bytes.
+/// Reads the compose size marker of a saved MIME part; unknown values are absent.
+pub fn image_size(raw: &[u8], part: &str) -> Option<torro_mail::ImageSize> {
+    let message = MessageParser::default().parse(raw)?;
+    let part = message.parts.get(part.parse::<usize>().ok()?)?;
+    let value =
+        part.headers.iter().find(|h| h.name.as_str().eq_ignore_ascii_case("X-Torro-Image-Size"))?.value.as_text()?;
+    match value.trim() {
+        "small" => Some(torro_mail::ImageSize::Small),
+        "medium" => Some(torro_mail::ImageSize::Medium),
+        "large" => Some(torro_mail::ImageSize::Large),
+        "original" => Some(torro_mail::ImageSize::Original),
+        _ => None,
+    }
+}
+
+fn image_part<'a>(file: &'a OutgoingAttachment) -> MimePart<'a> {
+    let mut part = MimePart::new(outgoing_content_type(&file.content_type), file.bytes.as_slice());
+    if let Some(size) = file.image_size {
+        let size = match size {
+            torro_mail::ImageSize::Small => "small",
+            torro_mail::ImageSize::Medium => "medium",
+            torro_mail::ImageSize::Large => "large",
+            torro_mail::ImageSize::Original => "original",
+        };
+        part = part.header("X-Torro-Image-Size", mail_builder::headers::raw::Raw::new(size));
+    }
+    part
+}
+
 /// Builds `outgoing` into MIME bytes and its SMTP envelope. The same input gives the same bytes.
 pub fn build(outgoing: &Outgoing) -> Result<Built, MimeError> {
     for address in std::iter::once(&outgoing.from).chain(&outgoing.to).chain(&outgoing.cc).chain(&outgoing.bcc) {
@@ -398,6 +458,13 @@ pub fn build(outgoing: &Outgoing) -> Result<Built, MimeError> {
             signature.to_string()
         }
     });
+    if let Some(markup) = &signed {
+        for cid in html::image_refs(markup) {
+            if outgoing.attachments.iter().filter(|a| a.inline && a.content_id.as_deref() == Some(&cid)).count() != 1 {
+                return Err(MimeError::Write);
+            }
+        }
+    }
     let text = crlf(&match &signed {
         Some(signed) => html::to_text(signed),
         None => with_signature(&outgoing.body, plain_signature.as_deref()),
@@ -408,7 +475,22 @@ pub fn build(outgoing: &Outgoing) -> Result<Built, MimeError> {
     let boundary: String = outgoing.message_id.chars().filter(char::is_ascii_alphanumeric).take(48).collect();
     let mut forms = vec![MimePart::new("text/plain", text.clone())];
     if let Some(signed) = &signed {
-        forms.push(MimePart::new("text/html", crlf(&html_document(signed))));
+        let html_part = MimePart::new("text/html", crlf(&html_document(signed)));
+        let mut related = vec![html_part];
+        for image in outgoing.attachments.iter().filter(|file| file.inline) {
+            let id = image
+                .content_id
+                .as_deref()
+                .filter(|id| torro_mail::html::valid_cid(id))
+                .ok_or(MimeError::InvalidMessageId)?;
+            related.push(image_part(image).inline().cid(id));
+        }
+        if related.len() == 1 {
+            forms.extend(related);
+        } else {
+            let kind = ContentType::new("multipart/related").attribute("boundary", format!("=_torro_rel_{boundary}"));
+            forms.push(MimePart::new(kind, related));
+        }
     }
     if let Some(calendar) = &outgoing.calendar {
         if calendar.method.is_empty() || !calendar.method.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -426,17 +508,25 @@ pub fn build(outgoing: &Outgoing) -> Result<Built, MimeError> {
     } else {
         MimePart::new("text/plain", text.clone())
     };
-    builder = if outgoing.attachments.is_empty() && !alternative {
+    let attached: Vec<_> = outgoing.attachments.iter().filter(|file| !file.inline).collect();
+    if signed.is_none() && outgoing.attachments.iter().any(|file| file.inline) {
+        return Err(MimeError::Write);
+    }
+    builder = if attached.is_empty() && !alternative {
         builder.text_body(text)
-    } else if outgoing.attachments.is_empty() {
+    } else if attached.is_empty() {
         builder.body(text_part)
     } else {
         let mut parts = vec![text_part];
-        for file in &outgoing.attachments {
-            parts.push(
-                MimePart::new(outgoing_content_type(&file.content_type), file.bytes.as_slice())
-                    .attachment(one_line(&file.filename)),
-            );
+        for file in attached {
+            let mut part = image_part(file).attachment(one_line(&file.filename));
+            if let Some(id) = &file.content_id {
+                if !html::valid_cid(id) {
+                    return Err(MimeError::InvalidMessageId);
+                }
+                part = part.cid(id.as_str());
+            }
+            parts.push(part);
         }
         let kind = ContentType::new("multipart/mixed").attribute("boundary", format!("=_torro_{boundary}"));
         builder.body(MimePart::new(kind, parts))

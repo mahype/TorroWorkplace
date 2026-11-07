@@ -1785,6 +1785,9 @@ impl Request {
             Request::MoveMail { .. } => &MOVE_MESSAGES,
             Request::DeleteMail { .. } => &DELETE_MESSAGES,
             Request::SaveDraft { .. } => &SAVE_DRAFT,
+            Request::PrepareMailImage { .. } => &PREPARE_MAIL_IMAGE,
+            Request::UploadMailImage { .. } => &UPLOAD_MAIL_IMAGE,
+            Request::ReleaseMailImages { .. } => &RELEASE_MAIL_IMAGES,
             Request::SendDraft { .. } => &SEND_DRAFT,
             Request::GetDraft { .. } => &GET_DRAFT,
             Request::RespondToInvitation { .. } => &RESPOND_TO_INVITATION,
@@ -2104,6 +2107,9 @@ pub static CATALOGUE: &[&Command] = &[
     &MOVE_MESSAGES,
     &DELETE_MESSAGES,
     &SAVE_DRAFT,
+    &PREPARE_MAIL_IMAGE,
+    &UPLOAD_MAIL_IMAGE,
+    &RELEASE_MAIL_IMAGES,
     &SEND_DRAFT,
     &GET_DRAFT,
     &RESPOND_TO_INVITATION,
@@ -4724,15 +4730,41 @@ static SAVE_DRAFT: Command = Command {
     mcp: Mcp::Tool,
     description: "Saves a draft (account, to, cc, bcc, subject, plain text body, the message it answers in \
                   `in_reply_to`, attachments) in the account's drafts folder and returns it with its id. For \
-                  formatted mail give `html` too: it is cleaned (no scripts, styles, images or attributes but \
-                  http, https and mailto links), the plain text is made from it, and the signature goes above a \
+                  formatted mail give `html` too: it is cleaned (no scripts, styles or external images; only \
+                  cid images and http, https and mailto links), the plain text is made from it, and the signature goes above a \
                   `<div class=\"torro-quote\">` holding the quoted history. Passing \
                   the id of your own saved draft replaces it, which needs delete access; drafts of others are \
                   `not-found`. Attach parts of messages with `{\"kind\": \"mail_part\"}`, files with \
                   `{\"kind\": \"file\"}`: from Torro Workplace's attachment folder, or a PDF you made yourself \
                   with tools_create_pdf (the `path` from its answer), unchanged since, while that tool is switched \
                   on, you may read `tools` and `pdf` is among your tools; any other file is `forbidden`. Nothing is sent: use \
-                  send_draft.",
+                  send_draft. Embedded images use kind image with a stable CID id, a file/mail_part/prepared source, \
+                  inline (default true) and size small/medium/large/original (default medium). Every cid reference \
+                  must match exactly one image part. Returned image sources name the new draft's own mail parts.",
+};
+
+static PREPARE_MAIL_IMAGE: Command = Command {
+    name: "mail.prepare_image",
+    area: Area::Mail,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Prepares a PNG, JPEG, GIF or WebP from a permitted file, reachable mail part, or your prepared id. Returns a volatile id, dimensions and PNG preview (at most 256 KiB). Originals stay only in RAM; idle leases expire after one hour. Normal saves orient and reduce to at most 1600 pixels wide; Original is explicit. Foreign sources are not-found; resource limits are busy. Re-prepare a prepared id to renew its lease, or copy it to another account only if you can reach both accounts; copying returns a separate lease and preserves the RAM original.",
+};
+
+static UPLOAD_MAIL_IMAGE: Command = Command {
+    name: "mail.upload_image",
+    area: Area::Mail,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Uploads base64 image bytes in chunks of at most 256 KiB decoded, at most 25 MiB total. Start without upload at offset 0; continue with the returned id and next byte offset. Repeating identical chunks is idempotent; other offsets conflict. Set final to decode and return a prepared image. Unfinished uploads expire after 10 minutes idle. Nothing is sent or saved to disk.",
+};
+
+static RELEASE_MAIL_IMAGES: Command = Command {
+    name: "mail.release_images",
+    area: Area::Mail,
+    access: Access::Delete,
+    mcp: Mcp::Tool,
+    description: "Releases your volatile image and upload ids in one account. Unknown ids and ids of other callers or accounts are ignored. Returns ok without counts. Saved drafts keep their own image parts.",
 };
 
 static SEND_DRAFT: Command = Command {
@@ -5968,6 +6000,18 @@ mod tests {
             Request::MoveMail { ids: vec!["m:1".into()], to: MoveTarget::Role(MoveRole::Archive) },
             Request::DeleteMail { ids: vec!["m:1".into()], permanent: false },
             Request::SaveDraft { draft: draft(None) },
+            Request::PrepareMailImage {
+                account: "mail:anna@example.org".into(),
+                source: torro_mail::ImageSource::Prepared { id: "image-one".into() },
+            },
+            Request::UploadMailImage {
+                account: "mail:anna@example.org".into(),
+                upload: None,
+                offset: 0,
+                base64: "AA==".into(),
+                finish: false,
+            },
+            Request::ReleaseMailImages { account: "mail:anna@example.org".into(), ids: vec!["image-one".into()] },
             Request::SendDraft { id: "m:2".into() },
             Request::GetDraft { id: "m:2".into() },
             Request::RespondToInvitation {
@@ -8045,7 +8089,10 @@ mod tests {
         // overview, which only reads. Issue #422: the sync's state, which only reads. Issue #416:
         // unsubscribing, which sends. Issue #501: saving a mail as PDF or picture. Issue #453: a sender's
         // logo, which only reads. Issue #502: reading a draft back, which only reads.
-        assert_eq!(mail.len(), 42);
+        assert_eq!(mail.len(), 45);
+        assert_eq!(PREPARE_MAIL_IMAGE.access, Access::Write);
+        assert_eq!(UPLOAD_MAIL_IMAGE.access, Access::Write);
+        assert_eq!(RELEASE_MAIL_IMAGES.access, Access::Delete);
         assert_eq!(GET_DRAFT.access, Access::Read);
         assert_eq!(INDEX_STATUS.access, Access::Read);
         assert_eq!((GET_SENDER_LOGO.access, GET_SENDER_LOGO.mcp), (Access::Read, Mcp::Tool));

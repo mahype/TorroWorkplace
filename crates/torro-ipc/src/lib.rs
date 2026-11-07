@@ -3209,6 +3209,29 @@ pub enum Request {
     /// both as stored.
     #[serde(rename = "mail.save_draft")]
     SaveDraft { draft: Draft },
+    /// Decodes an image into a volatile, caller/account-owned source and a bounded PNG preview.
+    /// Returns MailImage; not-found for foreign sources, forbidden for disallowed files,
+    /// busy at memory/concurrency limits, error for invalid or oversized image data.
+    /// A prepared source of this caller in another reachable account is copied into a new lease;
+    /// both accounts are checked. Saving a draft still requires its destination account's lease.
+    #[serde(rename = "mail.prepare_image")]
+    PrepareMailImage { account: String, source: torro_mail::ImageSource },
+    /// Uploads at most 256 KiB decoded per call (25 MiB total). Repeating bytes at an earlier
+    /// offset is idempotent; a different offset/content is conflict. Final returns MailImage.
+    #[serde(rename = "mail.upload_image")]
+    UploadMailImage {
+        account: String,
+        #[serde(default)]
+        upload: Option<String>,
+        offset: u64,
+        base64: mail::ImageData,
+        #[serde(default, rename = "final")]
+        finish: bool,
+    },
+    /// Releases only this caller's volatile images/uploads in this account. Unknown or foreign
+    /// ids are ignored; returns Ok without revealing counts.
+    #[serde(rename = "mail.release_images")]
+    ReleaseMailImages { account: String, ids: Vec<String> },
     /// Sends a saved draft, keeps a copy in the sent folder and removes the draft
     /// ([`Response::MailSent`]). The message is built from the draft as the core stores it, never
     /// from text sent along. For a client key `api::Rights::outbound` decides: `never` is
@@ -4944,6 +4967,15 @@ pub enum Response {
     /// A draft as saved ([`Request::SaveDraft`]) or read back ([`Request::GetDraft`]), with its id.
     MailDraft {
         draft: Draft,
+    },
+    /// A volatile prepared image and its display-safe preview, never its original bytes.
+    MailImage {
+        image: mail::PreparedImage,
+    },
+    /// The next decoded-byte offset of an unfinished image upload.
+    MailImageUpload {
+        id: String,
+        offset: u64,
     },
     /// A draft was sent ([`Request::SendDraft`]).
     MailSent {
