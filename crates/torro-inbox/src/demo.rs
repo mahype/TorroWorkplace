@@ -57,8 +57,9 @@ use std::sync::{Mutex, MutexGuard};
 use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use torro_core::i18n::{tr, trf};
 use torro_mail::{
-    AttachmentInfo, Category, DateSource, Draft, DraftAttachment, FileKind, Flag, Folder, MailAddress, MailCategory,
-    MailPile, Message, MessageSummary, MessageTraits, Order, Role, SaveTarget, SaveTargetSpec,
+    AttachmentInfo, AuthCheck, Category, DateSource, Draft, DraftAttachment, FileKind, Flag, Folder, MailAddress,
+    MailCategory, MailPile, Message, MessageSummary, MessageTraits, Order, Role, SaveTarget, SaveTargetSpec,
+    WarningSign,
 };
 
 use crate::item::{
@@ -673,6 +674,8 @@ struct Letter {
     category: Option<MailCategory>,
     /// The pile it lies on from the start (task E19.3); `None` for most.
     pile: Option<MailPile>,
+    /// Caught as fraud or spam (issue #506): out of "All", under its category.
+    caught: bool,
 }
 
 impl Letter {
@@ -697,6 +700,7 @@ impl Letter {
             bulk: false,
             category: None,
             pile: None,
+            caught: false,
         }
     }
 }
@@ -745,7 +749,9 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
         content_id: Some(content_id.into()),
     }));
     Message {
+        warnings: demo_warnings(letter.id),
         summary: MessageSummary {
+            caught: letter.caught,
             id: letter.id.into(),
             account: MAIL_ACCOUNTS[letter.account].into(),
             folder: folder_id(letter.account, letter.folder),
@@ -824,6 +830,21 @@ fn adopt_sample_draft(data: &mut Data, id: &str) {
     }
     if let Some(draft) = sample_draft(&data.mail, &data.folders, id) {
         data.drafts.push(draft);
+    }
+}
+
+/// The warning signs the demo pretends the core found (issue #506): the caught fraud names a brand it
+/// does not belong to, looks like its domain and failed DMARC; the prize spam has two weak signs.
+fn demo_warnings(id: &str) -> Vec<WarningSign> {
+    match id {
+        "m:w30" => vec![
+            WarningSign::BrandMismatch { brand: "PayPal".into() },
+            WarningSign::Lookalike { brand: "PayPal".into() },
+            WarningSign::AuthFailed { check: AuthCheck::Dmarc },
+            WarningSign::Pressure,
+        ],
+        "m:w11" => vec![WarningSign::GenericGreeting, WarningSign::FirstContact],
+        _ => Vec::new(),
     }
 }
 
@@ -1079,6 +1100,17 @@ fn sample_letters() -> Vec<Letter> {
             category: Some(MailCategory::by_rule(Category::Spam)),
             ..Letter::new("m:w11", WORK, "junk", "You have won a prize")
         },
+        // Caught as fraud (issue #506): out of "All", under Unwanted › Phishing with its band.
+        Letter {
+            from: ("PayPal Service", "service@paypa1-secure.example"),
+            // The oldest of the work inbox: caught, it waited out of sight.
+            minutes: 20 * 24 * 60,
+            text: "Dear customer,\n\nyour account will be limited. Confirm your access data within 24 hours: \
+                   https://paypa1-secure.example/login",
+            category: Some(MailCategory::by_model(Category::Phishing, 0.97)),
+            caught: true,
+            ..Letter::new("m:w30", WORK, "inbox", "Your account will be limited")
+        },
         Letter {
             from: ("Office news", "news@work.example.org"),
             minutes: 5 * 24 * 60,
@@ -1245,7 +1277,8 @@ const WEEKEND_DRAFT_HTML: &str = concat!(
 /// the sender and the start of the text, linking the message.
 fn mail_entries(mail: &[Message]) -> Vec<Item> {
     mail.iter()
-        .filter(|m| m.summary.folder.ends_with("-inbox") && !m.summary.flags.contains(&Flag::Seen))
+        // Caught as fraud or spam (issue #506): no entry, as the core files none.
+        .filter(|m| m.summary.folder.ends_with("-inbox") && !m.summary.flags.contains(&Flag::Seen) && !m.summary.caught)
         .enumerate()
         .map(|(n, m)| {
             let summary = &m.summary;
@@ -1449,7 +1482,8 @@ impl DemoSource {
             .map(|folder| {
                 let inside = data.mail.iter().filter(|m| m.summary.folder == folder.id);
                 let (total, unread) = inside.fold((0, 0), |(total, unread), m| {
-                    (total + 1, unread + u32::from(!m.summary.flags.contains(&Flag::Seen)))
+                    // Caught mail counts nowhere as unread (issue #506), as in the core.
+                    (total + 1, unread + u32::from(!m.summary.flags.contains(&Flag::Seen) && !m.summary.caught))
                 });
                 Folder { unread, total, ..folder.clone() }
             })
@@ -1570,6 +1604,25 @@ impl DemoSource {
         let page: Vec<MessageSummary> = found.iter().skip(start).take(limit).map(|m| m.summary.clone()).collect();
         let next = (start + page.len() < found.len()).then(|| (start + page.len()).to_string());
         Ok((page, next))
+    }
+
+    /// `inbox.release_mail` (issue #506, "Not fraud"): the messages `ids` are no longer caught and
+    /// lose the category Phishing or Spam; with `trust` the demo needs to remember nothing more.
+    /// [`InboxError::NotFound`] when one of them is unknown; nothing changes then.
+    pub fn release_mail(&self, ids: &[String]) -> Result<(), InboxError> {
+        let mut data = self.lock();
+        if !ids.iter().all(|id| data.mail.iter().any(|m| m.summary.id == *id)) {
+            return Err(InboxError::NotFound);
+        }
+        for message in data.mail.iter_mut().filter(|m| ids.contains(&m.summary.id)) {
+            message.summary.caught = false;
+            message.warnings.clear();
+            if message.summary.category.is_some_and(|held| matches!(held.category, Category::Phishing | Category::Spam))
+            {
+                message.summary.category = None;
+            }
+        }
+        Ok(())
     }
 
     /// `mail.get_message` with its text and its HTML, as asked with `include_html` (the inbox's
@@ -2495,7 +2548,8 @@ mod tests {
             assert_eq!(roles.iter().filter(|role| role.is_none()).count(), 1);
         }
         let inbox = folder(&folders, "f:work-inbox");
-        assert_eq!((inbox.unread, inbox.total), (5, 8));
+        // The fraud caught (issue #506) stays in its folder on the server, but counts as unread nowhere.
+        assert_eq!((inbox.unread, inbox.total), (5, 9));
         assert_eq!(folder(&folders, "f:private-trash").total, 0, "an empty folder");
         let mail = mail_sample(now());
         assert!(mail.iter().all(|m| m.summary.untrusted), "mail is foreign text");
@@ -2551,8 +2605,11 @@ mod tests {
         let (first, next) = demo.search_mail("f:work-inbox", None, 4, None, newest).expect("a page");
         let ids: Vec<&str> = first.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["m:w1", "m:w2", "m:w3", "m:w13"], "newest first");
-        let (rest, last) = demo.search_mail("f:work-inbox", None, 4, next.as_deref(), newest).expect("the next page");
-        assert_eq!((rest.len(), last), (4, None));
+        let (rest, after) = demo.search_mail("f:work-inbox", None, 4, next.as_deref(), newest).expect("the next page");
+        assert_eq!(rest.len(), 4);
+        let (end, last) = demo.search_mail("f:work-inbox", None, 4, after.as_deref(), newest).expect("the last page");
+        // The fraud caught (issue #506) stays in its folder, the oldest there.
+        assert_eq!((end.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), last), (vec!["m:w30"], None));
         let (found, _) = demo.search_mail("f:work-inbox", Some("JONAS minutes"), 50, None, newest).expect("found");
         assert_eq!(found.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["m:w6"], "every word, any case");
         let (by_file, _) = demo.search_mail("f:work-inbox", Some("budget-q4.csv"), 50, None, newest).expect("found");
@@ -2566,7 +2623,7 @@ mod tests {
         let (first, next) = demo.search_mail("f:work-inbox", None, 4, None, Order::OldestFirst).expect("a page");
         assert_eq!(first, reversed[..4]);
         let (rest, _) = demo.search_mail("f:work-inbox", None, 4, next.as_deref(), Order::OldestFirst).expect("more");
-        assert_eq!(rest, reversed[4..]);
+        assert_eq!(rest, reversed[4..8]);
     }
 
     #[tokio::test]

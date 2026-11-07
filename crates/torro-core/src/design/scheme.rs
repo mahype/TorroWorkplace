@@ -8,6 +8,8 @@
 //!
 //! A scheme with `dark_only = true` at the top (issue #291) has dark colours only: `[colors.light]` is
 //! an error there, the light palette is a copy of the dark one, and only the dark one is checked.
+//! `vivid = true` (issue #515) marks the vivid siblings of other schemes; it only decides the group the
+//! suite lists the scheme in and changes nothing about the colours or their checks.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -46,6 +48,7 @@ pub fn load_color_scheme(dir: &Path, id: &str) -> Result<ColorScheme, Vec<Design
 struct SchemeFile {
     format: Option<i64>,
     dark_only: Option<bool>,
+    vivid: Option<bool>,
     #[serde(default)]
     about: AboutFile,
     #[serde(default)]
@@ -117,7 +120,7 @@ fn known(path: &str, key: &str) -> Option<bool> {
     let value = |ok: bool| ok.then_some(false);
     match path {
         "" => match key {
-            "format" | "dark_only" => Some(false),
+            "format" | "dark_only" | "vivid" => Some(false),
             "about" | "colors" | "logo" => Some(true),
             _ => None,
         },
@@ -140,7 +143,8 @@ fn read(dir: &Path, id: &str, about: &mut About) -> Result<ColorScheme, Vec<Desi
     if dark_only && file.colors.light.is_some() {
         problems.push(DesignError::DarkOnlyLight);
     }
-    let scheme = build(id, about.clone(), &root, &file.colors, dark_only, file.logo, &mut problems);
+    let mut scheme = build(id, about.clone(), &root, &file.colors, dark_only, file.logo, &mut problems);
+    scheme.vivid = file.vivid.unwrap_or(false);
     if problems.is_empty() { Ok(scheme) } else { Err(problems) }
 }
 
@@ -533,6 +537,24 @@ mod tests {
         data.write(Part::ColorScheme, "two", "format = 1\ndark_only = false\n[about]\nname = \"Two\"\nversion = \"1\"\n[colors.light]\nbg = \"#FAFAFA\"\n");
         let two = load_color_scheme(&dir, "two").expect("valid");
         assert!(!two.dark_only && two.colors.light.bg == Rgba::hex(0xFAFAFA));
+    }
+
+    /// Issue #515: `vivid = true` marks a scheme, without the key it is not; a word instead of a flag is
+    /// a syntax error, and a vivid scheme may be dark only.
+    #[test]
+    fn the_vivid_key_marks_a_scheme() {
+        let data = Data::new();
+        let dir = data.dir(Part::ColorScheme);
+        let scheme = |extra: &str| format!("format = 1\n{extra}[about]\nname = \"Volt\"\nversion = \"1\"\n");
+        data.write(Part::ColorScheme, "volt", &scheme("vivid = true\n"));
+        assert!(load_color_scheme(&dir, "volt").expect("valid").vivid);
+        data.write(Part::ColorScheme, "plain", &scheme(""));
+        assert!(!load_color_scheme(&dir, "plain").expect("valid").vivid, "without the key it is not vivid");
+        data.write(Part::ColorScheme, "night", &scheme("vivid = true\ndark_only = true\n"));
+        let night = load_color_scheme(&dir, "night").expect("valid");
+        assert!(night.vivid && night.dark_only);
+        data.write(Part::ColorScheme, "word", &scheme("vivid = \"yes\"\n"));
+        assert!(matches!(problems(&dir, "word").as_slice(), [DesignError::Syntax { .. }]));
     }
 
     /// Task L.19: the repository's colour schemes, once task L.20 has made them, are valid.

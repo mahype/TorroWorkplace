@@ -205,7 +205,13 @@ fn invitations_are_found_and_the_text_is_not_the_calendar() {
     assert_eq!(read.text.trim(), "Du bist zur Planung eingeladen.");
     assert!(!read.from_html);
     assert_eq!(read.cc, [address(None, "carla@example.org")]);
-    assert_eq!(read.traits, Default::default(), "a person's mail");
+    // Issue #506: the headers were read – no sender checks, no reply reference – and nothing else.
+    let read_only = torro_mail::MessageTraits {
+        auth: Some(torro_mail::AuthResults::default()),
+        reply_ref: Some(false),
+        ..Default::default()
+    };
+    assert_eq!(read.traits, read_only, "a person's mail");
 }
 
 #[test]

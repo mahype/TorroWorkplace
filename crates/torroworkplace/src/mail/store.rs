@@ -76,7 +76,7 @@ const CORRESPONDENT_ROWS: u32 = 5_000;
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 
 /// Originals of mail that is no longer on the server (`originals.gone_at`) are deleted this many
 /// days after the sync noticed by [`MailStore::prune_gone_originals`]: long enough to still back up
@@ -127,6 +127,19 @@ const SCHEMA_V12_SIZE: &str = "ALTER TABLE messages ADD COLUMN size INTEGER;";
 /// domain whose logo stands for the sender. Rows from before stay `NULL`; the indexer checks those of
 /// the last 30 days ([`MailStore::unchecked_senders`]). Only added where it is missing.
 const SCHEMA_V13_SENDER_CHECK: &str = "ALTER TABLE messages ADD COLUMN sender_check TEXT;";
+
+/// Version 14 (issue #506): what the warning signs of fraud read from the headers – the sender
+/// checks of the top-most `Authentication-Results` (`torro_mail::AuthResults` as JSON), the address
+/// of `Return-Path` and whether the mail answers another (`In-Reply-To` or `References`, 0 or 1) –,
+/// and whether the core caught the mail as fraud or spam (`caught`, 0 or 1). The three headers are
+/// `NULL` for rows from before: not read, so they give no sign. Each column is only added where it
+/// is missing.
+const SCHEMA_V14: [(&str, &str); 4] = [
+    ("auth_json", "ALTER TABLE messages ADD COLUMN auth_json TEXT;"),
+    ("return_path", "ALTER TABLE messages ADD COLUMN return_path TEXT;"),
+    ("reply_ref", "ALTER TABLE messages ADD COLUMN reply_ref INTEGER;"),
+    ("caught", "ALTER TABLE messages ADD COLUMN caught INTEGER NOT NULL DEFAULT 0;"),
+];
 
 /// Before version 11 nothing marked an original whose message went: every original without a live
 /// header row at its place (folder path, the folder's current UIDVALIDITY, UID) is such one. An
@@ -516,6 +529,9 @@ pub struct SearchQuery {
     /// their category, and neither belongs under "Invoices". Without an inbox folder nothing
     /// matches.
     pub in_inbox: bool,
+    /// `Some(false)`: not caught as fraud or spam (what "All" lists, issue #506); `Some(true)`: only
+    /// caught mail.
+    pub caught: Option<bool>,
 }
 
 /// The store of one account. `Send`, not `Sync`: share it as `Arc<Mutex<MailStore>>` and call it
@@ -1032,7 +1048,7 @@ impl MailStore {
     }
 
     /// All folders, ordered by role (inbox first) and then path. `unread` and `total` are counted
-    /// from the stored headers.
+    /// from the stored headers; `unread` leaves out mail caught as fraud or spam (issue #506).
     pub fn folders(&self) -> Result<Vec<Folder>, MailStoreError> {
         let mut statement = self.db.prepare(&format!("{FOLDER_SELECT} ORDER BY {FOLDER_ORDER}"))?;
         let rows = statement.query_map([], |row| folder_from_row(&self.account, row))?;
@@ -1471,6 +1487,66 @@ impl MailStore {
         Ok(self.db.execute(sql, params![id, key, source, confidence])? > 0)
     }
 
+    /// Marks the mail `id` caught as fraud or spam (issue #506) or no longer. `false` when the store
+    /// has no such message.
+    pub fn set_caught(&self, id: &str, caught: bool) -> Result<bool, MailStoreError> {
+        Ok(self.db.execute("UPDATE messages SET caught = ?2 WHERE id = ?1", params![id, caught])? > 0)
+    }
+
+    /// Whether the account wrote to `address` (issue #506, "known"): a mail in the sent folder names
+    /// it in `To:` or `Cc:`, in any case. Without a sent folder nobody was written to.
+    pub fn wrote_to(&self, address: &str) -> Result<bool, MailStoreError> {
+        let Some(sent) = self.folder_by_role(Role::Sent)? else { return Ok(false) };
+        // The address as the stored JSON writes it (`"address":"anna@example.org"`), quotes included,
+        // so `nna@example.org` or `anna@example.org.evil` do not count.
+        let address = address.trim().to_lowercase();
+        if address.is_empty() || address.contains('"') || address.contains('\\') {
+            return Ok(false);
+        }
+        let needle = format!("\"address\":\"{address}\"");
+        let found: Option<i64> = self
+            .db
+            .query_row(
+                "SELECT 1 FROM messages WHERE folder_id = ?1
+                 AND (instr(lower(to_json), ?2) > 0 OR instr(lower(cc_json), ?2) > 0) LIMIT 1",
+                params![sent.id, needle],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// Whether the conversation `thread_id` holds a mail of the sent folder (issue #506): a reply in it
+    /// answers mail of one's own. Mail in one's name in other folders does not count – it may be forged.
+    pub fn sent_in_thread(&self, thread_id: &str) -> Result<bool, MailStoreError> {
+        let Some(sent) = self.folder_by_role(Role::Sent)? else { return Ok(false) };
+        let sql = "SELECT 1 FROM messages WHERE thread_id = ?1 AND folder_id = ?2 LIMIT 1";
+        Ok(self.db.query_row(sql, params![thread_id, sent.id], |row| row.get::<_, i64>(0)).optional()?.is_some())
+    }
+
+    /// Whether the store holds a mail from `address` (in any case, any folder) other than `id` and its
+    /// copies with the same `Message-ID` – Gmail keeps every mail in "All Mail" too (issue #506):
+    /// without one, `id` is the first contact of that address.
+    pub fn has_other_from(&self, address: &str, id: &str) -> Result<bool, MailStoreError> {
+        let address = address.trim().to_lowercase();
+        if address.is_empty() || address.contains('"') || address.contains('\\') {
+            return Ok(false);
+        }
+        let needle = format!("\"address\":\"{address}\"");
+        let found: Option<i64> = self
+            .db
+            .query_row(
+                "SELECT 1 FROM messages WHERE id <> ?1 AND instr(lower(from_json), ?2) > 0
+                 AND (rfc_message_id IS NULL
+                      OR rfc_message_id IS NOT (SELECT rfc_message_id FROM messages WHERE id = ?1))
+                 LIMIT 1",
+                params![id, needle],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
     /// Commit a decision only if the category still matches the value read before the model
     /// call. A person's or rule's concurrent change therefore wins, including when the model took
     /// a long time to answer. What stands as `expected` may be a rule's category (a contact's
@@ -1714,13 +1790,14 @@ impl MailStore {
 
     /// What came in from `since` on for `mail.overview` (issue #409), newest first: every folder
     /// but Sent and Drafts, so archived mail counts as well and one's own does not – nor a copy of
-    /// it elsewhere with the same Message-ID (Gmail's "All Mail" holds what one sent). A sender or
+    /// it elsewhere with the same Message-ID (Gmail's "All Mail" holds what one sent), nor mail
+    /// caught as fraud or spam (issue #506), which never came in for the person. A sender or
     /// category this version cannot read counts as none: the overview must not fail on one message.
     pub fn overview_rows(&self, since: DateTime<Utc>) -> Result<Vec<CameIn>, MailStoreError> {
         let sql = "SELECT m.id, m.date, m.from_json, m.flags, m.category, m.rfc_message_id,
                 coalesce(f.role = 'trash', 0), m.list_unsubscribe
             FROM messages m JOIN folders f ON f.id = m.folder_id
-            WHERE m.date >= ?1 AND coalesce(f.role, '') NOT IN ('sent', 'drafts')
+            WHERE m.date >= ?1 AND coalesce(f.role, '') NOT IN ('sent', 'drafts') AND m.caught = 0
                 AND (m.rfc_message_id IS NULL OR m.rfc_message_id NOT IN (
                     SELECT o.rfc_message_id FROM messages o JOIN folders g ON g.id = o.folder_id
                     WHERE g.role IN ('sent', 'drafts') AND o.rfc_message_id IS NOT NULL))
@@ -1748,7 +1825,8 @@ impl MailStore {
     /// The people of this account's mail since `since`, for the recipient suggestions (issue #460,
     /// `contacts.suggest_recipients`): everyone mail went to from the sent folder (`To:` and `Cc:`),
     /// each mail counting by its age at `now` ([`torro_contacts::suggest::sent_weight`]), and the
-    /// senders of personal mail in every other folder but drafts, junk and trash – mail of a list
+    /// senders of personal mail in every other folder but drafts, junk and trash, never caught as fraud or
+    /// spam (issue #506) – mail of a list
     /// (`List-Id`), automatic mail (`Auto-Submitted` other than `no`) and bulk mail (`Precedence:
     /// bulk`, `list`, `junk`) say nothing about whom the person writes to, and would fill the list
     /// with "noreply" addresses. The folders go by their role; the person's picks for roles count as
@@ -1828,6 +1906,7 @@ impl MailStore {
              WHERE m.date >= ?1 AND m.from_json IS NOT NULL AND f.id IS NOT ?2
                 AND coalesce(f.role, '') NOT IN ('sent', 'drafts', 'junk', 'trash')
                 AND f.path NOT IN (SELECT value FROM json_each(?3))
+                AND m.caught = 0
                 AND m.list_id IS NULL
                 AND (m.auto_submitted IS NULL OR lower(trim(m.auto_submitted)) = 'no')
                 AND (m.precedence IS NULL OR lower(trim(m.precedence)) NOT IN ('bulk', 'list', 'junk'))
@@ -1846,12 +1925,12 @@ impl MailStore {
         Ok(people.into_values().collect())
     }
 
-    /// The mail of the inbox folder now for `mail.overview` (issue #409), newest first; none
-    /// without an inbox folder. A category this version cannot read counts as none, as in
+    /// The mail of the inbox folder now for `mail.overview` (issue #409), newest first, without mail
+    /// caught as fraud or spam (issue #506); none without an inbox folder. A category this version cannot read counts as none, as in
     /// [`MailStore::unread_by_category`].
     pub fn inbox_rows(&self) -> Result<Vec<InInbox>, MailStoreError> {
         let Some(inbox) = self.folder_by_role(Role::Inbox)? else { return Ok(Vec::new()) };
-        let sql = "SELECT date, category, rfc_message_id FROM messages WHERE folder_id = ?1
+        let sql = "SELECT date, category, rfc_message_id FROM messages WHERE folder_id = ?1 AND caught = 0
             ORDER BY date DESC, seq DESC";
         let mut statement = self.db.prepare(sql)?;
         let rows = statement.query_map([&inbox.id], |row| {
@@ -2296,7 +2375,8 @@ impl MailStore {
     pub fn message(&self, id: &str) -> Result<Option<Message>, MailStoreError> {
         let sql = format!(
             "SELECT {SUMMARY_COLUMNS}, m.cc_json, m.reply_to_json, m.list_id, m.list_unsubscribe, m.precedence,
-                    m.auto_submitted, m.invitation, b.text, b.from_html, b.attachments_json, m.github_reason
+                    m.auto_submitted, m.invitation, b.text, b.from_html, b.attachments_json, m.github_reason,
+                    m.auth_json, m.return_path, m.reply_ref
              FROM messages m LEFT JOIN bodies b ON b.seq = m.seq WHERE m.id = ?1"
         );
         let row = self.db.query_row(&sql, [id], |row| {
@@ -2304,6 +2384,9 @@ impl MailStore {
             // The columns after `SUMMARY_COLUMNS`, which holds [`SUMMARY_WIDTH`] of them.
             let after = |n: usize| SUMMARY_WIDTH + n;
             let attachments_json: Option<String> = row.get(after(9))?;
+            // Sender checks this version cannot read count as not read: no sign, no failure.
+            let auth: Option<String> = row.get(after(11))?;
+            let auth = auth.and_then(|json| serde_json::from_str::<torro_mail::AuthResults>(&json).ok());
             Ok(Message {
                 summary,
                 cc: json_column(row, after(0))?,
@@ -2321,8 +2404,12 @@ impl MailStore {
                     precedence: row.get(after(4))?,
                     auto_submitted: row.get(after(5))?,
                     github: row.get(after(10))?,
+                    auth,
+                    return_path: row.get(after(12))?,
+                    reply_ref: row.get(after(13))?,
                 },
                 invitation: row.get(after(6))?,
+                warnings: Vec::new(),
             })
         });
         Ok(row.optional()?)
@@ -2494,6 +2581,9 @@ impl MailStore {
         if !query.categories.is_empty() {
             conditions.push(format!("m.category IN ({})", vec!["?"; query.categories.len()].join(", ")));
             values.extend(query.categories.iter().map(|category| Value::Text(category.key().to_string())));
+        }
+        if let Some(caught) = query.caught {
+            conditions.push(if caught { "m.caught = 1" } else { "m.caught = 0" }.into());
         }
         if query.in_inbox {
             match self.folder_by_role(Role::Inbox)? {
@@ -2810,6 +2900,13 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
     if version < 13 && !has_column(&tx, "messages", "sender_check")? {
         tx.execute_batch(SCHEMA_V13_SENDER_CHECK)?;
     }
+    if version < 14 {
+        for (column, sql) in SCHEMA_V14 {
+            if !has_column(&tx, "messages", column)? {
+                tx.execute_batch(sql)?;
+            }
+        }
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -2856,7 +2953,7 @@ fn json_list(items: &[String]) -> Result<Value, MailStoreError> {
 }
 
 const FOLDER_SELECT: &str = "SELECT f.id, f.name, f.path, f.role,
-        (SELECT count(*) FROM messages m WHERE m.folder_id = f.id AND m.flags & 1 = 0),
+        (SELECT count(*) FROM messages m WHERE m.folder_id = f.id AND m.flags & 1 = 0 AND m.caught = 0),
         (SELECT count(*) FROM messages m WHERE m.folder_id = f.id)
     FROM folders f";
 
@@ -2867,22 +2964,23 @@ const FOLDER_ORDER: &str =
 
 const SUMMARY_COLUMNS: &str = "m.id, m.folder_id, m.thread_id, m.from_json, m.to_json, m.subject, m.date, m.snippet,
     m.flags, m.has_attachments, m.invite_json, m.invite_answer, m.category, m.category_source, m.category_confidence,
-    m.sender_check";
+    m.sender_check, m.caught";
 
 /// How many columns [`SUMMARY_COLUMNS`] selects: where the columns a query adds after it begin.
 /// A query that appends its own must count from here, never from a number written out – task
 /// E12.2 added three columns in the middle and every hard-coded index moved.
-const SUMMARY_WIDTH: usize = 16;
+const SUMMARY_WIDTH: usize = 17;
 
 const INSERT_HEADERS: &str = "INSERT INTO messages (id, folder_id, uid, rfc_message_id, thread_id, from_json, to_json,
     cc_json, reply_to_json, subject, sender, recipients, date, snippet, flags, has_attachments, list_id,
-    list_unsubscribe, precedence, auto_submitted, invitation, github_reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    list_unsubscribe, precedence, auto_submitted, invitation, github_reason, auth_json, return_path, reply_ref)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
 const UPDATE_HEADERS: &str = "UPDATE messages SET rfc_message_id = ?2, thread_id = ?3, from_json = ?4, to_json = ?5,
     cc_json = ?6, reply_to_json = ?7, subject = ?8, sender = ?9, recipients = ?10, date = ?11, snippet = ?12,
     flags = ?13, has_attachments = ?14, list_id = ?15, list_unsubscribe = ?16, precedence = ?17,
-    auto_submitted = ?18, invitation = ?19, github_reason = ?20 WHERE seq = ?1";
+    auto_submitted = ?18, invitation = ?19, github_reason = ?20, auth_json = ?21, return_path = ?22, reply_ref = ?23
+    WHERE seq = ?1";
 
 /// The header values in the order the two statements above take them after their leading columns.
 fn header_values(new: &NewMessage) -> Result<Vec<Value>, MailStoreError> {
@@ -2913,6 +3011,12 @@ fn header_values(new: &NewMessage) -> Result<Vec<Value>, MailStoreError> {
         optional(&new.traits.auto_submitted),
         Value::Integer(i64::from(new.invitation)),
         optional(&new.traits.github),
+        match &new.traits.auth {
+            Some(auth) => Value::Text(serde_json::to_string(auth)?),
+            None => Value::Null,
+        },
+        optional(&new.traits.return_path),
+        new.traits.reply_ref.map_or(Value::Null, |answers| Value::Integer(i64::from(answers))),
     ])
 }
 
@@ -3131,6 +3235,7 @@ fn summary_from_row(account: &str, row: &Row<'_>) -> rusqlite::Result<MessageSum
         untrusted: true,
         pile_since: None,
         logo: checked.filter(|domain| !domain.is_empty()),
+        caught: row.get::<_, Option<bool>>(16)?.unwrap_or(false),
     })
 }
 
@@ -3436,6 +3541,97 @@ mod tests {
         assert_eq!(read.traits.github.as_deref(), Some("review_requested"), "written from now on");
     }
 
+    /// Issue #506: a store of version 13 learns the sender checks, `Return-Path`, the reply reference
+    /// and `caught`; rows from before read as not read and not caught, mail written from now on keeps
+    /// them, and a sync writing the headers again leaves `caught` as it is.
+    #[test]
+    fn a_store_of_version_13_learns_what_the_warning_signs_read() {
+        use torro_mail::{AuthResult, AuthResults};
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let mut new = message(1, "Your account");
+        let id = add(&store, &inbox, &new);
+        let columns = ["auth_json", "return_path", "reply_ref", "caught"];
+        for column in columns {
+            store.db.execute_batch(&format!("ALTER TABLE messages DROP COLUMN {column};")).expect("drop");
+        }
+        store.db.execute_batch("PRAGMA user_version = 13").expect("v13");
+        drop(store);
+
+        let store = MailStore::open(&dirs, ACCOUNT).expect("migrated");
+        let version: i64 = store.db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        let kept = store.message(&id).expect("read").expect("kept");
+        assert_eq!((kept.traits.auth, kept.traits.return_path, kept.traits.reply_ref), (None, None, None), "not read");
+        assert!(!kept.summary.caught);
+
+        new.traits.auth = Some(AuthResults { spf: Some(AuthResult::Pass), dkim: None, dmarc: Some(AuthResult::Fail) });
+        new.traits.return_path = Some("bounce@other.example".into());
+        new.traits.reply_ref = Some(false);
+        assert_eq!(add(&store, &inbox, &new), id);
+        assert!(store.set_caught(&id, true).expect("caught"));
+        assert_eq!(add(&store, &inbox, &new), id, "a sync writes the headers again");
+        let read = store.message(&id).expect("read").expect("there");
+        assert_eq!(read.traits.auth, new.traits.auth);
+        assert_eq!(
+            (read.traits.return_path.as_deref(), read.traits.reply_ref),
+            (Some("bounce@other.example"), Some(false))
+        );
+        assert!(read.summary.caught, "caught stays");
+        assert!(!store.set_caught("m:nope", true).expect("none"));
+    }
+
+    /// Issue #506: the search leaves caught mail out with `caught: false` and keeps only it with
+    /// `true`; who the account wrote to is read from `To` and `Cc` of the sent folder, whole
+    /// addresses in any case; another mail from an address tells a first contact from a later one.
+    #[test]
+    fn caught_mail_is_filtered_and_acquaintance_is_read_from_the_store() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let sent = folder(&store, "Sent", Some(Role::Sent));
+        let first = add(&store, &inbox, &message(1, "Prize"));
+        let other = add(&store, &inbox, &message(2, "Offer"));
+        store.set_caught(&first, true).expect("caught");
+        let ids = |caught| {
+            let query = SearchQuery { caught, ..SearchQuery::default() };
+            store.search(&query, 10, 0).expect("searched").into_iter().map(|m| m.id).collect::<Vec<_>>()
+        };
+        assert_eq!(ids(Some(false)), std::slice::from_ref(&other));
+        assert_eq!(ids(Some(true)), std::slice::from_ref(&first));
+        assert_eq!(ids(None).len(), 2);
+        let counted = store.folders().expect("folders").into_iter().find(|f| f.id == inbox).expect("inbox");
+        assert_eq!((counted.unread, counted.total), (1, 2), "caught mail counts as unread nowhere");
+
+        assert!(!store.wrote_to("carla@example.com").expect("read"), "nothing sent yet");
+        let mut written = message(3, "Hello");
+        written.to = vec![address(Some("Paul"), "Paul@Example.com")];
+        written.cc = vec![address(None, "carla@example.com")];
+        add(&store, &sent, &written);
+        assert!(store.wrote_to("paul@example.com").expect("read"), "To, in any case");
+        assert!(store.wrote_to("CARLA@example.com").expect("read"), "Cc");
+        assert!(!store.wrote_to("arla@example.com").expect("read"), "whole addresses only");
+        assert!(!store.wrote_to("anna@example.org").expect("read"), "the inbox's To does not count");
+
+        assert!(store.has_other_from("bernd@example.com", &first).expect("read"), "Bernd wrote twice");
+        // A copy of the same mail elsewhere (Gmail's All Mail) is no other mail.
+        let archive = folder(&store, "All Mail", None);
+        let mut alone = message(9, "Single");
+        alone.from = Some(address(None, "eve@example.net"));
+        let single = add(&store, &inbox, &alone);
+        add(&store, &archive, &alone);
+        assert!(!store.has_other_from("eve@example.net", &single).expect("read"), "the copy does not count");
+        // Only the sent folder makes a conversation one's own; mail in one's name elsewhere may be forged.
+        assert!(store.sent_in_thread(&written.thread_id).expect("read"));
+        let mut forged = message(10, "In your name");
+        forged.from = Some(address(None, "anna@example.org"));
+        add(&store, &inbox, &forged);
+        assert!(!store.sent_in_thread(&forged.thread_id).expect("read"));
+        let lone = message(4, "Hi");
+        let lone = NewMessage { from: Some(address(None, "dora@example.net")), ..lone };
+        let lone = add(&store, &inbox, &lone);
+        assert!(!store.has_other_from("dora@example.net", &lone).expect("read"), "her first");
+    }
+
     /// Issue #136: a store of version 4 gets both indexes of folded text, rebuilt from what it
     /// holds; messages without a kept text wait for the background fetch, and one without any
     /// text is not handed out again.
@@ -3661,6 +3857,9 @@ mod tests {
         new.has_attachments = true;
         new.invitation = true;
         new.traits = MessageTraits {
+            auth: None,
+            reply_ref: None,
+            return_path: None,
             list_id: Some("<news.example.com>".into()),
             list_unsubscribe: true,
             precedence: Some("bulk".into()),

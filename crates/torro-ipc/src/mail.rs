@@ -980,7 +980,8 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
         Request::SetMailFlags { ids, .. }
         | Request::MoveMail { ids, .. }
         | Request::DeleteMail { ids, .. }
-        | Request::SetMailPile { ids, .. } => {
+        | Request::SetMailPile { ids, .. }
+        | Request::ReleaseMail { ids, .. } => {
             if ids.is_empty() {
                 return refuse("name at least one message in ids".into());
             }
@@ -1133,7 +1134,8 @@ impl Request {
             Request::SetMailFlags { ids, .. }
             | Request::MoveMail { ids, .. }
             | Request::DeleteMail { ids, .. }
-            | Request::SetMailPile { ids, .. } => ids.iter().map(String::as_str).collect(),
+            | Request::SetMailPile { ids, .. }
+            | Request::ReleaseMail { ids, .. } => ids.iter().map(String::as_str).collect(),
             Request::SaveDraft { draft } => {
                 let parts = draft.attachments.iter().filter_map(|attachment| match attachment {
                     DraftAttachment::MailPart { message, .. } => Some(message.as_str()),
@@ -1154,6 +1156,7 @@ mod tests {
 
     fn search(limit: u32, query: Option<String>) -> Request {
         Request::SearchMail {
+            caught: None,
             account: None,
             folder: None,
             query,
@@ -1458,6 +1461,11 @@ mod tests {
         assert_eq!(limit_refusal(&pile(ids(MAX_IDS))), None);
         assert!(refused(&pile(vec!["m:".to_string() + &"x".repeat(MAX_ID_BYTES)])));
         assert_eq!(pile(ids(2)).message_ids(), ["m:0", "m:1"]);
+        // Issue #506: "Not fraud" alike.
+        let release = |ids| Request::ReleaseMail { ids, trust: false };
+        assert!(refused(&release(ids(0))) && refused(&release(ids(MAX_IDS + 1))));
+        assert_eq!(limit_refusal(&release(ids(MAX_IDS))), None);
+        assert_eq!(release(ids(1)).message_ids(), ["m:0"]);
 
         assert!(refused(&search(0, None)) && refused(&search(MAX_LIMIT + 1, None)));
         assert_eq!(limit_refusal(&search(MAX_LIMIT, Some("ä".repeat(MAX_QUERY_CHARS)))), None, "characters, not bytes");

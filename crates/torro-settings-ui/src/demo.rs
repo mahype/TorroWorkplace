@@ -628,6 +628,11 @@ impl Demo {
                 facet: Some(Facet { key: FacetKey::Bulk, value: "bulk".into() }),
                 ..rule("r4", SourceRef::mail(MAIL_ADDRESS), RuleEffect::Lane { lane: Lane::Info }, 13)
             },
+            // "Not fraud" with the sender trusted (issue #506): on the pages of Spam and Phishing.
+            Rule {
+                sender: Some("max@example.org".into()),
+                ..rule("r5", SourceRef::mail(MAIL_ADDRESS), RuleEffect::Trusted, 14)
+            },
         ];
         let hits = vec![
             RuleHits { rule: "r1".into(), hits: 9, since: made(10) },
@@ -1068,6 +1073,7 @@ impl Demo {
     fn mail_filter_preview(&self, account: Option<&str>) -> Response {
         let account = account.map_or_else(|| format!("mail:{MAIL_ADDRESS}"), str::to_string);
         let message = |at: u32, from: &str, subject: &str| torro_mail::MessageSummary {
+            caught: false,
             id: format!("m:demo-filter-{at}"),
             account: account.clone(),
             folder: "f:demo-inbox".into(),

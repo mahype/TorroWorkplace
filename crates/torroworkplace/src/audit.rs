@@ -347,7 +347,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ClassifyItem { id: entry }
         | Request::MuteItem { id: entry, .. } => vec![random("inbox", entry)],
         // Mail put on a pile (task E19.2) by its messages, hashed as in the mail commands.
-        Request::SetMailPile { ids, .. } => {
+        // And mail brought back from fraud or spam (issue #506).
+        Request::SetMailPile { ids, .. } | Request::ReleaseMail { ids, .. } => {
             ids.iter().map(|message| format!("message:{}", hashed(message))).collect()
         }
         // Nothing of their own to name: a catalogue, a status, a background run.
@@ -1202,6 +1203,7 @@ pub(crate) mod tests {
     #[test]
     fn mail_requests_log_the_account_and_hashes_only() {
         let search = Request::SearchMail {
+            caught: None,
             account: Some("mail:anna@mailbox.org".into()),
             folder: Some("f:0a1b".into()),
             query: Some("salary negotiation".into()),

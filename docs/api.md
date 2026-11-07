@@ -418,7 +418,7 @@ kommen nach dem eingebauten `torro` aus ihren Ordnern `<data>/fonts/` bzw. `<dat
 geht) und `active` (das in den Einstellungen gewählte); bei den Stufen sind Name und Beschreibung Worte der Suite,
 übersetzt, und `valid` ist immer wahr. Dazu bei Designs `density` (`"airy"`, `"balanced"`, `"dense"`, aus der Höhe der
 Mail-Zeile, L.33; `"very_dense"` kennt das Format weiter), bei Schriften `family` (Familie der Textschrift) und
-`license`, bei Farbschemata `darkOnly` (nur dunkel: jedes Fenster zeichnet es auch im hellen Modus dunkel, L.33).
+`license`, bei Farbschemata `darkOnly` (nur dunkel: jedes Fenster zeichnet es auch im hellen Modus dunkel, L.33) und `vivid` (eine der knalligen Schwestern, #515; die Steuerzentrale zeigt sie in einer Gruppe „Vivid“).
 Gewählt wird jeder Teil für sich mit `set_setting { key: "design" | "font" | "color_scheme", value: "<id>" }`
 (`Admin`). **Eine Stufe zu wählen ändert nur die Abstände:** Schrift, Farbschema und Mail-Darstellung bleiben. Die
 früheren `"compact"` und `"console"` nimmt `set_setting` als `"dense"` an, damit vorhandene Skripte weiterlaufen; jede
@@ -430,7 +430,7 @@ Gründen ab; liegt die id in einem anderen Ordner, nennt die Meldung den Schlüs
 wirklich speichert (`"console"` → `'dense'`), sonst nichts (`approvals::Facts::design` und die Vorschläge aus
 `[about] font` und `[about] mail_view` entfallen mit Issue #484). Die Felder `font` und `mailView` der Designs entfallen
 ebenso wie zuvor `colorScheme`; kein `v: 2`, weil sie optional waren und ein Client sie bei Antworten älterer Dienste
-weiter lesen darf (sie werden übergangen). `density` und `darkOnly` haben Vorgaben (`balanced`, `false`), ein neuer
+weiter lesen darf (sie werden übergangen). `density`, `darkOnly` und `vivid` haben Vorgaben (`balanced`, `false`, `false`), ein neuer
 Client liest also auch einen älteren Dienst (verträglich).
 `update_settings` ohne `font` oder `colorScheme` behält die gespeicherten. **Schriften des Rechners (#299):**
 `list_fonts` nennt nach den Ordnern die installierten Schriften, `system` (die Oberflächenschrift des

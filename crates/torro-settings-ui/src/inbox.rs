@@ -617,6 +617,8 @@ pub mod rules {
             RuleEffect::NoPopup => 3,
             // Kept categories last (task E12.2): they say what mail is, they hide nothing.
             RuleEffect::Category { .. } => 4,
+            // Trusted senders after them (issue #506): they let mail in, they hide nothing.
+            RuleEffect::Trusted => 5,
         });
         ordered
     }
@@ -655,6 +657,8 @@ pub mod rules {
                 RuleEffect::Category { category } => {
                     trf("Filed as “{category}”", &[("category", &crate::category_name_in(categories, category))])
                 }
+                // "Not fraud" with the sender trusted (issue #506).
+                RuleEffect::Trusted => tr("Never caught as fraud or spam").to_owned(),
             };
         }
         // A lane "for me" mutes nothing; `inbox.mute_item` never keeps one, so it only names the
@@ -706,6 +710,10 @@ pub mod rules {
     /// today", "Sent 9 since yesterday", "Nothing caught since 3 Oct". `None` when the core told
     /// nothing.
     fn caught(rule: &Rule, hits: Option<&RuleHits>, now: DateTime<Utc>) -> Option<String> {
+        // A trusted sender catches nothing (issue #506): it only lets mail in.
+        if rule.effect == RuleEffect::Trusted {
+            return None;
+        }
         let hits = hits?;
         let (n, day) = (hits.hits, since_text(hits.since, now));
         if n == 0 {
@@ -716,6 +724,7 @@ pub mod rules {
             RuleEffect::NoPopup => trf("Kept {n} quiet since {day}", &[("n", &n), ("day", &day)]),
             RuleEffect::Lane { .. } => trf("Sent {n} since {day}", &[("n", &n), ("day", &day)]),
             RuleEffect::Category { .. } => trf("Filed {n} since {day}", &[("n", &n), ("day", &day)]),
+            RuleEffect::Trusted => return None,
         })
     }
 

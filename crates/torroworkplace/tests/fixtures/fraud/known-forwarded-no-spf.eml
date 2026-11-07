@@ -1,0 +1,10 @@
+Authentication-Results: mx.example.org; spf=fail smtp.mailfrom=forwarder.example; dkim=none; dmarc=none
+Return-Path: <srs0=abc@forwarder.example>
+From: Paul Berg <paul@example.com>
+To: anna@example.org
+Subject: Hike on Saturday
+Date: Thu, 05 Nov 2026 14:00:00 +0000
+Message-ID: <known-forwarded@example.com>
+Content-Type: text/plain; charset=utf-8
+
+Are we still on for the hike? Click here for the map: https://bit.ly/hike-map

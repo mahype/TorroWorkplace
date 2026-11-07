@@ -674,6 +674,31 @@ impl Store {
     }
 }
 
+impl Store {
+    /// Whether a contact in a book that is not hidden has `name` as its full name (issue #506), in
+    /// any case and spacing: a stranger's address under a contact's name is a warning sign of fraud.
+    /// Only names of two words or more count; "Anna" alone names too many people.
+    pub fn knows_name(&self, name: &str) -> Result<bool, StoreError> {
+        let name = name.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        if name.split(' ').count() < 2 {
+            return Ok(false);
+        }
+        let mut statement = self.db.prepare(
+            "SELECT c.vcard FROM cards c JOIN books b ON b.id = c.book
+             WHERE b.hidden = 0 AND c.id IN (SELECT s.card FROM search s WHERE s.text LIKE ?1 ESCAPE '\\')",
+        )?;
+        let cards = statement.query_map([like(&folded(&name))], |row| row.get::<_, String>(0))?;
+        for raw in cards {
+            let contact = vcard::read(&raw?).unwrap_or_default();
+            let shown = contact.display_name.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+            if shown == name {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
 fn serde_json_groups(groups: &[String]) -> String {
     serde_json::to_string(groups).unwrap_or_else(|_| "[]".into())
 }

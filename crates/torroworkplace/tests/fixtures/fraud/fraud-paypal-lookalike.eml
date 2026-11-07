@@ -1,0 +1,12 @@
+Authentication-Results: mx.example.org; spf=pass smtp.mailfrom=paypa1-secure.example; dkim=none; dmarc=none
+Return-Path: <bounce@paypa1-secure.example>
+From: PayPal Service <service@paypa1-secure.example>
+To: anna@example.org
+Subject: Your account will be limited
+Date: Thu, 05 Nov 2026 09:14:00 +0000
+Message-ID: <fraud-paypal@paypa1-secure.example>
+Content-Type: text/html; charset=utf-8
+
+<p>Dear customer,</p>
+<p>we noticed unusual activity. Your account will be suspended unless you confirm your identity within 24 hours.</p>
+<p><a href="https://login.paypa1-secure.example/verify">www.paypal.com/verify</a></p>

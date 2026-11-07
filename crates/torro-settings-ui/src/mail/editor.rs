@@ -182,6 +182,9 @@ pub enum Message {
     RuleSwitched(String, bool),
     /// "From someone in your address books" on Personal's page (issue #390): stored at once.
     ContactsPersonal(bool),
+    /// "Remove" beside a trusted sender on the pages of Spam and Phishing (issue #506): the rule
+    /// with this id goes (`inbox.remove_rule`), and the sender's mail may be caught again.
+    Untrust(String),
     /// "Move up" (`up: true`) or "Move down" on a category's page: one place in its group, sent at
     /// once.
     Shift {
@@ -412,6 +415,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
         Message::ContactsPersonal(on) => {
             Action::send(Request::SetSetting { key: SettingKey::MailContactsPersonal, value: serde_json::json!(on) })
         }
+        Message::Untrust(id) => Action::send(Request::RemoveRule { id }),
         Message::Shift { category, up } => match shifted(data, category, up) {
             Some(request) => Action::send(request),
             None => Action::None,
@@ -1161,6 +1165,10 @@ fn category_page<'a>(state: &'a State, form: &'a CategoryForm, data: &'a Data) -
     if let Some(category) = form.category {
         page = page.push(fixed_rules(state, data, category));
     }
+    // The senders "Not fraud" trusted (issue #506): what is never caught as fraud or spam.
+    if matches!(form.category, Some(Category::Spam | Category::Phishing)) {
+        page = page.push(trusted_senders(data));
+    }
     page = page.push(tiles(form, data));
     if let Some(mistake) = note_or_mistake(form.tried, form.model_mistake(data), None) {
         page = page.push(mistake);
@@ -1277,6 +1285,24 @@ fn fixed_rules<'a>(state: &'a State, data: &'a Data, category: Category) -> Elem
         rows.push(container(none).width(Fill).center_y(size::row()).padding([0.0, space::l()]).into());
     }
     widgets::group_with(Some(widgets::group_title(tr("Fixed rules · go before the AI"), vec![add])), rows, None)
+}
+
+/// The senders trusted with "Not fraud" (issue #506, rules of kind `trusted`), each with "Remove";
+/// one quiet line without any. The same list on the pages of Spam and Phishing: a trusted sender is
+/// caught as neither.
+fn trusted_senders(data: &Data) -> Element<'_, Message> {
+    let mut rows: Vec<Element<'_, Message>> = Vec::new();
+    for rule in data.rules.iter().filter(|rule| rule.effect == torro_inbox::RuleEffect::Trusted) {
+        let Some(sender) = rule.sender.clone() else { continue };
+        let remove =
+            widgets::text_button(None, tr("Remove"), style::button::ghost, Some(Message::Untrust(rule.id.clone())));
+        rows.push(fixed_line(None, sender, true, remove, None));
+    }
+    if rows.is_empty() {
+        let none = typo::text(typo::body(), tr("No trusted senders yet.")).style(torro_gui::theme::text_2);
+        rows.push(container(none).width(Fill).center_y(size::row()).padding([0.0, space::l()]).into());
+    }
+    widgets::group_with(Some(widgets::group_title(tr("Trusted senders · never caught"), vec![])), rows, None)
 }
 
 /// A row of the fixed rules: `lead` (the chip of a filter), what it looks at – quieter and with
@@ -2230,5 +2256,15 @@ mod tests {
         let Some((name, ..)) = page(&state, &data) else { panic!("a page") };
         let invoice = crate::category_name_in(&data.categories, Category::Invoice);
         assert_eq!(name, trf("Rule for {category}", &[("category", &invoice)]));
+    }
+
+    /// Issue #506: "Remove" beside a trusted sender removes its rule; the list stands on the pages of
+    /// Spam and Phishing only.
+    #[test]
+    fn a_trusted_sender_is_removed_by_its_rule() {
+        let mut state = State::default();
+        let data = Data::default();
+        let action: Action<()> = update(&mut state, Message::Untrust("r5".into()), &data);
+        assert_eq!(action, Action::send(Request::RemoveRule { id: "r5".into() }));
     }
 }

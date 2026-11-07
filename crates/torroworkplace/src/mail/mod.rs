@@ -15,6 +15,8 @@
 //! - [`progress`]: where each account's sync stands, for `mail.sync_status` (issue #422).
 //! - [`inbox_feed`]: new mail as entries of the inbox, and done entries back as read mail (task
 //!   E4.1).
+//! - [`warnings`]: the warning signs of fraud and spam of one mail, without a model and without the
+//!   network, and how much they weigh (issue #506).
 //! - [`write`]: changing mail: flags, moving, deleting and drafts (task M3.2).
 //! - [`send`]: sending a draft under the send rule, its copy in the Sent folder (task M3.3), and
 //!   reading a draft back to write on (`mail.get_draft`, issue #502).
@@ -71,6 +73,7 @@ pub mod service;
 pub mod store;
 pub mod sync;
 pub mod unsubscribe;
+pub mod warnings;
 pub mod write;
 
 /// Fetched attachments are deleted after this long (task M2.5).

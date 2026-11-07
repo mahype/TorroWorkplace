@@ -1,0 +1,10 @@
+Authentication-Results: mx.example.org; spf=pass smtp.mailfrom=freemail.example; dkim=pass header.d=freemail.example; dmarc=pass
+From: Lena Hoffmann <lena.hoffmann@freemail.example>
+Reply-To: Lena <lena@home.example>
+To: anna@example.org
+Subject: Re: Design review on Thursday
+Date: Thu, 05 Nov 2026 13:00:00 +0000
+Message-ID: <known-private@freemail.example>
+Content-Type: text/plain; charset=utf-8
+
+Hi Anna, from my private address today – the laptop is at home. Thursday works.

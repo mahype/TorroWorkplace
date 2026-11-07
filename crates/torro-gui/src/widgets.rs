@@ -6260,6 +6260,52 @@ pub fn warning_band<'a, M: 'a>(what: impl IntoFragment<'a>, why: impl IntoFragme
         .into()
 }
 
+/// [`warning_band`] with the warning signs that were found (issue #506): under the reason a quiet
+/// title "Warning signs" (`caption`, `TEXT_2`) and one line per sign in `meta` (`TEXT`), then at most
+/// one button (`secondary`, "Not fraud") that takes it back. Without `lines` the title is left out,
+/// without `action` the button.
+pub fn warning_band_with<'a, M: Clone + 'a>(
+    what: impl IntoFragment<'a>,
+    why: impl IntoFragment<'a>,
+    lines: Vec<String>,
+    action: Option<(String, M)>,
+) -> Element<'a, M> {
+    let shield = icon(Icon::ShieldAlert, icon::SIZE).style(|t, _| svg::Style { color: Some(palette(t).error_text) });
+    let mut words = column![
+        typo::text(typo::body_strong(), what),
+        typo::text(typo::meta(), why).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
+    ]
+    .spacing(space::xs())
+    .width(Fill);
+    if !lines.is_empty() {
+        let mut signs =
+            column![typo::text(typo::caption(), tr("Warning signs")).style(theme::text_2)].spacing(space::xs());
+        for line in lines {
+            signs = signs
+                .push(typo::text(typo::meta(), format!("· {line}")).style(theme::text).wrapping(Wrapping::WordOrGlyph));
+        }
+        words = words.push(container(signs).padding(Padding { top: space::s(), ..Padding::ZERO }));
+    }
+    if let Some((label, message)) = action {
+        let button = text_button(None, label, style::button::secondary, Some(message));
+        words = words.push(container(button).padding(Padding { top: space::s(), ..Padding::ZERO }));
+    }
+    let content = row![shield, words].spacing(space::m()).align_y(Alignment::Start);
+    container(content)
+        .width(Fill)
+        .padding(space::m())
+        .style(|t| {
+            let p = palette(t);
+            container::Style {
+                background: Some(p.error.scale_alpha(0.12).into()),
+                text_color: Some(p.error_text),
+                border: border::rounded(radius::sm()).color(p.error).width(LINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
 /// The empty state of a list or view: what appears here (`title`, `BODY_STRONG`) and what to do
 /// (`hint`, `text_2`), centred.
 pub fn empty_state<'a, M: 'a>(title: &'a str, hint: &'a str) -> Element<'a, M> {

@@ -1,0 +1,14 @@
+Authentication-Results: mx.example.org; spf=pass smtp.mailfrom=gmail.example; dkim=pass header.d=gmail.example; dmarc=pass
+From: Jonas Weber <jonas.weber.ceo@freemail.example>
+Reply-To: <payments.jw@elsewhere.example>
+To: anna@example.org
+Subject: Kurze Frage
+Date: Thu, 05 Nov 2026 11:30:00 +0000
+Message-ID: <fraud-boss@freemail.example>
+Content-Type: text/plain; charset=utf-8
+
+Hallo Anna,
+
+bist du gerade erreichbar? Ich brauche eine dringende Überweisung an einen neuen Lieferanten, bitte vertraulich behandeln.
+
+Jonas
