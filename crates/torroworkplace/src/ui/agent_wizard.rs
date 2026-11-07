@@ -30,7 +30,7 @@
 //!    group with a row per thing that was set up, each with a check in the ok colour: where the
 //!    entry and the hooks went (Codex runs new hooks only once they are trusted in its `/hooks`),
 //!    or why the hooks could not be set up (a cross in the error colour): then the hook client is
-//!    removed again, and the agent works without them. The keys are dropped from memory.
+//!    removed again, and the agent works without them. The key remains until the wizard closes.
 //!
 //!    **Key:** a script's key, an "Other MCP client"'s key with the command its configuration
 //!    runs ([`client_setup::mcp_command`]), or an agent's key whose entry could not be written
@@ -44,6 +44,7 @@
 //! off, since the dialog is only as wide as a narrow window allows; the lines below carry no full
 //! stop, like the rows of the pages.
 
+use chrono::{DateTime, Utc};
 use iced::widget::space as blank;
 use iced::widget::text::IntoFragment;
 use iced::widget::{Space, checkbox, column, container, row, svg, text, text_input};
@@ -112,6 +113,13 @@ impl Choice {
 
 #[derive(Debug, Default)]
 pub struct State {
+    keyboard: Option<usize>,
+    selected: Option<Found>,
+    program: std::path::PathBuf,
+    since: Option<DateTime<Utc>>,
+    checking: bool,
+    verified: bool,
+    check_error: bool,
     step: Step,
     /// "Create key" ([`State::key`]): starts on the rights of a script and has no way back to a
     /// list of clients.
@@ -142,6 +150,7 @@ pub struct State {
     command: String,
     /// "Copy" next to the command was pressed.
     copied_command: bool,
+    copied_configuration: bool,
 }
 
 impl State {
@@ -149,7 +158,7 @@ impl State {
     /// [`Job::Detect`]).
     pub fn new() -> State {
         let program = std::env::current_exe().unwrap_or_else(|_| torro_core::AppId::WORKPLACE.binary.into());
-        State { command: client_setup::mcp_command(&program), ..State::default() }
+        State { command: client_setup::mcp_command(&program), program, ..State::default() }
     }
 
     /// "Create key": the rights of a new script with its name, no detection and no "Back".
@@ -158,8 +167,14 @@ impl State {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
+    Navigate(Navigation),
+    FocusName,
+    ChooseFound(Found),
+    ChooseFile,
+    CopyConfiguration,
+    CheckConnection,
     /// Cancel, Done or Escape.
     Close,
     /// A click next to the dialog.
@@ -182,6 +197,120 @@ pub enum Message {
     Setup(Outcome),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Navigation {
+    Next,
+    Previous,
+    Activate,
+}
+
+/// A single keyboard order for the client choices, setup actions and fixed footer. The selected
+/// action is also named in the footer, so even an action below the scroll fold stays discoverable.
+fn keyboard_actions(state: &State) -> Vec<(String, Message)> {
+    let mut actions = Vec::new();
+    match state.step {
+        Step::Client => {
+            if let Some(found) = &state.found {
+                for found in found {
+                    actions.push((
+                        format!("{} · {}", found.target.label(), found.place),
+                        Message::ChooseFound(found.clone()),
+                    ));
+                }
+                actions.push((tr("Other MCP client").into(), Message::Choose(Choice::Other)));
+                for target in Target::ALL
+                    .into_iter()
+                    .filter(|target| target.is_open() && !found.iter().any(|f| f.target == *target))
+                {
+                    actions.push((target.label().into(), Message::Choose(Choice::Agent(target))));
+                }
+            }
+        }
+        Step::Rights => {
+            if state.choice.is_some_and(Choice::named) {
+                actions.push((tr("Name").into(), Message::FocusName));
+            }
+            if state.choice.is_some_and(|choice| matches!(choice, Choice::Agent(target) if target.is_open() && !matches!(target, Target::OpenWebui | Target::CherryStudio))) {
+                actions.push((tr("Choose configuration file…").into(), Message::ChooseFile));
+            }
+            actions.extend(
+                RightsTemplate::ALL
+                    .into_iter()
+                    .map(|template| (template_label(template).into(), Message::Template(template))),
+            );
+            if matches!(state.choice, Some(Choice::Agent(target)) if target.agent().is_some()) && automatic(state) {
+                actions.push((
+                    tr("Report to the Notification Hub when waiting or done").into(),
+                    Message::Hooks(state.no_hooks),
+                ));
+            }
+            if !state.key_only {
+                actions.push((tr("Back").into(), Message::Back));
+            }
+            actions.push((tr("Connect").into(), Message::Connect));
+        }
+        Step::Key => {
+            if matches!(state.choice, Some(Choice::Agent(target)) if target.is_open()) {
+                actions.push((tr("Copy configuration").into(), Message::CopyConfiguration));
+            }
+            if state.choice == Some(Choice::Other)
+                || matches!(state.choice, Some(Choice::Agent(target)) if target.is_open())
+            {
+                actions.push((tr("Command").into(), Message::CopyCommand));
+            }
+            actions.push((tr("Key").into(), Message::CopyKey));
+        }
+        _ => {}
+    }
+    if matches!(state.step, Step::Key | Step::Done) {
+        if state.choice != Some(Choice::Script) && !state.checking && state.agent_client.is_some() {
+            actions.push((tr("Check connection").into(), Message::CheckConnection));
+        }
+        actions.push((finish_label(state).into(), Message::Close));
+    } else if matches!(state.step, Step::Client | Step::Rights) {
+        actions.push((tr("Cancel").into(), Message::Close));
+    }
+    actions
+}
+
+fn automatic(state: &State) -> bool {
+    state
+        .choice
+        .and_then(|choice| found(state, choice))
+        .flatten()
+        .is_some_and(|found| !matches!(found.method, Method::Guided { .. }))
+}
+
+fn finish_label(state: &State) -> &'static str {
+    if state.verified || state.choice == Some(Choice::Script) { tr("Done") } else { tr("Finish without test") }
+}
+
+fn keyboard_activation(state: &State) -> Option<Message> {
+    if let Some(index) = state.keyboard {
+        return keyboard_actions(state).get(index).map(|(_, message)| message.clone());
+    }
+    match state.step {
+        Step::Rights => Some(Message::Connect),
+        _ => keyboard_actions(state).first().map(|(_, message)| message.clone()),
+    }
+}
+
+fn focus_ring<'a>(state: &State, message: &Message, element: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    let focused = state
+        .keyboard
+        .is_some_and(|index| keyboard_actions(state).get(index).is_some_and(|(_, action)| action == message));
+    container(element)
+        .style(move |theme| container::Style {
+            border: iced::Border {
+                color: if focused { palette(theme).focus_ring } else { Color::TRANSPARENT },
+                width: style::FOCUS_RING_WIDTH,
+                radius: torro_gui::theme::radius::sm().into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
 /// Whether Cancel, Done and Escape may close the dialog now: not while the client is being
 /// created or set up, since its key would be lost.
 pub fn closable(state: &State) -> bool {
@@ -199,10 +328,24 @@ pub fn dismissable(state: &State) -> bool {
 /// ([`dismissable`]); everything else goes to [`update`]. Nothing happens without a dialog.
 pub fn update_in(slot: &mut Option<State>, message: Message, data: &Data) -> Action {
     let Some(open) = slot.as_mut() else { return Action::None };
+    let message = match message {
+        Message::Navigate(Navigation::Activate) => match keyboard_activation(open) {
+            Some(message) => message,
+            None => return Action::None,
+        },
+        message => message,
+    };
     let close = match message {
         Message::Close => closable(open),
         Message::Dismiss => dismissable(open),
-        message => return update(open, message, data),
+        message => {
+            let before = open.step;
+            let action = update(open, message, data);
+            if open.step != before {
+                open.keyboard = None;
+            }
+            return action;
+        }
     };
     if close {
         *slot = None;
@@ -212,6 +355,62 @@ pub fn update_in(slot: &mut Option<State>, message: Message, data: &Data) -> Act
 
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
+        Message::FocusName => Action::Focus(iced::widget::Id::new("connect-client-name")),
+        Message::Navigate(Navigation::Activate) => match keyboard_activation(state) {
+            Some(message) => update(state, message, data),
+            None => Action::None,
+        },
+        Message::Navigate(direction) => {
+            let actions = keyboard_actions(state);
+            if actions.is_empty() {
+                return Action::None;
+            }
+            let index = match (state.keyboard.filter(|index| *index < actions.len()), direction) {
+                (Some(index), Navigation::Previous) => (index + actions.len() - 1) % actions.len(),
+                (Some(index), _) => (index + 1) % actions.len(),
+                (None, Navigation::Previous) => actions.len() - 1,
+                _ => 0,
+            };
+            state.keyboard = Some(index);
+            let id =
+                if actions[index].1 == Message::FocusName { "connect-client-name" } else { "connect-client-actions" };
+            Action::Focus(iced::widget::Id::new(id))
+        }
+        Message::ChooseFound(found) => {
+            if state.step == Step::Client {
+                state.choice = Some(Choice::Agent(found.target));
+                state.selected = Some(found);
+                state.step = Step::Rights;
+            }
+            Action::None
+        }
+        Message::ChooseFile if state.step == Step::Rights => match state.choice {
+            Some(Choice::Agent(target))
+                if target.is_open() && !matches!(target, Target::OpenWebui | Target::CherryStudio) =>
+            {
+                Action::Setup(Job::ChooseFile { target })
+            }
+            _ => Action::None,
+        },
+        Message::ChooseFile => Action::None,
+        Message::CopyConfiguration => match (state.choice, state.key.as_ref()) {
+            (Some(Choice::Agent(target)), Some(key)) => {
+                state.copied_configuration = true;
+                Action::Copy(client_setup::open_clients::configuration(target, &state.program, key.expose()))
+            }
+            _ => Action::None,
+        },
+        Message::CheckConnection if matches!(state.step, Step::Done | Step::Key) && !state.checking => {
+            match state.agent_client.clone() {
+                Some(id) => {
+                    state.checking = true;
+                    state.check_error = false;
+                    Action::Send(Request::ClientActivity { id })
+                }
+                None => Action::None,
+            }
+        }
+        Message::CheckConnection => Action::None,
         Message::Close | Message::Dismiss | Message::KeepKey => Action::None,
         Message::Back => {
             if state.step == Step::Rights && !state.key_only {
@@ -223,6 +422,12 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::Choose(choice) => {
             if state.step == Step::Client && found(state, choice).is_some() {
+                state.selected = match choice {
+                    Choice::Agent(target) => {
+                        state.found.as_ref().and_then(|found| found.iter().find(|f| f.target == target)).cloned()
+                    }
+                    _ => None,
+                };
                 state.choice = Some(choice);
                 state.step = Step::Rights;
             }
@@ -270,7 +475,18 @@ fn hook_agent(state: &State) -> Option<AgentKind> {
 fn found(state: &State, choice: Choice) -> Option<Option<&Found>> {
     match choice {
         Choice::Script | Choice::Other => Some(None),
-        Choice::Agent(target) => state.found.as_ref()?.iter().find(|found| found.target == target).map(Some),
+        Choice::Agent(target) => {
+            if let Some(selected) = state.selected.as_ref().filter(|selected| selected.target == target) {
+                return Some(Some(selected));
+            }
+            state
+                .found
+                .as_ref()?
+                .iter()
+                .find(|found| found.target == target)
+                .map(Some)
+                .or_else(|| target.is_open().then_some(None))
+        }
     }
 }
 
@@ -290,6 +506,7 @@ fn connect(state: &mut State, data: &Data) -> Action {
         },
     };
     state.error = None;
+    state.since = Some(Utc::now());
     state.step = Step::Creating;
     Action::Send(Request::CreateClient {
         name,
@@ -321,6 +538,22 @@ pub fn name_problem(name: &str, kind: &str, data: &Data) -> Option<&'static str>
 /// client of another kind than the one the dialog is creating – a page's own request (a hook
 /// switch, task S.35) may be answered meanwhile.
 pub fn answered(state: &mut State, result: &Result<Response, String>) -> Option<Action> {
+    if state.checking {
+        state.checking = false;
+        state.verified = match result {
+            Ok(Response::Activity { entries }) => entries.iter().any(|entry| {
+                entry.client.as_ref() == state.agent_client.as_ref()
+                    && entry.command == "system.ping"
+                    && entry.result == "ok"
+                    && state.since.is_some_and(|since| entry.time >= since)
+            }),
+            _ => {
+                state.check_error = true;
+                false
+            }
+        };
+        return Some(Action::None);
+    }
     let expected = match state.step {
         Step::Creating => state.choice.map(Choice::kind)?,
         Step::CreatingHooks => HOOK_CLIENT,
@@ -339,8 +572,11 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> Option<
 fn created(state: &mut State, result: &Result<Response, String>) -> Action {
     match result {
         Ok(Response::ClientKey { client, key }) => {
+            state.agent_client = Some(client.id.clone());
             let agent = match state.choice {
-                Some(Choice::Agent(target)) => state.found.iter().flatten().find(|found| found.target == target),
+                Some(choice @ Choice::Agent(_)) => {
+                    found(state, choice).flatten().filter(|found| !matches!(found.method, Method::Guided { .. }))
+                }
                 _ => None,
             };
             let Some(found) = agent.cloned() else {
@@ -406,10 +642,15 @@ fn hook_created(state: &mut State, result: &Result<Response, String>) -> Action 
 /// is removed again (`clients.remove_client`), since nothing uses its key.
 fn setup(state: &mut State, outcome: Outcome) -> Action {
     match outcome {
+        Outcome::Selected(result) if state.step == Step::Rights => match result {
+            Ok(Some(found)) if state.choice == Some(Choice::Agent(found.target)) => state.selected = Some(found),
+            Err(error) => state.error = Some(error),
+            _ => {}
+        },
         Outcome::Detected(found) => state.found = Some(found),
         Outcome::Connected(result) if state.step == Step::Writing => match result {
             Ok(()) => {
-                state.key = None;
+                // Keep the key available for guided recovery until the person closes the wizard.
                 let Some(agent) = hook_agent(state) else {
                     state.step = Step::Done;
                     return Action::None;
@@ -438,7 +679,11 @@ fn setup(state: &mut State, outcome: Outcome) -> Action {
                 return Action::Send(Request::RemoveClient { id });
             }
         }
-        Outcome::Connected(_) | Outcome::Hooked(_) | Outcome::Disconnected(_) | Outcome::HookNotes(_) => {}
+        Outcome::Selected(_)
+        | Outcome::Connected(_)
+        | Outcome::Hooked(_)
+        | Outcome::Disconnected(_)
+        | Outcome::HookNotes(_) => {}
     }
     Action::None
 }
@@ -485,6 +730,9 @@ fn subtitle(state: &State) -> String {
         Step::Creating | Step::Writing | Step::CreatingHooks | Step::WritingHooks => {
             tr("Creating a key and adding it to the configuration.").to_string()
         }
+        Step::Done if state.choice == Some(Choice::Agent(Target::OpenCode)) => {
+            tr("Reload OpenCode and call system_ping to check the connection.").into()
+        }
         Step::Done => trf("Restart {name} to use Torro Workplace.", &[("name", &name)]),
         Step::Key => tr("Copy the key now.").to_string(),
     }
@@ -499,7 +747,8 @@ fn client_step(state: &State) -> Element<'_, Message> {
         .iter()
         .map(|found| {
             let row = wrap_row(None, found.target.label(), Some(found_detail(found)), chevron());
-            pressable(row, Some(Message::Choose(Choice::Agent(found.target))))
+            let message = Message::ChooseFound(found.clone());
+            focus_ring(state, &message, pressable(row, Some(message.clone())))
         })
         .collect();
     let other = wrap_row(
@@ -508,9 +757,13 @@ fn client_step(state: &State) -> Element<'_, Message> {
         Some(tr("Any client that speaks MCP, with a key you put in yourself").to_string()),
         chevron(),
     );
-    rows.push(pressable(other, Some(Message::Choose(Choice::Other))));
+    let message = Message::Choose(Choice::Other);
+    rows.push(focus_ring(state, &message, pressable(other, Some(message.clone()))));
     rows.extend(
-        Target::ALL.into_iter().filter(|target| !found.iter().any(|found| found.target == *target)).map(missing_row),
+        Target::ALL
+            .into_iter()
+            .filter(|target| !found.iter().any(|found| found.target == *target))
+            .map(|target| missing_row(state, target)),
     );
     let footer = tr("Not listed? Choose Other MCP client and put the key into its configuration yourself.");
     widgets::group(tr("MCP clients"), rows, Some(footer.to_string()))
@@ -519,14 +772,31 @@ fn client_step(state: &State) -> Element<'_, Message> {
 /// "Found · set up with the claude command", "Found · writes ~/.cursor/mcp.json".
 fn found_detail(found: &Found) -> String {
     match found.method {
+        Method::Open { executable: Some(_), .. } => {
+            trf("Found · set up with the {command} command", &[("command", &"opencode")])
+        }
         Method::Cli { .. } => trf("Found · set up with the {command} command", &[("command", &found.place)]),
-        Method::Json { .. } | Method::Toml { .. } => trf("Found · writes {file}", &[("file", &found.place)]),
+        Method::Json { .. } | Method::Toml { .. } | Method::Open { .. } => {
+            trf("Found · writes {file}", &[("file", &found.place)])
+        }
+        Method::Guided { .. } => tr("Found · guided setup").into(),
     }
 }
 
 /// A known client that is not on this computer: name and "Not found", faded to the disabled 40 %,
 /// as high as the rows of the clients that were found.
-fn missing_row(target: Target) -> Element<'static, Message> {
+fn missing_row(state: &State, target: Target) -> Element<'_, Message> {
+    if target.is_open() {
+        let message = Message::Choose(Choice::Agent(target));
+        return focus_ring(
+            state,
+            &message,
+            pressable(
+                wrap_row(None, target.label(), Some(tr("Not found · guided setup").into()), chevron()),
+                Some(message.clone()),
+            ),
+        );
+    }
     let faded = |colour: fn(&Palette) -> Color| {
         move |t: &Theme| text::Style { color: Some(colour(&palette(t)).scale_alpha(style::DISABLED_ALPHA)) }
     };
@@ -541,10 +811,33 @@ fn missing_row(target: Target) -> Element<'static, Message> {
 /// chosen one.
 fn rights_step<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let mut page = column![].spacing(layout::section_gap());
+    if let Some(choice @ Choice::Agent(target)) =
+        state.choice.filter(|choice| matches!(choice, Choice::Agent(target) if target.is_open()))
+    {
+        let place = found(state, choice)
+            .flatten()
+            .map(|found| found.place.clone())
+            .unwrap_or_else(|| tr("Guided setup").into());
+        let choose = (!matches!(target, Target::OpenWebui | Target::CherryStudio)).then(|| {
+            focus_ring(
+                state,
+                &Message::ChooseFile,
+                widgets::text_button(
+                    None,
+                    tr("Choose configuration file…"),
+                    style::button::secondary,
+                    Some(Message::ChooseFile),
+                ),
+            )
+        });
+        page =
+            page.push(column![typo::text(typo::body(), place).style(theme::text_2)].push(choose).spacing(space::s()));
+    }
     if let Some(choice) = state.choice.filter(|choice| choice.named()) {
         // An example, not a word to translate.
         let example = if choice == Choice::Script { "nightly-backup" } else { "my-editor" };
         let field = text_input(example, &state.name)
+            .id(iced::widget::Id::new("connect-client-name"))
             .size(typo::body().size)
             .line_height(typo::body().line_height)
             .font(typo::body().font)
@@ -570,7 +863,8 @@ fn rights_step<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
                 Space::new().width(icon::SIZE).into()
             };
             let row = wrap_row(None, template_label(template), Some(template_detail(template).to_string()), mark);
-            pressable(row, Some(Message::Template(template)))
+            let message = Message::Template(template);
+            focus_ring(state, &message, pressable(row, Some(message.clone())))
         })
         .collect();
     page = page.push(widgets::group(tr("Access"), rows, Some(rights_footer())));
@@ -595,6 +889,9 @@ fn rights_footer() -> String {
 
 /// The check box "Report to the Notification Hub when waiting or done"; the whole row ticks it.
 fn inbox_group(state: &State) -> Element<'_, Message> {
+    if !automatic(state) {
+        return widgets::group(tr("Notification Hub"), Vec::new(), Some(tr("Reports are not set up during guided setup. After configuring the client, enable Report when waiting or done on its client page.").into()));
+    }
     let on = !state.no_hooks;
     let check = checkbox(on)
         .size(style::CHECK_SIZE)
@@ -604,7 +901,12 @@ fn inbox_group(state: &State) -> Element<'_, Message> {
     let label = tr("Report to the Notification Hub when waiting or done");
     let detail = tr("A separate key that can only report");
     let row = wrap_row(Some(check.into()), label, Some(detail.to_string()), Space::new());
-    widgets::group(tr("Notification Hub"), vec![pressable(row, Some(Message::Hooks(!on)))], None)
+    let message = Message::Hooks(!on);
+    widgets::group(
+        tr("Notification Hub"),
+        vec![focus_ring(state, &message, pressable(row, Some(message.clone())))],
+        None,
+    )
 }
 
 fn template_label(template: RightsTemplate) -> &'static str {
@@ -630,8 +932,9 @@ fn done_step(state: &State) -> Element<'_, Message> {
     let place = state.choice.and_then(|choice| found(state, choice)).flatten();
     let mut rows = Vec::new();
     match place {
-        Some(found) if matches!(found.method, Method::Cli { .. }) => {
-            let added = trf("Added with the {command} command", &[("command", &found.place)]);
+        Some(found) if matches!(found.method, Method::Cli { .. } | Method::Open { executable: Some(_), .. }) => {
+            let command = if found.target == Target::OpenCode { "opencode" } else { &found.place };
+            let added = trf("Added with the {command} command", &[("command", &command)]);
             rows.push(wrap_row(Some(status_mark(Icon::CircleCheck, |p| p.ok)), added, None, Space::new()));
         }
         Some(found) => {
@@ -662,7 +965,9 @@ fn done_step(state: &State) -> Element<'_, Message> {
     if rows.is_empty() {
         return typo::text(typo::body(), undo).style(theme::text_2).into();
     }
-    widgets::group(tr("Configuration"), rows, Some(undo.to_string()))
+    column![widgets::group(tr("Configuration"), rows, Some(undo.to_string())), connection_step(state)]
+        .spacing(space::l())
+        .into()
 }
 
 /// A status icon in front of a row: 16, in the colour `colour` picks from the palette.
@@ -705,6 +1010,26 @@ fn row_padding(detail: bool) -> f32 {
 /// client" also the command its configuration runs, with "Copy" of its own.
 fn key_step(state: &State) -> Element<'_, Message> {
     let mut body = column![].spacing(space::l());
+    if let Some(Choice::Agent(target)) =
+        state.choice.filter(|choice| matches!(choice, Choice::Agent(target) if target.is_open()))
+    {
+        body = body.push(typo::text(typo::body(), client_setup::open_clients::guidance(target)).style(theme::text_2));
+        body = body.push(focus_ring(
+            state,
+            &Message::CopyConfiguration,
+            widgets::text_button(
+                Some(Icon::Copy),
+                if state.copied_configuration { tr("Copied") } else { tr("Copy configuration") },
+                style::button::secondary,
+                Some(Message::CopyConfiguration),
+            ),
+        ));
+        body = body.push(focus_ring(
+            state,
+            &Message::CopyCommand,
+            command_line(&state.command, state.copied_command, Message::CopyCommand, Message::KeepKey),
+        ));
+    }
     if let Some(error) = &state.error {
         let problem = trf("The configuration could not be written: {error}", &[("error", error)]);
         body = body.push(
@@ -725,7 +1050,13 @@ fn key_step(state: &State) -> Element<'_, Message> {
             )
             .style(theme::text_2),
         );
-        body = body.push(command_line(&state.command, state.copied_command, Message::CopyCommand, Message::KeepKey));
+        body = body.push(focus_ring(
+            state,
+            &Message::CopyCommand,
+            command_line(&state.command, state.copied_command, Message::CopyCommand, Message::KeepKey),
+        ));
+    } else if matches!(state.choice, Some(Choice::Agent(target)) if target.is_open()) {
+        body = body.push(typo::text(typo::body(), tr("The copied configuration contains this key. Keep it private; it is shown only until you finish setup.")).style(theme::text_2));
     } else {
         body = body.push(
             typo::text(
@@ -739,7 +1070,43 @@ fn key_step(state: &State) -> Element<'_, Message> {
         );
     }
     let key = state.key.as_ref().map_or("", IssuedKey::expose);
-    body.push(copy_line(tr("Key"), key, state.copied, Message::CopyKey, Message::KeepKey)).into()
+    body.push(focus_ring(
+        state,
+        &Message::CopyKey,
+        copy_line(tr("Key"), key, state.copied, Message::CopyKey, Message::KeepKey),
+    ))
+    .push(connection_step(state))
+    .into()
+}
+
+fn connection_step(state: &State) -> Element<'_, Message> {
+    if state.choice == Some(Choice::Script) {
+        return Space::new().into();
+    }
+    let status = if state.verified {
+        tr("Connection verified")
+    } else if state.checking {
+        tr("Checking connection…")
+    } else if state.check_error {
+        tr("Could not check the connection. Try again.")
+    } else {
+        tr("Not verified yet. Call system_ping in this client, then check again.")
+    };
+    column![
+        typo::text(typo::body(), status).style(theme::text_2),
+        focus_ring(
+            state,
+            &Message::CheckConnection,
+            widgets::text_button(
+                None,
+                tr("Check connection"),
+                style::button::secondary,
+                (!state.checking && state.agent_client.is_some()).then_some(Message::CheckConnection)
+            )
+        )
+    ]
+    .spacing(space::s())
+    .into()
 }
 
 /// `text` (a key) under its `label` in `CAPTION` (`text_3`), in a field to select, in tabular
@@ -820,21 +1187,42 @@ fn footer<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             .into(),
         _ => blank::horizontal().into(),
     };
-    let back = (state.step == Step::Rights && !state.key_only)
-        .then(|| widgets::text_button(None, tr("Back"), style::button::secondary, Some(Message::Back)));
-    let cancel = matches!(state.step, Step::Client | Step::Rights)
-        .then(|| widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Close)));
-    let primary = |label, message| Some(widgets::text_button(None, label, style::button::primary, message));
+    let back = (state.step == Step::Rights && !state.key_only).then(|| {
+        focus_ring(
+            state,
+            &Message::Back,
+            widgets::text_button(None, tr("Back"), style::button::secondary, Some(Message::Back)),
+        )
+    });
+    let cancel = matches!(state.step, Step::Client | Step::Rights).then(|| {
+        focus_ring(
+            state,
+            &Message::Close,
+            widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Close)),
+        )
+    });
+    let primary = |label, message: Option<Message>| {
+        let action = message.clone().unwrap_or(Message::Connect);
+        Some(focus_ring(state, &action, widgets::text_button(None, label, style::button::primary, message)))
+    };
     let next = match (state.step, state.choice) {
         (Step::Rights, Some(choice)) if choice.named() => {
             let ready = !state.tried || name_problem(&state.name, choice.kind(), data).is_none();
             primary(tr("Create key"), ready.then_some(Message::Connect))
         }
         (Step::Rights, _) => primary(tr("Connect"), Some(Message::Connect)),
-        (Step::Done | Step::Key, _) => primary(tr("Done"), Some(Message::Close)),
+        (Step::Done | Step::Key, _) => primary(finish_label(state), Some(Message::Close)),
         (Step::Client | Step::Creating | Step::Writing | Step::CreatingHooks | Step::WritingHooks, _) => None,
     };
-    row![error].push(back).push(cancel).push(next).spacing(space::s()).align_y(Alignment::Center).into()
+    let selected = state.keyboard.and_then(|index| keyboard_actions(state).get(index).map(|(label, _)| label.clone()));
+    let hint = selected.map(|label| {
+        typo::text(typo::caption(), trf("Tab / arrows · Enter: {action}", &[("action", &label)])).style(theme::text_2)
+    });
+    column![]
+        .push(hint)
+        .push(row![error].push(back).push(cancel).push(next).spacing(space::s()).align_y(Alignment::Center))
+        .spacing(space::s())
+        .into()
 }
 
 #[cfg(test)]
@@ -890,6 +1278,151 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_reaches_file_copy_check_and_finish_without_creating_an_extra_key() {
+        let data = Data::default();
+        let mut state = detected();
+        let _ = update(&mut state, Message::Choose(Choice::Agent(Target::OpenCode)), &data);
+        let file_index = keyboard_actions(&state)
+            .iter()
+            .position(|(_, message)| *message == Message::ChooseFile)
+            .expect("file action");
+        state.keyboard = Some(file_index);
+        let mut slot = Some(state);
+        assert!(matches!(
+            update_in(&mut slot, Message::Navigate(Navigation::Activate), &data),
+            Action::Setup(Job::ChooseFile { target: Target::OpenCode })
+        ));
+        let state = slot.as_mut().expect("open");
+        assert!(state.key.is_none());
+        let _ = update(state, Message::Setup(Outcome::Selected(Ok(None))), &data);
+        let _ = update(state, Message::Connect, &data);
+        let _ = answered(state, &key_answer("new", "OpenCode", "opencode"));
+        let _ = update(state, Message::Setup(Outcome::Connected(Err("test failure".into()))), &data);
+        let copy_index = keyboard_actions(state)
+            .iter()
+            .position(|(_, message)| *message == Message::CopyConfiguration)
+            .expect("copy action");
+        state.keyboard = Some(copy_index);
+        assert!(
+            matches!(update_in(&mut slot, Message::Navigate(Navigation::Activate), &data), Action::Copy(text) if text.contains("TORRO_TOKEN"))
+        );
+        let state = slot.as_mut().expect("open");
+        assert!(state.copied_configuration);
+        let check_index = keyboard_actions(state)
+            .iter()
+            .position(|(_, message)| *message == Message::CheckConnection)
+            .expect("check action");
+        state.keyboard = Some(check_index);
+        assert!(
+            matches!(update_in(&mut slot, Message::Navigate(Navigation::Activate), &data), Action::Send(Request::ClientActivity { id }) if id == "new")
+        );
+        let state = slot.as_mut().expect("open");
+        let _ = answered(state, &Ok(Response::Activity { entries: Vec::new() }));
+        state.keyboard = Some(keyboard_actions(state).len() - 1);
+        let _ = update_in(&mut slot, Message::Navigate(Navigation::Activate), &data);
+        assert!(slot.is_none(), "Enter activates the same close path as the visible footer");
+    }
+
+    #[test]
+    fn keyboard_order_wraps_and_guided_opencode_does_not_offer_a_silent_hook_switch() {
+        let data = Data::default();
+        let mut state = detected();
+        state.found = Some(Vec::new());
+        let _ = update(&mut state, Message::Navigate(Navigation::Previous), &data);
+        assert_eq!(keyboard_activation(&state), Some(Message::Close));
+        let _ = update(&mut state, Message::Navigate(Navigation::Next), &data);
+        assert_eq!(state.keyboard, Some(0));
+        let _ = update(&mut state, Message::Choose(Choice::Agent(Target::OpenCode)), &data);
+        assert!(!automatic(&state));
+        assert!(!keyboard_actions(&state).iter().any(|(_, message)| matches!(message, Message::Hooks(_))));
+        drop(inbox_group(&state));
+    }
+
+    #[test]
+    fn keyboard_can_turn_reports_off_and_back_on_and_names_the_visible_finish_action() {
+        let data = Data::default();
+        let mut state = detected();
+        let _ = update(&mut state, Message::Choose(Choice::Agent(Target::OpenCode)), &data);
+        assert!(automatic(&state));
+        for enabled in [false, true] {
+            state.keyboard =
+                keyboard_actions(&state).iter().position(|(_, action)| matches!(action, Message::Hooks(_)));
+            assert!(state.keyboard.is_some(), "reports remain reachable while off");
+            let _ = update(&mut state, Message::Navigate(Navigation::Activate), &data);
+            assert_eq!(!state.no_hooks, enabled);
+        }
+        state.step = Step::Done;
+        for verified in [false, true] {
+            state.verified = verified;
+            assert_eq!(
+                keyboard_actions(&state).last().expect("finish action").0,
+                if verified { tr("Done") } else { tr("Finish without test") }
+            );
+        }
+    }
+
+    #[test]
+    fn missing_open_clients_remain_selectable_and_file_cancellation_creates_no_key() {
+        let data = Data::default();
+        for target in Target::ALL.into_iter().filter(|target| target.is_open()) {
+            let mut state = detected();
+            state.found = Some(Vec::new());
+            let _ = update(&mut state, Message::Choose(Choice::Agent(target)), &data);
+            assert_eq!(state.step, Step::Rights, "{target:?}");
+            let _ = update(&mut state, Message::Setup(Outcome::Selected(Ok(None))), &data);
+            assert!(state.key.is_none() && state.agent_client.is_none());
+            let _ = update(&mut state, Message::Connect, &data);
+            let action = answered(&mut state, &key_answer("new", target.label(), target.kind()));
+            assert!(matches!(action, Some(Action::None)));
+            assert_eq!(state.step, Step::Key);
+            assert!(!state.verified && !dismissable(&state));
+            assert!(
+                matches!(update(&mut state, Message::CopyConfiguration, &data), Action::Copy(text) if text.contains("TORRO_TOKEN"))
+            );
+            drop(view(&state, &data));
+        }
+    }
+
+    #[test]
+    fn connection_checks_accept_only_the_new_clients_successful_ping_since_setup() {
+        let data = Data::default();
+        let mut state = detected();
+        state.found = Some(Vec::new());
+        let _ = update(&mut state, Message::Choose(Choice::Agent(Target::OpenCode)), &data);
+        let _ = update(&mut state, Message::Connect, &data);
+        let _ = answered(&mut state, &key_answer("new", "OpenCode", "opencode"));
+        let since = state.since.expect("since");
+        let entry = |client: &str, command: &str, result: &str, time| torro_ipc::ActivityEntry {
+            client: Some(client.into()),
+            command: command.into(),
+            result: result.into(),
+            time,
+            ids: Vec::new(),
+            approval: None,
+        };
+        for entries in [
+            vec![],
+            vec![entry("other", "system.ping", "ok", since)],
+            vec![entry("new", "system.status", "ok", since)],
+            vec![entry("new", "system.ping", "error", since)],
+            vec![entry("new", "system.ping", "ok", since - chrono::Duration::seconds(1))],
+        ] {
+            assert!(
+                matches!(update(&mut state, Message::CheckConnection, &data), Action::Send(Request::ClientActivity { id }) if id == "new")
+            );
+            let _ = answered(&mut state, &Ok(Response::Activity { entries }));
+            assert!(!state.verified);
+        }
+        let _ = update(&mut state, Message::CheckConnection, &data);
+        let _ = answered(&mut state, &Err("offline".into()));
+        assert!(!state.verified && state.check_error);
+        let _ = update(&mut state, Message::CheckConnection, &data);
+        let _ =
+            answered(&mut state, &Ok(Response::Activity { entries: vec![entry("new", "system.ping", "ok", since)] }));
+        assert!(state.verified);
+    }
+
+    #[test]
     fn an_agent_is_created_with_its_template_then_its_entry_is_written() {
         let data = Data::default();
         let mut state = detected();
@@ -926,7 +1459,7 @@ mod tests {
 
         let _ = update(&mut state, Message::Setup(Outcome::Connected(Ok(()))), &data);
         assert_eq!(state.step, Step::Done);
-        assert!(state.key.is_none(), "the key is forgotten once it is in the configuration");
+        assert!(state.key.is_some(), "the key stays available until the wizard closes");
         assert!(closable(&state) && dismissable(&state));
         drop(view(&state, &data));
     }
@@ -959,7 +1492,7 @@ mod tests {
             }) if *name == expected_name && kind == HOOK_CLIENT
         ));
         assert_eq!(state.step, Step::CreatingHooks);
-        assert!(state.key.is_none(), "the agent's key is forgotten once it is in the configuration");
+        assert!(state.key.is_some(), "the agent's key stays available until the wizard closes");
         assert!(!closable(&state) && !dismissable(&state), "nothing interrupts the hook client");
 
         let mut hook = key_answer("h1", &expected_name, HOOK_CLIENT);

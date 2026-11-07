@@ -672,6 +672,7 @@ mod tests {
         assert_eq!(orphans(&data, Some(&gone)).map(|h| h.id.as_str()).collect::<Vec<_>>(), ["h1"]);
         assert_eq!(hook_agent("claude-code"), Some(AgentKind::ClaudeCode));
         assert_eq!(hook_agent("gemini"), Some(AgentKind::Gemini));
+        assert_eq!(hook_agent("opencode"), Some(AgentKind::OpenCode));
         assert_eq!(hook_agent("cursor"), None);
         assert_eq!(hook_agent(MCP_CLIENT), None);
     }

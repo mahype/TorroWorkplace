@@ -451,6 +451,12 @@ pub fn kind_label(client: &ClientInfo) -> String {
     match client.kind.as_str() {
         "claude-desktop" => "Claude Desktop".to_string(),
         "cursor" => "Cursor".to_string(),
+        "open-webui" => "Open WebUI".into(),
+        "zed" => "Zed".into(),
+        "cline" => "Cline".into(),
+        "continue" => "Continue".into(),
+        "cherry-studio" => "Cherry Studio".into(),
+        "librechat" => "LibreChat".into(),
         SCRIPT_CLIENT => tr("Script").to_string(),
         MCP_CLIENT => tr("Other MCP client").to_string(),
         HOOK_CLIENT => match client.agent {
