@@ -474,16 +474,66 @@ Bis zur Nacharbeit von #302 hieß der Abschnitt „MCP“; `--section mcp` bleib
   MCP-Clients ab, auch die seiner Hooks. Darunter die Befehlszeile zum Kopieren für Clients, die man von Hand
   einrichtet (`torroworkplace mcp` mit `TORRO_TOKEN`).
 - Gruppe **„Connected clients“:** eine Zeile je Client (Claude Code, Codex, Gemini CLI, Claude Desktop,
-  Cursor, „Other MCP client“), „Connect client“ in der Kopfleiste: der bisherige Agent-Dialog ohne „Script“,
+  Cursor, OpenCode, Open WebUI, Zed, Cline, Continue, Cherry Studio, LibreChat, „Other MCP client“), „Connect client“ in der Kopfleiste: der Agent-Dialog ohne „Script“,
   dafür mit „Other MCP client“ (Name, Key einmal zum Kopieren samt Befehlszeile).
 - **Seite eines Clients:** der Rechte-Editor mit den MCP-Tools (`calendar_list_events`); Gruppe **„Notification
-  Hub“** mit dem Schalter „Report when waiting or done“ (nur Claude Code, Codex, Gemini CLI) und dem Stand der
+  Hub“** mit dem Schalter „Report when waiting or done“ (Claude Code, Codex, Gemini CLI und OpenCode) und dem Stand der
   Hooks (eingerichtet; bei Codex „Trust the hooks in Codex' /hooks“; Fehler mit Grund); die letzten Aufrufe,
   „Create new key“, „Disconnect…“.
 - **Hooks** sind technisch weiter ein eigener Client der Art `hook` mit festen, kleinen Rechten
   (`Rights::hook`). Sie erscheinen nirgends mehr als eigene Zeile: Der Schalter auf der Seite des Agenten legt
   den Hook-Client an und schreibt die Hooks, bzw. nimmt beides heraus. Wie die Meldungen der Agenten im
   Eingang erscheinen, bleibt in den Einstellungen des Notification Hub; die Apps brauchen dafür nichts Eigenes.
+
+#### Offene Clients verbinden (#539)
+
+Die sieben zusätzlichen Clients bleiben auch ohne lokalen Fund auswählbar. Erkannt werden nur die unten
+genannten Befehle im `PATH` und konkrete Konfigurationsdateien: kein Home-, Container- oder Port-Scan. Bei Cline
+werden CLI und vorhandene VS-Code-Konfiguration getrennt angeboten; die Auswahl ändert nur das gewählte Ziel.
+„Choose configuration file…“ wählt eine vorhandene Datei vor dem Anlegen des Schlüssels. Abbrechen schreibt nichts.
+
+| Client | Erkennung und Einrichtung |
+|---|---|
+| OpenCode V2 | `opencode` oder `~/.config/opencode/opencode.json(c)` (mit `XDG_CONFIG_HOME`-Override). Beides vorhanden: abbrechen und Mehrdeutigkeit klären. Mit CLI: `opencode mcp add torroworkplace --global --env TORRO_TOKEN=… -- <programm> mcp`; sonst `mcp.servers.torroworkplace`, `type: local`, `command: [<programm>, mcp]`, `environment`. Kein erfundener Remove-Befehl: beim Trennen nur den eigenen Eintrag editieren. |
+| Zed | `zed` oder `settings.json`: macOS `~/.config/zed/`, Linux `$XDG_CONFIG_HOME/zed/` bzw. `~/.config/zed/`, Windows `%APPDATA%/Zed/`. Eintrag unter `context_servers`. |
+| Cline | `cline`, CLI-Datei `~/.cline/data/settings/cline_mcp_settings.json` oder vorhandene `<App-Konfiguration>/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`. `CLINE_MCP_SETTINGS_PATH` vor `CLINE_DIR`, danach Standard; leere Overrides gelten als ungesetzt. Eintrag unter `mcpServers`; andere Editorprofile ausdrücklich wählen. |
+| Continue | `cn` oder `~/.continue/config.yaml`; alternativ eine ausdrücklich gewählte Datei. Nur bestehende YAML-Dateien bearbeiten: `mcpServers` als Liste. Keine erfundenen Modelle oder synthetische Grundkonfiguration. `cn --config <datei>` bestimmt die tatsächlich verwendete Datei. |
+| Cherry Studio | `cherry-studio`; sonst weiterhin auswählbar. Geführter JSON-Import: Settings → MCP → MCP Servers → Add → Import from JSON; Server aktivieren und an einen Agenten binden. Keine internen Datenbanken bearbeiten. |
+| LibreChat | Nur eine ausdrücklich gewählte lokale `librechat.yaml`; Eintrag unter `mcpServers`. Ohne Datei Anleitung/Kopieren. Kein geratener globaler Installationspfad. |
+| Open WebUI | `open-webui`; sonst weiterhin auswählbar. Nur Anleitung/Kopieren: natives MCP nutzt HTTP, Torro hier stdio. Eine selbst installierte und gestartete `mcpo`-Brücke bindet Torro als OpenAPI-Werkzeug ein. Ihr API-Key ist **nicht** Torros MCP-Token. Keine automatische Installation, kein Hintergrunddienst und keine Netzwerkfreigabe. |
+
+Für Container und entfernte Prozesse müssen Torros Programm und Socket gesondert abgesichert erreichbar sein;
+der lokale Pfad allein reicht nicht. Der Wizard richtet diese Verbindung nicht ein.
+
+Dateiwege erhalten Kommentare und fremde Werte (JSONC/YAML). Defekte Syntax, doppelte Schlüssel und fremde
+Namenskollisionen bleiben unverändert. Vorheriger Inhalt und neue Datei werden privat (0600) gespeichert;
+Symlinks bleiben erhalten. Neu gewählte Pfade, aufgelöste Symlink-Ziele und das Plugin-Verzeichnis werden **vor**
+dem Schreiben in `protected_paths.json` reserviert. Die separate `protected_paths.lock` bleibt stabil:
+Setup exklusiv, Dateiwerkzeuge und MCP-Aufrufe gemeinsam bis zur Antwort. Konkurrenz meldet `busy`, defekte oder
+unlesbare Schutzdaten sperren den Zugriff. Reservierungen bleiben auch nach Rollback und Trennen bestehen.
+
+OpenCodes optionale globale Dateien unter `plugins/torroworkplace/` melden nur Warten und Abschluss. Offene
+Formular- und Freigabe-IDs werden pro Sitzung verfolgt; Kind-Sitzungen werden ignoriert. Antworten/Freigaben
+bleiben in OpenCode. Das Plugin enthält nur Programm-/Key-Dateipfade, nie einen Token; es startet ohne Shell
+`torroworkplace hook opencode --key-file <datei>` mit begrenzter Standardeingabe und Timeout. Fremde Plugins bleiben.
+
+**„Geschrieben“ heißt nicht „Verbindung geprüft“.** Im eingerichteten Client `system_ping` aufrufen und im
+Wizard „Check connection“ wählen. Nur ein erfolgreicher `system.ping` dieses neuen Clients seit Beginn der
+Einrichtung zählt; leere Aktivität, fremde Clients und Fehler bleiben ungeprüft. Erneut prüfen oder mit
+„Finish without test“ abschließen. Ein Ping belegt Schlüsselnutzung, nicht die Prozessidentität oder fehlende
+Projekt-Overrides. Schlüssel für geführte Einrichtung bleiben bis zum Abschluss kopierbar.
+Tab bzw. Pfeile wählen Wizard-Aktionen, Umschalt+Tab geht zurück und Enter führt aus. Der feste Fuß zeigt die
+gewählte Aktion auch dann, wenn ihre Zeile unterhalb des sichtbaren Scrollbereichs liegt; ein neutraler Ring
+markiert sie im Inhalt. Bei geführtem OpenCode-Setup sagt der Wizard ausdrücklich, dass Meldungen erst danach
+über den Schalter auf der Client-Seite eingerichtet werden.
+
+Quellen der Einrichtungswege:
+[OpenCode MCP](https://opencode.ai/docs/mcp-servers), [Konfiguration](https://opencode.ai/docs/config),
+[Plugin-API](https://opencode.ai/docs/build/plugins/server), [Zed](https://zed.dev/docs/ai/mcp),
+[Cline](https://docs.cline.bot/mcp/mcp-overview), [Continue](https://docs.continue.dev/customize/deep-dives/mcp),
+[Cherry Studio](https://github.com/cherryhq/cherry-studio/blob/main/docs/website/content/i18n/english/advanced-basic/mcp/README.md),
+[LibreChat](https://www.librechat.ai/docs/configuration/librechat_yaml/object_structure/mcp_servers),
+[Open WebUI/mcpo](https://docs.openwebui.com/features/extensibility/plugin/tools/openapi-servers/mcp).
 
 ### MCP servers (#302)
 
@@ -565,7 +615,7 @@ sofort, immer nur eine zur Zeit, weil sie ihre Einstellungen ohne Abschied schli
 - Jeder Aufruf trägt im Umschlag, über welchen Weg er kommt (`via`: `api` oder `mcp`, ohne Angabe `api`);
   `torroworkplace mcp` und der Hook-Befehl `torroworkplace hook` setzen `mcp`. Der Kern prüft nach dem Key:
   - Key der Art `script`: nur mit „Allow API keys“, und nur über `api`.
-  - Key eines MCP-Clients (Claude Code, Codex, Gemini CLI, Claude Desktop, Cursor, Other MCP client): nur mit
+  - Key eines MCP-Clients (auch OpenCode, Open WebUI, Zed, Cline, Continue, Cherry Studio, LibreChat): nur mit
     „Allow MCP“, und nur über `mcp`.
   - Key der Art `hook`: nur mit „Allow MCP“ (er gehört zu einem Agenten), über beide Wege. Der Hook-Befehl
     `torroworkplace hook` meldet sich als `mcp`, weil er ohne Schlüsseldatei `TORRO_TOKEN` nimmt, das der Key des

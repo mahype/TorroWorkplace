@@ -1020,7 +1020,7 @@ Reports something to the person's inbox under this key's own source, e.g. `Done:
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `agent` | object | nein | Session, project and processes of a coding agent; sent by hooks. |
-| `agent.agent` | `"claude-code"` \| `"codex"` \| `"gemini"` | ja | The coding agents whose hooks report to the inbox. |
+| `agent.agent` | `"claude-code"` \| `"codex"` \| `"gemini"` \| `"opencode"` | ja | The coding agents whose hooks report to the inbox. |
 | `agent.branch` | string | nein, Standard `null` | Git branch checked out in the working directory. `None` outside a repository. |
 | `agent.pids` | array<integer> | nein, Standard `[]` | The hook's parent processes, nearest first, to find the agent's window (E2.4; on macOS too since E8.9). Empty on Windows. |
 | `agent.project` | string | nein, Standard `null` | Last part of the working directory, e.g. `TorroWorkplace`. `None` when unknown. |
@@ -3133,12 +3133,12 @@ Keine Felder.
 
 Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
 
-Connects a new agent or script with the rights of a template, or with the rights given (narrowed to what its kind may hold and checked like clients.update_client), and returns its key (the assistant: the client only, result `client`, never a key). The key is in this answer only; the core keeps just its hash. Kinds: `script`, the MCP clients `claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor` and `mcp`, `hook` (names the agent it reports for) and `assistant`; any other kind is an error.
+Connects a new agent or script with the rights of a template, or with the rights given (narrowed to what its kind may hold and checked like clients.update_client), and returns its key (the assistant: the client only, result `client`, never a key). The key is in this answer only; the core keeps just its hash. Kinds: `script`, the MCP clients `claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor`, `opencode`, `open-webui`, `zed`, `cline`, `continue`, `cherry-studio`, `librechat` and `mcp`, `hook` (names the agent it reports for) and `assistant`; any other kind is an error.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `agent` | `"claude-code"` \| `"codex"` \| `"gemini"` | nein | Only and always with kind `hook`: the coding agent whose hooks use the key. It is fixed for the client's life; the inbox files every report of the key under this agent and refuses reports that name another one ([`api::post_source`]). |
-| `kind` | string | ja | Which program ([`api::CLIENT_KINDS`]): `script` (a key for the API), an MCP client – `claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor` or `mcp` ("Other MCP client", [`api::MCP_KINDS`]) –, `hook` for the hooks of coding agents ([`api::HOOK_CLIENT`]), which may only report to the inbox ([`api::Rights::for_kind`]), or `assistant` ([`api::ASSISTANT_CLIENT`]). |
+| `agent` | `"claude-code"` \| `"codex"` \| `"gemini"` \| `"opencode"` | nein | Only and always with kind `hook`: the coding agent whose hooks use the key. It is fixed for the client's life; the inbox files every report of the key under this agent and refuses reports that name another one ([`api::post_source`]). |
+| `kind` | string | ja | Which program ([`api::CLIENT_KINDS`]): `script` (a key for the API), an MCP client – `claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor` or `mcp` ("Other MCP client", [`api::MCP_KINDS`], including OpenCode, Open WebUI, Zed, Cline, Continue, Cherry Studio and LibreChat) –, `hook` for the hooks of coding agents ([`api::HOOK_CLIENT`]), which may only report to the inbox ([`api::Rights::for_kind`]), or `assistant` ([`api::ASSISTANT_CLIENT`]). |
 | `name` | string | ja | What the person calls it: `Claude Code`. |
 | `rights` | object | nein | The rights to start with instead of the template's (task C.11), so a client never holds other rights for a moment; narrowed to what its kind may hold ([`api::Rights::for_kind`]). Missing: the template's. |
 | `rights.addressBooks` | `"all"` \| object | nein, Standard `{"only":[]}` | The address books the client sees and may write to, by their id (`<account-id>/<name>`): a contact of any other book behaves as if it did not exist (`not-found`), filtered before the core reads it, in searches, counts, groups and birthdays too. Covers the books shown in the suite only; hidden ones are named in [`Rights::hidden_address_books`] ([`Rights::reaches_address_book`]). Missing in rights from before contacts: none, like an area added later. No template opens a book. |
