@@ -5641,6 +5641,15 @@ impl Core {
         })
     }
 
+    /// Keep image future construction outside the large dispatcher poll frame, which is active
+    /// twice while executing an approved request (as with `client_reads_draft`).
+    fn image_request<'a>(&'a self, request: Request, reach: Reach<'a>, caller: Option<&str>) -> DraftRead<'a> {
+        let author = caller.map_or(DraftAuthor::App, |id| DraftAuthor::Client(id.to_owned()));
+        Box::pin(async move {
+            crate::mail::images::handle(&self.mail, reach, &author, request, self.tool_files(reach)).await
+        })
+    }
+
     async fn answer_within(&self, request: Request, reach: Reach<'_>, caller: Option<&str>) -> Response {
         // Jobs and plans belong to the client that made them; a client without a known caller
         // would see and use the app's. The dispatch always names a client's caller, so this only
@@ -6196,6 +6205,9 @@ impl Core {
             // Boxed: `change_mail` is a large future (about 10 KB in a debug build), and an approved
             // move into the trash reaches it in the second pass through this function.
             | Request::SaveDraft { .. }) => Box::pin(self.change_mail(request, reach)).await,
+            request @ (Request::PrepareMailImage { .. } | Request::UploadMailImage { .. } | Request::ReleaseMailImages { .. }) => {
+                self.image_request(request, reach, caller).await
+            }
             // Answering an invitation (task E8.3b): for a client after `Core::handle_client` checked
             // its sending; the handler checks mail and calendar itself.
             Request::RespondToInvitation { account, id, answer, collection } => {
@@ -24544,6 +24556,52 @@ mod tests {
         let mut drafts = on_server(&server, "Drafts");
         drafts.sort();
         assert_eq!(drafts, ["The agent's, better", "The person's"]);
+    }
+
+    // Sending mail (task M3.3): Anna's account on the fake IMAP server and a fake SMTP server; the
+    #[tokio::test]
+    async fn image_commands_check_accounts_owners_and_revocation_before_and_after_approval() {
+        use torro_ipc::api::Confirm;
+        let dir = tempfile::tempdir().expect("temp");
+        let (core, _, app_key) = changing_mail_core(dir.path()).await;
+        let rights = Rights { confirm: Confirm::OnEveryChange, ..with_mail_level(Level::Full) };
+        let (client_id, key) = client(&core, rights.clone()).await;
+        let upload = |account: &str| Request::UploadMailImage {
+            account: account.into(),
+            upload: None,
+            offset: 0,
+            base64: "AA==".into(),
+            finish: false,
+        };
+        assert_eq!(code(&ask(&core, Some(&key), upload("mail:missing@example.org")).await), "not-found");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists());
+        let pending = waits(ask(&core, Some(&key), upload("mail:anna@example.org")).await);
+        let mut narrowed = rights.clone();
+        narrowed.mail_accounts = Selection::Only(vec![]);
+        assert_eq!(
+            ask(&core, Some(&app_key), Request::UpdateClient { id: client_id.clone(), rights: narrowed }).await,
+            Response::Ok
+        );
+        let result = approval(ask(&core, Some(&app_key), decide(&pending.id, true)).await);
+        assert!(
+            matches!(result.state, torro_ipc::ApprovalState::Done { response } if matches!(*response, Response::Error { ref code, .. } if code == "not-found"))
+        );
+        assert_eq!(ask(&core, Some(&app_key), Request::UpdateClient { id: client_id, rights }).await, Response::Ok);
+        let pending = waits(ask(&core, Some(&key), upload("mail:anna@example.org")).await);
+        let result = approval(ask(&core, Some(&app_key), decide(&pending.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = result.state else { panic!("done") };
+        let Response::MailImageUpload { id, .. } = *response else { panic!("upload") };
+        let (_, outsider) = client(&core, with_mail_level(Level::Full)).await;
+        let prepare = Request::PrepareMailImage {
+            account: "mail:anna@example.org".into(),
+            source: torro_mail::ImageSource::Prepared { id: id.clone() },
+        };
+        assert_eq!(code(&ask(&core, Some(&outsider), prepare).await), "not-found");
+        let release = Request::ReleaseMailImages { account: "mail:anna@example.org".into(), ids: vec![id] };
+        assert!(
+            matches!(ask(&core, Some(&outsider), release).await, Response::Pending { .. }),
+            "delete confirmation still applies, without revealing foreign counts"
+        );
     }
 
     // Sending mail (task M3.3): Anna's account on the fake IMAP server and a fake SMTP server; the

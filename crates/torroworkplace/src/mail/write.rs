@@ -93,6 +93,8 @@ const NOT_LOCATED: &str = "The draft was saved, but the server did not say where
 /// codes, texts for people without subjects, addresses, paths or server words.
 #[derive(Debug)]
 pub(crate) enum WriteError {
+    /// Shared image/output/MIME working space is exhausted.
+    Busy,
     /// `not-found`: an id no reachable store knows, a draft of someone else, a missing folder.
     NotFound(&'static str),
     /// `unsupported`: messages of several accounts, or a folder of another account.
@@ -113,6 +115,7 @@ impl WriteError {
         let refused =
             |code: &str, message: &'static str| Response::Error { code: code.into(), message: tr(message).into() };
         match self {
+            WriteError::Busy => refused("busy", "Too many images are being prepared. Try again later."),
             WriteError::NotFound(message) => refused("not-found", message),
             WriteError::Unsupported(message) => refused("unsupported", message),
             WriteError::Forbidden(message) => refused("forbidden", message),
@@ -150,6 +153,9 @@ pub(crate) fn changes_mail(request: &Request) -> bool {
             | Request::MoveMail { .. }
             | Request::DeleteMail { .. }
             | Request::SaveDraft { .. }
+            | Request::PrepareMailImage { .. }
+            | Request::UploadMailImage { .. }
+            | Request::ReleaseMailImages { .. }
     )
 }
 
@@ -262,6 +268,9 @@ pub(crate) async fn client_refusal(
     if let Err(err) = locate(mail, reach, &request.message_ids()).await {
         return Some(err.response());
     }
+    if let Some(refused) = Box::pin(super::images::client_refusal(mail, client, reach, request, tools)).await {
+        return Some(refused);
+    }
     let checked = match request {
         Request::MoveMail { to: MoveTarget::Folder(folder), .. } => match locate_folder(mail, reach, folder).await {
             Ok(Some(_)) => Ok(()),
@@ -304,7 +313,7 @@ pub(crate) async fn with_trash_role(mail: &MailService, reach: Reach<'_>, reques
 /// its own (else `not-found`, security rule 2). A
 /// client's files must be in the managed folder `cache` or be its own in the tools' register
 /// `tools` (else `forbidden`, security rule 1). `None` for a new draft.
-async fn check_draft(
+pub(crate) async fn check_draft(
     mail: &MailService,
     author: &DraftAuthor,
     draft: &Draft,
@@ -711,6 +720,7 @@ async fn save(
     tools: Option<&Register>,
 ) -> Result<Draft, WriteError> {
     let draft = cleaned(draft);
+    validate_images(&draft)?;
     let config = mail.config(&draft.account).await?;
     let store = mail.store(&draft.account).await?;
     let drafts = folder_with_role(&store, Role::Drafts).await?.ok_or(WriteError::NotFound(NO_ROLE_FOLDER))?;
@@ -721,8 +731,56 @@ async fn save(
         None => None,
     };
     let mut attachments = Vec::with_capacity(draft.attachments.len());
+    let mut image_reservations = Vec::new();
+    let image_save = draft.attachments.iter().any(|a| matches!(a, DraftAttachment::Image { .. }));
+    if image_save {
+        image_reservations.push(
+            mail.images
+                .reserve_output(
+                    draft
+                        .body
+                        .len()
+                        .saturating_add(draft.html.as_ref().map_or(0, String::len))
+                        .saturating_mul(8)
+                        .saturating_add(1024 * 1024),
+                )
+                .await?,
+        );
+    }
     for attachment in &draft.attachments {
-        attachments.push(attachment_of(mail, reach, attachment, &author, cache.as_ref(), tools).await?);
+        attachments.push(match attachment {
+            DraftAttachment::Image { id, source, inline, size } => {
+                let resolved =
+                    super::images::attachment(mail, reach, &author, &draft.account, source, *size, tools).await?;
+                image_reservations.extend(resolved.reservations);
+                let mut image = resolved.content;
+                image.content_id = Some(id.clone());
+                image.inline = *inline;
+                image.image_size = Some(*size);
+                image
+            }
+            _ => {
+                let mut buffer =
+                    if image_save { Some(mail.images.reserve_output(MAX_FILE_BYTES as usize).await?) } else { None };
+                let content = if image_save && matches!(attachment, DraftAttachment::MailPart { .. }) {
+                    let (limit, reservation) = mail.images.mime_budget().await?;
+                    bounded_attachment_of(mail, reach, attachment, &author, tools, (limit, Some(reservation)), false)
+                        .await?
+                } else {
+                    attachment_of(mail, reach, attachment, &author, cache.as_ref(), tools).await?
+                };
+                if let Some(mut buffer) = buffer.take() {
+                    buffer.shrink_to(content.bytes.capacity());
+                    image_reservations.push(buffer);
+                    image_reservations.push(
+                        mail.images
+                            .reserve_output(content.bytes.capacity().saturating_mul(8).saturating_add(64 * 1024))
+                            .await?,
+                    );
+                }
+                content
+            }
+        });
     }
     let domain = config.address.rsplit_once('@').map_or("localhost", |(_, domain)| domain);
     let outgoing = Outgoing {
@@ -765,6 +823,19 @@ async fn save(
             return Err(err);
         }
     };
+    let mut saved = draft.clone();
+    // Resolve each image by its CID, never by position: adding/removing an ordinary attachment
+    // or changing multipart nesting renumbers MIME parts.
+    for attachment in &mut saved.attachments {
+        if let DraftAttachment::Image { id: cid, source, .. } = attachment {
+            let info = read
+                .attachments
+                .iter()
+                .find(|info| info.content_id.as_deref() == Some(cid.as_str()))
+                .ok_or(WriteError::Invalid("The saved image part could not be found."))?;
+            *source = torro_mail::ImageSource::MailPart { message: id.clone(), part: info.part.clone() };
+        }
+    }
     let (folder, id_kept) = (drafts.folder.id.clone(), id.clone());
     let replacing = old.is_some();
     store
@@ -785,7 +856,32 @@ async fn save(
         let id = id.clone();
         store.run(move |store| store.forget_draft(&id).map(drop)).await?;
     }
-    Ok(Draft { id: Some(id), ..draft })
+    drop(image_reservations);
+    Ok(Draft { id: Some(id), ..saved })
+}
+
+fn validate_images(draft: &Draft) -> Result<(), WriteError> {
+    let mut seen = BTreeSet::new();
+    let refs = draft.html.as_deref().map(html::image_refs).unwrap_or_default();
+    if refs.iter().collect::<BTreeSet<_>>().len() != refs.len() {
+        return Err(WriteError::Invalid("The embedded image references are invalid."));
+    }
+    for attachment in &draft.attachments {
+        if let DraftAttachment::Image { id, inline, .. } = attachment
+            && (!html::valid_cid(id) || !seen.insert(id.as_str()) || (*inline && !refs.iter().any(|r| r == id)))
+        {
+            return Err(WriteError::Invalid("The embedded image references are invalid."));
+        }
+    }
+    if refs.iter().any(|id| {
+        !draft
+            .attachments
+            .iter()
+            .any(|a| matches!(a, DraftAttachment::Image { id: cid, inline: true, .. } if cid == id))
+    }) {
+        return Err(WriteError::Invalid("The embedded image references are invalid."));
+    }
+    Ok(())
 }
 
 /// `draft` with its HTML cleaned (`html::sanitize`) and its plain text made from it; HTML that
@@ -906,7 +1002,7 @@ async fn reply_to(mail: &MailService, reach: Reach<'_>, id: &str) -> Result<Opti
 
 /// One attachment of a draft with its content: a part of a message `reach` sees, or a file
 /// ([`read_file`]).
-async fn attachment_of(
+pub(crate) async fn attachment_of(
     mail: &MailService,
     reach: Reach<'_>,
     attachment: &DraftAttachment,
@@ -915,6 +1011,7 @@ async fn attachment_of(
     tools: Option<&Register>,
 ) -> Result<OutgoingAttachment, WriteError> {
     match attachment {
+        DraftAttachment::Image { .. } => Err(WriteError::Invalid("Prepare images before attaching them.")),
         DraftAttachment::File { path } => {
             let client = match author {
                 DraftAuthor::Client(id) => Some(id.clone()),
@@ -938,6 +1035,9 @@ async fn attachment_of(
                 return Err(WriteError::Invalid(TOO_BIG));
             }
             Ok(OutgoingAttachment {
+                image_size: mime::image_size(&raw, part),
+                content_id: None,
+                inline: false,
                 filename: safe_file_name(found.filename.as_deref().unwrap_or("")),
                 content_type: found.content_type,
                 bytes: found.bytes,
@@ -990,7 +1090,14 @@ fn read_file(
         return Err(WriteError::Forbidden(FILE_OUTSIDE));
     }
     let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    Ok(OutgoingAttachment { content_type: content_type_of(path).to_string(), filename: safe_file_name(&name), bytes })
+    Ok(OutgoingAttachment {
+        content_type: content_type_of(path).to_string(),
+        filename: safe_file_name(&name),
+        bytes,
+        content_id: None,
+        inline: false,
+        image_size: None,
+    })
 }
 
 /// The file at `path` in the tools' register `tools` when the client `client` made it and it is
@@ -1018,6 +1125,64 @@ fn content_type_of(path: &Path) -> &'static str {
 }
 
 // ----- approvals -----
+
+/// Image imports use a single bounded MIME leaf, not `attachment_of`'s whole-message path.
+/// `encoded_limit` is reserved by the image store before this method touches the network.
+pub(crate) async fn image_attachment_of(
+    mail: &MailService,
+    reach: Reach<'_>,
+    attachment: &DraftAttachment,
+    author: &DraftAuthor,
+    tools: Option<&Register>,
+    encoded_limit: usize,
+) -> Result<OutgoingAttachment, WriteError> {
+    bounded_attachment_of(mail, reach, attachment, author, tools, (encoded_limit, None), true).await
+}
+
+async fn bounded_attachment_of(
+    mail: &MailService,
+    reach: Reach<'_>,
+    attachment: &DraftAttachment,
+    author: &DraftAuthor,
+    tools: Option<&Register>,
+    budget: (usize, Option<torro_ipc::mail::ImageReservation>),
+    image_only: bool,
+) -> Result<OutgoingAttachment, WriteError> {
+    let DraftAttachment::MailPart { message, part } = attachment else {
+        return attachment_of(mail, reach, attachment, author, mail.attachment_cache().as_ref(), tools).await;
+    };
+    let part = part.parse::<u32>().map_err(|_| WriteError::NotFound(NO_ATTACHMENT))?;
+    let source = locate(mail, reach, &[message.as_str()]).await?.remove(0);
+    let mut command = mail.command(&source.account).await?;
+    open(command.session(), &source.folder_path, source.uidvalidity).await?;
+    let raw = if image_only {
+        command.session().fetch_image_part(source.uid, part, budget.0).await?
+    } else {
+        command.session().fetch_attachment_part(source.uid, part, budget.0).await?
+    }
+    .ok_or(WriteError::NotFound(NO_ATTACHMENT))?;
+    command.release();
+    tokio::task::spawn_blocking(move || {
+        // A cancelled caller cannot release the parser's reservation while its worker still runs.
+        let _reservation = budget.1;
+        let found = if image_only {
+            mime::image_attachment(&raw, MAX_FILE_BYTES as usize)
+        } else {
+            mime::bounded_attachment(&raw, MAX_FILE_BYTES as usize)
+        }
+        .map_err(|_| WriteError::Invalid(TOO_BIG))?;
+        Ok(OutgoingAttachment {
+            filename: safe_file_name(found.filename.as_deref().unwrap_or("")),
+            content_type: found.content_type,
+            bytes: found.bytes,
+            content_id: None,
+            inline: false,
+            image_size: None,
+        })
+    })
+    .await
+    .map_err(|_| WriteError::Invalid(TOO_BIG))?
+}
 
 /// What the mail store holds about what a changing mail `request` names, for its approval's
 /// summary (`crate::approvals::MailFacts`): the account's address, how many messages, the
@@ -1619,6 +1784,269 @@ pub(crate) mod tests {
         saved(save_draft(&room.mail, Reach::Suite, empty, DraftAuthor::App).await);
         let raw = &drafts_on_server(&room.server)[0].1;
         assert!(!raw.contains("To:") && !raw.contains("Bcc:"), "{raw}");
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_attachment_beside_images_also_uses_only_its_bounded_leaf() {
+        use torro_mail::{ImageSize, ImageSource};
+        let room = mailroom().await;
+        let raw = format!(
+            "From: bob@example.org\r\nSubject: Large surrounding message\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=parts\r\n\r\n--parts\r\nContent-Type: text/plain\r\n\r\n{}\r\n--parts\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=notes.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERg==\r\n--parts--\r\n",
+            "unrelated text ".repeat(100_000)
+        );
+        let pdf = mime::read(raw.as_bytes()).expect("read").attachments[0].part.clone();
+        room.server.add("INBOX", &raw, &[]);
+        room.mail.sync_all(Reach::Suite).await.expect("sync");
+        let message = id_of(&room.mail, "Large surrounding message").await;
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(10, 10).write_to(&mut png, image::ImageFormat::Png).expect("png");
+        let path = room.dir.path().join("image.png");
+        fs::write(&path, png.into_inner()).expect("file");
+        let mut offer = draft("Mixed image and PDF");
+        offer.attachments = vec![
+            DraftAttachment::Image {
+                id: "image@torro".into(),
+                source: ImageSource::File { path: path.to_string_lossy().into_owned() },
+                inline: false,
+                size: ImageSize::Medium,
+            },
+            DraftAttachment::MailPart { message, part: pdf },
+        ];
+        let before = room.server.lines().len();
+        saved(save_draft(&room.mail, Reach::Suite, offer, DraftAuthor::App).await);
+        let lines = room.server.lines();
+        let calls = &lines[before..];
+        assert!(calls.iter().any(|line| line.contains("BODY.PEEK[2]")), "only PDF body section");
+        assert!(!calls.iter().any(|line| line.contains("BODY.PEEK[]")), "never the surrounding message");
+        let stored = drafts_on_server(&room.server).remove(0).1;
+        let read = mime::read(stored.as_bytes()).expect("saved");
+        assert_eq!(read.attachments.len(), 2);
+        let info = read.attachments.iter().find(|a| a.content_type == "application/pdf").expect("PDF");
+        assert_eq!(mime::attachment(stored.as_bytes(), &info.part).expect("PDF").bytes, b"%PDF");
+    }
+
+    #[tokio::test]
+    async fn repeated_image_sources_cannot_amplify_a_save_beyond_the_memory_budget() {
+        use torro_mail::{ImageSize, ImageSource};
+        let room = mailroom().await;
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(10, 10).write_to(&mut png, image::ImageFormat::Png).expect("png");
+        let mut bytes = png.into_inner();
+        bytes.resize(3 * 1024 * 1024, 0); // Valid PNG with source bytes Original must preserve.
+        let path = room.dir.path().join("large-original.png");
+        fs::write(&path, bytes).expect("file");
+        let response = super::super::images::handle(
+            &room.mail,
+            Reach::Suite,
+            &DraftAuthor::App,
+            Request::PrepareMailImage {
+                account: ANNA.into(),
+                source: ImageSource::File { path: path.to_string_lossy().into_owned() },
+            },
+            None,
+        )
+        .await;
+        let Response::MailImage { image } = response else { panic!("prepare: {response:?}") };
+        let mut offer = draft("Amplification");
+        offer.attachments = (0..20)
+            .map(|n| DraftAttachment::Image {
+                id: format!("image-{n}@torro"),
+                source: ImageSource::Prepared { id: image.id.clone() },
+                inline: false,
+                size: ImageSize::Original,
+            })
+            .collect();
+        assert_eq!(code(&save_draft(&room.mail, Reach::Suite, offer.clone(), DraftAuthor::App).await), "busy");
+        assert!(drafts_on_server(&room.server).is_empty(), "budget is checked before MIME building or append");
+        offer.attachments.truncate(1);
+        if let DraftAttachment::Image { size, .. } = &mut offer.attachments[0] {
+            *size = ImageSize::Medium;
+        }
+        saved(save_draft(&room.mail, Reach::Suite, offer, DraftAuthor::App).await);
+        assert_eq!(drafts_on_server(&room.server).len(), 1, "failed save released every output reservation");
+    }
+
+    #[tokio::test]
+    async fn sender_size_marker_never_bypasses_normal_image_conversion() {
+        use base64::Engine as _;
+        use torro_mail::{ImageSize, ImageSource};
+        let room = mailroom().await;
+        let mut gif = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(24, 16).write_to(&mut gif, image::ImageFormat::Gif).expect("gif");
+        let raw = format!(
+            "From: bob@example.org\r\nSubject: Untrusted image\r\nMIME-Version: 1.0\r\nContent-Type: image/gif\r\nContent-Disposition: attachment; filename=photo.gif\r\nX-Torro-Image-Size: medium\r\nContent-Transfer-Encoding: base64\r\n\r\n{}",
+            base64::engine::general_purpose::STANDARD.encode(gif.get_ref())
+        );
+        room.server.add("INBOX", &raw, &[]);
+        room.mail.sync_all(Reach::Suite).await.expect("sync image");
+        let message = id_of(&room.mail, "Untrusted image").await;
+        let source = ImageSource::MailPart { message, part: "0".into() };
+        for prepare in [false, true] {
+            let input = if prepare {
+                let response = super::super::images::handle(
+                    &room.mail,
+                    Reach::Suite,
+                    &DraftAuthor::App,
+                    Request::PrepareMailImage { account: ANNA.into(), source: source.clone() },
+                    None,
+                )
+                .await;
+                let Response::MailImage { image } = response else { panic!("prepare: {response:?}") };
+                ImageSource::Prepared { id: image.id }
+            } else {
+                source.clone()
+            };
+            let normal = super::super::images::attachment(
+                &room.mail,
+                Reach::Suite,
+                &DraftAuthor::App,
+                ANNA,
+                &input,
+                ImageSize::Medium,
+                None,
+            )
+            .await
+            .expect("convert");
+            assert_eq!(normal.content_type, "image/png", "GIF is flattened even with a sender size marker");
+            assert_ne!(normal.bytes, *gif.get_ref());
+        }
+    }
+
+    #[tokio::test]
+    async fn account_copy_preserves_ram_original_and_checks_both_accounts_and_author() {
+        use base64::Engine as _;
+        use torro_mail::{ImageSize, ImageSource};
+        let dir = tempfile::tempdir().expect("temp");
+        let secrets = MemoryTokens::default();
+        let server = mail_server(dir.path(), &secrets).await;
+        let first = mail_account("anna@example.org", &server.endpoint);
+        let second = mail_account("bernd@example.org", &server.endpoint);
+        let other = "mail:bernd@example.org";
+        store_accounts(dir.path(), &secrets, &[(&first, PASSWORD), (&second, PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        let owner = DraftAuthor::Client("owner".into());
+        let mut original = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1800, 900).write_to(&mut original, image::ImageFormat::Png).expect("png");
+        let response = super::super::images::handle(
+            &mail,
+            Reach::Suite,
+            &owner,
+            Request::UploadMailImage {
+                account: ANNA.into(),
+                upload: None,
+                offset: 0,
+                base64: base64::engine::general_purpose::STANDARD.encode(original.get_ref()).into(),
+                finish: true,
+            },
+            None,
+        )
+        .await;
+        let Response::MailImage { image } = response else { panic!("upload: {response:?}") };
+        let source = ImageSource::Prepared { id: image.id.clone() };
+        let copy = Request::PrepareMailImage { account: other.into(), source: source.clone() };
+        let mut rights = torro_ipc::api::RightsTemplate::ReadAndWrite.rights();
+        rights.mail_accounts = torro_ipc::api::Selection::Only(vec![other.into()]);
+        assert!(
+            super::super::images::client_refusal(&mail, "owner", Reach::Client(&rights), &copy, None).await.is_some(),
+            "hidden source account is refused before approval"
+        );
+        assert_eq!(
+            code(&super::super::images::handle(&mail, Reach::Client(&rights), &owner, copy.clone(), None).await),
+            "not-found"
+        );
+        assert_eq!(
+            code(
+                &super::super::images::handle(
+                    &mail,
+                    Reach::Suite,
+                    &DraftAuthor::Client("foreign".into()),
+                    copy.clone(),
+                    None
+                )
+                .await
+            ),
+            "not-found"
+        );
+        let response = super::super::images::handle(&mail, Reach::Suite, &owner, copy, None).await;
+        let Response::MailImage { image: copied } = response else { panic!("copy: {response:?}") };
+        assert_ne!(copied.id, image.id);
+        assert_eq!(copied.original_width, 1800);
+        super::super::images::handle(
+            &mail,
+            Reach::Suite,
+            &owner,
+            Request::ReleaseMailImages { account: ANNA.into(), ids: vec![image.id] },
+            None,
+        )
+        .await;
+        let restored = super::super::images::attachment(
+            &mail,
+            Reach::Suite,
+            &owner,
+            other,
+            &ImageSource::Prepared { id: copied.id },
+            ImageSize::Original,
+            None,
+        )
+        .await
+        .expect("original after switch");
+        assert_eq!(restored.bytes, original.into_inner());
+    }
+
+    #[tokio::test]
+    async fn images_round_trip_original_size_cids_and_saved_sources_without_extra_original_parts() {
+        use base64::Engine as _;
+        use torro_mail::{ImageSize, ImageSource};
+        let room = mailroom().await;
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(2200, 1100).write_to(&mut png, image::ImageFormat::Png).expect("png");
+        let png = png.into_inner();
+        let upload = Request::UploadMailImage {
+            account: ANNA.into(),
+            upload: None,
+            offset: 0,
+            base64: base64::engine::general_purpose::STANDARD.encode(&png).into(),
+            finish: true,
+        };
+        let response = super::super::images::handle(&room.mail, Reach::Suite, &DraftAuthor::App, upload, None).await;
+        let Response::MailImage { image } = response else { panic!("prepared: {response:?}") };
+        let mut offer = draft("Plan");
+        offer.html = Some("<p>Before</p><img src='cid:plan@torro' alt='Plan' width='2200'><p>After</p>".into());
+        offer.attachments = vec![DraftAttachment::Image {
+            id: "plan@torro".into(),
+            source: ImageSource::Prepared { id: image.id.clone() },
+            inline: true,
+            size: ImageSize::Original,
+        }];
+        let filed = saved(save_draft(&room.mail, Reach::Suite, offer, DraftAuthor::App).await);
+        let id = filed.id.clone().expect("id");
+        assert!(
+            matches!(&filed.attachments[0], DraftAttachment::Image { source: ImageSource::MailPart { message, .. }, .. } if *message == id)
+        );
+        let raw = drafts_on_server(&room.server).remove(0).1;
+        let parsed = mime::read(raw.as_bytes()).expect("read");
+        assert_eq!(parsed.attachments.len(), 1, "no hidden original MIME part");
+        assert_eq!(mime::attachment(raw.as_bytes(), &parsed.attachments[0].part).expect("image").bytes, png);
+        let release = Request::ReleaseMailImages { account: ANNA.into(), ids: vec![image.id] };
+        assert_eq!(
+            super::super::images::handle(&room.mail, Reach::Suite, &DraftAuthor::App, release, None).await,
+            Response::Ok
+        );
+        let reopened = saved(super::super::send::get_draft(&room.mail, Reach::Suite, &DraftAuthor::App, &id).await);
+        assert!(matches!(&reopened.attachments[0], DraftAttachment::Image { size: ImageSize::Original, .. }));
+        let again = saved(save_draft(&room.mail, Reach::Suite, reopened, DraftAuthor::App).await);
+        let raw = drafts_on_server(&room.server).remove(0).1;
+        let parsed = mime::read(raw.as_bytes()).expect("read");
+        assert_eq!(mime::attachment(raw.as_bytes(), &parsed.attachments[0].part).expect("image").bytes, png);
+        let mut broken = again.clone();
+        broken.attachments.push(broken.attachments[0].clone());
+        assert_eq!(code(&save_draft(&room.mail, Reach::Suite, broken, DraftAuthor::App).await), "error");
+        assert_eq!(drafts_on_server(&room.server).len(), 1, "invalid refs never replace a good draft");
+        let prepared = super::super::send::prepare(&room.mail, Reach::Suite, &DraftAuthor::App, &id)
+            .await
+            .expect("send preparation");
+        assert_eq!(prepared.facts().draft.expect("facts").attachments, 1, "approval counts the embedded part");
     }
 
     #[tokio::test]

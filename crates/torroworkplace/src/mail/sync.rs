@@ -1971,6 +1971,21 @@ pub(crate) mod fake {
             literal(format!("* {seq} FETCH (UID {} BODY[]<{offset}>", message.uid), piece)
         } else if items.contains("BODY.PEEK[]") {
             literal(format!("* {seq} FETCH (UID {} BODY[]", message.uid), &message.raw)
+        } else if items.contains("BODYSTRUCTURE") {
+            let parsed = mail_parser::MessageParser::default().parse(&message.raw).expect("test MIME");
+            format!("* {seq} FETCH (UID {} BODYSTRUCTURE {})", message.uid, image_test_structure(&parsed, 0))
+                .into_bytes()
+        } else if let Some(query) = items.split("BODY.PEEK[").nth(1) {
+            let (section, range) = query.split_once("]<").expect("section range");
+            let (offset, count) = range.trim_end_matches(')').trim_end_matches('>').split_once('.').expect("range");
+            let (offset, count) = (offset.parse::<usize>().expect("offset"), count.parse::<usize>().expect("count"));
+            let parsed = mail_parser::MessageParser::default().parse(&message.raw).expect("test MIME");
+            let part = image_test_section(&parsed, section.trim_end_matches(".MIME"));
+            let start = if section.ends_with(".MIME") { part.offset_header } else { part.offset_body } as usize;
+            let end = if section.ends_with(".MIME") { part.offset_body } else { part.offset_end } as usize;
+            let bytes = &message.raw[start..end];
+            let piece = bytes.get(offset..offset.saturating_add(count).min(bytes.len())).unwrap_or_default();
+            literal(format!("* {seq} FETCH (UID {} BODY[{section}]<{offset}>", message.uid), piece)
         } else if items.contains("INTERNALDATE") && items.contains("RFC822.SIZE") {
             let gmail = match message.gm_msgid {
                 Some(msgid) if items.contains("X-GM-MSGID") => format!(" X-GM-MSGID {msgid}"),
@@ -1988,6 +2003,36 @@ pub(crate) mod fake {
         } else {
             format!("* {seq} FETCH (UID {} FLAGS ({flags}) MODSEQ ({}))", message.uid, message.modseq).into_bytes()
         }
+    }
+
+    /// Test-only BODYSTRUCTURE derived from the same MIME tree that names public part indices.
+    fn image_test_structure(message: &mail_parser::Message<'_>, id: u32) -> String {
+        use mail_parser::MimeHeaders as _;
+        let part = &message.parts[id as usize];
+        if let mail_parser::PartType::Multipart(children) = &part.body {
+            let children = children.iter().map(|id| image_test_structure(message, *id)).collect::<Vec<_>>().join("");
+            format!("({children} \"mixed\")")
+        } else {
+            let kind = part.content_type();
+            let major = kind.map_or("application", |c| c.c_type.as_ref());
+            let minor = kind.and_then(|c| c.c_subtype.as_deref()).unwrap_or("octet-stream");
+            format!("(\"{major}\" \"{minor}\" NIL NIL NIL \"base64\" {})", part.offset_end - part.offset_body)
+        }
+    }
+
+    fn image_test_section<'a>(
+        message: &'a mail_parser::Message<'a>,
+        section: &str,
+    ) -> &'a mail_parser::MessagePart<'a> {
+        let mut id = 0;
+        for (at, index) in section.split('.').enumerate() {
+            let index = index.parse::<usize>().expect("section number");
+            match &message.parts[id].body {
+                mail_parser::PartType::Multipart(children) => id = children[index - 1] as usize,
+                _ => assert!(at == 0 && index == 1, "single part section"),
+            }
+        }
+        &message.parts[id]
     }
 
     /// `uid` is in the sequence set `set` (`1:3,5,7:*`).

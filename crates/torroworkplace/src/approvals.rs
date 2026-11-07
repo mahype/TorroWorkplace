@@ -1047,6 +1047,9 @@ impl Approvals {
             state.entries[index].info = before;
             return Err(err);
         }
+        if !allow && crate::mail::images::is_request(&state.entries[index].request) {
+            state.entries[index].request = Request::Ping;
+        }
         drop(state);
         self.changed.send_replace(());
         (self.notify.settled)(id);
@@ -1068,6 +1071,9 @@ impl Approvals {
             .find(|entry| entry.info.id == id)
             .ok_or_else(|| ApprovalsError::NotFound(id.to_string()))?;
         entry.info.state = ApprovalState::Done { response: Box::new(response) };
+        if crate::mail::images::is_request(&entry.request) {
+            entry.request = Request::Ping;
+        }
         let info = entry.info.clone();
         if let Err(err) = self.write(&state).await {
             eprintln!("torroworkplace: cannot store the outcome of approval {id}: {err}");
@@ -1129,8 +1135,42 @@ impl Approvals {
     /// Writes `state` to the file (0600), on a blocking thread.
     async fn write(&self, state: &State) -> Result<(), ApprovalsError> {
         let file = self.file.clone().ok_or(ApprovalsError::NoHome)?;
-        let content = ApprovalsFile { approvals: state.entries.clone() };
+        let mut entries = state.entries.clone();
+        let volatile = entries
+            .iter()
+            .map(|entry| {
+                matches!(
+                    entry.info.command.as_str(),
+                    "mail.prepare_image" | "mail.upload_image" | "mail.release_images"
+                )
+            })
+            .collect::<Vec<_>>();
+        // Strip the typed clones before serialization: shared image payloads/previews never
+        // become temporary JSON strings merely because another approval was persisted.
+        for (entry, volatile) in entries.iter_mut().zip(&volatile) {
+            if *volatile {
+                entry.request = Request::Ping;
+                if matches!(entry.info.state, ApprovalState::Done { .. }) {
+                    entry.info.state = ApprovalState::Done {
+                        response: Box::new(Response::Error {
+                            code: "not-found".into(),
+                            message: "Volatile image data expired.".into(),
+                        }),
+                    };
+                }
+            }
+        }
+        let content = ApprovalsFile { approvals: entries };
         blocking(move || {
+            let mut content = serde_json::to_value(&content)
+                .map_err(|err| ApprovalsError::Io { path: file.clone(), err: io::Error::other(err) })?;
+            if let Some(entries) = content.get_mut("approvals").and_then(serde_json::Value::as_array_mut) {
+                for (entry, volatile) in entries.iter_mut().zip(volatile) {
+                    if volatile {
+                        entry["volatile_images"] = serde_json::json!(true);
+                    }
+                }
+            }
             let bytes = serde_json::to_vec_pretty(&content)
                 .map_err(|err| ApprovalsError::Io { path: file.clone(), err: io::Error::other(err) })?;
             if let Some(dir) = file.parent() {
@@ -1158,6 +1198,11 @@ fn tidy(entries: &mut Vec<Entry>, now: DateTime<Utc>) -> bool {
             entry.info.state = ApprovalState::Expired;
             entry.info.decided = Some(entry.info.expires);
             expired = true;
+        }
+        if matches!(entry.info.state, ApprovalState::Denied | ApprovalState::Expired | ApprovalState::Done { .. })
+            && crate::mail::images::is_request(&entry.request)
+        {
+            entry.request = Request::Ping;
         }
     }
     entries.retain(|entry| entry.info.decided.is_none_or(|decided| now - decided < KEPT));
@@ -1209,6 +1254,7 @@ fn entries_of(bytes: &[u8]) -> Result<Vec<Entry>, serde_json::Error> {
     };
     let mut entries = Vec::with_capacity(list.len());
     for value in list.iter_mut() {
+        let volatile = value.get("volatile_images").and_then(serde_json::Value::as_bool) == Some(true);
         let sorting = old_sorting_step(value);
         if sorting {
             let state = value.pointer("/info/state").and_then(serde_json::Value::as_str);
@@ -1220,6 +1266,11 @@ fn entries_of(bytes: &[u8]) -> Result<Vec<Entry>, serde_json::Error> {
         }
         let old = old_filter_move(value);
         let mut entry: Entry = serde_json::from_value(value.take())?;
+        if volatile {
+            entry.request = Request::Ping;
+            entry.info.state = ApprovalState::Expired;
+            entry.info.decided = Some(Utc::now());
+        }
         if (old || sorting)
             && !matches!(entry.info.state, ApprovalState::Done { .. } | ApprovalState::Denied | ApprovalState::Expired)
         {
@@ -1509,6 +1560,13 @@ fn follow_summary(function: torro_core::ai::AiFunction, facts: &Facts) -> String
 /// invisible format characters, no quotes that could end the quoted part, no placeholders, at
 /// most 60 characters. Front ends still show the summary as plain text only.
 pub fn summary(request: &Request, facts: &Facts) -> String {
+    if super::mail::images::is_request(request) {
+        return match request {
+            Request::PrepareMailImage { .. } => tr("Prepare a mail image").into(),
+            Request::UploadMailImage { .. } => tr("Upload a mail image").into(),
+            _ => tr("Release temporary mail images").into(),
+        };
+    }
     let today = Local::now().date_naive();
     // The display name the core knows, else the id the command runs with.
     let named = |id: &str| quote(facts.name.as_deref().unwrap_or(id));
@@ -4141,6 +4199,42 @@ pub(crate) mod tests {
         // A day after it expired it is gone.
         let later = at(10) + KEPT;
         assert!(matches!(restarted.status(None, &opened.id, later).await, Err(ApprovalsError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn image_approval_payloads_stay_in_ram_and_restart_expires_the_envelope() {
+        let dir = tempfile::tempdir().expect("temp");
+        let approvals = quiet_in(dir.path());
+        let request = Request::UploadMailImage {
+            account: "mail:a".into(),
+            upload: None,
+            offset: 0,
+            base64: "PRIVATE_IMAGE_PIXELS".into(),
+            finish: true,
+        };
+        let now = Utc::now();
+        let opened = approvals.open("one", "Agent", request.clone(), None, "Upload".into(), now).await.expect("open");
+        let stored = fs::read_to_string(file_in(dir.path())).expect("file");
+        assert!(!stored.contains("PRIVATE_IMAGE_PIXELS"));
+        assert!(stored.contains("volatile_images"));
+        assert!(!format!("{request:?}").contains("PRIVATE_IMAGE_PIXELS"));
+        let restarted = quiet_in(dir.path());
+        assert_eq!(restarted.status(Some("one"), &opened.id, now).await.expect("status").state, ApprovalState::Expired);
+        let Decision::Run { request: kept, .. } = approvals.decide(&opened.id, true, now).await.expect("decide") else {
+            panic!("run")
+        };
+        assert_eq!(*kept, request, "in-process confirmation still executes exactly the approved request");
+        let image = torro_ipc::mail::PreparedImage {
+            id: "private-id".into(),
+            width: 1,
+            height: 1,
+            original_width: 1,
+            original_height: 1,
+            preview: "PRIVATE_PREVIEW".into(),
+        };
+        approvals.finish(&opened.id, Response::MailImage { image }, now).await.expect("finished");
+        let stored = fs::read_to_string(file_in(dir.path())).expect("file");
+        assert!(!stored.contains("PRIVATE_PREVIEW"));
     }
 
     #[tokio::test]

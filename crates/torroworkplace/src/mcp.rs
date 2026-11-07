@@ -2231,6 +2231,29 @@ mod tests {
         assert!(INSTRUCTIONS.contains("assistant window under Access"), "#231: where a lent key's rights are");
     }
 
+    #[test]
+    fn image_tools_map_one_to_one_to_bounded_service_requests() {
+        let upload = request_for(
+            "mail_upload_image",
+            args(json!({"account":"mail:anna@example.org", "offset":0, "base64":"AA==", "final":true})),
+            &Utc,
+        )
+        .expect("request");
+        assert!(matches!(upload, Request::UploadMailImage { upload: None, offset: 0, finish: true, .. }));
+        assert!(!format!("{upload:?}").contains("AA=="));
+        let prepare = request_for(
+            "mail_prepare_image",
+            args(json!({"account":"mail:anna@example.org", "source":{"kind":"prepared","id":"one"}})),
+            &Utc,
+        )
+        .expect("prepare");
+        assert!(matches!(prepare, Request::PrepareMailImage { source: torro_mail::ImageSource::Prepared { .. }, .. }));
+        let release =
+            request_for("mail_release_images", args(json!({"account":"mail:anna@example.org", "ids":["one"]})), &Utc)
+                .expect("release");
+        assert_eq!(release.operation().access, Access::Delete);
+    }
+
     /// Task M12.4: `mail_save_attachments` takes the message, optionally some of its parts, and
     /// `downloads` or a save target's id. A path is never an input: a person chooses one.
     #[test]

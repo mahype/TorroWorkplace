@@ -995,6 +995,101 @@ impl Session {
             .find_map(|item| item.get("BODY[]").and_then(Token::bytes).map(<[u8]>::to_vec)))
     }
 
+    /// Reads only one image leaf, addressed by the MIME parser's preorder part index. Multipart
+    /// containers count, embedded messages are leaves. No other message body is fetched. Headers,
+    /// structure and every wire response are bounded before allocating literals; the returned
+    /// standalone MIME entity (still transfer-encoded) never exceeds `limit` bytes.
+    pub async fn fetch_image_part(&mut self, uid: u32, part: u32, limit: usize) -> Result<Option<Vec<u8>>, ImapError> {
+        self.fetch_mime_leaf(uid, part, limit, true).await
+    }
+
+    /// The same bounded leaf reader for an ordinary attachment accompanying compose images.
+    /// The caller's MIME parser must still check that it has attachment disposition.
+    pub async fn fetch_attachment_part(
+        &mut self,
+        uid: u32,
+        part: u32,
+        limit: usize,
+    ) -> Result<Option<Vec<u8>>, ImapError> {
+        self.fetch_mime_leaf(uid, part, limit, false).await
+    }
+
+    async fn fetch_mime_leaf(
+        &mut self,
+        uid: u32,
+        part: u32,
+        limit: usize,
+        image_only: bool,
+    ) -> Result<Option<Vec<u8>>, ImapError> {
+        self.require_selected()?;
+        let set = uid.to_string();
+        let data = self
+            .run_bounded(&[Arg::Raw("UID FETCH"), Arg::Raw(&set), Arg::Raw("(UID BODYSTRUCTURE)")], 256 << 10)
+            .await?;
+        let Some((section, bytes)) = fetched(&data)
+            .filter(|item| item.uid == uid)
+            .find_map(|item| mime_section(item.get("BODYSTRUCTURE")?, part, image_only))
+        else {
+            return Ok(None);
+        };
+        if bytes > limit as u64 {
+            return Err(ImapError::Protocol("image MIME part exceeds the input budget".into()));
+        }
+        drop(data);
+        let mut raw = self
+            .image_piece(uid, &format!("{section}.MIME"), 0, LITERAL_CHUNK)
+            .await?
+            .ok_or_else(|| ImapError::NotFound("image MIME headers vanished".into()))?;
+        if raw.len() == LITERAL_CHUNK || raw.len().saturating_add(bytes as usize) > limit {
+            return Err(ImapError::Protocol("image MIME headers exceed the input budget".into()));
+        }
+        // A broken server must not make this buffer grow geometrically beyond the reservation.
+        raw.try_reserve_exact(bytes as usize)
+            .map_err(|_| ImapError::Protocol("image MIME allocation failed".into()))?;
+        let mut offset = 0;
+        loop {
+            // Read one byte past the advertised end as well: a false size cannot truncate a part
+            // into a valid-looking image or silently make it larger than the budget.
+            let count = (bytes - offset).min(LITERAL_CHUNK as u64).max(1) as usize;
+            let piece = self
+                .image_piece(uid, &section, offset, count)
+                .await?
+                .ok_or_else(|| ImapError::NotFound("image MIME part vanished".into()))?;
+            if offset == bytes {
+                if !piece.is_empty() {
+                    return Err(ImapError::Protocol("image MIME part exceeds its size".into()));
+                }
+                break;
+            }
+            if piece.len() != count {
+                return Err(ImapError::Protocol("image MIME part is truncated".into()));
+            }
+            raw.extend_from_slice(&piece);
+            offset += count as u64;
+        }
+        Ok(Some(raw))
+    }
+
+    async fn image_piece(
+        &mut self,
+        uid: u32,
+        section: &str,
+        offset: u64,
+        count: usize,
+    ) -> Result<Option<Vec<u8>>, ImapError> {
+        let set = uid.to_string();
+        let query = format!("(UID BODY.PEEK[{section}]<{offset}.{count}>)");
+        let returned = format!("BODY[{section}]<{offset}>");
+        let data = self.run_bounded(&[Arg::Raw("UID FETCH"), Arg::Raw(&set), Arg::Raw(&query)], count + 4096).await?;
+        let piece = fetched(&data)
+            .filter(|item| item.uid == uid)
+            .find_map(|item| item.get(&returned).and_then(Token::bytes).map(<[u8]>::to_vec));
+        if piece.as_ref().is_some_and(|bytes| bytes.len() > count) {
+            return Err(ImapError::Protocol("image MIME server ignored the requested range".into()));
+        }
+        Ok(piece)
+    }
+
     /// Adds and removes flags of the messages `uids` in the open folder (`UID STORE …
     /// +FLAGS.SILENT` / `-FLAGS.SILENT`).
     pub async fn store_flags(&mut self, uids: &[u32], add: &[Flag], remove: &[Flag]) -> Result<(), ImapError> {
@@ -1150,6 +1245,13 @@ impl Session {
             Status::Ok => Ok(reply.data),
             _ => Err(refused(&reply.outcome, what)),
         }
+    }
+
+    async fn run_bounded(&mut self, args: &[Arg<'_>], budget: usize) -> Result<Vec<Response>, ImapError> {
+        self.wire.receive_budget = Some(budget);
+        let result = self.run(args, "FETCH").await;
+        self.wire.receive_budget = None;
+        result
     }
 
     async fn refresh_capabilities(&mut self) -> Result<(), ImapError> {
@@ -1328,6 +1430,35 @@ fn has_attachment(token: &Token) -> bool {
     let disposition = items.first().and_then(Token::text).is_some_and(|t| t.eq_ignore_ascii_case("attachment"))
         && items.get(1).is_some_and(|t| t.list().is_some() || *t == Token::Nil);
     disposition || items.iter().any(has_attachment)
+}
+
+/// Match mail-parser's preorder indices without descending into an attached message's own tree.
+/// Iteration also bounds nesting and part count independently of server-provided metadata.
+fn mime_section(root: &Token, wanted: u32, image_only: bool) -> Option<(String, u64)> {
+    let mut stack = vec![(root, String::new(), 0)];
+    let mut index = 0_u32;
+    while let Some((token, path, depth)) = stack.pop() {
+        if depth > 64 || index > 4096 {
+            return None;
+        }
+        let items = token.list()?;
+        let multipart = items.first()?.list().is_some();
+        if index == wanted {
+            if multipart || (image_only && !items.first()?.text()?.eq_ignore_ascii_case("image")) {
+                return None;
+            }
+            return Some((if path.is_empty() { "1".into() } else { path }, items.get(6)?.number()?));
+        }
+        index += 1;
+        if multipart {
+            let children = items.iter().take_while(|t| t.list().is_some()).collect::<Vec<_>>();
+            for (at, child) in children.into_iter().enumerate().rev() {
+                let next = if path.is_empty() { (at + 1).to_string() } else { format!("{path}.{}", at + 1) };
+                stack.push((child, next, depth + 1));
+            }
+        }
+    }
+    None
 }
 
 /// UIDs as a sequence set: `[1, 2, 3, 5, 7, 8]` → `1:3,5,7:8`.
@@ -1807,11 +1938,13 @@ struct Wire<S> {
     /// An exchange started and did not finish (its future was dropped, or it failed midway):
     /// where the server is in the conversation is unknown.
     busy: bool,
+    /// Aggregate bytes of all responses in a bounded image FETCH, including unsolicited data.
+    receive_budget: Option<usize>,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Wire<S> {
     fn new(stream: S, next_tag: u32) -> Wire<S> {
-        Wire { io: BufReader::new(stream), next_tag, busy: false }
+        Wire { io: BufReader::new(stream), next_tag, busy: false, receive_budget: None }
     }
 
     /// The stream for the TLS handshake after STARTTLS, and the next tag. Refused when the
@@ -2107,6 +2240,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Wire<S> {
             if size > MAX_LITERAL {
                 return Err(ImapError::Protocol("the server sent a literal too large to take".into()));
             }
+            if let Some(left) = &mut self.receive_budget {
+                *left = left
+                    .checked_sub(size)
+                    .ok_or_else(|| ImapError::Protocol("image FETCH response exceeds its budget".into()))?;
+            }
             self.read_exact(&mut raw, size).await?;
         }
         Response::parse(&raw).map(Some)
@@ -2123,10 +2261,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Wire<S> {
                 }
                 match buffer.iter().position(|&b| b == b'\n') {
                     Some(end) => {
+                        if let Some(left) = &mut self.receive_budget {
+                            *left = left
+                                .checked_sub(end + 1)
+                                .ok_or_else(|| ImapError::Protocol("image FETCH response exceeds its budget".into()))?;
+                        }
                         out.extend_from_slice(&buffer[..=end]);
                         (end + 1, true)
                     }
                     None => {
+                        if let Some(left) = &mut self.receive_budget {
+                            *left = left
+                                .checked_sub(buffer.len())
+                                .ok_or_else(|| ImapError::Protocol("image FETCH response exceeds its budget".into()))?;
+                        }
                         out.extend_from_slice(buffer);
                         (buffer.len(), false)
                     }

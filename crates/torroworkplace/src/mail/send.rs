@@ -460,6 +460,9 @@ pub(crate) async fn prepare(
     for info in &read.attachments {
         let found = mime::attachment(&raw, &info.part).map_err(SendError::Unbuildable)?;
         attachments.push(OutgoingAttachment {
+            image_size: mime::image_size(&raw, &info.part),
+            content_id: info.content_id.clone().filter(|id| html::valid_cid(id)),
+            inline: info.inline && info.content_id.as_deref().is_some_and(html::valid_cid),
             filename: safe_file_name(found.filename.as_deref().unwrap_or("")),
             content_type: found.content_type,
             bytes: found.bytes,
@@ -619,8 +622,16 @@ async fn read_draft(mail: &MailService, reach: Reach<'_>, author: &DraftAuthor, 
     let attachments = read
         .attachments
         .iter()
-        .filter(|info| !info.inline)
-        .map(|info| DraftAttachment::MailPart { message: draft.id.clone(), part: info.part.clone() })
+        .filter(|info| !info.inline || info.content_id.as_deref().is_some_and(html::valid_cid))
+        .map(|info| match info.content_id.as_ref().filter(|id| html::valid_cid(id)) {
+            Some(cid) if info.content_type.starts_with("image/") => DraftAttachment::Image {
+                id: cid.clone(),
+                source: torro_mail::ImageSource::MailPart { message: draft.id.clone(), part: info.part.clone() },
+                inline: info.inline,
+                size: mime::image_size(&raw, &info.part).unwrap_or(torro_mail::ImageSize::Medium),
+            },
+            _ => DraftAttachment::MailPart { message: draft.id.clone(), part: info.part.clone() },
+        })
         .collect();
     Ok(Draft {
         id: Some(draft.id.clone()),
