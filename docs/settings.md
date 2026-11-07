@@ -511,9 +511,14 @@ Symlinks bleiben erhalten. Neu gewählte Pfade, aufgelöste Symlink-Ziele und da
 dem Schreiben in `protected_paths.json` reserviert. Die separate `protected_paths.lock` bleibt stabil:
 Setup exklusiv, Dateiwerkzeuge und MCP-Aufrufe gemeinsam bis zur Antwort. Konkurrenz meldet `busy`, defekte oder
 unlesbare Schutzdaten sperren den Zugriff. Reservierungen bleiben auch nach Rollback und Trennen bestehen.
+Vor OpenCodes CLI-Aufruf wird deren Konfigurationsverzeichnis privat (0700) und die Datei mit 0600 vorbereitet;
+ein nachträgliches Einschränken allein würde den Schlüssel zwischenzeitlich lesbar machen. Bei fehlgeschlagenem
+oder abgebrochenem MCP-Start bleibt die Beendigungsbarriere bis zum tatsächlichen Ende des Prozesses bestehen.
 
 OpenCodes optionale globale Dateien unter `plugins/torroworkplace/` melden nur Warten und Abschluss. Offene
-Formular- und Freigabe-IDs werden pro Sitzung verfolgt; Kind-Sitzungen werden ignoriert. Antworten/Freigaben
+Formular- und Freigabe-IDs werden pro Sitzung und Ort im dauerhaften Plugin-Speicher verfolgt, damit ein Neuladen
+keine noch offene Frage vergisst; gespeichert werden nur IDs, keine Fragen oder Schlüssel. Geschlossene Fragen
+werden daraus entfernt; Kind-Sitzungen werden ignoriert. Antworten/Freigaben
 bleiben in OpenCode. Das Plugin enthält nur Programm-/Key-Dateipfade, nie einen Token; es startet ohne Shell
 `torroworkplace hook opencode --key-file <datei>` mit begrenzter Standardeingabe und Timeout. Fremde Plugins bleiben.
 
@@ -522,6 +527,8 @@ Wizard „Check connection“ wählen. Nur ein erfolgreicher `system.ping` diese
 Einrichtung zählt; leere Aktivität, fremde Clients und Fehler bleiben ungeprüft. Erneut prüfen oder mit
 „Finish without test“ abschließen. Ein Ping belegt Schlüsselnutzung, nicht die Prozessidentität oder fehlende
 Projekt-Overrides. Schlüssel für geführte Einrichtung bleiben bis zum Abschluss kopierbar.
+API-Antworten gehören zur jeweiligen Wizard-Instanz und Anfrage; eine verspätete Prüfung kann keinen später
+geöffneten Wizard und dessen gerade erzeugten Schlüssel verändern.
 Tab bzw. Pfeile wählen Wizard-Aktionen, Umschalt+Tab geht zurück und Enter führt aus. Der feste Fuß zeigt die
 gewählte Aktion auch dann, wenn ihre Zeile unterhalb des sichtbaren Scrollbereichs liegt; ein neutraler Ring
 markiert sie im Inhalt. Bei geführtem OpenCode-Setup sagt der Wizard ausdrücklich, dass Meldungen erst danach
