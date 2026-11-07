@@ -1592,6 +1592,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 pub fn scene(name: &str) -> Option<Vec<Message>> {
     Some(match name {
         "ai" => vec![Message::Tab(1)],
+        "waiting" => vec![Message::Tab(1)],
         "categories" => Vec::new(),
         "category" => vec![Message::Editor(editor::Message::EditCategory(Category::Invoice))],
         // Issue #506: the page of Phishing with its trusted senders.
@@ -1599,7 +1600,10 @@ pub fn scene(name: &str) -> Option<Vec<Message>> {
         "sort" => vec![Message::OpenSort { rules_only: false }],
         "filter" => vec![Message::NewFilter],
         "running" => vec![Message::OpenSort { rules_only: false }, Message::StartJob],
-        "model" => vec![Message::ModelMenu(true)],
+        "model" => vec![Message::Tab(1), Message::ModelMenu(true)],
+        "consent" => {
+            vec![Message::Tab(1), Message::Model(crate::accounts::demo::DEMO_NETWORK.into(), "nimble:latest".into())]
+        }
         _ => return None,
     })
 }
@@ -1650,6 +1654,33 @@ mod tests {
         assert!(scene("rules").is_none(), "no tab of rules any more");
         assert_eq!(scene("category").map(|messages| messages.len()), Some(1));
         assert!(scene("nope").is_none());
+    }
+
+    #[tokio::test]
+    async fn the_mail_demos_offer_network_models_and_show_consent_and_waiting() {
+        let data = demo().await;
+        let engine = crate::accounts::demo::DEMO_NETWORK;
+        let (_, _, elsewhere) = grouped(&data);
+        assert!(elsewhere.iter().any(|(account, model)| account == engine && model.id == "nimble:latest"));
+        let mut state = State::default();
+        for message in scene("model").expect("model menu") {
+            assert!(sent(update::<()>(&mut state, message, &data)).is_empty());
+        }
+        assert_eq!(state.tab, Tab::Ai);
+        assert!(state.model_menu);
+        let mut state = State::default();
+        for message in scene("consent").expect("consent scene") {
+            assert!(sent(update::<()>(&mut state, message, &data)).is_empty());
+        }
+        assert_eq!(state.tab, Tab::Ai);
+        assert!(asking_cloud(&state));
+        assert!(overlay(&state, &data).is_some());
+
+        let backend: Arc<dyn crate::Backend> = Arc::new(crate::demo::Demo::with_network_sorting());
+        let waiting = crate::load(backend, super::super::wanted()).await;
+        assert!(waiting.error.is_none(), "{:?}", waiting.error);
+        assert!(matches!(chosen(&waiting), Chosen::Cloud { waiting: true, .. }));
+        assert!(!waiting.settings.mail_to_cloud_in(AiSlot::Decide));
     }
 
     /// Issue #454: the model is chosen in a menu with "Off" first, no switch; "Off" keeps sorting

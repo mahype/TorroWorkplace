@@ -1680,6 +1680,9 @@ pub enum Open {
     CategorizationRunning,
     /// … with the menu of "Sort with model" open.
     CategorizationModel,
+    /// #359: a new LAN model waiting for the person's Use, and a saved one without permission.
+    CategorizationConsent,
+    CategorizationWaiting,
     /// "All" of the mail window with the menu of the account field open (issue #455).
     MailAccounts,
     /// "Trash" of the mail window (issue #455): the mail in the trash of every account.
@@ -1689,7 +1692,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 100] = [
+    const ALL: [(&'static str, Open); 102] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1787,6 +1790,8 @@ impl Open {
         ("categorization-filter", Open::CategorizationFilter),
         ("categorization-running", Open::CategorizationRunning),
         ("categorization-model", Open::CategorizationModel),
+        ("categorization-consent", Open::CategorizationConsent),
+        ("categorization-waiting", Open::CategorizationWaiting),
         ("mail-accounts", Open::MailAccounts),
         ("trash", Open::Trash),
         ("drafts", Open::Drafts),
@@ -1816,6 +1821,8 @@ impl Open {
             Open::CategorizationFilter => Some("filter"),
             Open::CategorizationRunning => Some("running"),
             Open::CategorizationModel => Some("model"),
+            Open::CategorizationConsent => Some("consent"),
+            Open::CategorizationWaiting => Some("waiting"),
             _ => None,
         }
     }
@@ -8305,6 +8312,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Source::Demo(_) if self.launch.open == Some(Open::AccountQuestion) => {
                 let problem = trf("The {service} server refused the password.", &[("service", &"IMAP")]);
                 Arc::new(torro_settings_ui::demo::Demo::with_mail_problem(problem))
+            }
+            Source::Demo(_) if self.launch.open == Some(Open::CategorizationWaiting) => {
+                Arc::new(torro_settings_ui::demo::Demo::with_network_sorting())
             }
             Source::Demo(_) => Arc::new(torro_settings_ui::demo::Demo::new()),
         }
