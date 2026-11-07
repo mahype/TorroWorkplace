@@ -1501,10 +1501,6 @@ pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<
     }
 }
 
-/// The dialog the section has open, laid over the whole window by the shell: installing (also the
-/// tools of a server of one's own just added), the form of a server of one's own, a secret to
-/// replace, or the question before a server is removed. `class` is the window's: narrower than
-/// [`SizeClass::Medium`] the rows of the form's variables stack ([`entry_row`]).
 /// Whether what [`overlay`] shows is a menu (a dropdown of a PDF template, the folders of a
 /// server) rather than a dialog: a menu leaves the window undimmed (design review of #554).
 pub fn menu_open(state: &State) -> bool {
@@ -1518,6 +1514,10 @@ pub fn menu_open(state: &State) -> bool {
     }
 }
 
+/// The dialog the section has open, laid over the whole window by the shell: installing (also the
+/// tools of a server of one's own just added), the form of a server of one's own, a secret to
+/// replace, or the question before a server is removed. `class` is the window's: narrower than
+/// [`SizeClass::Medium`] the rows of the form's variables stack ([`entry_row`]).
 pub fn overlay<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Option<Element<'a, Message>> {
     if let Some(install) = &state.install {
         return install_dialog(install, data);

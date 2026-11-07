@@ -540,8 +540,10 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   `widgets::group` (Titel, Zeilen `size::header()` bzw. 12 höher mit
   Untertitel, Trennlinien, erklärender Satz darunter in `TEXT_2`) – keine eigenen Karten. **Jede Seite beginnt mit dem
   Titel ihrer ersten Gruppe** (#554), ohne eigenen großen Titel oder Unterzeile darüber: Die Kopfzeile nennt die Seite
-  schon. Auf Accounts und AI ist der Anbieter der Gruppentitel, sein Satz steht unter der Gruppe. Im schmalen Fenster
-  zeigt die Kopfzeile den Abschnitt als Menüknopf („‹ [🔔 Reminders ▾]“) wie in Mittel. Eine sichtbare Aktion je Zeile,
+  schon. Auf Accounts ist der Anbieter der Gruppentitel, sein Satz steht unter der Gruppe; auf AI heißt die Gruppe
+  „Accounts“, damit Kopfzeile und Gruppe nicht beide „AI“ sagen. Im schmalen Fenster zeigt die Kopfzeile den Abschnitt
+  als Menüknopf („‹ [🔔 Reminders ▾]“) wie in Mittel; hat die Seite eigene Knöpfe, nur Icon und Chevron, der Name
+  steht im Tooltip. Eine sichtbare Aktion je Zeile,
   der Rest im „…“-Menü. Was wohin gehört (App oder Steuerzentrale, auch die Rechte für API und MCP je App), regelt
   `docs/settings.md`, Abschnitt „Die Regel“; der Skill wiederholt es nicht. **Detailseiten** (dritte Ebene, #314, `docs/settings.md`) folgen einem festen Aufbau aus
   diesen Bausteinen (Anschauen: `cargo run -p torro-gui --example gallery -- --detail`, dazu `--light`,
