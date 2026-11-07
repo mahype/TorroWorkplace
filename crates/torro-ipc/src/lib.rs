@@ -1676,7 +1676,8 @@ pub enum Request {
         name: String,
         /// Which program ([`api::CLIENT_KINDS`]): `script` (a key for the API), an MCP client –
         /// `claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor` or `mcp` ("Other MCP
-        /// client", [`api::MCP_KINDS`]) –, `hook` for the hooks of coding agents
+        /// client", [`api::MCP_KINDS`], including OpenCode, Open WebUI, Zed, Cline, Continue,
+        /// Cherry Studio and LibreChat) –, `hook` for the hooks of coding agents
         /// ([`api::HOOK_CLIENT`]), which may only report to the inbox ([`api::Rights::for_kind`]),
         /// or `assistant` ([`api::ASSISTANT_CLIENT`]).
         kind: String,

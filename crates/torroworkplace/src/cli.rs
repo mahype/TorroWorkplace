@@ -49,7 +49,7 @@ const USAGE: &str = "usage:
   torroworkplace ctl setups key <id> <0-9|none> [--json]
   torroworkplace ctl clients list [--json]
   torroworkplace ctl clients add <name> [--kind {kinds}]
-                                        [--agent claude-code|codex|gemini]
+                                        [--agent claude-code|codex|gemini|opencode]
                                         [--template read-only|read-and-write|full-access] [--json]
   torroworkplace ctl clients remove <id> [--json]
   torroworkplace ctl clients new-key <id> [--json]
@@ -66,7 +66,7 @@ const USAGE: &str = "usage:
                                   --file: a plain name is in the managed folder, ./x.zip or sub/x.zip is
                                   relative to here; --wait has no time limit and Ctrl-C does not cancel the job)
   torroworkplace notify --title <text> [--body <text>] [--url <url>] [--for-me] [--thread <key>] [--json]
-  torroworkplace hook claude-code|codex|gemini [--key-file <file>]
+  torroworkplace hook claude-code|codex|gemini|opencode [--key-file <file>]
                                                  (run by an agent's hooks; reads stdin, prints nothing)";
 
 /// The help as printed: the kinds of client are those the core takes ([`torro_ipc::api::CLIENT_KINDS`],
@@ -484,7 +484,7 @@ fn missing_value(flag: &str) -> UsageError {
     match flag {
         "--mode" => UsageError::new("--mode needs a value: empty, add or replace"),
         "--kind" => UsageError::new(tr("--kind needs a value, e.g. claude-code or script")),
-        "--agent" => UsageError::new(tr("--agent needs a value: claude-code, codex or gemini")),
+        "--agent" => UsageError::new(tr("--agent needs a value: claude-code, codex, gemini or opencode")),
         _ => UsageError::new(tr("--template needs a value: read-only, read-and-write or full-access")),
     }
 }
@@ -553,7 +553,7 @@ fn parse_agent(agent: Option<&str>) -> Result<Option<AgentKind>, UsageError> {
     agent
         .map(|id| {
             AgentKind::from_id(id)
-                .ok_or_else(|| UsageError::new(tr("--agent needs a value: claude-code, codex or gemini")))
+                .ok_or_else(|| UsageError::new(tr("--agent needs a value: claude-code, codex, gemini or opencode")))
         })
         .transpose()
 }

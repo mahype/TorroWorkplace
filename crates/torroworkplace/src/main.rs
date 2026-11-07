@@ -6,7 +6,7 @@
 //!   system without the main application (issue #408, [`daemon_headless`]). `--takeover` waits for a
 //!   running service that hands over to this copy (issue #411, [`daemon_takeover`]).
 //! - `status --json`, `ctl`: for bars, hotkeys and scripts; `notify`: a notice to the inbox.
-//! - `hook claude-code|codex|gemini`: run by the hooks of coding agents; reports waiting and
+//! - `hook claude-code|codex|gemini|opencode`: run by the hooks of coding agents; reports waiting and
 //!   finished sessions to the inbox, silently and always with exit code 0 (see `hook`).
 //! - `workspace_keys`: the template keys (modifiers + digit), bound by the daemon on Hyprland
 //!   and by the tray on macOS and Windows.

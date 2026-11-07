@@ -8,7 +8,8 @@
 //! - **Start when needed:** the first call or tool list ([`Supervisor::call`], [`Supervisor::tools`]) starts it;
 //!   `initialize` and the first tool list must come within 30 s, 180 s when installing or updating
 //!   ([`Purpose::Install`]: the first `npx`, `uvx` or `docker run` downloads the package).
-//! - **Calls** answer within 60 s, else the call fails and the server is told it is cancelled.
+//! - **Calls** answer within 60 s, else the call fails and its process run is ended. A cancellation
+//!   notification alone cannot prove that a file operation stopped (#539).
 //! - **Idle:** 10 minutes without a call end it; the next call starts it again.
 //! - **Crashes:** a server that ends by itself, fails to start or breaks the protocol starts again on the next
 //!   need; the third failure within 5 minutes leaves it [`Status::Crashed`] until a person switches it on again
@@ -271,22 +272,29 @@ impl Supervisor {
         let (server, generation, connection) = self.ensure(launch, Purpose::Use).await?;
         // Counted out when the call ends, also when it is dropped before (the assistant's "Stop" aborts its
         // task): a count left behind would keep the server from ever ending when idle.
-        let in_flight = InFlight::new(&server, generation);
+        let _in_flight = InFlight::new(&server, generation);
         let answer = connection.call_tool(tool, arguments, self.timing.call).await;
-        drop(in_flight);
+        if let Err(err) = &answer {
+            // Wait for any replacement/stop already ending this generation, then end it ourselves if
+            // it is still current. In particular, a timeout must not release a configuration-protection
+            // guard while the remote operation can still access the newly secret-bearing path.
+            let turn = Arc::clone(&server.turn).lock_owned().await;
+            let reason = match err {
+                ClientError::Protocol | ClientError::BadHeader => CrashReason::Protocol,
+                ClientError::Timeout | ClientError::Closed => CrashReason::Exited,
+            };
+            if let Some(run) = server.take_failed(generation, reason, &self.timing) {
+                self.bump();
+                let _ = run.finish(self.timing.stop_grace, turn).await;
+            }
+        }
         match answer {
             Ok(result) => Ok(result),
             Err(ClientError::Timeout) => {
                 eprintln!("torroworkplace: MCP server {}: {tool:?} did not answer in time", server.id);
                 Err(SupervisorError::CallTimeout)
             }
-            Err(ClientError::Closed) => {
-                if let Some(run) = server.take_failed(generation, CrashReason::Exited, &self.timing) {
-                    self.bump();
-                    run.finish(self.timing.stop_grace).await;
-                }
-                Err(SupervisorError::Closed)
-            }
+            Err(ClientError::Closed) => Err(SupervisorError::Closed),
             Err(ClientError::Protocol | ClientError::BadHeader) => {
                 eprintln!("torroworkplace: MCP server {}: {tool:?} broke the protocol", server.id);
                 Err(SupervisorError::Protocol)
@@ -349,11 +357,11 @@ impl Supervisor {
         lock(&self.stopped).insert(id.to_string());
         let Some(server) = self.get(id) else { return };
         server.cancel.notify_waiters();
-        let _turn = server.turn.lock().await;
+        let turn = Arc::clone(&server.turn).lock_owned().await;
         let run = lock(&server.state).run.take();
         if let Some(run) = run {
             self.bump();
-            run.finish(self.timing.stop_grace).await;
+            let _ = run.finish(self.timing.stop_grace, turn).await;
         }
     }
 
@@ -430,6 +438,7 @@ impl Supervisor {
     /// the program it tried does not keep running. A run with another launch is left alone.
     pub async fn end(&self, launch: &Launch) {
         let Some(server) = self.get(&launch.id) else { return };
+        let turn = Arc::clone(&server.turn).lock_owned().await;
         let run = {
             let mut state = lock(&server.state);
             match &state.run {
@@ -439,7 +448,7 @@ impl Supervisor {
         };
         if let Some(run) = run {
             self.bump();
-            run.finish(self.timing.stop_grace).await;
+            let _ = run.finish(self.timing.stop_grace, turn).await;
         }
     }
 
@@ -458,8 +467,15 @@ impl Supervisor {
         let grace = self.timing.stop_grace;
         let stops: Vec<_> = servers
             .into_iter()
-            .filter_map(|server| lock(&server.state).run.take())
-            .map(|run| tokio::spawn(run.finish(grace)))
+            .map(|server| {
+                tokio::spawn(async move {
+                    let turn = Arc::clone(&server.turn).lock_owned().await;
+                    let run = lock(&server.state).run.take();
+                    if let Some(run) = run {
+                        let _ = run.finish(grace, turn).await;
+                    }
+                })
+            })
             .collect();
         for stop in stops {
             let _ = stop.await;
@@ -484,7 +500,7 @@ impl Supervisor {
     ) -> Result<(Arc<Server>, u64, Arc<Connection>), SupervisorError> {
         let server =
             lock(&self.servers).entry(launch.id.clone()).or_insert_with(|| Arc::new(Server::new(&launch.id))).clone();
-        let _turn = server.turn.lock().await;
+        let mut turn = Arc::clone(&server.turn).lock_owned().await;
         // Taken before the mark is looked at: a `stop` marks first and then tells, so either this sees the mark
         // or it hears the stop (a `Notified` hears every `notify_waiters` after it was made).
         let cancelled = server.cancel.notified();
@@ -515,8 +531,10 @@ impl Supervisor {
         };
         if let Some(run) = stale {
             self.bump();
-            run.finish(self.timing.stop_grace).await;
+            turn = run.finish(self.timing.stop_grace, turn).await?;
         }
+        // The teardown task owns the turn until the old process is gone, even if this ensure is cancelled.
+        let _turn = turn;
         if let Some(reason) = lock(&server.state).crashed {
             return Err(SupervisorError::Crashed(reason));
         }
@@ -649,7 +667,7 @@ impl Drop for Reset<'_> {
 struct Server {
     id: String,
     /// Held while it starts or stops, so calls at the same moment start it once.
-    turn: tokio::sync::Mutex<()>,
+    turn: Arc<tokio::sync::Mutex<()>>,
     /// Told by [`Supervisor::stop`]: a start under way breaks off.
     cancel: tokio::sync::Notify,
     state: Mutex<State>,
@@ -683,11 +701,22 @@ struct Run {
 
 impl Run {
     /// Ends the connection (a program's stdin closes), then the process tree.
-    async fn finish(self, grace: Duration) {
-        self.connection.close(grace).await;
-        if let Some(process) = self.process {
-            process.stop(grace).await;
-        }
+    async fn finish(
+        self,
+        grace: Duration,
+        turn: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, SupervisorError> {
+        // A removed run is not yet an ended process. Keep teardown and its turn alive independently
+        // of an update/stop/shutdown caller that may be cancelled while it waits.
+        tokio::spawn(async move {
+            self.connection.close(grace).await;
+            if let Some(process) = self.process {
+                process.stop(grace).await;
+            }
+            turn
+        })
+        .await
+        .map_err(|_| SupervisorError::Closed)
     }
 }
 
@@ -695,7 +724,7 @@ impl Server {
     fn new(id: &str) -> Server {
         Server {
             id: id.to_string(),
-            turn: tokio::sync::Mutex::new(()),
+            turn: Arc::new(tokio::sync::Mutex::new(())),
             cancel: tokio::sync::Notify::new(),
             state: Mutex::new(State::default()),
             output: Arc::new(Mutex::new(Output::default())),
@@ -808,9 +837,10 @@ async fn tend(
         };
         tokio::select! {
             _ = connection.closed() => {
+                let turn = Arc::clone(&server.turn).lock_owned().await;
                 if let Some(run) = server.take_failed(generation, CrashReason::Exited, &timing) {
                     bump();
-                    run.finish(timing.stop_grace).await;
+                    let _ = run.finish(timing.stop_grace, turn).await;
                 }
                 return;
             }
@@ -830,6 +860,7 @@ async fn tend(
                 }
             }
             _ = tokio::time::sleep_until(deadline.into()) => {
+                let turn = Arc::clone(&server.turn).lock_owned().await;
                 let run = {
                     let mut state = lock(&server.state);
                     let idle = state.run.as_ref().is_some_and(|run| {
@@ -839,7 +870,7 @@ async fn tend(
                 };
                 if let Some(run) = run {
                     bump();
-                    run.finish(timing.stop_grace).await;
+                    let _ = run.finish(timing.stop_grace, turn).await;
                     return;
                 }
             }
@@ -1202,15 +1233,18 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_call_that_takes_too_long_fails_and_the_server_stays() {
+        async fn a_call_that_takes_too_long_ends_its_process_tree_before_returning() {
             let dir = tempfile::tempdir().expect("temp dir");
             let supervisor = supervisor(Timing { call: Duration::from_millis(300), ..quick() });
-            let launch = launch(dir.path(), &[]);
+            let launch = launch(dir.path(), &["grandchild"]);
+            supervisor.tools(&launch, Purpose::Use).await.expect("started");
+            let pid = std::fs::read_to_string(dir.path().join("grandchild.pid")).expect("pid");
             let started = Instant::now();
             let late = supervisor.call(&launch, "slow", JsonObject::new()).await;
             assert_eq!(late, Err(SupervisorError::CallTimeout));
             assert!(started.elapsed() < Duration::from_secs(5));
-            assert_eq!(supervisor.status("fixture"), Status::Running);
+            assert_eq!(supervisor.status("fixture"), Status::Stopped);
+            assert!(gone(pid.trim()).await, "the timed-out operation and its children have stopped");
             supervisor.stop_all().await;
         }
 

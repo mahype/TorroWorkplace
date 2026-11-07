@@ -2797,14 +2797,20 @@ impl Core {
             announcements: crate::announcements::Announcements::system(),
         };
         let allowed = core.allowed_folders();
-        Core { extensions: core.extensions.clone().with_allowed(allowed), ..core }
+        Core {
+            extensions: core.extensions.clone().with_allowed(allowed).with_protection(core.tools.protection()),
+            ..core
+        }
     }
 
     /// The folders a person allowed, as the settings have them when asked, with what the tools never reach
     /// ([`crate::tools::Tools::excluded`]): what the MCP servers that work in a folder may be given (issue #303).
     fn allowed_folders(&self) -> crate::extensions::AllowedNow {
-        let (settings, excluded) = (self.settings.clone(), self.tools.excluded().to_vec());
-        Arc::new(move || crate::tools::folders::Allowed::of(&settings.current().tools.folders, &excluded))
+        let (settings, tools) = (self.settings.clone(), self.tools.clone());
+        Arc::new(move || match tools.excluded_now() {
+            Ok(excluded) => crate::tools::folders::Allowed::of(&settings.current().tools.folders, &excluded),
+            Err(_) => crate::tools::folders::Allowed::default(),
+        })
     }
 
     /// Tells the core how the template keys stand (issue #243): `active` when the keys of every
@@ -3121,14 +3127,15 @@ impl Core {
     #[cfg(test)]
     pub(crate) fn with_tools(mut self, tools: crate::tools::Tools) -> Core {
         self.tools = Arc::new(tools);
-        self.extensions = self.extensions.clone().with_allowed(self.allowed_folders());
+        self.extensions =
+            self.extensions.clone().with_allowed(self.allowed_folders()).with_protection(self.tools.protection());
         self
     }
 
     /// The core with `extensions` instead of the service's, for tests.
     #[cfg(test)]
     pub(crate) fn with_extensions(mut self, extensions: crate::extensions::Extensions) -> Core {
-        self.extensions = extensions.with_allowed(self.allowed_folders());
+        self.extensions = extensions.with_allowed(self.allowed_folders()).with_protection(self.tools.protection());
         self
     }
 
@@ -13580,7 +13587,7 @@ mod tests {
             agent: None,
             rights: None,
         };
-        for kind in ["zed", "bot", "Script"] {
+        for kind in ["unknown-editor", "bot", "Script"] {
             assert_eq!(code(&ask(&core, Some(&app_key), create("X", kind)).await), "error", "{kind}");
         }
         assert_eq!(ask(&core, Some(&app_key), Request::ListClients).await, Response::Clients { clients: Vec::new() });
@@ -13736,6 +13743,45 @@ mod tests {
                 && line.result == "unauthorized"),
             "{logged:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn open_clients_keep_the_mcp_gate_and_log_only_a_successful_ping() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = audited(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        for kind in ["opencode", "open-webui", "zed", "cline", "continue", "cherry-studio", "librechat"] {
+            let request = Request::CreateClient {
+                name: kind.into(),
+                kind: kind.into(),
+                template: RightsTemplate::ReadOnly,
+                agent: None,
+                rights: None,
+            };
+            let Response::ClientKey { client, key } = ask(&core, Some(&app_key), request).await else {
+                panic!("client created")
+            };
+            let key = key.into_key();
+            assert_eq!(ping_via(&core, &key, Door::Api).await, "unauthorized", "{kind}");
+            assert_eq!(ping_via(&core, &key, Door::Mcp).await, "pong", "{kind}");
+            let Response::Activity { entries } =
+                ask(&core, Some(&app_key), Request::ClientActivity { id: client.id.clone() }).await
+            else {
+                panic!("activity")
+            };
+            assert!(entries.iter().any(|entry| entry.client.as_deref() == Some(&client.id)
+                && entry.command == "system.ping"
+                && entry.result == "ok"));
+            assert_eq!(
+                core.handle(Request::SetSetting { key: SettingKey::AllowMcp, value: serde_json::json!(false) }).await,
+                Response::Ok
+            );
+            assert_eq!(ping_via(&core, &key, Door::Mcp).await, "unauthorized");
+            assert_eq!(
+                core.handle(Request::SetSetting { key: SettingKey::AllowMcp, value: serde_json::json!(true) }).await,
+                Response::Ok
+            );
+        }
     }
 
     /// #231: an approval asked for while the command was on and MCP open runs after "Allow" only if

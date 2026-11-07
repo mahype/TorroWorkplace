@@ -119,6 +119,7 @@ cat "$d/transcript.jsonl"
 async fn install(dir: tempfile::TempDir, idle: Duration, client: bool) -> Setup {
     let root = dir.path();
     let env = Env {
+        open: Default::default(),
         home: root.join("home"),
         app_config: root.join("home").join(".config"),
         path: vec![root.join("bin")],
@@ -266,6 +267,7 @@ fn agents_that_are_not_offered_are_no_engines_even_when_installed() {
     std::fs::create_dir_all(root.join("bin")).expect("bin");
     crate::apps::tests::fake_at(&root.join("bin").join("claude"), "exit 0\n");
     let env = Env {
+        open: Default::default(),
         home: root.join("home"),
         app_config: root.join("home").join(".config"),
         path: vec![root.join("bin")],

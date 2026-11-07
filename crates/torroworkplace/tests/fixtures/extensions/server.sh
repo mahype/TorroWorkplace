@@ -53,7 +53,7 @@ while IFS= read -r line; do
             case "$line" in
                 *'"name":"echo"'*) text "$id" "pong $FIXTURE_VALUE" ;;
                 *'"name":"pwd"'*) text "$id" "$(pwd)" ;;
-                *'"name":"slow"'*) sleep 30; text "$id" "late" ;;
+                *'"name":"slow"'*) echo started > slow.started; sleep 30; text "$id" "late" ;;
                 *'"name":"crash"'*) exit 3 ;;
                 *) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"no such tool"}}\n' "$id" ;;
             esac

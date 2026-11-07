@@ -1,6 +1,8 @@
 //! Putting Torro Workplace's MCP server into the configuration of a coding agent or app, and taking
 //! it out again (task A.7 in `docs/tasks/api-mcp.md`, concept in `docs/settings.md` › "MCP"), and
 //! the hooks with which coding agents report to the inbox (task E2.3 in `docs/tasks/eingang.md`).
+//! Open MCP clients (#539) use the documented paths/imports in [`open_clients`], lossless JSONC/YAML edits,
+//! and persistent path reservations in [`protection`]. OpenCode's V2 plugin only reports; Open WebUI is guided.
 //! The "Connect client" dialog (`ui/agent_wizard.rs`), "Disconnect…" and the switch "Report when
 //! waiting or done" on a client's page under MCP (`ui/mcp.rs`, task S.35) use it.
 //!
@@ -48,10 +50,10 @@
 //!
 //! Why the control centre writes these files and not the core: the key leaves the core once, in
 //! the answer to `clients.create_client`, and the files belong to the person's other programs, not
-//! to the suite. The core never needs to know them.
+//! to the suite. The core receives protected path reservations, never these configuration contents or keys.
 //!
 //! The key is never logged and never part of an error. The command line of `claude mcp add` and
-//! `codex mcp add` carries it for the moment the command runs (that is how both CLIs take it); the
+//! `codex mcp add` (also OpenCode's V2 global add) carries it for the moment the command runs; the
 //! same user can read the file it ends up in anyway. A hook's command carries only the path of
 //! its key file; the hook reads the key from there and refuses a file others could read (task
 //! E2.3b, `hook.rs`). A hook key may only report to the inbox anyway (security rule 4 in
@@ -77,6 +79,9 @@ use torro_ipc::IssuedKey;
 use crate::clients::{create_private_dir, write_private};
 use crate::hook::KEY_FILE_ARG;
 
+pub(crate) mod open_clients;
+pub mod protection;
+
 /// The name the server is registered under in every client.
 pub const SERVER_NAME: &str = "torroworkplace";
 /// The variable that carries the client's key (`torroworkplace mcp` reads it).
@@ -92,6 +97,8 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 /// directories. [`Env::current`] is the real one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Env {
+    /// Open-client paths and environment overrides, injectable without changing the process environment.
+    pub open: open_clients::Paths,
     /// The home directory: `~/.claude.json`, `~/.codex`, `~/.cursor` are below it.
     pub home: PathBuf,
     /// Where desktop apps keep their settings: `~/.config` on Linux, `~/Library/Application
@@ -115,6 +122,7 @@ impl Env {
         let path = std::env::var_os("PATH").map(|path| std::env::split_paths(&path).collect()).unwrap_or_default();
         let program = std::env::current_exe().unwrap_or_else(|_| PathBuf::from(AppId::WORKPLACE.binary));
         Some(Env {
+            open: open_clients::Paths::current(),
             app_config: app_config(&home),
             path,
             program,
@@ -179,12 +187,45 @@ pub enum Target {
     Gemini,
     ClaudeDesktop,
     Cursor,
+    #[serde(rename = "opencode")]
+    OpenCode,
+    OpenWebui,
+    Zed,
+    Cline,
+    Continue,
+    CherryStudio,
+    Librechat,
 }
 
 impl Target {
+    /// The additional open clients always remain selectable, even without a local installation.
+    pub fn is_open(self) -> bool {
+        matches!(
+            self,
+            Self::OpenCode
+                | Self::OpenWebui
+                | Self::Zed
+                | Self::Cline
+                | Self::Continue
+                | Self::CherryStudio
+                | Self::Librechat
+        )
+    }
     /// In the order the wizard lists them.
-    pub const ALL: [Target; 5] =
-        [Target::ClaudeCode, Target::Codex, Target::Gemini, Target::ClaudeDesktop, Target::Cursor];
+    pub const ALL: [Target; 12] = [
+        Target::ClaudeCode,
+        Target::Codex,
+        Target::Gemini,
+        Target::ClaudeDesktop,
+        Target::Cursor,
+        Target::OpenCode,
+        Target::OpenWebui,
+        Target::Zed,
+        Target::Cline,
+        Target::Continue,
+        Target::CherryStudio,
+        Target::Librechat,
+    ];
 
     /// The client kind for `clients.create_client` (`ClientInfo::kind`).
     pub fn kind(self) -> &'static str {
@@ -194,6 +235,13 @@ impl Target {
             Target::Gemini => "gemini",
             Target::ClaudeDesktop => "claude-desktop",
             Target::Cursor => "cursor",
+            Target::OpenCode => "opencode",
+            Target::OpenWebui => "open-webui",
+            Target::Zed => "zed",
+            Target::Cline => "cline",
+            Target::Continue => "continue",
+            Target::CherryStudio => "cherry-studio",
+            Target::Librechat => "librechat",
         }
     }
 
@@ -205,6 +253,13 @@ impl Target {
             Target::Gemini => "Gemini CLI",
             Target::ClaudeDesktop => "Claude Desktop",
             Target::Cursor => "Cursor",
+            Target::OpenCode => "OpenCode",
+            Target::OpenWebui => "Open WebUI",
+            Target::Zed => "Zed",
+            Target::Cline => "Cline",
+            Target::Continue => "Continue",
+            Target::CherryStudio => "Cherry Studio",
+            Target::Librechat => "LibreChat",
         }
     }
 
@@ -215,7 +270,8 @@ impl Target {
             Target::ClaudeCode => Some(AgentKind::ClaudeCode),
             Target::Codex => Some(AgentKind::Codex),
             Target::Gemini => Some(AgentKind::Gemini),
-            Target::ClaudeDesktop | Target::Cursor => None,
+            Target::OpenCode => Some(AgentKind::OpenCode),
+            _ => None,
         }
     }
 
@@ -242,6 +298,7 @@ impl Target {
             Target::Gemini => (in_folder || env.find_command("gemini", &[]).is_some())
                 .then_some(Method::Json { file, stdio_type: false }),
             Target::ClaudeDesktop | Target::Cursor => in_folder.then_some(Method::Json { file, stdio_type: false }),
+            _ => open_clients::locate(self, env).into_iter().next(),
         }
     }
 
@@ -256,6 +313,7 @@ impl Target {
             Target::Gemini => home.join(".gemini").join("settings.json"),
             Target::ClaudeDesktop => env.app_config.join("Claude").join("claude_desktop_config.json"),
             Target::Cursor => home.join(".cursor").join("mcp.json"),
+            _ => open_clients::file(self, env),
         }
     }
 }
@@ -267,9 +325,11 @@ impl Target {
 /// moved away or replaced, every hook would run something else. Their backups ([`BACKUP_SUFFIX`]) are locked by their
 /// name. The record and the hooks' key files are in the core's config folder, which is locked as a whole.
 pub fn protected_files(env: &Env) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = Target::ALL.iter().map(|target| target.file(env)).collect();
+    let mut files: Vec<PathBuf> =
+        Target::ALL.iter().map(|target| target.file(env)).filter(|path| path.is_absolute()).collect();
     files.extend(AgentKind::ALL.iter().map(|agent| hook_file(env, *agent)));
     files.push(skill_file(env));
+    files.extend(open_clients::protected_files(env));
     // A bare name (`Env::current` without its executable) or none names no file; a relative lock would match nothing
     // or, empty, everything.
     if env.program.is_absolute() {
@@ -284,6 +344,7 @@ pub fn protected_files(env: &Env) -> Vec<PathBuf> {
 pub enum Tool {
     Claude,
     Codex,
+    OpenCode,
 }
 
 impl Tool {
@@ -292,6 +353,7 @@ impl Tool {
         match self {
             Tool::Claude => "claude",
             Tool::Codex => "codex",
+            Tool::OpenCode => "opencode",
         }
     }
 
@@ -304,6 +366,7 @@ impl Tool {
         let mut args: Vec<String> = match self {
             Tool::Claude => ["mcp", "add", "--scope", "user", SERVER_NAME, "-e"].map(String::from).to_vec(),
             Tool::Codex => ["mcp", "add", SERVER_NAME, "--env"].map(String::from).to_vec(),
+            Tool::OpenCode => ["mcp", "add", SERVER_NAME, "--global", "--env"].map(String::from).to_vec(),
         };
         args.push(env);
         args.extend(["--".to_string(), server.program.display().to_string(), "mcp".to_string()]);
@@ -315,6 +378,8 @@ impl Tool {
         let args: &[&str] = match self {
             Tool::Claude => &["mcp", "remove", SERVER_NAME, "--scope", "user"],
             Tool::Codex => &["mcp", "remove", SERVER_NAME],
+            // V2 has no remove subcommand. OpenCode always uses Method::Open for cleanup.
+            Tool::OpenCode => &[],
         };
         args.iter().map(|arg| arg.to_string()).collect()
     }
@@ -324,6 +389,10 @@ impl Tool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "way")]
 pub enum Method {
+    /// A losslessly edited configuration, or OpenCode's documented global CLI with its cleanup path.
+    Open { target: Target, file: PathBuf, executable: Option<PathBuf> },
+    /// Import or instructions only; never starts a bridge or modifies an internal database.
+    Guided { target: Target },
     /// The client's own command does it; its file is never touched by hand.
     Cli { tool: Tool, executable: PathBuf },
     /// A JSON file with the servers under a top-level `mcpServers`. `stdio_type`: the entry says
@@ -331,6 +400,18 @@ pub enum Method {
     Json { file: PathBuf, stdio_type: bool },
     /// Codex's `config.toml`: the table `[mcp_servers.torroworkplace]`.
     Toml { file: PathBuf },
+}
+
+impl Method {
+    /// Ownership follows the destination, not whether this run used the CLI or the file editor.
+    fn same_destination(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Open { target: a, file: left, .. }, Self::Open { target: b, file: right, .. }) => {
+                a == b && left == right
+            }
+            _ => self == other,
+        }
+    }
 }
 
 /// What the entry runs: `program mcp` with `key` in [`TOKEN_VARIABLE`].
@@ -354,13 +435,20 @@ pub struct Found {
 pub fn detect(env: &Env) -> Vec<Found> {
     Target::ALL
         .into_iter()
-        .filter_map(|target| {
-            let method = target.locate(env)?;
-            let place = match &method {
-                Method::Cli { tool, .. } => tool.command().to_string(),
-                Method::Json { file, .. } | Method::Toml { file } => env.shown(file),
+        .flat_map(|target| {
+            let methods = if target.is_open() {
+                open_clients::locate(target, env)
+            } else {
+                target.locate(env).into_iter().collect()
             };
-            Some(Found { target, method, place })
+            methods.into_iter().map(move |method| {
+                let place = match &method {
+                    Method::Cli { tool, .. } => tool.command().to_string(),
+                    Method::Json { file, .. } | Method::Toml { file } | Method::Open { file, .. } => env.shown(file),
+                    Method::Guided { .. } => tr("Guided setup").into(),
+                };
+                Found { target, method, place }
+            })
         })
         .collect()
 }
@@ -368,6 +456,7 @@ pub fn detect(env: &Env) -> Vec<Found> {
 /// Why a client could not be set up or cleaned up. Never holds a key.
 #[derive(Debug)]
 pub enum SetupError {
+    Protection(protection::Error),
     /// The file is there but is not what it should be (not JSON, not an object). Left as it is.
     Unreadable(PathBuf),
     Io {
@@ -395,6 +484,10 @@ impl SetupError {
     /// The error for people, translated.
     pub fn message(&self) -> String {
         match self {
+            SetupError::Protection(err) => match err.response() {
+                torro_ipc::Response::Error { message, .. } => message,
+                _ => tr("Client configuration protection is unavailable. Try again.").into(),
+            },
             SetupError::Unreadable(path) => {
                 trf("{file} could not be read, so it was left as it is.", &[("file", &path.display())])
             }
@@ -478,6 +571,8 @@ impl Runner for System {
 /// says; writing what is there already writes nothing.
 pub fn add(method: &Method, server: &Server<'_>, runner: &dyn Runner) -> Result<(), SetupError> {
     match method {
+        Method::Open { .. } => open_clients::add(method, server, runner),
+        Method::Guided { .. } => Ok(()),
         Method::Cli { tool, executable } => {
             let _ = runner.run(executable, &tool.remove_args());
             runner.run(executable, &tool.add_args(server)).map_err(|err| err.of(*tool))
@@ -505,6 +600,8 @@ pub fn add(method: &Method, server: &Server<'_>, runner: &dyn Runner) -> Result<
 /// file) is fine and writes nothing.
 pub fn remove(method: &Method, runner: &dyn Runner) -> Result<(), SetupError> {
     match method {
+        Method::Open { .. } => open_clients::remove(method),
+        Method::Guided { .. } => Ok(()),
         Method::Cli { tool, executable } => runner.run(executable, &tool.remove_args()).map_err(|err| err.of(*tool)),
         Method::Json { file, .. } => {
             let Some(before) = read_text(file)? else { return Ok(()) };
@@ -719,6 +816,9 @@ fn answers(agent: AgentKind, event: &str) -> bool {
 /// The file the hooks of `agent` go into, below the home directory: the user settings of Claude
 /// Code and Gemini CLI, Codex's own hooks file.
 pub fn hook_file(env: &Env, agent: AgentKind) -> PathBuf {
+    if agent == AgentKind::OpenCode {
+        return open_clients::plugin_dir(env).join("index.ts");
+    }
     env.home.join(hook_file_in_home(agent))
 }
 
@@ -727,6 +827,7 @@ fn hook_file_in_home(agent: AgentKind) -> &'static str {
         AgentKind::ClaudeCode => ".claude/settings.json",
         AgentKind::Codex => ".codex/hooks.json",
         AgentKind::Gemini => ".gemini/settings.json",
+        AgentKind::OpenCode => ".config/opencode/plugins/torroworkplace/index.ts",
     }
 }
 
@@ -740,6 +841,7 @@ fn hook_events(agent: AgentKind) -> &'static [&'static str] {
         }
         AgentKind::Codex => &["PermissionRequest", "Stop", "UserPromptSubmit", "PostToolUse", "SessionEnd"],
         AgentKind::Gemini => &["Notification", "AfterAgent", "BeforeAgent", "SessionEnd"],
+        AgentKind::OpenCode => &[],
     }
 }
 
@@ -855,6 +957,7 @@ fn hook_handler(agent: AgentKind, event: &str, command: &str) -> Value {
             handler["name"] = json!(SERVER_NAME);
             handler["timeout"] = json!(HOOK_TIMEOUT_SECS * 1000);
         }
+        AgentKind::OpenCode => {}
     }
     handler
 }
@@ -988,6 +1091,9 @@ fn remove_skill(file: &Path) -> Result<(), SetupError> {
 /// One client the wizard set up: which client got which target's entry, and how.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
+    /// Hash of the entry we wrote; removal refuses a subsequently substituted entry. No key is stored here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
     /// The client's id (`ClientInfo::id`).
     pub client: String,
     pub target: Target,
@@ -1001,6 +1107,9 @@ pub struct Record {
 /// The hooks the wizard wrote for one agent (task E2.3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookRecord {
+    /// Owned plugin files and their hashes; absent for legacy JSON hooks. Foreign siblings never belong to us.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<(PathBuf, String)>,
     /// The hook client's id (`ClientInfo::id`, kind `hook`).
     pub client: String,
     /// The agent client it was set up with; disconnecting that one takes the hooks out and names
@@ -1102,6 +1211,12 @@ pub fn connect(
     key: &IssuedKey,
     runner: &dyn Runner,
 ) -> Result<(), SetupError> {
+    let mut paths = protected_files(env);
+    if let Method::Open { file, .. } = method {
+        paths.push(file.clone());
+    }
+    let _protection =
+        protection::Registry::new(env.config_dir.clone()).reserve(&paths).map_err(SetupError::Protection)?;
     let mut records = load_records(env)?;
     let previous = records.clone();
     let skill = (target == Target::ClaudeCode).then(|| skill_file(env));
@@ -1115,8 +1230,23 @@ pub fn connect(
         }
         None => None,
     };
-    records.written.retain(|record| record.target != target);
-    records.written.push(Record { client: client.to_string(), target, method: method.clone(), skill: skill.clone() });
+    let owned = records
+        .written
+        .iter()
+        .find(|record| record.method.same_destination(method))
+        .and_then(|record| record.fingerprint.clone());
+    let server = Server { program: &env.program, key: key.expose() };
+    let fingerprint = matches!(method, Method::Open { .. }).then(|| open_clients::fingerprint(target, &server));
+    records
+        .written
+        .retain(|record| record.target != target || (target.is_open() && !record.method.same_destination(method)));
+    records.written.push(Record {
+        client: client.to_string(),
+        target,
+        method: method.clone(),
+        skill: skill.clone(),
+        fingerprint,
+    });
     save_records(env, &records)?;
     if let Some(file) = &skill
         && let Err(err) = write_skill(file, before.as_deref())
@@ -1124,8 +1254,12 @@ pub fn connect(
         let _ = save_records(env, &previous);
         return Err(err);
     }
-    let server = Server { program: &env.program, key: key.expose() };
-    add(method, &server, runner).inspect_err(|_| {
+    let added = if matches!(method, Method::Open { .. }) {
+        open_clients::add_owned(method, &server, runner, owned.as_deref())
+    } else {
+        add(method, &server, runner)
+    };
+    added.inspect_err(|_| {
         let _ = save_records(env, &previous);
         if let Some(file) = &skill {
             undo_skill(file, before.as_deref());
@@ -1146,14 +1280,24 @@ pub fn connect_hooks(
     client: &str,
     key: &IssuedKey,
 ) -> Result<(), SetupError> {
+    let mut paths = protected_files(env);
+    if agent == AgentKind::OpenCode {
+        paths.push(open_clients::plugin_dir(env).join("bridge.mjs"));
+    }
+    let _protection =
+        protection::Registry::new(env.config_dir.clone()).reserve(&paths).map_err(SetupError::Protection)?;
     let mut records = load_records(env)?;
     let previous = records.clone();
+    if agent == AgentKind::OpenCode {
+        return open_clients::connect_plugin(env, owner, client, key, records);
+    }
     let file = hook_file(env, agent);
     let key_file = hook_key_file(env, client);
     let (replaced, kept): (Vec<HookRecord>, Vec<HookRecord>) =
         records.hooks.into_iter().partition(|record| record.agent == agent);
     records.hooks = kept;
     records.hooks.push(HookRecord {
+        artifacts: Vec::new(),
         client: client.to_string(),
         owner: owner.map(str::to_string),
         agent,
@@ -1184,6 +1328,7 @@ pub fn connect_hooks(
 /// agent that is gone, so the caller removes them from the core too. `client` itself is never in
 /// it; nothing noted is an empty list. A note stays when its hooks could not be taken out.
 pub fn unhook(env: &Env, client: &str) -> Result<Vec<String>, SetupError> {
+    let _protection = protection::Registry::new(env.config_dir.clone()).reserve(&[]).map_err(SetupError::Protection)?;
     let mut records = load_records(env)?;
     let mine = |record: &HookRecord| record.client == client || record.owner.as_deref() == Some(client);
     let (gone, kept): (Vec<HookRecord>, Vec<HookRecord>) = records.hooks.into_iter().partition(mine);
@@ -1192,7 +1337,11 @@ pub fn unhook(env: &Env, client: &str) -> Result<Vec<String>, SetupError> {
         return Ok(Vec::new());
     }
     for record in &gone {
-        remove_hooks(&record.file, record.agent)?;
+        if record.agent == AgentKind::OpenCode {
+            open_clients::remove_plugin(record)?;
+        } else {
+            remove_hooks(&record.file, record.agent)?;
+        }
         if let Some(key_file) = &record.key_file {
             delete_hook_key(key_file)?;
         }
@@ -1205,10 +1354,15 @@ pub fn unhook(env: &Env, client: &str) -> Result<Vec<String>, SetupError> {
 /// has one ([`remove_skill`]) and its note. Returns the target it was in, `None` when the wizard
 /// did not set that client up (nothing to do).
 pub fn disconnect(env: &Env, client: &str, runner: &dyn Runner) -> Result<Option<Target>, SetupError> {
+    let _protection = protection::Registry::new(env.config_dir.clone()).reserve(&[]).map_err(SetupError::Protection)?;
     let mut records = load_records(env)?;
     let Some(index) = records.written.iter().position(|record| record.client == client) else { return Ok(None) };
     let record = records.written.remove(index);
-    remove(&record.method, runner)?;
+    if matches!(record.method, Method::Open { .. }) {
+        open_clients::remove_owned(&record.method, record.fingerprint.as_deref())?;
+    } else {
+        remove(&record.method, runner)?;
+    }
     if let Some(file) = &record.skill {
         remove_skill(file)?;
     }
@@ -1222,6 +1376,8 @@ pub fn disconnect(env: &Env, client: &str, runner: &dyn Runner) -> Result<Option
 /// ([`perform`]), in `--demo` not at all ([`demo`]).
 #[derive(Debug, Clone)]
 pub enum Job {
+    /// A native file chooser before a key is created; cancellation changes nothing.
+    ChooseFile { target: Target },
     /// Which clients are on this computer: [`Outcome::Detected`].
     Detect,
     /// [`connect`]: [`Outcome::Connected`].
@@ -1248,6 +1404,7 @@ pub struct Released {
 /// How a [`Job`] went; errors as [`SetupError::message`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
+    Selected(Result<Option<Found>, String>),
     Detected(Vec<Found>),
     Connected(Result<(), String>),
     /// The hooks are written; `Ok` holds where, for people (`~/.claude/settings.json`).
@@ -1262,6 +1419,7 @@ pub enum Outcome {
 pub fn run(job: Job, env: Option<&Env>, runner: &dyn Runner) -> Outcome {
     let no_home = || SetupError::NoHome.message();
     match job {
+        Job::ChooseFile { .. } => Outcome::Selected(Ok(None)),
         Job::Detect => Outcome::Detected(env.map(detect).unwrap_or_default()),
         Job::Connect { target, method, client, key } => Outcome::Connected(match env {
             Some(env) => connect(env, target, &method, &client, &key, runner).map_err(|err| err.message()),
@@ -1294,7 +1452,15 @@ fn release(env: &Env, client: &str, runner: &dyn Runner) -> Result<Released, Set
 
 /// Runs `job` on a blocking thread with the real [`Env`] and [`System`].
 pub async fn perform(job: Job) -> Outcome {
+    if let Job::ChooseFile { target } = job {
+        let chosen = rfd::AsyncFileDialog::new().pick_file().await;
+        return Outcome::Selected(Ok(chosen.map(|file| {
+            let file = file.path().to_path_buf();
+            Found { target, place: file.display().to_string(), method: Method::Open { target, file, executable: None } }
+        })));
+    }
     let failed = |job: &Job| match job {
+        Job::ChooseFile { .. } => Outcome::Selected(Ok(None)),
         Job::Detect => Outcome::Detected(Vec::new()),
         Job::Connect { .. } => Outcome::Connected(Err(tr("Something went wrong. Try again.").to_string())),
         Job::Hook { .. } => Outcome::Hooked(Err(tr("Something went wrong. Try again.").to_string())),
@@ -1311,6 +1477,7 @@ pub async fn perform(job: Job) -> Outcome {
 /// `ui::launch::demo_hook_notes`).
 pub fn demo(job: &Job) -> Outcome {
     match job {
+        Job::ChooseFile { .. } => Outcome::Selected(Ok(None)),
         Job::Detect => Outcome::Detected(vec![
             Found {
                 target: Target::ClaudeCode,
@@ -1326,6 +1493,15 @@ pub fn demo(job: &Job) -> Outcome {
                 target: Target::Cursor,
                 method: Method::Json { file: PathBuf::from("/home/you/.cursor/mcp.json"), stdio_type: false },
                 place: "~/.cursor/mcp.json".into(),
+            },
+            Found {
+                target: Target::OpenCode,
+                method: Method::Open {
+                    target: Target::OpenCode,
+                    file: PathBuf::from("/home/you/.config/opencode/opencode.json"),
+                    executable: Some(PathBuf::from("/usr/local/bin/opencode")),
+                },
+                place: "~/.config/opencode/opencode.json".into(),
             },
         ]),
         Job::Connect { .. } => Outcome::Connected(Ok(())),
@@ -1355,6 +1531,7 @@ mod tests {
     fn env(dir: &TempDir) -> Env {
         let root = dir.path();
         Env {
+            open: Default::default(),
             home: root.join("home"),
             app_config: root.join("home/.config"),
             path: vec![root.join("bin")],
@@ -1441,7 +1618,7 @@ mod tests {
         for folder in [".claude", ".codex", ".gemini", ".config/Claude", ".cursor"] {
             fs::create_dir_all(home.join(folder)).expect("dir");
         }
-        for target in Target::ALL {
+        for target in Target::ALL.into_iter().filter(|target| !target.is_open()) {
             match target.locate(&env) {
                 Some(Method::Json { file, .. } | Method::Toml { file }) => assert_eq!(file, target.file(&env)),
                 other => panic!("{target:?}: {other:?}"),
@@ -1478,7 +1655,11 @@ mod tests {
         write(&env.home.join(".claude.json"), "{}");
         let found = detect(&env);
         let targets: Vec<Target> = found.iter().map(|found| found.target).collect();
-        assert_eq!(targets, Target::ALL, "every target, in the wizard's order");
+        assert_eq!(
+            targets,
+            Target::ALL.into_iter().filter(|target| !target.is_open()).collect::<Vec<_>>(),
+            "legacy targets, in the wizard's order"
+        );
         assert_eq!(found[0].method, Method::Json { file: env.home.join(".claude.json"), stdio_type: true });
         assert_eq!(found[1].method, Method::Toml { file: env.home.join(".codex/config.toml") });
         assert_eq!(found[2].method, Method::Json { file: env.home.join(".gemini/settings.json"), stdio_type: false });
@@ -1688,7 +1869,13 @@ mod tests {
         let noted = records(&env).expect("records");
         assert_eq!(
             noted,
-            vec![Record { client: "c1".into(), target: Target::Cursor, method: method.clone(), skill: None }]
+            vec![Record {
+                client: "c1".into(),
+                target: Target::Cursor,
+                method: method.clone(),
+                skill: None,
+                fingerprint: None
+            }]
         );
         let record_text = fs::read_to_string(env.config_dir.join(RECORD_FILE)).expect("record");
         assert!(!record_text.contains(KEY), "the record holds no key");
@@ -1823,7 +2010,7 @@ mod tests {
         let gone = dir.path().join("dotfiles/SKILL.md");
         std::os::unix::fs::symlink(&gone, &file).expect("link");
         let refused = connect(&env, Target::ClaudeCode, &claude_code(), "c1", &key(), &fake);
-        assert!(matches!(refused, Err(SetupError::Unreadable(_))), "{refused:?}");
+        assert!(matches!(refused, Err(SetupError::Unreadable(_) | SetupError::Protection(_))), "{refused:?}");
         assert!(fs::symlink_metadata(&file).expect("link").file_type().is_symlink(), "still a link");
         assert!(!gone.exists(), "nothing written where it points");
         assert!(records(&env).expect("records").is_empty());
@@ -1872,7 +2059,7 @@ mod tests {
         assert_eq!(run(connect.clone(), Some(&env), &Fake::default()), Outcome::Connected(Ok(())));
         assert!(fs::read_to_string(env.home.join(".codex/config.toml")).expect("written").contains(KEY));
 
-        assert!(matches!(demo(&Job::Detect), Outcome::Detected(found) if found.len() == 3));
+        assert!(matches!(demo(&Job::Detect), Outcome::Detected(found) if found.len() == 4));
         assert_eq!(demo(&connect), Outcome::Connected(Ok(())));
         assert_eq!(demo(&Job::HookNotes), Outcome::HookNotes(Ok(Vec::new())));
         assert_eq!(run(Job::HookNotes, Some(&env), &Fake::default()), Outcome::HookNotes(Ok(Vec::new())));
@@ -2124,6 +2311,7 @@ mod tests {
         assert_eq!(
             noted,
             vec![HookRecord {
+                artifacts: Vec::new(),
                 client: "h1".into(),
                 owner: Some("a1".into()),
                 agent: AgentKind::Gemini,

@@ -638,7 +638,9 @@ impl Tools {
     /// paths of [`super::Roots::excluded`], on a blocking thread: for the core before it asks a person to approve
     /// and to pin the approval. `Err` is the refusal to answer; `Ok(None)` for every other request.
     pub async fn plan(&self, request: &Request, folders: &[AllowedFolder]) -> Result<Option<Plan>, Response> {
-        let (request, folders, excluded) = (request.clone(), folders.to_vec(), self.roots.excluded.clone());
+        let _guard = self.protection().map(|registry| registry.read()).transpose().map_err(|err| err.response())?;
+        let (request, folders, excluded) =
+            (request.clone(), folders.to_vec(), self.excluded_now().map_err(|err| err.response())?);
         let planned = tokio::task::spawn_blocking(move || plan(&Allowed::of(&folders, &excluded), &request));
         match planned.await {
             Ok(planned) => planned.map_err(|err| err.response()),
@@ -659,10 +661,20 @@ impl Tools {
     /// looks at its target and then renames, so two at once to the same target would both see it free and the second
     /// replace the first. Listing and finding change nothing and do not wait.
     pub async fn organize(&self, request: Request, folders: &[AllowedFolder], approved: Option<&str>) -> Response {
-        let (folders, excluded, trash) = (folders.to_vec(), self.roots.excluded.clone(), self.trash.clone());
+        let guard = match self.protection().map(|registry| registry.read()).transpose() {
+            Ok(guard) => guard,
+            Err(err) => return err.response(),
+        };
+        let excluded = match self.excluded_now() {
+            Ok(paths) => paths,
+            Err(err) => return err.response(),
+        };
+        let (folders, trash) = (folders.to_vec(), self.trash.clone());
         let approved = approved.map(str::to_string);
         let changes = Planned::changes(&request).then(|| std::sync::Arc::clone(&self.changes));
         let ran = tokio::task::spawn_blocking(move || {
+            // Move the guard into the blocking task: cancellation of the async caller must not release it early.
+            let _protection = guard;
             // A command that failed while holding it left nothing half done that the next one must not see.
             let _turn = changes.as_deref().map(|lock| lock.lock().unwrap_or_else(PoisonError::into_inner));
             let allowed = Allowed::of(&folders, &excluded);
@@ -730,6 +742,33 @@ fn execute(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn new_client_paths_are_protected_without_restarting_the_tools() {
+        use crate::client_setup::protection::Registry;
+        let place = Place::new();
+        let registry = Registry::new(place.dir.path().join("config"));
+        let tools = Tools::new(Default::default()).with_protection(registry.clone());
+        write(&place, "home/Documents/selected.yaml", b"key");
+        let request = Request::CopyFile {
+            from: place.path("home/Documents/selected.yaml"),
+            to: place.path("home/Documents/copy.yaml"),
+        };
+        assert!(tools.plan(&request, &place.folders()).await.is_ok());
+        let guard = registry.reserve(&[PathBuf::from(place.path("home/Documents/selected.yaml"))]).expect("reserve");
+        assert!(
+            matches!(tools.organize(request.clone(), &place.folders(), None).await, Response::Error { code, .. } if code == "busy")
+        );
+        drop(guard);
+        assert!(tools.plan(&request, &place.folders()).await.is_err());
+        assert!(
+            matches!(tools.organize(request.clone(), &place.folders(), None).await, Response::Error { code, .. } if code == "not-found")
+        );
+        fs::write(place.dir.path().join("config/protected_paths.json"), "broken").expect("break");
+        assert!(
+            matches!(tools.organize(request, &place.folders(), None).await, Response::Error { code, .. } if code == "error")
+        );
+        assert!(!PathBuf::from(place.path("home/Documents/copy.yaml")).exists());
+    }
     use super::super::folders::READ_ONLY;
     use super::super::folders::tests::Place;
     use super::*;

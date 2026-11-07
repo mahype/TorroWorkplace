@@ -6351,6 +6351,28 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn two_opencode_hook_clients_with_the_same_session_are_isolated() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let first = hook_for(AgentKind::OpenCode);
+        let second = ClientInfo { id: "another-opencode-hook".into(), ..first.clone() };
+        let post = || agent_post(Kind::AgentWaiting, "opencode:same", AgentKind::OpenCode);
+        let a = posted(inbox.handle(post(), Some(&first), at(8, 0)));
+        let b = posted(inbox.handle(post(), Some(&second), at(8, 0)));
+        assert_ne!(a, b);
+        assert_eq!(
+            inbox.handle(Request::ResolveItems { thread_key: "opencode:same".into() }, Some(&first), at(8, 1)),
+            Response::Ok
+        );
+        assert!(matches!(item(inbox.handle(Request::GetItem { id: a }, None, at(8, 2))).state, State::Done { .. }));
+        let waiting = item(inbox.handle(Request::GetItem { id: b }, None, at(8, 2)));
+        assert_eq!(waiting.state, State::New);
+        assert_eq!(waiting.source, SourceRef::agent("opencode"));
+        assert!(waiting.untrusted);
+        assert_eq!(code(&inbox.handle(all(), Some(&second), at(8, 3))), "not-found");
+    }
+
+    #[test]
     fn a_client_cannot_resolve_a_foreign_thread() {
         let dir = tempfile::tempdir().expect("temp dir");
         let inbox = inbox_in(dir.path());

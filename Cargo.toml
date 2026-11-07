@@ -177,6 +177,9 @@ ksni = "0.3.6"
 notify-rust = "4.18.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.152"
+# Lossless client configuration edits (issue #539): preserve comments and unrelated values.
+jsonc-parser = { version = "0.34", features = ["cst", "serde_json"] }
+yaml-edit = "0.3"
 sha2 = "0.11.0"
 zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # Safe access to processes without `unsafe` here: the SID of the current user on Windows (torro-ipc, X.1) and

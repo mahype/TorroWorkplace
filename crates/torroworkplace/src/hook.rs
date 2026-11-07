@@ -405,7 +405,7 @@ pub fn prepare(agent: AgentKind, payload: &str) -> Option<Request> {
     // Reading /proc and the agent's files only pays off for a report: the pids find the window to
     // jump to, the name says which job it is. `PostToolUse` comes often and reads nothing.
     let pids = match &mut intent {
-        HookIntent::Report { agent: info, .. } => {
+        HookIntent::Report { agent: info, .. } if agent != AgentKind::OpenCode => {
             info.title = session_name(agent, payload);
             parent_pids()
         }
@@ -758,6 +758,15 @@ fn one_line(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn opencode_uses_the_reported_title_without_borrowing_the_servers_parent_processes() {
+        let payload = r#"{"hook_event_name":"waiting","session_id":"s","title":"My task","cwd":"/missing/project"}"#;
+        let Some(Request::PostItem { agent: Some(info), .. }) = prepare(AgentKind::OpenCode, payload) else {
+            panic!("report")
+        };
+        assert!(info.pids.is_empty());
+        assert_eq!(info.title.as_deref(), Some("My task"));
+    }
     use std::time::Instant;
 
     use torro_inbox::AgentInfo;
