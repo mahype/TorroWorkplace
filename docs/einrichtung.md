@@ -242,7 +242,7 @@ Neu: eine Einstellung je Komponente (`calendar`, `tasks`, `mail`, `inbox`, `assi
 Standard **an**, damit bestehende Installationen nichts merken.
 
 Eine abgeschaltete Komponente
-- erscheint nicht im App-Umschalter, im Tray-Menü und in der Overview; der Abschnitt Apps zeigt sie mit
+- erscheint nicht im Tray-Menü und in der Overview (einen App-Umschalter im Fenster gibt es seit #530 nicht mehr); der Abschnitt Apps zeigt sie mit
   der Pille „Turned off“ (im Menü „…“ der Karte schaltet man sie mit „Turn on“ wieder ein; Workspaces unter
   General › Startup),
 - verursacht keine Hintergrundarbeit, die nur ihr dient (Mail-Abruf, Abfragen von Eingangsquellen,

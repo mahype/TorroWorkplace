@@ -116,7 +116,7 @@ Dienst mit ETag; eine Erweiterung erreicht nur ihren eigenen Unterordner.
 | Schlüssel, Rechte, Freigaben, Protokoll ([api.md](api.md)) | gibt es | trägt: eine Erweiterung ist ein Client |
 | `inbox.post_item`, `tasks.save_todo`, `create_task_from_item`, `calendar.save_event` | gibt es | Aufgaben, Termine und Meldungen übergeben geht schon |
 | `torro_ipc::api::Area` (17 feste Bereiche, seit #302 mit `extensions`), `Request::operation()` (vollständiges `match`) | geschlossen | keine eigenen Befehle je Erweiterung; die Werkzeuge eines MCP-Servers laufen über `extensions.call_tool` mit Stufe je Server, nicht als Katalogbefehle |
-| `torro_core::app::AppId::ALL` | fest im Code | Erweiterungs-Apps fehlen im Umschalter, in Vorlagen und in `apps.list_apps` |
+| `torro_core::app::AppId::ALL` | fest im Code | Erweiterungs-Apps fehlen im Tray-Menü, in Vorlagen und in `apps.list_apps` |
 | Änderungsmeldungen (`subscribe`) | nur geplant ([api.md](api.md#transport)) | jede Erweiterung müsste selbst abfragen |
 | Design | `torro-gui` nur für Rust/Iced; die API nennt nur die Pakete (`settings.list_designs`) | Erweiterungen in anderen Sprachen bekommen Farben und Schriften nicht |
 | `torro-nextcloud` | Capabilities, Benachrichtigungen, Talk | Suche, Dashboard, Links, Activity, WebDAV-Ablage fehlen |

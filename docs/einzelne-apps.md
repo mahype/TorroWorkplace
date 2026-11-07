@@ -45,7 +45,7 @@ Hauptanwendung lösen.
    bzw. `general` öffnet sie direkt. Ist die Hauptanwendung da, bleiben die Verweise „Appearance ↗“ und
    „All settings ↗“ wie heute. Verworfen: die Abschnitte immer in jeder App zeigen. Eine Einstellung stünde
    sonst an zwei Orten.
-3. **Fehlt eine Partner-App, verschwinden nur Sprünge in sie.** Der App-Umschalter und jedes „Open in …“, das
+3. **Fehlt eine Partner-App, verschwinden nur Sprünge in sie.** Jedes „Open in …“, das
    nur eine andere App öffnet (`apps.open_app` an eine Partner-App), fehlen, wenn das Ziel nicht installiert
    ist. Was Daten anlegt, etwa eine Aufgabe aus einer Mail, bleibt, weil die Daten im Konto landen.
    Verworfen: auch das Anlegen ausblenden.

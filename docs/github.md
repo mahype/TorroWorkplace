@@ -247,7 +247,7 @@ was sie vorausfüllen und welche Quelle sie mitgeben.
 | **Aufgaben** | Detail › „…“ › „Move to GitHub…“ | Titel, Beschreibung, Unteraufgaben als Checkliste | Die Aufgabe wird **immer** zum Verweis auf das neue Issue (nichts doppelt) |
 | **Kalender** | Termin › „…“ › „Create issue…“ | Titel des Termins, Beschreibung, Datum | später auch je Aktionspunkt aus einem Besprechungsprotokoll |
 | **Chat** | „Mach daraus ein Issue“ | was der Assistent aus der Unterhaltung oder einem gefundenen Eintrag macht | Issue-Entwurfs-Karte, siehe [assistent.md](assistent.md) |
-| **Report a problem** | jede Torro-App, Menü des App-Umschalters | Version, System; Log-Auszug nur angehakt | Ziel ist fest `mahype/TorroWorkplace` |
+| **Report a problem** | jede Torro-App; der Ort ist offen, seit der App-Umschalter mit #530 entfallen ist (vorher dessen Menü) | Version, System; Log-Auszug nur angehakt | Ziel ist fest `mahype/TorroWorkplace` |
 
 Der **Dialog „New issue“** ist ein gemeinsamer Baustein aller Apps (`torro-gui`): Repo (vorgeschlagen),
 Titel, Text (Markdown mit Vorschau), Labels, Zuständige und Meilenstein als Chips aus
