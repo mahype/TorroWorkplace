@@ -451,6 +451,8 @@ pub struct KnownModel {
 /// with Bcc and the attachments of the stored draft for sending (`crate::mail::send`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MailFacts {
+    /// Image source metadata resolved by the service after reach/ownership checks, never payloads.
+    pub image: Option<ImageFacts>,
     /// The account's address as the core knows it (`anna@mailbox.org`); `None` when unknown: the
     /// summary then shows the account id the command runs with.
     pub account: Option<String>,
@@ -473,6 +475,15 @@ pub struct MailFacts {
     /// For `mail.unsubscribe` (issue #416): the sender and the way, as the store and the header
     /// read from the server have them.
     pub unsubscribe: Option<UnsubscribeFacts>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ImageFacts {
+    pub file: Option<String>,
+    pub source_account: Option<String>,
+    pub subject: Option<String>,
+    pub part: Option<String>,
+    pub dimensions: Option<(u32, u32)>,
 }
 
 /// What `mail.unsubscribe` would do, for [`MailFacts::unsubscribe`] (issue #416).
@@ -1561,10 +1572,15 @@ fn follow_summary(function: torro_core::ai::AiFunction, facts: &Facts) -> String
 /// most 60 characters. Front ends still show the summary as plain text only.
 pub fn summary(request: &Request, facts: &Facts) -> String {
     if super::mail::images::is_request(request) {
+        let account =
+            quote(facts.mail.as_ref().and_then(|mail| mail.account.as_deref()).unwrap_or(tr("Unknown account")));
         return match request {
-            Request::PrepareMailImage { .. } => tr("Prepare a mail image").into(),
-            Request::UploadMailImage { .. } => tr("Upload a mail image").into(),
-            _ => tr("Release temporary mail images").into(),
+            Request::PrepareMailImage { source, .. } => trf(
+                "Prepare a mail image in \"{account}\" from {source}",
+                &[("account", &account), ("source", &image_source(source, facts))],
+            ),
+            Request::UploadMailImage { .. } => trf("Upload a mail image to \"{account}\"", &[("account", &account)]),
+            _ => trf("Release temporary mail images in \"{account}\"", &[("account", &account)]),
         };
     }
     let today = Local::now().date_naive();
@@ -3860,6 +3876,33 @@ pub const DETAIL_MAX: usize = 200;
 /// `name: value` (the value as compact JSON), whole ([`whole`]): the summary cuts them at
 /// [`ARGUMENTS_MAX`] characters, the person deciding sees all of them here.
 pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
+    if super::mail::images::is_request(request) {
+        let mail = facts.mail.as_ref();
+        let account = quote_up_to(mail.and_then(|m| m.account.as_deref()).unwrap_or(tr("Unknown account")), DETAIL_MAX);
+        let mut lines = vec![trf("Mail account: {account}", &[("account", &account)])];
+        if let Request::PrepareMailImage { source, .. } = request {
+            lines.push(trf("Image source: {source}", &[("source", &image_source(source, facts))]));
+        }
+        if let Some(image) = mail.and_then(|m| m.image.as_ref()) {
+            for (label, key, value) in [
+                ("File: {path}", "path", image.file.as_ref()),
+                ("Source account: {account}", "account", image.source_account.as_ref()),
+                ("Message: {subject}", "subject", image.subject.as_ref()),
+                ("Image part: {part}", "part", image.part.as_ref()),
+            ] {
+                if let Some(value) = value {
+                    lines.push(trf(label, &[(key, &quote_up_to(value, DETAIL_MAX))]));
+                }
+            }
+            if let Some((width, height)) = image.dimensions {
+                lines.push(trf("Image dimensions: {width} × {height}", &[("width", &width), ("height", &height)]));
+            }
+        }
+        if let Request::ReleaseMailImages { ids, .. } = request {
+            lines.push(trf("Temporary image leases requested: {n}", &[("n", &ids.len())]));
+        }
+        return lines;
+    }
     if let Some(lines) =
         profile_details(request, facts).or_else(|| bot_details(request)).or_else(|| files_details(request, facts))
     {
@@ -3897,6 +3940,24 @@ pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
         text => lines.push(trf("Text: {text}", &[("text", &format!("\"{text}\""))])),
     }
     lines
+}
+
+fn image_source(source: &torro_mail::ImageSource, facts: &Facts) -> String {
+    let known = facts.mail.as_ref().and_then(|mail| mail.image.as_ref());
+    match source {
+        torro_mail::ImageSource::File { .. } => match known.and_then(|i| i.file.as_deref()) {
+            Some(path) => trf("file \"{path}\"", &[("path", &quote(path))]),
+            None => tr("an unknown image file").into(),
+        },
+        torro_mail::ImageSource::MailPart { .. } => match known.and_then(|i| i.subject.as_deref()) {
+            Some(subject) => trf("message \"{subject}\"", &[("subject", &quote(subject))]),
+            None => tr("an unknown image message").into(),
+        },
+        torro_mail::ImageSource::Prepared { .. } => match known.and_then(|i| i.source_account.as_deref()) {
+            Some(account) => trf("a temporary image in \"{account}\"", &[("account", &quote(account))]),
+            None => tr("an unknown temporary image").into(),
+        },
+    }
 }
 
 /// The question of the tool `web` in a conversation (issue #305, task WEB.5, decision 22): the
@@ -4235,6 +4296,56 @@ pub(crate) mod tests {
         approvals.finish(&opened.id, Response::MailImage { image }, now).await.expect("finished");
         let stored = fs::read_to_string(file_in(dir.path())).expect("file");
         assert!(!stored.contains("PRIVATE_PREVIEW"));
+    }
+
+    #[test]
+    fn image_approvals_only_show_resolved_sources_and_sanitize_metadata() {
+        use torro_mail::ImageSource;
+        let known = Facts {
+            mail: Some(MailFacts {
+                account: Some("target@example.org".into()),
+                image: Some(ImageFacts {
+                    file: Some("/real/photo\n\u{202e}.png".into()),
+                    source_account: Some("source@example.org".into()),
+                    subject: Some("Real\nsubject\u{202e}".into()),
+                    part: Some("2".into()),
+                    dimensions: Some((1800, 1200)),
+                }),
+                ..MailFacts::default()
+            }),
+            ..Facts::default()
+        };
+        for source in [
+            ImageSource::File { path: "/client-forged/name.png".into() },
+            ImageSource::MailPart { message: "client-forged-message".into(), part: "client-forged-part".into() },
+            ImageSource::Prepared { id: "client-forged-lease".into() },
+        ] {
+            let request = Request::PrepareMailImage { account: "client-forged-account".into(), source };
+            let title = summary(&request, &known);
+            let lines = details(&request, &known);
+            assert!(title.contains("target@example.org"));
+            assert!(lines.iter().any(|l| l.contains("source@example.org")));
+            assert!(lines.iter().any(|l| l.contains("1800") && l.contains("1200")));
+            for line in std::iter::once(&title).chain(&lines) {
+                assert!(
+                    !line.contains("client-forged") && !line.contains('\n') && !line.contains('\u{202e}'),
+                    "{line}"
+                );
+            }
+            let unknown = summary(&request, &Facts::default());
+            assert!(!unknown.contains("client-forged"), "unknown sources are not client claims");
+        }
+        let upload = Request::UploadMailImage {
+            account: "client-forged-account".into(),
+            upload: None,
+            offset: 0,
+            base64: "PRIVATE_PIXELS".into(),
+            finish: true,
+        };
+        assert!(!format!("{}{:?}", summary(&upload, &known), details(&upload, &known)).contains("PRIVATE_PIXELS"));
+        let release =
+            Request::ReleaseMailImages { account: "client-forged-account".into(), ids: vec!["foreign".into()] };
+        assert_eq!(details(&release, &Facts::default()).len(), 2, "no foreign lease metadata is looked up");
     }
 
     #[tokio::test]
@@ -5604,6 +5715,7 @@ pub(crate) mod tests {
         let ids = |n: usize| (0..n).map(|i| format!("m:{i}")).collect::<Vec<_>>();
         let held = |subjects: &[&str], folder: Option<&str>| Facts {
             mail: Some(MailFacts {
+                image: None,
                 senders: Vec::new(),
                 account: Some("anna@mailbox.org".into()),
                 count: subjects.len(),

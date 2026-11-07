@@ -176,6 +176,61 @@ fn conflict() -> Response {
     error("conflict", "The image upload offset or content does not match.")
 }
 
+/// Only after caller/reach checks: derive approval descriptions from configured accounts, the
+/// mail cache and actual filesystem metadata. No source bytes are decoded or exposed here.
+pub(crate) async fn facts(mail: &MailService, request: &Request) -> Option<crate::approvals::MailFacts> {
+    use crate::approvals::{ImageFacts, MailFacts};
+    let account = mail.config(request.mail_account()?).await.ok().map(|c| c.address);
+    let mut image = ImageFacts::default();
+    if let Request::PrepareMailImage { source, .. } = request {
+        match source {
+            ImageSource::File { path } => {
+                let path = path.clone();
+                image.file = tokio::task::spawn_blocking(move || {
+                    let meta = std::fs::symlink_metadata(&path).ok()?;
+                    if !meta.is_file() || meta.file_type().is_symlink() {
+                        return None;
+                    }
+                    std::fs::canonicalize(path).ok().map(|p| p.to_string_lossy().into_owned())
+                })
+                .await
+                .ok()
+                .flatten();
+            }
+            ImageSource::Prepared { id } => {
+                let source = {
+                    let state = mail.images.state.lock().await;
+                    state.entries.get(id).map(|entry| {
+                        (entry.account.clone(), entry.ready.as_ref().map(|i| (i.original_width, i.original_height)))
+                    })
+                };
+                if let Some((account, dimensions)) = source {
+                    image.source_account = mail.config(&account).await.ok().map(|c| c.address);
+                    image.dimensions = dimensions;
+                }
+            }
+            ImageSource::MailPart { message, part } => {
+                if let Ok(mut refs) = write::locate(mail, Reach::Suite, &[message]).await
+                    && let Some(source) = refs.pop()
+                {
+                    image.source_account = mail.config(&source.account).await.ok().map(|c| c.address);
+                    if let Ok(store) = mail.store(&source.account).await {
+                        let id = message.clone();
+                        if let Ok(Some(known)) = store.run(move |s| s.message(&id)).await {
+                            image.subject = Some(known.summary.subject);
+                            if let Some(info) = known.attachments.iter().find(|i| i.part == *part) {
+                                image.part = Some(info.part.clone());
+                                image.file = info.filename.clone();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Some(MailFacts { account, image: Some(image), ..MailFacts::default() })
+}
+
 pub(crate) fn is_request(request: &Request) -> bool {
     matches!(
         request,

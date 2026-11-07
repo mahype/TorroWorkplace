@@ -4721,6 +4721,17 @@ impl Core {
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
+            // Image sources are volatile, but their resolved account/source metadata must be
+            // visible in the approval's details as well as its compact summary.
+            (
+                Request::PrepareMailImage { .. } | Request::UploadMailImage { .. } | Request::ReleaseMailImages { .. },
+                _,
+            ) => {
+                let facts = self.facts(&request).await;
+                shown = crate::approvals::details(&request, &facts);
+                let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
             // The web's yes per conversation (issue #305, task WEB.5): the conversation by the title the
             // assistant keeps, the providers a search can ask now (SearXNG only with an address), and what
             // runs first by the request's own words, as they will go out.
@@ -4977,6 +4988,9 @@ impl Core {
                     mail: Some(crate::approvals::MailFacts { account, ..crate::approvals::MailFacts::default() }),
                     ..Facts::default()
                 }
+            }
+            request if crate::mail::images::is_request(request) => {
+                Facts { mail: Box::pin(crate::mail::images::facts(&self.mail, request)).await, ..Facts::default() }
             }
             request if crate::mail::write::changes_mail(request) => {
                 Facts { mail: crate::mail::write::facts(&self.mail, request).await, ..Facts::default() }
@@ -24576,6 +24590,8 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&key), upload("mail:missing@example.org")).await), "not-found");
         assert!(!crate::approvals::tests::file_in(dir.path()).exists());
         let pending = waits(ask(&core, Some(&key), upload("mail:anna@example.org")).await);
+        assert!(pending.summary.contains("anna@example.org"), "{}", pending.summary);
+        assert_eq!(pending.details, [trf("Mail account: {account}", &[("account", &"anna@example.org")])]);
         let mut narrowed = rights.clone();
         narrowed.mail_accounts = Selection::Only(vec![]);
         assert_eq!(
@@ -24601,6 +24617,78 @@ mod tests {
         assert!(
             matches!(ask(&core, Some(&outsider), release).await, Response::Pending { .. }),
             "delete confirmation still applies, without revealing foreign counts"
+        );
+    }
+
+    #[tokio::test]
+    async fn image_approvals_resolve_cached_mail_parts_and_owned_prepared_metadata() {
+        use base64::Engine as _;
+        use torro_mail::ImageSource;
+        let dir = tempfile::tempdir().expect("temp");
+        let (core, server, app_key) = changing_mail_core(dir.path()).await;
+        let rights = Rights { confirm: torro_ipc::api::Confirm::OnEveryChange, ..with_mail_level(Level::Full) };
+        let (_, key) = client(&core, rights).await;
+        server.add("INBOX", "From: bob@example.org\r\nSubject: Image source\r\nMIME-Version: 1.0\r\nContent-Type: image/png\r\nContent-Disposition: attachment; filename=real-photo.png\r\nContent-Transfer-Encoding: base64\r\n\r\nAA==\r\n", &[]);
+        core.mail.sync_all(Reach::Suite).await.expect("sync");
+        let message = id_of(&core.mail, "Image source").await;
+        let request = Request::PrepareMailImage {
+            account: ANNA.into(),
+            source: ImageSource::MailPart { message, part: "0".into() },
+        };
+        let asked = waits(ask(&core, Some(&key), request.clone()).await);
+        let facts = core.facts(&request).await;
+        let image = facts.mail.as_ref().expect("mail").image.as_ref().expect("image");
+        assert_eq!(image.subject.as_deref(), Some("Image source"));
+        assert_eq!(image.file.as_deref(), Some("real-photo.png"));
+        assert_eq!(image.part.as_deref(), Some("0"));
+        assert_eq!(image.source_account.as_deref(), Some("anna@example.org"));
+        assert_eq!(asked.details, crate::approvals::details(&request, &facts));
+        assert!(asked.summary.contains("Image source") && asked.summary.contains("anna@example.org"));
+
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(23, 17).write_to(&mut png, image::ImageFormat::Png).expect("png");
+        let request = Request::UploadMailImage {
+            account: ANNA.into(),
+            upload: None,
+            offset: 0,
+            base64: base64::engine::general_purpose::STANDARD.encode(png.get_ref()).into(),
+            finish: true,
+        };
+        let asked = waits(ask(&core, Some(&key), request).await);
+        let result = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = result.state else { panic!("done") };
+        let Response::MailImage { image } = *response else { panic!("prepared") };
+        let request =
+            Request::PrepareMailImage { account: ANNA.into(), source: ImageSource::Prepared { id: image.id } };
+        let asked = waits(ask(&core, Some(&key), request.clone()).await);
+        let facts = core.facts(&request).await;
+        let image = facts.mail.as_ref().expect("mail").image.as_ref().expect("image");
+        assert_eq!(image.source_account.as_deref(), Some("anna@example.org"));
+        assert_eq!(image.dimensions, Some((23, 17)));
+        assert_eq!(asked.details, crate::approvals::details(&request, &facts));
+        let (_, outsider) = client(&core, with_mail_level(Level::Full)).await;
+        assert_eq!(
+            code(&ask(&core, Some(&outsider), request).await),
+            "not-found",
+            "a foreign ready lease reveals no metadata"
+        );
+
+        let path =
+            core.mail.attachment_cache().expect("cache").store("canonical-photo.png", png.get_ref()).expect("file");
+        let request = Request::PrepareMailImage {
+            account: ANNA.into(),
+            source: ImageSource::File { path: path.to_string_lossy().into_owned() },
+        };
+        let asked = waits(ask(&core, Some(&key), request.clone()).await);
+        let facts = core.facts(&request).await;
+        assert_eq!(
+            facts.mail.as_ref().expect("mail").image.as_ref().expect("image").file,
+            Some(std::fs::canonicalize(&path).expect("canonical").to_string_lossy().into_owned())
+        );
+        assert_eq!(asked.details, crate::approvals::details(&request, &facts));
+        assert!(
+            asked.summary.contains("anna@example.org")
+                && asked.details.iter().any(|l| l.contains("canonical-photo.png"))
         );
     }
 

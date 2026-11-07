@@ -81,6 +81,10 @@ kein eigener Datenzugriff. Der lokale Zwischenablagezugriff ist Eingabe des Mens
 Bild-Requests und deren Antworten bleiben bei Freigaben im RAM. Auf der Platte steht nur eine markierte,
 payloadfreie Hülle; nach Neustart ist sie abgelaufen und wird niemals ausgeführt. Logs/Debug enthalten keine
 Bilddaten. Gespeicherte Entwürfe behalten natürlich ihre eingebetteten MIME-Teile.
+Bildfreigaben nennen das konfigurierte Zielkonto und die bekannte Quelle: kanonischer Dateipfad,
+Nachrichtenbetreff mit Dateiname/MIME-Teil und Quellkonto oder bei RAM-Quellen Quellkonto und Originalmaße.
+Der Dienst schlägt diese Angaben erst nach Rechte-/Eigentumsprüfung nach; unbekannte Quellen bleiben als
+unbekannt markiert. Steuer- und Richtungszeichen werden für die Anzeige entschärft, Bilddaten nie angezeigt.
 
 Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalog** in `torro-ipc`
 (`api.rs`). Er beschreibt jeden Befehl:
