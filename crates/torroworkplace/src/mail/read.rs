@@ -72,6 +72,7 @@
 
 use std::sync::{Arc, PoisonError};
 
+use base64::Engine;
 use chrono::{DateTime, Local, Utc};
 use torro_core::i18n::tr;
 use torro_inbox::SourceRef;
@@ -86,6 +87,7 @@ use torro_mail_imap::imap::Session;
 use torro_mail_imap::mime::{self, MimeError, ReadMessage};
 
 use super::fold::{self, Needle};
+use super::logos::SenderLogos;
 use super::overview::{self, AccountRows};
 use super::query::{self, Field, Query};
 use super::service::{KeptStats, MailError, MailService, SharedStore};
@@ -184,12 +186,51 @@ pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request
         }
         Request::GetMailThread { id } => get_thread(mail, reach, &id).await,
         Request::GetMailAttachment { id, attachment } => get_attachment(mail, reach, &id, &attachment).await,
+        Request::GetSenderLogo { id } => get_sender_logo(mail, reach, &id).await,
         other => {
             let message = format!("{} is not a reading mail command", other.operation().name());
             Err(Box::new(Response::Error { code: "unsupported".into(), message }))
         }
     };
-    answered.unwrap_or_else(|refused| *refused)
+    with_logos(answered.unwrap_or_else(|refused| *refused), mail.sender_logos())
+}
+
+/// `response` with a message's `logo` only where the core keeps that domain's logo and logos are on
+/// (issue #453): the store names the domain a check found ([`MessageSummary::logo`]), whether there
+/// is a logo to show is decided here, for every summary of a reading answer (and of
+/// `mail.preview_filter`). The setting is read once per answer.
+pub(crate) fn with_logos(mut response: Response, logos: &SenderLogos) -> Response {
+    let on = logos.on();
+    let mut keep = |summary: &mut MessageSummary| {
+        summary.logo = summary.logo.take().filter(|domain| on && logos.kept(domain));
+    };
+    match &mut response {
+        Response::MailMessages { messages, .. } => messages.iter_mut().for_each(&mut keep),
+        Response::MailMessage { message } => keep(&mut message.summary),
+        Response::MailThread { messages } => messages.iter_mut().for_each(|message| keep(&mut message.summary)),
+        Response::MailOverview { overview } => overview.senders.iter_mut().for_each(|sender| keep(&mut sender.latest)),
+        Response::MailFilterPreview { messages, .. } => messages.iter_mut().for_each(&mut keep),
+        _ => {}
+    }
+    response
+}
+
+// ----- mail.get_sender_logo -----
+
+/// `mail.get_sender_logo` (issue #453): the kept logo of the domain the check found for the message
+/// `id`, as PNG. Read from the core's copy only, never fetched; `not-found` for a message out of
+/// reach, one that did not pass the check, while logos are off and for a domain without a logo.
+async fn get_sender_logo(mail: &MailService, reach: Reach<'_>, id: &str) -> Answer<Response> {
+    let stores = mail.stores(reach).await;
+    let located = locate(&stores, id).await?;
+    let lookup = located.place.id.clone();
+    let summary =
+        located.store.run(move |store| store.summary(&lookup)).await.map_err(store_failed)?.ok_or_else(no_message)?;
+    let png = summary
+        .logo
+        .and_then(|domain| mail.sender_logos().png(&domain))
+        .ok_or_else(|| not_found(tr("This sender has no logo.")))?;
+    Ok(Response::Image { png: base64::engine::general_purpose::STANDARD.encode(png) })
 }
 
 // ----- mail.list_folders -----
@@ -1450,6 +1491,98 @@ pub(crate) mod tests {
     /// `mail.get_message` with text and HTML, as the mail window asks (task M8.1).
     fn get_html(id: &str) -> Request {
         Request::GetMail { id: id.into(), include_body: true, include_html: true }
+    }
+
+    // ----- logos of known senders (issue #453) -----
+
+    /// A recent mail of `from` with `subject`, signed by `domain` with the key of the check's tests.
+    fn signed_mail(from: &str, subject: &str, domain: &str) -> String {
+        let date = Utc::now().to_rfc2822();
+        let id = subject.replace(' ', "-");
+        let mail = format!(
+            "From: {from}\r\nTo: anna@example.org\r\nSubject: {subject}\r\nDate: {date}\r\n\
+             Message-ID: <{id}@example.org>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nHello.\r\n"
+        );
+        let signed = crate::mail::check::tests::sign(mail.as_bytes(), domain, false);
+        String::from_utf8(signed).expect("text")
+    }
+
+    /// Anna's account on `server`, synced once by a service whose logos come from `web` and whose
+    /// check knows the key of `domains`.
+    async fn synced_with_logos(
+        dir: &Path,
+        server: &FakeImap,
+        web: Arc<crate::mail::logos::tests::FakeWeb>,
+        domains: &[&str],
+    ) -> MailService {
+        let check = crate::mail::check::SenderCheck::offline();
+        for domain in domains {
+            check.know(&format!("torro._domainkey.{domain}"), &crate::mail::check::tests::key_record());
+        }
+        let logos = crate::mail::logos::SenderLogos::new(Some(dir.join("sender-logos")), web).without_gap();
+        let secrets = MemoryTokens::default();
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir, &secrets, &[(&account, PASSWORD)]);
+        let service = service_in(dir, &secrets).with_sender_logos(Arc::new(logos), Arc::new(check));
+        service.reload().await;
+        service.sync_all(Reach::Suite).await.expect("synced");
+        service
+    }
+
+    fn logo_of(response: Response, subject: &str) -> Option<String> {
+        let Response::MailMessages { messages, .. } = response else { panic!("a page, got {response:?}") };
+        messages.into_iter().find(|message| message.subject == subject).expect("listed").logo
+    }
+
+    /// The sync checks a signed mail, the logo of its domain is fetched once, and only then does the
+    /// mail name it; a forged mail of the same sender never does. Asking for the logo reads the kept
+    /// copy only; off, nothing is named or handed out, and a client out of reach gets `not-found`.
+    #[tokio::test]
+    async fn a_signed_mail_shows_the_logo_of_its_domain_and_a_forged_one_never() {
+        use crate::mail::logos::Reply;
+        use crate::mail::logos::tests::{FakeWeb, picture};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &signed_mail("GitHub <noreply@github.example>", "Review requested", "github.example"), &[]);
+        server.add("INBOX", &signed_mail("GitHub <security@github.example>", "Your account", "evil.example"), &[]);
+        server.add("INBOX", &mail_with("Unsigned", 1, "Hello."), &[]);
+        let touch = picture(180, 180, image::ImageFormat::Png);
+        let web = Arc::new(FakeWeb::default().page("https://github.example/apple-touch-icon.png", Reply::Body(touch)));
+        let service =
+            synced_with_logos(dir.path(), &server, Arc::clone(&web), &["github.example", "evil.example"]).await;
+        let logos = service.sender_logos();
+        crate::mail::service::tests::eventually("the logo is kept", || async { logos.has("github.example") }).await;
+        assert_eq!(web.asked(), ["https://github.example/apple-touch-icon.png"], "once, and only the signer's");
+
+        let listed = || answer(&service, Reach::Suite, search(None, 10, None));
+        assert_eq!(logo_of(listed().await, "Review requested").as_deref(), Some("github.example"));
+        assert_eq!(logo_of(listed().await, "Your account"), None, "signed by another domain");
+        assert_eq!(logo_of(listed().await, "Unsigned"), None);
+
+        let signed = id_of(&service, "Review requested").await;
+        let Response::MailMessage { message } = answer(&service, Reach::Suite, get(&signed, false)).await else {
+            panic!("a message")
+        };
+        assert_eq!(message.summary.logo.as_deref(), Some("github.example"), "in the mail's head too");
+        let logo = answer(&service, Reach::Suite, Request::GetSenderLogo { id: signed.clone() }).await;
+        let Response::Image { png } = logo else { panic!("a picture, got {logo:?}") };
+        let png = base64::engine::general_purpose::STANDARD.decode(png).expect("base64");
+        assert!(png.starts_with(b"\x89PNG"));
+        let forged = id_of(&service, "Your account").await;
+        let refused = answer(&service, Reach::Suite, Request::GetSenderLogo { id: forged }).await;
+        assert_eq!(code(&refused), "not-found");
+        assert_eq!(web.asked().len(), 1, "reading asks nothing");
+
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+        let elsewhere = answer(&service, Reach::Client(&rights), Request::GetSenderLogo { id: signed.clone() }).await;
+        assert_eq!(code(&elsewhere), "not-found", "out of reach");
+
+        service.set_logo_switch(Arc::new(|| false));
+        assert_eq!(logo_of(listed().await, "Review requested"), None, "off: no logo named");
+        let off = answer(&service, Reach::Suite, Request::GetSenderLogo { id: signed }).await;
+        assert_eq!(code(&off), "not-found", "off: none handed out");
     }
 
     async fn id_of(service: &MailService, subject: &str) -> String {

@@ -1090,6 +1090,7 @@ impl Demo {
             category: None,
             pile: None,
             pile_since: None,
+            logo: None,
             untrusted: true,
         };
         Response::MailFilterPreview {

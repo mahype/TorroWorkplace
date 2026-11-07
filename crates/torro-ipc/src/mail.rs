@@ -1125,6 +1125,7 @@ impl Request {
             Request::GetMail { id, .. }
             | Request::GetMailThread { id }
             | Request::GetMailAttachment { id, .. }
+            | Request::GetSenderLogo { id }
             | Request::SaveMailAttachments { id, .. }
             | Request::SaveMailAs { id, .. }
             | Request::ListSaveTargets { id: Some(id) }

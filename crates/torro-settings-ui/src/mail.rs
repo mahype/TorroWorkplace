@@ -3174,7 +3174,7 @@ pub mod reading {
     use torro_mail::MailFormat as ComposeFormat;
 
     use super::*;
-    use crate::parts::{picker, setting_row};
+    use crate::parts::{picker, setting_row, switch};
 
     const SIGNATURE_LINES: f32 = 8.0;
 
@@ -3228,6 +3228,8 @@ pub mod reading {
         Show(MailFormat),
         /// "Mail colors": the colours of a mail's content in the reader.
         Colors(MailAppearance),
+        /// "Logos of known senders" (issue #453): on or off.
+        Logos(bool),
         /// Account used for a new message without an explicit account choice.
         Sender(String),
         Compose(ComposeFormat),
@@ -3247,6 +3249,9 @@ pub mod reading {
                 key: SettingKey::MailAppearance,
                 value: serde_json::to_value(colors).unwrap_or_default(),
             }),
+            Message::Logos(on) => {
+                Action::send(Request::SetSetting { key: SettingKey::MailSenderLogos, value: serde_json::json!(on) })
+            }
             Message::Sender(id) => {
                 if state.dirty || state.saving {
                     return Action::None;
@@ -3333,9 +3338,23 @@ pub mod reading {
         let colors = picker(COLOR_CHOICES, ColorChoice(settings.mail_appearance), |choice: ColorChoice| {
             Message::Colors(choice.0)
         });
+        let logos = switch(settings.mail_sender_logos, Message::Logos);
         let group = widgets::group(
             tr("Reading"),
-            vec![setting_row(None, tr("Show mail as"), None, show), setting_row(None, tr("Mail colors"), None, colors)],
+            vec![
+                setting_row(None, tr("Show mail as"), None, show),
+                setting_row(None, tr("Mail colors"), None, colors),
+                // Issue #453: the switch is on unless turned off, and it reaches out to senders' domains.
+                setting_row(
+                    None,
+                    tr("Logos of known senders"),
+                    Some(
+                        tr("Only for mail signed by its own domain. Torro fetches the logo once from that domain.")
+                            .into(),
+                    ),
+                    logos,
+                ),
+            ],
             None,
         );
         let mut blocks = vec![group];
@@ -4288,6 +4307,24 @@ mod tests {
         let Action::Send(requests) = show else { panic!("a request") };
         let [torro_ipc::Request::SetSetting { value, .. }] = requests.as_slice() else { panic!("one setting") };
         assert_eq!(value, &serde_json::json!(["promotion"]), "only the ones still hidden");
+    }
+
+    /// Issue #453: the switch "Logos of known senders" sends exactly that setting, on or off; on
+    /// unless turned off.
+    #[test]
+    fn the_logos_switch_sends_its_setting() {
+        assert!(Data::default().settings.mail_sender_logos, "on unless turned off");
+        for on in [false, true] {
+            let action = reading::update::<()>(&mut Default::default(), reading::Message::Logos(on), &Data::default());
+            let Action::Send(requests) = action else { panic!("a request") };
+            assert_eq!(
+                requests,
+                [torro_ipc::Request::SetSetting {
+                    key: torro_ipc::SettingKey::MailSenderLogos,
+                    value: serde_json::json!(on),
+                }]
+            );
+        }
     }
 
     /// Issue #390: the switch "Mail from contacts is personal" sends exactly that setting, on or off.

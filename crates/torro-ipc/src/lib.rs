@@ -2983,6 +2983,17 @@ pub enum Request {
         /// The attachment: its `part` from `attachments` of `mail.get_message`.
         attachment: String,
     },
+    /// The logo of the sender of a message as PNG, 128 pixels on white ([`Response::Image`], issue
+    /// #453): only when the core checked the mail's DKIM signature itself and it belongs to the
+    /// sender's domain, and only from the core's own copy, so asking never goes out to the web. Its
+    /// `logo` in the message's summary names the domain whose logo it is. `not-found` for an id the
+    /// caller does not reach, mail that did not pass the check, while "Logos of known senders" is
+    /// off, and for a domain without a logo.
+    #[serde(rename = "mail.get_sender_logo")]
+    GetSenderLogo {
+        /// The message's id (`m:…`).
+        id: String,
+    },
     // Saving attachments (issue #290, wire types in [`mail`]). Save targets are the same for every
     // mail account and kept in `<data>/mail/save-targets.json`, not in the settings.
     /// The save targets, the Downloads folder and, with `id`, where each attachment of that message
@@ -4148,6 +4159,10 @@ pub enum SettingKey {
     /// new mail from an address in the address books goes to the group Personal before any model;
     /// mail filters, sorting rules, newsletters, invitations and automatic replies still come first.
     MailContactsPersonal,
+    /// "Logos of known senders" (issue #453): `true` (the default) or `false`. While on, the core
+    /// checks the DKIM signature of new mail and keeps the logo of a sender's domain whose mail
+    /// passed; off, it checks and fetches nothing, and mail carries no `logo`.
+    MailSenderLogos,
     /// How reminders of events come (task ER1.2), as one object; it changes only the fields it
     /// names, and in `calendars` only the calendars it names (`torro_core::settings::Reminders`);
     /// a calendar the client does not see is `not-found`: `{"enabled": true, "defaultLead": 1 (minutes
@@ -4377,7 +4392,8 @@ pub enum Response {
         places: Vec<Place>,
     },
     /// A picture: the map of [`Request::MapPreview`], a contact's picture of `contacts.get_photo`
-    /// ([`Request::GetContactPhoto`]).
+    /// ([`Request::GetContactPhoto`]), a sender's logo of `mail.get_sender_logo`
+    /// ([`Request::GetSenderLogo`]).
     Image {
         /// The PNG file, Base64 (standard alphabet, with padding).
         png: String,

@@ -552,6 +552,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::GetMail { .. }
         | Request::GetMailThread { .. }
         | Request::GetMailAttachment { .. }
+        | Request::GetSenderLogo { .. }
         | Request::SetMailFlags { .. }
         | Request::MoveMail { .. }
         | Request::DeleteMail { .. }

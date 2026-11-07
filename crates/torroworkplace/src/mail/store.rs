@@ -76,7 +76,7 @@ const CORRESPONDENT_ROWS: u32 = 5_000;
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 
 /// Originals of mail that is no longer on the server (`originals.gone_at`) are deleted this many
 /// days after the sync noticed by [`MailStore::prune_gone_originals`]: long enough to still back up
@@ -122,13 +122,19 @@ const SCHEMA_V11_INDEX: &str =
 /// bounded number at a time ([`MailStore::uids_without_size`]). Only added where it is missing.
 const SCHEMA_V12_SIZE: &str = "ALTER TABLE messages ADD COLUMN size INTEGER;";
 
-/// Version 13 (issue #506): what the warning signs of fraud read from the headers – the sender
+/// Version 13 (issue #453): what the core's own DKIM check found for each message
+/// (`super::check`): `NULL` not checked yet, `''` no signature of the sender's domain, otherwise the
+/// domain whose logo stands for the sender. Rows from before stay `NULL`; the indexer checks those of
+/// the last 30 days ([`MailStore::unchecked_senders`]). Only added where it is missing.
+const SCHEMA_V13_SENDER_CHECK: &str = "ALTER TABLE messages ADD COLUMN sender_check TEXT;";
+
+/// Version 14 (issue #506): what the warning signs of fraud read from the headers – the sender
 /// checks of the top-most `Authentication-Results` (`torro_mail::AuthResults` as JSON), the address
 /// of `Return-Path` and whether the mail answers another (`In-Reply-To` or `References`, 0 or 1) –,
 /// and whether the core caught the mail as fraud or spam (`caught`, 0 or 1). The three headers are
 /// `NULL` for rows from before: not read, so they give no sign. Each column is only added where it
 /// is missing.
-const SCHEMA_V13: [(&str, &str); 4] = [
+const SCHEMA_V14: [(&str, &str); 4] = [
     ("auth_json", "ALTER TABLE messages ADD COLUMN auth_json TEXT;"),
     ("return_path", "ALTER TABLE messages ADD COLUMN return_path TEXT;"),
     ("reply_ref", "ALTER TABLE messages ADD COLUMN reply_ref INTEGER;"),
@@ -1379,6 +1385,38 @@ impl MailStore {
     /// `false`: no such message.
     pub fn mark_unindexable(&self, id: &str) -> Result<bool, MailStoreError> {
         Ok(self.db.execute("UPDATE messages SET indexed = ?2 WHERE id = ?1", params![id, NO_TEXT])? > 0)
+    }
+
+    /// Notes what the DKIM check of the message `id` found (issue #453): `Some(domain)` for the
+    /// domain whose logo stands for its sender, `None` for no signature of the sender's domain. A
+    /// check to repeat later is not noted. `false`: no such message.
+    pub fn set_sender_check(&self, id: &str, domain: Option<&str>) -> Result<bool, MailStoreError> {
+        let value = domain.unwrap_or_default();
+        Ok(self.db.execute("UPDATE messages SET sender_check = ?2 WHERE id = ?1", params![id, value])? > 0)
+    }
+
+    /// Up to `limit` messages dated `since` or later whose sender was never checked (issue #453),
+    /// newest first: mail kept from before the check existed, or whose text the sync did not fetch.
+    /// Only messages of folders a sync has opened, never of Junk, Trash, Sent and Drafts.
+    pub fn unchecked_senders(&self, limit: u32, since: DateTime<Utc>) -> Result<Vec<MessageRef>, MailStoreError> {
+        let sql = "SELECT m.id, m.folder_id, f.path, f.uidvalidity, m.uid, m.rfc_message_id
+                   FROM messages m JOIN folders f ON f.id = m.folder_id
+                   WHERE m.sender_check IS NULL AND m.date >= ?1 AND f.uidvalidity IS NOT NULL
+                       AND coalesce(f.role, '') NOT IN ('junk', 'trash', 'sent', 'drafts')
+                   ORDER BY m.date DESC, m.seq DESC LIMIT ?2";
+        let mut statement = self.db.prepare(sql)?;
+        let rows = statement.query_map(params![since.timestamp(), limit], |row| {
+            Ok(MessageRef {
+                id: row.get(0)?,
+                account: self.account.clone(),
+                folder: row.get(1)?,
+                folder_path: row.get(2)?,
+                uidvalidity: row.get(3)?,
+                uid: row.get(4)?,
+                rfc_message_id: row.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Up to `limit` messages whose text is not in the index yet, newest first, with their dates:
@@ -2859,8 +2897,11 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
     if version < 12 && !has_column(&tx, "messages", "size")? {
         tx.execute_batch(SCHEMA_V12_SIZE)?;
     }
-    if version < 13 {
-        for (column, sql) in SCHEMA_V13 {
+    if version < 13 && !has_column(&tx, "messages", "sender_check")? {
+        tx.execute_batch(SCHEMA_V13_SENDER_CHECK)?;
+    }
+    if version < 14 {
+        for (column, sql) in SCHEMA_V14 {
             if !has_column(&tx, "messages", column)? {
                 tx.execute_batch(sql)?;
             }
@@ -2923,12 +2964,12 @@ const FOLDER_ORDER: &str =
 
 const SUMMARY_COLUMNS: &str = "m.id, m.folder_id, m.thread_id, m.from_json, m.to_json, m.subject, m.date, m.snippet,
     m.flags, m.has_attachments, m.invite_json, m.invite_answer, m.category, m.category_source, m.category_confidence,
-    m.caught";
+    m.sender_check, m.caught";
 
 /// How many columns [`SUMMARY_COLUMNS`] selects: where the columns a query adds after it begin.
 /// A query that appends its own must count from here, never from a number written out – task
 /// E12.2 added three columns in the middle and every hard-coded index moved.
-const SUMMARY_WIDTH: usize = 16;
+const SUMMARY_WIDTH: usize = 17;
 
 const INSERT_HEADERS: &str = "INSERT INTO messages (id, folder_id, uid, rfc_message_id, thread_id, from_json, to_json,
     cc_json, reply_to_json, subject, sender, recipients, date, snippet, flags, has_attachments, list_id,
@@ -3172,6 +3213,9 @@ fn folder_from_row(account: &str, row: &Row<'_>) -> rusqlite::Result<Folder> {
 fn summary_from_row(account: &str, row: &Row<'_>) -> rusqlite::Result<MessageSummary> {
     let from: Option<String> = row.get(3)?;
     let seconds: i64 = row.get(6)?;
+    // The checked domain (column 15, issue #453); whether its logo is handed out the reading
+    // commands decide (`read::with_logos`).
+    let checked: Option<String> = row.get(15)?;
     Ok(MessageSummary {
         id: row.get(0)?,
         account: account.to_string(),
@@ -3190,7 +3234,8 @@ fn summary_from_row(account: &str, row: &Row<'_>) -> rusqlite::Result<MessageSum
         category: category_from_row(row)?,
         untrusted: true,
         pile_since: None,
-        caught: row.get::<_, Option<bool>>(15)?.unwrap_or(false),
+        logo: checked.filter(|domain| !domain.is_empty()),
+        caught: row.get::<_, Option<bool>>(16)?.unwrap_or(false),
     })
 }
 
@@ -3496,11 +3541,11 @@ mod tests {
         assert_eq!(read.traits.github.as_deref(), Some("review_requested"), "written from now on");
     }
 
-    /// Issue #506: a store of version 12 learns the sender checks, `Return-Path`, the reply reference
+    /// Issue #506: a store of version 13 learns the sender checks, `Return-Path`, the reply reference
     /// and `caught`; rows from before read as not read and not caught, mail written from now on keeps
     /// them, and a sync writing the headers again leaves `caught` as it is.
     #[test]
-    fn a_store_of_version_12_learns_what_the_warning_signs_read() {
+    fn a_store_of_version_13_learns_what_the_warning_signs_read() {
         use torro_mail::{AuthResult, AuthResults};
         let (_tmp, dirs, store) = open();
         let inbox = folder(&store, "INBOX", Some(Role::Inbox));
@@ -3510,7 +3555,7 @@ mod tests {
         for column in columns {
             store.db.execute_batch(&format!("ALTER TABLE messages DROP COLUMN {column};")).expect("drop");
         }
-        store.db.execute_batch("PRAGMA user_version = 12").expect("v12");
+        store.db.execute_batch("PRAGMA user_version = 13").expect("v13");
         drop(store);
 
         let store = MailStore::open(&dirs, ACCOUNT).expect("migrated");
@@ -4543,6 +4588,50 @@ mod tests {
         assert!(store.set_size(&inbox, 1, 4096).expect("set"));
         assert!(!store.set_size(&inbox, 2, 1).expect("asked"), "no such message");
         assert!(store.uids_without_size(&inbox, 10).expect("asked").is_empty());
+    }
+
+    // ----- sender check (issue #453) -----
+
+    /// A store of version 12 gets `messages.sender_check`, keeps its rows, and none of them counts as
+    /// checked; a check is noted, and only a passed one names a logo.
+    #[test]
+    fn version_13_adds_the_sender_check_and_the_summary_names_the_domain() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let ids: Vec<String> = (1..=3).map(|uid| add(&store, &inbox, &message(uid, "before"))).collect();
+        store
+            .db
+            .execute_batch("ALTER TABLE messages DROP COLUMN sender_check; PRAGMA user_version = 12;")
+            .expect("a store of version 12");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("migrated");
+        let version: i64 = store.db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        let unchecked = |since| -> Vec<String> {
+            store.unchecked_senders(10, since).expect("asked").into_iter().map(|place| place.id).collect()
+        };
+        assert_eq!(unchecked(day(1)), [ids[2].clone(), ids[1].clone(), ids[0].clone()], "newest first");
+        assert_eq!(unchecked(day(2)), [ids[2].clone(), ids[1].clone()], "only since");
+        assert!(store.set_sender_check(&ids[2], Some("example.com")).expect("noted"));
+        assert!(store.set_sender_check(&ids[1], None).expect("noted"));
+        assert!(!store.set_sender_check("m:none", None).expect("asked"), "no such message");
+        assert_eq!(unchecked(day(1)), [ids[0].clone()]);
+        let logo = |id: &str| store.summary(id).expect("read").and_then(|summary| summary.logo);
+        assert_eq!(logo(&ids[2]).as_deref(), Some("example.com"));
+        assert_eq!((logo(&ids[1]), logo(&ids[0])), (None, None), "no signature, and not checked");
+        let whole = store.message(&ids[2]).expect("read").expect("there");
+        assert_eq!(whole.summary.logo.as_deref(), Some("example.com"), "also with the whole message");
+        // A new sync of the headers keeps what was checked.
+        add(&store, &inbox, &message(3, "again"));
+        assert_eq!(logo(&ids[2]).as_deref(), Some("example.com"));
+        // Unwanted, deleted and one's own mail is never checked.
+        for (path, role) in
+            [("Junk", Role::Junk), ("Trash", Role::Trash), ("Sent", Role::Sent), ("Drafts", Role::Drafts)]
+        {
+            let folder = folder(&store, path, Some(role));
+            add(&store, &folder, &message(9, path));
+        }
+        assert_eq!(unchecked(day(1)), [ids[0].clone()], "only the inbox's");
     }
 
     #[test]
