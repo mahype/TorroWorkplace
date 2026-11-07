@@ -1,4 +1,4 @@
-# Tokyo Night Vivid – Tokyo Night with a vivid yellow accent (issue #515). Surfaces, text and status colours are those of Tokyo Night;
+# Tokyo Night Vivid – Tokyo Night with a vivid yellow accent, violet in light mode (issue #515). Surfaces, text and status colours are those of Tokyo Night;
 # only accent, on_accent and focus_ring are new. The notes below on Tokyo Night (source, licence) still hold.
 # Tokyo Night – after the open Tokyo Night theme by Enkia (MIT), github.com/enkia/tokyo-night-vscode-theme
 # (themes/tokyo-night-color-theme.json, tokyo-night-light-color-theme.json), task FS.3, issue #292. Light is Tokyo
@@ -12,7 +12,7 @@ vivid = true
 name = "Tokyo Night Vivid"
 version = "1.0.0"
 author = "Torro, after Tokyo Night by Enkia (MIT)"
-description = "The Tokyo Night colour scheme with a vivid yellow accent"
+description = "The Tokyo Night colour scheme with a vivid yellow accent (violet in light mode)"
 
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
@@ -44,8 +44,9 @@ night = "#181822"
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
 # Moved for contrast: panel #D6D8DF → #E1E2E7 (for the standard's category colours, which a scheme cannot set); text_3
 # #707280 → #575B70.
-# Vivid accent in light mode: the wanted yellow (#FFE500) is too bright on light surfaces, so it is darkened to #827400
-# to keep white text on it at 4.5:1 or more and the mark (today circle, now line) at 3:1 or more on panel and selected.
+# Vivid accent in light mode: yellow cannot carry white text on a light surface, and a dark mustard (#827400) reads olive
+# and is hard to tell from `attention` (#8F5E15). So light mode takes a vivid violet (#8A3FE0) instead: white on it is 5.4:1
+# and it stays 3:1 or more on panel and selected.
 [colors.light]
 bg = "#E6E7ED"
 panel = "#E1E2E7"
@@ -59,8 +60,8 @@ text_3 = "#575B70"
 line = "#343B5914"
 line_strong = "#343B5926"
 line_selected = "#343B595D"
-focus_ring = "#827400"
-accent = "#827400"
+focus_ring = "#8A3FE0"
+accent = "#8A3FE0"
 on_accent = "#FFFFFF"
 ok = "#385F0D"
 attention = "#8F5E15"

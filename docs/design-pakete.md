@@ -383,7 +383,7 @@ Jede Datei hat ihr eigenes `[about]` mit `name` und `version`; jeder Teil wird f
 
 **Knallige Schwestern (Issue #515).** Fünf der Schemata gibt es ein zweites Mal mit leuchtendem Akzent, in der Gruppe
 „Vivid“ (`vivid = true`, [Knallige Farbschemata](#knallige-farbschemata)): Grund, Text und Statusfarben sind die der
-Vorlage, nur `accent`, `on_accent` und `focus_ring` sind neu. Die Töne sind so verteilt, dass keiner mit der Warn- oder
+Vorlage, nur `accent`, `on_accent` und `focus_ring` sind neu. Die Töne (hell bei Tokyo Night Vivid ein Violett statt Gelb) sind so verteilt, dass keiner mit der Warn- oder
 OK-Farbe seiner Vorlage verwechselt wird. Im hellen Modus ist jeder Ton dunkler, damit Weiß auf dem Akzent 4,5:1 hält
 und Heute-Kreis und Jetzt-Linie auf `panel` und `selected` 3:1 erreichen; der Wunschton und der Grund stehen als
 Kommentar über `[colors.light]`. Name „<Vorlage> Vivid“, die Lizenz ist die der Vorlage.
@@ -683,10 +683,10 @@ kräftiger); `text` und `text_2` erreichen 4,5:1 auch auf den getönten Terminfl
 | Poimandres | `poimandres` | Dark only | github.com/drcmda/poimandres-theme | MIT | Akzent Mint `#5DE4C7`; `bg` und `panel` beide `#1B1E28`, wie in der Quelle (der Entwurf hatte `panel` `#232733`, das dort nicht vorkommt); gedämpfter Text und Rot verschoben |
 | Sonokai | `sonokai` | Dark only | github.com/sainnhe/sonokai | MIT | Stil default, Akzent sein Blau `#76CCE0`; ohne Cyan und Magenta (Violett, Gelb im Kalender); gedämpfter Text und Rot verschoben |
 | Catppuccin Vivid | `catppuccin-vivid` | Vivid | wie Catppuccin | MIT (Text der Vorlage) | Magenta: dunkel `#FF4DB8`, hell `#D6008A`; sonst Catppuccin; ohne Logo |
-| Dracula Vivid | `dracula-vivid` | Vivid | wie Dracula | MIT (Text der Vorlage) | Cyan: dunkel `#00E5FF`, hell `#00798C`; Draculas Grün bleibt „OK“; ohne Logo |
+| Dracula Vivid | `dracula-vivid` | Vivid | wie Dracula | MIT (Text der Vorlage) | Cyan: dunkel `#00E5FF`, hell `#00798C`; Draculas Grün bleibt „OK“; erste Kalenderfarbe dunkel Blau `#6FA8FF` statt Hellcyan; ohne Logo |
 | Gruvbox Vivid | `gruvbox-vivid` | Vivid | wie Gruvbox | MIT (Text der Vorlage) | Grün: dunkel `#2EE66B`, hell `#00852B`; Orange bleibt der Warnfarbe; ohne Logo |
 | Nord Vivid | `nord-vivid` | Vivid | wie Nord | MIT (Text der Vorlage) | Orange: dunkel `#FF7A1A`, hell `#C24A00`; ohne Logo |
-| Tokyo Night Vivid | `tokyo-night-vivid` | Vivid | wie Tokyo Night | MIT (Text der Vorlage) | Gelb: dunkel `#FFE500`, hell dunkles Senfgelb `#827400` (knapp über 3:1 auf `selected`); ohne Logo |
+| Tokyo Night Vivid | `tokyo-night-vivid` | Vivid | wie Tokyo Night | MIT (Text der Vorlage) | Gelb: dunkel `#FFE500`; hell Violett `#8A3FE0` (Gelb trägt hell kein Weiß und ein Senfgelb ist von der Warnfarbe kaum zu trennen, Sichtprüfung #515); ohne Logo |
 | Synthwave ’84 | `synthwave-84` | Dark only | github.com/robb0wen/synthwave-vscode | MIT | Akzent Pink `#FF7EDB`; Blau und Cyan sind ein Neon-Cyan (Gelb als fünfte Kalenderfarbe); gedämpfter Text und Rot verschoben |
 
 ### Schriften des Systems

@@ -1126,6 +1126,10 @@ mod tests {
             ] {
                 let mut sibling = old;
                 (sibling.accent, sibling.on_accent, sibling.focus_ring) = (new.accent, new.on_accent, new.focus_ring);
+                if id == "dracula-vivid" && mode == "dark" {
+                    // Dracula's light cyan would pass for the vivid cyan accent, so the first calendar colour moved.
+                    (sibling.calendar[0], sibling.chart[0]) = (new.calendar[0], new.chart[0]);
+                }
                 assert_eq!(new, sibling, "{id} {mode}: only the accent differs from {template}");
                 assert_ne!(new.accent, old.accent, "{id} {mode}: a new accent");
                 for (surface, name) in [(new.panel, "panel"), (new.selected, "selected")] {

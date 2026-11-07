@@ -14,7 +14,7 @@ description = "The Dracula colour scheme with a vivid cyan accent"
 
 # Dracula's own colours wherever they pass the rules. Two moved: the comment colour #6272A4 reaches
 # only about 3:1 as text, so text_3 is a lighter blue-grey; red #FF5555 as error text falls under
-# 4.5:1 on `selected`, so error is #FF8080. Status and calendar colours are Dracula's palette.
+# 4.5:1 on `selected`, so error is #FF8080. Status and calendar colours are Dracula's palette, except the first calendar colour: Dracula's light cyan #8BE9FD is nearly the vivid accent, so it is blue #6FA8FF here.
 [colors.dark]
 bg = "#21222C"
 panel = "#282A36"
@@ -36,7 +36,7 @@ attention = "#F1FA8C"
 error = "#FF8080"
 inactive = "#7C88B5"
 merged = "#BD93F9"
-calendar = ["#8BE9FD", "#50FA7B", "#FFB86C", "#FF79C6", "#BD93F9"]
+calendar = ["#6FA8FF", "#50FA7B", "#FFB86C", "#FF79C6", "#BD93F9"]
 night = "#232531"
 
 # Alucard: cream surfaces, the same hues darkened.
