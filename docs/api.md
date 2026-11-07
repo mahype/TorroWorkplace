@@ -422,7 +422,7 @@ Anweisungen. Die Sicherheitsregeln aus
   Sie können melden und auflösen; `list_items` und `get_item` liefern `not-found`. Sie haben auch keinen
   MCP-Server (Fußnote ²⁵): `extensions.list_tools` ist für sie leer, `extensions.call_tool` liefert `not-found`.
 - Ein Hook-Client gehört zu **genau einem Agenten** (E1.2b): `clients.create_client` mit Art `hook`
-  braucht `agent` (`claude-code`, `codex`, `gemini`), andere Arten dürfen keins nennen. Das Feld steht
+  braucht `agent` (`claude-code`, `codex`, `gemini`, `opencode`), andere Arten dürfen keins nennen. Das Feld steht
   in `clients.json` und in `ClientInfo.agent`. Meldungen landen unter `agent:<dieser Agent>`; nennt
   `post_item` in `agent` einen anderen, ist das `forbidden`. So wirkt Stummschalten zuverlässig.
 - Namen von `script`-Clients sind ihre Quelle (`script:<Name>`) und darum eindeutig (ohne Groß- und
@@ -897,6 +897,11 @@ Was gebaut ist und dabei genauer wurde als oben (Details: [erweiterungen.md › 
   Klartextwerte als „…“, ein Befehl mit Pfad nur mit seinem letzten Teil, etwa „…/server“, weil die Ordner davor
   Home und Benutzernamen verraten). Nur der App-Schlüssel sieht sie vollständig.
 - **Länge:** `extensions.call_tool` mit mehr als 64 KB Argumenten (als JSON) wird mit `error` abgelehnt.
+- **Dateischutz während laufender Aufrufe (#539):** Der gemeinsame Schutzlock reicht von der frischen
+  Pfadprüfung bis zur Antwort. Ein Abbruch des wartenden Aufrufers gibt ihn nicht vorzeitig frei. Bei Timeout
+  wird ein lokaler MCP-Prozesslauf samt Kindern beendet, bevor sein Lock freigegeben wird; bloßes Senden einer
+  Abbruchmeldung wäre kein Nachweis, dass ein Datei-Zugriff beendet ist. Auch Stop, Update-Rollback und Shutdown
+  verwenden dieselbe Beendigungsbarriere. Der nächste erlaubte Aufruf kann den Server wieder starten.
 - **Server mit Ordner (#303, ArtCraft):** Den gewählten Ordner (`ExtensionInfo::folder`) sieht jeder Client mit einer
   Stufe für den Server ungeschwärzt, solange er nutzbar ist: Ein Agent braucht ihn, um Pfade darin zu bilden, er ist
   eine Grenze, kein Geheimnis. Ist er nicht nutzbar, sieht ihn nur der App-Schlüssel; ein Client erfährt dann nur
@@ -1375,7 +1380,8 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
   `TORRO_TOKEN`, das ein Agent-Key sein kann) setzen `mcp`, alle anderen setzen nichts. Der Kern prüft direkt nach dem Schlüssel, vor den Rechten (auch bei `ping` mit Schlüssel und noch
   einmal, bevor eine Freigabe ausgeführt wird), ob Art, Weg und Schalter passen:
   - Art `script`: nur über `api` und nur mit „Allow API keys“ (Einstellung `allow_api_keys`, Standard an).
-  - MCP-Clients (`claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor`, `mcp`): nur über `mcp` und nur
+  - MCP-Clients (`claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor`, `opencode`, `open-webui`, `zed`,
+    `cline`, `continue`, `cherry-studio`, `librechat`, `mcp`): nur über `mcp` und nur
     mit „Allow MCP“ (`allow_mcp`, Standard an).
   - Art `hook`: über beide Wege, nur mit „Allow MCP“, weil er zu einem Agenten gehört.
   - Die Arten `assistant` und `bot` (nur sie bekommen geliehene Schlüssel): mit einem geliehenen Schlüssel an keinen

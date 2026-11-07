@@ -68,6 +68,75 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{model} reads your mail at {provider} outside this computer. Use it?",
         "{model} liest deine E-Mails bei {provider} außerhalb dieses Computers. Verwenden?",
     ),
+    // Open MCP clients (#539).
+    (
+        "The copied configuration contains this key. Keep it private; it is shown only until you finish setup.",
+        "Die kopierte Konfiguration enthält diesen Schlüssel. Halte sie privat; er wird nur bis zum Abschluss der Einrichtung angezeigt.",
+    ),
+    ("Tab / arrows · Enter: {action}", "Tab / Pfeile · Enter: {action}"),
+    (
+        "Reports are not set up during guided setup. After configuring the client, enable Report when waiting or done on its client page.",
+        "Bei der geführten Einrichtung werden Meldungen noch nicht eingerichtet. Aktiviere nach der Konfiguration auf der Client-Seite Melden, wenn er wartet oder fertig ist.",
+    ),
+    ("The MCP server call failed.", "Der Aufruf des MCP-Servers ist fehlgeschlagen."),
+    (
+        "--agent needs a value: claude-code, codex, gemini or opencode",
+        "--agent braucht einen Wert: claude-code, codex, gemini oder opencode",
+    ),
+    (
+        "Client configuration protection is unavailable. Try again.",
+        "Der Schutz der Client-Konfiguration ist nicht verfügbar. Versuche es erneut.",
+    ),
+    ("Guided setup", "Geführte Einrichtung"),
+    ("Found · guided setup", "Gefunden · geführte Einrichtung"),
+    ("Not found · guided setup", "Nicht gefunden · geführte Einrichtung"),
+    ("Choose configuration file…", "Konfigurationsdatei wählen…"),
+    ("Copy configuration", "Konfiguration kopieren"),
+    ("Connection verified", "Verbindung geprüft"),
+    ("Checking connection…", "Verbindung wird geprüft…"),
+    ("Could not check the connection. Try again.", "Die Verbindung konnte nicht geprüft werden. Versuche es erneut."),
+    (
+        "Not verified yet. Call system_ping in this client, then check again.",
+        "Noch nicht geprüft. Führe system_ping in diesem Client aus und prüfe dann erneut.",
+    ),
+    ("Check connection", "Verbindung prüfen"),
+    ("Finish without test", "Ohne Test abschließen"),
+    (
+        "Reload OpenCode and call system_ping to check the connection.",
+        "Lade OpenCode neu und führe system_ping aus, um die Verbindung zu prüfen.",
+    ),
+    (
+        "Add this entry under mcp.servers in your global OpenCode configuration. Reload OpenCode, then call system_ping.",
+        "Ergänze diesen Eintrag unter mcp.servers in deiner globalen OpenCode-Konfiguration. Lade OpenCode neu und führe dann system_ping aus.",
+    ),
+    (
+        "Merge this context_servers entry into Zed settings. Enable the server, then call system_ping.",
+        "Ergänze diesen context_servers-Eintrag in den Zed-Einstellungen. Aktiviere den Server und führe dann system_ping aus.",
+    ),
+    (
+        "Merge this mcpServers entry into the selected Cline MCP settings. Reload MCP servers, then call system_ping.",
+        "Ergänze diesen mcpServers-Eintrag in den gewählten Cline-MCP-Einstellungen. Lade die MCP-Server neu und führe dann system_ping aus.",
+    ),
+    (
+        "Merge the mcpServers list item into your existing Continue YAML configuration. Keep your models. Select that file with cn --config <file>, then call system_ping.",
+        "Ergänze den mcpServers-Listeneintrag in deiner bestehenden Continue-YAML-Konfiguration. Behalte deine Modelle. Wähle diese Datei mit cn --config <Datei> und führe dann system_ping aus.",
+    ),
+    (
+        "In Cherry Studio: Settings → MCP → MCP Servers → Add → Import from JSON. Import this configuration, enable the server and bind it to your agent. Then call system_ping.",
+        "In Cherry Studio: Settings → MCP → MCP Servers → Add → Import from JSON. Importiere diese Konfiguration, aktiviere den Server und verknüpfe ihn mit deinem Agenten. Führe dann system_ping aus.",
+    ),
+    (
+        "Merge this mcpServers entry into a local librechat.yaml, then restart LibreChat. The Torro program and socket must be reachable there; containers or remote servers need a separately secured connection. Then call system_ping.",
+        "Ergänze diesen mcpServers-Eintrag in einer lokalen librechat.yaml und starte LibreChat neu. Das Torro-Programm und der Socket müssen dort erreichbar sein; Container oder entfernte Server brauchen eine gesondert abgesicherte Verbindung. Führe dann system_ping aus.",
+    ),
+    (
+        "Open WebUI cannot run this stdio server directly.\n\n1. Save the copied configuration privately for a separately installed mcpo bridge.\n\n2. Start mcpo yourself with --config <file> and --api-key <separate-proxy-key>. The proxy key is NOT the Torro token.\n\n3. Add the bridge's OpenAPI URL in Open WebUI, then call system_ping through the configured tool.\n\nContainers and remote hosts need a separately secured connection. Torro installs nothing and opens no network access.",
+        "Open WebUI kann diesen stdio-Server nicht direkt starten.\n\n1. Speichere die kopierte Konfiguration privat für eine separat installierte mcpo-Brücke.\n\n2. Starte mcpo selbst mit --config <Datei> und --api-key <separater-Proxy-Schlüssel>. Der Proxy-Schlüssel ist NICHT das Torro-Token.\n\n3. Ergänze die OpenAPI-URL der Brücke in Open WebUI und führe system_ping über das eingerichtete Werkzeug aus.\n\nContainer und entfernte Rechner brauchen eine gesondert abgesicherte Verbindung. Torro installiert nichts und öffnet keinen Netzwerkzugang.",
+    ),
+    (
+        "Put this entry into your client's configuration, then call system_ping.",
+        "Ergänze diesen Eintrag in der Konfiguration deines Clients und führe dann system_ping aus.",
+    ),
     // Control centre (torroworkplace ui)
     ("1 needs attention", "1 braucht Aufmerksamkeit"),
     ("1 problem", "1 Problem"),

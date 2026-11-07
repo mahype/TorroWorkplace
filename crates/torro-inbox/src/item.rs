@@ -692,10 +692,12 @@ pub enum AgentKind {
     ClaudeCode,
     Codex,
     Gemini,
+    #[serde(rename = "opencode")]
+    OpenCode,
 }
 
 impl AgentKind {
-    pub const ALL: [AgentKind; 3] = [AgentKind::ClaudeCode, AgentKind::Codex, AgentKind::Gemini];
+    pub const ALL: [AgentKind; 4] = [AgentKind::ClaudeCode, AgentKind::Codex, AgentKind::Gemini, AgentKind::OpenCode];
 
     /// The id in source keys and on the command line (`torroworkplace hook claude-code`).
     pub fn id(self) -> &'static str {
@@ -703,6 +705,7 @@ impl AgentKind {
             AgentKind::ClaudeCode => "claude-code",
             AgentKind::Codex => "codex",
             AgentKind::Gemini => "gemini",
+            AgentKind::OpenCode => "opencode",
         }
     }
 
@@ -717,6 +720,7 @@ impl AgentKind {
             AgentKind::ClaudeCode => "Claude Code",
             AgentKind::Codex => "Codex",
             AgentKind::Gemini => "Gemini CLI",
+            AgentKind::OpenCode => "OpenCode",
         }
     }
 }

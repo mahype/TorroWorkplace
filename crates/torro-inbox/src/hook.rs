@@ -110,12 +110,16 @@ pub fn interpret(agent: AgentKind, payload: &str, git_head: Option<&str>) -> Hoo
             project: text(&json, "cwd").and_then(project_from_cwd),
             branch: git_head.and_then(branch_from_head),
             pids: Vec::new(),
-            title: None,
+            title: if agent == AgentKind::OpenCode { text(&json, "title").and_then(session_title) } else { None },
         },
         thread_key: thread_key.clone(),
         body: body.map(str::trim).filter(|body| !body.is_empty()).map(String::from),
     };
     match (agent, event) {
+        (AgentKind::OpenCode, "waiting") => report(Kind::AgentWaiting, text(&json, "message")),
+        (AgentKind::OpenCode, "done") => report(Kind::AgentDone, None),
+        (AgentKind::OpenCode, "resolved") => HookIntent::ResolveWaiting { thread_key },
+        (AgentKind::OpenCode, "started" | "deleted") => HookIntent::ResolveSession { thread_key },
         (AgentKind::ClaudeCode, "PermissionRequest") if text(&json, "tool_name") == Some(ASK_TOOL) => {
             let questions = json.get("tool_input").map(questions_text).unwrap_or_default();
             report(Kind::AgentWaiting, Some(&questions))
@@ -198,7 +202,7 @@ pub struct PermissionQuestion {
 /// input"; Codex: hooks reference, "PermissionRequest"); `session_id` is not needed, a question
 /// is bound to its approval id.
 pub fn permission_question(agent: AgentKind, payload: &str) -> Option<PermissionQuestion> {
-    if agent == AgentKind::Gemini {
+    if matches!(agent, AgentKind::Gemini | AgentKind::OpenCode) {
         return None;
     }
     let json = serde_json::from_str::<Value>(payload).ok()?;
@@ -257,7 +261,7 @@ pub fn permission_answer(agent: AgentKind, allow: bool) -> Option<String> {
             })
             .to_string(),
         ),
-        AgentKind::Gemini => None,
+        AgentKind::Gemini | AgentKind::OpenCode => None,
     }
 }
 
@@ -296,7 +300,7 @@ pub fn title_source(agent: AgentKind, payload: &str) -> Option<TitleSource> {
             path.is_absolute().then_some(TitleSource::Transcript(path))
         }
         AgentKind::Codex => Some(TitleSource::CodexIndex { session: text(&json, "session_id")?.to_string() }),
-        AgentKind::Gemini => None,
+        AgentKind::Gemini | AgentKind::OpenCode => None,
     }
 }
 
@@ -400,6 +404,30 @@ fn text<'a>(json: &'a Value, key: &str) -> Option<&'a str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn opencode_reports_normalized_events_without_permission_control() {
+        let payload = |event| {
+            serde_json::json!({"hook_event_name":event,"session_id":"s1","title":"Task\nname", "cwd":"/work/project"})
+                .to_string()
+        };
+        assert!(matches!(interpret(AgentKind::OpenCode, &payload("waiting"), None),
+            HookIntent::Report { kind: Kind::AgentWaiting, agent: AgentInfo { title: Some(_), pids, .. }, .. } if pids.is_empty()));
+        assert!(matches!(
+            interpret(AgentKind::OpenCode, &payload("done"), None),
+            HookIntent::Report { kind: Kind::AgentDone, .. }
+        ));
+        assert!(matches!(
+            interpret(AgentKind::OpenCode, &payload("resolved"), None),
+            HookIntent::ResolveWaiting { .. }
+        ));
+        for event in ["started", "deleted"] {
+            assert!(matches!(interpret(AgentKind::OpenCode, &payload(event), None), HookIntent::ResolveSession { .. }));
+        }
+        assert!(permission_question(AgentKind::OpenCode, &payload("PermissionRequest")).is_none());
+        assert!(permission_answer(AgentKind::OpenCode, true).is_none());
+        assert!(title_source(AgentKind::OpenCode, &payload("waiting")).is_none());
+        assert_eq!(serde_json::to_string(&AgentKind::OpenCode).expect("json"), "\"opencode\"");
+    }
     use super::*;
 
     const HEAD: &str = "ref: refs/heads/feat/inbox\n";

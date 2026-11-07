@@ -451,6 +451,12 @@ pub fn kind_label(client: &ClientInfo) -> String {
     match client.kind.as_str() {
         "claude-desktop" => "Claude Desktop".to_string(),
         "cursor" => "Cursor".to_string(),
+        "open-webui" => "Open WebUI".into(),
+        "zed" => "Zed".into(),
+        "cline" => "Cline".into(),
+        "continue" => "Continue".into(),
+        "cherry-studio" => "Cherry Studio".into(),
+        "librechat" => "LibreChat".into(),
         SCRIPT_CLIENT => tr("Script").to_string(),
         MCP_CLIENT => tr("Other MCP client").to_string(),
         HOOK_CLIENT => match client.agent {
@@ -709,13 +715,9 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     }
 }
 
-/// The answer to a request the shell sent: "Create key"'s own answers first
-/// ([`agent_wizard::answered`]; then `Some`, and the shell shows no notice of its own), then the
-/// page's ([`Page::answered`]). A revoked key leaves nothing else behind.
+/// An untagged answer goes only to the page ([`Page::answered`]); wizard requests use their own
+/// correlated route ([`agent_wizard::accept`]). A revoked key leaves nothing else behind.
 pub fn answered(state: &mut State, result: &Result<Response, String>) -> Option<Action> {
-    if let Some(next) = state.wizard.as_mut().and_then(|wizard| agent_wizard::answered(wizard, result)) {
-        return Some(next);
-    }
     let _ = state.page.answered(result);
     None
 }

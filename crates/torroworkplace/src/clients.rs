@@ -2496,6 +2496,14 @@ pub(crate) mod tests {
 
         let reopened = open_in(dir.path());
         assert_eq!(reopened.list()[0].agent, Some(AgentKind::Codex), "kept in clients.json");
+        let (opencode, _) = clients
+            .add_client("OpenCode hooks", HOOK_CLIENT, Some(AgentKind::OpenCode), Rights::hook())
+            .await
+            .expect("added");
+        let reopened = open_in(dir.path());
+        assert!(
+            reopened.list().iter().any(|client| client.id == opencode.id && client.agent == Some(AgentKind::OpenCode))
+        );
     }
 
     #[tokio::test]

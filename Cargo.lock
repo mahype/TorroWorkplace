@@ -1124,6 +1124,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "countme"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7704b5fdd17b18ae31c4c1da5a2e0305a2bf17b5249300a9ee9ed7b72114c636"
+
+[[package]]
 name = "cpubits"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2310,6 +2316,12 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+
+[[package]]
+name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
@@ -3298,6 +3310,15 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "jsonc-parser"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ecded084f9b9a718d39668a42657c32253663d1f6afb3fbb9134f0305f73f48"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -5650,6 +5671,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rowan"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "417a3a9f582e349834051b8a10c8d71ca88da4211e4093528e36b9845f6b5f21"
+dependencies = [
+ "countme",
+ "hashbrown 0.14.5",
+ "rustc-hash 1.1.0",
+ "text-size",
+]
+
+[[package]]
 name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6894,6 +6927,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "text-size"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f18aa187839b2bdb1ad2fa35ead8c4c2976b64e4363c386d45ac0f7ee85c9233"
+
+[[package]]
 name = "thin-vec"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7598,6 +7637,7 @@ dependencies = [
  "httpmock",
  "iced",
  "image",
+ "jsonc-parser",
  "keyring",
  "ksni",
  "mail-auth",
@@ -7650,6 +7690,7 @@ dependencies = [
  "winit",
  "winreg",
  "winresource",
+ "yaml-edit",
  "zip",
 ]
 
@@ -9102,6 +9143,16 @@ name = "xmlwriter"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
+
+[[package]]
+name = "yaml-edit"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5df55a38673279c691015377f55503186026bc41d448892b01886cb7475cd121"
+dependencies = [
+ "base64 0.22.1",
+ "rowan",
+]
 
 [[package]]
 name = "yansi"

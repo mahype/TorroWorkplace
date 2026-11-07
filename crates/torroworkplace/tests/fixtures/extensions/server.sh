@@ -26,6 +26,11 @@ while [ "$#" -gt 0 ]; do
                 n=$((n + 1))
             done
             ;;
+        failure)
+            shift
+            failure=$1
+            echo "$$" > server.pid
+            ;;
     esac
     shift
 done
@@ -44,16 +49,26 @@ while IFS= read -r line; do
     [ -n "$id" ] || continue
     case "$line" in
         *'"method":"initialize"'*)
+            [ "$failure" = init-timeout ] && sleep 30
+            if [ "$failure" = init-error ]; then
+                answer "$id" '{"invalid":true}'
+                sleep 30
+            fi
             answer "$id" '{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":true}},"serverInfo":{"name":"fixture","version":"1.0.0"}}'
             ;;
         *'"method":"tools/list"'*)
+            [ "$failure" = list-timeout ] && sleep 30
+            if [ "$failure" = list-error ]; then
+                answer "$id" '{"tools":"invalid"}'
+                sleep 30
+            fi
             answer "$id" '{"tools":[{"name":"echo","description":"Answers pong","inputSchema":{"type":"object"}},{"name":"pwd","description":"Where it runs","inputSchema":{"type":"object"}},{"name":"slow","description":"Takes long","inputSchema":{"type":"object"}},{"name":"crash","description":"Ends","inputSchema":{"type":"object"}}]}'
             ;;
         *'"method":"tools/call"'*)
             case "$line" in
                 *'"name":"echo"'*) text "$id" "pong $FIXTURE_VALUE" ;;
                 *'"name":"pwd"'*) text "$id" "$(pwd)" ;;
-                *'"name":"slow"'*) sleep 30; text "$id" "late" ;;
+                *'"name":"slow"'*) echo started > slow.started; sleep 30; text "$id" "late" ;;
                 *'"name":"crash"'*) exit 3 ;;
                 *) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"no such tool"}}\n' "$id" ;;
             esac

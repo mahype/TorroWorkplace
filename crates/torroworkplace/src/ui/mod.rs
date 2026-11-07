@@ -293,6 +293,8 @@ pub enum Action {
     None,
     /// Send this request to the daemon, then reload.
     Send(Request),
+    /// A client wizard request: route only to its originating instance and request, not `Sent`.
+    AskWizard(agent_wizard::Asked, Request),
     /// Send this request for the page Workspaces (issue #243) and hand the answer back to that page
     /// only, with what it was for ([`workspaces::Asked`]), so it never takes the answer to another of
     /// its requests for this one. The answer comes as the core gave it: a refusal stays a
@@ -474,6 +476,7 @@ pub struct Ui {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    WizardNavigate(agent_wizard::Navigation),
     /// The free top row (or the band of a window without it) was pressed: drag the window (see
     /// [`shell::TopRow`], [`shell::titlebar`]).
     DragWindow,
@@ -501,6 +504,7 @@ pub enum Message {
     Switcher(Switcher),
     Loaded(Box<Data>),
     Sent(Result<Response, String>),
+    WizardAnswered(agent_wizard::Asked, Result<Response, String>),
     /// The answer to an [`Action::Ask`], with what it was for; `Err` only when no answer came.
     Answered(workspaces::Asked, Result<Response, String>),
     /// The answer to an [`Action::AskConnections`], with what it was for; `Err` only when no answer
@@ -990,11 +994,24 @@ impl Ui {
             }
             // The steps of "Connect client", with the demo's detection: Claude Code to connect, or
             // another MCP client named "my-editor" whose key and command are shown.
-            Open::ConnectClient | Open::ConnectClientRights | Open::ConnectClientDone | Open::ConnectClientOther => {
+            Open::ConnectClient
+            | Open::ConnectClientRights
+            | Open::ConnectClientDone
+            | Open::ConnectClientOther
+            | Open::ConnectOpenCode
+            | Open::ConnectOpenCodeDone
+            | Open::ConnectOpenWebui
+            | Open::ConnectOpenWebuiKeyboard => {
                 use agent_wizard::{Choice, Message as Step};
                 let wizard = |message| Message::Mcp(mcp::Message::Wizard(message));
                 let mut messages = vec![Message::Select(Section::Mcp), Message::Mcp(mcp::Message::Connect)];
                 match open {
+                    Open::ConnectOpenCode | Open::ConnectOpenCodeDone => {
+                        messages.push(wizard(Step::Choose(Choice::Agent(crate::client_setup::Target::OpenCode))))
+                    }
+                    Open::ConnectOpenWebui | Open::ConnectOpenWebuiKeyboard => {
+                        messages.push(wizard(Step::Choose(Choice::Agent(crate::client_setup::Target::OpenWebui))))
+                    }
                     Open::ConnectClientRights | Open::ConnectClientDone => {
                         let claude = Choice::Agent(crate::client_setup::Target::ClaudeCode);
                         messages.push(wizard(Step::Choose(claude)));
@@ -1005,8 +1022,18 @@ impl Ui {
                     }
                     _ => {}
                 }
-                if matches!(open, Open::ConnectClientDone | Open::ConnectClientOther) {
+                if matches!(
+                    open,
+                    Open::ConnectClientDone
+                        | Open::ConnectClientOther
+                        | Open::ConnectOpenCodeDone
+                        | Open::ConnectOpenWebui
+                        | Open::ConnectOpenWebuiKeyboard
+                ) {
                     messages.push(wizard(Step::Connect));
+                }
+                if open == Open::ConnectOpenWebuiKeyboard {
+                    messages.extend((0..4).map(|_| wizard(Step::Navigate(agent_wizard::Navigation::Next))));
                 }
                 messages
             }
@@ -1462,6 +1489,14 @@ impl Ui {
                 let unhook = unhook.map_or_else(Task::none, |action| self.perform(action));
                 return Task::batch([import, hooks, slots, design, unhook, providers]);
             }
+            Message::WizardAnswered(asked, result) => {
+                let next = agent_wizard::accept(&mut self.mcp.wizard, asked, &result)
+                    .or_else(|| agent_wizard::accept(&mut self.api.wizard, asked, &result));
+                return match next {
+                    Some(next) => Task::batch([self.perform(next), self.reload()]),
+                    None => Task::none(),
+                };
+            }
             Message::Sent(result) => {
                 // The add-account dialog and the setup show the outcome of their own requests themselves.
                 let in_setup = self.setup.as_mut().is_some_and(|setup| setup::answered(setup, &result));
@@ -1593,7 +1628,22 @@ impl Ui {
                     None => Task::none(),
                 };
             }
+            Message::WizardNavigate(navigation) => {
+                let message = agent_wizard::Message::Navigate(navigation);
+                if self.section == Section::Mcp && self.mcp.wizard.is_some() {
+                    return self.update(Message::Mcp(mcp::Message::Wizard(message)));
+                }
+                if self.section == Section::Api && self.api.wizard.is_some() {
+                    return self.update(Message::Api(api::Message::Wizard(message)));
+                }
+                Action::None
+            }
             Message::Enter => {
+                if (self.section == Section::Mcp && self.mcp.wizard.is_some())
+                    || (self.section == Section::Api && self.api.wizard.is_some())
+                {
+                    return self.update(Message::WizardNavigate(agent_wizard::Navigation::Activate));
+                }
                 match self.setup.as_ref().is_some_and(|setup| !setup.dialog_open()) && self.menu.is_none() {
                     true => return self.update(Message::Setup(setup::Message::Next)),
                     false => Action::None,
@@ -1752,6 +1802,16 @@ impl Ui {
                 self.update(Message::Mcp(mcp::Message::Setup(outcome)))
             }
             Action::Send(request) => send(request),
+            Action::AskWizard(asked, request) if self.launch.demo => {
+                self.demo_keep(&request);
+                match launch::demo_answer(&request, &self.data) {
+                    Some(response) => self.update(Message::WizardAnswered(asked, Ok(response))),
+                    None => Task::none(),
+                }
+            }
+            Action::AskWizard(asked, request) => {
+                Task::perform(answer(request), move |result| Message::WizardAnswered(asked, result))
+            }
             Action::Ask(asked, request) if self.launch.demo => match launch::demo_answer(&request, &self.data) {
                 Some(response) => self.update(Message::Answered(asked, Ok(response))),
                 None => Task::none(),
@@ -2323,6 +2383,19 @@ use torro_settings_ui::suite;
 fn keys(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
     let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = event else { return None };
     match key {
+        iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab) if !modifiers.command() && !modifiers.alt() => {
+            Some(Message::WizardNavigate(if modifiers.shift() {
+                agent_wizard::Navigation::Previous
+            } else {
+                agent_wizard::Navigation::Next
+            }))
+        }
+        iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown) if status == iced::event::Status::Ignored => {
+            Some(Message::WizardNavigate(agent_wizard::Navigation::Next))
+        }
+        iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) if status == iced::event::Status::Ignored => {
+            Some(Message::WizardNavigate(agent_wizard::Navigation::Previous))
+        }
         iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => Some(Message::Escape),
         iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter) if status == iced::event::Status::Ignored => {
             Some(Message::Enter)
@@ -3404,6 +3477,10 @@ mod tests {
             ("connect-client-rights", Section::Mcp),
             ("connect-client-done", Section::Mcp),
             ("connect-client-other", Section::Mcp),
+            ("connect-opencode", Section::Mcp),
+            ("connect-opencode-done", Section::Mcp),
+            ("connect-open-webui", Section::Mcp),
+            ("connect-open-webui-keyboard", Section::Mcp),
         ];
         for (state, section) in states {
             let mut ui = started(&["--demo", "--open", state]);

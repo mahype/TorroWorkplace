@@ -67,6 +67,7 @@ pub struct Roots {
 
 /// The tools' handlers and their register.
 pub struct Tools {
+    protection: Option<crate::client_setup::protection::Registry>,
     roots: Roots,
     register: Register,
     open: Opener,
@@ -101,6 +102,7 @@ impl Tools {
         let roots = Roots { data, desktop: dirs::desktop_dir(), home, fonts: torro_core::design::font_dir(), excluded };
         let (open, trash): (Opener, Trasher) = (Arc::new(system_open), Arc::new(system_trash));
         Tools {
+            protection: crate::client_setup::protection::Registry::system(),
             register: Register::in_dir(roots.data.clone()),
             roots,
             open,
@@ -117,6 +119,7 @@ impl Tools {
         let open: Opener = Arc::new(|_: &Path| Err("nothing is opened here".to_string()));
         let trash: Trasher = Arc::new(|_: &Path| Err(folders::Failure::TrashRefused));
         Tools {
+            protection: None,
             register: Register::in_dir(roots.data.clone()),
             roots,
             open,
@@ -157,6 +160,26 @@ impl Tools {
     /// MCP servers that work in an allowed folder (#303, `crate::extensions::Extensions::with_allowed`).
     pub fn excluded(&self) -> &[PathBuf] {
         &self.roots.excluded
+    }
+
+    /// Registry shared with setup and folder-bound MCP calls. Tests inject a temporary one.
+    pub fn protection(&self) -> Option<crate::client_setup::protection::Registry> {
+        self.protection.clone()
+    }
+
+    #[cfg(test)]
+    pub fn with_protection(mut self, registry: crate::client_setup::protection::Registry) -> Self {
+        self.protection = Some(registry);
+        self
+    }
+
+    /// Refresh reservations without taking another lock; the operation owns the outer shared guard.
+    pub fn excluded_now(&self) -> Result<Vec<PathBuf>, crate::client_setup::protection::Error> {
+        let mut paths = self.excluded().to_vec();
+        if let Some(registry) = &self.protection {
+            paths.extend(registry.paths()?);
+        }
+        Ok(paths)
     }
 
     /// The register, for the attachments of drafts (`crate::mail::write`).
@@ -283,6 +306,7 @@ fn client_files(current: Option<crate::client_setup::Env>, home: Option<&Path>) 
         let config_dir = torro_core::paths::AppPaths::for_app(torro_core::AppId::WORKPLACE)
             .map_or_else(|| home.join(".config").join(torro_core::AppId::WORKPLACE.binary), |paths| paths.config);
         Some(crate::client_setup::Env {
+            open: Default::default(),
             app_config: dirs::config_dir().unwrap_or_else(|| home.join(".config")),
             path: Vec::new(),
             // The program the hooks start, as `Env::current` names it; none (an empty path) locks nothing.

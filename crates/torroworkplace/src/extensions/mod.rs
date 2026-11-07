@@ -65,6 +65,7 @@ pub type AllowedNow = Arc<dyn Fn() -> Allowed + Send + Sync>;
 /// ([`Extensions::with_store`]).
 #[derive(Clone)]
 pub struct Extensions {
+    protection: Option<crate::client_setup::protection::Registry>,
     /// Where the programs a server needs are looked for.
     roots: Roots,
     /// Their processes and connections.
@@ -107,6 +108,7 @@ impl Extensions {
         let store =
             torro_core::paths::AppPaths::for_app(torro_core::AppId::WORKPLACE).map(|paths| Store::in_data(&paths.data));
         Extensions {
+            protection: crate::client_setup::protection::Registry::system(),
             roots: Roots::system(),
             supervisor: Supervisor::service(),
             store,
@@ -125,6 +127,7 @@ impl Extensions {
     pub fn with_roots(roots: Roots) -> Extensions {
         let supervisor = Arc::new(Supervisor::new(roots.clone(), Default::default(), Timing::default()));
         Extensions {
+            protection: None,
             roots,
             supervisor,
             store: None,
@@ -141,6 +144,12 @@ impl Extensions {
     /// person may choose for a server that works in one ([`Extensions::set_folder`]).
     pub fn with_allowed(mut self, allowed: AllowedNow) -> Extensions {
         self.allowed = Some(allowed);
+        self
+    }
+
+    /// Use the same protection registry as setup and the built-in file tool.
+    pub fn with_protection(mut self, protection: Option<crate::client_setup::protection::Registry>) -> Self {
+        self.protection = protection;
         self
     }
 
@@ -258,6 +267,28 @@ impl Extensions {
     /// begins is not started by it (`not-found`, [`Supervisor::stop`]). The answer is the server's, marked
     /// `untrusted`.
     pub async fn call(&self, id: &str, tool: &str, arguments: serde_json::Map<String, serde_json::Value>) -> Response {
+        // Before any other lock and through the remote response: setup may not add secrets mid-call.
+        let protection = match self.protection.as_ref().map(|registry| registry.read()).transpose() {
+            Ok(guard) => guard,
+            Err(err) => return err.response(),
+        };
+        let (this, id, tool) = (self.clone(), id.to_string(), tool.to_string());
+        // Dropping the caller (Stop/disconnect) detaches this task, not the operation or its guard.
+        // Supervisor::call also ends a timed-out process before this task releases protection.
+        tokio::spawn(async move {
+            let _protection = protection;
+            this.call_guarded(&id, &tool, arguments).await
+        })
+        .await
+        .unwrap_or_else(|_| error("error", tr("The MCP server call failed.").into()))
+    }
+
+    async fn call_guarded(
+        &self,
+        id: &str,
+        tool: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Response {
         if let Some(refused) = arguments_refusal(&arguments) {
             return refused;
         }
@@ -951,11 +982,23 @@ impl Extensions {
         let rest = self.clone();
         let mut changes = self.supervisor.changes();
         // The rest of the servers' state without the supervisor: a clone with a strong one would keep it.
-        let Extensions { roots, store, secrets, changing, under_way, watching, secret_changes, allowed, .. } = rest;
+        let Extensions {
+            roots,
+            store,
+            secrets,
+            changing,
+            under_way,
+            watching,
+            secret_changes,
+            allowed,
+            protection,
+            ..
+        } = rest;
         tokio::spawn(async move {
             while changes.changed().await.is_ok() {
                 let Some(supervisor) = supervisor.upgrade() else { break };
                 let extensions = Extensions {
+                    protection: protection.clone(),
                     roots: roots.clone(),
                     supervisor,
                     store: store.clone(),
@@ -1576,6 +1619,140 @@ mod tests {
     use super::*;
     use torro_ipc::api::Rights;
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_aborted_caller_keeps_protection_until_the_timed_out_process_is_gone() {
+        use crate::client_setup::protection::{Error, Registry};
+        use std::time::Duration;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let registry = Registry::new(dir.path().join("config"));
+        let (extensions, secrets) = extensions_in(dir.path(), roots());
+        let mut extensions = extensions.with_protection(Some(registry.clone()));
+        extensions.supervisor = Arc::new(Supervisor::new(
+            roots(),
+            Default::default(),
+            supervisor::Timing {
+                call: Duration::from_millis(700),
+                stop_grace: Duration::from_millis(20),
+                ..Default::default()
+            },
+        ));
+        installed(&extensions, &secrets, "fixture", &[("slow", Access::Read)]);
+        let marker = extensions.store.as_ref().expect("store").work_path("fixture").expect("work").join("slow.started");
+        let owned = extensions.clone();
+        let caller = tokio::spawn(async move { owned.call("fixture", "slow", serde_json::Map::new()).await });
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("operation started");
+        caller.abort();
+        assert!(caller.await.expect_err("aborted caller").is_cancelled());
+        assert!(matches!(registry.reserve(&[]), Err(Error::Busy)), "the detached operation still owns its guard");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match registry.reserve(&[]) {
+                    Ok(guard) => {
+                        drop(guard);
+                        break;
+                    }
+                    Err(Error::Busy) => tokio::time::sleep(Duration::from_millis(10)).await,
+                    Err(err) => panic!("unexpected protection error: {err:?}"),
+                }
+            }
+        })
+        .await
+        .expect("timeout finished the process before releasing protection");
+        assert_eq!(extensions.supervisor.status("fixture"), Status::Stopped);
+        extensions.supervisor.stop_all().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn concurrent_end_stop_and_shutdown_keep_protection_even_if_the_stopper_is_aborted() {
+        use crate::client_setup::protection::{Error, Registry};
+        use std::time::Duration;
+        for how in ["end", "stop", "all"] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let registry = Registry::new(dir.path().join("config"));
+            let (extensions, secrets) = extensions_in(dir.path(), roots());
+            let mut extensions = extensions.with_protection(Some(registry.clone()));
+            extensions.supervisor = Arc::new(Supervisor::new(
+                roots(),
+                Default::default(),
+                supervisor::Timing {
+                    call: Duration::from_secs(10),
+                    stop_grace: Duration::from_secs(1),
+                    ..Default::default()
+                },
+            ));
+            installed(&extensions, &secrets, "fixture", &[("slow", Access::Read)]);
+            let (_, launch) = extensions.launch_for_call("fixture", "slow").await.expect("launch");
+            let marker = launch.work_dir.join("slow.started");
+            let owned = extensions.clone();
+            let caller = tokio::spawn(async move { owned.call("fixture", "slow", serde_json::Map::new()).await });
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while !marker.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("operation started");
+            let supervisor = extensions.supervisor.clone();
+            let stopper = tokio::spawn(async move {
+                match how {
+                    "end" => supervisor.end(&launch).await,
+                    "stop" => supervisor.stop("fixture").await,
+                    _ => supervisor.stop_all().await,
+                }
+            });
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while extensions.supervisor.running("fixture").is_some() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("run removed; process still ending");
+            stopper.abort();
+            let _ = stopper.await;
+            assert!(matches!(registry.reserve(&[]), Err(Error::Busy)), "{how}: removal is not process completion");
+            let response =
+                tokio::time::timeout(Duration::from_secs(10), caller).await.expect("process ended").expect("call task");
+            assert!(matches!(response, Response::Error { .. }));
+            drop(registry.reserve(&[]).expect("protection released only after process completion"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_newly_reserved_path_locks_an_already_selected_mcp_folder() {
+        use crate::client_setup::protection::Registry;
+        use torro_core::settings::AllowedFolder;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = dir.path().join("documents");
+        std::fs::create_dir(&folder).expect("mkdir");
+        let folders = vec![AllowedFolder { path: folder.display().to_string(), access: FolderAccess::ReadWrite }];
+        let registry = Registry::new(dir.path().join("config"));
+        let current = registry.clone();
+        let allowed = Arc::new(move || match current.paths() {
+            Ok(paths) => Allowed::of(&folders, &paths),
+            Err(_) => Allowed::default(),
+        });
+        let (extensions, _) = extensions_in(dir.path(), roots());
+        let extensions = extensions.with_allowed(allowed).with_protection(Some(registry.clone()));
+        artcraft_installed(&extensions, Some(folder.display().to_string()));
+        assert!(extensions.files_refusal("wordcraft", "get_text", &serde_json::Map::new()).is_none());
+        drop(registry.reserve(&[folder.join("new-client.yaml")]).expect("reserve"));
+        assert!(extensions.files_refusal("wordcraft", "get_text", &serde_json::Map::new()).is_some());
+        let result = extensions.call("wordcraft", "get_text", serde_json::Map::new()).await;
+        assert!(
+            matches!(result, Response::Error { .. }),
+            "no external process is needed to refuse the newly locked folder"
+        );
+        assert_eq!(extensions.supervisor.status("wordcraft"), Status::Stopped);
+    }
+
     fn info(response: Response) -> ExtensionInfo {
         match response {
             Response::Extension { extension } => extension,
@@ -2180,29 +2357,38 @@ mod tests {
         /// as the header, and every request had it.
         #[tokio::test]
         async fn a_server_over_http_is_installed_and_called_with_its_stored_header() {
-            let (base, seen) = client::http_fixture::serve().await;
-            let dir = tempfile::tempdir().expect("temp dir");
-            let (extensions, secrets) = extensions_in(dir.path(), roots());
-            let server = ServerSpec::Http {
-                url: format!("{base}/mcp"),
-                headers: BTreeMap::from([("Authorization".into(), Value::Secret(Secret::new("Bearer s3cret")))]),
-            };
-            let from = InstallFrom::Custom { id: "remote".into(), name: "Remote".into(), server };
-            let installed = info(extensions.install(from).await);
-            assert_eq!(installed.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(), ["now"]);
-            assert_eq!(secrets.keys(), ["ext:remote:Authorization"]);
-            let file = std::fs::read_to_string(dir.path().join("extensions/extensions.json")).expect("file");
-            assert!(!file.contains("s3cret"));
+            // Fresh connections amplify shutdown/pool races; any failed case fails the test,
+            // rather than being hidden by a retry of a failing operation.
+            for attempt in 0..100 {
+                let (base, seen) = client::http_fixture::serve().await;
+                let dir = tempfile::tempdir().expect("temp dir");
+                let (extensions, secrets) = extensions_in(dir.path(), roots());
+                let server = ServerSpec::Http {
+                    url: format!("{base}/mcp"),
+                    headers: BTreeMap::from([("Authorization".into(), Value::Secret(Secret::new("Bearer s3cret")))]),
+                };
+                let from = InstallFrom::Custom { id: "remote".into(), name: "Remote".into(), server };
+                let installed = info(extensions.install(from).await);
+                assert_eq!(installed.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(), ["now"]);
+                assert_eq!(secrets.keys(), ["ext:remote:Authorization"]);
+                let file = std::fs::read_to_string(dir.path().join("extensions/extensions.json")).expect("file");
+                assert!(!file.contains("s3cret"));
 
-            seen.lock().unwrap_or_else(PoisonError::into_inner).clear();
-            info(extensions.confirm("remote", &installed.fingerprint.expect("a fingerprint")).await);
-            let Response::ToolResult { output } = extensions.call("remote", "now", Default::default()).await else {
-                panic!("an answer");
-            };
-            assert_eq!(output.content, vec![torro_ipc::extensions::Content::Text { text: "called \"now\"".into() }]);
-            let seen = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
-            assert!(seen.iter().any(|request| request.body["method"] == "tools/call"), "{seen:?}");
-            assert!(seen.iter().all(|request| request.header("authorization") == Some("Bearer s3cret")));
+                seen.lock().unwrap_or_else(PoisonError::into_inner).clear();
+                info(extensions.confirm("remote", &installed.fingerprint.expect("a fingerprint")).await);
+                let response = extensions.call("remote", "now", Default::default()).await;
+                let Response::ToolResult { output } = response else {
+                    panic!("attempt {attempt}: expected a tool result, got {response:?}");
+                };
+                assert_eq!(
+                    output.content,
+                    vec![torro_ipc::extensions::Content::Text { text: "called \"now\"".into() }]
+                );
+                let seen = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                assert!(seen.iter().any(|request| request.body["method"] == "tools/call"), "{seen:?}");
+                assert!(seen.iter().all(|request| request.header("authorization") == Some("Bearer s3cret")));
+                extensions.supervisor.stop_all().await;
+            }
         }
 
         /// A keychain that stores, then puts a folder in place of the file of the servers, so writing the file

@@ -818,6 +818,7 @@ pub(crate) mod tests {
         let place = Place::new();
         let home = place.dir.path().join("home");
         let env = crate::client_setup::Env {
+            open: Default::default(),
             home: home.clone(),
             app_config: home.join(".config"),
             path: Vec::new(),

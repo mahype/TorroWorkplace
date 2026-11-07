@@ -1170,7 +1170,21 @@ pub const MCP_CLIENT: &str = "mcp";
 /// The kinds of MCP clients (#231): the coding agents and apps the connect wizard knows, and
 /// [`MCP_CLIENT`]. They come only through MCP ([`crate::Door::Mcp`]) and only while "Allow MCP" is
 /// on.
-pub const MCP_KINDS: &[&str] = &["claude-code", "codex", "gemini", "claude-desktop", "cursor", MCP_CLIENT];
+pub const MCP_KINDS: &[&str] = &[
+    "claude-code",
+    "codex",
+    "gemini",
+    "claude-desktop",
+    "cursor",
+    "opencode",
+    "open-webui",
+    "zed",
+    "cline",
+    "continue",
+    "cherry-studio",
+    "librechat",
+    MCP_CLIENT,
+];
 
 /// The kinds `clients.create_client` makes (#231): [`SCRIPT_CLIENT`], the [`MCP_KINDS`],
 /// [`HOOK_CLIENT`] and [`ASSISTANT_CLIENT`]. [`BOT_CLIENT`] is made only with its bot
@@ -1182,6 +1196,13 @@ pub const CLIENT_KINDS: &[&str] = &[
     "gemini",
     "claude-desktop",
     "cursor",
+    "opencode",
+    "open-webui",
+    "zed",
+    "cline",
+    "continue",
+    "cherry-studio",
+    "librechat",
     MCP_CLIENT,
     HOOK_CLIENT,
     ASSISTANT_CLIENT,
@@ -3586,7 +3607,8 @@ static CREATE_CLIENT: Command = Command {
                   to what its kind may hold and checked like clients.update_client), and returns its key (the \
                   assistant: the client only, result `client`, never a key). The key is in this answer only; the \
                   core keeps just its hash. Kinds: `script`, the MCP clients `claude-code`, `codex`, `gemini`, \
-                  `claude-desktop`, `cursor` and `mcp`, `hook` (names the agent it reports for) and `assistant`; \
+                  `claude-desktop`, `cursor`, `opencode`, `open-webui`, `zed`, `cline`, `continue`, \
+                  `cherry-studio`, `librechat` and `mcp`, `hook` (names the agent it reports for) and `assistant`; \
                   any other kind is an error.",
 };
 
@@ -6835,13 +6857,13 @@ mod tests {
     /// #231: the kinds of clients: which come through MCP, which can be made.
     #[test]
     fn client_kinds_are_closed_and_mcp_clients_are_known() {
-        for kind in ["claude-code", "codex", "gemini", "claude-desktop", "cursor", "mcp"] {
+        for &kind in MCP_KINDS {
             assert!(is_mcp_kind(kind) && CLIENT_KINDS.contains(&kind), "{kind}");
         }
-        for kind in [SCRIPT_CLIENT, HOOK_CLIENT, ASSISTANT_CLIENT, BOT_CLIENT, "zed"] {
+        for kind in [SCRIPT_CLIENT, HOOK_CLIENT, ASSISTANT_CLIENT, BOT_CLIENT, "unknown-editor"] {
             assert!(!is_mcp_kind(kind), "{kind}");
         }
-        assert!(!CLIENT_KINDS.contains(&BOT_CLIENT) && !CLIENT_KINDS.contains(&"zed"));
+        assert!(!CLIENT_KINDS.contains(&BOT_CLIENT) && !CLIENT_KINDS.contains(&"unknown-editor"));
         let client = |name: &str, kind: &str| ClientInfo {
             id: "c1".into(),
             name: name.into(),

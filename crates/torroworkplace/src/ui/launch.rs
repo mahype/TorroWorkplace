@@ -32,6 +32,11 @@ use crate::client_setup::HookNote;
 /// A state the control centre can start in (`--demo --open <state>`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Open {
+    /// Open-client connection states for visual checks (#539).
+    ConnectOpenCode,
+    ConnectOpenCodeDone,
+    ConnectOpenWebui,
+    ConnectOpenWebuiKeyboard,
     /// Accounts without any account (task S.30): every group with only its sentence and "Add".
     AccountsEmpty,
     /// The AI section with its accounts, "Add" and the data rule.
@@ -247,7 +252,7 @@ impl Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 122] = [
+    pub const ALL: [(&'static str, Open); 126] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -319,6 +324,10 @@ impl Open {
         ("mcp-bots", Open::McpBots),
         ("mcp-orphans", Open::McpOrphans),
         ("connect-client", Open::ConnectClient),
+        ("connect-opencode", Open::ConnectOpenCode),
+        ("connect-opencode-done", Open::ConnectOpenCodeDone),
+        ("connect-open-webui", Open::ConnectOpenWebui),
+        ("connect-open-webui-keyboard", Open::ConnectOpenWebuiKeyboard),
         ("connect-client-rights", Open::ConnectClientRights),
         ("connect-client-done", Open::ConnectClientDone),
         ("connect-client-other", Open::ConnectClientOther),

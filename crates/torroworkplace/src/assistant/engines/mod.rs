@@ -219,7 +219,7 @@ impl Agents {
         self.runs.as_ref()?;
         match agent.target().locate(self.env.as_ref()?)? {
             Method::Cli { executable, .. } => Some(executable),
-            Method::Json { .. } | Method::Toml { .. } => None,
+            Method::Json { .. } | Method::Toml { .. } | Method::Open { .. } | Method::Guided { .. } => None,
         }
     }
 
