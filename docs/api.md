@@ -59,16 +59,29 @@ Uploads beginnen ohne Kennung bei Offset 0; folgende Aufrufe benutzen die gelief
 Identische Wiederholungen sind idempotent, andere Offsets/Inhalte `conflict`. `final: true` liefert wie Prepare
 eine flüchtige Prepared-ID, Maße und eine PNG-Vorschau von höchstens 256 KiB. PNG/JPEG/GIF/WebP werden geprüft
 (höchstens 32 MP, Kanten 32768, Decoder 128 MiB), nie SVG. Ein Decoder läuft gleichzeitig. Maximal vier unfertige
-Uploads je Aufrufer, 16 insgesamt und 100 MiB für Originale/Uploads/Vorschauen; Ressourcenmangel ist `busy`.
+Uploads je Aufrufer, 16 insgesamt und gemeinsam 100 MiB für Originale/Uploads/Vorschauen sowie zusätzliche
+Arbeits- und Zielpuffer; Ressourcenmangel ist `busy`. Der dekodierte Quellframe gehört zum separaten
+128-MiB-Decoderbudget, zusätzliche EXIF-Drehframes und alte/neue Thumbnail-Zielpixel zum gemeinsamen Budget.
 Neue Upload-Payloads warten nicht ungezählt hinter einem laufenden Import oder Decoder: Ist die
 Speicherzulassung belegt, kommt sofort `busy`; erst zugelassene, bereits budgetierte Requests dürfen warten.
 Beim Speichern zählen auch ausgehende Bildpuffer und konservativ reservierter MIME-Arbeitsraum bis zum Abschluss.
 Die 25-MiB-Eingabegrenze ist deshalb keine Zusage, beliebig viele Originalteile gleichzeitig speichern zu können.
+Normale Größen behalten Lanczos3 und JPEG-Qualität 85 bei. Vor einer Reduktion auf Breite 1600 reserviert der
+Dienst gemeinsam den Float-Zwischenframe (`16 × Quellbreite × Zielhöhe`), die farbtiefengleichen Zielpixel und
+256 KiB Filter-Arbeitsraum; die Zielhöhe wird wie bisher seitenverhältnisgetreu gerundet, mindestens auf 1.
+Reicht das unveränderte Budget nicht, kommt `busy` vor dem Resampling – auch beim zulässigen RGBA-PNG
+1601×10000. Erfolgreiches Prepare garantiert deshalb nicht, dass jede spätere Größenwahl gespeichert werden
+kann. Es gibt keinen stillen Wechsel auf einen einfacheren Filter oder eine geringere Farbtiefe.
+Original erhält die Quelldatei bytegleich und benötigt keinen Resampling-Puffer.
 Unfertige Uploads laufen nach 10 Minuten, fertige Quellen nach einer Stunde ohne Nutzung ab. Erneutes Prepare
 einer Prepared-ID verlängert ihre Lease. Mit einem anderen Zielkonto kopiert Prepare die eigene RAM-Quelle
 in eine neue Lease, nur wenn Quell- und Zielkonto erreichbar sind; die alte Lease bleibt bis zur Freigabe erhalten.
 Das erhält beim Kontowechsel auch ungewählte Originalauflösungen, ohne sie zu speichern oder an die UI zu senden.
 MailPart-Importe holen nur den Bildteil in begrenzten IMAP-Stücken; auch Rohdaten und MIME-Dekodierung werden vorab budgetiert.
+Die tatsächliche Quellkapazität bleibt nach dem Lesen bis zum Store-Eintrag beziehungsweise Encoding-Ende
+reserviert; Prepared-Quellen und Upload-Einträge sind bereits im Store gezählt. Datei-/MIME-Leseworker und
+Decode-/Encode-Worker halten ihre Zulassung samt Ergebnis selbst: Abbruch des wartenden Aufrufs gibt Lock
+und temporäre Reservierungen erst frei, wenn auch die zugehörigen Puffer nicht mehr leben.
 Dateiimporte reservieren die gemessene Größe ohne geometrisches Pufferwachstum und lesen in begrenzten
 Stücken; auch bei zwischenzeitlichem Dateiwachstum bleibt die Quellpufferkapazität auf 25 MiB begrenzt.
 Encoder begrenzen die tatsächliche Ausgabekapazität vor jedem Schreiben. PNG-Ausgaben und Vorschauen
