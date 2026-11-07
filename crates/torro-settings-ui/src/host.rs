@@ -1391,7 +1391,14 @@ impl Host {
             (Form::Steps, true) => shell::header_title(Some(shell::SETTINGS_ICON), tr("Settings"), None),
             (Form::Steps, false) => {
                 let name = sub_page.map_or_else(|| section.name().to_string(), |(name, _)| name);
-                widgets::menu_button(anchor, Some(section.icon), widgets::path_menu_label(&name), menu())
+                if actions.is_empty() {
+                    widgets::menu_button(anchor, Some(section.icon), widgets::path_menu_label(&name), menu())
+                } else {
+                    // Beside the page's own buttons a name has no room in a narrow header ("Sort
+                    // existing mail…" ran under the settings button, design review of #554): the
+                    // section's icon and the chevron, the name as tooltip.
+                    widgets::with_tooltip(widgets::menu_button(anchor, Some(section.icon), "", menu()), name)
+                }
             }
             // Medium: the section's menu stays in front of the page below it (issue #473).
             (Form::Menu, _) => match sub_page {
@@ -1830,6 +1837,11 @@ mod tests {
         let below = page().sub_page("Work", Message::Back);
         assert!(host.view(SizeClass::Narrow, below, |m| m).overlay.is_some(), "the menu over the page");
         assert!(host.view(SizeClass::Narrow, page(), |m| m).overlay.is_some(), "the menu on the section");
+        // Beside a page's own button the menu button keeps only its icon (review of #554), and
+        // still opens the menu.
+        let busy =
+            page().actions(vec![widgets::text_button(None, "Sort existing mail…", style::button::secondary, None)]);
+        assert!(host.view(SizeClass::Narrow, busy, |m| m).overlay.is_some(), "the menu beside page actions");
         let _: Outcome<()> = host.update(Message::Close);
         assert!(host.view(SizeClass::Narrow, page(), |m| m).overlay.is_none(), "closed again");
         host.menu = true;
