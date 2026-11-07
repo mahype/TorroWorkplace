@@ -1268,6 +1268,7 @@ pub mod accounts {
         match action {
             crate::accounts::Action::Send(request) => Action::Ask(request),
             crate::accounts::Action::OpenUrl(url) => Action::OpenUrl(url),
+            crate::accounts::Action::Focus(field) => Action::Focus(field),
             crate::accounts::Action::None | crate::accounts::Action::AskAi(_) => Action::None,
         }
     }

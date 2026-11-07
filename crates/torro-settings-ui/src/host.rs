@@ -719,6 +719,7 @@ impl Host {
                 Task::perform(ask, move |result| Message::AiAnswered(asked.clone(), Box::new(result)))
             }))),
             accounts::Action::OpenUrl(url) => Outcome::OpenUrl(url),
+            accounts::Action::Focus(field) => Outcome::Work(iced::widget::operation::focus(field)),
         }
     }
 
