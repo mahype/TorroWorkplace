@@ -328,7 +328,7 @@ Konten steht die Datenregel „Mail to cloud models“ (vorher in den Rechten de
   Claude Code unter „MCP clients“ ist etwas anderes: Dort ruft der Agent die Suite über MCP.
 - **Die Kontoseite eines KI-Kontos** („‹ AI › Ollama“): Status und Verbindung, darunter
   **„Models“**: eine Zeile je Modell mit Name, Merkmalen (Tools, Thinking, Context), dem Ort, an dem es
-  rechnet („On this computer“, „Ollama Cloud“, „Cloud“), und einem **Schalter**. Modelle, die
+  rechnet („On this computer“, „Outside this computer“, „Ollama Cloud“, „Cloud“), und einem **Schalter**. Modelle, die
   weder Werkzeuge nutzen noch entscheiden, stehen blass mit „Can't use tools or decide“ und ohne Schalter, weil
   kein Modul sie nutzen kann; ein Entscheidungsmodell (nimble) hat das Merkmal „Decides“ und einen Schalter, weil
   die Mail-Sortierung es braucht (#231).
@@ -346,10 +346,10 @@ Konten steht die Datenregel „Mail to cloud models“ (vorher in den Rechten de
   Chat-Modelle. Ist schmaler als ein Formular, steht das
   Bedienelement jeder Zeile unter ihrem Text, damit nichts abgeschnitten wird. Ein Modell für Sorting nimmt vorher eine gespeicherte Ausnahme
   `inbox.categorize` zurück (`ai.set_assignment` mit `engine: null`, wie Einstellungen › Categorization), damit der
-  Platz sortiert. Unter „Data rule“ steht nur die Erlaubnis des Chats, `mailToCloud` („Chat may read mail in the
-  cloud“). Die für Sorting, `decideMailToCloud`, hat keinen eigenen Schalter (#424): Das Menü von Sorting zeigt nach
-  „Other models“ den Abschnitt „In the cloud“, jede Zeile mit Wolke; ein Modell dort
-  fragt vorher („Sort mail in the cloud?“, „Cancel“/„Use“, auch „Use suggestion“ für ein Modell in der Cloud), und
+  Platz sortiert. Unter „Data rule“ steht nur die Erlaubnis des Chats, `mailToCloud` („Chat may read mail outside this
+  computer“). Die für Sorting, `decideMailToCloud`, hat keinen eigenen Schalter (#424): Das Menü von Sorting zeigt nach
+  „Other models“ den Abschnitt „Elsewhere“, jede Zeile mit Wolke; ein Modell dort
+  fragt vorher („Send mail outside this computer?“, „Cancel“/„Use“, auch „Use suggestion“ für ein Modell anderswo), und
   erst „Use“ setzt Modell und Erlaubnis. Ein Modell hier oder „None“ nimmt sie zurück. Steht ein Modell in der
   Cloud im Platz und die Erlaubnis ist aus, sagt die Zeile unter Sorting „Waiting for your OK – mail stays here“.
 - **Was angeschaltet ist, gilt überall:** Die Auswahlen der Module (Assistent › New chats, die Auswahl
@@ -370,6 +370,13 @@ Konten steht die Datenregel „Mail to cloud models“ (vorher in den Rechten de
   jemand ein anderes wählt; erst danach bestimmt der Kern den Ort und wendet die Datenregel an.
   Laufende Antworten laufen zu Ende. Ist bei diesem Anbieter gar nichts mehr an, antwortet das Modul
   nicht mit einem anderen Anbieter, sondern sagt es: „Turn on a model of {provider} in Settings › AI.“
+- **Nur Loopback ist hier** (#359, #334): Ollama, LM Studio und Strata im LAN (auch auf eigenen Geräten)
+  stehen als „Outside this computer“, nicht als „Ollama Cloud“. Nur `localhost`, `*.localhost`, `127/8`
+  und `::1` können zusammen mit den Modellangaben „On this computer“ ergeben. Neue LAN-Modelle starten aus;
+  gespeicherte Schalter und Mail-Erlaubnisse bleiben erhalten. LAN-„Automatic“ darf mit Sortiererlaubnis
+  auch Cloud-Modelle desselben Kontos wählen, auf Loopback bleibt Automatic lokal. Jede neue Auswahl
+  anderswo fragt vor dem Setzen nach, auch in der Einrichtung und bei vorhandener Erlaubnis. „Cancel“
+  ändert nichts; „Continue“ ersetzt kein „Use“.
 - **Ollama Cloud:** Modelle mit dem Zusatz `:cloud` laufen über das lokale Ollama auf `ollama.com` und
   gelten für die Datenregel als **entfernt** ([ki.md](ki.md), Grundsatz 4; umgesetzt mit S.23). Ein
   eigener Anbieter „Ollama Cloud“ (direkt mit API-Schlüssel) kommt erst, wenn jemand ihn ohne lokales
