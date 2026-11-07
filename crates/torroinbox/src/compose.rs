@@ -1,6 +1,6 @@
 //! The compose window (task E4.3 in `docs/tasks/mail.md`, `docs/mail.md` "Schreiben in einem
-//! eigenen Fenster"): `torroinbox --compose [--reply <id> | --reply-all <id> | --forward <id>]
-//! [--account <id>] [--attach <path>]`, a window of its own with the class `torro-compose`, so a
+//! eigenen Fenster"): `torroinbox --compose [--reply <id> | --reply-all <id> | --forward <id> |
+//! --draft <id>] [--account <id>] [--attach <path>]`, a window of its own with the class `torro-compose`, so a
 //! tiling manager puts it beside the list and one can read while writing.
 //!
 //! - **A file along (task WZ.8):** `--attach <path>` attaches that file as the window opens, as if
@@ -32,6 +32,12 @@
 //!   and `> ` before every line); `in_reply_to` lets the core set the reply headers. Opened from
 //!   the panel of the inbox ([`crate::mail::compose_command`]) with the message id; the message
 //!   is fetched here (`mail.get_message`).
+//! - **Writing on a draft (issue #502):** `--draft <id>` opens a saved draft
+//!   (`mail.get_draft`): its account, every recipient (Bcc unfolded when it has some), subject,
+//!   text (formatted text back as marks, [`torro_mail::html::to_markup`], with where the quoted
+//!   history starts) and attachments, which are parts of the draft itself. Saving replaces it. A
+//!   draft's parts change their numbers when it is saved again, so after a save that kept them
+//!   the window asks for the new draft (`mail.get_message`) and names them anew, place by place.
 //! - **Nothing gets lost:** every change is saved as a draft a few seconds after the last one
 //!   ([`AUTOSAVE`], `mail.save_draft`; the id it answers replaces the draft next time). Closing
 //!   with unsaved changes asks first. "Send" saves what is not saved and then sends the draft
@@ -161,13 +167,15 @@ pub enum Kind {
     ReplyAll(String),
     /// To pass it on (`--forward <id>`).
     Forward(String),
+    /// To write on a saved draft (`--draft <id>`, issue #502).
+    Draft(String),
 }
 
 impl Kind {
     /// The message answered or passed on.
     pub fn message(&self) -> Option<&str> {
         match self {
-            Kind::New => None,
+            Kind::New | Kind::Draft(_) => None,
             Kind::Reply(id) | Kind::ReplyAll(id) | Kind::Forward(id) => Some(id),
         }
     }
@@ -179,6 +187,8 @@ impl Kind {
             Kind::Reply(_) => tr("Reply"),
             Kind::ReplyAll(_) => tr("Reply all"),
             Kind::Forward(_) => tr("Forward"),
+            // Not "Draft": the state beside it says "Draft saved" (design review of #502).
+            Kind::Draft(_) => tr("Continue writing"),
         }
     }
 
@@ -187,12 +197,13 @@ impl Kind {
         match self {
             Kind::New => tr("Couldn't open the compose window."),
             Kind::Reply(_) | Kind::ReplyAll(_) | Kind::Forward(_) => tr("Couldn't load the message."),
+            Kind::Draft(_) => tr("Couldn't load the draft."),
         }
     }
 
     fn icon(&self) -> Icon {
         match self {
-            Kind::New => Icon::SquarePen,
+            Kind::New | Kind::Draft(_) => Icon::SquarePen,
             Kind::Reply(_) => Icon::Reply,
             Kind::ReplyAll(_) => Icon::ReplyAll,
             Kind::Forward(_) => Icon::Forward,
@@ -256,13 +267,18 @@ pub struct Start {
 }
 
 impl Start {
-    /// Reads `--compose`, `--reply <id>`, `--reply-all <id>`, `--forward <id>`, `--account <id>`,
+    /// Reads `--compose`, `--reply <id>`, `--reply-all <id>`, `--forward <id>`, `--draft <id>`,
+    /// `--account <id>`,
     /// `--attach <path>` and `--open <state>` from `args`. `None` without `--compose`; then the
     /// flags that only make sense with it are refused, so a mistyped command never opens the inbox
     /// instead. An empty path is a missing value.
     pub fn parse(args: &[String], demo: bool) -> Result<Option<Start>, LaunchError> {
-        let answers: [(&'static str, Answer); 3] =
-            [("--reply", Kind::Reply), ("--reply-all", Kind::ReplyAll), ("--forward", Kind::Forward)];
+        let answers: [(&'static str, Answer); 4] = [
+            ("--reply", Kind::Reply),
+            ("--reply-all", Kind::ReplyAll),
+            ("--forward", Kind::Forward),
+            ("--draft", Kind::Draft),
+        ];
         let mut found = Vec::new();
         for (flag, make) in answers {
             if let Some(id) = flag_value(args, flag)? {
@@ -425,6 +441,10 @@ pub trait ComposeSource: Send + Sync {
     /// `mail.get_message` with its text: the message to answer or pass on.
     fn get_mail(&self, id: String) -> impl Future<Output = Result<Mail, ComposeError>> + Send;
 
+    /// `mail.get_draft` (issue #502): the saved draft `id` to write on, with its Bcc, the message
+    /// it answers and its attachments as parts of itself; `NotFound` when it is gone.
+    fn get_draft(&self, id: String) -> impl Future<Output = Result<Draft, ComposeError>> + Send;
+
     /// `mail.save_draft`: files `draft` in the account's drafts folder and answers it with its id.
     /// With the id of a saved draft it replaces that draft; `NotFound` when that is gone.
     fn save_draft(&self, draft: Draft) -> impl Future<Output = Result<Draft, ComposeError>> + Send;
@@ -516,6 +536,13 @@ impl ComposeSource for InboxClient {
     async fn get_mail(&self, id: String) -> Result<Mail, ComposeError> {
         match ask(self, Request::GetMail { id, include_body: true, include_html: false }).await? {
             Response::MailMessage { message } => Ok(message),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn get_draft(&self, id: String) -> Result<Draft, ComposeError> {
+        match ask(self, Request::GetDraft { id }).await? {
+            Response::MailDraft { draft } => Ok(draft),
             other => Err(unexpected(other)),
         }
     }
@@ -623,6 +650,10 @@ impl ComposeSource for DemoSource {
 
     async fn get_mail(&self, id: String) -> Result<Mail, ComposeError> {
         Ok(DemoSource::get_mail(self, &id)?)
+    }
+
+    async fn get_draft(&self, id: String) -> Result<Draft, ComposeError> {
+        Ok(DemoSource::get_draft(self, &id)?)
     }
 
     async fn save_draft(&self, draft: Draft) -> Result<Draft, ComposeError> {
@@ -780,6 +811,8 @@ impl Attached {
 pub struct Opening {
     pub to: Vec<MailAddress>,
     pub cc: Vec<MailAddress>,
+    /// Only a draft brings blind copies (issue #502).
+    pub bcc: Vec<MailAddress>,
     pub subject: String,
     /// Starts with two blank lines for the answer, then the quote.
     pub body: String,
@@ -914,11 +947,64 @@ pub fn opening(kind: &Kind, message: Option<&Mail>, own: &[String]) -> Opening {
     Opening {
         to,
         cc,
+        bcc: Vec::new(),
         subject: reply_subject(&summary.subject),
         body: format!("\n\n{}\n{}", attribution(message), quote(text)),
         attachments: Vec::new(),
         in_reply_to: Some(summary.id.clone()),
         history: Some(attribution(message)),
+    }
+}
+
+/// What the window starts with to write on the saved `draft` (issue #502): its recipients, subject,
+/// the message it answers, its text (formatted text as the marks of [`markup`], from where its
+/// quoted history starts; else its plain text) and its attachments. A part of a message the window
+/// knows (`mail`, the draft as `mail.get_message` reads it) takes its name and size from there,
+/// any other one is called "Attachment" with no size.
+pub fn reopening(draft: &Draft, mail: Option<&Mail>) -> Opening {
+    let (mut body, history) = match draft.html.as_deref() {
+        Some(markup) => html::to_markup(markup),
+        None => (draft.body.clone(), None),
+    };
+    // An answer without own text yet starts with room above the quote, as a new answer does: typing
+    // at once must not change the line where the history starts.
+    if history.as_deref().is_some_and(|history| body.trim_start().starts_with(history)) {
+        body = format!("\n\n{}", body.trim_start());
+    }
+    let attachments = draft
+        .attachments
+        .iter()
+        .map(|attachment| match attachment {
+            DraftAttachment::MailPart { message, part } => {
+                let known = mail
+                    .filter(|mail| mail.summary.id == *message)
+                    .and_then(|mail| mail.attachments.iter().find(|info| info.part == *part));
+                match known {
+                    Some(info) => Attached::part(message, info),
+                    None => Attached::Part {
+                        message: message.clone(),
+                        part: part.clone(),
+                        name: tr("Attachment").to_owned(),
+                        size: 0,
+                    },
+                }
+            }
+            DraftAttachment::File { path } => {
+                let path = PathBuf::from(path);
+                let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+                Attached::File { path, name, size: 0 }
+            }
+        })
+        .collect();
+    Opening {
+        to: draft.to.clone(),
+        cc: draft.cc.clone(),
+        bcc: draft.bcc.clone(),
+        subject: list::one_line(&draft.subject),
+        body,
+        attachments,
+        in_reply_to: draft.in_reply_to.clone(),
+        history,
     }
 }
 
@@ -1215,6 +1301,8 @@ type Answer = fn(String) -> Kind;
 pub struct Prepared {
     pub senders: Vec<Sender>,
     pub message: Option<Box<Mail>>,
+    /// The draft to write on (`--draft`, issue #502).
+    pub draft: Option<Box<Draft>>,
     pub default_sender: Option<String>,
     /// Where "+ Contact" writes ([`ComposeSource::writable_book`]); `None` hides the button.
     pub writable_book: Option<String>,
@@ -1325,7 +1413,7 @@ pub enum Message {
     /// "Send" (`Ctrl+Enter`).
     Send,
     /// A save finished: the revision it saved and the draft the core answered.
-    Saved(u64, Box<Result<Draft, ComposeError>>),
+    Saved(u64, Box<Result<Kept, ComposeError>>),
     /// A send finished.
     Sent(Result<Delivery, ComposeError>),
     /// A draft that is replaced by one in another account was moved to the trash.
@@ -1372,8 +1460,18 @@ pub struct Window<S> {
     in_reply_to: Option<String>,
     /// Where the quoted history starts in the text ([`Opening::history`]).
     history: Option<String>,
-    /// The draft as the core answered the last save: its id, and the account it lives in.
+    /// The draft as the core answered the last save (or as it was opened with `--draft`): its id,
+    /// and the account it lives in.
     draft: Option<(String, String)>,
+    /// A draft of another account that goes to the trash once the running save filed the new one:
+    /// that save may still take parts of it along.
+    discard_after: Option<String>,
+    /// The attachments the running save was started with, to name the draft's own parts anew
+    /// ([`save_draft_kept`]) only while they are still the same.
+    saving_parts: Vec<DraftAttachment>,
+    /// The attachments of the last save whose new part numbers could not be read: the next save
+    /// reads them first ([`save_draft_kept`], review of #502).
+    unsure_parts: Option<Vec<DraftAttachment>>,
     /// Counts every change; a save remembers the number it saved.
     revision: u64,
     saved: u64,
@@ -1452,6 +1550,9 @@ impl<S: ComposeSource + 'static> Window<S> {
             in_reply_to: None,
             history: None,
             draft: None,
+            discard_after: None,
+            saving_parts: Vec::new(),
+            unsure_parts: None,
             revision: 0,
             saved: 0,
             changed: None,
@@ -1936,11 +2037,26 @@ impl<S: ComposeSource + 'static> Window<S> {
                 Phase::Failed(Notice::new(tr("No mail account yet."), tr("Connect one in Settings, under Accounts.")));
             return Task::none();
         }
+        // A draft of an account it cannot be written from would be saved into another one and lost
+        // from its own: it is not opened.
+        if let Some(draft) = prepared.draft.as_deref()
+            && !prepared.senders.iter().any(|sender| sender.account == draft.account)
+        {
+            let why = tr("The draft's account can't send mail from here.");
+            self.phase = Phase::Failed(Notice::new(self.start.kind.load_failed(), why));
+            return Task::none();
+        }
         let own: Vec<String> = prepared.senders.iter().map(|sender| sender.address.to_lowercase()).collect();
-        let opened = opening(&self.start.kind, prepared.message.as_deref(), &own);
+        let opened = match prepared.draft.as_deref() {
+            Some(draft) => reopening(draft, prepared.message.as_deref()),
+            None => opening(&self.start.kind, prepared.message.as_deref(), &own),
+        };
+        // A draft is written on from its own account (issue #502), whatever `--account` says: the
+        // draft the window holds lives there.
+        let wanted = prepared.draft.as_ref().map(|draft| draft.account.clone()).or_else(|| self.start.account.clone());
         self.from = pick_sender_with_default(
             &prepared.senders,
-            self.start.account.as_deref(),
+            wanted.as_deref(),
             prepared.message.as_deref(),
             prepared.default_sender.as_deref(),
         )
@@ -1950,12 +2066,27 @@ impl<S: ComposeSource + 'static> Window<S> {
         self.paper = prepared.paper;
         self.to = Recipients::of(&opened.to);
         self.cc = Recipients::of(&opened.cc);
+        self.bcc = Recipients::of(&opened.bcc);
         self.show_cc = !opened.cc.is_empty();
+        self.show_bcc = !opened.bcc.is_empty();
         self.subject = opened.subject;
         self.body = Content::with_text(&opened.body);
         self.attachments = opened.attachments;
         self.in_reply_to = opened.in_reply_to;
         self.history = opened.history;
+        if let Some(draft) = prepared.draft {
+            // An account that writes plain text writes on the draft's plain text, without marks; one
+            // that writes formatted mail keeps the marks of a plain draft as text.
+            if draft.html.is_some() && !self.formatted() {
+                self.body = Content::with_text(&draft.body);
+                self.history = None;
+            } else if draft.html.is_none() && self.formatted() {
+                self.body = Content::with_text(&html::plain_to_markup(&draft.body));
+            }
+            // Saving replaces it; nothing is unsaved until something changes.
+            let Draft { id, account, .. } = *draft;
+            self.draft = id.map(|id| (id, account));
+        }
         self.phase = Phase::Ready;
         // `--attach` (task WZ.8): the file goes along as if it had been chosen; one that cannot go
         // says why in the notice, the window opens anyway.
@@ -2131,19 +2262,20 @@ impl<S: ComposeSource + 'static> Window<S> {
             return Task::none();
         }
         let draft = self.draft();
-        let old = self.draft.clone().filter(|(_, account)| *account != draft.account).map(|(id, _)| id);
+        // The old draft of another account goes once this one is filed (`saved`): its parts may
+        // go along into the new one.
+        self.discard_after = self.draft.clone().filter(|(_, account)| *account != draft.account).map(|(id, _)| id);
+        self.saving_parts = draft.attachments.clone();
+        let own: Vec<String> = self.draft.iter().map(|(id, _)| id.clone()).collect();
         self.saving = Some(self.revision);
         let revision = self.revision;
         #[cfg(test)]
         self.calls.push(Call::Save(Box::new(draft.clone())));
         let source = self.source.clone();
-        let saved = Task::perform(async move { save_with_fallback(source, draft).await }, move |result| {
+        let stale = self.unsure_parts.clone();
+        Task::perform(async move { save_draft_kept(source, draft, own, stale).await }, move |result| {
             Message::Saved(revision, Box::new(result))
-        });
-        match old {
-            Some(old) => Task::batch([saved, self.discard(old)]),
-            None => saved,
-        }
+        })
     }
 
     /// Moves a draft that was replaced by one in another account to the trash.
@@ -2155,13 +2287,19 @@ impl<S: ComposeSource + 'static> Window<S> {
     }
 
     /// A save finished.
-    fn saved(&mut self, revision: u64, result: Result<Draft, ComposeError>) -> Task<Message> {
+    fn saved(&mut self, revision: u64, result: Result<Kept, ComposeError>) -> Task<Message> {
         self.saving = None;
         let draft = match result {
-            Ok(draft) => draft,
+            Ok(Kept { draft, unsure }) => {
+                // Numbers that could not be read stay unsure until a later save reads them.
+                self.unsure_parts = unsure.then(|| draft.attachments.clone());
+                draft
+            }
             Err(err) => {
                 // Everything stays as it is; the clock tries again, and a send or a close that
-                // waited for this save is given up.
+                // waited for this save is given up. The old draft stays too: nothing replaced it.
+                self.discard_after = None;
+                self.saving_parts.clear();
                 self.after = After::Nothing;
                 self.sending = false;
                 self.changed = Some(Instant::now());
@@ -2169,9 +2307,33 @@ impl<S: ComposeSource + 'static> Window<S> {
                 return Task::none();
             }
         };
+        // The draft's own parts under their new names: each attachment still there as it was saved
+        // takes the name the save gave it, also when others came or went meanwhile.
+        let sent = std::mem::take(&mut self.saving_parts);
+        // Parts of a draft that was removed meanwhile could not go along (`save_with_fallback`): they
+        // leave the window too, which says so.
+        let lost: Vec<&DraftAttachment> = sent.iter().filter(|saved| !draft.attachments.contains(saved)).collect();
+        if draft.attachments.len() < sent.len() && !lost.is_empty() {
+            self.attachments.retain(|attached| !lost.contains(&&attached.draft()));
+            self.notice = Some(Notice::plain(tr("The attachments of the removed draft could not be kept.")));
+        } else if sent.len() == draft.attachments.len() {
+            for attached in &mut self.attachments {
+                let at = sent.iter().position(|saved| *saved == attached.draft());
+                if let (Some(at), Attached::Part { message, part, .. }) = (at, attached)
+                    && let DraftAttachment::MailPart { message: id, part: number } = &draft.attachments[at]
+                {
+                    *message = id.clone();
+                    *part = number.clone();
+                }
+            }
+        }
         if let Some(id) = draft.id {
             self.draft = Some((id, draft.account));
         }
+        let cleaned = match self.discard_after.take() {
+            Some(old) => self.discard(old),
+            None => Task::none(),
+        };
         self.saved = self.saved.max(revision);
         let settled = revision == self.revision;
         if settled {
@@ -2179,12 +2341,13 @@ impl<S: ComposeSource + 'static> Window<S> {
         }
         if !settled && self.after != After::Nothing {
             // Changed while it was saved, and something waits for it: save what is new first.
-            return self.save(After::Nothing);
+            return Task::batch([cleaned, self.save(After::Nothing)]);
         }
         match std::mem::replace(&mut self.after, After::Nothing) {
-            After::Nothing => Task::none(),
-            After::Send => self.dispatch(),
-            After::Close => self.exit(),
+            After::Nothing => cleaned,
+            After::Send => Task::batch([cleaned, self.dispatch()]),
+            // The old draft is gone before the window is.
+            After::Close => cleaned.chain(self.exit()),
         }
     }
 
@@ -2328,23 +2491,115 @@ fn key(event: iced::Event, _status: iced::event::Status, _window: iced::window::
 pub async fn prepare<S: ComposeSource>(source: Arc<S>, kind: Kind) -> Result<Prepared, ComposeError> {
     let senders = source.senders().await?;
     let default_sender = source.default_sender().await?;
-    let message = match kind.message() {
+    let mut message = match kind.message() {
         Some(id) => Some(Box::new(source.get_mail(id.to_owned()).await?)),
         None => None,
+    };
+    let draft = match &kind {
+        Kind::Draft(id) => {
+            let draft = source.get_draft(id.clone()).await?;
+            // Only the names and sizes of its attachments: without them they are "Attachment".
+            message = source.get_mail(id.clone()).await.ok().map(Box::new);
+            Some(Box::new(draft))
+        }
+        _ => None,
     };
     // Neither stops the window: without them "+ Contact" is missing and the paper is light.
     let writable_book = source.writable_book().await.ok().flatten();
     let paper = source.paper().await.unwrap_or_default();
-    Ok(Prepared { senders, message, default_sender, writable_book, paper })
+    Ok(Prepared { senders, message, draft, default_sender, writable_book, paper })
 }
 
 /// Saves `draft`; a draft that is gone (`NotFound` for the id it carries) is saved as a new one,
-/// so what was written is never lost to a draft someone removed.
+/// so what was written is never lost to a draft someone removed. Its own attachments (parts of the
+/// gone draft, issue #502) went with it: when the new one cannot take them it is saved without
+/// them, and the window says so ([`Window::saved`]).
 pub async fn save_with_fallback<S: ComposeSource>(source: Arc<S>, draft: Draft) -> Result<Draft, ComposeError> {
+    let Some(gone) = draft.id.clone() else { return source.save_draft(draft).await };
     match source.save_draft(draft.clone()).await {
-        Err(ComposeError::NotFound) if draft.id.is_some() => source.save_draft(Draft { id: None, ..draft }).await,
+        Err(ComposeError::NotFound) => {
+            let fresh = Draft { id: None, ..draft };
+            let own = |attachment: &DraftAttachment| matches!(attachment, DraftAttachment::MailPart { message, .. } if *message == gone);
+            match source.save_draft(fresh.clone()).await {
+                Err(ComposeError::NotFound) if fresh.attachments.iter().any(own) => {
+                    let attachments = fresh.attachments.iter().filter(|attachment| !own(attachment)).cloned().collect();
+                    source.save_draft(Draft { attachments, ..fresh }).await
+                }
+                other => other,
+            }
+        }
         other => other,
     }
+}
+
+/// A save of [`save_draft_kept`]: the draft as the core keeps it, its own parts under their new
+/// numbers; `unsure` when those numbers could not be read after the save (they are still the old
+/// ones then, and the next save reads them first).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Kept {
+    pub draft: Draft,
+    pub unsure: bool,
+}
+
+/// Saves `draft` ([`save_with_fallback`]) and names the parts of the draft itself anew: they are
+/// attachments the core took over from the draft it replaced (`own`: the ids the window knew it by,
+/// and the id it has now), whose numbers change with the new message (issue #502). The saved draft
+/// is read once (`mail.get_message`) and each such part takes the number of the attachment at its
+/// place; when the number of attachments differs, the parts stay as they were. When the reading
+/// fails, the answer says `unsure`.
+///
+/// `stale` are the attachments of the last save whose numbers stayed unsure: before this save the
+/// stored draft is read, and each of them still in `draft` takes the number at its place. A save
+/// that cannot read them is not made (the error is the answer; the window tries again), so no part
+/// is taken by a number that now names another one.
+pub async fn save_draft_kept<S: ComposeSource>(
+    source: Arc<S>,
+    draft: Draft,
+    own: Vec<String>,
+    stale: Option<Vec<DraftAttachment>>,
+) -> Result<Kept, ComposeError> {
+    let draft = match (stale, draft.id.clone()) {
+        (Some(stale), Some(id)) => {
+            let mail = source.get_mail(id.clone()).await?;
+            let parts: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|info| !info.inline).collect();
+            let renamed = |attachment: &DraftAttachment| {
+                let at = stale.iter().position(|old| old == attachment)?;
+                let own = matches!(attachment, DraftAttachment::MailPart { message, .. } if *message == id);
+                let info = parts.get(at).filter(|_| own && parts.len() == stale.len())?;
+                Some(DraftAttachment::MailPart { message: id.clone(), part: info.part.clone() })
+            };
+            let attachments = draft.attachments.iter().map(|old| renamed(old).unwrap_or_else(|| old.clone())).collect();
+            Draft { attachments, ..draft }
+        }
+        _ => draft,
+    };
+    let saved = save_with_fallback(source.clone(), draft).await?;
+    let Some(id) = saved.id.clone() else { return Ok(Kept { draft: saved, unsure: false }) };
+    let names_itself = |message: &str| message == id || own.iter().any(|own| own == message);
+    let keeps = saved
+        .attachments
+        .iter()
+        .any(|attachment| matches!(attachment, DraftAttachment::MailPart { message, .. } if names_itself(message)));
+    if !keeps {
+        return Ok(Kept { draft: saved, unsure: false });
+    }
+    let Ok(mail) = source.get_mail(id.clone()).await else { return Ok(Kept { draft: saved, unsure: true }) };
+    let parts: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|info| !info.inline).collect();
+    if parts.len() != saved.attachments.len() {
+        return Ok(Kept { draft: saved, unsure: false });
+    }
+    let attachments = saved
+        .attachments
+        .iter()
+        .zip(parts)
+        .map(|(attachment, info)| match attachment {
+            DraftAttachment::MailPart { message, .. } if names_itself(message) => {
+                DraftAttachment::MailPart { message: id.clone(), part: info.part.clone() }
+            }
+            other => other.clone(),
+        })
+        .collect();
+    Ok(Kept { draft: Draft { attachments, ..saved }, unsure: false })
 }
 
 /// Asks for files with the system's chooser; none when it is cancelled.
@@ -3539,7 +3794,8 @@ mod tests {
             panic!("a save was started")
         };
         let revision = window.saving.expect("a save is running");
-        let result = block_on(save_with_fallback(window.source.clone(), *draft));
+        let own: Vec<String> = window.draft.iter().map(|(id, _)| id.clone()).collect();
+        let result = block_on(save_draft_kept(window.source.clone(), *draft, own, window.unsure_parts.clone()));
         window.update(Message::Saved(revision, Box::new(result)))
     }
 
@@ -3810,6 +4066,9 @@ mod tests {
         assert_eq!(kind(&["--compose", "--reply", "m:1"]), Kind::Reply("m:1".into()));
         assert_eq!(kind(&["--compose", "--reply-all=m:2"]), Kind::ReplyAll("m:2".into()));
         assert_eq!(kind(&["--compose", "--forward", "m:3"]), Kind::Forward("m:3".into()));
+        assert_eq!(kind(&["--compose", "--draft", "m:4"]), Kind::Draft("m:4".into()), "issue #502");
+        assert_eq!(Kind::Draft("m:4".into()).title(), tr("Continue writing"));
+        assert_eq!(Kind::Draft("m:4".into()).message(), None, "it answers nothing by itself");
         let start = parse(&["--compose", "--account", "mail:anna@example.org", "--open", "menu"]).expect("valid");
         assert_eq!(
             start,
@@ -4175,8 +4434,9 @@ mod tests {
         assert_eq!(window.draft().account, "mail:anna@example.org");
         assert_eq!(window.draft().id, None, "the old draft lives in the other account");
         let _ = window.update(Message::Tick(later()));
-        assert!(window.calls.contains(&Call::Discard(old)));
+        assert!(!window.calls.contains(&Call::Discard(old.clone())), "not before the new one is filed");
         let _ = deliver_save(&mut window);
+        assert!(window.calls.contains(&Call::Discard(old)), "issue #502: once it is");
         assert_eq!(window.draft.as_ref().map(|(_, account)| account.as_str()), Some("mail:anna@example.org"));
     }
 
@@ -4200,6 +4460,247 @@ mod tests {
         let notice = window.notice.clone().expect("it could not be attached");
         assert_eq!(notice.what, tr("Couldn't attach the file."));
         assert_eq!(window.attachments.len(), 1);
+    }
+
+    /// Issue #502: a saved draft opens with every field filled from its own account, its formatted
+    /// text as marks with the history where it was, and nothing unsaved; saving replaces it.
+    #[test]
+    fn a_draft_opens_with_every_field_and_saving_replaces_it() {
+        let mut window = ready(&["--draft", "m:p9"]);
+        assert_eq!(window.draft.clone(), Some(("m:p9".to_owned(), "mail:anna@example.org".to_owned())));
+        assert_eq!(window.draft().account, "mail:anna@example.org", "its own account");
+        assert!(window.show_bcc && !window.show_cc, "Bcc unfolded because it is filled");
+        assert!(!window.unsaved(), "nothing changed yet");
+        assert_eq!(window.title(), "Re: Weekend plans");
+        let draft = window.draft();
+        assert_eq!(draft.id.as_deref(), Some("m:p9"));
+        assert_eq!(draft.to.iter().map(|to| to.address.as_str()).collect::<Vec<_>>(), ["paul@example.org"]);
+        assert_eq!(draft.bcc.iter().map(|to| to.address.as_str()).collect::<Vec<_>>(), ["clara@example.org"]);
+        assert_eq!(draft.in_reply_to.as_deref(), Some("m:p1"));
+        let text = window.body.text();
+        assert!(text.starts_with("Yes, **Saturday at nine** works!"), "{text}");
+        assert_eq!(window.history.as_deref(), Some("On Saturday, Paul Berg <paul@example.org> wrote:"));
+        assert_eq!(draft.html.as_deref(), Some(demo_html("m:p9").as_str()), "saved as it was");
+
+        type_in(&mut window, "", "Re: Weekend plans", " See you!");
+        let _ = window.update(Message::Tick(later()));
+        let _ = deliver_save(&mut window);
+        assert_eq!(window.draft.as_ref().map(|(id, _)| id.as_str()), Some("m:p9"), "replaced under its id");
+        assert_eq!(window.source.drafts().len(), 1, "no second draft");
+    }
+
+    fn demo_html(id: &str) -> String {
+        DemoSource::new(Utc::now()).get_draft(id).expect("a draft").html.expect("formatted")
+    }
+
+    /// Issue #502: the attachments of a draft come back as its own parts, named and sized from the
+    /// draft, and keep their place when saved.
+    #[test]
+    fn a_drafts_attachments_are_its_own_parts() {
+        let mut window = ready(&["--draft", "m:w8"]);
+        assert_eq!(window.attachments.len(), 1);
+        assert_eq!((window.attachments[0].name(), window.attachments[0].size()), ("offer-relaunch.pdf", 182_400));
+        let part = DraftAttachment::MailPart { message: "m:w8".into(), part: "2".into() };
+        assert_eq!(window.draft().attachments, std::slice::from_ref(&part));
+        let _ = window.update(Message::Subject("Offer, second version".into()));
+        let _ = window.update(Message::Tick(later()));
+        let _ = deliver_save(&mut window);
+        assert_eq!(window.draft().attachments, [part], "the same part of the same draft");
+
+        let unknown = Draft {
+            attachments: vec![DraftAttachment::MailPart { message: "m:other".into(), part: "3".into() }],
+            ..window.draft()
+        };
+        let opened = reopening(&unknown, None);
+        assert_eq!((opened.attachments[0].name(), opened.attachments[0].size()), (tr("Attachment"), 0));
+        let missing = ready_failing(&["--draft", "m:p1"]);
+        assert_eq!(missing, tr("Couldn't load the draft."), "a mail that is no draft");
+
+        // An answer without own text gets room above its quote, as a new answer has.
+        let quote_only = Draft {
+            html: Some(markup::to_html("On Monday, Bernd wrote:\n> Lunch?", Some("On Monday, Bernd wrote:"))),
+            ..window.draft()
+        };
+        let opened = reopening(&quote_only, None);
+        assert!(opened.body.starts_with("\n\nOn Monday, Bernd wrote:"), "{:?}", opened.body);
+        assert_eq!(opened.history.as_deref(), Some("On Monday, Bernd wrote:"));
+    }
+
+    /// Issue #502: a draft saved as plain text keeps its stars as text in an account that writes
+    /// formatted mail, and `--account` does not move a draft into another account.
+    #[test]
+    fn a_plain_draft_keeps_its_marks_and_its_account() {
+        let source = Arc::new(DemoSource::new(Utc::now()));
+        let plain = Draft {
+            id: None,
+            account: "mail:anna@example.org".into(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Prices".into(),
+            body: "2 * 3 and *not italic*".into(),
+            html: None,
+            in_reply_to: None,
+            attachments: Vec::new(),
+        };
+        let id = source.save_draft(plain).expect("saved").id.expect("an id");
+        let window = ready_on(source, &["--draft", &id, "--account", "mail:anna@work.example.org"]);
+        assert_eq!(window.draft().account, "mail:anna@example.org", "its own account");
+        let html = window.draft().html.expect("formatted");
+        assert!(html.contains("*not italic*") && !html.contains("<em>"), "{html}");
+    }
+
+    /// Issue #502: a draft removed meanwhile is saved as a new one; its own attachments, which went
+    /// with it, are left out, and the window says so.
+    #[test]
+    fn the_attachments_of_a_removed_draft_are_left_out_and_said() {
+        struct Removed(DemoSource);
+        impl ComposeSource for Removed {
+            async fn senders(&self) -> Result<Vec<Sender>, ComposeError> {
+                ComposeSource::senders(&self.0).await
+            }
+            async fn get_mail(&self, id: String) -> Result<Mail, ComposeError> {
+                ComposeSource::get_mail(&self.0, id).await
+            }
+            async fn get_draft(&self, id: String) -> Result<Draft, ComposeError> {
+                ComposeSource::get_draft(&self.0, id).await
+            }
+            async fn save_draft(&self, draft: Draft) -> Result<Draft, ComposeError> {
+                let gone = |attachment: &DraftAttachment| matches!(attachment, DraftAttachment::MailPart { message, .. } if message == "m:w8");
+                if draft.id.is_some() || draft.attachments.iter().any(gone) {
+                    return Err(ComposeError::NotFound);
+                }
+                ComposeSource::save_draft(&self.0, draft).await
+            }
+            async fn send_draft(&self, id: String) -> Result<Delivery, ComposeError> {
+                ComposeSource::send_draft(&self.0, id).await
+            }
+            async fn discard_draft(&self, id: String) -> Result<(), ComposeError> {
+                ComposeSource::discard_draft(&self.0, id).await
+            }
+        }
+        let source = Arc::new(Removed(DemoSource::new(Utc::now())));
+        let mut window = ready_on(source, &["--draft", "m:w8"]);
+        let _ = window.update(Message::Subject("Offer, second version".into()));
+        let _ = window.update(Message::Tick(later()));
+        let _ = deliver_save(&mut window);
+        assert!(window.attachments.is_empty(), "the part went with the removed draft");
+        let notice = window.notice.clone().expect("it says so");
+        assert_eq!(notice.what, tr("The attachments of the removed draft could not be kept."));
+        assert!(window.draft.as_ref().is_some_and(|(id, _)| id != "m:w8"), "saved as a new draft");
+    }
+
+    /// Issue #502: a draft of an account the window cannot write from is not opened: saving it would
+    /// move it into another account.
+    #[test]
+    fn a_draft_of_an_account_without_mail_is_not_opened() {
+        let source = Arc::new(DemoSource::new(Utc::now()));
+        let mut prepared = block_on(prepare(source.clone(), Kind::Draft("m:w8".into())));
+        if let Ok(prepared) = &mut prepared {
+            prepared.senders.retain(|sender| sender.account != "mail:anna@work.example.org");
+        }
+        let launch = Launch::parse(&args(&["--compose", "--demo", "--draft", "m:w8"])).expect("valid parameters");
+        let mut window = Window::new(source, Source::from_args(args(&["--demo"])), launch).0;
+        let _ = window.update(Message::Loaded(prepared));
+        assert!(matches!(&window.phase, Phase::Failed(notice) if notice.what == tr("Couldn't load the draft.")));
+    }
+
+    /// Issue #502: an attachment added while a save runs does not keep the draft's own parts from
+    /// their new names.
+    #[test]
+    fn parts_are_named_anew_also_when_a_file_came_meanwhile() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("plan.pdf");
+        std::fs::write(&path, vec![0u8; 300]).expect("written");
+        let mut window = ready(&["--draft", "m:w8"]);
+        let _ = window.update(Message::Subject("Offer, second version".into()));
+        let _ = window.update(Message::Tick(later()));
+        let revision = window.saving.expect("a save is running");
+        let _ = window.update(Message::Picked(vec![path]));
+        let mut saved = window.draft();
+        saved.attachments = vec![DraftAttachment::MailPart { message: "m:w8".into(), part: "1.2".into() }];
+        let _ = window.update(Message::Saved(revision, Box::new(Ok(Kept { draft: saved, unsure: false }))));
+        let now = window.draft().attachments;
+        assert_eq!(now[0], DraftAttachment::MailPart { message: "m:w8".into(), part: "1.2".into() });
+        assert!(matches!(now[1], DraftAttachment::File { .. }), "the new file stays");
+    }
+
+    fn ready_failing(words: &[&str]) -> String {
+        let source = Arc::new(DemoSource::new(Utc::now()));
+        let mut all = vec!["--compose", "--demo"];
+        all.extend_from_slice(words);
+        let launch = Launch::parse(&args(&all)).expect("valid parameters");
+        let kind = launch.compose.as_ref().map(|start| start.kind.clone()).expect("a compose window");
+        let mut window = Window::new(source.clone(), Source::from_args(args(&["--demo"])), launch).0;
+        let _ = window.update(Message::Loaded(block_on(prepare(source, kind))));
+        match &window.phase {
+            Phase::Failed(notice) => notice.what.to_string(),
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    /// Issue #502: saved again, a draft's own parts take the numbers the new message gives them.
+    #[test]
+    fn a_drafts_own_parts_are_named_anew_after_a_save() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        /// Renumbers the parts of every mail; while `.1` is set, reading a mail fails.
+        struct Renumbered(DemoSource, AtomicBool);
+        impl ComposeSource for Renumbered {
+            async fn senders(&self) -> Result<Vec<Sender>, ComposeError> {
+                ComposeSource::senders(&self.0).await
+            }
+            async fn get_mail(&self, id: String) -> Result<Mail, ComposeError> {
+                if self.1.load(Ordering::SeqCst) {
+                    return Err(ComposeError::Offline);
+                }
+                let mut mail = ComposeSource::get_mail(&self.0, id).await?;
+                for info in &mut mail.attachments {
+                    info.part = format!("1.{}", info.part);
+                }
+                Ok(mail)
+            }
+            async fn get_draft(&self, id: String) -> Result<Draft, ComposeError> {
+                ComposeSource::get_draft(&self.0, id).await
+            }
+            async fn save_draft(&self, draft: Draft) -> Result<Draft, ComposeError> {
+                ComposeSource::save_draft(&self.0, draft).await
+            }
+            async fn send_draft(&self, id: String) -> Result<Delivery, ComposeError> {
+                ComposeSource::send_draft(&self.0, id).await
+            }
+            async fn discard_draft(&self, id: String) -> Result<(), ComposeError> {
+                ComposeSource::discard_draft(&self.0, id).await
+            }
+        }
+        let source = Arc::new(Renumbered(DemoSource::new(Utc::now()), AtomicBool::new(false)));
+        let draft = block_on(source.get_draft("m:w8".into())).expect("a draft");
+        let kept =
+            block_on(save_draft_kept(source.clone(), draft.clone(), vec!["m:w8".into()], None)).expect("saved").draft;
+        assert_eq!(kept.attachments, [DraftAttachment::MailPart { message: "m:w8".into(), part: "1.2".into() }]);
+        let other = Draft {
+            attachments: vec![DraftAttachment::MailPart { message: "m:p3".into(), part: "2".into() }],
+            ..draft.clone()
+        };
+        let foreign =
+            block_on(save_draft_kept(source.clone(), other.clone(), vec!["m:w8".into()], None)).expect("saved").draft;
+        assert_eq!(foreign.attachments, other.attachments, "a part of another mail stays as it is");
+
+        // Review of #502: the numbers cannot be read after a save – the answer says so, the next
+        // save reads them first, and does not save while it cannot.
+        let own = vec!["m:w8".to_owned()];
+        source.1.store(true, Ordering::SeqCst);
+        let unsure = block_on(save_draft_kept(source.clone(), draft.clone(), own.clone(), None)).expect("saved");
+        assert!(unsure.unsure, "the numbers stay unsure");
+        assert_eq!(unsure.draft.attachments, draft.attachments, "still the old ones");
+        let stale = Some(unsure.draft.attachments.clone());
+        let refused = block_on(save_draft_kept(source.clone(), draft.clone(), own.clone(), stale.clone()));
+        assert_eq!(refused, Err(ComposeError::Offline), "no save with numbers that may name another part");
+        source.1.store(false, Ordering::SeqCst);
+        let read = block_on(save_draft_kept(source.clone(), draft.clone(), own, stale)).expect("saved");
+        assert!(!read.unsure);
+        assert_eq!(read.draft.attachments, [DraftAttachment::MailPart { message: "m:w8".into(), part: "1.2".into() }]);
+        let stored = DemoSource::get_draft(&source.0, "m:w8").expect("stored");
+        assert_eq!(stored.attachments, read.draft.attachments, "saved under the number read before");
     }
 
     #[test]
@@ -4680,6 +5181,10 @@ mod tests {
 
         async fn get_mail(&self, id: String) -> Result<Mail, ComposeError> {
             ComposeSource::get_mail(&self.inner, id).await
+        }
+
+        async fn get_draft(&self, id: String) -> Result<Draft, ComposeError> {
+            ComposeSource::get_draft(&self.inner, id).await
         }
 
         async fn save_draft(&self, draft: Draft) -> Result<Draft, ComposeError> {

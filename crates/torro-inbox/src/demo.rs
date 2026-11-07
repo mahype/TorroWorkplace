@@ -57,8 +57,9 @@ use std::sync::{Mutex, MutexGuard};
 use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use torro_core::i18n::{tr, trf};
 use torro_mail::{
-    AttachmentInfo, AuthCheck, Category, DateSource, Draft, FileKind, Flag, Folder, MailAddress, MailCategory,
-    MailPile, Message, MessageSummary, MessageTraits, Order, Role, SaveTarget, SaveTargetSpec, WarningSign,
+    AttachmentInfo, AuthCheck, Category, DateSource, Draft, DraftAttachment, FileKind, Flag, Folder, MailAddress,
+    MailCategory, MailPile, Message, MessageSummary, MessageTraits, Order, Role, SaveTarget, SaveTargetSpec,
+    WarningSign,
 };
 
 use crate::item::{
@@ -647,6 +648,11 @@ struct Letter {
     from: (&'static str, &'static str),
     /// `(name, address)` of the recipients of sent mail; empty: the default recipient (issue #445).
     to: &'static [(&'static str, &'static str)],
+    /// `(name, address)` of the blind copies of a draft (issue #502): the store has no field for
+    /// them, a draft read back ([`DemoSource::get_draft`]) carries them.
+    bcc: &'static [(&'static str, &'static str)],
+    /// The id of the message a draft answers (issue #502); empty: none.
+    answers: &'static str,
     subject: &'static str,
     /// How long before "now" it arrived.
     minutes: i64,
@@ -681,6 +687,8 @@ impl Letter {
             thread: "",
             from: ("", ""),
             to: &[],
+            bcc: &[],
+            answers: "",
             subject,
             minutes: 0,
             flags: &[],
@@ -777,6 +785,51 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             ..MessageTraits::default()
         },
         invitation: false,
+    }
+}
+
+/// The draft `id` of the sample, as the core reads one back (`mail.get_draft`): a message of
+/// `mail` in a drafts folder, with what only its [`Letter`] knows (Bcc, the message it answers).
+/// `None` for any other id.
+fn sample_draft(mail: &[Message], folders: &[Folder], id: &str) -> Option<Draft> {
+    let message = mail.iter().find(|message| message.summary.id == id)?;
+    let in_drafts =
+        folders.iter().any(|folder| folder.id == message.summary.folder && folder.role == Some(Role::Drafts));
+    if !in_drafts {
+        return None;
+    }
+    let letter = sample_letters().into_iter().find(|letter| letter.id == id);
+    let bcc = letter.as_ref().map(|letter| letter.bcc.iter().map(|&(name, mail)| address(name, mail)).collect());
+    let answers = letter.as_ref().map(|letter| letter.answers).filter(|answers| !answers.is_empty());
+    let attachments = message
+        .attachments
+        .iter()
+        .filter(|info| !info.inline)
+        .map(|info| DraftAttachment::MailPart { message: id.to_owned(), part: info.part.clone() })
+        .collect();
+    Some(Draft {
+        id: Some(id.to_owned()),
+        account: message.summary.account.clone(),
+        to: message.summary.to.clone(),
+        cc: message.cc.clone(),
+        bcc: bcc.unwrap_or_default(),
+        subject: message.summary.subject.clone(),
+        body: message.text.clone().unwrap_or_default(),
+        html: message.html.clone(),
+        in_reply_to: answers.map(str::to_owned),
+        attachments,
+    })
+}
+
+/// Saving or sending a draft of the sample keeps it with the drafts saved in the demo, under its
+/// id, as the core replaces a draft (issue #502); its message stays in the folder until it is sent.
+/// Nothing for any other id.
+fn adopt_sample_draft(data: &mut Data, id: &str) {
+    if data.drafts.iter().any(|draft| draft.id.as_deref() == Some(id)) {
+        return;
+    }
+    if let Some(draft) = sample_draft(&data.mail, &data.folders, id) {
+        data.drafts.push(draft);
     }
 }
 
@@ -916,12 +969,19 @@ const REPLIED: &[Flag] = &[Flag::Seen, Flag::Answered];
 
 /// The messages of both accounts around `now`: unread mail in both inboxes (the entries of
 /// [`mail_entries`]), read and flagged mail, attachments, a newsletter made from HTML, a
-/// conversation with a sent reply, a draft, and a message in every other folder but the private
-/// drafts, junk and trash, which are empty.
+/// conversation with a sent reply, a draft in each account (the private one a formatted answer,
+/// issue #502), and a message in every other folder but the private junk and trash, which are
+/// empty.
 pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
+    sample_letters().into_iter().map(|l| letter(now, l)).collect()
+}
+
+/// The letters of [`mail_sample`], also for what the store does not keep of a draft (its Bcc and
+/// the message it answers, [`DemoSource::get_draft`]).
+fn sample_letters() -> Vec<Letter> {
     const WORK: usize = 0;
     const PRIVATE: usize = 1;
-    let letters = [
+    vec![
         Letter {
             thread: "budget",
             from: ("Jonas Weber", "jonas.weber@work.example.org"),
@@ -1013,6 +1073,9 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
         Letter {
             minutes: 4 * 60,
             flags: READ,
+            // A recipient and a file (issue #502): continuing it fills To and the attachments.
+            to: &[("Thomas Keller", "thomas.keller@client.example")],
+            attachments: &[("offer-relaunch.pdf", "application/pdf", 182_400)],
             text: "Dear Mr Keller,\n\nthank you for your request. For the relaunch we suggest",
             ..Letter::new("m:w8", WORK, "drafts", "Offer for the website relaunch")
         },
@@ -1182,9 +1245,32 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             text: "Never mind the slides from Monday, the new ones are in the shared folder.",
             ..Letter::new("m:w17", WORK, "trash", "Old slides")
         },
-    ];
-    letters.into_iter().map(|l| letter(now, l)).collect()
+        // A formatted answer saved as a draft, with a blind copy (issue #502): "Drafts" lists one of
+        // each account, and continuing it shows every field of the compose window filled.
+        Letter {
+            thread: "m:p1",
+            to: &[("Paul Berg", "paul@example.org")],
+            bcc: &[("Clara Berg", "clara@example.org")],
+            answers: "m:p1",
+            minutes: 20,
+            flags: READ,
+            text: "Yes, Saturday at nine works!\n\nI will bring coffee.\n\nAnna\n\n\
+                   On Saturday, Paul Berg <paul@example.org> wrote:\n\n\
+                   > Are we still on for the hike on Saturday? The weather looks good. I can pick you up at nine.",
+            html: Some(WEEKEND_DRAFT_HTML),
+            ..Letter::new("m:p9", PRIVATE, "drafts", "Re: Weekend plans")
+        },
+    ]
 }
+
+/// The HTML of the private draft (`m:p9`), as the compose window writes it (`markup::to_html`):
+/// bold and italic own text above the quoted history.
+const WEEKEND_DRAFT_HTML: &str = concat!(
+    "<p>Yes, <strong>Saturday at nine</strong> works!</p><p>I will bring <em>coffee</em>.</p><p>Anna</p>",
+    "<div class=\"torro-quote\"><p>On Saturday, Paul Berg &lt;paul@example.org&gt; wrote:</p>",
+    "<blockquote type=\"cite\"><p>Are we still on for the hike on Saturday? The weather looks good. I can pick ",
+    "you up at nine.</p></blockquote></div>",
+);
 
 /// The inbox entries the core files for `mail` (task E4.1): one per unread message in an inbox,
 /// in "Info" when sent to a list or by a machine, else in "For me"; titled with the subject, with
@@ -1678,8 +1764,16 @@ impl DemoSource {
         }
         match draft.id.clone() {
             Some(id) => {
+                adopt_sample_draft(&mut data, &id);
                 let old = data.drafts.iter_mut().find(|old| old.id.as_deref() == Some(id.as_str()));
                 *old.ok_or(InboxError::NotFound)? = draft.clone();
+                // A draft of the sample shows in "Drafts" as saved now.
+                if let Some(message) = data.mail.iter_mut().find(|message| message.summary.id == id) {
+                    message.summary.subject = draft.subject.clone();
+                    message.summary.to = draft.to.clone();
+                    message.text = Some(draft.body.clone());
+                    message.html = draft.html.clone();
+                }
                 Ok(draft)
             }
             None => {
@@ -1691,6 +1785,17 @@ impl DemoSource {
         }
     }
 
+    /// `mail.get_draft` (issue #502): the draft `id` to write on, as saved, or a draft of the sample
+    /// as the core reads it back: its fields, its Bcc and the message it answers, its HTML, and its
+    /// files as parts of the draft itself. [`InboxError::NotFound`] for any other id.
+    pub fn get_draft(&self, id: &str) -> Result<Draft, InboxError> {
+        let data = self.lock();
+        if let Some(draft) = data.drafts.iter().find(|draft| draft.id.as_deref() == Some(id)) {
+            return Ok(draft.clone());
+        }
+        sample_draft(&data.mail, &data.folders, id).ok_or(InboxError::NotFound)
+    }
+
     /// `mail.send_draft`: the draft `id` leaves the drafts and is kept as sent.
     /// [`InboxError::NotFound`] for an unknown id, [`InboxError::Other`] for a draft without
     /// recipient (nothing is sent then).
@@ -1700,12 +1805,14 @@ impl DemoSource {
     pub fn send_draft(&self, id: &str) -> Result<(), InboxError> {
         let now = self.now();
         let mut data = self.lock();
+        adopt_sample_draft(&mut data, id);
         let at = data.drafts.iter().position(|draft| draft.id.as_deref() == Some(id)).ok_or(InboxError::NotFound)?;
         let draft = &data.drafts[at];
         if draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
             return Err(InboxError::Other(tr("The draft has no recipient.").to_owned()));
         }
         let sent = data.drafts.remove(at);
+        data.mail.retain(|message| message.summary.id != id);
         let answered = sent.in_reply_to.as_deref().and_then(|answered| {
             data.mail.iter().find(|m| m.summary.id == answered).map(|m| m.summary.thread_id.clone())
         });
@@ -2717,6 +2824,40 @@ mod tests {
         let other = demo.save_draft(draft(MAIL_ACCOUNTS[1], &["bob@example.org"])).expect("saved");
         demo.discard_draft(&other.id.expect("an id")).expect("discarded");
         assert!(demo.drafts().is_empty() && demo.sent().len() == 1);
+    }
+
+    /// Issue #502: the drafts of the sample read back with every field, are replaced by saving
+    /// under their id and leave "Drafts" when sent.
+    #[test]
+    fn drafts_of_the_sample_are_read_back_replaced_and_sent() {
+        let demo = DemoSource::new(now());
+        let drafts = |demo: &DemoSource| -> Vec<String> {
+            demo.by_role(Role::Drafts, None, None, Order::NewestFirst).into_iter().map(|m| m.id).collect()
+        };
+        assert_eq!(drafts(&demo), ["m:p9", "m:w8"], "one of each account, newest first");
+
+        let answer = demo.get_draft("m:p9").expect("a draft");
+        assert_eq!(answer.in_reply_to.as_deref(), Some("m:p1"));
+        assert_eq!(answer.bcc, [address("Clara Berg", "clara@example.org")]);
+        let html = answer.html.clone().expect("formatted");
+        assert_eq!(torro_mail::html::sanitize(&html), html, "as the core keeps it");
+        let (_, history) = torro_mail::html::to_markup(&html);
+        assert_eq!(history.as_deref(), Some("On Saturday, Paul Berg <paul@example.org> wrote:"));
+        let offer = demo.get_draft("m:w8").expect("a draft");
+        assert_eq!(offer.to, [address("Thomas Keller", "thomas.keller@client.example")]);
+        assert_eq!(offer.attachments, [DraftAttachment::MailPart { message: "m:w8".into(), part: "2".into() }]);
+        assert_eq!(demo.get_draft("m:p1"), Err(InboxError::NotFound), "no draft");
+
+        let changed = Draft { subject: "Offer, second version".into(), ..offer };
+        assert_eq!(demo.save_draft(changed).expect("replaced").id.as_deref(), Some("m:w8"));
+        assert_eq!(demo.get_draft("m:w8").expect("there").subject, "Offer, second version");
+        assert_eq!(drafts(&demo), ["m:p9", "m:w8"], "replaced, not added");
+        assert_eq!(demo.get_mail("m:w8").expect("listed").summary.subject, "Offer, second version");
+
+        demo.send_draft("m:p9").expect("sent");
+        assert_eq!(drafts(&demo), ["m:w8"], "gone from Drafts");
+        assert_eq!(demo.get_draft("m:p9"), Err(InboxError::NotFound));
+        assert_eq!(demo.sent().len(), 1);
     }
 
     fn pile_ids(demo: &DemoSource, pile: MailPile, account: Option<&str>) -> Vec<String> {

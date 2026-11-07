@@ -385,7 +385,9 @@ im Eingang, nur die Oberfläche teilt sich auf.
   zeigt ihre Mails). Darunter, nur durch
   Abstand getrennt (in der Leiste durch eine Linie), **Reply later** und **Set aside** (die beiden Stapel, mit der
   Zahl ihrer Mails), **Follow up** (ohne Zahl, an der Stelle des früheren „Later“; „Hidden“ darunter ist mit #339 entfallen), dann **Folders**
-  mit **Sent** (deutsch „Gesendet“: die gesendeten Mails aller gezeigten Konten, ohne Zahl; jede Zeile nennt den
+  mit **Drafts** (#502, deutsch „Entwürfe“: die Entwürfe aller gezeigten Konten über die Ordnerrolle, ohne Zahl, nur wenn
+  ein Konto einen Entwurfsordner hat; jede Zeile nennt den Empfänger wie bei „Sent“, ein Klick zeigt den Entwurf im
+  Lesebereich, „Weiterschreiben“ (Taste `r`) öffnet ihn im Schreibfenster mit `--draft <id>`), **Sent** (deutsch „Gesendet“: die gesendeten Mails aller gezeigten Konten, ohne Zahl; jede Zeile nennt den
   Empfänger und das Postfach), **Trash** (#455, „Papierkorb“: die
   Mails im Papierkorb aller gezeigten Konten über die Ordnerrolle, ohne Zahl; nur wenn ein Konto einen hat), den
   angehefteten Ordnern (Symbol und Ordnername auf einer Zeile, darunter klein die Adresse des Kontos, wenn das Fenster

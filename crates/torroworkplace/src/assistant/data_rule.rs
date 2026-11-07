@@ -123,6 +123,9 @@ pub fn for_model(request: &Request, response: &Response, reader: impl Into<Reade
     let mail = reader.reads_mail();
     let result = value.get("result").and_then(Value::as_str).unwrap_or_default();
     let whole = match request {
+        // A draft read back (issue #502) answers as a saved one does, but may hold the quoted
+        // history and the attachments of mail it answers: it stays home like mail.
+        Request::GetDraft { .. } => !mail && result != "error",
         request if request.operation().area() == Area::Mail => !mail && !MAIL_ANSWERS_ALLOWED.contains(&result),
         // A task made of a mail in a folder (task E8.7a) holds that mail only.
         Request::CreateTodoFromMail { .. } => !mail && result != "error",
@@ -381,6 +384,31 @@ mod tests {
         // Errors, and what the assistant wrote itself, still reach it.
         let error = Response::Error { code: "not-found".into(), message: "no such message".into() };
         assert_eq!(for_model(&search, &error, Place::Remote).value["result"], "error");
+    }
+
+    #[test]
+    fn a_draft_read_back_goes_to_local_models_only() {
+        // Issue #502: the answer is a `mail-draft` like a saved one, but it may quote the mail it
+        // answers; a model elsewhere reads that something was withheld, or the error.
+        let request = Request::GetDraft { id: "m:1".into() };
+        let draft = torro_mail::Draft {
+            id: Some("m:1".into()),
+            account: "mail:anna@example.org".into(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Re: Offer".into(),
+            body: "> the quoted offer".into(),
+            html: None,
+            in_reply_to: None,
+            attachments: Vec::new(),
+        };
+        let answered = Response::MailDraft { draft };
+        assert!(!for_model(&request, &answered, Place::Local).withheld);
+        let remote = for_model(&request, &answered, Place::Remote);
+        assert_eq!((remote.withheld, remote.value.clone()), (true, json!({ "withheld": WITHHELD })));
+        let error = Response::Error { code: "not-found".into(), message: "No such draft.".into() };
+        assert_eq!(for_model(&request, &error, Place::Remote).value["result"], "error");
     }
 
     #[test]

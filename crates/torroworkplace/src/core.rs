@@ -4158,6 +4158,11 @@ impl Core {
             let author = DraftAuthor::Client(id.clone());
             return Ok(crate::mail::send::send_draft(&self.mail, reach, &author, draft, None).await);
         }
+        // A client reads back only its own drafts, as it replaces and sends only those (issue #502).
+        // Boxed in a function of its own (`DraftRead`): this function's frame is large in a debug build.
+        if let Request::GetDraft { .. } = &request {
+            return Ok(Self::client_reads_draft(&self.mail, &id, request, reach).await);
+        }
         if let Some(info) = inbox_client {
             return Ok(self.inbox_request(request, Some(&info), None).await);
         }
@@ -5605,6 +5610,37 @@ impl Core {
     }
 
     /// [`Core::handle_within`] without the template keys: the answer to `request` itself.
+    /// `mail.get_draft` for the client `client` (issue #502): only a draft it wrote itself. The
+    /// future is boxed here, in a frame of its own, so the caller's frame holds only the box: built
+    /// in the caller (`Box::pin(fut)`), a debug build would keep the whole future on its stack.
+    fn client_reads_draft<'a>(
+        mail: &'a crate::mail::service::MailService,
+        client: &str,
+        request: Request,
+        reach: Reach<'a>,
+    ) -> DraftRead<'a> {
+        let author = DraftAuthor::Client(client.to_owned());
+        Box::pin(async move {
+            let Request::GetDraft { id } = request else { return refusal("error", "not a draft to read".into()) };
+            crate::mail::send::get_draft(mail, reach, &author, &id).await
+        })
+    }
+
+    /// `mail.get_draft` for the person (issue #502): any draft in an account `reach` sees; a client's
+    /// read carries its id and never reaches here unnamed (`Core::handle_client`). Boxed here, as
+    /// [`Core::client_reads_draft`].
+    fn read_draft_back<'a>(&'a self, request: Request, reach: Reach<'a>) -> DraftRead<'a> {
+        Box::pin(async move {
+            match (torro_ipc::mail::limit_refusal(&request), &request, reach) {
+                (Some(refused), _, _) => refused,
+                (None, Request::GetDraft { id }, Reach::Suite) => {
+                    crate::mail::send::get_draft(&self.mail, reach, &DraftAuthor::App, id).await
+                }
+                _ => refusal("forbidden", "a client's draft is read with its own id as the author".into()),
+            }
+        })
+    }
+
     async fn answer_within(&self, request: Request, reach: Reach<'_>, caller: Option<&str>) -> Response {
         // Jobs and plans belong to the client that made them; a client without a known caller
         // would see and use the app's. The dispatch always names a client's caller, so this only
@@ -6149,6 +6185,11 @@ impl Core {
                 }
                 _ => refusal("forbidden", "a client's draft is sent with its own id as the author".into()),
             },
+            // Reading a draft back (issue #502): the person reads any draft; a client's read carries
+            // its id and never reaches here unnamed (`Core::handle_client`).
+            // Boxed in a function of its own (`DraftRead`): this match's frame is large in a debug build
+            // and on the stack twice for an approved request.
+            request @ Request::GetDraft { .. } => self.read_draft_back(request, reach).await,
             request @ (Request::SetMailFlags { .. }
             | Request::MoveMail { .. }
             | Request::DeleteMail { .. }
@@ -11885,6 +11926,9 @@ fn mail_not_yet(request: &Request) -> Response {
 }
 
 /// An error answer with `code` and `message`.
+/// Reading a draft back (`mail.get_draft`, issue #502), boxed where it is made.
+type DraftRead<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send + 'a>>;
+
 fn refusal(code: &str, message: String) -> Response {
     Response::Error { code: code.into(), message }
 }
@@ -15205,8 +15249,20 @@ mod tests {
     /// Issue #339: the preview counts what a filter's search finds in the inbox; applying it marks
     /// and moves exactly that mail to the trash, once – a second run finds nothing left to do. A
     /// client's run waits for a person and says how many mails it changes.
-    #[tokio::test]
-    async fn applying_a_mail_filter_changes_the_mail_it_finds_in_the_inbox() {
+    #[test]
+    fn applying_a_mail_filter_changes_the_mail_it_finds_in_the_inbox() {
+        // The approved run goes through the core's answer twice, and the mail is deleted under it: in
+        // a debug build that sits at the edge of a test thread's 2 MiB stack (it overflowed with the
+        // commands of #453 and #502 together), so it runs on a thread of its own with more, as
+        // `an_approved_server_tool_runs_with_the_rights_of_now` does.
+        let worker = std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+            runtime.block_on(apply_a_mail_filter_and_find_its_mail_changed());
+        });
+        worker.expect("thread").join().expect("the test ran through");
+    }
+
+    async fn apply_a_mail_filter_and_find_its_mail_changed() {
         use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
         use crate::mail::sync::fake::{FakeImap, mail};
         let dir = tempfile::tempdir().expect("temp dir");
@@ -24624,10 +24680,16 @@ mod tests {
         let (core, server, app_key, smtp) = sending_core(dir.path()).await;
         let (_, key) = client(&core, sender(Outbound::WithApproval, Confirm::Never)).await;
         let persons = lunch_draft(&core, &app_key, "The person's").await;
+        // Issue #502: reading a draft back follows the same rule; the person reads any.
+        assert_eq!(code(&ask(&core, Some(&key), Request::GetDraft { id: persons.clone() }).await), "not-found");
+        let read = ask(&core, Some(&app_key), Request::GetDraft { id: persons.clone() }).await;
+        assert_eq!(saved_draft(read).subject, "The person's");
         assert_eq!(code(&ask(&core, Some(&key), Request::SendDraft { id: persons }).await), "not-found");
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
 
         let own = lunch_draft(&core, &key, "Lunch").await;
+        let read = ask(&core, Some(&key), Request::GetDraft { id: own.clone() }).await;
+        assert_eq!(saved_draft(read).id.as_deref(), Some(own.as_str()), "its own draft");
         let asked = waits(ask(&core, Some(&key), Request::SendDraft { id: own.clone() }).await);
         let changed = torro_mail::Draft { id: Some(own.clone()), ..draft("Lunch, and bring Eve") };
         saved_draft(ask(&core, Some(&key), Request::SaveDraft { draft: changed }).await);

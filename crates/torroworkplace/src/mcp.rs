@@ -2207,6 +2207,9 @@ mod tests {
             matches!(&saved, Ok(Request::SaveDraft { draft }) if draft.id.is_none() && draft.to.len() == 1),
             "{saved:?}"
         );
+        // Issue #502: an agent reads its own draft back by its id, which changes nothing.
+        let read_back = request_for("mail_get_draft", args(json!({"id": "m:2"})), &Utc);
+        assert_eq!(read_back, Ok(Request::GetDraft { id: "m:2".into() }));
         let search = request_for("mail_search_messages", args(json!({"limit": 10, "unread": true})), &Utc);
         assert!(matches!(search, Ok(Request::SearchMail { limit: 10, unread: Some(true), .. })));
         let update = request_for(
@@ -2219,6 +2222,7 @@ mod tests {
         let hints = |name: &str| tools().iter().find(|t| t.name == name).and_then(|t| t.annotations.clone());
         assert_eq!(hints("mail_get_message").and_then(|h| h.read_only_hint), Some(true));
         assert_eq!(hints("mail_get_message").and_then(|h| h.open_world_hint), None, "mail talks to servers");
+        assert_eq!(hints("mail_get_draft").and_then(|h| h.read_only_hint), Some(true));
         for name in ["mail_delete_messages", "mail_move_messages", "mail_save_draft", "mail_send_draft"] {
             assert_eq!(hints(name).and_then(|h| h.destructive_hint), Some(true), "{name}");
         }
@@ -2387,6 +2391,7 @@ mod tests {
             "mail_get_thread",
             "mail_get_attachment",
             "mail_overview",
+            "mail_get_draft",
         ];
         let status = tools().iter().find(|tool| tool.name == "mail_index_status").cloned().expect("a tool");
         assert_eq!(status.annotations.and_then(|hints| hints.read_only_hint), Some(true));

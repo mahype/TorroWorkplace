@@ -18,7 +18,8 @@
 //! - [`warnings`]: the warning signs of fraud and spam of one mail, without a model and without the
 //!   network, and how much they weigh (issue #506).
 //! - [`write`]: changing mail: flags, moving, deleting and drafts (task M3.2).
-//! - [`send`]: sending a draft under the send rule, its copy in the Sent folder (task M3.3).
+//! - [`send`]: sending a draft under the send rule, its copy in the Sent folder (task M3.3), and
+//!   reading a draft back to write on (`mail.get_draft`, issue #502).
 //! - [`unsubscribe`]: unsubscribing from a mailing list by the `List-Unsubscribe` header of a mail
 //!   (`mail.unsubscribe`, issue #416).
 //! - [`save`]: saving attachments to Downloads, a chosen place or a save target, and the save

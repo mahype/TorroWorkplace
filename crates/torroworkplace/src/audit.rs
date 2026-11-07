@@ -557,7 +557,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::MoveMail { .. }
         | Request::DeleteMail { .. }
         | Request::SaveDraft { .. }
-        | Request::SendDraft { .. }) => {
+        | Request::SendDraft { .. }
+        | Request::GetDraft { .. }) => {
             let folder = match mail {
                 Request::SearchMail { folder: Some(folder), .. }
                 | Request::MoveMail { to: MoveTarget::Folder(folder), .. } => Some(folder),

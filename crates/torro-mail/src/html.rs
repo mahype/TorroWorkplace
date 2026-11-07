@@ -11,6 +11,8 @@
 //! - [`to_text`] is the plain text sent beside the HTML (`multipart/alternative`) and shown where
 //!   the text of a draft is shown: paragraphs, `> ` before quoted lines, `- ` and `1. ` before
 //!   list items, a link's address behind its text.
+//! - [`to_markup`] turns such HTML back into the compose window's markup ([`crate::markup`]), so
+//!   a saved draft can be written on again (issue #502).
 //! - [`sign`] puts the signature (`-- ` and the account's text) in front of the quoted history of
 //!   an answer (the element with the class [`QUOTE_CLASS`], which [`crate::markup::to_html`] wraps
 //!   it in), else at the end.
@@ -93,6 +95,62 @@ pub fn sanitize(html: &str) -> String {
 pub fn to_text(html: &str) -> String {
     let lines = lines_of(&parse(html), false);
     lines.into_iter().map(|line| if line == "--" { "-- ".to_owned() } else { line }).collect::<Vec<_>>().join("\n")
+}
+
+/// The compose window's text ([`crate::markup`]) of `html` (any HTML: it is cleaned first) and the
+/// line where its quoted history starts, so that `markup::to_html(text, history)` gives the HTML
+/// back: for what `markup::to_html` made, exactly (issue #502, writing on a saved draft).
+///
+/// Own text: paragraphs separated by a blank line, `br` a line break, `strong`/`b` as `**…**`,
+/// `em`/`i` as `*…*`, `u` as `__…__`, a link as `[text](address)` (an address that is its own
+/// text as it is, as it became a link by itself), `ul`/`ol` items as `- `/`1. ` lines, a
+/// `blockquote` with `> ` before its lines. Characters the markup would read as marks are written
+/// with `\` in front. The element with the class [`QUOTE_CLASS`] is the history: its lines as
+/// [`to_text`] writes them, without marks, and its first line is the second value (`None` without
+/// one). Everything else (headings, tables, code, rules) is text as [`to_text`] writes it. Bold,
+/// italic and underline right at a letter keep only their text, as the markup has no mark there; a
+/// line that starts like a numbered item (`3. `) gets a `\\` before its dot.
+pub fn to_markup(html: &str) -> (String, Option<String>) {
+    let nodes = parse(html);
+    let start = nodes.iter().position(|node| matches!(node, Node::Element(element) if element.has_class(QUOTE_CLASS)));
+    let (own, theirs) = nodes.split_at(start.unwrap_or(nodes.len()));
+    let mut lines = marked_lines(own);
+    let mut history = None;
+    if !theirs.is_empty() {
+        let quoted: Vec<String> = theirs
+            .iter()
+            .flat_map(|node| match node {
+                Node::Element(element) if element.has_class(QUOTE_CLASS) => lines_of(&element.children, false),
+                other => lines_of(std::slice::from_ref(other), false),
+            })
+            .collect();
+        history = quoted.iter().find(|line| !line.trim().is_empty()).cloned();
+        lines.push(String::new());
+        lines.extend(quoted);
+    }
+    (tidy(lines).join("\n"), history)
+}
+
+/// Plain `text` as the compose window's markup ([`crate::markup`]), so that the marks it reads
+/// stay text (issue #502, writing on a draft saved without HTML in an account that writes
+/// formatted mail): characters that would be marks get a `\` in front, and a line that would start
+/// a list item too. Quoted lines (`>`) stay quotes, their text escaped the same way. White space in
+/// a line is collapsed, as HTML shows it.
+pub fn plain_to_markup(text: &str) -> String {
+    let text = text.replace("\r\n", "\n");
+    let mut out = Vec::new();
+    for line in text.split('\n') {
+        let rest = line.trim_start();
+        let marks = rest.find(|c: char| c != '>' && c != ' ').filter(|_| rest.starts_with('>')).unwrap_or(0);
+        let (quote, words) = rest.split_at(if rest.starts_with('>') && marks == 0 { rest.len() } else { marks });
+        let mut gathered = marked_text(words);
+        let mut lines = Vec::new();
+        end_lines(&mut gathered, &mut lines);
+        let words = lines.concat();
+        let quote = quote.trim_end();
+        out.push(if quote.is_empty() { words } else { format!("{quote} {words}").trim_end().to_owned() });
+    }
+    out.join("\n")
 }
 
 /// `html`, cleaned ([`sanitize`]), with `signature` as `<div class="torro-signature">-- <br>…</div>`
@@ -697,6 +755,214 @@ impl Lines {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// The compose window's markup
+// ---------------------------------------------------------------------------------------------
+
+/// The characters [`crate::markup`] lets a `\` turn into text.
+const MARKS: &str = "\\*_[]()>-#`.";
+
+/// The lines of own text in `nodes` as markup ([`to_markup`]): inline content gathered into lines,
+/// each block apart by a blank line.
+fn marked_lines(nodes: &[Node]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut line = String::new();
+    for (at, node) in nodes.iter().enumerate() {
+        match node {
+            Node::Text(text) => line.push_str(&marked_text(text)),
+            Node::Element(element) if !is_block(element.name) && element.name != "li" => {
+                let next = nodes.get(at + 1).and_then(|node| text_of(std::slice::from_ref(node)).chars().next());
+                let piece = marked_piece(element, line.chars().next_back(), next);
+                line.push_str(&piece);
+            }
+            Node::Element(element) => {
+                end_lines(&mut line, &mut out);
+                out.push(String::new());
+                out.extend(marked_block(element));
+                out.push(String::new());
+            }
+        }
+    }
+    end_lines(&mut line, &mut out);
+    tidy(out)
+}
+
+/// Moves the gathered inline text `line` into `out`, one line per line break, white space
+/// collapsed, and a line start the markup would read as a list item or a quote escaped.
+fn end_lines(line: &mut String, out: &mut Vec<String>) {
+    let gathered = std::mem::take(line);
+    for part in gathered.split('\n') {
+        let collapsed = part.split(' ').filter(|word| !word.is_empty()).collect::<Vec<_>>().join(" ");
+        let digits = collapsed.find(|c: char| !c.is_ascii_digit()).filter(|end| (1..=6).contains(end));
+        let escaped = if collapsed.starts_with('>') || collapsed.starts_with("- ") {
+            format!("\\{collapsed}")
+        } else if let Some(end) = digits.filter(|&end| collapsed[end..].starts_with(". ")) {
+            // `3. October` would start a numbered list: the dot is text.
+            format!("{}\\{}", &collapsed[..end], &collapsed[end..])
+        } else {
+            collapsed
+        };
+        out.push(escaped);
+    }
+}
+
+/// One block element as markup lines.
+fn marked_block(element: &Element) -> Vec<String> {
+    match element.name {
+        "p" | "div" => marked_lines(&element.children),
+        "blockquote" => marked_lines(&element.children)
+            .into_iter()
+            .map(|line| if line.is_empty() { ">".to_owned() } else { format!("> {line}") })
+            .collect(),
+        "ul" | "ol" => {
+            let mut number = 0;
+            let mut items = Vec::new();
+            for child in &element.children {
+                let lines = match child {
+                    Node::Element(item) if item.name == "li" => marked_lines(&item.children),
+                    Node::Text(text) if text.trim().is_empty() => continue,
+                    other => marked_lines(std::slice::from_ref(other)),
+                };
+                number += 1;
+                let marker = if element.name == "ol" { format!("{number}. ") } else { "- ".to_owned() };
+                let text = lines.iter().filter(|line| !line.is_empty()).cloned().collect::<Vec<_>>().join(" ");
+                items.push(format!("{marker}{text}").trim_end().to_owned());
+            }
+            items
+        }
+        "li" => {
+            let text = marked_lines(&element.children).into_iter().filter(|line| !line.is_empty());
+            vec![format!("- {}", text.collect::<Vec<_>>().join(" ")).trim_end().to_owned()]
+        }
+        // Headings, tables, code blocks and rules have no markup: their text, as plain text has it.
+        _ => lines_of(std::slice::from_ref(&Node::Element(element.clone())), false)
+            .into_iter()
+            .map(|line| {
+                let mut gathered = marked_text(&line);
+                let mut out = Vec::new();
+                end_lines(&mut gathered, &mut out);
+                out.concat()
+            })
+            .collect(),
+    }
+}
+
+/// An inline element as markup: the marks around its content, white space at its edges outside
+/// them (the markup wants text right inside a mark). `before` and `after` are the characters
+/// around it, which its content sees where it has none of its own beside it.
+fn marked_inline(element: &Element, before: Option<char>, after: Option<char>) -> String {
+    let marked = |inside: Option<char>| marked_children(&element.children, inside, inside);
+    let wrap = |mark: &str| {
+        let inner = marked(mark.chars().next());
+        let trimmed = inner.trim();
+        if trimmed.is_empty() || trimmed.contains('\n') {
+            return inner.clone();
+        }
+        let lead = &inner[..inner.len() - inner.trim_start().len()];
+        let tail = &inner[inner.trim_end().len()..];
+        format!("{lead}{mark}{trimmed}{mark}{tail}")
+    };
+    match element.name {
+        "br" => "\n".to_owned(),
+        "strong" | "b" => wrap("**"),
+        "em" | "i" => wrap("*"),
+        "u" => wrap("__"),
+        "a" => {
+            let Some(href) = element.attr("href") else { return marked_children(&element.children, before, after) };
+            let shown = text_of(&element.children);
+            // An address shown as itself became a link by itself (`markup::to_html`).
+            if shown.trim() == href && (href.starts_with("http://") || href.starts_with("https://")) {
+                return href.to_owned();
+            }
+            let inner = marked(Some('['));
+            let label = inner.trim();
+            if label.is_empty() || href.contains([')', ' ']) {
+                return marked_children(&element.children, before, after);
+            }
+            format!("[{label}]({href})")
+        }
+        // No mark of its own: its content stands where it stands.
+        _ => marked_children(&element.children, before, after),
+    }
+}
+
+/// The markup of inline content between the characters `before` and `after` (`None`: an edge).
+fn marked_children(nodes: &[Node], before: Option<char>, after: Option<char>) -> String {
+    let mut out = String::new();
+    for (at, node) in nodes.iter().enumerate() {
+        let next = match nodes.get(at + 1) {
+            Some(node) => text_of(std::slice::from_ref(node)).chars().next(),
+            None => after,
+        };
+        let prev = out.chars().next_back().or(before);
+        match node {
+            Node::Text(text) => out.push_str(&marked_text(text)),
+            Node::Element(element) if is_block(element.name) || element.name == "li" => {
+                out.push(' ');
+                out.push_str(&marked_children(&element.children, None, None));
+                out.push(' ');
+            }
+            Node::Element(element) => {
+                let piece = marked_piece(element, prev, next);
+                out.push_str(&piece);
+            }
+        }
+    }
+    out
+}
+
+/// The inline `element` between the characters `before` and `after`: with its marks
+/// ([`marked_inline`]), but bold, italic and underline whose text starts or ends right at a letter
+/// or digit outside only as their text. The markup reads a mark only at a word's edge, so
+/// `**Bold**text` would stay as stars; white space inside the element keeps it apart.
+fn marked_piece(element: &Element, before: Option<char>, after: Option<char>) -> String {
+    let wrapping = matches!(element.name, "strong" | "b" | "em" | "i" | "u");
+    let inner = text_of(&element.children);
+    let starts_word = inner.chars().next().is_some_and(|c| !c.is_whitespace());
+    let ends_word = inner.chars().next_back().is_some_and(|c| !c.is_whitespace());
+    let glued = (starts_word && before.is_some_and(char::is_alphanumeric))
+        || (ends_word && after.is_some_and(char::is_alphanumeric));
+    if wrapping && glued {
+        marked_children(&element.children, before, after)
+    } else {
+        marked_inline(element, before, after)
+    }
+}
+
+/// The text inside `nodes`, without any marks.
+fn text_of(nodes: &[Node]) -> String {
+    nodes
+        .iter()
+        .map(|node| match node {
+            Node::Text(text) => text.clone(),
+            Node::Element(element) => text_of(&element.children),
+        })
+        .collect()
+}
+
+/// `text` with white space as single spaces and every character the markup would read as a mark
+/// escaped: `\`, `*`, `[`, `]`, and `_` next to another `_` or at the text's edge, where the
+/// next node may bring one (only `__` is a mark).
+fn marked_text(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    for (at, &c) in chars.iter().enumerate() {
+        if c.is_whitespace() && c != '\u{a0}' {
+            if !out.ends_with(' ') {
+                out.push(' ');
+            }
+            continue;
+        }
+        let edge = at == 0 || at + 1 == chars.len();
+        let doubled = c == '_' && (edge || chars.get(at + 1) == Some(&'_') || at > 0 && chars[at - 1] == '_');
+        if (matches!(c, '\\' | '*' | '[' | ']') || doubled) && MARKS.contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// The lines of one list item: the marker before the first, as many spaces before the others.
 fn item_lines(marker: &str, lines: Vec<String>) -> Vec<String> {
     let indent = " ".repeat(marker.len());
@@ -874,5 +1140,73 @@ mod tests {
         assert!(signed.find("torro-signature").unwrap() < signed.find("torro-quote").unwrap());
         let plain = to_text(&signed);
         assert!(plain.contains("Anna · Profile <https://example.org>"), "{plain}");
+    }
+
+    /// Issue #502: the HTML the compose window made becomes its text again, so a saved draft can
+    /// be written on and saved as it was.
+    #[test]
+    fn the_compose_windows_html_becomes_its_markup_again() {
+        use crate::markup::to_html;
+        let formatted = concat!(
+            "Hi Jonas,\n\nthe numbers look **fine** to me, *except* the travel budget. ",
+            "See [the sheet](https://intranet.work.example.org/budget/q4).\n\n",
+            "- Flights\n- Hotels\n\n1. Check\n2. __Approve__\n\n> Could you look before Thursday?\n\nAnna",
+        );
+        let html = to_html(formatted, None);
+        let (text, history) = to_markup(&html);
+        assert_eq!(history, None);
+        assert_eq!(text, formatted, "the same marks");
+        assert_eq!(to_html(&text, None), html);
+
+        let answer = concat!(
+            "\n\nThanks, **see you** at https://example.org/room.\nAnna\n\n",
+            "On Monday, Bernd wrote:\n> Lunch at *noon*?\n>\n> > Earlier text\n> Bernd",
+        );
+        let attribution = "On Monday, Bernd wrote:";
+        let html = to_html(answer, Some(attribution));
+        let (text, history) = to_markup(&html);
+        assert_eq!(history.as_deref(), Some(attribution));
+        assert!(text.contains("Lunch at *noon*?"), "the history keeps its text as it is: {text}");
+        assert_eq!(to_html(&text, history.as_deref()), html);
+    }
+
+    #[test]
+    fn text_that_looks_like_marks_stays_text() {
+        use crate::markup::to_html;
+        let html = "<p>- not a list, 2*3*4, a__b, [x] and C:\\dir</p><blockquote><p>&gt; not a quote</p></blockquote>";
+        let (text, history) = to_markup(html);
+        assert_eq!(history, None);
+        assert_eq!(to_html(&text, None), html, "{text}");
+        let (heading, _) = to_markup("<h1>Title</h1><p><b>Bold</b>text and x<em>y</em></p>");
+        assert_eq!(heading, "Title\n\nBoldtext and xy", "marks at a letter would stay stars");
+        // Issue #502, second review: nested and wrapped marks see the letters outside them, white
+        // space inside keeps them apart, and an underscore before an underline stays text.
+        for (html, markup) in [
+            ("<p>x<b><i>y</i></b></p>", "xy"),
+            ("<p><s><b>y</b></s>z</p>", "yz"),
+            ("<p>Hello<b> world</b></p>", "Hello **world**"),
+            ("<p><b>x </b>y</p>", "**x** y"),
+            ("<p>_<u>x</u></p>", "\\___x__"),
+        ] {
+            assert_eq!(to_markup(html).0, markup, "{html}");
+        }
+        assert_eq!(to_html(&to_markup("<p>_<u>x</u></p>").0, None), "<p>_<u>x</u></p>");
+        let date = "<p>3. October suits me.</p>";
+        assert_eq!(to_markup(date).0, "3\\. October suits me.");
+        assert_eq!(to_html(&to_markup(date).0, None), date, "no numbered list");
+        let plain = "Price 2 * 3, see *the file*.\n- not a list\n> quoted **text**\n>\n>> deeper";
+        let markup = plain_to_markup(plain);
+        assert_eq!(
+            markup,
+            "Price 2 \\* 3, see \\*the file\\*.\n\\- not a list\n> quoted \\*\\*text\\*\\*\n>\n>> deeper"
+        );
+        assert_eq!(
+            to_html(&markup, None),
+            concat!(
+                "<p>Price 2 * 3, see *the file*.<br>- not a list</p>",
+                "<blockquote><p>quoted **text**</p><blockquote><p>deeper</p></blockquote></blockquote>",
+            )
+        );
+        assert_eq!(to_markup("").0, "");
     }
 }

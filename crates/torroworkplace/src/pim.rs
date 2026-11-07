@@ -1332,6 +1332,7 @@ impl PimService {
             | Request::DeleteMail { .. }
             | Request::SaveDraft { .. }
             | Request::SendDraft { .. }
+            | Request::GetDraft { .. }
             | Request::Unsubscribe { .. } => return None,
             Request::GetMailCachePolicy { .. }
             | Request::SetMailCachePolicy { .. }

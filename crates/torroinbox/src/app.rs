@@ -1196,6 +1196,11 @@ pub enum View {
     /// is refused as for any mail in the trash. `mail.*` only. (The archive has no view of its own
     /// since issue #476: the search's filter "Only archive" lists it.)
     Trash,
+    /// "Drafts", the first row under "Folders" of the mail window (issue #502): the mail in the
+    /// drafts folders of every account shown ([`Role::Drafts`]), as "Trash" lists its role, without
+    /// a number. A draft opens in the reader, "Continue writing" in the compose window. `mail.*`
+    /// only.
+    Drafts,
     /// The pile "Reply later" of the mail window (task E19.4, decisions 1 and 3 of E19): the mail put
     /// there, from every folder but the trash and spam of every account shown, newest first, a page
     /// at a time (`MailSource::mail_in_pile`). `mail.*` only.
@@ -1222,6 +1227,7 @@ impl View {
             | View::All
             | View::Sent
             | View::Trash
+            | View::Drafts
             | View::ReplyLater
             | View::SetAside => return None,
         };
@@ -1247,6 +1253,7 @@ impl View {
             View::All => tr("All").into(),
             View::Sent => tr("Sent").into(),
             View::Trash => tr("Trash").into(),
+            View::Drafts => tr("Drafts").into(),
             View::ReplyLater => tr("Reply later").into(),
             // The pile, not the action (decision 11 of E19): "Beiseitegelegt", not "Beiseitelegen".
             View::SetAside => trc("pile", "Set aside").into(),
@@ -1268,6 +1275,7 @@ impl View {
             View::All => Icon::Mail,
             View::Sent => Icon::Send,
             View::Trash => Icon::Trash2,
+            View::Drafts => Icon::FilePenLine,
             View::ReplyLater => Icon::MessageSquareReply,
             View::SetAside => Icon::Bookmark,
         }
@@ -1293,6 +1301,7 @@ impl View {
                 | View::All
                 | View::Sent
                 | View::Trash
+                | View::Drafts
                 | View::ReplyLater
                 | View::SetAside
         )
@@ -1334,19 +1343,22 @@ impl View {
             View::All => Some("all".to_owned()),
             View::Sent => Some("sent".to_owned()),
             View::Trash => Some("trash".to_owned()),
+            View::Drafts => Some("drafts".to_owned()),
             View::ReplyLater => Some("reply-later".to_owned()),
             View::SetAside => Some("set-aside".to_owned()),
             _ => None,
         }
     }
 
-    /// The folder role and snoozed mail of "All", "Sent" and "Trash" (task E18.4, issues #445, #455),
+    /// The folder role and snoozed mail of "All", "Sent", "Trash" and "Drafts" (task E18.4, issues
+    /// #445, #455, #502),
     /// as `MailSource::mail_by_role` asks for them; `None` for every other view.
     pub fn by_role(&self) -> Option<(Role, Option<bool>)> {
         match self {
             View::All => Some((Role::Inbox, Some(false))),
             View::Sent => Some((Role::Sent, None)),
             View::Trash => Some((Role::Trash, None)),
+            View::Drafts => Some((Role::Drafts, None)),
             _ => None,
         }
     }
@@ -1672,10 +1684,12 @@ pub enum Open {
     MailAccounts,
     /// "Trash" of the mail window (issue #455): the mail in the trash of every account.
     Trash,
+    /// "Drafts" of the mail window (issue #502): the drafts of every account.
+    Drafts,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 99] = [
+    const ALL: [(&'static str, Open); 100] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1775,6 +1789,7 @@ impl Open {
         ("categorization-model", Open::CategorizationModel),
         ("mail-accounts", Open::MailAccounts),
         ("trash", Open::Trash),
+        ("drafts", Open::Drafts),
     ];
 
     /// The demo page of the backup states, which open the mail window's settings at the first
@@ -3864,9 +3879,9 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
                 category_selected(&*inbox, view.categories(), limit, None, order, mail_accounts.as_deref()).await?;
             Some(page)
         }
-        // "All", "Sent" and "Trash" (task E18.4, issues #445, #455): the mail of one folder role of
-        // every account shown, as the core leaves out what is snoozed.
-        View::All | View::Sent | View::Trash => {
+        // "All", "Sent", "Trash" and "Drafts" (task E18.4, issues #445, #455, #502): the mail of one
+        // folder role of every account shown, as the core leaves out what is snoozed.
+        View::All | View::Sent | View::Trash | View::Drafts => {
             Some(role_selected(&*inbox, &view, limit, None, order, mail_accounts.as_deref()).await?)
         }
         // A pile (task E19.4): its mail from every folder of the accounts shown.
@@ -4246,6 +4261,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 ) if mail_window => View::All,
                 Some(Open::Archive | Open::ArchiveWith | Open::ArchiveOnly) => View::Mail,
                 Some(Open::Trash) => View::Trash,
+                Some(Open::Drafts) => View::Drafts,
                 Some(Open::ReplyLater | Open::Focus) => View::ReplyLater,
                 Some(Open::SetAside) => View::SetAside,
                 // The first inbox, once the folders are in.
@@ -6695,6 +6711,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// and leaves its entry to the core.
     fn mail_action(&mut self, action: MailAction, id: String) -> Task<Message> {
         self.close_menus();
+        // A draft is written on, not answered (issue #502): `r` continues it; Reply all, Forward and
+        // Archive do nothing (archived it would be no draft any more), as its rail offers none.
+        let action = match action {
+            MailAction::Reply if self.in_role(&id, Role::Drafts) => MailAction::ContinueDraft,
+            MailAction::ReplyAll | MailAction::Forward | MailAction::Archive if self.in_role(&id, Role::Drafts) => {
+                return Task::none();
+            }
+            other => other,
+        };
         if let Some(kind) = Compose::of(action) {
             return self.compose(kind, &id);
         }
@@ -6850,6 +6875,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// ([`Undo::Pile`]); an error brings the row and the numbers back with the load and says so
     /// ([`Message::Piled`]). Nothing for the pile the mail lies on already.
     fn pile_mail(&mut self, id: String, pile: Option<MailPile>) -> Task<Message> {
+        // A draft goes on no pile (issue #502): it is written on or thrown away, as its rail says.
+        if pile.is_some() && self.in_role(&id, Role::Drafts) {
+            return Task::none();
+        }
         self.pile_with(id, pile, None, None)
     }
 
@@ -7394,6 +7423,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
 
     /// Whether the message `id` lies in a trash folder.
     fn in_trash(&self, id: &str) -> bool {
+        self.in_role(id, Role::Trash)
+    }
+
+    /// Whether the message `id` lies in a folder of the role `role` (a drafts folder: issue #502).
+    fn in_role(&self, id: &str, role: Role) -> bool {
         let folder = match self.messages.iter().find(|message| message.id == id) {
             Some(message) => Some(message.folder.as_str()),
             None => match &self.letter {
@@ -7403,7 +7437,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 _ => None,
             },
         };
-        folder.is_some_and(|folder| self.folders.iter().any(|f| f.id == folder && f.role == Some(Role::Trash)))
+        folder.is_some_and(|folder| self.folders.iter().any(|f| f.id == folder && f.role == Some(role)))
     }
 
     /// Starts the compose window for the message `id` ([`mail::compose_command`], task E4.3).
@@ -8165,8 +8199,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     category_selected(&*inbox, categories, mail::PAGE, Some(cursor), order, selected.as_deref()).await
                 })
             }
-            // "All", "Sent" and "Trash" (task E18.4): the next page of the same role and fields.
-            View::All | View::Sent | View::Trash => {
+            // "All", "Sent", "Trash" and "Drafts" (task E18.4): the next page of the same role and fields.
+            View::All | View::Sent | View::Trash | View::Drafts => {
                 let (shown, selected, cursor) = (view.clone(), accounts.clone(), cursor.clone());
                 Box::pin(async move {
                     role_selected(&*inbox, &shown, mail::PAGE, Some(cursor), order, selected.as_deref()).await
@@ -11100,8 +11134,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         // The wide mail window reads beside the list (task E8.3), without the panel; while nothing is
         // open the reader's column holds the overview (issue #409).
-        let overview = (class == SizeClass::Wide && self.mail_overview_shown())
-            .then(|| self.mail_overview_page(mail_overview::Place::Page, &overview_at));
+        // "Drafts" holds the person's own mail (issue #502): no statistics of what comes in, but how to
+        // go on.
+        let overview = (class == SizeClass::Wide && self.mail_overview_shown()).then(|| {
+            if self.view == View::Drafts {
+                list::empty_state(Icon::FilePenLine, tr("No draft chosen."), tr("Pick a draft to continue writing."))
+            } else {
+                self.mail_overview_page(mail_overview::Place::Page, &overview_at)
+            }
+        });
         if let Some(reader) = self.wide_reader(class, &anchors).or(overview) {
             // The divider between them drags (issue #130).
             let width = self.split.width(self.split_limits());
@@ -11593,6 +11634,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             text: &self.text,
             attention: colours.attention_text,
             in_trash: self.in_trash(&letter.id),
+            in_drafts: self.in_role(&letter.id, Role::Drafts),
             deciding: self.model_ready,
             dated: self.view.is_mail(),
             read: self.look().cards(),
@@ -12208,11 +12250,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .collect()
     }
 
-    /// The rows of "Folders" in the mail window (task E18.4, issue #455), in this order: "Sent" – the
-    /// sent mail of every account ([`View::Sent`]), always –, "Trash" ([`View::Trash`]) while an
-    /// account shown has a trash folder, the pinned folders, and "Pin folders" ([`Target::OpenFolders`],
-    /// with its chevron) while there is a mail account. Empty in the other windows; a window of mail
-    /// only has no "Sent" and no "Trash". The archive is no row here since issue #476: the filter menu
+    /// The rows of "Folders" in the mail window (task E18.4, issues #455, #502), in this order:
+    /// "Drafts" ([`View::Drafts`]) while an account shown has a drafts folder, "Sent" – the sent mail
+    /// of every account ([`View::Sent`]), always –, "Trash" ([`View::Trash`]) while an account shown
+    /// has a trash folder, the pinned folders, and "Pin folders" ([`Target::OpenFolders`], with its
+    /// chevron) while there is a mail account. Empty in the other windows; a window of mail only has
+    /// no "Drafts", "Sent" and "Trash". The archive is no row here since issue #476: the filter menu
     /// of the search has it ("Only archive").
     fn folder_entries(&self) -> Vec<NavEntry> {
         if self.launch.kind != Kind::Mail && !self.mail_only {
@@ -12241,9 +12284,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             detail: None,
         };
         let whole = self.launch.kind == Kind::Mail && !self.mail_only;
+        let drafts = (whole && has_role(Role::Drafts)).then(|| entry(View::Drafts));
         let sent = whole.then(|| entry(View::Sent));
         let trash = (whole && has_role(Role::Trash)).then(|| entry(View::Trash));
-        sent.into_iter().chain(trash).chain(self.pinned_entries()).chain(browse).collect()
+        drafts.into_iter().chain(sent).chain(trash).chain(self.pinned_entries()).chain(browse).collect()
     }
 
     /// The pinned folders of "Folders" (task E18.4): the folder's name, and under it the address of
@@ -18396,15 +18440,17 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let browse = (tr("Pin folders").to_owned(), Target::OpenFolders, Trail::Icon(Icon::ChevronRight));
+        let drafts = (tr("Drafts").to_owned(), Target::View, Trail::None);
         let sent = (tr("Sent").to_owned(), Target::View, Trail::None);
         let trash = (tr("Trash").to_owned(), Target::View, Trail::None);
-        // Issue #476: the archive is no row of its own; the search's filter has it.
-        let roles = [sent.clone(), trash.clone()];
+        // Issue #476: the archive is no row of its own; the search's filter has it. Issue #502:
+        // "Drafts" comes first.
+        let roles = [drafts.clone(), sent.clone(), trash.clone()];
         assert_eq!(folders(&app), [roles.to_vec(), vec![browse.clone()]].concat(), "nothing pinned yet");
-        let views: Vec<View> = app.folder_entries().into_iter().take(2).map(|entry| entry.view).collect();
-        assert_eq!(views, [View::Sent, View::Trash]);
-        let marks: Vec<Mark> = app.folder_entries().into_iter().take(2).map(|entry| entry.mark).collect();
-        assert_eq!(marks, [Icon::Send, Icon::Trash2].map(Mark::Icon));
+        let views: Vec<View> = app.folder_entries().into_iter().take(3).map(|entry| entry.view).collect();
+        assert_eq!(views, [View::Drafts, View::Sent, View::Trash]);
+        let marks: Vec<Mark> = app.folder_entries().into_iter().take(3).map(|entry| entry.mark).collect();
+        assert_eq!(marks, [Icon::FilePenLine, Icon::Send, Icon::Trash2].map(Mark::Icon));
         // The rail and the menu of the narrow windows draw these rows too.
         assert!(!app.folder_entries().iter().any(|entry| entry.label == tr("Archive")), "no Archive under Folders");
         let pin = app.folders.iter().find(|folder| folder.role == Some(Role::Sent)).expect("a sent folder").clone();
@@ -18414,7 +18460,7 @@ mod tests {
         let pinned = mail::folder_name(&pin);
         let pinned_row = (pinned.clone(), Target::View, Trail::None);
         assert_eq!(folders(&app), [roles.to_vec(), vec![pinned_row, browse.clone()]].concat());
-        assert_eq!(app.folder_entries()[2].detail.as_deref(), Some(mail::address(&pin.account)));
+        assert_eq!(app.folder_entries()[3].detail.as_deref(), Some(mail::address(&pin.account)));
         assert!(
             app.folder_entries()
                 .iter()
@@ -18422,9 +18468,9 @@ mod tests {
                 .all(|entry| entry.detail.is_none())
         );
         assert_eq!(app.folder_entries()[0].detail, None, "only a pinned folder has a second line");
-        assert!(matches!(app.folder_entries()[3].message(), Message::OpenFolders), "the browser opens beside it");
-        // No account with a trash folder: no row; Sent always stands.
-        app.folders.retain(|folder| !matches!(folder.role, Some(Role::Trash)));
+        assert!(matches!(app.folder_entries()[4].message(), Message::OpenFolders), "the browser opens beside it");
+        // No account with a trash or drafts folder: no row; Sent always stands.
+        app.folders.retain(|folder| !matches!(folder.role, Some(Role::Trash | Role::Drafts)));
         let labels: Vec<String> = folders(&app).into_iter().map(|row| row.0).collect();
         assert_eq!(labels[..2], [tr("Sent").to_owned(), pinned.clone()]);
         // Folders of one account only: the address says nothing, the row keeps one line.
@@ -18522,6 +18568,36 @@ mod tests {
         let entry = app.folder_entries().into_iter().find(|entry| entry.view == View::Trash).expect("a row");
         assert_eq!(entry.count, None, "no number");
         assert!(entry.active, "chosen while it shows");
+    }
+
+    /// Issue #502: "Drafts" lists the drafts of every account shown, newest first, as "Trash" lists its
+    /// role, without a number; its rows name the recipient, as in "Sent".
+    #[test]
+    fn drafts_list_the_drafts_of_every_account() {
+        assert_eq!(View::Drafts.by_role(), Some((Role::Drafts, None)));
+        assert!(View::Drafts.is_mail() && View::Drafts.filter().is_none());
+        assert_eq!((View::Drafts.name(), View::Drafts.icon()), (tr("Drafts").to_owned(), Icon::FilePenLine));
+        assert_eq!(View::Drafts.listing().as_deref(), Some("drafts"));
+        let mut app = mail_window(Density::Compact, &["--open", "drafts"]);
+        load(&mut app);
+        assert_eq!(app.view, View::Drafts);
+        let ids: Vec<&str> = app.messages.iter().map(|message| message.id.as_str()).collect();
+        assert_eq!(ids, ["m:p9", "m:w8"], "one of each account, newest first");
+        let entry = app.folder_entries().into_iter().next().expect("a row");
+        assert_eq!((entry.view, entry.count, entry.active), (View::Drafts, None, true), "first, no number");
+        assert!(mail::names_recipient(&View::Drafts));
+        let _ = app.view();
+        // `r` on a draft continues it in the compose window; Reply all and Forward do nothing.
+        let _ = app.update(Message::Mail(MailAction::Reply, "m:w8".into()));
+        assert_eq!(app.sent.last(), Some(&Sent::Compose(mail::compose_args(Compose::Draft, "m:w8", true))));
+        let before = app.sent.len();
+        let _ = app.update(Message::Mail(MailAction::Forward, "m:w8".into()));
+        let _ = app.update(Message::Mail(MailAction::ReplyAll, "m:w8".into()));
+        let _ = app.update(Message::Mail(MailAction::Archive, "m:w8".into()));
+        let _ = app.update(Message::Pile("m:w8".into(), Some(MailPile::ReplyLater)));
+        assert_eq!(app.sent.len(), before, "nothing to answer, archive or pile");
+        app.messages.clear();
+        let _ = app.view();
     }
 
     /// Task E18.4: "All" asks for the mail of its role with the fields of decision 1 and 3 of E18 –

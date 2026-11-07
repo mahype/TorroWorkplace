@@ -44,7 +44,7 @@ pub const SIZES: [(&str, Size); 6] = [
 pub const SCALE: f32 = 2.0;
 
 /// The flags whose values name the view in a file, in this order.
-const NAMING_FLAGS: [&str; 24] = [
+const NAMING_FLAGS: [&str; 25] = [
     "--view",
     "--section",
     "--settings",
@@ -65,6 +65,7 @@ const NAMING_FLAGS: [&str; 24] = [
     "--reply",
     "--reply-all",
     "--forward",
+    "--draft",
     "--account",
     "--step",
     "--mail-view",
