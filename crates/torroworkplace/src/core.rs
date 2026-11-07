@@ -4120,10 +4120,9 @@ impl Core {
             return Ok(crate::mail::send::send_draft(&self.mail, reach, &author, draft, None).await);
         }
         // A client reads back only its own drafts, as it replaces and sends only those (issue #502).
-        if let Request::GetDraft { id: draft } = &request {
-            let author = DraftAuthor::Client(id.clone());
-            // Boxed, as reading mail is: the future is large and this function is on the stack.
-            return Ok(Box::pin(crate::mail::send::get_draft(&self.mail, reach, &author, draft)).await);
+        // Boxed in a function of its own (`DraftRead`): this function's frame is large in a debug build.
+        if let Request::GetDraft { .. } = &request {
+            return Ok(Self::client_reads_draft(&self.mail, &id, request, reach).await);
         }
         if let Some(info) = inbox_client {
             return Ok(self.inbox_request(request, Some(&info), None).await);
@@ -5571,6 +5570,37 @@ impl Core {
     }
 
     /// [`Core::handle_within`] without the template keys: the answer to `request` itself.
+    /// `mail.get_draft` for the client `client` (issue #502): only a draft it wrote itself. The
+    /// future is boxed here, in a frame of its own, so the caller's frame holds only the box: built
+    /// in the caller (`Box::pin(fut)`), a debug build would keep the whole future on its stack.
+    fn client_reads_draft<'a>(
+        mail: &'a crate::mail::service::MailService,
+        client: &str,
+        request: Request,
+        reach: Reach<'a>,
+    ) -> DraftRead<'a> {
+        let author = DraftAuthor::Client(client.to_owned());
+        Box::pin(async move {
+            let Request::GetDraft { id } = request else { return refusal("error", "not a draft to read".into()) };
+            crate::mail::send::get_draft(mail, reach, &author, &id).await
+        })
+    }
+
+    /// `mail.get_draft` for the person (issue #502): any draft in an account `reach` sees; a client's
+    /// read carries its id and never reaches here unnamed (`Core::handle_client`). Boxed here, as
+    /// [`Core::client_reads_draft`].
+    fn read_draft_back<'a>(&'a self, request: Request, reach: Reach<'a>) -> DraftRead<'a> {
+        Box::pin(async move {
+            match (torro_ipc::mail::limit_refusal(&request), &request, reach) {
+                (Some(refused), _, _) => refused,
+                (None, Request::GetDraft { id }, Reach::Suite) => {
+                    crate::mail::send::get_draft(&self.mail, reach, &DraftAuthor::App, id).await
+                }
+                _ => refusal("forbidden", "a client's draft is read with its own id as the author".into()),
+            }
+        })
+    }
+
     async fn answer_within(&self, request: Request, reach: Reach<'_>, caller: Option<&str>) -> Response {
         // Jobs and plans belong to the client that made them; a client without a known caller
         // would see and use the app's. The dispatch always names a client's caller, so this only
@@ -6110,14 +6140,9 @@ impl Core {
             },
             // Reading a draft back (issue #502): the person reads any draft; a client's read carries
             // its id and never reaches here unnamed (`Core::handle_client`).
-            request @ Request::GetDraft { .. } => match (torro_ipc::mail::limit_refusal(&request), &request, reach) {
-                (Some(refused), _, _) => refused,
-                (None, Request::GetDraft { id }, Reach::Suite) => {
-                    // Boxed, as reading mail is: the future is large and this function is on the stack.
-                    Box::pin(crate::mail::send::get_draft(&self.mail, reach, &DraftAuthor::App, id)).await
-                }
-                _ => refusal("forbidden", "a client's draft is read with its own id as the author".into()),
-            },
+            // Boxed in a function of its own (`DraftRead`): this match's frame is large in a debug build
+            // and on the stack twice for an approved request.
+            request @ Request::GetDraft { .. } => self.read_draft_back(request, reach).await,
             request @ (Request::SetMailFlags { .. }
             | Request::MoveMail { .. }
             | Request::DeleteMail { .. }
@@ -11656,6 +11681,9 @@ fn mail_not_yet(request: &Request) -> Response {
 }
 
 /// An error answer with `code` and `message`.
+/// Reading a draft back (`mail.get_draft`, issue #502), boxed where it is made.
+type DraftRead<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send + 'a>>;
+
 fn refusal(code: &str, message: String) -> Response {
     Response::Error { code: code.into(), message }
 }
