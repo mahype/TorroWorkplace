@@ -1505,7 +1505,7 @@ impl CategoryPace {
 /// the core does not know, keep [`CategoryPace::CAREFUL`].
 async fn category_pace(ai: &AiAccounts, (engine, model): (&str, &str)) -> CategoryPace {
     use torro_core::ai::AiProvider;
-    let Some((provider, server)) = ai.server(engine).await else { return CategoryPace::CAREFUL };
+    let Some((provider, _)) = ai.server(engine).await else { return CategoryPace::CAREFUL };
     let Ok(listed) = ai.known_models(engine, Some(model)).await else { return CategoryPace::CAREFUL };
     let Some(model) = listed.into_iter().find(|known| known.id == model) else { return CategoryPace::CAREFUL };
     if model.decision != Some(true) {
@@ -1513,7 +1513,9 @@ async fn category_pace(ai: &AiAccounts, (engine, model): (&str, &str)) -> Catego
     }
     let parallel = match provider {
         AiProvider::Jev => CATEGORY_PARALLEL_JEV,
-        AiProvider::Ollama if crate::assistant::place_of(provider, &server, &model) != Place::Local => {
+        // Inference capacity is relative to the server, unlike the mail data rule. A decision
+        // model on a LAN Ollama still runs serially on that device, not in Ollama's cloud.
+        AiProvider::Ollama if model.remote != Some(false) || torro_core::ai::openai::ollama_cloud_name(&model.id) => {
             CATEGORY_PARALLEL_CLOUD
         }
         _ => 1,
@@ -25776,6 +25778,17 @@ mod tests {
             assert!(elsewhere_of(provider, &base, Some(&AiModel { remote: Some(false), ..AiModel::named("nimble") })));
             for model in ["nimble", "nimble:cloud"] {
                 assert_eq!(core.handle(switch(&engine, model, true)).await, Response::Ok);
+            }
+            if provider == AiProvider::Ollama {
+                assert_eq!(
+                    category_pace(&core.ai, (&engine, "nimble")).await,
+                    CategoryPace { parallel: 1, pause: false },
+                    "LAN inference remains serial"
+                );
+                assert_eq!(
+                    category_pace(&core.ai, (&engine, "nimble:cloud")).await,
+                    CategoryPace { parallel: CATEGORY_PARALLEL_CLOUD, pause: false }
+                );
             }
             let mut rights = RightsTemplate::FullAccess.rights();
             for area in Area::ALL {
