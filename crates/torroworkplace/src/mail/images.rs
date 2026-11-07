@@ -749,12 +749,16 @@ fn decode(bytes: &[u8], state: &State) -> Result<(image::DynamicImage, image::Im
     limits.max_image_width = Some(32768);
     limits.max_image_height = Some(32768);
     limits.max_alloc = Some(128 * 1024 * 1024);
-    reader.limits(limits);
+    reader.limits(limits.clone());
     let mut decoder = reader.into_decoder().map_err(|_| invalid())?;
     let (width, height) = decoder.dimensions();
     if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 32_000_000 {
         return Err(invalid());
     }
+    // into_decoder + from_decoder bypass ImageReader::decode's source-frame reservation.
+    // Reproduce that admission explicitly before orientation or any full-frame allocation.
+    limits.reserve(decoder.total_bytes()).map_err(|_| invalid())?;
+    decoder.set_limits(limits).map_err(|_| invalid())?;
     let orientation = decoder.orientation().map_err(|_| invalid())?;
     use image::metadata::Orientation;
     let _rotation = if matches!(
@@ -1002,6 +1006,33 @@ mod tests {
         drop(decoded);
         assert!(matches!(encode(&bytes, false), Err(Response::Error { code, .. }) if code == "busy"));
         assert_eq!(encode(&bytes, true).expect("original").bytes, bytes);
+    }
+
+    #[test]
+    fn decoded_rgba16_frame_must_fit_the_separate_decoder_budget() {
+        if isolated("mail::images::tests::decoded_rgba16_frame_must_fit_the_separate_decoder_budget") {
+            return;
+        }
+        use std::io::Write as _;
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, 1600, 20000);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Sixteen);
+        let mut writer = encoder.write_header().expect("header");
+        {
+            let mut stream = writer.stream_writer_with_size(8192).expect("stream");
+            let row = [128; 1600 * 8];
+            for _ in 0..20000 {
+                stream.write_all(&row).expect("row");
+            }
+            stream.finish().expect("finish");
+        }
+        writer.finish().expect("PNG");
+        assert!(bytes.len() < ORIGINAL, "valid 32-MP, 16-bit source within encoded and edge limits");
+        assert!(
+            matches!(decode(&bytes), Err(Response::Error { code, .. }) if code == "error"),
+            "256,000,000 source bytes must be rejected before allocating, even without resampling or EXIF"
+        );
     }
 
     #[test]
