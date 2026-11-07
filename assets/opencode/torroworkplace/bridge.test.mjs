@@ -124,3 +124,30 @@ test("HTTP-backed Session.Info envelopes still enforce parent and Location check
   assert.equal(reports[0].title, "Task");
   assert.equal(reports[0].cwd, "/a");
 });
+
+test("failed lookup keeps queued events on the same session tail", async () => {
+  const reports = [];
+  let release, entered;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const lookupEntered = new Promise((resolve) => { entered = resolve; });
+  let calls = 0;
+  const receive = bridge({
+    session: async () => {
+      if (++calls === 1) throw new Error("transient");
+      if (calls === 2) { entered(); await blocked; }
+      return {};
+    },
+    report: async (p) => reports.push(p.hook_event_name),
+  });
+  const event = (id, type) => ({ id, type, data: { sessionID: "s", id: "p" } });
+  const oldStart = receive(event("1", "session.execution.started"));
+  const oldDone = receive(event("2", "session.execution.succeeded"));
+  await oldStart;
+  await lookupEntered;
+  const newStart = receive(event("3", "session.execution.started"));
+  const newQuestion = receive(event("4", "permission.asked"));
+  await new Promise(setImmediate);
+  release();
+  await Promise.all([oldDone, newStart, newQuestion]);
+  assert.deepEqual(reports, ["done", "started", "waiting"]);
+});

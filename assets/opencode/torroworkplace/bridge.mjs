@@ -76,7 +76,6 @@ export function bridge({ directory, session, report, signal, timeout = 2000 }) {
             // A deleted session is no longer queryable (also after plugin reload). Resolving its
             // own thread is harmless for an ignored child and cannot resolve a parent's thread.
             if (event.type !== "session.deleted") {
-              if (sessions.get(id) === state) sessions.delete(id);
               return;
             }
             state.info = {};
@@ -84,7 +83,6 @@ export function bridge({ directory, session, report, signal, timeout = 2000 }) {
         }
         const info = state.info;
         if ((directory && info?.location?.directory && info.location.directory !== directory) || info?.parentID) {
-          if (sessions.get(id) === state) sessions.delete(id);
           return;
         }
         if (!info || closed || signal?.aborted) return;
@@ -124,12 +122,12 @@ export function bridge({ directory, session, report, signal, timeout = 2000 }) {
           message: intent === "waiting" ? String(form?.title ?? data.message ?? data.action ?? "").slice(0, 4000) : undefined,
         };
         if (!closed && !signal?.aborted) await report(payload, signal);
-        if (intent === "deleted" && sessions.get(id) === state) sessions.delete(id);
       } catch { /* A failed notification must never interfere with OpenCode. */ }
     };
     state.queued++;
     state.tail = state.tail.then(run, run).finally(() => {
       state.queued--;
+      // Keep one tail until all queued work drains, including failed lookups and deletion.
       // Cache only live questions and queued work, not every completed historical session.
       if (!state.queued && !state.pending.size && sessions.get(id) === state) sessions.delete(id);
     });
