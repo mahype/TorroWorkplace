@@ -102,6 +102,8 @@ ammonia = "4.2.3"
 # of ammonia and blitz-html) and second selectors/cssparser (0.38/0.37, beside Stylo's 0.41/0.38),
 # with older phf, string_cache, servo_arc and web_atoms. MIT.
 dom_query = { version = "0.28.0", default-features = false }
+# Incremental sender-logo head tokenization (#526), reusing dom_query's parser version. MIT/Apache-2.0.
+html5ever = "=0.39.0"
 # The hosts of the links of a mail, for its warning signs of fraud (torroworkplace, issue #506): IP addresses, Punycode
 # and the domain a link really goes to. Already in the build through reqwest. MIT OR Apache-2.0.
 url = "2.5"
