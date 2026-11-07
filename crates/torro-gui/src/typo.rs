@@ -17,7 +17,7 @@
 //! typo::text(typo::micro(), "14:00").style(theme::text_2); // time axis, times in events
 //! ```
 //!
-//! Widgets that take text settings themselves (`text_input`, `pick_list`) get them from the
+//! Widgets that take text settings themselves (`text_input`, `text_editor`) get them from the
 //! level's fields: `let body = typo::body(); input.size(body.size).line_height(body.line_height).font(body.font)`.
 //!
 //! The levels are functions of the active design, not constants: never keep one in a `const` or
