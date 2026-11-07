@@ -2534,7 +2534,10 @@ mod tests {
         assert!(
             !listed.contains("`mailView`") && !listed.contains("colorScheme") && !listed.contains("designs folder")
         );
-        assert!(text("settings_list_color_schemes").is_some_and(|text| text.contains("`darkOnly`")));
+        assert!(
+            text("settings_list_color_schemes")
+                .is_some_and(|text| text.contains("`darkOnly`") && text.contains("`vivid`"))
+        );
         let update = text("settings_update_settings").expect("a description");
         assert!(update.contains("\"compact\" and \"console\" are stored as \"dense\""), "{update}");
     }

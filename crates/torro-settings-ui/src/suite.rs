@@ -28,8 +28,9 @@
 //!   the computer's: "System" first, then the families ([`font_sections`]). Typing filters both,
 //!   Enter takes the first usable match.
 //! - **Colors** – the colour scheme as a dropdown: four stripes (`bg`, `panel`, `text`, `accent` in
-//!   the window's light or dark mode) and the name, in the sections "Torro", "Light and dark" and
-//!   "Dark only" (`ColorSchemeInfo::dark_only`); an empty section is left out ([`scheme_groups`]).
+//!   the window's light or dark mode) and the name, in the sections "Torro", "Light and dark",
+//!   "Dark only" (`ColorSchemeInfo::dark_only`) and "Vivid" (`ColorSchemeInfo::vivid`); an empty
+//!   section is left out ([`scheme_groups`]).
 //!   Under it "Color mode" as a segment of System, Light, Dark with symbol and word.
 //! - **Display** – the zoom of the suite with −, the value, + and "Reset" (task Z.1).
 //!
@@ -1121,17 +1122,21 @@ enum SchemeGroup {
     LightAndDark,
     /// The ones that are only dark (`ColorSchemeInfo::dark_only`).
     DarkOnly,
+    /// The vivid siblings of other schemes (`ColorSchemeInfo::vivid`, issue #515), also a dark-only one.
+    Vivid,
 }
 
 impl SchemeGroup {
-    const ALL: [SchemeGroup; 3] = [SchemeGroup::Torro, SchemeGroup::LightAndDark, SchemeGroup::DarkOnly];
+    const ALL: [SchemeGroup; 4] =
+        [SchemeGroup::Torro, SchemeGroup::LightAndDark, SchemeGroup::DarkOnly, SchemeGroup::Vivid];
 
     /// The section of the colour scheme `info`.
     fn of(info: &ColorSchemeInfo) -> SchemeGroup {
-        match (info.standard, info.dark_only) {
-            (true, _) => SchemeGroup::Torro,
-            (false, true) => SchemeGroup::DarkOnly,
-            (false, false) => SchemeGroup::LightAndDark,
+        match (info.standard, info.vivid, info.dark_only) {
+            (true, _, _) => SchemeGroup::Torro,
+            (false, true, _) => SchemeGroup::Vivid,
+            (false, false, true) => SchemeGroup::DarkOnly,
+            (false, false, false) => SchemeGroup::LightAndDark,
         }
     }
 
@@ -1141,6 +1146,7 @@ impl SchemeGroup {
             SchemeGroup::Torro => "Torro",
             SchemeGroup::LightAndDark => tr("Light and dark"),
             SchemeGroup::DarkOnly => tr("Dark only"),
+            SchemeGroup::Vivid => tr("Vivid"),
         }
     }
 }
@@ -1750,6 +1756,7 @@ fn demo_schemes() -> Vec<SchemeEntry> {
         problems: Vec::new(),
         active: false,
         dark_only: scheme.dark_only,
+        vivid: scheme.vivid,
     };
     let sample = |id: &str, about| ColorScheme { id: id.into(), about, ..ColorScheme::standard() };
     let mut harbor = sample("harbor", sample_about("Harbor", "1.2.0", "Teal accent, cool surfaces"));
@@ -1784,6 +1791,7 @@ fn demo_schemes() -> Vec<SchemeEntry> {
         .collect(),
         active: false,
         dark_only: false,
+        vivid: false,
     };
     // Dark only: the light mode is a copy of the dark one, as the core reads such a scheme.
     let mut midnight = sample("midnight", sample_about("Midnight", "1.0.0", "Deep blue, dark only"));
@@ -1792,7 +1800,13 @@ fn demo_schemes() -> Vec<SchemeEntry> {
     (dark.accent, dark.on_accent) = (Rgba::hex(0x6E8BFF), Rgba::hex(0x0A1030));
     midnight.colors.light = midnight.colors.dark;
     midnight.dark_only = true;
-    let mut schemes = vec![ColorScheme::standard(), harbor, paper, midnight];
+    // Vivid: surfaces of Harbor, a bright orange accent (a dark one in light mode, for white text on it).
+    let mut volt = sample("volt", sample_about("Volt", "1.0.0", "Harbor with a vivid orange accent"));
+    (volt.colors.dark, volt.colors.light) = (harbor.colors.dark, harbor.colors.light);
+    (volt.colors.dark.accent, volt.colors.dark.on_accent) = (Rgba::hex(0xFF7A1A), Rgba::hex(0x0A0E10));
+    (volt.colors.light.accent, volt.colors.light.on_accent) = (Rgba::hex(0xC24A00), Rgba::hex(0xFFFFFF));
+    volt.vivid = true;
+    let mut schemes = vec![ColorScheme::standard(), harbor, paper, midnight, volt];
     let forced = torro_gui::scheme::active();
     if !schemes.iter().any(|scheme| scheme.id == forced.id) {
         schemes.push((*forced).clone());
@@ -2019,8 +2033,8 @@ mod tests {
         }
     }
 
-    /// Task L.37: the colour schemes' dropdown has the sections "Torro", "Light and dark" and "Dark
-    /// only" in this order, each scheme in its own, and leaves out a section without one.
+    /// Task L.37, issue #515: the colour schemes' dropdown has the sections "Torro", "Light and dark",
+    /// "Dark only" and "Vivid" in this order, each scheme in its own, and leaves out a section without one.
     #[test]
     fn the_scheme_dropdown_groups_its_entries() {
         let state = demo();
@@ -2038,11 +2052,14 @@ mod tests {
                 (SchemeGroup::Torro, strings(&["torro"])),
                 (SchemeGroup::LightAndDark, strings(&["harbor", "paper", "neon"])),
                 (SchemeGroup::DarkOnly, strings(&["midnight"])),
+                (SchemeGroup::Vivid, strings(&["volt"])),
             ]
         );
         assert_eq!(SchemeGroup::Torro.title(), "Torro", "a name");
         assert_eq!(SchemeGroup::DarkOnly.title(), tr("Dark only"));
-        let without: Vec<SchemeEntry> = schemes.iter().filter(|e| !e.info.dark_only).cloned().collect();
+        assert_eq!(SchemeGroup::Vivid.title(), tr("Vivid"));
+        let without: Vec<SchemeEntry> =
+            schemes.iter().filter(|e| !e.info.dark_only && !e.info.vivid).cloned().collect();
         let groups: Vec<SchemeGroup> = scheme_groups(&without).into_iter().map(|(group, _)| group).collect();
         assert_eq!(groups, [SchemeGroup::Torro, SchemeGroup::LightAndDark], "no empty section");
     }

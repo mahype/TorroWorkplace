@@ -1175,6 +1175,9 @@ pub struct ColorScheme {
     /// `dark_only = true` in `color-scheme.toml` (issue #291): the scheme has dark colours only, so
     /// every app draws it dark in either mode. Such a file may not have `[colors.light]`.
     pub dark_only: bool,
+    /// `vivid = true` in `color-scheme.toml` (issue #515): the scheme is a sibling of another one with a
+    /// bright accent. It only decides the group the suite lists it in; colours and checks stay as they are.
+    pub vivid: bool,
 }
 
 impl ColorScheme {
@@ -1191,6 +1194,7 @@ impl ColorScheme {
             colors: STANDARD_COLORS,
             logo: Logo::default(),
             dark_only: false,
+            vivid: false,
         }
     }
 

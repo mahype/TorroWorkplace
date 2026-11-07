@@ -5968,6 +5968,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Ein Farbschema mit dark_only = true hat kein [colors.light]. Entferne eines von beiden.",
     ),
     ("Dark only", "Nur dunkel"),
+    ("Vivid", "Knallig"),
     ("Dense", "Dicht"),
     // Spacing levels instead of designs (issue #484)
     ("Colors", "Farben"),
