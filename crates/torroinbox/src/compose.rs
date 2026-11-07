@@ -1413,7 +1413,7 @@ pub enum Message {
     /// "Send" (`Ctrl+Enter`).
     Send,
     /// A save finished: the revision it saved and the draft the core answered.
-    Saved(u64, Box<Result<Draft, ComposeError>>),
+    Saved(u64, Box<Result<Kept, ComposeError>>),
     /// A send finished.
     Sent(Result<Delivery, ComposeError>),
     /// A draft that is replaced by one in another account was moved to the trash.
@@ -1469,6 +1469,9 @@ pub struct Window<S> {
     /// The attachments the running save was started with, to name the draft's own parts anew
     /// ([`save_draft_kept`]) only while they are still the same.
     saving_parts: Vec<DraftAttachment>,
+    /// The attachments of the last save whose new part numbers could not be read: the next save
+    /// reads them first ([`save_draft_kept`], review of #502).
+    unsure_parts: Option<Vec<DraftAttachment>>,
     /// Counts every change; a save remembers the number it saved.
     revision: u64,
     saved: u64,
@@ -1549,6 +1552,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             draft: None,
             discard_after: None,
             saving_parts: Vec::new(),
+            unsure_parts: None,
             revision: 0,
             saved: 0,
             changed: None,
@@ -2268,7 +2272,8 @@ impl<S: ComposeSource + 'static> Window<S> {
         #[cfg(test)]
         self.calls.push(Call::Save(Box::new(draft.clone())));
         let source = self.source.clone();
-        Task::perform(async move { save_draft_kept(source, draft, own).await }, move |result| {
+        let stale = self.unsure_parts.clone();
+        Task::perform(async move { save_draft_kept(source, draft, own, stale).await }, move |result| {
             Message::Saved(revision, Box::new(result))
         })
     }
@@ -2282,10 +2287,14 @@ impl<S: ComposeSource + 'static> Window<S> {
     }
 
     /// A save finished.
-    fn saved(&mut self, revision: u64, result: Result<Draft, ComposeError>) -> Task<Message> {
+    fn saved(&mut self, revision: u64, result: Result<Kept, ComposeError>) -> Task<Message> {
         self.saving = None;
         let draft = match result {
-            Ok(draft) => draft,
+            Ok(Kept { draft, unsure }) => {
+                // Numbers that could not be read stay unsure until a later save reads them.
+                self.unsure_parts = unsure.then(|| draft.attachments.clone());
+                draft
+            }
             Err(err) => {
                 // Everything stays as it is; the clock tries again, and a send or a close that
                 // waited for this save is given up. The old draft stays too: nothing replaced it.
@@ -2523,30 +2532,61 @@ pub async fn save_with_fallback<S: ComposeSource>(source: Arc<S>, draft: Draft) 
     }
 }
 
+/// A save of [`save_draft_kept`]: the draft as the core keeps it, its own parts under their new
+/// numbers; `unsure` when those numbers could not be read after the save (they are still the old
+/// ones then, and the next save reads them first).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Kept {
+    pub draft: Draft,
+    pub unsure: bool,
+}
+
 /// Saves `draft` ([`save_with_fallback`]) and names the parts of the draft itself anew: they are
 /// attachments the core took over from the draft it replaced (`own`: the ids the window knew it by,
 /// and the id it has now), whose numbers change with the new message (issue #502). The saved draft
 /// is read once (`mail.get_message`) and each such part takes the number of the attachment at its
-/// place. When that fails, or the number of attachments differs, the parts stay as they were.
+/// place; when the number of attachments differs, the parts stay as they were. When the reading
+/// fails, the answer says `unsure`.
+///
+/// `stale` are the attachments of the last save whose numbers stayed unsure: before this save the
+/// stored draft is read, and each of them still in `draft` takes the number at its place. A save
+/// that cannot read them is not made (the error is the answer; the window tries again), so no part
+/// is taken by a number that now names another one.
 pub async fn save_draft_kept<S: ComposeSource>(
     source: Arc<S>,
     draft: Draft,
     own: Vec<String>,
-) -> Result<Draft, ComposeError> {
+    stale: Option<Vec<DraftAttachment>>,
+) -> Result<Kept, ComposeError> {
+    let draft = match (stale, draft.id.clone()) {
+        (Some(stale), Some(id)) => {
+            let mail = source.get_mail(id.clone()).await?;
+            let parts: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|info| !info.inline).collect();
+            let renamed = |attachment: &DraftAttachment| {
+                let at = stale.iter().position(|old| old == attachment)?;
+                let own = matches!(attachment, DraftAttachment::MailPart { message, .. } if *message == id);
+                let info = parts.get(at).filter(|_| own && parts.len() == stale.len())?;
+                Some(DraftAttachment::MailPart { message: id.clone(), part: info.part.clone() })
+            };
+            let attachments = draft.attachments.iter().map(|old| renamed(old).unwrap_or_else(|| old.clone())).collect();
+            Draft { attachments, ..draft }
+        }
+        _ => draft,
+    };
     let saved = save_with_fallback(source.clone(), draft).await?;
-    let Some(id) = saved.id.clone() else { return Ok(saved) };
+    let Some(id) = saved.id.clone() else { return Ok(Kept { draft: saved, unsure: false }) };
     let names_itself = |message: &str| message == id || own.iter().any(|own| own == message);
     let keeps = saved
         .attachments
         .iter()
         .any(|attachment| matches!(attachment, DraftAttachment::MailPart { message, .. } if names_itself(message)));
     if !keeps {
-        return Ok(saved);
+        return Ok(Kept { draft: saved, unsure: false });
     }
-    let Ok(mail) = source.get_mail(id.clone()).await else { return Ok(saved) };
+    let Ok(mail) = source.get_mail(id.clone()).await else { return Ok(Kept { draft: saved, unsure: true }) };
     let parts: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|info| !info.inline).collect();
     if parts.len() != saved.attachments.len() {
-        return Ok(saved);
+        return Ok(Kept { draft: saved, unsure: false });
     }
     let attachments = saved
         .attachments
@@ -2559,7 +2599,7 @@ pub async fn save_draft_kept<S: ComposeSource>(
             other => other.clone(),
         })
         .collect();
-    Ok(Draft { attachments, ..saved })
+    Ok(Kept { draft: Draft { attachments, ..saved }, unsure: false })
 }
 
 /// Asks for files with the system's chooser; none when it is cancelled.
@@ -3755,7 +3795,7 @@ mod tests {
         };
         let revision = window.saving.expect("a save is running");
         let own: Vec<String> = window.draft.iter().map(|(id, _)| id.clone()).collect();
-        let result = block_on(save_draft_kept(window.source.clone(), *draft, own));
+        let result = block_on(save_draft_kept(window.source.clone(), *draft, own, window.unsure_parts.clone()));
         window.update(Message::Saved(revision, Box::new(result)))
     }
 
@@ -4579,7 +4619,7 @@ mod tests {
         let _ = window.update(Message::Picked(vec![path]));
         let mut saved = window.draft();
         saved.attachments = vec![DraftAttachment::MailPart { message: "m:w8".into(), part: "1.2".into() }];
-        let _ = window.update(Message::Saved(revision, Box::new(Ok(saved))));
+        let _ = window.update(Message::Saved(revision, Box::new(Ok(Kept { draft: saved, unsure: false }))));
         let now = window.draft().attachments;
         assert_eq!(now[0], DraftAttachment::MailPart { message: "m:w8".into(), part: "1.2".into() });
         assert!(matches!(now[1], DraftAttachment::File { .. }), "the new file stays");
@@ -4602,12 +4642,17 @@ mod tests {
     /// Issue #502: saved again, a draft's own parts take the numbers the new message gives them.
     #[test]
     fn a_drafts_own_parts_are_named_anew_after_a_save() {
-        struct Renumbered(DemoSource);
+        use std::sync::atomic::{AtomicBool, Ordering};
+        /// Renumbers the parts of every mail; while `.1` is set, reading a mail fails.
+        struct Renumbered(DemoSource, AtomicBool);
         impl ComposeSource for Renumbered {
             async fn senders(&self) -> Result<Vec<Sender>, ComposeError> {
                 ComposeSource::senders(&self.0).await
             }
             async fn get_mail(&self, id: String) -> Result<Mail, ComposeError> {
+                if self.1.load(Ordering::SeqCst) {
+                    return Err(ComposeError::Offline);
+                }
                 let mut mail = ComposeSource::get_mail(&self.0, id).await?;
                 for info in &mut mail.attachments {
                     info.part = format!("1.{}", info.part);
@@ -4627,16 +4672,35 @@ mod tests {
                 ComposeSource::discard_draft(&self.0, id).await
             }
         }
-        let source = Arc::new(Renumbered(DemoSource::new(Utc::now())));
+        let source = Arc::new(Renumbered(DemoSource::new(Utc::now()), AtomicBool::new(false)));
         let draft = block_on(source.get_draft("m:w8".into())).expect("a draft");
-        let kept = block_on(save_draft_kept(source.clone(), draft.clone(), vec!["m:w8".into()])).expect("saved");
+        let kept =
+            block_on(save_draft_kept(source.clone(), draft.clone(), vec!["m:w8".into()], None)).expect("saved").draft;
         assert_eq!(kept.attachments, [DraftAttachment::MailPart { message: "m:w8".into(), part: "1.2".into() }]);
         let other = Draft {
             attachments: vec![DraftAttachment::MailPart { message: "m:p3".into(), part: "2".into() }],
-            ..draft
+            ..draft.clone()
         };
-        let foreign = block_on(save_draft_kept(source, other.clone(), vec!["m:w8".into()])).expect("saved");
+        let foreign =
+            block_on(save_draft_kept(source.clone(), other.clone(), vec!["m:w8".into()], None)).expect("saved").draft;
         assert_eq!(foreign.attachments, other.attachments, "a part of another mail stays as it is");
+
+        // Review of #502: the numbers cannot be read after a save – the answer says so, the next
+        // save reads them first, and does not save while it cannot.
+        let own = vec!["m:w8".to_owned()];
+        source.1.store(true, Ordering::SeqCst);
+        let unsure = block_on(save_draft_kept(source.clone(), draft.clone(), own.clone(), None)).expect("saved");
+        assert!(unsure.unsure, "the numbers stay unsure");
+        assert_eq!(unsure.draft.attachments, draft.attachments, "still the old ones");
+        let stale = Some(unsure.draft.attachments.clone());
+        let refused = block_on(save_draft_kept(source.clone(), draft.clone(), own.clone(), stale.clone()));
+        assert_eq!(refused, Err(ComposeError::Offline), "no save with numbers that may name another part");
+        source.1.store(false, Ordering::SeqCst);
+        let read = block_on(save_draft_kept(source.clone(), draft.clone(), own, stale)).expect("saved");
+        assert!(!read.unsure);
+        assert_eq!(read.draft.attachments, [DraftAttachment::MailPart { message: "m:w8".into(), part: "1.2".into() }]);
+        let stored = DemoSource::get_draft(&source.0, "m:w8").expect("stored");
+        assert_eq!(stored.attachments, read.draft.attachments, "saved under the number read before");
     }
 
     #[test]
