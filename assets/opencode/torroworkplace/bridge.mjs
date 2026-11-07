@@ -35,7 +35,16 @@ export function bridge({ directory, session, report, signal, timeout = 2000,
   const sessions = new Map();
   const seen = new Set();
   let closed = false;
-  const clean = () => { closed = true; sessions.clear(); seen.clear(); };
+  let drained = Promise.resolve();
+  const clean = () => {
+    if (closed) return;
+    closed = true;
+    // Capture the actual tails before releasing the cache. Plugin cleanup awaits these writes
+    // before OpenCode loads a replacement instance against the same durable storage.
+    drained = Promise.allSettled([...sessions.values()].map((state) => state.tail));
+    sessions.clear();
+    seen.clear();
+  };
   signal?.addEventListener("abort", clean, { once: true });
   const bounded = async (work) => {
     let timer;
@@ -45,7 +54,7 @@ export function bridge({ directory, session, report, signal, timeout = 2000,
       })]);
     } finally { clearTimeout(timer); }
   };
-  return async (event) => {
+  const receive = async (event) => {
     if (closed || signal?.aborted || !types.includes(event?.type)) return;
     // Global plugins may be instantiated for several Locations on the same server. Dedupe alone
     // is local to this instance; never act on an explicitly different source Location.
@@ -127,7 +136,9 @@ export function bridge({ directory, session, report, signal, timeout = 2000,
             break;
           case "session.deleted": state.pending.clear(); intent = "deleted"; break;
         }
-        await bounded(savePending(id, [...state.pending]));
+        // Storage writes cannot be cancelled. Keep the tail until the actual write completes;
+        // timing out only our wait would let an older snapshot overwrite later closures.
+        await savePending(id, [...state.pending]);
         if (!intent) return;
         const payload = {
           hook_event_name: intent, session_id: id,
@@ -147,4 +158,6 @@ export function bridge({ directory, session, report, signal, timeout = 2000,
     });
     return state.tail;
   };
+  receive.drain = () => { clean(); return drained; };
+  return receive;
 }

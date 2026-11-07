@@ -28,6 +28,9 @@ export default Plugin.define({
         }
       } catch { /* Unloading or an unavailable event stream is harmless. */ }
     })();
-    return () => controller.abort();
+    return async () => {
+      controller.abort();
+      await receive.drain();
+    };
   },
 });

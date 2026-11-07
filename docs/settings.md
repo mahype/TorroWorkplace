@@ -494,7 +494,7 @@ werden CLI und vorhandene VS-Code-Konfiguration getrennt angeboten; die Auswahl 
 
 | Client | Erkennung und Einrichtung |
 |---|---|
-| OpenCode V2 | `opencode` oder `~/.config/opencode/opencode.json(c)` (mit `XDG_CONFIG_HOME`-Override). Beides vorhanden: abbrechen und Mehrdeutigkeit klären. Mit CLI: `opencode mcp add torroworkplace --global --env TORRO_TOKEN=… -- <programm> mcp`; sonst `mcp.servers.torroworkplace`, `type: local`, `command: [<programm>, mcp]`, `environment`. Kein erfundener Remove-Befehl: beim Trennen nur den eigenen Eintrag editieren. |
+| OpenCode V2 | `opencode` oder `~/.config/opencode/opencode.json(c)` (mit `XDG_CONFIG_HOME`-Override; `OPENCODE_CONFIG_DIR` hat Vorrang und gilt auch für Plugins und Dateischutz). Beides vorhanden: abbrechen und Mehrdeutigkeit klären. Mit CLI: `opencode mcp add torroworkplace --global --env TORRO_TOKEN=… -- <programm> mcp`; sonst `mcp.servers.torroworkplace`, `type: local`, `command: [<programm>, mcp]`, `environment`. Kein erfundener Remove-Befehl: beim Trennen nur den eigenen Eintrag editieren. |
 | Zed | `zed` oder `settings.json`: macOS `~/.config/zed/`, Linux `$XDG_CONFIG_HOME/zed/` bzw. `~/.config/zed/`, Windows `%APPDATA%/Zed/`. Eintrag unter `context_servers`. |
 | Cline | `cline`, CLI-Datei `~/.cline/data/settings/cline_mcp_settings.json` oder vorhandene `<App-Konfiguration>/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`. `CLINE_MCP_SETTINGS_PATH` vor `CLINE_DIR`, danach Standard; leere Overrides gelten als ungesetzt. Eintrag unter `mcpServers`; andere Editorprofile ausdrücklich wählen. |
 | Continue | `cn` oder `~/.continue/config.yaml`; alternativ eine ausdrücklich gewählte Datei. Nur bestehende YAML-Dateien bearbeiten: `mcpServers` als Liste. Keine erfundenen Modelle oder synthetische Grundkonfiguration. `cn --config <datei>` bestimmt die tatsächlich verwendete Datei. |
@@ -521,6 +521,9 @@ keine noch offene Frage vergisst; gespeichert werden nur IDs, keine Fragen oder 
 werden daraus entfernt; Kind-Sitzungen werden ignoriert. Antworten/Freigaben
 bleiben in OpenCode. Das Plugin enthält nur Programm-/Key-Dateipfade, nie einen Token; es startet ohne Shell
 `torroworkplace hook opencode --key-file <datei>` mit begrenzter Standardeingabe und Timeout. Fremde Plugins bleiben.
+Nicht abbrechbare Speicher-Schreibzugriffe bleiben bis zum tatsächlichen Abschluss in der Sitzungsqueue;
+ein Timeout der Benachrichtigung darf keine älteren Zustände über neuere Abschlüsse schreiben lassen.
+Beim Neuladen wartet das asynchrone Plugin-Cleanup ebenfalls auf diese Schreibzugriffe, bevor die neue Instanz startet.
 
 **„Geschrieben“ heißt nicht „Verbindung geprüft“.** Im eingerichteten Client `system_ping` aufrufen und im
 Wizard „Check connection“ wählen. Nur ein erfolgreicher `system.ping` dieses neuen Clients seit Beginn der

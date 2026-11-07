@@ -175,3 +175,47 @@ test("reload retains open question IDs and cancellation resolves only the final 
   assert.deepEqual(reports, ["waiting", "waiting", "resolved"]);
   assert.equal(stored.size, 0);
 });
+
+test("slow persistent writes cannot overtake later question closures", async () => {
+  let stored = [], writes = 0, release, entered;
+  const delayed = new Promise((resolve) => { release = resolve; });
+  const writeEntered = new Promise((resolve) => { entered = resolve; });
+  const receive = bridge({ session: async () => ({}), report: async () => {}, timeout: 5,
+    loadPending: async () => stored,
+    savePending: async (_, pending) => {
+      if (++writes === 2) { entered(); await delayed; }
+      stored = pending;
+    },
+  });
+  const ask = (id) => ({ id: `ask-${id}`, type: "form.created", data: { form: { sessionID: "s", id } } });
+  const close = (id) => ({ id: `close-${id}`, type: "form.cancelled", data: { sessionID: "s", id } });
+  await receive(ask("a"));
+  const second = receive(ask("b"));
+  await writeEntered;
+  const closures = [receive(close("a")), receive(close("b"))];
+  // Exceed the notification timeout while the non-cancellable storage operation is pending.
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  release();
+  await Promise.all([second, ...closures]);
+  assert.deepEqual(stored, [], "a late old write must not revive closed questions");
+});
+
+test("plugin cleanup drains non-cancellable writes before a replacement can load", async () => {
+  let release, entered, finished = false;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const writeEntered = new Promise((resolve) => { entered = resolve; });
+  const controller = new AbortController();
+  const receive = bridge({ signal: controller.signal, session: async () => ({}),
+    report: async () => assert.fail("an unloaded plugin reports nothing"),
+    savePending: async () => { entered(); await blocked; },
+  });
+  const work = receive({ id: "ask", type: "form.created", data: { form: { sessionID: "s", id: "a" } } });
+  await writeEntered;
+  controller.abort();
+  const cleanup = receive.drain().then(() => { finished = true; });
+  await new Promise(setImmediate);
+  assert.equal(finished, false, "clearing the session cache is not storage completion");
+  release();
+  await Promise.all([work, cleanup]);
+  assert.equal(finished, true);
+});
