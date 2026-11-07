@@ -26938,11 +26938,17 @@ mod tests {
     #[tokio::test]
     async fn the_recommendation_suggests_sorting_only_with_mail_the_caller_may_read() {
         use torro_core::ai::AiSlot;
+        let assert_visible = |answer: &Response, expected: &[AiSlot]| {
+            assert_eq!(suggested_slots(answer), expected, "legacy slots: {answer:?}");
+            let Response::AiRecommendation { recommendation } = answer else { panic!("recommendation") };
+            let prepared: Vec<_> = recommendation.preparations.iter().map(|p| p.slot).collect();
+            assert_eq!(prepared, expected, "account preparations follow the same mail rights: {answer:?}");
+        };
         let ollama = fake_ollama_deciding_here_and_elsewhere().await;
         let alone = tempfile::tempdir().expect("temp dir");
         let core = core_with_ai(alone.path(), &MemoryTokens::default(), Vec::new()).with_probe(Measured(large_pc()));
         core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await.expect("ollama");
-        assert_eq!(suggested_slots(&core.handle(Request::AiRecommend).await), [AiSlot::Chat], "no mail, no sorting");
+        assert_visible(&core.handle(Request::AiRecommend).await, &[AiSlot::Chat]);
 
         let dir = tempfile::tempdir().expect("temp dir");
         let imap = FakeImap::start(MAIL_PASSWORD).await;
@@ -26953,24 +26959,24 @@ mod tests {
         core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await.expect("ollama");
         let app_key = crate::clients::tests::app_key(dir.path());
         let both = [AiSlot::Chat, AiSlot::Decide];
-        assert_eq!(suggested_slots(&ask(&core, Some(&app_key), Request::AiRecommend).await), both);
+        assert_visible(&ask(&core, Some(&app_key), Request::AiRecommend).await, &both);
 
         let mut blind = RightsTemplate::ReadOnly.rights();
         blind.areas.insert(Area::Mail, AreaRights { level: Level::NoAccess, admin: false });
         let (_, blind) = client(&core, blind).await;
         let answer = ask(&core, Some(&blind), Request::AiRecommend).await;
-        assert_eq!(suggested_slots(&answer), [AiSlot::Chat], "no mail rights: {answer:?}");
+        assert_visible(&answer, &[AiSlot::Chat]);
 
         let mut elsewhere = RightsTemplate::ReadOnly.rights();
         elsewhere.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
         let (_, elsewhere) = client(&core, elsewhere).await;
         let answer = ask(&core, Some(&elsewhere), Request::AiRecommend).await;
-        assert_eq!(suggested_slots(&answer), [AiSlot::Chat], "another account only: {answer:?}");
+        assert_visible(&answer, &[AiSlot::Chat]);
 
         let mut reading = RightsTemplate::ReadOnly.rights();
         reading.mail_accounts = Selection::Only(vec![anna]);
         let (_, reading) = client(&core, reading).await;
-        assert_eq!(suggested_slots(&ask(&core, Some(&reading), Request::AiRecommend).await), both);
+        assert_visible(&ask(&core, Some(&reading), Request::AiRecommend).await, &both);
     }
 
     /// An Ollama with a deciding model here (`nimble`) and one that decides elsewhere
