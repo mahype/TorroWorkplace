@@ -73,6 +73,7 @@ use iced::{
 use iced::{border, keyboard, mouse};
 
 mod context_area;
+mod guard;
 
 use torro_core::design::{ListLook, ListSelection};
 use torro_core::i18n::tr;
@@ -2750,8 +2751,10 @@ impl<K: Clone + Eq + Hash> Dropdown<K> {
 /// The menu of a dropdown (issue #554, the rule of choices): with fewer than [`SEARCH_FROM`]
 /// entries a [`menu_wide`] that scrolls past [`size::panel()`]; with more a [`search_menu`] whose
 /// field ([`DROPDOWN_SEARCH`]) filters the entries by `query` without regard to case. Sections
-/// without a match drop out, Enter takes the first match, and without one sends `on_close`.
-/// `on_query` comes with every change of the field.
+/// without a match drop out, Enter takes [`first_choice`], and without one sends `on_close`.
+/// `on_query` comes with every change of the field; Escape passes the field by ([`escape_free`]) and
+/// reaches the window, which closes the menu.
+/// Over a floating dialog, draw the dialog [`inert`] while the menu is open.
 pub fn choice_menu<'a, M: Clone + 'a>(
     sections: Vec<MenuSection<'a, M>>,
     width: f32,
@@ -2767,15 +2770,43 @@ pub fn choice_menu<'a, M: Clone + 'a>(
             .style(style::scrollable)
             .height(Length::Shrink)
             .width(Fill);
-        return container(container(body).max_height(size::panel()))
+        let card = container(container(body).max_height(size::panel()))
             .width(width)
             .padding(style::MENU_INSET)
-            .style(style::container::menu)
-            .into();
+            .style(style::container::menu);
+        return card.into();
     }
     let shown = matching_sections(sections, query);
-    let first = shown.iter().find_map(|section| section.items.first()).map(|item| item.on_press.clone());
-    search_menu(DROPDOWN_SEARCH, query, on_query, first.unwrap_or(on_close), menu_rows(shown), width)
+    let enter = first_choice(&shown, query).unwrap_or_else(|| on_close.clone());
+    escape_free(search_menu(DROPDOWN_SEARCH, query, on_query, enter, menu_rows(shown), width))
+}
+
+/// What Enter in the search field of a dropdown takes from `sections` (already filtered by
+/// `query`): the first match while words are typed; with an empty field the current entry, so
+/// opening a menu and pressing Enter never changes the choice (the first entry is often "Off").
+pub fn first_choice<M: Clone>(sections: &[MenuSection<'_, M>], query: &str) -> Option<M> {
+    let mut items = sections.iter().flat_map(|section| section.items.iter());
+    let item = if query.trim().is_empty() { items.find(|item| item.current) } else { items.next() };
+    item.map(|item| item.on_press.clone())
+}
+
+/// `menu` whose search field never sees Escape (issue #554): a focused field keeps the key to itself
+/// otherwise, and the window's Escape – which closes the open menu first – would come only on the
+/// second press. The key stays uncaptured, so the window gets it.
+pub fn escape_free<'a, M: 'a>(menu: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    guard::EscapeArea { content: menu.into() }.into()
+}
+
+/// `content` drawn as it is but deaf to the pointer and the keys: a floating dialog or card while a
+/// dropdown of it is open (issue #554). Iced hands an event to every floating layer, the lower one
+/// first, so a button of the dialog under the menu would take a click meant for an entry; inert,
+/// the click reaches the menu, and a click on the dialog closes the menu.
+///
+/// ```ignore
+/// let card = if state.menus.open().is_some() { widgets::inert(card) } else { card };
+/// ```
+pub fn inert<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    guard::Inert { content: content.into() }.into()
 }
 
 /// The sections of a dropdown with only the entries whose label holds `query` (trimmed, without
@@ -5509,11 +5540,16 @@ pub fn tabs<'a, M: Clone + 'a>(
             return column![strip, line].into();
         }
         let hidden = scrollable::Scrollbar::new().width(0).scroller_width(0);
-        let mut scroll =
+        let scroll =
             scrollable(strip).direction(scrollable::Direction::Horizontal(hidden)).style(style::scrollable).width(Fill);
-        if tabs_width(&labels[..(selected + 1).min(labels.len())]) > room.width {
-            scroll = scroll.anchor_right();
-        }
+        // Anchored at the right while the chosen tab lies past the room. The scrollable keeps its
+        // offset from its anchor, so a change of anchor would mirror the row: the other anchor gets a
+        // tree of its own (one container more), and with it a fresh offset from its own edge.
+        let scroll: Element<'a, M> = if tabs_width(&labels[..(selected + 1).min(labels.len())]) > room.width {
+            container(scroll.anchor_right()).into()
+        } else {
+            scroll.into()
+        };
         let fade = container(blank().width(space::l()).height(Fill)).style(|t: &Theme| {
             let panel = palette(t).panel;
             let fade = iced::gradient::Linear::new(iced::Radians(std::f32::consts::FRAC_PI_2))
@@ -7512,6 +7548,21 @@ mod tests {
         assert_eq!(labels(matching_sections(sections(), "LLA")), vec!["llama3"]);
         assert_eq!(matching_sections(sections(), "cla").len(), 1, "the local section drops out");
         assert!(matching_sections(sections(), "nothing").is_empty());
+    }
+
+    /// Issue #554 (review): Enter in an empty search keeps the current entry, never the first one
+    /// ("Off"); with words it takes the first match, and without a current entry nothing.
+    #[test]
+    fn enter_keeps_the_choice_until_words_are_typed() {
+        let sections = vec![MenuSection::new(vec![
+            MenuItem::plain("Off", 0),
+            MenuItem::plain("llama3", 1).current(true),
+            MenuItem::plain("qwen", 2),
+        ])];
+        assert_eq!(first_choice(&sections, " "), Some(1));
+        assert_eq!(first_choice(&matching_sections(sections.clone(), "q"), "q"), Some(2));
+        let none = vec![MenuSection::new(vec![MenuItem::plain("Off", 0)])];
+        assert_eq!(first_choice(&none, ""), None);
     }
 
     /// Issue #554: eleven entries stand in a plain menu, twelve get the search field; both build.
