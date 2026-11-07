@@ -32,7 +32,8 @@
 //!   opening is in (until then the client's page says "Updating…"), and every save reads the client
 //!   anew right before it and changes only the app's areas in what the core holds then ([`send`],
 //!   [`merged`]): nothing of another area, "Ask first" or an MCP server goes back as this window last
-//!   saw it. Two windows that change the same client in the same moment: the last one wins.
+//!   saw it. Within the app's own areas the page sends what it shows: a change made in the control
+//!   centre to the same area since the page loaded the clients is replaced by it (the last one wins).
 //! - A change goes out at once (not [`rights::SAVE_DELAY`] later as in the control centre): an app
 //!   closes its settings without a word to the host, and a draft that waits would be lost. Only one
 //!   `clients.update_client` is on its way at a time, answered on a message of its own, so an older one
@@ -236,8 +237,10 @@ fn edit<A>(state: &mut State, message: rights::Message, data: &Data) -> Action<A
         return Action::None;
     }
     let Some(client) = open_client(state, data) else { return Action::None };
-    // A draft of another client still waits for its turn: it would be replaced, and lost.
-    if rights::waiting_for(&state.rights).is_some_and(|id| id != client.id) {
+    // A draft of another client still waits for its turn: a change would replace it, and lose it.
+    // What only changes what the editor shows goes through.
+    let shows_only = matches!(message, rights::Message::RepoInput(_) | rights::Message::Expand(_));
+    if !shows_only && rights::waiting_for(&state.rights).is_some_and(|id| id != client.id) {
         return Action::None;
     }
     let _: Action<A> = rights::update(&mut state.rights, message, Some(client), &known);
@@ -299,13 +302,17 @@ fn save<A>(state: &mut State) -> Action<A> {
 
 /// A send of the settings came back (`host::Message::Done`): the page's save is settled – stored, it
 /// goes with the next list of clients; failed, the editor shows what the core holds again.
-pub fn done(state: &mut State, result: &Result<(), String>) {
+///
+/// A change made while it was on its way goes out at once now ([`Action::Send`]), not with the clock:
+/// settings closed in the meantime would lose it.
+pub fn done<A>(state: &mut State, result: &Result<(), String>) -> Action<A> {
     if !state.sending {
-        return;
+        return Action::None;
     }
     state.sending = false;
     let answer = result.clone().map(|()| torro_ipc::Response::Ok);
     rights::answered(&mut state.rights, &answer);
+    save(state)
 }
 
 /// The settings' data came anew: a saved draft is in it now. A client that is gone shows the list
@@ -520,12 +527,11 @@ mod tests {
             matches!(&sent[..], [Request::UpdateClient { id, rights }] if *id == claude.id && rights.area(Area::Calendar).level == Level::Read),
             "{sent:?}"
         );
-        // One at a time: a change while the first is on its way waits for the clock after the answer.
+        // One at a time: a change while the first is on its way goes out with its answer.
         let write = Message::Rights(rights::Message::Level(Area::Calendar, Level::Write));
         assert!(requests(update(&mut state, write, &data)).is_empty());
         assert!(requests(update(&mut state, later(), &data)).is_empty(), "the first is still on its way");
-        done(&mut state, &Ok(()));
-        let sent = requests(update(&mut state, later(), &data));
+        let sent = requests(done(&mut state, &Ok(())));
         assert!(
             matches!(&sent[..], [Request::UpdateClient { rights, .. }] if rights.area(Area::Calendar).level == Level::Write)
         );
@@ -577,13 +583,13 @@ mod tests {
                 sent.extend(requests(update(&mut state, open, &data)));
                 for edit in edits() {
                     sent.extend(requests(update(&mut state, Message::Rights(edit), &data)));
-                    done(&mut state, &Ok(()));
+                    sent.extend(requests(done(&mut state, &Ok(()))));
                     sent.extend(requests(update(&mut state, later(), &data)));
-                    done(&mut state, &Ok(()));
+                    sent.extend(requests(done(&mut state, &Ok(()))));
                 }
                 sent.extend(requests(update(&mut state, Message::ControlCentre("mcp"), &data)));
                 sent.extend(requests(update(&mut state, Message::Back, &data)));
-                done(&mut state, &Ok(()));
+                sent.extend(requests(done(&mut state, &Ok(()))));
             }
             assert!(!sent.is_empty(), "{}", app.window_class);
             for request in &sent {
@@ -655,8 +661,7 @@ mod tests {
         assert!(requests(update(&mut state, level(Level::Full), &data)).is_empty(), "the second waits");
         let _ = update::<()>(&mut state, Message::Open(claude.id.clone(), claude.kind.clone()), &data);
         assert!(requests(update(&mut state, level(Level::Read), &data)).is_empty(), "dropped, not in its place");
-        done(&mut state, &Ok(()));
-        let sent = requests(update(&mut state, later(), &data));
+        let sent = requests(done(&mut state, &Ok(())));
         assert!(
             matches!(&sent[..], [Request::UpdateClient { id, rights }] if *id == key.id && rights.area(Area::Calendar).level == Level::Full),
             "{sent:?}"

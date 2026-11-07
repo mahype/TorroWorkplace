@@ -1119,10 +1119,23 @@ impl Host {
                 }
             }
             Message::OutsideDone(result) => {
-                if let Some(state) = self.outside.as_mut() {
-                    outside::done(state, &result);
+                // A change made while the save was on its way goes out at once, after it.
+                let next = match self.outside.as_mut() {
+                    Some(state) => match outside::done::<A>(state, &result) {
+                        Action::Send(requests) => {
+                            let send = outside::send(Arc::clone(&self.backend), requests, state.areas());
+                            Some(Task::perform(send, Message::OutsideDone))
+                        }
+                        _ => None,
+                    },
+                    None => None,
+                };
+                let outcome = self.update(Message::Done { changed: true, result });
+                match (next, outcome) {
+                    (Some(next), Outcome::Work(task)) => Outcome::Work(Task::batch([task, next])),
+                    (Some(next), Outcome::None) => Outcome::Work(next),
+                    (_, outcome) => outcome,
                 }
-                self.update(Message::Done { changed: true, result })
             }
             Message::AccountAnswered(result) => {
                 let Some(state) = self.accounts.as_mut() else { return Outcome::None };
