@@ -700,20 +700,28 @@ fn transport_error(err: &reqwest::Error) -> AiError {
 /// Read discovery bodies without letting an endpoint grow the search's memory unboundedly.
 async fn probe_body(response: reqwest::Response) -> Option<Vec<u8>> {
     let mut remaining = HEALTH_MAX;
-    probe_body_with_budget(response, &mut remaining).await
+    probe_body_with_budget(response, &mut remaining).await.ok()
+}
+
+enum ProbeBodyError {
+    Transport,
+    Limit,
 }
 
 /// Health and model-list bodies consume the same endpoint budget during discovery.
-async fn probe_body_with_budget(mut response: reqwest::Response, remaining: &mut usize) -> Option<Vec<u8>> {
+async fn probe_body_with_budget(
+    mut response: reqwest::Response,
+    remaining: &mut usize,
+) -> Result<Vec<u8>, ProbeBodyError> {
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.ok()? {
+    while let Some(chunk) = response.chunk().await.map_err(|_| ProbeBodyError::Transport)? {
         if chunk.len() > *remaining {
-            return None;
+            return Err(ProbeBodyError::Limit);
         }
         *remaining -= chunk.len();
         body.extend_from_slice(&chunk);
     }
-    Some(body)
+    Ok(body)
 }
 
 /// Comparable loopback endpoint, keeping port and path (two APIs can share a host).
@@ -1423,8 +1431,11 @@ impl AiAccounts {
                     let strata = if provider == AiProvider::Strata || program == Some(LocalProgram::LlamaCpp) {
                         match client.wire.http.get(strata::health_url(&url)).send().await {
                             Ok(response) if response.status().is_success() => {
-                                let body = probe_body_with_budget(response, &mut remaining).await?;
-                                strata::is_strata(&body)
+                                match probe_body_with_budget(response, &mut remaining).await {
+                                    Ok(body) => strata::is_strata(&body),
+                                    Err(ProbeBodyError::Transport) => false,
+                                    Err(ProbeBodyError::Limit) => return None,
+                                }
                             }
                             // A missing/broken health route is not evidence against a generic
                             // runtime. Its model list still gets the remaining shared budget.
@@ -1442,7 +1453,7 @@ impl AiAccounts {
                     let models = if matches!(status, 401 | 403) {
                         Err(AiObservationStatus::AuthRequired)
                     } else if response.status().is_success() {
-                        let bytes = probe_body_with_budget(response, &mut remaining).await?;
+                        let bytes = probe_body_with_budget(response, &mut remaining).await.ok()?;
                         match openai::parse_models(&bytes) {
                             Ok(models) => Ok(models.len()),
                             Err(_) if strata => Err(AiObservationStatus::ModelsUnavailable),
@@ -3130,32 +3141,46 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_health_transport_error_keeps_the_shared_llama_cpp_model_fallback() {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-        let dir = tempfile::tempdir().expect("temp dir");
-        let keys = MemoryTokens::default();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("loopback listener");
-        let base = format!("http://{}/v1", listener.local_addr().expect("local address"));
-        let server = tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
-                let mut request = String::new();
-                tokio::io::BufReader::new(&mut stream).read_line(&mut request).await.expect("request");
-                if request.starts_with("GET /health ") {
-                    // No HTTP response: exercise a transport failure, not an HTTP error status.
-                    continue;
+        let almost_full = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            HEALTH_MAX + 1,
+            " ".repeat(HEALTH_MAX - 5)
+        );
+        for (health_reply, expected) in [
+            (String::new(), 1),
+            ("HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{".into(), 1),
+            (almost_full, 0),
+        ] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let keys = MemoryTokens::default();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("loopback listener");
+            let base = format!("http://{}/v1", listener.local_addr().expect("local address"));
+            let server = tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    let mut request = String::new();
+                    tokio::io::BufReader::new(&mut stream).read_line(&mut request).await.expect("request");
+                    if request.starts_with("GET /health ") {
+                        // Fail either before headers or partway through an otherwise successful body.
+                        stream.write_all(health_reply.as_bytes()).await.expect("broken health response");
+                        continue;
+                    }
+                    assert!(request.starts_with("GET /v1/models "));
+                    let body = r#"{"data":[]}"#;
+                    let reply =
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    stream.write_all(reply.as_bytes()).await.expect("response");
                 }
-                assert!(request.starts_with("GET /v1/models "));
-                let body = r#"{"data":[]}"#;
-                let reply =
-                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-                stream.write_all(reply.as_bytes()).await.expect("response");
+            });
+            let mut ai = service(dir.path(), &keys, vec![(AiProvider::Strata, base.clone())]);
+            ai.programs = vec![(LocalProgram::LlamaCpp, base)];
+            let (found, observations) = ai.scan_local().await.expect("scan");
+            server.abort();
+            assert!(observations.is_empty());
+            assert_eq!(found.len(), expected, "transport failures retain the fallback, never reset the body budget");
+            if let Some(found) = found.first() {
+                assert_eq!(found.program.as_deref(), Some("llama_cpp"));
             }
-        });
-        let mut ai = service(dir.path(), &keys, vec![(AiProvider::Strata, base.clone())]);
-        ai.programs = vec![(LocalProgram::LlamaCpp, base)];
-        let (found, observations) = ai.scan_local().await.expect("scan");
-        server.abort();
-        assert!(observations.is_empty());
-        assert_eq!(found.len(), 1, "a health transport failure does not hide a valid model endpoint");
-        assert_eq!(found[0].program.as_deref(), Some("llama_cpp"));
+        }
     }
 
     #[tokio::test]
