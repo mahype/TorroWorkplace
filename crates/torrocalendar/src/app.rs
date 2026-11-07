@@ -3062,6 +3062,26 @@ mod tests {
         // Which ids are valid is `torro_gui::design::is_choice`'s test; it reads the user's designs folder.
     }
 
+    /// Issue #484: the medium header keeps "New event" with its word while the window holds the title,
+    /// the buttons and the word, and shrinks it to "+" below that; the timeline's "Nights" asks for
+    /// more room than the week. The standard's 800 holds the week, as the pictures showed.
+    #[test]
+    fn the_medium_header_shrinks_new_event_only_when_it_lacks_room() {
+        let mut app = launched(&["--demo"]);
+        let fits = |app: &mut App, view: CalView, width: f32| {
+            app.view = view;
+            app.size = Size::new(width, 600.0);
+            let (title, note) = app.title_parts();
+            app.medium_header_fits(title_words(&title, note.as_deref()))
+        };
+        assert!(fits(&mut app, CalView::Week, 1000.0), "a wide medium window has room");
+        assert!(fits(&mut app, CalView::Week, 800.0), "the standard's 800 holds the week");
+        assert!(!fits(&mut app, CalView::Week, 620.0), "a slim one does not");
+        let least = |app: &mut App, view: CalView| (600..1024).find(|w| fits(app, view, *w as f32));
+        let (week, timeline) = (least(&mut app, CalView::Week), least(&mut app, CalView::Timeline));
+        assert!(timeline > week, "Nights asks for more: {week:?} < {timeline:?}");
+    }
+
     /// The message "design changed" (task L.3, issue #484): the stored setting arrives and the window
     /// follows it; an id that is no spacing level (an old design of the designs folder) gives the
     /// standard. Dense itself is only read here the way the window reads it, not switched to: it has

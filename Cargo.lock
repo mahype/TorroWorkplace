@@ -7383,7 +7383,6 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "iced",
- "resvg",
  "serde_json",
  "tokio",
  "torro-core",
