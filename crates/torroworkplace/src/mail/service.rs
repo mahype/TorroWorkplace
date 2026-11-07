@@ -1221,6 +1221,7 @@ type Stored = (Account, MailAccountConfig, Result<Option<Secret>, String>);
 /// The mail accounts of the core. Built by [`MailService::system`]; nothing is read or sent before
 /// [`MailService::start`].
 pub struct MailService {
+    pub(crate) images: super::images::ImageStore,
     /// `accounts.json`; `None` without a home directory, and then there are no mail accounts.
     accounts_file: Option<PathBuf>,
     secrets: Arc<dyn TokenStore>,
@@ -1332,6 +1333,7 @@ impl MailService {
             super::filters::MailFilters::at(dirs.as_ref().map(|dirs| dirs.data.join(super::filters::FILE_NAME)));
         let dirs_logos = dirs.as_ref().map(|dirs| dirs.logos.clone());
         MailService {
+            images: super::images::ImageStore::default(),
             accounts_file,
             secrets,
             dirs,
@@ -2925,6 +2927,40 @@ pub struct SortingFacts {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[tokio::test]
+    async fn upload_payloads_are_admitted_before_waiting_for_account_reload() {
+        use crate::mail::{images, store::DraftAuthor, write};
+        use futures_util::FutureExt as _;
+        use torro_ipc::Request;
+        let mail = super::MailService::without_home();
+        // Reload holds this actual lock while opening account stores. No timing or network
+        // assumptions: poll the real app/client paths while that account phase stays blocked.
+        let _reload = mail.entries.write().await;
+        for _ in 0..8 {
+            let request = Request::UploadMailImage {
+                account: "mail:a".into(),
+                upload: None,
+                offset: 0,
+                base64: "A".repeat(torro_ipc::mail::IMAGE_CHUNK_BYTES).into(),
+                finish: false,
+            };
+            let Request::UploadMailImage { base64, .. } = &request else { panic!("upload") };
+            let app = images::handle(&mail, crate::pim::Reach::Suite, &DraftAuthor::App, request.clone(), None);
+            assert!(app.now_or_never().is_none(), "account lookup remains blocked");
+            assert!(base64.is_reserved(), "app payload must already be charged before waiting for reload");
+            let request = Request::UploadMailImage {
+                account: "mail:a".into(),
+                upload: None,
+                offset: 0,
+                base64: "AAAA".into(),
+                finish: false,
+            };
+            let Request::UploadMailImage { base64, .. } = &request else { panic!("upload") };
+            let client = write::client_refusal(&mail, "owner", crate::pim::Reach::Suite, &request, None);
+            assert!(client.now_or_never().is_none(), "client account lookup remains blocked");
+            assert!(base64.is_reserved(), "client payload must be charged before locate/account awaits");
+        }
+    }
     use std::path::Path;
 
     use torro_mail::{Endpoint, Flag, Security, Services};

@@ -42,6 +42,9 @@ fn outgoing() -> Outgoing {
             references: vec!["docs-1@example.org".into(), "docs-2@example.de".into()],
         }),
         attachments: vec![OutgoingAttachment {
+            image_size: None,
+            content_id: None,
+            inline: false,
             filename: "Präsentation.pdf".into(),
             content_type: "application/pdf".into(),
             bytes: (0u8..=255).collect(),
@@ -50,6 +53,37 @@ fn outgoing() -> Outgoing {
         message_id: "t1.abc@example.de".into(),
         date: when(),
     }
+}
+
+/// Issue #125: formatted mail goes as `multipart/alternative` (plain text, then HTML) beside its
+#[test]
+fn embedded_images_are_related_to_html_beside_normal_attachments() {
+    let mut mail = outgoing();
+    mail.html = Some("<p>Before</p><img src='cid:plan@torro' alt='Plan' width='640'><p>After</p>".into());
+    mail.attachments.push(OutgoingAttachment {
+        image_size: Some(torro_mail::ImageSize::Large),
+        content_id: Some("plan@torro".into()),
+        inline: true,
+        filename: "plan.png".into(),
+        content_type: "image/png".into(),
+        bytes: vec![1, 2, 3],
+    });
+    let first = mime::build(&mail).expect("built");
+    assert_eq!(first.bytes, mime::build(&mail).expect("again").bytes);
+    let raw = String::from_utf8_lossy(&first.bytes);
+    for kind in ["multipart/mixed", "multipart/alternative", "multipart/related", "Content-ID: <plan@torro>"] {
+        assert!(raw.contains(kind), "{kind}: {raw}");
+    }
+    let read = mime::read(&first.bytes).expect("read");
+    assert_eq!(read.attachments.len(), 2);
+    let image = read.attachments.iter().find(|a| a.content_id.as_deref() == Some("plan@torro")).expect("image");
+    assert!(image.inline);
+    assert_eq!(mime::attachment(&first.bytes, &image.part).expect("bytes").bytes, [1, 2, 3]);
+    assert!(read.text.contains("Plan"));
+    mail.attachments.retain(|a| !a.inline);
+    mail.html = Some("<p>Only an attachment</p>".into());
+    let raw = String::from_utf8(mime::build(&mail).expect("built").bytes).expect("ascii");
+    assert!(!raw.contains("multipart/related"));
 }
 
 /// Issue #125: formatted mail goes as `multipart/alternative` (plain text, then HTML) beside its

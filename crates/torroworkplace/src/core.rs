@@ -4723,6 +4723,17 @@ impl Core {
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
+            // Image sources are volatile, but their resolved account/source metadata must be
+            // visible in the approval's details as well as its compact summary.
+            (
+                Request::PrepareMailImage { .. } | Request::UploadMailImage { .. } | Request::ReleaseMailImages { .. },
+                _,
+            ) => {
+                let facts = self.facts(&request).await;
+                shown = crate::approvals::details(&request, &facts);
+                let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
             // The web's yes per conversation (issue #305, task WEB.5): the conversation by the title the
             // assistant keeps, the providers a search can ask now (SearXNG only with an address), and what
             // runs first by the request's own words, as they will go out.
@@ -4979,6 +4990,9 @@ impl Core {
                     mail: Some(crate::approvals::MailFacts { account, ..crate::approvals::MailFacts::default() }),
                     ..Facts::default()
                 }
+            }
+            request if crate::mail::images::is_request(request) => {
+                Facts { mail: Box::pin(crate::mail::images::facts(&self.mail, request)).await, ..Facts::default() }
             }
             request if crate::mail::write::changes_mail(request) => {
                 Facts { mail: crate::mail::write::facts(&self.mail, request).await, ..Facts::default() }
@@ -5643,6 +5657,15 @@ impl Core {
         })
     }
 
+    /// Keep image future construction outside the large dispatcher poll frame, which is active
+    /// twice while executing an approved request (as with `client_reads_draft`).
+    fn image_request<'a>(&'a self, request: Request, reach: Reach<'a>, caller: Option<&str>) -> DraftRead<'a> {
+        let author = caller.map_or(DraftAuthor::App, |id| DraftAuthor::Client(id.to_owned()));
+        Box::pin(async move {
+            crate::mail::images::handle(&self.mail, reach, &author, request, self.tool_files(reach)).await
+        })
+    }
+
     async fn answer_within(&self, request: Request, reach: Reach<'_>, caller: Option<&str>) -> Response {
         // Jobs and plans belong to the client that made them; a client without a known caller
         // would see and use the app's. The dispatch always names a client's caller, so this only
@@ -6198,6 +6221,9 @@ impl Core {
             // Boxed: `change_mail` is a large future (about 10 KB in a debug build), and an approved
             // move into the trash reaches it in the second pass through this function.
             | Request::SaveDraft { .. }) => Box::pin(self.change_mail(request, reach)).await,
+            request @ (Request::PrepareMailImage { .. } | Request::UploadMailImage { .. } | Request::ReleaseMailImages { .. }) => {
+                self.image_request(request, reach, caller).await
+            }
             // Answering an invitation (task E8.3b): for a client after `Core::handle_client` checked
             // its sending; the handler checks mail and calendar itself.
             Request::RespondToInvitation { account, id, answer, collection } => {
@@ -24546,6 +24572,126 @@ mod tests {
         let mut drafts = on_server(&server, "Drafts");
         drafts.sort();
         assert_eq!(drafts, ["The agent's, better", "The person's"]);
+    }
+
+    // Sending mail (task M3.3): Anna's account on the fake IMAP server and a fake SMTP server; the
+    #[tokio::test]
+    async fn image_commands_check_accounts_owners_and_revocation_before_and_after_approval() {
+        use torro_ipc::api::Confirm;
+        let dir = tempfile::tempdir().expect("temp");
+        let (core, _, app_key) = changing_mail_core(dir.path()).await;
+        let rights = Rights { confirm: Confirm::OnEveryChange, ..with_mail_level(Level::Full) };
+        let (client_id, key) = client(&core, rights.clone()).await;
+        let upload = |account: &str| Request::UploadMailImage {
+            account: account.into(),
+            upload: None,
+            offset: 0,
+            base64: "AA==".into(),
+            finish: false,
+        };
+        assert_eq!(code(&ask(&core, Some(&key), upload("mail:missing@example.org")).await), "not-found");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists());
+        let pending = waits(ask(&core, Some(&key), upload("mail:anna@example.org")).await);
+        assert!(pending.summary.contains("anna@example.org"), "{}", pending.summary);
+        assert_eq!(pending.details, [trf("Mail account: {account}", &[("account", &"anna@example.org")])]);
+        let mut narrowed = rights.clone();
+        narrowed.mail_accounts = Selection::Only(vec![]);
+        assert_eq!(
+            ask(&core, Some(&app_key), Request::UpdateClient { id: client_id.clone(), rights: narrowed }).await,
+            Response::Ok
+        );
+        let result = approval(ask(&core, Some(&app_key), decide(&pending.id, true)).await);
+        assert!(
+            matches!(result.state, torro_ipc::ApprovalState::Done { response } if matches!(*response, Response::Error { ref code, .. } if code == "not-found"))
+        );
+        assert_eq!(ask(&core, Some(&app_key), Request::UpdateClient { id: client_id, rights }).await, Response::Ok);
+        let pending = waits(ask(&core, Some(&key), upload("mail:anna@example.org")).await);
+        let result = approval(ask(&core, Some(&app_key), decide(&pending.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = result.state else { panic!("done") };
+        let Response::MailImageUpload { id, .. } = *response else { panic!("upload") };
+        let (_, outsider) = client(&core, with_mail_level(Level::Full)).await;
+        let prepare = Request::PrepareMailImage {
+            account: "mail:anna@example.org".into(),
+            source: torro_mail::ImageSource::Prepared { id: id.clone() },
+        };
+        assert_eq!(code(&ask(&core, Some(&outsider), prepare).await), "not-found");
+        let release = Request::ReleaseMailImages { account: "mail:anna@example.org".into(), ids: vec![id] };
+        assert!(
+            matches!(ask(&core, Some(&outsider), release).await, Response::Pending { .. }),
+            "delete confirmation still applies, without revealing foreign counts"
+        );
+    }
+
+    #[tokio::test]
+    async fn image_approvals_resolve_cached_mail_parts_and_owned_prepared_metadata() {
+        use base64::Engine as _;
+        use torro_mail::ImageSource;
+        let dir = tempfile::tempdir().expect("temp");
+        let (core, server, app_key) = changing_mail_core(dir.path()).await;
+        let rights = Rights { confirm: torro_ipc::api::Confirm::OnEveryChange, ..with_mail_level(Level::Full) };
+        let (_, key) = client(&core, rights).await;
+        server.add("INBOX", "From: bob@example.org\r\nSubject: Image source\r\nMIME-Version: 1.0\r\nContent-Type: image/png\r\nContent-Disposition: attachment; filename=real-photo.png\r\nContent-Transfer-Encoding: base64\r\n\r\nAA==\r\n", &[]);
+        core.mail.sync_all(Reach::Suite).await.expect("sync");
+        let message = id_of(&core.mail, "Image source").await;
+        let request = Request::PrepareMailImage {
+            account: ANNA.into(),
+            source: ImageSource::MailPart { message, part: "0".into() },
+        };
+        let asked = waits(ask(&core, Some(&key), request.clone()).await);
+        let facts = core.facts(&request).await;
+        let image = facts.mail.as_ref().expect("mail").image.as_ref().expect("image");
+        assert_eq!(image.subject.as_deref(), Some("Image source"));
+        assert_eq!(image.file.as_deref(), Some("real-photo.png"));
+        assert_eq!(image.part.as_deref(), Some("0"));
+        assert_eq!(image.source_account.as_deref(), Some("anna@example.org"));
+        assert_eq!(asked.details, crate::approvals::details(&request, &facts));
+        assert!(asked.summary.contains("Image source") && asked.summary.contains("anna@example.org"));
+
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(23, 17).write_to(&mut png, image::ImageFormat::Png).expect("png");
+        let request = Request::UploadMailImage {
+            account: ANNA.into(),
+            upload: None,
+            offset: 0,
+            base64: base64::engine::general_purpose::STANDARD.encode(png.get_ref()).into(),
+            finish: true,
+        };
+        let asked = waits(ask(&core, Some(&key), request).await);
+        let result = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = result.state else { panic!("done") };
+        let Response::MailImage { image } = *response else { panic!("prepared") };
+        let request =
+            Request::PrepareMailImage { account: ANNA.into(), source: ImageSource::Prepared { id: image.id } };
+        let asked = waits(ask(&core, Some(&key), request.clone()).await);
+        let facts = core.facts(&request).await;
+        let image = facts.mail.as_ref().expect("mail").image.as_ref().expect("image");
+        assert_eq!(image.source_account.as_deref(), Some("anna@example.org"));
+        assert_eq!(image.dimensions, Some((23, 17)));
+        assert_eq!(asked.details, crate::approvals::details(&request, &facts));
+        let (_, outsider) = client(&core, with_mail_level(Level::Full)).await;
+        assert_eq!(
+            code(&ask(&core, Some(&outsider), request).await),
+            "not-found",
+            "a foreign ready lease reveals no metadata"
+        );
+
+        let path =
+            core.mail.attachment_cache().expect("cache").store("canonical-photo.png", png.get_ref()).expect("file");
+        let request = Request::PrepareMailImage {
+            account: ANNA.into(),
+            source: ImageSource::File { path: path.to_string_lossy().into_owned() },
+        };
+        let asked = waits(ask(&core, Some(&key), request.clone()).await);
+        let facts = core.facts(&request).await;
+        assert_eq!(
+            facts.mail.as_ref().expect("mail").image.as_ref().expect("image").file,
+            Some(std::fs::canonicalize(&path).expect("canonical").to_string_lossy().into_owned())
+        );
+        assert_eq!(asked.details, crate::approvals::details(&request, &facts));
+        assert!(
+            asked.summary.contains("anna@example.org")
+                && asked.details.iter().any(|l| l.contains("canonical-photo.png"))
+        );
     }
 
     // Sending mail (task M3.3): Anna's account on the fake IMAP server and a fake SMTP server; the

@@ -204,6 +204,11 @@ pub struct Outgoing {
 /// A file to attach, already read by the core (security rule 1 of M2.1 checked there).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutgoingAttachment {
+    /// Compose display choice retained independently of image dimensions.
+    pub image_size: Option<torro_mail::ImageSize>,
+    /// Stable Content-ID, also retained when this image is an ordinary attachment.
+    pub content_id: Option<String>,
+    pub inline: bool,
     /// The name shown to the recipients; line breaks and path parts are not checked here.
     pub filename: String,
     /// `type/subtype`; anything else becomes `application/octet-stream`.
@@ -348,6 +353,150 @@ pub fn attachment(raw: &[u8], part: &str) -> Result<Attachment, MimeError> {
     })
 }
 
+/// Decodes a bounded standalone image entity fetched with `Session::fetch_image_part`. Check the
+/// decoded length before copying it, and never interpret a multipart or embedded message as an image.
+pub fn image_attachment(raw: &[u8], limit: usize) -> Result<Attachment, MimeError> {
+    standalone_attachment(raw, limit, true)
+}
+
+/// Decodes an ordinary standalone attachment with the same before-copy byte limit.
+pub fn bounded_attachment(raw: &[u8], limit: usize) -> Result<Attachment, MimeError> {
+    standalone_attachment(raw, limit, false)
+}
+
+fn standalone_attachment(raw: &[u8], limit: usize, image_only: bool) -> Result<Attachment, MimeError> {
+    // A standalone leaf is an opaque attachment, not display text. Full message parsing may
+    // expand a declared charset to four times the encoded body before we can inspect its size.
+    // Parse only the bounded MIME header block and perform transfer decoding, never transcoding.
+    let end = (0..raw.len().min(256 << 10))
+        .find_map(|offset| {
+            let tail = &raw[offset..];
+            if tail.starts_with(b"\r\n\r\n") {
+                Some(offset + 4)
+            } else if tail.starts_with(b"\n\n") {
+                Some(offset + 2)
+            } else {
+                None
+            }
+        })
+        .ok_or(MimeError::Unreadable)?;
+    let message = MessageParser::default().parse_headers(&raw[..end]).ok_or(MimeError::Unreadable)?;
+    let part = message.parts.first().ok_or(MimeError::NoSuchPart)?;
+    let kind = content_type(part);
+    if kind.starts_with("multipart/")
+        || (image_only && !kind.starts_with("image/"))
+        || (!image_only
+            && matches!(kind.as_str(), "text/plain" | "text/html")
+            && part.content_disposition().is_none_or(|disposition| !disposition.is_attachment()))
+    {
+        return Err(MimeError::NoSuchPart);
+    }
+    let body = &raw[end..];
+    let encoding = part.content_transfer_encoding().unwrap_or("7bit");
+    let bytes = if encoding.eq_ignore_ascii_case("base64") {
+        mail_parser::decoders::base64::base64_decode(body).ok_or(MimeError::Unreadable)?
+    } else if encoding.eq_ignore_ascii_case("quoted-printable") {
+        bounded_quoted_printable(body, limit)?
+    } else if ["7bit", "8bit", "binary"].iter().any(|known| encoding.eq_ignore_ascii_case(known)) {
+        if body.len() > limit {
+            return Err(MimeError::NoSuchPart);
+        }
+        body.to_vec()
+    } else {
+        return Err(MimeError::Unreadable);
+    };
+    if bytes.len() > limit {
+        return Err(MimeError::NoSuchPart);
+    }
+    // Transfer decoders may reserve from encoded length (notably quoted-printable). Keep the
+    // final capacity equal to decoded length; raw + decoder + this final copy are pre-budgeted.
+    let bytes = bytes.into_boxed_slice().into_vec();
+    Ok(Attachment { filename: part.attachment_name().map(clean), content_type: kind, bytes })
+}
+
+/// Decode opaque QP bytes without normalizing mixed hard line endings. The general MIME
+/// decoder remembers CRLF and can expand every subsequent bare LF, then grow its Vec before
+/// a caller checks the decoded limit. This buffer is preallocated once within both limits;
+/// every emit is checked before writing, so neither length nor capacity can grow past them.
+fn bounded_quoted_printable(body: &[u8], limit: usize) -> Result<Vec<u8>, MimeError> {
+    let capacity = body.len().min(limit);
+    let mut out = Vec::new();
+    out.try_reserve_exact(capacity).map_err(|_| MimeError::Unreadable)?;
+    let emit = |out: &mut Vec<u8>, bytes: &[u8]| {
+        if bytes.len() > capacity.saturating_sub(out.len()) {
+            return Err(MimeError::NoSuchPart);
+        }
+        out.extend_from_slice(bytes);
+        Ok(())
+    };
+    // Process one borrowed line at a time. RFC 2045 discards unencoded trailing spaces/tabs
+    // and soft line breaks; encoded whitespace is literal and must survive.
+    for line in body.split_inclusive(|byte| *byte == b'\n') {
+        let (mut text, newline) = if let Some(text) = line.strip_suffix(b"\r\n") {
+            (text, b"\r\n".as_slice())
+        } else if let Some(text) = line.strip_suffix(b"\n") {
+            (text, b"\n".as_slice())
+        } else {
+            (line, b"".as_slice())
+        };
+        while matches!(text.last(), Some(b' ' | b'\t')) {
+            text = &text[..text.len() - 1];
+        }
+        let soft = !newline.is_empty() && text.ends_with(b"=");
+        if soft {
+            text = &text[..text.len() - 1];
+        }
+        let mut remaining = text;
+        while let Some((&byte, rest)) = remaining.split_first() {
+            if byte == b'=' {
+                let Some((&first, rest)) = rest.split_first() else { return Err(MimeError::Unreadable) };
+                let Some((&second, rest)) = rest.split_first() else { return Err(MimeError::Unreadable) };
+                let decoded = mail_parser::decoders::quoted_printable::quoted_printable_decode_char(first, second)
+                    .ok_or(MimeError::Unreadable)?;
+                emit(&mut out, &[decoded])?;
+                remaining = rest;
+            } else {
+                emit(&mut out, &[byte])?;
+                remaining = rest;
+            }
+        }
+        if !soft {
+            emit(&mut out, newline)?;
+        }
+    }
+    Ok(out)
+}
+
+/// Builds `outgoing` into MIME bytes and its SMTP envelope. The same input gives the same bytes.
+/// Reads the compose size marker of a saved MIME part; unknown values are absent.
+pub fn image_size(raw: &[u8], part: &str) -> Option<torro_mail::ImageSize> {
+    let message = MessageParser::default().parse(raw)?;
+    let part = message.parts.get(part.parse::<usize>().ok()?)?;
+    let value =
+        part.headers.iter().find(|h| h.name.as_str().eq_ignore_ascii_case("X-Torro-Image-Size"))?.value.as_text()?;
+    match value.trim() {
+        "small" => Some(torro_mail::ImageSize::Small),
+        "medium" => Some(torro_mail::ImageSize::Medium),
+        "large" => Some(torro_mail::ImageSize::Large),
+        "original" => Some(torro_mail::ImageSize::Original),
+        _ => None,
+    }
+}
+
+fn image_part<'a>(file: &'a OutgoingAttachment) -> MimePart<'a> {
+    let mut part = MimePart::new(outgoing_content_type(&file.content_type), file.bytes.as_slice());
+    if let Some(size) = file.image_size {
+        let size = match size {
+            torro_mail::ImageSize::Small => "small",
+            torro_mail::ImageSize::Medium => "medium",
+            torro_mail::ImageSize::Large => "large",
+            torro_mail::ImageSize::Original => "original",
+        };
+        part = part.header("X-Torro-Image-Size", mail_builder::headers::raw::Raw::new(size));
+    }
+    part
+}
+
 /// Builds `outgoing` into MIME bytes and its SMTP envelope. The same input gives the same bytes.
 pub fn build(outgoing: &Outgoing) -> Result<Built, MimeError> {
     for address in std::iter::once(&outgoing.from).chain(&outgoing.to).chain(&outgoing.cc).chain(&outgoing.bcc) {
@@ -398,6 +547,13 @@ pub fn build(outgoing: &Outgoing) -> Result<Built, MimeError> {
             signature.to_string()
         }
     });
+    if let Some(markup) = &signed {
+        for cid in html::image_refs(markup) {
+            if outgoing.attachments.iter().filter(|a| a.inline && a.content_id.as_deref() == Some(&cid)).count() != 1 {
+                return Err(MimeError::Write);
+            }
+        }
+    }
     let text = crlf(&match &signed {
         Some(signed) => html::to_text(signed),
         None => with_signature(&outgoing.body, plain_signature.as_deref()),
@@ -408,7 +564,22 @@ pub fn build(outgoing: &Outgoing) -> Result<Built, MimeError> {
     let boundary: String = outgoing.message_id.chars().filter(char::is_ascii_alphanumeric).take(48).collect();
     let mut forms = vec![MimePart::new("text/plain", text.clone())];
     if let Some(signed) = &signed {
-        forms.push(MimePart::new("text/html", crlf(&html_document(signed))));
+        let html_part = MimePart::new("text/html", crlf(&html_document(signed)));
+        let mut related = vec![html_part];
+        for image in outgoing.attachments.iter().filter(|file| file.inline) {
+            let id = image
+                .content_id
+                .as_deref()
+                .filter(|id| torro_mail::html::valid_cid(id))
+                .ok_or(MimeError::InvalidMessageId)?;
+            related.push(image_part(image).inline().cid(id));
+        }
+        if related.len() == 1 {
+            forms.extend(related);
+        } else {
+            let kind = ContentType::new("multipart/related").attribute("boundary", format!("=_torro_rel_{boundary}"));
+            forms.push(MimePart::new(kind, related));
+        }
     }
     if let Some(calendar) = &outgoing.calendar {
         if calendar.method.is_empty() || !calendar.method.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -426,17 +597,25 @@ pub fn build(outgoing: &Outgoing) -> Result<Built, MimeError> {
     } else {
         MimePart::new("text/plain", text.clone())
     };
-    builder = if outgoing.attachments.is_empty() && !alternative {
+    let attached: Vec<_> = outgoing.attachments.iter().filter(|file| !file.inline).collect();
+    if signed.is_none() && outgoing.attachments.iter().any(|file| file.inline) {
+        return Err(MimeError::Write);
+    }
+    builder = if attached.is_empty() && !alternative {
         builder.text_body(text)
-    } else if outgoing.attachments.is_empty() {
+    } else if attached.is_empty() {
         builder.body(text_part)
     } else {
         let mut parts = vec![text_part];
-        for file in &outgoing.attachments {
-            parts.push(
-                MimePart::new(outgoing_content_type(&file.content_type), file.bytes.as_slice())
-                    .attachment(one_line(&file.filename)),
-            );
+        for file in attached {
+            let mut part = image_part(file).attachment(one_line(&file.filename));
+            if let Some(id) = &file.content_id {
+                if !html::valid_cid(id) {
+                    return Err(MimeError::InvalidMessageId);
+                }
+                part = part.cid(id.as_str());
+            }
+            parts.push(part);
         }
         let kind = ContentType::new("multipart/mixed").attribute("boundary", format!("=_torro_{boundary}"));
         builder.body(MimePart::new(kind, parts))
@@ -1246,6 +1425,63 @@ mod legacy {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quoted_printable_mixed_line_endings_never_expand_opaque_attachment_bytes() {
+        let raw = b"Content-Type: image/png\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n=89PNG\r\n\n\n";
+        let attachment = super::image_attachment(raw, 9).expect("transfer bytes fit exactly");
+        assert_eq!(attachment.bytes, b"\x89PNG\r\n\n\n");
+        assert!(super::image_attachment(raw, 7).is_err(), "reject before emitting an excess byte");
+        assert_eq!(
+            super::bounded_quoted_printable(b"a=20=\r\nb=09=\nc \t\r\nd\t", 20).expect("soft breaks and whitespace"),
+            b"a b\tc\r\nd"
+        );
+        assert_eq!(super::bounded_quoted_printable(b"a\rb", 3).expect("opaque CR"), b"a\rb");
+        assert!(super::bounded_quoted_printable(b"=0", 3).is_err());
+        assert!(super::bounded_quoted_printable(b"=GG", 3).is_err());
+        assert!(super::bounded_quoted_printable(b"\r\n\n\n", 3).is_err());
+        let decoded = super::bounded_quoted_printable(&[b'\n'; 8192], 8192).expect("exact bounded output");
+        assert_eq!(decoded.len(), 8192);
+        assert_eq!(decoded.capacity(), 8192);
+    }
+
+    #[test]
+    fn standalone_transfer_encodings_keep_exact_bytes_and_bounded_capacity() {
+        for (encoding, body) in [
+            ("base64", b"AAECA/7/\r\n".as_slice()),
+            ("quoted-printable", b"=00=01=02=03=FE=FF".as_slice()),
+            ("binary", b"\0\x01\x02\x03\xfe\xff".as_slice()),
+            ("8bit", b"\0\x01\x02\x03\xfe\xff".as_slice()),
+        ] {
+            let mut raw = format!("Content-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=data.bin\r\nContent-Transfer-Encoding: {encoding}\r\n\r\n").into_bytes();
+            raw.extend_from_slice(body);
+            let attachment = super::bounded_attachment(&raw, 6).expect("decoded attachment");
+            assert_eq!(attachment.bytes, [0, 1, 2, 3, 0xfe, 0xff], "{encoding}");
+            assert_eq!(attachment.bytes.capacity(), 6, "no encoded-length capacity retained: {encoding}");
+            assert!(super::bounded_attachment(&raw, 5).is_err(), "decoded limit: {encoding}");
+        }
+        let raw = b"Content-Type: application/octet-stream\nContent-Transfer-Encoding: 7bit\n\nopaque\r\n";
+        assert_eq!(super::bounded_attachment(raw, 8).expect("LF headers").bytes, b"opaque\r\n");
+        assert!(super::bounded_attachment(b"Content-Type: multipart/mixed; boundary=x\r\n\r\n--x--", 100).is_err());
+        assert!(
+            super::bounded_attachment(b"Content-Type: image/png\r\nContent-Transfer-Encoding: mystery\r\n\r\nx", 100)
+                .is_err()
+        );
+        assert!(
+            super::bounded_attachment(b"Content-Type: image/png\r\nContent-Transfer-Encoding: base64\r\n\r\n!", 100)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn bounded_text_attachments_preserve_bytes_without_expanding_the_declared_charset() {
+        let raw = b"Content-Type: text/plain; charset=shift_jis\r\nContent-Disposition: attachment; filename=notes.txt\r\nContent-Transfer-Encoding: base64\r\n\r\ngqA=\r\n";
+        let attachment = super::bounded_attachment(raw, 2).expect("Shift-JIS attachment");
+        assert_eq!(attachment.bytes, [0x82, 0xa0], "transfer decoding only, never whole-body charset expansion");
+        assert_eq!(attachment.filename.as_deref(), Some("notes.txt"));
+        assert!(super::bounded_attachment(raw, 1).is_err());
+        assert!(super::bounded_attachment(b"Content-Type: text/plain\r\n\r\nnot an attachment", 30).is_err());
+        assert!(super::image_attachment(raw, 10).is_err(), "a text part is never treated as an image");
+    }
     use super::*;
 
     #[test]

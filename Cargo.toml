@@ -164,6 +164,8 @@ parley = { version = "0.12.0", default-features = false, features = ["std"] }
 cursor-icon = "1.2.0"
 # Blitz decodes pictures with `image` but turns on no decoder itself: these four, nothing else (no SVG, no TIFF).
 image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+# Safe local screenshot input for the compose window; no polling or native AppKit code.
+arboard = { version = "=3.6.1", default-features = false, features = ["image-data"] }
 # Writes PNG files in the example of torro-htmlview and the visual check (`torro_gui::shots`, #492); the version
 # `image` and `iced_test` bring.
 png = "0.18.0"

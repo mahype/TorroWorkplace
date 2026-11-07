@@ -31,6 +31,7 @@ torro-pim.workspace = true
 torro-settings-ui.workspace = true
 # The pictures of contacts come as Base64 PNG (`contacts.get_photo`).
 base64.workspace = true
+arboard.workspace = true
 chrono.workspace = true
 # `image-without-codecs`: the pictures of contacts in the suggestions (issue #460).
 iced = { workspace = true, features = ["image-without-codecs"] }
@@ -44,9 +45,13 @@ tokio.workspace = true
 webbrowser.workspace = true
 
 [dev-dependencies]
+iced_test.workspace = true
 tempfile.workspace = true
 
 # Not under `[target.'cfg(windows)'.build-dependencies]`: Cargo checks that `cfg` against the host that runs the build
 # script, so a cross build for Windows (cargo-xwin) would not get the crate. `build.rs` decides by the target OS.
 [build-dependencies]
 winresource.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { workspace = true, features = ["wayland-data-control"] }

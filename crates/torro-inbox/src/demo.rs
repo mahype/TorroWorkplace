@@ -807,8 +807,16 @@ fn sample_draft(mail: &[Message], folders: &[Folder], id: &str) -> Option<Draft>
     let attachments = message
         .attachments
         .iter()
-        .filter(|info| !info.inline)
-        .map(|info| DraftAttachment::MailPart { message: id.to_owned(), part: info.part.clone() })
+        .filter(|info| !info.inline || info.content_id.as_deref().is_some_and(torro_mail::html::valid_cid))
+        .map(|info| match info.content_id.as_ref().filter(|cid| torro_mail::html::valid_cid(cid)) {
+            Some(cid) if info.content_type.starts_with("image/") => DraftAttachment::Image {
+                id: cid.clone(),
+                source: torro_mail::ImageSource::MailPart { message: id.into(), part: info.part.clone() },
+                inline: info.inline,
+                size: torro_mail::ImageSize::Medium,
+            },
+            _ => DraftAttachment::MailPart { message: id.to_owned(), part: info.part.clone() },
+        })
         .collect();
     Some(Draft {
         id: Some(id.to_owned()),

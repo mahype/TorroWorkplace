@@ -557,6 +557,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::MoveMail { .. }
         | Request::DeleteMail { .. }
         | Request::SaveDraft { .. }
+        | Request::PrepareMailImage { .. }
+        | Request::UploadMailImage { .. }
+        | Request::ReleaseMailImages { .. }
         | Request::SendDraft { .. }
         | Request::GetDraft { .. }) => {
             let folder = match mail {

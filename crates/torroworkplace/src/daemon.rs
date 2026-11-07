@@ -1175,6 +1175,9 @@ fn describe(request: &Request) -> String {
         Request::MoveMail { ids, .. } => format!("move {} messages", ids.len()),
         Request::DeleteMail { ids, .. } => format!("delete {} messages", ids.len()),
         Request::SaveDraft { .. } => "save draft".into(),
+        Request::PrepareMailImage { .. } => "prepare mail image".into(),
+        Request::UploadMailImage { .. } => "upload mail image".into(),
+        Request::ReleaseMailImages { .. } => "release mail images".into(),
         Request::SendDraft { .. } => "send draft".into(),
         Request::GetDraft { .. } => "get draft".into(),
         // Never the answer, the account or the mail (task E8.3b).

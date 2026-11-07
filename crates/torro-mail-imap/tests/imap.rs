@@ -46,6 +46,83 @@ async fn connect(server: &Server) -> Session {
 }
 
 #[tokio::test]
+async fn image_import_reads_only_the_nested_leaf_with_bounded_partial_fetches() {
+    let header = "Content-Type: image/png\r\nContent-Transfer-Encoding: base64\r\n\r\n";
+    let structure = "((\"text\" \"plain\" NIL NIL NIL \"7bit\" 3 1)(\"image\" \"png\" NIL NIL NIL \"base64\" 4)(\"application\" \"pdf\" NIL NIL NIL \"base64\" 1000000000) \"mixed\")";
+    let mut steps = signed_in("");
+    steps.extend([
+        expect("a2 EXAMINE \"INBOX\""),
+        send("* 1 EXISTS\r\n* OK [UIDVALIDITY 42] valid\r\na2 OK [READ-ONLY] opened"),
+        expect("a3 UID FETCH 7 (UID BODYSTRUCTURE)"),
+        send(&format!("* 1 FETCH (UID 7 BODYSTRUCTURE {structure})\r\na3 OK structure")),
+        expect("a4 UID FETCH 7 (UID BODY.PEEK[2.MIME]<0.65536>)"),
+        send(&format!("* 1 FETCH (UID 7 BODY[2.MIME]<0> {{{}}}\r\n{header})\r\na4 OK headers", header.len())),
+        expect("a5 UID FETCH 7 (UID BODY.PEEK[2]<0.4>)"),
+        send("* 1 FETCH (UID 7 BODY[2]<0> {4}\r\nAA==)\r\na5 OK image"),
+        expect("a6 UID FETCH 7 (UID BODY.PEEK[2]<4.1>)"),
+        send("* 1 FETCH (UID 7 BODY[2]<4> {0}\r\n)\r\na6 OK end"),
+    ]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    session.examine("INBOX").await.expect("folder");
+    let raw = session.fetch_image_part(7, 2, 256).await.expect("bounded image").expect("part");
+    assert_eq!(raw, format!("{header}AA==").as_bytes());
+    let image = torro_mail_imap::mime::image_attachment(&raw, 1).expect("decoded image");
+    assert_eq!(image.bytes, [0]);
+    assert!(torro_mail_imap::mime::image_attachment(&raw, 0).is_err(), "check decoded limit before copying");
+    let received = server.received().await;
+    assert!(!received.iter().any(|line| line.contains("BODY.PEEK[]") || line.contains("BODY.PEEK[3]")));
+}
+
+#[tokio::test]
+async fn a_tiny_ordinary_attachment_does_not_fetch_its_ninety_megabyte_neighbor() {
+    let header = "Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=notes.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\n";
+    let structure = "((\"text\" \"plain\" NIL NIL NIL \"7bit\" 94371840 1)(\"application\" \"pdf\" NIL NIL NIL \"base64\" 8) \"mixed\")";
+    let mut steps = signed_in("");
+    steps.extend([
+        expect("a2 EXAMINE \"INBOX\""),
+        send("* 1 EXISTS\r\n* OK [UIDVALIDITY 42] valid\r\na2 OK [READ-ONLY] opened"),
+        expect("a3 UID FETCH 7 (UID BODYSTRUCTURE)"),
+        send(&format!("* 1 FETCH (UID 7 BODYSTRUCTURE {structure})\r\na3 OK structure")),
+        expect("a4 UID FETCH 7 (UID BODY.PEEK[2.MIME]<0.65536>)"),
+        send(&format!("* 1 FETCH (UID 7 BODY[2.MIME]<0> {{{}}}\r\n{header})\r\na4 OK headers", header.len())),
+        expect("a5 UID FETCH 7 (UID BODY.PEEK[2]<0.8>)"),
+        send("* 1 FETCH (UID 7 BODY[2]<0> {8}\r\nJVBERg==)\r\na5 OK attachment"),
+        expect("a6 UID FETCH 7 (UID BODY.PEEK[2]<8.1>)"),
+        send("* 1 FETCH (UID 7 BODY[2]<8> {0}\r\n)\r\na6 OK end"),
+    ]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    session.examine("INBOX").await.expect("folder");
+    let raw = session.fetch_attachment_part(7, 2, 256).await.expect("bounded leaf").expect("part");
+    assert_eq!(torro_mail_imap::mime::bounded_attachment(&raw, 4).expect("attachment").bytes, b"%PDF");
+    let received = server.received().await;
+    assert!(!received.iter().any(|line| line.contains("BODY.PEEK[]") || line.contains("BODY.PEEK[1]")));
+}
+
+#[tokio::test]
+async fn image_import_refuses_an_oversized_literal_before_reading_its_payload() {
+    let mut steps = signed_in("");
+    steps.extend([
+        expect("a2 EXAMINE \"INBOX\""),
+        send("* 1 EXISTS\r\n* OK [UIDVALIDITY 42] valid\r\na2 OK [READ-ONLY] opened"),
+        expect("a3 UID FETCH 7 (UID BODYSTRUCTURE)"),
+        send("* 1 FETCH (UID 7 BODYSTRUCTURE (\"image\" \"png\" NIL NIL NIL \"base64\" 4))\r\na3 OK structure"),
+        expect("a4 UID FETCH 7 (UID BODY.PEEK[1.MIME]<0.65536>)"),
+        // Deliberately no literal body: a bounded reader must reject the announcement immediately.
+        send("* 1 FETCH (UID 7 BODY[1.MIME]<0> {104857600}"),
+    ]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    session.examine("INBOX").await.expect("folder");
+    let result = tokio::time::timeout(Duration::from_secs(2), session.fetch_image_part(7, 0, 256))
+        .await
+        .expect("no payload read");
+    assert!(matches!(result, Err(ImapError::Protocol(_))));
+    let _ = server.received().await;
+}
+
+#[tokio::test]
 async fn backup_reads_exact_original_in_read_only_bounded_parts() {
     let mut steps = signed_in("");
     steps.extend([
