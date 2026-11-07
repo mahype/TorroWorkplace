@@ -1,6 +1,6 @@
 //! The data rule of the assistant (task C.2, `docs/ki.md` principle 4): which results of its tools
-//! a model may read. Mail stays with models on the person's own computers unless the person lets it
-//! go to cloud models (setting `mail_to_cloud`, task C.17, [`DataRule`]); a model
+//! a model may read. Mail stays with models on this computer via loopback unless the person lets it
+//! go elsewhere, including a LAN server (setting `mail_to_cloud`, task C.17, [`DataRule`]); a model
 //! elsewhere reads "withheld by your data rule" instead.
 //!
 //! Per-source rules ("GitHub may go to the cloud, Messenger only local") are task KI.1. Until then
@@ -64,7 +64,7 @@ use torro_ipc::{Request, Response};
 /// model, not for people.
 pub const WITHHELD: &str = "withheld by your data rule";
 
-/// What the person lets go to models outside their computers (task C.17): the setting
+/// What the person lets go to models outside this computer (task C.17): the setting
 /// `mail_to_cloud` as it is when a run starts. The default keeps mail local.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DataRule {
@@ -384,6 +384,19 @@ mod tests {
         // Errors, and what the assistant wrote itself, still reach it.
         let error = Response::Error { code: "not-found".into(), message: "no such message".into() };
         assert_eq!(for_model(&search, &error, Place::Remote).value["result"], "error");
+    }
+
+    #[test]
+    fn network_runtime_mail_is_withheld_until_the_person_allows_it() {
+        use torro_core::ai::{AiModel, AiProvider};
+        let request = Request::GetDraft { id: "mail:1".into() };
+        let response = Response::Ok;
+        for provider in AiProvider::LOCAL {
+            let model = AiModel { remote: Some(false), ..AiModel::named("model") };
+            let place = place_of(provider, "http://192.168.1.20:8080/v1", &model);
+            assert!(for_model(&request, &response, place).withheld);
+            assert!(!for_model(&request, &response, Reader { place, rule: DataRule { mail_to_cloud: true } }).withheld);
+        }
     }
 
     #[test]

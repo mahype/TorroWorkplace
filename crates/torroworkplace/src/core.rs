@@ -1140,12 +1140,12 @@ fn one_fits(models: &[torro_core::ai::AiModel], decides: bool) -> bool {
 
 /// Whether mail given to `model` of the AI account at `provider` and `server` leaves this computer
 /// (tasks S.23, MW.2): where the model computes ([`crate::assistant::place_of`]); naming none, where
-/// the account sits – only an account on this computer keeps it here, since its "Automatic" picks
+/// Automatic is local – only a local runtime on loopback keeps it here, since its "Automatic" picks
 /// only among the models here ([`categorize::chosen`], review of issue #325).
 fn elsewhere_of(provider: torro_core::ai::AiProvider, server: &str, model: Option<&torro_core::ai::AiModel>) -> bool {
     match model {
         Some(model) => crate::assistant::place_of(provider, server, model) != Place::Local,
-        None => !matches!(provider.seat(), torro_core::ai::Seat::ThisComputer),
+        None => torro_core::ai::automatic_place_of(provider, server) != Place::Local,
     }
 }
 
@@ -25749,6 +25749,124 @@ mod tests {
     /// `local`.
     fn core_with_ai(dir: &std::path::Path, keys: &MemoryTokens, local: Vec<(AiProvider, String)>) -> Core {
         Core { ai: Arc::new(crate::account::ai::tests::service(dir, keys, local)), ..audited(dir) }
+    }
+
+    #[tokio::test]
+    async fn network_runtimes_require_mail_permission_for_models_and_automatic() {
+        use torro_core::ai::{AiModel, AiSlot};
+        for provider in AiProvider::LOCAL {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let keys = MemoryTokens::default();
+            let mock = fake_ollama_deciding(true).await;
+            mock.mock_async(|when, then| {
+                when.method("GET").path("/health");
+                then.status(200).json_body(serde_json::json!({"status":"ok", "service":"strata"}));
+            })
+            .await;
+            let ai = AiAccounts::new(
+                Some(crate::account::github::tests::accounts_file(dir.path())),
+                Arc::new(keys.clone()),
+                Some(crate::account::ai::tests::network_http(&mock)),
+                Vec::new(),
+            );
+            let core = Core { ai: Arc::new(ai), ..audited(dir.path()) };
+            let base = format!("http://gpu.example.test:{}/v1", mock.port());
+            let engine = core.ai.connect(provider, Some(&base), Default::default()).await.expect("LAN account").id;
+            assert!(elsewhere_of(provider, &base, None));
+            assert!(elsewhere_of(provider, &base, Some(&AiModel { remote: Some(false), ..AiModel::named("nimble") })));
+            for model in ["nimble", "nimble:cloud"] {
+                assert_eq!(core.handle(switch(&engine, model, true)).await, Response::Ok);
+            }
+            let mut rights = RightsTemplate::FullAccess.rights();
+            for area in Area::ALL {
+                rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+            }
+            for model in [Some("nimble"), None] {
+                let request = set_slot(AiSlot::Decide, Some(&engine), model);
+                assert_eq!(core.turns_on_elsewhere(&request, Reach::Suite).await, Ok(true));
+                assert_eq!(code(&core.handle_within(request.clone(), Reach::Client(&rights)).await), "forbidden");
+                let assignment = set_sorting(Some(&engine), model, true);
+                assert_eq!(code(&core.handle_within(assignment, Reach::Client(&rights)).await), "forbidden");
+                assert!(matches!(core.handle(request).await, Response::AiAssignments { .. }));
+                assert!(core.settings.current().mail_to_cloud_in(AiSlot::Decide));
+                let picked = decider_of(&core.settings, &core.ai).await.expect("permitted");
+                assert_eq!(picked.0, engine);
+                if provider == AiProvider::Ollama && model.is_none() {
+                    assert_eq!(picked.1, "nimble:cloud", "LAN Automatic may choose cloud with saved permission");
+                }
+                let off = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(false) };
+                assert_eq!(core.handle(off).await, Response::Ok);
+                assert!(decider_of(&core.settings, &core.ai).await.is_err(), "no permitted decider");
+                let scope = torro_ipc::inbox::CategoryJobScope {
+                    engine: Some(engine.clone()),
+                    model: Some("nimble".into()),
+                    ..Default::default()
+                };
+                assert_eq!(
+                    category_job_decider(&core.settings, &core.ai, &scope).await,
+                    Err(categorize::Refusal::NotLocal)
+                );
+                let on = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(true) };
+                assert_eq!(core.handle(on).await, Response::Ok);
+                assert!(category_job_decider(&core.settings, &core.ai, &scope).await.expect("permitted job").1);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn network_sorting_sends_no_mail_without_permission_and_keeps_saved_permissions() {
+        use torro_core::ai::AiSlot;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        crate::account::ai::tests::mock_jev(&jev).await;
+        let (mut core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["A private invoice".into()]).await;
+        let mock = fake_ollama_deciding(false).await;
+        let calls = mock.mock_async(|when, then| {
+            when.method("POST").path("/v1/systemone");
+            then.status(200).json_body(serde_json::json!({"model":"nimble", "answers": {
+                "category": {"type":"choice", "choice":"invoice", "probabilities":{"invoice":0.91,"other":0.09}, "confidence":0.91},
+                "needs_reply":{"type":"noul", "noul":0.2}, "urgency":{"type":"score", "score":0.7,"confidence":0.8}
+            }}));
+        }).await;
+        let make_ai = || {
+            AiAccounts::new(
+                Some(crate::account::github::tests::accounts_file(dir.path())),
+                Arc::new(MemoryTokens::default()),
+                Some(crate::account::ai::tests::network_http(&mock)),
+                Vec::new(),
+            )
+        };
+        core.ai = Arc::new(make_ai());
+        let base = format!("http://gpu.example.test:{}/v1", mock.port());
+        let engine = core.ai.connect(AiProvider::Ollama, Some(&base), Default::default()).await.expect("LAN").id;
+        assert_eq!(core.handle(switch(&engine, "nimble", true)).await, Response::Ok);
+        core.handle(set_slot(AiSlot::Decide, Some(&engine), Some("nimble"))).await;
+        let search: Request =
+            serde_json::from_value(serde_json::json!({"method":"mail.search_messages", "limit":10})).expect("search");
+        let Response::MailMessages { messages, .. } = core.handle(search).await else { panic!("mail") };
+        let id = messages.first().expect("mail").id.clone();
+        for permission in [false, true] {
+            for key in [SettingKey::MailToCloud, SettingKey::DecideMailToCloud] {
+                assert_eq!(
+                    core.handle(Request::SetSetting { key, value: serde_json::json!(permission) }).await,
+                    Response::Ok
+                );
+            }
+            // Reopen both stores: no startup migration removes or grants permission.
+            core.settings = SettingsStore::at(dir.path().join("config/settings.json"));
+            core.ai = Arc::new(make_ai());
+            core.ai.load().await.expect("reopened accounts");
+            assert_eq!(core.settings.current().mail_to_cloud, permission);
+            assert_eq!(core.settings.current().mail_to_cloud_in(AiSlot::Decide), permission);
+            let response = core.handle(Request::ClassifyItem { id: id.clone() }).await;
+            if permission {
+                assert!(matches!(response, Response::ItemCategory { .. }), "{response:?}");
+                assert_eq!(calls.calls_async().await, 1);
+            } else {
+                assert!(!matches!(response, Response::ItemCategory { .. }));
+                assert_eq!(calls.calls_async().await, 0, "no mail sent");
+            }
+        }
     }
 
     use torro_core::ai::AiProvider;
