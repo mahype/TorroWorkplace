@@ -306,16 +306,14 @@ impl Dialog {
         .spacing(space::xs())
         .align_y(Alignment::Center)
         .padding(space::m());
-        let body = scrollable(container(self.fields(form)).padding(space::xl()).width(Fill))
-            .direction(vertical())
-            .style(style::scrollable);
-        let card = column![
-            head,
-            rule::horizontal(LINE).style(style::rule),
-            body,
+        let head = column![head, rule::horizontal(LINE).style(style::rule)];
+        let body = container(self.fields(form)).padding(space::xl()).width(Fill);
+        let foot = column![
             rule::horizontal(LINE).style(style::rule),
             container(footer(form)).padding([space::l(), space::xl()]),
         ];
+        // Measure the actions before the scrolling fields so low windows cannot squeeze them out.
+        let card = torro_gui::dialog::frame(head, body, foot, 0.0);
         let card = container(card).width(Fill).style(style::container::popover);
         widgets::modal(Space::new().width(Fill).height(Fill), card, widgets::DIALOG_WIDTH, Message::Backdrop)
     }
