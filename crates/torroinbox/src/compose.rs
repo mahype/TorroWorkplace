@@ -1469,6 +1469,8 @@ enum After {
 pub enum Message {
     EditorCommand(u64, Box<Message>),
     BodyFocused(Option<u64>),
+    RevealCaret(u64, f32),
+    PaperScrolled,
     BlockBody(u64, text_editor::Action),
     InsertImage,
     ChooseImageAt(Option<u64>),
@@ -1616,6 +1618,8 @@ pub struct Window<S> {
     unsure_parts: Option<Vec<DraftAttachment>>,
     /// Counts every change; a save remembers the number it saved.
     revision: u64,
+    caret_epoch: u64,
+    follow_caret: bool,
     saved: u64,
     /// When the last change was made; `None` when everything is saved.
     changed: Option<Instant>,
@@ -1700,6 +1704,8 @@ impl<S: ComposeSource + 'static> Window<S> {
             saving_parts: Vec::new(),
             unsure_parts: None,
             revision: 0,
+            caret_epoch: 0,
+            follow_caret: true,
             saved: 0,
             changed: None,
             saving: None,
@@ -1811,6 +1817,7 @@ impl<S: ComposeSource + 'static> Window<S> {
         }
         let Some(account) = self.sender().map(|s| s.account.clone()) else { return Task::none() };
         let id = self.body.reserve();
+        self.reveal_caret();
         self.touch();
         let source = self.source.clone();
         let ask = account.clone();
@@ -1841,6 +1848,9 @@ impl<S: ComposeSource + 'static> Window<S> {
                 self.after = After::Nothing;
                 self.notice = Some(Notice::new(tr("Couldn't insert the image."), error));
             }
+        }
+        if self.follow_caret {
+            self.reveal_caret();
         }
         self.touch();
         if !self.body.pending() && self.after != After::Nothing {
@@ -1878,6 +1888,9 @@ impl<S: ComposeSource + 'static> Window<S> {
             }
             Ok(images::Clipboard::Text(text)) => {
                 let focus = self.body.replace_reservation(id, &text);
+                if focus && self.follow_caret {
+                    self.reveal_caret();
+                }
                 self.touch();
                 let save = if !self.body.pending() && self.after != After::Nothing {
                     self.save(After::Nothing)
@@ -1963,6 +1976,11 @@ impl<S: ComposeSource + 'static> Window<S> {
         self.changed = Some(Instant::now());
     }
 
+    fn reveal_caret(&mut self) {
+        self.caret_epoch = self.caret_epoch.wrapping_add(1);
+        self.follow_caret = true;
+    }
+
     // ----- updates -----
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -1983,8 +2001,15 @@ impl<S: ComposeSource + 'static> Window<S> {
         match message {
             Message::BodyFocused(Some(id)) => {
                 self.body.focus_text(id);
+                self.reveal_caret();
             }
             Message::BodyFocused(None) => {}
+            Message::PaperScrolled => self.follow_caret = false,
+            Message::RevealCaret(epoch, delta) => {
+                if self.follow_caret && epoch == self.caret_epoch && delta.is_finite() && delta != 0.0 {
+                    return operation::scroll_by("compose-paper", operation::AbsoluteOffset { x: 0.0, y: delta });
+                }
+            }
             Message::EditorCommand(id, message) => {
                 if self.editable() && self.body.focus_text(id) {
                     return self.update(*message);
@@ -2118,6 +2143,7 @@ impl<S: ComposeSource + 'static> Window<S> {
                 if self.editable() {
                     let account = self.sender().map(|s| s.account.clone()).unwrap_or_default();
                     let id = self.body.reserve();
+                    self.reveal_caret();
                     self.touch();
                     return Task::batch([
                         Task::perform(images::clipboard(), move |result| {
@@ -2156,7 +2182,10 @@ impl<S: ComposeSource + 'static> Window<S> {
                 let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
                 return Task::batch([task, size]);
             }
-            Message::Resized(size) => self.size = size,
+            Message::Resized(size) => {
+                self.size = size;
+                self.reveal_caret();
+            }
             Message::SystemMode(mode) => self.system_mode = mode,
             Message::Appearance(Ok(appearance)) => self.appearance = appearance,
             // The core may be starting up; keep the colours we have.
@@ -2184,6 +2213,7 @@ impl<S: ComposeSource + 'static> Window<S> {
                 // Writing or clicking in the text leaves the recipient fields; scrolling does not.
                 if !matches!(action, text_editor::Action::Scroll { .. }) {
                     self.leave(None);
+                    self.reveal_caret();
                 }
                 // Enter in a list item starts the next one (an empty one ends the list).
                 let enter = matches!(action, text_editor::Action::Edit(Edit::Enter));
@@ -2201,6 +2231,7 @@ impl<S: ComposeSource + 'static> Window<S> {
                 self.tools = false;
                 if self.editable() && self.formatted() {
                     apply_format(&mut self.body, format);
+                    self.reveal_caret();
                     self.touch();
                     // A click on the toolbar took the focus from the text.
                     return operation::focus(Document::text_id(self.body.active));
@@ -3383,7 +3414,11 @@ impl<S: ComposeSource + 'static> Window<S> {
                     if editable {
                         editor = editor.on_action(move |action| Message::BlockBody(id, action));
                     }
-                    page = page.push(editor.highlight_with::<MarkupHighlighter>((), look_format));
+                    page = page.push(document::reveal_caret(
+                        editor.highlight_with::<MarkupHighlighter>((), look_format).into(),
+                        content,
+                        self.follow_caret.then_some(self.caret_epoch),
+                    ));
                 }
                 Block::Image(picture) => page = page.push(self.picture_block(picture, narrow)),
             }
@@ -3391,12 +3426,14 @@ impl<S: ComposeSource + 'static> Window<S> {
         if let Some(signature) = self.sender().and_then(|sender| sender.signature.as_deref()) {
             page = page.push(container(signature_block(signature)).padding(Padding::new(space::m()).top(0.0)));
         }
-        let paper = container(
+        let paper = container(document::paper_scroll(
             iced::widget::scrollable(page)
+                .id("compose-paper")
                 .height(Fill)
                 .direction(iced::widget::scrollable::Direction::Vertical(style::scrollbar()))
-                .style(style::scrollable),
-        )
+                .style(style::scrollable)
+                .into(),
+        ))
         .width(Fill)
         .height(Fill)
         .style(style::container::paper);
@@ -5725,6 +5762,128 @@ mod tests {
         assert!(!window.body.picture(first).expect("image").failed, "same account but stale source is also ignored");
         let _ = window.update(Message::ImageLeased(first, account_b, copied.id, Err(ComposeError::NotFound)));
         assert!(window.body.picture(first).expect("image").failed, "a current lease error is not swallowed");
+    }
+
+    #[test]
+    fn pending_clipboard_paste_follows_through_real_paper_layout_notifications() {
+        use iced::advanced::{renderer::Headless as _, widget::operation as raw};
+        use iced::futures::StreamExt as _;
+        use iced_test::runtime::{Action, UserInterface, task, user_interface};
+        let body = typo::body();
+        let mut renderer = block_on(iced::Renderer::new(body.font, body.size, None)).expect("headless renderer");
+        let mut cache = user_interface::Cache::default();
+        let mut window = ready(&[]);
+        window.size = NARROW;
+        paste(&mut window.body, &"prefix line\n".repeat(90));
+        let _ = window.update(Message::PasteImage);
+        let reservation = window.body.selected.expect("clipboard reservation");
+        let account = window.sender().expect("sender").account.clone();
+
+        let mut frame = |window: &mut Window<DemoSource>, focus: bool, pending: Task<Message>| {
+            let mut ui = UserInterface::build(window.view(), NARROW, std::mem::take(&mut cache), &mut renderer);
+            if focus {
+                ui.operate(&renderer, &mut raw::focusable::focus(Document::text_id(window.body.active).into()));
+            }
+            if let Some(stream) = task::into_stream(pending) {
+                for action in block_on(stream.collect::<Vec<_>>()) {
+                    if let Action::Widget(mut operation) = action {
+                        ui.operate(&renderer, operation.as_mut());
+                    }
+                }
+            }
+            let mut messages = Vec::new();
+            ui.update(
+                &[iced::Event::Window(iced::window::Event::RedrawRequested(Instant::now()))],
+                iced::mouse::Cursor::Unavailable,
+                &mut renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut messages,
+            );
+            cache = ui.into_cache();
+            assert!(!messages.iter().any(|m| matches!(m, Message::PaperScrolled)), "layout is not user scrolling");
+            let mut deltas = Vec::new();
+            let mut operations = Vec::new();
+            for message in messages {
+                if let Message::RevealCaret(_, delta) = message {
+                    deltas.push(delta);
+                }
+                if let Some(stream) = task::into_stream(window.update(message)) {
+                    for action in block_on(stream.collect::<Vec<_>>()) {
+                        if let Action::Widget(operation) = action {
+                            operations.push(operation);
+                        }
+                    }
+                }
+            }
+            let mut ui = UserInterface::build(window.view(), NARROW, std::mem::take(&mut cache), &mut renderer);
+            for mut operation in operations {
+                ui.operate(&renderer, operation.as_mut());
+            }
+            cache = ui.into_cache();
+            deltas
+        };
+        assert!(frame(&mut window, true, Task::none()).iter().any(|delta| *delta > 1000.0));
+        frame(&mut window, false, Task::none());
+        assert!(window.follow_caret, "reservation layout and programmatic scroll retain pending paste intent");
+        let pending = window.update(Message::Clipboard(
+            reservation,
+            account,
+            Ok(images::Clipboard::Text("wrapped text ".repeat(1000))),
+        ));
+        assert!(
+            frame(&mut window, false, pending).iter().any(|delta| *delta > 500.0),
+            "delayed text paste reveals its endpoint"
+        );
+        for manual_scroll in [false, true] {
+            let _ = window.update(Message::PasteImage);
+            let id = window.body.selected.expect("image reservation");
+            frame(&mut window, true, Task::none());
+            frame(&mut window, false, Task::none());
+            if manual_scroll {
+                let _ = window.update(Message::PaperScrolled);
+            }
+            let account = window.sender().expect("sender").account.clone();
+            let mut image = demo_image();
+            image.width = 400;
+            image.height = 1600;
+            let _ = window.update(Message::ImageLoaded(id, account, Ok(image)));
+            // Deterministically model the renderer resolving encoded preview geometry later:
+            // consume the epoch with a short preview, then grow it without another app message.
+            window.body.picture(id).expect("image").preview =
+                Some(iced::widget::image::Handle::from_rgba(400, 1, vec![0; 400 * 4]));
+            frame(&mut window, false, Task::none());
+            window.body.picture(id).expect("image").preview =
+                Some(iced::widget::image::Handle::from_rgba(40, 160, vec![0; 40 * 160 * 4]));
+            let deltas = frame(&mut window, false, Task::none());
+            if manual_scroll {
+                assert!(deltas.is_empty(), "a tall reply never re-enables cancelled follow");
+            } else {
+                assert!(
+                    deltas.iter().any(|delta| *delta > 100.0),
+                    "a tall reply keeps the focused suffix visible: {deltas:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn manual_paper_scroll_survives_successful_and_failed_async_image_replies() {
+        for result in [Ok(demo_image()), Err(ComposeError::NotFound)] {
+            let mut window = ready(&[]);
+            let account = window.sender().expect("sender").account.clone();
+            let _ = window.insert_image(ImageSource::File { path: "/unused/image.png".into() });
+            let id = window.body.selected.expect("reservation");
+            let epoch = window.caret_epoch;
+            let _ = window.update(Message::PaperScrolled);
+            let revision = window.revision;
+            let _ = window.update(Message::ImageLoaded(id, account, result));
+            assert!(window.revision > revision, "asynchronous changes still autosave");
+            assert!(!window.follow_caret && window.caret_epoch == epoch, "no scroll intent from a late reply");
+            let stale = window.update(Message::RevealCaret(epoch, 1000.0));
+            assert_eq!(stale.units(), 0, "an already queued reveal cannot undo manual scrolling");
+            let _ = window.update(Message::Body(text_editor::Action::Edit(Edit::Insert('x'))));
+            assert!(window.follow_caret && window.caret_epoch != epoch, "new typing follows again");
+        }
     }
 
     #[test]

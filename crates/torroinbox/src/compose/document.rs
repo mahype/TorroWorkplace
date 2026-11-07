@@ -6,6 +6,245 @@ use std::ops::{Deref, DerefMut};
 use torro_ipc::mail::PreparedImage;
 use torro_mail::{Draft, DraftAttachment, ImageSize, ImageSource, html, markup};
 
+/// The growing editors share one paper scroll area. Use the editor's shaped IME caret rectangle,
+/// not a line-count estimate (which is wrong for wrapping and blocks below tall images).
+pub(super) fn reveal_caret<'a>(
+    content: iced::Element<'a, super::Message>,
+    text: &'a Content,
+    epoch: Option<u64>,
+) -> iced::Element<'a, super::Message> {
+    iced::Element::new(RevealCaret { content, text: Some(text), epoch })
+}
+
+/// Observe actual offset changes *during input handling*. Iced's `on_scroll` also reports
+/// layout changes and programmatic scrolls, neither of which cancels a pending paste.
+pub(super) fn paper_scroll(content: iced::Element<'_, super::Message>) -> iced::Element<'_, super::Message> {
+    iced::Element::new(RevealCaret { content, text: None, epoch: None })
+}
+
+struct RevealCaret<'a> {
+    content: iced::Element<'a, super::Message>,
+    text: Option<&'a Content>,
+    epoch: Option<u64>,
+}
+
+#[derive(Default)]
+struct RevealState {
+    epoch: Option<u64>,
+    geometry: Option<(iced::Rectangle, iced::Rectangle, iced::Size)>,
+}
+
+impl RevealState {
+    fn changed(
+        &mut self,
+        epoch: u64,
+        bounds: iced::Rectangle,
+        caret: iced::Rectangle,
+        viewport: iced::Rectangle,
+    ) -> bool {
+        let geometry = (bounds, caret, viewport.size());
+        let changed = self.epoch != Some(epoch) || self.geometry != Some(geometry);
+        self.epoch = Some(epoch);
+        self.geometry = Some(geometry);
+        changed
+    }
+
+    fn delta(caret: iced::Rectangle, viewport: iced::Rectangle) -> Option<f32> {
+        let gap = torro_gui::theme::space::xs();
+        let top = viewport.y + gap;
+        let bottom = (viewport.y + viewport.height - gap).max(top + caret.height);
+        if caret.y < top {
+            Some(caret.y - top)
+        } else if caret.y + caret.height > bottom {
+            Some(caret.y + caret.height - bottom)
+        } else {
+            None
+        }
+    }
+}
+
+impl iced::advanced::Widget<super::Message, iced::Theme, iced::Renderer> for RevealCaret<'_> {
+    fn tag(&self) -> iced::advanced::widget::tree::Tag {
+        iced::advanced::widget::tree::Tag::of::<RevealState>()
+    }
+    fn state(&self) -> iced::advanced::widget::tree::State {
+        iced::advanced::widget::tree::State::new(RevealState::default())
+    }
+    fn children(&self) -> Vec<iced::advanced::widget::Tree> {
+        vec![iced::advanced::widget::Tree::new(&self.content)]
+    }
+    fn diff(&self, tree: &mut iced::advanced::widget::Tree) {
+        tree.diff_children(std::slice::from_ref(&self.content));
+    }
+    fn size(&self) -> iced::Size<iced::Length> {
+        self.content.as_widget().size()
+    }
+    fn size_hint(&self) -> iced::Size<iced::Length> {
+        self.content.as_widget().size_hint()
+    }
+    fn layout(
+        &mut self,
+        tree: &mut iced::advanced::widget::Tree,
+        renderer: &iced::Renderer,
+        limits: &iced::advanced::layout::Limits,
+    ) -> iced::advanced::layout::Node {
+        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
+    }
+    fn operate(
+        &mut self,
+        tree: &mut iced::advanced::widget::Tree,
+        layout: iced::advanced::Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn iced::advanced::widget::Operation,
+    ) {
+        self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
+    }
+    fn update(
+        &mut self,
+        tree: &mut iced::advanced::widget::Tree,
+        event: &iced::Event,
+        layout: iced::advanced::Layout<'_>,
+        cursor: iced::mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn iced::advanced::Clipboard,
+        shell: &mut iced::advanced::Shell<'_, super::Message>,
+        viewport: &iced::Rectangle,
+    ) {
+        let mut messages = Vec::new();
+        let mut inner = iced::advanced::Shell::new(&mut messages);
+        let before =
+            self.text.is_none().then(|| scroll_offset(&mut self.content, &mut tree.children[0], layout, renderer));
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            &mut inner,
+            viewport,
+        );
+        if let Some(epoch) = self.epoch
+            && let Some(text) = self.text
+            && let iced::advanced::input_method::InputMethod::Enabled { cursor: caret, .. } = inner.input_method()
+            && tree.state.downcast_mut::<RevealState>().changed(epoch, layout.bounds(), *caret, *viewport)
+        {
+            let caret = if text.cursor().selection.is_some() { selection_caret(text, layout.bounds()) } else { *caret };
+            if let Some(delta) = RevealState::delta(caret, *viewport) {
+                shell.publish(super::Message::RevealCaret(epoch, delta));
+            }
+        }
+        if let Some(before) = before
+            && scroll_offset(&mut self.content, &mut tree.children[0], layout, renderer) != before
+        {
+            shell.publish(super::Message::PaperScrolled);
+        }
+        shell.merge(inner, |message| message);
+    }
+    fn draw(
+        &self,
+        tree: &iced::advanced::widget::Tree,
+        renderer: &mut iced::Renderer,
+        theme: &iced::Theme,
+        style: &iced::advanced::renderer::Style,
+        layout: iced::advanced::Layout<'_>,
+        cursor: iced::mouse::Cursor,
+        viewport: &iced::Rectangle,
+    ) {
+        self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
+    }
+    fn mouse_interaction(
+        &self,
+        tree: &iced::advanced::widget::Tree,
+        layout: iced::advanced::Layout<'_>,
+        cursor: iced::mouse::Cursor,
+        viewport: &iced::Rectangle,
+        renderer: &iced::Renderer,
+    ) -> iced::mouse::Interaction {
+        self.content.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
+    }
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut iced::advanced::widget::Tree,
+        layout: iced::advanced::Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &iced::Rectangle,
+        translation: iced::Vector,
+    ) -> Option<iced::advanced::overlay::Element<'b, super::Message, iced::Theme, iced::Renderer>> {
+        self.content.as_widget_mut().overlay(&mut tree.children[0], layout, renderer, viewport, translation)
+    }
+}
+
+fn scroll_offset(
+    content: &mut iced::Element<'_, super::Message>,
+    tree: &mut iced::advanced::widget::Tree,
+    layout: iced::advanced::Layout<'_>,
+    renderer: &iced::Renderer,
+) -> f32 {
+    use iced::advanced::widget::{Operation, operation::Scrollable};
+    #[derive(Default)]
+    struct Offset(f32);
+    impl Operation for Offset {
+        fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+            visit(self);
+        }
+        fn scrollable(
+            &mut self,
+            id: Option<&iced::advanced::widget::Id>,
+            _: iced::Rectangle,
+            _: iced::Rectangle,
+            translation: iced::Vector,
+            _: &mut dyn Scrollable,
+        ) {
+            if id == Some(&iced::advanced::widget::Id::from("compose-paper")) {
+                self.0 = translation.y;
+            }
+        }
+    }
+    let mut offset = Offset::default();
+    content.as_widget_mut().operate(tree, layout, renderer, &mut offset);
+    offset.0
+}
+
+/// Iced's IME rectangle describes the first selected range, not its moving endpoint. Shape a
+/// selection-free mirror only on explicit reveal requests; never disturb the real selection.
+fn selection_caret(content: &Content, bounds: iced::Rectangle) -> iced::Rectangle {
+    use iced::advanced::text::{Editor as _, Highlighter as _};
+    let body = torro_gui::typo::body();
+    let padding = torro_gui::theme::space::m();
+    let mut editor = iced::advanced::graphics::text::Editor::with_text(&content.text());
+    let mut highlighter = super::MarkupHighlighter::new(&());
+    editor.move_to(iced::widget::text_editor::Cursor { selection: None, ..content.cursor() });
+    editor.update(
+        iced::Size::new((bounds.width - padding * 2.0).max(0.0), f32::INFINITY),
+        body.font,
+        body.size,
+        body.line_height,
+        iced::advanced::text::Wrapping::WordOrGlyph,
+        &mut highlighter,
+    );
+    editor.highlight(body.font, &mut highlighter, |look| super::look_format(look, &iced::Theme::Light));
+    let iced::advanced::text::editor::Selection::Caret(position) = editor.selection() else {
+        return bounds;
+    };
+    // The public Iced cursor omits wrap-boundary affinity. Conservatively reveal both possible
+    // visual rows at a shared glyph boundary, so either moving endpoint remains visible.
+    let column = content.cursor().position.column;
+    let ambiguous =
+        editor.buffer().lines.get(content.cursor().position.line).and_then(|line| line.layout_opt()).is_some_and(
+            |lines| {
+                lines.windows(2).any(|pair| {
+                    pair[0].glyphs.last().is_some_and(|glyph| glyph.end == column)
+                        && pair[1].glyphs.first().is_some_and(|glyph| glyph.start == column)
+                })
+            },
+        );
+    iced::Rectangle::new(
+        bounds.position() + iced::Vector::new(padding + position.x, padding + position.y),
+        iced::Size::new(1.0, body.line_height.to_absolute(body.size).0 * if ambiguous { 2.0 } else { 1.0 }),
+    )
+}
+
 pub(super) enum Block {
     Text { id: u64, content: Content, history: Option<String> },
     Image(Box<Picture>),
@@ -435,6 +674,208 @@ fn uuid_token() -> String {
 mod tests {
     use super::*;
     use iced::widget::text_editor::Cursor;
+
+    #[test]
+    fn growing_editors_reveal_paste_and_selection_below_images_without_stealing_scroll() {
+        use iced::advanced::renderer::Headless as _;
+        use iced::advanced::widget::{Operation, operation};
+        use iced_test::runtime::{UserInterface, user_interface};
+
+        #[derive(Default)]
+        struct ScrollPosition(f32);
+        impl Operation for ScrollPosition {
+            fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+                visit(self);
+            }
+            fn scrollable(
+                &mut self,
+                _: Option<&iced::advanced::widget::Id>,
+                _: iced::Rectangle,
+                _: iced::Rectangle,
+                translation: iced::Vector,
+                _: &mut dyn operation::Scrollable,
+            ) {
+                self.0 = translation.y;
+            }
+        }
+
+        let mut renderer = iced_test::futures::futures::executor::block_on(iced::Renderer::new(
+            torro_gui::typo::body().font,
+            torro_gui::typo::body().size,
+            None,
+        ))
+        .expect("headless renderer");
+        let mut cache = user_interface::Cache::default();
+        let mut content = Content::new();
+        let prefix = Content::with_text("Before image");
+        let mut epoch = 0;
+        // Cache survives every rebuild, just as in the application. A nonzero container origin
+        // catches confusing content coordinates with window coordinates.
+        let mut frame = |content: &Content, epoch: Option<u64>, focus: bool, scroll: Option<f32>, image_height: f32| {
+            let body = torro_gui::typo::body();
+            let editor = iced::widget::text_editor(content)
+                .id("caret-test")
+                .font(body.font)
+                .size(body.size)
+                .line_height(body.line_height)
+                .padding(torro_gui::theme::space::m())
+                .height(iced::Shrink)
+                .wrapping(iced::advanced::text::Wrapping::WordOrGlyph)
+                .on_action(super::super::Message::Body)
+                .highlight_with::<super::super::MarkupHighlighter>((), super::super::look_format);
+            let root = iced::widget::container(paper_scroll(
+                iced::widget::scrollable(iced::widget::column![
+                    iced::widget::text_editor(&prefix)
+                        .id("prefix")
+                        .height(iced::Shrink)
+                        .on_action(super::super::Message::Body),
+                    iced::widget::space().height(image_height),
+                    reveal_caret(editor.into(), content, epoch),
+                ])
+                .id("compose-paper")
+                .height(iced::Fill)
+                .into(),
+            ))
+            .padding(23);
+            let mut ui =
+                UserInterface::build(root, iced::Size::new(340.0, 220.0), std::mem::take(&mut cache), &mut renderer);
+            if focus {
+                ui.operate(&renderer, &mut operation::focusable::focus("prefix".into()));
+                let mut next: Box<dyn Operation> = Box::new(operation::focusable::focus_next());
+                loop {
+                    ui.operate(&renderer, next.as_mut());
+                    if let operation::Outcome::Chain(chained) = next.finish() {
+                        next = chained;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            if let Some(y) = scroll.filter(|y| *y >= 0.0) {
+                ui.operate(
+                    &renderer,
+                    &mut operation::scrollable::scroll_to(
+                        "compose-paper".into(),
+                        operation::scrollable::AbsoluteOffset { x: None, y: Some(y) },
+                    ),
+                );
+            }
+            let redraw = iced::Event::Window(iced::window::Event::RedrawRequested(iced::time::Instant::now()));
+            let wheel = scroll.is_some_and(|y| y < 0.0);
+            let mut events = Vec::new();
+            if wheel {
+                events.push(iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
+                    delta: iced::mouse::ScrollDelta::Pixels { x: 0.0, y: 100.0 },
+                }));
+            }
+            events.push(redraw);
+            let mut messages = Vec::new();
+            let (state, _) = ui.update(
+                &events,
+                if wheel {
+                    iced::mouse::Cursor::Available(iced::Point::new(160.0, 110.0))
+                } else {
+                    iced::mouse::Cursor::Unavailable
+                },
+                &mut renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut messages,
+            );
+            let caret = match state {
+                user_interface::State::Updated {
+                    input_method: iced::advanced::InputMethod::Enabled { cursor, .. },
+                    ..
+                } => Some(cursor),
+                _ => None,
+            };
+            assert_eq!(
+                messages.iter().any(|m| matches!(m, super::super::Message::PaperScrolled)),
+                wheel,
+                "only an actual user offset change cancels pending follow, not layout/programmatic scrolling"
+            );
+            let deltas = messages
+                .into_iter()
+                .filter_map(|message| match message {
+                    super::super::Message::RevealCaret(_, delta) => Some(delta),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            for delta in &deltas {
+                ui.operate(
+                    &renderer,
+                    &mut operation::scrollable::scroll_by(
+                        "compose-paper".into(),
+                        operation::scrollable::AbsoluteOffset { x: 0.0, y: *delta },
+                    ),
+                );
+            }
+            let mut offset = ScrollPosition::default();
+            ui.operate(&renderer, &mut offset);
+            cache = ui.into_cache();
+            (deltas, offset.0, caret)
+        };
+
+        let (delta, _, _) = frame(&content, Some(epoch), true, None, 0.0);
+        assert!(delta.is_empty(), "initial caret is visible");
+        for text in ["line\n".repeat(90), "wrapped words 世界 ".repeat(500)] {
+            content.perform(iced::widget::text_editor::Action::Edit(iced::widget::text_editor::Edit::Paste(
+                std::sync::Arc::new(text),
+            )));
+            epoch += 1;
+            let (deltas, offset, _) = frame(&content, Some(epoch), false, None, 0.0);
+            assert!(deltas.iter().any(|delta| *delta > 500.0), "long paste scrolls the paper: {deltas:?}");
+            assert!(offset > 500.0);
+            let (deltas, _, caret) = frame(&content, Some(epoch), false, None, 0.0);
+            assert!(deltas.is_empty(), "follow converges after one scroll");
+            let caret = caret.expect("focused editor");
+            assert!(caret.y >= 23.0 && caret.y + caret.height <= 197.1, "visible caret: {caret:?}");
+        }
+
+        content = Content::with_text("after image");
+        epoch += 1;
+        let (deltas, _, _) = frame(&content, Some(epoch), true, Some(0.0), 1300.0);
+        assert!(deltas.iter().any(|delta| *delta > 1000.0), "focus below a tall image follows exact layout");
+        frame(&content, Some(epoch), false, Some(-1.0), 1300.0);
+        let (_, before, _) = frame(&content, Some(epoch), false, Some(0.0), 1300.0);
+        let (deltas, after, _) = frame(&content, Some(epoch), false, None, 1300.0);
+        assert!(deltas.is_empty() && before == after, "manual scrolling survives repeated redraws");
+        let (deltas, _, _) = frame(&content, None, false, None, 1500.0);
+        assert!(deltas.is_empty(), "a late image changing layout cannot re-arm cancelled follow");
+
+        content = Content::with_text(&"selected line\n".repeat(100));
+        content.move_to(Cursor {
+            position: Position { line: 90, column: 4 },
+            selection: Some(Position { line: 0, column: 0 }),
+        });
+        epoch += 1;
+        let (deltas, _, _) = frame(&content, Some(epoch), true, Some(0.0), 0.0);
+        assert!(
+            deltas.iter().any(|delta| *delta > 1500.0),
+            "follow the moving endpoint, not selection anchor: {deltas:?}"
+        );
+        content.move_to(Cursor {
+            position: Position { line: 0, column: 0 },
+            selection: Some(Position { line: 90, column: 4 }),
+        });
+        epoch += 1;
+        let (deltas, _, _) = frame(&content, Some(epoch), false, None, 0.0);
+        assert!(deltas.iter().any(|delta| *delta < -1500.0), "reverse selection follows upward: {deltas:?}");
+
+        content = Content::with_text(&"x".repeat(1000));
+        epoch += 1;
+        frame(&content, Some(epoch), true, Some(0.0), 0.0);
+        let line = torro_gui::typo::line_height(torro_gui::typo::body());
+        let mut ambiguous = false;
+        for _ in 0..12 {
+            // Keyboard selection moves on visual rows and can retain After affinity at a wrap.
+            content.perform(iced::widget::text_editor::Action::Select(iced::widget::text_editor::Motion::Down));
+            epoch += 1;
+            frame(&content, Some(epoch), false, None, 0.0);
+            let rect = selection_caret(&content, iced::Rectangle::with_size(iced::Size::new(294.0, f32::INFINITY)));
+            ambiguous |= rect.height > line;
+        }
+        assert!(ambiguous, "wrap-boundary affinity is covered by both possible caret rows");
+    }
 
     #[test]
     fn a_plain_draft_reopens_its_non_inline_images_even_without_body_text() {

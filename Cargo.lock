@@ -7546,6 +7546,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "iced",
+ "iced_test",
  "image",
  "rfd",
  "serde_json",

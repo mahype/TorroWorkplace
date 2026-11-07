@@ -45,6 +45,7 @@ tokio.workspace = true
 webbrowser.workspace = true
 
 [dev-dependencies]
+iced_test.workspace = true
 tempfile.workspace = true
 
 # Not under `[target.'cfg(windows)'.build-dependencies]`: Cargo checks that `cfg` against the host that runs the build
