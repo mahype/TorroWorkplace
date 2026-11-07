@@ -2695,6 +2695,9 @@ pub struct InviteSide<'a> {
     pub calendars: Option<&'a [TaskList]>,
     /// The calendar chosen for the answer, one of `calendars` (`App::invite_calendar`).
     pub calendar: Option<&'a TaskList>,
+    /// The window's dropdowns of fields (issue #554), where the calendar's dropdown keeps its
+    /// anchor; `None` draws its button without one.
+    pub menus: Option<&'a torro_gui::widgets::Dropdown<crate::app::Field>>,
     /// The events of the shown calendars around this invitation ([`MailSource::list_events`]);
     /// `None` while they load or when they could not be read: then nothing is said about overlaps.
     pub events: Option<&'a [CalendarEvent]>,
@@ -2746,9 +2749,11 @@ pub fn invite_card<'a>(
         let line = row![mark, container(text.wrapping(Wrapping::None)).clip(true)].spacing(space::s());
         parts.push(line.align_y(Alignment::Center).into());
     }
-    if let Some(calendars) = side.calendars.filter(|calendars| open && !calendars.is_empty()) {
-        let pick = crate::app::choice(calendars.to_vec(), side.calendar.cloned(), Message::InviteCalendar);
-        // As wide as a property column: a pick list across a wide reader would read as a field.
+    if side.calendars.is_some_and(|calendars| open && !calendars.is_empty()) {
+        let unanchored = torro_gui::widgets::Dropdown::default();
+        let menus = side.menus.unwrap_or(&unanchored);
+        let pick = crate::app::choice(menus, crate::app::Field::InviteCalendar, side.calendar);
+        // As wide as a property column: a dropdown across a wide reader would read as a field.
         let line = widgets::prop_line(tr("Calendar"), Some(Mark::Icon(Icon::Calendar)), pick, None);
         parts.push(container(line).max_width(size::props()).into());
     }

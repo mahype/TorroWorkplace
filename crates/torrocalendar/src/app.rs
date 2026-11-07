@@ -47,7 +47,7 @@ use std::time::{Duration, Instant};
 use chrono::{Datelike, Duration as Days, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use iced::theme::Mode;
 use iced::widget::space as blank;
-use iced::widget::{column, container, pick_list, responsive, row, svg};
+use iced::widget::{column, container, responsive, row, stack, svg};
 use iced::{Alignment, Color, Element, Rectangle, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
@@ -64,7 +64,9 @@ use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
-use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color};
+use torro_gui::widgets::{
+    self, Align, Anchor, Dropdown, DropdownEvent, Mark, MenuItem, MenuSection, Placement, Trail, collection_color,
+};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
 use torro_pim::account::account_of;
@@ -72,6 +74,7 @@ use torro_pim::demo::DemoSource;
 use torro_pim::model::{Geo, SeriesScope};
 use torro_pim::{AccountState, Collection, Event, PimAccount, PimSource};
 use torro_settings_ui::accounts::Group;
+use torro_settings_ui::calendar::End;
 use torro_settings_ui::{Backend as SettingsBackend, Host, Outcome, Page, Section, calendar, collections};
 
 use crate::editor::{self, Editor};
@@ -210,10 +213,19 @@ pub enum SettingsMessage {
 }
 
 /// The settings in the content area while they are open: the library's [`Host`] with
-/// [`SETTINGS_SECTIONS`]. None of the sections keeps state of its own (unlike the
-/// assistant's, task S.18): everything they show comes straight from [`Host::data`].
+/// [`SETTINGS_SECTIONS`], and which dropdown of Reminders, Night or Working hours is open (issue
+/// #554); everything else the sections show comes straight from [`Host::data`].
 struct SettingsPane {
     host: Host,
+    sections: SettingsSections,
+}
+
+/// The state of the sections that keep one: the open dropdown of each page.
+#[derive(Debug, Default)]
+struct SettingsSections {
+    reminders: calendar::reminders::State,
+    night: calendar::night::State,
+    working_hours: calendar::working_hours::State,
 }
 
 /// [`torro_settings_ui::Backend`] for a window on the core: one request, one answer over the
@@ -249,24 +261,68 @@ fn tasks_jump(installed: impl Fn(AppId) -> bool) -> Option<Message> {
 }
 
 /// What a section of the settings returned, as the host hands it to the app.
-fn settings_update(message: SettingsMessage, data: &torro_settings_ui::Data) -> torro_settings_ui::Action<()> {
+fn settings_update(
+    sections: &mut SettingsSections,
+    message: SettingsMessage,
+    data: &torro_settings_ui::Data,
+) -> torro_settings_ui::Action<()> {
     match message {
         SettingsMessage::Calendars(message) => collections::update(message),
-        SettingsMessage::Reminders(message) => calendar::reminders::update(message),
-        SettingsMessage::Night(message) => calendar::night::update(message, data),
-        SettingsMessage::WorkingHours(message) => calendar::working_hours::update(message, data),
+        SettingsMessage::Reminders(message) => calendar::reminders::update(&mut sections.reminders, message),
+        SettingsMessage::Night(message) => calendar::night::update(&mut sections.night, message, data),
+        SettingsMessage::WorkingHours(message) => {
+            calendar::working_hours::update(&mut sections.working_hours, message, data)
+        }
     }
 }
 
 /// The page of the section with this id: Calendars shows [`collections::Role::Calendar`]; an id
 /// no section has (there is none today) shows it too, like the host only ever asking for one of
 /// [`SETTINGS_SECTIONS`].
-fn settings_page<'a>(data: &'a torro_settings_ui::Data, section: &str) -> Page<'a, SettingsMessage> {
+fn settings_page<'a>(
+    sections: &'a SettingsSections,
+    data: &'a torro_settings_ui::Data,
+    section: &str,
+) -> Page<'a, SettingsMessage> {
     match section {
-        "reminders" => wrap(Page::new(calendar::reminders::view(data)), SettingsMessage::Reminders),
-        "night" => wrap(Page::new(calendar::night::view(data)), SettingsMessage::Night),
-        "working-hours" => wrap(Page::new(calendar::working_hours::view(data)), SettingsMessage::WorkingHours),
+        "reminders" => {
+            wrap(Page::new(calendar::reminders::view(&sections.reminders, data)), SettingsMessage::Reminders)
+        }
+        "night" => wrap(Page::new(calendar::night::view(&sections.night, data)), SettingsMessage::Night),
+        "working-hours" => {
+            wrap(Page::new(calendar::working_hours::view(&sections.working_hours, data)), SettingsMessage::WorkingHours)
+        }
         _ => wrap(Page::new(collections::page(data, collections::Role::Calendar)), SettingsMessage::Calendars),
+    }
+}
+
+/// The open dropdown of the section with this id, over the window (issue #554).
+fn settings_overlay<'a>(
+    sections: &'a SettingsSections,
+    data: &'a torro_settings_ui::Data,
+    section: &str,
+) -> Option<Element<'a, SettingsMessage>> {
+    match section {
+        "reminders" => {
+            calendar::reminders::overlay(&sections.reminders, data).map(|layer| layer.map(SettingsMessage::Reminders))
+        }
+        "night" => calendar::night::overlay(&sections.night, data).map(|layer| layer.map(SettingsMessage::Night)),
+        "working-hours" => calendar::working_hours::overlay(&sections.working_hours, data)
+            .map(|layer| layer.map(SettingsMessage::WorkingHours)),
+        _ => None,
+    }
+}
+
+/// What Escape means in the open section before it closes the settings: close its open dropdown.
+/// `None` lets the settings close. Only the section that shows counts: a dropdown left open behind
+/// another section must not take Escape.
+fn settings_escape(pane: &SettingsPane) -> Option<SettingsMessage> {
+    let sections = &pane.sections;
+    match pane.host.current().id {
+        "reminders" => calendar::reminders::escape(&sections.reminders).map(SettingsMessage::Reminders),
+        "night" => calendar::night::escape(&sections.night).map(SettingsMessage::Night),
+        "working-hours" => calendar::working_hours::escape(&sections.working_hours).map(SettingsMessage::WorkingHours),
+        _ => None,
     }
 }
 
@@ -585,6 +641,8 @@ pub struct App {
     night_saving: bool,
     /// The card "Night", while it is open.
     night_card: Option<NightCard>,
+    /// Which dropdown of the night's card is open, "From" or "Until" (issue #554).
+    night_menus: Dropdown<End>,
     /// The suite's working hours, a line in day, week, timeline and radar
     /// (`Settings::working_hours`).
     working_hours: WorkingHours,
@@ -711,6 +769,8 @@ pub enum Message {
     NoNight,
     /// ✕, Escape or a click beside the card.
     CloseNight,
+    /// A dropdown of the card, "From" or "Until", opened, closed or was searched (issue #554).
+    NightMenus(DropdownEvent<End>),
     /// The night and the working hours stored in the suite settings; an error keeps the ones we
     /// have.
     Night(Result<(Night, WorkingHours), String>),
@@ -823,6 +883,7 @@ impl App {
             night: Night::DEFAULT,
             night_saving: false,
             night_card: None,
+            night_menus: Dropdown::default(),
             working_hours: WorkingHours::DEFAULT,
             settings: None,
             settings_memory: torro_settings_ui::Memory::default(),
@@ -1068,8 +1129,14 @@ impl App {
                 // area, so an editor behind them is out of sight and keeps what it holds
                 // ([`App::toggle_settings`]). Escape must act on what can be seen, not on the
                 // hidden editor – a key that does nothing visible is a key that looks broken.
-                if self.menu.is_some() || self.drawer || self.night_card.is_some() {
+                if self.night_menus.open().is_some() {
+                    // The dropdown of the card first; the card stays open.
+                    self.night_menus.close();
+                } else if self.menu.is_some() || self.drawer || self.night_card.is_some() {
                     self.close_menus();
+                } else if let Some(message) = self.settings.as_ref().and_then(settings_escape) {
+                    // A dropdown of the open section closes before the settings do (issue #554).
+                    return self.update(Message::SettingsPage(message));
                 } else if self.settings.is_some() {
                     self.settings = None;
                 } else if self.editor.is_some() {
@@ -1101,7 +1168,7 @@ impl App {
             Message::SettingsPage(message) => {
                 let outcome = {
                     let Some(pane) = self.settings.as_mut() else { return Task::none() };
-                    let action = settings_update(message, pane.host.data());
+                    let action = settings_update(&mut pane.sections, message, pane.host.data());
                     pane.host.act(action)
                 };
                 return self.settings_outcome(outcome);
@@ -1258,13 +1325,20 @@ impl App {
                 self.night_card = Some(NightCard { at, from: self.night.from, to: self.night.to });
             }
             Message::NightFrom(from) => {
+                self.night_menus.close();
                 if let Some(card) = self.night_card.as_mut() {
                     card.from = from;
                 }
             }
             Message::NightTo(to) => {
+                self.night_menus.close();
                 if let Some(card) = self.night_card.as_mut() {
                     card.to = to;
+                }
+            }
+            Message::NightMenus(event) => {
+                if self.night_menus.update(event) {
+                    return iced::widget::operation::focus(widgets::DROPDOWN_SEARCH);
                 }
             }
             Message::SaveNight => {
@@ -1275,7 +1349,10 @@ impl App {
                 let Some(card) = self.night_card.take() else { return Task::none() };
                 return self.set_night(Night::none_at(card.from));
             }
-            Message::CloseNight => self.night_card = None,
+            Message::CloseNight => {
+                self.night_card = None;
+                self.night_menus.close();
+            }
             // While this window's own change is on its way, the stored night is the old one. The
             // working hours are only set behind the gear, never on their way from here.
             Message::Night(Ok((night, working))) => {
@@ -1489,7 +1566,10 @@ impl App {
         let (header, body, overlay, props) = match &self.settings {
             Some(pane) => {
                 let frame = self.settings_frame(pane, class);
-                (frame.header, frame.body, frame.overlay, None)
+                // The open dropdown of a section, else the host's section menu.
+                let dropdown = settings_overlay(&pane.sections, pane.host.data(), pane.host.current().id)
+                    .map(|layer| layer.map(Message::SettingsPage));
+                (frame.header, frame.body, dropdown.or(frame.overlay), None)
             }
             None => {
                 let (views, field) = (Anchor::new(), Anchor::new());
@@ -1507,7 +1587,13 @@ impl App {
                         Some(moon) => (night_view.area(moon), Placement::Beside),
                         None => (night_button.clone(), Placement::Below(Align::End)),
                     };
-                    widgets::floating(&anchor, placement, night_card(card), Message::CloseNight)
+                    let card_layer =
+                        widgets::floating(&anchor, placement, night_card(card, &self.night_menus), Message::CloseNight);
+                    // Its open dropdown over the card, in the same layer (issue #554).
+                    match night_menu(card, &self.night_menus) {
+                        Some(menu) => stack![card_layer, menu].into(),
+                        None => card_layer,
+                    }
                 });
                 // One layer at a time: the window's menus, the night's card, else the calendar
                 // menu inside the panel.
@@ -2153,6 +2239,7 @@ impl App {
         self.menu = None;
         self.drawer = false;
         self.night_card = None;
+        self.night_menus.close();
     }
 
     // -- The settings in the content area (task S.19) -------------------------------------------
@@ -2209,7 +2296,7 @@ impl App {
         if let Some(id) = section {
             host.open(id);
         }
-        self.settings = Some(SettingsPane { host });
+        self.settings = Some(SettingsPane { host, sections: SettingsSections::default() });
         load.map(Message::SettingsHost)
     }
 
@@ -2265,7 +2352,7 @@ impl App {
 
     /// The header bar and the content area of the open settings, as the host draws them.
     fn settings_frame<'a>(&'a self, pane: &'a SettingsPane, class: SizeClass) -> torro_settings_ui::Frame<'a, Message> {
-        let page = settings_page(pane.host.data(), pane.host.current().id);
+        let page = settings_page(&pane.sections, pane.host.data(), pane.host.current().id);
         let page = page.map(Message::SettingsPage);
         pane.host.view(class, page, Message::SettingsHost)
     }
@@ -2364,9 +2451,10 @@ impl App {
 }
 
 /// The floating card "Night" (`widgets::popover`): the moon and "Calendar" with ✕ at the top, the
-/// title, "From" and "Until" as lists of the quarter hours, "Save" and "No night" at the bottom. The
-/// same fields as the row "Night" in the control centre.
-fn night_card<'a>(card: NightCard) -> Element<'a, Message> {
+/// title, "From" and "Until" as dropdowns of the quarter hours (with search, issue #554, opened by
+/// `menus`), "Save" and "No night" at the bottom. The same fields as the row "Night" in the control
+/// centre.
+fn night_card<'a>(card: NightCard, menus: &Dropdown<End>) -> Element<'a, Message> {
     let moon = icon::icon(Icon::Moon, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
     let head = row![
         moon,
@@ -2376,24 +2464,32 @@ fn night_card<'a>(card: NightCard) -> Element<'a, Message> {
     ]
     .spacing(space::s())
     .align_y(Alignment::Center);
-    let time = |label: &'a str, value: Quarter, on_pick: fn(Quarter) -> Message| {
-        let field = pick_list(Quarter::all().collect::<Vec<_>>(), Some(value), on_pick)
-            .padding(style::pick_list_padding())
-            .text_size(typo::caption().size)
-            .text_line_height(typo::caption().line_height)
-            .font(typo::caption().font)
-            .style(style::pick_list)
-            .menu_style(style::pick_list_menu);
+    let time = |label: &'a str, value: Quarter, end: End| {
+        let field = menus.button(end, value.to_string(), Message::NightMenus);
         let row = row![typo::text(typo::body(), label).style(theme::text_2), blank::horizontal(), field]
             .align_y(Alignment::Center);
         widgets::prop_row(None, row, None)
     };
-    let rows = vec![time(tr("From"), card.from, Message::NightFrom), time(tr("Until"), card.to, Message::NightTo)];
+    let rows = vec![time(tr("From"), card.from, End::From), time(tr("Until"), card.to, End::Until)];
     let actions = vec![
         widgets::text_button(None, tr("Save"), style::button::secondary, Some(Message::SaveNight)),
         widgets::text_button(None, tr("No night"), style::button::ghost, Some(Message::NoNight)),
     ];
     widgets::popover(head, tr("Night"), rows, actions)
+}
+
+/// The open dropdown of the night's card: the 96 quarter hours with search, the picked one marked,
+/// under its button in the card.
+fn night_menu<'a>(card: NightCard, menus: &'a Dropdown<End>) -> Option<Element<'a, Message>> {
+    let end = menus.open()?;
+    let (chosen, on_pick): (Quarter, fn(Quarter) -> Message) = match end {
+        End::From => (card.from, Message::NightFrom),
+        End::Until => (card.to, Message::NightTo),
+    };
+    let items = Quarter::all()
+        .map(|quarter| MenuItem::plain(quarter.to_string(), on_pick(quarter)).current(quarter == chosen))
+        .collect();
+    Some(menus.view(end, vec![MenuSection::new(items)], widgets::menu_width(), Align::End, Message::NightMenus))
 }
 
 /// Opens a link of "Open in Maps" (task TE.8) that passed `editor::openable_map`: a `geo:` link with
@@ -3451,6 +3547,45 @@ mod tests {
         assert_eq!(app.night_card, None);
     }
 
+    /// Issue #554: "From" in the card is a Torro dropdown with search over the card; Escape closes
+    /// the dropdown before the card, and a quarter hour closes it and takes the time.
+    #[test]
+    fn the_cards_dropdown_closes_before_the_card() {
+        let mut app = launched(&["--demo", "--open", "night"]);
+        let _ = app.update(Message::NightMenus(DropdownEvent::Toggle(End::From)));
+        assert!(app.night_menus.is_open(&End::From));
+        let _ = app.view();
+        let _ = app.update(Message::Escape);
+        assert!(app.night_menus.open().is_none() && app.night_card.is_some(), "the dropdown first");
+        let _ = app.update(Message::NightMenus(DropdownEvent::Toggle(End::Until)));
+        let _ = app.update(Message::NightTo(quarter(7, 0)));
+        assert!(app.night_menus.open().is_none(), "a choice closes it");
+        assert_eq!(app.night_card.map(|card| card.to), Some(quarter(7, 0)));
+        let _ = app.update(Message::NightMenus(DropdownEvent::Toggle(End::From)));
+        let _ = app.update(Message::CloseNight);
+        assert!(app.night_menus.open().is_none(), "closing the card closes its dropdown");
+    }
+
+    /// Issue #554: an open dropdown of a settings page takes Escape before the settings close.
+    #[test]
+    fn escape_closes_a_settings_dropdown_first() {
+        let mut app = launched(&["--demo", "--open", "week"]);
+        let _ = app.update(Message::ToggleSettings);
+        if let Some(pane) = app.settings.as_mut() {
+            pane.host.open("reminders");
+        }
+        let toggle =
+            calendar::reminders::Message::Menus(DropdownEvent::Toggle(calendar::reminders::Choice::DefaultLead));
+        let _ = app.update(Message::SettingsPage(SettingsMessage::Reminders(toggle)));
+        assert!(app.settings.as_ref().is_some_and(|pane| settings_escape(pane).is_some()));
+        let _ = app.view();
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_some(), "the dropdown closed, the settings stay");
+        assert!(app.settings.as_ref().is_some_and(|pane| settings_escape(pane).is_none()));
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_none());
+    }
+
     #[test]
     fn a_double_click_folds_back_the_night_its_first_click_opened() {
         let mut app = launched(&["--demo", "--open", "timeline"]);
@@ -3643,7 +3778,9 @@ mod tests {
     #[test]
     fn settings_dispatch_reaches_the_right_section() {
         let data = torro_settings_ui::Data::default();
+        let mut sections = SettingsSections::default();
         let shown = settings_update(
+            &mut sections,
             SettingsMessage::Calendars(collections::Message::Shown { collection: "a/work".into(), shown: false }),
             &data,
         );
@@ -3654,20 +3791,28 @@ mod tests {
                 shown: false
             })
         );
-        let reminders = settings_update(SettingsMessage::Reminders(calendar::reminders::Message::Enabled(true)), &data);
+        let reminders = settings_update(
+            &mut sections,
+            SettingsMessage::Reminders(calendar::reminders::Message::Enabled(true)),
+            &data,
+        );
         let torro_settings_ui::Action::Send(requests) = reminders else { panic!("expected Send") };
         assert!(matches!(
             requests.as_slice(),
             [torro_ipc::Request::SetSetting { key: torro_ipc::SettingKey::Reminders, .. }]
         ));
-        let night = settings_update(SettingsMessage::Night(calendar::night::Message::From(quarter(23, 30))), &data);
+        let night = settings_update(
+            &mut sections,
+            SettingsMessage::Night(calendar::night::Message::From(quarter(23, 30))),
+            &data,
+        );
         let torro_settings_ui::Action::Send(requests) = night else { panic!("expected Send") };
         assert!(matches!(
             requests.as_slice(),
             [torro_ipc::Request::SetSetting { key: torro_ipc::SettingKey::Night, .. }]
         ));
         let working = calendar::working_hours::Message::To(quarter(16, 0));
-        let working = settings_update(SettingsMessage::WorkingHours(working), &data);
+        let working = settings_update(&mut sections, SettingsMessage::WorkingHours(working), &data);
         let torro_settings_ui::Action::Send(requests) = working else { panic!("expected Send") };
         assert!(matches!(
             requests.as_slice(),
