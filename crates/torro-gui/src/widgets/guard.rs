@@ -104,12 +104,17 @@ impl<M> Widget<M, Theme, Renderer> for Inert<'_, M> {
 
     fn overlay<'b>(
         &'b mut self,
-        _tree: &'b mut Tree,
-        _layout: Layout<'b>,
-        _renderer: &Renderer,
-        _viewport: &Rectangle,
-        _translation: Vector,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
     ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
+        // Asked and dropped: asking runs the hooks of the content's floats, and the anchor of the
+        // menu's trigger (`widgets::anchored`) learns its true place only there – the place from
+        // drawing lacks the dialog's translation (second review of #554). Dropped, the content's
+        // own layers (tooltips) stay out of the way.
+        let _ = self.content.as_widget_mut().overlay(tree, layout, renderer, viewport, translation);
         None
     }
 }
