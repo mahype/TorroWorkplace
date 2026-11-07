@@ -57,6 +57,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Unknown local AI program.", "Unbekanntes lokales KI-Programm."),
     ("Your computer", "Dein Rechner"),
     ("{n} models", "{n} Modelle"),
+    ("1 model", "1 Modell"),
     // Embedded compose images (#461).
     ("As attachment", "Als Anhang"),
     ("Couldn't copy the images to the other account.", "Die Bilder konnten nicht ins andere Konto kopiert werden."),
