@@ -489,7 +489,7 @@ pub(crate) async fn attachment(
             Arc::clone(&entry.bytes)
         }
         source => {
-            state.room(ORIGINAL + PREVIEW * 2).map_err(|_| WriteError::Invalid(BAD_IMAGE))?;
+            state.room(ORIGINAL + PREVIEW * 2).map_err(|_| WriteError::Busy)?;
             let input = match source {
                 ImageSource::File { path } => DraftAttachment::File { path: path.clone() },
                 ImageSource::MailPart { message, part } => {
@@ -497,7 +497,7 @@ pub(crate) async fn attachment(
                 }
                 ImageSource::Prepared { .. } => return Err(WriteError::NotFound(NO_IMAGE)),
             };
-            let budget = state.encoded_budget().map_err(|_| WriteError::Invalid(BAD_IMAGE))?;
+            let budget = state.encoded_budget().map_err(|_| WriteError::Busy)?;
             let input = write::image_attachment_of(mail, reach, &input, author, tools, budget).await?;
             Arc::new(input.bytes)
         }

@@ -1828,6 +1828,24 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn repeated_image_sources_cannot_amplify_a_save_beyond_the_memory_budget() {
         use torro_mail::{ImageSize, ImageSource};
+        // This deliberately fills the process-global reservation budget. Keep other image tests
+        // concurrent without making their success depend on when this stress test releases it.
+        const CHILD: &str = "TORRO_IMAGE_AMPLIFICATION_TEST_CHILD";
+        const TEST: &str = "mail::write::tests::repeated_image_sources_cannot_amplify_a_save_beyond_the_memory_budget";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+                .args([TEST, "--exact", "--test-threads=1"])
+                .env(CHILD, "1")
+                .output()
+                .expect("isolated budget regression");
+            assert!(
+                output.status.success() && String::from_utf8_lossy(&output.stdout).contains(&format!("{TEST} ... ok")),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         let room = mailroom().await;
         let mut png = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgba8(10, 10).write_to(&mut png, image::ImageFormat::Png).expect("png");
@@ -1864,6 +1882,21 @@ pub(crate) mod tests {
         }
         saved(save_draft(&room.mail, Reach::Suite, offer, DraftAuthor::App).await);
         assert_eq!(drafts_on_server(&room.server).len(), 1, "failed save released every output reservation");
+        // Exercise both the encoded-MIME pre-read budget and the larger source pre-read check.
+        for pressure in [71 * 1024 * 1024 + 256 * 1024, 80 * 1024 * 1024] {
+            let _pressure = torro_ipc::mail::ImageReservation::new(pressure).expect("isolated pressure");
+            let result = super::super::images::attachment(
+                &room.mail,
+                Reach::Suite,
+                &DraftAuthor::App,
+                ANNA,
+                &ImageSource::File { path: path.to_string_lossy().into_owned() },
+                ImageSize::Medium,
+                None,
+            )
+            .await;
+            assert!(matches!(result, Err(WriteError::Busy)), "budget exhaustion is not corrupt image data");
+        }
     }
 
     #[tokio::test]
