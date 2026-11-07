@@ -1394,7 +1394,8 @@ impl DemoSource {
             .map(|folder| {
                 let inside = data.mail.iter().filter(|m| m.summary.folder == folder.id);
                 let (total, unread) = inside.fold((0, 0), |(total, unread), m| {
-                    (total + 1, unread + u32::from(!m.summary.flags.contains(&Flag::Seen)))
+                    // Caught mail counts nowhere as unread (issue #506), as in the core.
+                    (total + 1, unread + u32::from(!m.summary.flags.contains(&Flag::Seen) && !m.summary.caught))
                 });
                 Folder { unread, total, ..folder.clone() }
             })
@@ -2438,8 +2439,8 @@ mod tests {
             assert_eq!(roles.iter().filter(|role| role.is_none()).count(), 1);
         }
         let inbox = folder(&folders, "f:work-inbox");
-        // The fraud caught (issue #506) stays in its folder on the server.
-        assert_eq!((inbox.unread, inbox.total), (6, 9));
+        // The fraud caught (issue #506) stays in its folder on the server, but counts as unread nowhere.
+        assert_eq!((inbox.unread, inbox.total), (5, 9));
         assert_eq!(folder(&folders, "f:private-trash").total, 0, "an empty folder");
         let mail = mail_sample(now());
         assert!(mail.iter().all(|m| m.summary.untrusted), "mail is foreign text");

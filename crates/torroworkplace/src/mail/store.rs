@@ -1042,7 +1042,7 @@ impl MailStore {
     }
 
     /// All folders, ordered by role (inbox first) and then path. `unread` and `total` are counted
-    /// from the stored headers.
+    /// from the stored headers; `unread` leaves out mail caught as fraud or spam (issue #506).
     pub fn folders(&self) -> Result<Vec<Folder>, MailStoreError> {
         let mut statement = self.db.prepare(&format!("{FOLDER_SELECT} ORDER BY {FOLDER_ORDER}"))?;
         let rows = statement.query_map([], |row| folder_from_row(&self.account, row))?;
@@ -2912,7 +2912,7 @@ fn json_list(items: &[String]) -> Result<Value, MailStoreError> {
 }
 
 const FOLDER_SELECT: &str = "SELECT f.id, f.name, f.path, f.role,
-        (SELECT count(*) FROM messages m WHERE m.folder_id = f.id AND m.flags & 1 = 0),
+        (SELECT count(*) FROM messages m WHERE m.folder_id = f.id AND m.flags & 1 = 0 AND m.caught = 0),
         (SELECT count(*) FROM messages m WHERE m.folder_id = f.id)
     FROM folders f";
 
@@ -3554,6 +3554,8 @@ mod tests {
         assert_eq!(ids(Some(false)), std::slice::from_ref(&other));
         assert_eq!(ids(Some(true)), std::slice::from_ref(&first));
         assert_eq!(ids(None).len(), 2);
+        let counted = store.folders().expect("folders").into_iter().find(|f| f.id == inbox).expect("inbox");
+        assert_eq!((counted.unread, counted.total), (1, 2), "caught mail counts as unread nowhere");
 
         assert!(!store.wrote_to("carla@example.com").expect("read"), "nothing sent yet");
         let mut written = message(3, "Hello");

@@ -16114,7 +16114,7 @@ mod tests {
         assert_eq!(
             work,
             [
-                (tr("Inbox"), Some(6)),
+                (tr("Inbox"), Some(5)),
                 (tr("Drafts"), None),
                 (tr("Sent"), None),
                 (tr("Archive"), None),

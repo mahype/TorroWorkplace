@@ -41,7 +41,8 @@ pub struct Folder {
     /// What the folder is for, if anything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
-    /// Messages without the flag `seen`.
+    /// Messages without the flag `seen`, not counting mail caught as fraud or spam (issue #506): it
+    /// announces itself nowhere.
     pub unread: u32,
     /// All messages.
     pub total: u32,
