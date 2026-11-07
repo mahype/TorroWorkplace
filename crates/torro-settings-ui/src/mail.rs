@@ -1434,10 +1434,8 @@ pub mod accounts {
         // Each in a row of its own, under the heading of the suite's Accounts (design review of #410).
         rows.push(row_frame(crate::accounts::on_axis(add), false));
         rows.push(row_frame(crate::accounts::on_axis(import), false));
-        // The heading as far from the group as on the suite's Accounts (design review of #410).
-        let accounts =
-            column![widgets::group(tr("Mail"), rows, None), widgets::mail_coverage_legend()].spacing(space::m());
-        column![crate::accounts::page_heading(), accounts].spacing(layout::section_gap()).into()
+        // The page starts with its first group, like every settings page (issue #554).
+        column![widgets::group(tr("Mail"), rows, None), widgets::mail_coverage_legend()].spacing(space::m()).into()
     }
 
     fn inventory_content<'a>(stats: Option<&MailAccountStats>) -> Element<'a, Message> {

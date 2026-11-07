@@ -2048,7 +2048,7 @@ pub fn view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass, palette:
     let now = Utc::now();
     match selected(state, data) {
         Some(account) => detail(state, account, data, now),
-        None => list(state, data, now, (!beside(class)).then_some(palette), false, false, true),
+        None => list(state, data, now, (!beside(class)).then_some(palette), false, false),
     }
 }
 
@@ -2058,7 +2058,7 @@ pub fn ai_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -> El
     let now = Utc::now();
     match selected(state, data) {
         Some(account) => detail(state, account, data, now),
-        None => list(state, data, now, None, true, !beside(class), true),
+        None => list(state, data, now, None, true, !beside(class)),
     }
 }
 
@@ -2067,15 +2067,14 @@ pub fn ai_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -> El
 /// sentence of what belongs there under it –, since an app has two or three of them and no room
 /// for a column beside its own list of sections; an account's page as in the control centre.
 ///
-/// The heading ([`page_heading`]) only where the header bar does not name the section already: in a
-/// narrow window it does (design review of #410).
-pub fn app_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -> Element<'a, Message> {
+/// Like every settings page it starts with the title of its first group (issue #554): the header bar
+/// names the section already.
+pub fn app_view<'a>(state: &'a State, data: &'a dyn Seen, _class: SizeClass) -> Element<'a, Message> {
     let now = Utc::now();
     if let Some(account) = selected(state, data) {
         return detail(state, account, data, now);
     }
     let entries = entries(data);
-    let heading = beside(class).then(page_heading);
     let groups = account_providers(state, &entries).into_iter().filter_map(|group| match group {
         Listed::Fixed(fixed) => Some(fixed),
         Listed::Other(_) => None,
@@ -2099,20 +2098,7 @@ pub fn app_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -> E
         }
         widgets::group(group.title(), rows, Some(group.about().to_string()))
     });
-    column![].push(heading).extend(page).spacing(layout::section_gap()).into()
-}
-
-/// The heading of Accounts in an app, as AI and the control centre have one (design review of
-/// #410): what the section is, and that an account is one for the whole suite. Mail's own page of
-/// its accounts starts with it too.
-pub fn page_heading<'a, M: 'a>() -> Element<'a, M> {
-    column![
-        typo::text(typo::headline(), tr("Accounts")).wrapping(Wrapping::None),
-        typo::text(typo::meta(), tr("One account for the whole suite: connected here, every app knows it."))
-            .style(theme::text_2),
-    ]
-    .spacing(space::xs())
-    .into()
+    column(page).spacing(layout::section_gap()).into()
 }
 
 /// The page AI in an app's settings (issue #410): the control centre's ([`ai_view`]), the slots
@@ -2122,7 +2108,7 @@ pub fn app_ai_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -
     match selected(state, data) {
         Some(account) => detail(state, account, data, now),
         // In a narrow window the header bar names AI already (design review of #410).
-        None => list(state, data, now, None, true, !matches!(class, SizeClass::Wide), beside(class)),
+        None => list(state, data, now, None, true, !matches!(class, SizeClass::Wide)),
     }
 }
 
@@ -2661,9 +2647,9 @@ fn selected<'a>(state: &State, data: &'a dyn Seen) -> Option<&'a AccountInfo> {
 
 // ----- Views --------------------------------------------------------------------------------
 
-/// The chosen provider ([`chosen`], task S.37): its name with the sentence of what belongs there
-/// above its accounts, then the group "Accounts" with them, the sign-ins in progress and its "Add"
-/// ("No account yet." before it while there is none), and under AI the data rule. A kind of
+/// The chosen provider ([`chosen`], task S.37) as the page's first group (issue #554): titled with
+/// its name, its accounts, the sign-ins in progress and its "Add" ("No account yet." before it while
+/// there is none), the sentence of what belongs there under it; under AI the data rule. A kind of
 /// account none of the fixed groups holds has no "Add". With `chips` (narrow) the providers stand
 /// as chips above it all.
 fn list<'a>(
@@ -2673,7 +2659,6 @@ fn list<'a>(
     chips: Option<&Palette>,
     ai: bool,
     stacked: bool,
-    heading: bool,
 ) -> Element<'a, Message> {
     let entries = entries(data);
     let groups = account_providers(state, &entries);
@@ -2681,9 +2666,6 @@ fn list<'a>(
     let mut page = column![].spacing(layout::section_gap());
     if let Some(palette) = chips {
         page = page.push(provider_chips(&groups, shown, &entries, palette));
-    }
-    if heading {
-        page = page.push(provider_heading(shown));
     }
     let mut rows: Vec<Element<'a, Message>> = entries
         .iter()
@@ -2693,13 +2675,15 @@ fn list<'a>(
             false => account_row(account, models_on(state, &account.id), now),
         })
         .collect();
+    let mut about = None;
     if let Listed::Fixed(fixed) = shown {
         if rows.is_empty() {
             rows.push(quiet_row(tr("No account yet.")));
         }
         rows.push(add_row(fixed, fixed == Group::Mail && offers_import(state)));
+        about = Some(fixed.about().to_string());
     }
-    page = page.push(widgets::group(tr("Accounts"), rows, None));
+    page = page.push(widgets::group(shown.title(), rows, about));
     if shown == Listed::Fixed(Group::Ai) {
         // Stacked also where the page is narrower than a form (design review of #325): beside each
         // other, a model's name, the computer's line or where mail goes would be cut off there.
@@ -2732,17 +2716,6 @@ fn provider_chips<'a>(
         )
     });
     widgets::chip_row(chips.collect())
-}
-
-/// The shown provider's name and, for a fixed group, the sentence of what belongs there – above
-/// its accounts, as the name of an account heads its detail page ([`heading`]).
-fn provider_heading<'a>(group: Listed<'_>) -> Element<'a, Message> {
-    let name = typo::text(typo::headline(), group.title()).wrapping(Wrapping::None);
-    let mut heading = column![container(name).width(Fill).clip(true)].spacing(space::xs());
-    if let Listed::Fixed(fixed) = group {
-        heading = heading.push(typo::text(typo::meta(), fixed.about()).style(theme::text_2));
-    }
-    heading.into()
 }
 
 /// The group Mail offers "Import from TorroMail…": the last list TorroMail gave has an account the
