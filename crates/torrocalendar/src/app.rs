@@ -1587,12 +1587,19 @@ impl App {
                         Some(moon) => (night_view.area(moon), Placement::Beside),
                         None => (night_button.clone(), Placement::Below(Align::End)),
                     };
-                    let card_layer =
-                        widgets::floating(&anchor, placement, night_card(card, &self.night_menus), Message::CloseNight);
-                    // Its open dropdown over the card, in the same layer (issue #554).
+                    // Its open dropdown over the card, in the same layer (issue #554); the card is
+                    // inert meanwhile, or a button under an entry would take the click first.
                     match night_menu(card, &self.night_menus) {
-                        Some(menu) => stack![card_layer, menu].into(),
-                        None => card_layer,
+                        Some(menu) => {
+                            let card = widgets::inert(night_card(card, &self.night_menus));
+                            stack![widgets::floating(&anchor, placement, card, Message::CloseNight), menu].into()
+                        }
+                        None => widgets::floating(
+                            &anchor,
+                            placement,
+                            night_card(card, &self.night_menus),
+                            Message::CloseNight,
+                        ),
                     }
                 });
                 // One layer at a time: the window's menus, the night's card, else the calendar

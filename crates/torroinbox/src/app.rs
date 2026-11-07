@@ -11099,14 +11099,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Some(Menu::Pick) => Some(widgets::floating(&snooze_at, below, self.picker(), Message::CloseMenu)),
             // The open dropdown of a field over its dialog, in the same layer (issue #554).
-            Some(Menu::Task) => Some(over_dialog(
-                widgets::floating(&task_at, dialog, self.task_dialog(), Message::CloseMenu),
-                self.field_menu(),
-            )),
-            Some(Menu::Event) => Some(over_dialog(
-                widgets::floating(&event_at, dialog, self.event_dialog(), Message::CloseMenu),
-                self.field_menu(),
-            )),
+            Some(Menu::Task) => Some(over_dialog(&task_at, dialog, self.task_dialog(), self.field_menu())),
+            Some(Menu::Event) => Some(over_dialog(&event_at, dialog, self.event_dialog(), self.field_menu())),
             Some(Menu::Hide) => Some(widgets::floating(
                 &hide_at,
                 below,
@@ -13946,11 +13940,21 @@ pub(crate) fn choice_section<'a, T: ToString + PartialEq>(
     vec![MenuSection::new(items)]
 }
 
-/// `dialog` with the open dropdown of one of its fields over it, if one is (issue #554).
-fn over_dialog<'a>(dialog: Element<'a, Message>, menu: Option<Element<'a, Message>>) -> Element<'a, Message> {
+/// The floating `dialog` at `anchor`, with the open dropdown of one of its fields over it, if one is
+/// (issue #554). While the menu is open the dialog is inert (`widgets::inert`): Iced hands a click to
+/// the dialog's layer before the menu's, and a button under an entry would take it.
+fn over_dialog<'a>(
+    anchor: &widgets::Anchor,
+    placement: Placement,
+    dialog: Element<'a, Message>,
+    menu: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
     match menu {
-        Some(menu) => stack![dialog, menu].into(),
-        None => dialog,
+        Some(menu) => {
+            let dialog = widgets::floating(anchor, placement, widgets::inert(dialog), Message::CloseMenu);
+            stack![dialog, menu].into()
+        }
+        None => widgets::floating(anchor, placement, dialog, Message::CloseMenu),
     }
 }
 
