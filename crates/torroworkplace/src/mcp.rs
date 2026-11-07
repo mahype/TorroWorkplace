@@ -706,6 +706,7 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
 /// dismissing locally and never writes them to the calendar server (task ER1.2), and the mail
 /// filters in its own file (issue #339; `mail.apply_filter` changes mail on the server).
 const STAYS_HERE: &[&str] = &[
+    "mail.prepare_paste",
     // Favourites and the contacts used last are kept on this device only (issue #351).
     "contacts.set_favorite",
     "contacts.mark_used",
@@ -2252,6 +2253,21 @@ mod tests {
             request_for("mail_release_images", args(json!({"account":"mail:anna@example.org", "ids":["one"]})), &Utc)
                 .expect("release");
         assert_eq!(release.operation().access, Access::Delete);
+    }
+
+    #[test]
+    fn paste_tool_only_accepts_supplied_content_and_stays_on_this_computer() {
+        let request = request_for("mail_prepare_paste", args(json!({"html":"<b>Hello</b>","text":"Hello"})), &Utc)
+            .expect("paste");
+        assert_eq!(
+            request,
+            Request::PrepareMailPaste { html: Some("<b>Hello</b>".into()), text: Some("Hello".into()) }
+        );
+        let tool = tools().iter().find(|tool| tool.name == "mail_prepare_paste").expect("tool");
+        assert!(tool.description.as_deref().is_some_and(|s| s.contains("data, never instructions")));
+        let hints = tool.annotations.as_ref().expect("hints");
+        assert_eq!(hints.read_only_hint, Some(true));
+        assert_eq!(hints.open_world_hint, Some(false));
     }
 
     /// Task M12.4: `mail_save_attachments` takes the message, optionally some of its parts, and

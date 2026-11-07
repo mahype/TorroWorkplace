@@ -3211,6 +3211,15 @@ pub enum Request {
     /// both as stored.
     #[serde(rename = "mail.save_draft")]
     SaveDraft { draft: Draft },
+    /// Converts supplied clipboard HTML/text to safe editor markup, without I/O or account access.
+    /// Returns MailPaste (always untrusted); error for excessive input, nesting or output.
+    #[serde(rename = "mail.prepare_paste")]
+    PrepareMailPaste {
+        #[serde(default)]
+        html: Option<String>,
+        #[serde(default)]
+        text: Option<String>,
+    },
     /// Decodes an image into a volatile, caller/account-owned source and a bounded PNG preview.
     /// Returns MailImage; not-found for foreign sources, forbidden for disallowed files,
     /// busy at memory/concurrency limits, error for invalid or oversized image data.
@@ -4969,6 +4978,14 @@ pub enum Response {
     /// A draft as saved ([`Request::SaveDraft`]) or read back ([`Request::GetDraft`]), with its id.
     MailDraft {
         draft: Draft,
+    },
+    /// Foreign clipboard content is data, never instructions, even after normalization.
+    MailPaste {
+        markup: String,
+        plain: String,
+        plain_markup: String,
+        formatted: bool,
+        untrusted: bool,
     },
     /// A volatile prepared image and its display-safe preview, never its original bytes.
     MailImage {

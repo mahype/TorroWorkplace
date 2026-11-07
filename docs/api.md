@@ -109,6 +109,21 @@ Nachrichtenbetreff mit Dateiname/MIME-Teil und Quellkonto oder bei RAM-Quellen Q
 Der Dienst schlägt diese Angaben erst nach Rechte-/Eigentumsprüfung nach; unbekannte Quellen bleiben als
 unbekannt markiert. Steuer- und Richtungszeichen werden für die Anzeige entschärft, Bilddaten nie angezeigt.
 
+**Zwischenablage-HTML (#462):** `mail.prepare_paste` (`Request::PrepareMailPaste`, MCP
+`mail_prepare_paste`) nimmt optional `html` und `text` als übergebenen Inhalt, niemals einen Clipboard- oder
+Dateizugriff. `Mail/Read` genügt ohne Kontofreigabe und ohne Versandrecht; ein einzeln gesperrter Befehl bleibt
+verboten. Es wird nichts gespeichert, registriert, geladen oder gesendet. Die Antwort `mail-paste` enthält
+`markup`, `plain`, `plain_markup`, `formatted` und immer `untrusted:true`: Inhalt ist Datenmaterial, nie Anweisung.
+Erlaubte Formatierung sind B/I/U, Listen, Zitate und http/https/mailto-Links. Office-Stile werden semantisch
+normalisiert, Tabellen zu Text; aktive Inhalte, alle Bildquellen (auch CID) und eigene Signatur-/Historienklassen
+entfallen. `plain` bevorzugt die Textalternative des Aufrufers, sonst gesäubertes HTML; `plain_markup` maskiert
+auch Listen- und Zitatpräfixe. Teilwortformatierung wird Text. Leere Eingaben liefern leere Strings und
+`formatted:false`. Je Eingabe und je konvertierter Ausgabe gelten höchstens 1 MiB, vor rekursiver Verarbeitung
+höchstens 64 Elementebenen; Überschreitungen sind `error`, nie gekürzt. Zusätzlich muss der vollständige
+JSON-Request samt Envelope, Escaping und Newline ins unveränderte 1-MiB-Transportlimit passen. Die Oberfläche
+erweitert nur den bestehenden serialisierten Reservations-/Upload-/Lease-/CID-Pfad; keine zusätzlichen
+`mail.save_draft`-Dateirechte und kein agentenseitiger Zwischenablagezugriff.
+
 Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalog** in `torro-ipc`
 (`api.rs`). Er beschreibt jeden Befehl:
 
@@ -139,7 +154,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `contacts` ²⁸ | `list_address_books`, `list_contacts`, `get_contact`, `get_photo`, `list_groups`, `upcoming_birthdays` | `create_contact`, `add_to_contact`, `set_favorite`, `add_to_group`, `mark_used`, `move_contact`, `resolve_conflict` mit `both` | `update_contact`, `remove_from_group`, `set_photo`, `delete_contact`, `resolve_conflict` mit `mine`/`theirs` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ², `move_category` ²⁹ |
-| `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `get_draft`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `prepare_image`, `upload_image`, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages`, `release_images` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
+| `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `get_draft`, `prepare_paste`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `prepare_image`, `upload_image`, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages`, `release_images` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
 | `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |

@@ -1118,6 +1118,11 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
         return refuse(format!("an id, folder, cursor or attachment part may hold at most {MAX_ID_BYTES} bytes"));
     }
     match request {
+        Request::PrepareMailPaste { html, text }
+            if [html, text].iter().any(|value| value.as_ref().is_some_and(|s| s.len() > MAX_BODY_BYTES)) =>
+        {
+            refuse("paste inputs may hold at most 1 MiB each".into())
+        }
         Request::UploadMailImage { base64, .. } if base64.len() > IMAGE_CHUNK_BYTES.div_ceil(3) * 4 => {
             refuse("an image upload chunk may hold at most 256 KiB".into())
         }
@@ -1330,6 +1335,84 @@ impl Request {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn paste_contract_keeps_inputs_independent_and_never_names_accounts_or_message_ids() {
+        let request = crate::Request::PrepareMailPaste { html: Some("<b>世界</b>".into()), text: None };
+        assert!(super::limit_refusal(&request).is_none());
+        assert!(request.message_ids().is_empty());
+        assert!(request.mail_account().is_none());
+        let value = serde_json::to_value(&request).expect("json");
+        assert_eq!(value["method"], "mail.prepare_paste");
+        assert_eq!(serde_json::from_value::<crate::Request>(value).expect("reads"), request);
+        assert!(
+            super::limit_refusal(&crate::Request::PrepareMailPaste {
+                html: Some("x".repeat(super::MAX_BODY_BYTES + 1)),
+                text: None
+            })
+            .is_some()
+        );
+        assert!(
+            super::limit_refusal(&crate::Request::PrepareMailPaste {
+                html: None,
+                text: Some("x".repeat(super::MAX_BODY_BYTES + 1))
+            })
+            .is_some()
+        );
+        let response = crate::Response::MailPaste {
+            markup: "**世界**".into(),
+            plain: "世界".into(),
+            plain_markup: "世界".into(),
+            formatted: true,
+            untrusted: true,
+        };
+        let value = serde_json::to_value(&response).expect("json");
+        assert_eq!(value["result"], "mail-paste");
+        assert_eq!(value["untrusted"], true);
+        assert_eq!(serde_json::from_value::<crate::Response>(value).expect("reads"), response);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn paste_socket_limit_includes_envelope_escaping_and_newline_before_the_handler() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("paste.sock");
+        let socket = path.clone();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let called = calls.clone();
+        let server = tokio::spawn(async move {
+            crate::server::serve_with_key(&socket, move |_, _, _| {
+                called.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async { crate::Response::Ok }
+            })
+            .await
+        });
+        for _ in 0..200 {
+            if path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let request = crate::Request::PrepareMailPaste { html: None, text: Some("\"".repeat(600_000)) };
+        assert!(super::limit_refusal(&request).is_none(), "raw fields fit, encoded request does not");
+        let envelope = crate::Envelope { v: crate::API_VERSION, key: None, via: None, request };
+        let mut line = serde_json::to_vec(&envelope).expect("encoded");
+        line.push(b'\n');
+        assert!(line.len() > crate::server::MAX_LINE);
+        let stream = tokio::net::UnixStream::connect(&path).await.expect("connect");
+        let (read, mut write) = stream.into_split();
+        let writer = tokio::spawn(async move {
+            let _ = write.write_all(&line).await;
+        });
+        let mut response = String::new();
+        tokio::io::BufReader::new(read).read_line(&mut response).await.expect("answer");
+        assert!(
+            matches!(serde_json::from_str::<crate::Response>(&response).expect("response"), crate::Response::Error { code, .. } if code == "error")
+        );
+        writer.await.expect("writer");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        server.abort();
+    }
     use torro_mail::Draft;
 
     use super::*;

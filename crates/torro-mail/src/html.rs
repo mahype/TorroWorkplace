@@ -216,6 +216,265 @@ pub fn plain_to_markup(text: &str) -> String {
     out.join("\n")
 }
 
+/// A clipboard conversion, independent of accounts, disk, network and the OS clipboard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Paste {
+    pub markup: String,
+    pub plain: String,
+    pub plain_markup: String,
+    pub formatted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasteError {
+    TooLarge,
+    TooDeep,
+}
+
+impl std::fmt::Display for PasteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::TooLarge => "paste inputs and outputs may hold at most 1 MiB each",
+            Self::TooDeep => "paste HTML may nest at most 64 elements",
+        })
+    }
+}
+
+impl std::error::Error for PasteError {}
+
+/// Escapes literal clipboard text, including quote/list prefixes. Unlike draft reopening,
+/// pasted `>` is not a history boundary. Keep line breaks, but discard directional controls.
+pub fn paste_plain_markup(text: &str) -> String {
+    clean_text(text)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .split('\n')
+        .map(|line| {
+            // A paste is a substring: its edge whitespace may separate existing words.
+            let start = line.len() - line.trim_start().len();
+            let words = &line[start..];
+            let digits = words.find(|c: char| !c.is_ascii_digit()).unwrap_or(words.len());
+            let numbered = (1..=6).contains(&digits) && words[digits..].starts_with(". ");
+            let mut out = String::new();
+            for (at, c) in line.char_indices() {
+                if matches!(c, '\\' | '*' | '_' | '[' | ']')
+                    || at == start && matches!(c, '>' | '-' | '#' | '`')
+                    || numbered && at == start + digits
+                {
+                    out.push('\\');
+                }
+                out.push(c);
+            }
+            out
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Normalizes foreign HTML separately from saved drafts. The existing `to_markup` remains
+/// authoritative for representable word boundaries and safe links. Images and suite classes
+/// never enter this path; no clipboard content can create a signature/history boundary.
+pub fn prepare_paste(html: Option<&str>, text: Option<&str>) -> Result<Paste, PasteError> {
+    const MAX: usize = 1024 * 1024;
+    if [html, text].into_iter().flatten().any(|s| s.len() > MAX) {
+        return Err(PasteError::TooLarge);
+    }
+    let normalized = paste_html(html.unwrap_or_default())?;
+    let plain = text.map(clean_text).unwrap_or_else(|| to_text(&normalized));
+    let plain_markup = paste_plain_markup(&plain);
+    let markup =
+        if html.is_some_and(|s| !s.trim().is_empty()) { to_markup(&normalized).0 } else { plain_markup.clone() };
+    if [&markup, &plain, &plain_markup].iter().any(|s| s.len() > MAX) {
+        return Err(PasteError::TooLarge);
+    }
+    let rendered = crate::markup::to_html(&markup, None);
+    let formatted =
+        ["<strong>", "<em>", "<u>", "<ul>", "<ol>", "<blockquote", "<a "].iter().any(|tag| rendered.contains(tag))
+            && markup != plain_markup;
+    Ok(Paste { markup, plain, plain_markup, formatted })
+}
+
+/// Count even unknown/discarded elements before any recursive tree traversal or discard.
+/// Raw-text contents are not HTML; all other element depth is bounded, including SVG.
+fn paste_depth(mut rest: &str) -> Result<(), PasteError> {
+    let mut stack = Vec::new();
+    while let Some(at) = rest.find('<') {
+        rest = &rest[at..];
+        rest = match token(rest) {
+            Token::Open { name, after, .. } => {
+                if ![
+                    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
+                    "track", "wbr",
+                ]
+                .contains(&name.as_str())
+                {
+                    stack.push(name.clone());
+                    if stack.len() > 64 {
+                        return Err(PasteError::TooDeep);
+                    }
+                    if RAW_TEXT.contains(&name.as_str()) {
+                        stack.pop();
+                        rest = skip_element(&name, after);
+                        continue;
+                    }
+                }
+                after
+            }
+            Token::Close { name, after } => {
+                if let Some(at) = stack.iter().rposition(|s| *s == name) {
+                    stack.truncate(at);
+                }
+                after
+            }
+            Token::Comment(after) | Token::Declaration(after) | Token::Text(after) => after,
+        };
+    }
+    Ok(())
+}
+
+fn paste_html(html: &str) -> Result<String, PasteError> {
+    paste_depth(html)?;
+    let mut rest = html;
+    let mut out = String::new();
+    // Original names paired with generated closing tags: spans may add semantic wrappers,
+    // but neither their styles nor any other foreign attributes reach the resulting HTML.
+    let mut stack: Vec<(String, String)> = Vec::new();
+    while !rest.is_empty() {
+        let Some(at) = rest.find('<') else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        rest = match token(rest) {
+            Token::Open { name, attrs, after } => {
+                let style =
+                    attrs.iter().find(|(k, _)| k == "style").map(|(_, v)| v.to_ascii_lowercase()).unwrap_or_default();
+                let properties: Vec<(&str, &str)> =
+                    style.split(';').filter_map(|p| p.split_once(':')).map(|(k, v)| (k.trim(), v.trim())).collect();
+                if DROPPED.contains(&name.as_str()) || properties.contains(&("mso-list", "ignore")) {
+                    skip_element(&name, after)
+                } else if name == "img" {
+                    after
+                } else {
+                    let mut close = String::new();
+                    let list = name == "p" && properties.iter().any(|(k, v)| *k == "mso-list" && *v != "none");
+                    if list {
+                        let kind = office_list_kind(after);
+                        out.push_str(&format!("<{kind}><li>"));
+                        close.push_str(&format!("</li></{kind}>"));
+                    } else if ALLOWED.contains(&name.as_str()) {
+                        out.push('<');
+                        out.push_str(&name);
+                        if name == "a" {
+                            for (k, v) in &attrs {
+                                if k == "href" {
+                                    out.push_str(&format!(" href=\"{}\"", escape(v)));
+                                    break;
+                                }
+                            }
+                        }
+                        out.push('>');
+                        if !VOID.contains(&name.as_str()) {
+                            close.push_str(&format!("</{name}>"));
+                        }
+                    }
+                    for (tag, on) in [
+                        (
+                            "b",
+                            properties.iter().any(|(k, v)| {
+                                *k == "font-weight" && (*v == "bold" || v.parse::<u16>().is_ok_and(|n| n >= 600))
+                            }),
+                        ),
+                        ("i", properties.contains(&("font-style", "italic"))),
+                        (
+                            "u",
+                            properties.iter().any(|(k, v)| {
+                                matches!(*k, "text-decoration" | "text-decoration-line")
+                                    && v.split_whitespace().any(|s| s == "underline")
+                            }),
+                        ),
+                    ] {
+                        if on
+                            && ![
+                                "area", "base", "br", "col", "embed", "hr", "input", "link", "meta", "param", "source",
+                                "track", "wbr",
+                            ]
+                            .contains(&name.as_str())
+                        {
+                            out.push_str(&format!("<{tag}>"));
+                            close.insert_str(0, &format!("</{tag}>"));
+                        }
+                    }
+                    if ![
+                        "area", "base", "br", "col", "embed", "hr", "input", "link", "meta", "param", "source",
+                        "track", "wbr",
+                    ]
+                    .contains(&name.as_str())
+                    {
+                        stack.push((name, close));
+                    }
+                    after
+                }
+            }
+            Token::Close { name, after } => {
+                if let Some(at) = stack.iter().rposition(|(n, _)| *n == name) {
+                    while stack.len() > at {
+                        if let Some((_, close)) = stack.pop() {
+                            out.push_str(&close);
+                        }
+                    }
+                }
+                after
+            }
+            Token::Comment(after) | Token::Declaration(after) => after,
+            Token::Text(after) => {
+                out.push_str("&lt;");
+                after
+            }
+        };
+    }
+    for (_, close) in stack.into_iter().rev() {
+        out.push_str(&close);
+    }
+    // Semantic wrappers can add levels even when source nesting was shallow. Validate again
+    // before constructing/traversing a tree; void elements never leave wrappers open.
+    paste_depth(&out)?;
+    let mut nodes = parse(&out);
+    join_paste_lists(&mut nodes);
+    Ok(serialize(&nodes))
+}
+
+fn office_list_kind(rest: &str) -> &'static str {
+    let end = rest.find("</p").unwrap_or(rest.len());
+    let text = to_text(&rest[..end]);
+    let marker = text.trim_start();
+    let digits = marker.find(|c: char| !c.is_ascii_digit()).unwrap_or(marker.len());
+    if digits > 0 && marker[digits..].starts_with(['.', ')']) { "ol" } else { "ul" }
+}
+
+fn join_paste_lists(nodes: &mut Vec<Node>) {
+    let mut merged: Vec<Node> = Vec::new();
+    for mut node in std::mem::take(nodes) {
+        if let Node::Element(element) = &mut node {
+            join_paste_lists(&mut element.children);
+            if matches!(element.name, "ul" | "ol") {
+                let last = merged.iter().rposition(|node| !matches!(node, Node::Text(s) if s.trim().is_empty()));
+                if let Some(at) = last
+                    && let Node::Element(previous) = &mut merged[at]
+                    && previous.name == element.name
+                {
+                    previous.children.append(&mut element.children);
+                    merged.truncate(at + 1);
+                    continue;
+                }
+            }
+        }
+        merged.push(node);
+    }
+    *nodes = merged;
+}
+
 /// `html`, cleaned ([`sanitize`]), with `signature` as `<div class="torro-signature">-- <br>…</div>`
 /// (each line of it escaped, line breaks as `<br>`) in front of the first top-level element with
 /// the class [`QUOTE_CLASS`], else at the end. A missing or blank signature adds nothing.
@@ -1073,6 +1332,77 @@ fn tidy(lines: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn paste_browser_office_and_mail_are_safe_without_changing_draft_rules() {
+        for (input, expected) in [
+            (
+                include_str!("../tests/fixtures/paste/browser.html"),
+                vec!["**世界**", "*team*", "__today__", "- One", "> Quote", "[Website](https://example.org)", "A | B"],
+            ),
+            (
+                include_str!("../tests/fixtures/paste/office.html"),
+                vec!["**Bold**", "*Italic*", "__Underlined__", "- First", "- Second"],
+            ),
+            (
+                include_str!("../tests/fixtures/paste/mail.html"),
+                vec!["**Signature text**", "*format*", "> Older text", "partwordtail", "\\*\\*literal\\*\\*", "Unsafe"],
+            ),
+        ] {
+            let paste = super::prepare_paste(Some(input), None).expect("paste");
+            assert!(paste.formatted);
+            for expected in expected {
+                assert!(paste.markup.contains(expected), "{expected}: {paste:?}");
+            }
+            let rendered = crate::markup::to_html(&paste.markup, None);
+            for forbidden in ["<img", "cid:", "style=", "class=", "javascript:", "steal()", "Hidden", "bad()"] {
+                assert!(!rendered.contains(forbidden), "{forbidden}: {rendered}");
+            }
+        }
+        assert!(!super::prepare_paste(Some("part<b>word</b>tail"), None).expect("paste").formatted);
+    }
+
+    #[test]
+    fn paste_plain_alternative_masks_quotes_lists_and_unicode_without_becoming_history() {
+        let text = "> 世界\n- item\n3. numbered\n**literal** [link](https://example.org)";
+        let paste = super::prepare_paste(Some("<b>HTML</b>"), Some(text)).expect("paste");
+        assert_eq!(paste.plain, text);
+        assert!(paste.plain_markup.starts_with("\\> 世界\n\\- item\n3\\. numbered"));
+        let rendered = crate::markup::to_html(&paste.plain_markup, None);
+        assert!(!rendered.contains("<blockquote") && !rendered.contains("<li>") && !rendered.contains("<strong>"));
+        assert_eq!(
+            super::prepare_paste(None, None).expect("empty"),
+            super::Paste { markup: String::new(), plain: String::new(), plain_markup: String::new(), formatted: false }
+        );
+    }
+
+    #[test]
+    fn office_numbered_paragraphs_form_one_ordered_list() {
+        let html = "<p style='mso-list:l0 level1 lfo1'><span style='mso-list:Ignore'>1.&nbsp;</span>First</p>\n<p style='mso-list:l0 level1 lfo1'><span style='mso-list:Ignore'>2.&nbsp;</span>Second</p>";
+        let paste = super::prepare_paste(Some(html), None).expect("office");
+        assert_eq!(paste.markup, "1. First\n2. Second");
+        assert!(paste.formatted);
+    }
+
+    #[test]
+    fn styled_void_elements_never_accumulate_open_wrappers() {
+        let html = format!("{}x", "<br style='font-weight:bold'>".repeat(20_000));
+        let paste = super::prepare_paste(Some(&html), None).expect("flat void elements");
+        assert_eq!(paste.markup, "x");
+        assert!(!paste.formatted);
+        assert_eq!(
+            super::prepare_paste(Some(&"<div style='font-weight:bold'>".repeat(40)), None),
+            Err(super::PasteError::TooDeep)
+        );
+    }
+
+    #[test]
+    fn paste_depth_is_checked_even_in_unknown_and_discarded_trees_and_outputs_are_bounded() {
+        for tag in ["div", "span", "svg", "unknown"] {
+            let deep = format!("{}x{}", format!("<{tag}>").repeat(65), format!("</{tag}>").repeat(65));
+            assert_eq!(super::prepare_paste(Some(&deep), None), Err(super::PasteError::TooDeep));
+        }
+        assert_eq!(super::prepare_paste(None, Some(&"*".repeat(600_000))), Err(super::PasteError::TooLarge));
+    }
     #[test]
     fn cid_images_are_bounded_escaped_and_stable() {
         let dirty = "<p>Before</p><img src='cid:one@torro' alt='&lt;plan&gt;' width='640' height='99999' style='x' onerror='bad()'><img src='https://tracker/x'><img src='data:image/png;base64,AAAA'><img src='cid:bad%0aid'><p>After</p>";

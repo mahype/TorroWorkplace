@@ -1332,6 +1332,7 @@ impl PimService {
             | Request::DeleteMail { .. }
             | Request::SaveDraft { .. }
             | Request::PrepareMailImage { .. }
+            | Request::PrepareMailPaste { .. }
             | Request::UploadMailImage { .. }
             | Request::ReleaseMailImages { .. }
             | Request::SendDraft { .. }
