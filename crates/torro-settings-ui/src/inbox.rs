@@ -33,7 +33,7 @@ use torro_gui::layout;
 use torro_gui::widgets;
 use torro_ipc::{AccountInfo, Request, SettingKey};
 
-use crate::parts::{picker, setting_row, switch};
+use crate::parts::{setting_row, switch};
 use crate::{Action, Data, Page, Section};
 
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <id>` takes.
@@ -344,13 +344,13 @@ pub mod sources {
     /// A mail account's "Show new mail": all of it, only what the inbox's rules put into "For me",
     /// or none.
     fn mail_row<'a>(account: &AccountInfo, source: &SourceRef, data: &Data) -> Element<'a, Message> {
-        let id = account.id.clone();
-        let chosen = NotifyChoice(mail_notify(account, source, data));
-        let control = picker(NOTIFY_CHOICES, chosen, move |choice: NotifyChoice| Message::Notify {
-            account: id.clone(),
-            notify: choice.0,
-        });
-        setting_row(None, tr("Show new mail"), None, control)
+        let chosen = mail_notify(account, source, data);
+        let options = NOTIFY_CHOICES
+            .iter()
+            .map(|choice| (choice.to_string(), Message::Notify { account: account.id.clone(), notify: choice.0 }))
+            .collect();
+        let active = NOTIFY_CHOICES.iter().position(|choice| choice.0 == chosen).unwrap_or(0);
+        crate::mail::segmented_row(tr("Show new mail"), None, options, active)
     }
 
     /// What a group says under its rows beyond what muting means everywhere ([`view`]): only the
@@ -371,7 +371,7 @@ pub mod sources {
         Some(sentence.to_string())
     }
 
-    /// "Show new mail" as a choice of a pick list.
+    /// "Show new mail" as a segment of its control (issue #554).
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct NotifyChoice(pub Notify);
 
