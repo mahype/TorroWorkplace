@@ -142,7 +142,7 @@ pub enum SupervisorError {
     Crashed(CrashReason),
     /// Starting it failed now, for this reason; counted.
     Failed(CrashReason),
-    /// The call did not answer within [`Timing::call`]; the server keeps running.
+    /// The call did not answer within [`Timing::call`]; its process run has been ended.
     CallTimeout,
     /// The server ended during the call; counted as a crash ([`CrashReason::Exited`]).
     Closed,
@@ -534,7 +534,7 @@ impl Supervisor {
             turn = run.finish(self.timing.stop_grace, turn).await?;
         }
         // The teardown task owns the turn until the old process is gone, even if this ensure is cancelled.
-        let _turn = turn;
+        let mut pending = StartingProcess { turn: Some(turn), process: None };
         if let Some(reason) = lock(&server.state).crashed {
             return Err(SupervisorError::Crashed(reason));
         }
@@ -545,19 +545,23 @@ impl Supervisor {
             Purpose::Use => self.timing.start,
             Purpose::Install => self.timing.install_start,
         };
-        // A start that runs out of time or is stopped is dropped: its process with it, which kills the tree.
+        // Keep the process outside the cancellable handshake future. An error or timeout must await
+        // the watcher, not merely drop its sender and release the file-protection guard early.
         let started = tokio::select! {
-            started = tokio::time::timeout(limit, self.start(launch, &server.output, limit)) => {
+            started = tokio::time::timeout(limit, self.start(launch, &server.output, limit, &mut pending.process)) => {
                 started.unwrap_or(Err(SupervisorError::Failed(CrashReason::StartTimeout)))
             }
             () = &mut cancelled => Err(SupervisorError::Stopped),
         };
+        if started.is_err() {
+            pending.finish().await?;
+        }
         let mut state = lock(&server.state);
         // Under the same lock as the run, so the status goes from starting to running without a gap; the
         // guard clears it again when it goes, which changes nothing then.
         state.starting = false;
         let result = match started {
-            Ok((connection, process, tools)) => {
+            Ok((connection, tools)) => {
                 state.generation += 1;
                 let generation = state.generation;
                 let connection = Arc::new(connection);
@@ -565,7 +569,7 @@ impl Supervisor {
                     generation,
                     launch: launch.clone(),
                     connection: connection.clone(),
-                    process,
+                    process: pending.process.take(),
                     tools,
                     last_used: Instant::now(),
                     in_flight: 0,
@@ -593,7 +597,8 @@ impl Supervisor {
         launch: &Launch,
         output: &Arc<Mutex<Output>>,
         limit: Duration,
-    ) -> Result<(Connection, Option<Process>, Vec<ReportedTool>), SupervisorError> {
+        process: &mut Option<Process>,
+    ) -> Result<(Connection, Vec<ReportedTool>), SupervisorError> {
         let failed = |err: ClientError| {
             SupervisorError::Failed(match err {
                 ClientError::Closed => CrashReason::Exited,
@@ -601,7 +606,7 @@ impl Supervisor {
                 ClientError::Protocol | ClientError::BadHeader => CrashReason::Protocol,
             })
         };
-        let (connection, process) = match &launch.server {
+        let connection = match &launch.server {
             ServerSpec::Stdio { command, args, .. } => {
                 let found = prereq::find(command, &self.roots).ok_or(SupervisorError::Missing)?;
                 let dirs = env::path_dirs(&found, &self.roots);
@@ -610,18 +615,19 @@ impl Supervisor {
                 crate::clients::create_private_dir(&launch.work_dir)
                     .map_err(|_| SupervisorError::Failed(CrashReason::SpawnFailed))?;
                 let args: Vec<String> = args.iter().chain(&launch.bounds).cloned().collect();
-                let (process, stdout, stdin) = Process::spawn(&found.program, &args, vars, &launch.work_dir, output)
+                let (child, stdout, stdin) = Process::spawn(&found.program, &args, vars, &launch.work_dir, output)
                     .map_err(|_| SupervisorError::Failed(CrashReason::SpawnFailed))?;
-                (client::connect((stdout, stdin)).await.map_err(failed)?, Some(process))
+                *process = Some(child);
+                client::connect((stdout, stdin)).await.map_err(failed)?
             }
             ServerSpec::Http { url, .. } => {
                 env::check_url(url).map_err(SupervisorError::Setup)?;
                 let headers = env::headers(&launch.server, &launch.secrets).map_err(SupervisorError::Setup)?;
-                (client::connect_http(url, &headers).await.map_err(failed)?, None)
+                client::connect_http(url, &headers).await.map_err(failed)?
             }
         };
         let tools = connection.list_tools(limit).await.map_err(failed)?;
-        Ok((connection, process, tools))
+        Ok((connection, tools))
     }
 }
 
@@ -874,6 +880,39 @@ async fn tend(
                     return;
                 }
             }
+        }
+    }
+}
+
+/// A not-yet-installed process and its turn. Cancellation also transfers both into teardown,
+/// so another caller cannot mistake a dropped handshake for a reaped process (#539).
+struct StartingProcess {
+    turn: Option<tokio::sync::OwnedMutexGuard<()>>,
+    process: Option<Process>,
+}
+
+impl StartingProcess {
+    async fn finish(&mut self) -> Result<(), SupervisorError> {
+        let Some(process) = self.process.take() else { return Ok(()) };
+        let turn = self.turn.take();
+        self.turn = tokio::spawn(async move {
+            process.stop(Duration::ZERO).await;
+            turn
+        })
+        .await
+        .map_err(|_| SupervisorError::Closed)?;
+        Ok(())
+    }
+}
+
+impl Drop for StartingProcess {
+    fn drop(&mut self) {
+        if let Some(process) = self.process.take() {
+            let turn = self.turn.take();
+            tokio::spawn(async move {
+                process.stop(Duration::ZERO).await;
+                drop(turn);
+            });
         }
     }
 }
@@ -1246,6 +1285,42 @@ mod tests {
             assert_eq!(supervisor.status("fixture"), Status::Stopped);
             assert!(gone(pid.trim()).await, "the timed-out operation and its children have stopped");
             supervisor.stop_all().await;
+        }
+
+        #[tokio::test]
+        async fn failed_initialization_and_tool_listing_reap_the_process_before_returning() {
+            for mode in ["init-error", "init-timeout", "list-error", "list-timeout"] {
+                let dir = tempfile::tempdir().expect("temp dir");
+                let supervisor = supervisor(Timing { start: Duration::from_millis(500), ..quick() });
+                let launch = launch(dir.path(), &["failure", mode]);
+                assert!(supervisor.tools(&launch, Purpose::Use).await.is_err(), "{mode}");
+                let pid = std::fs::read_to_string(dir.path().join("server.pid")).expect("started PID");
+                // No yield/polling here: returning is the barrier the file-protection guard relies on.
+                assert!(!alive(pid.trim()), "{mode}: error returned while the process still runs");
+            }
+        }
+
+        #[tokio::test]
+        async fn cancelling_a_handshake_keeps_the_turn_until_its_process_is_reaped() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let supervisor = Arc::new(supervisor(quick()));
+            let launch = launch(dir.path(), &["failure", "init-timeout"]);
+            let owned = supervisor.clone();
+            let start = tokio::spawn(async move { owned.tools(&launch, Purpose::Use).await });
+            let marker = dir.path().join("server.pid");
+            tokio::time::timeout(WAIT, async {
+                while !marker.exists() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("process started");
+            let pid = std::fs::read_to_string(marker).expect("PID");
+            start.abort();
+            assert!(start.await.expect_err("cancelled start").is_cancelled());
+            // Even with no installed Run, stop must wait for the abandoned handshake's teardown.
+            supervisor.stop("fixture").await;
+            assert!(!alive(pid.trim()), "a cancelled handshake must not bypass the turn barrier");
         }
 
         #[tokio::test]
