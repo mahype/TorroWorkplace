@@ -49,7 +49,8 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
   `torroworkplace ui --section accounts`.
 - **Links eine Seitenleiste** (220 px) mit Abschnitten als Symbol + Wort; unten leise
   „Torro Workplace · Version x.y“. **Rechts die Seite** des Abschnitts. Keine Reiter für die
-  Abschnitte; Reiter gibt es nur innerhalb einer Detailseite (siehe unten).
+  Abschnitte; Reiter gibt es innerhalb einer Seite, sobald sie mehr als drei Gruppen hat (#529, in der
+  Steuerzentrale wie in den Apps), und auf Detailseiten (siehe unten).
 - Jede Seite besteht aus **Gruppen**: Überschrift, Zeilen, darunter eine Fußzeile, die in einem
   ganzen Satz die Folgen erklärt („Applies to all apps of the suite.“).
 - **Schmale Kachel** (< 640 px): Die Seitenleiste wird zur Liste; ein Abschnitt öffnet sich als
@@ -117,7 +118,7 @@ Warum: Bis dahin öffnete das Zahnrad jeder App die Steuerzentrale als eigenes F
 
 ```
 ┌ Seitenleiste der App ┐┌ Inhalt ──────────────────────────────────────────────────────┐
-│ T Calendar ▾         ││ ← Settings › Reminders                                    ⚙  │
+│ ● ● ●  [▯]           ││ ← Settings › Reminders                                    ☰  │
 │ Today                │├────────────────┬─────────────────────────────────────────────┤
 │ Week                 ││ Calendars      │ Reminders                                   │
 │ Calendars            ││ Reminders      │  Show reminders                      [on]   │
@@ -127,6 +128,9 @@ Warum: Bis dahin öffnete das Zahnrad jeder App die Steuerzentrale als eigenes F
 │                      ││ All settings ↗ │  Only events I accepted              [on]   │
 └──────────────────────┘└────────────────┴─────────────────────────────────────────────┘
 ```
+
+☰ steht für den Knopf der Einstellungen mit Schiebereglern (`shell::SETTINGS_ICON`); einen App-Umschalter gibt es
+seit #530 nicht mehr. Hat eine Seite mehr als drei Gruppen, teilen Reiter (`widgets::tabs`) sie auf (#529).
 
 - **Das Zahnrad schaltet den Inhaltsbereich um**: statt Chat, Woche oder Liste die Einstellungen
   der App. Kein eigenes Fenster, kein abgedunkelter Dialog. Die Seitenleiste der App bleibt stehen;
