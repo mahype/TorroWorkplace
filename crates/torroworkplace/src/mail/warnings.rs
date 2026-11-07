@@ -274,6 +274,17 @@ const BRANDS: &[Brand] = &[
     Brand { name: "Steam", words: &["steam"], domains: &["steampowered.com", "steamcommunity.com"] },
 ];
 
+/// Brands whose name is no proof of a forgery (PR review of #506): hundreds of regional savings
+/// banks, cooperative banks and tax offices write from domains of their own (`sparkasse-hannover.de`,
+/// `vb-mittelhessen.de`, `finanzamt.bayern.de`), and Hermes, Visa and Steam are names and words too.
+/// For them the name on a foreign domain is a sign only from a free mail address, and a domain is a
+/// look-alike only by a swapped letter (`sparkase`, `5parkasse`), never for holding the word.
+const LOOSE_BRANDS: &[&str] = &["Sparkasse", "Volksbank", "Elster", "Hermes", "Visa", "Steam"];
+
+fn loose(brand: &Brand) -> bool {
+    LOOSE_BRANDS.contains(&brand.name)
+}
+
 /// Free mail providers: anyone gets an address there, so a brand in the name means nothing good.
 const FREEMAIL: &[&str] = &[
     "gmail.com",
@@ -392,7 +403,7 @@ fn sender_signs(name: &str, domain: Option<&str>, found: &mut Vec<WarningSign>) 
     for brand in named_brands(name) {
         // A free mail domain of the brand itself (`outlook.com`, `icloud.com`) is anyone's address:
         // a company writes from its own domains, never from a box everybody can get.
-        if within(domain, brand.domains) && !freemail {
+        if (within(domain, brand.domains) || loose(brand)) && !freemail {
             continue;
         }
         found.push(WarningSign::BrandMismatch { brand: brand.name.into() });
@@ -434,17 +445,22 @@ fn lookalike(domain: &str) -> Option<&'static Brand> {
             let folded = confusables(part);
             words.iter().any(|word| {
                 let ordinary = ORDINARY_WORDS.contains(&word.as_str());
-                let exact = folded == *word && !ordinary;
+                let loose = loose(brand);
+                let exact = folded == *word && !ordinary && !loose;
                 // A letter swapped or one more; one less only of a long word (`amazn`, `paypl` for
                 // words of six letters), never of a short one: `mail` is no `gmail`.
                 let shorter = word.len() >= 6 && inner_letter_left_out(&folded, word);
                 let near = !ordinary
                     && word.len() >= 5
                     && (folded.len() >= word.len() || shorter)
+                    && (!loose || folded.len() == word.len())
                     && folded != *word
                     && distance(&folded, word) <= 1;
-                let joined =
-                    !ordinary && word.len() >= 6 && folded.len() > word.len() && folded.contains(word.as_str());
+                let joined = !ordinary
+                    && !loose
+                    && word.len() >= 6
+                    && folded.len() > word.len()
+                    && folded.contains(word.as_str());
                 exact || near || joined
             })
         })
@@ -805,6 +821,19 @@ mod tests {
         let free = address("Amazon Kundendienst", "amazon.hilfe@gmail.com");
         let found = signs_of(&free, "");
         assert!(found.contains(&WarningSign::FreemailBrand { brand: "Amazon".into() }), "{found:?}");
+        // Regional banks and tax offices write from domains of their own, and Hermes is a name too
+        // (PR review of #506): no sign on their own domains, a sign from a free mail address.
+        for (name, from) in [
+            ("Sparkasse Hannover", "info@sparkasse-hannover.example"),
+            ("Volksbank Mittelhessen", "service@vb-mittelhessen.example"),
+            ("Finanzamt München", "poststelle@finanzamt.bayern.example"),
+            ("Anna Hermes", "anna@hermes-family.example"),
+        ] {
+            let found = signs_of(&address(name, from), "");
+            assert!(found.is_empty(), "{name}: {found:?}");
+        }
+        let sparkasse = signs_of(&address("Sparkasse", "sparkasse.sicherheit@gmail.com"), "");
+        assert!(sparkasse.contains(&WarningSign::BrandMismatch { brand: "Sparkasse".into() }), "{sparkasse:?}");
         // A word inside another word names no brand: "Upstairs" is not UPS.
         assert!(signs_of(&address("Upstairs Cafe", "hi@cafe.example"), "").is_empty());
     }
