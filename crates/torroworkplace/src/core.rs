@@ -15249,8 +15249,20 @@ mod tests {
     /// Issue #339: the preview counts what a filter's search finds in the inbox; applying it marks
     /// and moves exactly that mail to the trash, once – a second run finds nothing left to do. A
     /// client's run waits for a person and says how many mails it changes.
-    #[tokio::test]
-    async fn applying_a_mail_filter_changes_the_mail_it_finds_in_the_inbox() {
+    #[test]
+    fn applying_a_mail_filter_changes_the_mail_it_finds_in_the_inbox() {
+        // The approved run goes through the core's answer twice, and the mail is deleted under it: in
+        // a debug build that sits at the edge of a test thread's 2 MiB stack (it overflowed with the
+        // commands of #453 and #502 together), so it runs on a thread of its own with more, as
+        // `an_approved_server_tool_runs_with_the_rights_of_now` does.
+        let worker = std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+            runtime.block_on(apply_a_mail_filter_and_find_its_mail_changed());
+        });
+        worker.expect("thread").join().expect("the test ran through");
+    }
+
+    async fn apply_a_mail_filter_and_find_its_mail_changed() {
         use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
         use crate::mail::sync::fake::{FakeImap, mail};
         let dir = tempfile::tempdir().expect("temp dir");
