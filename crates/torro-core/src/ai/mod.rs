@@ -92,6 +92,55 @@ pub enum AiProvider {
     Jev,
 }
 
+/// Named OpenAI-compatible programs (issue #527). Transport providers stay wire-compatible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalProgram {
+    Jan,
+    Gpt4All,
+    KoboldCpp,
+    LlamaCpp,
+}
+
+impl LocalProgram {
+    pub const ALL: [Self; 4] = [Self::Jan, Self::Gpt4All, Self::KoboldCpp, Self::LlamaCpp];
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|program| program.id() == id)
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Jan => "jan",
+            Self::Gpt4All => "gpt4all",
+            Self::KoboldCpp => "koboldcpp",
+            Self::LlamaCpp => "llama_cpp",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Jan => "Jan",
+            Self::Gpt4All => "GPT4All",
+            Self::KoboldCpp => "koboldcpp",
+            Self::LlamaCpp => "llama.cpp / llamafile",
+        }
+    }
+
+    pub fn default_url(self) -> &'static str {
+        match self {
+            Self::Jan => "http://127.0.0.1:1337/v1",
+            Self::Gpt4All => "http://127.0.0.1:4891/v1",
+            Self::KoboldCpp => "http://127.0.0.1:5001/v1",
+            Self::LlamaCpp => "http://127.0.0.1:8080/v1",
+        }
+    }
+
+    /// Jan can relay to cloud providers; unknown markers are never evidence of local inference.
+    pub fn computes_here(self) -> bool {
+        matches!(self, Self::Gpt4All | Self::KoboldCpp | Self::LlamaCpp)
+    }
+}
+
 /// Where a provider's servers usually are (task W.3, `docs/einrichtung.md`): shown with each provider, so
 /// the choice where data goes is made knowingly. Neutral, never a warning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1106,8 +1155,8 @@ pub enum Place {
 /// - LM Studio: local on loopback unless the model is known to run elsewhere;
 /// - OpenRouter and the other cloud providers (task W.3): never (an address of this computer would
 ///   be a proxy to one);
-/// - any other server: only at an address of this computer (`localhost`, `127.0.0.1`, `::1`), and
-///   not for a model known to run elsewhere.
+/// - other OpenAI-compatible servers: only on loopback with positive runtime evidence (`remote:
+///   false`). Jan and unknown programs, including unlisted fallback models, count as elsewhere.
 ///
 /// Ask it once the model is chosen, "Automatic" too (the assistant's `ModelAccess::automatic`).
 pub fn place_of(provider: AiProvider, server: &str, model: &AiModel) -> Place {
@@ -1119,7 +1168,7 @@ pub fn place_of(provider: AiProvider, server: &str, model: &AiModel) -> Place {
         AiProvider::Ollama if model.remote == Some(false) && !openai::ollama_cloud_name(&model.id) => Place::Local,
         AiProvider::Strata if model.remote == Some(false) => Place::Local,
         AiProvider::LmStudio if !elsewhere => Place::Local,
-        AiProvider::OpenAiCompatible if !elsewhere && is_this_computer(server) => Place::Local,
+        AiProvider::OpenAiCompatible if model.remote == Some(false) => Place::Local,
         // Every cloud provider (task W.3), and any other server elsewhere.
         _ => Place::Remote,
     }
@@ -1171,8 +1220,8 @@ mod tests {
         assert_eq!(place_of(AiProvider::Ollama, "http://localhost:11434/v1", &local), Place::Local);
         assert_eq!(place_of(AiProvider::Ollama, "http://gpu.local:11434/v1", &local), Place::Remote);
         assert_eq!(place_of(AiProvider::LmStudio, "http://localhost:1234/v1", &unknown), Place::Local);
-        assert_eq!(place_of(AiProvider::OpenAiCompatible, "http://127.0.0.1:8000/v1", &unknown), Place::Local);
-        assert_eq!(place_of(AiProvider::OpenAiCompatible, "http://[::1]:8000/v1", &unknown), Place::Local);
+        assert_eq!(place_of(AiProvider::OpenAiCompatible, "http://127.0.0.1:8000/v1", &unknown), Place::Remote);
+        assert_eq!(place_of(AiProvider::OpenAiCompatible, "http://[::1]:8000/v1", &unknown), Place::Remote);
         assert_eq!(place_of(AiProvider::OpenAiCompatible, "https://ai.example.org/v1", &unknown), Place::Remote);
         assert_eq!(place_of(AiProvider::OpenRouter, "https://openrouter.ai/api/v1", &unknown), Place::Remote);
         assert_eq!(place_of(AiProvider::OpenRouter, "http://localhost:8080/api/v1", &local), Place::Remote, "a proxy");
@@ -1217,7 +1266,8 @@ mod tests {
                 for remote in [Some(true), Some(false), None] {
                     let model_here = match provider {
                         AiProvider::Ollama | AiProvider::Strata => remote == Some(false),
-                        AiProvider::LmStudio | AiProvider::OpenAiCompatible => remote != Some(true),
+                        AiProvider::LmStudio => remote != Some(true),
+                        AiProvider::OpenAiCompatible => remote == Some(false),
                         _ => false,
                     };
                     let expected = if loopback && model_here { Place::Local } else { Place::Remote };

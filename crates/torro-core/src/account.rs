@@ -230,6 +230,9 @@ pub struct Account {
     /// the other kinds and in lists written before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai: Option<AiProvider>,
+    /// Named local program (issue #527); transport and account ids remain unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_program: Option<String>,
     /// The topics and the user name of an ntfy account ([`AccountKind::Ntfy`], task E5.12);
     /// `None` for the other kinds and in lists written before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -282,6 +285,7 @@ impl Account {
             mail: None,
             mail_settings: None,
             ai: None,
+            ai_program: None,
             ntfy: None,
         }
     }
@@ -317,6 +321,7 @@ impl Account {
             mail: Some(config),
             mail_settings: Some(settings),
             ai: None,
+            ai_program: None,
             ntfy: None,
         })
     }
@@ -339,6 +344,7 @@ impl Account {
             mail: None,
             mail_settings: None,
             ai: None,
+            ai_program: None,
             ntfy: None,
         }
     }
@@ -355,6 +361,7 @@ impl Account {
             mail: None,
             mail_settings: None,
             ai: None,
+            ai_program: None,
             ntfy: None,
         }
     }
@@ -377,6 +384,7 @@ impl Account {
             mail: None,
             mail_settings: None,
             ai: Some(provider),
+            ai_program: None,
             ntfy: None,
         }
     }
@@ -402,6 +410,7 @@ impl Account {
             mail: None,
             mail_settings: None,
             ai: None,
+            ai_program: None,
             ntfy: Some(NtfyConfig { topics: Vec::new(), user }),
         }
     }

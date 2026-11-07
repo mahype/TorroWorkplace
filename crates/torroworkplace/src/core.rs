@@ -3597,8 +3597,10 @@ impl Core {
         };
         let answer = match admitted {
             Ok((id, rights)) => match key.and_then(|key| self.clients.lent_approvals(key).map(|own| (key, own))) {
-                Some((key, own)) => self.handle_lent(key, &own, id, rights, request, scope).await,
-                None => self.handle_client(id, rights, request, &Via::default()).await,
+                // Approval execution can re-enter dispatch. Keep the client dispatch frame on
+                // the heap as requests and account metadata grow (issue #527).
+                Some((key, own)) => Box::pin(self.handle_lent(key, &own, id, rights, request, scope)).await,
+                None => Box::pin(self.handle_client(id, rights, request, &Via::default())).await,
             },
             Err(refused) => Err(refused),
         };
@@ -6085,11 +6087,12 @@ impl Core {
             // over each other.
             Request::ConnectAi { provider, server, key } => {
                 let _writing = self.calendar_sign_ins.lock().await;
-                match self.ai.connect(provider, server.as_deref(), key).await {
+                match Box::pin(self.ai.connect(provider, server.as_deref(), key)).await {
                     Ok(account) => Response::Account { account },
                     Err(err) => ai_error(&err),
                 }
             }
+            request @ Request::ConnectLocalAi { .. } => Box::pin(self.answer_local_ai(request)).await,
             // Boxed and apart, so this match grows by one arm only: its poll frame is deep in the
             // stack already when an approved command or the inbox's quiet runs it again.
             request @ (Request::ConnectNtfy { .. } | Request::SetNtfyLogin { .. } | Request::SetNtfyTopic { .. }) => {
@@ -6104,7 +6107,7 @@ impl Core {
             Request::SetModelEnabled { account, model, enabled } => {
                 Box::pin(self.set_model_enabled(&account, &model, enabled, client)).await
             }
-            Request::FindAiServers => Response::AiServers { servers: self.ai.find_local().await },
+            Request::FindAiServers => Box::pin(self.find_ai_servers()).await,
             Request::AiAssignments => self.ai_assignments().await,
             Request::SetAiAssignment { function, engine, model, effort, enabled } => {
                 let wanted = torro_core::ai::AiAssignment { function, engine, model, effort, enabled };
@@ -6760,6 +6763,29 @@ impl Core {
     /// rights name none of the mail accounts, gets no suggestion for Sorting, so the answer never
     /// tells it that mail is there (as `inbox.list_categories`). Reads only, stores nothing.
     /// `error` with the list's own words when the built-in list is broken.
+    /// Keep connection and discovery's temporaries out of central dispatch. Approval handling
+    /// re-enters it; even a small increase can exhaust a debug test thread's stack.
+    async fn answer_local_ai(&self, request: Request) -> Response {
+        let Request::ConnectLocalAi { program, server, key } = request else {
+            return Response::Error { code: "unsupported".into(), message: tr("Unknown local AI program.").into() };
+        };
+        let Some(program) = torro_core::ai::LocalProgram::from_id(&program) else {
+            return Response::Error { code: "unsupported".into(), message: tr("Unknown local AI program.").into() };
+        };
+        let _writing = self.calendar_sign_ins.lock().await;
+        match self.ai.connect_program(program, server.as_deref(), key).await {
+            Ok(account) => Response::Account { account },
+            Err(err) => ai_error(&err),
+        }
+    }
+
+    async fn find_ai_servers(&self) -> Response {
+        match self.ai.scan_local().await {
+            Ok((servers, observations)) => Response::AiServers { servers, observations },
+            Err(err) => ai_error(&err),
+        }
+    }
+
     async fn ai_recommend(&self, reach: Reach<'_>) -> Response {
         use crate::account::recommend;
         let list = match recommend::List::builtin() {
@@ -26236,8 +26262,8 @@ mod tests {
             ..audited(dir.path())
         }
         .with_mail(mail);
-        let connect = Request::ConnectAi {
-            provider: AiProvider::OpenAiCompatible,
+        let connect = Request::ConnectLocalAi {
+            program: "gpt4all".into(),
             server: Some(server.url("/v1")),
             key: torro_ipc::Secret::default(),
         };
@@ -26357,8 +26383,8 @@ mod tests {
             ..audited(dir.path())
         }
         .with_mail(mail);
-        let connect = Request::ConnectAi {
-            provider: AiProvider::OpenAiCompatible,
+        let connect = Request::ConnectLocalAi {
+            program: "gpt4all".into(),
             server: Some(server.url("/v1")),
             key: torro_ipc::Secret::default(),
         };
@@ -26486,8 +26512,8 @@ mod tests {
             ..audited(dir.path())
         }
         .with_mail(mail);
-        let connect = Request::ConnectAi {
-            provider: AiProvider::OpenAiCompatible,
+        let connect = Request::ConnectLocalAi {
+            program: "gpt4all".into(),
             server: Some(server.url("/v1")),
             key: torro_ipc::Secret::default(),
         };
@@ -28502,7 +28528,7 @@ mod tests {
             assert!(!matches!(answer, Response::Error { .. }), "{answer:?}");
             answers.push(answer);
         }
-        let Response::AiServers { servers } = &answers[2] else { panic!("servers") };
+        let Response::AiServers { servers, .. } = &answers[2] else { panic!("servers") };
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].account.as_deref(), Some(account.id.as_str()));
         // A server that is gone: the error says so, without the key.
@@ -28534,6 +28560,37 @@ mod tests {
     }
 
     // ----- The assistant's answers with a model (task C.2) -----
+
+    #[tokio::test]
+    async fn named_local_program_connections_are_app_only_and_unknown_ids_are_unsupported() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let mock = fake_ollama().await;
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        let request = |program: &str| Request::ConnectLocalAi {
+            program: program.into(),
+            server: Some(mock.url("/v1")),
+            key: torro_ipc::Secret::default(),
+        };
+        let Err(refused) = Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), request("jan"))).await
+        else {
+            panic!("app only");
+        };
+        assert_eq!(refused, Refused::Lacks { command: "accounts.connect_local_ai", lack: Lack::ForPeople });
+        assert_eq!(code(&ask(&core, Some(&app_key), request("unknown")).await), "unsupported");
+        let Response::Account { account } = ask(&core, Some(&app_key), request("jan")).await else {
+            panic!("connected Jan");
+        };
+        let Response::AiModels { models, .. } =
+            ask(&core, Some(&app_key), Request::AiModels { account: account.id, all: true }).await
+        else {
+            panic!("models");
+        };
+        assert!(models.iter().all(|model| model.remote == Some(true)));
+        assert!(audit_lines(dir.path()).iter().all(|line| line.ids.is_empty()));
+    }
 
     use crate::assistant::tests::{Script, Scripted, calls, says};
     use crate::assistant::{Host, Limits, ModelAccess, Place};

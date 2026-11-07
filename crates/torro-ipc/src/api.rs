@@ -1755,6 +1755,7 @@ impl Request {
             Request::TorroMailAccounts => &LIST_TORROMAIL_ACCOUNTS,
             Request::ImportTorroMailAccount { .. } => &IMPORT_TORROMAIL_ACCOUNT,
             Request::ConnectAi { .. } => &CONNECT_AI,
+            Request::ConnectLocalAi { .. } => &CONNECT_LOCAL_AI,
             Request::ConnectNtfy { .. } => &CONNECT_NTFY,
             Request::SetNtfyLogin { .. } => &SET_NTFY_LOGIN,
             Request::SetNtfyTopic { .. } => &SET_NTFY_TOPIC,
@@ -2002,6 +2003,7 @@ pub static CATALOGUE: &[&Command] = &[
     &LIST_TORROMAIL_ACCOUNTS,
     &IMPORT_TORROMAIL_ACCOUNT,
     &CONNECT_AI,
+    &CONNECT_LOCAL_AI,
     &CONNECT_NTFY,
     &SET_NTFY_LOGIN,
     &SET_NTFY_TOPIC,
@@ -3025,6 +3027,14 @@ static IMPORT_TORROMAIL_ACCOUNT: Command = Command {
 // Never an MCP tool, and for the app key only: it hands the core an API key (`docs/api.md`, "Was
 // nie nach außen geht", 5; `docs/ki.md`, principle 6). A local server without a key is connected
 // the same way, by a person, so no agent adds a server the suite then sends data to.
+static CONNECT_LOCAL_AI: Command = Command {
+    name: "accounts.connect_local_ai",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Connects a named local AI program (jan, gpt4all, koboldcpp, llama_cpp), checking its address and optional key before storing it. Only the app key may choose a data destination, even without a key. Jan may relay to cloud providers; its models count as elsewhere. Unknown programs return unsupported. Never fall back to accounts.connect_ai on an older daemon.",
+};
+
 static CONNECT_AI: Command = Command {
     name: "accounts.connect_ai",
     area: Area::Accounts,
@@ -3217,7 +3227,7 @@ static RECOMMEND: Command = Command {
                   per slot the account, model, whether it runs here, where it runs, its download size when the \
                   model still has to be downloaded (`download_bytes`) and a short reason. Local models come \
                   first; a cloud model only where no local one fits. `decide` only while a mail account this \
-                  key may read is connected. It sets nothing: use ai_pull_model and ai_set_slot.",
+                   key may read is connected. `preparations` additionally groups up to three curated candidates per account and slot, with size, fit and ready/ollama_pull/external state. External models must be loaded in their own program, never with ai_pull_model. Jan is not evidence of private local inference. It sets nothing: use ai_pull_model and ai_set_slot.",
 };
 
 // Admin: it loads gigabytes onto the person's computer and changes what Ollama offers. Only models of
@@ -3257,15 +3267,13 @@ static CANCEL_PULL: Command = Command {
                   unknown id.",
 };
 
-// Read access: it asks two fixed addresses on this computer for their models and stores nothing.
+// Read access: only known loopback endpoints, bounded probes, never secrets or persistence.
 static FIND_LOCAL_SERVERS: Command = Command {
     name: "ai.find_local_servers",
     area: Area::Ai,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Looks for AI servers running on this computer (Ollama at localhost:11434, LM Studio at \
-                  localhost:1234, Strata at 127.0.0.1:8080) and returns each that answers with its address, \
-                  number of models and the AI account already connected there. Connecting one is done by a person in Torro Workplace.",
+    description: "Looks for AI endpoints on loopback: Ollama :11434, LM Studio :1234, Jan :1337, GPT4All :4891, koboldcpp :5001, Strata or llama.cpp/llamafile :8080. Probes run in parallel, at most two seconds and 64 KiB each, without keys, proxies or redirects. `servers` contains only real model counts (including zero), optional program id and connected account. `observations` reports auth_required or models_unavailable without inventing a count. Strata identity wins the shared endpoint. A loopback address does not prove local computation: Jan can relay to cloud providers. Connecting any data destination is for people, not agents.",
 };
 
 static GET_SETTINGS: Command = Command {
@@ -5593,6 +5601,7 @@ mod tests {
                 server: None,
                 key: crate::Secret::new("sk-or-v1-example"),
             },
+            Request::ConnectLocalAi { program: "jan".into(), server: None, key: crate::Secret::default() },
             Request::AiModels { account: "ai:openrouter@openrouter.ai".into(), all: true },
             Request::SetModelEnabled {
                 account: "ai:ollama@localhost:11434".into(),
@@ -6445,6 +6454,7 @@ mod tests {
                         | "accounts.reconfigure_mail"
                         | "accounts.import_torromail_account"
                         | "accounts.connect_ai"
+                        | "accounts.connect_local_ai"
                         | "accounts.set_ntfy_login"
                         | "approvals.decide_approval"
                         // Point 6: the microphone. Switching voice on through settings.set_setting

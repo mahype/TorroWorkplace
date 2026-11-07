@@ -1128,7 +1128,7 @@ fn describe(request: &Request) -> String {
         Request::TorroMailAccounts => "torromail accounts".into(),
         Request::ImportTorroMailAccount { .. } => "import torromail account".into(),
         // Never the address or the key (task KI.1a).
-        Request::ConnectAi { .. } => "connect ai".into(),
+        Request::ConnectAi { .. } | Request::ConnectLocalAi { .. } => "connect ai".into(),
         // Never a topic: on a public server its name is a password (task E5.12).
         Request::ConnectNtfy { .. } => "connect ntfy".into(),
         Request::SetNtfyLogin { .. } => "set ntfy login".into(),

@@ -39,11 +39,11 @@ use tokio::sync::RwLock;
 use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
 use torro_core::ai::{
-    self, AiError, AiModel, AiProvider, BoxFuture, ChatReply, ChatRequest, ModelSwitches, Provider, anthropic, openai,
-    responses, strata, systemone,
+    self, AiError, AiModel, AiProvider, BoxFuture, ChatReply, ChatRequest, LocalProgram, ModelSwitches, Provider,
+    anthropic, openai, responses, strata, systemone,
 };
 use torro_core::i18n::{tr, trf};
-use torro_ipc::{AccountInfo, AiServer};
+use torro_ipc::{AccountInfo, AiObservation, AiObservationStatus, AiServer};
 use torro_pim::AccountState;
 
 use super::github::{SystemTokens, TokenStore};
@@ -234,13 +234,14 @@ fn refuses_reasoning(error: &AiError) -> bool {
 pub struct OpenAiCompatible {
     wire: Wire,
     provider: AiProvider,
+    program: Option<String>,
 }
 
 impl OpenAiCompatible {
     /// The server of `provider` at `base` with `key` (none for most local servers). Sends nothing
     /// yet.
     pub fn new(http: reqwest::Client, provider: AiProvider, base: &str, key: Option<Secret>) -> OpenAiCompatible {
-        OpenAiCompatible { wire: Wire::new(http, base, key, Auth::Bearer), provider }
+        OpenAiCompatible { wire: Wire::new(http, base, key, Auth::Bearer), provider, program: None }
     }
 
     /// Whether the server takes this account: OpenRouter's key with `GET <base>/key` (its model
@@ -256,7 +257,21 @@ impl OpenAiCompatible {
     pub async fn list(&self) -> Result<Vec<AiModel>, AiError> {
         let response = self.wire.send(self.wire.request(reqwest::Method::GET, "models")).await?;
         let body = self.wire.body(response).await?;
-        openai::parse_models(&body).map_err(|err| self.wire.scrubbed(err))
+        let mut models = openai::parse_models(&body).map_err(|err| self.wire.scrubbed(err))?;
+        // An optional explicit remote signal can only narrow locality. Never accept `false`
+        // as proof from a generic relay; known runtimes add that evidence separately.
+        if let Ok(value) = serde_json::from_slice::<Value>(&body)
+            && let Some(data) = value.get("data").and_then(Value::as_array)
+        {
+            for entry in data.iter().filter(|entry| entry.get("remote").and_then(Value::as_bool) == Some(true)) {
+                if let Some(model) =
+                    models.iter_mut().find(|model| entry.get("id").and_then(Value::as_str) == Some(model.id.as_str()))
+                {
+                    model.remote = Some(true);
+                }
+            }
+        }
+        Ok(models)
     }
 
     /// Whether the server here is Strata: its `GET /health` says `strata` ([`strata::is_strata`]). The
@@ -264,31 +279,13 @@ impl OpenAiCompatible {
     /// [`HEALTH_MAX`] only. Strata runs on the port llama.cpp uses and lists models the same way,
     /// so the list cannot tell them apart.
     async fn is_strata(&self) -> bool {
-        let Ok(mut response) = self.wire.send(self.wire.http.get(strata::health_url(&self.wire.base))).await else {
+        let Ok(response) = self.wire.http.get(strata::health_url(&self.wire.base)).send().await else {
             return false;
         };
-        let mut body = Vec::new();
-        while let Ok(Some(chunk)) = response.chunk().await {
-            body.extend_from_slice(&chunk);
-            if body.len() > HEALTH_MAX {
-                return false;
-            }
+        if !response.status().is_success() {
+            return false;
         }
-        strata::is_strata(&body)
-    }
-
-    /// What [`AiAccounts::find_local`] asks of a server: how many models it lists, `None` when no
-    /// server of this provider answers. Strata is found by [`OpenAiCompatible::is_strata`]; the
-    /// list is only for the count, and a Strata with no model loaded or behind a key has none to
-    /// show but is still there.
-    async fn probe(&self) -> Option<usize> {
-        if self.provider == AiProvider::Strata {
-            if !self.is_strata().await {
-                return None;
-            }
-            return Some(self.list().await.map_or(0, |models| models.len()));
-        }
-        self.list().await.ok().map(|models| models.len())
+        probe_body(response).await.is_some_and(|body| strata::is_strata(&body))
     }
 
     /// Ollama's word on whether `model` calls tools, thinks (issue #131) and decides (task
@@ -407,7 +404,8 @@ impl Provider for OpenAiCompatible {
                     let show = self.ollama_capabilities(&model.id).await;
                     (model.tools, model.reasoning, model.decision) = (show.tools, show.reasoning, show.decision);
                     model.context = model.context.or(show.context);
-                    model.remote = Some(openai::ollama_runs_elsewhere(&model.id, remote.as_ref()));
+                    model.remote =
+                        Some(model.remote == Some(true) || openai::ollama_runs_elsewhere(&model.id, remote.as_ref()));
                     if let Some(found) = details.get(&model.id) {
                         model.parameters = found.parameters.clone();
                         model.quantization = found.quantization.clone();
@@ -418,7 +416,19 @@ impl Provider for OpenAiCompatible {
             }
             if self.provider == AiProvider::Strata {
                 for model in &mut models {
-                    model.remote = Some(false);
+                    if model.remote != Some(true) {
+                        model.remote = Some(false);
+                    }
+                }
+            }
+            if self.provider == AiProvider::OpenAiCompatible {
+                let runtime =
+                    self.program.as_deref().and_then(LocalProgram::from_id).is_some_and(LocalProgram::computes_here);
+                for model in &mut models {
+                    // A loopback relay is not evidence of local inference. A runtime cannot
+                    // override an explicit remote mark, nor make a LAN address local.
+                    model.remote =
+                        Some(!runtime || !ai::is_this_computer(&self.wire.base) || model.remote == Some(true));
                 }
             }
             Ok(models)
@@ -687,6 +697,24 @@ fn transport_error(err: &reqwest::Error) -> AiError {
     }
 }
 
+/// Read discovery bodies without letting an endpoint grow the search's memory unboundedly.
+async fn probe_body(mut response: reqwest::Response) -> Option<Vec<u8>> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if chunk.len() > HEALTH_MAX.saturating_sub(body.len()) {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Some(body)
+}
+
+/// Comparable loopback endpoint, keeping port and path (two APIs can share a host).
+fn endpoint_key(base: &str) -> String {
+    let normalized = ai::normalize_base(base).unwrap_or_else(|_| base.to_string());
+    normalized.replace("://localhost:", "://127.0.0.1:")
+}
+
 /// One AI account as the core holds it.
 #[derive(Debug)]
 struct Slot {
@@ -731,6 +759,9 @@ impl Slot {
 /// with the host elsewhere (`Ollama (gpu.local:11434)`), the host alone for any other server.
 pub fn label(account: &Account) -> String {
     let host = account.id.split_once('@').map_or(account.server.as_str(), |(_, host)| host);
+    if let Some(program) = account.ai_program.as_deref().and_then(LocalProgram::from_id) {
+        return format!("{} ({host})", program.name());
+    }
     match account.ai.unwrap_or(AiProvider::OpenAiCompatible) {
         AiProvider::OpenAiCompatible => host.to_string(),
         provider if provider.default_url() == Some(account.server.as_str()) => provider.name().to_string(),
@@ -750,6 +781,7 @@ pub struct AiAccounts {
     /// What [`AiAccounts::find_local`] asks: [`LOCAL_SERVERS`] at their usual addresses; fake
     /// servers in tests.
     local: Vec<(AiProvider, String)>,
+    programs: Vec<(LocalProgram, String)>,
     /// In the order of `accounts.json`; a new account comes last.
     slots: RwLock<Vec<Slot>>,
     /// Which models are on (task S.24): `ai-models.json` next to `accounts.json`, read on first use
@@ -964,7 +996,9 @@ impl AiAccounts {
             .into_iter()
             .filter_map(|provider| provider.default_url().map(|url| (provider, url.to_string())))
             .collect();
-        AiAccounts::new(account::accounts_file().ok(), Arc::new(SystemTokens), http, local)
+        let mut service = AiAccounts::new(account::accounts_file().ok(), Arc::new(SystemTokens), http, local);
+        service.programs = LocalProgram::ALL.into_iter().map(|p| (p, p.default_url().to_string())).collect();
+        service
     }
 
     /// The service on `accounts_file` and `keys`, asking servers with `http` and looking for local
@@ -980,6 +1014,7 @@ impl AiAccounts {
             keys,
             http,
             local,
+            programs: Vec::new(),
             slots: RwLock::new(Vec::new()),
             switches: tokio::sync::Mutex::new(None),
             kept: tokio::sync::watch::Sender::new(true),
@@ -1066,7 +1101,11 @@ impl AiAccounts {
         if slot.key.is_none() && slot.provider().needs_key() {
             return Err(AiError::NoKey);
         }
-        Ok(AiClient::new(self.http()?.clone(), slot.provider(), &slot.account.server, slot.key.clone()))
+        let mut client = AiClient::new(self.http()?.clone(), slot.provider(), &slot.account.server, slot.key.clone());
+        if let AiClient::OpenAi(client) = &mut client {
+            client.program = slot.account.ai_program.clone();
+        }
+        Ok(client)
     }
 
     /// One call to the decision model of the account `id` (task E12.6, `torro_core::ai::systemone`).
@@ -1121,6 +1160,35 @@ impl AiAccounts {
         server: Option<&str>,
         key: Secret,
     ) -> Result<AccountInfo, AiError> {
+        self.connect_marked(provider, server, key, None).await
+    }
+
+    /// Connect a named program without changing the transport or stable account id.
+    pub async fn connect_program(
+        &self,
+        program: LocalProgram,
+        server: Option<&str>,
+        key: Secret,
+    ) -> Result<AccountInfo, AiError> {
+        self.connect_marked(
+            AiProvider::OpenAiCompatible,
+            Some(server.filter(|s| !s.trim().is_empty()).unwrap_or(program.default_url())),
+            key,
+            Some(program),
+        )
+        .await
+    }
+
+    async fn connect_marked(
+        &self,
+        provider: AiProvider,
+        server: Option<&str>,
+        key: Secret,
+        program: Option<LocalProgram>,
+    ) -> Result<AccountInfo, AiError> {
+        // Loading may still be in flight at startup. A legacy reconnect must preserve a persisted
+        // relay marker even when that first load has not published its slots yet.
+        self.load().await.map_err(AiError::Format)?;
         let base = match server.map(str::trim).filter(|server| !server.is_empty()) {
             Some(typed) => ai::normalize_base(typed)?,
             None => provider
@@ -1148,7 +1216,18 @@ impl AiAccounts {
         }
         let client = AiClient::new(self.http()?.clone(), provider, &base, key.clone());
         client.check().await?;
-        let account = Account::ai(provider, &base);
+        let mut account = Account::ai(provider, &base);
+        // Legacy reconnects may replace a key, never erase evidence that this account is a relay.
+        account.ai_program = match program {
+            Some(program) => Some(program.id().to_string()),
+            None => self
+                .slots
+                .read()
+                .await
+                .iter()
+                .find(|s| s.account.id == account.id)
+                .and_then(|s| s.account.ai_program.clone()),
+        };
         self.store(&account, key.as_ref()).await.map_err(AiError::Format)?;
         let slot = Slot { account, key, checked: Some(Utc::now()), problem: None, models: None };
         let info = slot.info();
@@ -1254,17 +1333,25 @@ impl AiAccounts {
     /// this device, the server does not answer). One server after the other, so an account's list
     /// is read through [`AiAccounts::models`] with what that keeps of it.
     pub async fn connected(&self) -> Vec<super::recommend::Connected> {
-        let servers: Vec<(String, AiProvider, String)> = self
+        let servers: Vec<(String, AiProvider, String, Option<String>)> = self
             .slots
             .read()
             .await
             .iter()
-            .map(|slot| (slot.account.id.clone(), slot.provider(), slot.account.server.clone()))
+            .map(|slot| {
+                (slot.account.id.clone(), slot.provider(), slot.account.server.clone(), slot.account.ai_program.clone())
+            })
             .collect();
         let mut connected = Vec::with_capacity(servers.len());
-        for (id, provider, server) in servers {
+        for (id, provider, server, program) in servers {
             let models = self.models(&id, true).await.ok();
-            connected.push(super::recommend::Connected { id, provider, local: ai::is_this_computer(&server), models });
+            connected.push(super::recommend::Connected {
+                id,
+                provider,
+                program,
+                local: ai::is_this_computer(&server),
+                models,
+            });
         }
         connected
     }
@@ -1286,28 +1373,85 @@ impl AiAccounts {
     /// The local servers that answer now ([`LOCAL_SERVERS`]), asked side by side, each for at most
     /// [`PROBE_TIMEOUT`]: provider, address, how many models, and the AI account connected there.
     /// Never with a key.
+    #[allow(
+        dead_code,
+        reason = "Retain the existing in-process API; the wire handler needs scan_local's richer result."
+    )]
     pub async fn find_local(&self) -> Vec<AiServer> {
-        let Ok(http) = self.http() else { return Vec::new() };
+        self.scan_local().await.map(|(servers, _)| servers).unwrap_or_default()
+    }
+
+    /// Bounded, secret-free discovery; an unreadable list is not an empty list.
+    pub async fn scan_local(&self) -> Result<(Vec<AiServer>, Vec<AiObservation>), AiError> {
+        self.http()?;
+        let http = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| AiError::Format(tr("The local AI search could not start.").into()))?;
         let mut probes = tokio::task::JoinSet::new();
-        for (at, (provider, url)) in self.local.iter().cloned().enumerate() {
+        let targets = self
+            .local
+            .iter()
+            .cloned()
+            .map(|(p, u)| (p, None, u))
+            .chain(self.programs.iter().map(|(p, u)| (AiProvider::OpenAiCompatible, Some(*p), u.clone())));
+        for (at, (provider, program, url)) in targets.enumerate() {
+            if !ai::is_this_computer(&url) {
+                continue;
+            }
             let client = OpenAiCompatible::new(http.clone(), provider, &url, None);
             probes.spawn(async move {
-                let models = tokio::time::timeout(PROBE_TIMEOUT, client.probe()).await.ok()??;
-                Some((at, provider, url, models))
+                let probe = async {
+                    let strata = if provider == AiProvider::Strata || program == Some(LocalProgram::LlamaCpp) {
+                        client.is_strata().await
+                    } else {
+                        false
+                    };
+                    if provider == AiProvider::Strata && !strata {
+                        return None;
+                    }
+                    let (provider, program) = if strata { (AiProvider::Strata, None) } else { (provider, program) };
+                    let response = client.wire.http.get(format!("{url}/models")).send().await.ok()?;
+                    let status = response.status().as_u16();
+                    let models = if matches!(status, 401 | 403) {
+                        Err(AiObservationStatus::AuthRequired)
+                    } else if response.status().is_success() {
+                        let bytes = probe_body(response).await?;
+                        match openai::parse_models(&bytes) {
+                            Ok(models) => Ok(models.len()),
+                            Err(_) if strata => Err(AiObservationStatus::ModelsUnavailable),
+                            Err(_) => return None,
+                        }
+                    } else if strata {
+                        Err(AiObservationStatus::ModelsUnavailable)
+                    } else {
+                        return None;
+                    };
+                    Some((at, provider, program.map(|p| p.id().to_string()), url, models))
+                };
+                tokio::time::timeout(PROBE_TIMEOUT, probe).await.ok().flatten()
             });
         }
-        let mut found: Vec<(usize, AiProvider, String, usize)> =
-            probes.join_all().await.into_iter().flatten().collect();
+        let mut found: Vec<_> = probes.join_all().await.into_iter().flatten().collect();
         found.sort_by_key(|(at, ..)| *at);
         let slots = self.slots.read().await;
-        found
-            .into_iter()
-            .map(|(_, provider, url, models)| {
-                let id = Account::ai(provider, &url).id;
-                let account = slots.iter().any(|slot| slot.account.id == id).then_some(id);
-                AiServer { provider, url, models, account }
-            })
-            .collect()
+        let mut seen = std::collections::BTreeSet::new();
+        let (mut servers, mut observations) = (Vec::new(), Vec::new());
+        for (_, provider, program, url, models) in found {
+            if !seen.insert(endpoint_key(&url)) {
+                continue;
+            }
+            let account = slots
+                .iter()
+                .find(|s| endpoint_key(&s.account.server) == endpoint_key(&url))
+                .map(|s| s.account.id.clone());
+            match models {
+                Ok(models) => servers.push(AiServer { provider, program, url, models, account }),
+                Err(status) => observations.push(AiObservation { provider, program, url, status, account }),
+            }
+        }
+        Ok((servers, observations))
     }
 
     /// Removes the account `id`, its key and its entry in `accounts.json`; the other accounts stay.
@@ -2815,7 +2959,13 @@ pub(crate) mod tests {
         let found = ai.find_local().await;
         assert_eq!(
             found,
-            [AiServer { provider: AiProvider::Ollama, url: ollama.url("/v1"), models: 3, account: None }]
+            [AiServer {
+                provider: AiProvider::Ollama,
+                program: None,
+                url: ollama.url("/v1"),
+                models: 3,
+                account: None
+            }]
         );
         let info =
             ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Secret::default()).await.expect("connected");
@@ -2835,7 +2985,13 @@ pub(crate) mod tests {
         let found = ai.find_local().await;
         assert_eq!(
             found,
-            [AiServer { provider: AiProvider::Strata, url: strata.url("/v1"), models: 1, account: None }]
+            [AiServer {
+                provider: AiProvider::Strata,
+                program: None,
+                url: strata.url("/v1"),
+                models: 1,
+                account: None
+            }]
         );
         let info =
             ai.connect(AiProvider::Strata, Some(&strata.url("/v1")), Secret::default()).await.expect("connected");
@@ -2857,8 +3013,127 @@ pub(crate) mod tests {
         let keys = MemoryTokens::default();
         let (idle, locked) = (fake_strata(&[], None).await, fake_strata(&["qwen"], Some("secret-key")).await);
         let local = vec![(AiProvider::Strata, idle.url("/v1")), (AiProvider::Strata, locked.url("/v1"))];
-        let found = service(dir.path(), &keys, local).find_local().await;
-        assert_eq!(found.iter().map(|server| server.models).collect::<Vec<_>>(), [0, 0]);
+        let (found, observations) = service(dir.path(), &keys, local).scan_local().await.expect("scan");
+        assert_eq!(found.iter().map(|server| server.models).collect::<Vec<_>>(), [0]);
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].status, AiObservationStatus::ModelsUnavailable);
+    }
+
+    #[tokio::test]
+    async fn named_programs_round_trip_and_legacy_reconnect_preserves_jan_evidence() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let mock = fake_llama_cpp().await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let jan = ai.connect_program(LocalProgram::Jan, Some(&mock.url("/v1")), Secret::default()).await.expect("Jan");
+        assert!(jan.label.starts_with("Jan"));
+        assert!(ai.models(&jan.id, true).await.expect("models").iter().all(|m| m.remote == Some(true)));
+        assert!(ai.runs_elsewhere(&jan.id, "not-listed").await.expect("unknown is remote"));
+        ai.connect(AiProvider::OpenAiCompatible, Some(&mock.url("/v1")), Secret::default())
+            .await
+            .expect("old reconnect");
+        let stored = account::load_from(&accounts_file(dir.path())).expect("stored");
+        assert_eq!(stored[0].ai_program.as_deref(), Some("jan"));
+        drop(ai);
+        let ai = service(dir.path(), &keys, Vec::new());
+        ai.connect(AiProvider::OpenAiCompatible, Some(&mock.url("/v1")), Secret::default())
+            .await
+            .expect("cold legacy reconnect");
+        assert!(ai.models(&jan.id, true).await.expect("models").iter().all(|m| m.remote == Some(true)));
+        ai.connect_program(LocalProgram::Gpt4All, Some(&mock.url("/v1")), Secret::default()).await.expect("runtime");
+        assert!(ai.models(&jan.id, true).await.expect("models").iter().all(|m| m.remote == Some(false)));
+    }
+
+    #[tokio::test]
+    async fn discovery_is_bounded_and_strata_wins_the_shared_endpoint() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let strata = fake_strata(&[], None).await;
+        let mut ai = service(dir.path(), &keys, vec![(AiProvider::Strata, strata.url("/v1"))]);
+        ai.programs = vec![(LocalProgram::LlamaCpp, strata.url("/v1"))];
+        let (servers, observations) = ai.scan_local().await.expect("scan");
+        assert!(observations.is_empty());
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].provider, AiProvider::Strata);
+        assert_eq!(servers[0].program, None);
+        let flood = MockServer::start_async().await;
+        flood
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).body("x".repeat(HEALTH_MAX + 1));
+            })
+            .await;
+        ai.programs = vec![(LocalProgram::Jan, flood.url("/v1"))];
+        ai.local.clear();
+        assert!(ai.scan_local().await.expect("scan").0.is_empty());
+        ai.http = None;
+        assert!(ai.scan_local().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn discovery_reports_auth_without_count_and_skips_redirects_and_timeouts() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let auth = MockServer::start_async().await;
+        let health = auth
+            .mock_async(|when, then| {
+                when.method("GET").path("/health");
+                then.status(500).body("x".repeat(HEALTH_MAX + 1));
+            })
+            .await;
+        auth.mock_async(|when, then| {
+            when.method("GET").path("/v1/models").header_missing("authorization");
+            then.status(401);
+        })
+        .await;
+        let slow = MockServer::start_async().await;
+        slow.mock_async(|when, then| {
+            when.method("GET").path("/v1/models");
+            then.status(200).delay(Duration::from_secs(3)).json_body(json!({"data":[]}));
+        })
+        .await;
+        let redirect = MockServer::start_async().await;
+        redirect
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(302).header("location", auth.url("/v1/models"));
+            })
+            .await;
+        let mut ai = service(dir.path(), &keys, Vec::new());
+        ai.programs = vec![
+            (LocalProgram::Jan, auth.url("/v1")),
+            (LocalProgram::Gpt4All, slow.url("/v1")),
+            (LocalProgram::KoboldCpp, redirect.url("/v1")),
+        ];
+        let (servers, observations) = ai.scan_local().await.expect("scan");
+        assert!(servers.is_empty());
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].status, AiObservationStatus::AuthRequired);
+        health.assert_calls_async(0).await;
+    }
+
+    #[tokio::test]
+    async fn a_named_runtime_never_overrides_explicit_remote_model_evidence() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(json!({"data":[
+                    {"id":"local"}, {"id":"relay", "remote":true}
+                ]}));
+            })
+            .await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let account = ai
+            .connect_program(LocalProgram::Gpt4All, Some(&server.url("/v1")), Secret::default())
+            .await
+            .expect("runtime");
+        let models = ai.models(&account.id, true).await.expect("models");
+        assert_eq!(models.iter().map(|m| m.remote).collect::<Vec<_>>(), [Some(false), Some(true)]);
+        assert_eq!(ai.runs_elsewhere(&account.id, "relay").await, Ok(true));
+        assert_eq!(ai.runs_elsewhere(&account.id, "not-listed").await, Ok(true));
     }
 
     /// Issue #322: the models of Strata run on this computer (`remote: false`) and are not described

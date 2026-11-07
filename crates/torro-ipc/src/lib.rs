@@ -728,6 +728,18 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Secret::is_blank")]
         key: Secret,
     },
+    /// Connects a named local program with its optional address and key (issue #527).
+    /// Admin, app key only, even without a secret: only people choose new data destinations.
+    /// Returns Account; unsupported for an unknown program, otherwise the errors of ConnectAi.
+    /// Older daemons reject this request; clients must never fall back to ConnectAi.
+    #[serde(rename = "accounts.connect_local_ai")]
+    ConnectLocalAi {
+        program: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server: Option<String>,
+        #[serde(default, skip_serializing_if = "Secret::is_blank")]
+        key: Secret,
+    },
     /// Connects an ntfy server's topics that need no login (task E5.12): the inbox subscribes to
     /// them as the source `ntfy:<host>` (task E5.13).
     ///
@@ -868,13 +880,13 @@ pub enum Request {
         /// `true` turns it on, `false` off.
         enabled: bool,
     },
-    /// Looks for AI servers on this computer (task KI.1a): Ollama at `localhost:11434`, LM Studio
-    /// at `localhost:1234` and Strata at `127.0.0.1:8080` (issue #322), by asking each for its
-    /// models (`GET <server>/models`, a short wait each; Strata is told from llama.cpp, which uses
-    /// the same port, by its `GET /health`). Nothing else is contacted and nothing is stored.
+    /// Looks for AI endpoints on loopback: Ollama :11434, LM Studio :1234, Jan :1337, GPT4All :4891,
+    /// koboldcpp :5001 and Strata or llama.cpp/llamafile :8080. Parallel, two seconds and 64 KiB per
+    /// endpoint, no key/proxy/redirect. Strata's /health identity wins the shared address.
     ///
     /// Answered with [`Response::AiServers`]: the servers that answered, in that order, with the
-    /// number of models and the account already connected there; an empty list when none runs.
+    /// real model count and connected account. Observations report auth/list errors without counts.
+    /// Returns an error if the HTTP client cannot be built; empty lists only for no valid answer.
     #[serde(rename = "ai.find_local_servers")]
     FindAiServers,
     /// Fetch calendars and tasks from the servers of all accounts now. Each account syncs on
@@ -5020,6 +5032,9 @@ pub enum Response {
     /// The AI servers found on this computer ([`Request::FindAiServers`]).
     AiServers {
         servers: Vec<AiServer>,
+        /// Reachable endpoints whose model count is unknown; never an invented zero.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        observations: Vec<AiObservation>,
     },
     /// The engines the assistant can answer with ([`Request::ListEngines`]).
     Engines {
@@ -5644,6 +5659,55 @@ pub struct AiRecommendation {
     pub tier_label: String,
     /// One suggestion per slot that has one, in the order of `torro_core::ai::AiSlot::ALL`.
     pub slots: Vec<SlotSuggestion>,
+    /// Account-specific model preparation. Missing on older daemons: retain the old display.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preparations: Vec<AiPreparation>,
+}
+
+/// One account's preparation for one slot; candidates are ordered, at most three.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiPreparation {
+    pub account: String,
+    pub slot: torro_core::ai::AiSlot,
+    pub candidates: Vec<AiCandidate>,
+}
+
+/// A curated model, not an instruction to download or select it without confirmation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiCandidate {
+    pub model: String,
+    pub size_bytes: u64,
+    pub fits: bool,
+    pub local: bool,
+    pub preparation: AiPreparationKind,
+    pub by_chat: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiPreparationKind {
+    Ready,
+    OllamaPull,
+    External,
+}
+
+/// A local endpoint with no readable model list (issue #527).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiObservation {
+    pub provider: AiProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+    pub url: String,
+    pub status: AiObservationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiObservationStatus {
+    AuthRequired,
+    ModelsUnavailable,
 }
 
 /// The model suggested for one slot ([`AiRecommendation::slots`]).
@@ -5714,6 +5778,9 @@ pub enum AiPullState {
 pub struct AiServer {
     /// Which kind of server answered there.
     pub provider: AiProvider,
+    /// Named program; absent on older daemons. Never infer Jan from the transport provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
     /// Its base address, what `accounts.connect_ai` takes as `server`.
     pub url: String,
     /// How many models it offers now.
@@ -6461,6 +6528,43 @@ impl std::error::Error for IpcError {}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_ai_additions_are_wire_compatible_and_never_fall_back() {
+        let old = serde_json::json!({"result":"ai-servers", "servers": []});
+        let parsed: super::Response = serde_json::from_value(old).expect("old daemon answer");
+        assert!(matches!(parsed, super::Response::AiServers { observations, .. } if observations.is_empty()));
+        let request: super::Request = serde_json::from_value(serde_json::json!({
+            "method":"accounts.connect_local_ai", "program":"future_program"
+        }))
+        .expect("program identifiers are extensible");
+        assert!(matches!(request, super::Request::ConnectLocalAi { program, .. } if program == "future_program"));
+        let recommendation: super::AiRecommendation = serde_json::from_value(serde_json::json!({
+            "hardware": {}, "tier":"small", "tier_label":"Small", "slots":[]
+        }))
+        .expect("old recommendation");
+        assert!(recommendation.preparations.is_empty());
+        let server: super::AiServer = serde_json::from_value(serde_json::json!({
+            "provider":"ollama", "url":"http://localhost:11434/v1", "models":0
+        }))
+        .expect("old server");
+        assert!(server.program.is_none());
+        #[derive(serde::Deserialize)]
+        struct LegacyServers {
+            servers: Vec<LegacyServer>,
+        }
+        #[derive(serde::Deserialize)]
+        struct LegacyServer {
+            provider: torro_core::ai::AiProvider,
+            models: usize,
+        }
+        let legacy: LegacyServers = serde_json::from_value(serde_json::json!({
+            "servers":[{"provider":"openai_compatible", "program":"jan", "models":1}],
+            "observations": [{"program":"jan", "status":"auth_required"}]
+        }))
+        .expect("old client ignores extra fields");
+        assert_eq!(legacy.servers[0].provider, torro_core::ai::AiProvider::OpenAiCompatible);
+        assert_eq!(legacy.servers[0].models, 1);
+    }
     use super::*;
 
     #[test]
