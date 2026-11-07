@@ -2374,8 +2374,20 @@ fn crumb<'a>(section: Section, name: String, back: Message) -> Element<'a, Messa
 // the apps and of the control centre look and behave the same; the control centre uses only these,
 // never the library's host.
 pub(crate) use torro_settings_ui::parts::{
-    chevron, confirm, dialog, field, notice, one_line, picker, pressable, row_frame, setting_row, switch,
+    chevron, confirm, dialog, field, notice, one_line, pressable, row_frame, setting_row, switch,
 };
+
+/// Up to four `choices` side by side (the rule of choices, issue #554), `chosen` marked: a
+/// [`torro_gui::widgets::segmented`] whose segments are the choices' names. A stored value that is
+/// none of them (set through the API) marks no segment.
+pub(crate) fn segments<'a, T: Copy + PartialEq + std::fmt::Display, M: Clone + 'a>(
+    choices: &[T],
+    chosen: T,
+    on_pick: impl Fn(T) -> M,
+) -> Element<'a, M> {
+    let active = choices.iter().position(|choice| *choice == chosen).unwrap_or(usize::MAX);
+    torro_gui::widgets::segmented(choices.iter().map(|choice| (choice.to_string(), on_pick(*choice))), active)
+}
 use torro_settings_ui::suite;
 
 /// Escape, wherever the focus is (a text input keeps it to itself otherwise), and `[` for the

@@ -30,11 +30,11 @@ use torro_gui::icon::Icon;
 use torro_gui::theme::space;
 use torro_gui::{layout, style, widgets};
 use torro_ipc::{Request, SettingKey};
-use torro_settings_ui::parts::{field, notice, picker, switch};
+use torro_settings_ui::parts::{field, notice, switch};
 use torro_settings_ui::suite::{self, Place};
 
 use super::setup::component_name;
-use super::{Action, Data, setting_row};
+use super::{Action, Data, segments, setting_row};
 
 /// The page's own state: the suite's pages ([`suite::State`]) and the addresses of "Maps".
 #[derive(Debug, Default)]
@@ -334,13 +334,14 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
     };
     let hint = |which: Address| Some(address_detail(draft, maps, which).to_string());
     let kind =
-        picker(KIND_CHOICES, KindChoice(maps.geocoder_kind), |chosen: KindChoice| Message::GeocoderKind(chosen.0));
+        segments(&KIND_CHOICES, KindChoice(maps.geocoder_kind), |chosen: KindChoice| Message::GeocoderKind(chosen.0));
     let search = row![address(Address::Geocoder, Maps::PHOTON), kind]
         .spacing(space::s())
         .align_y(Alignment::Center)
         .width(Length::FillPortion(2));
     let tiles = container(address(Address::Tiles, Maps::OSM_TILES)).width(Length::FillPortion(2));
-    let open_with = picker(app_choices(), AppChoice(maps.open_with), |chosen: AppChoice| Message::OpenWith(chosen.0));
+    let open_with =
+        segments(&app_choices(), AppChoice(maps.open_with), |chosen: AppChoice| Message::OpenWith(chosen.0));
     let rows = vec![
         setting_row(
             None,
@@ -387,7 +388,7 @@ fn address_style(
     style::text_input(theme, shown)
 }
 
-/// A protocol of a place search service in its picker: the service's own name.
+/// A protocol of a place search service in its segments: the service's own name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct KindChoice(GeocoderKind);
 
@@ -402,7 +403,7 @@ impl std::fmt::Display for KindChoice {
     }
 }
 
-/// What "Open in Maps" opens, in its picker.
+/// What "Open in Maps" opens, in its segments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AppChoice(MapsApp);
 

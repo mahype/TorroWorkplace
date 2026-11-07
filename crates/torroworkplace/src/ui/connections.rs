@@ -106,7 +106,9 @@ use torro_core::settings::{
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, palette, size, space};
-use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Status as Dot};
+use torro_gui::widgets::{
+    self, Align, Anchor, DROPDOWN_SEARCH, Dropdown, DropdownEvent, MenuItem, MenuSection, Placement, Status as Dot,
+};
 use torro_gui::{style, typo};
 use torro_ipc::api::{ASSISTANT_CLIENT, Area};
 use torro_ipc::extensions::{
@@ -120,14 +122,14 @@ use torro_settings_ui::assistant::web;
 use torro_settings_ui::rights::{first_sentence, plain, tool_level};
 
 use super::{
-    Action, ClientTarget, Data, Header, chevron, confirm, dialog, field, notice, picker, pressable, row_frame,
+    Action, ClientTarget, Data, Header, chevron, confirm, dialog, field, notice, pressable, row_frame, segments,
     setting_row, switch,
 };
 
 /// The file endings the logo chooser offers, as `PdfTemplate::check` takes them.
 pub const LOGO_EXTENSIONS: [&str; 3] = ["png", "jpg", "jpeg"];
 
-/// The even margins the picker offers, in millimetres; a margin set otherwise through the API is
+/// The even margins the dropdown offers, in millimetres; a margin set otherwise through the API is
 /// listed among them ([`margin_options`]).
 const EVEN_MARGINS: [u8; 8] = [5, 10, 15, 20, 25, 30, 40, 50];
 
@@ -211,6 +213,13 @@ pub enum Page {
     Server(String),
 }
 
+/// A dropdown of the page "PDF templates" (issue #554): the margins or the font size of a template.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TemplateMenu {
+    Margins(PdfTemplateId),
+    FontSize(PdfTemplateId),
+}
+
 /// The section's state: the page shown, the header or footer line being typed, why the last
 /// chosen path could not be used, the install dialog and what a server's page holds besides the
 /// server's data.
@@ -231,6 +240,8 @@ pub struct State {
     /// What is typed into a search provider's key or SearXNG's address, and whether its check waits; new when the
     /// page of the search providers is left.
     web: web::State,
+    /// The dropdown of a template that is open (issue #554).
+    menus: Dropdown<TemplateMenu>,
 }
 
 /// The install dialog (task MA.8): first the form, then the tools the server reported.
@@ -734,12 +745,14 @@ pub enum Message {
     Web(web::Message),
     /// The back button of a page below the list, or Escape there.
     Back,
-    /// A paper of the template's picker.
+    /// A paper of the template's segments.
     Paper(PdfTemplateId, Paper),
-    /// The margins of the template's picker, top, right, bottom, left.
+    /// The margins of the template's dropdown, top, right, bottom, left. Closes the dropdown.
     Margins(PdfTemplateId, [u8; 4]),
-    /// A font size of the template's picker, in points.
+    /// A font size of the template's dropdown, in points. Closes the dropdown.
     FontSize(PdfTemplateId, u8),
+    /// The trigger or the menu of a template's dropdown (issue #554).
+    Menus(DropdownEvent<TemplateMenu>),
     /// What is typed into a header or footer.
     Type(PdfTemplateId, Line, String),
     /// Enter in the line being typed, or its "Save".
@@ -900,11 +913,22 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.page = Page::List;
             state.server = ServerState::default();
             state.web = web::State::default();
+            state.menus.close();
             saved_draft(state, data)
         }
         Message::Paper(id, paper) => changed(data, id, |template| template.paper = paper),
-        Message::Margins(id, margins) => changed(data, id, |template| template.margins_mm = margins),
-        Message::FontSize(id, points) => changed(data, id, |template| template.font_size_pt = points),
+        Message::Margins(id, margins) => {
+            state.menus.close();
+            changed(data, id, |template| template.margins_mm = margins)
+        }
+        Message::FontSize(id, points) => {
+            state.menus.close();
+            changed(data, id, |template| template.font_size_pt = points)
+        }
+        Message::Menus(event) => match state.menus.update(event) {
+            true => Action::Focus(DROPDOWN_SEARCH.into()),
+            false => Action::None,
+        },
         Message::PageNumbers(id, on) => changed(data, id, |template| template.page_numbers = on),
         Message::RemoveLogo(id) => changed(data, id, |template| template.logo = None),
         Message::Type(id, line, text) => {
@@ -1416,9 +1440,12 @@ fn install_problem(code: Option<&str>) -> Option<&'static str> {
     }
 }
 
-/// What Escape means here: close the open dialog, drop the line being typed, else leave the page
+/// What Escape means here: close the open dropdown or dialog, drop the line being typed, else leave the page
 /// below the list. `None` on the list while nothing is open.
 pub fn escape(state: &State) -> Option<Message> {
+    if state.menus.open().is_some() {
+        return Some(Message::Menus(DropdownEvent::Close));
+    }
     if state.install.is_some() {
         return Some(Message::CloseInstall);
     }
@@ -1485,6 +1512,9 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Option
     if let Some(custom) = &state.custom {
         return Some(custom_dialog(custom, data, class));
     }
+    if state.page == Page::PdfTemplates {
+        return template_menu(state, data);
+    }
     let Page::Server(id) = &state.page else { return None };
     let server = server_of(data, id)?;
     if let Some(replacing) = &state.server.replacing {
@@ -1511,6 +1541,38 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Option
             Message::CancelRemove,
         )
     })
+}
+
+/// The open dropdown of a template (issue #554): its margins or its font sizes, the stored one marked.
+fn template_menu<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    let key = state.menus.open()?;
+    let items: Vec<MenuItem<'a, Message>> = match *key {
+        TemplateMenu::Margins(id) => {
+            let stored = data.settings.tools.pdf.template(id).margins_mm;
+            margin_options(stored)
+                .into_iter()
+                .map(|margins| {
+                    MenuItem::plain(margins.to_string(), Message::Margins(id, margins.0)).current(margins.0 == stored)
+                })
+                .collect()
+        }
+        TemplateMenu::FontSize(id) => {
+            let stored = data.settings.tools.pdf.template(id).font_size_pt;
+            font_sizes()
+                .into_iter()
+                .map(|points| {
+                    MenuItem::plain(points.to_string(), Message::FontSize(id, points.0)).current(points.0 == stored)
+                })
+                .collect()
+        }
+    };
+    let sections = vec![MenuSection::new(items)];
+    Some(state.menus.view(key, sections, widgets::menu_width(), Align::End, Message::Menus))
+}
+
+/// The font sizes a template offers, from [`PdfTemplate::MIN_FONT_PT`] to [`PdfTemplate::MAX_FONT_PT`].
+fn font_sizes() -> Vec<Points> {
+    (PdfTemplate::MIN_FONT_PT..=PdfTemplate::MAX_FONT_PT).map(Points).collect()
 }
 
 /// The count after the section in the sidebar and the menu: the servers installed.
@@ -1747,10 +1809,10 @@ fn folders_group<'a>(data: &'a Data, words: bool) -> Element<'a, Message> {
     widgets::group(tr("Allowed folders"), rows, Some(folders_footer(folders.len())))
 }
 
-/// One allowed folder: its name, its path below, the picker "Read" / "Read and write" and "Remove".
+/// One allowed folder: its name, its path below, the segments "Read" / "Read and write" and "Remove".
 fn allowed_folder_row<'a>(folder: &'a AllowedFolder, words: bool) -> Element<'a, Message> {
     let path = folder.path.as_str();
-    let access = picker(AccessChoice::ALL.to_vec(), AccessChoice(folder.access), move |choice: AccessChoice| {
+    let access = segments(&AccessChoice::ALL, AccessChoice(folder.access), move |choice: AccessChoice| {
         Message::SetFolderAccess(path.to_string(), choice.0)
     });
     let remove = Message::RemoveFolder(folder.path.clone());
@@ -1891,14 +1953,13 @@ fn template_group<'a>(
     last: bool,
 ) -> Element<'a, Message> {
     let template = data.settings.tools.pdf.template(id);
-    let paper = picker(PaperChoice::ALL.to_vec(), PaperChoice(template.paper), move |choice: PaperChoice| {
+    let paper = segments(&PaperChoice::ALL, PaperChoice(template.paper), move |choice: PaperChoice| {
         Message::Paper(id, choice.0)
     });
-    let margins = picker(margin_options(template.margins_mm), Margins(template.margins_mm), move |choice: Margins| {
-        Message::Margins(id, choice.0)
-    });
-    let sizes: Vec<Points> = (PdfTemplate::MIN_FONT_PT..=PdfTemplate::MAX_FONT_PT).map(Points).collect();
-    let font = picker(sizes, Points(template.font_size_pt), move |choice: Points| Message::FontSize(id, choice.0));
+    let margins = Margins(template.margins_mm).to_string();
+    let margins = state.menus.button(TemplateMenu::Margins(id), margins, Message::Menus);
+    let font = Points(template.font_size_pt).to_string();
+    let font = state.menus.button(TemplateMenu::FontSize(id), font, Message::Menus);
     let numbers = switch(template.page_numbers, move |on| Message::PageNumbers(id, on));
     let example = trf("Page {n} of {m}", &[("n", &1), ("m", &3)]);
     let rows = vec![
@@ -3328,7 +3389,7 @@ pub fn template_name(id: PdfTemplateId) -> &'static str {
     }
 }
 
-/// The margins the picker offers: the even ones, and `current` first when it is none of them.
+/// The margins the dropdown offers: the even ones, and `current` first when it is none of them.
 pub fn margin_options(current: [u8; 4]) -> Vec<Margins> {
     let mut options: Vec<Margins> = EVEN_MARGINS.into_iter().map(|margin| Margins([margin; 4])).collect();
     if !options.contains(&Margins(current)) {
@@ -3342,7 +3403,7 @@ fn file_name(path: &str) -> String {
     Path::new(path).file_name().and_then(|name| name.to_str()).unwrap_or(path).to_string()
 }
 
-/// A paper in the picker.
+/// A paper in its segments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaperChoice(pub Paper);
 
@@ -3361,7 +3422,7 @@ impl fmt::Display for PaperChoice {
     }
 }
 
-/// An allowed folder's access in the picker: "Read", "Read and write".
+/// An allowed folder's access in its segments: "Read", "Read and write".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AccessChoice(pub FolderAccess);
 
@@ -3378,7 +3439,7 @@ impl fmt::Display for AccessChoice {
     }
 }
 
-/// Margins in the picker, top, right, bottom, left: "20 mm", or "20 · 25 · 20 · 25 mm" when they
+/// Margins in the dropdown, top, right, bottom, left: "20 mm", or "20 · 25 · 20 · 25 mm" when they
 /// differ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Margins(pub [u8; 4]);
@@ -3394,7 +3455,7 @@ impl fmt::Display for Margins {
     }
 }
 
-/// A font size in the picker: "11 pt".
+/// A font size in the dropdown: "11 pt".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Points(pub u8);
 
@@ -3835,9 +3896,9 @@ mod tests {
         assert!(missing.is_some_and(|entry| entry.missing == [Prerequisite::Npx]), "the demo has no Node");
     }
 
-    /// The pickers' words and the margins set elsewhere.
+    /// The choices' words and the margins set elsewhere.
     #[test]
-    fn the_pickers_say_what_they_hold() {
+    fn the_choices_say_what_they_hold() {
         assert_eq!(margin_options([20; 4]).len(), EVEN_MARGINS.len());
         let odd = margin_options([20, 25, 20, 25]);
         assert_eq!(odd[0], Margins([20, 25, 20, 25]), "set through the API, listed first");
@@ -3847,6 +3908,27 @@ mod tests {
         assert_eq!(PaperChoice(Paper::Letter).to_string(), tr("US Letter"));
         assert_eq!(template_name(PdfTemplateId::Letter), trc("template", "Letter"));
         assert_eq!(file_name("/home/anna/logo.png"), "logo.png");
+    }
+
+    /// Issue #554: a template's margins and font size open as dropdowns that ask for the search
+    /// field's focus; Escape closes the open one before it leaves the page, a choice closes it.
+    #[test]
+    fn the_template_dropdowns_open_and_close() {
+        let data = data();
+        let mut state = State { page: Page::PdfTemplates, ..State::default() };
+        let key = TemplateMenu::Margins(PdfTemplateId::Letter);
+        let opened = update(&mut state, Message::Menus(DropdownEvent::Toggle(key)), &data);
+        assert!(matches!(opened, Action::Focus(_)), "{opened:?}");
+        assert!(template_menu(&state, &data).is_some() && overlay(&state, &data, SizeClass::Wide).is_some());
+        assert_eq!(escape(&state), Some(Message::Menus(DropdownEvent::Close)), "Escape closes the menu first");
+        let _ = update(&mut state, Message::Margins(PdfTemplateId::Letter, [30; 4]), &data);
+        assert_eq!(state.menus.open(), None, "a choice closes it");
+        assert_eq!(escape(&state), Some(Message::Back));
+        let font = TemplateMenu::FontSize(PdfTemplateId::Note);
+        let _ = update(&mut state, Message::Menus(DropdownEvent::Toggle(font)), &data);
+        let _ = update(&mut state, Message::FontSize(PdfTemplateId::Note, 12), &data);
+        assert_eq!(state.menus.open(), None);
+        assert_eq!(font_sizes().len(), usize::from(PdfTemplate::MAX_FONT_PT - PdfTemplate::MIN_FONT_PT + 1));
     }
 
     /// Every state builds in every size: both pages, a line typed, servers listed, none, and both
