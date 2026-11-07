@@ -284,7 +284,7 @@ impl Pick {
 }
 
 /// What the editor's controls report.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     /// A segment of an area's level.
     Level(Area, Level),
@@ -1129,20 +1129,89 @@ pub fn groups<'a>(
     title: &'a str,
     column: Option<f32>,
 ) -> Vec<Element<'a, Message>> {
-    let mut groups =
-        vec![access_group(state, rights, known, column, kind, naming, title), confirm_group(rights.confirm, column)];
+    let mut groups = vec![
+        access_group(state, rights, known, column, kind, naming, title, None),
+        confirm_group(rights.confirm, column),
+    ];
     for pick in Pick::ALL.into_iter().filter(|pick| rights.area(pick.area()).level != Level::NoAccess) {
         groups.push(selection_group(&state.repo_input, pick, rights, known, column));
     }
     groups
 }
 
-/// The level of every area a client of `kind` can be given ([`shows_area`]), each followed by its
-/// admin switch where it has one and, where the area grants anything, "Show commands" with the
-/// commands of the areas open in `state`. The admin switch is a row of its own, not indented: admin
-/// commands are allowed per area whatever the level (`docs/api.md`, "Rechte"), so its line names the
-/// area instead. The area `extensions` ("MCP servers") is followed by the servers `known` lists
-/// ([`server_rows`]).
+/// The groups of the editor for the `areas` of one app only (issue #531, Settings › API and MCP of an
+/// app): the access group titled `title` with the level, admin switch, sending and commands of those
+/// areas – no MCP servers, no other area – and the selection of each of them the rights reach. No
+/// "Ask first": it holds for every area of the client, so it stays in the control centre. Everything
+/// else as [`groups`]; the rights outside `areas` are not shown and not touched.
+#[expect(clippy::too_many_arguments, reason = "the arguments of `groups` and the areas it is narrowed to")]
+pub fn groups_in<'a>(
+    state: &'a State,
+    rights: &Rights,
+    kind: &str,
+    known: &Known,
+    naming: Naming,
+    title: &'a str,
+    column: Option<f32>,
+    areas: &[Area],
+) -> Vec<Element<'a, Message>> {
+    let mut groups = vec![access_group(state, rights, known, column, kind, naming, title, Some(areas))];
+    let reached = |pick: &Pick| areas.contains(&pick.area()) && rights.area(pick.area()).level != Level::NoAccess;
+    for pick in Pick::ALL.into_iter().filter(reached) {
+        groups.push(selection_group(&state.repo_input, pick, rights, known, column));
+    }
+    groups
+}
+
+/// What a client may do in the `areas` of one app, in a few words (issue #531): per area with access
+/// its level and, where it has a selection, how much of it ("Calendar: Read · 2 calendars", "Tasks:
+/// Write · all lists · GitHub: Read · all repositories"); an area with only its admin switch on says
+/// so. "No access" when none of `areas` is open.
+pub fn area_summary(rights: &Rights, areas: &[Area]) -> String {
+    let parts: Vec<String> = areas
+        .iter()
+        .filter_map(|&area| {
+            let granted = rights.area(area);
+            if granted.level == Level::NoAccess {
+                return granted.admin.then(|| format!("{}: {}", area_label(area), tr("Admin commands")));
+            }
+            let level = format!("{}: {}", area_label(area), widgets::level_label(granted.level));
+            match Pick::ALL.into_iter().find(|pick| pick.area() == area) {
+                Some(pick) => Some(format!("{level} · {}", selection_words(pick, pick.of(rights)))),
+                None => Some(level),
+            }
+        })
+        .collect();
+    match parts.is_empty() {
+        true => tr("No access").to_string(),
+        false => parts.join(" · "),
+    }
+}
+
+/// How much of a selection a client reaches, in words: "all calendars", "1 calendar", "2 calendars".
+fn selection_words(pick: Pick, selection: &Selection) -> String {
+    let (all, one, many) = match pick {
+        Pick::Calendars => (tr("all calendars"), tr("1 calendar"), "{n} calendars"),
+        Pick::TaskLists => (tr("all lists"), tr("1 list"), "{n} lists"),
+        Pick::GithubRepos => (tr("all repositories"), tr("1 repository"), "{n} repositories"),
+        Pick::InboxSources => (tr("all sources"), tr("1 source"), "{n} sources"),
+        Pick::MailAccounts => (tr("all mail accounts"), tr("1 mail account"), "{n} mail accounts"),
+        Pick::Tools => (tr("all tools"), tr("1 tool"), "{n} tools"),
+    };
+    match selection {
+        Selection::All => all.to_string(),
+        Selection::Only(ids) if ids.len() == 1 => one.to_string(),
+        Selection::Only(ids) => trf(many, &[("n", &ids.len())]),
+    }
+}
+
+/// The level of every area a client of `kind` can be given ([`shows_area`]) – of `only` these where
+/// given ([`groups_in`]) –, each followed by its admin switch where it has one and, where the area
+/// grants anything, "Show commands" with the commands of the areas open in `state`. The admin switch
+/// is a row of its own, not indented: admin commands are allowed per area whatever the level
+/// (`docs/api.md`, "Rechte"), so its line names the area instead. The area `extensions` ("MCP
+/// servers") is followed by the servers `known` lists ([`server_rows`]).
+#[expect(clippy::too_many_arguments, reason = "one group, drawn whole or for the areas of one app")]
 fn access_group<'a>(
     state: &State,
     rights: &Rights,
@@ -1151,10 +1220,12 @@ fn access_group<'a>(
     kind: &str,
     naming: Naming,
     title: &'a str,
+    only: Option<&[Area]>,
 ) -> Element<'a, Message> {
     let open = &state.open;
     let mut rows = Vec::new();
-    for area in Area::ALL.into_iter().filter(|&area| shows_area(area, kind)) {
+    let listed = |area: &Area| shows_area(*area, kind) && only.is_none_or(|areas| areas.contains(area));
+    for area in Area::ALL.into_iter().filter(listed) {
         let granted = rights.area(area);
         let offered = levels(area);
         let active = active_level(&offered, granted.level);
@@ -2103,7 +2174,7 @@ mod tests {
         rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
         let state = State { open: BTreeSet::from([Area::Mail]), ..State::default() };
         for kind in [ASSISTANT_CLIENT, BOT_CLIENT, "claude-code"] {
-            drop(access_group(&state, &rights, &Known::default(), None, kind, Naming::Tools, "Access"));
+            drop(access_group(&state, &rights, &Known::default(), None, kind, Naming::Tools, "Access", None));
         }
     }
 
