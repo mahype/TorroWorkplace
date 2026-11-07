@@ -96,6 +96,8 @@ pub enum Open {
     Menu,
     /// The sidebar drawer of the medium and narrow layouts.
     Drawer,
+    /// Shared AI onboarding states: no network or installed runtime is required.
+    AiSetup(&'static str),
     /// The "Remove this account?" confirmation.
     Remove,
     /// The "Delete this template?" confirmation.
@@ -252,7 +254,18 @@ impl Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 126] = [
+    pub const ALL: [(&'static str, Open); 137] = [
+        ("setup-ai-form", Open::AiSetup("form")),
+        ("setup-ai-consent", Open::AiSetup("consent")),
+        ("setup-ai-download", Open::AiSetup("download")),
+        ("setup-ai-warning", Open::AiSetup("warning")),
+        ("setup-ai-ready", Open::AiSetup("ready")),
+        ("setup-ai-found", Open::AiSetup("found")),
+        ("setup-ai-small", Open::AiSetup("small")),
+        ("setup-ai-medium", Open::AiSetup("medium")),
+        ("setup-ai-auth", Open::AiSetup("auth")),
+        ("setup-ai-external", Open::AiSetup("external")),
+        ("setup-ai-error", Open::AiSetup("error")),
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),

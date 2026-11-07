@@ -20,7 +20,7 @@ use serde::Deserialize;
 use torro_core::ai::hardware::Hardware;
 use torro_core::ai::{AiModel, AiProvider, AiSlot};
 use torro_core::i18n::{tr, trf};
-use torro_ipc::{AiRecommendation, SlotSuggestion};
+use torro_ipc::{AiCandidate, AiPreparation, AiPreparationKind, AiRecommendation, SlotSuggestion};
 
 /// The list as built in.
 const LIST: &str = include_str!("../../assets/ai/recommendations.toml");
@@ -47,6 +47,21 @@ pub struct List {
     local: Vec<Local>,
     /// The cloud models, as written.
     cloud: Vec<Cloud>,
+    external: Vec<External>,
+}
+
+/// Model names accepted by external runtimes. Only explicit aliases are matched, never guesses.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct External {
+    tier: String,
+    slot: AiSlot,
+    model: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+    size_bytes: u64,
+    license: String,
+    open_weights: bool,
 }
 
 /// A tier of computers (`[[tier]]`).
@@ -115,6 +130,7 @@ pub struct Connected {
     /// The account's id (`ai:ollama@localhost:11434`).
     pub id: String,
     pub provider: AiProvider,
+    pub program: Option<String>,
     /// Its server runs on this computer (the core's `is_this_computer` on its address). Only such an Ollama or
     /// Strata runs a local model of the list: the list fits this computer, not another one.
     pub local: bool,
@@ -151,6 +167,8 @@ struct RawList {
     local: Vec<Local>,
     #[serde(default)]
     cloud: Vec<Cloud>,
+    #[serde(default)]
+    external: Vec<External>,
 }
 
 #[derive(Deserialize)]
@@ -202,7 +220,20 @@ impl List {
         }
         check_local(&raw.local, &ids)?;
         check_cloud(&raw.cloud)?;
-        Ok(List { tiers, fallback, local: raw.local, cloud: raw.cloud })
+        for entry in &raw.external {
+            if !ids.contains(&entry.tier.as_str())
+                || entry.model.trim().is_empty()
+                || entry.size_bytes == 0
+                || !entry.open_weights
+                || !LICENSES.contains(&entry.license.as_str())
+            {
+                return Err(invalid(&entry.model, "invalid external model, tier, size or licence"));
+            }
+            if raw.external.iter().filter(|e| e.tier == entry.tier && e.slot == entry.slot).count() > 3 {
+                return Err(invalid(&entry.tier, "at most three external models per tier and slot"));
+            }
+        }
+        Ok(List { tiers, fallback, local: raw.local, cloud: raw.cloud, external: raw.external })
     }
 
     /// Every tier, strongest first, the last one (without conditions) at the end. Only the tests read the
@@ -373,7 +404,115 @@ pub fn suggest(hardware: &Hardware, list: &List, accounts: &[Connected], mail: b
         tier: tier.id.clone(),
         tier_label: tr(tier.label).to_string(),
         slots,
+        preparations: prepare(list, &tier.id, accounts, mail),
     }
+}
+
+/// Keep suggestions grouped by the account a person chose, rather than silently switching servers.
+fn prepare(list: &List, tier: &str, accounts: &[Connected], mail: bool) -> Vec<AiPreparation> {
+    let mut preparations = Vec::new();
+    for account in accounts {
+        for slot in AiSlot::ALL.into_iter().filter(|s| mail || *s != AiSlot::Decide) {
+            let mut candidates = Vec::new();
+            let mut names = std::collections::BTreeSet::new();
+            if account.local && account.provider == AiProvider::Ollama {
+                let fitting_size = list.local_for(tier, slot, AiProvider::Ollama).map(|e| e.size_bytes);
+                if fitting_size.is_none() {
+                    continue;
+                }
+                let entries = list.local_for(tier, slot, AiProvider::Ollama).into_iter().chain(
+                    list.local.iter().filter(|e| e.tier != tier && e.slot == slot && e.provider == AiProvider::Ollama),
+                );
+                for entry in entries {
+                    if !names.insert(entry.model.clone()) {
+                        continue;
+                    }
+                    let ready = account
+                        .models
+                        .iter()
+                        .flatten()
+                        .find(|m| same_ollama_model(&m.id, &entry.model) && m.remote != Some(true));
+                    candidates.push(AiCandidate {
+                        model: ready.map_or_else(|| entry.model.clone(), |m| m.id.clone()),
+                        size_bytes: entry.size_bytes,
+                        fits: fitting_size.is_some_and(|size| entry.size_bytes <= size),
+                        local: true,
+                        preparation: if ready.is_some() {
+                            AiPreparationKind::Ready
+                        } else {
+                            AiPreparationKind::OllamaPull
+                        },
+                        by_chat: slot == AiSlot::Decide && !entry.decision,
+                    });
+                    if candidates.len() == 3 {
+                        break;
+                    }
+                }
+            } else if account.local
+                && matches!(account.provider, AiProvider::LmStudio | AiProvider::Strata | AiProvider::OpenAiCompatible)
+            {
+                let here = account.provider != AiProvider::OpenAiCompatible
+                    || account
+                        .program
+                        .as_deref()
+                        .and_then(torro_core::ai::LocalProgram::from_id)
+                        .is_some_and(torro_core::ai::LocalProgram::computes_here);
+                let fitting_size =
+                    list.external.iter().find(|e| e.tier == tier && e.slot == slot).map(|e| e.size_bytes);
+                if fitting_size.is_none() {
+                    continue;
+                }
+                let entries = list
+                    .external
+                    .iter()
+                    .filter(|e| e.tier == tier && e.slot == slot)
+                    .chain(list.external.iter().filter(|e| e.tier != tier && e.slot == slot));
+                for entry in entries {
+                    if !names.insert(entry.model.clone()) {
+                        continue;
+                    }
+                    let ready = account.models.iter().flatten().find(|m| {
+                        (m.id.eq_ignore_ascii_case(&entry.model)
+                            || entry.aliases.iter().any(|a| m.id.eq_ignore_ascii_case(a)))
+                            && (slot != AiSlot::Decide || m.can_decide())
+                            && (!here || m.remote != Some(true))
+                    });
+                    candidates.push(AiCandidate {
+                        model: ready.map_or_else(|| entry.model.clone(), |m| m.id.clone()),
+                        size_bytes: entry.size_bytes,
+                        fits: fitting_size.is_some_and(|max| entry.size_bytes <= max),
+                        local: here,
+                        preparation: if ready.is_some() {
+                            AiPreparationKind::Ready
+                        } else {
+                            AiPreparationKind::External
+                        },
+                        by_chat: slot == AiSlot::Decide,
+                    });
+                    if candidates.len() == 3 {
+                        break;
+                    }
+                }
+            }
+            if !account.local
+                && let Some(suggestion) = cloud_suggestion(list, slot, std::slice::from_ref(account), tr("Ready"))
+                && let Some(model) = suggestion.model
+            {
+                candidates.push(AiCandidate {
+                    model,
+                    size_bytes: 0,
+                    fits: true,
+                    local: false,
+                    preparation: AiPreparationKind::Ready,
+                    by_chat: suggestion.by_chat,
+                });
+            }
+            if !candidates.is_empty() {
+                preparations.push(AiPreparation { account: account.id.clone(), slot, candidates });
+            }
+        }
+    }
+    preparations
 }
 
 /// The suggestion for one slot ([`suggest`], steps 1–4).
@@ -496,6 +635,41 @@ fn starts_with_ignoring_case(id: &str, prefix: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn preparations_stay_with_the_chosen_account_and_external_never_means_pull() {
+        let mut jan = account(
+            "ai:openai_compatible@localhost:1337",
+            AiProvider::OpenAiCompatible,
+            true,
+            Some(vec![model("Qwen/Qwen3-4B", Some(true), None)]),
+        );
+        jan.program = Some("jan".into());
+        let studio = account("ai:lm_studio@localhost:1234", AiProvider::LmStudio, true, Some(Vec::new()));
+        let ollama = account("ai:ollama@localhost:11434", AiProvider::Ollama, true, Some(Vec::new()));
+        let result = suggest(&pc(8 * GIB_U64, None), builtin(), &[jan.clone(), studio.clone(), ollama], true);
+        let for_account = |id: &str| result.preparations.iter().filter(|p| p.account == id).collect::<Vec<_>>();
+        assert!(
+            for_account(&jan.id)
+                .iter()
+                .flat_map(|p| &p.candidates)
+                .all(|c| !c.local && c.preparation != AiPreparationKind::OllamaPull)
+        );
+        assert!(
+            for_account(&studio.id)
+                .iter()
+                .flat_map(|p| &p.candidates)
+                .all(|c| c.preparation == AiPreparationKind::External && c.local)
+        );
+        assert!(result.preparations.iter().all(|p| p.candidates.len() <= 3));
+        assert!(
+            for_account(&studio.id).iter().flat_map(|p| &p.candidates).any(|c| !c.fits),
+            "large models are warned, not hidden"
+        );
+        let no_mail = suggest(&Hardware::default(), builtin(), &[jan], false);
+        assert_eq!(no_mail.tier, "small");
+        assert!(no_mail.preparations.iter().all(|p| p.slot != AiSlot::Decide));
+    }
+
     use torro_core::ai::hardware::Gpu;
 
     use super::*;
@@ -530,7 +704,7 @@ mod tests {
     }
 
     fn account(id: &str, provider: AiProvider, local: bool, models: Option<Vec<AiModel>>) -> Connected {
-        Connected { id: id.into(), provider, local, models }
+        Connected { id: id.into(), provider, program: None, local, models }
     }
 
     const OLLAMA: &str = "ai:ollama@localhost:11434";

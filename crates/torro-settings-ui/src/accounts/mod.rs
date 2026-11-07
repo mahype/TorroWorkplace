@@ -152,6 +152,7 @@ use torro_ntfy::TOPICS_MAX;
 use crate::parts::{chevron, confirm, dialog, notice, pressable, row_frame, setting_row, size_facts};
 use server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
 
+pub mod ai_setup;
 pub mod connect;
 pub mod demo;
 pub mod server_fields;
@@ -412,6 +413,8 @@ pub struct SlotFailure {
 /// ([`ai_answered`]) and is never taken for another one's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Asked {
+    /// Shared setup owner and request generation; never causes a whole-page reload for discovery.
+    Setup { owner: u64, run: u64, changes: bool },
     /// `ai.recommend`.
     Recommend,
     /// `ai.list_pulls`, every second while a download runs.
@@ -429,7 +432,7 @@ impl Asked {
     /// The answer may have changed the settings (a slot, `decideMailToCloud`, a model turned on): the
     /// shell reloads after it. Reading answers do not, so polling every second stays light.
     pub fn changes(&self) -> bool {
-        matches!(self, Asked::Slot(_))
+        matches!(self, Asked::Slot(_) | Asked::Setup { changes: true, .. })
     }
 }
 
@@ -1270,10 +1273,15 @@ fn running(pulls: &[AiPull]) -> bool {
 /// Every second while a download runs (task MW.8, `ai.list_pulls`), else nothing: the page does not
 /// tick while it waits for nothing.
 pub fn subscription(state: &State) -> Subscription<Message> {
-    match running(&state.slots.pulls) {
+    let pulls = match running(&state.slots.pulls) {
         true => iced::time::every(Duration::from_secs(1)).map(|_| Message::PollPulls),
         false => Subscription::none(),
-    }
+    };
+    let setup = state
+        .wizard
+        .as_ref()
+        .map_or_else(Subscription::none, |wizard| wizard::ai_subscription(wizard).map(Message::Wizard));
+    Subscription::batch([pulls, setup])
 }
 
 /// `name` with its tag, as Ollama lists it: `nimble` → `nimble:latest`. Only the part after the last
@@ -1403,7 +1411,8 @@ fn use_suggestion(state: &mut State, data: &dyn Seen, slot: AiSlot) -> Action {
         step: UseStep::List,
         retry: Box::new(Message::UseSuggestion(slot)),
     };
-    let download = suggestion.download_bytes.and(suggestion.model.clone());
+    let download =
+        suggestion.download_bytes.filter(|_| suggestion.provider == AiProvider::Ollama).and(suggestion.model.clone());
     let action = match download {
         Some(model) => match pull_of(&state.slots.pulls, &engine, &model).filter(|p| p.state == AiPullState::Running) {
             Some(pull) => {
@@ -1458,6 +1467,10 @@ fn stop(state: &mut State, message: String) -> Action {
 /// may finish the download it waits for. Returns the next request, if any.
 pub fn ai_answered(state: &mut State, asked: Asked, result: &Result<Response, String>) -> Action {
     match asked {
+        Asked::Setup { owner, run, .. } => match state.wizard.as_mut() {
+            Some(wizard) => ai_setup::answered(&mut wizard.setup, owner, run, result),
+            None => Action::None,
+        },
         Asked::Recommend => {
             state.slots.recommending = false;
             match result {
@@ -4830,7 +4843,7 @@ mod tests {
             let action = update(&mut state, Message::Add(provider), &data);
             assert!(state.wizard.is_some() && overlay(&state, &data).is_some(), "{provider:?}");
             match provider {
-                wizard::Provider::Ai => assert!(matches!(action, Action::Send(Request::FindAiServers)), "{action:?}"),
+                wizard::Provider::Ai => assert!(matches!(action, Action::AskAi(_)), "{action:?}"),
                 _ => assert!(matches!(action, Action::None), "{provider:?}: {action:?}"),
             }
         }
@@ -5639,7 +5652,7 @@ mod tests {
         let any = AiModel::named("m");
         assert_eq!(model_place(Some(AiProvider::OpenRouter), "https://openrouter.ai/api/v1", &any), tr("Cloud"));
         let compatible = Some(AiProvider::OpenAiCompatible);
-        assert_eq!(model_place(compatible, "http://localhost:8000/v1", &any), tr("On this computer"));
+        assert_eq!(model_place(compatible, "http://localhost:8000/v1", &any), tr("Outside this computer"));
         assert_eq!(model_place(compatible, "https://llm.example.org/v1", &any), tr("Outside this computer"));
         assert_eq!(
             model_place(None, "http://localhost:11434/v1", &local),

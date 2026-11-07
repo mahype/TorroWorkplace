@@ -6,6 +6,7 @@ use iced::widget::text::Wrapping;
 use iced::widget::{Space, checkbox, column, container, pick_list, row, toggler};
 use iced::{Alignment, Element, Fill, Theme};
 use torro_core::AppId;
+#[cfg(test)]
 use torro_core::ai::AiProvider;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Component, Language};
@@ -74,10 +75,11 @@ pub fn status(state: &State, data: &Data) -> Option<String> {
             let on = inbox_sources(data).iter().filter(|(source, ..)| !state.is_muted(data, source)).count();
             Some(trf("{n} sources on", &[("n", &on)]))
         }
-        Step::Ai if state.ai_searching => Some(tr("Looking on this computer…").to_string()),
-        Step::Ai if state.ai_connecting.is_some() => Some(tr("Connecting…").to_string()),
         Step::Ai => {
-            let n = data.accounts.iter().filter(|account| account.kind == "ai").count() + state.ai_connected.len();
+            if let Some(status) = torro_settings_ui::accounts::ai_setup::status(&state.ai_setup) {
+                return Some(status.to_string());
+            }
+            let n = data.accounts.iter().filter(|account| account.kind == "ai").count();
             Some(if n == 1 { tr("1 account").to_string() } else { trf("{n} accounts", &[("n", &n)]) })
         }
         Step::Web if super::web_waits(state, data) => Some(tr("Saving…").to_string()),
@@ -536,45 +538,14 @@ fn inbox<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 
 // ----- AI (task W.8) ----------------------------------------------------------------------------------
 
-/// Whether an AI account of `provider` is connected (its id is `ai:<provider>@<host>`).
-fn has_ai_account(data: &Data, provider: AiProvider) -> bool {
-    let prefix = format!("ai:{}@", provider.id());
-    data.accounts.iter().any(|account| account.kind == "ai" && account.id.starts_with(&prefix))
-}
-
 /// Open First: the servers on this computer, then the cloud providers by where they are, then what
 /// a new chat of the assistant starts with.
 fn ai<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let local = AiProvider::LOCAL.into_iter().map(|provider| local_row(state, data, provider));
-    let mut local: Vec<Element<'a, Message>> = local.collect();
-    local.push(opener(
-        Icon::Plus,
-        tr("Other server"),
-        tr("vLLM, llama.cpp, LocalAI or a server of your own"),
-        Message::OtherAiServer,
-    ));
     let mut parts = vec![
-        title(
-            tr("AI"),
-            tr("Local models first: they keep your data on this computer. Add cloud providers if you want more."),
-        ),
+        title(tr("AI"), tr("Connect an AI program or an online service. Choose knowingly where your text goes.")),
         mail_sorting_choice(state, data),
-        widgets::group(
-            tr("On this computer"),
-            local,
-            Some(tr("Models on this computer run here. Nothing you ask them leaves it.").to_string()),
-        ),
+        torro_settings_ui::accounts::ai_setup::view(&state.ai_setup, data).map(Message::AiSetup),
     ];
-    let groups = cloud_groups();
-    let count = groups.len();
-    for (index, (name, providers)) in groups.into_iter().enumerate() {
-        let rows = providers.into_iter().map(|provider| cloud_row(data, provider)).collect();
-        let footer = (index + 1 == count).then(|| {
-            tr("Cloud providers receive what you send them. Mail goes to local models only unless you change it.")
-                .to_string()
-        });
-        parts.push(widgets::group(name, rows, footer));
-    }
     if let Some(choice) = engine_choice(state, data) {
         parts.push(choice);
     }
@@ -654,48 +625,9 @@ impl std::fmt::Display for MailModelChoice {
     }
 }
 
-/// A server on this computer: looking, found with "Connect" (or "Connected"), or not running.
-fn local_row<'a>(state: &'a State, data: &'a Data, provider: AiProvider) -> Element<'a, Message> {
-    let tile = widgets::source_tile(TileFace::letter(provider.name()), TileSize::Medium, None);
-    let Some(found) = &state.ai_found else {
-        return setting_row(
-            Some(tile),
-            provider.name(),
-            Some(tr("Looking on this computer…").to_string()),
-            Space::new(),
-        );
-    };
-    let Some(server) = found.iter().find(|server| server.provider == provider) else {
-        return setting_row(
-            Some(tile),
-            provider.name(),
-            Some(tr("Not running on this computer").to_string()),
-            Space::new(),
-        );
-    };
-    let rest = server.url.split_once("://").map_or(server.url.as_str(), |(_, rest)| rest);
-    let host = rest.split('/').next().unwrap_or(rest);
-    let detail = match server.models {
-        // Strata is found by its `/health`; with no model loaded, or behind an API key, it lists none.
-        0 if provider == AiProvider::Strata => trf("{host} · no models listed", &[("host", &host)]),
-        1 => trf("{host} · 1 model", &[("host", &host)]),
-        n => trf("{host} · {n} models", &[("host", &host), ("n", &n)]),
-    };
-    let connected =
-        server.account.is_some() || state.ai_connected.contains(&server.url) || has_ai_account(data, provider);
-    let control: Element<'a, Message> = if connected {
-        widgets::state_pill(Icon::CircleCheck, tr("Connected"))
-    } else if state.ai_connecting.as_deref() == Some(server.url.as_str()) {
-        typo::text(typo::meta(), tr("Connecting…")).style(theme::text_2).into()
-    } else {
-        let press = state.ai_connecting.is_none().then(|| Message::ConnectLocalAi(provider, server.url.clone()));
-        widgets::text_button(None, tr("Connect"), style::button::secondary, press)
-    };
-    setting_row(Some(tile), provider.name(), Some(detail), control)
-}
-
 /// The cloud providers in their groups, after the servers on this computer: first Jev, which only
 /// sorts mail (issue #323), then the open models, the providers and those in China.
+#[cfg(test)]
 fn cloud_groups() -> Vec<(&'static str, Vec<AiProvider>)> {
     vec![
         (tr("For sorting mail"), vec![AiProvider::Jev]),
@@ -709,6 +641,7 @@ fn cloud_groups() -> Vec<(&'static str, Vec<AiProvider>)> {
 }
 
 /// What a cloud provider's row says under its name: where it is, and what sets it apart.
+#[cfg(test)]
 fn cloud_detail(provider: AiProvider) -> String {
     let seat = provider.seat().label();
     match provider {
@@ -717,18 +650,6 @@ fn cloud_detail(provider: AiProvider) -> String {
         _ if provider.open_weights() => trf("{seat} · open weights", &[("seat", &seat)]),
         _ => seat.to_string(),
     }
-}
-
-/// A cloud provider: its first letter, its name, where it is (and open weights), and "Add key" or
-/// "Connected".
-fn cloud_row(data: &Data, provider: AiProvider) -> Element<'_, Message> {
-    let tile = widgets::source_tile(TileFace::letter(provider.name()), TileSize::Medium, None);
-    let detail = cloud_detail(provider);
-    let control: Element<'_, Message> = match has_ai_account(data, provider) {
-        true => widgets::state_pill(Icon::CircleCheck, tr("Connected")),
-        false => widgets::text_button(None, tr("Add key"), style::button::secondary, Some(Message::AddAiKey(provider))),
-    };
-    setting_row(Some(tile), provider.name(), Some(detail), control)
 }
 
 /// "Use for": the AI account a new chat of the assistant starts with, once there is one.
