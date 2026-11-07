@@ -278,7 +278,7 @@ const BRANDS: &[Brand] = &[
 /// banks, cooperative banks and tax offices write from domains of their own (`sparkasse-hannover.de`,
 /// `vb-mittelhessen.de`, `finanzamt.bayern.de`), and Hermes, Visa and Steam are names and words too.
 /// For them the name on a foreign domain is a sign only from a free mail address, and a domain is a
-/// look-alike only by a swapped letter (`sparkase`, `5parkasse`), never for holding the word.
+/// look-alike only by a swapped letter (`5parkasse`, `sparkassa`), never for holding the word.
 const LOOSE_BRANDS: &[&str] = &["Sparkasse", "Volksbank", "Elster", "Hermes", "Visa", "Steam"];
 
 fn loose(brand: &Brand) -> bool {
