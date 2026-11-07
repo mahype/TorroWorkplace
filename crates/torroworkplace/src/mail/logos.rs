@@ -821,27 +821,47 @@ fn fitted(mut picture: RgbaImage) -> Option<Vec<u8>> {
     }
     let scale = MOTIF_RADIUS / radius;
     let crop = image::imageops::crop_imm(&picture, left, top, width, height).to_image();
-    let fitted = image::imageops::resize(
+    let mut fitted = image::imageops::resize(
         &crop,
         (width as f32 * scale).round().max(1.0) as u32,
         (height as f32 * scale).round().max(1.0) as u32,
         image::imageops::FilterType::Triangle,
     );
-    // Resampling can erase a faint JPEG fringe on just one side. Centre the resulting motif,
-    // rather than the now-invisible fringe, without enlarging it a second time.
-    let (mut left, mut top, mut right, mut bottom) = (fitted.width(), fitted.height(), 0, 0);
-    for (x, y, pixel) in fitted.enumerate_pixels() {
-        if pixel.0[..3].iter().any(|channel| *channel < 243) {
-            left = left.min(x);
-            top = top.min(y);
-            right = right.max(x);
-            bottom = bottom.max(y);
+    // Resampling can erase an asymmetric faint fringe. Re-centre the visible result AND recheck
+    // its radial fit, repeating after any further reduction. Every reduction shrinks its longest
+    // side, so even adversarial fringes cannot loop indefinitely or push content into the disc edge.
+    let fitted = loop {
+        let (mut left, mut top, mut right, mut bottom) = (fitted.width(), fitted.height(), 0, 0);
+        for (x, y, pixel) in fitted.enumerate_pixels() {
+            if pixel.0[..3].iter().any(|channel| *channel < 243) {
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max(x);
+                bottom = bottom.max(y);
+            }
         }
-    }
-    if left > right || top > bottom {
-        return None;
-    }
-    let fitted = image::imageops::crop_imm(&fitted, left, top, right - left + 1, bottom - top + 1).to_image();
+        if left > right || top > bottom {
+            return None;
+        }
+        let crop = image::imageops::crop_imm(&fitted, left, top, right - left + 1, bottom - top + 1).to_image();
+        let (cx, cy) = (crop.width() as f32 / 2.0, crop.height() as f32 / 2.0);
+        let radius = crop
+            .enumerate_pixels()
+            .filter(|(_, _, p)| p.0[..3].iter().any(|c| *c < 243))
+            .map(|(x, y, _)| ((x as f32 + 0.5 - cx).abs() + 0.5).hypot((y as f32 + 0.5 - cy).abs() + 0.5))
+            .fold(0.0f32, f32::max);
+        if radius <= MOTIF_RADIUS {
+            break crop;
+        }
+        // Half a pixel avoids a rounded size identical to the preceding iteration.
+        let scale = (MOTIF_RADIUS - 0.5) / radius;
+        fitted = image::imageops::resize(
+            &crop,
+            (crop.width() as f32 * scale).round().max(1.0) as u32,
+            (crop.height() as f32 * scale).round().max(1.0) as u32,
+            image::imageops::FilterType::Triangle,
+        );
+    };
     let mut canvas = RgbaImage::from_pixel(LOGO_PIXELS, LOGO_PIXELS, Rgba([255, 255, 255, 255]));
     let x = (LOGO_PIXELS - fitted.width()) / 2;
     let y = (LOGO_PIXELS - fitted.height()) / 2;
@@ -970,6 +990,26 @@ pub(crate) mod tests {
                 "round contour grows towards the circle"
             );
             assert_eq!(p.get_pixel(20, 20), &Rgba([255, 255, 255, 255]), "no square replacing the circle");
+        }
+    }
+
+    #[test]
+    fn disappearing_asymmetric_fringe_cannot_push_content_outside_the_circle() {
+        let mut raw = RgbaImage::from_pixel(400, 400, Rgba([255; 4]));
+        for (cx, cy) in [(140i32, 30i32), (140, 370), (380, 200)] {
+            for y in cy - 5..=cy + 5 {
+                for x in cx - 5..=cx + 5 {
+                    if (x - cx).pow(2) + (y - cy).pow(2) <= 25 {
+                        raw.put_pixel(x as u32, y as u32, Rgba([0, 0, 0, 255]));
+                    }
+                }
+            }
+        }
+        raw.put_pixel(20, 200, Rgba([242, 242, 242, 255]));
+        let logo = decoded(&from_raster(&encoded(raw, image::ImageFormat::Png)).expect("a sparse motif"));
+        motif_bounds(&logo);
+        for pixel in logo.pixels().filter(|p| p.0[..3].iter().any(|c| *c < 80)) {
+            assert_eq!(pixel[3], 255, "no dark motif pixel is clipped by the final disc");
         }
     }
 
