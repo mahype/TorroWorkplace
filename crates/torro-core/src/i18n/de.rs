@@ -2,6 +2,26 @@
 //! within a group; the test in `mod.rs` checks for duplicates and matching placeholders.
 
 pub(super) static TABLE: &[(&str, &str)] = &[
+    // Original mail export (#553).
+    ("Another EML export is running.", "Ein anderer EML-Export läuft bereits."),
+    ("Email messages", "E-Mail-Nachrichten"),
+    ("Save as EML", "Als EML speichern"),
+    ("Save mail as EML", "Mail als EML speichern"),
+    ("Save the mail {subject} as EML to {target}", "Die Mail {subject} als EML nach {target} speichern"),
+    (
+        "The complete original could not be verified; nothing was saved.",
+        "Das vollständige Original konnte nicht geprüft werden; nichts wurde gespeichert.",
+    ),
+    (
+        "The complete original is unavailable; nothing was saved.",
+        "Das vollständige Original ist nicht verfügbar; nichts wurde gespeichert.",
+    ),
+    (
+        "The message changed during export; nothing was saved.",
+        "Die Nachricht wurde während des Exports geändert; nichts wurde gespeichert.",
+    ),
+    ("The original message is no longer available.", "Die Originalnachricht ist nicht mehr verfügbar."),
+    ("The original message is too large to export as EML.", "Die Originalnachricht ist für den EML-Export zu groß."),
     // Embedded compose images (#461).
     ("As attachment", "Als Anhang"),
     ("Couldn't copy the images to the other account.", "Die Bilder konnten nicht ins andere Konto kopiert werden."),

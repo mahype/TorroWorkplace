@@ -426,7 +426,7 @@ pub struct PlannedPlace {
 
 /// What `mail.save_message_as` makes of a mail (issue #501): the mail drawn as the reader shows it,
 /// head (sender, recipients, date, subject) and content, as `pdf` (A4 pages) or `png` (one long
-/// picture).
+/// picture), or the unmodified original as `eml` (including headers and all MIME parts).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ExportFormat {
@@ -434,27 +434,31 @@ pub enum ExportFormat {
     Pdf,
     /// One PNG picture of the whole mail.
     Png,
+    /// The verified, unmodified RFC-822 original, including all MIME parts.
+    Eml,
 }
 
 impl ExportFormat {
-    /// The file's extension: `pdf`, `png`.
+    /// The file's extension: `pdf`, `png`, `eml`.
     pub fn extension(self) -> &'static str {
         match self {
             ExportFormat::Pdf => "pdf",
             ExportFormat::Png => "png",
+            ExportFormat::Eml => "eml",
         }
     }
 
-    /// The file's MIME type: `application/pdf`, `image/png`.
+    /// The file's MIME type: `application/pdf`, `image/png`, `message/rfc822`.
     pub fn content_type(self) -> &'static str {
         match self {
             ExportFormat::Pdf => "application/pdf",
             ExportFormat::Png => "image/png",
+            ExportFormat::Eml => "message/rfc822",
         }
     }
 
-    /// Both formats, PDF first.
-    pub const ALL: [ExportFormat; 2] = [ExportFormat::Pdf, ExportFormat::Png];
+    /// All formats, with the original after the rendered formats.
+    pub const ALL: [ExportFormat; 3] = [ExportFormat::Pdf, ExportFormat::Png, ExportFormat::Eml];
 }
 
 /// Where a mail saved as PDF or picture would go, for `mail.list_save_targets` with `id` (issue #501):
@@ -1304,7 +1308,7 @@ impl Request {
             | Request::GetSenderLogo { id }
             | Request::SaveMailAttachments { id, .. }
             | Request::SaveMailAs { id, .. }
-            | Request::ListSaveTargets { id: Some(id) }
+            | Request::ListSaveTargets { id: Some(id), .. }
             | Request::SendDraft { id }
             | Request::GetDraft { id } => vec![id.as_str()],
             Request::SetMailFlags { ids, .. }
@@ -1442,8 +1446,8 @@ mod tests {
     fn saving_attachments_names_its_message_and_keeps_the_limits() {
         let save = |parts: Vec<String>, to| Request::SaveMailAttachments { id: "m:1".into(), parts, to };
         assert_eq!(save(Vec::new(), SaveTo::Downloads).message_ids(), ["m:1"]);
-        assert_eq!(Request::ListSaveTargets { id: Some("m:2".into()) }.message_ids(), ["m:2"]);
-        assert!(Request::ListSaveTargets { id: None }.message_ids().is_empty());
+        assert_eq!(Request::ListSaveTargets { id: Some("m:2".into()), export_only: false }.message_ids(), ["m:2"]);
+        assert!(Request::ListSaveTargets { id: None, export_only: false }.message_ids().is_empty());
         assert!(!refused(&save(vec!["2".into(); MAX_ATTACHMENTS], SaveTo::Downloads)));
         assert!(refused(&save(vec!["2".into(); MAX_ATTACHMENTS + 1], SaveTo::Downloads)));
         let long = "x".repeat(MAX_ID_BYTES + 1);
@@ -1456,6 +1460,12 @@ mod tests {
     /// picture names its message (for the reach check) and keeps the target's id within the limits.
     #[test]
     fn saving_a_mail_as_names_its_message_and_keeps_the_limits() {
+        let old: Request = serde_json::from_value(serde_json::json!({"method":"mail.list_save_targets","id":"m:1"}))
+            .expect("legacy request");
+        assert_eq!(old, Request::ListSaveTargets { id: Some("m:1".into()), export_only: false });
+        assert!(serde_json::to_value(old).expect("request").get("export_only").is_none());
+        assert_eq!(serde_json::to_value(ExportFormat::Eml).expect("eml"), serde_json::json!("eml"));
+        assert_eq!((ExportFormat::Eml.extension(), ExportFormat::Eml.content_type()), ("eml", "message/rfc822"));
         assert_eq!(serde_json::to_value(ExportFormat::Pdf).expect("writes"), serde_json::json!("pdf"));
         assert_eq!(serde_json::from_value::<ExportFormat>(serde_json::json!("png")).expect("reads"), ExportFormat::Png);
         assert!(serde_json::from_value::<ExportFormat>(serde_json::json!("html")).is_err(), "no HTML export");

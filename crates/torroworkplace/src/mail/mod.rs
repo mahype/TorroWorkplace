@@ -24,8 +24,9 @@
 //!   (`mail.unsubscribe`, issue #416).
 //! - [`save`]: saving attachments to Downloads, a chosen place or a save target, and the save
 //!   targets themselves in `<data>/mail/save-targets.json` (task M12.3, issue #290); the mail itself
-//!   as PDF or picture to the same places (`mail.save_message_as`, issue #501).
+//!   as EML, PDF or picture to the same places (`mail.save_message_as`, issues #501/#553).
 //! - [`export`]: drawing a mail as PDF or picture with the reader's HTML view (issue #501).
+//! - [`eml`]: verified, bounded capture of an original for EML export (issue #553).
 //! - [`check`], [`logos`]: whether a mail comes from its sender's domain (the core's own DKIM check),
 //!   and the logos of those domains, kept in `<cache>/sender-logos/` (issue #453).
 //! - [`filters`]: mail filters, a saved search with what to do with the mail it finds in the inbox,
@@ -58,6 +59,7 @@ use torro_core::paths::AppPaths;
 
 pub mod backup;
 pub mod check;
+pub mod eml;
 pub mod export;
 pub mod filters;
 pub mod fold;

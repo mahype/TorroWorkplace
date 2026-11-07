@@ -4633,16 +4633,18 @@ impl Core {
             }
             // Saving a mail as PDF or picture (issue #501): its subject and the target by what the
             // core's stores hold, the approval pinned to the mail as saving its attachments is.
-            (Request::SaveMailAs { id, to, .. }, _) => {
+            (Request::SaveMailAs { id, format, to }, _) => {
                 if info.is_none() {
                     return Err(Refused::Forbidden { command });
                 }
-                let (found, pinned) = match self.mail_as_to_approve(id, rights).await {
-                    Ok(found) => found,
-                    Err(refused) => return Ok(*refused),
-                };
-                let target = match to {
-                    torro_ipc::mail::SaveTo::Target(target) => {
+                let (found, pinned, checked_target) =
+                    match self.mail_as_to_approve(id, *format, to, rights, &self.save_context()).await {
+                        Ok(found) => found,
+                        Err(refused) => return Ok(*refused),
+                    };
+                let target = match (to, checked_target) {
+                    (_, Some(spec)) => Some(spec.name),
+                    (torro_ipc::mail::SaveTo::Target(target), _) => {
                         self.mail.save_targets().get(target).ok().flatten().map(|target| target.spec.name)
                     }
                     _ => None,
@@ -5321,9 +5323,16 @@ impl Core {
             }
         }
         // A mail is saved as PDF or picture only as the person was shown it (issue #501).
-        if let Request::SaveMailAs { id, .. } = &request {
-            match self.mail_as_to_approve(id, rights).await {
-                Ok((_, now)) if Some(now.as_str()) == fingerprint => {}
+        if let Request::SaveMailAs { id, format, to } = &request {
+            let context = self.save_context();
+            match self.mail_as_to_approve(id, *format, to, rights, &context).await {
+                Ok((_, now, target)) if Some(now.as_str()) == fingerprint => {
+                    if *format == torro_ipc::mail::ExportFormat::Eml {
+                        // Like restore above: keep the deep IMAP/spool future out of every approved call's stack.
+                        return Box::pin(crate::mail::save::approved_eml(&self.mail, reach, &context, id, to, target))
+                            .await;
+                    }
+                }
                 Ok(_) => {
                     let message = "the mail changed after the approval was asked for; nothing was saved, ask again";
                     return Response::Error { code: "conflict".into(), message: message.into() };
@@ -8742,11 +8751,38 @@ impl Core {
     async fn mail_as_to_approve(
         &self,
         id: &str,
+        format: torro_ipc::mail::ExportFormat,
+        to: &torro_ipc::mail::SaveTo,
         rights: &torro_ipc::api::Rights,
-    ) -> Result<(crate::mail::save::ToApprove, String), Box<Response>> {
+        context: &crate::mail::save::Context,
+    ) -> Result<(crate::mail::save::ToApprove, String, Option<torro_mail::SaveTargetSpec>), Box<Response>> {
         let found = crate::mail::save::message_to_approve(&self.mail, Reach::Client(rights), id).await?;
         let mail = self.mail_to_approve(&found.account, id, rights).await?;
-        Ok((found, mail_fingerprint(&mail)))
+        let mut fingerprint = mail_fingerprint(&mail);
+        let mut target = None;
+        if format == torro_ipc::mail::ExportFormat::Eml {
+            use torro_ipc::mail::SaveTo;
+            if let SaveTo::Target(id) = to {
+                target = Some(
+                    self.mail
+                        .save_targets()
+                        .get(id)
+                        .map_err(|err| Box::new(err.response()))?
+                        .ok_or_else(|| Box::new(crate::mail::save::TargetError::NotFound.response()))?
+                        .spec,
+                );
+            }
+            let destination = serde_json::json!({
+                "to": to, "target": target,
+                "downloads": if matches!(to, SaveTo::Downloads) { context.downloads.as_ref() } else { None },
+            });
+            use sha2::{Digest, Sha256};
+            fingerprint = Sha256::digest(format!("{fingerprint}\0{destination}").as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+        }
+        Ok((found, fingerprint, target))
     }
 
     /// For the approval of `tasks.create_todo_from_mail` (task E8.7a): the mail as the store holds
@@ -15677,10 +15713,11 @@ mod tests {
             saved.iter().all(|file| std::path::Path::new(&file.path).starts_with(base.canonicalize().expect("base")))
         );
 
-        let part = match ask(&core, Some(&key), Request::ListSaveTargets { id: Some(id.clone()) }).await {
-            Response::SaveTargets { files, .. } => files[1].part.clone(),
-            other => panic!("targets: {other:?}"),
-        };
+        let part =
+            match ask(&core, Some(&key), Request::ListSaveTargets { id: Some(id.clone()), export_only: false }).await {
+                Response::SaveTargets { files, .. } => files[1].part.clone(),
+                other => panic!("targets: {other:?}"),
+            };
         // A part named twice is one file, as the core saves it.
         let one =
             Request::SaveMailAttachments { id: id.clone(), parts: vec![part.clone(), part], to: SaveTo::Downloads };
@@ -15699,7 +15736,7 @@ mod tests {
         outside.mail_accounts = Selection::Only(Vec::new());
         let (_, stranger) = client(&core, outside).await;
         let before = core.approvals.list(None, Utc::now()).await.unwrap_or_default().len();
-        let plan = Request::ListSaveTargets { id: Some(id.clone()) };
+        let plan = Request::ListSaveTargets { id: Some(id.clone()), export_only: false };
         assert_eq!(code(&ask(&core, Some(&stranger), plan).await), "not-found");
         let save = Request::SaveMailAttachments { id, parts: Vec::new(), to: SaveTo::Downloads };
         assert_eq!(code(&ask(&core, Some(&stranger), save).await), "not-found");
@@ -15794,6 +15831,67 @@ mod tests {
         let save = Request::SaveMailAs { id, format: ExportFormat::Png, to: SaveTo::Downloads };
         assert_eq!(code(&ask(&core, Some(&stranger), save).await), "not-found");
         assert_eq!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().len(), before, "nobody asked");
+    }
+
+    #[tokio::test]
+    async fn eml_approvals_pin_the_destination_and_preserve_account_and_path_protection() {
+        use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake::FakeImap;
+        use torro_ipc::mail::{ExportFormat, SaveTo};
+        let _serial = crate::mail::eml::TESTS.lock().await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let raw = crate::mail::save::tests::raw_on(Utc::now(), "Original", &[("data.bin", b"data")]);
+        server.add("INBOX", &raw, &[]);
+        let secrets = crate::account::github::tests::MemoryTokens::default();
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&account, PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let core = core(dir.path()).with_mail(mail);
+        let id = crate::mail::save::tests::message_id(&core.mail, "Original").await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let base = dir.path().join("exports");
+        std::fs::create_dir(&base).expect("exports");
+        let target = torro_mail::SaveTargetSpec::new("Originals", base.to_string_lossy());
+        let made = save_target(ask(&core, Some(&app_key), Request::CreateSaveTarget { target }).await);
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, key) = client(&core, rights.clone()).await;
+        let save =
+            Request::SaveMailAs { id: id.clone(), format: ExportFormat::Eml, to: SaveTo::Target(made.id.clone()) };
+        let asked = waits(ask(&core, Some(&key), save.clone()).await);
+        assert!(asked.summary.contains("EML"));
+        let mut changed = made.spec.clone();
+        changed.file_name = "changed.{ext}".into();
+        core.mail.save_targets().update(&made.id, changed, &torro_mail::Category::BUILT_IN).expect("changed target");
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("{allowed:?}") };
+        assert_eq!(code(&response), "conflict");
+        assert_eq!(std::fs::read_dir(&base).expect("empty").count(), 0);
+        let asked = waits(ask(&core, Some(&key), save.clone()).await);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("{allowed:?}") };
+        let Response::SavedMail { path, skipped: false, shortened: false } = *response else { panic!("{response:?}") };
+        assert!(std::path::Path::new(&path).starts_with(base.canonicalize().expect("base")));
+        assert_eq!(std::fs::read(&path).expect("original"), raw.as_bytes());
+        for to in [SaveTo::File(path), SaveTo::Folder(base.to_string_lossy().into_owned())] {
+            assert_eq!(
+                code(
+                    &ask(&core, Some(&key), Request::SaveMailAs { id: id.clone(), format: ExportFormat::Eml, to })
+                        .await
+                ),
+                "forbidden"
+            );
+        }
+        rights.mail_accounts = Selection::Only(Vec::new());
+        let (_, stranger) = client(&core, rights).await;
+        assert_eq!(code(&ask(&core, Some(&stranger), save).await), "not-found");
+        assert_eq!(
+            code(&ask(&core, Some(&stranger), Request::ListSaveTargets { id: Some(id), export_only: true }).await),
+            "not-found"
+        );
     }
 
     /// The answer's file of a `tools.create_pdf`, also as an approval kept it.

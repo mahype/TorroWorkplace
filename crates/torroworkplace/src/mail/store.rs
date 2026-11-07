@@ -750,6 +750,17 @@ impl MailStore {
         Ok(bytes.map(|bytes| bytes.max(0) as u64))
     }
 
+    /// The live original at this exact folder/UIDVALIDITY/UID, never a gone occurrence.
+    /// No body is read and no schema change is needed.
+    pub fn original_at(&self, place: &MessageRef) -> Result<Option<LocalOriginal>, MailStoreError> {
+        let seq: Option<i64> = self.db.query_row(
+            "SELECT seq FROM originals WHERE folder_path = ?1 AND uidvalidity = ?2 AND uid = ?3 AND gone_at IS NULL",
+            params![place.folder_path, place.uidvalidity, place.uid], |row| row.get(0),
+        ).optional()?;
+        let Some(seq) = seq else { return Ok(None) };
+        Ok(self.local_originals_page(seq - 1, 1)?.into_iter().find(|item| item.seq == seq && !item.gone))
+    }
+
     /// Refresh retained RFC-822 metadata even when the body was not fetched again.
     pub fn set_original_flags(
         &self,

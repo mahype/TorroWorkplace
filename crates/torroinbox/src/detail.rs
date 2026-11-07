@@ -112,6 +112,8 @@ pub struct Anchors {
     pub save_pdf: Anchor,
     /// "Save as image" in the rail's group Save (issue #501), alike.
     pub save_image: Anchor,
+    /// "Save as EML": available even if the reading body could not be loaded.
+    pub save_eml: Anchor,
     /// The icons of the groups of the mail's action rail (task E14.3, `mail::action_groups`): an
     /// open group hangs at its icon, and – through [`Anchors::with_rail`] – so do the menus and
     /// dialogs of its items while their row is not on screen.
@@ -159,6 +161,7 @@ impl Anchors {
             Message::AskSaveAttachments(_) => Some(&self.save_rail),
             Message::AskSaveMailAs(_, torro_ipc::mail::ExportFormat::Pdf) => Some(&self.save_pdf),
             Message::AskSaveMailAs(_, torro_ipc::mail::ExportFormat::Png) => Some(&self.save_image),
+            Message::AskSaveMailAs(_, torro_ipc::mail::ExportFormat::Eml) => Some(&self.save_eml),
             _ => None,
         }
     }
@@ -184,6 +187,7 @@ impl Anchors {
             save_rail: self.save_rail.or(&rail.save),
             save_pdf: self.save_pdf.or(&rail.save),
             save_image: self.save_image.or(&rail.save),
+            save_eml: self.save_eml.or(&rail.save),
             ..self
         }
     }

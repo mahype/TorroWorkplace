@@ -178,8 +178,8 @@ pub struct SaveTargets {
     /// message and while the core has not read its text yet (the menus then show the targets
     /// without a path).
     pub files: Vec<AttachmentPlan>,
-    /// Where the mail itself would go as PDF and as picture (issue #501), one plan per format; empty
-    /// without a message.
+    /// Where the mail itself would go, one plan per format; empty without a message.
+    /// PDF/PNG with `save_targets`, PDF/PNG/EML with `export_targets`.
     pub exports: Vec<ExportPlan>,
 }
 
@@ -220,7 +220,7 @@ pub struct SavedMail {
     pub path: String,
     /// Nothing was written: the same file lies there already ("Skip if identical").
     pub skipped: bool,
-    /// The mail was too long for one file and its end is cut off.
+    /// The rendered mail was too long and its end is cut off; always false for EML originals.
     pub shortened: bool,
 }
 
@@ -537,7 +537,17 @@ impl InboxClient {
     /// message `id` – where each of its attachments would go ([`SaveTargets`]). `NotFound` for a
     /// message the window may not see.
     pub async fn save_targets(&self, id: Option<String>) -> Result<SaveTargets, InboxError> {
-        match self.ask(Request::ListSaveTargets { id }).await? {
+        match self.ask(Request::ListSaveTargets { id, export_only: false }).await? {
+            Response::SaveTargets { targets, downloads, files, exports } => {
+                Ok(SaveTargets { targets, downloads, files, exports })
+            }
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Export plans from the message summary only, without fetching its body (issue #553).
+    pub async fn export_targets(&self, id: Option<String>) -> Result<SaveTargets, InboxError> {
+        match self.ask(Request::ListSaveTargets { id, export_only: true }).await? {
             Response::SaveTargets { targets, downloads, files, exports } => {
                 Ok(SaveTargets { targets, downloads, files, exports })
             }
@@ -562,7 +572,7 @@ impl InboxClient {
         }
     }
 
-    /// `mail.save_message_as` (issue #501): saves the message `id` as PDF or picture where `to` says;
+    /// `mail.save_message_as`: saves the message `id` as EML, PDF or picture where `to` says;
     /// the window, holding the app key, may send `to: file` with the path a person chose in the
     /// system's dialog. `NotFound` for an unknown message or target, or a target whose folder is
     /// missing.

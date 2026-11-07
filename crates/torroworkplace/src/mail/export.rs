@@ -139,6 +139,9 @@ pub async fn draw(head: Head, body: Body, format: ExportFormat, online: bool) ->
 
 /// [`draw`] on this (blocking) thread.
 fn draw_now(head: &Head, body: Body, format: ExportFormat, online: bool) -> Result<Drawn, String> {
+    if format == ExportFormat::Eml {
+        return Err("EML must use the original, not the renderer".into());
+    }
     let head = Content::offline(&head_html(head), None);
     let body = match body {
         Body::Html { html, raw, parts } => {
@@ -156,6 +159,7 @@ fn draw_now(head: &Head, body: Body, format: ExportFormat, online: bool) -> Resu
     match format {
         ExportFormat::Png => png(&sheet, MAX_PNG_ROWS),
         ExportFormat::Pdf => pdf(&sheet, MAX_PAGES),
+        ExportFormat::Eml => Err("EML is not a rendered format".into()),
     }
 }
 
