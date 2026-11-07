@@ -1238,7 +1238,19 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    „Save all to folder…“) nur mit dem App-Schlüssel (`Request::kept_for_people`): Den Pfad wählt ein Mensch im
    Dialog des Systems. Clients speichern nach `downloads` oder in ein Ziel (`{"target": …}`), mit der gewöhnlichen
    Schreibregel (Test `only_people_choose_where_attachments_go` in `torro-ipc`). Dasselbe gilt für
-   `mail.save_message_as` (Issue #501, die Mail selbst als PDF oder Bild).
+    `mail.save_message_as` (Issues #501/#553, die Mail selbst als PDF, Bild oder EML).
+    Die Exportvorschau `mail.list_save_targets` mit `id` und **`export_only: true`** liest nur die
+    gespeicherte Zusammenfassung: `files` ist leer und entfällt im JSON, Exportpläne für `pdf`, `png`, `eml`,
+    kein Body-/Netzabruf.
+    Ohne Opt-in bleiben ausschließlich PDF-/PNG-Pläne im bisherigen Antwortformat, ohne `id` nur Ziele.
+    EML (`message/rfc822`) enthält die geprüften Originalbytes mit allen MIME-Teilen und Anhängen,
+    keine Rekonstruktion. Ein lokal fehlendes oder nicht beweisbar vollständiges Original wird einmal
+    per IMAP `BODY.PEEK[]` geholt; weder externe Bilder noch Lesemarkierung oder Cacheänderung.
+    Fehlende UID/andere UIDVALIDITY: `not-found`; Netz/Anmeldung: `offline`/`auth` mit Originalhinweis;
+    unvollständige Daten, fehlende Größe und I/O: `error`; veränderte Zuordnung/Metadaten: `conflict`.
+    Höchstens 998951424 Bytes und ein EML-Export gleichzeitig (`busy`), niemals Kürzung
+    (`shortened: false`). Freigaben binden EML zusätzlich an die Zielspezifikation (bei Downloads
+    den eingestellten Ordner); Änderungen während der Wartezeit erfordern eine neue Anfrage.
 
 11. **Eine App installieren oder aktualisieren** (Issue #411, App-Katalog): `apps.install_app` und
    `apps.update_apps` nur mit dem App-Schlüssel (`Mcp::Never`). Grund: Wer installiert oder aktualisiert,

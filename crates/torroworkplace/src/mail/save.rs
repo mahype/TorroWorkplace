@@ -379,7 +379,7 @@ pub async fn answer(mail: &MailService, reach: Reach<'_>, context: &Context, req
     let targets = mail.save_targets();
     let downloads = || context.downloads.as_deref().map(|path| path.to_string_lossy().into_owned()).unwrap_or_default();
     let answered = match request {
-        Request::ListSaveTargets { id } => list(mail, reach, id.as_deref())
+        Request::ListSaveTargets { id, export_only } => list(mail, reach, id.as_deref(), export_only)
             .await
             .map(|(targets, files, exports)| Response::SaveTargets { targets, downloads: downloads(), files, exports }),
         Request::CreateSaveTarget { target } => {
@@ -401,7 +401,7 @@ pub async fn answer(mail: &MailService, reach: Reach<'_>, context: &Context, req
             })
             .map_err(boxed),
         Request::SaveMailAttachments { id, parts, to } => save(mail, reach, context, &id, &parts, &to).await,
-        Request::SaveMailAs { id, format, to } => save_message(mail, reach, context, &id, format, &to).await,
+        Request::SaveMailAs { id, format, to } => save_message(mail, reach, context, &id, format, &to, None).await,
         other => {
             let message = format!("{} is not a command for saving attachments", other.operation().name());
             Err(Box::new(Response::Error { code: "unsupported".into(), message }))
@@ -487,8 +487,19 @@ pub async fn to_approve(mail: &MailService, reach: Reach<'_>, id: &str, parts: &
 pub async fn message_to_approve(mail: &MailService, reach: Reach<'_>, id: &str) -> Answer<ToApprove> {
     let stores = mail.stores(reach).await;
     let located = read::locate(&stores, id).await?;
-    let message = read::stored_message(&located).await?;
-    Ok(ToApprove { account: located.account, subject: message.summary.subject, count: 1 })
+    let summary = summary_of(&located).await?;
+    Ok(ToApprove { account: located.account, subject: summary.subject, count: 1 })
+}
+
+/// Export needs only headers; a damaged disposable reading body must not hide the original.
+async fn summary_of(located: &read::Located) -> Answer<MessageSummary> {
+    let id = located.place.id.clone();
+    located
+        .store
+        .run(move |store| store.summary(&id))
+        .await
+        .map_err(|err| Box::new(super::service::MailError::Store(err).response()))?
+        .ok_or_else(|| failed("not-found", tr("No such message.")))
 }
 
 /// The attachments of the stored `message`, `inline` ones included: the store's once it has read the
@@ -518,23 +529,30 @@ async fn known_attachments(
 /// The targets and, for `id`, the plan of each attachment of the message that is not `inline`
 /// ([`plan`], the attachments from [`known_attachments`]) and of the mail itself as PDF and picture
 /// ([`export_plan`], issue #501); no attachment plans when they cannot be read, the targets and the
-/// mail's plans all the same.
+/// mail's plans all the same. `export_only` instead plans every export format from the summary,
+/// with no attachment plans or body access (issue #553).
 async fn list(
     mail: &MailService,
     reach: Reach<'_>,
     id: Option<&str>,
+    export_only: bool,
 ) -> Answer<(Vec<SaveTarget>, Vec<AttachmentPlan>, Vec<ExportPlan>)> {
     let targets = mail.save_targets().list().map_err(boxed)?;
     let Some(id) = id else { return Ok((targets, Vec::new(), Vec::new())) };
     let stores = mail.stores(reach).await;
     let located = read::locate(&stores, id).await?;
-    let message = read::stored_message(&located).await?;
+    let summary = summary_of(&located).await?;
     let account = account_name(mail, &located.account).await;
     let months = month_names();
     let exports = ExportFormat::ALL
         .iter()
-        .map(|&format| export_plan(&targets, &message.summary, format, &account, &months))
+        .filter(|&&format| export_only || format != ExportFormat::Eml)
+        .map(|&format| export_plan(&targets, &summary, format, &account, &months))
         .collect();
+    if export_only {
+        return Ok((targets, Vec::new(), exports));
+    }
+    let message = read::stored_message(&located).await?;
     let Some(attachments) = known_attachments(mail, &located, &message).await else {
         return Ok((targets, Vec::new(), exports));
     };
@@ -708,11 +726,7 @@ fn place_of(mail: &MailService, context: &Context, to: &SaveTo) -> Answer<Place>
         },
         SaveTo::Target(id) => {
             let target = mail.save_targets().get(id).map_err(boxed)?.ok_or_else(|| boxed(TargetError::NotFound))?;
-            if !Path::new(&target.spec.folder).is_dir() {
-                let message = trf("The folder of {target} is missing.", &[("target", &target.spec.name)]);
-                return Err(Box::new(Response::Error { code: "not-found".into(), message }));
-            }
-            Ok(Place::Target(target.spec))
+            target_place(target.spec)
         }
         SaveTo::Folder(dir) if Path::new(dir).is_dir() => Ok(Place::Folder(PathBuf::from(dir))),
         SaveTo::Folder(_) => Err(failed("not-found", tr("The folder is missing."))),
@@ -721,6 +735,14 @@ fn place_of(mail: &MailService, context: &Context, to: &SaveTo) -> Answer<Place>
         }
         SaveTo::File(_) => Err(failed("not-found", tr("The folder is missing."))),
     }
+}
+
+fn target_place(spec: SaveTargetSpec) -> Answer<Place> {
+    if !Path::new(&spec.folder).is_dir() {
+        let message = trf("The folder of {target} is missing.", &[("target", &spec.name)]);
+        return Err(Box::new(Response::Error { code: "not-found".into(), message }));
+    }
+    Ok(Place::Target(spec))
 }
 
 /// The parts to save: `parts`, each once, or with none named every attachment of `raw` that is not
@@ -894,6 +916,39 @@ fn destination(place: &Place, attachment: &mime::Attachment, mail: &Mail<'_>) ->
 }
 
 impl Job {
+    /// EML publication: copy/verify to a private temporary in the destination directory, sync it,
+    /// then atomically publish. Existing files remain intact on every pre-publication failure.
+    fn run_file(self, mut source: super::eml::Prepared) -> Result<Written, Problem> {
+        let (dir, name, rule, replace) = match self {
+            Job::New { dir, below, name, rule } => {
+                let dir = match below {
+                    Some((base, folders)) => target_dir(&base, &folders)?,
+                    None => dir,
+                };
+                (dir, name, rule, None)
+            }
+            Job::Replace(path) => {
+                replaceable(&path)?;
+                let dir = path.parent().ok_or(Problem::Write)?.to_path_buf();
+                (dir, String::new(), OnConflict::KeepBoth, Some(path))
+            }
+        };
+        let mut temporary = tempfile::NamedTempFile::new_in(&dir).map_err(|err| Problem::of(&err))?;
+        super::eml::copy(&mut source.file, temporary.as_file_mut(), source.bytes, &source.sha256).map_err(|err| {
+            match err {
+                super::eml::Error::Write(io::ErrorKind::PermissionDenied) => Problem::Denied,
+                _ => Problem::Write,
+            }
+        })?;
+        temporary.as_file().sync_all().map_err(|err| Problem::of(&err))?;
+        if let Some(path) = replace {
+            replaceable(&path)?;
+            temporary.persist(&path).map_err(|err| Problem::of(&err.error))?;
+            return Ok(Written::Saved(path));
+        }
+        publish_new(temporary, &dir, &name, rule, &mut source.file, source.bytes)
+    }
+
     /// Writes `bytes` (blocking).
     fn run(self, bytes: &[u8]) -> Result<Written, Problem> {
         match self {
@@ -907,6 +962,64 @@ impl Job {
             Job::Replace(file) => replace(&file, bytes),
         }
     }
+}
+
+/// Publish a verified destination temporary without ever overwriting a competing writer's file.
+fn publish_new(
+    mut temporary: tempfile::NamedTempFile,
+    dir: &Path,
+    name: &str,
+    rule: OnConflict,
+    source: &mut fs::File,
+    bytes: u64,
+) -> Result<Written, Problem> {
+    for copy in 1..=MAX_COPY {
+        let path = dir.join(numbered(name, copy));
+        if rule == OnConflict::SkipIdentical && same_file(&path, source, bytes) {
+            return Ok(Written::Skipped(path));
+        }
+        match temporary.persist_noclobber(&path) {
+            Ok(_) => return Ok(Written::Saved(path)),
+            Err(err) if err.error.kind() == io::ErrorKind::AlreadyExists => temporary = err.file,
+            Err(err) => return Err(Problem::of(&err.error)),
+        }
+    }
+    Err(Problem::Taken)
+}
+
+/// Never replace a link, directory or special file. A missing destination is allowed.
+fn replaceable(path: &Path) -> Result<(), Problem> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() => Ok(()),
+        Ok(_) => Err(Problem::NotReplaceable),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(Problem::of(&err)),
+    }
+}
+
+/// Bounded equality check, never following a known symbolic link or buffering a whole original.
+fn same_file(path: &Path, source: &mut fs::File, bytes: u64) -> bool {
+    use std::io::{Read, Seek};
+    if !fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() == bytes) {
+        return false;
+    }
+    let Ok(mut there) = fs::File::open(path) else { return false };
+    if source.rewind().is_err() {
+        return false;
+    }
+    let (mut a, mut b) = ([0u8; 64 * 1024], [0u8; 64 * 1024]);
+    let mut left = bytes;
+    while left > 0 {
+        let count = left.min(a.len() as u64) as usize;
+        if source.read_exact(&mut a[..count]).is_err()
+            || there.read_exact(&mut b[..count]).is_err()
+            || a[..count] != b[..count]
+        {
+            return false;
+        }
+        left -= count as u64;
+    }
+    there.read(&mut b[..1]).is_ok_and(|read| read == 0)
 }
 
 /// The folder `folders` below `base`, made one at a time: each one, once made (or found), is
@@ -1008,10 +1121,11 @@ fn name_subject(subject: &str) -> String {
 }
 
 /// The kind of file `format` makes, for a target's "Suggest when" (decision 5 of issue #501).
-fn export_kind(format: ExportFormat) -> FileKind {
+fn export_kind(format: ExportFormat) -> Option<FileKind> {
     match format {
-        ExportFormat::Pdf => FileKind::Pdf,
-        ExportFormat::Png => FileKind::Image,
+        ExportFormat::Pdf => Some(FileKind::Pdf),
+        ExportFormat::Png => Some(FileKind::Image),
+        ExportFormat::Eml => None,
     }
 }
 
@@ -1048,9 +1162,7 @@ pub fn export_plan(
                 file: resolved.file,
             });
         }
-        if suggestion(&target.spec.suggest, summary.category, Some(export_kind(format)), &facts.sender_address)
-            .is_some()
-        {
+        if suggestion(&target.spec.suggest, summary.category, export_kind(format), &facts.sender_address).is_some() {
             plan.suggested.push(target.id.clone());
         }
     }
@@ -1068,6 +1180,7 @@ async fn save_message(
     id: &str,
     format: ExportFormat,
     to: &SaveTo,
+    checked_target: Option<SaveTargetSpec>,
 ) -> Answer<Response> {
     if let SaveTo::File(path) | SaveTo::Folder(path) = to
         && !path_fits(path)
@@ -1076,11 +1189,31 @@ async fn save_message(
     }
     let stores = mail.stores(reach).await;
     let located = read::locate(&stores, id).await?;
+    let place = match checked_target {
+        Some(spec) => target_place(spec)?,
+        None => place_of(mail, context, to)?,
+    };
+    if format == ExportFormat::Eml {
+        let summary = summary_of(&located).await?;
+        // Keep the chunked IMAP capture out of the shared save/dispatch future, even for non-EML calls.
+        let original = Box::pin(super::eml::prepare(mail, &located)).await.map_err(|err| err.response())?;
+        let (account, months) = (account_name(mail, &located.account).await, month_names());
+        let job = export_destination(&place, &summary, format, &account, &months).map_err(|err| err.failed())?;
+        let written = tokio::task::spawn_blocking(move || job.run_file(original)).await.unwrap_or(Err(Problem::Write));
+        return match written {
+            Ok(Written::Saved(path)) => {
+                Ok(Response::SavedMail { path: shown(&path), skipped: false, shortened: false })
+            }
+            Ok(Written::Skipped(path)) => {
+                Ok(Response::SavedMail { path: shown(&path), skipped: true, shortened: false })
+            }
+            Err(problem) => Err(problem.failed()),
+        };
+    }
     let message = read::stored_message(&located).await?;
-    let place = place_of(mail, context, to)?;
+    let summary = &message.summary;
     let raw = read::fetch_raw(mail, &located).await?;
     let read = mime::read(&raw).map_err(|_| read::unreadable())?;
-    let summary = &message.summary;
     let head = super::export::Head {
         subject: summary.subject.clone(),
         from: summary.from.clone(),
@@ -1105,6 +1238,19 @@ async fn save_message(
         Ok(Written::Skipped(path)) => Ok(Response::SavedMail { path: shown(&path), skipped: true, shortened }),
         Err(problem) => Err(problem.failed()),
     }
+}
+
+/// Runs an approved EML save with the exact target snapshot fingerprinted by the core. Never
+/// re-reads that target after checking the approval, even if a person edits it concurrently.
+pub(crate) async fn approved_eml(
+    mail: &MailService,
+    reach: Reach<'_>,
+    context: &Context,
+    id: &str,
+    to: &SaveTo,
+    target: Option<SaveTargetSpec>,
+) -> Response {
+    save_message(mail, reach, context, id, ExportFormat::Eml, to, target).await.unwrap_or_else(|err| *err)
 }
 
 /// The file the mail `summary` saved as `format` becomes at `place`.
@@ -1597,7 +1743,13 @@ pub(crate) mod tests {
         let context = Context { downloads: Some(downloads.clone()), categories: Category::BUILT_IN.to_vec() };
         let made = service.save_targets().create(spec("Invoices", &base), &context.categories).expect("stored");
 
-        let listed = answer(&service, Reach::Suite, &context, Request::ListSaveTargets { id: Some(id.clone()) }).await;
+        let listed = answer(
+            &service,
+            Reach::Suite,
+            &context,
+            Request::ListSaveTargets { id: Some(id.clone()), export_only: false },
+        )
+        .await;
         let Response::SaveTargets { targets, downloads: shown, files, .. } = listed else {
             panic!("targets: {listed:?}")
         };
@@ -1638,7 +1790,7 @@ pub(crate) mod tests {
         let mut rights = RightsTemplate::FullAccess.rights();
         rights.mail_accounts = Selection::Only(Vec::new());
         let client = Reach::Client(&rights);
-        let plan = Request::ListSaveTargets { id: Some(id.clone()) };
+        let plan = Request::ListSaveTargets { id: Some(id.clone()), export_only: false };
         assert_eq!(code(&answer(&service, client, &context, plan).await), "not-found");
         let save = Request::SaveMailAttachments { id, parts: Vec::new(), to: SaveTo::Downloads };
         assert_eq!(code(&answer(&service, client, &context, save).await), "not-found");
@@ -1671,6 +1823,18 @@ pub(crate) mod tests {
         let png = export_plan(&targets, &summary(), ExportFormat::Png, "Privat", &months);
         assert_eq!(png.file_name, "2026-03-28 Ihre Rechnung.png");
         assert!(png.suggested.is_empty(), "a picture is no PDF");
+        let mut targets = targets;
+        targets.push(SaveTarget {
+            id: "sender".into(),
+            spec: SaveTargetSpec {
+                suggest: SuggestWhen { senders: vec!["stadtwerke-bonn.de".into()], ..SuggestWhen::default() },
+                ..spec("Sender", folder)
+            },
+        });
+        let eml = export_plan(&targets, &summary(), ExportFormat::Eml, "Privat", &months);
+        assert_eq!(eml.file_name, "2026-03-28 Ihre Rechnung.eml");
+        assert_eq!(eml.places[0].file, "Ihre Rechnung.eml");
+        assert_eq!(eml.suggested, ["sender"], "EML matches sender rules, never PDF/image type rules");
 
         let odd = MessageSummary { subject: format!("  Re: a/b\n{}", "x".repeat(80)), ..summary() };
         let named = export_plan(&[], &odd, ExportFormat::Pdf, "Privat", &months).file_name;
@@ -1699,9 +1863,28 @@ pub(crate) mod tests {
         let target = SaveTargetSpec { subfolders: "{year}".into(), ..spec("Invoices", &base) };
         let made = service.save_targets().create(target, &context.categories).expect("stored");
 
-        let listed = answer(&service, Reach::Suite, &context, Request::ListSaveTargets { id: Some(id.clone()) }).await;
+        let listed = answer(
+            &service,
+            Reach::Suite,
+            &context,
+            Request::ListSaveTargets { id: Some(id.clone()), export_only: false },
+        )
+        .await;
         let Response::SaveTargets { exports, .. } = listed else { panic!("targets: {listed:?}") };
-        assert_eq!(exports.iter().map(|plan| plan.format).collect::<Vec<_>>(), ExportFormat::ALL);
+        assert_eq!(exports.iter().map(|plan| plan.format).collect::<Vec<_>>(), [ExportFormat::Pdf, ExportFormat::Png]);
+        #[derive(Debug, Deserialize, PartialEq)]
+        #[serde(rename_all = "lowercase")]
+        enum OldFormat {
+            Pdf,
+            Png,
+        }
+        #[derive(Deserialize)]
+        struct OldPlan {
+            format: OldFormat,
+        }
+        let old: Vec<OldPlan> = serde_json::from_value(serde_json::to_value(&exports).expect("wire"))
+            .expect("pre-EML client reads legacy plans");
+        assert_eq!(old.into_iter().map(|p| p.format).collect::<Vec<_>>(), [OldFormat::Pdf, OldFormat::Png]);
         assert_eq!(exports[0].places[0].file, "Ihre Rechnung.pdf");
 
         let to_target = Request::SaveMailAs { id: id.clone(), format: ExportFormat::Pdf, to: SaveTo::Target(made.id) };
@@ -1772,6 +1955,442 @@ pub(crate) mod tests {
         assert!(red > 1000, "the picture of the mail is drawn: {red} red pixels");
     }
 
+    /// Originals remain byte-identical, including unknown/folded headers, nested alternative/related
+    /// parts and binary attachments. Export preview is strictly metadata-only and opt-in.
+    #[tokio::test]
+    async fn eml_exports_exact_mime_without_body_preview_or_cache_writes() {
+        let _serial = super::super::eml::TESTS.lock().await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let text = raw_with(&[]);
+        let mixed = raw_with(&[("binary.dat", &[0, 255, 13, 10, 128])]);
+        let related = concat!(
+            "From: sender@example.org\r\nTo: anna@example.org\r\nSubject: Related\r\n",
+            "Message-ID: <related@example.org>\r\nX-Extra: untouched\r\n\tfolded value\r\n",
+            "MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n",
+            "--m\r\nContent-Type: multipart/alternative; boundary=a\r\n\r\n",
+            "--a\r\nContent-Type: text/plain\r\n\r\nPlain text\r\n",
+            "--a\r\nContent-Type: multipart/related; boundary=r\r\n\r\n",
+            "--r\r\nContent-Type: text/html\r\n\r\n<p>HTML<img src=\"cid:picture\"></p>\r\n",
+            "--r\r\nContent-Type: image/png\r\nContent-ID: <picture>\r\nContent-Disposition: inline\r\n",
+            "Content-Transfer-Encoding: base64\r\n\r\nAAECAw==\r\n--r--\r\n--a--\r\n",
+            "--m\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=binary.dat\r\n",
+            "Content-Transfer-Encoding: base64\r\n\r\nAP8NCoA=\r\n--m--\r\n",
+        );
+        let bodies = [text.as_str(), mixed.as_str(), related];
+        let uids: Vec<_> = bodies.iter().map(|raw| server.add("INBOX", raw, &[])).collect();
+        let service = synced(dir.path(), &server).await;
+        let store = service.stores(Reach::Suite).await.remove(0).1;
+        let downloads = dir.path().join("exports");
+        fs::create_dir(&downloads).expect("folder");
+        let context = Context { downloads: Some(downloads.clone()), categories: Category::BUILT_IN.to_vec() };
+        let places = store
+            .run(move |store| {
+                let folder = store.folder_by_role(torro_mail::Role::Inbox)?.expect("inbox");
+                let mut places = Vec::new();
+                for uid in uids {
+                    let id = store
+                        .list_messages(&folder.id, 20, 0)?
+                        .into_iter()
+                        .find(|m| store.resolve_message(&m.id).ok().flatten().is_some_and(|p| p.uid == uid))
+                        .expect("message")
+                        .id;
+                    places.push(store.resolve_message(&id)?.expect("place"));
+                }
+                Ok(places)
+            })
+            .await
+            .expect("places");
+        for (place, raw) in places.iter().zip(bodies) {
+            let lines = server.lines().len();
+            let preview = answer(
+                &service,
+                Reach::Suite,
+                &context,
+                Request::ListSaveTargets { id: Some(place.id.clone()), export_only: true },
+            )
+            .await;
+            let Response::SaveTargets { files, exports, .. } = preview else { panic!("{preview:?}") };
+            assert!(files.is_empty());
+            assert_eq!(exports.iter().map(|plan| plan.format).collect::<Vec<_>>(), ExportFormat::ALL);
+            // Released command sessions may finish their IDLE/LOGOUT housekeeping concurrently.
+            // Count body/export fetches, not unrelated connection lifecycle lines.
+            let later = server.lines()[lines..].to_vec();
+            assert!(
+                !later
+                    .iter()
+                    .any(|line| line.contains("BODY.PEEK[]") || line.contains("(UID INTERNALDATE RFC822.SIZE)")),
+                "preview performs no source fetches: {later:?}"
+            );
+            let before = read::stored_message(&read::Located {
+                account: ANNA.into(),
+                store: store.clone(),
+                place: place.clone(),
+            })
+            .await
+            .expect("before");
+            let save = Request::SaveMailAs { id: place.id.clone(), format: ExportFormat::Eml, to: SaveTo::Downloads };
+            let saved = answer(&service, Reach::Suite, &context, save.clone()).await;
+            let Response::SavedMail { path, skipped: false, shortened: false } = saved else { panic!("{saved:?}") };
+            let bytes = fs::read(&path).expect("saved original");
+            assert_eq!(bytes, raw.as_bytes());
+            assert!(Path::new(&path).extension().is_some_and(|ext| ext == "eml"));
+            let parsed = mime::read(&bytes).expect("standard MIME readback");
+            if raw == related {
+                assert!(parsed.html.is_some());
+                let attachment = parsed.attachments.iter().find(|a| !a.inline).expect("binary attachment");
+                assert_eq!(mime::attachment(&bytes, &attachment.part).expect("decoded").bytes, [0, 255, 13, 10, 128]);
+                let header = b"X-Extra: untouched\r\n\tfolded value\r\n";
+                assert!(bytes.windows(header.len()).any(|s| s == header), "unknown folded header remains");
+            }
+            let after = read::stored_message(&read::Located {
+                account: ANNA.into(),
+                store: store.clone(),
+                place: place.clone(),
+            })
+            .await
+            .expect("after");
+            assert_eq!(before, after, "export does not update reading cache");
+            assert!(server.flags("INBOX", place.uid).is_empty(), "PEEK never marks read");
+            let target = SaveTargetSpec {
+                on_conflict: OnConflict::SkipIdentical,
+                ..spec(&format!("Original {}", place.uid), &downloads)
+            };
+            let target = service.save_targets().create(target, &context.categories).expect("target");
+            let to = SaveTo::Target(target.id);
+            let request = Request::SaveMailAs { id: place.id.clone(), format: ExportFormat::Eml, to };
+            let first = answer(&service, Reach::Suite, &context, request.clone()).await;
+            let Response::SavedMail { path: target_path, skipped: false, shortened: false } = first else {
+                panic!("{first:?}")
+            };
+            assert_eq!(fs::read(&target_path).expect("target bytes"), raw.as_bytes());
+            let second = answer(&service, Reach::Suite, &context, request).await;
+            assert_eq!(second, Response::SavedMail { path: target_path, skipped: true, shortened: false });
+            let located = read::Located { account: ANNA.into(), store: store.clone(), place: place.clone() };
+            // A locally retained original works even after it has disappeared from the server.
+            let local_place = place.clone();
+            let original = raw.as_bytes().to_vec();
+            store
+                .run(move |store| {
+                    store.save_original(
+                        &local_place.folder_path,
+                        local_place.uidvalidity,
+                        local_place.uid,
+                        Utc::now().fixed_offset(),
+                        &[],
+                        &original,
+                    )
+                })
+                .await
+                .expect("local original");
+            server.expunge("INBOX", place.uid);
+            let commands = server.lines().len();
+            let captured = super::super::eml::prepare(&service, &located).await.expect("offline source");
+            let busy = answer(&service, Reach::Suite, &context, save.clone()).await;
+            assert_eq!(code(&busy), "busy");
+            let job = Job::New {
+                dir: downloads.clone(),
+                below: None,
+                name: "Original.eml".into(),
+                rule: OnConflict::KeepBoth,
+            };
+            let written = job.clone().run_file(captured).expect("published");
+            assert!(matches!(written, Written::Saved(_)));
+            let captured = super::super::eml::prepare(&service, &located).await.expect("local again");
+            let written = Job::New {
+                dir: downloads.clone(),
+                below: None,
+                name: "Original.eml".into(),
+                rule: OnConflict::SkipIdentical,
+            }
+            .run_file(captured)
+            .expect("skip identical");
+            assert!(matches!(written, Written::Skipped(_)));
+            let later = server.lines()[commands..].to_vec();
+            assert!(
+                !later
+                    .iter()
+                    .any(|line| line.contains("BODY.PEEK[]") || line.contains("(UID INTERNALDATE RFC822.SIZE)")),
+                "local export never fetches: {later:?}"
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(fs::metadata(path).expect("mode").permissions().mode() & 0o777, 0o600);
+            }
+            // Use another name for the next fixture's direct Job publication.
+            fs::remove_file(downloads.join("Original.eml")).expect("test file");
+        }
+    }
+
+    #[tokio::test]
+    async fn eml_name_conflicts_preserve_old_files_and_clean_up_when_all_names_are_taken() {
+        let _serial = super::super::eml::TESTS.lock().await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let raw = raw_with(&[]);
+        server.add("INBOX", &raw, &[]);
+        let service = synced(dir.path(), &server).await;
+        let id = message_id(&service, "Ihre Rechnung").await;
+        let located = read::locate(&service.stores(Reach::Suite).await, &id).await.expect("located");
+        for rule in [OnConflict::KeepBoth, OnConflict::SkipIdentical] {
+            let exports = tempfile::tempdir().expect("exports");
+            let job = Job::New { dir: exports.path().into(), below: None, name: "Original.eml".into(), rule };
+            let captured = super::super::eml::prepare(&service, &located).await.expect("capture");
+            // Names become occupied after destination planning; no existence check may clobber them.
+            for copy in 1..=2 {
+                fs::write(exports.path().join(numbered("Original.eml", copy)), b"old content").expect("old");
+            }
+            let path = exports.path().join("Original (3).eml");
+            assert_eq!(job.clone().run_file(captured), Ok(Written::Saved(path.clone())));
+            assert_eq!(fs::read(path).expect("new original"), raw.as_bytes());
+            for copy in 1..=2 {
+                assert_eq!(fs::read(exports.path().join(numbered("Original.eml", copy))).expect("old"), b"old content");
+            }
+            assert_eq!(fs::read_dir(exports.path()).expect("files").count(), 3);
+            for copy in 3..=MAX_COPY {
+                fs::write(exports.path().join(numbered("Original.eml", copy)), b"old content").expect("occupied");
+            }
+            let captured = super::super::eml::prepare(&service, &located).await.expect("capture");
+            assert_eq!(job.run_file(captured), Err(Problem::Taken));
+            assert_eq!(fs::read_dir(exports.path()).expect("files").count(), MAX_COPY as usize, "no temporary remains");
+            for copy in 1..=MAX_COPY {
+                assert_eq!(
+                    fs::read(exports.path().join(numbered("Original.eml", copy))).expect("unchanged"),
+                    b"old content"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eml_atomic_publication_numbers_concurrent_writers_without_clobbering() {
+        use std::io::Write;
+        use std::sync::Barrier;
+
+        let dir = tempfile::tempdir().expect("exports");
+        let start = Barrier::new(2);
+        std::thread::scope(|threads| {
+            let writers: Vec<_> = [b"first original".as_slice(), b"second original".as_slice()]
+                .into_iter()
+                .map(|bytes| {
+                    let (dir, start) = (dir.path(), &start);
+                    threads.spawn(move || {
+                        let mut temporary = tempfile::NamedTempFile::new_in(dir).expect("temporary");
+                        temporary.write_all(bytes).expect("destination bytes");
+                        let mut source = tempfile::tempfile().expect("source");
+                        source.write_all(bytes).expect("source bytes");
+                        start.wait();
+                        let written = publish_new(
+                            temporary,
+                            dir,
+                            "Original.eml",
+                            OnConflict::KeepBoth,
+                            &mut source,
+                            bytes.len() as u64,
+                        )
+                        .expect("published");
+                        let Written::Saved(path) = written else { panic!("not saved") };
+                        assert_eq!(fs::read(&path).expect("own bytes"), bytes);
+                        path
+                    })
+                })
+                .collect();
+            let mut paths: Vec<_> = writers.into_iter().map(|writer| writer.join().expect("writer")).collect();
+            paths.sort();
+            let mut expected = vec![dir.path().join("Original.eml"), dir.path().join("Original (2).eml")];
+            expected.sort();
+            assert_eq!(paths, expected);
+        });
+        assert_eq!(fs::read_dir(dir.path()).expect("files").count(), 2, "no temporary remains");
+    }
+
+    #[tokio::test]
+    async fn eml_incomplete_sources_and_failed_publication_leave_no_files() {
+        let _serial = super::super::eml::TESTS.lock().await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let raw = raw_with(&[("a.dat", b"data")]);
+        let uid = server.add("INBOX", &raw, &[]);
+        let service = synced(dir.path(), &server).await;
+        let id = message_id(&service, "Ihre Rechnung").await;
+        let located = read::locate(&service.stores(Reach::Suite).await, &id).await.expect("located");
+        let exports = dir.path().join("exports");
+        fs::create_dir(&exports).expect("folder");
+        let context = Context { downloads: Some(exports.clone()), categories: Category::BUILT_IN.to_vec() };
+        let request = Request::SaveMailAs { id: id.clone(), format: ExportFormat::Eml, to: SaveTo::Downloads };
+        for claimed in [0, raw.len() - 1, raw.len() + 1, super::super::store::ORIGINAL_MAX_BYTES as usize + 1] {
+            server.misreport_size("INBOX", uid, claimed);
+            assert_eq!(code(&answer(&service, Reach::Suite, &context, request.clone()).await), "error");
+            assert_eq!(fs::read_dir(&exports).expect("files").count(), 0);
+        }
+        server.misreport_size("INBOX", uid, raw.len());
+        // Corrupt or unprovable local originals are tried once on the server, never reconstructed.
+        let db = located.store.run(|store| Ok(store.path().to_path_buf())).await.expect("db path");
+        for damage in [
+            "UPDATE originals SET sha256 = 'broken'",
+            "UPDATE originals SET raw = x'61'",
+            "UPDATE originals SET bytes = bytes - 1",
+            "UPDATE messages SET size = NULL",
+        ] {
+            let place = located.place.clone();
+            let original = raw.as_bytes().to_vec();
+            located
+                .store
+                .run(move |store| {
+                    store.set_size(&place.folder, place.uid, original.len() as u64)?;
+                    store.save_original(
+                        &place.folder_path,
+                        place.uidvalidity,
+                        place.uid,
+                        Utc::now().fixed_offset(),
+                        &[],
+                        &original,
+                    )
+                })
+                .await
+                .expect("local original");
+            rusqlite::Connection::open(&db).expect("db").execute(damage, []).expect("damage fixture");
+            let lines = server.lines().len();
+            let original = super::super::eml::prepare(&service, &located).await.expect("server fallback");
+            assert!(server.lines()[lines..].iter().any(|line| line.contains("BODY.PEEK[]<")));
+            drop(original);
+        }
+        server.withhold_size("INBOX", uid);
+        assert_eq!(code(&answer(&service, Reach::Suite, &context, request.clone()).await), "error");
+        // Restore a proven local original, then fail destination writes/replacement.
+        let place = located.place.clone();
+        let bytes = raw.as_bytes().to_vec();
+        located
+            .store
+            .run(move |store| {
+                store.set_size(&place.folder, place.uid, bytes.len() as u64)?;
+                store.save_original(
+                    &place.folder_path,
+                    place.uidvalidity,
+                    place.uid,
+                    Utc::now().fixed_offset(),
+                    &[],
+                    &bytes,
+                )
+            })
+            .await
+            .expect("proven original");
+        let old = exports.join("old.eml");
+        fs::write(&old, b"old content").expect("old");
+        let prepared = super::super::eml::prepare(&service, &located).await.expect("capture");
+        prepared.file.set_len(1).expect("truncate spool");
+        assert!(Job::Replace(old.clone()).run_file(prepared).is_err());
+        assert_eq!(fs::read(&old).expect("old intact"), b"old content");
+        let captured = super::super::eml::prepare(&service, &located).await.expect("capture");
+        assert!(
+            Job::New { dir: exports.join("missing"), below: None, name: "a.eml".into(), rule: OnConflict::KeepBoth }
+                .run_file(captured)
+                .is_err()
+        );
+        let captured = super::super::eml::prepare(&service, &located).await.expect("capture");
+        Job::Replace(old.clone()).run_file(captured).expect("regular replacement");
+        assert_eq!(fs::read(&old).expect("replaced"), raw.as_bytes());
+        #[cfg(unix)]
+        {
+            let link = exports.join("link.eml");
+            std::os::unix::fs::symlink(&old, &link).expect("link");
+            let captured = super::super::eml::prepare(&service, &located).await.expect("capture");
+            assert_eq!(Job::Replace(link.clone()).run_file(captured), Err(Problem::NotReplaceable));
+            fs::remove_file(link).expect("link removed");
+        }
+        assert_eq!(fs::read_dir(&exports).expect("files").count(), 1, "no temporary/partial files remain");
+        // A damaged disposable reader body does not prevent summary-only preview, approval or EML.
+        let body = super::super::store::Body::of(mime::read(raw.as_bytes()).expect("mime"), None);
+        let body_id = id.clone();
+        located.store.run(move |store| store.set_body(&body_id, &body)).await.expect("reading body");
+        rusqlite::Connection::open(&db)
+            .expect("db")
+            .execute("UPDATE bodies SET attachments_json = 'broken'", [])
+            .expect("corrupt reading metadata");
+        let preview = answer(
+            &service,
+            Reach::Suite,
+            &context,
+            Request::ListSaveTargets { id: Some(id.clone()), export_only: true },
+        )
+        .await;
+        assert!(matches!(preview, Response::SaveTargets { .. }));
+        assert!(message_to_approve(&service, Reach::Suite, &id).await.is_ok());
+        assert!(matches!(answer(&service, Reach::Suite, &context, request).await, Response::SavedMail { .. }));
+    }
+
+    #[tokio::test]
+    async fn eml_rechecks_server_facts_and_mapping_but_not_flags() {
+        let _serial = super::super::eml::TESTS.lock().await;
+        for change in ["flags", "size", "validity", "mapping", "gone"] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let server = FakeImap::start(PASSWORD).await;
+            let raw = raw_with(&[]);
+            let uid = server.add("INBOX", &raw, &[]);
+            let service = synced(dir.path(), &server).await;
+            let id = message_id(&service, "Ihre Rechnung").await;
+            let context =
+                Context { downloads: Some(dir.path().join("exports")), categories: Category::BUILT_IN.to_vec() };
+            fs::create_dir(context.downloads.as_ref().expect("folder")).expect("exports");
+            let stores = service.stores(Reach::Suite).await;
+            let located = read::locate(&stores, &id).await.expect("located");
+            if change == "gone" {
+                server.withhold_text("INBOX", uid);
+                let response = answer(
+                    &service,
+                    Reach::Suite,
+                    &context,
+                    Request::SaveMailAs { id, format: ExportFormat::Eml, to: SaveTo::Downloads },
+                )
+                .await;
+                assert_eq!(code(&response), "not-found");
+                continue;
+            }
+            let already = server.lines().iter().filter(|line| line.contains("BODY.PEEK[]<")).count();
+            server.hold_backup_chunks(true);
+            let save = answer(
+                &service,
+                Reach::Suite,
+                &context,
+                Request::SaveMailAs { id, format: ExportFormat::Eml, to: SaveTo::Downloads },
+            );
+            let mutate = async {
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    while server.lines().iter().filter(|line| line.contains("BODY.PEEK[]<")).count() == already {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("export reaches gated body");
+                match change {
+                    "flags" => server.set_flags("INBOX", uid, &["\\Flagged"]),
+                    "size" => server.misreport_size("INBOX", uid, raw.len() + 1),
+                    "validity" => server.renumber("INBOX"),
+                    "mapping" => {
+                        let place = located.place.clone();
+                        located
+                            .store
+                            .run(move |store| store.delete_uids(&place.folder, &[place.uid]))
+                            .await
+                            .expect("gone from cache");
+                    }
+                    _ => unreachable!(),
+                }
+                server.hold_backup_chunks(false);
+            };
+            let (response, ()) = tokio::join!(save, mutate);
+            match change {
+                "flags" => assert!(matches!(response, Response::SavedMail { .. }), "{response:?}"),
+                "validity" => assert_eq!(code(&response), "not-found"),
+                _ => assert_eq!(code(&response), "conflict"),
+            }
+            if change != "flags" {
+                assert_eq!(fs::read_dir(context.downloads.as_ref().expect("folder")).expect("files").count(), 0);
+            }
+        }
+    }
+
     /// Issue #501: "Skip if identical" finds the same drawing of the mail there and writes nothing, as
     /// PDF and as picture.
     #[tokio::test]
@@ -1784,7 +2403,7 @@ pub(crate) mod tests {
         let context = Context { downloads: None, categories: Category::BUILT_IN.to_vec() };
         let target = SaveTargetSpec { on_conflict: OnConflict::SkipIdentical, ..spec("Skip", dir.path()) };
         let made = service.save_targets().create(target, &context.categories).expect("stored");
-        for format in ExportFormat::ALL {
+        for format in [ExportFormat::Pdf, ExportFormat::Png] {
             let save = Request::SaveMailAs { id: id.clone(), format, to: SaveTo::Target(made.id.clone()) };
             let first = answer(&service, Reach::Suite, &context, save.clone()).await;
             let Response::SavedMail { path, skipped: false, .. } = first else { panic!("saved: {first:?}") };
@@ -1809,7 +2428,7 @@ pub(crate) mod tests {
         assert!(stored.text.is_none(), "the text of an old mail is not kept");
         let context = Context { downloads: None, categories: Category::BUILT_IN.to_vec() };
         let made = service.save_targets().create(spec("Invoices", dir.path()), &context.categories).expect("stored");
-        let list = Request::ListSaveTargets { id: Some(id.clone()) };
+        let list = Request::ListSaveTargets { id: Some(id.clone()), export_only: false };
 
         let listed = answer(&service, Reach::Suite, &context, list.clone()).await;
         let Response::SaveTargets { files, .. } = listed else { panic!("targets: {listed:?}") };

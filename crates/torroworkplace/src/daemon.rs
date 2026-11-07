@@ -1164,6 +1164,7 @@ fn describe(request: &Request) -> String {
         Request::SaveMailAttachments { parts, .. } => format!("save {} mail attachments", parts.len()),
         Request::SaveMailAs { format: torro_ipc::mail::ExportFormat::Pdf, .. } => "save mail as pdf".into(),
         Request::SaveMailAs { format: torro_ipc::mail::ExportFormat::Png, .. } => "save mail as image".into(),
+        Request::SaveMailAs { format: torro_ipc::mail::ExportFormat::Eml, .. } => "save mail as eml".into(),
         // Never a filter's search, account or folder (issue #339).
         Request::ListMailFilters => "list mail filters".into(),
         Request::CreateMailFilter { .. } => "create a mail filter".into(),
