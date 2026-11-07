@@ -2312,6 +2312,11 @@ impl<'a, M> MenuItem<'a, M> {
         }
     }
 
+    /// An entry with `label` alone, no mark in front: a value of a dropdown ("10 minutes", "22:00").
+    pub fn plain(label: impl IntoFragment<'a>, on_press: M) -> Self {
+        Self { mark: None, ..Self::new(Icon::Check, label, on_press) }
+    }
+
     /// The same entry with `text` as a second line in `typo::meta()` in `text_3`, cut with "…" when
     /// it is too long. The entry is twice as high as one without it.
     ///
@@ -2690,6 +2695,30 @@ impl<K: Clone + Eq + Hash> Dropdown<K> {
     /// The anchor of the trigger of `key`: pass it to the [`select_button`] that opens it.
     pub fn anchor(&self, key: &K) -> Anchor {
         self.anchors.borrow_mut().entry(key.clone()).or_default().clone()
+    }
+
+    /// The trigger of `key`: a [`select_button`] with `label` (the chosen value) at this key's
+    /// anchor that sends [`DropdownEvent::Toggle`] through `on_event`.
+    pub fn button<'a, M: Clone + 'a>(
+        &self,
+        key: K,
+        label: impl IntoFragment<'a>,
+        on_event: impl Fn(DropdownEvent<K>) -> M,
+    ) -> Element<'a, M> {
+        let anchor = self.anchor(&key);
+        select_button(&anchor, label, on_event(DropdownEvent::Toggle(key)))
+    }
+
+    /// A [`Dropdown::button`] as wide as its place ([`select_button_fill`]), for a field in a dialog
+    /// or a narrow row.
+    pub fn button_fill<'a, M: Clone + 'a>(
+        &self,
+        key: K,
+        label: impl IntoFragment<'a>,
+        on_event: impl Fn(DropdownEvent<K>) -> M,
+    ) -> Element<'a, M> {
+        let anchor = self.anchor(&key);
+        select_button_fill(&anchor, label, on_event(DropdownEvent::Toggle(key)))
     }
 
     /// The open menu of `key` as a floating layer under its trigger, lined up by `align`: a
