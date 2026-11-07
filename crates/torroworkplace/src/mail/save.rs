@@ -946,18 +946,7 @@ impl Job {
             temporary.persist(&path).map_err(|err| Problem::of(&err.error))?;
             return Ok(Written::Saved(path));
         }
-        for copy in 1..=MAX_COPY {
-            let path = dir.join(numbered(&name, copy));
-            if rule == OnConflict::SkipIdentical && same_file(&path, &mut source.file, source.bytes) {
-                return Ok(Written::Skipped(path));
-            }
-            match temporary.persist_noclobber(&path) {
-                Ok(_) => return Ok(Written::Saved(path)),
-                Err(err) if err.error.kind() == io::ErrorKind::AlreadyExists => temporary = err.file,
-                Err(err) => return Err(Problem::of(&err.error)),
-            }
-        }
-        Err(Problem::Taken)
+        publish_new(temporary, &dir, &name, rule, &mut source.file, source.bytes)
     }
 
     /// Writes `bytes` (blocking).
@@ -973,6 +962,29 @@ impl Job {
             Job::Replace(file) => replace(&file, bytes),
         }
     }
+}
+
+/// Publish a verified destination temporary without ever overwriting a competing writer's file.
+fn publish_new(
+    mut temporary: tempfile::NamedTempFile,
+    dir: &Path,
+    name: &str,
+    rule: OnConflict,
+    source: &mut fs::File,
+    bytes: u64,
+) -> Result<Written, Problem> {
+    for copy in 1..=MAX_COPY {
+        let path = dir.join(numbered(name, copy));
+        if rule == OnConflict::SkipIdentical && same_file(&path, source, bytes) {
+            return Ok(Written::Skipped(path));
+        }
+        match temporary.persist_noclobber(&path) {
+            Ok(_) => return Ok(Written::Saved(path)),
+            Err(err) if err.error.kind() == io::ErrorKind::AlreadyExists => temporary = err.file,
+            Err(err) => return Err(Problem::of(&err.error)),
+        }
+    }
+    Err(Problem::Taken)
 }
 
 /// Never replace a link, directory or special file. A missing destination is allowed.
@@ -2109,6 +2121,88 @@ pub(crate) mod tests {
             // Use another name for the next fixture's direct Job publication.
             fs::remove_file(downloads.join("Original.eml")).expect("test file");
         }
+    }
+
+    #[tokio::test]
+    async fn eml_name_conflicts_preserve_old_files_and_clean_up_when_all_names_are_taken() {
+        let _serial = super::super::eml::TESTS.lock().await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let raw = raw_with(&[]);
+        server.add("INBOX", &raw, &[]);
+        let service = synced(dir.path(), &server).await;
+        let id = message_id(&service, "Ihre Rechnung").await;
+        let located = read::locate(&service.stores(Reach::Suite).await, &id).await.expect("located");
+        for rule in [OnConflict::KeepBoth, OnConflict::SkipIdentical] {
+            let exports = tempfile::tempdir().expect("exports");
+            let job = Job::New { dir: exports.path().into(), below: None, name: "Original.eml".into(), rule };
+            let captured = super::super::eml::prepare(&service, &located).await.expect("capture");
+            // Names become occupied after destination planning; no existence check may clobber them.
+            for copy in 1..=2 {
+                fs::write(exports.path().join(numbered("Original.eml", copy)), b"old content").expect("old");
+            }
+            let path = exports.path().join("Original (3).eml");
+            assert_eq!(job.clone().run_file(captured), Ok(Written::Saved(path.clone())));
+            assert_eq!(fs::read(path).expect("new original"), raw.as_bytes());
+            for copy in 1..=2 {
+                assert_eq!(fs::read(exports.path().join(numbered("Original.eml", copy))).expect("old"), b"old content");
+            }
+            assert_eq!(fs::read_dir(exports.path()).expect("files").count(), 3);
+            for copy in 3..=MAX_COPY {
+                fs::write(exports.path().join(numbered("Original.eml", copy)), b"old content").expect("occupied");
+            }
+            let captured = super::super::eml::prepare(&service, &located).await.expect("capture");
+            assert_eq!(job.run_file(captured), Err(Problem::Taken));
+            assert_eq!(fs::read_dir(exports.path()).expect("files").count(), MAX_COPY as usize, "no temporary remains");
+            for copy in 1..=MAX_COPY {
+                assert_eq!(
+                    fs::read(exports.path().join(numbered("Original.eml", copy))).expect("unchanged"),
+                    b"old content"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eml_atomic_publication_numbers_concurrent_writers_without_clobbering() {
+        use std::io::Write;
+        use std::sync::Barrier;
+
+        let dir = tempfile::tempdir().expect("exports");
+        let start = Barrier::new(2);
+        std::thread::scope(|threads| {
+            let writers: Vec<_> = [b"first original".as_slice(), b"second original".as_slice()]
+                .into_iter()
+                .map(|bytes| {
+                    let (dir, start) = (dir.path(), &start);
+                    threads.spawn(move || {
+                        let mut temporary = tempfile::NamedTempFile::new_in(dir).expect("temporary");
+                        temporary.write_all(bytes).expect("destination bytes");
+                        let mut source = tempfile::tempfile().expect("source");
+                        source.write_all(bytes).expect("source bytes");
+                        start.wait();
+                        let written = publish_new(
+                            temporary,
+                            dir,
+                            "Original.eml",
+                            OnConflict::KeepBoth,
+                            &mut source,
+                            bytes.len() as u64,
+                        )
+                        .expect("published");
+                        let Written::Saved(path) = written else { panic!("not saved") };
+                        assert_eq!(fs::read(&path).expect("own bytes"), bytes);
+                        path
+                    })
+                })
+                .collect();
+            let mut paths: Vec<_> = writers.into_iter().map(|writer| writer.join().expect("writer")).collect();
+            paths.sort();
+            let mut expected = vec![dir.path().join("Original.eml"), dir.path().join("Original (2).eml")];
+            expected.sort();
+            assert_eq!(paths, expected);
+        });
+        assert_eq!(fs::read_dir(dir.path()).expect("files").count(), 2, "no temporary remains");
     }
 
     #[tokio::test]
