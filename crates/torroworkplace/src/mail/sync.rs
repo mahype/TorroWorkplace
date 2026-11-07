@@ -321,12 +321,7 @@ pub(crate) async fn backfill(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) 
     if !todo.is_empty() {
         store.run(move |store| store.note_index_run(now)).await?;
     }
-    let checked = if todo.len() < limit as usize {
-        check_senders(mailbox, &store, limit - todo.len() as u32, now).await?
-    } else {
-        0
-    };
-    Ok(todo.len() + checked)
+    Ok(todo.len())
 }
 
 /// How far back the indexer checks the senders of mail kept without a check (issue #453, decision
@@ -346,15 +341,14 @@ fn checks_senders(role: Option<Role>) -> bool {
 /// once more with `BODY.PEEK[]`, newest first, and gets this one chance: one whose signing domain's
 /// DNS does not answer now is noted as without a logo, so no message is fetched again and again.
 /// Nothing while logos are off or the DNS cannot be asked at all. Answers how many it checked.
-async fn check_senders(
-    mailbox: &Mailbox,
-    store: &SharedStore,
-    limit: u32,
-    now: DateTime<Utc>,
-) -> Result<usize, MailError> {
+///
+/// Its own step of the indexer after [`backfill`], so the count of the search index (and of the
+/// cache job that rebuilds it) holds texts only.
+pub(crate) async fn check_senders(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) -> Result<usize, MailError> {
     if !mailbox.logos().on() || !mailbox.sender_check().ready() {
         return Ok(0);
     }
+    let store = mailbox.store()?;
     let since = now - chrono::TimeDelta::days(SENDER_CATCH_UP_DAYS);
     let todo = store.run(move |store| store.unchecked_senders(limit, since)).await?;
     let mut checked = 0;
@@ -2294,14 +2288,15 @@ mod tests {
             store.run(move |db| db.unchecked_senders(10, since)).await.expect("asked").len()
         };
         assert_eq!(unchecked().await, 2, "off: nothing checked");
-        assert_eq!(backfill(&mailbox, 10, Utc::now()).await.expect("ran"), 0, "off: nothing fetched for it");
+        assert_eq!(check_senders(&mailbox, 10, Utc::now()).await.expect("ran"), 0, "off: nothing fetched for it");
 
         mailbox.logos().set_switch(Arc::new(|| true));
         let fetched = fetches(&server, "BODY.PEEK[]").len();
-        assert_eq!(backfill(&mailbox, 10, Utc::now()).await.expect("ran"), 1);
+        assert_eq!(backfill(&mailbox, 10, Utc::now()).await.expect("ran"), 0, "the index counts texts only");
+        assert_eq!(check_senders(&mailbox, 10, Utc::now()).await.expect("ran"), 1);
         assert_eq!(fetches(&server, "BODY.PEEK[]").len(), fetched + 1, "only the recent one fetched again");
         assert_eq!(unchecked().await, 1, "the old one stays unchecked");
-        assert_eq!(backfill(&mailbox, 10, Utc::now()).await.expect("ran"), 0, "not asked again");
+        assert_eq!(check_senders(&mailbox, 10, Utc::now()).await.expect("ran"), 0, "not asked again");
     }
 
     #[tokio::test]

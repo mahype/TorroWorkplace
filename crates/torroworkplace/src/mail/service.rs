@@ -1150,7 +1150,12 @@ async fn index(mailbox: Arc<Mailbox>) {
             tokio::time::sleep(mailbox.timing.retry_first).await;
             continue;
         }
-        match sync::backfill(&mailbox, sync::BACKFILL_BATCH, Utc::now()).await {
+        // Texts for the index first, then the senders still to check (issue #453).
+        let step = match sync::backfill(&mailbox, sync::BACKFILL_BATCH, Utc::now()).await {
+            Ok(0) => sync::check_senders(&mailbox, sync::BACKFILL_BATCH, Utc::now()).await,
+            other => other,
+        };
+        match step {
             Ok(0) => tokio::time::sleep(mailbox.timing.poll).await,
             Ok(_) => wait = mailbox.timing.retry_first,
             Err(err) => {
