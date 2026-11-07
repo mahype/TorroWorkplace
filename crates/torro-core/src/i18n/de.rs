@@ -2,6 +2,41 @@
 //! within a group; the test in `mod.rs` checks for duplicates and matching placeholders.
 
 pub(super) static TABLE: &[(&str, &str)] = &[
+    // Embedded compose images (#461).
+    ("As attachment", "Als Anhang"),
+    ("Couldn't copy the images to the other account.", "Die Bilder konnten nicht ins andere Konto kopiert werden."),
+    ("Couldn't insert the image.", "Das Bild konnte nicht eingefügt werden."),
+    ("Couldn't read an image from the clipboard.", "Ein Bild konnte nicht aus der Zwischenablage gelesen werden."),
+    ("Embed image", "Bild einbetten"),
+    ("Image", "Bild"),
+    ("Image attachment", "Bild als Anhang"),
+    (
+        "Images: {key}+I next · Shift previous · 1–4 size · A attach · Backspace remove",
+        "Bilder: {key}+I nächstes · Umschalt vorheriges · 1–4 Größe · A Anhang · Rücktaste entfernen",
+    ),
+    ("Insert image", "Bild einfügen"),
+    ("Original", "Original"),
+    ("Prepare a mail image", "Ein Mail-Bild vorbereiten"),
+    ("Preparing image…", "Bild wird vorbereitet…"),
+    ("Release temporary mail images", "Vorübergehende Mail-Bilder freigeben"),
+    ("Remove this image?", "Dieses Bild entfernen?"),
+    ("The image is invalid or exceeds the image limits.", "Das Bild ist ungültig oder überschreitet die Bildgrenzen."),
+    (
+        "The image source is no longer available. Insert it again.",
+        "Die Bildquelle ist nicht mehr verfügbar. Füge das Bild erneut ein.",
+    ),
+    (
+        "The image upload offset or content does not match.",
+        "Die Position oder der Inhalt des Bild-Uploads stimmt nicht überein.",
+    ),
+    (
+        "Too many images are being prepared. Try again later.",
+        "Es werden zu viele Bilder vorbereitet. Versuche es später erneut.",
+    ),
+    ("Upload a mail image", "Ein Mail-Bild hochladen"),
+    ("The embedded image references are invalid.", "Die Verweise auf eingebettete Bilder sind ungültig."),
+    ("The saved image part could not be found.", "Der gespeicherte Bildteil wurde nicht gefunden."),
+    ("Prepare images before attaching them.", "Bereite Bilder vor dem Anhängen vor."),
     // Control centre (torroworkplace ui)
     ("1 needs attention", "1 braucht Aufmerksamkeit"),
     ("1 problem", "1 Problem"),
