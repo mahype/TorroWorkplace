@@ -5517,7 +5517,10 @@ pub fn tabs_width(labels: &[(String, Option<u64>)]) -> f32 {
 ///
 /// When the row does not fit ([`tabs_width`]), it scrolls sideways (issue #554), with a fade
 /// [`space::l()`] wide at its right edge that says more follow; while the chosen tab would stand
-/// beyond the room, the row starts scrolled to its right end. `on_select` gets the index of the tab.
+/// beyond the room, the row starts scrolled to its right end and the fade stands at its left edge,
+/// where the hidden tabs are. `on_select` gets the index of the tab.
+///
+/// The fade runs into `PANEL`: tabs stand on a page or a panel, never on a menu or a raised card.
 ///
 /// ```ignore
 /// let labels = vec![(tr("Overview").to_string(), None), (tr("Folders").to_string(), Some(12))];
@@ -5545,19 +5548,20 @@ pub fn tabs<'a, M: Clone + 'a>(
         // Anchored at the right while the chosen tab lies past the room. The scrollable keeps its
         // offset from its anchor, so a change of anchor would mirror the row: the other anchor gets a
         // tree of its own (one container more), and with it a fresh offset from its own edge.
-        let scroll: Element<'a, M> = if tabs_width(&labels[..(selected + 1).min(labels.len())]) > room.width {
-            container(scroll.anchor_right()).into()
-        } else {
-            scroll.into()
-        };
-        let fade = container(blank().width(space::l()).height(Fill)).style(|t: &Theme| {
+        let at_end = tabs_width(&labels[..(selected + 1).min(labels.len())]) > room.width;
+        let scroll: Element<'a, M> = if at_end { container(scroll.anchor_right()).into() } else { scroll.into() };
+        // Towards the hidden tabs: at the right while the row starts at its left, else mirrored.
+        let angle = if at_end { -std::f32::consts::FRAC_PI_2 } else { std::f32::consts::FRAC_PI_2 };
+        let fade = container(blank().width(space::l()).height(Fill)).style(move |t: &Theme| {
             let panel = palette(t).panel;
-            let fade = iced::gradient::Linear::new(iced::Radians(std::f32::consts::FRAC_PI_2))
+            let fade = iced::gradient::Linear::new(iced::Radians(angle))
                 .add_stop(0.0, Color { a: 0.0, ..panel })
                 .add_stop(1.0, panel);
             container::Style { background: Some(Background::Gradient(fade.into())), ..container::Style::default() }
         });
-        let faded = stack![scroll, container(fade).width(Fill).height(size::control_lg()).align_right(Fill)];
+        let fade = container(fade).width(Fill).height(size::control_lg());
+        let fade = if at_end { fade.align_left(Fill) } else { fade.align_right(Fill) };
+        let faded = stack![scroll, fade];
         column![faded, line].into()
     })
     .height(Length::Shrink)
