@@ -27,14 +27,14 @@ use iced::{Alignment, Element, Length, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Component, ComponentSwitch, GeocoderKind, Maps, MapsApp, Settings, address_problem};
 use torro_gui::icon::Icon;
-use torro_gui::theme::space;
+use torro_gui::theme::{size, space};
 use torro_gui::{layout, style, widgets};
 use torro_ipc::{Request, SettingKey};
 use torro_settings_ui::parts::{field, notice, switch};
 use torro_settings_ui::suite::{self, Place};
 
 use super::setup::component_name;
-use super::{Action, Data, segments, setting_row};
+use super::{Action, Data, segments, segments_width, setting_row, stacking_row};
 
 /// The page's own state: the suite's pages ([`suite::State`]) and the addresses of "Maps".
 #[derive(Debug, Default)]
@@ -325,7 +325,7 @@ const MAP_LINKS: [(&str, &str); 2] = [
 fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
     let draft = &state.maps;
     let off = !maps.enabled;
-    let address = |which: Address, placeholder: &'static str| {
+    let address = move |which: Address, placeholder: &'static str| {
         let typed = draft.draft(which).map_or(which.stored(maps), |typed| typed.text.as_str());
         field(placeholder, typed)
             .on_input(move |text| Message::AddressInput(which, text))
@@ -333,15 +333,37 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
             .style(move |theme, status| address_style(theme, status, off))
     };
     let hint = |which: Address| Some(address_detail(draft, maps, which).to_string());
-    let kind =
-        segments(&KIND_CHOICES, KindChoice(maps.geocoder_kind), |chosen: KindChoice| Message::GeocoderKind(chosen.0));
-    let search = row![address(Address::Geocoder, Maps::PHOTON), kind]
-        .spacing(space::s())
-        .align_y(Alignment::Center)
-        .width(Length::FillPortion(2));
+    let kind = move || {
+        segments(&KIND_CHOICES, KindChoice(maps.geocoder_kind), |chosen: KindChoice| Message::GeocoderKind(chosen.0))
+    };
+    // Field and segments beside the name while they fit, under it in a narrow window: the field
+    // across the row, the segments below it (design review of #554).
+    let search_hint = hint(Address::Geocoder);
+    let beside_hint = search_hint.clone();
+    let search = stacking_row(
+        tr("Place search"),
+        search_hint,
+        size::sidebar() + space::s() + segments_width(&KIND_CHOICES),
+        move || {
+            let search = row![address(Address::Geocoder, Maps::PHOTON), kind()]
+                .spacing(space::s())
+                .align_y(Alignment::Center)
+                .width(Length::FillPortion(2));
+            setting_row(None, tr("Place search"), beside_hint.clone(), search)
+        },
+        move || column![address(Address::Geocoder, Maps::PHOTON), kind()].spacing(space::s()).into(),
+    );
     let tiles = container(address(Address::Tiles, Maps::OSM_TILES)).width(Length::FillPortion(2));
+    let apps = app_choices();
     let open_with =
-        segments(&app_choices(), AppChoice(maps.open_with), |chosen: AppChoice| Message::OpenWith(chosen.0));
+        move || segments(&app_choices(), AppChoice(maps.open_with), |chosen: AppChoice| Message::OpenWith(chosen.0));
+    let open_with = stacking_row(
+        tr("Open in Maps with"),
+        None,
+        segments_width(&apps),
+        move || setting_row(None, tr("Open in Maps with"), None, open_with()),
+        open_with,
+    );
     let rows = vec![
         setting_row(
             None,
@@ -349,9 +371,9 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
             Some(tr("Find places and see a small map in the calendar's event editor").to_string()),
             switch(maps.enabled, Message::MapsOn),
         ),
-        setting_row(None, tr("Place search"), hint(Address::Geocoder), search),
+        search,
         setting_row(None, tr("Map tiles"), hint(Address::Tiles), tiles),
-        setting_row(None, tr("Open in Maps with"), None, open_with),
+        open_with,
     ];
     let footer = tr("Off until you turn it on. Both services are run by others, under their own rules.");
     let links = MAP_LINKS.map(|(label, url)| {

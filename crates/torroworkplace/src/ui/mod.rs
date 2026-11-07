@@ -2384,7 +2384,7 @@ fn crumb<'a>(section: Section, name: String, back: Message) -> Element<'a, Messa
 // the apps and of the control centre look and behave the same; the control centre uses only these,
 // never the library's host.
 pub(crate) use torro_settings_ui::parts::{
-    chevron, confirm, dialog, field, notice, one_line, pressable, row_frame, setting_row, switch,
+    chevron, confirm, dialog, field, notice, one_line, pressable, row_frame, setting_row, stacking_row, switch,
 };
 
 /// Up to four `choices` side by side (the rule of choices, issue #554), `chosen` marked: a
@@ -2397,6 +2397,14 @@ pub(crate) fn segments<'a, T: Copy + PartialEq + std::fmt::Display, M: Clone + '
 ) -> Element<'a, M> {
     let active = choices.iter().position(|choice| *choice == chosen).unwrap_or(usize::MAX);
     torro_gui::widgets::segmented(choices.iter().map(|choice| (choice.to_string(), on_pick(*choice))), active)
+}
+
+/// How wide [`segments`] of `choices` are: for [`stacking_row`], which puts them under the row's
+/// name where they do not fit beside it (design review of #554).
+pub(crate) fn segments_width<T: std::fmt::Display>(choices: &[T]) -> f32 {
+    let words: Vec<String> = choices.iter().map(ToString::to_string).collect();
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    torro_gui::widgets::segmented_width(&words)
 }
 use torro_settings_ui::suite;
 

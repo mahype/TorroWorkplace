@@ -229,16 +229,17 @@ pub fn segmented_rows<'a, M: Clone + 'a>(rows: Vec<SegmentedRow<'a, M>>) -> Vec<
 /// and detail with `under` on a line of its own below them. For a row whose control holds segments
 /// next to something else (an address field, "Remove"), where [`segmented_row`] does not fit.
 pub fn stacking_row<'a, M: 'a>(
-    label: &'a str,
+    label: impl Into<String>,
     detail: Option<String>,
     width: f32,
     beside: impl Fn() -> Element<'a, M> + 'a,
     under: impl Fn() -> Element<'a, M> + 'a,
 ) -> Element<'a, M> {
+    let label = label.into();
     iced::widget::responsive(move |room| {
-        match widgets::segment_column(width, [(label, detail.as_deref())], room.width) {
+        match widgets::segment_column(width, [(label.as_str(), detail.as_deref())], room.width) {
             Some(_) => beside(),
-            None => widgets::segment_row(label, detail.clone(), under(), None),
+            None => widgets::segment_row(label.clone(), detail.clone(), under(), None),
         }
     })
     .height(iced::Length::Shrink)

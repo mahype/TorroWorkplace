@@ -123,7 +123,7 @@ use torro_settings_ui::rights::{first_sentence, plain, tool_level};
 
 use super::{
     Action, ClientTarget, Data, Header, chevron, confirm, dialog, field, notice, pressable, row_frame, segments,
-    setting_row, switch,
+    segments_width, setting_row, stacking_row, switch,
 };
 
 /// The file endings the logo chooser offers, as `PdfTemplate::check` takes them.
@@ -1825,16 +1825,28 @@ fn folders_group<'a>(data: &'a Data, words: bool) -> Element<'a, Message> {
 /// One allowed folder: its name, its path below, the segments "Read" / "Read and write" and "Remove".
 fn allowed_folder_row<'a>(folder: &'a AllowedFolder, words: bool) -> Element<'a, Message> {
     let path = folder.path.as_str();
-    let access = segments(&AccessChoice::ALL, AccessChoice(folder.access), move |choice: AccessChoice| {
-        Message::SetFolderAccess(path.to_string(), choice.0)
-    });
-    let remove = Message::RemoveFolder(folder.path.clone());
-    let remove = match words {
-        true => widgets::text_button(None, tr("Remove"), style::button::ghost, Some(remove)),
-        false => widgets::icon_button(Icon::X, tr("Remove"), Some(remove)),
+    let control = move || -> Element<'a, Message> {
+        let access = segments(&AccessChoice::ALL, AccessChoice(folder.access), move |choice: AccessChoice| {
+            Message::SetFolderAccess(path.to_string(), choice.0)
+        });
+        let remove = Message::RemoveFolder(folder.path.clone());
+        let remove = match words {
+            true => widgets::text_button(None, tr("Remove"), style::button::ghost, Some(remove)),
+            false => widgets::icon_button(Icon::X, tr("Remove"), Some(remove)),
+        };
+        row![access, remove].spacing(space::s()).align_y(Alignment::Center).into()
     };
-    let control = row![access, remove].spacing(space::s()).align_y(Alignment::Center);
-    setting_row(Some(folder_mark()), file_name(path), Some(path.to_string()), control)
+    // Beside the name while it fits, under it in a narrow window (design review of #554); the
+    // folder's mark in front of the name takes from the room too.
+    let remove = if words { widgets::text_button_width(false, tr("Remove")) } else { size::control_sm() };
+    let width = segments_width(&AccessChoice::ALL) + space::s() + remove + size::control_sm() + space::m();
+    stacking_row(
+        file_name(path),
+        Some(path.to_string()),
+        width,
+        move || setting_row(Some(folder_mark()), file_name(path), Some(path.to_string()), control()),
+        control,
+    )
 }
 
 /// The mark of a folder row: the folder icon in `text_2`.
@@ -1966,9 +1978,18 @@ fn template_group<'a>(
     last: bool,
 ) -> Element<'a, Message> {
     let template = data.settings.tools.pdf.template(id);
-    let paper = segments(&PaperChoice::ALL, PaperChoice(template.paper), move |choice: PaperChoice| {
-        Message::Paper(id, choice.0)
-    });
+    let paper = move || {
+        segments(&PaperChoice::ALL, PaperChoice(template.paper), move |choice: PaperChoice| {
+            Message::Paper(id, choice.0)
+        })
+    };
+    let paper = stacking_row(
+        tr("Paper"),
+        None,
+        segments_width(&PaperChoice::ALL),
+        move || setting_row(None, tr("Paper"), None, paper()),
+        paper,
+    );
     let margins = Margins(template.margins_mm).to_string();
     let margins = state.menus.button(TemplateMenu::Margins(id), margins, Message::Menus);
     let font = Points(template.font_size_pt).to_string();
@@ -1976,7 +1997,7 @@ fn template_group<'a>(
     let numbers = switch(template.page_numbers, move |on| Message::PageNumbers(id, on));
     let example = trf("Page {n} of {m}", &[("n", &1), ("m", &3)]);
     let rows = vec![
-        setting_row(None, tr("Paper"), None, paper),
+        paper,
         setting_row(None, tr("Margins"), None, margins),
         setting_row(None, tr("Font size"), None, font),
         line_row(state, id, Line::Header, template, words),
