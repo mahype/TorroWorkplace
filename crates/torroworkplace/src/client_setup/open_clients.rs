@@ -5,6 +5,7 @@ use super::*;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Paths {
     pub xdg_config: Option<PathBuf>,
+    pub opencode_config_dir: Option<PathBuf>,
     pub cline_dir: Option<PathBuf>,
     pub cline_settings: Option<PathBuf>,
     pub continue_config: Option<PathBuf>,
@@ -16,6 +17,7 @@ impl Paths {
         let path = |name| std::env::var_os(name).filter(|value| !value.is_empty()).map(PathBuf::from);
         Self {
             xdg_config: path("XDG_CONFIG_HOME"),
+            opencode_config_dir: path("OPENCODE_CONFIG_DIR").map(|path| std::path::absolute(&path).unwrap_or(path)),
             cline_dir: path("CLINE_DIR"),
             cline_settings: path("CLINE_MCP_SETTINGS_PATH"),
             // Continue's --config and LibreChat's local file are explicitly chosen in the wizard.
@@ -33,13 +35,17 @@ fn config(env: &Env) -> PathBuf {
     nonempty(&env.open.xdg_config).map(Path::to_path_buf).unwrap_or_else(|| env.home.join(".config"))
 }
 
+fn opencode_dir(env: &Env) -> PathBuf {
+    nonempty(&env.open.opencode_config_dir).map(Path::to_path_buf).unwrap_or_else(|| config(env).join("opencode"))
+}
+
 pub(super) fn plugin_dir(env: &Env) -> PathBuf {
-    config(env).join("opencode/plugins/torroworkplace")
+    opencode_dir(env).join("plugins/torroworkplace")
 }
 
 pub(super) fn file(target: Target, env: &Env) -> PathBuf {
     match target {
-        Target::OpenCode => config(env).join("opencode/opencode.json"),
+        Target::OpenCode => opencode_dir(env).join("opencode.json"),
         Target::Zed => {
             #[cfg(windows)]
             {
@@ -76,6 +82,9 @@ pub(super) fn protected_files(env: &Env) -> Vec<PathBuf> {
     let mut paths = vec![
         plugin_dir(env),
         plugin_dir(env).join("bridge.mjs"),
+        // An override does not erase secrets from an older default configuration.
+        config(env).join("opencode/opencode.json"),
+        config(env).join("opencode/opencode.jsonc"),
         file(Target::OpenCode, env).with_extension("jsonc"),
         cline_editor(env),
     ];
@@ -235,8 +244,20 @@ pub(super) fn add_owned(
             crate::clients::create_private_dir(parent).map_err(SetupError::io(parent))?;
             restore(file, Some(before.as_deref().unwrap_or("{}")))?;
             runner.run(executable, &args).map_err(|err| err.of(Tool::OpenCode))?;
-            // The CLI owns formatting, but successful setup must leave a readable, private file.
-            read_text(file)?.ok_or_else(|| SetupError::Unreadable(file.clone()))?;
+            // A successful exit alone cannot prove that the CLI wrote the destination we protected.
+            // Check the exact V2 entry as well, without exposing its secret in an error.
+            let text = read_text(file)?.ok_or_else(|| SetupError::Unreadable(file.clone()))?;
+            let doc = jsonc_parser::cst::CstRootNode::parse(&text, &Default::default())
+                .map_err(|_| SetupError::Unreadable(file.clone()))?;
+            let actual = doc
+                .object_value()
+                .and_then(|root| root.object_value("mcp"))
+                .and_then(|mcp| mcp.object_value("servers"))
+                .and_then(|servers| servers.get(SERVER_NAME))
+                .and_then(|prop| prop.to_serde_value());
+            if actual.as_ref() != Some(&entry(*target, server)) {
+                return Err(SetupError::Unreadable(file.clone()));
+            }
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -655,6 +676,30 @@ mod tests {
     }
 
     #[test]
+    fn opencode_config_dir_override_is_detected_owned_and_reserved_at_the_actual_destination() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut env = environment(dir.path());
+        let custom = dir.path().join("custom-opencode");
+        env.open.opencode_config_dir = Some(custom.clone());
+        let destination = custom.join("opencode.json");
+        let foreign = r#"{"mcp":{"servers":{"torroworkplace":{"foreign":true}}}}"#;
+        write(&destination, foreign);
+        let methods = locate(Target::OpenCode, &env);
+        assert_eq!(methods.len(), 1, "detect configuration outside XDG");
+        let method = &methods[0];
+        assert!(matches!(method, Method::Open { file, .. } if file == &destination));
+        assert_eq!(plugin_dir(&env), custom.join("plugins/torroworkplace"));
+        assert!(
+            connect(&env, Target::OpenCode, method, "c1", &key(), &Never).is_err(),
+            "foreign entry is not overwritten"
+        );
+        assert_eq!(read_text(&destination).expect("read").as_deref(), Some(foreign));
+        let reserved = protection::Registry::new(env.config_dir.clone()).paths().expect("reserved");
+        assert!(reserved.contains(&fs::canonicalize(&destination).expect("canonical")));
+        assert!(!config(&env).join("opencode/opencode.json").exists(), "the wrong XDG path stays untouched");
+    }
+
+    #[test]
     fn jsonc_edits_preserve_comments_foreign_values_and_ownership() {
         let dir = tempfile::tempdir().expect("tmp");
         let env = environment(dir.path());
@@ -793,7 +838,7 @@ mod tests {
                     fs::metadata(self.0.parent().expect("parent")).expect("directory").permissions().mode() & 0o777,
                     0o700
                 );
-                fs::write(self.0, "{}").expect("CLI write");
+                fs::write(self.0, r#"{"mcp":{"servers":{"torroworkplace":{"type":"local","command":["torro","mcp"],"environment":{"TORRO_TOKEN":"secret"}}}}}"#).expect("CLI write");
                 Ok(())
             }
         }
@@ -814,6 +859,28 @@ mod tests {
             };
             add(&method, &Server { program: Path::new("torro"), key: "secret" }, &Cli(&file)).expect("setup");
         }
+    }
+
+    #[test]
+    fn cli_success_without_the_expected_destination_entry_is_not_setup_success() {
+        struct NoWrite;
+        impl Runner for NoWrite {
+            fn run(&self, _: &Path, _: &[String]) -> Result<(), RunError> {
+                Ok(())
+            }
+        }
+        let dir = tempfile::tempdir().expect("tmp");
+        let env = environment(dir.path());
+        let file = file(Target::OpenCode, &env);
+        write(&file, r#"{"other":true}"#);
+        let method = Method::Open {
+            target: Target::OpenCode,
+            file: file.clone(),
+            executable: Some(dir.path().join("opencode")),
+        };
+        assert!(connect(&env, Target::OpenCode, &method, "c1", &key(), &NoWrite).is_err());
+        assert_eq!(read_text(&file).expect("read").as_deref(), Some(r#"{"other":true}"#));
+        assert!(records(&env).expect("records").is_empty());
     }
 
     #[test]
