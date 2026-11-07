@@ -68,6 +68,14 @@
 //! [`Host::subscription`]. A change of an account ends in [`Outcome::Changed`], so the app loads its
 //! own data – the calendar a new account's calendars – at once.
 //!
+//! # API and MCP (issue #531)
+//!
+//! An app with areas of its own in the rights of keys and MCP clients ([`crate::outside::areas`]) adds
+//! the section API and MCP after Accounts and AI ([`Host::with_outside`]); the host shows and runs it
+//! itself, as it does Accounts. It loads the clients and what their selections offer with the app's
+//! own requests, and sends only `clients.update_client` for a key or an MCP client
+//! ([`crate::outside`]).
+//!
 //! # Answer by answer (issue #394)
 //!
 //! The host sends every request of a load on its own ([`Message::Part`]) and puts each answer in
@@ -96,6 +104,7 @@ use torro_gui::{shell, style};
 use torro_ipc::{Request, Response};
 
 use crate::accounts::{self, Group};
+use crate::outside;
 use crate::parts::notice;
 use crate::{Action, Backend, Data, Memory, background, suite};
 
@@ -356,6 +365,8 @@ pub enum Message {
     Part { generation: u64, request: Box<Request>, result: Box<Result<Response, String>> },
     /// What a widget of the pages Accounts and AI reported ([`Host::with_accounts`]).
     Accounts(Box<accounts::Message>),
+    /// What a widget of the page API and MCP reported ([`Host::with_outside`]).
+    Outside(Box<outside::Message>),
     /// The tick of Accounts and AI while they are on screen ([`Host::subscription`]): load again.
     Tick,
     /// Time to look whether the core has said what is installed ([`Host::suite_arrived`], issue #419).
@@ -460,6 +471,10 @@ pub struct Host {
     /// its own with the same word (Mail's "accounts"), which stays the app's.
     accounts_at: Option<usize>,
     ai_at: Option<usize>,
+    /// The page API and MCP while the app shows it ([`Host::with_outside`]), and where in `sections`
+    /// the host put it; `None` else.
+    outside: Option<outside::State>,
+    outside_at: Option<usize>,
 }
 
 impl Host {
@@ -536,6 +551,8 @@ impl Host {
             accounts: None,
             accounts_at: None,
             ai_at: None,
+            outside: None,
+            outside_at: None,
         };
         let load = host.reload();
         (host, load)
@@ -579,6 +596,31 @@ impl Host {
         self
     }
 
+    /// The same host with the page API and MCP of the app `app` (issue #531): what keys and MCP clients
+    /// may do in the app's own areas ([`outside::areas`]); none leaves it out. It follows Accounts and
+    /// AI – call it after [`Host::with_accounts`] – before the suite's pages, and loads the clients and
+    /// what their selections offer ([`outside::wanted`]) with the app's own requests.
+    pub fn with_outside(mut self, app: AppId) -> Self {
+        if outside::areas(app).is_empty() || self.sections.iter().any(|section| section.id == outside::SECTION.id) {
+            return self;
+        }
+        self.sections.insert(self.own, outside::SECTION);
+        self.outside_at = Some(self.own);
+        self.own += 1;
+        let new: Vec<Request> =
+            outside::wanted(app).into_iter().filter(|request| !self.wanted.contains(request)).collect();
+        // Shown at once from the app's memory only when it holds these too.
+        self.loaded = self.loaded && new.iter().all(|request| self.answered.contains(request));
+        self.wanted.extend(new);
+        self.outside = Some(outside::State::new(app));
+        self
+    }
+
+    /// Whether the section on screen is API and MCP, which the host shows itself.
+    fn on_outside_page(&self) -> bool {
+        self.outside.is_some() && self.outside_at == Some(self.current)
+    }
+
     /// Opens Accounts with the add-account dialog at `provider` (issue #410): what the start of an
     /// app without an account offers ([`torro_gui::connect`]).
     pub fn add_account<A>(&mut self, provider: accounts::wizard::Provider) -> Outcome<A> {
@@ -595,6 +637,14 @@ impl Host {
         let apps = match self.suite_pending {
             true => iced::time::every(APPS_TICK).map(|_| Message::Apps),
             false => iced::Subscription::none(),
+        };
+        // The editor of API and MCP while a draft waits, on screen or not: it still goes out.
+        let apps = match &self.outside {
+            Some(state) => iced::Subscription::batch([
+                apps,
+                outside::subscription(state).map(|message| Message::Outside(Box::new(message))),
+            ]),
+            None => apps,
         };
         let Some(state) = &self.accounts else { return apps };
         let page = accounts::subscription(state).map(|message| Message::Accounts(Box::new(message)));
@@ -778,6 +828,13 @@ impl Host {
         {
             suite::leave(state);
         }
+        // Leaving API and MCP shows its list when it comes back.
+        if at != self.current
+            && self.on_outside_page()
+            && let Some(state) = self.outside.as_mut()
+        {
+            outside::leave(state);
+        }
         // Leaving Accounts or AI leaves no account's page or dialog behind (they share one state).
         if at != self.current
             && self.on_accounts_page()
@@ -861,6 +918,9 @@ impl Host {
         if !self.announced && !waiting {
             self.announced = true;
             self.loaded = true;
+            if let Some(state) = self.outside.as_mut() {
+                outside::loaded(state, &self.data);
+            }
             self.echoes += 1;
             let data = Box::new(self.data.clone());
             let report = match self.change.take() {
@@ -1000,6 +1060,9 @@ impl Host {
                 {
                     return self.update(Message::Accounts(Box::new(close)));
                 }
+                if let Some(back) = self.outside.as_ref().filter(|_| self.on_outside_page()).and_then(outside::escape) {
+                    return self.update(Message::Outside(Box::new(back)));
+                }
                 match self.suite.as_ref().filter(|_| self.on_suite_page()).and_then(suite::escape) {
                     Some(close) => self.update(Message::Suite(close)),
                     None => Outcome::Close,
@@ -1030,6 +1093,11 @@ impl Host {
                 let Some(state) = self.accounts.as_mut() else { return Outcome::None };
                 let action = accounts::update(state, *message, &self.data);
                 self.accounts_act(action)
+            }
+            Message::Outside(message) => {
+                let Some(state) = self.outside.as_mut() else { return Outcome::None };
+                let action: Action<A> = outside::update(state, *message, &self.data);
+                self.act(action)
             }
             Message::AccountAnswered(result) => {
                 let Some(state) = self.accounts.as_mut() else { return Outcome::None };
@@ -1121,6 +1189,9 @@ impl Host {
             Message::Answered(result) => Outcome::Answer(result),
             Message::Part { generation, request, result } => work(self.part(generation, *request, *result)),
             Message::Done { changed, result: Ok(()) } => {
+                if let Some(state) = self.outside.as_mut() {
+                    outside::done(state, &Ok(()));
+                }
                 // The change is stored: a new load, reported as the send once the page is fresh. A
                 // plain reload that comes back meanwhile does not hide a real change before it.
                 self.change = Some(self.change.unwrap_or(false) || changed);
@@ -1128,6 +1199,9 @@ impl Host {
             }
             // Through the app as before, so the sections that wait for the send hear how it ended.
             Message::Done { changed, result: Err(problem) } => {
+                if let Some(state) = self.outside.as_mut() {
+                    outside::done(state, &Err(problem.clone()));
+                }
                 Outcome::Work(Task::done(Message::Sent { changed, result: Box::new(Err(problem)) }))
             }
         }
@@ -1165,7 +1239,10 @@ impl Host {
             }
             None => match self.accounts.as_ref().filter(|_| self.on_accounts_page()) {
                 Some(state) => self.accounts_page(state, class, wrap),
-                None => page,
+                None => match self.outside.as_ref().filter(|_| self.on_outside_page()) {
+                    Some(state) => self.outside_page(state, wrap),
+                    None => page,
+                },
             },
         };
         let Page { body, sub_page, siblings, actions, save_bar, max_width } = page;
@@ -1214,6 +1291,17 @@ impl Host {
             Some(layer.map(move |message| wrap(Message::Accounts(Box::new(message)))))
         });
         Frame { header, body, overlay }
+    }
+
+    /// The page API and MCP, with the client open below it.
+    fn outside_page<'a, M: Clone + 'a>(&'a self, state: &'a outside::State, wrap: fn(Message) -> M) -> Page<'a, M> {
+        let inner = move |message: outside::Message| wrap(Message::Outside(Box::new(message)));
+        let Page { body, sub_page, .. } = outside::page(state, &self.data);
+        let page = Page::new(body.map(inner));
+        match sub_page {
+            Some((name, back)) => page.sub_page(name, inner(back)),
+            None => page,
+        }
     }
 
     /// The page of Accounts or AI, with the account open below it ([`accounts::sub_page`]).

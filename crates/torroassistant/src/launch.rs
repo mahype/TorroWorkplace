@@ -229,6 +229,7 @@ impl Launch {
         let sections = [
             &SECTIONS[..],
             &torro_settings_ui::account_sections(&[], true),
+            &torro_settings_ui::outside::sections(torro_core::AppId::ASSISTANT),
             &torro_settings_ui::suite_sections(&SECTIONS),
         ]
         .concat();

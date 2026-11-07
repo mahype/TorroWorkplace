@@ -19,7 +19,9 @@ use torro_core::settings::{AssistantDefault, CalendarReminders, Reminders, Setti
 use torro_core::theme::Appearance;
 use torro_inbox::item::{Facet, FacetKey};
 use torro_inbox::{Lane, Rule, RuleEffect, SourceInfo, SourceRef};
-use torro_ipc::api::{ASSISTANT_CLIENT, Access, Area, AreaRights, BOT_CLIENT, Level, Rights, Selection};
+use torro_ipc::api::{
+    ASSISTANT_CLIENT, Access, Area, AreaRights, BOT_CLIENT, Level, Rights, RightsTemplate, SCRIPT_CLIENT, Selection,
+};
 use torro_ipc::assistant::{Engine, EngineKind, LETTER_AVATAR, Note, Profile};
 use torro_ipc::bots::BotSummary;
 use torro_ipc::extensions::{ExtensionInfo, ExtensionTool, ServerSpec, Source, Status, ToolState};
@@ -187,8 +189,8 @@ impl Demo {
     /// off, so the rights editor shows what that looks like (task S.33), and reading the MCP server
     /// "Time" with one of its tools switched off (task MA.10, [`Demo::extensions`]); and the clients of the
     /// sample bots ([`Demo::bots`]): the travel planner reads two calendars, so Access has a bot to
-    /// open (task S.34), the release helper may use nothing. The demo only pretends to switch or
-    /// change them.
+    /// open (task S.34), the release helper may use nothing; and a script's key and two MCP clients for
+    /// API and MCP of an app (issue #531). The demo only pretends to switch or change them.
     fn clients(&self) -> Vec<ClientInfo> {
         let created = Utc.with_ymd_and_hms(2026, 10, 1, 9, 0, 0).single().unwrap_or_else(Utc::now);
         let client = |id: &str, name: &str, kind: &str, rights: Rights| ClientInfo {
@@ -204,6 +206,9 @@ impl Demo {
         travel.areas.insert(Area::Calendar, AreaRights { level: Level::Read, admin: false });
         travel.calendars =
             Selection::Only(vec![WORK_CALENDAR.into(), "nextcloud:anna@cloud.example.org/family".into()]);
+        let mut backup = Rights::none();
+        backup.areas.insert(Area::Calendar, AreaRights { level: Level::Read, admin: false });
+        backup.calendars = travel.calendars.clone();
         vec![
             client(
                 "a51c3e88",
@@ -217,6 +222,11 @@ impl Demo {
             ),
             client("c0000001", tr("Travel planner"), BOT_CLIENT, travel),
             client("c0000002", tr("Release helper"), BOT_CLIENT, Rights::none()),
+            // For Settings › API and MCP of an app (issue #531): a script's key that reads two
+            // calendars, an MCP client that writes in every app, one that may do nothing yet.
+            client("d0000001", "backup-script", SCRIPT_CLIENT, backup),
+            client("d0000002", "Claude Code", "claude-code", RightsTemplate::ReadAndWrite.rights()),
+            client("d0000003", "Codex", "codex", Rights::none()),
         ]
     }
 

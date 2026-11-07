@@ -2257,7 +2257,8 @@ impl Launch {
         let own = kind.settings_sections();
         let (providers, ai) = kind.account_providers();
         let accounts = torro_settings_ui::account_sections(providers, ai);
-        let sections = [&own[..], &accounts[..], &torro_settings_ui::suite_sections(&own)].concat();
+        let outside = torro_settings_ui::outside::sections(kind.app());
+        let sections = [&own[..], &accounts[..], &outside[..], &torro_settings_ui::suite_sections(&own)].concat();
         let settings = match flag_value(args, "--settings")? {
             None => None,
             Some(word) if sections.iter().any(|section| section.id == word) => Some(word.to_owned()),
@@ -8453,6 +8454,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         // Its accounts and AI, always, also with the main application (issue #410).
         let (providers, ai) = kind.account_providers();
         let mut host = host.with_accounts(kind.app(), providers, ai);
+        // What keys and MCP clients may do in this window's area (issue #531).
+        host = host.with_outside(kind.app());
         if let Some(id) = section {
             host.open(id);
         }

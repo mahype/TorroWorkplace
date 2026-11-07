@@ -434,6 +434,7 @@ impl Launch {
         let sections = [
             &SETTINGS_SECTIONS[..],
             &torro_settings_ui::account_sections(&ACCOUNT_PROVIDERS, false),
+            &torro_settings_ui::outside::sections(AppId::TASKS),
             &torro_settings_ui::suite_sections(&SETTINGS_SECTIONS),
         ]
         .concat();
@@ -2483,6 +2484,8 @@ impl App {
         );
         // Its accounts, always, also with the main application (issue #410).
         let mut host = host.with_accounts(AppId::TASKS, &ACCOUNT_PROVIDERS, false);
+        // What keys and MCP clients may do in the tasks and on GitHub (issue #531).
+        host = host.with_outside(AppId::TASKS);
         if let Some(id) = section {
             host.open(id);
         }

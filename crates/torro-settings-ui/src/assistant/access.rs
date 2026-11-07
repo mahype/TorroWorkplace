@@ -25,7 +25,8 @@
 //!
 //! - Of all sections only this one sends `clients.*` beyond reading the list: `clients.update_client`
 //!   (the editor), and for the kind `assistant` only `clients.create_client` and
-//!   `clients.remove_client`. Never `clients.new_key` – the core runs the assistant's and the bots'
+//!   `clients.remove_client`. The one other page is API and MCP of every app (`crate::outside`, issue
+//!   #531), which sends only `clients.update_client`, only for keys of scripts and MCP clients. Never `clients.new_key` – the core runs the assistant's and the bots'
 //!   tools itself with their clients' rights, so nobody needs their keys.
 //! - Everything goes out as [`crate::Action::Send`], whose answers the host drops unread
 //!   (`crate::send`): a key that a core would still hand back with `clients.create_client` never

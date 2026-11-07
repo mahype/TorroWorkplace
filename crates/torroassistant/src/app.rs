@@ -1834,6 +1834,8 @@ impl App {
         );
         // AI, always, also with the main application (issue #410): the models it chats with.
         let mut host = host.with_accounts(AppId::ASSISTANT, &[], true);
+        // What keys and MCP clients may do with the assistant and its bots (issue #531).
+        host = host.with_outside(AppId::ASSISTANT);
         if let Some(id) = section {
             host.open(id);
         }
