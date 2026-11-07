@@ -265,6 +265,11 @@ pub(crate) async fn client_refusal(
     if !changes_mail(request) {
         return None;
     }
+    // Uploads carry no message ids. Their accounting admission must precede locate(), which
+    // may wait for an account reload even for an empty id list.
+    if matches!(request, Request::UploadMailImage { .. }) {
+        return Box::pin(super::images::client_refusal(mail, client, reach, request, tools)).await;
+    }
     if let Err(err) = locate(mail, reach, &request.message_ids()).await {
         return Some(err.response());
     }
@@ -1079,11 +1084,27 @@ fn read_file(
         return Err(WriteError::Invalid(TOO_BIG));
     }
     let mut bytes = Vec::new();
+    // read_to_end's geometric growth can retain 32 MiB for a valid 24-MiB image. The
+    // image store admits at most 25 MiB of source capacity, not merely source length.
+    bytes.try_reserve_exact(meta.len() as usize).map_err(|_| WriteError::Busy)?;
     let file = fs::File::open(path).map_err(|_| WriteError::NotFound(NO_FILE))?;
-    // The file may have grown since it was measured.
-    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes).map_err(|_| WriteError::NotFound(NO_FILE))?;
-    if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err(WriteError::Invalid(TOO_BIG));
+    let mut reader = file.take(MAX_FILE_BYTES + 1);
+    let mut chunk = [0; 8192];
+    loop {
+        let count = match reader.read(&mut chunk) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result.map_err(|_| WriteError::NotFound(NO_FILE))?,
+        };
+        if count == 0 {
+            break;
+        }
+        // A file may grow after metadata was checked. Reject the extra byte before
+        // allocating, and never let amortized Vec growth exceed the source limit.
+        if bytes.len() + count > MAX_FILE_BYTES as usize {
+            return Err(WriteError::Invalid(TOO_BIG));
+        }
+        bytes.try_reserve_exact(count).map_err(|_| WriteError::Busy)?;
+        bytes.extend_from_slice(&chunk[..count]);
     }
     // Exchanged since the register's check: not the file the core made.
     if registered.is_some_and(|entry| !entry.holds(&bytes)) {
@@ -1823,6 +1844,52 @@ pub(crate) mod tests {
         assert_eq!(read.attachments.len(), 2);
         let info = read.attachments.iter().find(|a| a.content_type == "application/pdf").expect("PDF");
         assert_eq!(mime::attachment(stored.as_bytes(), &info.part).expect("PDF").bytes, b"%PDF");
+    }
+
+    #[tokio::test]
+    async fn mixed_line_endings_in_a_quoted_printable_image_import_preserve_original_bytes() {
+        use torro_mail::{ImageSize, ImageSource};
+        let room = mailroom().await;
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(10, 10).write_to(&mut png, image::ImageFormat::Png).expect("PNG");
+        let mut expected = png.into_inner();
+        let mut body = expected.iter().map(|byte| format!("={byte:02X}")).collect::<String>();
+        // An opaque valid image with source padding. A CRLF must not turn every subsequent
+        // bare LF into two output bytes, or a small MIME leaf can exceed its admitted budget.
+        body.push_str("\r\n");
+        body.push_str(&"\n".repeat(1024));
+        expected.extend_from_slice(b"\r\n");
+        expected.extend_from_slice(&[b'\n'; 1024]);
+        let raw = format!(
+            "From: bob@example.org\r\nSubject: Mixed image line endings\r\nMIME-Version: 1.0\r\nContent-Type: image/png\r\nContent-Disposition: attachment; filename=mixed.png\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n{body}"
+        );
+        room.server.add("INBOX", &raw, &[]);
+        room.mail.sync_all(Reach::Suite).await.expect("sync");
+        let message = id_of(&room.mail, "Mixed image line endings").await;
+        let response = super::super::images::handle(
+            &room.mail,
+            Reach::Suite,
+            &DraftAuthor::App,
+            Request::PrepareMailImage {
+                account: ANNA.into(),
+                source: ImageSource::MailPart { message, part: "0".into() },
+            },
+            None,
+        )
+        .await;
+        let Response::MailImage { image } = response else { panic!("prepare: {response:?}") };
+        let original = super::super::images::attachment(
+            &room.mail,
+            Reach::Suite,
+            &DraftAuthor::App,
+            ANNA,
+            &ImageSource::Prepared { id: image.id },
+            ImageSize::Original,
+            None,
+        )
+        .await
+        .expect("original");
+        assert_eq!(original.bytes, expected, "transfer decoding must preserve hard line endings, not expand them");
     }
 
     #[tokio::test]

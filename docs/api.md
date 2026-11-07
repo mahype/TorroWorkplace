@@ -69,6 +69,14 @@ einer Prepared-ID verlängert ihre Lease. Mit einem anderen Zielkonto kopiert Pr
 in eine neue Lease, nur wenn Quell- und Zielkonto erreichbar sind; die alte Lease bleibt bis zur Freigabe erhalten.
 Das erhält beim Kontowechsel auch ungewählte Originalauflösungen, ohne sie zu speichern oder an die UI zu senden.
 MailPart-Importe holen nur den Bildteil in begrenzten IMAP-Stücken; auch Rohdaten und MIME-Dekodierung werden vorab budgetiert.
+Dateiimporte reservieren die gemessene Größe ohne geometrisches Pufferwachstum und lesen in begrenzten
+Stücken; auch bei zwischenzeitlichem Dateiwachstum bleibt die Quellpufferkapazität auf 25 MiB begrenzt.
+Encoder begrenzen die tatsächliche Ausgabekapazität vor jedem Schreiben. PNG-Ausgaben und Vorschauen
+werden zeilenweise mit höchstens 8-KiB-IDAT-Stücken geschrieben, ohne Zwischenpuffer für das ganze Bild;
+der konstante Encoder-Arbeitsspeicher wird zusätzlich reserviert. MIME-Anhänge werden nur transferdekodiert,
+nicht anhand eines deklarierten Zeichensatzes in UTF-8 umgewandelt; Quoted-Printable prüft die Grenze vor
+jeder Ausgabe und erweitert gemischte Zeilenenden nicht. Die gespeicherte Kapazität entspricht den
+dekodierten Bytes. Upload-Payloads werden bereits vor wartenden Kontoabfragen budgetiert oder abgewiesen.
 `mail.release_images` entfernt nur eigene IDs dieses Kontos, ignoriert
 fremde/unbekannte und liefert `ok` ohne Zähler. Vor Freigabe und Ausführung gelten Konto-/Quellrechte;
 fremde Quellen sind `not-found`, Dateien unterliegen denselben Beschränkungen wie normale Anhänge.

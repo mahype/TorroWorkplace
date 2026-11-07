@@ -24,6 +24,9 @@ use crate::tools::Register;
 
 const MEMORY: usize = 100 * 1024 * 1024;
 const PREVIEW: usize = 256 * 1024;
+// Streaming PNG compression, three scanlines, endian conversion and an 8-KiB IDAT chunk.
+// Encoded output is charged separately; this never scales with image height.
+const ENCODER_SCRATCH: usize = 1024 * 1024;
 const ORIGINAL: usize = MAX_FILE_BYTES as usize;
 const NO_IMAGE: &str = "The image source is no longer available. Insert it again.";
 const BAD_IMAGE: &str = "The image is invalid or exceeds the image limits.";
@@ -263,10 +266,12 @@ pub(crate) async fn client_refusal(
     let author = DraftAuthor::Client(client.into());
     let account_id = request.mail_account()?;
     if is_request(request) {
-        if let Err(refused) = account(mail, reach, account_id).await {
+        // Account reload may await store opening. Charge incoming payloads before that wait,
+        // not just before the later image-store wait; no protected source is read here.
+        if let Err(refused) = mail.images.reserve_request(request).await {
             return Some(refused);
         }
-        if let Err(refused) = mail.images.reserve_request(request).await {
+        if let Err(refused) = account(mail, reach, account_id).await {
             return Some(refused);
         }
     }
@@ -351,10 +356,10 @@ pub(crate) async fn handle(
         return refused;
     }
     let Some(id) = request.mail_account() else { return invalid() };
-    if let Err(refused) = account(mail, reach, id).await {
+    if let Err(refused) = mail.images.reserve_request(&request).await {
         return refused;
     }
-    if let Err(refused) = mail.images.reserve_request(&request).await {
+    if let Err(refused) = account(mail, reach, id).await {
         return refused;
     }
     // Start only after admission, so the first upload cannot contend with the cleanup worker
@@ -420,7 +425,7 @@ async fn prepare(
     let mut state = mail.images.state.lock().await;
     state.purge();
     state.slots(author)?;
-    state.room(ORIGINAL + PREVIEW * 2)?;
+    state.room(ORIGINAL + ENCODER_SCRATCH + PREVIEW * 3)?;
     let attachment = match source {
         ImageSource::File { path } => DraftAttachment::File { path },
         ImageSource::MailPart { message, part } => DraftAttachment::MailPart { message, part },
@@ -431,11 +436,15 @@ async fn prepare(
     let budget = state.encoded_budget()?;
     let input =
         write::image_attachment_of(mail, reach, &attachment, author, tools, budget).await.map_err(|e| e.response())?;
+    state.room(input.bytes.capacity().saturating_add(ENCODER_SCRATCH + PREVIEW * 3))?;
     let bytes = Arc::new(input.bytes);
     let decoding = Arc::clone(&bytes);
     let image = tokio::task::spawn_blocking(move || describe(&decoding)).await.map_err(|_| invalid())??;
     let id = super::random_hex(16).map_err(|_| invalid())?;
     let image = PreparedImage { id: id.clone(), ..image };
+    // The new preview is now charged globally; check the actual retained source capacity
+    // again before publishing its lease, even if a future reader changes allocation strategy.
+    state.room(bytes.capacity())?;
     state.entries.insert(
         id,
         Entry {
@@ -460,7 +469,7 @@ async fn upload_image(
 ) -> Result<Response, Response> {
     let mut state = mail.images.state.lock().await;
     state.purge();
-    state.room(IMAGE_CHUNK_BYTES + PREVIEW * 2)?;
+    state.room(IMAGE_CHUNK_BYTES + ENCODER_SCRATCH + PREVIEW * 3)?;
     let chunk = STANDARD.decode(base64).map_err(|_| invalid())?;
     if chunk.len() > IMAGE_CHUNK_BYTES {
         return Err(invalid());
@@ -569,9 +578,13 @@ pub(crate) async fn attachment(
     // Reserve before the encoder can copy an Original or allocate its normal output. Moving the
     // charge into the worker also retains it if the caller drops its future during encoding.
     state
-        .room(ORIGINAL + if matches!(source, ImageSource::Prepared { .. }) { 0 } else { bytes.capacity() })
+        .room(
+            ORIGINAL
+                + ENCODER_SCRATCH
+                + if matches!(source, ImageSource::Prepared { .. }) { 0 } else { bytes.capacity() },
+        )
         .map_err(|_| WriteError::Busy)?;
-    let output = torro_ipc::mail::ImageReservation::new(ORIGINAL).ok_or(WriteError::Busy)?;
+    let output = torro_ipc::mail::ImageReservation::new(ORIGINAL + ENCODER_SCRATCH).ok_or(WriteError::Busy)?;
     let (content, mut output) = tokio::task::spawn_blocking(move || {
         encode(&bytes, size == ImageSize::Original).map(|content| (content, output))
     })
@@ -617,16 +630,19 @@ fn decode(bytes: &[u8]) -> Result<(image::DynamicImage, image::ImageFormat), Res
 }
 
 fn describe(bytes: &[u8]) -> Result<PreparedImage, Response> {
+    let _scratch = torro_ipc::mail::ImageReservation::new(ENCODER_SCRATCH + PREVIEW).ok_or_else(busy)?;
     let (image, _) = decode(bytes)?;
     let (original_width, original_height) = (image.width(), image.height());
     let width = original_width.min(1600);
     let height = (u64::from(original_height) * u64::from(width) / u64::from(original_width)).max(1) as u32;
     let mut preview = image.thumbnail(512, 512);
     let preview = loop {
-        let mut png = Cursor::new(Vec::new());
-        preview.write_to(&mut png, image::ImageFormat::Png).map_err(|_| invalid())?;
-        if png.get_ref().len() <= PREVIEW {
-            break png.into_inner();
+        let mut png = Bounded::<PREVIEW>(Cursor::new(Vec::new()));
+        if stream_png(&preview, &mut png).is_ok() {
+            break png.0.into_inner();
+        }
+        if preview.width() == 1 && preview.height() == 1 {
+            return Err(invalid());
         }
         preview = preview.thumbnail((preview.width() / 2).max(1), (preview.height() / 2).max(1));
     };
@@ -660,12 +676,12 @@ fn encode(bytes: &[u8], original: bool) -> Result<OutgoingAttachment, Response> 
     if image.width() > 1600 {
         image = image.resize(1600, u32::MAX, image::imageops::FilterType::Lanczos3);
     }
-    let mut out = Bounded(Cursor::new(Vec::new()));
+    let mut out = Bounded::<ORIGINAL>(Cursor::new(Vec::new()));
     let kind = if format == image::ImageFormat::Jpeg {
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85).encode_image(&image).map_err(|_| invalid())?;
         "jpeg"
     } else {
-        image.write_to(&mut out, image::ImageFormat::Png).map_err(|_| invalid())?;
+        stream_png(&image, &mut out)?;
         "png"
     };
     if out.0.get_ref().len() > ORIGINAL {
@@ -681,12 +697,67 @@ fn encode(bytes: &[u8], original: bool) -> Result<OutgoingAttachment, Response> 
     })
 }
 
-/// Stop encoders before they allocate an oversized output, not after writing the whole image.
-struct Bounded(Cursor<Vec<u8>>);
-impl std::io::Write for Bounded {
+/// Encode scanlines, never a full-frame zlib staging buffer. Preserve 8/16-bit colour and alpha;
+/// the only conversion buffer is one 16-bit row in PNG's big-endian sample order.
+fn stream_png(image: &image::DynamicImage, output: &mut impl std::io::Write) -> Result<(), Response> {
+    use image::ColorType;
+    use std::io::Write as _;
+    let (color, depth, channels) = match image.color() {
+        ColorType::L8 => (png::ColorType::Grayscale, png::BitDepth::Eight, 1),
+        ColorType::La8 => (png::ColorType::GrayscaleAlpha, png::BitDepth::Eight, 2),
+        ColorType::Rgb8 => (png::ColorType::Rgb, png::BitDepth::Eight, 3),
+        ColorType::Rgba8 => (png::ColorType::Rgba, png::BitDepth::Eight, 4),
+        ColorType::L16 => (png::ColorType::Grayscale, png::BitDepth::Sixteen, 1),
+        ColorType::La16 => (png::ColorType::GrayscaleAlpha, png::BitDepth::Sixteen, 2),
+        ColorType::Rgb16 => (png::ColorType::Rgb, png::BitDepth::Sixteen, 3),
+        ColorType::Rgba16 => (png::ColorType::Rgba, png::BitDepth::Sixteen, 4),
+        _ => return Err(invalid()),
+    };
+    if image.width() == 0 || image.width() > 1600 {
+        return Err(invalid());
+    }
+    let sixteen = depth == png::BitDepth::Sixteen;
+    let row_bytes = image.width() as usize * channels * if sixteen { 2 } else { 1 };
+    let mut endian = Vec::new();
+    if sixteen {
+        endian.try_reserve_exact(row_bytes).map_err(|_| busy())?;
+    }
+    let mut encoder = png::Encoder::new(output, image.width(), image.height());
+    encoder.set_color(color);
+    encoder.set_depth(depth);
+    let mut writer = encoder.write_header().map_err(|_| invalid())?;
+    {
+        let mut stream = writer.stream_writer_with_size(8192).map_err(|_| invalid())?;
+        for row in image.as_bytes().chunks_exact(row_bytes) {
+            let row = if sixteen {
+                endian.clear();
+                for sample in row.chunks_exact(2) {
+                    endian.extend_from_slice(&u16::from_ne_bytes([sample[0], sample[1]]).to_be_bytes());
+                }
+                endian.as_slice()
+            } else {
+                row
+            };
+            stream.write_all(row).map_err(|_| invalid())?;
+        }
+        stream.finish().map_err(|_| invalid())?;
+    }
+    writer.finish().map_err(|_| invalid())
+}
+
+/// Bound capacity as well as length before forwarding a write. A small PNG CRC/IEND trailer
+/// must never double an already large Vec beyond the output reservation.
+struct Bounded<const LIMIT: usize>(Cursor<Vec<u8>>);
+impl<const LIMIT: usize> std::io::Write for Bounded<LIMIT> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if self.0.position().saturating_add(bytes.len() as u64) > MAX_FILE_BYTES {
+        let end = usize::try_from(self.0.position()).ok().and_then(|position| position.checked_add(bytes.len()));
+        let Some(end) = end.filter(|end| *end <= LIMIT) else {
             return Err(std::io::Error::other("image output limit"));
+        };
+        let buffer = self.0.get_mut();
+        if end > buffer.capacity() {
+            let capacity = buffer.capacity().saturating_mul(2).max(end).min(LIMIT);
+            buffer.try_reserve_exact(capacity - buffer.len()).map_err(std::io::Error::other)?;
         }
         std::io::Write::write(&mut self.0, bytes)
     }
@@ -694,7 +765,7 @@ impl std::io::Write for Bounded {
         Ok(())
     }
 }
-impl std::io::Seek for Bounded {
+impl<const LIMIT: usize> std::io::Seek for Bounded<LIMIT> {
     fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
         std::io::Seek::seek(&mut self.0, position)
     }
@@ -703,6 +774,93 @@ impl std::io::Seek for Bounded {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encoder_small_trailer_never_doubles_capacity_beyond_its_reservation() {
+        use std::io::Write as _;
+        let mut out = Bounded::<ORIGINAL>(Cursor::new(Vec::new()));
+        out.write_all(&vec![0; 15 * 1024 * 1024]).expect("large encoder chunk");
+        out.write_all(&[0; 4]).expect("CRC trailer");
+        assert!(
+            out.0.get_ref().capacity() <= ORIGINAL,
+            "output capacity exceeded its 25-MiB reservation: {}",
+            out.0.get_ref().capacity()
+        );
+        out.write_all(&vec![0; ORIGINAL - 15 * 1024 * 1024 - 4]).expect("exact limit");
+        assert_eq!(out.0.get_ref().len(), ORIGINAL);
+        assert_eq!(out.0.get_ref().capacity(), ORIGINAL);
+        assert!(out.write_all(&[0]).is_err(), "reject excess before allocating");
+        assert_eq!(out.0.get_ref().capacity(), ORIGINAL);
+    }
+
+    #[test]
+    fn streamed_png_preserves_all_supported_sample_depths_and_alpha() {
+        use image::{DynamicImage, ImageBuffer};
+        let bytes = [0_u8, 1, 0x12, 0x80, 0xfe, 0xff];
+        let words = [0_u16, 1, 0x1234, 0x80ff, 0xff00, 0xffff];
+        let images = [
+            DynamicImage::ImageLuma8(ImageBuffer::from_fn(5, 3, |x, y| image::Luma([bytes[((x + y) % 6) as usize]]))),
+            DynamicImage::ImageLumaA8(ImageBuffer::from_fn(5, 3, |x, y| {
+                image::LumaA([bytes[x as usize], bytes[y as usize]])
+            })),
+            DynamicImage::ImageRgb8(ImageBuffer::from_fn(5, 3, |x, y| {
+                image::Rgb([bytes[x as usize], bytes[y as usize], 0xff])
+            })),
+            DynamicImage::ImageRgba8(ImageBuffer::from_fn(5, 3, |x, y| {
+                image::Rgba([bytes[x as usize], 0x80, 0xff, bytes[y as usize]])
+            })),
+            DynamicImage::ImageLuma16(ImageBuffer::from_fn(5, 3, |x, y| image::Luma([words[((x + y) % 6) as usize]]))),
+            DynamicImage::ImageLumaA16(ImageBuffer::from_fn(5, 3, |x, y| {
+                image::LumaA([words[x as usize], words[y as usize]])
+            })),
+            DynamicImage::ImageRgb16(ImageBuffer::from_fn(5, 3, |x, y| {
+                image::Rgb([words[x as usize], words[y as usize], 0xffff])
+            })),
+            DynamicImage::ImageRgba16(ImageBuffer::from_fn(5, 3, |x, y| {
+                image::Rgba([words[x as usize], 0x80ff, 0xffff, words[y as usize]])
+            })),
+        ];
+        for image in images {
+            let mut png = Vec::new();
+            stream_png(&image, &mut png).expect("stream");
+            let restored = image::load_from_memory(&png).expect("decode streamed PNG");
+            assert_eq!(restored.color(), image.color());
+            assert_eq!(restored.as_bytes(), image.as_bytes(), "sample bytes and alpha must survive streaming");
+            let normalized = encode(&png, false).expect("normalize");
+            let restored = image::load_from_memory(&normalized.bytes).expect("decode normalized PNG");
+            assert_eq!(restored.color(), image.color());
+            assert_eq!(restored.as_bytes(), image.as_bytes());
+            let prepared = describe(&png).expect("preview also accepts this colour type");
+            assert!(!prepared.preview.is_empty());
+        }
+    }
+
+    #[test]
+    fn png_encoding_streams_bounded_idat_chunks_instead_of_staging_a_whole_frame() {
+        let mut pixels = image::RgbaImage::new(192, 192);
+        let mut random = 42_u32;
+        for pixel in pixels.as_mut() {
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
+            *pixel = random as u8;
+        }
+        let mut source = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(pixels).write_to(&mut source, image::ImageFormat::Png).expect("source PNG");
+        let output = encode(source.get_ref(), false).expect("encode");
+        let mut chunks = &output.bytes[8..];
+        let mut count = 0;
+        while chunks.len() >= 12 {
+            let length = u32::from_be_bytes(chunks[..4].try_into().expect("length")) as usize;
+            if &chunks[4..8] == b"IDAT" {
+                assert!(length <= 8192, "whole-frame PNG staging produced an IDAT of {length} bytes");
+                count += 1;
+            }
+            chunks = &chunks[length + 12..];
+        }
+        assert!(count > 1, "incompressible output must exercise multiple bounded chunks");
+        assert!(image::load_from_memory(&output.bytes).is_ok(), "streamed output remains a valid PNG");
+    }
 
     fn png(width: u32, height: u32) -> Vec<u8> {
         let mut out = Cursor::new(Vec::new());
@@ -746,6 +904,52 @@ mod tests {
         state.entries.get_mut(&id).expect("entry").touched -= Duration::from_secs(3601);
         state.purge();
         assert!(state.entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn file_imports_budget_retained_capacity_under_source_preload() {
+        const TEST: &str = "mail::images::tests::file_imports_budget_retained_capacity_under_source_preload";
+        const CHILD: &str = "TORRO_FILE_IMAGE_BUDGET_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+                .args([TEST, "--exact", "--test-threads=1"])
+                .env(CHILD, "1")
+                .output()
+                .expect("isolated source budget");
+            assert!(
+                output.status.success() && String::from_utf8_lossy(&output.stdout).contains(&format!("{TEST} ... ok")),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("source.png");
+        let mail = MailService::without_home();
+        let source = ImageSource::File { path: path.to_string_lossy().into_owned() };
+        // These real valid imports used to retain 32 + 32 + 8 + 32 MiB: all were admitted
+        // by the 25.5-MiB precheck, but the fourth put the store above its 100-MiB limit.
+        for size in [24, 24, 6, 24] {
+            let mut bytes = png(10, 10);
+            bytes.resize(size * 1024 * 1024, 0);
+            std::fs::write(&path, &bytes).expect("valid PNG with trailing source bytes");
+            drop(bytes);
+            let response = prepare(&mail, Reach::Suite, &DraftAuthor::App, "mail:a", source.clone(), None).await;
+            assert!(matches!(response, Ok(Response::MailImage { .. })), "prepare: {response:?}");
+            let state = mail.images.state.lock().await;
+            assert!(
+                state.used() + torro_ipc::mail::held_image_bytes() <= MEMORY,
+                "retained source capacities exceeded 100 MiB: {}",
+                state.used()
+            );
+        }
+        let response = prepare(&mail, Reach::Suite, &DraftAuthor::App, "mail:a", source, None).await;
+        assert!(
+            matches!(response, Err(Response::Error { code, .. }) if code == "busy"),
+            "the next large source is refused before reading"
+        );
+        assert_eq!(mail.images.state.lock().await.entries.len(), 4, "rejection stores no additional source");
     }
 
     #[tokio::test]
