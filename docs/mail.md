@@ -117,7 +117,22 @@ spricht nur über IPC mit dem Dienst wie Kalender und Aufgaben.
   ([kontakte.md](kontakte.md), „Empfänger-Vorschläge“). Das **Papier** schaltet ◐ hell oder dunkel, unabhängig vom
   Fenster und von den Mailfarben des Lesers (Einstellung `compose_paper`, gemerkt); die gesendete Mail bleibt gleich.
   Der Text bleibt ein Textfeld mit leisen Zeichen: Eine Webview lässt sich unter Wayland nicht in ein Iced-Fenster
-  einbetten, Schriftgröße und Textfarbe kann es nicht zeigen. Bilder im Text: #461, Einfügen mit Formatierung: #462.
+  einbetten, Schriftgröße und Textfarbe kann es nicht zeigen. Das Schreibfenster schreibt HTML, ohne die
+  Reintext-Voreinstellung eines Kontos umzuschreiben. Reintext-Entwürfe werden dabei als Text escaped.
+  **Bilder im Text (#461)** stehen als eigene Blöcke zwischen Textfeldern, am Cursor bzw. anstelle der Auswahl:
+  über „Bild“, Datei-Ziehen oder Cmd/Ctrl+V mit einem Screenshot. Ohne Bild wird nur reiner Text einmal eingefügt;
+  formatierter Text und Dateien aus der Zwischenablage bleiben #462. Unter Wayland liefert winit 0.30 keine
+  Datei-Drops: dort bleiben Knopf und Screenshot, ohne eigenen Drag-and-drop-Unterbau.
+  Beim gewählten Bild stehen Klein/Mittel/Groß (höchstens natürliche Breite bzw. 320/640/960 Pixel), Original,
+  „Als Anhang“ und Entfernen. Normal wird orientiert, auf höchstens 1600 Pixel Breite verkleinert, nie vergrößert,
+  JPEG mit Qualität 85, andere Formate als PNG/erster Frame. Original behält nur auf Wunsch die Quellbytes.
+  Entwürfe und Versand verwenden `cid:` und `multipart/related`; normale Anhänge bleiben daneben.
+  Originale bleiben nur im Dienst-RAM und werden nach einer Stunde ohne Nutzung vergessen; offene Fenster
+  verlängern alle 30 Minuten. Nach Wiederöffnen gilt die gespeicherte Auflösung. Ein Quellenverlust sperrt den
+  Versand, statt ein Bild unbemerkt wegzulassen. Fenster und Papier können weiterhin unabhängig hell/dunkel sein.
+  Tastatur: Cmd/Ctrl+Alt+O öffnet den Bilddialog, Cmd/Ctrl+Alt+I wählt das nächste Bild (mit Umschalt das vorige);
+  danach wählen Cmd/Ctrl+Alt+1–4 die Größe und Cmd/Ctrl+Alt+A wechselt Anhang/Einbettung.
+  Cmd/Ctrl+Alt+Rücktaste öffnet die Rückfrage vor dem Entfernen; Enter bestätigt, Escape bricht ab.
 - **Einladungen** (iMIP) zeigen oben in der Nachricht „Accept / Maybe / Decline“; die Antwort
   geht per Mail zurück (iTIP `REPLY` über das Konto, Schalter „Nach außen“ wie beim Senden), der
   Termin landet in dem Kalender, der die frühere Kopie hält, sonst im ersten beschreibbaren (E8.3b,
