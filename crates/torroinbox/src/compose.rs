@@ -6020,6 +6020,26 @@ mod tests {
     }
 
     #[test]
+    fn html_only_keep_text_and_offline_fallback_preserve_word_separators() {
+        let html = " <b>world</b> ";
+        let converted = html::prepare_paste(Some(html), None).expect("paste");
+        let mut window = ready(&[]);
+        window.body = Content::with_text("Helloagain").into();
+        window.body.move_to(Cursor { position: Position { line: 0, column: 5 }, selection: None });
+        let _ = window.update(Message::PasteImage);
+        let id = window.body.selected.expect("reservation");
+        let account = window.sender().expect("sender").account.clone();
+        let generation = window.edit_generation;
+        let _ = window.update(Message::PasteReady(id, account, generation, Ok(converted), Some(window.body.active)));
+        assert_eq!(window.body.text(), "Hello **world** again");
+        let _ = window.update(Message::KeepPasteText);
+        assert_eq!(window.body.text(), "Hello world again");
+        let fallback = paste_answer(html, None, Err(IpcError::NotRunning)).expect("offline plain text");
+        assert_eq!(fallback.plain, " world ");
+        assert_eq!(fallback.markup, " world ");
+    }
+
+    #[test]
     fn clipboard_image_upload_failure_restores_selection_and_account_switch_discards_its_reply() {
         for switch in [false, true] {
             let mut window = ready(&[]);

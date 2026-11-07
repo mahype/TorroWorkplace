@@ -176,7 +176,7 @@ mod tests {
         let file = std::fs::canonicalize(file).expect("canonical");
         let mut fake = Fake {
             files: Some(vec![file.clone()]),
-            html: Some("<b>Rich</b>".into()),
+            html: Some(" <b>Rich</b> ".into()),
             text: Some("Text".into()),
             ..Fake::default()
         };
@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(fake.calls, ["files", "html", "text"]);
         fake.text = None;
         fake.calls.clear();
-        assert!(matches!(read(&mut fake, true), Ok(Clipboard::Text(s)) if s == "Rich"));
+        assert!(matches!(read(&mut fake, true), Ok(Clipboard::Text(s)) if s == " Rich "));
         assert_eq!(fake.calls, ["text", "html"]);
         fake.html = None;
         fake.calls.clear();

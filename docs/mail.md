@@ -150,6 +150,8 @@ spricht nur über IPC mit dem Dienst wie Kalender und Aufgaben.
    vor Speichern/Senden fordert das Fenster zum Kürzen auf. Bei fehlendem Backend bleibt Iced-Text,
    bei offline/älterem Dienst nur Klartext. Echte Clipboard-Integration
    auf macOS, Windows und Hyprland bleibt manuell zu prüfen; Tests verwenden injizierte Formate ohne System-Clipboard.
+   Automatische Tests prüfen Inhalt und Zustandswechsel. Die erzeugten headless PNGs werden zusätzlich visuell
+   geprüft; Bildgenerierung oder grüne Tests allein sind keine Sichtprüfung.
 - **Einladungen** (iMIP) zeigen oben in der Nachricht „Accept / Maybe / Decline“; die Antwort
   geht per Mail zurück (iTIP `REPLY` über das Konto, Schalter „Nach außen“ wie beim Senden), der
   Termin landet in dem Kalender, der die frühere Kopie hält, sonst im ersten beschreibbaren (E8.3b,
