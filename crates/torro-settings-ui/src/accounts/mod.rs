@@ -2683,7 +2683,10 @@ fn list<'a>(
         rows.push(add_row(fixed, fixed == Group::Mail && offers_import(state)));
         about = Some(fixed.about().to_string());
     }
-    page = page.push(widgets::group(shown.title(), rows, about));
+    // On AI the header names the section already: its first group is the accounts, not "AI" again
+    // ("AI › AI", design review of #554). Elsewhere the provider names the group.
+    let title = if shown == Listed::Fixed(Group::Ai) { tr("Accounts").into() } else { shown.title() };
+    page = page.push(widgets::group(title, rows, about));
     if shown == Listed::Fixed(Group::Ai) {
         // Stacked also where the page is narrower than a form (design review of #325): beside each
         // other, a model's name, the computer's line or where mail goes would be cut off there.
