@@ -282,8 +282,18 @@ pub fn prepare_paste(html: Option<&str>, text: Option<&str>) -> Result<Paste, Pa
     let normalized = paste_html(html.unwrap_or_default())?;
     let plain = text.map(clean_text).unwrap_or_else(|| to_text(&normalized));
     let plain_markup = paste_plain_markup(&plain);
-    let markup =
+    let mut markup =
         if html.is_some_and(|s| !s.trim().is_empty()) { to_markup(&normalized).0 } else { plain_markup.clone() };
+    if html.is_some() && !markup.is_empty() {
+        // A clipboard insertion is a substring: preserve whitespace separating existing words.
+        let edges = text.map(str::to_owned).unwrap_or_else(|| text_of(&parse(&normalized)));
+        if !edges.trim().is_empty() {
+            let is_edge = |c: char| if text.is_some() { c.is_whitespace() } else { matches!(c, ' ' | '\t' | '\u{a0}') };
+            let leading = &edges[..edges.len() - edges.trim_start_matches(is_edge).len()];
+            let trailing = &edges[edges.trim_end_matches(is_edge).len()..];
+            markup = format!("{}{}{}", paste_plain_markup(leading), markup, paste_plain_markup(trailing));
+        }
+    }
     if [&markup, &plain, &plain_markup].iter().any(|s| s.len() > MAX) {
         return Err(PasteError::TooLarge);
     }
@@ -446,8 +456,27 @@ fn paste_html(html: &str) -> Result<String, PasteError> {
 }
 
 fn office_list_kind(rest: &str) -> &'static str {
-    let end = rest.find("</p").unwrap_or(rest.len());
-    let text = to_text(&rest[..end]);
+    // The draft parser ignores unknown names, unlike source-depth validation. Never recurse
+    // through raw HTML here: mismatched unknown tags can otherwise hide arbitrary depth.
+    let mut rest = rest;
+    let mut text = String::new();
+    while !rest.is_empty() && text.chars().count() < 32 {
+        let end = rest.find('<').unwrap_or(rest.len());
+        text.extend(decode(&rest[..end]).chars().take(32 - text.chars().count()));
+        rest = &rest[end..];
+        if rest.is_empty() {
+            break;
+        }
+        rest = match token(rest) {
+            Token::Close { name, .. } if name == "p" => break,
+            Token::Open { name, after, .. } if DROPPED.contains(&name.as_str()) => skip_element(&name, after),
+            Token::Open { after, .. }
+            | Token::Close { after, .. }
+            | Token::Comment(after)
+            | Token::Declaration(after)
+            | Token::Text(after) => after,
+        };
+    }
     let marker = text.trim_start();
     let digits = marker.find(|c: char| !c.is_ascii_digit()).unwrap_or(marker.len());
     if digits > 0 && marker[digits..].starts_with(['.', ')']) { "ol" } else { "ul" }
@@ -1332,6 +1361,24 @@ fn tidy(lines: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rich_paste_keeps_the_plain_alternatives_edge_whitespace() {
+        let paste = super::prepare_paste(Some("<b>world</b> "), Some("world ")).expect("paste");
+        assert_eq!(paste.markup, "**world** ");
+        assert_eq!(
+            crate::markup::to_html(&format!("{}again", paste.markup), None),
+            "<p><strong>world</strong> again</p>"
+        );
+        let paste = super::prepare_paste(Some(" <i>world</i> "), None).expect("HTML-only");
+        assert_eq!(paste.markup, " *world* ");
+    }
+
+    #[test]
+    fn office_marker_detection_never_recurses_through_unknown_tag_mismatches() {
+        let html = format!("<p style='mso-list:l0'>{}1. A</p>", "<x><b></x>".repeat(10_000));
+        let paste = super::prepare_paste(Some(&html), None).expect("flat normalized tree");
+        assert_eq!(paste.markup, "1. 1\\. A");
+    }
     #[test]
     fn paste_browser_office_and_mail_are_safe_without_changing_draft_rules() {
         for (input, expected) in [
