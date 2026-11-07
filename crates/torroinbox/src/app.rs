@@ -13,11 +13,12 @@
 //! [`App::density`], `torro_gui::layout::density`), so all three windows agree.
 //!
 //! The mail window (task E8.3, `docs/eingang.md` "Drei Fenster") holds mail only ([`Kind::keeps`]).
-//! Its sidebar (issues #337, #445 and #455) starts with the account field and "New email", then "All"
+//! Its sidebar (issues #337, #445, #455 and #559) starts with "All"
 //! (the mail of every inbox, with the unread mail it holds, [`App::top_entries`]) right above the groups
 //! of categories without a title; after a gap Reply later and Set aside (the piles, with the mail they hold) and Follow up (tasks E18.4 and E19.4,
 //! [`App::nav_entries`]); then "Folders" with Archive, pinned folders and an on-demand
-//! folder browser grouped by account ([`App::folder_entries`]); no sources. The account field at the top of the sidebar chooses the accounts shown (issue #455). In the
+//! folder browser grouped by account ([`App::folder_entries`]); no sources. At the foot, "New email"
+//! stands directly above the account field, which chooses the accounts shown (issue #559). In the
 //! comfortable density mail shows as cards with their buttons always shown ([`App::look`],
 //! `list::Look`); in the wide layout an open mail stands in the reader beside the list
 //! ([`App::wide_reader`], `mail::reader`) instead of in the panel; every action on it stands in the
@@ -12392,7 +12393,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
 
     /// The menu of the account field (issue #455, as the draft): "Show accounts", "All accounts" with
     /// the unread mail of all of them, then each account with its tick, its domain over its address,
-    /// its unread mail of "All" and "Only this", and at the end "Manage accounts…". A number that
+    /// its unread mail of "All" and "Only this", and at the end "Manage accounts…", then "Settings". A number that
     /// could not be counted is left out, and the sum with it.
     fn mail_accounts_menu(&self) -> Element<'_, Message> {
         let groups = self.mail_groups();
@@ -12432,7 +12433,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             list = list.push(line.spacing(space::s()).align_y(Alignment::Center));
         }
         let manage = MenuItem::new(shell::SETTINGS_ICON, tr("Manage accounts…"), Message::ManageMailAccounts);
-        list = list.push(menu_line()).push(widgets::menu_item(manage));
+        let settings = MenuItem::new(shell::SETTINGS_ICON, tr("Settings"), Message::OpenSettings);
+        list = list.push(menu_line()).push(widgets::menu_item(manage)).push(widgets::menu_item(settings));
         let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
         let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::list_medium());
         let body = iced::widget::scrollable(list).height(iced::Length::Shrink).width(Fill);
@@ -12443,11 +12445,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .into()
     }
 
-    /// The head of the mail window's sidebar (issue #455, issue #476): "New email" with its key, the
+    /// The compose action in the mail window's footer (issue #559): "New email" with its key, the
     /// window's primary button – in the rail the pen on the accent, the words as tooltip. Without a mail
-    /// account it is off and framed (decision 2 of #476). The account field stands at the foot
-    /// ([`App::mail_sidebar_foot`]).
-    fn mail_sidebar_head<'a>(&'a self, mode: SidebarMode) -> Element<'a, Message> {
+    /// account it is off and framed (decision 2 of #476), still above the account field.
+    fn mail_sidebar_compose<'a>(&'a self, mode: SidebarMode) -> Element<'a, Message> {
         let compose = (!self.folders.is_empty()).then_some(Message::Switcher(Switcher::New));
         match mode {
             SidebarMode::Expanded => new_mail_button(compose),
@@ -12463,12 +12464,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
     }
 
-    /// The foot of the mail window's sidebar (issue #476): the account field at the bottom edge, its
+    /// The foot of the mail window's sidebar (issue #559): compose, then the account field at the bottom edge, its
     /// menu opening above it where there is no room below (`Placement::Below` turns over) – in the rail
-    /// its icon, centred, the field's words as tooltip. Empty without a mail account.
+    /// its icon, centred, the field's words as tooltip. Without an account only disabled compose remains.
     fn mail_sidebar_foot<'a>(&'a self, mode: SidebarMode, accounts: &Anchor) -> Vec<Element<'a, Message>> {
+        let compose = self.mail_sidebar_compose(mode);
         if self.folders.is_empty() {
-            return Vec::new();
+            return vec![compose];
         }
         let (title, detail) = self.account_field_text();
         let field: Element<'a, Message> = match mode {
@@ -12481,7 +12483,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 container(widgets::anchored(accounts, field)).center_x(Fill).into()
             }
         };
-        vec![field]
+        vec![compose, field]
     }
 
     /// The card "Display" of the mail's action rail (issue #456, as the draft has it): "View" HTML or
@@ -12701,9 +12703,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
         }
         // "Settings" sits in the top row's right corner (issue #459); there is no app switcher (#530). The mail
-        // window has "New email" on top and its account field at the foot (issue #476).
+        // window keeps "New email" directly above its account field at the foot (issue #559).
         let (head, foot) = if self.launch.kind == Kind::Mail && !self.mail_only {
-            (self.mail_sidebar_head(mode), self.mail_sidebar_foot(mode, accounts))
+            (Space::new().into(), self.mail_sidebar_foot(mode, accounts))
         } else {
             (shell::sidebar_tools(mode, self.sidebar_search(), Message::Switcher), Vec::new())
         };
@@ -13661,7 +13663,7 @@ fn mail_domain(account: &str) -> &str {
     address.rsplit_once('@').map_or(address, |(_, domain)| domain)
 }
 
-/// "New email" at the top of the sidebar (issue #455, issue #476): as wide as the sidebar, with the pen
+/// "New email" at the foot of the sidebar (issue #559): as wide as the sidebar, with the pen
 /// and the key of the system's preset at its end. With a mail account it is the window's one primary
 /// button – the accent with pen, word and key light on it ([`widgets::kbd_on_accent`]); without one it
 /// stays framed and off as before (decision 2 of #476), since a faded red would hardly read in light.
@@ -18644,11 +18646,58 @@ mod tests {
         // Without a mail account there is no field, and "New email" is off.
         let mut bare = mail_window(Density::Compact, &[]);
         bare.folders.clear();
-        let _ = bare.mail_sidebar_head(SidebarMode::Expanded);
-        let _ = bare.mail_sidebar_head(SidebarMode::Rail);
-        assert!(bare.mail_sidebar_foot(SidebarMode::Expanded, &Anchor::new()).is_empty(), "no account field");
-        assert!(bare.mail_sidebar_foot(SidebarMode::Rail, &Anchor::new()).is_empty());
-        assert_eq!(app.mail_sidebar_foot(SidebarMode::Expanded, &Anchor::new()).len(), 1, "at the foot");
+        for mode in [SidebarMode::Expanded, SidebarMode::Rail] {
+            assert_eq!(bare.mail_sidebar_foot(mode, &Anchor::new()).len(), 1, "disabled compose, no account field");
+            assert_eq!(app.mail_sidebar_foot(mode, &Anchor::new()).len(), 2, "compose, then accounts");
+            let mut ui = iced_test::Simulator::with_size(
+                iced::Settings::default(),
+                iced::Size::new(shell::rail(), size::control()),
+                bare.mail_sidebar_compose(mode),
+            );
+            ui.point_at(iced::Point::new(shell::rail() / 2.0, size::control() / 2.0));
+            ui.simulate(iced_test::simulator::click());
+            assert!(ui.into_messages().next().is_none(), "compose remains disabled without an account");
+        }
+    }
+
+    /// Issue #559: the fixed footer keeps compose directly above accounts, including the drawer.
+    #[test]
+    fn mail_compose_stands_below_navigation_and_above_accounts() {
+        let mut app = mail_window(Density::Compact, &[]);
+        for size in [WIDE, NARROW] {
+            app.size = size;
+            app.drawer = size == NARROW;
+            let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), size, app.view());
+            let navigation = ui.find(tr("All")).expect("navigation").bounds();
+            let compose = ui.find(tr("New email")).expect("compose").bounds();
+            let accounts = ui.find(tr("All accounts")).expect("accounts").bounds();
+            assert!(navigation.y < compose.y && compose.y < accounts.y, "navigation, compose, accounts");
+            assert!(compose.y > size.height / 2.0, "compose stays at the foot");
+            ui.click(tr("New email")).expect("compose can be clicked");
+            assert!(ui.into_messages().any(|message| matches!(message, Message::Switcher(Switcher::New))));
+        }
+    }
+
+    /// Issue #559: the account menu uses the top-right button's action, including remembered settings.
+    #[test]
+    fn account_menu_settings_follows_manage_and_uses_the_existing_action() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::ToggleMailAccounts);
+        let mut ui = iced_test::simulator(app.mail_accounts_menu());
+        let manage = ui.find(tr("Manage accounts…")).expect("manage").bounds();
+        let settings = ui.find(tr("Settings")).expect("settings").bounds();
+        assert!(settings.y > manage.y && settings.y - manage.y <= size::row_sidebar(), "directly after manage");
+        ui.click(tr("Settings")).expect("settings can be clicked");
+        let messages: Vec<_> = ui.into_messages().collect();
+        assert!(matches!(messages.as_slice(), [Message::OpenSettings]));
+        for message in messages {
+            let _ = app.update(message);
+        }
+        assert!(app.settings.is_some() && app.menu.is_none());
+        let selected = app.settings.as_ref().expect("settings").host.current().id;
+        let _ = app.update(Message::OpenSettings);
+        let _ = app.update(Message::OpenSettings);
+        assert_eq!(app.settings.as_ref().expect("settings").host.current().id, selected);
     }
 
     /// Issue #455: "Trash" lists the mail in the trash folders of every account shown, as "Sent"
