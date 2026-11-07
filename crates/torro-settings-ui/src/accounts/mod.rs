@@ -122,8 +122,8 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
-use iced::widget::{Space, column, container, responsive, row, scrollable, svg, text, toggler};
-use iced::{Alignment, Element, Fill, Subscription, Theme};
+use iced::widget::{Space, column, container, responsive, row, rule, scrollable, svg, text, toggler};
+use iced::{Alignment, Element, Fill, Padding, Subscription, Theme};
 use torro_core::AppId;
 use torro_core::account::Secret;
 use torro_core::ai::hardware::Hardware;
@@ -3251,8 +3251,7 @@ fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
             .into_iter()
             .map(|choice| {
                 let current = choice == chosen;
-                // The account as a quiet word after the name ("Qwen3 235B A22B  OpenRouter"): the menu is
-                // narrower than the list was, and a name with a word behind it is cut with "…".
+                // The account gets its own line: a LAN address must not crowd out the model name.
                 // The label names the account after the model whenever there are several; it is taken
                 // off the name either way, and stands as the word only where `tagged` asks for it.
                 let account = choice
@@ -3274,7 +3273,7 @@ fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
                 let mut item = MenuItem::new(Icon::Check, name, Message::PickSlot(AiSlot::Decide, choice));
                 item.mark = None;
                 if let Some(account) = account.filter(|_| tagged) {
-                    item = item.tag(account, false);
+                    item = item.detail(account);
                 }
                 item.trail(trail).current(current)
             })
@@ -3296,7 +3295,30 @@ fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
     }
     // Many models turned on (OpenRouter) would reach past the window: past a panel's height it scrolls,
     // as the pick list it replaces did.
-    let menu = scrollable(widgets::menu(sections))
+    // The standard entry renderer has no per-entry tooltip parameter. Compose its existing
+    // entries here so both long model names and account addresses remain fully accessible.
+    let mut entries = column![];
+    for (index, section) in sections.into_iter().enumerate() {
+        if index > 0 {
+            entries = entries
+                .push(container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]));
+        }
+        if let Some(title) = section.title {
+            entries = entries.push(
+                container(typo::text(typo::caption(), title).style(theme::text_3))
+                    .padding(Padding::new(space::s()).bottom(space::xs())),
+            );
+        }
+        for item in section.items {
+            let hint = match &item.detail {
+                Some(account) => format!("{} · {account}", item.label),
+                None => item.label.to_string(),
+            };
+            entries = entries.push(widgets::with_tooltip(widgets::menu_item(item), hint));
+        }
+    }
+    let card = container(entries).width(size::panel()).padding(style::MENU_INSET).style(style::container::menu);
+    let menu = scrollable(card)
         .direction(scrollable::Direction::Vertical(style::scrollbar()))
         .style(style::scrollable)
         .height(iced::Length::Shrink);
