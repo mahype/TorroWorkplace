@@ -1225,7 +1225,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Schreibregel (Test `only_people_choose_where_attachments_go` in `torro-ipc`). Dasselbe gilt für
     `mail.save_message_as` (Issues #501/#553, die Mail selbst als PDF, Bild oder EML).
     Die Exportvorschau `mail.list_save_targets` mit `id` und **`export_only: true`** liest nur die
-    gespeicherte Zusammenfassung: `files: []`, Exportpläne für `pdf`, `png`, `eml`, kein Body-/Netzabruf.
+    gespeicherte Zusammenfassung: `files` ist leer und entfällt im JSON, Exportpläne für `pdf`, `png`, `eml`,
+    kein Body-/Netzabruf.
     Ohne Opt-in bleiben ausschließlich PDF-/PNG-Pläne im bisherigen Antwortformat, ohne `id` nur Ziele.
     EML (`message/rfc822`) enthält die geprüften Originalbytes mit allen MIME-Teilen und Anhängen,
     keine Rekonstruktion. Ein lokal fehlendes oder nicht beweisbar vollständiges Original wird einmal
