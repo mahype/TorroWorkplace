@@ -30,7 +30,7 @@ use torro_ipc::{Request, Response, SettingKey};
 use torro_setups::{LoadMode, TemplateSummary};
 
 use super::template_form::{self, Facts, Form, Mode, Step};
-use super::{Action, Data, Header, confirm, dialog, picker, setting_row};
+use super::{Action, Data, Header, confirm, dialog, segments, setting_row};
 use crate::workspace_keys;
 
 /// Page-local state: at most one row has its menu open, at most one dialog or confirmation is open.
@@ -309,8 +309,8 @@ fn shortcuts_row<'a>(data: &'a Data) -> Element<'a, Message> {
         Some(problem) => (Some(widgets::status_dot(widgets::Status::Attention)), problem),
         None => (None, trf("{keys} load a template", &[("keys", &keys)])),
     };
-    let choices: Vec<Modifiers> = ShortcutModifiers::ALL.into_iter().map(Modifiers).collect();
-    let choice = picker(choices, Modifiers(modifiers), |chosen: Modifiers| Message::Modifiers(chosen.0));
+    let choices = ShortcutModifiers::ALL.map(Modifiers);
+    let choice = segments(&choices, Modifiers(modifiers), |chosen: Modifiers| Message::Modifiers(chosen.0));
     setting_row(Some(lead(mark)), tr("Shortcuts"), Some(detail), choice)
 }
 
@@ -355,7 +355,7 @@ fn lead<'a>(content: Option<Element<'a, Message>>) -> Element<'a, Message> {
     container(row![].push(content)).center_x(size::control_sm()).into()
 }
 
-/// A choice of modifiers in the picker, written as this system's keyboard names them.
+/// A choice of modifiers in its segments, written as this system's keyboard names them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Modifiers(ShortcutModifiers);
 

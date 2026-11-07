@@ -3,7 +3,7 @@
 //! what the footer says and what its primary button is called.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, checkbox, column, container, pick_list, row, toggler};
+use iced::widget::{Space, checkbox, column, container, row, toggler};
 use iced::{Alignment, Element, Fill, Theme};
 use torro_core::AppId;
 use torro_core::ai::AiProvider;
@@ -12,7 +12,7 @@ use torro_core::settings::{Component, Language};
 use torro_gui::icon::Icon;
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, Appearance, palette, size, space};
-use torro_gui::widgets::{self, TileFace, TileSize};
+use torro_gui::widgets::{self, Align, MenuItem, MenuSection, TileFace, TileSize};
 use torro_gui::{style, typo};
 
 use torro_core::account::Secret;
@@ -22,7 +22,7 @@ use torro_ipc::{AccountInfo, ServerService};
 use torro_pim::{AccountState, Collection};
 use torro_settings_ui::assistant::web as web_view;
 
-use super::{Data, Message, State, Step, app_of};
+use super::{Data, Message, SetupMenu, State, Step, app_of};
 use crate::ui::{chevron, connect, pressable, setting_row};
 
 /// The page of the current step, laid out for `class`.
@@ -589,21 +589,7 @@ fn mail_sorting_choice<'a>(state: &'a State, data: &'a Data) -> Element<'a, Mess
             None,
         );
     }
-    let options: Vec<MailModelChoice> = super::mail_deciders(data)
-        .into_iter()
-        .map(|(account, model)| {
-            let provider = data
-                .accounts
-                .iter()
-                .find(|known| known.id == *account)
-                .map_or(account.as_str(), |known| known.label.as_str());
-            MailModelChoice {
-                account: account.clone(),
-                model: model.id.clone(),
-                label: format!("{provider} · {}", model.name),
-            }
-        })
-        .collect();
+    let options = mail_model_choices(data);
     if options.is_empty() {
         return widgets::group(
             tr("Sort mail into categories"),
@@ -613,17 +599,9 @@ fn mail_sorting_choice<'a>(state: &'a State, data: &'a Data) -> Element<'a, Mess
     }
     let enabled = super::mail_sorting_on(state, data);
     let switch = toggler(enabled).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::SortMail);
-    let chosen = super::selected_mail_decider(state, data).and_then(|(account, model)| {
-        options.iter().find(|option| option.account == *account && option.model == model.id).cloned()
-    });
-    let pick = pick_list(options, chosen, |choice: MailModelChoice| Message::SortModel(choice.account, choice.model))
-        .placeholder(tr("Choose"))
-        .padding(style::pick_list_padding())
-        .text_size(typo::caption().size)
-        .text_line_height(typo::caption().line_height)
-        .font(typo::caption().font)
-        .style(style::pick_list)
-        .menu_style(style::pick_list_menu);
+    let chosen = chosen_mail_model(state, data, &options);
+    let label = chosen.map_or_else(|| tr("Choose").to_string(), |choice| choice.label.clone());
+    let pick = state.menus.button(SetupMenu::SortModel, label, Message::Menus);
     widgets::group(
         tr("Sort mail into categories"),
         vec![
@@ -641,6 +619,7 @@ fn mail_sorting_choice<'a>(state: &'a State, data: &'a Data) -> Element<'a, Mess
     )
 }
 
+/// A decision model for mail in its dropdown: chosen by account and model, shown as "provider · model".
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MailModelChoice {
     account: String,
@@ -648,10 +627,61 @@ struct MailModelChoice {
     label: String,
 }
 
-impl std::fmt::Display for MailModelChoice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.label)
-    }
+/// The decision models the connected AI accounts offer for sorting mail, as the dropdown lists them.
+fn mail_model_choices(data: &Data) -> Vec<MailModelChoice> {
+    super::mail_deciders(data)
+        .into_iter()
+        .map(|(account, model)| {
+            let provider = data
+                .accounts
+                .iter()
+                .find(|known| known.id == *account)
+                .map_or(account.as_str(), |known| known.label.as_str());
+            MailModelChoice {
+                account: account.clone(),
+                model: model.id.clone(),
+                label: format!("{provider} · {}", model.name),
+            }
+        })
+        .collect()
+}
+
+/// The decision model chosen among `options`, if one is.
+fn chosen_mail_model<'o>(state: &State, data: &Data, options: &'o [MailModelChoice]) -> Option<&'o MailModelChoice> {
+    super::selected_mail_decider(state, data).and_then(|(account, model)| {
+        options.iter().find(|option| option.account == *account && option.model == model.id)
+    })
+}
+
+/// The open dropdown of the setup (issue #554): the decision models for mail, or the AI accounts a
+/// new chat can start with, the chosen one marked. From twelve entries on it has a search field.
+pub(super) fn menu<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    let key = state.menus.open()?;
+    let items: Vec<MenuItem<'a, Message>> = match key {
+        SetupMenu::SortModel => {
+            let options = mail_model_choices(data);
+            let chosen = chosen_mail_model(state, data, &options).cloned();
+            options
+                .into_iter()
+                .map(|option| {
+                    let current = chosen.as_ref() == Some(&option);
+                    MenuItem::plain(option.label, Message::SortModel(option.account, option.model)).current(current)
+                })
+                .collect()
+        }
+        SetupMenu::Engine => {
+            let current = chosen_engine(state, data);
+            engine_choices(data)
+                .into_iter()
+                .map(|choice| {
+                    let on = current.as_deref() == Some(choice.id.as_str());
+                    MenuItem::plain(choice.name, Message::Engine(choice.id)).current(on)
+                })
+                .collect()
+        }
+    };
+    let sections = vec![MenuSection::new(items)];
+    Some(state.menus.view(key, sections, size::props(), Align::End, Message::Menus))
 }
 
 /// A server on this computer: looking, found with "Connect" (or "Connected"), or not running.
@@ -733,26 +763,14 @@ fn cloud_row(data: &Data, provider: AiProvider) -> Element<'_, Message> {
 
 /// "Use for": the AI account a new chat of the assistant starts with, once there is one.
 fn engine_choice<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
-    let engines: Vec<Choice> = data
-        .engines
-        .iter()
-        .filter(|engine| engine.kind == torro_ipc::assistant::EngineKind::Ai)
-        .map(|engine| Choice { id: engine.id.clone(), name: engine.name.clone() })
-        .collect();
+    let engines = engine_choices(data);
     if engines.is_empty() {
         return None;
     }
-    let current =
-        state.engine.clone().or_else(|| data.settings.ai_slots.chat.as_ref().map(|default| default.engine.clone()));
-    let selected = current.and_then(|id| engines.iter().find(|choice| choice.id == id).cloned());
-    let pick = pick_list(engines, selected, |choice: Choice| Message::Engine(choice.id))
-        .placeholder(tr("Choose"))
-        .padding(style::pick_list_padding())
-        .text_size(typo::caption().size)
-        .text_line_height(typo::caption().line_height)
-        .font(typo::caption().font)
-        .style(style::pick_list)
-        .menu_style(style::pick_list_menu);
+    let current = chosen_engine(state, data);
+    let selected = current.and_then(|id| engines.into_iter().find(|choice| choice.id == id));
+    let label = selected.map_or_else(|| tr("Choose").to_string(), |choice| choice.name);
+    let pick = state.menus.button(SetupMenu::Engine, label, Message::Menus);
     let row = setting_row(None, tr("Assistant"), Some(tr("What a new chat starts with").to_string()), pick);
     Some(widgets::group(
         tr("Use for"),
@@ -761,17 +779,25 @@ fn engine_choice<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Mes
     ))
 }
 
-/// An AI account in the "Use for" list: shown by its name, chosen by its engine id.
+/// An AI account in the "Use for" dropdown: shown by its name, chosen by its engine id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Choice {
     id: String,
     name: String,
 }
 
-impl std::fmt::Display for Choice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.name)
-    }
+/// The AI accounts a new chat of the assistant can start with.
+fn engine_choices(data: &Data) -> Vec<Choice> {
+    data.engines
+        .iter()
+        .filter(|engine| engine.kind == torro_ipc::assistant::EngineKind::Ai)
+        .map(|engine| Choice { id: engine.id.clone(), name: engine.name.clone() })
+        .collect()
+}
+
+/// The engine chosen here, else the one stored as the start of a new chat.
+fn chosen_engine(state: &State, data: &Data) -> Option<String> {
+    state.engine.clone().or_else(|| data.settings.ai_slots.chat.as_ref().map(|default| default.engine.clone()))
 }
 
 // ----- Web search (task WEB.7) ------------------------------------------------------------------------
