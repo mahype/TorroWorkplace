@@ -295,6 +295,19 @@ pub fn overlay<'a>(
     }
 }
 
+/// Whether what [`overlay`] shows for `section` is only a dropdown (issue #554: "Default sender
+/// address", the offline content of an account), not a dialog: a dropdown leaves the window undimmed,
+/// as every menu does.
+pub fn menu_only(state: &State, data: &Data, section: &str) -> bool {
+    match section {
+        READING_SECTION => reading::overlay(&state.reading, data).is_some(),
+        ACCOUNTS_SECTION => {
+            accounts::overlay(&state.accounts, data).is_none() && storage::overlay(&state.storage, data).is_some()
+        }
+        _ => false,
+    }
+}
+
 /// What Escape means while "Attachments" shows: close its menu, its question, then its dialog
 /// (task M12.7). `None` without a dialog, which lets the window close the settings.
 pub fn attachments_escape(state: &State) -> Option<Message> {
