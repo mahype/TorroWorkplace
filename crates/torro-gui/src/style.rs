@@ -226,7 +226,7 @@ pub mod button {
         chosen(status, rest)
     }
 
-    /// An icon button with a frame, for "New" next to the app switcher in the sidebar: looks like
+    /// An icon button with a frame, for "New" in the first row of the sidebar: looks like
     /// [`secondary`] at 28 × 28.
     pub fn boxed(theme: &Theme, status: Status) -> Style {
         secondary(theme, status)

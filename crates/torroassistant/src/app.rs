@@ -189,8 +189,6 @@ pub type Reply = Box<dyn Fn(Result<Response, Refusal>) -> Message + Send>;
 /// An open menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Menu {
-    /// The app switcher at the top of the sidebar.
-    Switcher,
     /// The engine and model picker of the composer.
     Picker,
     /// The effort of the composer (issue #131).
@@ -420,7 +418,7 @@ pub enum Message {
     Search(String),
     /// The pointer is on the sidebar row of this conversation (`None`: on none).
     Hover(Option<String>),
-    /// From the app switcher and the buttons beside it.
+    /// From the tools at the top of the sidebar: search and "New".
     Switcher(Switcher),
     /// Start or raise another app of the suite.
     OpenApp(String),
@@ -649,7 +647,6 @@ impl App {
                 Some(Open::Picker) => Some(Menu::Picker),
                 Some(Open::Effort) => Some(Menu::Effort),
                 Some(Open::Mode) => Some(Menu::Mode),
-                Some(Open::Switcher) => Some(Menu::Switcher),
                 Some(Open::Menu) => Some(Menu::Conversation { id: demo::TOOLS.into(), at: MenuAt::Header }),
                 Some(Open::BotMenu) => Some(Menu::Bot { id: demo::TRAVEL.into() }),
                 _ => None,
@@ -657,8 +654,8 @@ impl App {
             dialog: None,
             search: String::new(),
             hover: None,
-            // Without a sidebar the app switcher lives in the drawer.
-            drawer: matches!(open, Some(Open::Drawer | Open::Switcher | Open::BotMenu)),
+            // Without a sidebar the bot's menu hangs in the drawer.
+            drawer: matches!(open, Some(Open::Drawer | Open::BotMenu)),
             sidebar: SidebarMode::default(),
             notice: None,
             settings: None,
@@ -1028,8 +1025,6 @@ impl App {
             Message::CloseDialog => self.dialog = None,
             Message::Search(text) => self.search = text,
             Message::Hover(id) => self.hover = id,
-            Message::Switcher(Switcher::Toggle) => self.toggle_menu(Menu::Switcher),
-            Message::Switcher(Switcher::OpenApp(app)) => return self.update(Message::OpenApp(app.to_owned())),
             Message::Switcher(Switcher::Search) => {
                 self.menu = None;
                 // The search field lives in the expanded sidebar: the drawer brings it where there is none.
@@ -1839,6 +1834,8 @@ impl App {
         );
         // AI, always, also with the main application (issue #410): the models it chats with.
         let mut host = host.with_accounts(AppId::ASSISTANT, &[], true);
+        // What keys and MCP clients may do with the assistant and its bots (issue #531).
+        host = host.with_outside(AppId::ASSISTANT);
         if let Some(id) = section {
             host.open(id);
         }
@@ -1984,10 +1981,6 @@ impl App {
             return Task::none();
         }
         ui_state::save_task(MAIN, UiState { sidebar: self.sidebar })
-    }
-
-    fn toggle_menu(&mut self, menu: Menu) {
-        self.menu = if self.menu.as_ref() == Some(&menu) { None } else { Some(menu) };
     }
 
     fn close_menus(&mut self) {

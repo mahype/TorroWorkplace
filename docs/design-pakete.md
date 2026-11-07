@@ -242,7 +242,7 @@ hat jeder Modus optional einen eigenen Satz für die **Rahmenfläche**:
 - **Zurückfallen auf die Werte desselben Pakets**, nicht des Standards: Setzt ein Paket nur `bg`, folgt die
   Seitenleiste seinem `bg`, und es sieht aus wie bisher.
 - Was in der Seitenleiste steht, zeichnet sich ohne Zutun der Apps in diesen Farben (Navigation, Gruppen, Mini-Monat
-  des Kalenders, Listen mit Farbpunkten, App-Umschalter, Fußzeilen, die Knöpfe im Titelband). Die Shell zeichnet die
+  des Kalenders, Listen mit Farbpunkten, Suche und „Neu“, Fußzeilen, die Knöpfe im Titelband). Die Shell zeichnet die
   Leiste dafür in einem eigenen Theme; Menüs und Tooltips, die aus ihr aufgehen, bleiben im Theme des Fensters.
 - **Eigene Fläche** heißt: `sidebar` ist nicht `bg`. Nur dann werden in der Leiste auch `panel` zu `sidebar`, `raised`
   zu `sidebar_hover` und `line_strong` zu `sidebar_line` (Flächen und Rahmen für den hellen Inhalt trügen die Schrift

@@ -20,12 +20,12 @@ So war es, bevor #279 umgesetzt wurde. Was daraus wurde, steht unter „Entschei
   App, sonst im `PATH`. In getrennten macOS-Bündeln liegt es weder dort noch im `PATH` einer GUI-App;
   unter Windows startet keine App den Dienst. Dasselbe tun Steuerzentrale, Vorlagen-Dialog und jeder
   MCP-Server (`torroworkplace mcp`, höchstens alle 10 s).
-- **Der Dienst startet die Apps als nackte Programme** (`apps.open_app`, Tray, App-Umschalter):
+- **Der Dienst startet die Apps als nackte Programme** (`apps.open_app`, Tray, bis #530 auch der App-Umschalter):
   `torrocalendar` neben dem Dienst oder aus dem `PATH`. Auf macOS hat so ein Prozess keine Bundle-ID;
-  Dock und App-Umschalter zeigen das Terminal-Symbol und den Programmnamen.
+  Dock und ⌘-Tab zeigen das Terminal-Symbol und den Programmnamen.
 - **„Schon offen? Dann nach vorn holen“ greift nur unter Hyprland.** `Core::open_app` sucht ein Fenster
   mit der Klasse `torro-calendar`. AeroSpace meldet aber die Bundle-ID bzw. den Programmnamen, GlazeWM
-  den Prozessnamen. Auf macOS und Windows startet deshalb jeder Klick im Tray oder im App-Umschalter
+  den Prozessnamen. Auf macOS und Windows startet deshalb jeder Klick im Tray (damals auch im App-Umschalter)
   eine weitere Instanz. Das passt zur Beobachtung vom 2026-10-21: Die Apps „öffneten sich immer
   wieder“; geschlossen wurde jeweils nur eine von mehreren.
 - **Startschleife.** Scheitert der Dienst nach dem Start (beobachtet: Socket-Pfad zu lang), hat er die
@@ -58,7 +58,7 @@ So war es, bevor #279 umgesetzt wurde. Was daraus wurde, steht unter „Entschei
    einen Menschen (Tray › Quit, `ctl quit`). Endet der Dienst anders (Signal, `launchctl`/`systemctl
    stop`, Absturz), startet ein MCP-Server ihn wie bisher neu.
 5. **Eine Instanz je App.** Ein zweiter Start ohne Ziel holt das offene Fenster nach vorn und beendet
-   sich, auf allen Systemen und auf jedem Startweg (Launcher, Tray, App-Umschalter, Terminal). Das
+   sich, auf allen Systemen und auf jedem Startweg (Launcher, Tray, Steuerzentrale › Apps, Terminal). Das
    erledigt die App selbst über einen kleinen lokalen Kanal je Fensterart, nicht der Dienst über den
    Fenstermanager. Mit Ziel (`--task=…`, `--message=…`, Verfassen, Chat-Fenster) öffnet weiter ein
    eigenes Fenster wie heute.
@@ -209,7 +209,7 @@ Was bei der Umsetzung (AP.1–AP.7) zusätzlich entschieden wurde.
 | Starter | `.app` in `/Applications` (Finder, Spotlight, Dock) | `.desktop` (Launcher, `StartupWMClass` = Fensterklasse) | Startmenü (Scoop `shortcuts`) |
 | Identität | Bundle-ID `io.github.mahype.<fensterklasse>` | Wayland-App-ID = Fensterklasse | eigene `.exe` je App mit eingebettetem Icon |
 | Dienst | Agenten-Bündel im Workplace-Bündel | `torroworkplace daemon` (systemd, `exec-once` oder erste App) | `torroworkplace.exe daemon` |
-| Tray, App-Umschalter, `apps.open_app` | neuer Prozess (`open -n -a`), dann lokaler Kanal der App | Fenster mit genauer Klasse über Hyprland nach vorn, sonst neuer Prozess und lokaler Kanal | neues Programm, dann lokaler Kanal der App |
+| Tray, Steuerzentrale › Apps, `apps.open_app` | neuer Prozess (`open -n -a`), dann lokaler Kanal der App | Fenster mit genauer Klasse über Hyprland nach vorn, sonst neuer Prozess und lokaler Kanal | neues Programm, dann lokaler Kanal der App |
 | zweiter Start | lokaler Kanal der App | lokaler Kanal der App | lokaler Kanal der App |
 | Beenden | ⌘Q, Dock › Beenden, rotes Fenster-Symbol | Fenster schließen | Fenster schließen |
 
@@ -268,7 +268,7 @@ eigenem `TORRO_STATE_HOME`; sonst sprechen Dienst und App über verschiedene Soc
 - [ ] `desktop-file-validate packaging/linux/*.desktop`; die sieben Einträge erscheinen im Launcher, jeder mit
       Icon und Name.
 - [ ] Jede App aus dem Launcher ohne laufenden Dienst starten: Der Dienst startet mit.
-- [ ] Zweiter Start (Launcher, Terminal, Tray) holt das Fenster nach vorn, auch aus dem App-Umschalter.
+- [ ] Zweiter Start (Launcher, Terminal, Tray) holt das Fenster nach vorn, auch aus Steuerzentrale › Apps.
 - [ ] Vorlage mit laufendem Kalender in „Hinzufügen“ und „Ersetzen“ laden: Das Fenster wird verschoben bzw. bleibt
       auf dem Ziel, kein „no window appeared“.
 - [ ] Hyprland erkennt die Fensterklasse (`hyprctl clients`) und Fensterregeln greifen.
@@ -281,7 +281,7 @@ eigenem `TORRO_STATE_HOME`; sonst sprechen Dienst und App über verschiedene Soc
 - [ ] Jede App aus dem Startmenü: ohne Konsolenfenster, der Dienst startet losgelöst mit.
 - [ ] Die Taskleiste zeigt für Mail und App Feed ein eigenes Icon und gruppiert sie getrennt vom Hub.
 - [ ] Zweiter Start holt das Fenster nach vorn (Named Pipe), keine zweite Instanz; auch aus Tray und
-      App-Umschalter unter GlazeWM. Kommt es wirklich nach vorn oder blinkt nur das Taskleisten-Symbol?
+      Steuerzentrale › Apps unter GlazeWM. Kommt es wirklich nach vorn oder blinkt nur das Taskleisten-Symbol?
 - [ ] Die Pipe `\\.\pipe\torro-<fensterklasse>-<SID>` ist nur für den Benutzer zugänglich.
 - [ ] Ein Startfehler erscheint in der Datei im State-Verzeichnis des Eingangs, nicht in einer Konsole.
 

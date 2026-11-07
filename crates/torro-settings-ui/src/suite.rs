@@ -1403,15 +1403,12 @@ fn ink(frame: &mut canvas::Frame, x: f32, middle: f32, width: f32, level: &Level
     fill(frame, x, middle - height / 2.0, width, height, colour);
 }
 
-/// The sidebar on `bg`: the app switcher (logo in accent, the app's name) in the header's height,
-/// then its rows, the first one chosen.
+/// The sidebar on `bg`: the header's height free (there is no app switcher since issue #530), then
+/// its rows, the first one chosen.
 fn sidebar(frame: &mut canvas::Frame, design: &Design, p: &Palette, r: &Regions, height: f32) {
     let k = r.scale;
     fill(frame, 0.0, 0.0, r.sidebar, height, p.bg);
     let (pad, mark, gap) = (design.space.m * k, icon::SIZE * k, design.space.s * k);
-    let middle = r.header / 2.0;
-    fill(frame, pad, middle - mark / 2.0, mark, mark, p.accent);
-    ink(frame, pad + mark + gap, middle, r.sidebar * 0.3, &design.typo.body_strong, k, p.text);
     let step = (design.size.row_sidebar * k).max(size::HAIRLINE);
     for index in 0..NAV_ROWS {
         let top = r.header + index as f32 * step;

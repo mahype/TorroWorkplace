@@ -32,7 +32,7 @@ aus einem Guss wirkt:
 
 ```
 ┌ Seitenleiste 240 (Grund BG) ┐│ Inhalt: bündige Fläche PANEL, Linie zur Seitenleiste ──────────────┐
-│ ● ● ●  [T] App ▾       [▯]  ││ obere Zeile 40: Titel · Navigation … Ansicht · Filter · [+ Neu]  [☰] │
+│ ● ● ●  [▯]                   ││ obere Zeile 40: Titel · Navigation … Ansicht · Filter · [+ Neu]  [☰] │
 │                🔍  [✎]      │├───────────────────────────────────────────┬───────────────────────┤
 │ Navigation (Zeilen 32)      ││                                           │                       │
 │ Gruppe ▾ (CAPTION, TEXT_3)  ││ Inhalt (Liste, Raster, Detail)            │ Eigenschaften 300     │
@@ -43,17 +43,21 @@ aus einem Guss wirkt:
 ```
 
 - **Eine obere Zeile** (#459, `shell::TopRow` an `Shell::top_row`, Entwurf `docs/prototypes/mail-layout/`):
-  40 pt hoch (doppelte Höhe der Ampel-Mitte), auf allen Systemen. Links Platz für die Ampel (nur macOS),
-  der **App-Umschalter** („T Calendar ▾“, wie Linears Workspace-Menü, öffnet die anderen Apps, Kern-Befehl
-  `OpenApp`) und der Knopf `panel-left`; über der ausgeklappten Seitenleiste so breit wie sie, neben der
-  Leiste nur das Logo, schmal nur der Knopf (der Umschalter steht dann oben in der Schublade). Daneben die
-  **Kopfzeile der App** (`shell::header_bar`), ganz rechts die **Einstellungen** mit Schiebereglern
+  40 pt hoch (doppelte Höhe der Ampel-Mitte), auf allen Systemen. Links Platz für die Ampel (nur macOS), direkt
+  danach der Knopf `panel-left`, in jeder Form an derselben Stelle (ausgeklappt, Leiste, schmal); über der
+  ausgeklappten Seitenleiste ist dieser Teil so breit wie sie. **Kein App-Umschalter** (#530): Zwischen den Apps
+  wechselt man über das Tray-Menü, das Dock bzw. die Taskleiste und Steuerzentrale › Apps; im Fenster kommt dafür
+  nichts dazu. Sprünge mit Bezug („Open in …“, „↗ andere App“) bleiben, ebenso der Kern-Befehl `OpenApp`. Daneben
+  die **Kopfzeile der App** (`shell::header_bar`), ganz rechts die **Einstellungen** mit Schiebereglern
   (`shell::SETTINGS_ICON`, nie das Zahnrad; markiert, solange sie offen sind), `control_sm − space::s()` im Quadrat (28 im
   Standard, kleiner als die übrigen Symbolknöpfe, damit die runde Fensterecke ihn nicht anschneidet) und rechts so weit vom Rand wie oben
-  und zur Linie unten (`settings_gap`, 5,5 bei Zoom 1, #474). Die freie Fläche zieht das
+  und zur Linie unten (`settings_gap`, 5,5 bei Zoom 1, #474). **Jedes Fenster mit Einstellungen** zeigt diesen Knopf
+  gleich und an derselben Stelle; Fenster ohne eigene Einstellungen (Anmelden, Laden, Mini- und Leisten-Kachel,
+  Schreibfenster, Vorlagen-Dialog) haben nur die Ampel und keinen Knopf. Die freie Fläche zieht das
   Fenster, Dialoge und Schublade dimmen die Zeile (`Cover`). Wer seine Kopfzeile nach Spalten teilt, zieht
   `shell::head_inset` vom ersten Teil ab. Suche und „Neu“ stehen als erste Zeile der Seitenleiste
-  (`shell::sidebar_tools`). Ohne Shell (Anmelden, Glance, Schreibfenster) bleibt `shell::titlebar`.
+  (`shell::sidebar_tools`), schmal als erste Zeile der Schublade. Ohne Shell (Anmelden, Glance, Schreibfenster)
+  bleibt `shell::titlebar`.
 - **Seitenleiste** auf dem Fenstergrund `BG`, **Inhalt bündig** (#291, `layout::inset()` = 0 in allen
   eingebauten Designs): die Fläche `PANEL` reicht bis an die Fensterränder, eine 1-px-`LINE` trennt sie von
   Seitenleiste bzw. Leiste – kein Rand, kein Radius. Ein Design mit `inset` > 0 (bleibt im Format, keine Stufe setzt ihn, #484) bekäme die
@@ -66,7 +70,7 @@ aus einem Guss wirkt:
   ohne Rand und Radius; neben der Leiste (Mittel) steht er wie in Breit.
 - **Seitenleiste in drei Zuständen** (U.2, `shell::SidebarMode`): **ausgeklappt** (`size::sidebar()`, 240), **Leiste**
   (`shell::rail()` = `size::rail()`, 60: nur Icons, Name und Zahl als Tooltip rechts, Gruppentitel als Linie,
-  App-Umschalter nur als Logo, Mini-Monat und Versionszeile entfallen) und **Schublade** (Overlay).
+  Mini-Monat und Versionszeile entfallen) und **Schublade** (Overlay).
   Breit wählt der Nutzer ausgeklappt oder Leiste – Knopf `panel-left` („Collapse sidebar“/„Expand
   sidebar“) und Taste `[` wie Linear; jede App merkt sich die Wahl in `ui.json` im State-Verzeichnis
   (`torro_gui::ui_state`). Mittel zeigt immer die Leiste, der Knopf öffnet die ausgeklappte
@@ -442,6 +446,15 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   `LINE`, darunter die Einträge des Aufrufers. Der Aufrufer filtert selbst (ohne Groß/Klein) und lässt Titel ohne
   Treffer weg; ohne Treffer steht „No matches“ in `TEXT_3`. Beim Öffnen fokussiert er das Feld (`id`), Enter wählt
   den ersten Treffer (`on_submit`), Escape schließt. Anschauen: `cargo run -p torro-gui --example gallery -- --blocks`.
+- **Auswahl** (#529, gilt in jeder App und in den Einstellungen): Wie viele Optionen es gibt, entscheidet den
+  Baustein, nicht der Platz.
+  - **Bis etwa 4 Optionen:** `widgets::segmented` (eine Ansicht derselben Daten) oder Chips
+    (`widgets::choice_chip`, auch für mehrere zugleich), alle Optionen sichtbar.
+  - **Mehr als etwa 4:** ein Dropdown (`widgets::select_button` mit `widgets::menu`), der gewählte Wert steht im Knopf.
+  - **Ab etwa 12:** ein Dropdown mit Suche (`widgets::search_menu`, oben).
+  - **Keine langen Zeilenlisten zum Anklicken** für eine Einzelauswahl (etwa die Chat-Modelle eines Anbieters oder
+    eine Liste von Kalendern, aus der einer gewählt wird). Listen mit Zeilen sind für Dinge, die jedes für sich
+    etwas tun (an/aus, öffnen, entfernen), nicht für „eins davon“.
 - **Schwebende Karte** (`widgets::popover`): 320 breit, `MENU`, Radius 10, Innenrand 16, Kopf mit
   Kalender/Liste, Titel `typo::title()`, Eigenschaftszeilen, unten Aktionen.
 - **Icons** nur aus `torro_gui::icon` (Lucide-SVG), nie Unicode-Glyphen wie ⟳ ‹ › ✓.
@@ -512,9 +525,13 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   Umriss mit Kreis; vergangene 55 % Deckkraft; freie Zeit als „2 h free“ in `TEXT_3`.
   **Heute** = roter Kreis mit weißer Zahl; **Jetzt** = rote Linie 1 px mit Punkt und Zeitlabel in
   der Achse.
-- **Einstellungsseiten:** Abschnittsseiten aus `widgets::group` (Titel, Zeilen `size::header()` bzw. 12 höher mit
+- **Einstellungsseiten:** links im Inhalt ein **Untermenü** mit den Abschnitten der App (Host der Einstellungen,
+  `docs/settings.md` „Wie es aussieht“), rechts die Seite. Jede Seite mit **mehr als drei Gruppen** bekommt Reiter
+  (`widgets::tabs`, unten), nicht nur Detailseiten; bis drei Gruppen stehen sie untereinander. Abschnittsseiten aus
+  `widgets::group` (Titel, Zeilen `size::header()` bzw. 12 höher mit
   Untertitel, Trennlinien, erklärender Satz darunter in `TEXT_2`) – keine eigenen Karten. Eine sichtbare Aktion je Zeile,
-  der Rest im „…“-Menü. **Detailseiten** (dritte Ebene, #314, `docs/settings.md`) folgen einem festen Aufbau aus
+  der Rest im „…“-Menü. Was wohin gehört (App oder Steuerzentrale, auch die Rechte für API und MCP je App), regelt
+  `docs/settings.md`, Abschnitt „Die Regel“; der Skill wiederholt es nicht. **Detailseiten** (dritte Ebene, #314, `docs/settings.md`) folgen einem festen Aufbau aus
   diesen Bausteinen (Anschauen: `cargo run -p torro-gui --example gallery -- --detail`, dazu `--light`,
   `--design comfort`, `--design dense`):
   - `detail_head(lead, title, meta, status, actions)`: Kachel `TileSize::Large`, Name `typo::title()`, Meta-Zeile
@@ -524,7 +541,8 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   - `tabs(labels, selected, on_select)`: Reiter mit Unterstrich, `size::control_lg()` hoch; gewählt `TEXT`,
     `body_strong`, Strich 2 px in `TEXT`, sonst `TEXT_2`; Zahl in `meta`/`TEXT_3`; eine `LINE` unter der Reihe. Passt die
     Reihe nicht (`tabs_width`), wird sie eine Auswahlliste, nie waagerecht scrollend. Nie Rot, nie `segmented`
-    (`segmented` wechselt die Ansicht derselben Daten, Reiter den Teil eines Objekts). Erst ab mehr als drei Gruppen.
+    (`segmented` wechselt die Ansicht derselben Daten, Reiter den Teil eines Objekts oder einer Seite). Erst ab mehr als
+    drei Gruppen, dann aber auf jeder Seite.
   - `question_card(mark, title, detail, actions)`: was auf eine Entscheidung wartet, direkt unter den Reitern;
     `RAISED`, Rand `LINE_STRONG`, Radius `sm`, Icon in Attention, Knöpfe rechts oder darunter; mehrere mit
     `size::card_gap()`.
@@ -589,19 +607,20 @@ Regeln:
 - **Mini und Leiste sind Anzeigen, keine Mini-Apps:** keine Werkzeugleiste, keine Formulare, keine
   Dialoge. Höchstens eine Ein-Klick-Aktion, die den Zweck der Kachel ist (z. B. abhaken). Ruhig,
   aus der Distanz lesbar, Kopfzahl in `typo::display()`.
-- **Groß heißt nicht gestreckt:** Listen und Seiten max. `size::content_max()`, Formulare `size::form_max()`,
-  zentriert bzw. links mit Seitenleiste; zusätzlicher Platz geht an Inhalt (mehr Tage, Detail
-  daneben), nicht an Leerraum zwischen Elementen.
-- **Einstellungsseiten** (#464, Host der Einstellungen und Steuerzentrale) haben **keine Obergrenze**: Die Seite
-  steht bündig neben der Seitenleiste (Rand `page_margin`) und füllt die ganze Breite; statt eines festen Maßes
-  brechen die Inhalte nach Art um:
+- **Groß heißt nicht gestreckt:** Leselisten (Mail, Aufgaben, Chat) und Fließtext max. `size::content_max()`,
+  Formulare `size::form_max()`, zentriert bzw. links mit Seitenleiste; zusätzlicher Platz geht an Inhalt (mehr Tage,
+  Detail daneben, mehr Spalten), nicht an Leerraum zwischen Elementen.
+- **Einstellungs-, Übersichts- und Kennzahlenseiten** (#464, #529: Host der Einstellungen, Steuerzentrale,
+  Mail-Übersicht, Insights, Detailseiten) haben **keine Obergrenze**: Die Seite steht bündig neben der Seitenleiste
+  (Rand `page_margin`) und füllt die ganze Breite; nur Fließtext und Bedienelemente bleiben bei `content_max()`.
+  Statt eines festen Maßes brechen die Inhalte nach Art um:
   - **Zeilen** (`widgets::group_row`, `parts::setting_row`): Zeile und Trennlinie über die ganze Breite, der Text
     wächst höchstens bis `size::content_max()` (`widgets::reading_cell`), das Bedienelement steht am Zeilenende in
     seiner eigenen Breite – Schalter, Auswahl und kurze Felder werden nie gestreckt, lange Felder und Editoren
     füllen ihre Spalte. Der erklärende Satz unter einer Gruppe bricht ebenfalls bei `content_max()` um.
-  - **Listen und Tabellen** (`widgets::settings_table`, Konten): volle Breite, die Namensspalte bekommt den Zuwachs,
-    die Wertspalten bleiben so breit wie bei `size::content_max()`; `widgets::data_table` außerhalb der Einstellungen
-    (Insights, Übersicht) behält seine Anteile.
+  - **Listen und Tabellen** (`widgets::settings_table`, Konten, und ebenso `widgets::data_table` in Insights und
+    Übersichten): volle Breite, die Namensspalte bekommt den Zuwachs, die Wertspalten bleiben so breit wie bei
+    `size::content_max()`.
   - **Karten, Kennzahlen, Kacheln** (`stat_grid`): ein Raster, das mit der Breite mehr Spalten bekommt.
   - **Unabhängige Blöcke** einer Seite (`widgets::page_columns`): ab 2 × `size::form_max()` + `layout::section_gap()`
     zwei Spalten, ab 3 × `form_max()` + 2 × `section_gap()` drei, nie mehr Spalten als Blöcke; die Blöcke der Reihe
@@ -679,12 +698,12 @@ Kante bis 4096; ersetzt die sechs, Datei `<präfix>-1000x700.png`). Der erste Fe
 
 **Zustände per Startparameter (Q.1), ohne zu klicken:** `--demo --open <zustand>` öffnet einen
 Zustand direkt (bei `shots.sh` stehen die Zustände vor `--`) (`--open` und `--now` gehen nur mit `--demo`). Kalender: `day week month agenda
-timeline radar night editor editor-new menu drawer switcher error empty loading` (`night`: Zeitstrahl
+timeline radar night editor editor-new menu drawer error empty loading` (`night`: Zeitstrahl
 mit der Karte „Night“); Aufgaben: `detail pr more menu display drawer
-switcher due error empty loading` (`pr`: Detail des ersten offenen Pull Requests, `more`: Detail mit
+due error empty loading` (`pr`: Detail des ersten offenen Pull Requests, `more`: Detail mit
 offenem „…“-Menü); Steuerzentrale (`torroworkplace ui --demo`, Beispieldaten im
 Speicher, kein Dienst, nichts wird gespeichert): `wizard-nextcloud wizard-mail wizard-mail-certificate
-wizard-mail-certificate-public wizard-ai wizard-torromail account-detail account-detail-ai sorting-menu menu drawer switcher remove delete-template rename-template design
+wizard-mail-certificate-public wizard-ai wizard-torromail account-detail account-detail-ai sorting-menu menu drawer remove delete-template rename-template design
 design-schemes design-switched design-fonts design-fonts-search api-empty api-off api-detail api-new-key api-revoke create-key create-key-done mcp-empty mcp-off
 mcp-detail mcp-hooks mcp-new-key mcp-disconnect mcp-bots mcp-orphans connect-client
 connect-client-rights connect-client-done connect-client-other connections connections-empty search-providers catalog-install
@@ -707,8 +726,8 @@ Systems), `design-fonts-search`: dasselbe mit „mo“ im Suchfeld; `design-swit
 das ganze Fenster in dieser Stufe, sonst nichts umgestellt (#484); `mcp-hooks`: Seite von Claude Code mit
 „Notification Hub“; `mcp-orphans`: „Hooks without an agent“; alle Wörter nennt die Fehlermeldung zu
 einem unbekannten) und `--section overview|accounts|ai|api|mcp|connections|approvals|workspaces|appearance|general`.
-`menu` ist das Menü der mittleren/schmalen Kopfleiste, `switcher` der App-Umschalter (dort im
-Drawer) – in der Größe ohne dieses Menü zeigt der Zustand es nicht. `--appearance
+`menu` ist das Menü der mittleren/schmalen Kopfleiste – in der Größe ohne dieses Menü zeigt der Zustand es
+nicht. `--appearance
 light|dark|system` überschreibt nur für diesen Prozess die gespeicherte Einstellung (damit
 entfällt jedes im Code erzwungene „hell“); `--design <id>` (nur mit `--demo`, alle Apps und die
 Steuerzentrale) zeichnet mit der Abstandsstufe `<id>`: `torro` (Standard), `comfort` oder `dense` (#484; eigene
@@ -756,3 +775,24 @@ Fenster nicht die angeforderte Größe (Mindestgröße), ist das ein Befund.
 - [ ] Tastatur: Fokus sichtbar, Enter/Escape/Pfeile, Kurzbefehle
 - [ ] In allen sechs Größen angesehen: Layout wechselt sinnvoll, nichts abgeschnitten, groß nicht gestreckt
 - [ ] Alle Texte über `tr()`, englisch, Satzschreibung
+
+## 11. Aufräumen einer App
+
+Für eine App, die es schon gibt (Audit, Aufräum-Issue), nicht für eine neue Änderung (dafür Abschnitt 10). Jede
+Ansicht und jede Seite der Einstellungen einzeln, mit `shots.sh` in allen sechs Größen, hell und dunkel
+(Abschnitt 9). Je Seite ein Befund der Form „Seite · Regel · Befund“.
+
+- [ ] **Breite** (Abschnitt 6): Einstellungs-, Übersichts- und Kennzahlenseiten füllen die Breite neben der
+  Seitenleiste; Fließtext und Bedienelemente bei `content_max()`; Kennzahlen und Karten bekommen mehr Spalten,
+  unabhängige Blöcke stehen nebeneinander (`page_columns`); kein `max_width(size::content_max())` um eine ganze Seite.
+- [ ] **Auswahl** (Abschnitt 5): bis etwa 4 Optionen `segmented` oder Chips, mehr `select_button`, ab etwa 12
+  `search_menu`; keine langen Zeilenlisten für eine Einzelauswahl.
+- [ ] **Reiter** (Abschnitt 5, Einstellungsseiten): Seiten mit mehr als drei Gruppen haben `tabs`; die Abschnitte
+  stehen links im Untermenü.
+- [ ] **Obere Zeile** (Abschnitt 0): kein App-Umschalter; Ampel, dann `panel-left`; der Einstellungs-Knopf mit
+  `SETTINGS_ICON` ganz rechts, in jedem Fenster mit Einstellungen gleich.
+- [ ] **Ort** (`docs/settings.md`, „Die Regel“): Was nur diese App betrifft, steht in der App; was die Suite teilt,
+  in der Steuerzentrale (in der App nur ein Verweis, ohne Hauptanwendung die Seite selbst).
+- [ ] **API und MCP**: Die App zeigt unter Einstellungen › API and MCP die Rechte ihres Bereichs (sofern sie einen
+  hat), Anlegen und Schlüssel bleiben in der Steuerzentrale.
+- [ ] **Prüfliste 10** vollständig für jede Seite.

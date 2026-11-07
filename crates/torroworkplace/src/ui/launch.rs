@@ -91,8 +91,6 @@ pub enum Open {
     Menu,
     /// The sidebar drawer of the medium and narrow layouts.
     Drawer,
-    /// The app switcher at the top of the sidebar (in the drawer where there is no sidebar).
-    Switcher,
     /// The "Remove this account?" confirmation.
     Remove,
     /// The "Delete this template?" confirmation.
@@ -249,7 +247,7 @@ impl Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 123] = [
+    pub const ALL: [(&'static str, Open); 122] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -299,7 +297,6 @@ impl Open {
         ("mail-servers", Open::MailServers),
         ("menu", Open::Menu),
         ("drawer", Open::Drawer),
-        ("switcher", Open::Switcher),
         ("remove", Open::Remove),
         ("delete-template", Open::DeleteTemplate),
         ("edit-template", Open::EditTemplate),

@@ -620,7 +620,7 @@ pub fn icon_toggle<'a, M: Clone + 'a>(
     icon_only(which, tooltip, style, on_press)
 }
 
-/// An icon button with a frame (`style::button::boxed`), 28 × 28: "New" next to the app switcher.
+/// An icon button with a frame (`style::button::boxed`), 28 × 28: "New" in the sidebar's first row.
 pub fn boxed_button<'a, M: Clone + 'a>(
     which: Icon,
     tooltip: impl IntoFragment<'a>,
@@ -2157,7 +2157,7 @@ pub fn context_area<'a, M: 'a>(
 /// Which edge of the anchor a card below it lines up with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Align {
-    /// Left edges line up (menus opened from the left of a header, the app switcher).
+    /// Left edges line up (menus opened from the left of a header).
     Start,
     /// Right edges line up (menus opened from the right of a header: "Week ▾", "…").
     End,

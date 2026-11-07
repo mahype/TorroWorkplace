@@ -70,7 +70,7 @@ impl Source {
 
     /// Opens or raises another app of the suite by its binary name (`torrotasks`), through the
     /// core's `Request::OpenApp`, so the core can focus a window that is already open instead of
-    /// starting a second one. Answer of the app switcher and of "Open Tasks ↗".
+    /// starting a second one. Answer of "Open Tasks ↗" and the other jumps to an app.
     ///
     /// Demo data has no core: nothing is opened and the result is `Ok(())`. An `Err` carries the
     /// core's message (unknown app, cannot start, core not running).

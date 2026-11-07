@@ -1,6 +1,6 @@
 //! Which apps of the suite are installed, and whether the main application is (issue #408,
-//! `docs/einzelne-apps.md`), for every window of this process: the app switcher and every "Open in …"
-//! leave out apps that are not there, and an app without the main application shows the suite's
+//! `docs/einzelne-apps.md`), for every window of this process: every "Open in …" leaves out apps that
+//! are not there, and an app without the main application shows the suite's
 //! settings itself.
 //!
 //! The windows ask the core for the settings anyway (`design::Follow`); it also asks `apps.list_apps`
