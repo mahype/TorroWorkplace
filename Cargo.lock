@@ -7570,6 +7570,7 @@ dependencies = [
  "torro-wm",
  "trash",
  "tray-icon",
+ "url",
  "webbrowser",
  "windows 0.62.2",
  "windows-sys 0.59.0",

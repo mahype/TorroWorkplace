@@ -460,6 +460,9 @@ pub struct MailFacts {
     pub count: usize,
     /// The subjects of the named messages the store holds, in the order of `ids`.
     pub subjects: Vec<String>,
+    /// The senders' addresses of the named messages the store holds (small letters, each once), for
+    /// `inbox.release_mail` with `trust` (issue #506): who would be trusted from now on.
+    pub senders: Vec<String>,
     /// For `mail.move_messages`: the display name of the target folder, the role's word for a role.
     pub folder: Option<String>,
     /// For `mail.send_draft` and for `mail.save_draft` with an id: the draft as the core stores it.
@@ -3035,6 +3038,23 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
         Request::SetMailPile { ids, pile: None, .. } => {
             trf("Take {messages} off their pile", &[("messages", &mail_messages(facts.mail.as_ref(), ids.len()))])
         }
+        // "Not fraud" (issue #506): the subjects and, with `trust`, every sender as the mail store holds
+        // them, never the client's words.
+        Request::ReleaseMail { ids, trust: false } => trf(
+            "Bring {messages} back into the inbox as no fraud",
+            &[("messages", &mail_messages(facts.mail.as_ref(), ids.len()))],
+        ),
+        Request::ReleaseMail { ids, trust: true } => {
+            let senders = facts.mail.as_ref().map(|mail| mail.senders.as_slice()).unwrap_or_default();
+            let senders = match senders {
+                [] => tr("their senders").to_string(),
+                senders => senders.iter().map(|sender| format!("\"{}\"", quote(sender))).collect::<Vec<_>>().join(", "),
+            };
+            trf(
+                "Bring {messages} back into the inbox and never catch mail from {senders} again, in every mail account",
+                &[("messages", &mail_messages(facts.mail.as_ref(), ids.len())), ("senders", &senders)],
+            )
+        }
         // Filing a mail by hand and keeping that for its sender (task E12.4). The sender comes
         // from the stored entry (`InboxFacts`), never from the request.
         Request::SetItemCategory { category, remember: true, .. }
@@ -3316,11 +3336,14 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 "Stop filing mail from everyone at {domain} as {category}",
                 &[("domain", &format!("\"{}\"", quote(domain))), ("category", &category_name(facts, *category))],
             ),
-            // Only rules with a trait keep no popups; one without is nothing the core makes, and
-            // a category rule always names a sender or a domain.
-            Some(Rule { effect: RuleEffect::NoPopup | RuleEffect::Category { .. }, .. }) | None => {
-                tr("Remove an unknown rule of the Notification Hub").to_string()
+            // A trusted sender (issue #506), by the address the stored rule names.
+            Some(Rule { sender: Some(sender), effect: RuleEffect::Trusted, .. }) => {
+                trf("Catch mail from {sender} as fraud or spam again", &[("sender", &format!("\"{}\"", quote(sender)))])
             }
+            // Only rules with a trait keep no popups; one without is nothing the core makes, and
+            // a category rule always names a sender or a domain, a trusted one a sender.
+            Some(Rule { effect: RuleEffect::NoPopup | RuleEffect::Category { .. } | RuleEffect::Trusted, .. })
+            | None => tr("Remove an unknown rule of the Notification Hub").to_string(),
         },
         other => summary(other, &Facts::default()),
     }
@@ -5487,6 +5510,7 @@ pub(crate) mod tests {
         let ids = |n: usize| (0..n).map(|i| format!("m:{i}")).collect::<Vec<_>>();
         let held = |subjects: &[&str], folder: Option<&str>| Facts {
             mail: Some(MailFacts {
+                senders: Vec::new(),
                 account: Some("anna@mailbox.org".into()),
                 count: subjects.len(),
                 subjects: subjects.iter().map(|s| s.to_string()).collect(),
@@ -6084,6 +6108,27 @@ pub(crate) mod tests {
             inbox_summary(&pile(None), &InboxFacts::default()),
             trf("Take {messages} off their pile", &[("messages", &unknown_mail)])
         );
+        // Issue #506: "Not fraud" names the subjects and, trusting them, every sender from the store.
+        let stored = MailFacts {
+            count: 2,
+            subjects: vec!["Weekly \"deals\"".into()],
+            senders: vec!["deals@shop.example".into(), "x\"y@shop.example".into()],
+            ..MailFacts::default()
+        };
+        let caught = InboxFacts { mail: Some(stored), ..InboxFacts::default() };
+        let release = |trust| Request::ReleaseMail { ids: vec!["m:1".into(), "m:2".into()], trust };
+        assert_eq!(
+            inbox_summary(&release(false), &caught),
+            trf("Bring {messages} back into the inbox as no fraud", &[("messages", &messages)])
+        );
+        assert_eq!(
+            inbox_summary(&release(true), &caught),
+            trf(
+                "Bring {messages} back into the inbox and never catch mail from {senders} again, in every mail account",
+                &[("messages", &messages), ("senders", &"\"deals@shop.example\", \"x'y@shop.example\"")]
+            )
+        );
+        assert!(inbox_summary(&release(true), &InboxFacts::default()).contains(tr("their senders")));
 
         let rule = |effect| InboxFacts {
             rule: Some(Rule {
@@ -6099,6 +6144,15 @@ pub(crate) mod tests {
             ..InboxFacts::default()
         };
         let remove = Request::RemoveRule { id: "r1".into() };
+        // Issue #506: a trusted sender by the address the stored rule names.
+        let mut trusted = rule(RuleEffect::Trusted);
+        if let Some(held) = trusted.rule.as_mut() {
+            held.sender = Some("max@example.org".into());
+        }
+        assert_eq!(
+            inbox_summary(&remove, &trusted),
+            trf("Catch mail from {sender} as fraud or spam again", &[("sender", &"\"max@example.org\"")])
+        );
         assert_eq!(
             inbox_summary(&remove, &rule(RuleEffect::Muted)),
             trf("Unmute {source} in the Notification Hub", &[("source", &named)])

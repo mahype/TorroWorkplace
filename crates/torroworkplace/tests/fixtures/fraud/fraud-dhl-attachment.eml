@@ -1,0 +1,22 @@
+Authentication-Results: mx.example.org; spf=softfail smtp.mailfrom=parcel-notice.example; dkim=none; dmarc=fail
+From: DHL Paket <noreply@parcel-notice.example>
+To: anna@example.org
+Subject: Ihre Sendung konnte nicht zugestellt werden
+Date: Thu, 05 Nov 2026 10:02:00 +0000
+Message-ID: <fraud-dhl@parcel-notice.example>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset=utf-8
+
+Sehr geehrter Kunde,
+
+Ihre Sendung wartet. Bitte öffnen Sie den Anhang und bestätigen Sie Ihre Daten.
+
+--b1
+Content-Type: text/html; name="Sendung.html"
+Content-Disposition: attachment; filename="Sendung.html"
+
+<html><body><form action="https://parcel-notice.example/pay">Zahlen</form></body></html>
+--b1--

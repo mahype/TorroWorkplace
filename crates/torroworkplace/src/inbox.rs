@@ -1739,6 +1739,50 @@ impl Inbox {
         self.with(|db| mail_category_in(db, sender.as_deref(), mail)).map_err(|failure| failure.to_string())
     }
 
+    /// Whether the person trusts `sender` (an address, any case): "Not fraud" kept a rule for it
+    /// (issue #506, [`RuleEffect::Trusted`]), in any mail account. Its mail is never caught. A store
+    /// that cannot be read trusts nobody (logged without the address).
+    pub fn trusts(&self, sender: &str) -> bool {
+        let sender = sender.trim().to_lowercase();
+        let found = self.work(false, |db| {
+            let sql = "SELECT 1 FROM rules WHERE effect = 'trusted' AND sender = ?1 AND facet = '' LIMIT 1";
+            Ok(db.query_row(sql, params![sender], |_| Ok(())).optional()?.is_some())
+        });
+        found.unwrap_or_else(|failure| {
+            eprintln!("torroworkplace: inbox: cannot read the trusted senders: {failure}");
+            false
+        })
+    }
+
+    /// Trusts `sender` (an address) from `now` on (issue #506, `inbox.release_mail` with `trust`): a
+    /// rule [`RuleEffect::Trusted`] kept under the mail account `source` it was made in, which holds
+    /// in every mail account. A sender trusted already keeps the rule it has. `Err` holds the message
+    /// for the log, without the address.
+    pub fn trust_sender(&self, sender: &str, source: &SourceRef, now: DateTime<Utc>) -> Result<(), String> {
+        let sender = sender.trim().to_lowercase();
+        if sender.is_empty() {
+            return Ok(());
+        }
+        self.with(|db| {
+            let sql = "SELECT 1 FROM rules WHERE effect = 'trusted' AND sender = ?1 AND facet = '' LIMIT 1";
+            if db.query_row(sql, params![sender], |_| Ok(())).optional()?.is_some() {
+                return Ok(());
+            }
+            let rule = Rule {
+                id: new_id()?,
+                source: source.clone(),
+                sender: Some(sender),
+                domain: None,
+                effect: RuleEffect::Trusted,
+                created: now,
+                facet: None,
+                until: None,
+            };
+            insert_rule(db, rule)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
     /// Files the new mail `mail` at `now` (task E4.1): as a new entry of its conversation, or
     /// merged into the entry of the conversation, which counts one more and opens again when it
     /// was done ([`rules::merge`]). Returns the entry's id, or `None` when nothing was filed:
@@ -3490,7 +3534,11 @@ fn remembered_lane(rule: &Rule) -> Option<Lane> {
     match rule.effect {
         RuleEffect::Lane { lane } if rule.facet.is_none() => Some(lane),
         // A kept category keeps no lane: it only says what the mail is (task E12.2).
-        RuleEffect::Lane { .. } | RuleEffect::Muted | RuleEffect::NoPopup | RuleEffect::Category { .. } => None,
+        RuleEffect::Lane { .. }
+        | RuleEffect::Muted
+        | RuleEffect::NoPopup
+        | RuleEffect::Category { .. }
+        | RuleEffect::Trusted => None,
     }
 }
 
@@ -3876,6 +3924,8 @@ fn effect_column(effect: RuleEffect) -> &'static str {
         // Task E12.2. Only for picking rows in SQL: the rule is stored as JSON, so which category
         // it keeps round-trips through serde and needs no column of its own.
         RuleEffect::Category { .. } => "category",
+        // Issue #506: a sender whose mail is never caught as fraud or spam.
+        RuleEffect::Trusted => "trusted",
     }
 }
 
@@ -10302,6 +10352,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let inbox = inbox_in(dir.path());
         let summary = torro_mail::MessageSummary {
+            caught: false,
             id: "m:9".into(),
             account: ANNA.into(),
             folder: "f:archive".into(),
@@ -10384,6 +10435,7 @@ pub(crate) mod tests {
 
         // A message without an entry alike, whatever it is muted by.
         let summary = torro_mail::MessageSummary {
+            caught: false,
             id: "m:9".into(),
             account: ANNA.into(),
             folder: "f:archive".into(),

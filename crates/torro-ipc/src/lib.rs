@@ -2622,6 +2622,29 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since: Option<DateTime<Utc>>,
     },
+    /// "Not fraud" (issue #506, `docs/kategorien.md`): brings mail back that the core caught as fraud
+    /// or spam, or that is filed as Phishing or Spam. The mail messages `ids` (`m:…`) are no longer
+    /// caught ([`torro_mail::MessageSummary::caught`]), lose the category Phishing or Spam (a model
+    /// sorts them anew) and come into the inbox like new mail, without a popup. With `trust: true`
+    /// later mail of each of their senders is never caught again, in every mail account: a lasting
+    /// rule per sender (`inbox.list_rules`, kind `trusted`), which `inbox.remove_rule` takes back.
+    /// Nothing is moved or deleted, nothing changes on the server.
+    ///
+    /// Answered with [`Response::Ok`]. `error` for no id, more than [`mail::MAX_IDS`] or an id over
+    /// [`mail::MAX_ID_BYTES`] bytes; `not-found` for the whole call, with nothing changed, as soon as
+    /// one id is in no account whose mail the caller reads (`mail_accounts`) and whose inbox entries
+    /// it sees (the account among `inbox_sources`); `unsupported` for the whole call when one message
+    /// is neither caught nor filed as Phishing or Spam. Both are checked before an approval is asked
+    /// for. Admin access to `inbox`: a client key always waits for the person's approval, since it
+    /// lets mail in that was kept out to protect them.
+    #[serde(rename = "inbox.release_mail")]
+    ReleaseMail {
+        /// The mail messages' ids (`m:…`), 1 to 100.
+        ids: Vec<String>,
+        /// Also trust their senders from now on: their mail is never caught again.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        trust: bool,
+    },
     /// The lasting rules: lanes remembered for sources, muted sources and muted traits that have
     /// not ended ([`Response::Rules`]), only of sources the client may
     /// see. With each rule how many reports and entries it caught since it was made, as far as the
@@ -2909,6 +2932,12 @@ pub enum Request {
         /// answered as without it.)
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pile: Option<mail::PileFilter>,
+        /// Mail caught as fraud or spam (issue #506, [`torro_mail::MessageSummary::caught`]):
+        /// `false` leaves it out (what "All" lists), `true` gives only that mail. Left out: every
+        /// message, caught or not. Filtered before paging, so pages and `cursor` hold; a cursor
+        /// belongs to this field as well.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caught: Option<bool>,
     },
     /// How far the core's search index of each mail account is ([`Response::MailIndexStatus`],
     /// issue #136): how many messages it keeps, how many of them have their text in the index,

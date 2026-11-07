@@ -123,6 +123,11 @@ Vor Schritt 1 stehen die festen Regeln einer Kategorie: Sortierregeln und Mail-F
 Passen Regeln mehrerer Kategorien, gewinnt seit Issue #481 die Kategorie, die in der Liste weiter oben
 steht; gemerkte Regeln „Always for this sender?“ gehen allen anderen vor (siehe [Vorrang](#vorrang)).
 
+Zwischen Schritt 3 und 4 steht seit Issue #506 das **Abfangen von Betrug und Spam** (siehe
+[Phishing und Betrug abfangen](#phishing-und-betrug-abfangen)): Neue Mail eines Fremden, die bis
+dahin nichts eingeordnet hat, wird ohne Modell auf Warnzeichen geprüft; reichen sie, fragt ein enger
+Modellaufruf „Betrug oder Spam?“, bevor die Mail eingetragen wird.
+
 **Wann:** beim Eintreffen jeder neuen Mail. Was unter Einstellungen › Categorization steht, gilt immer
 für jede neue Mail; **vorhandene Mail wird nur sortiert, wenn der Mensch das ausdrücklich anstößt**
 („Sort existing mail…“, siehe [Vorhandene Mail sortieren](#vorhandene-mail-sortieren), Issue #454).
@@ -206,23 +211,66 @@ echten Mails.
   Platz“): ein `:cloud`-Modell des lokalen Ollama sortiert nur, wenn ein Mensch es ausdrücklich wählt.
 - Kein Training, keine gesammelten Mails. Das Protokoll (`audit.jsonl`) hält nur Funktion, Konto,
   Modell, Tokens und Dauer – nie Betreff, Absender oder Text.
-- Nichts wird von einer KI versteckt, verschoben, gelöscht oder beantwortet. Die Kategorie ist ein
-  Vorschlag mit Kennzeichnung, das Original bleibt sichtbar.
+- Nichts wird von einer KI verschoben, gelöscht oder beantwortet. Die Kategorie ist ein Vorschlag mit
+  Kennzeichnung, das Original bleibt sichtbar. Einzige Ausnahme vom Ausblenden ist abgefangener Betrug und
+  Spam (Issue #506): Er steht nicht in „All“ und im Eingang, aber jederzeit unter Unerwünscht › Betrug
+  bzw. Spam, und „Kein Betrug“ holt ihn zurück.
+- Die Warnzeichen werden ohne Modell und ohne Netz berechnet; sie gehen nur an das Modell, das ohnehin
+  sortiert, unter derselben Erlaubnis. Das Protokoll nennt beim Abfangen und bei „Kein Betrug“ nur Konto
+  und Anzahl, nie Absender oder Betreff.
 - Der Text der Mail ist Fremdtext: Er steht im `state` zwischen `<message>` und `</message>`, eine
   schließende Marke darin wird aufgebrochen, und nichts daraus wird je als Anweisung gelesen.
   Dasselbe Verfahren wie bei `inbox.suggest_task_from_item` (`crate::suggest`).
-- Keine serverseitigen Filter, keine Junk-Automatik, kein Verschieben in den Junk-Ordner.
+- Keine serverseitigen Filter, kein Verschieben in den Junk-Ordner: abgefangene Mail bleibt auf dem Server
+  im Posteingang (Issue #506, Entscheidung 1). Auf dem Handy und im Webmail ist sie darum weiter sichtbar.
 
-## Phishing
+## Phishing und Betrug abfangen
 
-`phishing` ist der einzige Fall mit einem sichtbaren Eingriff, und der besteht nur aus einem
-zusätzlichen Klick:
+`phishing` hat immer einen sichtbaren Eingriff, der nur aus einem zusätzlichen Klick besteht:
 
-- ein deutliches Band oben in der Nachricht,
+- ein deutliches Band oben in der Nachricht, mit den Warnzeichen, die zutrafen, und „Kein Betrug“,
 - die Links sind entschärft: nicht mit einem Klick erreichbar, das Ziel steht im Klartext daneben,
   Öffnen erst nach einer Bestätigung.
 
-Versteckt, verschoben oder gelöscht wird nichts.
+Seit Issue #506 fängt Torro sicheren Betrug und Spam ab, bevor er im Eingang ankommt:
+
+1. **Warnzeichen ohne Modell** (`mail/warnings.rs`): bei jeder neuen Mail eines Fremden, die kein Filter,
+   keine Regel und keine Kopfzeile eingeordnet hat. Gewicht 3: Name nennt eine Marke, die Adresse gehört
+   nicht dazu; Domain sieht einer Marke nur ähnlich; DMARC durchgefallen; Link-Text zeigt ein anderes
+   Ziel; Name eines Kontakts mit fremder Adresse; Anhang, der Programme ausführt (`.html`, `.iso`, `.exe`
+   …) oder zwei Endungen hat. Gewicht 2: SPF oder DKIM durchgefallen; „Antworten an“ an eine andere
+   Domain; Freemail mit Markennamen; Link auf IP-Adresse oder URL-Kürzer; Punycode; Druck („Konto
+   prüfen“, „Sperrung“, Frist); Zahlungs- oder Kontoänderung, Chef-Masche. Gewicht 1: keine
+   Absenderprüfung; anderer Envelope-Absender (`Return-Path`); ungewöhnliche Endung (`.zip`, `.top`
+   …); gepackter Anhang; nur ein Bild; keine persönliche Anrede; erster Kontakt; „Re:“ ohne Antwortbezug.
+   Ab der Summe 3 ist die Mail verdächtig. Fakten, die nicht gelesen wurden (Mail von vor dem Update
+   hat keine Absenderprüfung und keinen Antwortbezug), geben kein Zeichen.
+2. **Enger Betrugs-Aufruf** an das Modell, das sortiert (`categorize::judge_request`): zwei Ja-Nein-Fragen
+   „Betrug?“ und „Spam?“ mit den Warnzeichen als Worten der Suite außerhalb des Zauns. Die verdächtige
+   Mail einer Runde wartet darauf zusammen höchstens eine Minute, ohne Eintrag und ohne
+   Benachrichtigung; was dann noch offen ist, kommt ohne Urteil an. Gelesen wird dafür nur, was der
+   Speicher hält (Text und HTML, sonst Kopfzeilen und Anfang), nie der Server.
+3. **Wirkung:** ab 90 % Betrug (`SURE`) wird sie `phishing`, ab 90 % Spam `spam`, und sie ist
+   **abgefangen** (`MessageSummary::caught`): nicht in „All“, nicht in Zahlen, Eingang und
+   Benachrichtigungen, aber unter Unerwünscht › Betrug bzw. Spam mit Band und entschärften Links. Ab
+   50 % Betrug (`UNSURE`) bleibt sie im Eingang, als `phishing` mit Band. Sonst, bei Fehler oder ohne
+   Antwort wird sie eingetragen wie jede andere. Ohne Sortier-Modell fängt Torro nichts ab.
+4. **„Kein Betrug“** (bzw. „Kein Spam“) holt eine Mail zurück: nicht mehr abgefangen, ohne die Kategorie
+   (eine von Hand gesetzte bleibt, sie ändert der Mensch im Kategorie-Menü),
+   als neuer Eintrag ohne Benachrichtigung, das Modell ordnet sie neu ein, und ihr Absender gilt ab jetzt
+   als vertraut (`RuleEffect::Trusted`, zu sehen und zu entfernen auf den Seiten Spam und Betrug unter
+   Einstellungen › Categorization).
+
+**Bekannte werden nie abgefangen**, egal welche Warnzeichen zutreffen: Adressbuch-Kontakte (auch wenn
+„Mail von Kontakten ist persönlich“ aus ist), Adressen, an die ein Konto geschrieben hat (`To`/`Cc` im
+Gesendet-Ordner), Antworten in Unterhaltungen mit einer Mail aus dem Gesendet-Ordner (Mail im eigenen
+Namen in anderen Ordnern zählt nicht, sie kann gefälscht sein) und mit „Kein Betrug“ gemerkte Absender.
+Die eigene Adresse zählt nur, solange ihre Absenderprüfung (SPF, DMARC) nicht durchfällt: Die
+Erpressungsmasche „Ich habe dein Konto gehackt“ schickt in ihrem Namen. Ein Bekannter, dessen Adresse
+gefälscht wird, bleibt erkennbar wie bisher (Issue #390): Das Modell wählt nur zwischen `personal` und
+`phishing`, ein Treffer bleibt im Eingang mit Band.
+
+Gelöscht wird nichts, und auf dem Server wird nichts verschoben.
 
 ## Nur Mail
 
@@ -250,6 +298,10 @@ Einträge von GitHub, Talk und ntfy lassen die Kategorie leer. Sie haben mit ihr
 | Plätze und Zuordnung lesen | Steuerzentrale › AI, Einstellungen › Categorization | `ai.list_assignments` (Feld `slots`) · Read | `ai_list_assignments` |
 | Modell für *Sortieren* setzen | Steuerzentrale › AI, Einstellungen › Categorization | `ai.set_slot` mit `slot: decide` · Admin; ein Modell anderswo nur Menschen | `ai_set_slot` (Freigabe) |
 | Ausnahme je Funktion setzen | Einstellungen › Categorization | `ai.set_assignment` · Admin | `ai_set_assignment` |
+| Warnzeichen sehen (Issue #506) | Band bzw. leise Zeile im Leser | Feld `warnings` in `mail.get_message` · Read; für einen Client-Schlüssel ohne die Zeichen, die Adressbücher und andere Konten verraten würden | `mail_get_message` |
+| Abgefangenes sehen (Issue #506) | Unerwünscht › Betrug bzw. Spam | Feld und Filter `caught` in `mail.search_messages` · Read | `mail_search_messages` |
+| „Kein Betrug“ (Issue #506) | Knopf im Band | `inbox.release_mail` mit `trust` · Admin (ein Agent nur mit Freigabe, der App-Schlüssel direkt) | `inbox_release_mail` |
+| Vertraute Absender (Issue #506) | Einstellungen › Categorization, Seiten Spam und Betrug | `inbox.list_rules` (Art `trusted`) · Read, `inbox.remove_rule` · Admin | `inbox_list_rules`, `inbox_remove_rule` |
 | Mail von Kontakten als persönlich (Issue #390) | Einstellungen › Categorization › Contacts | `settings.set_setting` mit `mail_contacts_personal` · Admin, lesen über `settings.get_settings` (`mailContactsPersonal`) · Read | `settings_set_setting`, `settings_get_settings` |
 
 Kein Befehl braucht `Never`: Es sind keine Geheimnisse beteiligt, Schlüssel bleiben wie bisher im

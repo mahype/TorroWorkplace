@@ -362,8 +362,9 @@ impl MuteEffect {
             RuleEffect::Lane { lane: Lane::Info } => Some(MuteEffect::Info),
             RuleEffect::Lane { lane: Lane::ForMe } => None,
             RuleEffect::Muted => Some(MuteEffect::Hide),
-            // A kept category mutes nothing: it only says what the mail is (task E12.2).
-            RuleEffect::Category { .. } => None,
+            // A kept category mutes nothing: it only says what the mail is (task E12.2). Nor does
+            // trusting a sender (issue #506).
+            RuleEffect::Category { .. } | RuleEffect::Trusted => None,
         }
     }
 }
@@ -796,7 +797,8 @@ pub enum SourceHealth {
 /// a rule (issue #339: filters took that over); the senders and domains hidden before are gone.
 ///
 /// At most one of `sender`, `domain` and `facet` is set; with none the rule is about the whole
-/// source. A rule with [`RuleEffect::Category`] always names a `sender` or a `domain`. A rule with `facet` holds for every source of the same kind as `source` (a sender muted
+/// source. A rule with [`RuleEffect::Category`] always names a `sender` or a `domain`, one with
+/// [`RuleEffect::Trusted`] a `sender`. A rule with `facet` holds for every source of the same kind as `source` (a sender muted
 /// in every mail account), one for the conversation only in `source` ([`crate::rules::mutes`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Rule {
@@ -851,6 +853,11 @@ pub enum RuleEffect {
     /// Only rules of `inbox.set_item_category` have it, and only with `sender` or `domain`; it
     /// changes no lane, drops nothing and mutes nothing.
     Category { category: torro_mail::Category },
+    /// Mail of the rule's `sender` is never caught as fraud or spam (issue #506,
+    /// `docs/kategorien.md`), in every mail account: the person said "Not fraud" about one of their
+    /// mails (`inbox.release_mail` with `trust`). Only rules of `inbox.release_mail` have it, always
+    /// with a `sender`; it changes no lane, files nothing and mutes nothing.
+    Trusted,
 }
 
 /// A sorting rule for mail (task E15.1, issue #255, `docs/kategorien.md`): mail that meets every

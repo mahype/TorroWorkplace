@@ -2348,6 +2348,13 @@ mod tests {
         let undo = json!({"ids": ["m:1"], "pile": "reply_later", "since": "2026-10-16T08:00:00Z"});
         let undo = call("inbox_set_mail_pile", undo);
         assert!(matches!(undo, Ok(Request::SetMailPile { since: Some(_), .. })), "{undo:?}");
+        // Issue #506: "Not fraud", trusting the senders only when asked; caught mail by its field.
+        let release = call("inbox_release_mail", json!({"ids": ["m:1"]}));
+        assert_eq!(release, Ok(Request::ReleaseMail { ids: vec!["m:1".into()], trust: false }));
+        let trusted = call("inbox_release_mail", json!({"ids": ["m:1"], "trust": true}));
+        assert_eq!(trusted, Ok(Request::ReleaseMail { ids: vec!["m:1".into()], trust: true }));
+        let caught = call("mail_search_messages", json!({"limit": 20, "caught": true}));
+        assert!(matches!(caught, Ok(Request::SearchMail { caught: Some(true), .. })), "{caught:?}");
         let later = call("inbox_snooze_item", json!({"id": "m:1", "until": "2026-10-16T08:00:00Z"}));
         assert!(
             matches!(&later, Ok(Request::SnoozeItem { id, until: Some(_), unless_reply: false, keep_open: false }) if id == "m:1"),
