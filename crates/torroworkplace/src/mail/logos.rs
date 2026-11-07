@@ -745,10 +745,8 @@ pub fn from_svg(bytes: &[u8]) -> Option<Vec<u8>> {
     // tiny-skia stores premultiplied colours; image's white compositing needs straight RGBA.
     for pixel in picture.pixels_mut() {
         let alpha = u32::from(pixel[3]);
-        if alpha > 0 {
-            for channel in &mut pixel.0[..3] {
-                *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
-            }
+        for channel in &mut pixel.0[..3] {
+            *channel = (u32::from(*channel) * 255 + alpha / 2).checked_div(alpha).unwrap_or(0).min(255) as u8;
         }
     }
     fitted(picture)
