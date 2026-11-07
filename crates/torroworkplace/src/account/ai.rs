@@ -1421,12 +1421,14 @@ impl AiAccounts {
                 let probe = async {
                     let mut remaining = HEALTH_MAX;
                     let strata = if provider == AiProvider::Strata || program == Some(LocalProgram::LlamaCpp) {
-                        let response = client.wire.http.get(strata::health_url(&url)).send().await.ok()?;
-                        if response.status().is_success() {
-                            let body = probe_body_with_budget(response, &mut remaining).await?;
-                            strata::is_strata(&body)
-                        } else {
-                            false
+                        match client.wire.http.get(strata::health_url(&url)).send().await {
+                            Ok(response) if response.status().is_success() => {
+                                let body = probe_body_with_budget(response, &mut remaining).await?;
+                                strata::is_strata(&body)
+                            }
+                            // A missing/broken health route is not evidence against a generic
+                            // runtime. Its model list still gets the remaining shared budget.
+                            _ => false,
                         }
                     } else {
                         false
@@ -3123,6 +3125,37 @@ pub(crate) mod tests {
         assert!(found.is_empty() && observations.is_empty(), "combined bodies exceed the endpoint's 64 KiB budget");
         health.assert_calls_async(1).await;
         models.assert_calls_async(1).await;
+    }
+
+    #[tokio::test]
+    async fn a_health_transport_error_keeps_the_shared_llama_cpp_model_fallback() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("loopback listener");
+        let base = format!("http://{}/v1", listener.local_addr().expect("local address"));
+        let server = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut request = String::new();
+                tokio::io::BufReader::new(&mut stream).read_line(&mut request).await.expect("request");
+                if request.starts_with("GET /health ") {
+                    // No HTTP response: exercise a transport failure, not an HTTP error status.
+                    continue;
+                }
+                assert!(request.starts_with("GET /v1/models "));
+                let body = r#"{"data":[]}"#;
+                let reply =
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                stream.write_all(reply.as_bytes()).await.expect("response");
+            }
+        });
+        let mut ai = service(dir.path(), &keys, vec![(AiProvider::Strata, base.clone())]);
+        ai.programs = vec![(LocalProgram::LlamaCpp, base)];
+        let (found, observations) = ai.scan_local().await.expect("scan");
+        server.abort();
+        assert!(observations.is_empty());
+        assert_eq!(found.len(), 1, "a health transport failure does not hide a valid model endpoint");
+        assert_eq!(found[0].program.as_deref(), Some("llama_cpp"));
     }
 
     #[tokio::test]
