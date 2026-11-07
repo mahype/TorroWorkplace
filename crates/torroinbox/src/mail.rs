@@ -192,6 +192,10 @@ pub trait MailSource: Send + Sync {
     /// attachment folder; answers its path.
     fn mail_attachment(&self, id: String, part: String) -> impl Future<Output = Result<PathBuf, InboxError>> + Send;
 
+    /// `mail.get_sender_logo` (issue #453): the logo of the sender of the message `id` as PNG, for a
+    /// mail whose summary names a [`MessageSummary::logo`]; `None` when the core has none for it.
+    fn sender_logo(&self, id: String) -> impl Future<Output = Result<Option<Vec<u8>>, InboxError>> + Send;
+
     /// `mail.list_save_targets` (task M12.6, issue #290): the save targets, the Downloads folder and –
     /// with the message `id` – where each of its attachments would go ([`SaveTargets::files`], one
     /// [`torro_ipc::mail::AttachmentPlan`] per attachment that is not `inline`). The attachment menus
@@ -466,6 +470,18 @@ impl MailSource for InboxClient {
         InboxClient::mail_folders(self).await
     }
 
+    async fn sender_logo(&self, id: String) -> Result<Option<Vec<u8>>, InboxError> {
+        use base64::Engine as _;
+        match torro_ipc::client::call(&self.socket, &torro_ipc::Request::GetSenderLogo { id }).await {
+            Ok(torro_ipc::Response::Image { png }) => Ok(base64::engine::general_purpose::STANDARD.decode(png).ok()),
+            Ok(torro_ipc::Response::Error { code, .. }) if code == "not-found" => Ok(None),
+            Ok(torro_ipc::Response::Error { message, .. }) => Err(InboxError::Other(message)),
+            Ok(_) => Err(InboxError::Other("unexpected answer".into())),
+            Err(torro_ipc::IpcError::NotRunning) => Err(InboxError::Offline),
+            Err(err) => Err(InboxError::Other(err.to_string())),
+        }
+    }
+
     async fn list_categories(&self, account: Option<String>) -> Result<Vec<CategoryInfo>, InboxError> {
         InboxClient::list_categories_for(self, account).await
     }
@@ -636,6 +652,12 @@ impl MailSource for InboxClient {
 impl MailSource for DemoSource {
     async fn mail_folders(&self) -> Result<Vec<Folder>, InboxError> {
         DemoSource::mail_folders(self)
+    }
+
+    /// The demo's one known sender, `github.example`, has a made-up mark; no other mail names a logo.
+    async fn sender_logo(&self, id: String) -> Result<Option<Vec<u8>>, InboxError> {
+        let named = DemoSource::get_mail(self, &id)?.summary.logo;
+        Ok(named.filter(|domain| domain == DEMO_LOGO_DOMAIN).map(|_| demo_logo()))
     }
 
     async fn list_categories(&self, account: Option<String>) -> Result<Vec<CategoryInfo>, InboxError> {
@@ -906,6 +928,10 @@ impl MailSource for DemoSource {
 impl MailSource for crate::empty::EmptySource {
     async fn mail_folders(&self) -> Result<Vec<Folder>, InboxError> {
         Ok(Vec::new())
+    }
+
+    async fn sender_logo(&self, _id: String) -> Result<Option<Vec<u8>>, InboxError> {
+        Ok(None)
     }
 
     async fn list_categories(&self, _account: Option<String>) -> Result<Vec<CategoryInfo>, InboxError> {
@@ -1754,6 +1780,8 @@ pub struct MailList<'a> {
     /// else (a search of mail in the hub) the strip of buttons where the text starts ([`message_buttons`]).
     /// Cards show only in the mail window and never carry buttons.
     pub bare: bool,
+    /// The senders' logos the window holds (issue #453), for the circles of the rows.
+    pub logos: &'a Logos,
 }
 
 impl<'a> MailList<'a> {
@@ -1962,9 +1990,90 @@ pub fn slim_span(messages: &[MessageSummary], index: usize, heads: bool) -> Opti
     None
 }
 
+/// The demo's sender with a logo ([`DemoSource::sender_logo`]).
+const DEMO_LOGO_DOMAIN: &str = "github.example";
+
+/// A made-up mark for the demo's known sender: a dark ring on a white disc, cut round as the core
+/// cuts every logo (`mail::logos` of the core), never anyone's real logo.
+fn demo_logo() -> Vec<u8> {
+    let edge = 128u32;
+    let mut picture = image::RgbaImage::from_pixel(edge, edge, image::Rgba([255, 255, 255, 255]));
+    let centre = edge as f32 / 2.0;
+    for (x, y, pixel) in picture.enumerate_pixels_mut() {
+        let distance = ((x as f32 + 0.5 - centre).powi(2) + (y as f32 + 0.5 - centre).powi(2)).sqrt();
+        if (24.0..=44.0).contains(&distance) {
+            *pixel = image::Rgba([0x24, 0x29, 0x2F, 255]);
+        }
+        pixel.0[3] = ((centre - distance + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8;
+    }
+    let mut out = std::io::Cursor::new(Vec::new());
+    match image::DynamicImage::ImageRgba8(picture).write_to(&mut out, image::ImageFormat::Png) {
+        Ok(()) => out.into_inner(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// A sender's logo as the window holds it (issue #453), by the domain a mail names
+/// ([`MessageSummary::logo`]): asked once, then here or known to be missing.
+#[derive(Debug, Clone)]
+pub enum Logo {
+    /// Asked for, the answer not in yet.
+    Asked,
+    Here(iced::widget::image::Handle),
+    /// The core has none (any more): the circle shows its mark.
+    Missing,
+    /// The core could not be asked (it restarts, say): asked again after [`LOGO_RETRY`].
+    Failed(std::time::Instant),
+}
+
+/// How long a logo that could not be asked waits before it is asked again.
+pub const LOGO_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The logos the window holds, by domain.
+pub type Logos = HashMap<String, Logo>;
+
+/// The logo the circle of `message` with `face` shows (issue #453), when the window holds one for
+/// the domain the mail names: never for unwanted mail, which keeps the skull on deep red, and never
+/// in "Sent" (`sent`), where the circle stands for the recipient.
+fn logo_for<'a>(
+    logos: &'a Logos,
+    message: &MessageSummary,
+    face: widgets::Face,
+    sent: bool,
+) -> Option<&'a iced::widget::image::Handle> {
+    if sent || face == widgets::Face::Junk {
+        return None;
+    }
+    match logos.get(message.logo.as_deref()?)? {
+        Logo::Here(handle) => Some(handle),
+        Logo::Asked | Logo::Missing | Logo::Failed(_) => None,
+    }
+}
+
+/// The circle in front of a mail (issues #458, #453), `edge` wide: the sender's logo where
+/// [`logo_for`] gives one – round already (the core cuts it so) and with a hairline in `line_strong`
+/// over it, so white on the white list stays a circle –, else the mark `face` in the colour of `hue`.
+/// A contact's photo (#358) will come before the logo.
+pub fn circle_of<'a, M: 'a>(
+    face: widgets::Face,
+    hue: Option<usize>,
+    logo: Option<&iced::widget::image::Handle>,
+    edge: f32,
+) -> Element<'a, M> {
+    let Some(logo) = logo else { return widgets::sender_circle(face, hue, edge) };
+    let picture = iced::widget::image(logo.clone()).width(edge).height(edge).border_radius(edge / 2.0);
+    let ring =
+        container(iced::widget::Space::new()).width(edge).height(edge).style(move |t: &Theme| container::Style {
+            border: iced::border::rounded(edge / 2.0).color(palette(t).line_strong).width(size::HAIRLINE),
+            ..container::Style::default()
+        });
+    iced::widget::stack![picture, ring].width(edge).height(edge).into()
+}
+
 /// What the circle of `message` shows (issue #458): the skull for the group "Unwanted", the portrait
 /// for a category with the person's mark, the category's own mark otherwise, the envelope without a
-/// category. The match with the contacts (#358) and senders' logos (#453) come later.
+/// category. A sender's logo (#453) stands in front of the mark ([`circle_of`]); the match with the
+/// contacts (#358) comes later.
 pub fn face_of(message: &MessageSummary, categories: &[CategoryInfo]) -> widgets::Face {
     let Some(held) = message.category else { return widgets::Face::Icon(Icon::Mail) };
     let (_, group) = category_look(categories, held.category);
@@ -1992,8 +2101,9 @@ fn slim_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) ->
         _ => message.from.as_ref().map(|from| from.address.as_str()).unwrap_or_default(),
     };
     let edge = layout::list().avatar;
-    let circle = (edge > 0.0)
-        .then(|| widgets::sender_circle(face_of(message, data.categories), Some(widgets::sender_hue(address)), edge));
+    let face = face_of(message, data.categories);
+    let logo = logo_for(data.logos, message, face, matches!(data.view, View::Sent));
+    let circle = (edge > 0.0).then(|| circle_of(face, Some(widgets::sender_hue(address)), logo, edge));
     let mut marks = Vec::new();
     // An invitation (task E8.3b) keeps its mark; its time and answers stand in the reader.
     marks.extend(message.invite.as_ref().map(|invite| invite_mark(invite, data.now)));
@@ -2687,6 +2797,10 @@ pub struct Reading<'a> {
     /// The senders (addresses in lower case) the window unsubscribed from while it runs (issue #416):
     /// their mail offers "Unsubscribe…" no more.
     pub unsubscribed: &'a HashSet<String>,
+    /// The senders' logos the window holds (issue #453), for the circle in the mail's head.
+    pub logos: &'a Logos,
+    /// The mail is read in "Sent": its circle is one's own, never a logo (issue #453).
+    pub sent: bool,
 }
 
 /// How the mail's HTML shows in the panel or the reader (task M9.7): as HTML or its text, in light
@@ -3220,8 +3334,9 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
     let edge = head_avatar_in(layout::list());
     // The circle of the list's row (issue #458): the same colour and mark for the same mail.
     let address = summary.from.as_ref().map(|from| from.address.as_str()).unwrap_or_default();
-    let circle =
-        |edge| widgets::sender_circle(face_of(summary, reading.categories), Some(widgets::sender_hue(address)), edge);
+    let face = face_of(summary, reading.categories);
+    let logo = logo_for(reading.logos, summary, face, reading.sent);
+    let circle = |edge| circle_of(face, Some(widgets::sender_hue(address)), logo, edge);
     let face = (edge > 0.0).then(|| circle(edge));
     let words_room = (room - face.as_ref().map_or(0.0, |_| edge + space::m())).max(0.0);
     let date = torro_gui::datetime::format_moment(summary.date, reading.now);
@@ -5540,6 +5655,12 @@ mod tests {
         assert!(text_links(&Selectable::new("no address")).is_none(), "no section without links");
     }
 
+    /// No logos held (issue #453): what every view of these tests draws with.
+    fn no_logos() -> &'static Logos {
+        static NONE: std::sync::OnceLock<Logos> = std::sync::OnceLock::new();
+        NONE.get_or_init(Logos::new)
+    }
+
     /// The demo's mail `id` loaded, its text and – for a mail with HTML – its HTML shown as `format`,
     /// handed to `check` as the reader would read it (`loaded` false: still loading).
     fn reading_of<R>(id: &str, format: MailFormat, loaded: bool, check: impl FnOnce(&Reading<'_>) -> R) -> R {
@@ -5550,6 +5671,8 @@ mod tests {
         let summary = mail.as_ref().ok().map(|mail| mail.summary.clone());
         let unsubscribed = HashSet::new();
         let reading = Reading {
+            logos: no_logos(),
+            sent: false,
             categories: &[],
             id,
             summary: summary.as_ref(),
@@ -6439,6 +6562,27 @@ mod tests {
         assert!(source.contains("message.category.map(|held| category_field("), "only with a category");
     }
 
+    /// Issue #453: a held logo stands in the circle, but unwanted mail keeps the skull and "Sent"
+    /// the recipient's mark; a logo asked for or missing leaves the mark.
+    #[test]
+    fn the_logo_comes_after_unwanted_and_never_in_sent() {
+        let handle = iced::widget::image::Handle::from_bytes(demo_logo());
+        let mut logos = Logos::from([("github.example".to_string(), Logo::Here(handle))]);
+        let mut message = demo::mail_sample(now()).remove(0).summary;
+        message.logo = Some("github.example".into());
+        let mail = widgets::Face::Icon(Icon::Mail);
+        assert!(logo_for(&logos, &message, mail, false).is_some());
+        assert!(logo_for(&logos, &message, widgets::Face::Junk, false).is_none(), "unwanted keeps the skull");
+        assert!(logo_for(&logos, &message, mail, true).is_none(), "Sent shows the recipient");
+        logos.insert("github.example".into(), Logo::Asked);
+        assert!(logo_for(&logos, &message, mail, false).is_none(), "not in yet");
+        logos.insert("github.example".into(), Logo::Failed(std::time::Instant::now()));
+        assert!(logo_for(&logos, &message, mail, false).is_none(), "could not be asked");
+        message.logo = None;
+        assert!(logo_for(&logos, &message, mail, false).is_none(), "the core named none");
+        assert!(image::load_from_memory(&demo_logo()).is_ok(), "the demo's mark is a picture");
+    }
+
     /// The source of the function `name` in this file, up to its closing brace.
     fn function_source<'s>(source: &'s str, name: &str) -> &'s str {
         let start = [format!("fn {name}<"), format!("fn {name}(")]
@@ -6592,6 +6736,7 @@ mod tests {
             for (view, look) in views.iter().flat_map(|view| looks.map(|look| (view, look))) {
                 for (messages, bare) in [(&summaries[..], false), (&summaries[..], true), (&[], true)] {
                     let data = MailList {
+                        logos: no_logos(),
                         categories: &[],
                         messages,
                         view,
@@ -6638,6 +6783,8 @@ mod tests {
                     .expect("the demo plans");
                     let none_left = HashSet::new();
                     let reading = Reading {
+                        logos: no_logos(),
+                        sent: false,
                         categories: &[],
                         task,
                         id: &message.summary.id,
@@ -6732,6 +6879,7 @@ mod tests {
         let plain = MessageSummary { invite: None, ..invitation.clone() };
         let messages = [plain.clone(), invitation.clone()];
         let data = |bare, selected: &'static str| MailList {
+            logos: no_logos(),
             categories: &[],
             messages: &messages,
             view: &view,

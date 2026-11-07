@@ -1767,6 +1767,7 @@ impl Request {
             Request::GetMail { .. } => &GET_MESSAGE,
             Request::GetMailThread { .. } => &GET_THREAD,
             Request::GetMailAttachment { .. } => &GET_ATTACHMENT,
+            Request::GetSenderLogo { .. } => &GET_SENDER_LOGO,
             Request::ListSaveTargets { .. } => &LIST_SAVE_TARGETS,
             Request::CreateSaveTarget { .. } => &CREATE_SAVE_TARGET,
             Request::UpdateSaveTarget { .. } => &UPDATE_SAVE_TARGET,
@@ -2083,6 +2084,7 @@ pub static CATALOGUE: &[&Command] = &[
     &GET_MESSAGE,
     &GET_THREAD,
     &GET_ATTACHMENT,
+    &GET_SENDER_LOGO,
     &LIST_SAVE_TARGETS,
     &CREATE_SAVE_TARGET,
     &UPDATE_SAVE_TARGET,
@@ -3303,6 +3305,9 @@ static SET_SETTING: Command = Command {
                   sorts) or `mail_contacts_personal` (true, the default, or false; while on, new mail from an \
                   address in the address books goes to the group Personal, after mail filters, sorting rules, \
                   newsletters, invitations and automatic replies, and a model only chooses within that group) or \
+                  `mail_sender_logos` (true, the default, or false; while on, the core checks the signature of new \
+                  mail and shows the logo of a sender whose mail passed, fetched once per domain from its BIMI record or \
+                  website; off, it checks and fetches nothing) or \
                   what a click on a mail attachment does: `mail_attachment_click` (\"open\", the \
                   default, \"downloads\", \"save_as\", \"suggested\" or {\"target\": \"<id from \
                   mail_list_save_targets>\"}) or `mail_downloads_folder` (null to save attachments in the \
@@ -4452,6 +4457,18 @@ static INDEX_STATUS: Command = Command {
                   `waiting`: for the first sync or for the server). While \
                   it is not complete, mail_search_messages may miss words in older texts; headers are always \
                   searchable. Changes nothing.",
+};
+
+static GET_SENDER_LOGO: Command = Command {
+    name: "mail.get_sender_logo",
+    area: Area::Mail,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Returns the logo of a message's sender as PNG (Base64, 128 pixels on white), from the core's own copy: \
+                  only for mail whose DKIM signature the core checked and found to belong to the sender's domain, \
+                  so forged mail never gets the real logo. Messages whose summary has a `logo` (the domain) have \
+                  one; `not-found` for every other message and while the person turned logos off. The logo shows \
+                  the domain sent it, not that the brand is who it claims to be.",
 };
 
 static GET_MESSAGE: Command = Command {
@@ -5842,6 +5859,7 @@ mod tests {
             Request::GetMail { id: "m:1".into(), include_body: true, include_html: true },
             Request::GetMailThread { id: "m:1".into() },
             Request::GetMailAttachment { id: "m:1".into(), attachment: "2".into() },
+            Request::GetSenderLogo { id: "m:1".into() },
             Request::ListSaveTargets { id: Some("m:1".into()) },
             Request::ListSaveTargets { id: None },
             Request::CreateSaveTarget { target: save_target() },
@@ -7406,6 +7424,7 @@ mod tests {
                 "mail_to_cloud",
                 "decide_mail_to_cloud",
                 "mail_contacts_personal",
+                "mail_sender_logos",
                 "reminders",
                 "hidden_categories",
                 "allow_api_keys",
@@ -7976,9 +7995,11 @@ mod tests {
         // Issue #136: mail.index_status reads how far the search index is. Issue #290: five
         // commands for saving attachments. Issue #339: six for the mail filters. Issue #409: the
         // overview, which only reads. Issue #422: the sync's state, which only reads. Issue #416:
-        // unsubscribing, which sends. Issue #501: saving a mail as PDF or picture.
-        assert_eq!(mail.len(), 40);
+        // unsubscribing, which sends. Issue #501: saving a mail as PDF or picture. Issue #453: a sender's
+        // logo, which only reads.
+        assert_eq!(mail.len(), 41);
         assert_eq!(INDEX_STATUS.access, Access::Read);
+        assert_eq!((GET_SENDER_LOGO.access, GET_SENDER_LOGO.mcp), (Access::Read, Mcp::Tool));
         assert_eq!(OVERVIEW.access, Access::Read);
         assert_eq!(SYNC_STATUS.access, Access::Read);
         assert_eq!(SYNC_STATUS.mcp, Mcp::Tool);

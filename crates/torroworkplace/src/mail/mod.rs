@@ -23,6 +23,8 @@
 //!   targets themselves in `<data>/mail/save-targets.json` (task M12.3, issue #290); the mail itself
 //!   as PDF or picture to the same places (`mail.save_message_as`, issue #501).
 //! - [`export`]: drawing a mail as PDF or picture with the reader's HTML view (issue #501).
+//! - [`check`], [`logos`]: whether a mail comes from its sender's domain (the core's own DKIM check),
+//!   and the logos of those domains, kept in `<cache>/sender-logos/` (issue #453).
 //! - [`filters`]: mail filters, a saved search with what to do with the mail it finds in the inbox,
 //!   in `<data>/mail/filters.json` (issue #339).
 //! - [`MailDirs`], [`AttachmentCache`]: where the files live, and the managed folder for
@@ -52,10 +54,12 @@ use torro_core::AppId;
 use torro_core::paths::AppPaths;
 
 pub mod backup;
+pub mod check;
 pub mod export;
 pub mod filters;
 pub mod fold;
 pub mod inbox_feed;
+pub mod logos;
 pub mod overview;
 pub mod progress;
 pub mod query;
@@ -82,12 +86,18 @@ pub struct MailDirs {
     pub data: PathBuf,
     /// `<cache>/mail-attachments/`: the managed folder for fetched attachments.
     pub attachments: PathBuf,
+    /// `<cache>/sender-logos/`: the logos of known senders (issue #453, [`logos`]).
+    pub logos: PathBuf,
 }
 
 impl MailDirs {
-    /// `data_root/mail` and `cache_root/mail-attachments`. Creates nothing.
+    /// `data_root/mail`, `cache_root/mail-attachments` and `cache_root/sender-logos`. Creates nothing.
     pub fn new(data_root: &Path, cache_root: &Path) -> MailDirs {
-        MailDirs { data: data_root.join("mail"), attachments: cache_root.join("mail-attachments") }
+        MailDirs {
+            data: data_root.join("mail"),
+            attachments: cache_root.join("mail-attachments"),
+            logos: cache_root.join("sender-logos"),
+        }
     }
 
     /// The directories of the core: `TORRO_DATA_HOME` (or the system's data directory) for the

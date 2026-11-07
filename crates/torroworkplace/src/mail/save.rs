@@ -1232,6 +1232,7 @@ pub(crate) mod tests {
             category: None,
             untrusted: true,
             pile_since: None,
+            logo: None,
         }
     }
 

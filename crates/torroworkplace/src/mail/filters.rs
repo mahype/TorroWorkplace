@@ -543,7 +543,9 @@ async fn answered(
         }
         Request::PreviewMailFilter { query, account } => {
             let (count, messages) = preview(mail, reach, &query, account.as_deref()).await?;
-            Ok(Response::MailFilterPreview { count, messages })
+            // Issue #453: a summary names a logo only where one is kept and logos are on.
+            let preview = Response::MailFilterPreview { count, messages };
+            Ok(super::read::with_logos(preview, mail.sender_logos()))
         }
         Request::ApplyMailFilter { id } => Ok(run_apply(mail, reach, categories, &id).await?.response()),
         other => Err(FilterError::Invalid(format!("{} is not a command for mail filters", other.operation().name()))),
