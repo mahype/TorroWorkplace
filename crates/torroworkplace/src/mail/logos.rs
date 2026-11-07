@@ -459,12 +459,16 @@ impl SenderLogos {
     }
 
     /// The logo of `domain` after the module docs, as a round PNG of [`LOGO_PIXELS`] on white;
-    /// `Ok(None)` when the domain has none, [`WebError::Offline`] when the DNS could not be asked,
-    /// [`WebError::Unreached`] when it answered but neither of the domain's own addresses (its touch
-    /// icon and start page) could be reached: a domain that only sends mail, or a network that
-    /// blocks the web.
+    /// `Ok(None)` when the domain has none, [`WebError::Offline`] when neither the DNS for its BIMI
+    /// record nor its website answered, [`WebError::Unreached`] when the DNS answered but neither of
+    /// the domain's own addresses (its touch icon and start page) could be reached: a domain that
+    /// only sends mail, or a network that blocks the web. A DNS failing for BIMI alone is no BIMI.
     pub async fn find(&self, domain: &str) -> Result<Option<Vec<u8>>, WebError> {
-        if let Some(svg) = self.bimi(domain).await?
+        // A DNS that fails for the BIMI or DMARC record (SERVFAIL of one zone) does not stop the
+        // website's symbol; only when the website cannot be reached either is it offline.
+        let bimi = self.bimi(domain).await;
+        let dns_down = bimi.is_err();
+        if let Ok(Some(svg)) = bimi
             && let Some(logo) = drawn(svg, Drawn::Bimi).await
         {
             return Ok(Some(logo));
@@ -480,6 +484,7 @@ impl SenderLogos {
         let Ok(start) = Url::parse(&format!("https://{domain}/")) else { return Ok(None) };
         let (at, page) = match self.fetch(start, PAGE_MAX_BYTES).await {
             Ok(Some(found)) => found,
+            Err(WebError::Offline) if touch_down && dns_down => return Err(WebError::Offline),
             Err(WebError::Offline) if touch_down => return Err(WebError::Unreached),
             _ => return Ok(None),
         };
@@ -786,6 +791,8 @@ pub(crate) mod tests {
         offline: bool,
         /// The DNS answers, but no website does.
         http_offline: bool,
+        /// No TXT record can be asked, but the websites answer.
+        dns_offline: bool,
         asked: Mutex<Vec<String>>,
     }
 
@@ -808,7 +815,7 @@ pub(crate) mod tests {
     impl LogoWeb for FakeWeb {
         fn txt<'a>(&'a self, name: &'a str) -> WebFuture<'a, Vec<String>> {
             Box::pin(async move {
-                if self.offline {
+                if self.offline || self.dns_offline {
                     return Err(WebError::Offline);
                 }
                 Ok(self.txt.get(name).cloned().unwrap_or_default())
@@ -957,6 +964,14 @@ pub(crate) mod tests {
         let (web, logos) = with_web(FakeWeb { http_offline: true, ..FakeWeb::default() });
         assert_eq!(logos.find("mailer.example").await, Err(WebError::Unreached));
         assert_eq!(web.asked().len(), 2, "the touch icon and the start page, once each");
+
+        // The DNS fails for BIMI only (SERVFAIL of one zone): the website's symbol still counts.
+        let touch = Reply::Body(picture(180, 180, image::ImageFormat::Png));
+        let (_, logos) = with_web(
+            FakeWeb { dns_offline: true, ..FakeWeb::default() }
+                .page("https://zone.example/apple-touch-icon.png", touch),
+        );
+        assert!(logos.find("zone.example").await.expect("asked").is_some());
     }
 
     #[test]
