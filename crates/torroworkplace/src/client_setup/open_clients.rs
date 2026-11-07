@@ -228,6 +228,12 @@ pub(super) fn add_owned(
             ])
             .collect::<Vec<_>>();
         let written = || -> Result<(), SetupError> {
+            // The CLI may create files with its own default mode or replace an existing file.
+            // Protect its config directory before handing it any token; seed the config privately
+            // as well, including a dotfiles symlink's target, before an in-place CLI write.
+            let parent = file.parent().ok_or_else(|| SetupError::Unreadable(file.clone()))?;
+            crate::clients::create_private_dir(parent).map_err(SetupError::io(parent))?;
+            restore(file, Some(before.as_deref().unwrap_or("{}")))?;
             runner.run(executable, &args).map_err(|err| err.of(Tool::OpenCode))?;
             // The CLI owns formatting, but successful setup must leave a readable, private file.
             read_text(file)?.ok_or_else(|| SetupError::Unreadable(file.clone()))?;
@@ -773,6 +779,41 @@ mod tests {
         assert_eq!(&calls.borrow()[0][..5], &["mcp", "add", SERVER_NAME, "--global", "--env"]);
         assert_eq!(calls.borrow().len(), 1);
         assert!(records(&env).expect("records").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opencode_cli_writes_only_after_its_directory_and_seed_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        struct Cli<'a>(&'a Path);
+        impl Runner for Cli<'_> {
+            fn run(&self, _: &Path, _: &[String]) -> Result<(), RunError> {
+                assert_eq!(fs::metadata(self.0).expect("seed").permissions().mode() & 0o777, 0o600);
+                assert_eq!(
+                    fs::metadata(self.0.parent().expect("parent")).expect("directory").permissions().mode() & 0o777,
+                    0o700
+                );
+                fs::write(self.0, "{}").expect("CLI write");
+                Ok(())
+            }
+        }
+        for existing in [false, true] {
+            let dir = tempfile::tempdir().expect("tmp");
+            let env = environment(dir.path());
+            let file = file(Target::OpenCode, &env);
+            fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+            fs::set_permissions(file.parent().expect("parent"), fs::Permissions::from_mode(0o755)).expect("public dir");
+            if existing {
+                write(&file, "{}");
+                fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).expect("public config");
+            }
+            let method = Method::Open {
+                target: Target::OpenCode,
+                file: file.clone(),
+                executable: Some(dir.path().join("opencode")),
+            };
+            add(&method, &Server { program: Path::new("torro"), key: "secret" }, &Cli(&file)).expect("setup");
+        }
     }
 
     #[test]
