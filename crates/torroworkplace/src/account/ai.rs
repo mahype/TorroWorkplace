@@ -698,12 +698,19 @@ fn transport_error(err: &reqwest::Error) -> AiError {
 }
 
 /// Read discovery bodies without letting an endpoint grow the search's memory unboundedly.
-async fn probe_body(mut response: reqwest::Response) -> Option<Vec<u8>> {
+async fn probe_body(response: reqwest::Response) -> Option<Vec<u8>> {
+    let mut remaining = HEALTH_MAX;
+    probe_body_with_budget(response, &mut remaining).await
+}
+
+/// Health and model-list bodies consume the same endpoint budget during discovery.
+async fn probe_body_with_budget(mut response: reqwest::Response, remaining: &mut usize) -> Option<Vec<u8>> {
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.ok()? {
-        if chunk.len() > HEALTH_MAX.saturating_sub(body.len()) {
+        if chunk.len() > *remaining {
             return None;
         }
+        *remaining -= chunk.len();
         body.extend_from_slice(&chunk);
     }
     Some(body)
@@ -1390,21 +1397,37 @@ impl AiAccounts {
             .build()
             .map_err(|_| AiError::Format(tr("The local AI search could not start.").into()))?;
         let mut probes = tokio::task::JoinSet::new();
-        let targets = self
-            .local
-            .iter()
-            .cloned()
-            .map(|(p, u)| (p, None, u))
-            .chain(self.programs.iter().map(|(p, u)| (AiProvider::OpenAiCompatible, Some(*p), u.clone())));
-        for (at, (provider, program, url)) in targets.enumerate() {
+        let mut targets: Vec<_> = self.local.iter().cloned().map(|(p, u)| (p, None, u)).collect();
+        for (program, url) in &self.programs {
+            // One shared 8080 probe first recognises Strata, otherwise llama.cpp/llamafile.
+            // Separate probes would multiply the endpoint's time/body allowance.
+            if *program == LocalProgram::LlamaCpp
+                && let Some((provider, marker, _)) = targets
+                    .iter_mut()
+                    .find(|(p, _, u)| *p == AiProvider::Strata && endpoint_key(u) == endpoint_key(url))
+            {
+                *provider = AiProvider::OpenAiCompatible;
+                *marker = Some(*program);
+                continue;
+            }
+            targets.push((AiProvider::OpenAiCompatible, Some(*program), url.clone()));
+        }
+        for (at, (provider, program, url)) in targets.into_iter().enumerate() {
             if !ai::is_this_computer(&url) {
                 continue;
             }
             let client = OpenAiCompatible::new(http.clone(), provider, &url, None);
             probes.spawn(async move {
                 let probe = async {
+                    let mut remaining = HEALTH_MAX;
                     let strata = if provider == AiProvider::Strata || program == Some(LocalProgram::LlamaCpp) {
-                        client.is_strata().await
+                        let response = client.wire.http.get(strata::health_url(&url)).send().await.ok()?;
+                        if response.status().is_success() {
+                            let body = probe_body_with_budget(response, &mut remaining).await?;
+                            strata::is_strata(&body)
+                        } else {
+                            false
+                        }
                     } else {
                         false
                     };
@@ -1417,7 +1440,7 @@ impl AiAccounts {
                     let models = if matches!(status, 401 | 403) {
                         Err(AiObservationStatus::AuthRequired)
                     } else if response.status().is_success() {
-                        let bytes = probe_body(response).await?;
+                        let bytes = probe_body_with_budget(response, &mut remaining).await?;
                         match openai::parse_models(&bytes) {
                             Ok(models) => Ok(models.len()),
                             Err(_) if strata => Err(AiObservationStatus::ModelsUnavailable),
@@ -3056,6 +3079,13 @@ pub(crate) mod tests {
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].provider, AiProvider::Strata);
         assert_eq!(servers[0].program, None);
+        let cpp = fake_llama_cpp().await;
+        ai.local = vec![(AiProvider::Strata, cpp.url("/v1"))];
+        ai.programs = vec![(LocalProgram::LlamaCpp, cpp.url("/v1"))];
+        let (servers, observations) = ai.scan_local().await.expect("llama.cpp scan");
+        assert!(observations.is_empty());
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].program.as_deref(), Some("llama_cpp"), "a shared probe retains the generic fallback");
         let flood = MockServer::start_async().await;
         flood
             .mock_async(|when, then| {
@@ -3068,6 +3098,31 @@ pub(crate) mod tests {
         assert!(ai.scan_local().await.expect("scan").0.is_empty());
         ai.http = None;
         assert!(ai.scan_local().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn discovery_shares_one_body_budget_and_probe_on_the_8080_endpoint() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let server = MockServer::start_async().await;
+        let health = server
+            .mock_async(|when, then| {
+                when.method("GET").path("/health");
+                then.status(200).json_body(json!({"service":"strata", "padding":" ".repeat(HEALTH_MAX / 2)}));
+            })
+            .await;
+        let models = server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(json!({"data":[], "padding":" ".repeat(HEALTH_MAX / 2)}));
+            })
+            .await;
+        let mut ai = service(dir.path(), &keys, vec![(AiProvider::Strata, server.url("/v1"))]);
+        ai.programs = vec![(LocalProgram::LlamaCpp, server.url("/v1"))];
+        let (found, observations) = ai.scan_local().await.expect("scan");
+        assert!(found.is_empty() && observations.is_empty(), "combined bodies exceed the endpoint's 64 KiB budget");
+        health.assert_calls_async(1).await;
+        models.assert_calls_async(1).await;
     }
 
     #[tokio::test]

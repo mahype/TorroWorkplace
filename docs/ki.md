@@ -158,8 +158,9 @@ einer verlassenen Seite ändern keine neue Auswahl. Fehler werden angezeigt und 
 
 Gefundene Programme erscheinen mit Adresse, echter Modellzahl (auch null) und bestehender Verbindung.
 Ein erforderlicher Schlüssel oder eine nicht verfügbare Liste ist ein eigener Hinweis **ohne Modellzahl**.
-Die Probe ist schlüsselfrei, parallel, auf Loopback beschränkt, je Ziel zwei Sekunden und 64 KiB; sie nutzt
-weder Proxy noch Weiterleitungen. Auf Port 8080 gewinnt die bestätigte Strata-Identität.
+Die Probe ist schlüsselfrei, parallel, auf Loopback beschränkt, je Ziel insgesamt zwei Sekunden und 64 KiB;
+Health- und Modellantwort teilen sich das Budget. Der gemeinsame Port 8080 wird nur einmal geprüft;
+die bestätigte Strata-Identität gewinnt. Die Suche nutzt weder Proxy noch Weiterleitungen.
 
 | Programm | Standardadresse | Herstellerquelle, geprüft im angenommenen Plan vom 07.11.2026 |
 |---|---|---|

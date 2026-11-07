@@ -882,7 +882,8 @@ pub enum Request {
     },
     /// Looks for AI endpoints on loopback: Ollama :11434, LM Studio :1234, Jan :1337, GPT4All :4891,
     /// koboldcpp :5001 and Strata or llama.cpp/llamafile :8080. Parallel, two seconds and 64 KiB per
-    /// endpoint, no key/proxy/redirect. Strata's /health identity wins the shared address.
+    /// endpoint in total (health and models share the budget), no key/proxy/redirect. One probe
+    /// covers the shared 8080 address; Strata's /health identity wins there.
     ///
     /// Answered with [`Response::AiServers`]: the servers that answered, in that order, with the
     /// real model count and connected account. Observations report auth/list errors without counts.

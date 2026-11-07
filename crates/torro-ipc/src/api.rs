@@ -3273,7 +3273,7 @@ static FIND_LOCAL_SERVERS: Command = Command {
     area: Area::Ai,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Looks for AI endpoints on loopback: Ollama :11434, LM Studio :1234, Jan :1337, GPT4All :4891, koboldcpp :5001, Strata or llama.cpp/llamafile :8080. Probes run in parallel, at most two seconds and 64 KiB each, without keys, proxies or redirects. `servers` contains only real model counts (including zero), optional program id and connected account. `observations` reports auth_required or models_unavailable without inventing a count. Strata identity wins the shared endpoint. A loopback address does not prove local computation: Jan can relay to cloud providers. Connecting any data destination is for people, not agents.",
+    description: "Looks for AI endpoints on loopback: Ollama :11434, LM Studio :1234, Jan :1337, GPT4All :4891, koboldcpp :5001, Strata or llama.cpp/llamafile :8080. Probes run in parallel, at most two seconds and 64 KiB per endpoint in total (health and models share the budget; the shared 8080 endpoint is probed once), without keys, proxies or redirects. `servers` contains only real model counts (including zero), optional program id and connected account. `observations` reports auth_required or models_unavailable without inventing a count. Strata identity wins the shared endpoint. A loopback address does not prove local computation: Jan can relay to cloud providers. Connecting any data destination is for people, not agents.",
 };
 
 static GET_SETTINGS: Command = Command {
