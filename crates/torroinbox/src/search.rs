@@ -1230,6 +1230,7 @@ mod tests {
             untrusted: true,
             category: None,
             pile_since: None,
+            logo: None,
         };
         let jonas = who("Jonas", "jonas@example.org");
         let messages = [

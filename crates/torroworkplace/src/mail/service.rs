@@ -78,6 +78,8 @@ use torro_mail_imap::tls::Fingerprint;
 use torro_pim::{AccountState, ProviderError};
 use torro_pim_caldav::discover::is_public;
 
+use super::check::SenderCheck;
+use super::logos::{LogoSwitch, LogoWeb, SenderLogos};
 use super::progress::SyncProgress;
 use super::send::Outbox;
 use super::store::MailStore;
@@ -858,12 +860,25 @@ pub(crate) struct Mailbox {
     events: broadcast::Sender<MailChange>,
     connector: Connector,
     timing: Timing,
+    /// The service's logos and DKIM check (issue #453).
+    logos: Arc<SenderLogos>,
+    check: Arc<SenderCheck>,
 }
 
 impl Mailbox {
     /// The account's id (`mail:<address>`).
     pub(crate) fn id(&self) -> &str {
         &self.account.id
+    }
+
+    /// The logos of checked senders (issue #453).
+    pub(crate) fn logos(&self) -> &Arc<SenderLogos> {
+        &self.logos
+    }
+
+    /// The DKIM check of a mail's sender (issue #453).
+    pub(crate) fn sender_check(&self) -> &SenderCheck {
+        &self.check
     }
 
     /// Mail is on, there is a password and a store: the account is synced.
@@ -1135,7 +1150,12 @@ async fn index(mailbox: Arc<Mailbox>) {
             tokio::time::sleep(mailbox.timing.retry_first).await;
             continue;
         }
-        match sync::backfill(&mailbox, sync::BACKFILL_BATCH, Utc::now()).await {
+        // Texts for the index first, then the senders still to check (issue #453).
+        let step = match sync::backfill(&mailbox, sync::BACKFILL_BATCH, Utc::now()).await {
+            Ok(0) => sync::check_senders(&mailbox, sync::BACKFILL_BATCH, Utc::now()).await,
+            other => other,
+        };
+        match step {
             Ok(0) => tokio::time::sleep(mailbox.timing.poll).await,
             Ok(_) => wait = mailbox.timing.retry_first,
             Err(err) => {
@@ -1239,6 +1259,33 @@ pub struct MailService {
     progress: StdMutex<HashMap<String, Arc<SyncProgress>>>,
     /// Woken by every change of any account's [`SyncProgress`].
     progress_wake: Arc<Notify>,
+    /// The logos of checked senders (issue #453), kept in `<cache>/sender-logos`, and the DKIM check
+    /// that says whose they are; shared by every mailbox.
+    logos: Arc<SenderLogos>,
+    check: Arc<SenderCheck>,
+}
+
+/// The web the logos are fetched from: the system's, but never in tests, which must not reach the
+/// network ([`MailService::with_sender_logos`] gives them their own).
+#[cfg(not(test))]
+fn logo_web() -> Arc<dyn LogoWeb> {
+    Arc::new(super::logos::SystemWeb::new())
+}
+
+#[cfg(test)]
+fn logo_web() -> Arc<dyn LogoWeb> {
+    Arc::new(tests::NoWeb)
+}
+
+/// The DKIM check on the system's DNS; in tests one that asks no server.
+#[cfg(not(test))]
+fn sender_check() -> SenderCheck {
+    SenderCheck::system()
+}
+
+#[cfg(test)]
+fn sender_check() -> SenderCheck {
+    SenderCheck::offline()
 }
 
 /// The last statistics of each mail account by its id (issue #395): what was counted, when the
@@ -1283,6 +1330,7 @@ impl MailService {
             super::save::SaveTargets::at(dirs.as_ref().map(|dirs| dirs.data.join(super::save::FILE_NAME)));
         let filters =
             super::filters::MailFilters::at(dirs.as_ref().map(|dirs| dirs.data.join(super::filters::FILE_NAME)));
+        let dirs_logos = dirs.as_ref().map(|dirs| dirs.logos.clone());
         MailService {
             accounts_file,
             secrets,
@@ -1303,7 +1351,28 @@ impl MailService {
             stats: Arc::default(),
             progress: StdMutex::default(),
             progress_wake: Arc::new(Notify::new()),
+            logos: Arc::new(SenderLogos::new(dirs_logos, logo_web())),
+            check: Arc::new(sender_check()),
         }
+    }
+
+    /// The logos of checked senders (issue #453).
+    pub fn sender_logos(&self) -> &SenderLogos {
+        &self.logos
+    }
+
+    /// Sets what says whether "Logos of known senders" is on (`mail_sender_logos`); without it they
+    /// are on. Off, mail is neither checked nor its logo fetched or handed out.
+    pub fn set_logo_switch(&self, switch: LogoSwitch) {
+        self.logos.set_switch(switch);
+    }
+
+    /// This service with its own logos and DKIM check, for tests. Before the first mailbox opens.
+    #[cfg(test)]
+    pub fn with_sender_logos(mut self, logos: Arc<SenderLogos>, check: Arc<SenderCheck>) -> MailService {
+        self.logos = logos;
+        self.check = check;
+        self
     }
 
     /// The last statistics of each account ([`KeptStats`]).
@@ -1519,6 +1588,8 @@ impl MailService {
             events: self.events.clone(),
             connector: self.connector.clone(),
             timing: self.timing,
+            logos: Arc::clone(&self.logos),
+            check: Arc::clone(&self.check),
         }
     }
 
@@ -2872,6 +2943,23 @@ pub(crate) mod tests {
 
     /// The service on `dir`: accounts in `dir/config/accounts.json`, stores below `dir`, the
     /// keychain `secrets`, connections to the fake server only; SMTP takes [`PASSWORD`].
+    /// A web that is never reachable: the logos of a test's service ask nothing.
+    pub(crate) struct NoWeb;
+
+    impl super::LogoWeb for NoWeb {
+        fn txt<'a>(&'a self, _name: &'a str) -> super::super::logos::WebFuture<'a, Vec<String>> {
+            Box::pin(async { Err(super::super::logos::WebError::Offline) })
+        }
+
+        fn get<'a>(
+            &'a self,
+            _url: &'a reqwest::Url,
+            _max: usize,
+        ) -> super::super::logos::WebFuture<'a, super::super::logos::Reply> {
+            Box::pin(async { Err(super::super::logos::WebError::Offline) })
+        }
+    }
+
     pub(crate) fn service_in(dir: &Path, secrets: &MemoryTokens) -> MailService {
         service_with_smtp(dir, secrets, PASSWORD).0
     }

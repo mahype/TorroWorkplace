@@ -2463,6 +2463,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Attachments cannot be kept on this device.", "Anhänge können auf diesem Gerät nicht gespeichert werden."),
     ("No such folder.", "Diesen Ordner gibt es nicht."),
     ("No such message.", "Diese Nachricht gibt es nicht."),
+    ("This sender has no logo.", "Für diesen Absender gibt es kein Logo."),
     ("The attachment is larger than 50 MiB.", "Der Anhang ist größer als 50 MiB."),
     ("The message could not be read.", "Die Nachricht konnte nicht gelesen werden."),
     (
@@ -3837,6 +3838,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Like the app", "Wie die App"),
     ("Mail colors", "Farben von E-Mails"),
+    ("Logos of known senders", "Logos bekannter Absender"),
+    (
+        "Only for mail signed by its own domain. Torro fetches the logo once from that domain.",
+        "Nur für E-Mails mit gültiger Signatur ihrer Domain. Torro holt das Logo einmal von dieser Domain.",
+    ),
     ("Show mail as", "E-Mails zeigen als"),
     // Formatted mail (issue #125)
     ("Bold", "Fett"),

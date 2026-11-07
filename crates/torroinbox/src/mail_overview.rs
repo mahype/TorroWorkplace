@@ -1037,6 +1037,7 @@ pub(crate) mod tests {
             category: Some(MailCategory::by_rule(category)),
             untrusted: true,
             pile_since: None,
+            logo: None,
         };
         let inbox = [
             mail("m:1", "News@Golem.de", 0, Category::Newsletter),

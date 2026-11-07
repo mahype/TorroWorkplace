@@ -190,6 +190,12 @@ pub struct Settings {
     /// person turned it off.
     #[serde(default = "on")]
     pub mail_contacts_personal: bool,
+    /// "Logos of known senders" (issue #453): while on, the core checks the DKIM signature of new
+    /// mail itself and shows, in the mail list and the mail's head, the logo of a sender whose mail
+    /// passed, fetched once per domain from the domain's BIMI record or website. Off, nothing is
+    /// checked or fetched and no mail shows a logo. On unless a person turned it off.
+    #[serde(default = "on")]
+    pub mail_sender_logos: bool,
     /// Reminders of events (task ER1.2, `docs/erinnerungen.md`): whether they come, which events,
     /// and per calendar as a notification or over the whole screen. Read leniently: a value that
     /// does not read gives the defaults, never a settings file that fails.
@@ -824,6 +830,7 @@ impl Default for Settings {
             // Written by this version: nothing to take over from before the slots.
             decide_mail_to_cloud: Some(false),
             mail_contacts_personal: on(),
+            mail_sender_logos: on(),
             reminders: Reminders::default(),
             maps: Maps::default(),
             ai_assignments: BTreeMap::new(),
@@ -2767,6 +2774,7 @@ mod tests {
             mail_to_cloud: false,
             decide_mail_to_cloud: Some(false),
             mail_contacts_personal: true,
+            mail_sender_logos: true,
             reminders: Reminders::default(),
             maps: Maps::default(),
             ai_assignments: BTreeMap::new(),
@@ -3055,6 +3063,7 @@ mod tests {
             mail_to_cloud: true,
             decide_mail_to_cloud: Some(true),
             mail_contacts_personal: false,
+            mail_sender_logos: false,
             reminders: Reminders {
                 default_lead: None,
                 calendars: BTreeMap::from([("work".to_string(), CalendarReminders::FullScreen)]),

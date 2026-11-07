@@ -722,6 +722,9 @@ const STAYS_HERE: &[&str] = &[
     "mail.update_filter",
     "mail.remove_filter",
     "mail.preview_filter",
+    // A sender's logo comes from the core's own copy; it is fetched in the background, never for a call
+    // (issue #453).
+    "mail.get_sender_logo",
 ];
 
 /// The inbox commands that reach a server: a calendar server (a task or an event of an entry) or an
@@ -2369,6 +2372,11 @@ mod tests {
         assert_eq!(call("mail_get_thread", json!({"id": "m:1"})), Ok(Request::GetMailThread { id: "m:1".into() }));
         let attachment = call("mail_get_attachment", json!({"id": "m:1", "attachment": "2"}));
         assert_eq!(attachment, Ok(Request::GetMailAttachment { id: "m:1".into(), attachment: "2".into() }));
+        // Issue #453: the logo is one message's, read from the core's copy only.
+        assert_eq!(call("mail_get_sender_logo", json!({"id": "m:1"})), Ok(Request::GetSenderLogo { id: "m:1".into() }));
+        let logo = tools().iter().find(|tool| tool.name == "mail_get_sender_logo").cloned().expect("a tool");
+        let hints = logo.annotations.expect("hints");
+        assert_eq!((hints.read_only_hint, hints.open_world_hint), (Some(true), Some(false)), "never a fetch");
         let reading = [
             "mail_list_folders",
             "mail_search_messages",
