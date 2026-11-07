@@ -277,7 +277,11 @@ pub async fn send(backend: Arc<dyn Backend>, requests: Vec<Request>, areas: &'st
         let request = match request {
             Request::UpdateClient { id, rights } => {
                 let fresh = match backend.call(Request::ListClients).await? {
-                    Response::Clients { clients } => clients.into_iter().find(|client| client.id == id),
+                    // A key or an MCP client only, checked here too: whatever the page let through, the
+                    // assistant, a bot or a hook is never changed from here.
+                    Response::Clients { clients } => {
+                        clients.into_iter().find(|client| client.id == id && editable(&client.kind))
+                    }
                     _ => None,
                 };
                 let Some(fresh) = fresh else { return Err(tr("This client no longer exists.").to_string()) };
@@ -642,9 +646,16 @@ mod tests {
         assert_eq!(rights.confirm, claude.rights.confirm);
         assert_eq!(*rights, merged(&claude.rights, &edited, areas(AppId::CALENDAR)));
         // A client that is gone is not made up again.
-        let gone = Request::UpdateClient { id: "gone".into(), rights: edited };
+        let gone = Request::UpdateClient { id: "gone".into(), rights: edited.clone() };
         let backend: Arc<dyn Backend> = demo.clone();
         assert!(send(backend, vec![gone], areas(AppId::CALENDAR)).await.is_err());
+        // Nor is the assistant changed, also when asked by its id (review of PR #550).
+        let assistant = data.clients.iter().find(|client| client.kind == ASSISTANT_CLIENT).expect("the assistant");
+        let before = demo.sent().len();
+        let theirs = Request::UpdateClient { id: assistant.id.clone(), rights: edited };
+        let backend: Arc<dyn Backend> = demo.clone();
+        assert!(send(backend, vec![theirs], areas(AppId::CALENDAR)).await.is_err());
+        assert!(!demo.sent()[before..].iter().any(|request| matches!(request, Request::UpdateClient { .. })));
     }
 
     /// A draft that waits for its turn is not replaced by a change of another client.
