@@ -24,7 +24,7 @@
 //! to be saved a one-second timer sends `Flush` ([`AUTOSAVE`]).
 //!
 //! The list head has one primary button, "New task", that focuses the quick add row (the same
-//! message as "New" at the app switcher). The Display menu groups the list (due date, list,
+//! message as "New" in the sidebar's first row). The Display menu groups the list (due date, list,
 //! priority, none), shows or hides completed tasks and syncs ("Sync now", with the time of the
 //! last sync). There is no filter function yet, so no "Filter" button, and no "Refresh" button:
 //! syncing lives in the Display menu and on `R`.
@@ -150,8 +150,6 @@ pub enum Filter {
 /// The menu that is open over the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Menu {
-    /// The app switcher at the top of the sidebar.
-    Switcher,
     /// The navigation menu of the medium and narrow layouts ("Today ▾").
     Nav,
     /// The Display menu in the header ("Show completed").
@@ -225,8 +223,6 @@ pub enum Open {
     Display,
     /// The sidebar drawer of the medium and narrow layouts.
     Drawer,
-    /// The app switcher at the top of the sidebar (in the drawer where there is no sidebar).
-    Switcher,
     /// The detail of the first task with its due date card open.
     Due,
     /// The detail of the first open pull request in the list (a GitHub item with checks and
@@ -278,12 +274,11 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 26] = [
+    const ALL: [(&'static str, Open); 25] = [
         ("detail", Open::Detail),
         ("menu", Open::Menu),
         ("display", Open::Display),
         ("drawer", Open::Drawer),
-        ("switcher", Open::Switcher),
         ("due", Open::Due),
         ("pr", Open::PullRequest),
         ("more", Open::More),
@@ -439,6 +434,7 @@ impl Launch {
         let sections = [
             &SETTINGS_SECTIONS[..],
             &torro_settings_ui::account_sections(&ACCOUNT_PROVIDERS, false),
+            &torro_settings_ui::outside::sections(AppId::TASKS),
             &torro_settings_ui::suite_sections(&SETTINGS_SECTIONS),
         ]
         .concat();
@@ -808,7 +804,7 @@ pub enum Message {
     Zoom(zoom::Message),
     /// The design pack stored in the suite settings, and its fonts loaded.
     Design(design::Message),
-    /// From the app switcher at the top of the sidebar.
+    /// From the tools at the top of the sidebar: search and "New".
     Switcher(Switcher),
     /// Open or close the navigation menu ("Today ▾").
     ToggleNav,
@@ -992,11 +988,9 @@ impl App {
             menu: match open {
                 Some(Open::Menu) => Some(Menu::Nav),
                 Some(Open::Display | Open::Order) => Some(Menu::Display),
-                Some(Open::Switcher) => Some(Menu::Switcher),
                 _ => None,
             },
-            // Without a sidebar the app switcher lives in the drawer.
-            drawer: matches!(open, Some(Open::Drawer | Open::Switcher)),
+            drawer: matches!(open, Some(Open::Drawer)),
             sidebar: SidebarMode::default(),
             zoom,
             design,
@@ -1389,8 +1383,6 @@ impl App {
                 let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
                 return Task::batch([task, size]);
             }
-            Message::Switcher(Switcher::Toggle) => self.toggle_menu(Menu::Switcher),
-            Message::Switcher(Switcher::OpenApp(app)) => return self.update(Message::OpenApp(app)),
             Message::Switcher(Switcher::New) => {
                 // "New" is a new task: the quick add field takes it.
                 self.close_menus();
@@ -1737,11 +1729,11 @@ impl App {
         !filter_full && !list_full
     }
 
-    /// The window's top row (issue #459): the switcher, the panel button, the settings, and what lies
-    /// over the top of the window.
-    fn top_row(&self, class: SizeClass, switcher: &Anchor) -> TopRow<Message> {
+    /// The window's top row (issue #459): the panel button, the settings, and what lies over the top
+    /// of the window.
+    fn top_row(&self, class: SizeClass) -> TopRow<Message> {
         let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
-        TopRow::new(AppId::TASKS, switcher, Message::Switcher, self.zoom.factor(), Message::DragWindow)
+        TopRow::new(self.zoom.factor(), Message::DragWindow)
             .sidebar(label, Message::ToggleSidebar)
             .settings(Message::ToggleSettings)
             .settings_open(self.settings.is_some())
@@ -1823,7 +1815,6 @@ impl App {
     /// The whole window in the layout of `class`. The settings (task S.19), while they are open,
     /// take the header and the content area instead; the sidebar and its menus stay.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
-        let switcher = Anchor::new();
         if let Some(pane) = &self.settings {
             let frame = self.settings_frame(pane, class);
             let sidebar = self.sidebar(SidebarMode::Expanded);
@@ -1833,7 +1824,7 @@ impl App {
                 .rail(rail)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(frame.overlay)
-                .top_row(self.top_row(class, &switcher));
+                .top_row(self.top_row(class));
             return self.with_notice(window.into());
         }
         let (nav, display, property) = (Anchor::new(), Anchor::new(), Anchor::new());
@@ -1851,12 +1842,6 @@ impl App {
         let columns = self.columns();
         let header = self.header(class, columns, [&nav, &display, &property, &list_menu]);
         let menu = self.menu.map(|menu| match menu {
-            Menu::Switcher => widgets::floating(
-                &switcher,
-                Placement::Below(Align::Start),
-                shell::switcher_menu(AppId::TASKS, Message::Switcher),
-                Message::CloseMenu,
-            ),
             Menu::Nav => widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Message::CloseMenu),
             Menu::Display => {
                 widgets::floating(&display, Placement::Below(Align::End), self.display_menu(), Message::CloseMenu)
@@ -1878,7 +1863,7 @@ impl App {
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(dialog.or(menu).or_else(editor))
-            .top_row(self.top_row(class, &switcher));
+            .top_row(self.top_row(class));
         self.with_notice(window.into())
     }
 
@@ -2295,7 +2280,7 @@ impl App {
                 open,
             ));
         }
-        // "Settings" sits in the top row's right corner (issue #459), the switcher at its left.
+        // "Settings" sits in the top row's right corner (issue #459); there is no app switcher (#530).
         let head = shell::sidebar_tools(mode, true, Message::Switcher);
         shell::sidebar(head, items, footer)
     }
@@ -2499,6 +2484,8 @@ impl App {
         );
         // Its accounts, always, also with the main application (issue #410).
         let mut host = host.with_accounts(AppId::TASKS, &ACCOUNT_PROVIDERS, false);
+        // What keys and MCP clients may do in the tasks and on GitHub (issue #531).
+        host = host.with_outside(AppId::TASKS);
         if let Some(id) = section {
             host.open(id);
         }
@@ -4023,8 +4010,8 @@ mod tests {
         assert_eq!(app.menu, Some(Menu::Nav));
         let _ = app.update(Message::ToggleNav);
         assert_eq!(app.menu, None, "a second click closes the menu");
-        let _ = app.update(Message::Switcher(Switcher::Toggle));
-        assert_eq!(app.menu, Some(Menu::Switcher));
+        let _ = app.update(Message::ToggleNav);
+        assert_eq!(app.menu, Some(Menu::Nav));
         // The top row's panel button opens the drawer where the sidebar is not beside the content.
         let _ = app.update(Message::Resized(MEDIUM));
         let _ = app.update(Message::ToggleSidebar);
@@ -4592,8 +4579,8 @@ mod tests {
         app
     }
 
-    /// Issue #459: the window shows the shell with its top row – switcher, panel button and the
-    /// settings in one row – in every layout with a sidebar or drawer; the glance and a dialog that
+    /// Issue #459: the window shows the shell with its top row – panel button and the settings in
+    /// one row – in every layout with a sidebar or drawer; the glance and a dialog that
     /// fills a narrow window keep the band.
     #[test]
     fn the_window_has_the_top_row_where_it_shows_the_shell() {
@@ -4726,13 +4713,9 @@ mod tests {
 
     #[test]
     fn the_menu_states_start_with_the_menu_open() {
-        for (word, menu, drawer) in [
-            ("menu", Some(Menu::Nav), false),
-            ("display", Some(Menu::Display), false),
-            ("drawer", None, true),
-            // Without a sidebar the switcher is in the drawer.
-            ("switcher", Some(Menu::Switcher), true),
-        ] {
+        for (word, menu, drawer) in
+            [("menu", Some(Menu::Nav), false), ("display", Some(Menu::Display), false), ("drawer", None, true)]
+        {
             let app = launched(&["--demo", "--open", word]);
             assert_eq!((app.menu, app.drawer), (menu, drawer), "{word}");
         }

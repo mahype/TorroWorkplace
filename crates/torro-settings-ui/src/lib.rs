@@ -21,6 +21,8 @@
 //! * [`rights`] – the rights editor (task S.33): what a client may do, area by area and command by
 //!   command. The control centre shows it for keys and MCP clients, the assistant window for the
 //!   assistant and its bots (task S.34).
+//! * [`outside`] – API and MCP (issue #531): what keys and MCP clients may do in the app's own areas,
+//!   behind its gear ([`Host::with_outside`]); the rights stay one per client, in the daemon.
 //!
 //! # The shape of a section
 //!
@@ -60,6 +62,7 @@ pub mod demo;
 pub mod host;
 pub mod inbox;
 pub mod mail;
+pub mod outside;
 pub mod parts;
 pub mod rights;
 pub mod suite;

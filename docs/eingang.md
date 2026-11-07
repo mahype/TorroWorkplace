@@ -370,11 +370,11 @@ im Eingang, nur die Oberfläche teilt sich auf.
 | **Notification Hub** („Mitteilungszentrale“, bis #127 „Inbox“), die Zentrale | Was muss ich entscheiden oder weitergeben? | Kein Lesen, sondern Handeln: Freigaben, wartende Agenten, Sortieren (→ Aufgabe, → Termin, Later, Erledigt). Daneben, was weitergegeben wurde und was wiederkommt. Dazu **Insights** |
 
 - **Ein Programm, drei Einträge.** Ein Code, ein Binary (`torroinbox --view mail|notifications|hub`), aber drei
-  Einträge im App-Umschalter, in `apps.list_apps` und in den Workspace-Vorlagen, jeder mit eigener Fensterklasse,
+  Einträge im Tray-Menü, in `apps.list_apps` und in den Workspace-Vorlagen, jeder mit eigener Fensterklasse,
   damit Kachel-Regeln sie auseinanderhalten. Die Filter `--source` und `--lane` aus E3.6 bleiben.
 - **Agenten und Freigaben** zeigt die Zentrale. Im App Feed lassen sie sich als Quelle zuschalten.
-- **Keine Links zu anderen Apps unten in der Seitenleiste.** Die anderen Fenster erreicht man über den
-  App-Umschalter, das Tray und die Tastatur. Weniger zeigen, damit das Wichtige übersichtlich bleibt.
+- **Keine Links zu anderen Apps unten in der Seitenleiste.** Die anderen Fenster erreicht man über das Tray,
+  Dock bzw. Taskleiste, Steuerzentrale › Apps und die Tastatur (einen App-Umschalter gibt es seit #530 nicht mehr). Weniger zeigen, damit das Wichtige übersichtlich bleibt.
 - **Seitenleiste des Mail-Fensters** (E18.4, E19.4, #337, #398, #445, #455, #476): ganz oben **New email**, der eine
   Primärknopf des Fensters (Akzentfarbe, Stift, Wort und Taste hell darauf; in der Leiste der Stift auf Rot; ohne
   Mail-Konto gerahmt und abgeschaltet wie vor #476), dann **All** (bis #445 „Unfiltered“, bis #337 „All“: der Posteingang aller

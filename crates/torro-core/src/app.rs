@@ -7,7 +7,7 @@
 //!
 //! One binary may have several entries (task E8.1): `torroinbox` opens three kinds of window –
 //! mail, notifications and the hub – each with its own window class, name and start arguments,
-//! so window rules, the app switcher and workspace templates tell them apart.
+//! so window rules, the tray menu and workspace templates tell them apart.
 
 /// The window class of the core's small dialog window (issue #243, `torroworkplace ui --template=<id>`):
 /// a template's name, key and startup, after "Save workspace…" in the tray or from the control
@@ -132,8 +132,8 @@ impl AppId {
     }
 
     /// The shortest name that [`AppId::find`] resolves to this entry: its binary when the binary
-    /// alone names it, else its window class (`torro-inbox-mail`). What the app switcher sends with
-    /// `apps.open_app`, so apps with one window are opened by binary exactly as before.
+    /// alone names it, else its window class (`torro-inbox-mail`). What the tray menu and the jumps to an app
+    /// send with `apps.open_app`, so apps with one window are opened by binary exactly as before.
     pub fn open_name(self) -> &'static str {
         if AppId::find(self.binary) == Some(self) { self.binary } else { self.window_class }
     }

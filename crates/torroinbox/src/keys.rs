@@ -18,7 +18,7 @@
 //!    decides); in a menu of choices the digits pick
 //!    its entries; `[` collapses the sidebar and `]` the mail's action rail (task E14.3); in the date picker the arrows change
 //!    day and time and `Enter` snoozes; in the dialog of "Make task" `Enter` creates the task.
-//!    Behind the navigation menu, the app switcher or the drawer no key reaches the list. Escape
+//!    Behind the navigation menu or the drawer no key reaches the list. Escape
 //!    is not here: `widgets::escape` closes whatever is in front.
 //!
 //! The overview (task E3.9, [`Focus::Overview`]) takes the keys of the list, and `h`/`l` and ←/→
@@ -156,7 +156,7 @@ pub enum Focus {
     /// The dialog of "Make task" (task E3.5) or of "Make event" (task E8.5b) is open; its title
     /// field takes what is typed.
     Task,
-    /// The navigation menu, the app switcher or the drawer is open; only `[` works.
+    /// The navigation menu or the drawer is open; only `[` works.
     Elsewhere,
     /// A question waits for its answer (task E10.1: "Delete permanently?"): `Enter` confirms, Escape
     /// (the app's) cancels, nothing of the list.

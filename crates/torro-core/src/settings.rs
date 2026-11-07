@@ -845,7 +845,7 @@ impl Default for Settings {
 }
 
 /// A part of the suite a person can turn off (task W.1, `docs/einrichtung.md`, "Komponenten an
-/// und aus"). Off means: not in the app switcher, the tray and the overview, and nothing runs in
+/// und aus"). Off means: not in the tray and the overview, and nothing runs in
 /// the background only for it. Its accounts and data stay, and its requests keep answering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

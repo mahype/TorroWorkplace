@@ -26,7 +26,7 @@
 //! request and reloads [`Data`].
 //!
 //! The window is the Linear frame of the suite (`torro_gui::shell`, design skill section 0):
-//! wide windows show the sidebar with the app switcher and the sections; medium and narrow ones
+//! wide windows show the sidebar with its tools and the sections; medium and narrow ones
 //! put the sections into a menu at the top left ("Accounts ▾") and the sidebar into a drawer, the
 //! same way the calendar and the tasks app do. In wide windows the sidebar collapses to a rail of
 //! icons (U.2: panel button or `[`, remembered in `ui.json`); medium windows always show that rail,
@@ -408,8 +408,6 @@ impl<'a, M: 'a> Header<'a, M> {
 /// The open menu of the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Menu {
-    /// The app switcher at the top of the sidebar.
-    Switcher,
     /// The section menu in the header of the medium and narrow layouts.
     Nav,
 }
@@ -499,7 +497,7 @@ pub enum Message {
     UiState(UiState),
     /// The window has this size (at start and after every resize).
     Resized(Size),
-    /// The app switcher and its search and "New" buttons.
+    /// The tools at the top of the sidebar: search and "New".
     Switcher(Switcher),
     Loaded(Box<Data>),
     Sent(Result<Response, String>),
@@ -737,12 +735,6 @@ impl Ui {
                 vec![]
             }
             Open::Drawer => {
-                self.drawer = true;
-                vec![]
-            }
-            // Without a sidebar the app switcher lives in the drawer.
-            Open::Switcher => {
-                self.menu = Some(Menu::Switcher);
                 self.drawer = true;
                 vec![]
             }
@@ -1425,7 +1417,7 @@ impl Ui {
                 // The hook switch takes the hooks out once the reload no longer lists their client.
                 let unhook = mcp::loaded(&mut self.mcp, &self.data);
                 connections::loaded(&mut self.connections, &self.data);
-                // The app switcher of this window follows the components (task W.2).
+                // The components that are off, for every window of this process (task W.2).
                 if self.data.error.is_none() {
                     torro_gui::components::set_off(&self.data.settings.components_off);
                 }
@@ -1685,17 +1677,9 @@ impl Ui {
         }
     }
 
-    /// What the app switcher's buttons do in the control centre.
+    /// What the sidebar's tools do in the control centre.
     fn switcher(&mut self, switcher: Switcher) -> Action {
         match switcher {
-            Switcher::Toggle => {
-                self.menu = if self.menu == Some(Menu::Switcher) { None } else { Some(Menu::Switcher) };
-                Action::None
-            }
-            Switcher::OpenApp(app) => {
-                self.close_menus();
-                Action::Send(Request::OpenApp { app: app.to_string(), target: None })
-            }
             // The control centre has nothing to search yet; the button only closes open menus.
             Switcher::Search => {
                 self.close_menus();
@@ -1958,11 +1942,11 @@ impl Ui {
         !matches!(layout::of(self.size), SizeClass::Mini | SizeClass::Strip) && self.setup.is_none()
     }
 
-    /// The window's top row (issue #459): the switcher, the panel button, "General" as the settings,
-    /// and what lies over the top of the window.
-    fn top_row(&self, class: SizeClass, switcher: &Anchor) -> TopRow<Message> {
+    /// The window's top row (issue #459): the panel button, "General" as the settings, and what lies
+    /// over the top of the window.
+    fn top_row(&self, class: SizeClass) -> TopRow<Message> {
         let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
-        TopRow::new(AppId::WORKPLACE, switcher, Message::Switcher, self.zoom.factor(), Message::DragWindow)
+        TopRow::new(self.zoom.factor(), Message::DragWindow)
             .sidebar(label, Message::ToggleSidebar)
             .settings(Message::Select(Section::General))
             .settings_open(self.section == Section::General)
@@ -1987,17 +1971,11 @@ impl Ui {
         if let Some(setup) = &self.setup {
             return self.setup_window(setup, class);
         }
-        let (switcher, nav) = (Anchor::new(), Anchor::new());
+        let nav = Anchor::new();
         let layer = self.menu.map(|menu| match menu {
-            Menu::Switcher => widgets::floating(
-                &switcher,
-                Placement::Below(Align::Start),
-                shell::switcher_menu(AppId::WORKPLACE, Message::Switcher),
-                Message::CloseMenu,
-            ),
             Menu::Nav => widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Message::CloseMenu),
         });
-        // The page's dialog lies under an open menu: the switcher still works above it.
+        // The page's dialog lies under an open menu: the menu still works above it.
         let layer = match (self.page_overlay(), layer) {
             (Some(dialog), Some(menu)) => Some(stack![dialog, menu].into()),
             (dialog, menu) => dialog.or(menu),
@@ -2008,7 +1986,7 @@ impl Ui {
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(layer)
-            .top_row(self.top_row(class, &switcher))
+            .top_row(self.top_row(class))
             .into()
     }
 
@@ -2051,8 +2029,8 @@ impl Ui {
     }
 
     /// The sidebar in `mode`: search and "New", the sections, and the version at the foot. The rail
-    /// (U.2) has no room for the version line. The switcher and "General" lie in the top row (issue
-    /// #459).
+    /// (U.2) has no room for the version line. The panel button and "General" lie in the top row
+    /// (issue #459).
     fn sidebar(&self, mode: SidebarMode) -> Element<'_, Message> {
         // The sidebar may draw in a theme of its own (a design pack's sidebar colours).
         let palette = palette(&theme::sidebar_theme(&self.theme()));
@@ -2758,8 +2736,8 @@ mod tests {
         assert!(!setup::web_waits(setup, &ui.data), "Continue goes on");
     }
 
-    /// Issue #459: the window shows the shell with its top row – switcher, panel button and "General"
-    /// in one row – in every layout with a sidebar or drawer; the glance and the setup keep the band.
+    /// Issue #459: the window shows the shell with its top row – panel button and "General" in one
+    /// row – in every layout with a sidebar or drawer; the glance and the setup keep the band.
     #[test]
     fn the_window_has_the_top_row_where_it_shows_the_shell() {
         let mut ui = started(&["--demo"]);
@@ -3280,26 +3258,16 @@ mod tests {
     fn escape_closes_the_menu_before_the_dialog_below_it() {
         let mut ui = ui(Section::Overview);
         let _ = ui.update(Message::Switcher(Switcher::New));
-        assert_eq!(ui.section, Section::Accounts, "New in the switcher adds an account");
+        assert_eq!(ui.section, Section::Accounts, "New in the sidebar adds an account");
         assert!(ui.accounts.wizard.is_none(), "where its group's Add chooses the kind (task S.30)");
         let _ = ui.update(Message::Accounts(accounts::Message::Add(wizard::Provider::Nextcloud)));
         assert!(ui.accounts.wizard.is_some());
-        let _ = ui.update(Message::Switcher(Switcher::Toggle));
-        assert_eq!(ui.menu, Some(Menu::Switcher));
+        ui.menu = Some(Menu::Nav);
         let _ = ui.update(Message::Escape);
         assert_eq!(ui.menu, None);
         assert!(ui.accounts.wizard.is_some(), "the dialog stays for the next Escape");
         let _ = ui.update(Message::Escape);
         assert!(ui.accounts.wizard.is_none());
-    }
-
-    #[test]
-    fn the_switcher_opens_other_apps_through_the_core() {
-        let mut ui = ui(Section::Overview);
-        ui.menu = Some(Menu::Switcher);
-        let action = ui.switcher(Switcher::OpenApp(AppId::CALENDAR.binary));
-        assert!(matches!(action, Action::Send(Request::OpenApp { ref app, .. }) if app == "torrocalendar"));
-        assert_eq!(ui.menu, None);
     }
 
     #[test]
@@ -3812,8 +3780,6 @@ mod tests {
         assert_eq!((menu.section, menu.menu, menu.drawer), (Section::Workspaces, Some(Menu::Nav), false));
         let drawer = started(&["--demo", "--open", "drawer"]);
         assert_eq!((drawer.menu, drawer.drawer), (None, true));
-        let switcher = started(&["--demo", "--open", "switcher"]);
-        assert_eq!((switcher.menu, switcher.drawer), (Some(Menu::Switcher), true));
     }
 
     #[test]
@@ -3847,7 +3813,6 @@ mod tests {
             Message::Apps(apps::Message::Reveal("torro-tasks".into())),
             Message::Apps(apps::Message::Switch(torro_core::settings::Component::Mail, false)),
             Message::General(general::Message::Component(torro_core::settings::Component::Mail, false)),
-            Message::Switcher(Switcher::OpenApp("torrocalendar")),
             Message::Accounts(accounts::Message::SyncNow),
             Message::Accounts(accounts::Message::OpenApp("torro-calendar")),
             Message::Accounts(accounts::Message::Open(demo.data.accounts[0].id.clone())),

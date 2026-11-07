@@ -167,7 +167,7 @@ Der Weg:
    Stationary | IgnoresCycle)`, `setFrame(NSScreen::screens()[n].frame())`, dann `makeKeyAndOrderFront` für den
    Hauptbildschirm, `orderFrontRegardless` (ohne Fokus) für die anderen.
 3. Der Prozess läuft aus einem eigenen kleinen Bundle mit `LSUIElement = true` (z. B. „Torro Reminder.app“ mit
-   dem Programm `torrocalendar`, gestartet mit `--reminders`). Kein Dock-Symbol, kein Eintrag im App-Umschalter.
+   dem Programm `torrocalendar`, gestartet mit `--reminders`). Kein Dock-Symbol, kein Eintrag in ⌘-Tab.
 
 **Kein neues `unsafe` nötig:** `setLevel`, `setCollectionBehavior`, `setFrame_display`, `NSScreen::screens`,
 `NSApplication::windows` sind in objc2-app-kit 0.3 sicher. Das Fenster findet man ohne Zeiger-Dereferenz: winit
@@ -289,7 +289,7 @@ samt Taskleiste, ohne Wechsel der Bildschirmauflösung und ohne neuen virtuellen
    Laufzeit anmelden (`eval hl.window_rule(…)`) und Vollbild setzen, damit der Hinweis auf dem richtigen
    Bildschirm erscheint (ER2.2).
 7. **macOS: eigenes Bundle „Torro Reminder.app“** mit `LSUIElement`, damit der Hinweis auch über
-   Vollbild-Apps erscheint; kein Dock-Symbol, kein Eintrag im App-Umschalter.
+   Vollbild-Apps erscheint; kein Dock-Symbol, kein Eintrag in ⌘-Tab.
 8. **Windows: ohne GlazeWM nur der Hauptbildschirm.** Kein `unsafe` für `EnumDisplayMonitors`; mit GlazeWM
    kommen alle Bildschirme aus `torro-wm`.
 
