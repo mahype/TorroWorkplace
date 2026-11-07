@@ -395,6 +395,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Ablageziel entfernen (#290) | Einstellungen › Mail › Attachments | `mail.remove_save_target` · Admin | `mail_remove_save_target` |
 | Anhänge speichern (#290) | Dreieck-Menü, „Save all ▾“, Kontextmenü der Liste, Klick auf den Namen | `mail.save_attachments` · Write; `to: file`/`folder` nur mit dem App-Schlüssel | `mail_save_attachments` (nur Downloads oder ein Ziel) |
 | Mail als PDF oder Bild speichern (#501) | Gruppe „Save“ (Diskette) der Leiste: „Save as PDF“, „Save as image“; Kontextmenü der Liste: „Save mail as ›“ | `mail.save_message_as` · Write (gezeichnet wie im Leser, immer hell; PDF aus A4-Bildseiten, höchstens 50 Seiten; PNG höchstens 30 000 Pixel hoch; externe Bilder werden geladen); `to: file`/`folder` nur mit dem App-Schlüssel | `mail_save_message_as` (nur Downloads oder ein Ziel) |
+| Vollständige Mail als EML speichern (#553) | Dieselben Menüs: „Save as EML“, auch bei fehlgeschlagenem Laden des Lesetexts, sobald die Zusammenfassung bekannt ist; Downloads, „Save as…“, Ablageziele | `mail.save_message_as`, `format: eml` · Write; Vorschau `mail.list_save_targets`, `export_only: true` · Read, ohne Bodyabruf | `mail_save_message_as`, `mail_list_save_targets`; nur Downloads oder Ziel-ID |
 | Filter auflisten (#339) | Einstellungen › Categorization: auf der Seite der Kategorie, die er setzt, sonst unter „Other filters“ (#481) | `mail.list_filters` · Read | `mail_list_filters` |
 | Filter anlegen, ändern, ein- und ausschalten (#339) | „+ Rule“ › „Filter from a search…“ auf der Seite einer Kategorie, „New filter…“ unter Other filters, Klick auf die Zeile, Schalter der Zeile; „Create filter…“ an einer Mail, „Create filter from search…“ am Suchfeld | `mail.create_filter`, `mail.update_filter` · Admin | `mail_create_filter`, `mail_update_filter` |
 | Filter entfernen (#339) | Dialog › „Delete filter“ | `mail.remove_filter` · Admin | `mail_remove_filter` |
@@ -417,6 +418,33 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 
 Statt TorroMails Paar `prepare_*` / `confirm_action` gibt es einen Request; ob er sofort läuft
 oder auf eine Freigabe wartet, entscheidet der Dienst nach den Rechten des Agenten.
+
+## Vollständige Nachricht als EML speichern
+
+„Save as EML“ (#553) steht nach PDF und Bild in der Gruppe „Save“ und unter „Save mail as ›“
+im Listen-Kontextmenü. Es nutzt Downloads, den vorhandenen Speicherdialog oder ein Ablageziel mit
+Pfadvorschau. Die Zusammenfassung genügt, auch wenn sich der Nachrichtentext nicht anzeigen lässt.
+
+EML ist die **unveränderte Originalnachricht**: Kopfzeilen einschließlich unbekannter und gefalteter
+Felder, Text/HTML, MIME-Struktur, eingebettete Bilder und Anhänge. Der Dienst prüft ein lokales
+Original anhand seiner Zuordnung, einer positiven bekannten Nachrichtengröße, Länge, SHA-256 und
+Dateiende. Fehlt es oder ist es beschädigt/unbeweisbar vollständig, lädt er das Original einmal
+in höchstens 64-KiB-Stücken vom Server und vergleicht UID, Größe und INTERNALDATE vor/nach dem
+Abruf. Flags gehören nicht zu diesen unveränderlichen Fakten. Es werden keine externen Bilder
+geladen, keine Lesemarkierung gesetzt und keine Cache-Daten geändert.
+
+Ohne vollständige Quelle wird **nichts gespeichert**, insbesondere kein aus Lesetext nachgebautes
+„Original“. Netz-/Anmeldefehler sagen, dass das vollständige Original fehlt. Pro Dienst läuft nur
+ein EML-Export gleichzeitig (`busy`); die Grenze je Nachricht beträgt 998951424 Bytes (knapp 1 GB).
+Größere Nachrichten werden abgewiesen, niemals gekürzt. PDF und Bild bleiben unverändert.
+
+Dateien werden über eine private temporäre Datei (Unix 0600), vollständigen Vergleich und Sync
+atomar veröffentlicht. Downloads/freie Ordner nummerieren bestehende Namen bis `(99)`; Ablageziele
+verwenden ihre Schemata und KeepBoth/SkipIdentical. EML hat keinen Dateityp-Vorschlag, wohl aber
+Absender-/Kategorie-Vorschläge. Nur der Speicherdialog darf eine reguläre Datei ersetzen, nie Links
+oder Ordner. Fehler lassen alte Dateien unverändert und entfernen temporäre/teilweise Dateien.
+Die bestehende Zielordnerprüfung bleibt; gleichzeitiger lokaler Austausch von Ordnern durch Links
+ist wie bisher keine abgesicherte Transaktion.
 
 ## Anhänge ablegen
 
