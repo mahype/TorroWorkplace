@@ -3007,6 +3007,10 @@ pub enum Request {
         /// A message (`m:…`) to plan its attachments for; left out, only the targets.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
+        /// Only export plans (PDF, PNG, EML), without fetching the body or attachment plans.
+        /// Left out/false retains the legacy PDF/PNG response; without `id`, only targets.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        export_only: bool,
     },
     /// Adds a save target ([`Response::SaveTarget`], with its new id). App key only and never an
     /// MCP tool (point 9 of "Was nie nach außen geht"): a new target always sets a folder. `error`
@@ -3143,7 +3147,11 @@ pub enum Request {
         /// Where the files go.
         to: mail::SaveTo,
     },
-    /// Saves a mail as a PDF or a picture (issue #501, [`Response::SavedMail`]): drawn as the reader
+    /// Saves a mail as EML, PDF or a picture ([`Response::SavedMail`]). EML is the verified original:
+    /// headers and all MIME parts unchanged, from the local depot or fetched once with BODY.PEEK.
+    /// No reconstruction, external images or cache changes. Missing source: `not-found`/`offline`/
+    /// `auth`; inconsistent source: `conflict`/`error`; another EML export: `busy`. At most
+    /// 998951424 bytes, never cut, `shortened: false`. PDF/PNG are drawn as the reader
     /// shows it – the head (sender, recipients, date, subject) and the content, HTML as HTML with its
     /// pictures (external ones are loaded, as the reader loads them) – always in light colours. A PDF
     /// holds A4 pages of pictures (its text cannot be selected), a PNG one long picture; a mail longer
@@ -3156,7 +3164,7 @@ pub enum Request {
     SaveMailAs {
         /// The message's id (`m:…`).
         id: String,
-        /// `pdf` or `png`.
+        /// `pdf`, `png` or `eml`.
         format: mail::ExportFormat,
         /// Where the file goes; `to: folder` puts it in that folder under its own name.
         to: mail::SaveTo,
@@ -4902,10 +4910,11 @@ pub enum Response {
         /// The Downloads folder as "Save to Downloads" uses it, an absolute path.
         downloads: String,
         /// With `id`: one plan per attachment that is not `inline`, in the message's order.
+        /// Empty/omitted with `export_only`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         files: Vec<mail::AttachmentPlan>,
-        /// With `id`: where the mail itself would go as PDF and as picture (issue #501,
-        /// `mail.save_message_as`), one plan per format. Its file name comes from the subject.
+        /// With `id`: PDF/PNG plans, plus EML only with `export_only` (issues #501/#553),
+        /// one plan per format. Its file name comes from the subject.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         exports: Vec<mail::ExportPlan>,
     },
@@ -4962,7 +4971,7 @@ pub enum Response {
         #[serde(default)]
         skipped: bool,
         /// The mail was longer than a file takes (50 PDF pages, 30,000 pixels of picture): its end
-        /// is cut off.
+        /// is cut off. Always false for EML, whose original is never shortened.
         #[serde(default)]
         shortened: bool,
     },

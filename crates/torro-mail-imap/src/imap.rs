@@ -269,6 +269,14 @@ pub struct BackupMessage {
     pub gm_msgid: Option<u64>,
 }
 
+/// Stable facts of one original exported as EML; flags are deliberately not part of its identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportMetadata {
+    pub uid: u32,
+    pub bytes: u64,
+    pub internal_date: DateTime<FixedOffset>,
+}
+
 /// Why reading a whole original in pieces ([`BodyChunks`]) failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BodyError {
@@ -920,6 +928,41 @@ impl Session {
             .collect()
     }
 
+    /// Stable export facts for `uid`. Unsolicited flag-only FETCH and other UIDs are ignored;
+    /// a requested metadata response missing either size or date is a protocol error.
+    pub async fn fetch_export_metadata(&mut self, uid: u32) -> Result<Option<ExportMetadata>, ImapError> {
+        self.require_selected()?;
+        let set = uid.to_string();
+        let data = self
+            .run_bounded(
+                &[Arg::Raw("UID FETCH"), Arg::Raw(&set), Arg::Raw("(UID INTERNALDATE RFC822.SIZE)")],
+                LITERAL_CHUNK,
+            )
+            .await?;
+        let mut found = None;
+        for item in fetched(&data).filter(|item| item.uid == uid) {
+            let size = item.get("RFC822.SIZE");
+            let date = item.get("INTERNALDATE");
+            if size.is_none() && date.is_none() && item.get("FLAGS").is_some() {
+                continue;
+            }
+            let bytes = size
+                .and_then(Token::number)
+                .filter(|&bytes| bytes > 0)
+                .ok_or_else(|| ImapError::Protocol("export FETCH named no positive RFC822.SIZE".into()))?;
+            let internal_date = date
+                .and_then(Token::text)
+                .and_then(|value| DateTime::parse_from_str(value.trim(), "%d-%b-%Y %H:%M:%S %z").ok())
+                .ok_or_else(|| ImapError::Protocol("export FETCH named no valid INTERNALDATE".into()))?;
+            let metadata = ExportMetadata { uid, bytes, internal_date };
+            if found.as_ref().is_some_and(|before| before != &metadata) {
+                return Err(ImapError::Protocol("conflicting export metadata".into()));
+            }
+            found = Some(metadata);
+        }
+        Ok(found)
+    }
+
     /// The sizes (`RFC822.SIZE`) of the messages `uids` of the selected folder, as `(uid, bytes)`
     /// (#314). Lenient where [`Session::fetch_backup_metadata`] is strict: a `FETCH` without a size
     /// or for a UID that was not asked for (a flag another client changed meanwhile) is left out, so
@@ -953,7 +996,8 @@ impl Session {
         let set = uid.to_string();
         let item = format!("(UID BODY.PEEK[]<{offset}.{count}>)");
         let returned = format!("BODY[]<{offset}>");
-        let data = self.run(&[Arg::Raw("UID FETCH"), Arg::Raw(&set), Arg::Raw(&item)], "FETCH").await?;
+        // Enforce the requested piece before allocating a server literal, not only after receipt.
+        let data = self.run_bounded(&[Arg::Raw("UID FETCH"), Arg::Raw(&set), Arg::Raw(&item)], count + 4096).await?;
         Ok(fetched(&data)
             .filter(|item| item.uid == uid)
             .find_map(|item| item.get(&returned).and_then(Token::bytes).map(<[u8]>::to_vec)))

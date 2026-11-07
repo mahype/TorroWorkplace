@@ -1137,6 +1137,7 @@ pub enum Sent {
     Fetch,
     /// `mail.list_save_targets` for the message with this id (task M12.6).
     SaveTargets(String),
+    ExportTargets(String),
     /// `mail.save_attachments`: message, parts (none: all) and where to.
     Save(String, Vec<String>, SaveTo),
     /// `mail.save_message_as` (issue #501): message, format and where to.
@@ -1586,6 +1587,8 @@ pub enum Open {
     SaveAllMenu,
     /// That invoice with the menu of "Save as PDF" open at the rail's group Save (issue #501).
     SaveMailMenu,
+    /// The invoice's EML destinations at the Save group.
+    SaveEmlMenu,
     /// That invoice with the rail's group Save open beside its icon (issue #501).
     SaveGroup,
     /// That invoice from the list's context menu: "Save mail as" chosen, its formats open at the row
@@ -1688,7 +1691,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 101] = [
+    const ALL: [(&'static str, Open); 102] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1747,6 +1750,7 @@ impl Open {
         ("attachment-menu", Open::AttachmentMenu),
         ("save-all-menu", Open::SaveAllMenu),
         ("save-mail-menu", Open::SaveMailMenu),
+        ("save-eml-menu", Open::SaveEmlMenu),
         ("save-group", Open::SaveGroup),
         ("save-format-menu", Open::SaveFormatMenu),
         ("attachment-saved", Open::AttachmentSaved),
@@ -2536,6 +2540,7 @@ async fn choose_export_file(name: String, format: ExportFormat) -> Option<std::p
     let (title, kind) = match format {
         ExportFormat::Pdf => (tr("Save mail as PDF"), tr("PDF documents")),
         ExportFormat::Png => (tr("Save mail as image"), tr("PNG images")),
+        ExportFormat::Eml => (tr("Save mail as EML"), tr("Email messages")),
     };
     let dialog =
         rfd::AsyncFileDialog::new().set_title(title).set_file_name(name).add_filter(kind, &[format.extension()]);
@@ -3003,6 +3008,8 @@ pub struct App<S> {
     /// `mail.list_save_targets`), asked once its text is in: the message's id and the answer. Only an
     /// answer for the mail held is taken, and only the one of the mail held counts ([`App::saving_of`]).
     saving: Option<(String, Result<SaveTargets, String>)>,
+    /// Independent of attachment plans: export preview must not need a readable body.
+    export_plans: Option<(String, Result<SaveTargets, String>)>,
     /// The settings `mail_view` and `mail_appearance` as last read, with `--mail-view` and
     /// `--mail-colors` over them ([`App::take_look`]).
     look: MailLook,
@@ -3493,6 +3500,7 @@ pub enum Message {
     AttachmentOpened(Result<Opened, String>),
     /// `mail.list_save_targets` answered for the message with this id (task M12.6).
     SaveTargets(String, Result<SaveTargets, String>),
+    ExportTargets(String, Result<SaveTargets, String>),
     /// The triangle of an attachment (task M12.6): its menu ([`Menu::Attachment`]) – the message's id
     /// and the attachment's place among those that are not `inline`.
     AskAttachment(String, usize),
@@ -4287,6 +4295,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     Open::AttachmentMenu
                     | Open::SaveAllMenu
                     | Open::SaveMailMenu
+                    | Open::SaveEmlMenu
                     | Open::SaveGroup
                     | Open::SaveFormatMenu
                     | Open::AttachmentSaved
@@ -4400,6 +4409,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             pinned_mail: None,
             html: None,
             saving: None,
+            export_plans: None,
             look: launch.look(MailLook::default()),
             display_chosen: false,
             mail_format: launch.look(MailLook::default()).format,
@@ -5573,7 +5583,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                         Task::none()
                     };
                     let saving = if files { self.ask_save_targets(&id) } else { Task::none() };
-                    return Task::batch([side, read, saving]);
+                    let exports = if matches!(self.menu, Some(Menu::SaveMail(_))) {
+                        self.ask_export_targets(&id)
+                    } else {
+                        Task::none()
+                    };
+                    return Task::batch([side, read, saving, exports]);
                 }
             }
             Message::Mail(action, id) => return self.mail_action(action, id),
@@ -5789,6 +5804,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 }
             }
             Message::AskAttachment(id, at) => self.ask_file_menu(&id, Menu::Attachment(at)),
+            Message::ExportTargets(id, result) => {
+                if self.letter.as_ref().is_none_or(|letter| letter.id != id) {
+                    return Task::none();
+                }
+                if let Err(err) = &result {
+                    self.error = Some(Failure::new(tr("Couldn't load the save targets."), err.clone()));
+                }
+                self.export_plans = Some((id, result));
+            }
             Message::AskSaveAll(id) => self.ask_file_menu(&id, Menu::SaveAll { rail: false }),
             Message::AskSaveAttachments(id) => self.ask_file_menu(&id, Menu::SaveAll { rail: true }),
             // Issue #501: from the context menu its formats at the row; `ContextAction` keeps it there.
@@ -6340,6 +6364,26 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
     }
 
+    fn exports_of(&self, id: &str) -> Option<&SaveTargets> {
+        match &self.export_plans {
+            Some((of, Ok(plans))) if of == id => Some(plans),
+            _ => None,
+        }
+    }
+
+    fn ask_export_targets(&mut self, id: &str) -> Task<Message> {
+        #[cfg(test)]
+        self.sent.push(Sent::ExportTargets(id.to_owned()));
+        let (inbox, id) = (self.inbox.clone(), id.to_owned());
+        Task::perform(
+            async move {
+                let result = MailSource::export_targets(inbox.as_ref(), Some(id.clone())).await;
+                (id, result.map_err(|err| err.to_string()))
+            },
+            |(id, result)| Message::ExportTargets(id, result),
+        )
+    }
+
     /// Asks the core where the attachments of the mail `id` would go (task M12.6,
     /// `mail.list_save_targets`), for its menus and the click on a name.
     fn ask_save_targets(&mut self, id: &str) -> Task<Message> {
@@ -6417,8 +6461,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             self.menu_at = MenuAt::Panel;
         }
         self.toggle_menu(Menu::SaveMail(format));
-        if self.menu.is_some() && self.saving_of(id).is_none() {
-            return self.ask_save_targets(id);
+        if self.menu.is_some() && self.exports_of(id).is_none() {
+            return self.ask_export_targets(id);
         }
         Task::none()
     }
@@ -6435,9 +6479,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 // The headers of the mail `id`, not of one opened since.
                 let summary = match self.letter.as_ref().filter(|letter| letter.id == id) {
                     Some(Letter { loaded: Some(Ok(mail)), .. }) => Some(mail.summary.clone()),
-                    _ => None,
+                    _ => {
+                        self.reading().filter(|reading| reading.id == id).and_then(|reading| reading.summary()).cloned()
+                    }
                 };
-                let name = mail::export_dialog_name(self.saving_of(&id), format, summary.as_ref());
+                let name = mail::export_dialog_name(self.exports_of(&id), format, summary.as_ref());
                 #[cfg(test)]
                 self.sent.push(Sent::SaveDialog(name.clone()));
                 Task::perform(choose_export_file(name, format), move |path| {
@@ -6459,7 +6505,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.hint = Some(Hint { text: tr("Saving…").to_owned(), undo: None, shown: Instant::now(), folder: None });
         #[cfg(test)]
         self.sent.push(Sent::SaveMail(id.clone(), format, to.clone()));
-        let place = mail::save_mail_place(&to, self.saving_of(&id), format);
+        let place = mail::save_mail_place(&to, self.exports_of(&id), format);
         let (inbox, answered) = (self.inbox.clone(), id.clone());
         Task::perform(
             async move { MailSource::save_mail_as(inbox.as_ref(), id, format, to).await.map_err(|err| err.to_string()) },
@@ -10964,6 +11010,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let (lane_at, category_at) = (at(|a| &a.lane), at(|a| &a.category));
         let save_rail_at = at(|a| &a.save_rail);
         let (save_pdf_at, save_image_at) = (at(|a| &a.save_pdf), at(|a| &a.save_image));
+        let save_eml_at = at(|a| &a.save_eml);
         // At the rail by the window's right edge, menus and dialogs open beside it, to the left –
         // the rail and the item that opened them stay in view; below, they would cover the rail.
         let rail_shown = self.rail_groups(class, &anchors).is_some();
@@ -11095,6 +11142,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let at = match format {
                     ExportFormat::Pdf => &save_pdf_at,
                     ExportFormat::Png => &save_image_at,
+                    ExportFormat::Eml => &save_eml_at,
                 };
                 match (from_panel, class == SizeClass::Wide) {
                     (true, _) => widgets::floating(at, below, card, Message::CloseMenu),
@@ -11669,13 +11717,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// while it is loaded.
     fn save_format_menu(&self) -> Option<Element<'_, Message>> {
         let reading = self.reading()?;
-        let Some(Ok(_)) = reading.loaded else { return None };
+        reading.summary()?;
         let ask =
             |icon, words, format| MenuItem::new(icon, words, Message::AskSaveMailAs(reading.id.to_owned(), format));
-        let items = vec![
-            ask(Icon::FileType, tr("Save as PDF"), ExportFormat::Pdf),
-            ask(Icon::Image, tr("Save as image"), ExportFormat::Png),
-        ];
+        let mut items = Vec::new();
+        if matches!(reading.loaded, Some(Ok(_))) {
+            items.push(ask(Icon::FileType, tr("Save as PDF"), ExportFormat::Pdf));
+            items.push(ask(Icon::Image, tr("Save as image"), ExportFormat::Png));
+        }
+        items.push(ask(Icon::Mail, tr("Save as EML"), ExportFormat::Eml));
         Some(widgets::menu(vec![MenuSection::new(items)]))
     }
 
@@ -11683,9 +11733,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// attachments' menu.
     fn export_menu(&self, format: ExportFormat) -> Option<Element<'_, Message>> {
         let reading = self.reading()?;
-        let Some(Ok(_)) = reading.loaded else { return None };
+        if format == ExportFormat::Eml {
+            reading.summary()?;
+        } else if !matches!(reading.loaded, Some(Ok(_))) {
+            return None;
+        }
         let category = reading.summary().and_then(|summary| summary.category);
-        let menu = mail::ExportMenu { id: reading.id, format, saving: reading.saving, category };
+        let menu = mail::ExportMenu { id: reading.id, format, saving: self.exports_of(reading.id), category };
         let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
         let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
         Some(mail::file_menu_card(mail::export_menu(menu), width, tallest))
@@ -13228,6 +13282,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 open @ (Open::AttachmentMenu
                 | Open::SaveAllMenu
                 | Open::SaveMailMenu
+                | Open::SaveEmlMenu
                 | Open::SaveGroup
                 | Open::SaveFormatMenu
                 | Open::AttachmentSaved),
@@ -13245,6 +13300,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                         Open::AttachmentMenu => Some(Menu::Attachment(0)),
                         Open::SaveAllMenu => Some(Menu::SaveAll { rail: false }),
                         Open::SaveMailMenu => Some(Menu::SaveMail(ExportFormat::Pdf)),
+                        Open::SaveEmlMenu => Some(Menu::SaveMail(ExportFormat::Eml)),
                         Open::SaveFormatMenu => Some(Menu::SaveMailFormat),
                         _ => None,
                     };
@@ -17646,6 +17702,8 @@ mod tests {
         let saving = block_on(MailSource::save_targets(app.inbox.as_ref(), Some("m:p3".into())));
         let _ = app.update(Message::SaveTargets("m:p3".into(), saving.map_err(|err| err.to_string())));
         assert!(app.saving_of("m:p3").is_some_and(|saving| saving.files.len() == 2));
+        let exports = block_on(MailSource::export_targets(app.inbox.as_ref(), Some("m:p3".into())));
+        let _ = app.update(Message::ExportTargets("m:p3".into(), exports.map_err(|err| err.to_string())));
         app
     }
 
@@ -17827,9 +17885,9 @@ mod tests {
         let _ = app.update(Message::AskSaveMailAs("m:other".into(), ExportFormat::Pdf));
         assert_eq!(app.menu, None, "only for the mail held");
         // Without the plans the menu asks for them.
-        app.saving = None;
+        app.export_plans = None;
         let _ = app.update(Message::AskSaveMailAs("m:p3".into(), ExportFormat::Png));
-        assert_eq!(app.sent.last(), Some(&Sent::SaveTargets("m:p3".into())));
+        assert_eq!(app.sent.last(), Some(&Sent::ExportTargets("m:p3".into())));
         let _ = app.update(Message::CloseMenu);
 
         let point = Point::new(40.0, 20.0);
@@ -17918,6 +17976,53 @@ mod tests {
         let _ = app.update(Message::MailSaved("m:p3".into(), ExportFormat::Png, None, Ok(done)));
         let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Png, mail::FileAct::Downloads));
         assert_eq!(app.sent.last(), Some(&Sent::SaveMail("m:p3".into(), ExportFormat::Png, SaveTo::Downloads)));
+    }
+
+    #[test]
+    fn eml_is_available_with_summary_after_a_read_error_and_uses_independent_preview() {
+        let mut app = invoice_in(&["--view", "mail"]);
+        let _ = app.update(Message::Resized(WIDE));
+        app.letter.as_mut().expect("letter").loaded = Some(Err("cannot render this mail".into()));
+        let anchors = detail::Anchors::default().with_rail();
+        let groups = app.rail_groups(SizeClass::Wide, &anchors).expect("rail");
+        let save = groups.iter().find(|group| group.icon == Icon::Save).expect("save");
+        assert!(save.items[0].on_press.is_none() && save.items[1].on_press.is_none());
+        assert!(matches!(&save.items[2].on_press, Some(Message::AskSaveMailAs(id, ExportFormat::Eml)) if id == "m:p3"));
+        assert!(anchors.of(&Message::AskSaveMailAs("m:p3".into(), ExportFormat::Eml)).is_some());
+        let context = mail::context_groups(groups, "m:p3");
+        let save = context.iter().find(|group| group.icon == Icon::Save).expect("save");
+        assert_eq!(save.items.len(), 1, "disabled formats must also collapse into one context item");
+        assert!(save.items[0].on_press.is_some());
+        assert!(app.save_format_menu().is_some());
+        assert!(app.export_menu(ExportFormat::Pdf).is_none());
+        assert!(app.export_menu(ExportFormat::Eml).is_some());
+        app.export_plans = None;
+        let _ = app.update(Message::AskSaveMailAs("m:p3".into(), ExportFormat::Eml));
+        assert_eq!(app.sent.last(), Some(&Sent::ExportTargets("m:p3".into())));
+        let preview = block_on(MailSource::export_targets(app.inbox.as_ref(), Some("m:p3".into()))).expect("preview");
+        assert!(preview.files.is_empty());
+        assert!(preview.export(ExportFormat::Eml).is_some());
+        let _ = app.update(Message::ExportTargets("m:other".into(), Ok(preview.clone())));
+        assert!(app.exports_of("m:p3").is_none(), "stale response ignored");
+        let _ = app.update(Message::ExportTargets("m:p3".into(), Ok(preview)));
+        assert_eq!(app.saving_of("m:p3").expect("attachments").files.len(), 2, "not overwritten by export preview");
+        draw_everywhere(&mut app);
+        app.export_plans = None;
+        let expected = mail::export_dialog_name(None, ExportFormat::Eml, app.reading().and_then(|r| r.summary()));
+        let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Eml, mail::FileAct::Choose));
+        let Some(Sent::SaveDialog(name)) = app.sent.last() else { panic!("dialog") };
+        assert_eq!(name, &expected, "summary fallback");
+        assert!(name.ends_with(".eml"));
+        let before = app.sent.len();
+        let _ = app.update(Message::SaveMailChosen("m:p3".into(), ExportFormat::Eml, None));
+        assert_eq!(app.sent.len(), before, "cancel never saves");
+        let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Eml, mail::FileAct::Downloads));
+        let before = app.sent.len();
+        let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Eml, mail::FileAct::Downloads));
+        assert_eq!(app.sent.len(), before, "no duplicate save");
+        let _ = app.update(Message::MailSaved("m:p3".into(), ExportFormat::Eml, None, Err("offline".into())));
+        assert!(!app.exporting.contains(&("m:p3".into(), ExportFormat::Eml)));
+        assert!(app.error.is_some());
     }
 
     /// Task M12.6: after saving the hint says where – with "Show in folder", which opens the folder of

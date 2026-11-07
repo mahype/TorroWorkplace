@@ -46,6 +46,55 @@ async fn connect(server: &Server) -> Session {
 }
 
 #[tokio::test]
+async fn export_metadata_ignores_unsolicited_flags_but_requires_complete_facts() {
+    for (answer, valid) in [
+        (
+            "* 2 FETCH (UID 8 FLAGS (\\Seen))\r\n* 1 FETCH (UID 7 FLAGS (\\Seen))\r\n* 1 FETCH (UID 7 INTERNALDATE \"28-Mar-2026 12:00:00 +0200\" RFC822.SIZE 9)",
+            true,
+        ),
+        ("* 1 FETCH (UID 7 INTERNALDATE \"28-Mar-2026 12:00:00 +0200\")", false),
+        ("* 1 FETCH (UID 7 RFC822.SIZE 9)", false),
+        ("* 1 FETCH (UID 7 INTERNALDATE \"bad\" RFC822.SIZE 9)", false),
+        ("* 1 FETCH (UID 7 INTERNALDATE \"28-Mar-2026 12:00:00 +0200\" RFC822.SIZE 0)", false),
+    ] {
+        let mut steps = signed_in("");
+        steps.extend([
+            expect("a2 EXAMINE \"INBOX\""),
+            send("* 1 EXISTS\r\n* OK [UIDVALIDITY 42] valid\r\na2 OK [READ-ONLY] opened"),
+            expect("a3 UID FETCH 7 (UID INTERNALDATE RFC822.SIZE)"),
+            send(&format!("{answer}\r\na3 OK metadata")),
+        ]);
+        let server = serve(Security::Tls, steps).await;
+        let mut session = connect(&server).await;
+        session.examine("INBOX").await.expect("folder");
+        let result = session.fetch_export_metadata(7).await;
+        if valid {
+            let facts = result.expect("metadata").expect("uid");
+            assert_eq!((facts.uid, facts.bytes, facts.internal_date.offset().local_minus_utc()), (7, 9, 7200));
+        } else {
+            assert!(matches!(result, Err(ImapError::Protocol(_))), "{result:?}");
+        }
+        server.received().await;
+    }
+}
+
+#[tokio::test]
+async fn original_export_refuses_an_oversized_literal_before_reading_payload() {
+    let mut steps = signed_in("");
+    steps.extend([
+        expect("a2 EXAMINE \"INBOX\""),
+        send("* 1 EXISTS\r\n* OK [UIDVALIDITY 42] valid\r\na2 OK [READ-ONLY] opened"),
+        expect("a3 UID FETCH 7 (UID BODY.PEEK[]<0.4>)"),
+        send("* 1 FETCH (UID 7 BODY[]<0> {104857600}"),
+    ]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    session.examine("INBOX").await.expect("folder");
+    assert!(session.fetch_backup_chunk(7, 0, 4).await.is_err());
+    server.received().await;
+}
+
+#[tokio::test]
 async fn image_import_reads_only_the_nested_leaf_with_bounded_partial_fetches() {
     let header = "Content-Type: image/png\r\nContent-Transfer-Encoding: base64\r\n\r\n";
     let structure = "((\"text\" \"plain\" NIL NIL NIL \"7bit\" 3 1)(\"image\" \"png\" NIL NIL NIL \"base64\" 4)(\"application\" \"pdf\" NIL NIL NIL \"base64\" 1000000000) \"mixed\")";
