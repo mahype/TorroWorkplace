@@ -177,6 +177,9 @@ pub enum Action {
     AskAi(Vec<(Asked, Request)>),
     /// Open a web page in the browser (a sign-in, the page of a provider's keys).
     OpenUrl(String),
+    /// Put the keyboard focus into the text field with this id: the search field of a model menu
+    /// that has just opened ([`widgets::DROPDOWN_SEARCH`], issue #554).
+    Focus(&'static str),
 }
 
 /// The provider of the add-account dialog for an account of `kind` (`nextcloud`, `mail`, `github`,
@@ -274,6 +277,9 @@ pub struct State {
     /// *Sorting*, so the two lists of the group look alike.
     pub chat_menu: bool,
     chat_anchor: Anchor,
+    /// The words in the search field of the open model menu (*Sorting* or *Chat*, issue #554): from
+    /// [`widgets::SEARCH_FROM`] models on the menu filters by them.
+    model_query: String,
     /// A choice of *Sorting* in the cloud waiting for the question before it (issue #424).
     pub cloud_consent: Option<CloudConsent>,
     /// The providers the list offers (issue #410): `None` every one, in the order of [`Group::ALL`],
@@ -723,6 +729,8 @@ pub enum Message {
     ToggleChatMenu,
     /// A click next to the menu of *Chat*, or Escape.
     CloseChatMenu,
+    /// The words in the search field of the open model menu changed (issue #554).
+    ModelQuery(String),
     /// "Use suggestion" of a slot: the chain of [`Using`] for the suggestion of `ai.recommend`.
     UseSuggestion(AiSlot),
     /// "Cancel" of a download shown under a slot, by the download's id: `ai.cancel_pull`.
@@ -799,6 +807,12 @@ pub fn escape(state: &State) -> Option<Message> {
     } else {
         None
     }
+}
+
+/// What opening (`open`) or closing a model menu asks for: a fresh search with the focus in its field.
+fn opened_menu(state: &mut State, open: bool) -> Action {
+    state.model_query.clear();
+    if open { Action::Focus(widgets::DROPDOWN_SEARCH) } else { Action::None }
 }
 
 /// The page opens (task S.30): it asks for TorroMail's accounts, so the group Mail knows whether to
@@ -906,14 +920,19 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
             }
             pick_slot(state, data, slot, choice, false)
         }
+        // Opening a model menu empties its search and gives the field the focus (issue #554).
         Message::ToggleSortingMenu => {
             state.sorting_menu = !state.sorting_menu;
             state.chat_menu = false;
-            Action::None
+            opened_menu(state, state.sorting_menu)
         }
         Message::ToggleChatMenu => {
             state.chat_menu = !state.chat_menu;
             state.sorting_menu = false;
+            opened_menu(state, state.chat_menu)
+        }
+        Message::ModelQuery(words) => {
+            state.model_query = words;
             Action::None
         }
         Message::CloseChatMenu => {
@@ -2029,7 +2048,7 @@ pub fn view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass, palette:
     let now = Utc::now();
     match selected(state, data) {
         Some(account) => detail(state, account, data, now),
-        None => list(state, data, now, (!beside(class)).then_some(palette), false, false, true),
+        None => list(state, data, now, (!beside(class)).then_some(palette), false, false),
     }
 }
 
@@ -2039,7 +2058,7 @@ pub fn ai_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -> El
     let now = Utc::now();
     match selected(state, data) {
         Some(account) => detail(state, account, data, now),
-        None => list(state, data, now, None, true, !beside(class), true),
+        None => list(state, data, now, None, true, !beside(class)),
     }
 }
 
@@ -2048,15 +2067,14 @@ pub fn ai_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -> El
 /// sentence of what belongs there under it –, since an app has two or three of them and no room
 /// for a column beside its own list of sections; an account's page as in the control centre.
 ///
-/// The heading ([`page_heading`]) only where the header bar does not name the section already: in a
-/// narrow window it does (design review of #410).
-pub fn app_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -> Element<'a, Message> {
+/// Like every settings page it starts with the title of its first group (issue #554): the header bar
+/// names the section already.
+pub fn app_view<'a>(state: &'a State, data: &'a dyn Seen, _class: SizeClass) -> Element<'a, Message> {
     let now = Utc::now();
     if let Some(account) = selected(state, data) {
         return detail(state, account, data, now);
     }
     let entries = entries(data);
-    let heading = beside(class).then(page_heading);
     let groups = account_providers(state, &entries).into_iter().filter_map(|group| match group {
         Listed::Fixed(fixed) => Some(fixed),
         Listed::Other(_) => None,
@@ -2080,20 +2098,7 @@ pub fn app_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -> E
         }
         widgets::group(group.title(), rows, Some(group.about().to_string()))
     });
-    column![].push(heading).extend(page).spacing(layout::section_gap()).into()
-}
-
-/// The heading of Accounts in an app, as AI and the control centre have one (design review of
-/// #410): what the section is, and that an account is one for the whole suite. Mail's own page of
-/// its accounts starts with it too.
-pub fn page_heading<'a, M: 'a>() -> Element<'a, M> {
-    column![
-        typo::text(typo::headline(), tr("Accounts")).wrapping(Wrapping::None),
-        typo::text(typo::meta(), tr("One account for the whole suite: connected here, every app knows it."))
-            .style(theme::text_2),
-    ]
-    .spacing(space::xs())
-    .into()
+    column(page).spacing(layout::section_gap()).into()
 }
 
 /// The page AI in an app's settings (issue #410): the control centre's ([`ai_view`]), the slots
@@ -2103,7 +2108,7 @@ pub fn app_ai_view<'a>(state: &'a State, data: &'a dyn Seen, class: SizeClass) -
     match selected(state, data) {
         Some(account) => detail(state, account, data, now),
         // In a narrow window the header bar names AI already (design review of #410).
-        None => list(state, data, now, None, true, !matches!(class, SizeClass::Wide), beside(class)),
+        None => list(state, data, now, None, true, !matches!(class, SizeClass::Wide)),
     }
 }
 
@@ -2642,9 +2647,9 @@ fn selected<'a>(state: &State, data: &'a dyn Seen) -> Option<&'a AccountInfo> {
 
 // ----- Views --------------------------------------------------------------------------------
 
-/// The chosen provider ([`chosen`], task S.37): its name with the sentence of what belongs there
-/// above its accounts, then the group "Accounts" with them, the sign-ins in progress and its "Add"
-/// ("No account yet." before it while there is none), and under AI the data rule. A kind of
+/// The chosen provider ([`chosen`], task S.37) as the page's first group (issue #554): titled with
+/// its name, its accounts, the sign-ins in progress and its "Add" ("No account yet." before it while
+/// there is none), the sentence of what belongs there under it; under AI the data rule. A kind of
 /// account none of the fixed groups holds has no "Add". With `chips` (narrow) the providers stand
 /// as chips above it all.
 fn list<'a>(
@@ -2654,7 +2659,6 @@ fn list<'a>(
     chips: Option<&Palette>,
     ai: bool,
     stacked: bool,
-    heading: bool,
 ) -> Element<'a, Message> {
     let entries = entries(data);
     let groups = account_providers(state, &entries);
@@ -2662,9 +2666,6 @@ fn list<'a>(
     let mut page = column![].spacing(layout::section_gap());
     if let Some(palette) = chips {
         page = page.push(provider_chips(&groups, shown, &entries, palette));
-    }
-    if heading {
-        page = page.push(provider_heading(shown));
     }
     let mut rows: Vec<Element<'a, Message>> = entries
         .iter()
@@ -2674,13 +2675,15 @@ fn list<'a>(
             false => account_row(account, models_on(state, &account.id), now),
         })
         .collect();
+    let mut about = None;
     if let Listed::Fixed(fixed) = shown {
         if rows.is_empty() {
             rows.push(quiet_row(tr("No account yet.")));
         }
         rows.push(add_row(fixed, fixed == Group::Mail && offers_import(state)));
+        about = Some(fixed.about().to_string());
     }
-    page = page.push(widgets::group(tr("Accounts"), rows, None));
+    page = page.push(widgets::group(shown.title(), rows, about));
     if shown == Listed::Fixed(Group::Ai) {
         // Stacked also where the page is narrower than a form (design review of #325): beside each
         // other, a model's name, the computer's line or where mail goes would be cut off there.
@@ -2713,17 +2716,6 @@ fn provider_chips<'a>(
         )
     });
     widgets::chip_row(chips.collect())
-}
-
-/// The shown provider's name and, for a fixed group, the sentence of what belongs there – above
-/// its accounts, as the name of an account heads its detail page ([`heading`]).
-fn provider_heading<'a>(group: Listed<'_>) -> Element<'a, Message> {
-    let name = typo::text(typo::headline(), group.title()).wrapping(Wrapping::None);
-    let mut heading = column![container(name).width(Fill).clip(true)].spacing(space::xs());
-    if let Listed::Fixed(fixed) = group {
-        heading = heading.push(typo::text(typo::meta(), fixed.about()).style(theme::text_2));
-    }
-    heading.into()
 }
 
 /// The group Mail offers "Import from TorroMail…": the last list TorroMail gave has an account the
@@ -3223,16 +3215,17 @@ fn chat_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
         .into_iter()
         .map(|choice| {
             let current = choice == chosen;
-            let mut item = MenuItem::new(Icon::Check, choice.label.clone(), Message::PickSlot(AiSlot::Chat, choice));
-            item.mark = None;
-            item.current(current)
+            MenuItem::plain(choice.label.clone(), Message::PickSlot(AiSlot::Chat, choice)).current(current)
         })
         .collect();
-    let menu = scrollable(widgets::menu(vec![MenuSection::new(items)]))
-        .direction(scrollable::Direction::Vertical(style::scrollbar()))
-        .style(style::scrollable)
-        .height(iced::Length::Shrink);
-    let menu = container(menu).max_height(size::panel());
+    // From twelve models on with a search field (issue #554); fewer scroll past a panel's height.
+    let menu = widgets::choice_menu(
+        vec![MenuSection::new(items)],
+        widgets::menu_width(),
+        &state.model_query,
+        Message::ModelQuery,
+        Message::CloseChatMenu,
+    );
     widgets::floating(&state.chat_anchor, Placement::Below(Align::End), menu, Message::CloseChatMenu)
 }
 
@@ -3293,20 +3286,27 @@ fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
         // the question before one is set (design review of #424).
         sections.push(MenuSection::titled(tr("Elsewhere"), items(cloud, Trail::Icon(Icon::Cloud), cloud_tagged)));
     }
-    // Many models turned on (OpenRouter) would reach past the window: past a panel's height it scrolls,
-    // as the pick list it replaces did.
-    // The standard entry renderer has no per-entry tooltip parameter. Compose its existing
-    // entries here so both long model names and account addresses remain fully accessible.
-    let mut entries = column![];
+    // From twelve models on (OpenRouter) a search field filters the entries (issue #554), as in
+    // `widgets::choice_menu`; that one has no tooltip per entry, so the entries are composed here and
+    // long model names and account addresses stay fully readable.
+    let entries: usize = sections.iter().map(|section| section.items.len()).sum();
+    let searched = entries >= widgets::SEARCH_FROM;
+    if searched {
+        sections = widgets::matching_sections(sections, &state.model_query);
+    }
+    let first = sections.iter().find_map(|section| section.items.first()).map(|item| item.on_press.clone());
+    let mut rows: Vec<Element<'a, Message>> = Vec::new();
     for (index, section) in sections.into_iter().enumerate() {
         if index > 0 {
-            entries = entries
-                .push(container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]));
+            rows.push(
+                container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]).into(),
+            );
         }
         if let Some(title) = section.title {
-            entries = entries.push(
+            rows.push(
                 container(typo::text(typo::caption(), title).style(theme::text_3))
-                    .padding(Padding::new(space::s()).bottom(space::xs())),
+                    .padding(Padding::new(space::s()).bottom(space::xs()))
+                    .into(),
             );
         }
         for item in section.items {
@@ -3314,15 +3314,28 @@ fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
                 Some(account) => format!("{} · {account}", item.label),
                 None => item.label.to_string(),
             };
-            entries = entries.push(widgets::with_tooltip(widgets::menu_item(item), hint));
+            rows.push(widgets::with_tooltip(widgets::menu_item(item), hint));
         }
     }
-    let card = container(entries).width(size::panel()).padding(style::MENU_INSET).style(style::container::menu);
-    let menu = scrollable(card)
-        .direction(scrollable::Direction::Vertical(style::scrollbar()))
-        .style(style::scrollable)
-        .height(iced::Length::Shrink);
-    let menu = container(menu).max_height(size::panel());
+    let menu: Element<'a, Message> = if searched {
+        widgets::search_menu(
+            widgets::DROPDOWN_SEARCH,
+            &state.model_query,
+            Message::ModelQuery,
+            first.unwrap_or(Message::CloseSortingMenu),
+            rows,
+            size::panel(),
+        )
+    } else {
+        // Past a panel's height it scrolls, as the pick list it replaces did.
+        let card =
+            container(column(rows)).width(size::panel()).padding(style::MENU_INSET).style(style::container::menu);
+        let menu = scrollable(card)
+            .direction(scrollable::Direction::Vertical(style::scrollbar()))
+            .style(style::scrollable)
+            .height(iced::Length::Shrink);
+        container(menu).max_height(size::panel()).into()
+    };
     widgets::floating(&state.sorting_anchor, Placement::Below(Align::End), menu, Message::CloseSortingMenu)
 }
 
@@ -6424,12 +6437,23 @@ mod tests {
     fn the_sorting_menu_opens_and_closes() {
         let (mut state, data) = shown(false);
         assert!(escape(&state).is_none() && overlay(&state, &data).is_none());
-        let _ = update(&mut state, Message::ToggleSortingMenu, &data);
+        // Issue #554: opening gives the search field the focus, with no words in it.
+        state.model_query = "old".into();
+        let opened = update(&mut state, Message::ToggleSortingMenu, &data);
+        assert!(matches!(opened, Action::Focus(id) if id == widgets::DROPDOWN_SEARCH), "{opened:?}");
         assert!(state.sorting_menu && overlay(&state, &data).is_some());
+        assert!(state.model_query.is_empty(), "a fresh search");
+        let _ = update(&mut state, Message::ModelQuery("qwen".into()), &data);
+        assert_eq!(state.model_query, "qwen");
+        assert!(overlay(&state, &data).is_some(), "the menu builds with words in its search");
         assert!(matches!(escape(&state), Some(Message::CloseSortingMenu)));
         draw_ai(&state, &data);
-        let _ = update(&mut state, Message::ToggleSortingMenu, &data);
+        let closed = update(&mut state, Message::ToggleSortingMenu, &data);
+        assert!(matches!(closed, Action::None), "closing asks for nothing");
         assert!(!state.sorting_menu, "the button closes what it opened");
+        let _ = update(&mut state, Message::ToggleChatMenu, &data);
+        assert!(state.chat_menu && overlay(&state, &data).is_some(), "the menu of Chat");
+        let _ = update(&mut state, Message::CloseChatMenu, &data);
         let _ = update(&mut state, Message::ToggleSortingMenu, &data);
         let _ = update(&mut state, Message::CloseSortingMenu, &data);
         assert!(!state.sorting_menu);
