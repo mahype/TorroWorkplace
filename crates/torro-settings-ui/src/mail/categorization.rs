@@ -37,7 +37,7 @@ use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{palette, size, space};
 use torro_gui::units::{format_count, format_duration};
-use torro_gui::widgets::{Align, Anchor, MenuItem, MenuSection, Placement, Trail};
+use torro_gui::widgets::{Align, Anchor, Dropdown, DropdownEvent, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::{layout, style, theme, typo, widgets};
 use torro_ipc::inbox::{CategoryInfo, CategoryJobControl, CategoryJobPreview, CategoryJobScope, CategoryJobState};
 use torro_ipc::{Request, Response};
@@ -72,9 +72,8 @@ pub struct State {
     pub(super) editor: editor::State,
     pub(super) filters: filters::State,
     tab: Tab,
-    /// The menu of "Sort with model" is open.
-    model_menu: bool,
-    model_anchor: Anchor,
+    /// The dropdown of "Sort with model", with its search (issue #554).
+    menus: Dropdown<Menu>,
     /// A model in the cloud picked while the question before it sorts is open (issue #424): only
     /// "Use" sets it, "Cancel" changes nothing.
     asking_cloud: Option<CloudPick>,
@@ -126,6 +125,13 @@ struct SortForm {
     menu: Option<SortMenu>,
 }
 
+/// The dropdowns of the page (issue #554).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Menu {
+    /// "Sort with model".
+    Model,
+}
+
 /// The menus of the dialog "Sort existing mail".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortMenu {
@@ -172,8 +178,9 @@ impl std::fmt::Display for Period {
 pub enum Message {
     /// One of the tabs, by its index.
     Tab(usize),
-    /// "Sort with model": open (`true`) or close the menu.
-    ModelMenu(bool),
+    /// The trigger of "Sort with model" or its menu: open, close, the words in its search (issue
+    /// #554).
+    Menus(DropdownEvent<Menu>),
     /// "Off" in the menu (`false`): the model sorts nothing. `true` sorts again with the slot, or
     /// what sorted last.
     Enabled(bool),
@@ -250,15 +257,17 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             close_menus(state);
             Action::None
         }
-        Message::ModelMenu(open) => {
-            state.model_menu = open;
+        Message::Menus(event) => {
+            if state.menus.update(event) {
+                return Action::Focus(widgets::DROPDOWN_SEARCH);
+            }
             Action::None
         }
         Message::Enabled(true) => switched_on(state, data),
         // Off is the exception switched off, with what sorts now: it goes before the slot and keeps
         // sorting off, also while the slot changes. Nothing sorts, nothing to switch off.
         Message::Enabled(false) => {
-            state.model_menu = false;
+            state.menus.close();
             let held = in_effect(data);
             match held.engine {
                 Some(engine) => Action::send(Request::SetAiAssignment {
@@ -275,7 +284,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
         // choosing it is the consent that mail leaves this computer –, unless it sorts already with
         // that consent.
         Message::Model(engine, model) => {
-            state.model_menu = false;
+            state.menus.close();
             let pick = in_cloud(data, &engine, Some(&model)).filter(|_| !consented(data, &engine, &model));
             let requests = use_model(data, engine, Some(model));
             match pick {
@@ -295,7 +304,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             Action::None
         }
         Message::ManageModels => {
-            state.model_menu = false;
+            state.menus.close();
             Action::Open(crate::assistant::AI_SECTION)
         }
         Message::CancelDrag => {
@@ -404,7 +413,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
 
 /// Closes every menu of the page; a drag ends without a move.
 fn close_menus(state: &mut State) {
-    state.model_menu = false;
+    state.menus.close();
     state.group_menu = None;
     state.category_drag = None;
 }
@@ -537,8 +546,8 @@ pub fn escape(state: &State) -> Option<Message> {
     if let Some(message) = filters::escape(&state.filters) {
         return Some(Message::Filters(message));
     }
-    if state.model_menu {
-        return Some(Message::ModelMenu(false));
+    if state.menus.open().is_some() {
+        return Some(Message::Menus(DropdownEvent::Close));
     }
     if state.category_drag.is_some() {
         return Some(Message::CancelDrag);
@@ -993,7 +1002,7 @@ fn ai_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Chosen::Off => tr("Off").to_string(),
         Chosen::Here(name) | Chosen::Cloud { name, .. } => name.clone(),
     };
-    let pick = widgets::select_button(&state.model_anchor, label, Message::ModelMenu(!state.model_menu));
+    let pick = state.menus.button(Menu::Model, label, Message::Menus);
     let mut rows: Vec<Element<'a, Message>> = Vec::new();
     // The model in effect, turned off since: the core sorts nothing with it (PR review #242).
     if let Some((engine, name)) = assigned_off(data) {
@@ -1104,12 +1113,8 @@ fn model_menu<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     }
     let more = MenuItem::new(torro_gui::shell::SETTINGS_ICON, tr("More models: Settings › AI"), Message::ManageModels);
     sections.push(MenuSection::new(vec![more]));
-    let menu = iced::widget::scrollable(widgets::menu_wide(sections, size::panel()))
-        .direction(iced::widget::scrollable::Direction::Vertical(style::scrollbar()))
-        .style(style::scrollable)
-        .height(Length::Shrink);
-    let menu = container(menu).max_height(size::panel() * 2.0);
-    widgets::floating(&state.model_anchor, Placement::Below(Align::End), menu, Message::ModelMenu(false))
+    // A dropdown with search from twelve entries on (issue #554): many models on one server.
+    state.menus.view(&Menu::Model, sections, size::panel(), Align::End, Message::Menus)
 }
 
 // ----- tab Categories -----
@@ -1390,11 +1395,11 @@ fn sort_dialog<'a>(
             None,
             choice_box(widgets::select_button_fill(&anchors.folders, folders, toggle(SortMenu::Folders))),
         ),
-        setting_row(
-            None,
+        crate::mail::segmented_row(
             tr("Time span"),
             None,
-            choice_box(crate::parts::picker_fill(&Period::ALL[..], form.period, Message::Period)),
+            Period::ALL.iter().map(|period| (period.to_string(), Message::Period(*period))).collect(),
+            Period::ALL.iter().position(|period| *period == form.period).unwrap_or(0),
         ),
     ];
     let model_detail = match chosen(data) {
@@ -1581,7 +1586,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
     if let Some(popover) = editor::overlay(&state.editor, data) {
         return Some(popover.map(Message::Editor));
     }
-    if state.model_menu {
+    if state.menus.is_open(&Menu::Model) {
         return Some(model_menu(state, data));
     }
     group_menu(state)
@@ -1600,7 +1605,7 @@ pub fn scene(name: &str) -> Option<Vec<Message>> {
         "sort" => vec![Message::OpenSort { rules_only: false }],
         "filter" => vec![Message::NewFilter],
         "running" => vec![Message::OpenSort { rules_only: false }, Message::StartJob],
-        "model" => vec![Message::Tab(1), Message::ModelMenu(true)],
+        "model" => vec![Message::Tab(1), Message::Menus(DropdownEvent::Toggle(Menu::Model))],
         "consent" => {
             vec![Message::Tab(1), Message::Model(crate::accounts::demo::DEMO_NETWORK.into(), "nimble:latest".into())]
         }
@@ -1628,7 +1633,8 @@ mod tests {
     fn sent<A: std::fmt::Debug>(action: Action<A>) -> Vec<Request> {
         match action {
             Action::Send(requests) => requests,
-            Action::None => Vec::new(),
+            // Opening a dropdown focuses its search (issue #554): no request either.
+            Action::None | Action::Focus(_) => Vec::new(),
             other => panic!("a request or nothing, not {other:?}"),
         }
     }
@@ -1667,7 +1673,7 @@ mod tests {
             assert!(sent(update::<()>(&mut state, message, &data)).is_empty());
         }
         assert_eq!(state.tab, Tab::Ai);
-        assert!(state.model_menu);
+        assert!(state.menus.is_open(&Menu::Model));
         let mut state = State::default();
         for message in scene("consent").expect("consent scene") {
             assert!(sent(update::<()>(&mut state, message, &data)).is_empty());
@@ -1689,9 +1695,12 @@ mod tests {
     async fn the_model_is_a_menu_with_off_first() {
         let mut data = demo().await;
         let mut state = State::default();
-        let _ = update::<()>(&mut state, Message::ModelMenu(true), &data);
+        let opened = update::<()>(&mut state, Message::Menus(DropdownEvent::Toggle(Menu::Model)), &data);
+        assert_eq!(opened, Action::Focus(widgets::DROPDOWN_SEARCH), "opening focuses the search");
         assert!(overlay(&state, &data).is_some(), "the menu");
-        assert!(matches!(escape(&state), Some(Message::ModelMenu(false))));
+        assert!(matches!(escape(&state), Some(Message::Menus(DropdownEvent::Close))));
+        let _ = update::<()>(&mut state, Message::Menus(DropdownEvent::Query("nim".into())), &data);
+        let _ = model_menu(&state, &data);
         data.settings.ai_slots.decide = Some(torro_core::ai::SlotModel {
             engine: "ai:ollama@localhost:11434".into(),
             model: Some("nimble".into()),
@@ -1699,7 +1708,7 @@ mod tests {
         });
         let off = sent(update::<()>(&mut state, Message::Enabled(false), &data));
         assert!(matches!(off.as_slice(), [Request::SetAiAssignment { enabled: false, .. }]), "{off:?}");
-        assert!(!state.model_menu, "picking closes the menu");
+        assert!(!state.menus.is_open(&Menu::Model), "picking closes the menu");
         let _ = model_menu(&state, &data);
         let _ = view(&state, &data);
     }

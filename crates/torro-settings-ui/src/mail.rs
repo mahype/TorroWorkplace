@@ -29,7 +29,7 @@ pub mod filters;
 pub const SECTIONS: [Section; 5] = [
     // Accounts is first: the gear lands on who the mail comes from.
     Section { id: ACCOUNTS_SECTION, icon: Icon::Mail, label: "Accounts" },
-    Section { id: "reading", icon: Icon::MailOpen, label: "Reading & writing" },
+    Section { id: READING_SECTION, icon: Icon::MailOpen, label: "Reading & writing" },
     // What a click on an attachment does and where it is saved (task M12.7, issue #290); "Manage
     // save targets…" in the menu of an attachment opens it ([`ATTACHMENTS_SECTION`]).
     Section { id: ATTACHMENTS_SECTION, icon: Icon::Paperclip, label: "Attachments" },
@@ -46,6 +46,9 @@ pub const SECTIONS: [Section; 5] = [
 /// "Details ›" of the overview leads. Its page counts the window's own answers of `mail.overview`, so
 /// the window draws it itself; [`page`] gives an empty one for it.
 pub const STATISTICS_SECTION: &str = "statistics";
+
+/// The id of "Reading & writing", whose dropdown the window closes on Escape ([`reading_escape`]).
+pub const READING_SECTION: &str = "reading";
 
 /// The id of the section "Attachments": what `--settings attachments` takes and where "Manage save
 /// targets…" leads.
@@ -250,7 +253,7 @@ fn section_update(state: &mut State, message: Message, data: &Data) -> Action<Ap
 /// Accounts, the section the gear lands on; the host only ever asks for one of [`SECTIONS`].
 pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Message> {
     match section {
-        "reading" => wrap(Page::new(reading::view(&state.reading, data)), Message::Reading),
+        READING_SECTION => wrap(Page::new(reading::view(&state.reading, data)), Message::Reading),
         CATEGORIZATION_SECTION => wrap(categorization::page(&state.categorization, data), Message::Categorization),
         ATTACHMENTS_SECTION => wrap(Page::new(attachments::view(&state.attachments, data)), Message::Attachments),
         // The window draws it in place of this ([`STATISTICS_SECTION`]).
@@ -274,7 +277,15 @@ pub fn overlay<'a>(
         ATTACHMENTS_SECTION => {
             attachments::overlay(&state.attachments, data, class).map(|dialog| dialog.map(Message::Attachments))
         }
-        ACCOUNTS_SECTION => accounts::overlay(&state.accounts, data).map(|menu| menu.map(Message::Accounts)),
+        // The "…" menu of an account's head, else the dropdown of its offline content (issue #554).
+        ACCOUNTS_SECTION => {
+            accounts::overlay(&state.accounts, data).map(|menu| menu.map(Message::Accounts)).or_else(|| {
+                storage::overlay(&state.storage, data)
+                    .map(|menu| menu.map(|message| Message::Accounts(accounts::Message::Storage(message))))
+            })
+        }
+        // The dropdown of "Default sender address" (issue #554).
+        READING_SECTION => reading::overlay(&state.reading, data).map(|menu| menu.map(Message::Reading)),
         // The dialogs and menus of the page: the question before a model in the cloud sorts mail
         // (issue #424), "Sort existing mail", a filter, the menus (issue #454).
         CATEGORIZATION_SECTION => {
@@ -315,7 +326,15 @@ pub fn categorization_sent(state: &mut State, result: &Result<Data, String>) -> 
 /// What Escape means while "Accounts" shows: close the "…" menu of an account's head (task DS.6).
 /// `None` without one, which lets the window close the settings.
 pub fn accounts_escape(state: &State) -> Option<Message> {
-    accounts::escape(&state.accounts).map(Message::Accounts)
+    accounts::escape(&state.accounts).map(Message::Accounts).or_else(|| {
+        storage::escape(&state.storage).map(|message| Message::Accounts(accounts::Message::Storage(message)))
+    })
+}
+
+/// What Escape means while "Reading & writing" shows: close its open dropdown (issue #554). `None`
+/// without one, which lets the window close the settings.
+pub fn reading_escape(state: &State) -> Option<Message> {
+    reading::escape(&state.reading).map(Message::Reading)
 }
 
 /// What Escape means in "Categorization": what lies on top goes first – the question before a model
@@ -2774,7 +2793,25 @@ pub mod accounts {
                 &data,
             );
             let choice = |message| crate::mail::Message::Accounts(Message::Storage(message));
+            // Issue #554: "Keep downloaded attachments" is a dropdown over the account's page, which
+            // Escape closes first and a pick closes too.
+            let open =
+                choice(storage::Message::Menus(torro_gui::widgets::DropdownEvent::Toggle(storage::Menu::Retention)));
+            let opened: Action<AppAction> = crate::mail::update(&mut state, open, &data);
+            assert_eq!(opened, Action::Focus(torro_gui::widgets::DROPDOWN_SEARCH));
+            let class = torro_gui::layout::SizeClass::Wide;
+            assert!(
+                crate::mail::overlay(&state, &data, crate::mail::ACCOUNTS_SECTION, class).is_some(),
+                "the dropdown"
+            );
+            assert!(matches!(
+                crate::mail::accounts_escape(&state),
+                Some(crate::mail::Message::Accounts(Message::Storage(storage::Message::Menus(
+                    torro_gui::widgets::DropdownEvent::Close
+                ))))
+            ));
             assert_eq!(crate::mail::update(&mut state, choice(storage::Message::Retention(7)), &data), Action::None);
+            assert!(crate::mail::accounts_escape(&state).is_none(), "a pick closes the dropdown");
             let _: Action<AppAction> =
                 crate::mail::update(&mut state, choice(storage::Message::Select(MailCacheMode::AllOffline)), &data);
             let Action::Send(requests) = crate::mail::update(&mut state, choice(storage::Message::Apply), &data) else {
@@ -3158,6 +3195,28 @@ pub mod accounts {
     }
 }
 
+/// A row of a settings group whose choice of up to four options is a [`torro_gui::widgets::segmented`]
+/// control (issue #554, the rule of choices): beside `label` (and its `detail`) while both fit, under
+/// them where they do not (`widgets::segment_column`). `options` are the words and what each sends,
+/// `active` the one chosen. Shared by the mail pages and the Notification Hub's "Show new mail".
+pub(crate) fn segmented_row<'a, M: Clone + 'a>(
+    label: &'a str,
+    detail: Option<String>,
+    options: Vec<(String, M)>,
+    active: usize,
+) -> Element<'a, M> {
+    use torro_gui::widgets;
+    let words: Vec<String> = options.iter().map(|(word, _)| word.clone()).collect();
+    iced::widget::responsive(move |room| {
+        let labels: Vec<&str> = words.iter().map(String::as_str).collect();
+        let slot = widgets::segmented_width(&labels);
+        let column = widgets::segment_column(slot, [(label, detail.as_deref())], room.width);
+        widgets::segment_row(label, detail.clone(), widgets::segmented(options.clone(), active), column)
+    })
+    .height(iced::Length::Shrink)
+    .into()
+}
+
 /// "Reading": how a mail shows in the reader and its colours there (task M9.8). Only the mail's
 /// content follows "Mail colors", never the rest of the window.
 pub mod reading {
@@ -3173,8 +3232,10 @@ pub mod reading {
     use torro_ipc::{Request, SettingKey};
     use torro_mail::MailFormat as ComposeFormat;
 
+    use torro_gui::widgets::{Align, Dropdown, DropdownEvent, MenuItem, MenuSection};
+
     use super::*;
-    use crate::parts::{picker, setting_row, switch};
+    use crate::parts::{setting_row, switch};
 
     const SIGNATURE_LINES: f32 = 8.0;
 
@@ -3189,6 +3250,15 @@ pub mod reading {
         signature_format: bool,
         dirty: bool,
         saving: bool,
+        /// The dropdown of "Default sender address" (issue #554).
+        menus: Dropdown<Menu>,
+    }
+
+    /// The dropdowns of the page.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum Menu {
+        /// "Default sender address".
+        Sender,
     }
 
     fn account<'a>(state: &State, data: &'a Data) -> Option<&'a torro_ipc::AccountInfo> {
@@ -3237,10 +3307,18 @@ pub mod reading {
         FormatSignature(SignatureStyle),
         SaveSignature,
         DiscardSignature,
+        /// The trigger or the menu of a dropdown (issue #554).
+        Menus(DropdownEvent<Menu>),
     }
 
     pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
         match message {
+            Message::Menus(event) => {
+                if state.menus.update(event) {
+                    return Action::Focus(widgets::DROPDOWN_SEARCH);
+                }
+                Action::None
+            }
             Message::Show(format) => Action::send(Request::SetSetting {
                 key: SettingKey::MailView,
                 value: serde_json::to_value(format).unwrap_or_default(),
@@ -3253,6 +3331,7 @@ pub mod reading {
                 Action::send(Request::SetSetting { key: SettingKey::MailSenderLogos, value: serde_json::json!(on) })
             }
             Message::Sender(id) => {
+                state.menus.close();
                 if state.dirty || state.saving {
                     return Action::None;
                 }
@@ -3334,16 +3413,16 @@ pub mod reading {
     /// The groups of [`view`]: "Reading", and "Writing" while an account sends mail.
     fn blocks<'a>(state: &'a State, data: &'a Data) -> Vec<Element<'a, Message>> {
         let settings = &data.settings;
-        let show = picker(SHOW_CHOICES, ShowChoice(settings.mail_view), |choice: ShowChoice| Message::Show(choice.0));
-        let colors = picker(COLOR_CHOICES, ColorChoice(settings.mail_appearance), |choice: ColorChoice| {
-            Message::Colors(choice.0)
-        });
+        let show = SHOW_CHOICES.iter().map(|choice| (choice.to_string(), Message::Show(choice.0))).collect();
+        let shown = SHOW_CHOICES.iter().position(|choice| choice.0 == settings.mail_view).unwrap_or(0);
+        let colors = COLOR_CHOICES.iter().map(|choice| (choice.to_string(), Message::Colors(choice.0))).collect();
+        let coloured = COLOR_CHOICES.iter().position(|choice| choice.0 == settings.mail_appearance).unwrap_or(0);
         let logos = switch(settings.mail_sender_logos, Message::Logos);
         let group = widgets::group(
             tr("Reading"),
             vec![
-                setting_row(None, tr("Show mail as"), None, show),
-                setting_row(None, tr("Mail colors"), None, colors),
+                segmented_row(tr("Show mail as"), None, show, shown),
+                segmented_row(tr("Mail colors"), None, colors, coloured),
                 // Issue #453: the switch is on unless turned off, and it reaches out to senders' domains.
                 setting_row(
                     None,
@@ -3358,28 +3437,15 @@ pub mod reading {
             None,
         );
         let mut blocks = vec![group];
-        let accounts: Vec<SenderChoice> = data
-            .accounts
-            .iter()
-            .filter_map(|account| {
-                let mail = account.mail.as_ref().filter(|mail| mail.settings.services.mail)?;
-                Some(SenderChoice { id: account.id.clone(), label: mail.address.clone() })
-            })
-            .collect();
-        if !accounts.is_empty() {
-            let chosen = state
-                .account
-                .as_ref()
-                .or(data.settings.mail_sender.as_ref())
-                .and_then(|id| accounts.iter().find(|account| &account.id == id))
-                .cloned()
-                .unwrap_or_else(|| accounts[0].clone());
-            let sender = picker(accounts, chosen, |choice: SenderChoice| Message::Sender(choice.id));
+        let accounts = senders(data);
+        if let Some(chosen) = chosen_sender(state, data, &accounts) {
+            let sender = state.menus.button(Menu::Sender, chosen.label, Message::Menus);
             let mail = account(state, data).and_then(|account| account.mail.as_ref());
             let compose = mail.map(|mail| {
-                picker(COMPOSE_CHOICES, ComposeChoice(mail.settings.format), |choice: ComposeChoice| {
-                    Message::Compose(choice.0)
-                })
+                let options =
+                    COMPOSE_CHOICES.iter().map(|choice| (choice.to_string(), Message::Compose(choice.0))).collect();
+                let active = COMPOSE_CHOICES.iter().position(|choice| choice.0 == mail.settings.format).unwrap_or(0);
+                (options, active)
             });
             let signature = text_editor(&state.signature)
                 .on_action(Message::Signature)
@@ -3409,8 +3475,8 @@ pub mod reading {
             ]
             .spacing(space::s());
             let mut rows = vec![setting_row(None, tr("Default sender address"), None, sender)];
-            if let Some(compose) = compose {
-                rows.push(setting_row(None, tr("Write new mail as"), None, compose));
+            if let Some((options, active)) = compose {
+                rows.push(segmented_row(tr("Write new mail as"), None, options, active));
                 rows.push(
                     container(
                         column![typo::text(typo::body_strong(), tr("Signature")), toolbar, signature, controls]
@@ -3432,10 +3498,51 @@ pub mod reading {
         label: String,
     }
 
-    impl std::fmt::Display for SenderChoice {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(&self.label)
+    /// The accounts that send mail, as "Default sender address" offers them.
+    fn senders(data: &Data) -> Vec<SenderChoice> {
+        data.accounts
+            .iter()
+            .filter_map(|account| {
+                let mail = account.mail.as_ref().filter(|mail| mail.settings.services.mail)?;
+                Some(SenderChoice { id: account.id.clone(), label: mail.address.clone() })
+            })
+            .collect()
+    }
+
+    /// The sender shown: the account of the page, else the one in the settings, else the first.
+    fn chosen_sender(state: &State, data: &Data, accounts: &[SenderChoice]) -> Option<SenderChoice> {
+        state
+            .account
+            .as_ref()
+            .or(data.settings.mail_sender.as_ref())
+            .and_then(|id| accounts.iter().find(|account| &account.id == id))
+            .or(accounts.first())
+            .cloned()
+    }
+
+    /// The open dropdown of the page, under its trigger (issue #554).
+    pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+        let key = state.menus.open()?;
+        match key {
+            Menu::Sender => {
+                let accounts = senders(data);
+                let chosen = chosen_sender(state, data, &accounts).map(|choice| choice.id);
+                let items = accounts
+                    .into_iter()
+                    .map(|choice| {
+                        let current = chosen.as_deref() == Some(choice.id.as_str());
+                        MenuItem::plain(choice.label, Message::Sender(choice.id)).current(current)
+                    })
+                    .collect();
+                let sections = vec![MenuSection::new(items)];
+                Some(state.menus.view(key, sections, widgets::menu_width(), Align::End, Message::Menus))
+            }
         }
+    }
+
+    /// What Escape means on the page: close the open dropdown. `None` without one.
+    pub fn escape(state: &State) -> Option<Message> {
+        state.menus.open().map(|_| Message::Menus(DropdownEvent::Close))
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3600,6 +3707,21 @@ pub mod reading {
         fn the_page_builds() {
             let _: Element<'_, Message> = view(&State::default(), &Data::default());
         }
+
+        /// Issue #554: the sender's dropdown opens with the focus on its search, Escape closes it,
+        /// and a choice closes it too.
+        #[test]
+        fn the_sender_dropdown_opens_and_closes() {
+            let mut state = State::default();
+            let data = Data::default();
+            let opened: Action<()> = update(&mut state, Message::Menus(DropdownEvent::Toggle(Menu::Sender)), &data);
+            assert_eq!(opened, Action::Focus(widgets::DROPDOWN_SEARCH));
+            assert!(matches!(escape(&state), Some(Message::Menus(DropdownEvent::Close))));
+            let _ = overlay(&state, &data);
+            let _: Action<()> = update(&mut state, Message::Sender("mail:anna".into()), &data);
+            assert!(escape(&state).is_none(), "a choice closes the dropdown");
+            assert!(overlay(&state, &data).is_none());
+        }
     }
 }
 
@@ -3614,8 +3736,10 @@ pub mod storage {
     use torro_ipc::mail::{MailCacheAction, MailCacheEstimate, MailCacheJobState, MailCacheMode, MailCachePolicy};
     use torro_ipc::{Request, Response};
 
+    use torro_gui::widgets::{Align, Dropdown, DropdownEvent, MenuItem, MenuSection};
+
     use super::*;
-    use crate::parts::{field, picker, row_frame};
+    use crate::parts::{field, row_frame};
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Retention {
@@ -3678,10 +3802,21 @@ pub mod storage {
         cleanup_preview: Option<MailCacheEstimate>,
         previewing_cleanup: bool,
         error: Option<String>,
+        /// The dropdown of "Keep downloaded attachments" (issue #554).
+        menus: Dropdown<Menu>,
+    }
+
+    /// The dropdowns of the page.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum Menu {
+        /// "Keep downloaded attachments".
+        Retention,
     }
 
     #[derive(Debug, Clone)]
     pub enum Message {
+        /// The trigger or the menu of a dropdown (issue #554).
+        Menus(DropdownEvent<Menu>),
         Account(String),
         Select(MailCacheMode),
         Date(String),
@@ -3802,7 +3937,14 @@ pub mod storage {
                     Request::StartMailCacheJob { account, action: MailCacheAction::ApplyPolicy },
                 ])
             }
+            Message::Menus(event) => {
+                if state.menus.update(event) {
+                    return Action::Focus(widgets::DROPDOWN_SEARCH);
+                }
+                Action::None
+            }
             Message::Retention(days) => {
+                state.menus.close();
                 state.pending_retention = Some(days);
                 state.error = None;
                 Action::None
@@ -3855,6 +3997,36 @@ pub mod storage {
             }
             _ => {}
         }
+    }
+
+    /// The open dropdown of the page, under its trigger (issue #554): the choices of "Keep downloaded
+    /// attachments", a number of days no choice has at their end.
+    pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+        let key = state.menus.open()?;
+        let account = selected(state, data)?;
+        match key {
+            Menu::Retention => {
+                let days = state.pending_retention.unwrap_or(policy(data, account).attachment_retention_days);
+                let chosen = Retention::from_days(days);
+                let mut options = Retention::ALL.to_vec();
+                if matches!(chosen, Retention::Other(_)) {
+                    options.push(chosen);
+                }
+                let items = options
+                    .into_iter()
+                    .map(|option| {
+                        MenuItem::plain(option.to_string(), Message::Retention(option.days())).current(option == chosen)
+                    })
+                    .collect();
+                let sections = vec![MenuSection::new(items)];
+                Some(state.menus.view(key, sections, widgets::menu_width(), Align::End, Message::Menus))
+            }
+        }
+    }
+
+    /// What Escape means on the page: close the open dropdown. `None` without one.
+    pub fn escape(state: &State) -> Option<Message> {
+        state.menus.open().map(|_| Message::Menus(DropdownEvent::Close))
     }
 
     fn policy(data: &Data, account: &str) -> MailCachePolicy {
@@ -4055,14 +4227,11 @@ pub mod storage {
         let running =
             data.mail_cache_jobs.iter().any(|job| job.account == account && job.state == MailCacheJobState::Running);
         let retention = Retention::from_days(state.pending_retention.unwrap_or(current.attachment_retention_days));
-        let mut retention_options = Retention::ALL.to_vec();
-        if matches!(retention, Retention::Other(_)) {
-            retention_options.push(retention);
-        }
+        let menus = &state.menus;
         rows.push(
             responsive(move |room| {
                 let label = typo::text(typo::body(), tr("Keep downloaded attachments"));
-                let select = picker(retention_options.clone(), retention, |choice| Message::Retention(choice.days()));
+                let select = menus.button(Menu::Retention, retention.to_string(), Message::Menus);
                 if room.width < 480.0 {
                     container(column![label, select].spacing(space::s()))
                         .width(Length::Fill)

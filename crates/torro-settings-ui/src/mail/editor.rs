@@ -39,7 +39,7 @@ use iced::{Alignment, Element, Fill, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::Icon;
 use torro_gui::theme::{palette, size, space};
-use torro_gui::widgets::{Align, Anchor, MenuItem, MenuSection, Placement};
+use torro_gui::widgets::{Align, Anchor, Dropdown, DropdownEvent, MenuItem, MenuSection, Placement};
 use torro_gui::{layout, style, typo, widgets};
 use torro_inbox::item::{SORT_CONDITIONS_MAX, SORT_VALUE_MAX};
 use torro_inbox::{SortComparison, SortCondition, SortField, SortRule};
@@ -49,7 +49,7 @@ use torro_mail::category::{DESCRIPTION_MAX, MODEL_PER_GROUP_MAX, NAME_MAX};
 use torro_mail::{Category, CategoryGroup, CategoryIcon};
 
 use super::filters;
-use crate::parts::{field, picker, pressable, row_frame, setting_row, switch};
+use crate::parts::{field, pressable, row_frame, setting_row, switch};
 use crate::{Action, Data};
 
 /// The id of the name field of a category's page: "Save" with a mistake in it goes there.
@@ -74,6 +74,22 @@ pub struct State {
     icon_anchor: Anchor,
     group_anchor: Anchor,
     rule_anchor: Anchor,
+    /// The dropdowns of the pages (issue #554): the category mail goes to, a condition's field and
+    /// comparison.
+    menus: Dropdown<Menu>,
+}
+
+/// The dropdowns of the editor's pages (issue #554).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Menu {
+    /// "File its mail as" once "Remove…" was pressed on a category's page.
+    Replacement,
+    /// "File as" of a rule's page.
+    RuleCategory,
+    /// What a condition (`exception: false`) or an exception at `at` looks at.
+    Field { exception: bool, at: usize },
+    /// How a condition or an exception at `at` compares.
+    Comparison { exception: bool, at: usize },
 }
 
 /// The popovers of a category's page (issue #481).
@@ -238,12 +254,24 @@ pub enum Message {
     DeleteRule,
     /// The answer to the question the page asks: go ahead (`true`) or not.
     Answer(bool),
+    /// The trigger or the menu of a dropdown (issue #554).
+    Menus(DropdownEvent<Menu>),
     /// "‹ Back" from a page to the list, and Escape: asks first when something typed would go.
     Back,
 }
 
 pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
+    // Any other click of the page – a choice of the open dropdown among them – closes it.
+    if !matches!(message, Message::Menus(_)) {
+        state.menus.close();
+    }
     match message {
+        Message::Menus(event) => {
+            if state.menus.update(event) {
+                return Action::Focus(widgets::DROPDOWN_SEARCH);
+            }
+            Action::None
+        }
         Message::NewGroup => {
             state.form = None;
             state.group_form = Some(GroupForm {
@@ -597,6 +625,9 @@ pub fn sent(state: &mut State, result: &Result<Data, String>) {
 /// What Escape means while the editor is open: the same as "‹ Back". `None` while the list
 /// shows – then the settings close as before.
 pub fn escape(state: &State) -> Option<Message> {
+    if state.menus.open().is_some() {
+        return Some(Message::Menus(DropdownEvent::Close));
+    }
     if state.popover.is_some() {
         return Some(Message::Popover(None));
     }
@@ -963,7 +994,7 @@ pub fn page<'a>(state: &'a State, data: &'a Data) -> Option<(String, Element<'a,
                     data.sort_rules.iter().find(|rule| &rule.id == id).is_none_or(|stored| !form.same_as(stored))
                 }
             };
-            (name, rule_page(form, data), save_button(ready, Message::SaveRule))
+            (name, rule_page(&state.menus, form, data), save_button(ready, Message::SaveRule))
         }
     };
     // The question stands above the page, where it is seen.
@@ -1180,7 +1211,7 @@ fn category_page<'a>(state: &'a State, form: &'a CategoryForm, data: &'a Data) -
             || info.icon != info.category.default_icon()
     });
     if form.removing {
-        page = page.push(removal(form, data));
+        page = page.push(removal(&state.menus, form, data));
     } else {
         let mut end = row![].spacing(space::s()).align_y(Alignment::Center);
         // The way without a mouse to the place a grip drags to (design review of #481): one up or
@@ -1397,6 +1428,9 @@ pub(crate) fn offers_group(data: &Data, category: Option<Category>, group: Categ
 /// The popover of a category's page that is open (issue #481): the symbols as a grid, the groups,
 /// or "+ Rule" with a rule or a filter from a search.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    if let Some(menu) = dropdown(state, data) {
+        return Some(menu);
+    }
     let Some(Form::Category(form)) = &state.form else { return None };
     let dismiss = Message::Popover(None);
     Some(match state.popover? {
@@ -1450,7 +1484,7 @@ fn description_height() -> f32 {
     DESCRIPTION_LINES * typo::line_height(typo::body()) + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom
 }
 
-/// A category to choose in a pick list: its name, with its group in front.
+/// A category to choose in a dropdown: its name, with its group in front.
 #[derive(Debug, Clone)]
 struct CategoryChoice {
     category: Category,
@@ -1600,29 +1634,97 @@ fn group_words(data: &Data, group: CategoryGroup) -> String {
         .map_or_else(|| torro_core::category::group_label(group).to_string(), |held| held.label.clone())
 }
 
-/// A pick list of `choices` in the look of a row's choice ([`crate::parts::picker`]); while
-/// nothing is chosen it says "Choose a category" – a placeholder, never a choice of its own.
+/// The trigger of a dropdown of categories (issue #554): the chosen one's words, or "Choose a
+/// category" while nothing is chosen – a placeholder, never a choice of its own.
 fn category_picker<'a>(
+    menus: &Dropdown<Menu>,
+    key: Menu,
+    choices: &[CategoryChoice],
+    chosen: Option<Category>,
+) -> Element<'a, Message> {
+    let words = chosen
+        .and_then(|wanted| choices.iter().find(|held| held.category == wanted))
+        .map_or_else(|| tr("Choose a category").to_string(), |held| held.words.clone());
+    menus.button(key, words, Message::Menus)
+}
+
+/// The entries of a dropdown of categories, the chosen one marked; a pick sends `on_pick`.
+fn category_items<'a>(
     choices: Vec<CategoryChoice>,
     chosen: Option<Category>,
-    on_pick: impl Fn(Category) -> Message + 'a,
-) -> Element<'a, Message> {
-    let chosen = chosen.and_then(|wanted| choices.iter().find(|held| held.category == wanted).cloned());
-    iced::widget::pick_list(choices, chosen, move |choice: CategoryChoice| on_pick(choice.category))
-        .placeholder(tr("Choose a category"))
-        .padding(style::pick_list_padding())
-        .text_size(typo::caption().size)
-        .text_line_height(typo::caption().line_height)
-        .font(typo::caption().font)
-        .style(style::pick_list)
-        .menu_style(style::pick_list_menu)
-        .into()
+    on_pick: fn(Category) -> Message,
+) -> Vec<MenuSection<'a, Message>> {
+    let items = choices
+        .into_iter()
+        .map(|choice| {
+            let current = chosen == Some(choice.category);
+            MenuItem::plain(choice.words, on_pick(choice.category)).current(current)
+        })
+        .collect();
+    vec![MenuSection::new(items)]
+}
+
+/// The open dropdown of a page, under its trigger (issue #554); `None` while none is open.
+fn dropdown<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    let key = state.menus.open()?;
+    let (sections, width, align) = match (key, state.form.as_ref()?) {
+        (Menu::Replacement, Form::Category(form)) => {
+            let choices = category_choices(data, form.category);
+            (category_items(choices, form.replacement, Message::Replacement), size::props(), Align::End)
+        }
+        (Menu::RuleCategory, Form::Rule(form)) => {
+            let choices = category_choices(data, None);
+            (category_items(choices, form.category, Message::RuleCategory), size::props(), Align::End)
+        }
+        (Menu::Field { exception, at }, Form::Rule(form)) => {
+            let condition = conditions_of(form, *exception).get(*at)?;
+            let (exception, at) = (*exception, *at);
+            let items = FIELD_CHOICES
+                .iter()
+                .map(|choice| {
+                    MenuItem::plain(choice.to_string(), Message::Field { exception, at, field: choice.0 })
+                        .current(choice.0 == condition.field)
+                })
+                .collect();
+            (vec![MenuSection::new(items)], widgets::menu_width(), Align::Start)
+        }
+        (Menu::Comparison { exception, at }, Form::Rule(form)) => {
+            let condition = conditions_of(form, *exception).get(*at)?;
+            let (exception, at) = (*exception, *at);
+            let chosen = shown_comparison(condition);
+            let items = COMPARISON_CHOICES
+                .iter()
+                .filter(|choice| condition.field.allows(choice.0))
+                .map(|choice| {
+                    MenuItem::plain(choice.to_string(), Message::Comparison { exception, at, comparison: choice.0 })
+                        .current(choice.0 == chosen)
+                })
+                .collect();
+            (vec![MenuSection::new(items)], widgets::menu_width(), Align::Start)
+        }
+        _ => return None,
+    };
+    Some(state.menus.view(key, sections, width, align, Message::Menus))
+}
+
+/// The conditions of a rule's page, or its exceptions.
+fn conditions_of(form: &RuleForm, exception: bool) -> &[SortCondition] {
+    if exception { &form.exceptions } else { &form.conditions }
+}
+
+/// The comparison a condition shows: its own, or its field's default while it has none.
+fn shown_comparison(condition: &SortCondition) -> SortComparison {
+    if condition.comparison == SortComparison::Auto {
+        condition.field.default_comparison()
+    } else {
+        condition.comparison
+    }
 }
 
 /// Once "Remove…" was pressed on a category of the person's own: the category its mail goes to,
 /// "Cancel" and "Remove category" in one row.
-fn removal<'a>(form: &'a CategoryForm, data: &'a Data) -> Element<'a, Message> {
-    let pick = category_picker(category_choices(data, form.category), form.replacement, Message::Replacement);
+fn removal<'a>(menus: &'a Dropdown<Menu>, form: &'a CategoryForm, data: &'a Data) -> Element<'a, Message> {
+    let pick = category_picker(menus, Menu::Replacement, &category_choices(data, form.category), form.replacement);
     let buttons = row![
         pick,
         widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CancelRemove)),
@@ -1643,8 +1745,8 @@ fn removal<'a>(form: &'a CategoryForm, data: &'a Data) -> Element<'a, Message> {
 }
 
 /// A rule's page.
-fn rule_page<'a>(form: &'a RuleForm, data: &'a Data) -> Element<'a, Message> {
-    let file_as = category_picker(category_choices(data, None), form.category, Message::RuleCategory);
+fn rule_page<'a>(menus: &'a Dropdown<Menu>, form: &'a RuleForm, data: &'a Data) -> Element<'a, Message> {
+    let file_as = category_picker(menus, Menu::RuleCategory, &category_choices(data, None), form.category);
     let file_as = setting_row(None, tr("File as"), None, file_as);
     let enabled = setting_row(None, tr("Rule is on"), None, switch(form.enabled, Message::RuleEnabled));
     let mut page = column![
@@ -1652,7 +1754,7 @@ fn rule_page<'a>(form: &'a RuleForm, data: &'a Data) -> Element<'a, Message> {
         checked_group(tr("File as"), vec![file_as], note_or_mistake(form.tried, form.category_mistake(), None)),
         checked_group(
             tr("Conditions"),
-            condition_rows(&form.conditions, false),
+            condition_rows(menus, &form.conditions, false),
             note_or_mistake(
                 form.tried,
                 form.condition_mistake(),
@@ -1661,7 +1763,7 @@ fn rule_page<'a>(form: &'a RuleForm, data: &'a Data) -> Element<'a, Message> {
         ),
         checked_group(
             tr("Exceptions"),
-            condition_rows(&form.exceptions, true),
+            condition_rows(menus, &form.exceptions, true),
             note_or_mistake(
                 form.tried,
                 form.exception_mistake(),
@@ -1685,25 +1787,20 @@ fn rule_page<'a>(form: &'a RuleForm, data: &'a Data) -> Element<'a, Message> {
 }
 
 /// One row per condition (or exception): what it looks at, the words, and ✕; "Add" last.
-fn condition_rows(list: &[SortCondition], exception: bool) -> Vec<Element<'_, Message>> {
+fn condition_rows<'a>(
+    menus: &'a Dropdown<Menu>,
+    list: &'a [SortCondition],
+    exception: bool,
+) -> Vec<Element<'a, Message>> {
     let mut rows: Vec<Element<'_, Message>> = list
         .iter()
         .enumerate()
         .map(|(at, condition)| {
             responsive(move |room| {
-                let kind = picker(FIELD_CHOICES, FieldChoice(condition.field), move |choice: FieldChoice| {
-                    Message::Field { exception, at, field: choice.0 }
-                });
-                let comparison = if condition.comparison == SortComparison::Auto {
-                    condition.field.default_comparison()
-                } else {
-                    condition.comparison
-                };
-                let comparisons: Vec<ComparisonChoice> =
-                    COMPARISON_CHOICES.iter().copied().filter(|choice| condition.field.allows(choice.0)).collect();
-                let comparison = picker(comparisons, ComparisonChoice(comparison), move |choice: ComparisonChoice| {
-                    Message::Comparison { exception, at, comparison: choice.0 }
-                });
+                let kind = FieldChoice(condition.field).to_string();
+                let kind = menus.button(Menu::Field { exception, at }, kind, Message::Menus);
+                let comparison = ComparisonChoice(shown_comparison(condition)).to_string();
+                let comparison = menus.button(Menu::Comparison { exception, at }, comparison, Message::Menus);
                 let drop = widgets::icon_button(Icon::X, tr("Remove"), Some(Message::Drop { exception, at }));
                 let value: Element<'_, Message> = if condition.field == SortField::Attachment {
                     blank::horizontal().into()
@@ -1751,7 +1848,7 @@ fn placeholder(field: SortField) -> &'static str {
     }
 }
 
-/// The field of a condition as a choice of a pick list.
+/// The field of a condition as a choice of a dropdown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FieldChoice(SortField);
 
@@ -2266,5 +2363,29 @@ mod tests {
         let data = Data::default();
         let action: Action<()> = update(&mut state, Message::Untrust("r5".into()), &data);
         assert_eq!(action, Action::send(Request::RemoveRule { id: "r5".into() }));
+    }
+
+    /// Issue #554: a condition's field opens as a dropdown with the focus on its search, Escape
+    /// closes it before the page goes back, and a pick closes it.
+    #[test]
+    fn a_conditions_dropdowns_open_and_close() {
+        let (data, mut state) = (data(), State::default());
+        let _: Action<()> = update(&mut state, Message::NewRule, &data);
+        let field = Menu::Field { exception: false, at: 0 };
+        let opened: Action<()> = update(&mut state, Message::Menus(DropdownEvent::Toggle(field)), &data);
+        assert_eq!(opened, Action::Focus(widgets::DROPDOWN_SEARCH));
+        assert!(overlay(&state, &data).is_some(), "the dropdown");
+        assert!(matches!(escape(&state), Some(Message::Menus(DropdownEvent::Close))));
+        let _: Action<()> =
+            update(&mut state, Message::Field { exception: false, at: 0, field: SortField::Subject }, &data);
+        assert!(state.menus.open().is_none(), "a pick closes the dropdown");
+        assert!(matches!(escape(&state), Some(Message::Back)));
+        for key in [Menu::Comparison { exception: false, at: 0 }, Menu::RuleCategory] {
+            let _: Action<()> = update(&mut state, Message::Menus(DropdownEvent::Toggle(key)), &data);
+            assert!(overlay(&state, &data).is_some(), "{key:?}");
+        }
+        let gone = Menu::Field { exception: true, at: 3 };
+        let _: Action<()> = update(&mut state, Message::Menus(DropdownEvent::Toggle(gone)), &data);
+        assert!(overlay(&state, &data).is_none(), "no menu for a condition that is not there");
     }
 }

@@ -2608,6 +2608,8 @@ fn settings_escape(pane: &SettingsPane) -> Option<SettingsMessage> {
         CATEGORIZATION_SECTION => settings_mail::escape(state).map(SettingsMessage::Mail),
         ATTACHMENTS_SECTION => settings_mail::attachments_escape(state).map(SettingsMessage::Mail),
         settings_mail::ACCOUNTS_SECTION => settings_mail::accounts_escape(state).map(SettingsMessage::Mail),
+        // Its dropdown (issue #554).
+        settings_mail::READING_SECTION => settings_mail::reading_escape(state).map(SettingsMessage::Mail),
         _ => None,
     }
 }
