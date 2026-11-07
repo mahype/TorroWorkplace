@@ -1183,6 +1183,14 @@ Skripte und Programme mit Key in der **Steuerzentrale, Abschnitt „API“**, Ag
 „MCP“), der eigene Assistent und seine Bots im **Assistent-Fenster, Abschnitt „Access“**. Alle drei nutzen denselben Rechte-Editor;
 dort wird je Client festgelegt, worauf er zugreifen darf (wie in TorroMail).
 
+Seit #531 zeigt außerdem **jede App** unter Zahnrad › **API and MCP** die Rechte der Schlüssel und MCP-Clients in
+ihrem eigenen Bereich (Kalender `calendar`, Aufgaben `tasks` und `github`, Notification Hub und App Feed `inbox`,
+Mail `mail`, Assistent `assistant` und `bots`) und ändert sie dort. Es sind dieselben Rechte desselben Clients,
+einmal im Dienst gespeichert; die Steuerzentrale zeigt sie gesammelt. Die App sendet nur `clients.update_client`
+(App-Schlüssel, `Mcp::Never`), nur für die Arten `script` und die MCP-Arten, nie für Assistent, Bots oder Hooks.
+Schlüssel anlegen und Clients verbinden bleibt in der Steuerzentrale (in einer einzelnen App: #538). Es gibt kein
+MCP-Tool dafür: Agenten ändern nie Rechte („Was nie nach außen geht“, Punkt 2).
+
 ### Je Client
 
 - **Je Bereich eine Stufe**: Kein Zugriff · Lesen · Lesen und Schreiben · Voll (mit Löschen).

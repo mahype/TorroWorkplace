@@ -15,8 +15,18 @@ im [Bestand](#bestand-stand-2026-10-16)) noch „Agents & API“ oder „Account
 
 **In die Steuerzentrale gehört, was mehrere Apps teilen oder ohne das keine App läuft:** die Übersicht aller
 Konten (auch KI-Konten mit ihren Modellen und der Datenregel), Programme, die die Suite von außen nutzen,
-mit Schlüsseln und Rechten (API und MCP), Freigaben, Aussehen, Sprache und welche Apps an sind. Die Rechte von
+mit Schlüsseln und allen ihren Rechten gesammelt (API und MCP), Freigaben, Aussehen, Sprache, welche Apps an sind
+und was die ganze Suite teilt, etwa welche Modelle eines KI-Anbieters freigegeben sind. Die Rechte von
 Assistent und Bots stehen seit #231 in deren Fenster (siehe [Accounts, API und MCP](#accounts-api-und-mcp-231)).
+
+**Rechte für API und MCP je App (#531):** Jede App ist einzeln herunterladbar und bringt ihre Rechte mit. Unter
+Zahnrad › **API and MCP** zeigt sie jeden API-Schlüssel und MCP-Client mit dem, was er in **ihrem** Bereich darf,
+und ändert es dort: Kalender `calendar`, Aufgaben `tasks` und `github`, Notification Hub und App Feed `inbox`, Mail
+`mail`, der Assistent `assistant` und `bots`. Kontakte und alles andere, was mehrere Apps teilen, bleibt in der
+Steuerzentrale. Gespeichert wird einmal im Dienst (`clients.update_client`); die Steuerzentrale zeigt dieselben
+Rechte gesammelt. Schlüssel anlegen und Clients verbinden bleibt in der Steuerzentrale; ohne Hauptanwendung steht
+dort nur ein Satz, wo Clients angelegt werden (das Anlegen in einer einzelnen App klärt #538). Was die Suite teilt
+(etwa freigegebene KI-Modelle), zeigt eine App nur ohne Hauptanwendung, wie Aussehen und Sprache.
 
 **In die App gehört, was nur ändert, wie diese App arbeitet:** welche Kalender oder Listen sie zeigt, wann
 sie erinnert, was in den Eingang darf, wie Mail aussieht und abgeschickt wird, wer der Assistent ist. Das
@@ -170,11 +180,11 @@ seit #530 nicht mehr. Hat eine Seite mehr als drei Gruppen, teilen Reiter (`widg
 
 | App | Abschnitte | kommt heute von |
 |---|---|---|
-| **Assistant** | General (Status an/aus mit Verweis auf Access; neue Chats: Engine, Modell, Denkstufe) · Profile (Profil und Gedächtnis) · **Access** (seit #231: Rechte des Assistenten und je Bot, „Turn on assistant“, „Turn off assistant…“) · Bots (Liste; je Bot „Edit“ öffnet den Bot-Editor, „Access“ öffnet Access beim Bot) · Tools (seit #302 nur ein Verweis auf MCP servers › Built-in tools) · Voice (Sprechen, Antworten vorlesen, Mikrofon, Programme auf diesem Rechner) · History (Unterhaltungen aufheben) | Seite Assistant ohne Datenregel und „Engines“; Access aus Agents & API (#231) |
-| **Calendar** | Calendars (welche die Suite zeigt, je Konto gruppiert; Art der Erinnerung je Kalender) · Reminders (an/aus, Vorlauf, alle Bildschirme, Ton, welche Termine) · Night (die Karte am Mond in der Zeitleiste bleibt als schneller Weg) | Kontodetail „Calendars and lists“; General › Calendar, › Reminders, › Which events, › Calendars |
-| **Tasks** | Lists (welche die Suite zeigt, je Konto gruppiert) | Kontodetail „Calendars and lists“ |
-| **Notification Hub** (Fensterarten Notification Hub und App Feed) | Notifications (still bei Terminen) · Sources (je Konto: Nextcloud-Benachrichtigungen und Talk, GitHub, je ntfy-Server stumm oder an, je Mail-Konto „Show new mail“) · Rules (Liste mit „Remove“) | Seite Notification Hub; Abschnitte „Notification Hub“ der Kontoseiten |
-| **Mail** (Fensterart Mail) | Accounts (je Mail-Konto Absendername, Signatur, „Write new mail as“, offene Ordnerfragen, Backup und Restore) · Reading („Show mail as“, „Mail colors“) · Attachments („Click on an attachment“, Downloads-Ordner, Ablageziele mit Editor; M12.7, #290) · Categorization (Tabs Categories, dann AI, seit #481; Kopf mit „Sort existing mail…“ und Fortschritt; Regeln und Filter einer Kategorie stehen auf ihrer Seite, Filter ohne Kategorie unter „Other filters“, eine eigene Seite „Filters“ gibt es nicht mehr; [kategorien.md](kategorien.md), [mail.md](mail.md#filter)) · Statistics (#485: Reiter Overview, Senders, Inbox, Categories; Zeitraum und Konto wie die Übersicht; „Details ›“ der Übersicht führt hin; [mail.md](mail.md)) · Keyboard shortcuts (E10.3) | Kontodetail Mail; Appearance › Mail; Mail-Backup #267 |
+| **Assistant** | General (Status an/aus mit Verweis auf Access; neue Chats: Engine, Modell, Denkstufe) · Profile (Profil und Gedächtnis) · **Access** (seit #231: Rechte des Assistenten und je Bot, „Turn on assistant“, „Turn off assistant…“) · Bots (Liste; je Bot „Edit“ öffnet den Bot-Editor, „Access“ öffnet Access beim Bot) · Tools (seit #302 nur ein Verweis auf MCP servers › Built-in tools) · Voice (Sprechen, Antworten vorlesen, Mikrofon, Programme auf diesem Rechner) · History (Unterhaltungen aufheben) · API and MCP (#531: was Schlüssel und MCP-Clients mit Assistent und Bots dürfen) | Seite Assistant ohne Datenregel und „Engines“; Access aus Agents & API (#231) |
+| **Calendar** | Calendars (welche die Suite zeigt, je Konto gruppiert; Art der Erinnerung je Kalender) · Reminders (an/aus, Vorlauf, alle Bildschirme, Ton, welche Termine) · Night (die Karte am Mond in der Zeitleiste bleibt als schneller Weg) · API and MCP (#531) | Kontodetail „Calendars and lists“; General › Calendar, › Reminders, › Which events, › Calendars |
+| **Tasks** | Lists (welche die Suite zeigt, je Konto gruppiert) · API and MCP (#531, Aufgaben und GitHub) | Kontodetail „Calendars and lists“ |
+| **Notification Hub** (Fensterarten Notification Hub und App Feed) | Notifications (still bei Terminen) · Sources (je Konto: Nextcloud-Benachrichtigungen und Talk, GitHub, je ntfy-Server stumm oder an, je Mail-Konto „Show new mail“) · Rules (Liste mit „Remove“) · API and MCP (#531) | Seite Notification Hub; Abschnitte „Notification Hub“ der Kontoseiten |
+| **Mail** (Fensterart Mail) | Accounts (je Mail-Konto Absendername, Signatur, „Write new mail as“, offene Ordnerfragen, Backup und Restore) · Reading („Show mail as“, „Mail colors“) · Attachments („Click on an attachment“, Downloads-Ordner, Ablageziele mit Editor; M12.7, #290) · Categorization (Tabs Categories, dann AI, seit #481; Kopf mit „Sort existing mail…“ und Fortschritt; Regeln und Filter einer Kategorie stehen auf ihrer Seite, Filter ohne Kategorie unter „Other filters“, eine eigene Seite „Filters“ gibt es nicht mehr; [kategorien.md](kategorien.md), [mail.md](mail.md#filter)) · Statistics (#485: Reiter Overview, Senders, Inbox, Categories; Zeitraum und Konto wie die Übersicht; „Details ›“ der Übersicht führt hin; [mail.md](mail.md)) · Keyboard shortcuts (E10.3) · API and MCP (#531) | Kontodetail Mail; Appearance › Mail; Mail-Backup #267 |
 
 Keine App zeigt „Appearance“ als eigene Seite (nur den Verweis). **Ausnahme seit #408:** Fehlt die
 Hauptanwendung, zeigt jede App statt der beiden Verweise die Abschnitte Appearance und General (Language,
@@ -184,7 +194,8 @@ Seiten wie die Steuerzentrale
 zeigen je ihre Abschnitte: Notification Hub und App Feed die des Eingangs, das Mail-Fenster die von Mail.
 
 In der Steuerzentrale bleiben: Konten (Status, Verbindung, welche Dienste ein Konto liefert,
-Entfernen; KI-Konten mit Modellen und Datenregel, siehe [KI](#ki)), API und MCP (Programme von außen mit Rechten),
+Entfernen; KI-Konten mit Modellen und Datenregel, siehe [KI](#ki)), API und MCP (Programme von außen: Schlüssel
+anlegen, Clients verbinden und alle Rechte gesammelt; die Rechte eines Bereichs zeigt seit #531 auch die App),
 Approvals, Workspaces, Appearance, General (Sprache, Start beim Anmelden), Apps (Katalog, Apps an/aus, #411). Die Kontodetailseiten
 werden dadurch kurz; wo eine Einstellung umzieht, steht dort eine Zeile, die zum neuen Ort führt
 („Calendars and lists are chosen in Calendar and Tasks.“) mit „Open“ je App.
@@ -237,10 +248,14 @@ spätere Auswahl **pro Fenster** (unten) kommt als eigener Schalter dazu, nicht 
 - „Open“ im Abschnitt Apps und an den Kontoseiten schickt `apps.open_app` mit der Fensterklasse (Mail:
   `torro-inbox-mail`).
 - Der Schlüssel eines neuen Clients gelangt nie in einen App-Prozess. Bis #231 hieß das: Apps senden keine
-  schreibenden `clients.*`. Seit #231 darf **nur** der Abschnitt Access des Assistenten `clients.update_client`,
-  `clients.activity` und – für die Art `assistant` – `clients.create_client` und `clients.remove_client` senden;
-  der Kern gibt für die Art `assistant` keinen Schlüssel heraus (der Kern führt die Werkzeuge des Assistenten
-  selbst aus, niemand braucht ihn). `clients.new_key` und Clients anderer Arten bleiben der Steuerzentrale.
+  schreibenden `clients.*`. Seit #231 dürfen **nur** zwei Abschnitte schreibende `clients.*` senden: Access des
+  Assistenten `clients.update_client`, `clients.activity` und – für die Art `assistant` – `clients.create_client` und
+  `clients.remove_client`; der Kern gibt für die Art `assistant` keinen Schlüssel heraus (der Kern führt die
+  Werkzeuge des Assistenten selbst aus, niemand braucht ihn). Seit #531 API and MCP jeder App
+  (`torro-settings-ui`, `outside.rs`): nur `clients.update_client`, nur für Schlüssel (`script`) und MCP-Clients,
+  nur in den Bereichen der App; der Editor öffnet erst, wenn die erste frische Liste der Clients dieses Öffnens da
+  ist, damit kein Stand aus dem Gedächtnis des Hosts neuere Rechte überschreibt. `clients.new_key`,
+  `clients.create_client` und `clients.remove_client` für andere Arten bleiben der Steuerzentrale.
 - Nur ein Mensch öffnet die Einstellungen. Antworten des Assistenten, Mails und Einträge im Eingang
   können keinen Abschnitt aufschlagen, und Agenten haben kein Ziel `settings:…` für `apps.open_app`.
 - **Oberfläche, API, MCP:** keine neue Funktion. Alle Einstellungen gehen über Requests, die es
@@ -508,7 +523,10 @@ stehen in [erweiterungen.md](erweiterungen.md#mcp-server-302).
 ### Der Rechte-Editor
 
 Ein Editor für API, MCP clients und Access (Assistent, Bots), in `torro-settings-ui`, damit Steuerzentrale und
-Assistent-Fenster denselben nutzen.
+Assistent-Fenster denselben nutzen. Seit #531 zeigt jede App unter API and MCP denselben Editor nur für ihre Bereiche
+(`rights::groups_in`): Stufe, Admin-Schalter, Befehle und Auswahl dieser Bereiche, ohne MCP-Server und ohne „Ask
+first“ (das gilt für alle Bereiche des Clients und bleibt in der Steuerzentrale). Die App speichert jede Änderung
+sofort, immer nur eine zur Zeit, weil sie ihre Einstellungen ohne Abschied schließt.
 
 - **Je Bereich die Stufe** (No access · Read · Write · Full) und der Admin-Schalter, wie bisher. Die Stufe ist
   der schnelle Weg.
