@@ -146,7 +146,9 @@ spricht nur über IPC mit dem Dienst wie Kalender und Aufgaben.
    Späte Antworten ersetzen nur ihren reservierten Bereich, erhalten späteres Tippen und übernehmen keinen
    inzwischen anderweitigen Fokus. Entfernte Ziele und Kontowechsel verwerfen die Antwort. Fehler/Leere stellen
    die Auswahl wieder her und brechen wartenden Versand ab; erfolgreiche Importe setzen wartendes Speichern/Senden
-   fort. Bei fehlendem Backend bleibt Iced-Text, bei offline/älterem Dienst nur Klartext. Echte Clipboard-Integration
+   fort. Passt die wiederhergestellte Auswahl mit späteren Eingaben nicht mehr ins Größenlimit, bleibt alles sichtbar;
+   vor Speichern/Senden fordert das Fenster zum Kürzen auf. Bei fehlendem Backend bleibt Iced-Text,
+   bei offline/älterem Dienst nur Klartext. Echte Clipboard-Integration
    auf macOS, Windows und Hyprland bleibt manuell zu prüfen; Tests verwenden injizierte Formate ohne System-Clipboard.
 - **Einladungen** (iMIP) zeigen oben in der Nachricht „Accept / Maybe / Decline“; die Antwort
   geht per Mail zurück (iTIP `REPLY` über das Konto, Schalter „Nach außen“ wie beim Senden), der

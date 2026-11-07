@@ -2009,6 +2009,10 @@ impl<S: ComposeSource + 'static> Window<S> {
                 if let Err(err) = result {
                     self.notice = Some(Notice::new(tr("Couldn't paste the clipboard."), err));
                 }
+                if !self.body.within_limits() {
+                    self.notice =
+                        Some(Notice::plain(tr("The message is too large. Shorten it before saving or sending.")));
+                }
                 if focus && focused.is_some() {
                     operation::focus(Document::text_id(self.body.active))
                 } else {
@@ -3054,6 +3058,12 @@ impl<S: ComposeSource + 'static> Window<S> {
         if self.saving.is_some() || !self.ready() || self.body.pending() {
             return Task::none();
         }
+        if !self.body.within_limits() {
+            self.sending = false;
+            self.after = After::Nothing;
+            self.notice = Some(Notice::plain(tr("The message is too large. Shorten it before saving or sending.")));
+            return Task::none();
+        }
         if self.body.failed() {
             self.sending = false;
             self.after = After::Nothing;
@@ -3697,8 +3707,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             paper_content = paper_content.push(
                 container(widgets::chip_row(vec![
                     container(typo::text(typo::meta(), tr("Pasted with formatting")).style(theme::text_2))
-                        .height(size::control_sm())
-                        .center_y(Fill)
+                        .center_y(size::control_sm())
                         .into(),
                     widgets::text_button(
                         None,
@@ -3706,7 +3715,7 @@ impl<S: ComposeSource + 'static> Window<S> {
                         style::button::ghost,
                         editable.then_some(Message::KeepPasteText),
                     ),
-                    container(widgets::kbd(shortcut("Alt+V"))).height(size::control_sm()).center_y(Fill).into(),
+                    container(widgets::kbd(shortcut("Alt+V"))).center_y(size::control_sm()).into(),
                 ]))
                 .padding(space::m()),
             );
@@ -5990,6 +5999,27 @@ mod tests {
         assert_eq!(window.body.cursor().position, Position { line: 0, column: "Grüße 世界".len() });
         assert_eq!(window.body.pictures().count(), 0);
         assert_eq!(window.draft().body, "Grüße 世界");
+    }
+
+    #[test]
+    fn failed_paste_restores_all_selected_text_even_if_later_typing_filled_the_budget() {
+        let mut window = ready(&[]);
+        type_in(&mut window, "bob@example.org", "Subject", &"x".repeat(600_000));
+        window.body.move_to(Cursor {
+            position: Position { line: 0, column: 0 },
+            selection: Some(Position { line: 0, column: 500_000 }),
+        });
+        let _ = window.update(Message::PasteImage);
+        let id = window.body.selected.expect("reservation");
+        let _ = window.update(Message::Body(text_editor::Action::Edit(Edit::Paste(Arc::new("y".repeat(600_000))))));
+        let _ = window.update(Message::Send);
+        let account = window.sender().expect("sender").account.clone();
+        let _ = window.update(Message::Clipboard(id, account, Ok(images::Clipboard::Empty)));
+        assert!(!window.body.pending(), "a failed restore must never leave a loading reservation");
+        assert_eq!(window.body.text().len(), 1_200_000, "both selected text and later typing stay visible");
+        assert!(!window.sending && window.after == After::Nothing);
+        let _ = window.update(Message::Tick(later()));
+        assert!(window.saving.is_none(), "oversized restored text needs shortening, not an endless save wait");
     }
 
     #[test]

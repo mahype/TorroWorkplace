@@ -4,6 +4,10 @@
 pub(super) static TABLE: &[(&str, &str)] = &[
     // Clipboard paste (#462).
     (
+        "The message is too large. Shorten it before saving or sending.",
+        "Die Nachricht ist zu groß. Kürze sie vor dem Speichern oder Senden.",
+    ),
+    (
         "A paste is still being prepared. Try again shortly.",
         "Eine Einfügung wird noch vorbereitet. Versuche es gleich erneut.",
     ),

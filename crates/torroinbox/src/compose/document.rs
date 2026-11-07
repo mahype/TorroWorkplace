@@ -465,11 +465,15 @@ impl Document {
     }
 
     pub fn replace_reservation(&mut self, id: u64, text: &str) -> bool {
-        self.replace_reserved_range(id, text).is_some_and(|inserted| inserted.focused)
+        self.replace_reserved_inner(id, text, false).is_some_and(|inserted| inserted.focused)
     }
 
     /// Success is independent of focus: a reply may target a block other than the active one.
     pub fn replace_reserved_range(&mut self, id: u64, text: &str) -> Option<Inserted> {
+        self.replace_reserved_inner(id, text, true)
+    }
+
+    fn replace_reserved_inner(&mut self, id: u64, text: &str, enforce_limits: bool) -> Option<Inserted> {
         let at = self.blocks.iter().position(|b| matches!(b, Block::Image(p) if p.block == id))?;
         let before = at.checked_sub(1).and_then(|i| self.blocks.get(i)).and_then(|b| match b {
             Block::Text { id, content, history } => Some((*id, content.text(), history.clone())),
@@ -501,9 +505,7 @@ impl Document {
             content.move_to(cursor);
             let previous: Vec<_> =
                 self.blocks.splice(at - 1..=at + 1, [Block::Text { id: text_id, content, history }]).collect();
-            if self.text_bytes() > torro_ipc::mail::MAX_BODY_BYTES
-                || self.html(None).len() > torro_ipc::mail::MAX_BODY_BYTES
-            {
+            if enforce_limits && !self.within_limits() {
                 self.blocks.splice(at - 1..at, previous);
                 return None;
             }
@@ -528,6 +530,10 @@ impl Document {
                 _ => 0,
             })
             .sum()
+    }
+
+    pub fn within_limits(&self) -> bool {
+        self.text_bytes() <= torro_ipc::mail::MAX_BODY_BYTES && self.html(None).len() <= torro_ipc::mail::MAX_BODY_BYTES
     }
 
     /// Compare the recorded bytes before replacing just the last insertion. Preserve a later
@@ -577,6 +583,8 @@ impl Document {
 
     pub fn restore_reservation(&mut self, id: u64) -> bool {
         let text = self.picture(id).map(|p| p.replaced.clone()).unwrap_or_default();
+        // Restoration is not a new import: selected text and later typing must both survive.
+        // If together they exceed the save budget, the window asks to shorten the result.
         self.replace_reservation(id, &text)
     }
 
