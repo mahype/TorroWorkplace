@@ -117,6 +117,8 @@ winit.workspace = true
 global-hotkey.workspace = true
 
 [dev-dependencies]
+# The fake IMAP server derives MIME sections for bounded image FETCH tests (#461).
+mail-parser.workspace = true
 # Fake AI servers (Ollama, OpenRouter) for the tests of the AI accounts (task KI.1a).
 httpmock.workspace = true
 # The fake IMAP server of the mail sync tests (task M2.6) speaks TLS like a real one; the client

@@ -380,7 +380,7 @@ pub struct Draft {
     pub body: String,
     /// The text as HTML, for formatted mail (issue #125): sent as `multipart/alternative` with the
     /// plain text beside it. The core cleans it when the draft is saved (`html::sanitize`: no
-    /// scripts, styles, images or other attributes than links to `http`, `https` and `mailto`), so
+    /// scripts, styles or external images; only CID images and links to `http`, `https` and `mailto`), so
     /// the saved draft may differ from what was sent. The signature goes in front of the element
     /// with the class `torro-quote` (the quoted history of an answer), else at the end. `None`
     /// for plain text only.
@@ -399,6 +399,16 @@ pub struct Draft {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DraftAttachment {
+    /// An embedded image (issue #461). Its id is also its stable Content-ID, including when
+    /// converted to an ordinary attachment. Original source bytes are never extra MIME parts.
+    Image {
+        id: String,
+        source: ImageSource,
+        #[serde(default = "inline_image")]
+        inline: bool,
+        #[serde(default)]
+        size: ImageSize,
+    },
     /// An attachment of a message the caller can read, to forward it.
     MailPart {
         /// The message's id (`m:…`).
@@ -415,6 +425,50 @@ pub enum DraftAttachment {
         /// The file's absolute path.
         path: String,
     },
+}
+
+fn inline_image() -> bool {
+    true
+}
+
+/// A source resolved by the service with the same file and message rights as attachments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ImageSource {
+    File {
+        path: String,
+    },
+    MailPart {
+        message: String,
+        part: String,
+    },
+    /// A volatile source belonging to exactly one caller and account.
+    Prepared {
+        id: String,
+    },
+}
+
+/// Display width; only Original asks the service to keep the source bytes unchanged.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+    Original,
+}
+
+impl ImageSize {
+    /// No upscaling, including for small screenshots.
+    pub fn width(self, natural: u32) -> u32 {
+        natural.min(match self {
+            Self::Small => 320,
+            Self::Medium => 640,
+            Self::Large => 960,
+            Self::Original => natural,
+        })
+    }
 }
 
 #[cfg(test)]

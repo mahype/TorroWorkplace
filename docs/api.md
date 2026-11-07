@@ -51,6 +51,43 @@ Anmeldung. Es entsteht keine zweite Schnittstelle neben dem IPC.
 
 ## Der Befehlskatalog
 
+### Eingebettete Mail-Bilder (#461)
+
+`mail.prepare_image` nimmt Konto und Quelle (`file`, `mail_part`, `prepared`), `mail.upload_image` nimmt
+Base64 in Stücken von höchstens 256 KiB dekodiert, höchstens 25 MiB insgesamt. Das 1-MiB-IPC-Limit bleibt.
+Uploads beginnen ohne Kennung bei Offset 0; folgende Aufrufe benutzen die gelieferte Kennung und den Byte-Offset.
+Identische Wiederholungen sind idempotent, andere Offsets/Inhalte `conflict`. `final: true` liefert wie Prepare
+eine flüchtige Prepared-ID, Maße und eine PNG-Vorschau von höchstens 256 KiB. PNG/JPEG/GIF/WebP werden geprüft
+(höchstens 32 MP, Kanten 32768, Decoder 128 MiB), nie SVG. Ein Decoder läuft gleichzeitig. Maximal vier unfertige
+Uploads je Aufrufer, 16 insgesamt und 100 MiB für Originale/Uploads/Vorschauen; Ressourcenmangel ist `busy`.
+Neue Upload-Payloads warten nicht ungezählt hinter einem laufenden Import oder Decoder: Ist die
+Speicherzulassung belegt, kommt sofort `busy`; erst zugelassene, bereits budgetierte Requests dürfen warten.
+Beim Speichern zählen auch ausgehende Bildpuffer und konservativ reservierter MIME-Arbeitsraum bis zum Abschluss.
+Die 25-MiB-Eingabegrenze ist deshalb keine Zusage, beliebig viele Originalteile gleichzeitig speichern zu können.
+Unfertige Uploads laufen nach 10 Minuten, fertige Quellen nach einer Stunde ohne Nutzung ab. Erneutes Prepare
+einer Prepared-ID verlängert ihre Lease. Mit einem anderen Zielkonto kopiert Prepare die eigene RAM-Quelle
+in eine neue Lease, nur wenn Quell- und Zielkonto erreichbar sind; die alte Lease bleibt bis zur Freigabe erhalten.
+Das erhält beim Kontowechsel auch ungewählte Originalauflösungen, ohne sie zu speichern oder an die UI zu senden.
+MailPart-Importe holen nur den Bildteil in begrenzten IMAP-Stücken; auch Rohdaten und MIME-Dekodierung werden vorab budgetiert.
+`mail.release_images` entfernt nur eigene IDs dieses Kontos, ignoriert
+fremde/unbekannte und liefert `ok` ohne Zähler. Vor Freigabe und Ausführung gelten Konto-/Quellrechte;
+fremde Quellen sind `not-found`, Dateien unterliegen denselben Beschränkungen wie normale Anhänge.
+
+`mail.save_draft` nimmt additiv `{"kind":"image","id":"cid@torro","source":{"kind":"prepared","id":"…"},
+"inline":true,"size":"medium"}`. Größen sind `small`, `medium` (Standard), `large`, `original`.
+Der HTML-Verweis ist `<img src="cid:cid@torro" alt="…" width="640">`; nur CID-Bilder und begrenzte Maße bleiben.
+Jede CID muss genau einem Bildteil entsprechen. `inline:false` entfernt den HTML-Verweis und macht das Bild
+zum Anhang, ohne die CID zu verlieren. Save/Get liefern Bildquellen als eigene Teile des gespeicherten Entwurfs.
+Die MCP-Tools heißen `mail_prepare_image`, `mail_upload_image`, `mail_release_images`; dieselben Dienstregeln,
+kein eigener Datenzugriff. Der lokale Zwischenablagezugriff ist Eingabe des Menschen, kein zusätzliches Tool.
+Bild-Requests und deren Antworten bleiben bei Freigaben im RAM. Auf der Platte steht nur eine markierte,
+payloadfreie Hülle; nach Neustart ist sie abgelaufen und wird niemals ausgeführt. Logs/Debug enthalten keine
+Bilddaten. Gespeicherte Entwürfe behalten natürlich ihre eingebetteten MIME-Teile.
+Bildfreigaben nennen das konfigurierte Zielkonto und die bekannte Quelle: kanonischer Dateipfad,
+Nachrichtenbetreff mit Dateiname/MIME-Teil und Quellkonto oder bei RAM-Quellen Quellkonto und Originalmaße.
+Der Dienst schlägt diese Angaben erst nach Rechte-/Eigentumsprüfung nach; unbekannte Quellen bleiben als
+unbekannt markiert. Steuer- und Richtungszeichen werden für die Anzeige entschärft, Bilddaten nie angezeigt.
+
 Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalog** in `torro-ipc`
 (`api.rs`). Er beschreibt jeden Befehl:
 
@@ -81,7 +118,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `contacts` ²⁸ | `list_address_books`, `list_contacts`, `get_contact`, `get_photo`, `list_groups`, `upcoming_birthdays` | `create_contact`, `add_to_contact`, `set_favorite`, `add_to_group`, `mark_used`, `move_contact`, `resolve_conflict` mit `both` | `update_contact`, `remove_from_group`, `set_photo`, `delete_contact`, `resolve_conflict` mit `mine`/`theirs` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ², `move_category` ²⁹ |
-| `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `get_draft`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
+| `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `get_draft`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `prepare_image`, `upload_image`, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages`, `release_images` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
 | `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |

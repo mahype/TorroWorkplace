@@ -602,3 +602,4 @@ mod tests {
         assert_eq!(mode(cache.dir()), 0o700);
     }
 }
+pub(crate) mod images;

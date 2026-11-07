@@ -4,8 +4,8 @@
 //!
 //! - [`sanitize`] keeps only that subset: paragraphs, line breaks, headings, bold, italic,
 //!   underline, strike-through, code, lists, quotes, simple tables, rules and links to `http`,
-//!   `https` and `mailto`. Everything else goes: scripts, styles, forms, frames, images (so no
-//!   tracking pixel and nothing fetched from elsewhere), event handlers, every other attribute.
+//!   `https` and `mailto`, and CID-only images with escaped alt text and bounded dimensions.
+//!   Scripts, styles, forms, frames, external/data images and event handlers go; nothing is fetched.
 //!   The core cleans every HTML a draft brings before it stores or sends it, so what a person
 //!   approves is what goes out.
 //! - [`to_text`] is the plain text sent beside the HTML (`multipart/alternative`) and shown where
@@ -58,10 +58,11 @@ const ALLOWED: &[&str] = &[
     "tr",
     "td",
     "th",
+    "img",
 ];
 
 /// Elements without content or closing tag.
-const VOID: &[&str] = &["br", "hr"];
+const VOID: &[&str] = &["br", "hr", "img"];
 
 /// Elements dropped together with everything inside them: code, styles, metadata, embedded
 /// documents and form controls are never text of the message.
@@ -84,6 +85,68 @@ const HREF_MAX: usize = 2048;
 /// of `div`. An empty or blank input answers an empty string.
 pub fn sanitize(html: &str) -> String {
     serialize(&parse(html))
+}
+
+/// A Content-ID safe in both MIME headers and a `cid:` URL. No whitespace, URL delimiters,
+/// controls or quoting; ids are opaque, not file paths or network addresses.
+pub fn valid_cid(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 250 && id.bytes().all(|c| c.is_ascii_alphanumeric() || b"@._+-".contains(&c))
+}
+
+/// Every kept image reference, in document order.
+pub fn image_refs(html: &str) -> Vec<String> {
+    to_blocks(html)
+        .into_iter()
+        .filter_map(|block| match block {
+            HtmlBlock::Image { cid, .. } => Some(cid),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Lossless image boundaries for the block compose editor; text pieces are sanitized HTML.
+/// The old `to_markup` interface remains unchanged for text-only callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HtmlBlock {
+    Text(String),
+    Image { cid: String, alt: String, width: Option<u32>, height: Option<u32>, quoted: bool },
+}
+
+pub fn to_blocks(html: &str) -> Vec<HtmlBlock> {
+    fn blocks(nodes: &[Node], quoted: bool) -> Vec<HtmlBlock> {
+        let mut out = Vec::new();
+        for node in nodes {
+            let pieces = match node {
+                Node::Element(e) if e.name == "img" => vec![HtmlBlock::Image {
+                    cid: e.attr("src").unwrap_or_default().strip_prefix("cid:").unwrap_or_default().into(),
+                    alt: e.attr("alt").unwrap_or_default().into(),
+                    width: e.attr("width").and_then(|v| v.parse().ok()),
+                    height: e.attr("height").and_then(|v| v.parse().ok()),
+                    quoted,
+                }],
+                Node::Element(e) if !VOID.contains(&e.name) => blocks(&e.children, quoted || e.has_class(QUOTE_CLASS))
+                    .into_iter()
+                    .map(|part| match part {
+                        HtmlBlock::Text(text) => {
+                            let attrs =
+                                e.attrs.iter().map(|(k, v)| format!(" {k}=\"{}\"", escape(v))).collect::<String>();
+                            HtmlBlock::Text(format!("<{}{attrs}>{text}</{}>", e.name, e.name))
+                        }
+                        image => image,
+                    })
+                    .collect(),
+                _ => vec![HtmlBlock::Text(serialize(std::slice::from_ref(node)))],
+            };
+            for piece in pieces {
+                match (out.last_mut(), piece) {
+                    (Some(HtmlBlock::Text(last)), HtmlBlock::Text(text)) => last.push_str(&text),
+                    (_, piece) => out.push(piece),
+                }
+            }
+        }
+        out
+    }
+    blocks(&parse(html), false)
 }
 
 /// The plain text of `html` (any HTML: it is cleaned first), for the `text/plain` part of a
@@ -328,7 +391,7 @@ impl Tree {
             _ => {}
         }
         let element = Element { name, attrs: kept_attrs(name, attrs), children: Vec::new() };
-        if name == "a" && element.attrs.is_empty() {
+        if (name == "a" || name == "img") && element.attrs.is_empty() {
             // A link to nowhere safe is its text.
             return;
         }
@@ -384,6 +447,23 @@ fn is_block(name: &str) -> bool {
 fn kept_attrs(name: &str, attrs: &[(String, String)]) -> Vec<(&'static str, String)> {
     let value = |wanted: &str| attrs.iter().find(|(name, _)| name == wanted).map(|(_, value)| value.as_str());
     match name {
+        "img" => {
+            let Some(cid) = value("src").and_then(|s| s.strip_prefix("cid:")).filter(|id| valid_cid(id)) else {
+                return Vec::new();
+            };
+            let mut kept = vec![("src", format!("cid:{cid}"))];
+            if let Some(alt) = value("alt") {
+                kept.push(("alt", clean_text(alt)));
+            }
+            for dimension in ["width", "height"] {
+                if let Some(n) =
+                    value(dimension).and_then(|s| s.parse::<u32>().ok()).filter(|n| (1..=32768).contains(n))
+                {
+                    kept.push((dimension, n.to_string()));
+                }
+            }
+            kept
+        }
         "a" => value("href").and_then(safe_url).map(|href| vec![("href", href)]).unwrap_or_default(),
         "blockquote" if value("type").is_some_and(|kind| kind.trim().eq_ignore_ascii_case("cite")) => {
             vec![("type", "cite".to_owned())]
@@ -678,6 +758,7 @@ impl Lines {
 
     fn element(&mut self, element: &Element) {
         match element.name {
+            "img" => self.block(vec![element.attr("alt").unwrap_or_default().to_string()], true),
             "br" => {
                 let line = std::mem::take(&mut self.line);
                 self.out.push(line.trim_end().to_owned());
@@ -992,6 +1073,17 @@ fn tidy(lines: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cid_images_are_bounded_escaped_and_stable() {
+        let dirty = "<p>Before</p><img src='cid:one@torro' alt='&lt;plan&gt;' width='640' height='99999' style='x' onerror='bad()'><img src='https://tracker/x'><img src='data:image/png;base64,AAAA'><img src='cid:bad%0aid'><p>After</p>";
+        let clean = super::sanitize(dirty);
+        assert_eq!(clean, "<p>Before</p><img src=\"cid:one@torro\" alt=\"&lt;plan&gt;\" width=\"640\"><p>After</p>");
+        assert_eq!(super::sanitize(&clean), clean);
+        assert_eq!(super::image_refs(&clean), ["one@torro"]);
+        assert_eq!(super::to_text(&clean), "Before\n\n<plan>\n\nAfter");
+        let blocks = super::to_blocks("<p>Ü</p><div class='torro-quote'><p>Old</p><img src='cid:one@torro'></div>");
+        assert!(matches!(blocks.last(), Some(super::HtmlBlock::Image { quoted: true, .. })));
+    }
     use super::*;
 
     #[test]

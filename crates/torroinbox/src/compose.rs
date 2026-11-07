@@ -105,6 +105,12 @@ use torro_mail::{AttachmentInfo, Draft, DraftAttachment, MailAddress, MailFormat
 use crate::app::{Launch, LaunchError, flag_value};
 use crate::{keys, list, mail};
 
+mod document;
+mod images;
+use document::{Block, Document};
+use torro_ipc::mail::PreparedImage;
+use torro_mail::{ImageSize, ImageSource};
+
 /// The compose window's identity: window class `torro-compose` (rules of a tiling manager match
 /// on it), the binary and state directory of the inbox.
 pub const COMPOSE: AppId = AppId {
@@ -236,10 +242,16 @@ pub enum Open {
     Suggest,
     /// The dark paper (issue #460).
     PaperDark,
+    Image,
+    ImageDark,
+    ImageRemove,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 11] = [
+    const ALL: [(&'static str, Open); 14] = [
+        ("image", Open::Image),
+        ("image-dark", Open::ImageDark),
+        ("image-remove", Open::ImageRemove),
         ("cc", Open::Cc),
         ("attach", Open::Attach),
         ("error", Open::Error),
@@ -429,6 +441,31 @@ impl From<InboxError> for ComposeError {
 /// core checks rights, the files a draft may attach and the send rule, the window never decides
 /// them. (Not part of [`crate::mail::MailSource`]: that is the list's and the panel's.)
 pub trait ComposeSource: Send + Sync {
+    /// One `mail.prepare_image` request. Originals and processing stay in the service.
+    fn prepare_image(
+        &self,
+        account: String,
+        source: ImageSource,
+    ) -> impl Future<Output = Result<PreparedImage, ComposeError>> + Send {
+        let _ = (account, source);
+        async { Err(ComposeError::Forbidden) }
+    }
+
+    /// One bounded `mail.upload_image` request; final replies with the prepared image.
+    fn upload_image(&self, request: Request) -> impl Future<Output = Result<Response, ComposeError>> + Send {
+        let _ = request;
+        async { Err(ComposeError::Forbidden) }
+    }
+
+    /// One `mail.release_images` request; no count or foreign information is returned.
+    fn release_images(
+        &self,
+        account: String,
+        ids: Vec<String>,
+    ) -> impl Future<Output = Result<(), ComposeError>> + Send {
+        let _ = (account, ids);
+        async { Ok(()) }
+    }
     /// `accounts.list_accounts`, reduced to the mail accounts a message can be written from
     /// ([`senders_of`]). Empty without a mail account.
     fn senders(&self) -> impl Future<Output = Result<Vec<Sender>, ComposeError>> + Send;
@@ -519,6 +556,23 @@ fn unexpected(response: Response) -> ComposeError {
 }
 
 impl ComposeSource for InboxClient {
+    async fn prepare_image(&self, account: String, source: ImageSource) -> Result<PreparedImage, ComposeError> {
+        match ask(self, Request::PrepareMailImage { account, source }).await? {
+            Response::MailImage { image } => Ok(image),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    async fn upload_image(&self, request: Request) -> Result<Response, ComposeError> {
+        ask(self, request).await
+    }
+
+    async fn release_images(&self, account: String, ids: Vec<String>) -> Result<(), ComposeError> {
+        match ask(self, Request::ReleaseMailImages { account, ids }).await? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
     async fn senders(&self) -> Result<Vec<Sender>, ComposeError> {
         match ask(self, Request::Accounts).await? {
             Response::Accounts { accounts } => Ok(senders_of(&accounts)),
@@ -633,6 +687,9 @@ fn new_contact(name: String, address: String) -> torro_contacts::ContactFields {
 }
 
 impl ComposeSource for DemoSource {
+    async fn prepare_image(&self, _account: String, _source: ImageSource) -> Result<PreparedImage, ComposeError> {
+        Ok(demo_image())
+    }
     async fn senders(&self) -> Result<Vec<Sender>, ComposeError> {
         Ok(self
             .mail_senders()
@@ -739,6 +796,62 @@ fn demo_photo(contact: &str) -> Vec<u8> {
     const COLOURS: [[u8; 3]; 4] = [[0x5B, 0x8C, 0xFF], [0x3F, 0xB9, 0x84], [0xE8, 0xA3, 0x3D], [0xD9, 0x6C, 0xA8]];
     let pick = contact.bytes().fold(0usize, |sum, byte| sum.wrapping_add(usize::from(byte)));
     torro_contacts::demo::solid_png(64, COLOURS[pick % COLOURS.len()])
+}
+
+fn demo_image() -> PreparedImage {
+    use base64::Engine as _;
+    // A small generated floor-plan fixture, independent of files and the service.
+    let mut pixels = ::image::RgbaImage::from_pixel(640, 360, ::image::Rgba([244, 245, 246, 255]));
+    for (x, y, p) in pixels.enumerate_pixels_mut() {
+        let wall = (32..608).contains(&x) && ((32..38).contains(&y) || (322..328).contains(&y))
+            || (32..328).contains(&y) && ((32..38).contains(&x) || (602..608).contains(&x))
+            || (38..322).contains(&y) && (310..316).contains(&x)
+            || (316..602).contains(&x) && (170..176).contains(&y);
+        if wall {
+            *p = ::image::Rgba([79, 83, 90, 255]);
+        }
+    }
+    let mut png = std::io::Cursor::new(Vec::new());
+    let _ = ::image::DynamicImage::ImageRgba8(pixels).write_to(&mut png, ::image::ImageFormat::Png);
+    PreparedImage {
+        id: "demo-image".into(),
+        width: 1600,
+        height: 900,
+        original_width: 2400,
+        original_height: 1350,
+        preview: base64::engine::general_purpose::STANDARD.encode(png.into_inner()).into(),
+    }
+}
+
+async fn upload_pixels<S: ComposeSource>(
+    source: Arc<S>,
+    account: String,
+    bytes: Vec<u8>,
+) -> Result<PreparedImage, ComposeError> {
+    use base64::Engine as _;
+    let mut upload = None;
+    let chunks = bytes.chunks(torro_ipc::mail::IMAGE_CHUNK_BYTES);
+    let count = chunks.len();
+    for (i, chunk) in chunks.enumerate() {
+        let request = Request::UploadMailImage {
+            account: account.clone(),
+            upload: upload.clone(),
+            offset: (i * torro_ipc::mail::IMAGE_CHUNK_BYTES) as u64,
+            base64: base64::engine::general_purpose::STANDARD.encode(chunk).into(),
+            finish: i + 1 == count,
+        };
+        match source.upload_image(request).await {
+            Ok(Response::MailImage { image }) => return Ok(image),
+            Ok(Response::MailImageUpload { id, .. }) => upload = Some(id),
+            result => {
+                if let Some(id) = upload {
+                    let _ = source.release_images(account, vec![id]).await;
+                }
+                return Err(result.err().unwrap_or(ComposeError::Other(tr("Couldn't insert the image.").into())));
+            }
+        }
+    }
+    Err(ComposeError::Other(tr("Couldn't insert the image.").into()))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -974,26 +1087,29 @@ pub fn reopening(draft: &Draft, mail: Option<&Mail>) -> Opening {
     let attachments = draft
         .attachments
         .iter()
-        .map(|attachment| match attachment {
-            DraftAttachment::MailPart { message, part } => {
-                let known = mail
-                    .filter(|mail| mail.summary.id == *message)
-                    .and_then(|mail| mail.attachments.iter().find(|info| info.part == *part));
-                match known {
-                    Some(info) => Attached::part(message, info),
-                    None => Attached::Part {
-                        message: message.clone(),
-                        part: part.clone(),
-                        name: tr("Attachment").to_owned(),
-                        size: 0,
-                    },
+        .filter_map(|attachment| {
+            Some(match attachment {
+                DraftAttachment::Image { .. } => return None,
+                DraftAttachment::MailPart { message, part } => {
+                    let known = mail
+                        .filter(|mail| mail.summary.id == *message)
+                        .and_then(|mail| mail.attachments.iter().find(|info| info.part == *part));
+                    match known {
+                        Some(info) => Attached::part(message, info),
+                        None => Attached::Part {
+                            message: message.clone(),
+                            part: part.clone(),
+                            name: tr("Attachment").to_owned(),
+                            size: 0,
+                        },
+                    }
                 }
-            }
-            DraftAttachment::File { path } => {
-                let path = PathBuf::from(path);
-                let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-                Attached::File { path, name, size: 0 }
-            }
+                DraftAttachment::File { path } => {
+                    let path = PathBuf::from(path);
+                    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+                    Attached::File { path, name, size: 0 }
+                }
+            })
         })
         .collect();
     Opening {
@@ -1351,6 +1467,30 @@ enum After {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    EditorCommand(u64, Box<Message>),
+    BodyFocused(Option<u64>),
+    RevealCaret(u64, f32),
+    PaperScrolled,
+    BlockBody(u64, text_editor::Action),
+    InsertImage,
+    ChooseImageAt(Option<u64>),
+    ImagePath(Option<PathBuf>),
+    ImageAt(Option<u64>, PathBuf),
+    ImageLoaded(u64, String, Result<PreparedImage, ComposeError>),
+    SelectImage(u64),
+    NextImage(bool),
+    SelectedImageSize(ImageSize),
+    SelectedImageAttach,
+    SelectedImageRemove,
+    ImageSize(u64, ImageSize),
+    ImageAttach(u64),
+    RemoveImage(u64),
+    ConfirmRemoveImage,
+    PasteImage,
+    Clipboard(u64, String, Result<images::Clipboard, ComposeError>),
+    LeaseImages,
+    ImageLeased(u64, String, String, Result<PreparedImage, ComposeError>),
+    AccountImages(usize, String, Result<Vec<(u64, PreparedImage)>, ComposeError>),
     /// The top band of the window was pressed (macOS): drag the window.
     DragWindow,
     Zoom(zoom::Message),
@@ -1449,13 +1589,17 @@ pub struct Window<S> {
     senders: Vec<Sender>,
     /// Index into `senders`.
     from: usize,
+    pending_from: Option<usize>,
+    switching: bool,
+    retired_images: Vec<(String, String)>,
+    removing_image: Option<u64>,
     to: Recipients,
     cc: Recipients,
     bcc: Recipients,
     show_cc: bool,
     show_bcc: bool,
     subject: String,
-    body: Content,
+    body: Document,
     attachments: Vec<Attached>,
     in_reply_to: Option<String>,
     /// Where the quoted history starts in the text ([`Opening::history`]).
@@ -1474,6 +1618,8 @@ pub struct Window<S> {
     unsure_parts: Option<Vec<DraftAttachment>>,
     /// Counts every change; a save remembers the number it saved.
     revision: u64,
+    caret_epoch: u64,
+    follow_caret: bool,
     saved: u64,
     /// When the last change was made; `None` when everything is saved.
     changed: Option<Instant>,
@@ -1539,13 +1685,17 @@ impl<S: ComposeSource + 'static> Window<S> {
             phase,
             senders: Vec::new(),
             from: 0,
+            pending_from: None,
+            switching: false,
+            retired_images: Vec::new(),
+            removing_image: None,
             to: Recipients::default(),
             cc: Recipients::default(),
             bcc: Recipients::default(),
             show_cc: false,
             show_bcc: false,
             subject: String::new(),
-            body: Content::new(),
+            body: Content::new().into(),
             attachments: Vec::new(),
             in_reply_to: None,
             history: None,
@@ -1554,6 +1704,8 @@ impl<S: ComposeSource + 'static> Window<S> {
             saving_parts: Vec::new(),
             unsure_parts: None,
             revision: 0,
+            caret_epoch: 0,
+            follow_caret: true,
             saved: 0,
             changed: None,
             saving: None,
@@ -1614,7 +1766,7 @@ impl<S: ComposeSource + 'static> Window<S> {
     }
 
     fn editable(&self) -> bool {
-        self.ready() && !self.sending
+        self.ready() && !self.sending && !self.switching
     }
 
     fn sender(&self) -> Option<&Sender> {
@@ -1623,7 +1775,7 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     /// The account writes formatted mail: toolbar, keys and HTML.
     fn formatted(&self) -> bool {
-        self.sender().is_some_and(|sender| sender.html)
+        true
     }
 
     /// The title of the window: the subject, else what is being written.
@@ -1651,16 +1803,374 @@ impl<S: ComposeSource + 'static> Window<S> {
         Task::perform(async move { prepare(source, kind).await }, Message::Loaded)
     }
 
+    fn release(&self, account: String, ids: Vec<String>) -> Task<Message> {
+        if ids.is_empty() {
+            return Task::none();
+        }
+        let source = self.source.clone();
+        Task::perform(async move { source.release_images(account, ids).await }, |_| Message::Cleaned)
+    }
+
+    fn insert_image(&mut self, input: ImageSource) -> Task<Message> {
+        if !self.editable() || self.attachments.len() + self.body.pictures().count() >= MAX_ATTACHMENTS {
+            return Task::none();
+        }
+        let Some(account) = self.sender().map(|s| s.account.clone()) else { return Task::none() };
+        let id = self.body.reserve();
+        self.reveal_caret();
+        self.touch();
+        let source = self.source.clone();
+        let ask = account.clone();
+        Task::batch([
+            Task::perform(async move { source.prepare_image(ask, input).await }, move |result| {
+                Message::ImageLoaded(id, account.clone(), result)
+            }),
+            operation::focus(Document::text_id(self.body.active)),
+        ])
+    }
+
+    fn image_loaded(&mut self, id: u64, account: String, result: Result<PreparedImage, ComposeError>) -> Task<Message> {
+        if self.sender().is_none_or(|s| s.account != account) || self.body.picture(id).is_none() {
+            return result.map_or_else(|_| Task::none(), |image| self.release(account, vec![image.id]));
+        }
+        match result {
+            Ok(image) => {
+                if let Some(p) = self.body.picture(id) {
+                    p.loaded(image);
+                }
+            }
+            Err(error) => {
+                if let Some(p) = self.body.picture(id) {
+                    p.loading = false;
+                    p.failed = true;
+                }
+                self.sending = false;
+                self.after = After::Nothing;
+                self.notice = Some(Notice::new(tr("Couldn't insert the image."), error));
+            }
+        }
+        if self.follow_caret {
+            self.reveal_caret();
+        }
+        self.touch();
+        if !self.body.pending() && self.after != After::Nothing {
+            return self.save(After::Nothing);
+        }
+        Task::none()
+    }
+
+    fn clipboard_received(
+        &mut self,
+        id: u64,
+        account: String,
+        result: Result<images::Clipboard, ComposeError>,
+    ) -> Task<Message> {
+        if self.sender().is_none_or(|s| s.account != account) || self.body.picture(id).is_none() {
+            return Task::none();
+        }
+        match result {
+            Ok(images::Clipboard::Image(bytes)) => {
+                if self.attachments.len() + self.body.pictures().count() > MAX_ATTACHMENTS
+                    || self.body.pictures().any(|p| p.block != id && p.loading)
+                {
+                    // The image limits must not swallow ordinary text paste. The placeholder
+                    // was reserved regardless of those limits; only actual image data is refused.
+                    let focus = self.body.restore_reservation(id);
+                    self.notice = Some(Notice::plain(tr("Too many images are being prepared. Try again later.")));
+                    self.touch();
+                    return if focus { operation::focus(Document::text_id(self.body.active)) } else { Task::none() };
+                }
+                let source = self.source.clone();
+                let ask = account.clone();
+                Task::perform(async move { upload_pixels(source, ask, bytes).await }, move |result| {
+                    Message::ImageLoaded(id, account.clone(), result)
+                })
+            }
+            Ok(images::Clipboard::Text(text)) => {
+                let focus = self.body.replace_reservation(id, &text);
+                if focus && self.follow_caret {
+                    self.reveal_caret();
+                }
+                self.touch();
+                let save = if !self.body.pending() && self.after != After::Nothing {
+                    self.save(After::Nothing)
+                } else {
+                    Task::none()
+                };
+                Task::batch([
+                    save,
+                    if focus { operation::focus(Document::text_id(self.body.active)) } else { Task::none() },
+                ])
+            }
+            Ok(images::Clipboard::Empty) | Err(_) => {
+                let focus = self.body.restore_reservation(id);
+                self.touch();
+                self.sending = false;
+                self.after = After::Nothing;
+                if let Err(err) = result {
+                    self.notice = Some(Notice::new(tr("Couldn't insert the image."), err));
+                }
+                if focus { operation::focus(Document::text_id(self.body.active)) } else { Task::none() }
+            }
+        }
+    }
+
+    fn load_images(&self) -> Task<Message> {
+        let Some(account) = self.sender().map(|s| s.account.clone()) else { return Task::none() };
+        Task::batch(self.body.pictures().filter(|p| p.loading).filter_map(|p| {
+            let input = p.source.clone()?;
+            let (id, account, source) = (p.block, account.clone(), self.source.clone());
+            let ask = account.clone();
+            Some(Task::perform(async move { source.prepare_image(ask, input).await }, move |result| {
+                Message::ImageLoaded(id, account.clone(), result)
+            }))
+        }))
+    }
+
+    fn lease_images(&self) -> Task<Message> {
+        let Some(account) = self.sender().map(|s| s.account.clone()) else { return Task::none() };
+        Task::batch(self.body.pictures().filter_map(|p| {
+            let ImageSource::Prepared { id: requested } = p.source.as_ref()? else { return None };
+            let requested = requested.clone();
+            let input = ImageSource::Prepared { id: requested.clone() };
+            let (id, source, account) = (p.block, self.source.clone(), account.clone());
+            let ask = account.clone();
+            Some(Task::perform(async move { source.prepare_image(ask, input).await }, move |result| {
+                Message::ImageLeased(id, account.clone(), requested.clone(), result)
+            }))
+        }))
+    }
+
+    fn switch_images(&mut self, index: usize) -> Task<Message> {
+        let Some(account) = self.senders.get(index).map(|s| s.account.clone()) else { return Task::none() };
+        let old = self.sender().map(|s| s.account.clone()).unwrap_or_default();
+        // Prefer the live RAM original: a normal autosave may have reduced its saved fallback.
+        let inputs = self.body.pictures().filter_map(|p| Some((p.block, p.source.clone()?))).collect::<Vec<_>>();
+        if inputs.len() != self.body.pictures().count() {
+            return Task::none();
+        }
+        self.switching = true;
+        let source = self.source.clone();
+        Task::perform(
+            async move {
+                let mut ready = Vec::new();
+                for (id, input) in inputs {
+                    match source.prepare_image(account.clone(), input).await {
+                        Ok(image) => ready.push((id, image)),
+                        Err(err) => {
+                            let ids = ready.iter().map(|(_, image)| image.id.clone()).collect();
+                            let _ = source.release_images(account, ids).await;
+                            return Err(err);
+                        }
+                    }
+                }
+                Ok(ready)
+            },
+            move |result| Message::AccountImages(index, old.clone(), result),
+        )
+    }
+
     /// Something changed: a new revision, to be saved after [`AUTOSAVE`].
     fn touch(&mut self) {
         self.revision += 1;
         self.changed = Some(Instant::now());
     }
 
+    fn reveal_caret(&mut self) {
+        self.caret_epoch = self.caret_epoch.wrapping_add(1);
+        self.follow_caret = true;
+    }
+
     // ----- updates -----
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        if matches!(
+            &message,
+            Message::BlockBody(..)
+                | Message::Body(_)
+                | Message::To(_)
+                | Message::Cc(_)
+                | Message::Bcc(_)
+                | Message::Subject(_)
+                | Message::Focus(_)
+                | Message::PickFrom(_)
+                | Message::Format(_)
+        ) {
+            self.removing_image = None;
+        }
         match message {
+            Message::BodyFocused(Some(id)) => {
+                self.body.focus_text(id);
+                self.reveal_caret();
+            }
+            Message::BodyFocused(None) => {}
+            Message::PaperScrolled => self.follow_caret = false,
+            Message::RevealCaret(epoch, delta) => {
+                if self.follow_caret && epoch == self.caret_epoch && delta.is_finite() && delta != 0.0 {
+                    return operation::scroll_by("compose-paper", operation::AbsoluteOffset { x: 0.0, y: delta });
+                }
+            }
+            Message::EditorCommand(id, message) => {
+                if self.editable() && self.body.focus_text(id) {
+                    return self.update(*message);
+                }
+            }
+            Message::AccountImages(index, old, result) => {
+                self.switching = false;
+                match result {
+                    Ok(ready) => {
+                        let retired =
+                            self.body.pictures().filter_map(|p| p.prepared.as_ref().map(|i| i.id.clone())).collect();
+                        for (id, image) in ready {
+                            if let Some(p) = self.body.picture(id) {
+                                p.loaded(image);
+                            }
+                        }
+                        self.from = index;
+                        self.touch();
+                        return self.release(old, retired);
+                    }
+                    Err(err) => {
+                        self.notice = Some(Notice::new(tr("Couldn't copy the images to the other account."), err))
+                    }
+                }
+            }
+            Message::BlockBody(id, action) => {
+                if self.editable() && self.body.activate(id) {
+                    return self.update(Message::Body(action));
+                }
+            }
+            Message::InsertImage => {
+                if self.editable() {
+                    return self.body.focused_text().map(Message::ChooseImageAt);
+                }
+            }
+            Message::ChooseImageAt(focused) => {
+                if self.editable() {
+                    if let Some(id) = focused {
+                        self.body.focus_text(id);
+                    }
+                    return Task::perform(images::choose(), Message::ImagePath);
+                }
+            }
+            Message::ImagePath(Some(path)) => {
+                return self.body.focused_text().map(move |id| Message::ImageAt(id, path.clone()));
+            }
+            Message::ImageAt(focused, path) => {
+                if let Some(id) = focused {
+                    self.body.focus_text(id);
+                }
+                return self.insert_image(ImageSource::File { path: path.to_string_lossy().into_owned() });
+            }
+            Message::ImagePath(None) => {}
+            Message::ImageLoaded(id, account, result) => return self.image_loaded(id, account, result),
+            Message::SelectImage(id) => {
+                self.body.selected = Some(id);
+                self.removing_image = None;
+            }
+            Message::NextImage(forward) => {
+                let ids = self.body.pictures().map(|p| p.block).collect::<Vec<_>>();
+                if !ids.is_empty() && self.editable() {
+                    let current = ids.iter().position(|id| Some(*id) == self.body.selected);
+                    let next = match (current, forward) {
+                        (Some(at), true) => (at + 1) % ids.len(),
+                        (Some(at), false) => (at + ids.len() - 1) % ids.len(),
+                        (None, true) => 0,
+                        (None, false) => ids.len() - 1,
+                    };
+                    self.body.selected = Some(ids[next]);
+                    self.removing_image = None;
+                    self.leave(None);
+                    return operation::focus(Document::text_id(self.body.active));
+                }
+            }
+            Message::SelectedImageSize(size) => {
+                if let Some(id) = self.body.selected {
+                    return self.update(Message::ImageSize(id, size));
+                }
+            }
+            Message::SelectedImageAttach => {
+                if let Some(id) = self.body.selected {
+                    return self.update(Message::ImageAttach(id));
+                }
+            }
+            Message::SelectedImageRemove => {
+                if let Some(id) = self.body.selected {
+                    return self.update(Message::RemoveImage(id));
+                }
+            }
+            Message::ImageSize(id, size) => {
+                if self.editable()
+                    && let Some(p) = self.body.picture(id)
+                {
+                    p.size = size;
+                    self.touch();
+                }
+            }
+            Message::ImageAttach(id) => {
+                if self.editable()
+                    && let Some(p) = self.body.picture(id)
+                {
+                    p.inline = !p.inline;
+                    self.touch();
+                }
+            }
+            Message::RemoveImage(id) => {
+                if self.editable() && self.body.picture(id).is_some() {
+                    self.body.selected = Some(id);
+                    self.removing_image = Some(id);
+                    self.leave(None);
+                    return operation::focus(Document::text_id(self.body.active));
+                }
+            }
+            Message::ConfirmRemoveImage => {
+                let Some(id) = self.removing_image.take() else { return Task::none() };
+                if self.editable()
+                    && self.body.selected == Some(id)
+                    && let Some(p) = self.body.remove(id)
+                {
+                    self.touch();
+                    if let (Some(prepared), Some(sender)) = (p.prepared, self.sender()) {
+                        if self.saving.is_some() {
+                            self.retired_images.push((sender.account.clone(), prepared.id));
+                            return Task::none();
+                        }
+                        return self.release(sender.account.clone(), vec![prepared.id]);
+                    }
+                }
+            }
+            Message::PasteImage => {
+                if self.editable() {
+                    let account = self.sender().map(|s| s.account.clone()).unwrap_or_default();
+                    let id = self.body.reserve();
+                    self.reveal_caret();
+                    self.touch();
+                    return Task::batch([
+                        Task::perform(images::clipboard(), move |result| {
+                            Message::Clipboard(id, account.clone(), result)
+                        }),
+                        operation::focus(Document::text_id(self.body.active)),
+                    ]);
+                }
+            }
+            Message::Clipboard(id, account, result) => return self.clipboard_received(id, account, result),
+            Message::LeaseImages => return self.lease_images(),
+            Message::ImageLeased(id, account, requested, result) => {
+                if self.sender().is_some_and(|s| s.account == account)
+                    && let Some(p) = self.body.picture(id)
+                    && matches!(&p.source, Some(ImageSource::Prepared { id }) if *id == requested)
+                    && p.prepared.as_ref().is_some_and(|image| image.id == requested)
+                {
+                    match result {
+                        Ok(image) if image.id == requested => p.prepared = Some(image),
+                        Ok(_) => {}
+                        Err(_) => {
+                            p.failed = true;
+                            self.touch();
+                        }
+                    }
+                }
+            }
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Zoom(message) => {
                 let before = self.zoom.factor();
@@ -1672,7 +2182,10 @@ impl<S: ComposeSource + 'static> Window<S> {
                 let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
                 return Task::batch([task, size]);
             }
-            Message::Resized(size) => self.size = size,
+            Message::Resized(size) => {
+                self.size = size;
+                self.reveal_caret();
+            }
             Message::SystemMode(mode) => self.system_mode = mode,
             Message::Appearance(Ok(appearance)) => self.appearance = appearance,
             // The core may be starting up; keep the colours we have.
@@ -1700,6 +2213,7 @@ impl<S: ComposeSource + 'static> Window<S> {
                 // Writing or clicking in the text leaves the recipient fields; scrolling does not.
                 if !matches!(action, text_editor::Action::Scroll { .. }) {
                     self.leave(None);
+                    self.reveal_caret();
                 }
                 // Enter in a list item starts the next one (an empty one ends the list).
                 let enter = matches!(action, text_editor::Action::Edit(Edit::Enter));
@@ -1717,9 +2231,10 @@ impl<S: ComposeSource + 'static> Window<S> {
                 self.tools = false;
                 if self.editable() && self.formatted() {
                     apply_format(&mut self.body, format);
+                    self.reveal_caret();
                     self.touch();
                     // A click on the toolbar took the focus from the text.
-                    return operation::focus(BODY);
+                    return operation::focus(Document::text_id(self.body.active));
                 }
             }
             Message::ShowCc => {
@@ -1773,7 +2288,11 @@ impl<S: ComposeSource + 'static> Window<S> {
             Message::FromMenu => self.menu = !self.menu,
             Message::PickFrom(index) => {
                 self.menu = false;
-                if index < self.senders.len() && index != self.from {
+                if self.editable() && index < self.senders.len() && index != self.from {
+                    if self.body.pictures().next().is_some() {
+                        self.pending_from = Some(index);
+                        return self.save(After::Nothing);
+                    }
                     self.from = index;
                     self.touch();
                 }
@@ -1806,7 +2325,10 @@ impl<S: ComposeSource + 'static> Window<S> {
                 }
                 if self.ready() && !self.asking && !self.is_glance() {
                     self.leave(None);
-                    return if forward { operation::focus_next() } else { operation::focus_previous() };
+                    let focus = if forward { operation::focus_next() } else { operation::focus_previous() };
+                    // Clicking a toolbar button subsequently unfocuses the editor. Remember
+                    // Tab's new body caret now, before that outside click can erase widget focus.
+                    return focus.chain(self.body.focused_text().map(Message::BodyFocused));
                 }
             }
         }
@@ -2070,19 +2592,14 @@ impl<S: ComposeSource + 'static> Window<S> {
         self.show_cc = !opened.cc.is_empty();
         self.show_bcc = !opened.bcc.is_empty();
         self.subject = opened.subject;
-        self.body = Content::with_text(&opened.body);
+        self.body = Content::with_text(&opened.body).into();
         self.attachments = opened.attachments;
         self.in_reply_to = opened.in_reply_to;
         self.history = opened.history;
         if let Some(draft) = prepared.draft {
             // An account that writes plain text writes on the draft's plain text, without marks; one
             // that writes formatted mail keeps the marks of a plain draft as text.
-            if draft.html.is_some() && !self.formatted() {
-                self.body = Content::with_text(&draft.body);
-                self.history = None;
-            } else if draft.html.is_none() && self.formatted() {
-                self.body = Content::with_text(&html::plain_to_markup(&draft.body));
-            }
+            self.body = Document::from_draft(&draft);
             // Saving replaces it; nothing is unsaved until something changes.
             let Draft { id, account, .. } = *draft;
             self.draft = id.map(|id| (id, account));
@@ -2095,7 +2612,7 @@ impl<S: ComposeSource + 'static> Window<S> {
         }
         self.apply_open();
         let focus = if self.to.is_empty() { TO } else { BODY };
-        Task::batch([operation::focus(focus), self.fetch_photos()])
+        Task::batch([operation::focus(focus), self.fetch_photos(), self.load_images()])
     }
 
     /// The forced states of `--demo --open`, once the window is ready.
@@ -2110,7 +2627,8 @@ impl<S: ComposeSource + 'static> Window<S> {
                 self.subject = "Budget review for Q4".to_owned();
                 self.body = Content::with_text(
                     "Hi Jonas,\n\nthe numbers look fine to me. Lena and the team are in copy.\n\nAnna",
-                );
+                )
+                .into();
             }
             Some(Open::Attach) => {
                 self.attachments = vec![
@@ -2144,7 +2662,8 @@ impl<S: ComposeSource + 'static> Window<S> {
                     "Hi Jonas,\n\nthe numbers look **fine** to me, *except* the travel budget. ",
                     "See [the sheet](https://intranet.work.example.org/budget/q4).\n\n",
                     "- Flights\n- Hotels\n\n1. Check\n2. __Approve__\n\n> Could you look before Thursday?\n\nAnna",
-                ));
+                ))
+                .into();
             }
             Some(Open::Suggest) => {
                 self.to = Recipients::parsed("Maria Lopez <maria.lopez@example.org>, jonas@berger");
@@ -2152,7 +2671,8 @@ impl<S: ComposeSource + 'static> Window<S> {
                 self.subject = "Floor plan for the new office".to_owned();
                 self.body = Content::with_text(
                     "Hi Maria, hi Jonas,\n\nthe floor plan is attached. **Please reply by Friday.**\n\nAnna",
-                );
+                )
+                .into();
                 let items = demo_suggestions("jo", Utc::now());
                 let query = "jo".to_owned();
                 self.suggestions = Some(Suggestions { field: Field::To, query, items, highlight: 0, problem: None });
@@ -2164,7 +2684,23 @@ impl<S: ComposeSource + 'static> Window<S> {
                 self.subject = "Budget review for Q4".to_owned();
                 self.body = Content::with_text(
                     "Hi Jonas,\n\nthe numbers look **fine** to me.\n\n> Could you look before Thursday?\n\nAnna",
-                );
+                )
+                .into();
+            }
+            Some(Open::Image | Open::ImageDark | Open::ImageRemove) => {
+                self.paper =
+                    if self.start.open == Some(Open::ImageDark) { ComposePaper::Dark } else { ComposePaper::Light };
+                self.to = Recipients::parsed("Jonas Weber <jonas.weber@work.example.org>");
+                self.subject = "Floor plan for the new office".into();
+                self.body = Content::with_text("Hi Jonas, here is the **floor plan**.\n\nMany thanks,\nAnna").into();
+                self.body.move_to(Cursor { position: Position { line: 1, column: 0 }, selection: None });
+                let id = self.body.reserve();
+                if let Some(p) = self.body.picture(id) {
+                    p.loaded(demo_image());
+                }
+                if self.start.open == Some(Open::ImageRemove) {
+                    self.removing_image = Some(id);
+                }
             }
             Some(Open::Loading | Open::Failed) | None => {}
         }
@@ -2188,7 +2724,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             {
                 continue;
             }
-            if self.attachments.len() >= MAX_ATTACHMENTS {
+            if self.attachments.len() + self.body.pictures().count() >= MAX_ATTACHMENTS {
                 problem.get_or_insert_with(|| {
                     trf("At most {n} attachments fit in one message.", &[("n", &MAX_ATTACHMENTS)])
                 });
@@ -2223,10 +2759,8 @@ impl<S: ComposeSource + 'static> Window<S> {
         let id = self.draft.as_ref().filter(|(_, in_account)| *in_account == account).map(|(id, _)| id.clone());
         let text = self.body.text().replace("\r\n", "\n");
         // Formatted mail: the marks as HTML, and the plain text the core would make of it.
-        let html = self
-            .formatted()
-            .then(|| markup::to_html(&text, self.history.as_deref()))
-            .filter(|markup| !markup.is_empty());
+        let html =
+            self.formatted().then(|| self.body.html(self.history.as_deref())).filter(|markup| !markup.is_empty());
         Draft {
             id,
             account,
@@ -2237,12 +2771,15 @@ impl<S: ComposeSource + 'static> Window<S> {
             body: html.as_deref().map_or(text, html::to_text),
             html,
             in_reply_to: self.in_reply_to.clone(),
-            attachments: self.attachments.iter().map(Attached::draft).collect(),
+            attachments: self.attachments.iter().map(Attached::draft).chain(self.body.attachments()).collect(),
         }
     }
 
     /// What stops a send: no recipient, or words in a field that are no address.
     pub fn problem(&self) -> Option<Notice> {
+        if self.body.failed() {
+            return Some(Notice::plain(tr("The image source is no longer available. Insert it again.")));
+        }
         let refused: Vec<String> = Field::ALL.into_iter().flat_map(|field| self.field(field).refused()).collect();
         if let Some(first) = refused.first() {
             return Some(Notice::plain(trf("{address} isn't a valid address.", &[("address", &first)])));
@@ -2258,7 +2795,13 @@ impl<S: ComposeSource + 'static> Window<S> {
     /// done; the fields are saved once more if they changed meanwhile.
     fn save(&mut self, after: After) -> Task<Message> {
         self.after = self.after.max(after);
-        if self.saving.is_some() || !self.ready() {
+        if self.saving.is_some() || !self.ready() || self.body.pending() {
+            return Task::none();
+        }
+        if self.body.failed() {
+            self.sending = false;
+            self.after = After::Nothing;
+            self.notice = Some(Notice::plain(tr("The image source is no longer available. Insert it again.")));
             return Task::none();
         }
         let draft = self.draft();
@@ -2299,6 +2842,7 @@ impl<S: ComposeSource + 'static> Window<S> {
                 // Everything stays as it is; the clock tries again, and a send or a close that
                 // waited for this save is given up. The old draft stays too: nothing replaced it.
                 self.discard_after = None;
+                self.pending_from = None;
                 self.saving_parts.clear();
                 self.after = After::Nothing;
                 self.sending = false;
@@ -2310,6 +2854,20 @@ impl<S: ComposeSource + 'static> Window<S> {
         // The draft's own parts under their new names: each attachment still there as it was saved
         // takes the name the save gave it, also when others came or went meanwhile.
         let sent = std::mem::take(&mut self.saving_parts);
+        for saved in &draft.attachments {
+            if let DraftAttachment::Image { id, source, .. } = saved {
+                for block in &mut self.body.blocks {
+                    if let Block::Image(p) = block
+                        && p.cid == *id
+                    {
+                        p.saved = Some(source.clone());
+                        if p.prepared.is_none() {
+                            p.source = Some(source.clone());
+                        }
+                    }
+                }
+            }
+        }
         // Parts of a draft that was removed meanwhile could not go along (`save_with_fallback`): they
         // leave the window too, which says so.
         let lost: Vec<&DraftAttachment> = sent.iter().filter(|saved| !draft.attachments.contains(saved)).collect();
@@ -2339,6 +2897,16 @@ impl<S: ComposeSource + 'static> Window<S> {
         if settled {
             self.changed = None;
         }
+        let retired = std::mem::take(&mut self.retired_images);
+        let release = Task::batch(retired.into_iter().map(|(account, id)| self.release(account, vec![id])));
+        if let Some(index) = self.pending_from.take() {
+            if !settled {
+                self.pending_from = Some(index);
+                return Task::batch([release, cleaned, self.save(After::Nothing)]);
+            }
+            return Task::batch([release, cleaned, self.switch_images(index)]);
+        }
+        let cleaned = Task::batch([release, cleaned]);
         if !settled && self.after != After::Nothing {
             // Changed while it was saved, and something waits for it: save what is new first.
             return Task::batch([cleaned, self.save(After::Nothing)]);
@@ -2405,7 +2973,9 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     /// Esc: closes what is open, else asks to close the window.
     fn escape(&mut self) -> Task<Message> {
-        if let Some(field) = self.suggestions.as_ref().map(|open| open.field) {
+        if self.removing_image.take().is_some() || self.body.selected.take().is_some() {
+            return operation::focus(Document::text_id(self.body.active));
+        } else if let Some(field) = self.suggestions.as_ref().map(|open| open.field) {
             self.close_suggestions();
             // Escape also takes the focus from the field (Iced's input); typing goes on there.
             return operation::focus(field.id());
@@ -2439,7 +3009,9 @@ impl<S: ComposeSource + 'static> Window<S> {
     fn exit(&mut self) -> Task<Message> {
         #[cfg(test)]
         self.calls.push(Call::Exit);
-        iced::exit()
+        let ids = self.body.pictures().filter_map(|p| p.prepared.as_ref().map(|p| p.id.clone())).collect::<Vec<_>>();
+        let account = self.sender().map(|s| s.account.clone()).unwrap_or_default();
+        self.release(account, ids).chain(iced::exit())
     }
 
     // ----- events -----
@@ -2455,6 +3027,10 @@ impl<S: ComposeSource + 'static> Window<S> {
         // Mini and strip are displays: no keys.
         if !self.is_glance() {
             all.push(iced::event::listen_with(key));
+            all.push(iced::event::listen_with(images::dropped));
+        }
+        if self.body.pictures().next().is_some() {
+            all.push(iced::time::every(Duration::from_secs(30 * 60)).map(|_| Message::LeaseImages));
         }
         if self.changed.is_some() {
             all.push(iced::time::every(CLOCK).map(Message::Tick));
@@ -2470,12 +3046,17 @@ fn unsure_reason() -> &'static str {
 
 /// Keys, also while a field has the focus: Esc, the shortcut "send" ([`is_send`]), Tab and ↑↓ (for
 /// the suggestions). (Only plain Enter and the letters are the fields'.)
-fn key(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
+fn key(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
     let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. }) = event else {
         return None;
     };
     if is_send(System::current(), &key, physical_key, modifiers) {
         return Some(Message::Send);
+    }
+    if status == iced::event::Status::Ignored
+        && let Some(message) = image_key(&key, modifiers)
+    {
+        return Some(message);
     }
     match key {
         Key::Named(Named::Escape) => Some(Message::Escape),
@@ -2561,11 +3142,21 @@ pub async fn save_draft_kept<S: ComposeSource>(
     let draft = match (stale, draft.id.clone()) {
         (Some(stale), Some(id)) => {
             let mail = source.get_mail(id.clone()).await?;
-            let parts: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|info| !info.inline).collect();
+            let ordinary = stale.iter().filter(|a| !matches!(a, DraftAttachment::Image { .. })).collect::<Vec<_>>();
+            let parts: Vec<&AttachmentInfo> = mail
+                .attachments
+                .iter()
+                .filter(|info| {
+                    !info.inline
+                        && !stale.iter().any(
+                            |a| matches!(a, DraftAttachment::Image { id, .. } if info.content_id.as_ref() == Some(id)),
+                        )
+                })
+                .collect();
             let renamed = |attachment: &DraftAttachment| {
-                let at = stale.iter().position(|old| old == attachment)?;
+                let at = ordinary.iter().position(|old| **old == *attachment)?;
                 let own = matches!(attachment, DraftAttachment::MailPart { message, .. } if *message == id);
-                let info = parts.get(at).filter(|_| own && parts.len() == stale.len())?;
+                let info = parts.get(at).filter(|_| own && parts.len() == ordinary.len())?;
                 Some(DraftAttachment::MailPart { message: id.clone(), part: info.part.clone() })
             };
             let attachments = draft.attachments.iter().map(|old| renamed(old).unwrap_or_else(|| old.clone())).collect();
@@ -2584,17 +3175,31 @@ pub async fn save_draft_kept<S: ComposeSource>(
         return Ok(Kept { draft: saved, unsure: false });
     }
     let Ok(mail) = source.get_mail(id.clone()).await else { return Ok(Kept { draft: saved, unsure: true }) };
-    let parts: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|info| !info.inline).collect();
-    if parts.len() != saved.attachments.len() {
+    let parts: Vec<&AttachmentInfo> = mail
+        .attachments
+        .iter()
+        .filter(|info| {
+            !info.inline
+                && !saved
+                    .attachments
+                    .iter()
+                    .any(|a| matches!(a, DraftAttachment::Image { id, .. } if info.content_id.as_ref() == Some(id)))
+        })
+        .collect();
+    let ordinary = saved.attachments.iter().filter(|a| !matches!(a, DraftAttachment::Image { .. })).collect::<Vec<_>>();
+    if parts.len() != ordinary.len() {
         return Ok(Kept { draft: saved, unsure: false });
     }
     let attachments = saved
         .attachments
         .iter()
-        .zip(parts)
-        .map(|(attachment, info)| match attachment {
+        .map(|attachment| match attachment {
             DraftAttachment::MailPart { message, .. } if names_itself(message) => {
-                DraftAttachment::MailPart { message: id.clone(), part: info.part.clone() }
+                let at = ordinary.iter().position(|a| **a == *attachment);
+                match at.and_then(|at| parts.get(at)) {
+                    Some(info) => DraftAttachment::MailPart { message: id.clone(), part: info.part.clone() },
+                    None => attachment.clone(),
+                }
             }
             other => other.clone(),
         })
@@ -2784,30 +3389,54 @@ impl<S: ComposeSource + 'static> Window<S> {
         }
         fields = fields.push(field(tr("Subject"), self.input(SUBJECT, &self.subject, Message::Subject, None)));
 
-        let mut editor = iced::widget::text_editor(&self.body)
-            .id(BODY)
-            .placeholder(tr("Write your message…"))
-            .size(typo::body().size)
-            .line_height(typo::body().line_height)
-            .font(typo::body().font)
-            .padding(space::m())
-            .height(Fill)
-            .wrapping(Wrapping::WordOrGlyph)
-            .style(style::text_editor_paper)
-            .key_binding(editor_binding);
-        if editable {
-            editor = editor.on_action(Message::Body);
+        let mut page = column![].spacing(space::s());
+        for block in &self.body.blocks {
+            match block {
+                Block::Text { id, content, .. } => {
+                    let id = *id;
+                    let mut editor = iced::widget::text_editor(content)
+                        .id(Document::text_id(id))
+                        .placeholder(tr("Write your message…"))
+                        .size(typo::body().size)
+                        .line_height(typo::body().line_height)
+                        .font(typo::body().font)
+                        .padding(space::m())
+                        .height(iced::Shrink)
+                        .wrapping(Wrapping::WordOrGlyph)
+                        .style(style::text_editor_paper)
+                        .key_binding(move |press| {
+                            editor_command(
+                                id,
+                                self.removing_image.is_some() && self.removing_image == self.body.selected,
+                                press,
+                            )
+                        });
+                    if editable {
+                        editor = editor.on_action(move |action| Message::BlockBody(id, action));
+                    }
+                    page = page.push(document::reveal_caret(
+                        editor.highlight_with::<MarkupHighlighter>((), look_format).into(),
+                        content,
+                        self.follow_caret.then_some(self.caret_epoch),
+                    ));
+                }
+                Block::Image(picture) => page = page.push(self.picture_block(picture, narrow)),
+            }
         }
-        let text: Element<'_, Message> = if self.formatted() {
-            editor.highlight_with::<MarkupHighlighter>((), look_format).into()
-        } else {
-            editor.into()
-        };
-        let mut page = column![text].height(Fill);
         if let Some(signature) = self.sender().and_then(|sender| sender.signature.as_deref()) {
             page = page.push(container(signature_block(signature)).padding(Padding::new(space::m()).top(0.0)));
         }
-        let paper = container(page).width(Fill).height(Fill).style(style::container::paper);
+        let paper = container(document::paper_scroll(
+            iced::widget::scrollable(page)
+                .id("compose-paper")
+                .height(Fill)
+                .direction(iced::widget::scrollable::Direction::Vertical(style::scrollbar()))
+                .style(style::scrollable)
+                .into(),
+        ))
+        .width(Fill)
+        .height(Fill)
+        .style(style::container::paper);
         let mut form =
             column![fields, self.toolbar(narrow, &anchors.tools), themed::in_paper(paper, self.dark_paper())]
                 .spacing(space::s())
@@ -2826,6 +3455,87 @@ impl<S: ComposeSource + 'static> Window<S> {
         self.paper == ComposePaper::Dark
     }
 
+    fn picture_block<'a>(&self, picture: &'a document::Picture, narrow: bool) -> Element<'a, Message> {
+        let id = picture.block;
+        let mut block = column![].spacing(space::s());
+        let content: Element<'a, Message> = if picture.loading {
+            typo::text(typo::meta(), tr("Preparing image…")).into()
+        } else if picture.failed {
+            typo::text(typo::meta(), tr("The image source is no longer available. Insert it again.")).into()
+        } else if !picture.inline {
+            widgets::chip(Some(Mark::Icon(Icon::Image)), tr("Image attachment"), None)
+        } else if let Some(preview) = &picture.preview {
+            let available = (self.toolbar_room(narrow) - 2.0 * space::m()).max(size::control_sm());
+            let natural = if picture.size == ImageSize::Original {
+                picture.prepared.as_ref().map_or(picture.width, |p| p.original_width)
+            } else {
+                picture.width
+            };
+            image(preview.clone())
+                .width((picture.size.width(natural) as f32).min(available))
+                .content_fit(iced::ContentFit::Contain)
+                .into()
+        } else {
+            typo::text(typo::meta(), tr("Image")).into()
+        };
+        block = block
+            .push(button(content).padding(space::xs()).style(style::button::ghost).on_press(Message::SelectImage(id)));
+        if self.body.selected == Some(id) {
+            if self.removing_image == Some(id) {
+                block = block.push(typo::text(typo::body(), tr("Remove this image?")));
+                block = block.push(widgets::chip_row(vec![
+                    widgets::text_button(None, tr("Remove"), style::button::danger, Some(Message::ConfirmRemoveImage)),
+                    widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::Escape)),
+                    widgets::kbd("Enter / Esc"),
+                ]));
+                return container(block).padding(space::m()).width(Fill).into();
+            }
+            let mut actions = [ImageSize::Small, ImageSize::Medium, ImageSize::Large, ImageSize::Original]
+                .into_iter()
+                .map(|size| {
+                    let label = match size {
+                        ImageSize::Small => tr("Small"),
+                        ImageSize::Medium => tr("Medium"),
+                        ImageSize::Large => tr("Large"),
+                        ImageSize::Original => tr("Original"),
+                    };
+                    widgets::text_button(
+                        None,
+                        label,
+                        if picture.size == size { style::button::secondary } else { style::button::ghost },
+                        (self.editable() && !picture.loading && !picture.failed)
+                            .then_some(Message::ImageSize(id, size)),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let label = if picture.inline { tr("As attachment") } else { tr("Embed image") };
+            actions.push(widgets::text_button(
+                Some(Icon::Paperclip),
+                label,
+                style::button::ghost,
+                (self.editable() && !picture.loading).then_some(Message::ImageAttach(id)),
+            ));
+            actions.push(widgets::text_button(
+                Some(Icon::Trash2),
+                tr("Remove"),
+                style::button::ghost,
+                self.editable().then_some(Message::RemoveImage(id)),
+            ));
+            block = block.push(widgets::chip_row(actions));
+            block = block.push(
+                typo::text(
+                    typo::caption(),
+                    trf(
+                        "Images: {key}+I next · Shift previous · 1–4 size · A attach · Backspace remove",
+                        &[("key", &shortcut("Alt"))],
+                    ),
+                )
+                .style(theme::text_3),
+            );
+        }
+        container(block).padding(space::m()).width(Fill).into()
+    }
+
     /// The width the toolbar has: the window's below the title band, less the form's padding.
     fn toolbar_room(&self, narrow: bool) -> f32 {
         let padding = if narrow { space::m() } else { space::l() };
@@ -2840,7 +3550,7 @@ impl<S: ComposeSource + 'static> Window<S> {
         let editable = self.editable();
         let mut bar = row![].spacing(space::xs()).align_y(Alignment::Center);
         if self.formatted() {
-            let shown = fits(self.toolbar_room(narrow));
+            let shown = fits(self.toolbar_room(narrow) - size::control_sm() - space::xs());
             for (i, group) in Format::GROUPS.iter().enumerate() {
                 let buttons: Vec<Format> = group.iter().copied().filter(|format| shown.contains(format)).collect();
                 if buttons.is_empty() {
@@ -2864,6 +3574,7 @@ impl<S: ComposeSource + 'static> Window<S> {
                 bar = bar.push(widgets::anchored(anchor, more));
             }
         }
+        bar = bar.push(widgets::icon_button(Icon::Image, tr("Insert image"), editable.then_some(Message::InsertImage)));
         let paper = if self.dark_paper() { tr("Switch to light paper") } else { tr("Switch to dark paper") };
         let toggle = widgets::icon_button(Icon::Contrast, paper, self.ready().then_some(Message::TogglePaper));
         bar.push(Space::new().width(Fill)).push(toggle).into()
@@ -2871,7 +3582,7 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     /// The menu "…" of the toolbar: the formats that did not fit, in their order.
     fn tools_menu(&self, anchor: &Anchor, narrow: bool) -> Element<'_, Message> {
-        let shown = fits(self.toolbar_room(narrow));
+        let shown = fits(self.toolbar_room(narrow) - size::control_sm() - space::xs());
         let items = Format::ALL
             .into_iter()
             .filter(|format| !shown.contains(format))
@@ -3216,7 +3927,36 @@ pub(crate) fn is_send(
 
 /// The text's key bindings: the editor's own, except that the shortcut "send" ([`is_send`]) sends
 /// instead of starting a new line.
+fn editor_command(id: u64, confirming: bool, press: text_editor::KeyPress) -> Option<Binding<Message>> {
+    if !matches!(press.status, text_editor::Status::Focused { .. }) {
+        return None;
+    }
+    let binding = if confirming && press.modifiers.is_empty() && press.key == Key::Named(Named::Enter) {
+        Some(Binding::Custom(Message::ConfirmRemoveImage))
+    } else {
+        // Escape uses only the window listener; native Unfocus publishes no custom message.
+        editor_binding(press)
+    };
+    match binding {
+        Some(Binding::Custom(message)) => Some(Binding::Custom(Message::EditorCommand(id, Box::new(message)))),
+        other => other,
+    }
+}
+
 fn editor_binding(press: text_editor::KeyPress) -> Option<Binding<Message>> {
+    if !matches!(press.status, text_editor::Status::Focused { .. }) {
+        return None;
+    }
+    if let Some(message) = image_key(&press.key, press.modifiers) {
+        return Some(Binding::Custom(message));
+    }
+    if press.modifiers.command()
+        && !press.modifiers.alt()
+        && !press.modifiers.shift()
+        && matches!(press.key.as_ref(), Key::Character("v" | "V"))
+    {
+        return Some(Binding::Custom(Message::PasteImage));
+    }
     if is_send(System::current(), &press.key, press.physical_key, press.modifiers) {
         return Some(Binding::Custom(Message::Send));
     }
@@ -3226,6 +3966,25 @@ fn editor_binding(press: text_editor::KeyPress) -> Option<Binding<Message>> {
         return Some(Binding::Custom(Message::Format(format)));
     }
     Binding::from_key_press(press)
+}
+
+/// Image actions also work without focusable buttons (Iced 0.14). The editor captures these
+/// before native editing; other fields dispatch them through the window's ignored-key listener.
+fn image_key(key: &Key, modifiers: keyboard::Modifiers) -> Option<Message> {
+    if !modifiers.command() || !modifiers.alt() {
+        return None;
+    }
+    match key.as_ref() {
+        Key::Character("i" | "I") => Some(Message::NextImage(!modifiers.shift())),
+        Key::Character("o" | "O") => Some(Message::InsertImage),
+        Key::Character("1") => Some(Message::SelectedImageSize(ImageSize::Small)),
+        Key::Character("2") => Some(Message::SelectedImageSize(ImageSize::Medium)),
+        Key::Character("3") => Some(Message::SelectedImageSize(ImageSize::Large)),
+        Key::Character("4") => Some(Message::SelectedImageSize(ImageSize::Original)),
+        Key::Character("a" | "A") => Some(Message::SelectedImageAttach),
+        Key::Named(Named::Backspace | Named::Delete) => Some(Message::SelectedImageRemove),
+        _ => None,
+    }
 }
 
 /// The formatting of `Cmd`/`Ctrl` and B, I, U or K (no Shift, no Alt); `None` for other keys.
@@ -4873,7 +5632,7 @@ mod tests {
     }
 
     #[test]
-    fn formatted_mail_is_saved_as_html_with_the_history_marked_and_plain_mail_as_text() {
+    fn formatted_mail_is_saved_as_html_without_changing_plain_account_defaults() {
         let mut window = ready(&["--reply", "m:w1"]);
         assert!(window.formatted(), "the demo writes formatted mail");
         let _ = window.update(Message::Body(text_editor::Action::Move(Motion::DocumentStart)));
@@ -4888,16 +5647,350 @@ mod tests {
         assert!(draft.body.starts_with("Thanks, Jonas\n\n"), "the plain text beside it: {}", draft.body);
         assert!(window.unsaved(), "formatting is a change");
 
-        // An account that writes plain text: no toolbar, no HTML, the marks stay as typed.
+        // This compose window writes HTML without changing the account's plain-text default.
         window.senders.iter_mut().for_each(|sender| sender.html = false);
         let _ = window.update(Message::Format(Format::Italic));
         let plain = window.draft();
-        assert_eq!(plain.html, None);
-        assert!(plain.body.starts_with("Thanks, **Jonas**"), "{}", plain.body);
+        assert!(plain.html.is_some());
+        assert!(window.senders.iter().all(|sender| !sender.html));
         for size in [WIDE, NARROW] {
             let _ = window.update(Message::Resized(size));
             let _ = window.view();
         }
+    }
+
+    #[test]
+    fn image_imports_wait_for_save_preserve_later_text_and_reconcile_by_cid() {
+        let mut window = ready(&[]);
+        type_in(&mut window, "bob@example.org", "Plan", "Before\nAfter");
+        window.body.move_to(Cursor { position: Position { line: 1, column: 0 }, selection: None });
+        let first = window.body.reserve();
+        window.touch();
+        let _ = window.update(Message::Tick(later()));
+        assert!(window.saving.is_none(), "no draft snapshot while an import is unresolved");
+        let _ = window.update(Message::Body(text_editor::Action::Edit(Edit::Paste(Arc::new("Latest ".into())))));
+        let account = window.sender().expect("sender").account.clone();
+        let _ = window.update(Message::ImageLoaded(first, account.clone(), Ok(demo_image())));
+        let first_cid = window.body.picture(first).expect("picture").cid.clone();
+        let draft = window.draft();
+        let markup = draft.html.as_deref().expect("html");
+        assert!(markup.find("Before").expect("before") < markup.find("cid:").expect("image"));
+        assert!(markup.find("cid:").expect("image") < markup.find("Latest").expect("after"));
+        let second = window.body.reserve();
+        let _ = window.update(Message::ImageLoaded(second, account.clone(), Ok(demo_image())));
+        let _ = window.update(Message::Tick(later()));
+        let revision = window.revision;
+        let mut saved = window.draft();
+        saved.id = Some("m:new".into());
+        for (i, a) in saved.attachments.iter_mut().enumerate() {
+            if let DraftAttachment::Image { source, .. } = a {
+                *source = ImageSource::MailPart { message: "m:new".into(), part: format!("{}", 7 + i) };
+            }
+        }
+        let _ = window.update(Message::RemoveImage(first));
+        assert!(window.body.picture(first).is_some(), "removal needs confirmation");
+        let _ = window.update(Message::ConfirmRemoveImage);
+        let second_cid = window.body.picture(second).expect("second").cid.clone();
+        let _ = window.update(Message::Saved(revision, Box::new(Ok(Kept { draft: saved, unsure: false }))));
+        let kept = window.body.picture(second).expect("still there");
+        assert_ne!(kept.cid, first_cid);
+        assert_eq!(kept.cid, second_cid);
+        assert_eq!(kept.saved, Some(ImageSource::MailPart { message: "m:new".into(), part: "8".into() }));
+        assert!(!window.draft().html.expect("html").contains(&first_cid));
+        let _ = window.update(Message::ImageAttach(second));
+        assert!(!window.draft().html.expect("html").contains(&second_cid));
+        let _ = window.update(Message::ImageSize(second, ImageSize::Original));
+        assert!(window.unsaved());
+    }
+
+    #[test]
+    fn clipboard_plain_text_falls_back_once_at_the_original_selection() {
+        let mut window = ready(&[]);
+        type_in(&mut window, "bob@example.org", "Text", "Grüße Welt");
+        window.body.move_to(Cursor {
+            position: Position { line: 0, column: 8 },
+            selection: Some(Position { line: 0, column: 12 }),
+        });
+        let id = window.body.reserve();
+        let account = window.sender().expect("sender").account.clone();
+        let _ = window.update(Message::Clipboard(id, account, Ok(images::Clipboard::Text("世界".into()))));
+        assert_eq!(window.body.text(), "Grüße 世界");
+        assert_eq!(window.body.cursor().position, Position { line: 0, column: "Grüße 世界".len() });
+        assert_eq!(window.body.pictures().count(), 0);
+        assert_eq!(window.draft().body, "Grüße 世界");
+    }
+
+    #[test]
+    fn button_and_drop_image_paths_use_the_focused_block_after_tab() {
+        let mut window = ready(&[]);
+        window.body = Content::with_text("Before After").into();
+        window.body.move_to(Cursor { position: Position { line: 0, column: 7 }, selection: None });
+        let first = window.body.reserve();
+        let suffix = window.body.active;
+        window.body.activate(0);
+        let _ = window.update(Message::BodyFocused(Some(suffix)));
+        let _ = window.update(Message::ChooseImageAt(None)); // Toolbar click already unfocused it.
+        assert_eq!(window.body.active, suffix, "button remembers the editor before opening its dialog");
+        window.body.activate(0);
+        let _ = window.update(Message::ImageAt(Some(suffix), PathBuf::from("/unused/image.png")));
+        let images = window.body.pictures().map(|p| p.block).collect::<Vec<_>>();
+        assert_eq!(images[0], first, "drop inserts after the first image, not at the old prefix caret");
+        assert_eq!(images.len(), 2);
+        assert_eq!(window.body.text(), "After");
+    }
+
+    #[test]
+    fn stale_lease_replies_cannot_replace_or_fail_an_account_copys_source() {
+        let mut window = ready(&[]);
+        let account_a = window.sender().expect("sender").account.clone();
+        let first = window.body.reserve();
+        let old = demo_image();
+        let _ = window.update(Message::ImageLoaded(first, account_a.clone(), Ok(old.clone())));
+        let mut copied = demo_image();
+        copied.id = "prepared-in-b".into();
+        let _ = window.update(Message::AccountImages(1, account_a.clone(), Ok(vec![(first, copied.clone())])));
+        let account_b = window.sender().expect("sender").account.clone();
+        assert_ne!(account_a, account_b);
+        for result in [Ok(old.clone()), Err(ComposeError::NotFound)] {
+            let _ = window.update(Message::ImageLeased(first, account_a.clone(), old.id.clone(), result));
+            let p = window.body.picture(first).expect("image");
+            assert_eq!(p.source, Some(ImageSource::Prepared { id: copied.id.clone() }));
+            assert_eq!(p.prepared.as_ref().expect("metadata").id, copied.id);
+            assert!(!p.failed);
+        }
+        let _ = window.update(Message::ImageLeased(first, account_b.clone(), old.id, Err(ComposeError::NotFound)));
+        assert!(!window.body.picture(first).expect("image").failed, "same account but stale source is also ignored");
+        let _ = window.update(Message::ImageLeased(first, account_b, copied.id, Err(ComposeError::NotFound)));
+        assert!(window.body.picture(first).expect("image").failed, "a current lease error is not swallowed");
+    }
+
+    #[test]
+    fn pending_clipboard_paste_follows_through_real_paper_layout_notifications() {
+        use iced::advanced::{renderer::Headless as _, widget::operation as raw};
+        use iced::futures::StreamExt as _;
+        use iced_test::runtime::{Action, UserInterface, task, user_interface};
+        let body = typo::body();
+        let mut renderer = block_on(iced::Renderer::new(body.font, body.size, None)).expect("headless renderer");
+        let mut cache = user_interface::Cache::default();
+        let mut window = ready(&[]);
+        window.size = NARROW;
+        paste(&mut window.body, &"prefix line\n".repeat(90));
+        let _ = window.update(Message::PasteImage);
+        let reservation = window.body.selected.expect("clipboard reservation");
+        let account = window.sender().expect("sender").account.clone();
+
+        let mut frame = |window: &mut Window<DemoSource>, focus: bool, pending: Task<Message>| {
+            let mut ui = UserInterface::build(window.view(), NARROW, std::mem::take(&mut cache), &mut renderer);
+            if focus {
+                ui.operate(&renderer, &mut raw::focusable::focus(Document::text_id(window.body.active).into()));
+            }
+            if let Some(stream) = task::into_stream(pending) {
+                for action in block_on(stream.collect::<Vec<_>>()) {
+                    if let Action::Widget(mut operation) = action {
+                        ui.operate(&renderer, operation.as_mut());
+                    }
+                }
+            }
+            let mut messages = Vec::new();
+            ui.update(
+                &[iced::Event::Window(iced::window::Event::RedrawRequested(Instant::now()))],
+                iced::mouse::Cursor::Unavailable,
+                &mut renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut messages,
+            );
+            cache = ui.into_cache();
+            assert!(!messages.iter().any(|m| matches!(m, Message::PaperScrolled)), "layout is not user scrolling");
+            let mut deltas = Vec::new();
+            let mut operations = Vec::new();
+            for message in messages {
+                if let Message::RevealCaret(_, delta) = message {
+                    deltas.push(delta);
+                }
+                if let Some(stream) = task::into_stream(window.update(message)) {
+                    for action in block_on(stream.collect::<Vec<_>>()) {
+                        if let Action::Widget(operation) = action {
+                            operations.push(operation);
+                        }
+                    }
+                }
+            }
+            let mut ui = UserInterface::build(window.view(), NARROW, std::mem::take(&mut cache), &mut renderer);
+            for mut operation in operations {
+                ui.operate(&renderer, operation.as_mut());
+            }
+            cache = ui.into_cache();
+            deltas
+        };
+        assert!(frame(&mut window, true, Task::none()).iter().any(|delta| *delta > 1000.0));
+        frame(&mut window, false, Task::none());
+        assert!(window.follow_caret, "reservation layout and programmatic scroll retain pending paste intent");
+        let pending = window.update(Message::Clipboard(
+            reservation,
+            account,
+            Ok(images::Clipboard::Text("wrapped text ".repeat(1000))),
+        ));
+        assert!(
+            frame(&mut window, false, pending).iter().any(|delta| *delta > 500.0),
+            "delayed text paste reveals its endpoint"
+        );
+        for manual_scroll in [false, true] {
+            let _ = window.update(Message::PasteImage);
+            let id = window.body.selected.expect("image reservation");
+            frame(&mut window, true, Task::none());
+            frame(&mut window, false, Task::none());
+            if manual_scroll {
+                let _ = window.update(Message::PaperScrolled);
+            }
+            let account = window.sender().expect("sender").account.clone();
+            let mut image = demo_image();
+            image.width = 400;
+            image.height = 1600;
+            let _ = window.update(Message::ImageLoaded(id, account, Ok(image)));
+            // Deterministically model the renderer resolving encoded preview geometry later:
+            // consume the epoch with a short preview, then grow it without another app message.
+            window.body.picture(id).expect("image").preview =
+                Some(iced::widget::image::Handle::from_rgba(400, 1, vec![0; 400 * 4]));
+            frame(&mut window, false, Task::none());
+            window.body.picture(id).expect("image").preview =
+                Some(iced::widget::image::Handle::from_rgba(40, 160, vec![0; 40 * 160 * 4]));
+            let deltas = frame(&mut window, false, Task::none());
+            if manual_scroll {
+                assert!(deltas.is_empty(), "a tall reply never re-enables cancelled follow");
+            } else {
+                assert!(
+                    deltas.iter().any(|delta| *delta > 100.0),
+                    "a tall reply keeps the focused suffix visible: {deltas:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn manual_paper_scroll_survives_successful_and_failed_async_image_replies() {
+        for result in [Ok(demo_image()), Err(ComposeError::NotFound)] {
+            let mut window = ready(&[]);
+            let account = window.sender().expect("sender").account.clone();
+            let _ = window.insert_image(ImageSource::File { path: "/unused/image.png".into() });
+            let id = window.body.selected.expect("reservation");
+            let epoch = window.caret_epoch;
+            let _ = window.update(Message::PaperScrolled);
+            let revision = window.revision;
+            let _ = window.update(Message::ImageLoaded(id, account, result));
+            assert!(window.revision > revision, "asynchronous changes still autosave");
+            assert!(!window.follow_caret && window.caret_epoch == epoch, "no scroll intent from a late reply");
+            let stale = window.update(Message::RevealCaret(epoch, 1000.0));
+            assert_eq!(stale.units(), 0, "an already queued reveal cannot undo manual scrolling");
+            let _ = window.update(Message::Body(text_editor::Action::Edit(Edit::Insert('x'))));
+            assert!(window.follow_caret && window.caret_epoch != epoch, "new typing follows again");
+        }
+    }
+
+    #[test]
+    fn editor_custom_bindings_only_dispatch_from_the_focused_block() {
+        let press = |key: Key, modifiers, focused| text_editor::KeyPress {
+            modified_key: key.clone(),
+            key,
+            physical_key: keyboard::key::Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
+            modifiers,
+            text: None,
+            status: if focused {
+                text_editor::Status::Focused { is_hovered: false }
+            } else {
+                text_editor::Status::Active
+            },
+        };
+        let command = keyboard::Modifiers::COMMAND;
+        for key in [
+            Key::Character("v".into()),
+            Key::Character("a".into()),
+            Key::Character("o".into()),
+            Key::Named(Named::Enter),
+        ] {
+            assert!(editor_command(2, true, press(key, command | keyboard::Modifiers::ALT, false)).is_none());
+        }
+        let paste = editor_command(2, false, press(Key::Character("v".into()), command, true));
+        assert!(
+            matches!(paste, Some(Binding::Custom(Message::EditorCommand(2, message))) if matches!(*message, Message::PasteImage))
+        );
+        assert!(
+            matches!(
+                editor_command(2, true, press(Key::Named(Named::Escape), keyboard::Modifiers::empty(), true)),
+                Some(Binding::Unfocus)
+            ),
+            "Escape has no second custom dispatch"
+        );
+        let confirm = editor_command(2, true, press(Key::Named(Named::Enter), keyboard::Modifiers::empty(), true));
+        assert!(
+            matches!(confirm, Some(Binding::Custom(Message::EditorCommand(2, message))) if matches!(*message, Message::ConfirmRemoveImage))
+        );
+    }
+
+    #[test]
+    fn tab_focused_paste_uses_its_block_and_text_still_pastes_while_an_image_is_loading() {
+        let mut window = ready(&[]);
+        window.body = Content::with_text("Before After").into();
+        window.body.move_to(Cursor { position: Position { line: 0, column: 7 }, selection: None });
+        let first = window.body.reserve();
+        let suffix = window.body.active;
+        assert!(window.body.activate(0)); // Mouse previously focused the prefix; Tab produces no action.
+        let _ = window.update(Message::EditorCommand(suffix, Box::new(Message::PasteImage)));
+        let placeholder = window.body.selected.expect("paste reservation even while first image loads");
+        assert_ne!(placeholder, first);
+        let account = window.sender().expect("sender").account.clone();
+        let _ = window.update(Message::Clipboard(placeholder, account, Ok(images::Clipboard::Text("Pasted ".into()))));
+        assert!(window.body.pictures().any(|p| p.block == first && p.loading));
+        assert_eq!(window.body.text(), "Pasted After");
+        assert!(matches!(&window.body.blocks[0], Block::Text { content, .. } if content.text() == "Before "));
+        let _ = window.update(Message::RemoveImage(first));
+        let _ = window.update(Message::BlockBody(suffix, text_editor::Action::Edit(Edit::Insert('x'))));
+        assert!(window.removing_image.is_none(), "writing cancels removal before the prompt disappears");
+        let _ = window.update(Message::ConfirmRemoveImage);
+        assert!(window.body.picture(first).is_some());
+    }
+
+    #[test]
+    fn text_paste_is_not_disabled_when_attachment_capacity_is_full() {
+        let mut window = ready(&[]);
+        window.attachments = (0..MAX_ATTACHMENTS)
+            .map(|n| Attached::File { path: PathBuf::from(format!("/unused/{n}")), name: n.to_string(), size: 0 })
+            .collect();
+        let _ = window.update(Message::PasteImage);
+        let placeholder = window.body.selected.expect("read clipboard despite attachment limit");
+        let account = window.sender().expect("sender").account.clone();
+        let _ = window.update(Message::Clipboard(placeholder, account, Ok(images::Clipboard::Text("Text".into()))));
+        assert_eq!(window.body.text(), "Text");
+        assert_eq!(window.body.pictures().count(), 0);
+    }
+
+    #[test]
+    fn image_keyboard_actions_and_removal_confirmation_keep_sources_until_confirmed() {
+        let mut window = ready(&[]);
+        let account = window.sender().expect("sender").account.clone();
+        let first = window.body.reserve();
+        let _ = window.update(Message::ImageLoaded(first, account.clone(), Ok(demo_image())));
+        let second = window.body.reserve();
+        let _ = window.update(Message::ImageLoaded(second, account, Ok(demo_image())));
+        let modifiers = keyboard::Modifiers::COMMAND | keyboard::Modifiers::ALT;
+        let action = |key: Key| image_key(&key, modifiers).expect("image shortcut");
+        let _ = window.update(action(Key::Character("i".into())));
+        assert_eq!(window.body.selected, Some(first), "cycles from last to first");
+        let _ = window.update(action(Key::Character("4".into())));
+        assert_eq!(window.body.picture(first).expect("image").size, ImageSize::Original);
+        let _ = window.update(action(Key::Character("a".into())));
+        assert!(!window.body.picture(first).expect("image").inline);
+        let revision = window.revision;
+        let _ = window.update(action(Key::Named(Named::Backspace)));
+        assert_eq!(window.removing_image, Some(first));
+        assert!(window.body.picture(first).expect("image").prepared.is_some());
+        assert_eq!(window.revision, revision, "no destructive edit before confirmation");
+        let _ = window.update(Message::Escape);
+        assert!(window.removing_image.is_none());
+        assert!(window.body.picture(first).is_some());
+        let _ = window.update(Message::RemoveImage(first));
+        let _ = window.update(Message::ConfirmRemoveImage);
+        assert!(window.body.picture(first).is_none());
+        assert!(window.body.picture(second).is_some());
     }
 
     #[test]
@@ -4935,6 +6028,8 @@ mod tests {
             &["--open", "suggest"],
             &["--open", "paper-dark"],
             &["--open", "format"],
+            &["--open", "image"],
+            &["--open", "image-dark"],
         ];
         for words in states {
             let mut window = ready(words);

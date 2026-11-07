@@ -1221,6 +1221,7 @@ type Stored = (Account, MailAccountConfig, Result<Option<Secret>, String>);
 /// The mail accounts of the core. Built by [`MailService::system`]; nothing is read or sent before
 /// [`MailService::start`].
 pub struct MailService {
+    pub(crate) images: super::images::ImageStore,
     /// `accounts.json`; `None` without a home directory, and then there are no mail accounts.
     accounts_file: Option<PathBuf>,
     secrets: Arc<dyn TokenStore>,
@@ -1332,6 +1333,7 @@ impl MailService {
             super::filters::MailFilters::at(dirs.as_ref().map(|dirs| dirs.data.join(super::filters::FILE_NAME)));
         let dirs_logos = dirs.as_ref().map(|dirs| dirs.logos.clone());
         MailService {
+            images: super::images::ImageStore::default(),
             accounts_file,
             secrets,
             dirs,

@@ -1331,6 +1331,9 @@ impl PimService {
             | Request::MoveMail { .. }
             | Request::DeleteMail { .. }
             | Request::SaveDraft { .. }
+            | Request::PrepareMailImage { .. }
+            | Request::UploadMailImage { .. }
+            | Request::ReleaseMailImages { .. }
             | Request::SendDraft { .. }
             | Request::GetDraft { .. }
             | Request::Unsubscribe { .. } => return None,
