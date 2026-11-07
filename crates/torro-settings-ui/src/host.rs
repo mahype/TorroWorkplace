@@ -1066,6 +1066,12 @@ impl Host {
             // Escape on a suite page closes its question or dropdown first, on Accounts or AI its
             // dialog or the account's page.
             Message::Back => {
+                // The section menu of the medium and narrow header first (review of #554): open, it
+                // is what Escape closes, not the settings.
+                if self.menu {
+                    self.menu = false;
+                    return Outcome::None;
+                }
                 if let Some(close) =
                     self.accounts.as_ref().filter(|_| self.on_accounts_page()).and_then(accounts::escape)
                 {
@@ -2018,6 +2024,16 @@ mod tests {
     #[test]
     fn escape_closes_the_settings() {
         let mut host = host();
+        assert!(matches!(host.update::<()>(Message::Back), Outcome::Close));
+    }
+
+    /// Review of #554: with the section menu of the header open, Escape closes the menu first and
+    /// only the next one the settings.
+    #[test]
+    fn escape_closes_the_section_menu_first() {
+        let mut host = host();
+        let _: Outcome<()> = host.update(Message::Menu);
+        assert!(matches!(host.update::<()>(Message::Back), Outcome::None));
         assert!(matches!(host.update::<()>(Message::Back), Outcome::Close));
     }
 

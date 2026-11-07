@@ -3294,7 +3294,7 @@ fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
     if searched {
         sections = widgets::matching_sections(sections, &state.model_query);
     }
-    let first = sections.iter().find_map(|section| section.items.first()).map(|item| item.on_press.clone());
+    let first = widgets::first_choice(&sections, &state.model_query);
     let mut rows: Vec<Element<'a, Message>> = Vec::new();
     for (index, section) in sections.into_iter().enumerate() {
         if index > 0 {
@@ -3318,14 +3318,14 @@ fn sorting_menu<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message
         }
     }
     let menu: Element<'a, Message> = if searched {
-        widgets::search_menu(
+        widgets::escape_free(widgets::search_menu(
             widgets::DROPDOWN_SEARCH,
             &state.model_query,
             Message::ModelQuery,
             first.unwrap_or(Message::CloseSortingMenu),
             rows,
             size::panel(),
-        )
+        ))
     } else {
         // Past a panel's height it scrolls, as the pick list it replaces did.
         let card =
