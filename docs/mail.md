@@ -120,8 +120,7 @@ spricht nur über IPC mit dem Dienst wie Kalender und Aufgaben.
   einbetten, Schriftgröße und Textfarbe kann es nicht zeigen. Das Schreibfenster schreibt HTML, ohne die
   Reintext-Voreinstellung eines Kontos umzuschreiben. Reintext-Entwürfe werden dabei als Text escaped.
   **Bilder im Text (#461)** stehen als eigene Blöcke zwischen Textfeldern, am Cursor bzw. anstelle der Auswahl:
-  über „Bild“, Datei-Ziehen oder Cmd/Ctrl+V mit einem Screenshot. Ohne Bild wird nur reiner Text einmal eingefügt;
-  formatierter Text und Dateien aus der Zwischenablage bleiben #462. Unter Wayland liefert winit 0.30 keine
+   über „Bild“, Datei-Ziehen oder Cmd/Ctrl+V mit einem Screenshot. Unter Wayland liefert winit 0.30 keine
   Datei-Drops: dort bleiben Knopf und Screenshot, ohne eigenen Drag-and-drop-Unterbau.
   Beim gewählten Bild stehen Klein/Mittel/Groß (höchstens natürliche Breite bzw. 320/640/960 Pixel), Original,
   „Als Anhang“ und Entfernen. Normal wird orientiert, auf höchstens 1600 Pixel Breite verkleinert, nie vergrößert,
@@ -132,7 +131,23 @@ spricht nur über IPC mit dem Dienst wie Kalender und Aufgaben.
   Versand, statt ein Bild unbemerkt wegzulassen. Fenster und Papier können weiterhin unabhängig hell/dunkel sein.
   Tastatur: Cmd/Ctrl+Alt+O öffnet den Bilddialog, Cmd/Ctrl+Alt+I wählt das nächste Bild (mit Umschalt das vorige);
   danach wählen Cmd/Ctrl+Alt+1–4 die Größe und Cmd/Ctrl+Alt+A wechselt Anhang/Einbettung.
-  Cmd/Ctrl+Alt+Rücktaste öffnet die Rückfrage vor dem Entfernen; Enter bestätigt, Escape bricht ab.
+   Cmd/Ctrl+Alt+Rücktaste öffnet die Rückfrage vor dem Entfernen; Enter bestätigt, Escape bricht ab.
+   **Einfügen aus anderen Programmen (#462)** bevorzugt native Dateilisten (absolute lokale reguläre Dateien,
+   keine Symlinks), dann HTML, Screenshot-Pixel und Text. Bilddateien werden normale Anhänge, Screenshots nutzen
+   die bestehenden Bild-Blöcke und Uploads. HTML aus Browser, Office und Mail wird zu den Editorzeichen:
+   Fett/Kursiv/Unterstrichen, Listen, Zitate und sichere Web-/Mail-Links bleiben; Tabellen werden Text.
+   Office-Schriftstile und Mso-Listen werden semantisch normalisiert. Fremdstile, ausführbare Inhalte, sämtliche
+   Bildquellen sowie Signatur-/Historienklassen werden entfernt; nichts wird geladen.
+   Fünf Sekunden lang bietet „Mit Formatierung eingefügt · Nur Text behalten“ den Ersatz nur dieser Einfügung
+   an (auch Cmd/Ctrl+Alt+V). Textänderung, Formatierung, nächste Einfügung und Kontowechsel entwerten den Hinweis,
+   Autosave nicht. Umschalt+Cmd+V (sonst Strg+Umschalt+V) liest ausschließlich Text, ersatzweise gesäuberten
+   HTML-Klartext. Alle Klartextwege maskieren die Editorzeichen einschließlich Listen-/Zitatpräfixen.
+   Ein serieller Clipboard-Leser läuft außerhalb des UI-Threads; weitere Einfügungen melden „noch in Vorbereitung“.
+   Späte Antworten ersetzen nur ihren reservierten Bereich, erhalten späteres Tippen und übernehmen keinen
+   inzwischen anderweitigen Fokus. Entfernte Ziele und Kontowechsel verwerfen die Antwort. Fehler/Leere stellen
+   die Auswahl wieder her und brechen wartenden Versand ab; erfolgreiche Importe setzen wartendes Speichern/Senden
+   fort. Bei fehlendem Backend bleibt Iced-Text, bei offline/älterem Dienst nur Klartext. Echte Clipboard-Integration
+   auf macOS, Windows und Hyprland bleibt manuell zu prüfen; Tests verwenden injizierte Formate ohne System-Clipboard.
 - **Einladungen** (iMIP) zeigen oben in der Nachricht „Accept / Maybe / Decline“; die Antwort
   geht per Mail zurück (iTIP `REPLY` über das Konto, Schalter „Nach außen“ wie beim Senden), der
   Termin landet in dem Kalender, der die frühere Kopie hält, sonst im ersten beschreibbaren (E8.3b,

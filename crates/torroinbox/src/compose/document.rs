@@ -302,6 +302,13 @@ pub(super) struct Document {
     fallback: Content,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct Inserted {
+    pub block: u64,
+    pub range: std::ops::Range<usize>,
+    pub focused: bool,
+}
+
 impl From<Content> for Document {
     fn from(content: Content) -> Self {
         Self {
@@ -402,7 +409,7 @@ impl Document {
         self.pictures().any(|p| p.loading)
     }
     pub fn failed(&self) -> bool {
-        self.pictures().any(|p| p.failed || p.source.is_none())
+        self.pictures().any(|p| !p.loading && (p.failed || p.source.is_none()))
     }
 
     /// Replace the current selection by a loading image, moving the suffix into a new text block.
@@ -458,9 +465,12 @@ impl Document {
     }
 
     pub fn replace_reservation(&mut self, id: u64, text: &str) -> bool {
-        let Some(at) = self.blocks.iter().position(|b| matches!(b, Block::Image(p) if p.block == id)) else {
-            return false;
-        };
+        self.replace_reserved_range(id, text).is_some_and(|inserted| inserted.focused)
+    }
+
+    /// Success is independent of focus: a reply may target a block other than the active one.
+    pub fn replace_reserved_range(&mut self, id: u64, text: &str) -> Option<Inserted> {
+        let at = self.blocks.iter().position(|b| matches!(b, Block::Image(p) if p.block == id))?;
         let before = at.checked_sub(1).and_then(|i| self.blocks.get(i)).and_then(|b| match b {
             Block::Text { id, content, history } => Some((*id, content.text(), history.clone())),
             _ => None,
@@ -472,29 +482,97 @@ impl Document {
         if let (Some((text_id, prefix, history)), Some(suffix)) = (before, after) {
             // Keep typing that arrived in the suffix while the clipboard worker was running,
             // including its cursor. Otherwise put the caret immediately after the pasted text.
-            let cursor = self.cursor();
             let suffix_active = matches!(self.blocks.get(at + 1), Some(Block::Text { id, .. }) if *id == self.active);
             let merged_active = suffix_active || self.active == text_id;
-            let added = if suffix_active {
-                suffix.split('\n').take(cursor.position.line).map(|s| s.len() + 1).sum::<usize>()
-                    + cursor.position.column
-            } else {
-                0
-            };
             let merged = format!("{prefix}{text}{suffix}");
-            let end = (prefix.len() + text.len() + added).min(merged.len());
-            let line = merged[..end].bytes().filter(|b| *b == b'\n').count();
-            let column = merged[..end].rsplit('\n').next().map_or(0, str::len);
+            let cursor = self.cursor();
+            let cursor = if suffix_active {
+                let shift = |p| position(&merged, prefix.len() + text.len() + offset(&suffix, p));
+                iced::widget::text_editor::Cursor {
+                    position: shift(cursor.position),
+                    selection: cursor.selection.map(shift),
+                }
+            } else if self.active == text_id {
+                cursor
+            } else {
+                text_editor_cursor(position(&merged, prefix.len() + text.len()))
+            };
             let mut content = Content::with_text(&merged);
-            content.move_to(text_editor_cursor(Position { line, column }));
-            self.blocks.splice(at - 1..=at + 1, [Block::Text { id: text_id, content, history }]);
+            content.move_to(cursor);
+            let previous: Vec<_> =
+                self.blocks.splice(at - 1..=at + 1, [Block::Text { id: text_id, content, history }]).collect();
+            if self.text_bytes() > torro_ipc::mail::MAX_BODY_BYTES
+                || self.html(None).len() > torro_ipc::mail::MAX_BODY_BYTES
+            {
+                self.blocks.splice(at - 1..at, previous);
+                return None;
+            }
             if merged_active {
                 self.active = text_id;
             }
             self.selected = self.selected.filter(|selected| *selected != id);
-            return merged_active;
+            return Some(Inserted {
+                block: text_id,
+                range: prefix.len()..prefix.len() + text.len(),
+                focused: merged_active,
+            });
         }
-        false
+        None
+    }
+
+    pub fn text_bytes(&self) -> usize {
+        self.blocks
+            .iter()
+            .map(|block| match block {
+                Block::Text { content, .. } => content.text().len(),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    /// Compare the recorded bytes before replacing just the last insertion. Preserve a later
+    /// caret/selection, including focus in a different editor; never restore a document snapshot.
+    pub fn replace_inserted(&mut self, inserted: &Inserted, expected: &str, replacement: &str) -> bool {
+        let Some(Block::Text { content, .. }) =
+            self.blocks.iter_mut().find(|block| matches!(block, Block::Text { id, .. } if *id == inserted.block))
+        else {
+            return false;
+        };
+        let old = content.text();
+        if old.get(inserted.range.clone()) != Some(expected) {
+            return false;
+        }
+        let mut next = old.clone();
+        next.replace_range(inserted.range.clone(), replacement);
+        let cursor = content.cursor();
+        let shift = |p| {
+            let at = offset(&old, p);
+            let at = if at < inserted.range.start {
+                at
+            } else if at <= inserted.range.end {
+                inserted.range.start + replacement.len()
+            } else {
+                at - inserted.range.len() + replacement.len()
+            };
+            position(&next, at)
+        };
+        let mut updated = Content::with_text(&next);
+        updated.move_to(iced::widget::text_editor::Cursor {
+            position: shift(cursor.position),
+            selection: cursor.selection.map(shift),
+        });
+        let previous = std::mem::replace(content, updated);
+        if self.text_bytes() > torro_ipc::mail::MAX_BODY_BYTES
+            || self.html(None).len() > torro_ipc::mail::MAX_BODY_BYTES
+        {
+            if let Some(Block::Text { content, .. }) =
+                self.blocks.iter_mut().find(|block| matches!(block, Block::Text { id, .. } if *id == inserted.block))
+            {
+                *content = previous;
+            }
+            return false;
+        }
+        true
     }
 
     pub fn restore_reservation(&mut self, id: u64) -> bool {
@@ -659,6 +737,19 @@ fn text_editor_cursor(position: Position) -> iced::widget::text_editor::Cursor {
     iced::widget::text_editor::Cursor { position, selection: None }
 }
 
+fn offset(text: &str, p: Position) -> usize {
+    let at = (text.split('\n').take(p.line).map(|s| s.len() + 1).sum::<usize>() + p.column).min(text.len());
+    (0..=at).rev().find(|at| text.is_char_boundary(*at)).unwrap_or(0)
+}
+
+fn position(text: &str, at: usize) -> Position {
+    let at = at.min(text.len());
+    Position {
+        line: text[..at].bytes().filter(|b| *b == b'\n').count(),
+        column: text[..at].rsplit('\n').next().map_or(0, str::len),
+    }
+}
+
 fn uuid_token() -> String {
     // CIDs need uniqueness, not secrecy; the service validates them before building MIME.
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -674,6 +765,48 @@ fn uuid_token() -> String {
 mod tests {
     use super::*;
     use iced::widget::text_editor::Cursor;
+
+    #[test]
+    fn inserted_range_is_utf8_exact_even_without_focus_and_replacement_checks_original_bytes() {
+        let mut doc = Document::from(Content::with_text("Grüße 世界!"));
+        doc.move_to(Cursor {
+            position: Position { line: 0, column: 8 },
+            selection: Some(Position { line: 0, column: 14 }),
+        });
+        let id = doc.reserve();
+        let later = doc.reserve();
+        let active = doc.active;
+        let inserted = doc.replace_reserved_range(id, "**Bold**").expect("success without focus");
+        assert!(!inserted.focused);
+        assert_eq!(inserted.range, 8..16);
+        assert_eq!(doc.active, active);
+        assert!(doc.replace_inserted(&inserted, "**Bold**", "Plain"));
+        assert!(!doc.replace_inserted(&inserted, "**Bold**", "Not again"));
+        doc.restore_reservation(later);
+        assert_eq!(doc.text(), "Grüße Plain!");
+    }
+
+    #[test]
+    fn reservation_reply_preserves_suffix_selection_and_rejects_expansion_transactionally() {
+        let mut doc = Document::from(Content::with_text("Before After"));
+        doc.move_to(text_editor_cursor(Position { line: 0, column: 7 }));
+        let id = doc.reserve();
+        doc.move_to(Cursor {
+            position: Position { line: 0, column: 2 },
+            selection: Some(Position { line: 0, column: 5 }),
+        });
+        let inserted = doc.replace_reserved_range(id, "世界").expect("reply");
+        assert_eq!(doc.cursor().position.column, 15);
+        assert_eq!(doc.cursor().selection.expect("selection").column, 18);
+        assert!(doc.replace_inserted(&inserted, "世界", "X"));
+        assert_eq!(doc.cursor().position.column, 10);
+        assert_eq!(doc.cursor().selection.expect("selection").column, 13);
+        let id = doc.reserve();
+        assert!(doc.replace_reserved_range(id, &"&".repeat(300_000)).is_none(), "HTML expansion also limited");
+        assert!(doc.picture(id).is_some());
+        doc.restore_reservation(id);
+        assert_eq!(doc.text(), "Before XAfter");
+    }
 
     #[test]
     fn growing_editors_reveal_paste_and_selection_below_images_without_stealing_scroll() {

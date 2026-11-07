@@ -245,10 +245,14 @@ pub enum Open {
     Image,
     ImageDark,
     ImageRemove,
+    Paste,
+    PasteDark,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 14] = [
+    const ALL: [(&'static str, Open); 16] = [
+        ("paste", Open::Paste),
+        ("paste-dark", Open::PasteDark),
         ("image", Open::Image),
         ("image-dark", Open::ImageDark),
         ("image-remove", Open::ImageRemove),
@@ -553,6 +557,47 @@ async fn ask(client: &InboxClient, request: Request) -> Result<Response, Compose
 
 fn unexpected(response: Response) -> ComposeError {
     ComposeError::Other(format!("unexpected answer: {response:?}"))
+}
+
+fn paste_error() -> ComposeError {
+    ComposeError::Other(tr("The message is too large to paste more text.").into())
+}
+
+async fn prepare_clipboard(suite: Source, html: String, text: Option<String>) -> Result<html::Paste, ComposeError> {
+    if let Source::Core(client) = suite {
+        let request = Request::PrepareMailPaste { html: Some(html.clone()), text: text.clone() };
+        if torro_ipc::mail::limit_refusal(&request).is_some() {
+            return Err(paste_error());
+        }
+        return paste_answer(&html, text.as_deref(), torro_ipc::client::call(&client.socket, &request).await);
+    }
+    html::prepare_paste(Some(&html), text.as_deref()).map_err(|_| paste_error())
+}
+
+fn paste_answer(
+    html: &str,
+    text: Option<&str>,
+    response: Result<Response, IpcError>,
+) -> Result<html::Paste, ComposeError> {
+    match response {
+        Ok(Response::MailPaste { markup, plain, plain_markup, formatted, untrusted: true }) => {
+            Ok(html::Paste { markup, plain, plain_markup, formatted })
+        }
+        Ok(Response::Error { code, message })
+            if !["unsupported", "unknown-command"].contains(&code.as_str())
+                && !message.starts_with("malformed request: unknown method") =>
+        {
+            Err(ComposeError::Other(message))
+        }
+        // An offline/older service must not make a rich paste disappear or insert raw HTML.
+        _ => {
+            let plain = match text {
+                Some(text) => text.to_owned(),
+                None => html::prepare_paste(Some(html), None).map_err(|_| paste_error())?.plain,
+            };
+            html::prepare_paste(None, Some(&plain)).map_err(|_| paste_error())
+        }
+    }
 }
 
 impl ComposeSource for InboxClient {
@@ -1487,7 +1532,14 @@ pub enum Message {
     RemoveImage(u64),
     ConfirmRemoveImage,
     PasteImage,
+    PastePlain,
+    KeepPasteText,
+    #[cfg(test)]
     Clipboard(u64, String, Result<images::Clipboard, ComposeError>),
+    ClipboardRead(u64, String, Result<images::Clipboard, ComposeError>),
+    ClipboardFocused(u64, String, Result<images::Clipboard, ComposeError>, Option<u64>),
+    PastePrepared(u64, String, u64, Result<html::Paste, ComposeError>),
+    PasteReady(u64, String, u64, Result<html::Paste, ComposeError>, Option<u64>),
     LeaseImages,
     ImageLeased(u64, String, String, Result<PreparedImage, ComposeError>),
     AccountImages(usize, String, Result<Vec<(u64, PreparedImage)>, ComposeError>),
@@ -1600,6 +1652,10 @@ pub struct Window<S> {
     show_bcc: bool,
     subject: String,
     body: Document,
+    clipboard_busy: bool,
+    pending_paste: Option<(u64, u64)>,
+    edit_generation: u64,
+    paste_hint: Option<PasteHint>,
     attachments: Vec<Attached>,
     in_reply_to: Option<String>,
     /// Where the quoted history starts in the text ([`Opening::history`]).
@@ -1664,6 +1720,14 @@ struct Suggestions {
     problem: Option<String>,
 }
 
+struct PasteHint {
+    inserted: document::Inserted,
+    markup: String,
+    plain_markup: String,
+    generation: u64,
+    expires: Instant,
+}
+
 impl<S: ComposeSource + 'static> Window<S> {
     pub fn new(source: Arc<S>, suite: Source, launch: Launch) -> (Window<S>, Task<Message>) {
         let start =
@@ -1696,6 +1760,10 @@ impl<S: ComposeSource + 'static> Window<S> {
             show_bcc: false,
             subject: String::new(),
             body: Content::new().into(),
+            clipboard_busy: false,
+            pending_paste: None,
+            edit_generation: 0,
+            paste_hint: None,
             attachments: Vec::new(),
             in_reply_to: None,
             history: None,
@@ -1816,6 +1884,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             return Task::none();
         }
         let Some(account) = self.sender().map(|s| s.account.clone()) else { return Task::none() };
+        self.invalidate_paste();
         let id = self.body.reserve();
         self.reveal_caret();
         self.touch();
@@ -1830,6 +1899,10 @@ impl<S: ComposeSource + 'static> Window<S> {
     }
 
     fn image_loaded(&mut self, id: u64, account: String, result: Result<PreparedImage, ComposeError>) -> Task<Message> {
+        if self.pending_paste.is_some_and(|(pending, _)| pending == id) {
+            self.pending_paste = None;
+            self.clipboard_busy = false;
+        }
         if self.sender().is_none_or(|s| s.account != account) || self.body.picture(id).is_none() {
             return result.map_or_else(|_| Task::none(), |image| self.release(account, vec![image.id]));
         }
@@ -1864,12 +1937,46 @@ impl<S: ComposeSource + 'static> Window<S> {
         id: u64,
         account: String,
         result: Result<images::Clipboard, ComposeError>,
+        focused: Option<u64>,
     ) -> Task<Message> {
+        self.clipboard_busy = false;
         if self.sender().is_none_or(|s| s.account != account) || self.body.picture(id).is_none() {
+            self.pending_paste = None;
             return Task::none();
         }
         match result {
+            Ok(images::Clipboard::Unavailable) => {
+                self.clipboard_busy = true;
+                iced::clipboard::read().map(move |text| {
+                    Message::ClipboardRead(
+                        id,
+                        account.clone(),
+                        Ok(text.map_or(images::Clipboard::Empty, images::Clipboard::Text)),
+                    )
+                })
+            }
+            Ok(images::Clipboard::Html { html, text }) => {
+                self.clipboard_busy = true;
+                let generation = self.pending_paste.map_or(self.edit_generation, |(_, generation)| generation);
+                let suite = self.suite.clone();
+                Task::perform(prepare_clipboard(suite, html, text), move |result| {
+                    Message::PastePrepared(id, account.clone(), generation, result)
+                })
+            }
+            Ok(images::Clipboard::Files(paths)) => {
+                self.pending_paste = None;
+                let focus = self.body.restore_reservation(id) && focused.is_some();
+                let previous_notice = self.notice.take();
+                self.attach(&paths);
+                let failed = self.notice.is_some();
+                if !failed {
+                    self.notice = previous_notice;
+                }
+                self.touch();
+                self.finish_import(!failed, focus)
+            }
             Ok(images::Clipboard::Image(bytes)) => {
+                self.pending_paste = None;
                 if self.attachments.len() + self.body.pictures().count() > MAX_ATTACHMENTS
                     || self.body.pictures().any(|p| p.block != id && p.loading)
                 {
@@ -1878,7 +1985,7 @@ impl<S: ComposeSource + 'static> Window<S> {
                     let focus = self.body.restore_reservation(id);
                     self.notice = Some(Notice::plain(tr("Too many images are being prepared. Try again later.")));
                     self.touch();
-                    return if focus { operation::focus(Document::text_id(self.body.active)) } else { Task::none() };
+                    return self.finish_import(false, focus && focused.is_some());
                 }
                 let source = self.source.clone();
                 let ask = account.clone();
@@ -1887,32 +1994,101 @@ impl<S: ComposeSource + 'static> Window<S> {
                 })
             }
             Ok(images::Clipboard::Text(text)) => {
-                let focus = self.body.replace_reservation(id, &text);
-                if focus && self.follow_caret {
-                    self.reveal_caret();
+                if text.is_empty() {
+                    return self.clipboard_received(id, account, Ok(images::Clipboard::Empty), focused);
                 }
-                self.touch();
-                let save = if !self.body.pending() && self.after != After::Nothing {
-                    self.save(After::Nothing)
-                } else {
-                    Task::none()
-                };
-                Task::batch([
-                    save,
-                    if focus { operation::focus(Document::text_id(self.body.active)) } else { Task::none() },
-                ])
+                let result = html::prepare_paste(None, Some(&text)).map_err(|_| paste_error());
+                self.paste_ready(id, account, self.edit_generation, result, focused)
             }
             Ok(images::Clipboard::Empty) | Err(_) => {
+                self.pending_paste = None;
                 let focus = self.body.restore_reservation(id);
                 self.touch();
                 self.sending = false;
                 self.after = After::Nothing;
                 if let Err(err) = result {
-                    self.notice = Some(Notice::new(tr("Couldn't insert the image."), err));
+                    self.notice = Some(Notice::new(tr("Couldn't paste the clipboard."), err));
                 }
-                if focus { operation::focus(Document::text_id(self.body.active)) } else { Task::none() }
+                if focus && focused.is_some() {
+                    operation::focus(Document::text_id(self.body.active))
+                } else {
+                    Task::none()
+                }
             }
         }
+    }
+
+    fn invalidate_paste(&mut self) {
+        self.edit_generation = self.edit_generation.wrapping_add(1);
+        self.paste_hint = None;
+    }
+
+    fn finish_import(&mut self, success: bool, focus: bool) -> Task<Message> {
+        if !success {
+            self.sending = false;
+            self.after = After::Nothing;
+        }
+        if focus && self.follow_caret {
+            self.reveal_caret();
+        }
+        let save = if success && !self.body.pending() && self.after != After::Nothing {
+            self.save(After::Nothing)
+        } else {
+            Task::none()
+        };
+        Task::batch([save, if focus { operation::focus(Document::text_id(self.body.active)) } else { Task::none() }])
+    }
+
+    fn paste_ready(
+        &mut self,
+        id: u64,
+        account: String,
+        generation: u64,
+        result: Result<html::Paste, ComposeError>,
+        focused: Option<u64>,
+    ) -> Task<Message> {
+        self.clipboard_busy = false;
+        self.pending_paste = None;
+        if self.sender().is_none_or(|s| s.account != account) || self.body.picture(id).is_none() {
+            return Task::none();
+        }
+        let converted = match result {
+            Ok(converted) => converted,
+            Err(error) => return self.clipboard_received(id, account, Err(error), focused),
+        };
+        if converted.markup.is_empty() {
+            return self.clipboard_received(id, account, Ok(images::Clipboard::Empty), focused);
+        }
+        let Some(inserted) = self.body.replace_reserved_range(id, &converted.markup) else {
+            return self.clipboard_received(id, account, Err(paste_error()), focused);
+        };
+        let focus = inserted.focused && focused.is_some();
+        if converted.formatted && generation == self.edit_generation {
+            self.paste_hint = Some(PasteHint {
+                inserted,
+                markup: converted.markup,
+                plain_markup: converted.plain_markup,
+                generation,
+                expires: Instant::now() + Duration::from_secs(5),
+            });
+        }
+        self.touch();
+        self.finish_import(true, focus)
+    }
+
+    fn keep_paste_text(&mut self) -> Task<Message> {
+        if !self.editable() {
+            return Task::none();
+        }
+        let Some(hint) = self.paste_hint.take() else { return Task::none() };
+        if hint.generation == self.edit_generation && Instant::now() < hint.expires {
+            if self.body.replace_inserted(&hint.inserted, &hint.markup, &hint.plain_markup) {
+                self.touch();
+            } else {
+                self.notice = Some(Notice::plain(tr("Couldn't replace the pasted text. Paste again.")));
+            }
+        }
+        Task::none()
     }
 
     fn load_images(&self) -> Task<Message> {
@@ -1984,6 +2160,11 @@ impl<S: ComposeSource + 'static> Window<S> {
     // ----- updates -----
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        if matches!(&message, Message::Format(_) | Message::PickFrom(_) | Message::PasteImage | Message::PastePlain)
+            || matches!(&message, Message::Body(action) | Message::BlockBody(_, action) if action.is_edit())
+        {
+            self.invalidate_paste();
+        }
         if matches!(
             &message,
             Message::BlockBody(..)
@@ -2139,21 +2320,56 @@ impl<S: ComposeSource + 'static> Window<S> {
                     }
                 }
             }
-            Message::PasteImage => {
+            Message::PasteImage | Message::PastePlain => {
                 if self.editable() {
+                    if self.clipboard_busy {
+                        self.notice = Some(Notice::plain(tr("A paste is still being prepared. Try again shortly.")));
+                        return Task::none();
+                    }
+                    let plain = matches!(message, Message::PastePlain);
                     let account = self.sender().map(|s| s.account.clone()).unwrap_or_default();
                     let id = self.body.reserve();
+                    self.clipboard_busy = true;
+                    self.pending_paste = Some((id, self.edit_generation));
                     self.reveal_caret();
                     self.touch();
                     return Task::batch([
-                        Task::perform(images::clipboard(), move |result| {
-                            Message::Clipboard(id, account.clone(), result)
+                        Task::perform(images::clipboard(plain), move |result| {
+                            Message::ClipboardRead(id, account.clone(), result)
                         }),
                         operation::focus(Document::text_id(self.body.active)),
                     ]);
                 }
             }
-            Message::Clipboard(id, account, result) => return self.clipboard_received(id, account, result),
+            #[cfg(test)]
+            Message::Clipboard(id, account, result) => {
+                return self.clipboard_received(id, account, result, Some(self.body.active));
+            }
+            Message::ClipboardRead(id, account, result) => {
+                return self
+                    .body
+                    .focused_text()
+                    .map(move |focused| Message::ClipboardFocused(id, account.clone(), result.clone(), focused));
+            }
+            Message::ClipboardFocused(id, account, result, focused) => {
+                if let Some(focused) = focused {
+                    self.body.focus_text(focused);
+                }
+                return self.clipboard_received(id, account, result, focused);
+            }
+            Message::PastePrepared(id, account, generation, result) => {
+                return self
+                    .body
+                    .focused_text()
+                    .map(move |focused| Message::PasteReady(id, account.clone(), generation, result.clone(), focused));
+            }
+            Message::PasteReady(id, account, generation, result, focused) => {
+                if let Some(focused) = focused {
+                    self.body.focus_text(focused);
+                }
+                return self.paste_ready(id, account, generation, result, focused);
+            }
+            Message::KeepPasteText => return self.keep_paste_text(),
             Message::LeaseImages => return self.lease_images(),
             Message::ImageLeased(id, account, requested, result) => {
                 if self.sender().is_some_and(|s| s.account == account)
@@ -2216,14 +2432,30 @@ impl<S: ComposeSource + 'static> Window<S> {
                     self.reveal_caret();
                 }
                 // Enter in a list item starts the next one (an empty one ends the list).
+                let action = match action {
+                    text_editor::Action::Edit(Edit::Paste(text)) => {
+                        text_editor::Action::Edit(Edit::Paste(Arc::new(html::paste_plain_markup(&text))))
+                    }
+                    other => other,
+                };
                 let enter = matches!(action, text_editor::Action::Edit(Edit::Enter));
                 if enter && self.formatted() && continue_list(&mut self.body) {
                     self.touch();
                     return Task::none();
                 }
                 let edits = action.is_edit();
+                let old = self.body.text();
+                let cursor = self.body.cursor();
                 self.body.perform(action);
                 if edits {
+                    if self.body.text_bytes() > torro_ipc::mail::MAX_BODY_BYTES
+                        || self.body.html(None).len() > torro_ipc::mail::MAX_BODY_BYTES
+                    {
+                        *self.body = Content::with_text(&old);
+                        self.body.move_to(cursor);
+                        self.notice = Some(Notice::plain(tr("The message is too large to paste more text.")));
+                        return Task::none();
+                    }
                     self.touch();
                 }
             }
@@ -2289,6 +2521,9 @@ impl<S: ComposeSource + 'static> Window<S> {
             Message::PickFrom(index) => {
                 self.menu = false;
                 if self.editable() && index < self.senders.len() && index != self.from {
+                    if let Some((id, _)) = self.pending_paste.take() {
+                        self.body.restore_reservation(id);
+                    }
                     if self.body.pictures().next().is_some() {
                         self.pending_from = Some(index);
                         return self.save(After::Nothing);
@@ -2538,6 +2773,9 @@ impl<S: ComposeSource + 'static> Window<S> {
     /// The clock: saves when [`AUTOSAVE`] has passed since the last change and nothing else is
     /// going on.
     fn tick(&mut self, now: Instant) -> Task<Message> {
+        if self.paste_hint.as_ref().is_some_and(|hint| now >= hint.expires) {
+            self.paste_hint = None;
+        }
         let idle = self.changed.is_some_and(|changed| now.duration_since(changed) >= AUTOSAVE);
         if idle && self.unsaved() && self.saving.is_none() && !self.sending {
             return self.save(After::Nothing);
@@ -2687,9 +2925,12 @@ impl<S: ComposeSource + 'static> Window<S> {
                 )
                 .into();
             }
-            Some(Open::Image | Open::ImageDark | Open::ImageRemove) => {
-                self.paper =
-                    if self.start.open == Some(Open::ImageDark) { ComposePaper::Dark } else { ComposePaper::Light };
+            Some(Open::Image | Open::ImageDark | Open::ImageRemove | Open::Paste | Open::PasteDark) => {
+                self.paper = if matches!(self.start.open, Some(Open::ImageDark | Open::PasteDark)) {
+                    ComposePaper::Dark
+                } else {
+                    ComposePaper::Light
+                };
                 self.to = Recipients::parsed("Jonas Weber <jonas.weber@work.example.org>");
                 self.subject = "Floor plan for the new office".into();
                 self.body = Content::with_text("Hi Jonas, here is the **floor plan**.\n\nMany thanks,\nAnna").into();
@@ -2700,6 +2941,21 @@ impl<S: ComposeSource + 'static> Window<S> {
                 }
                 if self.start.open == Some(Open::ImageRemove) {
                     self.removing_image = Some(id);
+                }
+                if matches!(self.start.open, Some(Open::Paste | Open::PasteDark)) {
+                    let id = self.body.reserve();
+                    let converted = html::prepare_paste(
+                        Some("<b>Copied from the browser</b><ul><li>First point</li><li>Second point</li></ul>"),
+                        None,
+                    );
+                    let account = self.sender().map(|s| s.account.clone()).unwrap_or_default();
+                    let _ = self.paste_ready(
+                        id,
+                        account,
+                        self.edit_generation,
+                        converted.map_err(|_| paste_error()),
+                        Some(self.body.active),
+                    );
                 }
             }
             Some(Open::Loading | Open::Failed) | None => {}
@@ -3032,7 +3288,7 @@ impl<S: ComposeSource + 'static> Window<S> {
         if self.body.pictures().next().is_some() {
             all.push(iced::time::every(Duration::from_secs(30 * 60)).map(|_| Message::LeaseImages));
         }
-        if self.changed.is_some() {
+        if self.changed.is_some() || self.paste_hint.is_some() {
             all.push(iced::time::every(CLOCK).map(Message::Tick));
         }
         Subscription::batch(all)
@@ -3426,17 +3682,36 @@ impl<S: ComposeSource + 'static> Window<S> {
         if let Some(signature) = self.sender().and_then(|sender| sender.signature.as_deref()) {
             page = page.push(container(signature_block(signature)).padding(Padding::new(space::m()).top(0.0)));
         }
-        let paper = container(document::paper_scroll(
+        // A fixed paper footer stays visible even after a long paste; it takes layout space,
+        // never overlays the text, image controls or account signature.
+        let mut paper_content = column![document::paper_scroll(
             iced::widget::scrollable(page)
                 .id("compose-paper")
                 .height(Fill)
                 .direction(iced::widget::scrollable::Direction::Vertical(style::scrollbar()))
                 .style(style::scrollable)
                 .into(),
-        ))
-        .width(Fill)
-        .height(Fill)
-        .style(style::container::paper);
+        )]
+        .height(Fill);
+        if self.paste_hint.is_some() {
+            paper_content = paper_content.push(
+                container(widgets::chip_row(vec![
+                    container(typo::text(typo::meta(), tr("Pasted with formatting")).style(theme::text_2))
+                        .height(size::control_sm())
+                        .center_y(Fill)
+                        .into(),
+                    widgets::text_button(
+                        None,
+                        tr("Keep text only"),
+                        style::button::ghost,
+                        editable.then_some(Message::KeepPasteText),
+                    ),
+                    container(widgets::kbd(shortcut("Alt+V"))).height(size::control_sm()).center_y(Fill).into(),
+                ]))
+                .padding(space::m()),
+            );
+        }
+        let paper = container(paper_content).width(Fill).height(Fill).style(style::container::paper);
         let mut form =
             column![fields, self.toolbar(narrow, &anchors.tools), themed::in_paper(paper, self.dark_paper())]
                 .spacing(space::s())
@@ -3950,12 +4225,8 @@ fn editor_binding(press: text_editor::KeyPress) -> Option<Binding<Message>> {
     if let Some(message) = image_key(&press.key, press.modifiers) {
         return Some(Binding::Custom(message));
     }
-    if press.modifiers.command()
-        && !press.modifiers.alt()
-        && !press.modifiers.shift()
-        && matches!(press.key.as_ref(), Key::Character("v" | "V"))
-    {
-        return Some(Binding::Custom(Message::PasteImage));
+    if press.modifiers.command() && !press.modifiers.alt() && matches!(press.key.as_ref(), Key::Character("v" | "V")) {
+        return Some(Binding::Custom(if press.modifiers.shift() { Message::PastePlain } else { Message::PasteImage }));
     }
     if is_send(System::current(), &press.key, press.physical_key, press.modifiers) {
         return Some(Binding::Custom(Message::Send));
@@ -3982,6 +4253,7 @@ fn image_key(key: &Key, modifiers: keyboard::Modifiers) -> Option<Message> {
         Key::Character("3") => Some(Message::SelectedImageSize(ImageSize::Large)),
         Key::Character("4") => Some(Message::SelectedImageSize(ImageSize::Original)),
         Key::Character("a" | "A") => Some(Message::SelectedImageAttach),
+        Key::Character("v" | "V") if !modifiers.shift() => Some(Message::KeepPasteText),
         Key::Named(Named::Backspace | Named::Delete) => Some(Message::SelectedImageRemove),
         _ => None,
     }
@@ -5718,6 +5990,283 @@ mod tests {
         assert_eq!(window.body.cursor().position, Position { line: 0, column: "Grüße 世界".len() });
         assert_eq!(window.body.pictures().count(), 0);
         assert_eq!(window.draft().body, "Grüße 世界");
+    }
+
+    #[test]
+    fn offline_old_service_and_backend_text_fallbacks_are_literal_not_raw_html() {
+        for response in [
+            Err(IpcError::NotRunning),
+            Ok(Response::Error {
+                code: "error".into(),
+                message: "malformed request: unknown method or arguments that do not fit it (see the API reference)"
+                    .into(),
+            }),
+            Ok(Response::Error { code: "unsupported".into(), message: "old service".into() }),
+        ] {
+            let converted =
+                paste_answer("<b>HTML</b><img src='cid:foreign'>", Some("> **literal** "), response).expect("fallback");
+            assert_eq!(converted.markup, "\\> \\*\\*literal\\*\\* ");
+            assert!(!converted.formatted);
+        }
+        let converted = paste_answer(
+            "<b>Safe</b><script>bad()</script><img src='https://tracker.example/x'>",
+            None,
+            Err(IpcError::NotRunning),
+        )
+        .expect("fallback");
+        assert_eq!(converted.markup, "Safe");
+        let refused = paste_answer(
+            "<b>HTML</b>",
+            Some("text"),
+            Ok(Response::Error { code: "forbidden".into(), message: "denied".into() }),
+        );
+        assert!(refused.is_err(), "rights failures are not disguised as offline fallback");
+    }
+
+    #[test]
+    fn rich_paste_hint_replaces_only_recorded_bytes_survives_autosave_and_expires() {
+        let mut window = ready(&[]);
+        window.body = Content::with_text("Before 世界 After").into();
+        window.body.move_to(Cursor {
+            position: Position { line: 0, column: 7 },
+            selection: Some(Position { line: 0, column: 13 }),
+        });
+        let _ = window.update(Message::PasteImage);
+        let id = window.body.selected.expect("reservation");
+        let generation = window.edit_generation;
+        let account = window.sender().expect("sender").account.clone();
+        let converted = html::prepare_paste(Some("<b>Rich</b>"), Some("Only text")).expect("convert");
+        let _ = window.update(Message::PasteReady(id, account, generation, Ok(converted), Some(window.body.active)));
+        assert_eq!(window.body.text(), "Before **Rich** After");
+        assert!(window.paste_hint.is_some());
+        let _ = window.update(Message::Tick(later()));
+        let _ = deliver_save(&mut window);
+        assert!(window.paste_hint.is_some(), "autosave is not an edit");
+        let _ = window.update(Message::KeepPasteText);
+        assert_eq!(window.body.text(), "Before Only text After");
+        assert!(window.paste_hint.is_none());
+        let mut demo = ready(&["--open", "paste"]);
+        let expires = demo.paste_hint.as_ref().expect("hint").expires;
+        let _ = demo.update(Message::Tick(expires));
+        assert!(demo.paste_hint.is_none());
+    }
+
+    #[test]
+    fn rich_paste_preserves_new_typing_and_invalidates_its_hint_instead_of_undoing_edits() {
+        for change in [
+            Message::Body(text_editor::Action::Edit(Edit::Insert('x'))),
+            Message::Format(Format::Bold),
+            Message::PastePlain,
+            Message::PickFrom(1),
+        ] {
+            let mut demo = ready(&["--open", "paste"]);
+            assert!(demo.paste_hint.is_some());
+            let _ = demo.update(change);
+            assert!(demo.paste_hint.is_none());
+            let before = demo.draft();
+            let _ = demo.update(Message::KeepPasteText);
+            assert_eq!(demo.draft(), before);
+        }
+        let mut window = ready(&[]);
+        let _ = window.update(Message::PasteImage);
+        let id = window.body.selected.expect("id");
+        let generation = window.edit_generation;
+        let _ = window.update(Message::Body(text_editor::Action::Edit(Edit::Insert('x'))));
+        let account = window.sender().expect("sender").account.clone();
+        let converted = html::prepare_paste(Some("<b>Pasted</b>"), None).expect("paste");
+        let _ = window.update(Message::PasteReady(id, account, generation, Ok(converted), None));
+        assert_eq!(window.body.text(), "**Pasted**x");
+        assert!(window.paste_hint.is_none(), "later typing invalidates optional replacement, not the paste");
+    }
+
+    #[test]
+    fn imports_are_serial_and_removed_or_account_switched_targets_ignore_late_answers() {
+        let mut window = ready(&[]);
+        let _ = window.update(Message::PasteImage);
+        let id = window.body.selected.expect("id");
+        let count = window.body.blocks.len();
+        assert_eq!(window.update(Message::PastePlain).units(), 0);
+        assert_eq!(window.body.blocks.len(), count);
+        let account = window.sender().expect("sender").account.clone();
+        let generation = window.edit_generation;
+        let _ = window.update(Message::PickFrom(1));
+        assert!(window.body.picture(id).is_none());
+        let before = window.draft();
+        let converted = html::prepare_paste(Some("<b>Stale</b>"), None).expect("paste");
+        let _ = window.update(Message::PasteReady(id, account, generation, Ok(converted), None));
+        assert_eq!(window.draft(), before);
+        assert!(!window.clipboard_busy);
+    }
+
+    #[test]
+    fn direct_editor_paste_masks_markup_and_failed_or_empty_clipboards_restore_selection_and_cancel_send() {
+        let mut window = ready(&[]);
+        let _ = window.update(Message::Body(text_editor::Action::Edit(Edit::Paste(Arc::new(
+            "> quote\n- item\n**literal**".into(),
+        )))));
+        let html = window.draft().html.expect("html");
+        assert!(!html.contains("<blockquote") && !html.contains("<li>") && !html.contains("<strong>"));
+        for result in [Ok(images::Clipboard::Empty), Err(ComposeError::Offline)] {
+            let mut window = ready(&[]);
+            type_in(&mut window, "bob@example.org", "Subject", "Keep me");
+            window.body.move_to(Cursor {
+                position: Position { line: 0, column: 0 },
+                selection: Some(Position { line: 0, column: 7 }),
+            });
+            let _ = window.update(Message::PasteImage);
+            let id = window.body.selected.expect("id");
+            let _ = window.update(Message::Send);
+            assert!(window.sending && window.after == After::Send);
+            let account = window.sender().expect("sender").account.clone();
+            let _ = window.update(Message::Clipboard(id, account, result));
+            assert_eq!(window.body.text(), "Keep me");
+            assert!(!window.sending && window.after == After::Nothing && window.saving.is_none());
+        }
+    }
+
+    #[test]
+    fn clipboard_files_restore_text_attach_once_and_resume_save_but_file_errors_cancel_send() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("image.png");
+        std::fs::write(&path, b"file").expect("file");
+        for full in [false, true] {
+            let mut window = ready(&[]);
+            type_in(&mut window, "bob@example.org", "Subject", "Keep me");
+            if full {
+                window.attachments = (0..MAX_ATTACHMENTS)
+                    .map(|n| Attached::File {
+                        path: PathBuf::from(format!("/unused/{n}")),
+                        name: n.to_string(),
+                        size: 0,
+                    })
+                    .collect();
+            }
+            let _ = window.update(Message::PasteImage);
+            let id = window.body.selected.expect("reservation");
+            let _ = window.update(Message::Send);
+            let account = window.sender().expect("sender").account.clone();
+            let _ = window.update(Message::Clipboard(
+                id,
+                account,
+                Ok(images::Clipboard::Files(vec![path.clone(), path.clone()])),
+            ));
+            assert_eq!(window.body.text(), "Keep me");
+            assert_eq!(window.body.pictures().count(), 0);
+            if full {
+                assert!(window.saving.is_none() && !window.sending && window.after == After::Nothing);
+            } else {
+                assert_eq!(window.attachments.len(), 1);
+                assert!(window.saving.is_some());
+                let _ = deliver_save(&mut window);
+                assert!(window.calls.iter().any(|call| matches!(call, Call::Send(_))));
+            }
+        }
+    }
+
+    #[test]
+    fn paste_shortcuts_are_focused_and_plain_and_keep_text_have_distinct_bindings() {
+        for (modifiers, expected) in [
+            (keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT, true),
+            (keyboard::Modifiers::COMMAND | keyboard::Modifiers::ALT, false),
+        ] {
+            let press = |focused| text_editor::KeyPress {
+                key: Key::Character("v".into()),
+                modified_key: Key::Character("V".into()),
+                physical_key: keyboard::key::Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
+                modifiers,
+                text: None,
+                status: if focused {
+                    text_editor::Status::Focused { is_hovered: false }
+                } else {
+                    text_editor::Status::Active
+                },
+            };
+            assert!(editor_command(7, false, press(false)).is_none());
+            let Some(Binding::Custom(Message::EditorCommand(7, message))) = editor_command(7, false, press(true))
+            else {
+                panic!("focused binding")
+            };
+            assert!(if expected {
+                matches!(*message, Message::PastePlain)
+            } else {
+                matches!(*message, Message::KeepPasteText)
+            });
+        }
+    }
+
+    #[test]
+    fn late_rich_paste_does_not_take_focus_back_from_subject_in_real_widget_tree() {
+        use iced::advanced::{
+            renderer::Headless as _,
+            widget::{Operation, operation as raw},
+        };
+        use iced::futures::StreamExt as _;
+        use iced_test::runtime::{Action, UserInterface, task, user_interface};
+        let body = typo::body();
+        let mut renderer = block_on(iced::Renderer::new(body.font, body.size, None)).expect("headless");
+        let mut window = ready(&[]);
+        window.body = Content::with_text("Before After").into();
+        window.body.move_to(Cursor { position: Position { line: 0, column: 7 }, selection: None });
+        let _ = window.update(Message::PasteImage);
+        let id = window.body.selected.expect("reservation");
+        let generation = window.edit_generation;
+        let account = window.sender().expect("sender").account.clone();
+        let mut ui = UserInterface::build(window.view(), NARROW, user_interface::Cache::default(), &mut renderer);
+        // Focus may move through Tab/fields without producing a body action.
+        ui.operate(&renderer, &mut raw::focusable::focus(Document::text_id(window.body.active).into()));
+        ui.operate(&renderer, &mut raw::focusable::focus(SUBJECT.into()));
+        struct SubjectFocused(bool);
+        impl Operation for SubjectFocused {
+            fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+                visit(self);
+            }
+            fn focusable(
+                &mut self,
+                id: Option<&iced::advanced::widget::Id>,
+                _: iced::Rectangle,
+                state: &mut dyn raw::Focusable,
+            ) {
+                if id == Some(&iced::advanced::widget::Id::from(SUBJECT)) {
+                    self.0 = state.is_focused();
+                }
+            }
+        }
+        let mut query = SubjectFocused(false);
+        ui.operate(&renderer, &mut query);
+        assert!(query.0);
+        let cache = ui.into_cache();
+        let converted = html::prepare_paste(Some("<b>Pasted</b>"), None).expect("paste");
+        let pending = window.update(Message::PasteReady(id, account, generation, Ok(converted), None));
+        assert_eq!(window.body.text(), "Before **Pasted**After");
+        let mut ui = UserInterface::build(window.view(), NARROW, cache, &mut renderer);
+        if let Some(stream) = task::into_stream(pending) {
+            for action in block_on(stream.collect::<Vec<_>>()) {
+                if let Action::Widget(mut operation) = action {
+                    ui.operate(&renderer, operation.as_mut());
+                }
+            }
+        }
+        let mut messages = Vec::new();
+        ui.update(
+            &[iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: Key::Character("x".into()),
+                modified_key: Key::Character("x".into()),
+                physical_key: keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+                text: Some("x".into()),
+                repeat: false,
+            })],
+            iced::mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut messages,
+        );
+        assert!(
+            messages.iter().any(|message| matches!(message, Message::Subject(s) if s == "x")),
+            "typing remains in subject: {messages:?}"
+        );
+        assert!(!messages.iter().any(|message| matches!(message, Message::BlockBody(_, action) if action.is_edit())));
     }
 
     #[test]
