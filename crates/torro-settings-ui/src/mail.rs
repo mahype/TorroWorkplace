@@ -4349,6 +4349,31 @@ mod tests {
     }
 
     /// The slot Sorting with `model` of the local Ollama (task MW.3).
+    fn local_model_data() -> Data {
+        let accounts = [
+            "ai:ollama@localhost:11434",
+            "ai:lm_studio@localhost:1234",
+            "ai:strata@localhost:8080",
+            "ai:openai_compatible@127.0.0.1:8000",
+        ]
+        .into_iter()
+        .map(|id| {
+            let mut account = crate::accounts::demo::demo_ollama_account();
+            account.id = id.into();
+            account.label = id.into();
+            let server = format!("http://{}/v1", id.split_once('@').expect("host").1);
+            account.state = torro_pim::AccountState::Connected {
+                server,
+                login_name: String::new(),
+                last_sync: None,
+                problem: None,
+            };
+            account
+        })
+        .collect();
+        Data { accounts, ..Data::default() }
+    }
+
     fn slot(model: &str) -> torro_core::ai::SlotModel {
         torro_core::ai::SlotModel {
             engine: "ai:ollama@localhost:11434".into(),
@@ -4412,7 +4437,7 @@ mod tests {
         use categorization::Message;
         use torro_core::ai::AiModel;
         let ollama = "ai:ollama@localhost:11434";
-        let mut by_slot = Data::default();
+        let mut by_slot = local_model_data();
         by_slot.settings.ai_slots.decide = Some(slot("nimble"));
         assert!(categorization::in_effect(&by_slot).is_ready(), "the slot sorts");
 
@@ -4439,7 +4464,7 @@ mod tests {
         let no_slot = Data {
             assignments: exception("nimble", false),
             decider_models: vec![(ollama.to_string(), listed)],
-            ..Data::default()
+            ..local_model_data()
         };
         assert_eq!(sent(Message::Enabled(true), &no_slot), [set_slot(ollama, "nimble"), no_exception()]);
         // Nothing sorts: nothing to switch off.
@@ -4468,7 +4493,7 @@ mod tests {
     #[tokio::test]
     async fn a_refused_take_back_sets_no_slot() {
         use categorization::Message;
-        let mut data = Data { assignments: exception("nimble", true), ..Data::default() };
+        let mut data = Data { assignments: exception("nimble", true), ..local_model_data() };
         data.settings.ai_slots.decide = Some(slot("nimble"));
         let requests = sent(Message::Model("ai:lm_studio@localhost:1234".into(), "tev1".into()), &data);
         let backend = std::sync::Arc::new(Refusing(std::sync::Mutex::new(Vec::new())));
@@ -4492,7 +4517,7 @@ mod tests {
             (ollama.to_string(), model)
         };
         let mut data =
-            Data { decider_models: vec![model("clef:cloud", true), model("nimble", false)], ..Data::default() };
+            Data { decider_models: vec![model("clef:cloud", true), model("nimble", false)], ..local_model_data() };
         data.settings.ai_slots.decide = Some(slot("nimble"));
         let update = |state: &mut categorization::State, message, data: &Data| -> Vec<torro_ipc::Request> {
             match categorization::update::<()>(state, message, data) {
@@ -4576,6 +4601,66 @@ mod tests {
         assert!(categorization::asking_cloud(&state));
     }
 
+    #[test]
+    fn network_models_are_elsewhere_and_new_choices_require_consent() {
+        use categorization::Message;
+        use torro_core::ai::{AiModel, AiProvider, AiSlot, SlotModel};
+        for provider in AiProvider::LOCAL {
+            let mut data = local_model_data();
+            let mut account = crate::accounts::demo::demo_network_account();
+            account.id = format!("ai:{}@192.168.1.20:11434", provider.id());
+            let engine = account.id.clone();
+            data.accounts.push(account);
+            data.decider_models = ["first", "second"]
+                .into_iter()
+                .map(|id| {
+                    (
+                        engine.clone(),
+                        AiModel { remote: Some(false), enabled: true, decision: Some(true), ..AiModel::named(id) },
+                    )
+                })
+                .collect();
+            let (fast, other, elsewhere) = categorization::grouped(&data);
+            assert!(fast.is_empty() && other.is_empty() && elsewhere.len() == 2);
+            data.settings.ai_slots.decide =
+                Some(SlotModel { engine: engine.clone(), model: Some("first".into()), effort: None });
+            data.settings.decide_mail_to_cloud = Some(true);
+            let pick = || Message::Model(engine.clone(), "second".into());
+            let mut state = categorization::State::default();
+            assert!(matches!(categorization::update::<()>(&mut state, pick(), &data), Action::None));
+            assert!(categorization::asking_cloud(&state));
+            assert!(matches!(categorization::update::<()>(&mut state, Message::CancelCloud, &data), Action::None));
+            assert_eq!(data.settings.ai_slots.decide.as_ref().and_then(|slot| slot.model.as_deref()), Some("first"));
+            categorization::update::<()>(&mut state, pick(), &data);
+            let Action::Send(requests) = categorization::update::<()>(&mut state, Message::UseCloud, &data) else {
+                panic!("Use sends choice")
+            };
+            assert_eq!(requests, [set_slot(&engine, "second")]);
+            data.settings.ai_slots.decide = None;
+            data.settings.decide_mail_to_cloud = Some(false);
+            let assignment = torro_core::ai::AiAssignment {
+                function: torro_core::ai::AiFunction::InboxCategorize,
+                engine: Some(engine.clone()),
+                model: None,
+                effort: None,
+                enabled: false,
+            };
+            data.assignments =
+                vec![torro_ipc::AiAssignmentInfo { assignment, label: String::new(), needs_decision: true }];
+            assert!(matches!(categorization::update::<()>(&mut state, Message::Enabled(true), &data), Action::None));
+            assert!(categorization::asking_cloud(&state), "Automatic uses the address too");
+            let Action::Send(requests) = categorization::update::<()>(&mut state, Message::UseCloud, &data) else {
+                panic!("confirmed Automatic")
+            };
+            assert!(matches!(&requests[0], torro_ipc::Request::SetAiSlot { slot: AiSlot::Decide, model: None, .. }));
+            data.accounts.retain(|account| account.id != engine);
+            assert!(
+                sent(Message::Model(engine, "unlisted".into()), &data).is_empty(),
+                "unknown accounts are not local"
+            );
+        }
+    }
+
     /// Task S.26 (and MW.3): only models turned on are offered for sorting mail – switching it on
     /// with nothing set puts the first one that is on into the slot, and with none on there is
     /// nothing to switch on.
@@ -4587,7 +4672,7 @@ mod tests {
             let model = AiModel { decision: Some(true), enabled, remote: Some(false), ..AiModel::named(id) };
             ("ai:ollama@localhost:11434".to_string(), model)
         };
-        let data = Data { decider_models: vec![decider("off", false), decider("on", true)], ..Data::default() };
+        let data = Data { decider_models: vec![decider("off", false), decider("on", true)], ..local_model_data() };
         let on = sent(categorization::Message::Enabled(true), &data);
         assert_eq!(on, [set_slot("ai:ollama@localhost:11434", "on")], "the model that is off is not offered");
         let _ = categorization::view(&Default::default(), &data);
@@ -4619,7 +4704,7 @@ mod tests {
                 model("ai:openai_compatible@127.0.0.1:8000", "mine", None, None, None),
                 model("ai:openai_compatible@gpu.example.org", "far", None, None, None),
             ],
-            ..Data::default()
+            ..local_model_data()
         };
         let ids = |data: &Data| -> Vec<String> {
             categorization::offered(data).into_iter().map(|(_, model)| model.id).collect()
@@ -4657,7 +4742,7 @@ mod tests {
                 model(ollama, "nimble", Some(true), Some(false)),
                 model(ollama, "brisk", Some(true), Some(false)),
             ],
-            ..Data::default()
+            ..local_model_data()
         };
         let ids = |part: Vec<(String, AiModel)>| -> Vec<String> {
             part.into_iter().map(|(engine, model)| format!("{engine} {}", model.id)).collect()
@@ -4747,7 +4832,7 @@ mod tests {
                 model(ollama, "nimble", Some(false), false),
                 model(ollama, "gpt-oss:120b-cloud", Some(true), true),
             ],
-            ..Data::default()
+            ..local_model_data()
         };
         data.settings.decide_mail_to_cloud = Some(true);
         let ids = |part: Vec<(String, AiModel)>| -> Vec<String> {
