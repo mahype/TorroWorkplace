@@ -537,6 +537,10 @@ gewählte Aktion auch dann, wenn ihre Zeile unterhalb des sichtbaren Scrollberei
 markiert sie im Inhalt. Bei geführtem OpenCode-Setup sagt der Wizard ausdrücklich, dass Meldungen erst danach
 über den Schalter auf der Client-Seite eingerichtet werden.
 
+Der deutsche Testlauf prüft vorhandene Übersetzungseinträge und übersetzte Ansichten, aber nicht automatisch
+die Vollständigkeit: Fehlende Texte fallen auf Englisch zurück. Der Abgleich aller neuen Wizard-, Anleitungs-,
+Fehler- und Hilfetexte mit ihren deutschen Einträgen gehört deshalb zusätzlich zur manuellen Prüfung.
+
 Quellen der Einrichtungswege:
 [OpenCode MCP](https://opencode.ai/docs/mcp-servers), [Konfiguration](https://opencode.ai/docs/config),
 [Plugin-API](https://opencode.ai/docs/build/plugins/server), [Zed](https://zed.dev/docs/ai/mcp),
