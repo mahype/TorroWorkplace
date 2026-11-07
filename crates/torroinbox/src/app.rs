@@ -5377,8 +5377,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     return self.update(Message::SettingsPage(message));
                 } else if self.settings.is_some() {
                     // The settings cover the content area; Escape gives it back (task S.20). What
-                    // was open behind them – the panel, a search – comes back with it.
-                    self.leave_settings();
+                    // was open behind them – the panel, a search – comes back with it. Through the
+                    // host: its open section menu or a page's own menu closes first (review of #554).
+                    return self.update(Message::SettingsHost(host::Message::Back));
                 } else if self.suggesting {
                     self.suggesting = false;
                 } else if self.focus_reply.is_some() {
@@ -8588,6 +8589,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .map(|dialog| dialog.map(|message| Message::SettingsPage(SettingsMessage::Mail(message))))
     }
 
+    /// Whether the open settings show only a dropdown of their page, no dialog ([`settings_mail::menu_only`]).
+    fn settings_menu_only(&self) -> bool {
+        let Some(pane) = self.settings.as_ref() else { return false };
+        let SettingsState::Mail(state) = &pane.sections else { return false };
+        settings_mail::menu_only(state, pane.host.data(), pane.host.current().id)
+    }
+
     /// The header bar and the content area of the open settings, as the host draws them. Statistics
     /// (issue #485) is the window's own page, its "Mute" menu hanging at `mute_at`.
     fn settings_frame<'a>(
@@ -10806,8 +10814,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.is_glance() {
             return Cover::Nothing;
         }
-        // A dialog of the settings (the save target's editor) lies in the window, under the top row.
-        let question = self.settings_dialog(class).is_some();
+        // A dialog of the settings (the save target's editor) lies in the window, under the top row;
+        // a dropdown of a settings page dims nothing (review of #554).
+        let question = self.settings_dialog(class).is_some() && !self.settings_menu_only();
         // The overview's panel covers the band like a mail's (issue #409).
         let panel = self.panel_open() || (class == SizeClass::Medium && self.mail_overview_shown());
         Cover::dialog(question).or(Cover::panel(class, panel)).or(Cover::drawer(class, self.drawer))

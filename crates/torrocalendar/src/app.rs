@@ -1138,7 +1138,9 @@ impl App {
                     // A dropdown of the open section closes before the settings do (issue #554).
                     return self.update(Message::SettingsPage(message));
                 } else if self.settings.is_some() {
-                    self.settings = None;
+                    // Through the host: an open section menu or a page's own menu closes first
+                    // (review of #554), else the host answers `Outcome::Close`.
+                    return self.update(Message::SettingsHost(torro_settings_ui::host::Message::Back));
                 } else if self.editor.is_some() {
                     return self.update(Message::Editor(editor::Message::Escape));
                 }
@@ -3589,6 +3591,19 @@ mod tests {
         let _ = app.update(Message::Escape);
         assert!(app.settings.is_some(), "the dropdown closed, the settings stay");
         assert!(app.settings.as_ref().is_some_and(|pane| settings_escape(pane).is_none()));
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_none());
+    }
+
+    /// Second review of #554: with the section menu of the narrow header open, Escape closes that
+    /// menu through the host, and only the next one the settings.
+    #[test]
+    fn escape_closes_the_section_menu_before_the_settings() {
+        let mut app = launched(&["--demo", "--open", "week"]);
+        let _ = app.update(Message::ToggleSettings);
+        let _ = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Menu));
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_some(), "the section menu closed, the settings stay");
         let _ = app.update(Message::Escape);
         assert!(app.settings.is_none());
     }
