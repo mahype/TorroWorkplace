@@ -2,6 +2,61 @@
 //! within a group; the test in `mod.rs` checks for duplicates and matching placeholders.
 
 pub(super) static TABLE: &[(&str, &str)] = &[
+    // Shared AI onboarding (#527).
+    (
+        "Connect an AI program or an online service. Choose knowingly where your text goes.",
+        "Verbinde ein KI-Programm oder einen Online-Dienst. Wähle bewusst, wohin dein Text geht.",
+    ),
+    ("Create an API key", "API-Schlüssel erstellen"),
+    ("Demo computer", "Beispielrechner"),
+    ("AI program", "KI-Programm"),
+    (
+        "Connect this program to prepare its recommended model.",
+        "Verbinde dieses Programm, um sein empfohlenes Modell vorzubereiten.",
+    ),
+    ("Load in {program}", "In {program} laden"),
+    ("Other provider", "Anderer Anbieter"),
+    ("Preparing model…", "Modell wird vorbereitet…"),
+    ("Slower chat fallback", "Langsamer Ersatzweg über Chat"),
+    ("API key required", "API-Schlüssel erforderlich"),
+    ("Cancel download", "Download abbrechen"),
+    ("Checks automatically", "Wird automatisch geprüft"),
+    ("Choose a provider", "Anbieter auswählen"),
+    ("Choose provider", "Anbieter auswählen"),
+    ("Computation location unknown", "Rechenort unbekannt"),
+    ("Connect with an API key", "Mit einem API-Schlüssel verbinden"),
+    ("Fits this computer", "Passt zu diesem Rechner"),
+    ("Get program", "Programm herunterladen"),
+    ("Load in your AI program", "Im KI-Programm laden"),
+    ("Load the suggested model in the program first.", "Lade das vorgeschlagene Modell zuerst im Programm."),
+    (
+        "Mail goes to this model outside this computer and cannot be taken back.",
+        "Mail geht an dieses Modell außerhalb dieses Rechners und lässt sich nicht zurückholen.",
+    ),
+    ("Mail needs your explicit permission.", "Für Mail ist deine ausdrückliche Zustimmung nötig."),
+    ("May be too large for this computer", "Möglicherweise zu groß für diesen Rechner"),
+    ("Model list unavailable", "Modellliste nicht verfügbar"),
+    ("No models available", "Keine Modelle verfügbar"),
+    ("Online service", "Online-Dienst"),
+    ("Other model", "Anderes Modell"),
+    ("Our suggestion for this PC", "Unser Vorschlag für diesen Rechner"),
+    ("Prepare model", "Modell vorbereiten"),
+    (
+        "Text goes to this provider. Mail stays here unless you allow it.",
+        "Text geht an diesen Anbieter. Mail bleibt hier, solange du nichts anderes erlaubst.",
+    ),
+    ("The local AI search could not start.", "Die lokale KI-Suche konnte nicht starten."),
+    (
+        "The model download did not finish. Try again.",
+        "Der Modell-Download wurde nicht abgeschlossen. Versuche es erneut.",
+    ),
+    (
+        "Torro checks automatically while this page is open. GPT4All: enable the Local API Server.",
+        "Torro prüft automatisch, solange diese Seite offen ist. GPT4All: Lokalen API-Server einschalten.",
+    ),
+    ("Unknown local AI program.", "Unbekanntes lokales KI-Programm."),
+    ("Your computer", "Dein Rechner"),
+    ("{n} models", "{n} Modelle"),
     // Embedded compose images (#461).
     ("As attachment", "Als Anhang"),
     ("Couldn't copy the images to the other account.", "Die Bilder konnten nicht ins andere Konto kopiert werden."),
