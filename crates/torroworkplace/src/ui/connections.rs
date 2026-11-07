@@ -1505,6 +1505,19 @@ pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<
 /// tools of a server of one's own just added), the form of a server of one's own, a secret to
 /// replace, or the question before a server is removed. `class` is the window's: narrower than
 /// [`SizeClass::Medium`] the rows of the form's variables stack ([`entry_row`]).
+/// Whether what [`overlay`] shows is a menu (a dropdown of a PDF template, the folders of a
+/// server) rather than a dialog: a menu leaves the window undimmed (design review of #554).
+pub fn menu_open(state: &State) -> bool {
+    if state.install.is_some() || state.custom.is_some() {
+        return false;
+    }
+    match &state.page {
+        Page::PdfTemplates => state.menus.open().is_some(),
+        Page::Server(_) => state.server.replacing.is_none() && state.server.folders_open,
+        _ => false,
+    }
+}
+
 pub fn overlay<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Option<Element<'a, Message>> {
     if let Some(install) = &state.install {
         return install_dialog(install, data);

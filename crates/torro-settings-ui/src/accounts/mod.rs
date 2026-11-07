@@ -2184,6 +2184,19 @@ fn entries(data: &dyn Seen) -> Vec<&AccountInfo> {
 /// the server dialog, else the "Remove this account?" confirmation, else the question before a model in
 /// the cloud sorts mail ([`consent_dialog`]), else the menu of *Sorting* ([`sorting_menu`]); `None`
 /// while none is open.
+/// Whether what [`overlay`] shows is one of the page's menus ("Chat", "Sorting") rather than a
+/// dialog: a menu leaves the window undimmed (design review of #554), a dialog dims it.
+pub fn menu_open(state: &State) -> bool {
+    let dialog = state.wizard.is_some()
+        || state.password.is_some()
+        || state.servers.is_some()
+        || state.topic.is_some()
+        || state.login.is_some()
+        || state.confirm_remove
+        || state.cloud_consent.is_some();
+    !dialog && (state.chat_menu || state.sorting_menu)
+}
+
 pub fn overlay<'a>(state: &'a State, data: &'a dyn Seen) -> Option<Element<'a, Message>> {
     if let Some(wizard) = &state.wizard {
         let content = wizard::view(wizard, data).map(Message::Wizard);

@@ -2022,7 +2022,7 @@ impl Ui {
         }
         let dialog = match &self.setup {
             Some(setup) => setup.dialog_open(),
-            None => self.page_overlay().is_some(),
+            None => self.page_overlay().is_some() && !self.page_menu_open(),
         };
         Cover::dialog(dialog).or(Cover::drawer(class, self.drawer))
     }
@@ -2192,6 +2192,16 @@ impl Ui {
             Section::Workspaces => workspaces::header(&self.workspaces, &self.data, class).map(Message::Workspaces),
             Section::Apps => apps::header(&self.apps, &self.data, class).map(Message::Apps),
             _ => Header::default(),
+        }
+    }
+
+    /// Whether the page's overlay is one of its menus, not a dialog: a menu dims nothing (design
+    /// review of #554).
+    fn page_menu_open(&self) -> bool {
+        match self.section {
+            Section::Accounts | Section::Ai => accounts::menu_open(&self.accounts),
+            Section::Connections => connections::menu_open(&self.connections),
+            _ => false,
         }
     }
 
@@ -2862,6 +2872,12 @@ mod tests {
             assert!(remove.has_top_row(), "{size:?}: the dialog lies over the top row");
             let _ = remove.view();
         }
+
+        // A menu is no dialog (design review of #554): the open "Sorting" menu dims nothing.
+        let mut sorting = started(&["--demo", "--open", "sorting-menu"]);
+        let _ = sorting.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        assert!(sorting.page_overlay().is_some(), "the menu is open");
+        assert_eq!(sorting.cover(), Cover::Nothing, "and leaves the window undimmed");
     }
 
     #[test]
