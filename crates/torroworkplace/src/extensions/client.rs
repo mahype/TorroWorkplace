@@ -622,6 +622,9 @@ pub(crate) mod http_fixture {
             true => response,
             false => format!("{response}\r\n"),
         };
+        // This one-request fixture always closes the socket. HTTP/1.1 otherwise advertises
+        // persistence, letting the client's pool race our shutdown on its next POST.
+        let response = response.replacen("\r\n", "\r\nConnection: close\r\n", 1);
         let _ = stream.write_all(response.as_bytes()).await;
         let _ = stream.shutdown().await;
     }
@@ -654,6 +657,17 @@ mod tests {
     use super::*;
 
     const WAIT: Duration = Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn the_http_fixture_declares_its_one_request_connection_lifetime() {
+        let (base, _) = http_fixture::serve().await;
+        let client = reqwest::Client::builder().no_proxy().build().expect("test client");
+        let response = client.get(format!("{base}/mcp")).send().await.expect("fixture response");
+        assert_eq!(
+            response.headers().get(reqwest::header::CONNECTION).and_then(|value| value.to_str().ok()),
+            Some("close")
+        );
+    }
 
     fn reported(name: &str, description: &str) -> ReportedTool {
         ReportedTool {
