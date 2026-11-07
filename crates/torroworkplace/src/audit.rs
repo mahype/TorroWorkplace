@@ -488,7 +488,7 @@ pub fn ids(request: &Request) -> Vec<String> {
             };
             [Some(format!("message:{}", hashed(message))), target].into_iter().flatten().collect()
         }
-        Request::ListSaveTargets { id } => id.iter().map(|message| format!("message:{}", hashed(message))).collect(),
+        Request::ListSaveTargets { id, .. } => id.iter().map(|message| format!("message:{}", hashed(message))).collect(),
         // Mail filters (issue #339): a filter by the id the core made (`f<n>`, hex digits) and the
         // account it names, never its search or category – the person's words about their mail.
         Request::ListMailFilters => Vec::new(),

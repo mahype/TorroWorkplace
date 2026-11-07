@@ -23,7 +23,7 @@
 //!   `notice` (the only kind a client key reports anyway),
 //! - `mail_save_attachments`: `id`, optional `parts`, and `to` as `downloads` or a save target's
 //!   id, never a path (task M12.4),
-//! - `mail_save_message_as`: `id`, `format` (`pdf`, `png`) and `to` as for `mail_save_attachments`,
+//! - `mail_save_message_as`: `id`, `format` (`pdf`, `png`, `eml`) and `to` as for `mail_save_attachments`,
 //!   never a path (issue #501).
 //!
 //! Inbox answers carry `untrusted` on every entry, as the core stores it: titles and bodies from
@@ -1347,7 +1347,8 @@ fn save_to(to: &str) -> torro_ipc::mail::SaveTo {
 struct SaveMessageAsInput {
     /// Id of the message, as mail_search_messages returns it.
     id: String,
-    /// `pdf` for a PDF of A4 pages, `png` for one long picture.
+    /// `eml` for the verified complete original (no external images, never shortened),
+    /// `pdf` for A4 pages or `png` for one long picture.
     format: torro_ipc::mail::ExportFormat,
     /// Where the file goes: `downloads` for the Downloads folder, or the id of a save target from
     /// mail_list_save_targets, e.g. `0a1b2c3d`. Paths are not accepted.
@@ -2299,6 +2300,17 @@ mod tests {
         // Issue #501: the mail itself as PDF or picture, by the same rule.
         let call = |input: Value| request_for("mail_save_message_as", args(input), &Utc);
         assert_eq!(
+            call(json!({"id":"m:1", "format":"eml", "to":"downloads"})),
+            Ok(Request::SaveMailAs { id: "m:1".into(), format: ExportFormat::Eml, to: SaveTo::Downloads })
+        );
+        assert_eq!(
+            request_for("mail_list_save_targets", args(json!({"id":"m:1", "export_only":true})), &Utc),
+            Ok(Request::ListSaveTargets { id: Some("m:1".into()), export_only: true })
+        );
+        let schemas = tools();
+        let export = schemas.iter().find(|tool| tool.name == "mail_save_message_as").expect("tool");
+        assert!(serde_json::to_string(export.input_schema.as_ref()).expect("schema").contains("eml"));
+        assert_eq!(
             call(json!({"id": "m:1", "format": "pdf", "to": "downloads"})),
             Ok(Request::SaveMailAs { id: "m:1".into(), format: ExportFormat::Pdf, to: SaveTo::Downloads })
         );
@@ -2316,6 +2328,7 @@ mod tests {
             json!({"id": "m:1", "format": "pdf", "to": {"file": "/Users/anna/a.pdf"}}),
             json!({"id": "m:1", "format": "pdf", "to": "downloads", "file": "/Users/anna/a.pdf"}),
             json!({"id": "m:1", "format": "pdf", "to": "downloads", "path": "/Users/anna"}),
+            json!({"id": "m:1", "format": "eml", "to": {"folder": "/Users/anna"}}),
         ] {
             let refused = call(input.clone());
             assert!(matches!(refused, Err(ToolError::Input(_))), "{input}: {refused:?}");

@@ -691,7 +691,7 @@ mod tests {
     #[tokio::test]
     async fn the_save_targets_come_with_the_downloads_folder() {
         let backend: Arc<dyn Backend> = Arc::new(demo::Demo::new());
-        let data = load(backend, vec![Request::ListSaveTargets { id: None }]).await;
+        let data = load(backend, vec![Request::ListSaveTargets { id: None, export_only: false }]).await;
         assert!(data.error.is_none(), "{:?}", data.error);
         let names: Vec<&str> = data.save_targets.iter().map(|target| target.spec.name.as_str()).collect();
         assert_eq!(names, ["Invoices", "Contracts"]);

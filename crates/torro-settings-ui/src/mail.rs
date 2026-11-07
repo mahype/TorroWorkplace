@@ -116,7 +116,7 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
         torro_ipc::Request::Settings,
         torro_ipc::Request::Accounts,
         // "Attachments" (task M12.7): the save targets and the Downloads folder.
-        torro_ipc::Request::ListSaveTargets { id: None },
+        torro_ipc::Request::ListSaveTargets { id: None, export_only: false },
         torro_ipc::Request::MailAccountStats { account: None },
         // "Categorization" (task E12.10): what is assigned and how far the backlog has come.
         torro_ipc::Request::AiAssignments,
@@ -4265,7 +4265,7 @@ mod tests {
             vec![
                 torro_ipc::Request::Settings,
                 torro_ipc::Request::Accounts,
-                torro_ipc::Request::ListSaveTargets { id: None },
+                torro_ipc::Request::ListSaveTargets { id: None, export_only: false },
                 torro_ipc::Request::MailAccountStats { account: None },
                 torro_ipc::Request::AiAssignments,
                 torro_ipc::Request::GetCategorization,

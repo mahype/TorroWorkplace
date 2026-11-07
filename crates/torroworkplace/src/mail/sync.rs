@@ -1986,6 +1986,8 @@ pub(crate) mod fake {
             let bytes = &message.raw[start..end];
             let piece = bytes.get(offset..offset.saturating_add(count).min(bytes.len())).unwrap_or_default();
             literal(format!("* {seq} FETCH (UID {} BODY[{section}]<{offset}>", message.uid), piece)
+        } else if items == "(UID INTERNALDATE RFC822.SIZE)" && message.sizeless {
+            format!("* {seq} FETCH (UID {} INTERNALDATE \"{date}\")", message.uid).into_bytes()
         } else if items.contains("INTERNALDATE") && items.contains("RFC822.SIZE") {
             let gmail = match message.gm_msgid {
                 Some(msgid) if items.contains("X-GM-MSGID") => format!(" X-GM-MSGID {msgid}"),
