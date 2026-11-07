@@ -37,7 +37,7 @@ use torro_settings_ui::Frame;
 use torro_settings_ui::assistant as settings;
 
 use crate::app::{
-    Access, App, Dialog, EDITOR, HISTORY, MAIN, MINI_INPUT, Menu, MenuAt, Message, RENAME, SEARCH, composer_binding,
+    Access, App, Dialog, EDITOR, HISTORY, MINI_INPUT, Menu, MenuAt, Message, RENAME, SEARCH, composer_binding,
 };
 use crate::bots;
 use crate::chat::{self, Choice};
@@ -52,7 +52,6 @@ const GLANCE_LINES: f32 = 3.0;
 /// The anchors of the menus that float next to their buttons; new in every `view`.
 #[derive(Default)]
 struct Anchors {
-    switcher: Anchor,
     header: Anchor,
     picker: Anchor,
     /// The effort of the composer (issue #131).
@@ -180,11 +179,11 @@ impl App {
         !self.is_glance()
     }
 
-    /// The window's top row (issue #459): the switcher and the panel button (not in a chat window,
-    /// which has no sidebar), the settings – marked while they fill the content area, and the way
+    /// The window's top row (issue #459): the panel button (not in a chat window, which has no
+    /// sidebar), the settings – marked while they fill the content area, and the way
     /// back out of them – and what lies over the top of the window.
-    fn top_row(&self, class: SizeClass, switcher: &Anchor) -> TopRow<Message> {
-        let mut top = TopRow::new(MAIN, switcher, Message::Switcher, self.zoom.factor(), Message::DragWindow)
+    fn top_row(&self, class: SizeClass) -> TopRow<Message> {
+        let mut top = TopRow::new(self.zoom.factor(), Message::DragWindow)
             .settings(Message::ToggleSettings)
             .settings_open(self.settings.is_some())
             .cover(self.cover());
@@ -238,7 +237,7 @@ impl App {
             // A chat window has no sidebar: the flush frame of the narrow layout in every size.
             shell::shell(SizeClass::Narrow, Space::new(), header, body, None)
                 .overlay(layer)
-                .top_row(self.top_row(SizeClass::Narrow, &anchors.switcher))
+                .top_row(self.top_row(SizeClass::Narrow))
                 .into()
         } else {
             let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
@@ -247,7 +246,7 @@ impl App {
                 .rail(rail)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(layer)
-                .top_row(self.top_row(class, &anchors.switcher))
+                .top_row(self.top_row(class))
                 .into()
         };
         let window = match &self.dialog {
@@ -267,12 +266,6 @@ impl App {
     fn layer(&self, anchors: &Anchors) -> Option<Element<'_, Message>> {
         let menu = self.menu.as_ref()?;
         Some(match menu {
-            Menu::Switcher => widgets::floating(
-                &anchors.switcher,
-                Placement::Below(Align::Start),
-                shell::switcher_menu(MAIN, Message::Switcher),
-                Message::CloseMenu,
-            ),
             Menu::Picker => widgets::floating(
                 &anchors.picker,
                 Placement::Below(Align::Start),
@@ -318,7 +311,7 @@ impl App {
     /// sidebar; the rail has the head alone (the conversations have no icons to tell them apart,
     /// and the drawer lists them).
     fn sidebar<'a>(&'a self, mode: SidebarMode, anchors: &Anchors) -> Element<'a, Message> {
-        // The switcher lies in the top row (issue #459), the sidebar begins with its tools.
+        // The sidebar begins with its tools (issue #459); there is no app switcher (#530).
         // No magnifier: the field "Search conversations" stands right below (design review of #459).
         let head = shell::sidebar_tools(mode, false, Message::Switcher);
         let mut items: Vec<Element<'a, Message>> = Vec::new();
@@ -1396,8 +1389,8 @@ mod tests {
         app
     }
 
-    /// Issue #459: the main window and a chat window show the shell with its top row – switcher,
-    /// panel button (not in a chat window) and the settings in one row – in every layout; the glance
+    /// Issue #459: the main window and a chat window show the shell with its top row – panel button
+    /// (not in a chat window) and the settings in one row – in every layout; the glance
     /// of a tile keeps the band.
     #[test]
     fn the_window_has_the_top_row_where_it_shows_the_shell() {

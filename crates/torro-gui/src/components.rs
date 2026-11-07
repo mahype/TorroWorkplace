@@ -1,6 +1,6 @@
 //! Which components of the suite are on (task W.2, `docs/einrichtung.md`, "Komponenten an und
-//! aus"), for every window of this process: the app switcher leaves out the apps of components
-//! turned off.
+//! aus"), for every window of this process: a window leaves out the apps of components turned off
+//! where it offers them ("Open in …").
 //!
 //! The windows ask the core for the settings anyway, for the design pack (`design::Follow`, every
 //! two seconds); that answer also brings `Settings::components_off`, which is kept here
@@ -41,7 +41,7 @@ pub fn of(app: AppId) -> Option<Component> {
     }
 }
 
-/// Whether the app switcher lists `app`: its component is on, or it has none.
+/// Whether `app` is on: its component is on, or it has none.
 pub fn app_on(app: AppId) -> bool {
     of(app).is_none_or(is_on)
 }
@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn the_settings_decide_which_apps_are_on() {
-        // The app switcher's test reads the same state.
+        // The tests of `installed` read the same state.
         let _lock = crate::installed::TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         set_off(&BTreeSet::from([Component::Calendar]));
         assert!(!app_on(AppId::CALENDAR) && app_on(AppId::TASKS) && app_on(AppId::WORKPLACE));

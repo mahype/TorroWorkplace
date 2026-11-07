@@ -163,14 +163,13 @@ fn shows_calendar(message: &Message) -> bool {
             | Message::ShowDay(_)
             | Message::ComingPage(_)
             | Message::Switcher(_)
+            | Message::OpenApp(_)
     )
 }
 
 /// The menus that open over the window; at most one at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Menu {
-    /// The app switcher at the top of the sidebar.
-    Switcher,
     /// "Week ▾" in the medium and narrow header: the views and the calendars.
     View,
 }
@@ -246,7 +245,7 @@ impl SettingsBackend for CoreSettings {
 /// "Open Tasks" at the foot of the sidebar, while the tasks app is `installed` (issue #408); `None`
 /// without it, and the entry is left out.
 fn tasks_jump(installed: impl Fn(AppId) -> bool) -> Option<Message> {
-    installed(AppId::TASKS).then_some(Message::Switcher(Switcher::OpenApp(AppId::TASKS.binary)))
+    installed(AppId::TASKS).then_some(Message::OpenApp(AppId::TASKS.binary))
 }
 
 /// What a section of the settings returned, as the host hands it to the app.
@@ -303,8 +302,6 @@ pub enum Open {
     Menu,
     /// The sidebar drawer of the medium and narrow layouts.
     Drawer,
-    /// The app switcher at the top of the sidebar (in the drawer where there is no sidebar).
-    Switcher,
     /// The error state with its "Retry".
     Error,
     /// No events at all.
@@ -314,7 +311,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 17] = [
+    const ALL: [(&'static str, Open); 16] = [
         ("day", Open::Day),
         ("week", Open::Week),
         ("month", Open::Month),
@@ -328,7 +325,6 @@ impl Open {
         ("night", Open::Night),
         ("menu", Open::Menu),
         ("drawer", Open::Drawer),
-        ("switcher", Open::Switcher),
         ("error", Open::Error),
         ("empty", Open::Empty),
         ("loading", Open::Loading),
@@ -630,8 +626,11 @@ pub enum Message {
     /// The error state's "Retry": ask for the account again, or reload the events.
     Retry,
     ToggleCollection(String),
-    /// The app switcher (top of the sidebar).
+    /// The tools at the top of the sidebar: search and "New".
     Switcher(Switcher),
+    /// "Open Tasks ↗" at the foot of the sidebar: start or raise the app with this binary through the
+    /// core (`Request::OpenApp`).
+    OpenApp(&'static str),
     /// Open `Menu`, or close it when it is open.
     ToggleMenu(Menu),
     /// Close the open menu and the drawer (click beside them).
@@ -803,11 +802,9 @@ impl App {
             error: None,
             menu: match open {
                 Some(Open::Menu) => Some(Menu::View),
-                Some(Open::Switcher) => Some(Menu::Switcher),
                 _ => None,
             },
-            // Without a sidebar the app switcher lives in the drawer.
-            drawer: matches!(open, Some(Open::Drawer | Open::Switcher)),
+            drawer: matches!(open, Some(Open::Drawer)),
             sidebar: SidebarMode::default(),
             mini_month: mini_month::shift(now.date(), 0),
             size: torro_gui::window(AppId::CALENDAR).size,
@@ -1046,8 +1043,7 @@ impl App {
                 }
                 return self.load();
             }
-            Message::Switcher(Switcher::Toggle) => return self.update(Message::ToggleMenu(Menu::Switcher)),
-            Message::Switcher(Switcher::OpenApp(binary)) => {
+            Message::OpenApp(binary) => {
                 self.close_menus();
                 let source = self.source.clone();
                 return Task::perform(async move { source.open_app(binary).await }, Message::AppOpened);
@@ -1409,11 +1405,11 @@ impl App {
         }
     }
 
-    /// The window's top row (issue #459): the switcher, the panel button, the settings, and what lies
-    /// over the top of the window.
-    fn top_row(&self, class: SizeClass, switcher: &Anchor) -> TopRow<Message> {
+    /// The window's top row (issue #459): the panel button, the settings, and what lies over the top
+    /// of the window.
+    fn top_row(&self, class: SizeClass) -> TopRow<Message> {
         let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
-        TopRow::new(AppId::CALENDAR, switcher, Message::Switcher, self.zoom.factor(), Message::DragWindow)
+        TopRow::new(self.zoom.factor(), Message::DragWindow)
             .sidebar(label, Message::ToggleSidebar)
             .settings(Message::ToggleSettings)
             .settings_open(self.settings.is_some())
@@ -1489,7 +1485,6 @@ impl App {
     /// settings (task S.19), while they are open, take the header and the content area instead;
     /// the sidebar and its menus stay.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
-        let switcher = Anchor::new();
         let (header, body, overlay, props) = match &self.settings {
             Some(pane) => {
                 let frame = self.settings_frame(pane, class);
@@ -1500,12 +1495,6 @@ impl App {
                 // The night's card floats beside a moon on the view's canvas, or under "Nights".
                 let (night_view, night_button) = (Anchor::new(), Anchor::new());
                 let menu = self.menu.and_then(|menu| match menu {
-                    Menu::Switcher => Some(widgets::floating(
-                        &switcher,
-                        Placement::Below(Align::Start),
-                        shell::switcher_menu(AppId::CALENDAR, Message::Switcher),
-                        Message::CloseMenu,
-                    )),
                     // Only the medium and narrow header have the "Week ▾" button the menu hangs
                     // from.
                     Menu::View => (!shell::has_sidebar(class)).then(|| {
@@ -1538,7 +1527,7 @@ impl App {
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(overlay)
-            .top_row(self.top_row(class, &switcher))
+            .top_row(self.top_row(class))
             .into()
     }
 
@@ -1643,14 +1632,14 @@ impl App {
         needed + 4.0 * space::s() <= self.size.width
     }
 
-    /// The sidebar (`calendar.html`, `.sidebar`): app switcher, small month, the views with their
+    /// The sidebar (`calendar.html`, `.sidebar`): search and "New", small month, the views with their
     /// keys, the calendars with their colour, visibility and number of loaded events, and at the
-    /// bottom "Open Tasks ↗"; the switcher and "Settings" lie in the top row (issue #459).
+    /// bottom "Open Tasks ↗"; the panel button and "Settings" lie in the top row (issue #459).
     ///
     /// As a drawer (medium, narrow) it leaves out the views: they are in the header's "Week ▾"
     /// menu already. As the rail (`mode`, U.2) it leaves out the small month, which has no icon
     /// form, and keeps the views as icons. What does not fit the window's height scrolls between
-    /// the switcher and the footer ([`shell::sidebar`], U.12).
+    /// the tools and the footer ([`shell::sidebar`], U.12).
     fn sidebar<'a>(&'a self, mode: SidebarMode, class: SizeClass) -> Element<'a, Message> {
         let mut items = Vec::new();
         if mode == SidebarMode::Expanded {
@@ -1722,7 +1711,7 @@ impl App {
                 open,
             ));
         }
-        // "Settings" sits in the top row's right corner (issue #459), the switcher at its left.
+        // "Settings" sits in the top row's right corner (issue #459); there is no app switcher (#530).
         let head = shell::sidebar_tools(mode, true, Message::Switcher);
         shell::sidebar(head, items, footer)
     }
@@ -2675,10 +2664,8 @@ mod tests {
     #[test]
     fn menus_and_drawer_open_one_at_a_time_and_close_together() {
         let mut app = demo_app();
-        let _ = app.update(Message::Switcher(Switcher::Toggle));
-        assert_eq!(app.menu, Some(Menu::Switcher));
         let _ = app.update(Message::ToggleMenu(Menu::View));
-        assert_eq!(app.menu, Some(Menu::View), "the view menu replaces the switcher");
+        assert_eq!(app.menu, Some(Menu::View));
         let _ = app.update(Message::ToggleDrawer);
         assert_eq!((app.menu, app.drawer), (None, true), "opening the drawer closes the menu");
         let _ = app.update(Message::CloseMenu);
@@ -2958,8 +2945,8 @@ mod tests {
         let _ = app.view();
     }
 
-    /// Issue #459: the window shows the shell with its top row – switcher, panel button and the
-    /// settings in one row – in every layout with a sidebar or drawer; signing in and the glance keep
+    /// Issue #459: the window shows the shell with its top row – panel button and the settings in
+    /// one row – in every layout with a sidebar or drawer; signing in and the glance keep
     /// the band.
     #[test]
     fn the_window_has_the_top_row_where_it_shows_the_shell() {
@@ -3307,12 +3294,6 @@ mod tests {
         assert_eq!((menu.menu, menu.drawer), (Some(Menu::View), false));
         let drawer = launched(&["--demo", "--open", "drawer"]);
         assert_eq!((drawer.menu, drawer.drawer), (None, true));
-        let switcher = launched(&["--demo", "--open", "switcher"]);
-        assert_eq!(
-            (switcher.menu, switcher.drawer),
-            (Some(Menu::Switcher), true),
-            "in the drawer where there is no sidebar"
-        );
     }
 
     #[test]
@@ -3547,9 +3528,7 @@ mod tests {
     /// Issue #408: "Open Tasks" is there only while the tasks app is installed.
     #[test]
     fn open_tasks_needs_the_tasks_app() {
-        assert!(
-            matches!(tasks_jump(|_| true), Some(Message::Switcher(Switcher::OpenApp(app))) if app == AppId::TASKS.binary)
-        );
+        assert!(matches!(tasks_jump(|_| true), Some(Message::OpenApp(app)) if app == AppId::TASKS.binary));
         assert!(tasks_jump(|app| app != AppId::TASKS).is_none());
     }
 
@@ -3631,7 +3610,7 @@ mod tests {
     fn escape_closes_the_menu_then_the_settings_then_the_panel() {
         let mut app = launched(&["--demo"]);
         let _ = app.update(Message::ToggleSettings);
-        let _ = app.update(Message::ToggleMenu(Menu::Switcher));
+        let _ = app.update(Message::ToggleMenu(Menu::View));
         let _ = app.update(Message::Escape);
         assert!(app.menu.is_none() && app.settings.is_some(), "the menu first");
         let _ = app.update(Message::Escape);

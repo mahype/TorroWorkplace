@@ -710,7 +710,7 @@ impl Window {
             widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Event::Close)),
             widgets::text_button(None, tr("Uninstall app"), style::button::danger, Some(Event::Confirm)),
         ];
-        let line = tr("It moves to the trash and leaves the app switcher.").to_string();
+        let line = tr("It moves to the trash and leaves the tray menu.").to_string();
         self.frame(self.hero(line, None), None, buttons, option.into())
     }
 

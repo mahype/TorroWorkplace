@@ -17,7 +17,7 @@
 //! `-- --detail` the blocks of a detail page in the settings (tasks DS.3, DS.4: head, tabs, open
 //! question, figures, shares with a legend, setting pairs, the save bar, the quiet branch), `-- --window` the example "Tasks" window (sample data from
 //! `docs/prototypes/linear/tasks.html`) in the layout that fits the window size – resize it to see
-//! wide, medium and narrow. `--open nav|switcher|drawer` opens that menu at start, `--open panel`
+//! wide, medium and narrow. `--open nav|drawer` opens that menu at start, `--open panel`
 //! shows the selected task in the side panel of `torro_gui::panel` instead of the detail: beside
 //! the list in the wide layout, over the window in medium and narrow (a click on a task opens it, ✕,
 //! Escape or a click on the dimmed window closes it). The "Styles ·
@@ -41,11 +41,10 @@ use iced::widget::{
     text_input, toggler,
 };
 use iced::{Alignment, Background, Color, Element, Fill, Length, Subscription, Theme, border};
-use torro_core::AppId;
 use torro_gui::icon::{self, Icon, icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel;
-use torro_gui::shell::{self, Switcher};
+use torro_gui::shell;
 use torro_gui::style;
 use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::typo;
@@ -124,7 +123,6 @@ enum Page {
 /// The menus of the example window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Menu {
-    Switcher,
     Nav,
 }
 
@@ -161,7 +159,6 @@ impl Start {
         };
         let menu = match open {
             Some("nav") => Some(Menu::Nav),
-            Some("switcher") => Some(Menu::Switcher),
             _ => None,
         };
         Self { light: has("--light"), page, menu, drawer: open == Some("drawer"), panel: open == Some("panel") }
@@ -222,7 +219,6 @@ enum Msg {
     Check(bool),
     Toggle(bool),
     Choice(u8),
-    Switcher(Switcher),
     OpenMenu(Menu),
     CloseMenu,
     Drawer,
@@ -334,11 +330,7 @@ impl Gallery {
             Msg::Check(c) => self.checked = c,
             Msg::Toggle(t) => self.toggled = t,
             Msg::Choice(c) => self.choice = Some(c),
-            Msg::Switcher(Switcher::Toggle) => {
-                self.menu = if self.menu == Some(Menu::Switcher) { None } else { Some(Menu::Switcher) };
-            }
-            // The gallery has no core to start apps; it only closes the menu.
-            Msg::Switcher(_) | Msg::CloseMenu => {
+            Msg::CloseMenu => {
                 self.menu = None;
                 self.drawer = false;
             }
@@ -1316,19 +1308,13 @@ fn task_check<'a>(done: bool, colour: usize, on_toggle: Option<Msg>) -> Element<
 impl Gallery {
     /// The example window in the layout of `class`.
     fn tasks_window(&self, class: SizeClass) -> Element<'_, Msg> {
-        let (switcher, nav) = (Anchor::new(), Anchor::new());
-        let sidebar = self.tasks_sidebar(&switcher);
+        let nav = Anchor::new();
+        let sidebar = self.tasks_sidebar();
         let header = self.tasks_header(class, &nav);
         let task_panel = self.panel.then(|| self.task_panel());
         // The panel takes the place of the properties column while it is beside the list.
         let props = (shell::has_props(class) && !self.side_panel).then(|| self.tasks_props());
         let layer = self.menu.map(|menu| match menu {
-            Menu::Switcher => widgets::floating(
-                &switcher,
-                Placement::Below(Align::Start),
-                shell::switcher_menu(AppId::TASKS, Msg::Switcher),
-                Msg::CloseMenu,
-            ),
             Menu::Nav => widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Msg::CloseMenu),
         });
         let body = if self.side_panel { self.task_list(class) } else { self.tasks_body(class) };
@@ -1339,7 +1325,7 @@ impl Gallery {
             .into()
     }
 
-    fn tasks_sidebar<'a>(&'a self, switcher: &Anchor) -> Element<'a, Msg> {
+    fn tasks_sidebar(&self) -> Element<'_, Msg> {
         let p = self.palette();
         let lists = [("Work", 0, 6), ("Personal", 1, 4), ("Family", 2, 3), ("Groceries", 4, 5)];
         let mut items = vec![
@@ -1395,7 +1381,8 @@ impl Gallery {
             Msg::Noop,
         ));
         shell::sidebar(
-            shell::app_switcher(AppId::TASKS, switcher, Msg::Switcher),
+            // The gallery has nothing to search or create; the tools only close the menu.
+            shell::sidebar_tools(shell::SidebarMode::Expanded, true, |_| Msg::CloseMenu),
             items,
             vec![
                 widgets::sidebar_item(
@@ -1765,7 +1752,7 @@ impl Gallery {
 
     fn blocks(&self) -> Element<'_, Msg> {
         let p = self.palette();
-        let sidebar = container(self.tasks_sidebar(&Anchor::new()))
+        let sidebar = container(self.tasks_sidebar())
             .width(size::sidebar())
             .height(640)
             .padding(space::s())

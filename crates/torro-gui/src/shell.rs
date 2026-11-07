@@ -12,12 +12,12 @@
 //!
 //! ```text
 //! Wide    ┌ sidebar 240 ┐│ panel (flush) ────────────────────────────────────────┐
-//!         │ [T] App ▾ 🔍 ✎│ header 64                                             │
+//!         │      🔍 ✎   │ header 64                                             │
 //!         │ rows …      │├──────────────────────────────────┬──────────────────┤
 //!         │             ││ body                             │ properties 300   │
 //!         └─────────────┘└──────────────────────────────────┴──────────────────┘
 //! Medium  ┌rail┐│ panel (flush) ──────────────────────────────────────────────────┐
-//!         │ T  ││ header 64                                                       │
+//!         │ 🔍 ││ header 64                                                       │
 //!         │ ☀  │├─────────────────────────────────────────────────────────────────┤
 //!         │ ○  ││ body                                                            │
 //!         └────┘└─────────────────────────────────────────────────────────────────┘
@@ -29,16 +29,16 @@
 //! A whole window, as the tasks app builds it:
 //!
 //! ```ignore
-//! use torro_gui::shell::{self, Switcher, header_bar, header_title, shell};
+//! use torro_gui::shell::{self, SidebarMode, header_bar, header_title, shell};
 //! use torro_gui::widgets::{self, Anchor, Trail};
 //! use torro_gui::layout::{self, SizeClass};
 //!
 //! fn view(&self) -> Element<'_, Message> {
 //!     iced::widget::responsive(|size| {
 //!         let class = layout::of(size);
-//!         let (switcher, nav) = (Anchor::new(), Anchor::new());
+//!         let nav = Anchor::new();
 //!         let sidebar = shell::sidebar(
-//!             shell::app_switcher(AppId::TASKS, &switcher, Message::Switcher),
+//!             shell::sidebar_tools(SidebarMode::Expanded, true, Message::Switcher),
 //!             vec![widgets::sidebar_item(Icon::Sun, tr("Today"), Trail::Count(5), true, Message::Today)],
 //!             vec![widgets::sidebar_item(Icon::Settings, tr("Settings"), Trail::None, false, Message::Settings)],
 //!         );
@@ -51,7 +51,7 @@
 //!         let props = shell::has_props(class).then(|| self.properties());
 //!         shell(class, sidebar, header, self.body(class), props)
 //!             .drawer(self.drawer, Message::CloseMenu)
-//!             .overlay(self.open_menu(&switcher, &nav))
+//!             .overlay(self.open_menu(&nav))
 //!             .into()
 //!     })
 //!     .into()
@@ -61,10 +61,13 @@
 //! # Top row (issue #459)
 //!
 //! The main windows of the suite draw no header bar and no band of [`titlebar`] above it any more, but
-//! one top row ([`TopRow`], [`Shell::top_row`]) on every system: beside the traffic lights the app
-//! switcher and the panel button, then the app's header, at the right the settings ([`SETTINGS_ICON`]).
-//! The sidebar then begins with its tools ([`sidebar_tools`]) instead of the switcher. Windows without
-//! a shell (signing in, a glance, a compose window) keep [`titlebar`].
+//! one top row ([`TopRow`], [`Shell::top_row`]) on every system: beside the traffic lights the panel
+//! button, then the app's header, at the right the settings ([`SETTINGS_ICON`]). The sidebar begins
+//! with its tools ([`sidebar_tools`]). Windows without a shell (signing in, a glance, a compose window)
+//! keep [`titlebar`].
+//!
+//! There is no app switcher in the window any more (issue #530): the person changes apps from the tray
+//! menu, the dock or task bar and the control centre's Apps; jumps with a reason ("Open in …") stay.
 //!
 //! Mini and strip windows have no chrome (skill, section 6): apps show their glance view there
 //! instead of a shell. A shell built for them anyway looks like the narrow one.
@@ -73,9 +76,8 @@
 //!
 //! The sidebar has three states: **expanded** (240, as above), **rail** (only the icons, [`rail()`] wide,
 //! names in tooltips, group titles as lines) and **drawer** (the expanded sidebar over the content,
-//! [`Shell::drawer`]). In the wide layout the user picks expanded or rail with the panel button –
-//! on macOS in the band right of the traffic lights ([`TitleButtons`]), elsewhere at the top of the
-//! sidebar ([`sidebar_head`]) – or the key `[` ([`is_sidebar_key`]); the app stores the
+//! [`Shell::drawer`]). In the wide layout the user picks expanded or rail with the panel button of the
+//! top row ([`TopRow::sidebar`]) or the key `[` ([`is_sidebar_key`]); the app stores the
 //! choice with [`crate::ui_state`]. The medium layout always shows the rail, and its panel button
 //! opens the expanded sidebar as a drawer. Narrow windows keep the drawer alone.
 //!
@@ -86,17 +88,16 @@
 //! ```ignore
 //! use torro_gui::shell::{self, SidebarMode};
 //!
-//! fn sidebar(&self, mode: SidebarMode, toggle: Message, switcher: &Anchor) -> Element<'_, Message> {
+//! fn sidebar(&self, mode: SidebarMode) -> Element<'_, Message> {
 //!     let items = vec![widgets::sidebar_item_in(mode, Icon::Sun, tr("Today"), Trail::Count(5), true, Message::Today)];
-//!     let head = shell::sidebar_head(mode, AppId::TASKS, switcher, Message::Switcher, toggle);
-//!     shell::sidebar(head, items, vec![])
+//!     shell::sidebar(shell::sidebar_tools(mode, true, Message::Switcher), items, vec![])
 //! }
 //!
-//! // view: the panel button flips the stored choice in wide windows, else it opens or closes the drawer.
-//! let toggle = if shell::has_sidebar(class) { Message::ToggleSidebar } else { Message::ToggleDrawer };
+//! // view: the panel button of the top row flips the stored choice in wide windows, else it opens or
+//! // closes the drawer.
 //! let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
-//!     .then(|| self.sidebar(SidebarMode::Rail, toggle.clone(), &switcher));
-//! shell(class, self.sidebar(SidebarMode::Expanded, toggle, &switcher), header, body, props)
+//!     .then(|| self.sidebar(SidebarMode::Rail));
+//! shell(class, self.sidebar(SidebarMode::Expanded), header, body, props)
 //!     .rail(rail)
 //!     .drawer(self.drawer, Message::CloseMenu)
 //!     .into()
@@ -131,24 +132,24 @@ use crate::split::{self, SplitEvent};
 use crate::style;
 use crate::theme::{self, palette, radius, size, space};
 use crate::typo;
-use crate::widgets::{self, Anchor, MenuItem, MenuSection, Tone, Trail};
+use crate::widgets::{self, Tone};
 
 use crate::themed::in_sidebar;
 
 /// The one-pixel lines of the design.
 const LINE: f32 = 1.0;
-/// Height of the app switcher row (`torro.css`: `.switcher{height:32px}`).
-fn switcher_height() -> f32 {
+/// Height of the sidebar's first row with search and "New" (`torro.css`: `.switcher{height:32px}`).
+fn tools_height() -> f32 {
     size::control()
 }
-/// Edge of the app logo in the switcher.
+/// Edge of the app's mark ([`app_mark`]).
 const LOGO: f32 = 20.0;
 /// Gap between the rows of the sidebar (`torro.css`: `.sidebar{gap:2px}`).
 pub(crate) const SIDEBAR_GAP: f32 = 2.0;
 /// Width of the collapsed sidebar (rail) and of the collapsed action rail of the mail window: the
 /// design's [`size::rail()`] (issue #291), 60 in the standard design – rows as wide as a large control
 /// (40) with 10 at both sides, room for a 16 icon on its hover surface, and the icons sit on the same
-/// axis as the logo. The rules keep it at least as wide as [`size::control_lg()`].
+/// axis. The rules keep it at least as wide as [`size::control_lg()`].
 pub fn rail() -> f32 {
     size::rail()
 }
@@ -161,8 +162,8 @@ pub enum SidebarMode {
     /// [`size::sidebar()`] wide: icons, names, counters, group titles (design skill, section 0).
     #[default]
     Expanded,
-    /// [`rail()`] wide: only the icons, names and counters in tooltips, group titles as lines, the app
-    /// switcher as its logo. Apps leave out what has no icon (the small month, the version line).
+    /// [`rail()`] wide: only the icons, names and counters in tooltips, group titles as lines. Apps
+    /// leave out what has no icon (the small month, the version line).
     Rail,
 }
 
@@ -317,7 +318,7 @@ impl<'a, M: Clone + 'a> Shell<'a, M> {
 
     /// In the medium and narrow layouts, shows the sidebar as a drawer over the left edge while
     /// `open`; a click next to it sends `on_dismiss`. Open it from [`sidebar_toggle`] or the panel
-    /// button of the rail ([`sidebar_head`]). No effect in the wide layout, where the sidebar (or the
+    /// button of the top row ([`TopRow::sidebar`]). No effect in the wide layout, where the sidebar (or the
     /// rail) is always there.
     pub fn drawer(mut self, open: bool, on_dismiss: M) -> Self {
         self.drawer = open.then_some(on_dismiss);
@@ -340,8 +341,8 @@ impl<'a, M: Clone + 'a> Shell<'a, M> {
     }
 
     /// Draws the window's top row (issue #459, [`TopRow`]) instead of the header bar and the band of
-    /// [`titlebar`]: `header` moves up into it, beside the app switcher and the panel button, with the
-    /// settings at its right end. The app then shows the window without [`titlebar`] around it.
+    /// [`titlebar`]: `header` moves up into it, beside the panel button, with the settings at its right
+    /// end. The app then shows the window without [`titlebar`] around it.
     pub fn top_row(mut self, top: TopRow<M>) -> Self {
         self.top = Some(top);
         self
@@ -488,36 +489,32 @@ impl Cover {
 }
 
 /// Whether the window has the band of [`titlebar`], and with it [`TitleButtons`] (only macOS). Where
-/// it has, the panel button and the settings live in the band, so apps leave them out of the sidebar
-/// ([`sidebar_head`] does that itself) and the narrow header ([`sidebar_toggle`]); elsewhere they stay
-/// where they were.
+/// it has, the panel button lives in the band, so apps leave it out of the narrow header
+/// ([`sidebar_toggle`]); elsewhere it stays where it was.
 pub fn has_band() -> bool {
     cfg!(target_os = "macos")
 }
 
 /// The window-wide buttons in the band of [`titlebar`] (U.10, as Claude and Slack have them): the
-/// panel button right of the traffic lights and the settings in the top right corner. Only macOS
-/// draws them ([`has_band`]); a window without them (a compose window, a glance) passes
-/// [`TitleButtons::none`].
+/// panel button right of the traffic lights. Only macOS draws it ([`has_band`]); a window without it
+/// (a compose window, a glance) passes [`TitleButtons::none`]. The settings button lives only in the
+/// top row of a window with settings ([`TopRow::settings`], issue #530): the windows that keep the band
+/// (signing in, loading, a glance, a compose window, the template dialog) have no settings of their own.
 ///
 /// ```ignore
 /// let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
-/// let buttons = TitleButtons::none().sidebar(label, Message::ToggleSidebar).settings(Message::OpenSettings);
-/// // While the settings fill the content area, the gear is marked (task S.16).
-/// let buttons = buttons.settings_open(self.settings.is_some());
+/// let buttons = TitleButtons::none().sidebar(label, Message::ToggleSidebar);
 /// shell::titlebar(content, zoom, surface, cover, buttons, Message::DragWindow)
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct TitleButtons<M> {
     sidebar: Option<(&'static str, M)>,
-    settings: Option<M>,
-    settings_open: bool,
 }
 
 impl<M> TitleButtons<M> {
     /// No buttons: the band holds the traffic lights alone.
     pub fn none() -> Self {
-        TitleButtons { sidebar: None, settings: None, settings_open: false }
+        TitleButtons { sidebar: None }
     }
 
     /// The panel button, which sends `on_press` – the same as `[` ([`is_sidebar_key`]): the app flips
@@ -525,20 +522,6 @@ impl<M> TitleButtons<M> {
     /// from [`sidebar_button_label`].
     pub fn sidebar(mut self, label: &'static str, on_press: M) -> Self {
         self.sidebar = Some((label, on_press));
-        self
-    }
-
-    /// The settings button ("Settings"), which sends `on_press`.
-    pub fn settings(mut self, on_press: M) -> Self {
-        self.settings = Some(on_press);
-        self
-    }
-
-    /// Marks the settings button while the settings are `open` – they fill the app's content area,
-    /// and the gear leads back out of them (task S.16, `docs/settings.md`): `selected` under the
-    /// icon and the icon in `text`, like a chosen sidebar row. Neutral, never red.
-    pub fn settings_open(mut self, open: bool) -> Self {
-        self.settings_open = open;
         self
     }
 }
@@ -559,8 +542,8 @@ pub fn sidebar_button_label(class: SizeClass, choice: SidebarMode, open: bool) -
 /// The band takes the colour of `surface`, the top of `content`, with what `cover` lays over it,
 /// and is pressed to drag the window (also while the window is dimmed); `on_drag` goes to the app's
 /// `update`, which returns [`crate::drag_window`]. `buttons` lie in the band: the panel button right
-/// of the traffic lights, the settings in the top right corner. Over a dialog or a side panel neither
-/// shows (the window below is dimmed), over the drawer only the panel button, which closes it.
+/// of the traffic lights. Over a dialog or a side panel it does not show (the window below is dimmed),
+/// over the drawer it does, and closes it.
 /// `zoom` is the factor of the app's `scale_factor`, so the band and its buttons stay the same size
 /// in points at any zoom, as the traffic lights do. Other platforms keep their own title bar and get
 /// `content` back unchanged.
@@ -600,10 +583,6 @@ const LIGHTS_PITCH: f32 = 23.0;
 /// half after the last light's, so it reads as a group of its own beside them, as in Claude.
 #[cfg(target_os = "macos")]
 const BAND_LEADING: f32 = LIGHTS + 3.5 * LIGHTS_PITCH - BAND_BUTTON / 2.0;
-/// The gap between the settings button and the right edge, in points: its icon is centred as far from
-/// the edge as the close button is from the left one.
-#[cfg(target_os = "macos")]
-const BAND_TRAILING: f32 = LIGHTS - BAND_BUTTON / 2.0;
 /// Edge of a button in the band, in points.
 #[cfg(target_os = "macos")]
 const BAND_BUTTON: f32 = 24.0;
@@ -612,34 +591,20 @@ const BAND_BUTTON: f32 = 24.0;
 /// divided by `zoom` into layout units.
 #[cfg(target_os = "macos")]
 fn band_buttons<'a, M: Clone + 'a>(buttons: TitleButtons<M>, cover: Cover, zoom: f32) -> Element<'a, M> {
-    let TitleButtons { sidebar, settings, settings_open } = buttons;
-    let (sidebar, settings) = match cover {
-        Cover::Nothing => (sidebar, settings),
-        Cover::Drawer => (sidebar, None),
-        Cover::Dialog | Cover::Panel | Cover::Filled(_) => (None, None),
-    };
-    let button_of = |which: Icon, label: &'static str, on_press: M, marked: bool| -> Element<'a, M> {
-        let tone = if marked { Tone::Text } else { Tone::Text2 };
-        let mark = widgets::toned(which, icon::SIZE / zoom, tone);
-        let edge = BAND_BUTTON / zoom;
-        let pressable = button(container(mark).center(Fill)).width(edge).height(edge).padding(0);
-        // One closure for both, because the two styles are different types.
-        let how = move |theme: &iced::Theme, status: iced::widget::button::Status| match marked {
-            true => style::button::sidebar_item(true)(theme, status),
-            false => style::button::icon(theme, status),
-        };
-        widgets::with_tooltip(pressable.style(how).on_press(on_press), label)
+    let TitleButtons { sidebar } = buttons;
+    let sidebar = match cover {
+        Cover::Nothing | Cover::Drawer => sidebar,
+        Cover::Dialog | Cover::Panel | Cover::Filled(_) => None,
     };
     let mut buttons = row![blank().width(BAND_LEADING / zoom)];
     if let Some((label, on_press)) = sidebar {
-        buttons = buttons.push(button_of(Icon::PanelLeft, label, on_press, false));
-    }
-    buttons = buttons.push(blank::horizontal());
-    if let Some(on_press) = settings {
-        buttons = buttons.push(button_of(SETTINGS_ICON, tr("Settings"), on_press, settings_open));
+        let mark = widgets::toned(Icon::PanelLeft, icon::SIZE / zoom, Tone::Text2);
+        let edge = BAND_BUTTON / zoom;
+        let pressable = button(container(mark).center(Fill)).width(edge).height(edge).padding(0);
+        buttons = buttons.push(widgets::with_tooltip(pressable.style(style::button::icon).on_press(on_press), label));
     }
     // Centred on the line of the traffic lights, not in the band: the line sits lower (see `LIGHTS`).
-    let row = buttons.push(blank().width(BAND_TRAILING / zoom)).height(BAND_BUTTON / zoom).align_y(Alignment::Center);
+    let row = buttons.push(blank::horizontal()).height(BAND_BUTTON / zoom).align_y(Alignment::Center);
     container(row).padding(Padding::new(0.0).top((LIGHTS - BAND_BUTTON / 2.0) / zoom)).into()
 }
 
@@ -705,7 +670,7 @@ const TOP_ROW: f32 = 40.0;
 
 /// Where the top row's own pieces start on macOS, in points from the left edge: the traffic lights
 /// end a light's radius after the third centre ([`LIGHTS`] + 2 × [`LIGHTS_PITCH`]), and half a pitch
-/// more keeps the app switcher apart from them.
+/// more keeps the panel button apart from them.
 #[cfg(target_os = "macos")]
 const LIGHTS_ROOM: f32 = LIGHTS + 2.5 * LIGHTS_PITCH;
 
@@ -718,17 +683,17 @@ pub const SETTINGS_ICON: Icon = Icon::SlidersHorizontal;
 /// draft (`docs/prototypes/mail-layout/`):
 ///
 /// ```text
-/// Wide    ● ● ●  [▣ Tasks ▾]        [▯] │ the app's header …                      [☰]
+/// Wide    ● ● ●  [▯]                    │ the app's header …                      [☰]
 ///         └──────── sidebar ───────────┘└──────────── content ───────────────────────┘
-/// Rail    ● ● ●  [▣] [▯]  the app's header …                                       [☰]
+/// Rail    ● ● ●  [▯]  the app's header …                                           [☰]
 /// Narrow  ● ● ●  [▯]  the app's header …                                           [☰]
 /// ```
 ///
-/// - Over the expanded sidebar (wide): room for the traffic lights (macOS only), the app switcher
-///   ([`app_switcher`]'s trigger without its tools) and the panel button at the sidebar's right edge,
-///   on the sidebar's surface; then the line beside the sidebar.
-/// - With the rail (wide by choice, medium) the logo stands for the switcher; narrow windows keep the
-///   panel button alone, which opens the drawer, and the drawer's top carries the switcher.
+/// - Over the expanded sidebar (wide): room for the traffic lights (macOS only) and right after them
+///   the panel button, on the sidebar's surface, as wide as the sidebar; then the line beside it.
+/// - With the rail (wide by choice, medium) and in narrow windows the same lights' room and panel
+///   button stand before the header; narrow, the button opens the drawer. There is no app switcher
+///   (issue #530): the panel button stands at the same place in every form.
 /// - Then the app's header ([`header_bar`]), padded as in the header bar, with a line below, and the
 ///   settings ([`SETTINGS_ICON`]) at the right end, marked while they are open.
 ///
@@ -737,7 +702,7 @@ pub const SETTINGS_ICON: Icon = Icon::SlidersHorizontal;
 /// `zoom`), the rest scales with the window.
 ///
 /// ```ignore
-/// let top = TopRow::new(AppId::TASKS, &switcher, Message::Switcher, self.zoom.factor(), Message::DragWindow)
+/// let top = TopRow::new(self.zoom.factor(), Message::DragWindow)
 ///     .sidebar(shell::sidebar_button_label(class, self.sidebar, self.drawer), Message::ToggleSidebar)
 ///     .settings(Message::ToggleSettings)
 ///     .settings_open(self.settings.is_some())
@@ -746,9 +711,6 @@ pub const SETTINGS_ICON: Icon = Icon::SlidersHorizontal;
 /// ```
 #[derive(Debug, Clone)]
 pub struct TopRow<M> {
-    app: AppId,
-    switcher: Anchor,
-    on: fn(Switcher) -> M,
     sidebar: Option<(&'static str, M)>,
     settings: Option<M>,
     settings_open: bool,
@@ -759,14 +721,10 @@ pub struct TopRow<M> {
 }
 
 impl<M> TopRow<M> {
-    /// The top row of `app`'s window: its switcher registers `switcher` and sends [`Switcher::Toggle`]
-    /// wrapped by `on`, a press on the free row sends `on_drag` (the app returns
+    /// The top row of a window: a press on the free row sends `on_drag` (the app returns
     /// [`crate::drag_window`]). `zoom` is the factor of the app's `scale_factor`.
-    pub fn new(app: AppId, switcher: &Anchor, on: fn(Switcher) -> M, zoom: f32, on_drag: M) -> Self {
+    pub fn new(zoom: f32, on_drag: M) -> Self {
         TopRow {
-            app,
-            switcher: switcher.clone(),
-            on,
             sidebar: None,
             settings: None,
             settings_open: false,
@@ -791,14 +749,16 @@ impl<M> TopRow<M> {
         self
     }
 
-    /// The settings button ("Settings", [`SETTINGS_ICON`]), which sends `on_press`.
+    /// The settings button ("Settings", [`SETTINGS_ICON`]), which sends `on_press`. Every window with
+    /// settings shows it, the same at the same place (issue #530); windows without settings leave it out.
     pub fn settings(mut self, on_press: M) -> Self {
         self.settings = Some(on_press);
         self
     }
 
-    /// Marks the settings button while the settings fill the content area (as
-    /// [`TitleButtons::settings_open`]).
+    /// Marks the settings button while the settings fill the content area, and the button leads back
+    /// out of them (task S.16, `docs/settings.md`): `selected` under the icon and the icon in `text`,
+    /// like a chosen sidebar row. Neutral, never red.
     pub fn settings_open(mut self, open: bool) -> Self {
         self.settings_open = open;
         self
@@ -813,14 +773,14 @@ impl<M> TopRow<M> {
 
 /// How far the header in the top row starts right of the content's left edge, in layout units, for a
 /// window of `class` with the user's `choice` at the zoom factor `zoom`: 0 beside the expanded sidebar,
-/// where the row's lead is as wide as the sidebar; else what the lights' room, the logo and the panel
-/// button take beyond the rail (or the whole of it in narrow windows). Apps that split their header
+/// where the row's lead is as wide as the sidebar; else what the lights' room and the panel button take
+/// beyond the rail (or the whole of it in narrow windows). Apps that split their header
 /// by the columns below (the list's head over the list) take it off the first part.
 pub fn head_inset(class: SizeClass, choice: SidebarMode, zoom: f32) -> f32 {
     match sidebar_mode(class, choice) {
         Some(SidebarMode::Expanded) => 0.0,
-        Some(SidebarMode::Rail) => (compact_lead_width(true, zoom) - rail() - LINE).max(0.0),
-        None => compact_lead_width(false, zoom),
+        Some(SidebarMode::Rail) => (compact_lead_width(zoom) - rail() - LINE).max(0.0),
+        None => compact_lead_width(zoom),
     }
 }
 
@@ -839,12 +799,10 @@ fn lights_room(zoom: f32) -> f32 {
 }
 
 /// The width of the top row's lead where it does not stand over the expanded sidebar: the lights'
-/// room, the logo (`logo`, with the rail) and the panel button, [`SIDEBAR_GAP`] apart, and the gap
-/// before the header.
-fn compact_lead_width(logo: bool, zoom: f32) -> f32 {
+/// room and the panel button, [`SIDEBAR_GAP`] apart, and the gap before the header.
+fn compact_lead_width(zoom: f32) -> f32 {
     // The pieces of `compact_lead` and the gap of its row between each two of them.
-    let logo = if logo { switcher_height() + SIDEBAR_GAP } else { 0.0 };
-    lights_room(zoom) + SIDEBAR_GAP + logo + size::control_sm() + SIDEBAR_GAP + space::s()
+    lights_room(zoom) + SIDEBAR_GAP + size::control_sm() + SIDEBAR_GAP + space::s()
 }
 
 /// The window `window` under its top row ([`Shell::top_row`]): `header` in the row, the row as wide as
@@ -883,7 +841,7 @@ fn top_row_band<'a, M: Clone + 'a>(
     match cover {
         Cover::Filled(surface) => container(blank()).width(Fill).height(Fill).style(surface_style(surface)).into(),
         Cover::Drawer => {
-            // The drawer's own top: the switcher and the panel button over its width, the rest dimmed.
+            // The drawer's own top: the panel button over its width, the rest dimmed.
             let width = size::sidebar();
             let side = expanded_lead(&top, width);
             row![side, stack![head_part(&top, header, class), dimmer()]].into()
@@ -909,8 +867,7 @@ fn plain_row<'a, M: Clone + 'a>(
     match lead {
         Some(width) => row![expanded_lead(top, width), head_part(top, header, class)].into(),
         None => {
-            let logo = sidebar_mode(class, SidebarMode::Expanded).is_some();
-            let lead = compact_lead(top, logo);
+            let lead = compact_lead(top);
             // The compact lead lies on the panel, as the header does, and the line runs under both.
             let row = row![container(lead).height(Fill).center_y(Fill), head_row(top, header_padded(header, class))];
             let part = column![row.height(Fill), rule::horizontal(LINE).style(style::rule)];
@@ -919,43 +876,21 @@ fn plain_row<'a, M: Clone + 'a>(
     }
 }
 
-/// The lead over the expanded sidebar, `width` wide: the lights' room, the switcher, free room, the
-/// panel button, on the sidebar's surface, then the line beside the sidebar.
+/// The lead over the expanded sidebar, `width` wide: the lights' room and the panel button right after
+/// it, on the sidebar's surface, then the line beside the sidebar.
 fn expanded_lead<'a, M: Clone + 'a>(top: &TopRow<M>, width: f32) -> Element<'a, M> {
-    // The name gets what the lights, the panel button and the gaps leave; a longer one ends in "…"
-    // and shows whole in the tooltip, and the chevron and the panel button always stay.
-    let fixed = lights_room(top.zoom) + size::control_sm() + 3.0 * SIDEBAR_GAP + space::s();
-    let chrome = LOGO + icon::SIZE_SM + 2.0 * space::s() + 2.0 * TRIGGER_INSET;
-    let name_room = (width - LINE - fixed - chrome).max(0.0);
-    let trigger = switcher_trigger(top.app, top.on, iced::Length::Shrink, Some(name_room));
-    let mut pieces = row![blank().width(lights_room(top.zoom)), widgets::anchored(&top.switcher, trigger)];
-    pieces = pieces.push(blank::horizontal());
-    if let Some((label, on_press)) = top.sidebar.clone() {
-        pieces = pieces.push(widgets::icon_button(Icon::PanelLeft, label, Some(on_press)));
-    }
-    let pieces = pieces.spacing(SIDEBAR_GAP).align_y(Alignment::Center);
-    let side = container(pieces)
+    let side = container(compact_lead(top))
         .width((width - LINE).max(0.0))
         .height(Fill)
-        .padding(Padding::new(0.0).right(space::s()))
         .center_y(Fill)
         .style(style::container::sidebar);
     row![in_sidebar(side), rule::vertical(LINE).style(style::rule)].into()
 }
 
-/// The lead without the expanded sidebar: the lights' room, the logo while `logo` (it opens the
-/// switcher), the panel button.
-fn compact_lead<'a, M: Clone + 'a>(top: &TopRow<M>, logo: bool) -> Element<'a, M> {
+/// The lead's pieces: the lights' room and the panel button, then the gap before the header. The same
+/// over the expanded sidebar, beside the rail and in narrow windows, so the button never moves.
+fn compact_lead<'a, M: Clone + 'a>(top: &TopRow<M>) -> Element<'a, M> {
     let mut pieces = row![blank().width(lights_room(top.zoom))];
-    if logo {
-        let mark = button(center_x(app_mark(top.app)))
-            .width(switcher_height())
-            .height(switcher_height())
-            .padding(0)
-            .style(style::button::sidebar_item(false))
-            .on_press((top.on)(Switcher::Toggle));
-        pieces = pieces.push(widgets::anchored(&top.switcher, widgets::with_tooltip(mark, app_name(top.app))));
-    }
     if let Some((label, on_press)) = top.sidebar.clone() {
         pieces = pieces.push(widgets::icon_button(Icon::PanelLeft, label, Some(on_press)));
     }
@@ -1030,16 +965,17 @@ fn surface_style(surface: Surface) -> fn(&iced::Theme) -> container::Style {
     }
 }
 
-/// The first row of a sidebar under the top row (issue #459): search (only while `search`, as in
-/// [`sidebar_head_in`]) and "New", which used to stand beside the app switcher. Expanded they stand at
-/// the row's end, in the rail below each other. `on` wraps the [`Switcher`] messages.
+/// The first row of a sidebar under the top row (issue #459): search (only while `search`, task E11.2:
+/// a window whose search field always stands over its list – the inbox's mail window – leaves the
+/// magnifier out) and "New". Expanded they stand at the row's end, in the rail below each other. `on`
+/// wraps the [`Switcher`] messages.
 pub fn sidebar_tools<'a, M: Clone + 'a>(mode: SidebarMode, search: bool, on: fn(Switcher) -> M) -> Element<'a, M> {
     let tools = head_tools(search).into_iter().map(|tool| tool.button(on));
     match mode {
         SidebarMode::Expanded => row![blank::horizontal()]
             .extend(tools)
             .spacing(SIDEBAR_GAP)
-            .height(switcher_height())
+            .height(tools_height())
             .align_y(Alignment::Center)
             .into(),
         SidebarMode::Rail => column(tools).spacing(SIDEBAR_GAP).width(Fill).align_x(Alignment::Center).into(),
@@ -1172,13 +1108,13 @@ fn drawer<'a, M: Clone + 'a>(sidebar: Element<'a, M>, on_dismiss: M) -> Element<
     stack![catcher, opaque(in_sidebar(panel))].into()
 }
 
-/// The content of the sidebar: the `switcher` row ([`app_switcher`], or [`sidebar_head`] with the
-/// panel button) with 8 below it, the `items` (navigation, [`widgets::sidebar_group`]s with their
-/// rows) from the top, and the `footer` rows ("Open Calendar ↗", "Settings") at the bottom. Rows
-/// are 2 apart. The same for both [`SidebarMode`]s: build the pieces in the mode you want.
+/// The content of the sidebar: the `switcher` row (since issue #530 the tools, [`sidebar_tools`]) with 8
+/// below it, the `items` (navigation, [`widgets::sidebar_group`]s with their rows) from the top, and the
+/// `footer` rows ("Open Calendar ↗", "Settings") at the bottom. Rows are 2 apart. The same for both
+/// [`SidebarMode`]s: build the pieces in the mode you want.
 ///
 /// Only the `items` scroll (task U.12): a design pack with taller rows or a low window has no room
-/// for all of them, and the switcher and the footer must stay in reach. The scrollbar floats in the
+/// for all of them, and the first row and the footer must stay in reach. The scrollbar floats in the
 /// sidebar's right edge, beside the rows, so it never covers their counters.
 pub fn sidebar<'a, M: 'a>(
     switcher: impl Into<Element<'a, M>>,
@@ -1204,7 +1140,7 @@ fn sidebar_parts<'a, M: 'a, R: iced::advanced::text::Renderer + 'a>(
         .height(Fill);
     column![
         container(switcher).width(Fill).padding(edge),
-        // 8 below the switcher and the row gap at both sides, as when the rows followed it directly.
+        // 8 below the first row and the row gap at both sides, as when the rows followed it directly.
         blank().height(space::s() + 2.0 * SIDEBAR_GAP),
         middle,
         // Scrolled rows end here, not flush against the footer.
@@ -1278,30 +1214,25 @@ pub fn header_title<'a, M: 'a>(
     content.into()
 }
 
-/// The header button that opens the sidebar drawer in the medium and narrow layouts. Only where the
-/// window has no band ([`has_band`]); with one, the band's panel button does it.
+/// The header button that opens the sidebar drawer in the medium and narrow layouts of a window without
+/// the top row. Only where the window has no band ([`has_band`]); with one, the band's panel button does
+/// it.
 pub fn sidebar_toggle<'a, M: Clone + 'a>(on_press: M) -> Element<'a, M> {
     widgets::icon_button(Icon::PanelLeft, tr("Show sidebar"), Some(on_press))
 }
 
-/// What the app switcher asks the app to do; the app wraps it in its own message
-/// (`Message::Switcher(Switcher)`).
+/// What the tools at the top of the sidebar ([`sidebar_tools`]) ask the app to do; the app wraps it in
+/// its own message (`Message::Switcher(Switcher)`). The name stays from the app switcher, which had
+/// these tools beside it until issue #530.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Switcher {
-    /// Open or close the switcher menu ([`switcher_menu`]).
-    Toggle,
-    /// Start or raise another app of the suite: send `Request::OpenApp { app }` to the core, then
-    /// close the menu. Carries [`AppId::open_name`]: the binary for an app with one window (as
-    /// [`AppId::binary`]), the window class for a further window of a shared binary
-    /// (`torro-inbox-mail`, task E8.1).
-    OpenApp(&'static str),
-    /// The search button next to the switcher.
+    /// The search button.
     Search,
-    /// The "New" button next to the switcher (new task, new event …).
+    /// The "New" button (new task, new event …).
     New,
 }
 
-/// The short name of an app in the switcher ("Tasks", "Calendar", "Workplace"); the inbox's three
+/// The short name of an app ("Tasks", "Calendar", "Workplace"); the inbox's three
 /// windows by their kind ("Notification Hub", "Mail", "App Feed"), since they share one binary. The
 /// three names share no word (issue #127), so nobody takes one window for another. Translated; the
 /// accounts' "Used by …" names the apps with it too (issue #410).
@@ -1317,7 +1248,7 @@ pub fn app_name(app: AppId) -> &'static str {
     }
 }
 
-/// The icon of an app in the switcher menu and on its mark ([`app_mark`]). Each of the inbox's
+/// The icon of an app, also on its mark ([`app_mark`]). Each of the inbox's
 /// windows has its own: the hub the tray, mail the envelope, the app feed the bell. Public for the
 /// control centre's app catalog (issue #411), which shows each app with the icon it has here.
 pub fn app_icon(app: AppId) -> Icon {
@@ -1345,13 +1276,13 @@ fn app_hue(app: AppId) -> Option<usize> {
     }
 }
 
-/// The mark of `app`, 20 × 20, where the switcher shows the logo (issue #127): for a window that
+/// The mark of `app`, 20 × 20 (issue #127): for a window that
 /// shares its program with others ([`app_hue`]: the inbox's hub, mail window and app feed) its icon
 /// ([`app_icon`], 14) in its own hue on a tile tinted with it ([`theme::Palette::tinted`], radius
 /// [`radius::xs()`]), so the windows differ at a glance; for every other app the suite's logo.
 ///
-/// The switcher and the rail show it by themselves. A window without sidebar or rail (narrow) puts
-/// it first in its header ([`header_bar`]'s `leading`), so the window still says which one it is.
+/// A window without sidebar or rail (narrow) puts it first in its header ([`header_bar`]'s
+/// `leading`), so the window still says which one it is; the setup shows it as the suite's logo.
 pub fn app_mark<'a, M: 'a>(app: AppId) -> Element<'a, M> {
     let Some(hue) = app_hue(app) else { return logo() };
     let glyph: Element<'a, M> = icon::icon(app_icon(app), icon::SIZE_SM)
@@ -1370,95 +1301,7 @@ pub fn app_mark<'a, M: 'a>(app: AppId) -> Element<'a, M> {
         .into()
 }
 
-/// The apps [`switcher_menu`] lists for a window of `current`: the apps of components turned off (task
-/// W.2) and apps not installed (issue #408) are left out; the window's own app stays.
-fn switcher_apps(current: AppId) -> Vec<AppId> {
-    AppId::ALL
-        .iter()
-        .copied()
-        .filter(|&app| (crate::components::app_on(app) && crate::installed::is_installed(app)) || app == current)
-        .collect()
-}
-
-/// What a click on `app` in the menu of a window of `current` sends: [`Switcher::Toggle`] (closes)
-/// for the window's own entry, else [`Switcher::OpenApp`] with its [`AppId::open_name`]. Entries
-/// are told apart by window class, so the inbox's mail window can open its hub and the other way.
-fn switcher_message(app: AppId, current: AppId) -> Switcher {
-    if app.window_class == current.window_class { Switcher::Toggle } else { Switcher::OpenApp(app.open_name()) }
-}
-
-/// The top row of the sidebar, like Linear's workspace menu: the logo, the name of `current`
-/// with a chevron (registers `anchor` and sends [`Switcher::Toggle`]), then search and a framed
-/// "New" button. `on` wraps the switcher's messages in the app's (`Message::Switcher`).
-pub fn app_switcher<'a, M: Clone + 'a>(current: AppId, anchor: &Anchor, on: fn(Switcher) -> M) -> Element<'a, M> {
-    switcher_row(current, anchor, on, None, true)
-}
-
-/// The top of the sidebar with the panel button that collapses and expands it:
-///
-/// - [`SidebarMode::Expanded`]: the [`app_switcher`] row, the panel button (`panel-left`,
-///   "Collapse sidebar") at its end.
-/// - [`SidebarMode::Rail`]: the logo alone (opens the switcher menu, registers `anchor`; the app's
-///   name is its tooltip), search, "New" and the panel button ("Expand sidebar") below each other.
-///
-/// `on_toggle` is what the panel button sends: in the wide layout the app flips its stored choice
-/// ([`SidebarMode::toggled`], saved with [`crate::ui_state`]); in the medium and narrow layouts it
-/// opens the drawer from the rail and closes it from the drawer. [`has_sidebar`] tells the cases
-/// apart in `view`, and `[` ([`is_sidebar_key`]) does the same.
-///
-/// Where the window has the band of [`titlebar`] ([`has_band`], macOS), the panel button lies there
-/// ([`TitleButtons::sidebar`]) and the head leaves it out.
-///
-/// The same as [`sidebar_head_in`] with the search button.
-pub fn sidebar_head<'a, M: Clone + 'a>(
-    mode: SidebarMode,
-    current: AppId,
-    anchor: &Anchor,
-    on: fn(Switcher) -> M,
-    on_toggle: M,
-) -> Element<'a, M> {
-    sidebar_head_in(mode, current, anchor, on, on_toggle, true)
-}
-
-/// [`sidebar_head`] with the search button ([`Icon::Search`], "Search", [`Switcher::Search`]) only
-/// while `search` (task E11.2): a window whose search field always stands over its list – the
-/// inbox's mail window – leaves the magnifier out in both forms, expanded and rail, since a second
-/// way to the same field only takes room; its keys (`/`, ⌘F / Ctrl + F) still focus the field.
-/// Everything else is as in [`sidebar_head`]; which tools the head carries says [`head_tools`].
-///
-/// ```ignore
-/// shell::sidebar_head_in(mode, AppId::INBOX_MAIL, switcher, Message::Switcher, Message::ToggleSidebar, false)
-/// ```
-pub fn sidebar_head_in<'a, M: Clone + 'a>(
-    mode: SidebarMode,
-    current: AppId,
-    anchor: &Anchor,
-    on: fn(Switcher) -> M,
-    on_toggle: M,
-    search: bool,
-) -> Element<'a, M> {
-    match mode {
-        SidebarMode::Expanded => switcher_row(current, anchor, on, (!has_band()).then_some(on_toggle), search),
-        SidebarMode::Rail => {
-            // The logo on a full-width row, as the other rows of the rail.
-            let logo = button(center_x(app_mark(current)))
-                .width(Fill)
-                .height(switcher_height())
-                .padding(0)
-                .style(style::button::sidebar_item(false))
-                .on_press(on(Switcher::Toggle));
-            let mut head =
-                column![widgets::anchored(anchor, widgets::tooltip_right(logo, app_name(current), Trail::None))];
-            head = head.extend(head_tools(search).into_iter().map(|tool| tool.button(on)));
-            if !has_band() {
-                head = head.push(widgets::icon_button(Icon::PanelLeft, tr("Expand sidebar"), Some(on_toggle)));
-            }
-            head.spacing(SIDEBAR_GAP).align_x(Alignment::Center).into()
-        }
-    }
-}
-
-/// A tool beside the app switcher in the head of the sidebar ([`sidebar_head_in`]).
+/// A tool in the first row of the sidebar ([`sidebar_tools`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeadTool {
     /// The magnifier, "Search" ([`Switcher::Search`]).
@@ -1477,15 +1320,10 @@ impl HeadTool {
     }
 }
 
-/// The tools of the sidebar's head after the switcher, in their order: Search (only while
-/// `search`, [`sidebar_head_in`]), then New.
+/// The tools of the sidebar's first row, in their order: Search (only while `search`,
+/// [`sidebar_tools`]), then New.
 pub fn head_tools(search: bool) -> Vec<HeadTool> {
     [search.then_some(HeadTool::Search), Some(HeadTool::New)].into_iter().flatten().collect()
-}
-
-/// `content` centred across the full width, at its own height.
-fn center_x<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
-    container(content).center_x(Fill).center_y(Fill).into()
 }
 
 /// The app logo, 20 × 20: the active colour scheme's own mark (`logo.mark`, an SVG from its folder)
@@ -1504,72 +1342,6 @@ fn logo<'a, M: 'a>() -> Element<'a, M> {
         ..container::Style::default()
     })
     .into()
-}
-
-/// The switcher row of [`app_switcher`], with the panel button at its end when `on_toggle` is given
-/// and the search button only while `search` ([`head_tools`]).
-fn switcher_row<'a, M: Clone + 'a>(
-    current: AppId,
-    anchor: &Anchor,
-    on: fn(Switcher) -> M,
-    on_toggle: Option<M>,
-    search: bool,
-) -> Element<'a, M> {
-    let mut top = row![widgets::anchored(anchor, switcher_trigger(current, on, Fill, None))];
-    top = top.extend(head_tools(search).into_iter().map(|tool| tool.button(on)));
-    if let Some(on_toggle) = on_toggle {
-        top = top.push(widgets::icon_button(Icon::PanelLeft, tr("Collapse sidebar"), Some(on_toggle)));
-    }
-    top.spacing(SIDEBAR_GAP).align_y(Alignment::Center).into()
-}
-
-/// The trigger of the app switcher: the mark of `current`, its name and a chevron, `width` wide
-/// (the sidebar's row fills, the top row's takes what it needs); sends [`Switcher::Toggle`].
-fn switcher_trigger<'a, M: Clone + 'a>(
-    current: AppId,
-    on: fn(Switcher) -> M,
-    width: impl Into<iced::Length>,
-    name_room: Option<f32>,
-) -> Element<'a, M> {
-    let full = app_name(current);
-    let shown = name_room.map_or_else(|| full.to_owned(), |room| typo::ellipsize(full, typo::body_strong(), room));
-    let cut = shown != full;
-    let name = row![
-        app_mark(current),
-        typo::text(typo::body_strong(), shown).style(theme::text).wrapping(Wrapping::None),
-        widgets::toned(Icon::ChevronDown, icon::SIZE_SM, Tone::Text3),
-    ]
-    .spacing(space::s())
-    .align_y(Alignment::Center);
-    // 6 inside, as `.switcher{padding:0 6px}`, so the logo lines up with the row icons below.
-    let trigger = button(container(name).center_y(Fill).clip(true))
-        .width(width)
-        .height(switcher_height())
-        .padding(Padding::new(0.0).left(TRIGGER_INSET).right(TRIGGER_INSET))
-        .style(style::button::sidebar_item(false))
-        .on_press(on(Switcher::Toggle));
-    if cut { widgets::with_tooltip(trigger, full) } else { trigger.into() }
-}
-
-/// The padding of the switcher's trigger at its sides (`.switcher{padding:0 6px}`).
-const TRIGGER_INSET: f32 = 6.0;
-
-/// The menu of the app switcher: every app of the suite ([`AppId::ALL`]) whose component is on
-/// ([`crate::components`], task W.2) and that is installed ([`crate::installed`], issue #408), `current`
-/// marked and always there. A click
-/// on another app sends [`Switcher::OpenApp`], on the current one [`Switcher::Toggle`] (closes).
-/// Show it with `widgets::floating(&anchor, Placement::Below(Align::Start), switcher_menu(..), close)`.
-pub fn switcher_menu<'a, M: Clone + 'a>(current: AppId, on: fn(Switcher) -> M) -> Element<'a, M> {
-    let items = switcher_apps(current)
-        .into_iter()
-        .map(|app| {
-            let message = switcher_message(app, current);
-            let is_current = message == Switcher::Toggle;
-            let trail = if is_current { Trail::None } else { Trail::Icon(Icon::ArrowUpRight) };
-            MenuItem::new(app_icon(app), app_name(app), on(message)).trail(trail).current(is_current)
-        })
-        .collect();
-    widgets::menu(vec![MenuSection::titled(tr("Apps"), items)])
 }
 
 /// The part of a sidebar list (calendars, task lists) that belongs to one account.
@@ -1627,6 +1399,7 @@ pub fn account_groups<'a, T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widgets::{Anchor, MenuItem, MenuSection, Trail};
     use torro_pim::AccountState;
 
     #[derive(Debug, Clone, PartialEq)]
@@ -1795,32 +1568,23 @@ mod tests {
         assert!(!is_sidebar_key(&bracket, Modifiers::empty()));
     }
 
-    /// Task E11.2: the head carries Search and New – without `search` (the mail window, whose field
-    /// stands over its list) New alone, in both forms; `sidebar_head` keeps its magnifier.
+    /// Task E11.2: the first row carries Search and New – without `search` (the mail window, whose
+    /// field stands over its list) New alone.
     #[test]
-    fn the_head_leaves_search_out_where_the_field_stands_over_the_list() {
+    fn the_tools_leave_search_out_where_the_field_stands_over_the_list() {
         assert_eq!(head_tools(true), [HeadTool::Search, HeadTool::New]);
         assert_eq!(head_tools(false), [HeadTool::New]);
-        let anchor = Anchor::new();
-        for mode in [SidebarMode::Expanded, SidebarMode::Rail] {
-            for search in [true, false] {
-                let _: Element<'_, Msg> =
-                    sidebar_head_in(mode, AppId::TASKS, &anchor, Msg::Switcher, Msg::Close, search);
-            }
-            let _: Element<'_, Msg> = sidebar_head(mode, AppId::TASKS, &anchor, Msg::Switcher, Msg::Close);
-        }
     }
 
     #[test]
     fn rails_and_heads_build_in_every_class() {
         for class in [SizeClass::Mini, SizeClass::Strip, SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
-            let anchor = Anchor::new();
             let side = |mode| {
                 let items = vec![
                     widgets::sidebar_item_in(mode, Icon::Sun, "Today", Trail::Count(5), true, Msg::Close),
                     widgets::sidebar_group_in(mode, "Lists", Some((true, Msg::Close))),
                 ];
-                sidebar(sidebar_head(mode, AppId::TASKS, &anchor, Msg::Switcher, Msg::Close), items, vec![])
+                sidebar(sidebar_tools(mode, true, Msg::Switcher), items, vec![])
             };
             let rail =
                 (sidebar_mode(class, SidebarMode::Rail) == Some(SidebarMode::Rail)).then(|| side(SidebarMode::Rail));
@@ -1837,7 +1601,7 @@ mod tests {
         for surface in [Surface::Window, Surface::Sidebar, Surface::Panel] {
             let filled = Cover::Filled(Surface::Panel);
             for cover in [Cover::Nothing, Cover::Dialog, Cover::Drawer, Cover::Panel, filled] {
-                let buttons = || TitleButtons::none().sidebar("Collapse sidebar", Msg::Close).settings(Msg::Close);
+                let buttons = || TitleButtons::none().sidebar("Collapse sidebar", Msg::Close);
                 let _: Element<'_, Msg> = titlebar(blank(), 1.0, surface, cover, TitleButtons::none(), Msg::Close);
                 let _: Element<'_, Msg> = titlebar(blank(), 1.0, surface, cover, buttons(), Msg::Close);
                 let _: Element<'_, Msg> = titlebar(blank(), 1.5, surface, cover, buttons(), Msg::Close);
@@ -1845,17 +1609,17 @@ mod tests {
         }
     }
 
-    /// The gear is marked while the settings are open, and nothing else about the buttons changes
-    /// (task S.16).
+    /// The settings button is marked while the settings are open, and nothing else about the row
+    /// changes (task S.16); the band of `titlebar` has no settings button at all (issue #530).
     #[test]
-    fn the_gear_is_marked_while_the_settings_are_open() {
-        let buttons = TitleButtons::none().sidebar("Collapse sidebar", Msg::Close).settings(Msg::Close);
-        assert!(!buttons.settings_open, "closed by default, as before S.16");
-        let open = buttons.clone().settings_open(true);
+    fn the_settings_button_is_marked_while_the_settings_are_open() {
+        let top = TopRow::new(1.0, Msg::Close).sidebar("Collapse sidebar", Msg::Close).settings(Msg::Close);
+        assert!(!top.settings_open, "closed by default, as before S.16");
+        let open = top.clone().settings_open(true);
         assert!(open.settings_open);
-        assert_eq!((open.sidebar, open.settings), (buttons.sidebar, buttons.settings), "nothing else changed");
-        // A window without a gear keeps none.
-        assert_eq!(TitleButtons::<Msg>::none().settings_open(true).settings, None);
+        assert_eq!((open.sidebar, open.settings), (top.sidebar, top.settings), "nothing else changed");
+        // A window without settings keeps no button.
+        assert_eq!(TopRow::<Msg>::new(1.0, Msg::Close).settings_open(true).settings, None);
     }
 
     #[test]
@@ -1885,7 +1649,6 @@ mod tests {
         assert!(is_flush(layout::inset()), "the standard is flush, and the lights stay at 20");
         // The band's buttons sit on that line and stay inside the band.
         const { assert!(LIGHTS + BAND_BUTTON / 2.0 <= TITLEBAR) };
-        assert_eq!(BAND_TRAILING + BAND_BUTTON / 2.0, LIGHTS, "the settings mirror the close button");
     }
 
     /// Issue #291: an inset of 0 draws the content flush beside the sidebar, any other an inset panel;
@@ -1943,12 +1706,11 @@ mod tests {
     #[test]
     fn the_top_row_builds_in_every_class_and_under_every_cover() {
         let part = || -> Element<'static, Msg> { blank().into() };
-        let anchor = Anchor::new();
         let filled = Cover::Filled(Surface::Panel);
         for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
             for cover in [Cover::Nothing, Cover::Dialog, Cover::Drawer, Cover::Panel, filled] {
                 for zoom in [1.0, 1.5] {
-                    let bare = TopRow::new(AppId::TASKS, &anchor, Msg::Switcher, zoom, Msg::Close).cover(cover);
+                    let bare = TopRow::new(zoom, Msg::Close).cover(cover);
                     let full = bare.clone().sidebar("Collapse sidebar", Msg::Close).settings(Msg::Close);
                     for (top, rail) in [(bare, false), (full.clone(), true), (full.settings_open(true), false)] {
                         let shell = shell(class, part(), part(), part(), None).rail(rail.then(part));
@@ -1967,22 +1729,21 @@ mod tests {
         assert_eq!(TOP_ROW, 2.0 * LIGHTS);
         assert_eq!(TOP_ROW, 40.0);
         assert_eq!(SETTINGS_ICON, Icon::SlidersHorizontal);
-        let top = TopRow::new(AppId::TASKS, &Anchor::new(), Msg::Switcher, 1.0, Msg::Close);
+        let top = TopRow::new(1.0, Msg::Close);
         assert!(!top.settings_open && top.settings.is_none() && top.sidebar.is_none(), "nothing by default");
         assert!(top.settings(Msg::Close).settings_open(true).settings_open);
     }
 
-    /// Issue #459: the header starts at the content's edge beside the expanded sidebar, after the
-    /// lights, the logo and the panel button beside the rail, and after the lights and the panel button
-    /// in narrow windows.
+    /// Issue #459: the header starts at the content's edge beside the expanded sidebar, and after the
+    /// lights and the panel button beside the rail and in narrow windows. Issue #530: without the app
+    /// switcher the lead is the same in both, so the panel button stands at the same place.
     #[test]
     fn the_header_starts_after_the_lead_of_the_top_row() {
         assert_eq!(head_inset(SizeClass::Wide, SidebarMode::Expanded, 1.0), 0.0);
         let rail = head_inset(SizeClass::Wide, SidebarMode::Rail, 1.0);
         assert_eq!(head_inset(SizeClass::Medium, SidebarMode::Expanded, 1.0), rail, "medium always has the rail");
-        assert_eq!(rail, (compact_lead_width(true, 1.0) - self::rail() - LINE).max(0.0));
-        assert_eq!(head_inset(SizeClass::Narrow, SidebarMode::Expanded, 1.0), compact_lead_width(false, 1.0));
-        assert!(compact_lead_width(true, 1.0) > compact_lead_width(false, 1.0), "the logo takes room");
+        assert_eq!(rail, (compact_lead_width(1.0) - self::rail() - LINE).max(0.0));
+        assert_eq!(head_inset(SizeClass::Narrow, SidebarMode::Expanded, 1.0), compact_lead_width(1.0));
     }
 
     #[test]
@@ -2094,56 +1855,16 @@ mod tests {
     }
 
     #[test]
-    fn switcher_messages_name_the_binary_to_open() {
-        let wrap: fn(Switcher) -> Msg = Msg::Switcher;
-        assert_eq!(wrap(Switcher::OpenApp(AppId::CALENDAR.binary)), Msg::Switcher(Switcher::OpenApp("torrocalendar")));
-        assert_eq!(switcher_message(AppId::CALENDAR, AppId::TASKS), Switcher::OpenApp("torrocalendar"));
-        assert_eq!(switcher_message(AppId::TASKS, AppId::TASKS), Switcher::Toggle);
-    }
-
-    #[test]
-    fn the_switcher_lists_only_installed_apps() {
-        let _lock = crate::installed::TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        crate::installed::reset();
-        assert_eq!(switcher_apps(AppId::TASKS), AppId::ALL, "before the core answers, all");
-        let calendar = torro_ipc::AppInfo {
-            binary: AppId::CALENDAR.binary.into(),
-            name: AppId::CALENDAR.display_name.into(),
-            window_class: AppId::CALENDAR.window_class.into(),
-            installed: true,
-        };
-        crate::installed::set(&[calendar], false);
-        // Neither the main application nor the other apps are there; the own app stays.
-        assert_eq!(switcher_apps(AppId::TASKS), [AppId::TASKS, AppId::CALENDAR]);
-        crate::installed::reset();
-    }
-
-    /// The inbox's three windows share a binary (task E8.1): each is an entry of its own, only the
-    /// window's own is current, the others open by the name that names them.
-    #[test]
-    fn the_inbox_windows_are_three_entries_of_the_switcher() {
-        let current = AppId::INBOX_MAIL;
-        assert_eq!(switcher_message(AppId::INBOX_MAIL, current), Switcher::Toggle);
-        assert_eq!(switcher_message(AppId::INBOX, current), Switcher::OpenApp("torroinbox"));
-        assert_eq!(
-            switcher_message(AppId::INBOX_NOTIFICATIONS, current),
-            Switcher::OpenApp("torro-inbox-notifications")
-        );
-        let toggles = AppId::ALL.iter().filter(|&&app| switcher_message(app, current) == Switcher::Toggle).count();
-        assert_eq!(toggles, 1, "one current entry");
-    }
-
-    #[test]
     fn shells_build_in_every_class() {
         for class in [SizeClass::Mini, SizeClass::Strip, SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
             let anchor = Anchor::new();
-            let side = sidebar(app_switcher(AppId::TASKS, &anchor, Msg::Switcher), vec![], vec![]);
+            let side = sidebar(sidebar_tools(SidebarMode::Expanded, true, Msg::Switcher), vec![], vec![]);
             let header = header_bar([sidebar_toggle(Msg::Close)], header_title(Some(Icon::Sun), "Today", None), []);
             let props: Option<Element<'_, Msg>> = has_props(class).then(|| blank().into());
             let layer = Some(widgets::floating(
                 &anchor,
                 widgets::Placement::Below(widgets::Align::Start),
-                switcher_menu(AppId::TASKS, Msg::Switcher),
+                widgets::menu(vec![MenuSection::titled("Lists", vec![MenuItem::new(Icon::Sun, "Today", Msg::Close)])]),
                 Msg::Close,
             ));
             let _: Element<'_, Msg> =

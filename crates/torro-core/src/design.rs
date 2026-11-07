@@ -971,8 +971,9 @@ impl Palette {
 /// The logo of a colour scheme, absolute; `None` draws the suite's own in the accent colour.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Logo {
-    /// The mark in the app switcher and the rail (SVG). `None`: the "T" on `accent`. There is no tray
-    /// symbol: the tray always draws the four red squares (issue #114).
+    /// The mark of the suite (SVG), where a window shows the suite's logo (the setup; the app switcher is gone
+    /// since issue #530). `None`: the "T" on `accent`. There is no tray symbol: the tray always draws the four
+    /// red squares (issue #114).
     pub mark: Option<PathBuf>,
 }
 

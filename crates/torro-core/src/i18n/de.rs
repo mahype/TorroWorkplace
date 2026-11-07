@@ -185,8 +185,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Schalte ein, was du brauchst; die nächsten Schritte richten es jeweils ein. Ändern kannst du das später unter Apps.",
     ),
     (
-        "Turned off, a part of the suite leaves the app switcher and the tray, and nothing runs for it in the background. Accounts and data stay.",
-        "Ausgeschaltet verschwindet ein Teil der Suite aus dem App-Umschalter und dem Tray, und im Hintergrund läuft nichts mehr dafür. Konten und Daten bleiben.",
+        "Turned off, a part of the suite leaves the tray, and nothing runs for it in the background. Accounts and data stay.",
+        "Ausgeschaltet verschwindet ein Teil der Suite aus dem Tray, und im Hintergrund läuft nichts mehr dafür. Konten und Daten bleiben.",
     ),
     ("Welcome", "Willkommen"),
     ("What do you want to use?", "Was möchtest du nutzen?"),
@@ -7447,8 +7447,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Uninstall app", "App entfernen"),
     ("Uninstall {app}?", "{app} entfernen?"),
     (
-        "It moves to the trash and leaves the app switcher.",
-        "Sie wandert in den Papierkorb und verschwindet aus dem App-Umschalter.",
+        "It moves to the trash and leaves the tray menu.",
+        "Sie wandert in den Papierkorb und verschwindet aus dem Tray-Menü.",
     ),
     ("Also remove its data on this computer", "Auch ihre Daten auf diesem Computer entfernen"),
     (

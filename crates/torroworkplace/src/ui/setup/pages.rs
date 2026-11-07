@@ -1025,7 +1025,7 @@ fn components<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         tr("Components"),
         rows,
         Some(
-            tr("Turned off, a part of the suite leaves the app switcher and the tray, and nothing runs for it in the background. Accounts and data stay.")
+            tr("Turned off, a part of the suite leaves the tray, and nothing runs for it in the background. Accounts and data stay.")
                 .to_string(),
         ),
     );

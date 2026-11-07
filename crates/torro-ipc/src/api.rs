@@ -3325,7 +3325,7 @@ static SET_SETTING: Command = Command {
                   forbidden) or `setup` (\"pending\" to run the first-run setup again, \"skipped\" to put \
                   it off, \"done\" when finished) or `component` ({\"component\": \"calendar\"|\"tasks\"|\"mail\"| \
                   \"inbox\"|\"assistant\"|\"workspaces\", \"enabled\": false} turns a part of the suite off: it leaves \
-                  the app switcher, the tray and the overview and nothing runs in the background for it; accounts \
+                  the tray and the overview and nothing runs in the background for it; accounts \
                   and data stay) or `reminders` (how reminders of events come, one object that changes only the fields it names: {\"enabled\": true, \
                   \"defaultLead\": 1 (minutes before, null for none), \"calendars\": {\"<calendar id>\": \"off\" | \
                   \"notification\" | \"full_screen\"}, \"onlyAccepted\": true, \"allDay\": false, \"freeEvents\": \

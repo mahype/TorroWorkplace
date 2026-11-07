@@ -79,8 +79,6 @@ pub enum Open {
     Loading,
     /// The sidebar drawer of the medium and narrow layouts.
     Drawer,
-    /// The app switcher (in the drawer where there is no sidebar).
-    Switcher,
     /// The chat with the demo's bot "Travel planner" in the main window: its conversation.
     Bot,
     /// A new chat with the bot "Travel planner": its welcome above the composer.
@@ -103,7 +101,7 @@ pub enum Open {
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 27] = [
+    pub const ALL: [(&'static str, Open); 26] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
@@ -121,7 +119,6 @@ impl Open {
         ("error", Open::Error),
         ("loading", Open::Loading),
         ("drawer", Open::Drawer),
-        ("switcher", Open::Switcher),
         ("bot", Open::Bot),
         ("bot-welcome", Open::BotWelcome),
         ("bot-menu", Open::BotMenu),

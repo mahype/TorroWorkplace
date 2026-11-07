@@ -7,7 +7,7 @@
 //! render and report clicks as [`Message`]s.
 //!
 //! Three windows (task E8.1, [`Kind`], `--view mail|notifications|hub`): each with its own window
-//! class, title and entry in the app switcher. They keep different entries ([`Kind::keeps`]: mail,
+//! class, title and entry in the tray menu. They keep different entries ([`Kind::keeps`]: mail,
 //! everything else, all) and draw their overviews in their own way (below). How close their entries
 //! stand is not theirs to choose: the density comes from the active design (task E13.2,
 //! [`App::density`], `torro_gui::layout::density`), so all three windows agree.
@@ -1367,8 +1367,6 @@ impl View {
 /// The menu that is open over the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Menu {
-    /// The app switcher at the top of the sidebar.
-    Switcher,
     /// The navigation menu of the medium and narrow layouts ("For me ▾").
     Nav,
     /// Actions of the message selected by right-click in the mail list.
@@ -1464,8 +1462,6 @@ pub enum Open {
     Menu,
     /// The sidebar drawer of the medium and narrow layouts.
     Drawer,
-    /// The app switcher at the top of the sidebar (in the drawer where there is no sidebar).
-    Switcher,
     /// The error state with its "Retry".
     Error,
     /// The list with the error line above it, as after a change that did not go through; kept
@@ -1692,7 +1688,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 102] = [
+    const ALL: [(&'static str, Open); 101] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1700,7 +1696,6 @@ impl Open {
         ("done", Open::Done),
         ("menu", Open::Menu),
         ("drawer", Open::Drawer),
-        ("switcher", Open::Switcher),
         ("error", Open::Error),
         ("failed", Open::Failed),
         ("empty", Open::Empty),
@@ -1952,7 +1947,7 @@ pub struct Launch {
 
 /// Which of the inbox's three windows this process is (task E8.1, `--view`; `docs/eingang.md`,
 /// "Drei Fenster"). One program, three entries of [`torro_core::AppId::ALL`]: each kind has its own
-/// window class, title and entry in the app switcher, so tiling rules and workspace templates tell
+/// window class, title and entry in the tray menu, so tiling rules and workspace templates tell
 /// them apart. All three show the same entries of the core – what one marks done is done in all.
 ///
 /// The mail window shows the overview's "Mail" column (task E8.3), the notifications window the
@@ -3311,7 +3306,7 @@ pub enum Message {
     Zoom(zoom::Message),
     /// The design pack stored in the suite settings, and its fonts loaded.
     Design(design::Message),
-    /// From the app switcher at the top of the sidebar.
+    /// From the tools at the top of the sidebar: search and "New".
     Switcher(Switcher),
     /// Open or close the navigation menu ("For me ▾").
     ToggleNav,
@@ -4425,7 +4420,6 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             system_mode: Mode::None,
             menu: match open {
                 Some(Open::Menu | Open::CategoryMenu) => Some(Menu::Nav),
-                Some(Open::Switcher) => Some(Menu::Switcher),
                 Some(Open::MailAccounts) => Some(Menu::MailAccounts),
                 // The filter menu is the mail window's search field's; the other windows show none here.
                 Some(Open::ArchiveMenu) if mail_window => Some(Menu::SearchFilters),
@@ -4433,8 +4427,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             },
             menu_at: MenuAt::default(),
             context_point: None,
-            // Without a sidebar the app switcher lives in the drawer.
-            drawer: matches!(open, Some(Open::Drawer | Open::Switcher)),
+            drawer: matches!(open, Some(Open::Drawer)),
             sidebar: SidebarMode::default(),
             density: layout::density(),
             order: Order::default(),
@@ -5253,8 +5246,6 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
                 return Task::batch([task, size]);
             }
-            Message::Switcher(Switcher::Toggle) => self.toggle_menu(Menu::Switcher),
-            Message::Switcher(Switcher::OpenApp(app)) => return self.update(Message::OpenApp(app.to_owned())),
             // The search button focuses the field over the list of mail, or opens a search where the
             // view has none (issue #136). "New" writes a message when there is a mail account to
             // write from (task E4.3); the inbox has nothing else to create. Elsewhere the buttons only
@@ -8870,7 +8861,6 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             // The attachments' menus (task M12.6) take clicks only, like the other menus of entries here.
             Some(
                 Menu::Nav
-                | Menu::Switcher
                 | Menu::MailContext
                 | Menu::MailAccounts
                 | Menu::MailDisplay
@@ -10736,17 +10726,17 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         // Always three layers, so the window keeps its state when the hint or the question comes and
         // goes.
-        // The window draws its top row itself (issue #459): the switcher, the panel button and the
-        // settings in one row with the header; the question lies over all of it.
+        // The window draws its top row itself (issue #459): the panel button and the settings in one
+        // row with the header; the question lies over all of it.
         let window = stack![self.window(class), self.hint_layer(), self.question_layer()].width(Fill).height(Fill);
         widgets::ctrl_guard(self.zoom.view(window))
     }
 
-    /// The window's top row (issue #459): the switcher, the panel button, the settings, and what lies
-    /// over the top of the window below the question ([`App::cover`]).
-    fn top_row(&self, class: SizeClass, switcher: &Anchor) -> TopRow<Message> {
+    /// The window's top row (issue #459): the panel button, the settings, and what lies over the top
+    /// of the window below the question ([`App::cover`]).
+    fn top_row(&self, class: SizeClass) -> TopRow<Message> {
         let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
-        TopRow::new(self.launch.kind.app(), switcher, Message::Switcher, self.zoom.factor(), Message::DragWindow)
+        TopRow::new(self.zoom.factor(), Message::DragWindow)
             .sidebar(label, Message::ToggleSidebar)
             .settings(Message::OpenSettings)
             .settings_open(self.settings.is_some())
@@ -10919,11 +10909,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     ///
     /// The settings (task S.20), while they are open, take the header and the content area instead;
     /// the app sidebar becomes a rail so the settings have room, and what is open behind them – the panel,
-    /// a search – is kept and comes back with the content area. Pressing the app switcher there
-    /// shows entries again ([`shows_entries`]), so the only layer over the settings is the host's
-    /// own section menu.
+    /// a search – is kept and comes back with the content area. Pressing search or "New" in the
+    /// sidebar there shows entries again ([`shows_entries`]), so the only layer over the settings is
+    /// the host's own section menu.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
-        let (switcher, nav, accounts, folders) = (Anchor::new(), Anchor::new(), Anchor::new(), Anchor::new());
+        let (nav, accounts, folders) = (Anchor::new(), Anchor::new(), Anchor::new());
         let filters = Anchor::new();
         // Where the overview's "Mute" menu hangs (issue #409).
         let overview_at = Anchor::new();
@@ -10935,9 +10925,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             let settings_rail = matches!(class, SizeClass::Wide | SizeClass::Medium)
                 .then(|| self.sidebar(SidebarMode::Rail, &accounts, &folders));
             // The one layer here is the host's own section menu (the medium layout's "Sources ▾").
-            // The app switcher cannot be open at the same time: every `Message::Switcher` shows
-            // entries again ([`shows_entries`]), so pressing it closes the settings first – as in
-            // the calendar and the tasks app.
+            // Every `Message::Switcher` shows entries again ([`shows_entries`]), so search and "New"
+            // close the settings first – as in the calendar and the tasks app.
             // A dialog of the section (the save target's editor) lies over everything; the host's
             // menu cannot be open with it, as a click next to that menu only closes it.
             // The "Mute" menu of a sender on the statistics page (issue #485) hangs at its button.
@@ -10950,7 +10939,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(overlay)
-                .top_row(self.top_row(class, &switcher))
+                .top_row(self.top_row(class))
                 .into();
         }
         // "Focus & reply" (task E19.5) has its own header: the way back, where it is, ↑ ↓.
@@ -10996,12 +10985,6 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     Message::CloseMenu,
                 )
             }),
-            Some(Menu::Switcher) => Some(widgets::floating(
-                &switcher,
-                Placement::Below(Align::Start),
-                shell::switcher_menu(self.launch.kind.app(), Message::Switcher),
-                Message::CloseMenu,
-            )),
             Some(Menu::Nav) => {
                 Some(widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Message::CloseMenu))
             }
@@ -11139,7 +11122,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(placed.overlay)
-                .top_row(self.top_row(class, &switcher))
+                .top_row(self.top_row(class))
                 .into();
         }
         // The wide mail window reads beside the list (task E8.3), without the panel; while nothing is
@@ -11164,7 +11147,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(placed.overlay)
-                .top_row(self.top_row(class, &switcher))
+                .top_row(self.top_row(class))
                 .into();
         }
         let side = |panel| self.with_rail(class, &anchors, panel);
@@ -11228,7 +11211,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(placed.overlay)
-            .top_row(self.top_row(class, &switcher))
+            .top_row(self.top_row(class))
             .into()
     }
 
@@ -12660,7 +12643,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 items.extend(sources.into_iter().map(row));
             }
         }
-        // "Settings" sits in the top row's right corner, the switcher at its left (issue #459). The mail
+        // "Settings" sits in the top row's right corner (issue #459); there is no app switcher (#530). The mail
         // window has "New email" on top and its account field at the foot (issue #476).
         let (head, foot) = if self.launch.kind == Kind::Mail && !self.mail_only {
             (self.mail_sidebar_head(mode), self.mail_sidebar_foot(mode, accounts))
@@ -14684,8 +14667,8 @@ mod tests {
         assert_eq!(app.menu, Some(Menu::Nav));
         let _ = app.update(Message::ToggleNav);
         assert_eq!(app.menu, None, "a second click closes the menu");
-        let _ = app.update(Message::Switcher(Switcher::Toggle));
-        assert_eq!(app.menu, Some(Menu::Switcher));
+        let _ = app.update(Message::ToggleNav);
+        assert_eq!(app.menu, Some(Menu::Nav));
         // The top row's panel button opens the drawer where the sidebar is not beside the content.
         let _ = app.update(Message::Resized(MEDIUM));
         let _ = app.update(Message::ToggleSidebar);
@@ -22183,11 +22166,11 @@ mod tests {
         let _ = app.update(Message::Show(View::ForMe));
         assert!(app.settings.is_none(), "a click in the sidebar shows entries again");
 
-        // The app switcher too, as in the calendar and the tasks app: it is never a layer over
-        // the open settings, so the settings branch of `window` draws only the host's own menu.
+        // The sidebar's tools too, as in the calendar and the tasks app: nothing of theirs is ever a
+        // layer over the open settings, so the settings branch of `window` draws only the host's own menu.
         let _ = app.update(Message::OpenSettings);
-        let _ = app.update(Message::Switcher(Switcher::Toggle));
-        assert!(app.settings.is_none() && app.menu == Some(Menu::Switcher), "the switcher shows entries again");
+        let _ = app.update(Message::Switcher(Switcher::Search));
+        assert!(app.settings.is_none(), "search shows entries again");
         app.menu = None;
 
         let _ = app.update(Message::OpenSettings);
