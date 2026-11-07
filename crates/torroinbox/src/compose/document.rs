@@ -102,6 +102,25 @@ impl DerefMut for Document {
 }
 
 impl Document {
+    /// Query widget focus, not the last editor action: Tab can change focus without changing text.
+    pub fn focused_text(&self) -> iced::Task<Option<u64>> {
+        iced::advanced::widget::operate(self.focused_operation())
+    }
+
+    fn focused_operation(&self) -> FocusedText {
+        FocusedText {
+            ids: self
+                .blocks
+                .iter()
+                .filter_map(|b| match b {
+                    Block::Text { id, .. } => Some((iced::advanced::widget::Id::from(Self::text_id(*id)), *id)),
+                    _ => None,
+                })
+                .collect(),
+            focused: None,
+        }
+    }
+
     pub fn text_id(id: u64) -> String {
         if id == 0 { super::BODY.into() } else { format!("compose-block-{id}") }
     }
@@ -251,12 +270,15 @@ impl Document {
             match block {
                 Block::Text { content, history: local, .. } => {
                     let text = content.text();
-                    let html = markup::to_html(&text, local.as_deref().or(history));
-                    if quoted && !html.contains(&format!("class=\"{}\"", html::QUOTE_CLASS)) {
-                        out.push_str(&format!("<div class=\"{}\">{html}</div>", html::QUOTE_CLASS));
+                    // Once the history boundary was crossed, the suffix remains someone else's
+                    // literal text even when an image split away its original attribution line.
+                    let boundary = if quoted {
+                        text.lines().find(|line| !line.trim().is_empty())
                     } else {
-                        out.push_str(&html);
-                    }
+                        local.as_deref().or(history)
+                    };
+                    let html = markup::to_html(&text, boundary);
+                    out.push_str(&html);
                     quoted |= html.contains(&format!("class=\"{}\"", html::QUOTE_CLASS));
                 }
                 Block::Image(p) if p.inline && !p.loading && !p.failed => {
@@ -290,13 +312,10 @@ impl Document {
 
     pub fn from_draft(draft: &Draft) -> Self {
         let mut document = Self::from(Content::new());
-        let Some(markup) = &draft.html else {
+        if draft.html.is_none() {
             *document = Content::with_text(&html::plain_to_markup(&draft.body));
-            return document;
-        };
-        document.blocks.clear();
-        document.blocks.push(Block::Text { id: 0, content: Content::new(), history: None });
-        for block in html::to_blocks(markup) {
+        }
+        for block in html::to_blocks(draft.html.as_deref().unwrap_or_default()) {
             match block {
                 html::HtmlBlock::Text(markup) => {
                     let (text, history) = html::to_markup(&markup);
@@ -370,6 +389,33 @@ impl Document {
     }
 }
 
+struct FocusedText {
+    ids: Vec<(iced::advanced::widget::Id, u64)>,
+    focused: Option<u64>,
+}
+
+impl iced::advanced::widget::Operation<Option<u64>> for FocusedText {
+    fn focusable(
+        &mut self,
+        id: Option<&iced::advanced::widget::Id>,
+        _bounds: iced::Rectangle,
+        state: &mut dyn iced::advanced::widget::operation::Focusable,
+    ) {
+        if state.is_focused() {
+            self.focused = self.ids.iter().find_map(|(known, block)| (Some(known) == id).then_some(*block));
+        }
+    }
+
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<Option<u64>>)) {
+        operate(self);
+    }
+
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<Option<u64>> {
+        // A missing focused editor still delivers a reply, retaining the last body caret.
+        iced::advanced::widget::operation::Outcome::Some(self.focused)
+    }
+}
+
 fn text_editor_cursor(position: Position) -> iced::widget::text_editor::Cursor {
     iced::widget::text_editor::Cursor { position, selection: None }
 }
@@ -389,6 +435,91 @@ fn uuid_token() -> String {
 mod tests {
     use super::*;
     use iced::widget::text_editor::Cursor;
+
+    #[test]
+    fn a_plain_draft_reopens_its_non_inline_images_even_without_body_text() {
+        let attachment = DraftAttachment::Image {
+            id: "attached@torro".into(),
+            source: ImageSource::MailPart { message: "m:draft".into(), part: "1".into() },
+            inline: false,
+            size: ImageSize::Original,
+        };
+        let draft = Draft {
+            id: Some("m:draft".into()),
+            account: "mail:a".into(),
+            to: vec![],
+            cc: vec![],
+            bcc: vec![],
+            subject: "Attached image".into(),
+            body: String::new(),
+            html: None,
+            in_reply_to: None,
+            attachments: vec![attachment.clone()],
+        };
+        for body in ["", "Plain **literal** text"] {
+            let draft = Draft { body: body.into(), ..draft.clone() };
+            let doc = Document::from_draft(&draft);
+            assert_eq!(doc.pictures().count(), 1);
+            assert_eq!(doc.attachments(), vec![attachment.clone()]);
+            assert_eq!(html::to_text(&doc.html(None)), body);
+        }
+    }
+
+    #[test]
+    fn split_history_remains_literal_after_its_attribution_was_split_away() {
+        let history = "On Thursday, Bob wrote:";
+        let mut doc = Document::from(Content::with_text(&format!(
+            "**Own text**\n\n{history}\n> Literal **text** and __marks__\n> - not a list"
+        )));
+        doc.move_to(text_editor_cursor(Position { line: 3, column: 0 }));
+        let id = doc.reserve();
+        doc.picture(id).expect("image").loaded(super::super::demo_image());
+        let markup = doc.html(Some(history));
+        assert!(markup.contains("<strong>Own text</strong>"));
+        assert!(markup.contains("Literal **text** and __marks__"));
+        assert!(!markup.contains("<strong>text</strong>") && !markup.contains("<u>marks</u>"));
+        assert!(markup.contains("- not a list") && !markup.contains("<li>"));
+        assert_eq!(html::sanitize(&markup), markup);
+    }
+
+    #[test]
+    fn focused_editor_query_follows_tab_without_needing_a_text_action() {
+        use iced::advanced::widget::{
+            Operation as _,
+            operation::{Focusable, Outcome},
+        };
+        struct Focus(bool);
+        impl Focusable for Focus {
+            fn is_focused(&self) -> bool {
+                self.0
+            }
+            fn focus(&mut self) {
+                self.0 = true;
+            }
+            fn unfocus(&mut self) {
+                self.0 = false;
+            }
+        }
+        let mut doc = Document::from(Content::with_text("Before After"));
+        doc.move_to(text_editor_cursor(Position { line: 0, column: 7 }));
+        doc.reserve();
+        let suffix = doc.active;
+        doc.activate(0);
+        let mut query = doc.focused_operation();
+        query.focusable(
+            Some(&iced::advanced::widget::Id::from(Document::text_id(0))),
+            iced::Rectangle::default(),
+            &mut Focus(false),
+        );
+        query.focusable(
+            Some(&iced::advanced::widget::Id::from(Document::text_id(suffix))),
+            iced::Rectangle::default(),
+            &mut Focus(true),
+        );
+        assert!(matches!(query.finish(), Outcome::Some(Some(id)) if id == suffix));
+        let empty = doc.focused_operation();
+        assert!(matches!(empty.finish(), Outcome::Some(None)), "no focused editor still returns a reply");
+    }
 
     #[test]
     fn unicode_selection_and_late_import_never_overwrite_new_text() {

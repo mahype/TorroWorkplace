@@ -1468,9 +1468,12 @@ enum After {
 #[derive(Debug, Clone)]
 pub enum Message {
     EditorCommand(u64, Box<Message>),
+    BodyFocused(Option<u64>),
     BlockBody(u64, text_editor::Action),
     InsertImage,
+    ChooseImageAt(Option<u64>),
     ImagePath(Option<PathBuf>),
+    ImageAt(Option<u64>, PathBuf),
     ImageLoaded(u64, String, Result<PreparedImage, ComposeError>),
     SelectImage(u64),
     NextImage(bool),
@@ -1484,7 +1487,7 @@ pub enum Message {
     PasteImage,
     Clipboard(u64, String, Result<images::Clipboard, ComposeError>),
     LeaseImages,
-    ImageLeased(u64, Result<PreparedImage, ComposeError>),
+    ImageLeased(u64, String, String, Result<PreparedImage, ComposeError>),
     AccountImages(usize, String, Result<Vec<(u64, PreparedImage)>, ComposeError>),
     /// The top band of the window was pressed (macOS): drag the window.
     DragWindow,
@@ -1914,10 +1917,13 @@ impl<S: ComposeSource + 'static> Window<S> {
     fn lease_images(&self) -> Task<Message> {
         let Some(account) = self.sender().map(|s| s.account.clone()) else { return Task::none() };
         Task::batch(self.body.pictures().filter_map(|p| {
-            let input = ImageSource::Prepared { id: p.prepared.as_ref()?.id.clone() };
+            let ImageSource::Prepared { id: requested } = p.source.as_ref()? else { return None };
+            let requested = requested.clone();
+            let input = ImageSource::Prepared { id: requested.clone() };
             let (id, source, account) = (p.block, self.source.clone(), account.clone());
-            Some(Task::perform(async move { source.prepare_image(account, input).await }, move |result| {
-                Message::ImageLeased(id, result)
+            let ask = account.clone();
+            Some(Task::perform(async move { source.prepare_image(ask, input).await }, move |result| {
+                Message::ImageLeased(id, account.clone(), requested.clone(), result)
             }))
         }))
     }
@@ -1975,6 +1981,10 @@ impl<S: ComposeSource + 'static> Window<S> {
             self.removing_image = None;
         }
         match message {
+            Message::BodyFocused(Some(id)) => {
+                self.body.focus_text(id);
+            }
+            Message::BodyFocused(None) => {}
             Message::EditorCommand(id, message) => {
                 if self.editable() && self.body.focus_text(id) {
                     return self.update(*message);
@@ -2007,10 +2017,24 @@ impl<S: ComposeSource + 'static> Window<S> {
             }
             Message::InsertImage => {
                 if self.editable() {
+                    return self.body.focused_text().map(Message::ChooseImageAt);
+                }
+            }
+            Message::ChooseImageAt(focused) => {
+                if self.editable() {
+                    if let Some(id) = focused {
+                        self.body.focus_text(id);
+                    }
                     return Task::perform(images::choose(), Message::ImagePath);
                 }
             }
             Message::ImagePath(Some(path)) => {
+                return self.body.focused_text().map(move |id| Message::ImageAt(id, path.clone()));
+            }
+            Message::ImageAt(focused, path) => {
+                if let Some(id) = focused {
+                    self.body.focus_text(id);
+                }
                 return self.insert_image(ImageSource::File { path: path.to_string_lossy().into_owned() });
             }
             Message::ImagePath(None) => {}
@@ -2105,10 +2129,15 @@ impl<S: ComposeSource + 'static> Window<S> {
             }
             Message::Clipboard(id, account, result) => return self.clipboard_received(id, account, result),
             Message::LeaseImages => return self.lease_images(),
-            Message::ImageLeased(id, result) => {
-                if let Some(p) = self.body.picture(id) {
+            Message::ImageLeased(id, account, requested, result) => {
+                if self.sender().is_some_and(|s| s.account == account)
+                    && let Some(p) = self.body.picture(id)
+                    && matches!(&p.source, Some(ImageSource::Prepared { id }) if *id == requested)
+                    && p.prepared.as_ref().is_some_and(|image| image.id == requested)
+                {
                     match result {
-                        Ok(image) => p.prepared = Some(image),
+                        Ok(image) if image.id == requested => p.prepared = Some(image),
+                        Ok(_) => {}
                         Err(_) => {
                             p.failed = true;
                             self.touch();
@@ -2265,7 +2294,10 @@ impl<S: ComposeSource + 'static> Window<S> {
                 }
                 if self.ready() && !self.asking && !self.is_glance() {
                     self.leave(None);
-                    return if forward { operation::focus_next() } else { operation::focus_previous() };
+                    let focus = if forward { operation::focus_next() } else { operation::focus_previous() };
+                    // Clicking a toolbar button subsequently unfocuses the editor. Remember
+                    // Tab's new body caret now, before that outside click can erase widget focus.
+                    return focus.chain(self.body.focused_text().map(Message::BodyFocused));
                 }
             }
         }
@@ -5649,6 +5681,50 @@ mod tests {
         assert_eq!(window.body.cursor().position, Position { line: 0, column: "Grüße 世界".len() });
         assert_eq!(window.body.pictures().count(), 0);
         assert_eq!(window.draft().body, "Grüße 世界");
+    }
+
+    #[test]
+    fn button_and_drop_image_paths_use_the_focused_block_after_tab() {
+        let mut window = ready(&[]);
+        window.body = Content::with_text("Before After").into();
+        window.body.move_to(Cursor { position: Position { line: 0, column: 7 }, selection: None });
+        let first = window.body.reserve();
+        let suffix = window.body.active;
+        window.body.activate(0);
+        let _ = window.update(Message::BodyFocused(Some(suffix)));
+        let _ = window.update(Message::ChooseImageAt(None)); // Toolbar click already unfocused it.
+        assert_eq!(window.body.active, suffix, "button remembers the editor before opening its dialog");
+        window.body.activate(0);
+        let _ = window.update(Message::ImageAt(Some(suffix), PathBuf::from("/unused/image.png")));
+        let images = window.body.pictures().map(|p| p.block).collect::<Vec<_>>();
+        assert_eq!(images[0], first, "drop inserts after the first image, not at the old prefix caret");
+        assert_eq!(images.len(), 2);
+        assert_eq!(window.body.text(), "After");
+    }
+
+    #[test]
+    fn stale_lease_replies_cannot_replace_or_fail_an_account_copys_source() {
+        let mut window = ready(&[]);
+        let account_a = window.sender().expect("sender").account.clone();
+        let first = window.body.reserve();
+        let old = demo_image();
+        let _ = window.update(Message::ImageLoaded(first, account_a.clone(), Ok(old.clone())));
+        let mut copied = demo_image();
+        copied.id = "prepared-in-b".into();
+        let _ = window.update(Message::AccountImages(1, account_a.clone(), Ok(vec![(first, copied.clone())])));
+        let account_b = window.sender().expect("sender").account.clone();
+        assert_ne!(account_a, account_b);
+        for result in [Ok(old.clone()), Err(ComposeError::NotFound)] {
+            let _ = window.update(Message::ImageLeased(first, account_a.clone(), old.id.clone(), result));
+            let p = window.body.picture(first).expect("image");
+            assert_eq!(p.source, Some(ImageSource::Prepared { id: copied.id.clone() }));
+            assert_eq!(p.prepared.as_ref().expect("metadata").id, copied.id);
+            assert!(!p.failed);
+        }
+        let _ = window.update(Message::ImageLeased(first, account_b.clone(), old.id, Err(ComposeError::NotFound)));
+        assert!(!window.body.picture(first).expect("image").failed, "same account but stale source is also ignored");
+        let _ = window.update(Message::ImageLeased(first, account_b, copied.id, Err(ComposeError::NotFound)));
+        assert!(window.body.picture(first).expect("image").failed, "a current lease error is not swallowed");
     }
 
     #[test]
