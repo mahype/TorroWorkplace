@@ -111,12 +111,14 @@ pub struct State {
     rights: rights::State,
     /// A `clients.update_client` of this page is on its way.
     sending: bool,
+    /// A list of clients came back well since the settings opened ([`waiting`]).
+    fresh: bool,
 }
 
 impl State {
     /// The page of `app`.
     pub fn new(app: AppId) -> State {
-        State { app, open: None, rights: rights::State::default(), sending: false }
+        State { app, open: None, rights: rights::State::default(), sending: false, fresh: false }
     }
 
     /// The areas this page shows ([`areas`]).
@@ -157,10 +159,17 @@ fn open_client<'a>(state: &State, data: &'a Data) -> Option<&'a ClientInfo> {
     data.clients.iter().find(|client| client.id == *id && client.kind == *kind && editable(&client.kind))
 }
 
-/// Whether the first fresh list of clients of this opening is still on its way: until then the editor
-/// stays shut, so rights the window kept from the last time are never sent back over newer ones.
-pub fn waiting(data: &Data) -> bool {
-    data.updating(&Request::ListClients)
+/// Whether the first fresh list of clients of this opening is still missing: until the host saw one
+/// answer of `clients.list_clients` come back well ([`clients_fresh`]) the editor stays shut, so rights
+/// the window kept from the last time are never sent back over newer ones. A failed answer does not
+/// open it.
+pub fn waiting(state: &State) -> bool {
+    !state.fresh
+}
+
+/// The host put in an answer of `clients.list_clients` that came back well: the clients are fresh.
+pub fn clients_fresh(state: &mut State) {
+    state.fresh = true;
 }
 
 /// Whether a control of the editor belongs to one of `areas`: a level, an admin switch, a command or a
@@ -223,7 +232,7 @@ fn edit<A>(state: &mut State, message: rights::Message, data: &Data) -> Action<A
         state.sending |= matches!(action, Action::Send(_));
         return action;
     }
-    if !belongs(&message, state.areas()) || waiting(data) {
+    if !belongs(&message, state.areas()) || waiting(state) {
         return Action::None;
     }
     let Some(client) = open_client(state, data) else { return Action::None };
@@ -303,7 +312,7 @@ pub fn done(state: &mut State, result: &Result<(), String>) {
 /// again, and its rights need not be saved any more.
 pub fn loaded(state: &mut State, data: &Data) {
     rights::loaded(&mut state.rights);
-    if waiting(data) {
+    if waiting(state) {
         return;
     }
     if let Some((id, _)) = state.open.clone().filter(|_| open_client(state, data).is_none()) {
@@ -337,10 +346,10 @@ pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
     match state.open.as_ref() {
         Some((_, kind)) => match open_client(state, data) {
             // Known from the last time, but not fresh yet: the editor waits.
-            Some(client) if waiting(data) => Page::new(updating(kind)).sub_page(client.name.clone(), Message::Back),
+            Some(client) if waiting(state) => Page::new(updating(kind)).sub_page(client.name.clone(), Message::Back),
             Some(client) => Page::new(client_page(state, data, client)).sub_page(client.name.clone(), Message::Back),
             // Still on its way: the page waits. Gone: the list, until `loaded` closes the page.
-            None if waiting(data) => Page::new(updating(kind)).sub_page(tr("Updating…"), Message::Back),
+            None if waiting(state) => Page::new(updating(kind)).sub_page(tr("Updating…"), Message::Back),
             None => Page::new(list(state, data)),
         },
         None => Page::new(list(state, data)),
@@ -352,11 +361,8 @@ fn list<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let (keys, mcp) = listed(data);
     let areas = state.areas();
     let row = |client: &'a ClientInfo| {
-        let shown = match state.open.as_ref() {
-            Some((id, _)) if *id == client.id => rights::shown(&state.rights, client),
-            _ => &client.rights,
-        };
-        let summary = rights::area_summary(shown, areas);
+        // A client's draft – still on its way after "Back" – shows here too, as on its page.
+        let summary = rights::area_summary(rights::shown(&state.rights, client), areas);
         let line = setting_row(None, client.name.as_str(), Some(summary), chevron());
         pressable(line, Some(Message::Open(client.id.clone(), client.kind.clone())))
     };
@@ -498,8 +504,7 @@ mod tests {
     /// dropped and the page says "Updating…"; then it goes out at once.
     #[tokio::test]
     async fn the_editor_waits_for_the_fresh_list_of_clients() {
-        let mut data = data(AppId::CALENDAR).await;
-        data.updating.push(Request::ListClients);
+        let data = data(AppId::CALENDAR).await;
         let claude = data.clients.iter().find(|client| client.kind == "claude-code").expect("Claude Code").clone();
         let mut state = State::new(AppId::CALENDAR);
         let _ = update::<()>(&mut state, Message::Open(claude.id.clone(), claude.kind.clone()), &data);
@@ -507,8 +512,9 @@ mod tests {
         assert!(requests(update(&mut state, level(), &data)).is_empty(), "nothing before the fresh list");
         assert!(requests(update(&mut state, later(), &data)).is_empty(), "and no draft waits");
         let _ = page(&state, &data).body;
+        assert!(waiting(&state), "a new page waits, also when the data knows the client");
 
-        data.updating.clear();
+        clients_fresh(&mut state);
         let sent = requests(update(&mut state, level(), &data));
         assert!(
             matches!(&sent[..], [Request::UpdateClient { id, rights }] if *id == claude.id && rights.area(Area::Calendar).level == Level::Read),
@@ -565,6 +571,7 @@ mod tests {
                 edits
             };
             let mut state = State::new(app);
+            clients_fresh(&mut state);
             let mut sent = Vec::new();
             for open in opens {
                 sent.extend(requests(update(&mut state, open, &data)));
@@ -641,6 +648,7 @@ mod tests {
         let (keys, mcp) = listed(&data);
         let (key, claude) = (keys[0].clone(), mcp[0].clone());
         let mut state = State::new(AppId::CALENDAR);
+        clients_fresh(&mut state);
         let level = |level| Message::Rights(rights::Message::Level(Area::Calendar, level));
         let _ = update::<()>(&mut state, Message::Open(key.id.clone(), key.kind.clone()), &data);
         assert_eq!(requests(update(&mut state, level(Level::Write), &data)).len(), 1, "the first goes at once");

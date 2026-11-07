@@ -943,6 +943,13 @@ impl Host {
             self.flight.remove(at);
         }
         let newer = self.applied.iter().any(|(held, put)| *held == request && *put > generation);
+        // API and MCP opens its editor only on a list of clients that came back well.
+        if request == Request::ListClients
+            && result.is_ok()
+            && let Some(state) = self.outside.as_mut()
+        {
+            outside::clients_fresh(state);
+        }
         if !newer {
             match result {
                 // Another set of accounts than before, from a reload of Accounts or AI (a sign-in
@@ -1665,6 +1672,33 @@ mod tests {
             Section { id: "calendars", icon: Icon::Calendar, label: "Calendars" },
             Section { id: "reminders", icon: Icon::Bell, label: "Reminders" },
         ]
+    }
+
+    /// Issue #531: API and MCP follows the app's sections and opens its editor only on a list of
+    /// clients that came back well – not before the first answer, not on a failed one.
+    #[test]
+    fn api_and_mcp_waits_for_a_list_of_clients_that_came_back_well() {
+        let (host, _load) = Host::new(Arc::new(Demo::new()), sections(), vec![]);
+        let mut host = host.with_outside(AppId::CALENDAR);
+        assert_eq!(host.sections().last().map(|section| section.id), Some(outside::SECTION.id));
+        assert!(host.wanted.contains(&Request::ListClients));
+        assert!(host.open(outside::SECTION.id) && host.on_outside_page());
+        let waiting = |host: &Host| host.outside.as_ref().is_some_and(outside::waiting);
+        assert!(waiting(&host), "before any answer");
+        let answer = |result: Result<Response, String>| Message::Part {
+            generation: host.generation,
+            request: Box::new(Request::ListClients),
+            result: Box::new(result),
+        };
+        let failed = answer(Err("timeout".into()));
+        let well = answer(Ok(Response::Clients { clients: Vec::new() }));
+        let _: Outcome<()> = host.update(failed);
+        assert!(waiting(&host), "a failed answer opens nothing");
+        let _: Outcome<()> = host.update(well);
+        assert!(!waiting(&host));
+        // The control centre has no areas of its own here.
+        let (centre, _load) = Host::new(Arc::new(Demo::new()), sections(), vec![]);
+        assert!(centre.with_outside(AppId::WORKPLACE).outside.is_none());
     }
 
     fn host() -> Host {

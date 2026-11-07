@@ -768,7 +768,7 @@ die Einstellungen einer App hinter ihrem Zahnrad liegen. `--section apps` öffne
 
 | Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
 |---|---|---|---|---|---|---|
-| je Komponente an/aus (Calendar, Tasks, Mail, Notification Hub, Assistant, Workspaces) | Komponente aus Umschalter, Tray und Übersicht nehmen, nichts im Hintergrund | Apps › Components; Einrichtung › Components | `componentsOff` | `set_setting component` | alle | bleibt, Apps › Menü „…“ der Karte (Turn off / Turn on), Workspaces unter General › Startup |
+| je Komponente an/aus (Calendar, Tasks, Mail, Notification Hub, Assistant, Workspaces) | Komponente aus Tray und Übersicht nehmen, nichts im Hintergrund | Apps › Components; Einrichtung › Components | `componentsOff` | `set_setting component` | alle | bleibt, Apps › Menü „…“ der Karte (Turn off / Turn on), Workspaces unter General › Startup |
 | Open | App starten (Aktion) | Apps › Suite apps | – | `apps.open_app` | – | bleibt als Aktion |
 
 ### Accounts
