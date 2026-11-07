@@ -6206,7 +6206,7 @@ impl Core {
             | Request::UpdateSaveTarget { .. }
             | Request::RemoveSaveTarget { .. }
             | Request::SaveMailAttachments { .. }
-            | Request::SaveMailAs { .. }) => Box::pin(self.save_request(request, reach)).await,
+            | Request::SaveMailAs { .. }) => self.save_request(request, reach).await,
             // Running a mail filter (issue #339) also puts the category it set on the inbox entries
             // of those mails, as the category jobs do.
             request @ Request::ApplyMailFilter { .. } => self.apply_mail_filter(request, reach).await,
@@ -8714,19 +8714,27 @@ impl Core {
     /// The requests of saving attachments for `reach` (issue #290, [`crate::mail::save::answer`]).
     /// Removing a target that the click on an attachment named sets the click back to `open`
     /// (setting `mail_attachment_click`), so it opens files again instead of naming a target gone.
-    async fn save_request(&self, request: Request, reach: Reach<'_>) -> Response {
-        let removed = match &request {
-            Request::RemoveSaveTarget { id } => Some(id.clone()),
-            _ => None,
-        };
-        let context = self.save_context();
-        let response = crate::mail::save::answer(&self.mail, reach, &context, request).await;
-        if let (Some(id), Response::SaveTargets { .. }) = (removed, &response)
-            && let Err(err) = self.settings.release_attachment_click(&id)
-        {
-            eprintln!("torroworkplace: mail: cannot set the click on attachments back to open: {err}");
-        }
-        response
+    /// Construct the expanded export future here, not in the dispatcher: approved requests already
+    /// hold two dispatcher frames, and boxing at their call site still builds the future on the stack.
+    fn save_request<'a>(
+        &'a self,
+        request: Request,
+        reach: Reach<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send + 'a>> {
+        Box::pin(async move {
+            let removed = match &request {
+                Request::RemoveSaveTarget { id } => Some(id.clone()),
+                _ => None,
+            };
+            let context = self.save_context();
+            let response = crate::mail::save::answer(&self.mail, reach, &context, request).await;
+            if let (Some(id), Response::SaveTargets { .. }) = (removed, &response)
+                && let Err(err) = self.settings.release_attachment_click(&id)
+            {
+                eprintln!("torroworkplace: mail: cannot set the click on attachments back to open: {err}");
+            }
+            response
+        })
     }
 
     /// For `mail.save_attachments` of a client (task M12.3): what its approval shows, from the
