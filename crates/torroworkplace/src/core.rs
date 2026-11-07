@@ -27308,6 +27308,104 @@ mod tests {
         );
     }
 
+    /// A test-only Jev proxy whose replies wait for explicit permits, not wall-clock delays.
+    /// Arrival notifications let the test change permission or prove overlapping requests first.
+    struct GatedJev {
+        base: String,
+        armed: Arc<std::sync::atomic::AtomicBool>,
+        arrived: tokio::sync::mpsc::UnboundedReceiver<()>,
+        release: Arc<tokio::sync::Semaphore>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl GatedJev {
+        async fn start(upstream: &httpmock::MockServer) -> Self {
+            use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("Jev proxy");
+            let base = format!("http://{}/v1", listener.local_addr().expect("proxy address"));
+            let upstream = upstream.url("/v1/systemone");
+            let http = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("proxy HTTP client");
+            let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let release = Arc::new(tokio::sync::Semaphore::new(0));
+            let (started, arrived) = tokio::sync::mpsc::unbounded_channel();
+            let (waiting, permits) = (armed.clone(), release.clone());
+            let task = tokio::spawn(async move {
+                let mut requests = tokio::task::JoinSet::new();
+                while let Ok((stream, _)) = listener.accept().await {
+                    let (upstream, http, waiting, permits, started) =
+                        (upstream.clone(), http.clone(), waiting.clone(), permits.clone(), started.clone());
+                    requests.spawn(async move {
+                        let mut stream = tokio::io::BufReader::new(stream);
+                        let mut line = String::new();
+                        stream.read_line(&mut line).await.expect("request line");
+                        assert!(line.starts_with("POST /v1/systemone "), "{line}");
+                        let mut length = None;
+                        loop {
+                            line.clear();
+                            assert_ne!(stream.read_line(&mut line).await.expect("request header"), 0);
+                            if line == "\r\n" {
+                                break;
+                            }
+                            if let Some((name, value)) = line.split_once(':')
+                                && name.eq_ignore_ascii_case("content-length")
+                            {
+                                length = Some(value.trim().parse::<usize>().expect("body length"));
+                            }
+                        }
+                        let mut body = vec![0; length.expect("fixed-length JSON request")];
+                        stream.read_exact(&mut body).await.expect("request body");
+                        if waiting.load(std::sync::atomic::Ordering::Acquire) {
+                            started.send(()).expect("test observes requests");
+                            permits.acquire().await.expect("release reply").forget();
+                        }
+                        let response = http
+                            .post(upstream)
+                            .bearer_auth(crate::account::ai::tests::KEY)
+                            .header("content-type", "application/json")
+                            .body(body)
+                            .send()
+                            .await
+                            .expect("upstream response");
+                        let status = response.status().as_u16();
+                        let body = response.bytes().await.expect("response body");
+                        let header = format!(
+                            "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let mut stream = stream.into_inner();
+                        stream.write_all(header.as_bytes()).await.expect("response header");
+                        stream.write_all(&body).await.expect("response body");
+                    });
+                }
+            });
+            Self { base, armed, arrived, release, task }
+        }
+
+        fn arm(&self) {
+            self.armed.store(true, std::sync::atomic::Ordering::Release);
+        }
+
+        async fn wait_for(&mut self, count: usize) {
+            for _ in 0..count {
+                tokio::time::timeout(std::time::Duration::from_secs(10), self.arrived.recv())
+                    .await
+                    .expect("requests reach Jev before any reply is released")
+                    .expect("proxy is running");
+            }
+        }
+    }
+
+    impl Drop for GatedJev {
+        fn drop(&mut self) {
+            // Dropping the accept task also drops its JoinSet and aborts all waiting connections.
+            self.task.abort();
+        }
+    }
+
     /// Issue #420: a core whose inbox holds one mail for each of `subjects`, the first the newest, and
     /// that sorts with Jev on `jev`, mail let out for sorting. The fake IMAP server comes along: it must
     /// outlive the run.
@@ -27316,6 +27414,10 @@ mod tests {
         jev: &httpmock::MockServer,
         subjects: &[String],
     ) -> (Core, FakeImap) {
+        core_sorting_with_jev_at(dir, &jev.url("/v1"), subjects).await
+    }
+
+    async fn core_sorting_with_jev_at(dir: &std::path::Path, endpoint: &str, subjects: &[String]) -> (Core, FakeImap) {
         use crate::mail::service::tests::{mail_account, service_in, store_accounts};
         use torro_core::ai::AiSlot;
 
@@ -27340,7 +27442,7 @@ mod tests {
         let core = Core { ai: Arc::new(crate::account::ai::tests::service(dir, &keys, Vec::new())), ..audited(dir) }
             .with_mail(mail);
         let key = torro_core::account::Secret::new(crate::account::ai::tests::KEY);
-        let engine = core.ai.connect(AiProvider::Jev, Some(&jev.url("/v1")), key).await.expect("jev").id;
+        let engine = core.ai.connect(AiProvider::Jev, Some(endpoint), key).await.expect("jev").id;
         assert_eq!(core.handle(switch(&engine, torro_core::ai::JEV_MODEL, true)).await, Response::Ok);
         let slot = set_slot(AiSlot::Decide, Some(&engine), Some(torro_core::ai::JEV_MODEL));
         assert!(matches!(core.handle(slot).await, Response::AiAssignments { .. }));
@@ -27736,21 +27838,24 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let jev = httpmock::MockServer::start_async().await;
         let decides = mock_jev_after(&jev, std::time::Duration::ZERO, None).await;
-        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Hello 1".to_string()]).await;
+        let mut gate = GatedJev::start(&jev).await;
+        let (core, _imap) = core_sorting_with_jev_at(dir.path(), &gate.base, &["Hello 1".to_string()]).await;
         decides.delete_async().await;
-        // Busy, and slow to say so: the person keeps mail here before the first refusal comes.
+        // Hold the first actual request until the person has kept mail here.
         let busy = jev
             .mock_async(|when, then| {
                 when.method("POST").path("/v1/systemone");
-                then.status(429).delay(std::time::Duration::from_millis(400)).json_body(serde_json::json!({}));
+                then.status(429).json_body(serde_json::json!({}));
             })
             .await;
 
         let start = Request::StartCategoryJob { scope: torro_ipc::inbox::CategoryJobScope::default() };
+        gate.arm();
         assert!(matches!(core.handle(start).await, Response::CategoryJob { job: Some(_) }));
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        gate.wait_for(1).await;
         let keep = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(false) };
         assert_eq!(core.handle(keep).await, Response::Ok);
+        gate.release.add_permits(1);
 
         let job = job_ended(&core, std::time::Duration::from_secs(10)).await;
         assert_eq!(job.state, CategoryJobState::Failed);
@@ -27805,26 +27910,26 @@ mod tests {
             .await
     }
 
-    /// Issue #420 (PR review): the backlog run asks Jev several mails at once too – 12 mails at 300 ms
-    /// an answer take less than one after the other would (3.6 s) –, goes past a mail the server
-    /// refuses and leaves that one without a category.
+    /// Issue #420 (PR review): several backlog requests reach Jev before the first reply is released.
+    /// A refused mail remains uncategorized and does not stop the remaining mails.
     #[tokio::test]
     async fn the_backlog_run_asks_jev_several_mails_at_once_and_goes_past_a_refused_one() {
         let dir = tempfile::tempdir().expect("temp dir");
         let jev = httpmock::MockServer::start_async().await;
         let refused = mock_jev_refusing(&jev).await;
-        mock_jev_after(&jev, std::time::Duration::from_millis(300), Some("Broken")).await;
+        mock_jev_after(&jev, std::time::Duration::ZERO, Some("Broken")).await;
         let subjects: Vec<String> =
             (1..=12).map(|n| if n == 6 { format!("Broken {n}") } else { format!("Hello {n}") }).collect();
-        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &subjects).await;
+        let mut gate = GatedJev::start(&jev).await;
+        let (core, _imap) = core_sorting_with_jev_at(dir.path(), &gate.base, &subjects).await;
 
-        let started = std::time::Instant::now();
+        gate.arm();
         let backlog = Request::CatchUpCategories { cancel: false, again: false };
         assert!(matches!(core.handle(backlog).await, Response::Categorization { .. }));
+        gate.wait_for(2).await;
+        gate.release.add_permits(subjects.len());
         let came = backlog_ended(&core, std::time::Duration::from_secs(10)).await;
-        let took = started.elapsed();
         assert_eq!(came, (12, 12), "through every mail");
-        assert!(took < std::time::Duration::from_millis(12 * 300), "took {took:?}");
         assert_eq!(refused.calls_async().await, 1);
         for (subject, sorted) in sorted_subjects(&core).await {
             assert_eq!(sorted, subject.starts_with("Hello"), "{subject}");
