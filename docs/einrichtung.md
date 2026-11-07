@@ -1,5 +1,26 @@
 # Einrichtung beim ersten Start
 
+## KI-Verbindung (#527)
+
+Die heutige KI-Seite und Accounts › Add › AI zeigen denselben Verbindungs- und Vorbereitungsweg
+([Entwurf](prototypes/onboarding/ai-connect.html), [Programme und Datenregel](ki.md)). Die Suche läuft
+beim Öffnen und alle fünf Sekunden nur auf der sichtbaren Seite. Formulare und Verbindungen pausieren
+sie; Verlassen beendet sie. Eine neu gestartete Laufzeit erscheint ohne „Neu suchen“. Genau ein Fund
+nach einer Installationswahl führt zur Vorbereitung, verbindet und lädt aber nichts ungefragt.
+
+Ohne Fund bleiben Online-Dienst (Anbieter und maskierter Schlüssel) und ein selbst installiertes lokales
+Programm gleichwertig. `small` oder unbekannt: online zuerst; ab `medium`: lokal zuerst. Der Online-Weg
+sagt, dass Text den Rechner verlässt und Mail ohne Zustimmung hier bleibt. Jan auf Loopback ist kein
+Datenschutzversprechen: Er kann Cloud-Anfragen weiterleiten.
+
+Nach dem Verbinden kommen kontobezogene Modellvorschläge mit Größe, Passung und höchstens drei
+Alternativen. Nur Ollama lädt auf bestätigten Klick; bei anderen Programmen wird das extern zu ladende
+Modell genannt und sein Erscheinen automatisch geprüft. Navigation und Abbrechen bleiben erreichbar,
+der Inhalt scrollt. Der neue Fünf-Schritte-Rahmen bleibt #326, der Lauf gegen echtes Strata #335.
+#359 ist übernommen; #334 wird hier nicht erneut umgesetzt.
+
+---
+
 Stand: 2026-10-14. **Freigegeben** (Entscheidungen am Ende). Klickbarer Entwurf:
 [prototypes/setup/wizard.html](prototypes/setup/wizard.html). Aufgaben: [tasks/einrichtung.md](tasks/einrichtung.md).
 

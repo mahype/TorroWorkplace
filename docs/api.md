@@ -1078,7 +1078,7 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
 5. **Geheimnisse entgegennehmen oder übertragen** (Token einfügen `accounts.set_github_token`,
    Anmeldung mit Passwort `accounts.connect_caldav`, `accounts.connect_mail` und
    `accounts.reconfigure_mail` (Zugangsdaten eines Mail-Kontos prüfen und speichern, #343), API-Schlüssel eines
-   KI-Kontos `accounts.connect_ai`, Anmeldung bei ntfy `accounts.set_ntfy_login`, Schlüssel eines
+   KI-Kontos `accounts.connect_ai` oder `accounts.connect_local_ai` (auch ohne Schlüssel: Menschen wählen Datenziele), Anmeldung bei ntfy `accounts.set_ntfy_login`, Schlüssel eines
    Websuche-Anbieters `accounts.set_search_key` (#305), Import aus einem fremden Schlüsselbund): nur mit
    dem App-Schlüssel, also nur aus der Oberfläche. Ein Agent nimmt nie ein Passwort entgegen und
    reicht es weiter. Darum setzt auch **Server und vertraute Zertifikate eines Mail-Kontos** nur ein Mensch

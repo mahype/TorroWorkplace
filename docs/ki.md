@@ -43,8 +43,9 @@ benutzt nie den Schlüssel eines Agenten.
    und `::1` zählen als hier. LAN-Adressen wie `192.168.1.20`, öffentliche Adressen, andere Rechnernamen
    und eigene Nicht-Loopback-Adressen zählen als anderswo; eine fehlende Adresse ebenfalls. Es gibt keine
    DNS- oder Netzwerkkarten-Erkennung. Für Ollama und Strata muss das Modell außerdem `remote: false`
-   tragen, bei Ollama ohne Cloudnamen; LM Studio und andere OpenAI-kompatible Server auf Loopback dürfen
-   nicht `remote: true` melden. `remote` beschreibt den Ort relativ zum Server, nicht zu diesem Rechner. Modelle
+    tragen, bei Ollama ohne Cloudnamen; LM Studio auf Loopback darf nicht `remote: true` melden.
+    Andere OpenAI-kompatible Programme brauchen positive Laufzeit-Metadaten (`remote: false`); Jan und
+    unbekannte Programme liefern sie nicht. `remote` beschreibt den Ort relativ zum Server, nicht zu diesem Rechner. Modelle
    von Ollama mit `:cloud` laufen über das lokale Ollama auf `ollama.com` und gelten als entfernt
    (`remote` in `ai.list_models`, Aufgabe S.23 in [tasks/steuerzentrale.md](tasks/steuerzentrale.md)).
    Jede KI-Funktion bestimmt den Ort über Konto **und** Modell (`data_rule::place_of`), nachdem das
@@ -149,7 +150,49 @@ und `decide`, in der Oberfläche „Chat“ und „Sorting“):
   ohne die Prüfung von `ai.set_slot` (auch nicht, ob das Modell eingeschaltet ist). Das Feld `assistantDefault`
   steht nicht mehr in `settings.get_settings`.
 
+## KI verbinden: vorhandene Programme und zwei Wege (#527)
+
+Einrichtung und Accounts › Add › AI benutzen denselben Baustein. Er sucht sofort und alle fünf Sekunden,
+solange die KI-Seite offen ist. Während einer Eingabe oder Verbindung pausiert die Suche; späte Antworten
+einer verlassenen Seite ändern keine neue Auswahl. Fehler werden angezeigt und lassen sich wiederholen.
+
+Gefundene Programme erscheinen mit Adresse, echter Modellzahl (auch null) und bestehender Verbindung.
+Ein erforderlicher Schlüssel oder eine nicht verfügbare Liste ist ein eigener Hinweis **ohne Modellzahl**.
+Die Probe ist schlüsselfrei, parallel, auf Loopback beschränkt, je Ziel zwei Sekunden und 64 KiB; sie nutzt
+weder Proxy noch Weiterleitungen. Auf Port 8080 gewinnt die bestätigte Strata-Identität.
+
+| Programm | Standardadresse | Herstellerquelle, geprüft im angenommenen Plan vom 07.11.2026 |
+|---|---|---|
+| Jan | `http://127.0.0.1:1337/v1` | <https://docs.jan.ai/desktop/api-server> |
+| GPT4All | `http://127.0.0.1:4891/v1` | <https://docs.gpt4all.io/gpt4all_api_server/home.html>; lokalen API-Server einschalten |
+| koboldcpp | `http://127.0.0.1:5001/v1` | <https://github.com/LostRuins/koboldcpp/wiki>, <https://lite.koboldai.net/koboldcpp_api> |
+| llama.cpp / llamafile | `http://127.0.0.1:8080/v1` | <https://github.com/mozilla-ai/llamafile/blob/main/docs/api.md>; gemeinsamer Eintrag |
+
+Ollama (11434), LM Studio (1234) und Strata (8080) bleiben erhalten. Weitere Adressen können Menschen
+selbst eintragen. Ohne Fund gibt es gleichwertige Wege: Online-Dienst mit Schlüssel oder ein selbst
+installiertes lokales Programm. Auf `small` und unbekannter Hardware steht online zuerst, ab `medium`
+lokal. Die Herstellerlinks installieren nichts. Nach der Installationswahl öffnet genau ein schlüsselfreier
+Fund die Vorbereitung; Verbinden und Herunterladen bleiben ausdrücklich bestätigte Klicks.
+
+**Jan ist kein Beleg für private lokale Berechnung:** Sein Server kann Cloud-Anbieter weiterreichen.
+Jan und unbekannte OpenAI-kompatible Programme zählen einschließlich unbekannter Modell-IDs als anderswo.
+Nur namentlich verbundene reine Laufzeiten auf Loopback bekommen positive lokale Modellmetadaten;
+ein ausdrückliches `remote: true` wird nicht überschrieben. Alte Reconnects erhalten den Programmmarker.
+`accounts.connect_local_ai {program, server?, key?}` ist wie `accounts.connect_ai` Admin/Never,
+auch schlüsselfrei. Ein alter Dienst darf den Befehl ablehnen; es gibt **keinen** Rückfall auf die generische
+Verbindung, der Jans Datenregel verlieren könnte. `AiProvider` und bestehende Konto-IDs bleiben gleich.
+
 ## Empfehlung je Rechner
+
+Zusätzlich zur bisherigen Antwort `slots` liefert `ai.recommend` kontobezogene `preparations`: je Platz
+höchstens drei Kandidaten mit Größe, Passung und `ready`, `ollama_pull` oder `external`. Die Oberfläche
+bleibt beim gewählten Konto. „Use suggestion“ füllt nur leere Plätze nacheinander; vorhandene Auswahl
+bleibt erhalten. Zu große Alternativen bleiben sichtbar mit Warnung. Ohne neue Felder ist keine neue
+Programmverbindung verfügbar. Externe Laufzeiten bekommen Qwen-Modelle statt Ollamas Nimble/SystemOne.
+Die Größen sind ungefähre GGUF-Orientierung anhand der kuratierten Q4-Downloads, keine gemessene Datei.
+Nur dokumentierte exakte IDs/Aliasse werden erkannt; andere Dateinamen erfordern manuelle Modellwahl.
+LM Studio und Strata zeigen „Load in …“; Torro prüft erneut, ob das Modell geladen ist. **Nur Ollama**
+bekommt einen Pull. Vor Einschalten und Platzzuweisung wird die Modellliste frisch gelesen.
 
 Torro misst den Rechner und schlägt je Platz ein Modell vor; herunterladen kann es das auf Wunsch. Ein Vorschlag
 setzt nie etwas von selbst.
