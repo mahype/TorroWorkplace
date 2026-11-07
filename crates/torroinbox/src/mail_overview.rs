@@ -523,12 +523,12 @@ pub(crate) fn numbers(state: &State) -> Numbers<'_> {
 
 /// The overview: its head, then loading, the error with "Retry", the empty span, or "What comes in",
 /// and "What's new" under it once the numbers are there or failed (`news::block`, left out without
-/// announcements), at most
-/// a reading width wide and scrolling. While another span or account loads the numbers stay with
-/// "Updating…" over them.
+/// announcements), scrolling. Only the statistics take the whole width; the other blocks keep their
+/// reading width. While another span or account loads the numbers stay with "Updating…" over them.
 pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
     let state = data.state;
     let mut blocks: Vec<Element<'_, Message>> = vec![head(&data)];
+    let mut statistics = None;
     match numbers(state) {
         Numbers::Loading => blocks.push(widgets::loading()),
         Numbers::Failed => {
@@ -544,6 +544,7 @@ pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
                     tr("What comes in and of which kind shows up here."),
                 ));
             } else {
+                statistics = Some(blocks.len());
                 blocks.push(comes_in_card(overview, state.range, data.catalogue));
             }
         }
@@ -552,7 +553,20 @@ pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
     if !matches!(numbers(state), Numbers::Loading) {
         blocks.extend(news::block(data.news));
     }
-    let content = column(blocks).spacing(layout::section_gap()).width(Fill).max_width(size::content_max());
+    let content = column(blocks.into_iter().enumerate().map(|(at, block)| {
+        if Some(at) == statistics {
+            block
+        } else {
+            let block = container(block).width(Fill).max_width(size::content_max());
+            let block = container(block).width(Fill);
+            match data.place {
+                Place::Panel => block.into(),
+                Place::Page | Place::Narrow => block.center_x(Fill).into(),
+            }
+        }
+    }))
+    .spacing(layout::section_gap())
+    .width(Fill);
     match data.place {
         // The panel scrolls its body itself; inset, the blocks line up with its title.
         Place::Panel => torro_gui::panel::inset(content),
@@ -930,6 +944,40 @@ pub(crate) mod tests {
                     older: 0,
                 },
             ],
+        }
+    }
+
+    #[tokio::test]
+    async fn only_the_statistics_fill_the_overview_width() {
+        use iced::Size;
+        use iced::advanced::{layout::Limits, renderer::Headless, widget::Tree};
+
+        let renderer =
+            iced::Renderer::new(theme::font(), typo::body().size, Some("tiny-skia")).await.expect("headless renderer");
+        let mut state = State::default();
+        state.data = Some(Loaded { key: state.key(), at: Instant::now(), result: Ok(overview()) });
+        let news = news::State { items: Some(Ok(news::demo())), asked: true };
+        for width in [1200.0, 320.0] {
+            let mut page = view(OverviewData {
+                state: &state,
+                catalogue: &[],
+                accounts: Vec::new(),
+                now: Utc::now(),
+                place: Place::Page,
+                mute_at: Anchor::default(),
+                news: &news,
+            });
+            let mut tree = Tree::new(&page);
+            let node =
+                page.as_widget_mut().layout(&mut tree, &renderer, &Limits::new(Size::ZERO, Size::new(width, 1000.0)));
+            let blocks = node.children()[0].children()[0].children();
+            let room = width - layout::page_padding().left - layout::page_padding().right;
+            assert_eq!(blocks[1].size().width, room, "statistics use all available room");
+            for at in [0, 2] {
+                let bounds = blocks[at].children()[0].bounds();
+                assert_eq!(bounds.width, room.min(size::content_max()), "head and news keep their reading width");
+                assert_eq!(bounds.x, (room - bounds.width) / 2.0, "head and news stay centered");
+            }
         }
     }
 
