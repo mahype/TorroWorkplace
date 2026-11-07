@@ -113,6 +113,9 @@ impl Choice {
 
 #[derive(Debug, Default)]
 pub struct State {
+    identity: Identity,
+    next_request: u64,
+    pending_request: Option<Asked>,
     keyboard: Option<usize>,
     selected: Option<Found>,
     program: std::path::PathBuf,
@@ -151,6 +154,38 @@ pub struct State {
     /// "Copy" next to the command was pressed.
     copied_command: bool,
     copied_configuration: bool,
+}
+
+#[derive(Debug)]
+struct Identity(u64);
+
+impl Default for Identity {
+    fn default() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// Correlates an answer with both its wizard instance and its individual request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Asked {
+    wizard: u64,
+    sequence: u64,
+}
+
+fn ask(state: &mut State, request: Request) -> Action {
+    state.next_request += 1;
+    let asked = Asked { wizard: state.identity.0, sequence: state.next_request };
+    state.pending_request = Some(asked);
+    Action::AskWizard(asked, request)
+}
+
+/// Late answers to a closed dialog never reach its replacement, even while it creates a key.
+pub fn accept(slot: &mut Option<State>, asked: Asked, result: &Result<Response, String>) -> Option<Action> {
+    let state = slot.as_mut().filter(|state| state.pending_request == Some(asked))?;
+    state.pending_request = None;
+    Some(answered(state, result).unwrap_or(Action::None))
 }
 
 impl State {
@@ -405,7 +440,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
                 Some(id) => {
                     state.checking = true;
                     state.check_error = false;
-                    Action::Send(Request::ClientActivity { id })
+                    ask(state, Request::ClientActivity { id })
                 }
                 None => Action::None,
             }
@@ -508,13 +543,16 @@ fn connect(state: &mut State, data: &Data) -> Action {
     state.error = None;
     state.since = Some(Utc::now());
     state.step = Step::Creating;
-    Action::Send(Request::CreateClient {
-        name,
-        kind: choice.kind().to_string(),
-        template: state.template,
-        agent: None,
-        rights: None,
-    })
+    ask(
+        state,
+        Request::CreateClient {
+            name,
+            kind: choice.kind().to_string(),
+            template: state.template,
+            agent: None,
+            rights: None,
+        },
+    )
 }
 
 /// What is wrong with `name` for a new client of `kind` (`script` or `mcp`): empty, the name of
@@ -656,15 +694,18 @@ fn setup(state: &mut State, outcome: Outcome) -> Action {
                     return Action::None;
                 };
                 state.step = Step::CreatingHooks;
-                return Action::Send(Request::CreateClient {
-                    name: trf("{agent} hooks", &[("agent", &agent.label())]),
-                    kind: HOOK_CLIENT.to_string(),
-                    // The core narrows any template to `Rights::hook`; "Full access" is the one
-                    // that leaves exactly that (write in the inbox, never ask first).
-                    template: RightsTemplate::FullAccess,
-                    agent: Some(agent),
-                    rights: None,
-                });
+                return ask(
+                    state,
+                    Request::CreateClient {
+                        name: trf("{agent} hooks", &[("agent", &agent.label())]),
+                        kind: HOOK_CLIENT.to_string(),
+                        // The core narrows any template to `Rights::hook`; "Full access" is the one
+                        // that leaves exactly that (write in the inbox, never ask first).
+                        template: RightsTemplate::FullAccess,
+                        agent: Some(agent),
+                        rights: None,
+                    },
+                );
             }
             Err(message) => {
                 state.error = Some(message);
@@ -676,7 +717,7 @@ fn setup(state: &mut State, outcome: Outcome) -> Action {
             let failed = result.is_err();
             state.hooks = Some(result);
             if let Some(id) = state.hook_client.take().filter(|_| failed) {
-                return Action::Send(Request::RemoveClient { id });
+                return ask(state, Request::RemoveClient { id });
             }
         }
         Outcome::Selected(_)
@@ -1314,7 +1355,7 @@ mod tests {
             .expect("check action");
         state.keyboard = Some(check_index);
         assert!(
-            matches!(update_in(&mut slot, Message::Navigate(Navigation::Activate), &data), Action::Send(Request::ClientActivity { id }) if id == "new")
+            matches!(update_in(&mut slot, Message::Navigate(Navigation::Activate), &data), Action::AskWizard(_, Request::ClientActivity { id }) if id == "new")
         );
         let state = slot.as_mut().expect("open");
         let _ = answered(state, &Ok(Response::Activity { entries: Vec::new() }));
@@ -1359,6 +1400,54 @@ mod tests {
                 if verified { tr("Done") } else { tr("Finish without test") }
             );
         }
+    }
+
+    #[test]
+    fn an_unrelated_activity_answer_cannot_consume_a_new_wizards_client_key() {
+        let data = Data::default();
+        let mut state = detected();
+        let _ = update(&mut state, Message::Choose(Choice::Agent(Target::OpenCode)), &data);
+        let _ = update(&mut state, Message::Connect, &data);
+        let mut page = super::super::mcp::State::default();
+        page.wizard = Some(state);
+        let _ = super::super::mcp::answered(&mut page, &Ok(Response::Activity { entries: Vec::new() }));
+        let state = page.wizard.as_mut().expect("new wizard");
+        assert_eq!(state.step, Step::Creating);
+        let _ = answered(state, &key_answer("new", "OpenCode", "opencode"));
+        assert!(state.key.is_some(), "the newly created key remains available for setup");
+    }
+
+    #[test]
+    fn late_check_answers_are_bound_to_the_wizard_instance_and_request() {
+        let data = Data::default();
+        let mut old = detected();
+        old.step = Step::Done;
+        old.agent_client = Some("old".into());
+        let Action::AskWizard(first_check, _) = update(&mut old, Message::CheckConnection, &data) else {
+            panic!("tagged check");
+        };
+        let mut slot = Some(old);
+        let empty = Ok(Response::Activity { entries: Vec::new() });
+        assert!(accept(&mut slot, first_check, &empty).is_some());
+        let Action::AskWizard(second_check, _) = update(slot.as_mut().expect("open"), Message::CheckConnection, &data)
+        else {
+            panic!("second check");
+        };
+        assert!(accept(&mut slot, first_check, &empty).is_none(), "the previous request cannot finish a retry");
+        assert!(slot.as_ref().expect("open").checking);
+        let _ = update_in(&mut slot, Message::Close, &data);
+        assert!(slot.is_none());
+        let mut new = detected();
+        let _ = update(&mut new, Message::Choose(Choice::Agent(Target::OpenCode)), &data);
+        let Action::AskWizard(create, _) = update(&mut new, Message::Connect, &data) else {
+            panic!("tagged creation");
+        };
+        slot = Some(new);
+        assert!(accept(&mut slot, second_check, &empty).is_none());
+        assert_eq!(slot.as_ref().expect("new wizard").step, Step::Creating);
+        let next = accept(&mut slot, create, &key_answer("new", "OpenCode", "opencode"));
+        assert!(matches!(next, Some(Action::Setup(Job::Connect { .. }))));
+        assert!(slot.as_ref().expect("new wizard").key.is_some());
     }
 
     #[test]
@@ -1408,7 +1497,7 @@ mod tests {
             vec![entry("new", "system.ping", "ok", since - chrono::Duration::seconds(1))],
         ] {
             assert!(
-                matches!(update(&mut state, Message::CheckConnection, &data), Action::Send(Request::ClientActivity { id }) if id == "new")
+                matches!(update(&mut state, Message::CheckConnection, &data), Action::AskWizard(_, Request::ClientActivity { id }) if id == "new")
             );
             let _ = answered(&mut state, &Ok(Response::Activity { entries }));
             assert!(!state.verified);
@@ -1435,7 +1524,7 @@ mod tests {
         let action = update(&mut state, Message::Connect, &data);
         assert!(matches!(
             action,
-            Action::Send(Request::CreateClient {
+            Action::AskWizard(_, Request::CreateClient {
                 ref name,
                 ref kind,
                 template: RightsTemplate::ReadOnly,
@@ -1483,7 +1572,7 @@ mod tests {
         let expected_name = trf("{agent} hooks", &[("agent", &"Claude Code")]);
         assert!(matches!(
             action,
-            Action::Send(Request::CreateClient {
+            Action::AskWizard(_, Request::CreateClient {
                 ref name,
                 ref kind,
                 template: RightsTemplate::FullAccess,
@@ -1525,7 +1614,7 @@ mod tests {
         let _ = answered(&mut state, &key_answer("h1", "Claude Code hooks", HOOK_CLIENT));
         let failed = Outcome::Hooked(Err("settings.json could not be read".into()));
         let action = update(&mut state, Message::Setup(failed), &data);
-        assert!(matches!(action, Action::Send(Request::RemoveClient { ref id }) if id == "h1"));
+        assert!(matches!(action, Action::AskWizard(_, Request::RemoveClient { ref id }) if id == "h1"));
         assert_eq!(state.step, Step::Done);
         assert_eq!(state.hooks, Some(Err("settings.json could not be read".into())));
         assert!(answered(&mut state, &Ok(Response::Ok)).is_none(), "the removal's answer is not the dialog's");
@@ -1589,7 +1678,7 @@ mod tests {
         let action = update(&mut state, Message::Connect, &data);
         assert!(matches!(
             action,
-            Action::Send(Request::CreateClient { ref name, ref kind, .. }) if name == "nightly" && kind == "script"
+            Action::AskWizard(_, Request::CreateClient { ref name, ref kind, .. }) if name == "nightly" && kind == "script"
         ));
         assert!(matches!(answered(&mut state, &key_answer("s2", "nightly", "script")), Some(Action::None)));
         assert_eq!(state.step, Step::Key);
@@ -1612,7 +1701,7 @@ mod tests {
         let action = update(&mut state, Message::Connect, &data);
         assert!(matches!(
             action,
-            Action::Send(Request::CreateClient { ref name, ref kind, agent: None, .. }) if name == "Helix" && kind == MCP_CLIENT
+            Action::AskWizard(_, Request::CreateClient { ref name, ref kind, agent: None, .. }) if name == "Helix" && kind == MCP_CLIENT
         ));
         // A new key of another kind is not the dialog's: a page's hook switch may be answered first.
         assert!(answered(&mut state, &key_answer("h9", "Claude Code hooks", HOOK_CLIENT)).is_none());

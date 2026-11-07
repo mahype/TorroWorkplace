@@ -308,15 +308,13 @@ fn remove_orphan(state: &mut State, data: &Data) -> Action {
 }
 
 /// The answer to a request the shell sent (it calls this for every answer, then reloads):
-/// "Connect client"'s own answers first ([`agent_wizard::answered`]), then a flip of the switch –
+/// A flip of the switch –
 /// the new hook client's key goes straight into [`Job::Hook`] –, then the page's
 /// ([`Page::answered`]): a confirmed removal takes the client out of its agent's configuration too
 /// ([`Job::Disconnect`]). Returns `Some` with what to do next when the answer was the section's
 /// (the shell then shows no notice of its own).
+/// Wizard answers have their own correlated route ([`agent_wizard::accept`]).
 pub fn answered(state: &mut State, result: &Result<Response, String>) -> Option<Action> {
-    if let Some(next) = state.wizard.as_mut().and_then(|wizard| agent_wizard::answered(wizard, result)) {
-        return Some(next);
-    }
     if let Some(next) = switched(state, result) {
         return Some(next);
     }

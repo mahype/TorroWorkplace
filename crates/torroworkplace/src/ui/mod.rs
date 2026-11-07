@@ -293,6 +293,8 @@ pub enum Action {
     None,
     /// Send this request to the daemon, then reload.
     Send(Request),
+    /// A client wizard request: route only to its originating instance and request, not `Sent`.
+    AskWizard(agent_wizard::Asked, Request),
     /// Send this request for the page Workspaces (issue #243) and hand the answer back to that page
     /// only, with what it was for ([`workspaces::Asked`]), so it never takes the answer to another of
     /// its requests for this one. The answer comes as the core gave it: a refusal stays a
@@ -502,6 +504,7 @@ pub enum Message {
     Switcher(Switcher),
     Loaded(Box<Data>),
     Sent(Result<Response, String>),
+    WizardAnswered(agent_wizard::Asked, Result<Response, String>),
     /// The answer to an [`Action::Ask`], with what it was for; `Err` only when no answer came.
     Answered(workspaces::Asked, Result<Response, String>),
     /// The answer to an [`Action::AskConnections`], with what it was for; `Err` only when no answer
@@ -1486,6 +1489,14 @@ impl Ui {
                 let unhook = unhook.map_or_else(Task::none, |action| self.perform(action));
                 return Task::batch([import, hooks, slots, design, unhook, providers]);
             }
+            Message::WizardAnswered(asked, result) => {
+                let next = agent_wizard::accept(&mut self.mcp.wizard, asked, &result)
+                    .or_else(|| agent_wizard::accept(&mut self.api.wizard, asked, &result));
+                return match next {
+                    Some(next) => Task::batch([self.perform(next), self.reload()]),
+                    None => Task::none(),
+                };
+            }
             Message::Sent(result) => {
                 // The add-account dialog and the setup show the outcome of their own requests themselves.
                 let in_setup = self.setup.as_mut().is_some_and(|setup| setup::answered(setup, &result));
@@ -1791,6 +1802,16 @@ impl Ui {
                 self.update(Message::Mcp(mcp::Message::Setup(outcome)))
             }
             Action::Send(request) => send(request),
+            Action::AskWizard(asked, request) if self.launch.demo => {
+                self.demo_keep(&request);
+                match launch::demo_answer(&request, &self.data) {
+                    Some(response) => self.update(Message::WizardAnswered(asked, Ok(response))),
+                    None => Task::none(),
+                }
+            }
+            Action::AskWizard(asked, request) => {
+                Task::perform(answer(request), move |result| Message::WizardAnswered(asked, result))
+            }
             Action::Ask(asked, request) if self.launch.demo => match launch::demo_answer(&request, &self.data) {
                 Some(response) => self.update(Message::Answered(asked, Ok(response))),
                 None => Task::none(),
