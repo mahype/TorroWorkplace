@@ -165,10 +165,11 @@ impl Period {
 impl std::fmt::Display for Period {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Period::All => tr("All mail"),
-            Period::Days30 => tr("Last 30 days"),
-            Period::Days90 => tr("Last 90 days"),
-            Period::Year => tr("Last year"),
+            // Short, as in the mail overview: four segments fit a narrow dialog (design review of #554).
+            Period::All => tr("All"),
+            Period::Days30 => tr("30 days"),
+            Period::Days90 => tr("90 days"),
+            Period::Year => tr("1 year"),
         })
     }
 }
@@ -863,20 +864,21 @@ pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
 }
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let subtitle = typo::text(typo::body(), tr("Fixed rules and the AI sort every new mail as it arrives."))
-        .style(theme::text_2)
-        .wrapping(Wrapping::WordOrGlyph);
-    let mut page = column![subtitle].spacing(layout::section_gap());
+    // The page begins with its tabs (design review of #554), a run in progress right under them like
+    // an open question; the sentence that explains the page closes it.
+    let labels = vec![(tr("Categories").to_string(), Some(data.categories.len() as u64)), (tr("AI").to_string(), None)];
+    let mut page = column![widgets::tabs(labels, state.tab.index(), Message::Tab)].spacing(layout::section_gap());
     if let Some(progress) = progress(data) {
         page = page.push(progress);
     }
-    let labels = vec![(tr("Categories").to_string(), Some(data.categories.len() as u64)), (tr("AI").to_string(), None)];
-    page = page.push(widgets::tabs(labels, state.tab.index(), Message::Tab));
     let tab = match state.tab {
         Tab::Categories => categories_tab(state, data),
         Tab::Ai => ai_tab(state, data),
     };
-    page.push(tab).into()
+    let about = typo::text(typo::body(), tr("Fixed rules and the AI sort every new mail as it arrives."))
+        .style(theme::text_2)
+        .wrapping(Wrapping::WordOrGlyph);
+    page.push(tab).push(container(about).max_width(size::content_max())).into()
 }
 
 /// "Sorting existing mail · 412 of 1,284 · about 4 min left" with its line and Pause/Resume and
