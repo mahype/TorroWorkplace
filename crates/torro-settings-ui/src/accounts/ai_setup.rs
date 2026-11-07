@@ -35,6 +35,7 @@ pub struct State {
     base: String,
     choices: BTreeMap<String, usize>,
     expanded: BTreeSet<String>,
+    sorting: bool,
     form: Option<(AiProvider, Option<String>, String)>,
     key: Secret,
     install: bool,
@@ -63,6 +64,7 @@ impl Default for State {
             base: String::new(),
             choices: BTreeMap::new(),
             expanded: BTreeSet::new(),
+            sorting: true,
             form: None,
             key: Secret::default(),
             install: false,
@@ -160,6 +162,22 @@ pub fn connected(state: &State) -> bool {
     state.selected.is_some()
 }
 
+/// The host's explicit sorting choice also governs shared preparation, not just Continue.
+pub fn allow_sorting(state: &mut State, allowed: bool) {
+    state.sorting = allowed;
+    if !allowed {
+        state.queue.retain(|(slot, _)| *slot != AiSlot::Decide);
+        if state.consent {
+            state.consent = false;
+            state.allowed_remote = None;
+            state.queue.clear();
+            if state.current.as_ref().is_some_and(|(slot, _)| *slot == AiSlot::Decide) {
+                state.current = None;
+            }
+        }
+    }
+}
+
 /// Short status for the host's compact overview, without starting a second polling path.
 pub fn status(state: &State) -> Option<&'static str> {
     if state.current.is_some() || state.pull.is_some() {
@@ -193,7 +211,7 @@ fn refresh(state: &mut State) -> Action {
 }
 
 fn may_change_account(state: &State) -> bool {
-    state.flight.is_none()
+    matches!(state.flight, None | Some(Work::Search | Work::Recommend))
         && state.current.is_none()
         && state.queue.is_empty()
         && state.pull.is_none()
@@ -201,7 +219,17 @@ fn may_change_account(state: &State) -> bool {
 }
 
 fn select_account(state: &mut State, id: String, data: &dyn Seen) {
-    state.base = data.accounts().iter().find(|a| a.id == id).map(super::account_server).unwrap_or_default().to_string();
+    let base = data.accounts().iter().find(|a| a.id == id).map(super::account_server).unwrap_or_default().to_string();
+    select_endpoint(state, id, base);
+}
+
+fn select_endpoint(state: &mut State, id: String, base: String) {
+    if state.selected.as_ref() != Some(&id) {
+        // Candidate indices belong to one account's curated list, never another provider's.
+        state.choices.clear();
+        state.expanded.clear();
+    }
+    state.base = base;
     state.selected = Some(id);
 }
 
@@ -241,6 +269,15 @@ fn compatible_recommendation(mut recommendation: AiRecommendation) -> AiRecommen
 pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
     if !state.active && !matches!(message, Message::Tick) {
         state.active = true;
+    }
+    if matches!(message, Message::Connect(_) | Message::Online(_) | Message::Other | Message::Back | Message::Select(_))
+        && may_change_account(state)
+        && state.flight.is_some()
+    {
+        // Read-only background work can be slow. Supersede its owner/run, without weakening
+        // the account lock held by model preparation or a connection already being saved.
+        state.run = state.run.wrapping_add(1);
+        state.flight = None;
     }
     match message {
         Message::Tick if !state.active => open(state),
@@ -339,7 +376,9 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
                 .into_iter()
                 .flat_map(|r| &r.preparations)
                 .filter(|p| {
-                    Some(&p.account) == state.selected.as_ref() && data.settings().ai_slots.get(p.slot).is_none()
+                    Some(&p.account) == state.selected.as_ref()
+                        && (state.sorting || p.slot != AiSlot::Decide)
+                        && data.settings().ai_slots.get(p.slot).is_none()
                 })
                 .filter_map(|p| {
                     p.candidates.get(*state.choices.get(p.slot.key()).unwrap_or(&0)).cloned().map(|c| (p.slot, c))
@@ -384,6 +423,9 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
 }
 
 fn next(state: &mut State) -> Action {
+    if !state.sorting {
+        state.queue.retain(|(slot, _)| *slot != AiSlot::Decide);
+    }
     if state.queue.is_empty() {
         state.current = None;
         return refresh(state);
@@ -411,6 +453,12 @@ pub fn answered(state: &mut State, owner: u64, run: u64, result: &Result<Respons
         return Action::None;
     }
     let Some(work) = state.flight.take() else { return Action::None };
+    if !state.sorting && state.current.as_ref().is_some_and(|(slot, _)| *slot == AiSlot::Decide) {
+        state.current = None;
+        state.pull = None;
+        state.allowed_remote = None;
+        return next(state);
+    }
     state.error = None;
     if matches!(work, Work::Pull) && matches!(result, Ok(Response::Error { code, .. }) if code == "busy") {
         return send(state, Work::Pulls, Request::AiPulls);
@@ -435,8 +483,7 @@ pub fn answered(state: &mut State, owner: u64, run: u64, result: &Result<Respons
             Action::None
         }
         (Work::Connect, Ok(Response::Account { account })) => {
-            state.selected = Some(account.id.clone());
-            state.base = super::account_server(account).to_string();
+            select_endpoint(state, account.id.clone(), super::account_server(account).to_string());
             state.form = None;
             refresh(state)
         }
@@ -590,7 +637,9 @@ fn can_use(state: &State, data: &dyn Seen) -> bool {
             r.preparations
                 .iter()
                 .filter(|p| {
-                    Some(&p.account) == state.selected.as_ref() && data.settings().ai_slots.get(p.slot).is_none()
+                    Some(&p.account) == state.selected.as_ref()
+                        && (state.sorting || p.slot != AiSlot::Decide)
+                        && data.settings().ai_slots.get(p.slot).is_none()
                 })
                 .any(|p| {
                     p.candidates
@@ -672,14 +721,15 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
             .unwrap_or_else(|| tr("Not measured").into());
         let gpu =
             recommendation.hardware.gpu.as_ref().and_then(|gpu| gpu.name.as_deref()).unwrap_or(tr("Not measured"));
-        parts = parts.push(typo::text(typo::body_strong(), tr("Your computer"))).push(typo::text(
-            typo::body(),
-            format!(
-                "{} · {} · {memory} · {gpu}",
-                recommendation.hardware.cpu.as_deref().unwrap_or(tr("Unknown")),
-                recommendation.tier_label
-            ),
-        ));
+        parts = parts.push(
+            column![
+                typo::text(typo::body_strong(), tr("Your computer")),
+                typo::text(typo::body(), recommendation.hardware.cpu.as_deref().unwrap_or(tr("Unknown"))),
+                typo::text(typo::meta(), format!("{} · {memory} · {gpu}", recommendation.tier_label))
+                    .style(theme::text_2),
+            ]
+            .spacing(space::s()),
+        );
     }
     if state.focus.is_some() && state.selected.is_none() {
         parts = parts
@@ -894,7 +944,7 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
                         narrow,
                         trf("Load in {program}", &[("program", &program)]),
                         Some(candidate.model.clone()),
-                        widgets::text_button(None, tr("Checks automatically"), style::button::ghost, None),
+                        typo::text(typo::meta(), tr("Checks automatically")).style(theme::text_2),
                     ));
                 }
                 if !candidate.local {
@@ -1291,5 +1341,74 @@ mod tests {
         drop(view_in(&state, &data, true));
         let (_, _, request) = tag(update(&mut state, Message::Use, &data));
         assert!(matches!(request,Request::AiModels { account: id, .. } if id == account));
+    }
+
+    #[test]
+    fn switching_accounts_never_reuses_another_accounts_candidate_index() {
+        let mut data = super::super::demo::demo_data();
+        data.settings.ai_slots.chat = None;
+        let mut state = State::default();
+        demo(&mut state, "ready", &data);
+        let first = state.selected.clone().expect("first account");
+        let recommendation = state.recommendation.as_mut().expect("recommendation");
+        let mut choices = recommendation.preparations[0].clone();
+        choices.candidates = vec![choices.candidates[0].clone(); 3];
+        recommendation.preparations[0] = choices;
+        let second = "ai:openrouter@openrouter.ai".to_string();
+        let mut other = recommendation.preparations[0].clone();
+        other.account = second.clone();
+        other.candidates.truncate(1);
+        recommendation.preparations.push(other);
+        update(&mut state, Message::ChooseModel(AiSlot::Chat, 2), &data);
+        let response =
+            Ok(Response::AiRecommendation { recommendation: state.recommendation.clone().expect("recommendation") });
+        let (owner, run, _) = tag(update(&mut state, Message::Select(second.clone()), &data));
+        answered(&mut state, owner, run, &response);
+        assert!(can_use(&state, &data), "the second account's only candidate remains usable");
+        let (_, _, request) = tag(update(&mut state, Message::Use, &data));
+        assert!(matches!(request, Request::AiModels { account, .. } if account == second));
+        assert_ne!(state.selected.as_ref(), Some(&first));
+    }
+
+    #[test]
+    fn a_slow_background_recommendation_cannot_block_or_overwrite_a_connection_form() {
+        let data = super::super::demo::demo_data();
+        let mut state = State::default();
+        let (owner, run, _) = tag(open(&mut state));
+        let (_, old_run, _) =
+            tag(answered(&mut state, owner, run, &Ok(Response::AiServers { servers: vec![], observations: vec![] })));
+        update(&mut state, Message::Online(AiProvider::OpenRouter), &data);
+        assert!(state.form.is_some(), "a pending recommendation must not block provider selection");
+        update(&mut state, Message::Key(Secret::new("private-key")), &data);
+        let response = super::super::demo::demo_answer(&Request::AiRecommend, &data).expect("recommendation");
+        assert!(matches!(answered(&mut state, owner, old_run, &Ok(response)), Action::None));
+        assert!(state.recommendation.is_none(), "the superseded background answer is discarded");
+        let (_, _, request) = tag(update(&mut state, Message::Submit, &data));
+        assert!(matches!(request, Request::ConnectAi { provider: AiProvider::OpenRouter, .. }));
+    }
+
+    #[test]
+    fn opting_out_of_sorting_excludes_local_suggestions_and_stops_late_preparation() {
+        let mut data = super::super::demo::demo_data();
+        data.settings.ai_slots.decide = None;
+        let mut state = State::default();
+        demo(&mut state, "consent", &data);
+        update(&mut state, Message::Cancel, &data);
+        let recommendation = state.recommendation.as_mut().expect("recommendation");
+        recommendation.preparations[0].candidates[0].local = true;
+        allow_sorting(&mut state, false);
+        assert!(!can_use(&state, &data));
+        assert!(matches!(update(&mut state, Message::Use, &data), Action::None));
+        assert!(state.flight.is_none() && state.current.is_none() && !state.consent);
+
+        allow_sorting(&mut state, true);
+        let (owner, run, request) = tag(update(&mut state, Message::Use, &data));
+        assert!(matches!(request, Request::AiModels { .. }));
+        allow_sorting(&mut state, false);
+        let account = state.selected.clone().expect("account");
+        let answer = Ok(Response::AiModels { account, models: vec![] });
+        let (_, _, request) = tag(answered(&mut state, owner, run, &answer));
+        assert!(matches!(request, Request::AiRecommend), "no model enable, download or slot request follows");
+        assert!(state.current.is_none() && state.queue.is_empty());
     }
 }

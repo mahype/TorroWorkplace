@@ -514,7 +514,11 @@ pub enum Outcome {
 }
 
 pub fn update(state: &mut State, message: Message, data: &Data) -> Outcome {
+    let sorting = mail_sorting_on(state, data);
+    torro_settings_ui::accounts::ai_setup::allow_sorting(&mut state.ai_setup, sorting);
     let outcome = handle(state, message, data);
+    let sorting = mail_sorting_on(state, data);
+    torro_settings_ui::accounts::ai_setup::allow_sorting(&mut state.ai_setup, sorting);
     // The AI step looks for servers on this computer the first time it is shown.
     match outcome {
         Outcome::Stay(Action::None)
@@ -1853,6 +1857,30 @@ mod tests {
         assert!(matches!(update(&mut setup, Message::Next, &data()), Outcome::Stay(Action::AskAi(_))));
         let engine = update(&mut setup, Message::Engine("ai:openrouter@openrouter.ai".into()), &data());
         assert!(matches!(sent(&engine), Some((SettingKey::AssistantDefault, _))));
+    }
+
+    #[test]
+    fn a_sorting_opt_out_also_applies_to_the_shared_suggestion_flow() {
+        use torro_settings_ui::accounts::ai_setup;
+        let mut data = data();
+        data.settings.ai_slots.decide = None;
+        data.settings.ai_assignments.remove(&AiFunction::InboxCategorize);
+        let mut setup = state(Step::Ai);
+        ai_setup::demo(&mut setup.ai_setup, "consent", &data);
+        update(&mut setup, Message::AiSetup(ai_setup::Message::Cancel), &data);
+        update(&mut setup, Message::SortMail(false), &data);
+        assert!(!mail_sorting_on(&setup, &data));
+        assert!(matches!(
+            update(&mut setup, Message::AiSetup(ai_setup::Message::Use), &data),
+            Outcome::Stay(Action::None)
+        ));
+        assert!(
+            matches!(
+                update(&mut setup, Message::AiSetup(ai_setup::Message::Confirm), &data),
+                Outcome::Stay(Action::None)
+            ),
+            "sorting stays opted out, even if a stale confirmation message arrives"
+        );
     }
 
     /// The AI step recommends a local model for sorting mail and stores it as main's mail settings
