@@ -854,7 +854,7 @@ impl Dialog {
     /// [`Dialog::load`] asks for the repositories and the labels of its repository.
     pub fn edit(list: &Collection, account: String, account_label: String) -> Option<Dialog> {
         let source = list.source.as_ref()?;
-        let accounts = vec![AccountChoice { id: account.clone(), label: account_label }];
+        let accounts = vec![AccountChoice { id: account.clone(), detail: account_label.clone(), label: account_label }];
         let mut editor = Editor::blank(account, accounts);
         editor.target = Target::Edit { collection: list.id.clone(), revision: source.revision };
         editor.load(list);
@@ -2378,7 +2378,7 @@ mod tests {
     const DESIGN: &str = "mahype/torro-design";
 
     fn account(id: &str) -> AccountChoice {
-        AccountChoice { id: id.into(), label: id.into() }
+        AccountChoice { id: id.into(), label: id.into(), detail: id.into() }
     }
 
     fn start(last_repo: Option<&str>) -> Start {

@@ -8,9 +8,10 @@
 //!   ([`Outcome::GithubFilter`]); until task G.11 rebuilds that dialog, the app opens it for its
 //!   first GitHub account.
 //! - **"New task list"** ([`Dialog::task_list`]): the account (chips, only with several Nextcloud
-//!   accounts), the name (focused), the colour (the five list colours) and how the row will look
-//!   in the sidebar. "Create list" sends `tasks.create_list` (`PimSource::create_task_list`) and
-//!   shows "Creating…" until the core answers, taking no second press. The answer closes the
+//!   accounts, with their full labels as tooltips), the name (focused), the colour (the five list
+//!   colours) and how the row will look in the sidebar. "Create list" sends `tasks.create_list`
+//!   (`PimSource::create_task_list`) and shows "Creating…" until the core answers, taking no second
+//!   press. The answer closes the
 //!   dialog ([`Outcome::Created`]); the app then shows the new list and says "List “{name}”
 //!   created". A missing name shows under the field after the first try; a refusal of the core
 //!   shows over the form with "Retry".
@@ -52,8 +53,17 @@ fn preview_width() -> f32 {
 pub struct AccountChoice {
     /// The account's id (`nextcloud:anna@cloud.example.org`): what `tasks.create_list` takes.
     pub id: String,
-    /// How the sidebar names it (`anna@cloud.example.org`).
+    /// A short host, or the full label when offered accounts share a host.
     pub label: String,
+    /// The full, untranslated account label, without credentials.
+    pub detail: String,
+}
+
+impl AccountChoice {
+    /// A full label for the tooltip, falling back to the chip's text for an empty detail.
+    fn detail_text(&self) -> &str {
+        if self.detail.is_empty() { &self.label } else { &self.detail }
+    }
 }
 
 /// What "New list…" can offer, from the app's connected accounts. Built by the app each time the
@@ -296,16 +306,14 @@ impl Dialog {
         .spacing(space::xs())
         .align_y(Alignment::Center)
         .padding(space::m());
-        let body = scrollable(container(self.fields(form)).padding(space::xl()).width(Fill))
-            .direction(vertical())
-            .style(style::scrollable);
-        let card = column![
-            head,
-            rule::horizontal(LINE).style(style::rule),
-            body,
+        let head = column![head, rule::horizontal(LINE).style(style::rule)];
+        let body = container(self.fields(form)).padding(space::xl()).width(Fill);
+        let foot = column![
             rule::horizontal(LINE).style(style::rule),
             container(footer(form)).padding([space::l(), space::xl()]),
         ];
+        // Measure the actions before the scrolling fields so low windows cannot squeeze them out.
+        let card = torro_gui::dialog::frame(head, body, foot, 0.0);
         let card = container(card).width(Fill).style(style::container::popover);
         widgets::modal(Space::new().width(Fill).height(Fill), card, widgets::DIALOG_WIDTH, Message::Backdrop)
     }
@@ -345,7 +353,10 @@ impl Dialog {
         if self.offer.task_accounts.len() > 1 {
             let chips = self.offer.task_accounts.iter().map(|account| {
                 let on = account.id == form.account;
-                widgets::choice_chip(account.label.as_str(), None, on, Some(Message::Account(account.id.clone())))
+                widgets::with_tooltip(
+                    widgets::choice_chip(account.label.as_str(), None, on, Some(Message::Account(account.id.clone()))),
+                    account.detail_text(),
+                )
             });
             parts.push(labelled(tr("Account"), widgets::chip_row(chips.collect()), None).into());
         }
@@ -484,7 +495,7 @@ mod tests {
     }
 
     fn choice(id: &str) -> AccountChoice {
-        AccountChoice { id: id.into(), label: id.rsplit(':').next().unwrap_or(id).into() }
+        AccountChoice { id: id.into(), label: id.rsplit(':').next().unwrap_or(id).into(), detail: id.into() }
     }
 
     /// Both Nextcloud accounts of the demo and its GitHub account.
@@ -494,6 +505,26 @@ mod tests {
 
     fn form(dialog: &Dialog) -> &Form {
         dialog.form.as_ref().expect("the form shows")
+    }
+
+    #[test]
+    fn account_tooltip_uses_the_full_label_or_the_chip_text() {
+        let mut account = AccountChoice {
+            id: "opaque-account-id".into(),
+            label: "cloud.example.org".into(),
+            detail: "anna@cloud.example.org".into(),
+        };
+        assert_eq!(account.detail_text(), "anna@cloud.example.org");
+        account.detail.clear();
+        assert_eq!(account.detail_text(), "cloud.example.org");
+    }
+
+    #[test]
+    fn a_single_account_is_selected_without_a_choice_row() {
+        let offer = Offer { task_accounts: vec![choice(HOME_ACCOUNT)], ..Offer::default() };
+        let dialog = Dialog::task_list(offer).expect("the form");
+        assert_eq!(form(&dialog).account, HOME_ACCOUNT);
+        let _ = dialog.view(SizeClass::Narrow, Size::new(480.0, 900.0));
     }
 
     #[test]
@@ -539,7 +570,12 @@ mod tests {
 
     #[test]
     fn create_sends_account_name_and_colour() {
-        let mut dialog = Dialog::task_list(offer()).expect("the form");
+        let mut offer = offer();
+        for account in &mut offer.task_accounts {
+            account.label = "cloud.example.org".into();
+        }
+        let mut dialog = Dialog::task_list(offer).expect("the form");
+        assert_eq!(form(&dialog).account, WORK_ACCOUNT);
         let (_, outcome) = dialog.update(Message::Create, &demo());
         assert_eq!(outcome, Outcome::Stay);
         assert!(!form(&dialog).creating, "nothing is sent without a name");

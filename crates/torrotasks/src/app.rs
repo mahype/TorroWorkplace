@@ -2718,7 +2718,11 @@ impl App {
             filter::Open::New(id) => {
                 let accounts = self
                     .github_accounts()
-                    .map(|a| new_list::AccountChoice { id: a.id.clone(), label: account_title(a, &shown) })
+                    .map(|a| new_list::AccountChoice {
+                        id: a.id.clone(),
+                        label: account_title(a, &shown),
+                        detail: a.label.clone(),
+                    })
                     .collect();
                 let start = filter::Start { accounts, account: id, last_repo: self.last_repo.clone(), back: true };
                 filter::Dialog::new_list(start)
@@ -2785,13 +2789,14 @@ impl App {
     /// GitHub), the one of the list shown first, and whether a GitHub account is there.
     fn list_offer(&self) -> new_list::Offer {
         let connected = |a: &&PimAccount| matches!(a.state, AccountState::Connected { .. });
-        let shown = self.shown_accounts();
-        let task_accounts = self
-            .accounts
+        let offered: Vec<_> = self.accounts.iter().filter(connected).filter(|a| a.kind != GITHUB_KIND).collect();
+        let task_accounts = offered
             .iter()
-            .filter(connected)
-            .filter(|a| a.kind != GITHUB_KIND)
-            .map(|a| new_list::AccountChoice { id: a.id.clone(), label: account_title(a, &shown) })
+            .map(|a| new_list::AccountChoice {
+                id: a.id.clone(),
+                label: account_title(a, &offered),
+                detail: a.label.clone(),
+            })
             .collect();
         let preferred = match &self.filter {
             Filter::List(id) => account_of(id, &self.accounts, |a| a.id.as_str()).map(|a| a.id.clone()),
@@ -4865,6 +4870,33 @@ mod tests {
         let offer = app.list_offer();
         assert!(offer.task_accounts.is_empty() && offer.github);
         assert_eq!(app.github_accounts().next().map(|a| a.id.as_str()), Some(GITHUB_ACCOUNT));
+    }
+
+    #[test]
+    fn new_list_distinguishes_accounts_even_without_collections() {
+        let mut app = launched_with_accounts(&["--demo"]);
+        let anna = account("nextcloud:anna@cloud.example.org");
+        let bob = account("nextcloud:bob@cloud.example.org");
+        let other = account("nextcloud:chris@other.example.org");
+        let mut offline = account("nextcloud:offline@other.example.org");
+        offline.state = AccountState::NotConnected;
+        app.accounts = vec![anna.clone(), bob.clone(), other.clone(), offline, github_account()];
+        // One owner first, then no owners: neither case may hide a same-host account.
+        let mut list = app.collections.first().cloned().expect("a demo list");
+        list.id = format!("{}/tasks", anna.id);
+        app.collections = vec![list];
+        for empty in [false, true] {
+            if empty {
+                app.collections.clear();
+            }
+            let choices = app.list_offer().task_accounts;
+            let ids: Vec<_> = choices.iter().map(|a| a.id.as_str()).collect();
+            assert_eq!(ids, [anna.id.as_str(), bob.id.as_str(), other.id.as_str()]);
+            let labels: Vec<_> = choices.iter().map(|a| a.label.as_str()).collect();
+            assert_eq!(labels, [anna.label.as_str(), bob.label.as_str(), "other.example.org"]);
+            let details: Vec<_> = choices.iter().map(|a| a.detail.as_str()).collect();
+            assert_eq!(details, [anna.label.as_str(), bob.label.as_str(), other.label.as_str()]);
+        }
     }
 
     #[test]
