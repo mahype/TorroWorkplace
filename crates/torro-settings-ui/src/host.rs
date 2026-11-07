@@ -367,6 +367,9 @@ pub enum Message {
     Accounts(Box<accounts::Message>),
     /// What a widget of the page API and MCP reported ([`Host::with_outside`]).
     Outside(Box<outside::Message>),
+    /// The page API and MCP's own save came back ([`outside::send`]); then the data is asked for anew
+    /// as after [`Message::Done`].
+    OutsideDone(Result<(), String>),
     /// The tick of Accounts and AI while they are on screen ([`Host::subscription`]): load again.
     Tick,
     /// Time to look whether the core has said what is installed ([`Host::suite_arrived`], issue #419).
@@ -1097,7 +1100,22 @@ impl Host {
             Message::Outside(message) => {
                 let Some(state) = self.outside.as_mut() else { return Outcome::None };
                 let action: Action<A> = outside::update(state, *message, &self.data);
-                self.act(action)
+                match action {
+                    // Merged into the rights the core holds at that moment, and answered on its own
+                    // message, so no other section's answer settles it.
+                    Action::Send(requests) => {
+                        self.notice = None;
+                        let send = outside::send(Arc::clone(&self.backend), requests, state.areas());
+                        Outcome::Work(Task::perform(send, Message::OutsideDone))
+                    }
+                    other => self.act(other),
+                }
+            }
+            Message::OutsideDone(result) => {
+                if let Some(state) = self.outside.as_mut() {
+                    outside::done(state, &result);
+                }
+                self.update(Message::Done { changed: true, result })
             }
             Message::AccountAnswered(result) => {
                 let Some(state) = self.accounts.as_mut() else { return Outcome::None };
@@ -1189,9 +1207,6 @@ impl Host {
             Message::Answered(result) => Outcome::Answer(result),
             Message::Part { generation, request, result } => work(self.part(generation, *request, *result)),
             Message::Done { changed, result: Ok(()) } => {
-                if let Some(state) = self.outside.as_mut() {
-                    outside::done(state, &Ok(()));
-                }
                 // The change is stored: a new load, reported as the send once the page is fresh. A
                 // plain reload that comes back meanwhile does not hide a real change before it.
                 self.change = Some(self.change.unwrap_or(false) || changed);
@@ -1199,9 +1214,6 @@ impl Host {
             }
             // Through the app as before, so the sections that wait for the send hear how it ended.
             Message::Done { changed, result: Err(problem) } => {
-                if let Some(state) = self.outside.as_mut() {
-                    outside::done(state, &Err(problem.clone()));
-                }
                 Outcome::Work(Task::done(Message::Sent { changed, result: Box::new(Err(problem)) }))
             }
         }

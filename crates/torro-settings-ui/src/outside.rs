@@ -27,17 +27,22 @@
 //!   clients stays in the control centre (in a single app without it: issue #538).
 //! - It changes only the rights of [`areas`]: a control of any other area is dropped before it reaches
 //!   the editor, and "Ask first" is not shown.
-//! - `clients.update_client` carries the whole rights. So the editor opens only once the first fresh
-//!   `clients.list_clients` of this opening is in; until then the client's page says "Updating…", and
-//!   rights the window still knew from the last time never overwrite newer ones.
+//! - `clients.update_client` carries the whole rights, and the control centre may have changed the
+//!   client meanwhile. So the editor opens only once the first fresh `clients.list_clients` of this
+//!   opening is in (until then the client's page says "Updating…"), and every save reads the client
+//!   anew right before it and changes only the app's areas in what the core holds then ([`send`],
+//!   [`merged`]): nothing of another area, "Ask first" or an MCP server goes back as this window last
+//!   saw it. Two windows that change the same client in the same moment: the last one wins.
 //! - A change goes out at once (not [`rights::SAVE_DELAY`] later as in the control centre): an app
 //!   closes its settings without a word to the host, and a draft that waits would be lost. Only one
-//!   `clients.update_client` is on its way at a time, so an older one never lands after a newer one;
-//!   a change made meanwhile waits for the editor's clock.
+//!   `clients.update_client` is on its way at a time, answered on a message of its own, so an older one
+//!   never lands after a newer one; a change made meanwhile waits for the editor's clock, and while it
+//!   waits no other client can be changed (it would take the draft's place).
 
 use iced::widget::{column, responsive, svg};
 use iced::{Element, Length, Theme};
 
+use std::sync::Arc;
 use torro_core::AppId;
 use torro_core::i18n::tr;
 use torro_gui::icon::{self, Icon};
@@ -45,11 +50,13 @@ use torro_gui::layout;
 use torro_gui::theme::palette;
 use torro_gui::widgets;
 use torro_ipc::api::{Area, CATALOGUE, SCRIPT_CLIENT, is_mcp_kind};
-use torro_ipc::{ClientInfo, Request};
+
+use torro_ipc::api::Rights;
+use torro_ipc::{ClientInfo, Request, Response};
 
 use crate::parts::{chevron, pressable, setting_row};
 use crate::rights::{self, Known, Naming, Pick};
-use crate::{Action, Data, Page, Section};
+use crate::{Action, Backend, Data, Page, Section};
 
 /// The section, as the list, the path and `--settings api-mcp` name it.
 pub const SECTION: Section = Section { id: "api-mcp", icon: Icon::Code, label: "API and MCP" };
@@ -220,8 +227,55 @@ fn edit<A>(state: &mut State, message: rights::Message, data: &Data) -> Action<A
         return Action::None;
     }
     let Some(client) = open_client(state, data) else { return Action::None };
+    // A draft of another client still waits for its turn: it would be replaced, and lost.
+    if rights::waiting_for(&state.rights).is_some_and(|id| id != client.id) {
+        return Action::None;
+    }
     let _: Action<A> = rights::update(&mut state.rights, message, Some(client), &known);
     save(state)
+}
+
+/// `edited` – what the page shows for a client – brought into `fresh`, what the core holds for it now:
+/// for each of `areas` the level and admin switch, the selection, the commands switched off and, for
+/// mail, "Send on my behalf"; everything else stays as in `fresh`.
+pub fn merged(fresh: &Rights, edited: &Rights, areas: &[Area]) -> Rights {
+    let mut rights = fresh.clone();
+    for &area in areas {
+        rights.areas.insert(area, edited.area(area));
+    }
+    for pick in Pick::ALL.into_iter().filter(|pick| areas.contains(&pick.area())) {
+        *pick.of_mut(&mut rights) = pick.of(edited).clone();
+    }
+    let in_areas =
+        |name: &String| CATALOGUE.iter().any(|command| command.name == name.as_str() && areas.contains(&command.area));
+    rights.denied.retain(|name| !in_areas(name));
+    rights.denied.extend(edited.denied.iter().filter(|name| in_areas(name)).cloned());
+    if areas.contains(&Area::Mail) {
+        rights.outbound = edited.outbound;
+    }
+    rights
+}
+
+/// Sends what the page saves (`clients.update_client`), each time over the rights the core holds right
+/// then ([`merged`]): asks `clients.list_clients`, takes the client by its id and changes only `areas`.
+/// A client that is gone fails with what the core says; any other request goes as it is. Stops at the
+/// first failure, as `crate::apply` does.
+pub async fn send(backend: Arc<dyn Backend>, requests: Vec<Request>, areas: &'static [Area]) -> Result<(), String> {
+    for request in requests {
+        let request = match request {
+            Request::UpdateClient { id, rights } => {
+                let fresh = match backend.call(Request::ListClients).await? {
+                    Response::Clients { clients } => clients.into_iter().find(|client| client.id == id),
+                    _ => None,
+                };
+                let Some(fresh) = fresh else { return Err(tr("This client no longer exists.").to_string()) };
+                Request::UpdateClient { id, rights: merged(&fresh.rights, &rights, areas) }
+            }
+            other => other,
+        };
+        backend.call(request).await?;
+    }
+    Ok(())
 }
 
 /// Sends a waiting draft now, unless a save of this page is on its way.
@@ -282,6 +336,8 @@ pub fn subscription(state: &State) -> iced::Subscription<Message> {
 pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
     match state.open.as_ref() {
         Some((_, kind)) => match open_client(state, data) {
+            // Known from the last time, but not fresh yet: the editor waits.
+            Some(client) if waiting(data) => Page::new(updating(kind)).sub_page(client.name.clone(), Message::Back),
             Some(client) => Page::new(client_page(state, data, client)).sub_page(client.name.clone(), Message::Back),
             // Still on its way: the page waits. Gone: the list, until `loaded` closes the page.
             None if waiting(data) => Page::new(updating(kind)).sub_page(tr("Updating…"), Message::Back),
@@ -545,6 +601,58 @@ mod tests {
                 )
             );
         }
+    }
+
+    /// A save changes only the app's areas in what the core holds right then: what the control centre
+    /// changed meanwhile in another area, in "Ask first" or for a server stays (review of #531).
+    #[tokio::test]
+    async fn a_save_keeps_what_the_core_holds_outside_the_app() {
+        let demo = Arc::new(Demo::new());
+        let backend: Arc<dyn Backend> = demo.clone();
+        let data = crate::load(Arc::clone(&backend), wanted(AppId::CALENDAR)).await;
+        let claude = data.clients.iter().find(|client| client.kind == "claude-code").expect("Claude Code");
+        // What this window last saw, changed in the calendar, and stale everywhere else.
+        let mut edited = claude.rights.clone();
+        edited.areas.insert(Area::Calendar, torro_ipc::api::AreaRights { level: Level::Read, admin: false });
+        edited.areas.insert(Area::Mail, torro_ipc::api::AreaRights { level: Level::NoAccess, admin: true });
+        edited.confirm = Confirm::Never;
+        edited.denied.insert("calendar.list_events".into());
+        edited.denied.insert("mail.search_messages".into());
+        let request = Request::UpdateClient { id: claude.id.clone(), rights: edited.clone() };
+        send(backend, vec![request], areas(AppId::CALENDAR)).await.expect("saved");
+        let sent = demo.sent();
+        let Some(Request::UpdateClient { rights, .. }) = sent.last() else { panic!("{sent:?}") };
+        assert_eq!(rights.area(Area::Calendar).level, Level::Read);
+        assert!(rights.denied.contains("calendar.list_events"));
+        assert_eq!(rights.area(Area::Mail), claude.rights.area(Area::Mail), "the core's mail rights stay");
+        assert!(!rights.denied.contains("mail.search_messages"));
+        assert_eq!(rights.confirm, claude.rights.confirm);
+        assert_eq!(*rights, merged(&claude.rights, &edited, areas(AppId::CALENDAR)));
+        // A client that is gone is not made up again.
+        let gone = Request::UpdateClient { id: "gone".into(), rights: edited };
+        let backend: Arc<dyn Backend> = demo.clone();
+        assert!(send(backend, vec![gone], areas(AppId::CALENDAR)).await.is_err());
+    }
+
+    /// A draft that waits for its turn is not replaced by a change of another client.
+    #[tokio::test]
+    async fn a_waiting_draft_keeps_its_place() {
+        let data = data(AppId::CALENDAR).await;
+        let (keys, mcp) = listed(&data);
+        let (key, claude) = (keys[0].clone(), mcp[0].clone());
+        let mut state = State::new(AppId::CALENDAR);
+        let level = |level| Message::Rights(rights::Message::Level(Area::Calendar, level));
+        let _ = update::<()>(&mut state, Message::Open(key.id.clone(), key.kind.clone()), &data);
+        assert_eq!(requests(update(&mut state, level(Level::Write), &data)).len(), 1, "the first goes at once");
+        assert!(requests(update(&mut state, level(Level::Full), &data)).is_empty(), "the second waits");
+        let _ = update::<()>(&mut state, Message::Open(claude.id.clone(), claude.kind.clone()), &data);
+        assert!(requests(update(&mut state, level(Level::Read), &data)).is_empty(), "dropped, not in its place");
+        done(&mut state, &Ok(()));
+        let sent = requests(update(&mut state, later(), &data));
+        assert!(
+            matches!(&sent[..], [Request::UpdateClient { id, rights }] if *id == key.id && rights.area(Area::Calendar).level == Level::Full),
+            "{sent:?}"
+        );
     }
 
     /// Nothing outside `areas` of `sent` differs from `held`: no other area, no "Ask first", no MCP

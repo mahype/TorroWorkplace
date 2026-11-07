@@ -254,7 +254,9 @@ spätere Auswahl **pro Fenster** (unten) kommt als eigener Schalter dazu, nicht 
   Werkzeuge des Assistenten selbst aus, niemand braucht ihn). Seit #531 API and MCP jeder App
   (`torro-settings-ui`, `outside.rs`): nur `clients.update_client`, nur für Schlüssel (`script`) und MCP-Clients,
   nur in den Bereichen der App; der Editor öffnet erst, wenn die erste frische Liste der Clients dieses Öffnens da
-  ist, damit kein Stand aus dem Gedächtnis des Hosts neuere Rechte überschreibt. `clients.new_key`,
+  ist, und jedes Speichern liest den Client unmittelbar davor neu und ändert nur die Bereiche der App, damit kein
+  älterer Stand (aus dem Gedächtnis des Hosts oder vor einer Änderung in der Steuerzentrale) neuere Rechte
+  überschreibt. `clients.new_key`,
   `clients.create_client` und `clients.remove_client` für andere Arten bleiben der Steuerzentrale.
 - Nur ein Mensch öffnet die Einstellungen. Antworten des Assistenten, Mails und Einträge im Eingang
   können keinen Abschnitt aufschlagen, und Agenten haben kein Ziel `settings:…` für `apps.open_app`.

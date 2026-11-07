@@ -7513,6 +7513,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Keys and clients are created in Torro Workplace.", "Schlüssel und Clients werden in Torro Workplace angelegt."),
     ("No program uses the API or MCP yet.", "Noch nutzt kein Programm die API oder MCP."),
     ("Open Torro Workplace", "Torro Workplace öffnen"),
+    ("This client no longer exists.", "Diesen Client gibt es nicht mehr."),
     (
         "Other rights of this client are set in Torro Workplace.",
         "Die übrigen Rechte dieses Clients stellst du in Torro Workplace ein.",

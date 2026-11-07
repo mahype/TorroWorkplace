@@ -229,7 +229,7 @@ impl Pick {
         }
     }
 
-    fn of_mut(self, rights: &mut Rights) -> &mut Selection {
+    pub(crate) fn of_mut(self, rights: &mut Rights) -> &mut Selection {
         match self {
             Pick::Calendars => &mut rights.calendars,
             Pick::TaskLists => &mut rights.task_lists,
@@ -581,6 +581,15 @@ pub fn leave(state: &mut State) {
     state.repo_input.clear();
     state.open.clear();
     state.open_servers.clear();
+}
+
+/// The client whose draft waits for the clock, by id; `None` while none waits (one that is on its way
+/// or answered does not count).
+pub fn waiting_for(state: &State) -> Option<&str> {
+    match &state.draft {
+        Some(Draft { id, phase: Phase::Waiting(_), .. }) => Some(id),
+        _ => None,
+    }
 }
 
 /// The clock that saves a waiting draft; none while nothing waits, so the editor costs nothing at
