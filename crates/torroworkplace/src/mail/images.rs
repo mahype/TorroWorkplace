@@ -84,8 +84,15 @@ impl ImageStore {
 
     async fn reserve_request(&self, request: &Request) -> Result<(), Response> {
         if let Request::UploadMailImage { base64, .. } = request {
-            let mut state = self.state.lock().await;
+            if base64.is_reserved() {
+                return Ok(());
+            }
+            // A fetch/decoder may retain this guard for seconds. Unadmitted payloads must
+            // never queue behind it: their bytes would be retained without any budget charge.
+            let mut state = self.state.try_lock().map_err(|_| busy())?;
             state.purge();
+            // A shared approval clone may have been admitted between the first check and
+            // acquiring the guard. Its existing charge must not be tested or added twice.
             if !base64.is_reserved() {
                 state.room(base64.len())?;
                 if !base64.reserve() {
@@ -340,7 +347,6 @@ pub(crate) async fn handle(
     request: Request,
     tools: Option<&Register>,
 ) -> Response {
-    mail.images.start_cleanup();
     if let Some(refused) = torro_ipc::mail::limit_refusal(&request) {
         return refused;
     }
@@ -351,6 +357,9 @@ pub(crate) async fn handle(
     if let Err(refused) = mail.images.reserve_request(&request).await {
         return refused;
     }
+    // Start only after admission, so the first upload cannot contend with the cleanup worker
+    // it just spawned while still holding an unbudgeted payload.
+    mail.images.start_cleanup();
     match request {
         Request::PrepareMailImage { account, source } => {
             prepare(mail, reach, author, &account, source, tools).await.unwrap_or_else(|e| e)
@@ -737,6 +746,44 @@ mod tests {
         state.entries.get_mut(&id).expect("entry").touched -= Duration::from_secs(3601);
         state.purge();
         assert!(state.entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn parallel_upload_payloads_do_not_wait_unbudgeted_behind_a_blocked_import() {
+        use futures_util::{FutureExt as _, future::join_all};
+        let store = ImageStore::default();
+        // Imports retain this same guard across the bounded MIME fetch and blocking decoder.
+        // Hold that phase open deterministically, with no network timing or timeout involved.
+        let import = store.state.lock().await;
+        let requests = (0..8)
+            .map(|_| Request::UploadMailImage {
+                account: "mail:a".into(),
+                upload: None,
+                offset: 0,
+                base64: STANDARD.encode(vec![0; IMAGE_CHUNK_BYTES]).into(),
+                finish: false,
+            })
+            .collect::<Vec<_>>();
+        let replies = join_all(requests.iter().map(|request| store.reserve_request(request)))
+            .now_or_never()
+            .expect("unadmitted payloads must be refused before waiting for an import");
+        for (request, reply) in requests.iter().zip(replies) {
+            assert!(matches!(reply, Err(Response::Error { code, .. }) if code == "busy"));
+            let Request::UploadMailImage { base64, .. } = request else { panic!("upload") };
+            assert!(!base64.is_reserved(), "rejection neither queues nor retains payloads");
+        }
+        drop(import);
+        store.reserve_request(&requests[0]).await.expect("admission after the import releases its lock");
+        let Request::UploadMailImage { base64, .. } = &requests[0] else { panic!("upload") };
+        assert!(base64.is_reserved());
+        // A cloned, already admitted approval is counted throughout a later import. It need
+        // not wait again merely to confirm the existing charge, and must not double-charge it.
+        let _import = store.state.lock().await;
+        store
+            .reserve_request(&requests[0].clone())
+            .now_or_never()
+            .expect("already admitted approvals remain budgeted without taking the import lock")
+            .expect("admitted");
     }
 
     #[tokio::test]

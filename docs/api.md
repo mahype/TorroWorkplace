@@ -60,6 +60,8 @@ Identische Wiederholungen sind idempotent, andere Offsets/Inhalte `conflict`. `f
 eine flüchtige Prepared-ID, Maße und eine PNG-Vorschau von höchstens 256 KiB. PNG/JPEG/GIF/WebP werden geprüft
 (höchstens 32 MP, Kanten 32768, Decoder 128 MiB), nie SVG. Ein Decoder läuft gleichzeitig. Maximal vier unfertige
 Uploads je Aufrufer, 16 insgesamt und 100 MiB für Originale/Uploads/Vorschauen; Ressourcenmangel ist `busy`.
+Neue Upload-Payloads warten nicht ungezählt hinter einem laufenden Import oder Decoder: Ist die
+Speicherzulassung belegt, kommt sofort `busy`; erst zugelassene, bereits budgetierte Requests dürfen warten.
 Beim Speichern zählen auch ausgehende Bildpuffer und konservativ reservierter MIME-Arbeitsraum bis zum Abschluss.
 Die 25-MiB-Eingabegrenze ist deshalb keine Zusage, beliebig viele Originalteile gleichzeitig speichern zu können.
 Unfertige Uploads laufen nach 10 Minuten, fertige Quellen nach einer Stunde ohne Nutzung ab. Erneutes Prepare
