@@ -1579,6 +1579,32 @@ pub(crate) mod tests {
         let elsewhere = answer(&service, Reach::Client(&rights), Request::GetSenderLogo { id: signed.clone() }).await;
         assert_eq!(code(&elsewhere), "not-found", "out of reach");
 
+        // #526: no network or mail refetch on reads, including a damaged or missing kept PNG.
+        let kept = std::fs::read_dir(dir.path().join("sender-logos"))
+            .expect("logo cache")
+            .map(|entry| entry.expect("entry").path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "png"))
+            .expect("kept PNG");
+        let mail_reads = server.lines().into_iter().filter(|line| line.contains("BODY.PEEK")).count();
+        for broken in [
+            b"broken".to_vec(),
+            picture(64, 64, image::ImageFormat::Png),
+            vec![0; crate::mail::logos::RASTER_MAX_BYTES + 1],
+        ] {
+            std::fs::write(&kept, broken).expect("damage cache");
+            let missing = answer(&service, Reach::Suite, Request::GetSenderLogo { id: signed.clone() }).await;
+            assert_eq!(code(&missing), "not-found", "invalid logo falls back without an image response");
+        }
+        std::fs::remove_file(&kept).expect("remove logo");
+        let missing = answer(&service, Reach::Suite, Request::GetSenderLogo { id: signed.clone() }).await;
+        assert_eq!(code(&missing), "not-found");
+        assert_eq!(web.asked().len(), 1, "logo reads never fetch");
+        assert_eq!(
+            server.lines().into_iter().filter(|line| line.contains("BODY.PEEK")).count(),
+            mail_reads,
+            "no original mail is reloaded"
+        );
+
         service.set_logo_switch(Arc::new(|| false));
         assert_eq!(logo_of(listed().await, "Review requested"), None, "off: no logo named");
         let off = answer(&service, Reach::Suite, Request::GetSenderLogo { id: signed }).await;

@@ -1500,7 +1500,11 @@ impl MailService {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|id, _| entries.iter().any(|entry| entry.mailbox.id() == id));
+        let refresh_logos = !self.paused.load(Ordering::Acquire) && entries.iter().any(|entry| entry.mailbox.syncs());
         drop(entries);
+        if refresh_logos {
+            self.logos.refresh_cached(Utc::now());
+        }
         self.loaded.store(true, Ordering::Release);
         // An account that came or went changes what a waiting `mail.sync_status` sees.
         self.progress_wake.notify_waiters();
@@ -3338,6 +3342,63 @@ pub(crate) mod tests {
         service.reload().await;
         assert!(service.infos(Reach::Suite).await.is_empty());
         assert_eq!(service.store(&account.id).await.map(drop).map_err(|err| err.code()), Err("not-found"));
+    }
+
+    #[tokio::test]
+    async fn reload_refreshes_old_logos_without_new_mail_only_when_mail_can_run() {
+        use crate::mail::logos::{
+            Reply,
+            tests::{FakeWeb, old_cache, picture},
+        };
+
+        let server = FakeImap::start(PASSWORD).await;
+        for mode in ["running", "paused", "mail-off", "no-password", "no-account", "logos-off", "no-store"] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let cache = dir.path().join("logos");
+            let old = old_cache(&cache);
+            let web = Arc::new(FakeWeb::default().page(
+                "https://github.example/apple-touch-icon.png",
+                Reply::Body(picture(180, 180, image::ImageFormat::Png)),
+            ));
+            let logos = Arc::new(SenderLogos::new(Some(cache.clone()), web.clone()).without_gap());
+            let secrets = MemoryTokens::default();
+            let mut account = mail_account("anna@example.org", &server.endpoint);
+            if mode == "mail-off" {
+                account.mail_settings = Some(MailSettings {
+                    services: Services { mail: false, ..Services::default() },
+                    ..MailSettings::default()
+                });
+            }
+            if mode == "no-password" {
+                std::fs::create_dir_all(accounts_file(dir.path()).parent().expect("config dir")).expect("dir");
+                account::save_to(&accounts_file(dir.path()), &[account]).expect("account");
+            } else if mode == "no-account" {
+                store_accounts(dir.path(), &secrets, &[]);
+            } else {
+                store_accounts(dir.path(), &secrets, &[(&account, PASSWORD)]);
+            }
+            let mut service =
+                service_in(dir.path(), &secrets).with_sender_logos(logos.clone(), Arc::new(SenderCheck::offline()));
+            if mode == "no-store" {
+                service.dirs = None;
+            }
+            service.pause_from_start(mode == "paused");
+            service.set_logo_switch(Arc::new(move || mode != "logos-off"));
+            service.reload().await;
+            if mode == "running" {
+                eventually("old logo refreshed without new mail", || async {
+                    logos.png("github.example").is_some_and(|png| png != old)
+                })
+                .await;
+                service.reload().await;
+                assert_eq!(web.asked(), ["https://github.example/apple-touch-icon.png"], "no repeated migration");
+            } else {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                assert!(web.asked().is_empty(), "{mode}: no logo request");
+                logos.set_switch(Arc::new(|| true));
+                assert_eq!(logos.png("github.example"), Some(old));
+            }
+        }
     }
 
     #[tokio::test]
