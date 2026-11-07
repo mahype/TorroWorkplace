@@ -771,6 +771,7 @@ async fn save(
                     let (limit, reservation) = mail.images.mime_budget().await?;
                     bounded_attachment_of(mail, reach, attachment, &author, tools, (limit, Some(reservation)), false)
                         .await?
+                        .0
                 } else {
                     attachment_of(mail, reach, attachment, &author, cache.as_ref(), tools).await?
                 };
@@ -1148,29 +1149,65 @@ fn content_type_of(path: &Path) -> &'static str {
 // ----- approvals -----
 
 /// Image imports use a single bounded MIME leaf, not `attachment_of`'s whole-message path.
-/// `encoded_limit` is reserved by the image store before this method touches the network.
+/// The admission travels through the source worker and its result, including after cancellation.
 pub(crate) async fn image_attachment_of(
     mail: &MailService,
     reach: Reach<'_>,
     attachment: &DraftAttachment,
     author: &DraftAuthor,
     tools: Option<&Register>,
-    encoded_limit: usize,
-) -> Result<OutgoingAttachment, WriteError> {
-    bounded_attachment_of(mail, reach, attachment, author, tools, (encoded_limit, None), true).await
+    budget: (usize, super::images::ImageAdmission),
+) -> Result<(OutgoingAttachment, super::images::ImageAdmission), WriteError> {
+    let (input, mut admission) = if let DraftAttachment::File { path } = attachment {
+        let client = match author {
+            DraftAuthor::Client(id) => Some(id.clone()),
+            DraftAuthor::App => None,
+        };
+        let (path, cache, tools) = (path.clone(), mail.attachment_cache(), tools.cloned());
+        tokio::task::spawn_blocking(move || {
+            let admission = budget.1;
+            #[cfg(test)]
+            admission.pause("file");
+            let input = read_file(&path, client.as_deref(), cache.as_ref(), tools.as_ref())?;
+            #[cfg(test)]
+            admission.pause("file-result");
+            Ok::<_, WriteError>((input, admission))
+        })
+        .await
+        .map_err(|_| WriteError::Invalid(TOO_BIG))??
+    } else {
+        bounded_attachment_of(mail, reach, attachment, author, tools, budget, true).await?
+    };
+    // All raw/parser scratch is gone, but the source remains charged through describe/encode.
+    admission.retain_source(input.bytes.capacity());
+    Ok((input, admission))
 }
 
-async fn bounded_attachment_of(
+trait AttachmentBudget: Send + 'static {
+    #[cfg(test)]
+    fn pause(&self, _stage: &str) {}
+}
+
+impl AttachmentBudget for Option<torro_ipc::mail::ImageReservation> {}
+
+impl AttachmentBudget for super::images::ImageAdmission {
+    #[cfg(test)]
+    fn pause(&self, stage: &str) {
+        self.pause(stage);
+    }
+}
+
+async fn bounded_attachment_of<B: AttachmentBudget>(
     mail: &MailService,
     reach: Reach<'_>,
     attachment: &DraftAttachment,
-    author: &DraftAuthor,
-    tools: Option<&Register>,
-    budget: (usize, Option<torro_ipc::mail::ImageReservation>),
+    _author: &DraftAuthor,
+    _tools: Option<&Register>,
+    budget: (usize, B),
     image_only: bool,
-) -> Result<OutgoingAttachment, WriteError> {
+) -> Result<(OutgoingAttachment, B), WriteError> {
     let DraftAttachment::MailPart { message, part } = attachment else {
-        return attachment_of(mail, reach, attachment, author, mail.attachment_cache().as_ref(), tools).await;
+        return Err(WriteError::NotFound(NO_ATTACHMENT));
     };
     let part = part.parse::<u32>().map_err(|_| WriteError::NotFound(NO_ATTACHMENT))?;
     let source = locate(mail, reach, &[message.as_str()]).await?.remove(0);
@@ -1185,21 +1222,30 @@ async fn bounded_attachment_of(
     command.release();
     tokio::task::spawn_blocking(move || {
         // A cancelled caller cannot release the parser's reservation while its worker still runs.
-        let _reservation = budget.1;
+        let admission = budget.1;
+        let source = raw;
+        #[cfg(test)]
+        admission.pause("mime");
+        // The generic non-image path keeps its existing reservation, while image imports also
+        // retain their owned store guard. The worker's result owns both until it is consumed.
         let found = if image_only {
-            mime::image_attachment(&raw, MAX_FILE_BYTES as usize)
+            mime::image_attachment(&source, MAX_FILE_BYTES as usize)
         } else {
-            mime::bounded_attachment(&raw, MAX_FILE_BYTES as usize)
+            mime::bounded_attachment(&source, MAX_FILE_BYTES as usize)
         }
         .map_err(|_| WriteError::Invalid(TOO_BIG))?;
-        Ok(OutgoingAttachment {
+        let content = OutgoingAttachment {
             filename: safe_file_name(found.filename.as_deref().unwrap_or("")),
             content_type: found.content_type,
             bytes: found.bytes,
             content_id: None,
             inline: false,
             image_size: None,
-        })
+        };
+        drop(source);
+        #[cfg(test)]
+        admission.pause("mime-result");
+        Ok((content, admission))
     })
     .await
     .map_err(|_| WriteError::Invalid(TOO_BIG))?
@@ -1493,6 +1539,26 @@ pub(crate) mod tests {
     use crate::mail::sync::fake::{self, FakeImap};
 
     pub(crate) const ANNA: &str = "mail:anna@example.org";
+
+    // Independent services in parallel tests still share the process-wide image budget. Imports
+    // now really reserve their full read allowance, so isolate image pipelines, not their limits.
+    fn isolated_image_test(name: &str) -> bool {
+        if std::env::var("TORRO_WRITE_IMAGE_TEST_CHILD").as_deref() == Ok(name) {
+            return false;
+        }
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([name, "--exact", "--test-threads=1"])
+            .env("TORRO_WRITE_IMAGE_TEST_CHILD", name)
+            .output()
+            .expect("isolated image regression");
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains(&format!("{name} ... ok")),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        true
+    }
 
     /// A fake server with a trash folder and mail in the inbox, archive and trash, and Anna's
     /// account on it in `dir`, synced once.
@@ -1809,6 +1875,11 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn an_ordinary_attachment_beside_images_also_uses_only_its_bounded_leaf() {
+        if isolated_image_test(
+            "mail::write::tests::an_ordinary_attachment_beside_images_also_uses_only_its_bounded_leaf",
+        ) {
+            return;
+        }
         use torro_mail::{ImageSize, ImageSource};
         let room = mailroom().await;
         let raw = format!(
@@ -1848,6 +1919,11 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn mixed_line_endings_in_a_quoted_printable_image_import_preserve_original_bytes() {
+        if isolated_image_test(
+            "mail::write::tests::mixed_line_endings_in_a_quoted_printable_image_import_preserve_original_bytes",
+        ) {
+            return;
+        }
         use torro_mail::{ImageSize, ImageSource};
         let room = mailroom().await;
         let mut png = std::io::Cursor::new(Vec::new());
@@ -1893,24 +1969,188 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_source_and_image_workers_keep_their_admission() {
+        use base64::Engine as _;
+        use futures_util::FutureExt as _;
+        use torro_mail::{ImageSize, ImageSource};
+        if isolated_image_test("mail::write::tests::cancelled_source_and_image_workers_keep_their_admission") {
+            return;
+        }
+        let room = mailroom().await;
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(12, 8).write_to(&mut png, image::ImageFormat::Png).expect("PNG");
+        let path = room.dir.path().join("source.png");
+        fs::write(&path, png.get_ref()).expect("file");
+        let raw = format!(
+            "From: bob@example.org\r\nSubject: Worker source\r\nMIME-Version: 1.0\r\nContent-Type: image/png\r\nContent-Transfer-Encoding: base64\r\n\r\n{}",
+            base64::engine::general_purpose::STANDARD.encode(png.get_ref())
+        );
+        room.server.add("INBOX", &raw, &[]);
+        room.mail.sync_all(Reach::Suite).await.expect("sync");
+        let message = id_of(&room.mail, "Worker source").await;
+        let held = torro_ipc::mail::held_image_bytes();
+        for stage in ["file", "file-result", "mime", "mime-result", "describe", "encode", "upload"] {
+            let source = if stage.starts_with("mime") {
+                ImageSource::MailPart { message: message.clone(), part: "0".into() }
+            } else {
+                ImageSource::File { path: path.to_string_lossy().into_owned() }
+            };
+            let gate = room.mail.images.block_worker(if stage == "upload" { "describe" } else { stage }).await;
+            let mut work = Box::pin(async {
+                if stage == "encode" {
+                    let _result = super::super::images::attachment(
+                        &room.mail,
+                        Reach::Suite,
+                        &DraftAuthor::App,
+                        ANNA,
+                        &source,
+                        ImageSize::Medium,
+                        None,
+                    )
+                    .await;
+                } else {
+                    let request = if stage == "upload" {
+                        Request::UploadMailImage {
+                            account: ANNA.into(),
+                            upload: None,
+                            offset: 0,
+                            base64: base64::engine::general_purpose::STANDARD.encode(png.get_ref()).into(),
+                            finish: true,
+                        }
+                    } else {
+                        Request::PrepareMailImage { account: ANNA.into(), source }
+                    };
+                    let _result =
+                        super::super::images::handle(&room.mail, Reach::Suite, &DraftAuthor::App, request, None).await;
+                }
+            });
+            tokio::select! {
+                () = gate.entered() => {},
+                () = &mut work => panic!("{stage} never reached its barrier"),
+            }
+            drop(work);
+            let locked = room.mail.images.reserve_output(1).now_or_never().is_none();
+            let charged = torro_ipc::mail::held_image_bytes() > held;
+            gate.release();
+            let reservation =
+                tokio::time::timeout(std::time::Duration::from_secs(10), room.mail.images.reserve_output(1))
+                    .await
+                    .expect("worker ended")
+                    .expect("admission reusable");
+            drop(reservation);
+            assert!(locked, "{stage} released its store guard before its worker ended");
+            // Upload's source is already counted in the store, never charged a second time.
+            assert!(stage == "upload" || charged, "{stage} lost its source/output reservation");
+            assert_eq!(torro_ipc::mail::held_image_bytes(), held, "{stage} leaked a temporary charge or preview");
+        }
+        // Change the gate before recovering; the last gate only matches describe, not encode.
+        let source = ImageSource::MailPart { message, part: "0".into() };
+        super::super::images::attachment(
+            &room.mail,
+            Reach::Suite,
+            &DraftAuthor::App,
+            ANNA,
+            &source,
+            ImageSize::Medium,
+            None,
+        )
+        .await
+        .expect("small normalization succeeds after every cancellation");
+    }
+
+    #[tokio::test]
+    async fn oversized_lanczos_work_never_appends_or_replaces_a_good_draft() {
+        use base64::Engine as _;
+        use std::io::Write as _;
+        use torro_mail::{ImageSize, ImageSource};
+        if isolated_image_test("mail::write::tests::oversized_lanczos_work_never_appends_or_replaces_a_good_draft") {
+            return;
+        }
+        let room = mailroom().await;
+        let mut png = Vec::new();
+        let mut encoder = png::Encoder::new(&mut png, 1601, 10000);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().expect("header");
+        {
+            let mut stream = writer.stream_writer_with_size(8192).expect("stream");
+            for _ in 0..10000 {
+                stream.write_all(&[128; 1601 * 4]).expect("row");
+            }
+            stream.finish().expect("finish");
+        }
+        writer.finish().expect("PNG");
+        let cache = room.mail.attachment_cache().expect("managed folder");
+        let path = cache.store("tall.png", &png).expect("source");
+        let raw = format!(
+            "From: bob@example.org\r\nSubject: Tall image\r\nMIME-Version: 1.0\r\nContent-Type: image/png\r\nContent-Transfer-Encoding: base64\r\n\r\n{}",
+            base64::engine::general_purpose::STANDARD.encode(&png)
+        );
+        room.server.add("INBOX", &raw, &[]);
+        room.mail.sync_all(Reach::Suite).await.expect("sync");
+        let message = id_of(&room.mail, "Tall image").await;
+        let rights = torro_ipc::api::RightsTemplate::ReadAndWrite.rights();
+        for author in [DraftAuthor::App, DraftAuthor::Client("owner".into())] {
+            let reach = if author == DraftAuthor::App { Reach::Suite } else { Reach::Client(&rights) };
+            let good = saved(save_draft(&room.mail, reach, draft("Good"), author.clone()).await);
+            let response = super::super::images::handle(
+                &room.mail,
+                reach,
+                &author,
+                Request::PrepareMailImage {
+                    account: ANNA.into(),
+                    source: ImageSource::File { path: path.to_string_lossy().into_owned() },
+                },
+                None,
+            )
+            .await;
+            let Response::MailImage { image } = response else { panic!("prepare: {response:?}") };
+            for source in [
+                ImageSource::Prepared { id: image.id.clone() },
+                ImageSource::File { path: path.to_string_lossy().into_owned() },
+                ImageSource::MailPart { message: message.clone(), part: "0".into() },
+            ] {
+                for id in [None, good.id.clone()] {
+                    let offer = Draft {
+                        id,
+                        attachments: vec![DraftAttachment::Image {
+                            id: "tall@torro".into(),
+                            source: source.clone(),
+                            inline: false,
+                            size: ImageSize::Medium,
+                        }],
+                        ..draft("Must not be filed")
+                    };
+                    let before = drafts_on_server(&room.server);
+                    let lines = room.server.lines().len();
+                    assert_eq!(code(&save_draft(&room.mail, reach, offer, author.clone()).await), "busy");
+                    assert_eq!(drafts_on_server(&room.server), before, "good drafts unchanged");
+                    assert!(!room.server.lines()[lines..].iter().any(|line| line.contains("APPEND")));
+                }
+            }
+            let mut small = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgba8(12, 8).write_to(&mut small, image::ImageFormat::Png).expect("small");
+            let small = cache.store("small.png", small.get_ref()).expect("small source");
+            let offer = Draft {
+                id: good.id,
+                attachments: vec![DraftAttachment::Image {
+                    id: "small@torro".into(),
+                    source: ImageSource::File { path: small.to_string_lossy().into_owned() },
+                    inline: false,
+                    size: ImageSize::Medium,
+                }],
+                ..draft("Recovered")
+            };
+            saved(save_draft(&room.mail, reach, offer, author).await);
+        }
+    }
+
+    #[tokio::test]
     async fn repeated_image_sources_cannot_amplify_a_save_beyond_the_memory_budget() {
         use torro_mail::{ImageSize, ImageSource};
-        // This deliberately fills the process-global reservation budget. Keep other image tests
-        // concurrent without making their success depend on when this stress test releases it.
-        const CHILD: &str = "TORRO_IMAGE_AMPLIFICATION_TEST_CHILD";
-        const TEST: &str = "mail::write::tests::repeated_image_sources_cannot_amplify_a_save_beyond_the_memory_budget";
-        if std::env::var_os(CHILD).is_none() {
-            let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
-                .args([TEST, "--exact", "--test-threads=1"])
-                .env(CHILD, "1")
-                .output()
-                .expect("isolated budget regression");
-            assert!(
-                output.status.success() && String::from_utf8_lossy(&output.stdout).contains(&format!("{TEST} ... ok")),
-                "{}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
+        if isolated_image_test(
+            "mail::write::tests::repeated_image_sources_cannot_amplify_a_save_beyond_the_memory_budget",
+        ) {
             return;
         }
         let room = mailroom().await;
@@ -1968,6 +2208,9 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn sender_size_marker_never_bypasses_normal_image_conversion() {
+        if isolated_image_test("mail::write::tests::sender_size_marker_never_bypasses_normal_image_conversion") {
+            return;
+        }
         use base64::Engine as _;
         use torro_mail::{ImageSize, ImageSource};
         let room = mailroom().await;
@@ -2014,6 +2257,11 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn account_copy_preserves_ram_original_and_checks_both_accounts_and_author() {
+        if isolated_image_test(
+            "mail::write::tests::account_copy_preserves_ram_original_and_checks_both_accounts_and_author",
+        ) {
+            return;
+        }
         use base64::Engine as _;
         use torro_mail::{ImageSize, ImageSource};
         let dir = tempfile::tempdir().expect("temp");
@@ -2096,6 +2344,11 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn images_round_trip_original_size_cids_and_saved_sources_without_extra_original_parts() {
+        if isolated_image_test(
+            "mail::write::tests::images_round_trip_original_size_cids_and_saved_sources_without_extra_original_parts",
+        ) {
+            return;
+        }
         use base64::Engine as _;
         use torro_mail::{ImageSize, ImageSource};
         let room = mailroom().await;

@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use image::{ImageDecoder, ImageReader};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use torro_core::i18n::tr;
-use torro_ipc::mail::{IMAGE_CHUNK_BYTES, MAX_FILE_BYTES, PreparedImage};
+use torro_ipc::mail::{IMAGE_CHUNK_BYTES, ImageReservation, MAX_FILE_BYTES, PreparedImage};
 use torro_ipc::{Request, Response};
 use torro_mail::{Draft, DraftAttachment, ImageSize, ImageSource};
 use torro_mail_imap::mime::OutgoingAttachment;
@@ -27,6 +27,9 @@ const PREVIEW: usize = 256 * 1024;
 // Streaming PNG compression, three scanlines, endian conversion and an 8-KiB IDAT chunk.
 // Encoded output is charged separately; this never scales with image height.
 const ENCODER_SCRATCH: usize = 1024 * 1024;
+// image 0.25.10's two-pass Lanczos sampler retains a RGBA32F vertical frame and the
+// typed horizontal target simultaneously. Each pass's weight Vec is bounded by one edge.
+const FILTER_SCRATCH: usize = 256 * 1024;
 const ORIGINAL: usize = MAX_FILE_BYTES as usize;
 const NO_IMAGE: &str = "The image source is no longer available. Insert it again.";
 const BAD_IMAGE: &str = "The image is invalid or exceeds the image limits.";
@@ -44,17 +47,16 @@ impl ImageStore {
     pub(crate) async fn mime_budget(&self) -> Result<(usize, torro_ipc::mail::ImageReservation), WriteError> {
         let state = self.state.lock().await;
         let limit = state.encoded_budget().map_err(|_| WriteError::Busy)?;
-        let bytes = limit.saturating_mul(2).saturating_add(ORIGINAL + 1024 * 1024);
-        state.room(bytes).map_err(|_| WriteError::Busy)?;
-        let reservation = torro_ipc::mail::ImageReservation::new(bytes).ok_or(WriteError::Busy)?;
+        let bytes =
+            limit.checked_mul(2).and_then(|n| n.checked_add(ORIGINAL + ENCODER_SCRATCH)).ok_or(WriteError::Busy)?;
+        let reservation = state.reserve(bytes).map_err(|_| WriteError::Busy)?;
         Ok((limit, reservation))
     }
 
     /// Conservatively retain output and MIME working space until the complete save is done.
     pub(crate) async fn reserve_output(&self, bytes: usize) -> Result<torro_ipc::mail::ImageReservation, WriteError> {
         let state = self.state.lock().await;
-        state.room(bytes).map_err(|_| WriteError::Busy)?;
-        torro_ipc::mail::ImageReservation::new(bytes).ok_or(WriteError::Busy)
+        state.reserve(bytes).map_err(|_| WriteError::Busy)
     }
 
     fn start_cleanup(&self) {
@@ -110,6 +112,8 @@ impl ImageStore {
 #[derive(Default)]
 struct State {
     entries: HashMap<String, Entry>,
+    #[cfg(test)]
+    worker_gate: Option<Arc<WorkerGate>>,
 }
 
 struct Entry {
@@ -121,6 +125,11 @@ struct Entry {
 }
 
 impl State {
+    fn reserve(&self, bytes: usize) -> Result<ImageReservation, Response> {
+        self.room(bytes)?;
+        ImageReservation::new(bytes).ok_or_else(busy)
+    }
+
     /// The source is read while this state stays locked. Budget raw transfer bytes, the MIME
     /// parser's decoded buffer and the final <=25 MiB copy, plus bounded wire/metadata scratch.
     /// This admits a 25 MiB base64 image even inside a much larger message, without fetching it.
@@ -166,6 +175,109 @@ impl State {
             self.entries.get_mut(id).filter(|e| e.account == account && &e.author == author).ok_or_else(not_found)?;
         entry.touched = Instant::now();
         Ok(entry)
+    }
+}
+
+/// Own the serialization lock, not a borrow from the waiting future. Every blocking source or
+/// image worker returns it with its buffers so cancellation cannot admit a second decoder early.
+pub(crate) struct ImageAdmission {
+    source: Option<ImageReservation>,
+    state: OwnedMutexGuard<State>,
+}
+
+impl ImageAdmission {
+    #[cfg(test)]
+    pub(super) fn pause(&self, stage: &str) {
+        self.state.pause(stage);
+    }
+
+    fn new(state: OwnedMutexGuard<State>) -> Self {
+        Self { source: None, state }
+    }
+
+    fn read_source(mut self) -> Result<(usize, Self), Response> {
+        let limit = self.state.encoded_budget()?;
+        let bytes = limit.checked_mul(2).and_then(|n| n.checked_add(ORIGINAL + ENCODER_SCRATCH)).ok_or_else(busy)?;
+        self.source = Some(self.state.reserve(bytes)?);
+        Ok((limit, self))
+    }
+
+    pub(super) fn retain_source(&mut self, capacity: usize) {
+        if let Some(reservation) = &mut self.source {
+            reservation.shrink_to(capacity);
+        }
+    }
+}
+
+#[cfg(test)]
+pub(super) struct WorkerGate {
+    stage: &'static str,
+    entered: tokio::sync::Notify,
+    release: std::sync::Barrier,
+}
+
+#[cfg(test)]
+impl WorkerGate {
+    pub(super) async fn entered(&self) {
+        self.entered.notified().await;
+    }
+
+    pub(super) fn release(&self) {
+        self.release.wait();
+    }
+}
+
+#[cfg(test)]
+impl ImageStore {
+    pub(super) async fn block_worker(&self, stage: &'static str) -> Arc<WorkerGate> {
+        let gate =
+            Arc::new(WorkerGate { stage, entered: tokio::sync::Notify::new(), release: std::sync::Barrier::new(2) });
+        self.state.lock().await.worker_gate = Some(Arc::clone(&gate));
+        gate
+    }
+}
+
+#[cfg(test)]
+impl State {
+    fn pause(&self, stage: &str) {
+        if let Some(gate) = &self.worker_gate
+            && gate.stage == stage
+        {
+            gate.entered.notify_one();
+            gate.release.wait();
+        }
+    }
+}
+
+struct ResizePlan {
+    width: u32,
+    height: u32,
+    bytes: usize,
+}
+
+impl ResizePlan {
+    fn new(width: u32, height: u32, bytes_per_pixel: usize) -> Result<Self, Response> {
+        if width == 0
+            || height == 0
+            || width > 32768
+            || height > 32768
+            || u64::from(width) * u64::from(height) > 32_000_000
+        {
+            return Err(invalid());
+        }
+        if width <= 1600 {
+            return Ok(Self { width, height, bytes: 0 });
+        }
+        // Match DynamicImage::resize's aspect-ratio rounding, including a one-pixel short edge.
+        let target_height = ((f64::from(height) * (1600.0 / f64::from(width))).round() as u32).max(1);
+        let frame = (width as usize).checked_mul(target_height as usize).and_then(|n| n.checked_mul(16));
+        let target = 1600_usize.checked_mul(target_height as usize).and_then(|n| n.checked_mul(bytes_per_pixel));
+        let bytes = frame
+            .zip(target)
+            .and_then(|(a, b)| a.checked_add(b))
+            .and_then(|n| n.checked_add(FILTER_SCRATCH))
+            .ok_or_else(busy)?;
+        Ok(Self { width: 1600, height: target_height, bytes })
     }
 }
 
@@ -422,30 +534,32 @@ async fn prepare(
         }
         return Ok(Response::MailImage { image });
     }
-    let mut state = mail.images.state.lock().await;
+    let mut state = Arc::clone(&mail.images.state).lock_owned().await;
     state.purge();
     state.slots(author)?;
-    state.room(ORIGINAL + ENCODER_SCRATCH + PREVIEW * 3)?;
     let attachment = match source {
         ImageSource::File { path } => DraftAttachment::File { path },
         ImageSource::MailPart { message, part } => DraftAttachment::MailPart { message, part },
         ImageSource::Prepared { .. } => return Err(not_found()),
     };
-    // The lock reserves the worst-case size before a byte is read. The decoder's transient
-    // allocation is separately bounded at 128 MiB and there is only one decoder.
-    let budget = state.encoded_budget()?;
-    let input =
+    let budget = ImageAdmission::new(state).read_source()?;
+    let (input, admission) =
         write::image_attachment_of(mail, reach, &attachment, author, tools, budget).await.map_err(|e| e.response())?;
-    state.room(input.bytes.capacity().saturating_add(ENCODER_SCRATCH + PREVIEW * 3))?;
     let bytes = Arc::new(input.bytes);
-    let decoding = Arc::clone(&bytes);
-    let image = tokio::task::spawn_blocking(move || describe(&decoding)).await.map_err(|_| invalid())??;
+    let (bytes, image, mut admission) = tokio::task::spawn_blocking(move || {
+        let budget = admission;
+        let source = bytes;
+        let image = describe(&source, &budget.state)?;
+        Ok::<_, Response>((source, image, budget))
+    })
+    .await
+    .map_err(|_| invalid())??;
     let id = super::random_hex(16).map_err(|_| invalid())?;
     let image = PreparedImage { id: id.clone(), ..image };
-    // The new preview is now charged globally; check the actual retained source capacity
-    // again before publishing its lease, even if a future reader changes allocation strategy.
-    state.room(bytes.capacity())?;
-    state.entries.insert(
+    // Convert the source charge into a store entry under the same lock, never count it twice
+    // and never leave it uncharged while describe builds its preview.
+    admission.source.take();
+    admission.state.entries.insert(
         id,
         Entry {
             author: author.clone(),
@@ -467,9 +581,11 @@ async fn upload_image(
     base64: &str,
     finish: bool,
 ) -> Result<Response, Response> {
-    let mut state = mail.images.state.lock().await;
+    let mut state = Arc::clone(&mail.images.state).lock_owned().await;
     state.purge();
-    state.room(IMAGE_CHUNK_BYTES + ENCODER_SCRATCH + PREVIEW * 3)?;
+    let chunk_reservation = state.reserve(IMAGE_CHUNK_BYTES)?;
+    // The store's growing source and the decoded upload chunk coexist until the copy finishes.
+    state.room(IMAGE_CHUNK_BYTES)?;
     let chunk = STANDARD.decode(base64).map_err(|_| invalid())?;
     if chunk.len() > IMAGE_CHUNK_BYTES {
         return Err(invalid());
@@ -512,15 +628,28 @@ async fn upload_image(
     } else {
         return Err(conflict());
     }
+    drop(chunk);
+    drop(chunk_reservation);
     if finish {
         if end != entry.bytes.len() {
             return Err(conflict());
         }
         if entry.ready.is_none() {
             let bytes = Arc::clone(&entry.bytes);
-            let image = tokio::task::spawn_blocking(move || describe(&bytes)).await.map_err(|_| invalid())??;
-            entry.ready = Some(PreparedImage { id: id.clone(), ..image });
+            let admission = ImageAdmission::new(state);
+            let (image, admission) = tokio::task::spawn_blocking(move || {
+                let budget = admission;
+                let source = bytes;
+                let image = describe(&source, &budget.state)?;
+                drop(source);
+                Ok::<_, Response>((image, budget))
+            })
+            .await
+            .map_err(|_| invalid())??;
+            state = admission.state;
+            state.owned(&id, account, author)?.ready = Some(PreparedImage { id: id.clone(), ..image });
         }
+        let entry = state.owned(&id, account, author)?;
         Ok(Response::MailImage { image: entry.ready.clone().ok_or_else(invalid)? })
     } else {
         Ok(Response::MailImageUpload { id, offset: entry.bytes.len() as u64 })
@@ -551,18 +680,17 @@ pub(crate) async fn attachment(
     tools: Option<&Register>,
 ) -> Result<ImageAttachment, WriteError> {
     account(mail, reach, account_id).await.map_err(|_| WriteError::NotFound(NO_IMAGE))?;
-    let mut state = mail.images.state.lock().await;
+    let mut state = Arc::clone(&mail.images.state).lock_owned().await;
     state.purge();
-    let bytes = match source {
+    let (bytes, admission) = match source {
         ImageSource::Prepared { id } => {
             let entry = state.owned(id, account_id, author).map_err(|_| WriteError::NotFound(NO_IMAGE))?;
             if entry.ready.is_none() {
                 return Err(WriteError::NotFound(NO_IMAGE));
             }
-            Arc::clone(&entry.bytes)
+            (Arc::clone(&entry.bytes), ImageAdmission::new(state))
         }
         source => {
-            state.room(ORIGINAL + PREVIEW * 2).map_err(|_| WriteError::Busy)?;
             let input = match source {
                 ImageSource::File { path } => DraftAttachment::File { path: path.clone() },
                 ImageSource::MailPart { message, part } => {
@@ -570,38 +698,42 @@ pub(crate) async fn attachment(
                 }
                 ImageSource::Prepared { .. } => return Err(WriteError::NotFound(NO_IMAGE)),
             };
-            let budget = state.encoded_budget().map_err(|_| WriteError::Busy)?;
-            let input = write::image_attachment_of(mail, reach, &input, author, tools, budget).await?;
-            Arc::new(input.bytes)
+            let budget = ImageAdmission::new(state).read_source().map_err(|_| WriteError::Busy)?;
+            let (input, admission) = write::image_attachment_of(mail, reach, &input, author, tools, budget).await?;
+            (Arc::new(input.bytes), admission)
         }
     };
+    let encoding = admission;
+    let source_bytes = bytes;
     // Reserve before the encoder can copy an Original or allocate its normal output. Moving the
     // charge into the worker also retains it if the caller drops its future during encoding.
-    state
-        .room(
-            ORIGINAL
-                + ENCODER_SCRATCH
-                + if matches!(source, ImageSource::Prepared { .. }) { 0 } else { bytes.capacity() },
-        )
-        .map_err(|_| WriteError::Busy)?;
-    let output = torro_ipc::mail::ImageReservation::new(ORIGINAL + ENCODER_SCRATCH).ok_or(WriteError::Busy)?;
-    let (content, mut output) = tokio::task::spawn_blocking(move || {
-        encode(&bytes, size == ImageSize::Original).map(|content| (content, output))
+    let output = encoding.state.reserve(ORIGINAL + ENCODER_SCRATCH).map_err(|_| WriteError::Busy)?;
+    let (content, mut output, mut admission) = tokio::task::spawn_blocking(move || {
+        // Locals drop in reverse order on errors: buffers first, reservations and lock last.
+        let admission = encoding;
+        let reserved_output = output;
+        let bytes = source_bytes;
+        let content = encode(&bytes, size == ImageSize::Original, &admission.state)?;
+        drop(bytes);
+        Ok((content, reserved_output, admission))
     })
     .await
     .map_err(|_| WriteError::Invalid(BAD_IMAGE))?
-    .map_err(|_| WriteError::Invalid(BAD_IMAGE))?;
+    .map_err(|e: Response| match e {
+        Response::Error { code, .. } if code == "busy" => WriteError::Busy,
+        _ => WriteError::Invalid(BAD_IMAGE),
+    })?;
     output.shrink_to(content.bytes.capacity());
+    admission.source.take();
     // Existing MIME construction clones attachments and may simultaneously retain transfer-
     // encoded Vec capacity, a Bcc copy and parser buffers. Charge a conservative upper bound,
     // rather than allowing repeated CIDs to amplify one source into hundreds of MiB.
     let scratch = content.bytes.capacity().saturating_mul(8).saturating_add(64 * 1024);
-    state.room(scratch).map_err(|_| WriteError::Busy)?;
-    let scratch = torro_ipc::mail::ImageReservation::new(scratch).ok_or(WriteError::Busy)?;
+    let scratch = admission.state.reserve(scratch).map_err(|_| WriteError::Busy)?;
     Ok(ImageAttachment { content, reservations: vec![output, scratch] })
 }
 
-fn decode(bytes: &[u8]) -> Result<(image::DynamicImage, image::ImageFormat), Response> {
+fn decode(bytes: &[u8], state: &State) -> Result<(image::DynamicImage, image::ImageFormat), Response> {
     if bytes.len() > ORIGINAL {
         return Err(invalid());
     }
@@ -624,37 +756,66 @@ fn decode(bytes: &[u8]) -> Result<(image::DynamicImage, image::ImageFormat), Res
         return Err(invalid());
     }
     let orientation = decoder.orientation().map_err(|_| invalid())?;
+    use image::metadata::Orientation;
+    let _rotation = if matches!(
+        orientation,
+        Orientation::Rotate90 | Orientation::Rotate270 | Orientation::Rotate90FlipH | Orientation::Rotate270FlipH
+    ) {
+        let pixels = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(decoder.color_type().bytes_per_pixel() as usize))
+            .ok_or_else(busy)?;
+        Some(state.reserve(pixels)?)
+    } else {
+        None
+    };
     let mut image = image::DynamicImage::from_decoder(decoder).map_err(|_| invalid())?;
     image.apply_orientation(orientation);
     Ok((image, format))
 }
 
-fn describe(bytes: &[u8]) -> Result<PreparedImage, Response> {
-    let _scratch = torro_ipc::mail::ImageReservation::new(ENCODER_SCRATCH + PREVIEW).ok_or_else(busy)?;
-    let (image, _) = decode(bytes)?;
+fn describe(bytes: &[u8], state: &State) -> Result<PreparedImage, Response> {
+    #[cfg(test)]
+    state.pause("describe");
+    // PNG bytes and their base64 string may coexist; the final ImageData has its own charge.
+    let _scratch = state.reserve(ENCODER_SCRATCH + PREVIEW * 3)?;
+    let (image, _) = decode(bytes, state)?;
     let (original_width, original_height) = (image.width(), image.height());
     let width = original_width.min(1600);
     let height = (u64::from(original_height) * u64::from(width) / u64::from(original_width)).max(1) as u32;
-    let mut preview = image.thumbnail(512, 512);
+    let bpp = image.color().bytes_per_pixel() as usize;
+    let mut preview_pixels = state.reserve(512 * 512 * bpp)?;
+    let mut thumbnail = image.thumbnail(512, 512);
     let preview = loop {
         let mut png = Bounded::<PREVIEW>(Cursor::new(Vec::new()));
-        if stream_png(&preview, &mut png).is_ok() {
+        if stream_png(&thumbnail, &mut png).is_ok() {
             break png.0.into_inner();
         }
-        if preview.width() == 1 && preview.height() == 1 {
+        if thumbnail.width() == 1 && thumbnail.height() == 1 {
             return Err(invalid());
         }
-        preview = preview.thumbnail((preview.width() / 2).max(1), (preview.height() / 2).max(1));
+        let (width, height) = ((thumbnail.width() / 2).max(1), (thumbnail.height() / 2).max(1));
+        let next_pixels = state.reserve(width as usize * height as usize * bpp)?;
+        thumbnail = thumbnail.thumbnail(width, height);
+        preview_pixels = next_pixels;
     };
+    drop(thumbnail);
+    drop(preview_pixels);
     let preview: torro_ipc::mail::ImageData = STANDARD.encode(preview).into();
+    // Transfer the already-budgeted base64 capacity into its shared payload charge under the
+    // same guard. No encoder, PNG output or thumbnail remains alive at this point.
+    drop(_scratch);
+    state.room(preview.len())?;
     if !preview.reserve() {
         return Err(busy());
     }
     Ok(PreparedImage { id: String::new(), width, height, original_width, original_height, preview })
 }
 
-fn encode(bytes: &[u8], original: bool) -> Result<OutgoingAttachment, Response> {
-    let (mut image, format) = decode(bytes)?;
+fn encode(bytes: &[u8], original: bool, state: &State) -> Result<OutgoingAttachment, Response> {
+    #[cfg(test)]
+    state.pause("encode");
+    let (decoded, format) = decode(bytes, state)?;
     // MIME size markers are sender-controlled UI metadata, never evidence of normalization.
     // Only an explicit Original choice may preserve source bytes without conversion.
     if original {
@@ -673,8 +834,11 @@ fn encode(bytes: &[u8], original: bool) -> Result<OutgoingAttachment, Response> 
             image_size: None,
         });
     }
-    if image.width() > 1600 {
-        image = image.resize(1600, u32::MAX, image::imageops::FilterType::Lanczos3);
+    let plan = ResizePlan::new(decoded.width(), decoded.height(), decoded.color().bytes_per_pixel() as usize)?;
+    let _resampling = state.reserve(plan.bytes)?;
+    let mut image = decoded;
+    if plan.bytes != 0 {
+        image = image.resize_exact(plan.width, plan.height, image::imageops::FilterType::Lanczos3);
     }
     let mut out = Bounded::<ORIGINAL>(Cursor::new(Vec::new()));
     let kind = if format == image::ImageFormat::Jpeg {
@@ -775,6 +939,165 @@ impl<const LIMIT: usize> std::io::Seek for Bounded<LIMIT> {
 mod tests {
     use super::*;
 
+    fn decode(bytes: &[u8]) -> Result<(image::DynamicImage, image::ImageFormat), Response> {
+        super::decode(bytes, &State::default())
+    }
+
+    fn describe(bytes: &[u8]) -> Result<PreparedImage, Response> {
+        super::describe(bytes, &State::default())
+    }
+
+    fn encode(bytes: &[u8], original: bool) -> Result<OutgoingAttachment, Response> {
+        let state = State::default();
+        let _output = state.reserve(ORIGINAL + ENCODER_SCRATCH)?;
+        super::encode(bytes, original, &state)
+    }
+
+    fn isolated(name: &str) -> bool {
+        if std::env::var("TORRO_IMAGE_TEST_CHILD").as_deref() == Ok(name) {
+            return false;
+        }
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([name, "--exact", "--test-threads=1"])
+            .env("TORRO_IMAGE_TEST_CHILD", name)
+            .output()
+            .expect("isolated image regression");
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains(&format!("{name} ... ok")),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        true
+    }
+
+    // Generate the reproducer scanline by scanline: the fixture must not itself allocate a frame.
+    fn tall_png() -> Vec<u8> {
+        use std::io::Write as _;
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, 1601, 10000);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().expect("header");
+        {
+            let mut stream = writer.stream_writer_with_size(8192).expect("stream");
+            let row = vec![128; 1601 * 4];
+            for _ in 0..10000 {
+                stream.write_all(&row).expect("row");
+            }
+            stream.finish().expect("finish");
+        }
+        writer.finish().expect("PNG");
+        bytes
+    }
+
+    #[test]
+    fn tall_rgba_lanczos_is_refused_before_resampling_but_original_survives() {
+        if isolated("mail::images::tests::tall_rgba_lanczos_is_refused_before_resampling_but_original_survives") {
+            return;
+        }
+        let bytes = tall_png();
+        let (decoded, _) = decode(&bytes).expect("valid source within decoder limits");
+        assert_eq!((decoded.width(), decoded.height()), (1601, 10000));
+        drop(decoded);
+        assert!(matches!(encode(&bytes, false), Err(Response::Error { code, .. }) if code == "busy"));
+        assert_eq!(encode(&bytes, true).expect("original").bytes, bytes);
+    }
+
+    #[test]
+    fn resize_plan_checks_dimensions_arithmetic_and_exact_shared_budget() {
+        if isolated("mail::images::tests::resize_plan_checks_dimensions_arithmetic_and_exact_shared_budget") {
+            return;
+        }
+        for bpp in [1, 2, 3, 4, 6, 8] {
+            for (width, height, expected) in
+                [(1600, 123, (1600, 123)), (1601, 123, (1600, 123)), (32768, 1, (1600, 1)), (1601, 10000, (1600, 9994))]
+            {
+                let plan = ResizePlan::new(width, height, bpp).expect("plan");
+                assert_eq!((plan.width, plan.height), expected);
+                assert_eq!(
+                    plan.bytes,
+                    if width <= 1600 {
+                        0
+                    } else {
+                        16 * width as usize * expected.1 as usize + bpp * 1600 * expected.1 as usize + FILTER_SCRATCH
+                    }
+                );
+            }
+        }
+        assert!(matches!(ResizePlan::new(1601, 1, usize::MAX), Err(Response::Error { code, .. }) if code == "busy"));
+        for (w, h) in [(0, 1), (1, 0), (32769, 1), (8001, 4000)] {
+            assert!(matches!(ResizePlan::new(w, h, 4), Err(Response::Error { code, .. }) if code == "error"));
+        }
+        let plan = ResizePlan::new(1800, 900, 8).expect("plan");
+        let mut state = State::default();
+        state.entries.insert(
+            "preload".into(),
+            Entry {
+                author: DraftAuthor::App,
+                account: "mail:a".into(),
+                touched: Instant::now(),
+                bytes: Arc::new(vec![0; 1024 * 1024]),
+                ready: None,
+            },
+        );
+        let pressure = state.reserve(MEMORY - state.used() - plan.bytes).expect("pressure");
+        let exact = state.reserve(plan.bytes).expect("exact remaining budget");
+        drop(exact);
+        assert!(matches!(state.reserve(plan.bytes + 1), Err(Response::Error { code, .. }) if code == "busy"));
+        drop(pressure);
+        assert!(state.reserve(plan.bytes).is_ok(), "temporary reservations are reusable");
+    }
+
+    #[test]
+    fn orientation_and_thumbnail_frames_are_admitted_before_allocation() {
+        if isolated("mail::images::tests::orientation_and_thumbnail_frames_are_admitted_before_allocation") {
+            return;
+        }
+        let source = image::DynamicImage::ImageRgba16(image::ImageBuffer::from_fn(17, 1801, |x, y| {
+            image::Rgba([(x * 211 + y * 37) as u16, y as u16, x as u16, (y * 31) as u16])
+        }));
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, source.width(), source.height());
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Sixteen);
+        let mut writer = encoder.write_header().expect("header");
+        // Little-endian TIFF: one SHORT orientation=6 (rotate 90 degrees).
+        let exif = b"II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+        writer.write_chunk(png::chunk::ChunkType(*b"eXIf"), exif).expect("orientation");
+        let samples: Vec<_> =
+            source.as_bytes().chunks_exact(2).flat_map(|s| u16::from_ne_bytes([s[0], s[1]]).to_be_bytes()).collect();
+        writer.write_image_data(&samples).expect("pixels");
+        writer.finish().expect("PNG");
+        let frame = 17 * 1801 * 8;
+        let state = State::default();
+        let pressure = state.reserve(MEMORY - frame + 1).expect("rotation pressure");
+        assert!(matches!(super::decode(&bytes, &state), Err(Response::Error { code, .. }) if code == "busy"));
+        drop(pressure);
+        let mut expected = source;
+        expected.apply_orientation(image::metadata::Orientation::Rotate90);
+        let (decoded, _) = decode(&bytes).expect("oriented");
+        assert_eq!(decoded.as_bytes(), expected.as_bytes());
+        assert_eq!((decoded.width(), decoded.height()), (1801, 17));
+        drop(decoded);
+        let expected = expected.resize(1600, u32::MAX, image::imageops::FilterType::Lanczos3);
+        let normal = encode(&bytes, false).expect("rotate then reduce");
+        let restored = image::load_from_memory(&normal.bytes).expect("normal");
+        assert_eq!(restored.color(), expected.color());
+        assert_eq!(restored.as_bytes(), expected.as_bytes());
+        assert_eq!(encode(&bytes, true).expect("original").bytes, bytes);
+
+        let mut small = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba16(5, 3).write_to(&mut small, image::ImageFormat::Png).expect("small");
+        let pressure =
+            state.reserve(MEMORY - (ENCODER_SCRATCH + PREVIEW * 3) - 512 * 512 * 8 + 1).expect("thumbnail pressure");
+        assert!(
+            matches!(super::describe(small.get_ref(), &state), Err(Response::Error { code, .. }) if code == "busy")
+        );
+        drop(pressure);
+        assert!(describe(small.get_ref()).is_ok(), "thumbnail budget reusable");
+    }
+
     #[test]
     fn encoder_small_trailer_never_doubles_capacity_beyond_its_reservation() {
         use std::io::Write as _;
@@ -795,6 +1118,9 @@ mod tests {
 
     #[test]
     fn streamed_png_preserves_all_supported_sample_depths_and_alpha() {
+        if isolated("mail::images::tests::streamed_png_preserves_all_supported_sample_depths_and_alpha") {
+            return;
+        }
         use image::{DynamicImage, ImageBuffer};
         let bytes = [0_u8, 1, 0x12, 0x80, 0xfe, 0xff];
         let words = [0_u16, 1, 0x1234, 0x80ff, 0xff00, 0xffff];
@@ -833,10 +1159,42 @@ mod tests {
             let prepared = describe(&png).expect("preview also accepts this colour type");
             assert!(!prepared.preview.is_empty());
         }
+        let b = |x: u32, y: u32| ((x * 37 + y * 103) % 256) as u8;
+        let w = |x: u32, y: u32| ((x * 7717 + y * 2017) % 65536) as u16;
+        let images = [
+            DynamicImage::ImageLuma8(ImageBuffer::from_fn(1801, 17, |x, y| image::Luma([b(x, y)]))),
+            DynamicImage::ImageLumaA8(ImageBuffer::from_fn(1801, 17, |x, y| image::LumaA([b(x, y), b(y, x)]))),
+            DynamicImage::ImageRgb8(ImageBuffer::from_fn(1801, 17, |x, y| image::Rgb([b(x, y), b(y, x), b(x + y, y)]))),
+            DynamicImage::ImageRgba8(ImageBuffer::from_fn(1801, 17, |x, y| {
+                image::Rgba([b(x, y), b(y, x), b(x + y, y), b(x, x + y)])
+            })),
+            DynamicImage::ImageLuma16(ImageBuffer::from_fn(1801, 17, |x, y| image::Luma([w(x, y)]))),
+            DynamicImage::ImageLumaA16(ImageBuffer::from_fn(1801, 17, |x, y| image::LumaA([w(x, y), w(y, x)]))),
+            DynamicImage::ImageRgb16(ImageBuffer::from_fn(1801, 17, |x, y| {
+                image::Rgb([w(x, y), w(y, x), w(x + y, y)])
+            })),
+            DynamicImage::ImageRgba16(ImageBuffer::from_fn(1801, 17, |x, y| {
+                image::Rgba([w(x, y), w(y, x), w(x + y, y), w(x, x + y)])
+            })),
+        ];
+        for image in images {
+            let mut source = Cursor::new(Vec::new());
+            image.write_to(&mut source, image::ImageFormat::Png).expect("source");
+            let expected = image.resize(1600, u32::MAX, image::imageops::FilterType::Lanczos3);
+            let normal = encode(source.get_ref(), false).expect("reduce");
+            let restored = image::load_from_memory(&normal.bytes).expect("reduced PNG");
+            assert_eq!(restored.color(), expected.color());
+            assert_eq!((restored.width(), restored.height()), (expected.width(), expected.height()));
+            assert_eq!(restored.as_bytes(), expected.as_bytes(), "same Lanczos samples, depth and variable alpha");
+            assert_eq!(encode(source.get_ref(), true).expect("original").bytes, *source.get_ref());
+        }
     }
 
     #[test]
     fn png_encoding_streams_bounded_idat_chunks_instead_of_staging_a_whole_frame() {
+        if isolated("mail::images::tests::png_encoding_streams_bounded_idat_chunks_instead_of_staging_a_whole_frame") {
+            return;
+        }
         let mut pixels = image::RgbaImage::new(192, 192);
         let mut random = 42_u32;
         for pixel in pixels.as_mut() {
@@ -870,6 +1228,9 @@ mod tests {
 
     #[test]
     fn normal_reduces_without_upscaling_and_original_is_exact() {
+        if isolated("mail::images::tests::normal_reduces_without_upscaling_and_original_is_exact") {
+            return;
+        }
         let bytes = png(1800, 900);
         let normal = encode(&bytes, false).expect("normal");
         let (reduced, _) = decode(&normal.bytes).expect("decode");
@@ -904,6 +1265,73 @@ mod tests {
         state.entries.get_mut(&id).expect("entry").touched -= Duration::from_secs(3601);
         state.purge();
         assert!(state.entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_prepare_keeps_source_charged_under_store_preload() {
+        if isolated("mail::images::tests::cancelled_prepare_keeps_source_charged_under_store_preload") {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("source.png");
+        let mut bytes = png(10, 10);
+        bytes.resize(24 * 1024 * 1024, 0);
+        std::fs::write(&path, &bytes).expect("source");
+        drop(bytes);
+        let mail = MailService::without_home();
+        let source = ImageSource::File { path: path.to_string_lossy().into_owned() };
+        for _ in 0..2 {
+            prepare(&mail, Reach::Suite, &DraftAuthor::App, "mail:a", source.clone(), None).await.expect("preload");
+        }
+        let retained = mail.images.state.lock().await.used();
+        let held = torro_ipc::mail::held_image_bytes();
+        let gate = mail.images.block_worker("describe").await;
+        let mut work = Box::pin(prepare(&mail, Reach::Suite, &DraftAuthor::App, "mail:a", source.clone(), None));
+        tokio::select! {
+            () = gate.entered() => {},
+            result = &mut work => panic!("worker did not block: {result:?}"),
+        }
+        drop(work);
+        let locked = mail.images.state.try_lock().is_err();
+        let charged = torro_ipc::mail::held_image_bytes() - held;
+        gate.release();
+        let mut state =
+            tokio::time::timeout(Duration::from_secs(10), mail.images.state.lock()).await.expect("worker ended");
+        assert!(locked, "cancellation must not admit another decoder");
+        assert_eq!(charged, 24 * 1024 * 1024, "actual source capacity remains charged while describe runs");
+        assert_eq!(state.used(), retained, "cancelled preparation publishes no lease");
+        assert_eq!(torro_ipc::mail::held_image_bytes(), held, "discarded result releases source and preview");
+        state.worker_gate = None;
+        drop(state);
+        prepare(&mail, Reach::Suite, &DraftAuthor::App, "mail:a", source, None).await.expect("budget reusable");
+    }
+
+    #[tokio::test]
+    async fn source_worker_result_owns_its_admission_until_consumed() {
+        if isolated("mail::images::tests::source_worker_result_owns_its_admission_until_consumed") {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("source.png");
+        std::fs::write(&path, png(12, 8)).expect("source");
+        let mail = MailService::without_home();
+        let state = Arc::clone(&mail.images.state).lock_owned().await;
+        let budget = ImageAdmission::new(state).read_source().expect("read admission");
+        let result = write::image_attachment_of(
+            &mail,
+            Reach::Suite,
+            &DraftAttachment::File { path: path.to_string_lossy().into_owned() },
+            &DraftAuthor::App,
+            None,
+            budget,
+        )
+        .await
+        .expect("worker result");
+        assert!(mail.images.state.try_lock().is_err(), "the returned result still owns serialization");
+        assert_eq!(torro_ipc::mail::held_image_bytes(), result.0.bytes.capacity());
+        drop(result);
+        assert!(mail.images.state.try_lock().is_ok());
+        assert_eq!(torro_ipc::mail::held_image_bytes(), 0);
     }
 
     #[tokio::test]
