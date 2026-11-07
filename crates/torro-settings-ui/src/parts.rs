@@ -182,12 +182,64 @@ pub fn segmented_row<'a, M: Clone + 'a>(
     options: Vec<(String, M)>,
     active: usize,
 ) -> Element<'a, M> {
-    let words: Vec<String> = options.iter().map(|(word, _)| word.clone()).collect();
+    let mut rows = segmented_rows(vec![SegmentedRow { label, detail, options, active }]);
+    rows.pop().unwrap_or_else(|| iced::widget::space().into())
+}
+
+/// One row of [`segmented_rows`]: what [`segmented_row`] takes.
+pub struct SegmentedRow<'a, M> {
+    /// The row's name.
+    pub label: &'a str,
+    /// The line under the name, if any.
+    pub detail: Option<String>,
+    /// The words of the segments and what each sends.
+    pub options: Vec<(String, M)>,
+    /// The segment chosen.
+    pub active: usize,
+}
+
+/// Several [`segmented_row`]s that decide together (design review of #554): all beside their labels
+/// in one column as wide as the widest control, or all under them, so the controls of a page stand
+/// on one axis instead of some beside and some under their labels.
+pub fn segmented_rows<'a, M: Clone + 'a>(rows: Vec<SegmentedRow<'a, M>>) -> Vec<Element<'a, M>> {
+    let slot = rows
+        .iter()
+        .map(|row| {
+            let words: Vec<&str> = row.options.iter().map(|(word, _)| word.as_str()).collect();
+            widgets::segmented_width(&words)
+        })
+        .fold(0.0, f32::max);
+    let texts: Vec<(&'a str, Option<String>)> = rows.iter().map(|row| (row.label, row.detail.clone())).collect();
+    rows.into_iter()
+        .map(|SegmentedRow { label, detail, options, active }| {
+            let texts = texts.clone();
+            iced::widget::responsive(move |room| {
+                let peers = texts.iter().map(|(label, detail)| (*label, detail.as_deref()));
+                let column = widgets::segment_column(slot, peers, room.width);
+                widgets::segment_row(label, detail.clone(), widgets::segmented(options.clone(), active), column)
+            })
+            .height(iced::Length::Shrink)
+            .into()
+        })
+        .collect()
+}
+
+/// A settings row whose control is `width` wide (issue #554): `beside` – the whole row, the control
+/// at its end – while `label` and `detail` fit beside it (`widgets::segment_column`), else the label
+/// and detail with `under` on a line of its own below them. For a row whose control holds segments
+/// next to something else (an address field, "Remove"), where [`segmented_row`] does not fit.
+pub fn stacking_row<'a, M: 'a>(
+    label: &'a str,
+    detail: Option<String>,
+    width: f32,
+    beside: impl Fn() -> Element<'a, M> + 'a,
+    under: impl Fn() -> Element<'a, M> + 'a,
+) -> Element<'a, M> {
     iced::widget::responsive(move |room| {
-        let labels: Vec<&str> = words.iter().map(String::as_str).collect();
-        let slot = widgets::segmented_width(&labels);
-        let column = widgets::segment_column(slot, [(label, detail.as_deref())], room.width);
-        widgets::segment_row(label, detail.clone(), widgets::segmented(options.clone(), active), column)
+        match widgets::segment_column(width, [(label, detail.as_deref())], room.width) {
+            Some(_) => beside(),
+            None => widgets::segment_row(label, detail.clone(), under(), None),
+        }
     })
     .height(iced::Length::Shrink)
     .into()

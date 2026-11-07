@@ -3212,7 +3212,7 @@ pub mod reading {
     use torro_gui::widgets::{Align, Dropdown, DropdownEvent, MenuItem, MenuSection};
 
     use super::*;
-    use crate::parts::{setting_row, switch};
+    use crate::parts::{SegmentedRow, setting_row, switch};
 
     const SIGNATURE_LINES: f32 = 8.0;
 
@@ -3395,11 +3395,29 @@ pub mod reading {
         let colors = COLOR_CHOICES.iter().map(|choice| (choice.to_string(), Message::Colors(choice.0))).collect();
         let coloured = COLOR_CHOICES.iter().position(|choice| choice.0 == settings.mail_appearance).unwrap_or(0);
         let logos = switch(settings.mail_sender_logos, Message::Logos);
+        let accounts = senders(data);
+        let chosen = chosen_sender(state, data, &accounts);
+        let compose =
+            chosen.as_ref().and_then(|_| account(state, data)).and_then(|account| account.mail.as_ref()).map(|mail| {
+                let options =
+                    COMPOSE_CHOICES.iter().map(|choice| (choice.to_string(), Message::Compose(choice.0))).collect();
+                let active = COMPOSE_CHOICES.iter().position(|choice| choice.0 == mail.settings.format).unwrap_or(0);
+                SegmentedRow { label: tr("Write new mail as"), detail: None, options, active }
+            });
+        // The segments of both groups decide together (design review of #554): all beside their
+        // names or all under them, on one axis.
+        let mut segmented = vec![
+            SegmentedRow { label: tr("Show mail as"), detail: None, options: show, active: shown },
+            SegmentedRow { label: tr("Mail colors"), detail: None, options: colors, active: coloured },
+        ];
+        segmented.extend(compose);
+        let mut segmented = crate::parts::segmented_rows(segmented).into_iter();
+        let (show_row, colors_row, compose_row) = (segmented.next(), segmented.next(), segmented.next());
         let group = widgets::group(
             tr("Reading"),
             vec![
-                crate::parts::segmented_row(tr("Show mail as"), None, show, shown),
-                crate::parts::segmented_row(tr("Mail colors"), None, colors, coloured),
+                show_row.unwrap_or_else(|| iced::widget::space().into()),
+                colors_row.unwrap_or_else(|| iced::widget::space().into()),
                 // Issue #453: the switch is on unless turned off, and it reaches out to senders' domains.
                 setting_row(
                     None,
@@ -3414,16 +3432,8 @@ pub mod reading {
             None,
         );
         let mut blocks = vec![group];
-        let accounts = senders(data);
-        if let Some(chosen) = chosen_sender(state, data, &accounts) {
+        if let Some(chosen) = chosen {
             let sender = state.menus.button(Menu::Sender, chosen.label, Message::Menus);
-            let mail = account(state, data).and_then(|account| account.mail.as_ref());
-            let compose = mail.map(|mail| {
-                let options =
-                    COMPOSE_CHOICES.iter().map(|choice| (choice.to_string(), Message::Compose(choice.0))).collect();
-                let active = COMPOSE_CHOICES.iter().position(|choice| choice.0 == mail.settings.format).unwrap_or(0);
-                (options, active)
-            });
             let signature = text_editor(&state.signature)
                 .on_action(Message::Signature)
                 .font(typo::body().font)
@@ -3452,8 +3462,8 @@ pub mod reading {
             ]
             .spacing(space::s());
             let mut rows = vec![setting_row(None, tr("Default sender address"), None, sender)];
-            if let Some((options, active)) = compose {
-                rows.push(crate::parts::segmented_row(tr("Write new mail as"), None, options, active));
+            if let Some(compose) = compose_row {
+                rows.push(compose);
                 rows.push(
                     container(
                         column![typo::text(typo::body_strong(), tr("Signature")), toolbar, signature, controls]
