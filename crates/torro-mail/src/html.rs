@@ -282,9 +282,9 @@ pub fn prepare_paste(html: Option<&str>, text: Option<&str>) -> Result<Paste, Pa
     let normalized = paste_html(html.unwrap_or_default())?;
     let plain = text.map(clean_text).unwrap_or_else(|| to_text(&normalized));
     let plain_markup = paste_plain_markup(&plain);
-    let mut markup =
-        if html.is_some_and(|s| !s.trim().is_empty()) { to_markup(&normalized).0 } else { plain_markup.clone() };
-    if html.is_some() && !markup.is_empty() {
+    let uses_html = html.is_some_and(|s| !s.trim().is_empty());
+    let mut markup = if uses_html { to_markup(&normalized).0 } else { plain_markup.clone() };
+    if uses_html && !markup.is_empty() {
         // A clipboard insertion is a substring: preserve whitespace separating existing words.
         let edges = text.map(str::to_owned).unwrap_or_else(|| text_of(&parse(&normalized)));
         if !edges.trim().is_empty() {
@@ -1371,6 +1371,11 @@ mod tests {
         );
         let paste = super::prepare_paste(Some(" <i>world</i> "), None).expect("HTML-only");
         assert_eq!(paste.markup, " *world* ");
+        for html in ["", " \n"] {
+            let paste = super::prepare_paste(Some(html), Some(" hello ")).expect("text alternative");
+            assert_eq!(paste.markup, " hello ");
+            assert!(!paste.formatted);
+        }
     }
 
     #[test]

@@ -2443,18 +2443,18 @@ impl<S: ComposeSource + 'static> Window<S> {
                     other => other,
                 };
                 let enter = matches!(action, text_editor::Action::Edit(Edit::Enter));
-                if enter && self.formatted() && continue_list(&mut self.body) {
-                    self.touch();
-                    return Task::none();
-                }
                 let edits = action.is_edit();
                 let old = self.body.text();
                 let cursor = self.body.cursor();
-                self.body.perform(action);
+                let before = edits.then(|| (self.body.text_bytes(), self.body.html(None).len()));
+                if !(enter && self.formatted() && continue_list(&mut self.body)) {
+                    self.body.perform(action);
+                }
                 if edits {
-                    if self.body.text_bytes() > torro_ipc::mail::MAX_BODY_BYTES
-                        || self.body.html(None).len() > torro_ipc::mail::MAX_BODY_BYTES
-                    {
+                    let now = (self.body.text_bytes(), self.body.html(None).len());
+                    let fits = now.0 <= torro_ipc::mail::MAX_BODY_BYTES && now.1 <= torro_ipc::mail::MAX_BODY_BYTES;
+                    let shrinks = before.is_some_and(|before| now.0 <= before.0 && now.1 <= before.1 && now != before);
+                    if !fits && !shrinks {
                         *self.body = Content::with_text(&old);
                         self.body.move_to(cursor);
                         self.notice = Some(Notice::plain(tr("The message is too large to paste more text.")));
@@ -6020,6 +6020,14 @@ mod tests {
         assert!(!window.sending && window.after == After::Nothing);
         let _ = window.update(Message::Tick(later()));
         assert!(window.saving.is_none(), "oversized restored text needs shortening, not an endless save wait");
+        for length in [1_199_999, 1_199_998] {
+            let _ = window.update(Message::Body(text_editor::Action::Edit(Edit::Backspace)));
+            assert_eq!(
+                window.body.text().len(),
+                length,
+                "shortening must work one character at a time above the limit"
+            );
+        }
     }
 
     #[test]
