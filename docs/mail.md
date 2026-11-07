@@ -139,24 +139,45 @@ Logo-Suchdienst. Kontaktfotos sind nicht Teil dieser Auswahl.
 
 1. Das SVG aus `l=` des DNS-Eintrags `default._bimi.<domain>` (`v=BIMI1`), nur bei durchgesetztem DMARC
    (`p=quarantine` oder `p=reject`, `pct` fehlt oder ist 100).
-2. `https://<domain>/apple-touch-icon.png`.
-3. Die eigene Startseite, auch nach Weiterleitung auf eine Unterdomain: zuerst Touch-Icons nach Größe, dann
-   SVG-Icons, dann PNG-Icons nach Größe. Bei gleicher Größe gilt die Reihenfolge im Dokument. Höchstens vier
-   dieser Seitenkandidaten werden versucht. Ein ungültiges, leeres oder unsicheres Bild wird übersprungen;
-   bleibt keines übrig, gibt es kein Logo.
+2. Ein SVG-Icon aus dem Kopf der eigenen Startseite, auch nach Weiterleitung auf eine Unterdomain: Das
+   veröffentlichte Markenmotiv bekommt Vorrang vor einem quadratischen App-/Touch-Symbol. Nach Größe,
+   bei Gleichstand in Dokumentreihenfolge; keine Sonderregel für einzelne Marken.
+3. `https://<domain>/apple-touch-icon.png`, danach die übrigen Seitenkandidaten: Touch-Icons und PNG-Icons,
+   jeweils nach Größe, bei Gleichstand in Dokumentreihenfolge. Für die Seitenkandidaten zusammen (einschließlich
+   SVGs) gilt ein Budget von vier. Ungültige, leere oder unsichere Bilder werden übersprungen; bleibt keines
+   übrig, gibt es kein Logo.
 
 Nur die Domain und von ihr benannte Adressen werden gefragt, auch eigene CDNs. Jeder Abruf und jede der höchstens
 drei Weiterleitungen braucht HTTPS und öffentliche DNS-Adressen, ohne Proxy, mit kurzen Zeit- und Bytegrenzen.
 SVGs mit Skripten, Entitäten, Fremdobjekten oder eingebetteten/externen Bildern werden abgelehnt. Rasterbilder
 (PNG, JPEG, WebP, GIF) werden größen- und speicherbegrenzt dekodiert.
+Vom HTML werden höchstens 512 KiB gelesen; am schließenden `head`-Tag endet das Lesen vorzeitig. Der übrige Seiteninhalt
+wird nicht benötigt. Eine große Startseite kann so ihr Logo nennen, ohne das Lese-Budget zu erhöhen.
+Das Kopfende wird mit dem bereits vorhandenen HTML-Tokenizer erkannt, nicht als Teilstring in Kommentaren,
+Script-/Style-Text oder Attributen. Die Verarbeitung erfolgt in kleinen Portionen mit derselben absoluten
+Anfragefrist (20 Sekunden, einschließlich Netzwartezeit). Der Tokenizer erhält höchstens 512 Bytes je Schritt;
+ohne echten Tokenfortschritt sind höchstens 16 KiB erlaubt. Überlange einzelne Tags/Kommentare werden deshalb
+konservativ abgelehnt, damit viele Attribute keine
+unbegrenzte Parserarbeit verursachen. Die Bild-Lesegrenzen gelten unverändert unabhängig davon.
 
 **Motiv statt Außenrand:** SVGs werden proportional mit längster Kante 512 Pixel transparent gerastert.
 Transparente und nahezu weiße Außenränder zählen nicht zum Motiv: Ein Pixel zählt bei ursprünglichem Alpha >8
-und mindestens einem Farbkanal <243 nach Verrechnung auf Weiß. Das begrenzende Rechteck dieses Motivs wird
+und mehr als zwölf Stufen Abstand zur Hintergrundfarbe in mindestens einem RGB-Kanal nach Verrechnung auf den
+Hintergrund (bei Weiß entspricht das <243). Das begrenzende Rechteck dieses Motivs wird
 zentriert; seine äußerste Pixelfläche passt proportional in Radius 57 eines weißen 128-Pixel-Kreises.
 Runde Motive werden dadurch größer als flächige Quadrate; breite und hohe Rechtecke bleiben vollständig.
-Dunkle oder farbige Hintergründe sind Inhalt und bleiben erhalten, ebenso weiße Details innerhalb des Motivs.
-Es gibt weder Verzerrung noch Umfärbung noch eine Sondergröße je Quelle. Ein Bild ohne Motiv zählt als fehlend.
+**Runde Trägerfläche statt Quadrat im Kreis:** Bei einem deckenden, annähernd quadratischen Bild (höchstens
+zehn Prozent Seitenunterschied) kann eine eindeutig gleichmäßige äußere Randfarbe den ganzen Avatar-Kreis
+füllen. Dafür wird der vollständige äußere Streifen geprüft (1/64 der kurzen Kante, mindestens ein Pixel):
+Alpha mindestens 247, maximal zwölf Stufen Farbabweichung je Kanal. Außerdem muss ein deutlich abgesetztes
+Motiv vorhanden sein (Kontrast >32, mindestens vier Pixel und 0,5 Prozent der Bildfläche). Dann wird nur das
+Motiv proportional in den sicheren Kreis eingepasst; die Randfarbe wird als runde Trägerfläche weitergeführt.
+So bleibt etwa ein heller Globus mit farbigem Ring auf Schwarz groß und vollständig, statt als schwarzes
+Quadrat in einem weißen Kreis zu stehen. Kein Motiv wird freigestellt oder umgefärbt. Transparente Grafiken,
+Fotos, uneindeutige Ränder, bloße Farbflächen und echte Rechteckformen fallen auf die konservative Darstellung
+auf Weiß zurück. Eine schwarze rechteckige Marke auf weißem Grund bleibt deshalb rechteckig und vollständig.
+Weiße Details innerhalb eines Motivs bleiben erhalten. Es gibt keine Sondergröße je Quelle; ein Bild ohne
+Motiv zählt als fehlend.
 
 **Ersatzanzeige:** Gesendete Mail zeigt weiterhin den Empfänger-Kreis, unerwünschte Mail ihr Warnsymbol.
 Sonst hat ein vorhandenes Logo Vorrang vor Kategoriezeichen, Personenzeichen und Umschlag. Ohne geprüfte
@@ -165,7 +186,7 @@ Einstellung bleibt derselbe bisherige Ersatzkreis. API `mail.get_sender_logo` / 
 lesen nur den lokalen Cache und liefern Base64-PNG 128×128 oder `not-found`; der Kontenzugriff wird vorher geprüft.
 
 **Cache und Erneuerung:** Originalbilder werden nicht gespeichert. Vorhandene positive Cache-Einträge ohne
-aktuelle Aufbereitungsrevision werden beim Laden eines laufberechtigten Mailkontos im Hintergrund erneuert,
+aktuelle Aufbereitungsrevision (2: Quellenfolge und runde Trägerflächen) werden beim Laden eines laufberechtigten Mailkontos im Hintergrund erneuert,
 auch ohne neue Mail. Pausierte/ausgeschaltete Mail und fehlendes Passwort, Cache-Verzeichnis oder Home lösen
 das nicht aus. Die vorhandene Queue fragt eine Domain nach der anderen mit einer Sekunde Abstand. Ein
 verwendbares Altbild bleibt bis zum Ergebnis und offline erhalten. Offline wird frühestens nach einer Stunde

@@ -9,9 +9,10 @@
 //!    only while the domain's DMARC record says `p=quarantine` or `p=reject` for all its mail (no
 //!    `pct` below 100), as the mail programs that show BIMI require. Its certificate (`a=`) is not
 //!    checked (decision 2 of the plan): the website's symbol never has one either.
-//! 2. `https://<domain>/apple-touch-icon.png`.
-//! 3. The domain's start page, when it stays on the domain (or a domain below it): the largest
-//!    `apple-touch-icon` it names, else an SVG `icon`, else a PNG `icon`.
+//! 2. An SVG `icon` named by the domain's start page, when it stays on the domain (or a domain below
+//!    it). Only its bounded HTML head is needed, not a potentially large marketing page.
+//! 3. `https://<domain>/apple-touch-icon.png`, then the remaining page candidates: touch icons and
+//!    PNG icons, largest first. Ties keep document order; at most four page candidates in total.
 //!
 //! Only the domain itself and the addresses its own BIMI record or start page name are asked
 //! (decision 3: PayPal, Amazon or GitHub keep their logos on CDNs of their own), never a service in
@@ -24,8 +25,10 @@
 //! foreign object or a picture is refused whole. A raster picture (at most [`RASTER_MAX_BYTES`],
 //! [`RASTER_MAX_PIXELS`] on each side when decoded, at least [`RASTER_MIN_PIXELS`]) is decoded within
 //! limits. Both have transparent/near-white outer padding removed; their content pixel areas fit
-//! proportionally inside radius 57, keeping even rectangular corners. Both are drawn on a
-//! blocking thread, fitted onto white, [`LOGO_PIXELS`] square, cut round (so the logo is round in
+//! proportionally inside radius 57, keeping even rectangular corners. A near-square opaque tile
+//! with an unambiguous uniform border extends that colour as the round carrier, keeping the mark
+//! large instead of putting a small square inside a white disc. Otherwise the backing stays white.
+//! Both are drawn on a blocking thread, [`LOGO_PIXELS`] square, cut round (so the logo is round in
 //! every renderer), and kept as PNG in `<cache>/sender-logos/` (0700, files 0600): `<sha256 of the
 //! domain>.png` and `index.json`, when each domain was asked and whether it had a logo; at most
 //! [`MAX_DOMAINS`].
@@ -52,6 +55,9 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, TimeDelta, Utc};
+use html5ever::TokenizerResult;
+use html5ever::tokenizer::states::RawKind;
+use html5ever::tokenizer::{BufferQueue, EndTag, StartTag, TagToken, Token, TokenSink, TokenSinkResult, Tokenizer};
 use image::{Rgba, RgbaImage};
 use reqwest::Url;
 use reqwest::header::{ACCEPT, LOCATION};
@@ -75,6 +81,11 @@ pub const RASTER_MAX_BYTES: usize = 256 * 1024;
 /// The most of a start page read for the symbols it names.
 pub const PAGE_MAX_BYTES: usize = 512 * 1024;
 
+/// Bound unfinished tags/comments before html5ever's duplicate-attribute checks can grow costly.
+const HEAD_TOKEN_MAX_BYTES: usize = 16 * 1024;
+/// Check the absolute request deadline between small tokenizer steps, not just network reads.
+const HEAD_FEED_BYTES: usize = 512;
+
 /// A raster picture smaller than this on a side is too coarse for the circle.
 pub const RASTER_MIN_PIXELS: u32 = 48;
 
@@ -87,8 +98,9 @@ const MOTIF_RADIUS: f32 = 57.0;
 /// SVGs are rasterized proportionally before the same motif fitting as raster pictures.
 const SVG_PIXELS: u32 = 512;
 
-/// Missing in older indices; an answered refresh ends early migration retries, even with an old image.
-const PROCESSING_REVISION: u8 = 1;
+/// Missing in older indices. Revision 2 also renews the source priority and round carrier treatment;
+/// an answered refresh ends early migration retries, even with an old image.
+const PROCESSING_REVISION: u8 = 2;
 
 /// The most memory decoding one raster picture may take.
 const RASTER_MAX_ALLOC: u64 = 64 << 20;
@@ -160,6 +172,11 @@ pub trait LogoWeb: Send + Sync {
     /// Asks `url` once, without following a redirect, reading at most `max` bytes of its body (a
     /// longer one is [`WebError::Failed`]).
     fn get<'a>(&'a self, url: &'a Url, max: usize) -> WebFuture<'a, Reply>;
+    /// A start page, stopping after its HTML head or `max` bytes. The default keeps existing web
+    /// implementations compatible; the system reader can stop before a large page's body arrives.
+    fn head<'a>(&'a self, url: &'a Url, max: usize) -> WebFuture<'a, Reply> {
+        self.get(url, max)
+    }
 }
 
 /// The system's DNS and an HTTP client that connects only to the public internet, without a proxy.
@@ -192,6 +209,165 @@ impl SystemWeb {
             })
             .as_ref()
     }
+
+    async fn request(&self, url: &Url, max: usize, head: bool) -> Result<Reply, WebError> {
+        let deadline = Instant::now() + DEADLINE;
+        let http = self.http().ok_or(WebError::Offline)?;
+        let accept = "image/svg+xml, image/png, image/*;q=0.9, text/html;q=0.8";
+        let sent = http.get(url.clone()).header(ACCEPT, accept).send().await;
+        let mut response = sent.map_err(|err| failure(&err.without_url()))?;
+        let status = response.status();
+        if status.is_redirection() {
+            let location = response.headers().get(LOCATION).and_then(|value| value.to_str().ok());
+            return Ok(location.map_or(Reply::Status(status.as_u16()), |to| Reply::Redirect(to.to_string())));
+        }
+        if !status.is_success() {
+            return Ok(Reply::Status(status.as_u16()));
+        }
+        if head {
+            // html5ever's incremental tokenizer is !Send. Construct and keep it on one blocking
+            // worker while the runtime drives the bounded response. The logo queue reads one
+            // domain at a time; neither parsing nor waiting for its chunks blocks a Tokio worker.
+            let runtime = tokio::runtime::Handle::current();
+            return tokio::task::spawn_blocking(move || runtime.block_on(read_head(response, max, deadline)))
+                .await
+                .map_err(|_| WebError::Failed)?;
+        }
+        if !head && response.content_length().is_some_and(|length| length > max as u64) {
+            return Err(WebError::Failed);
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|err| failure(&err.without_url()))? {
+            if append_body(&mut body, &chunk, max, None)? {
+                break;
+            }
+        }
+        Ok(Reply::Body(body))
+    }
+}
+
+async fn read_head(mut response: reqwest::Response, max: usize, deadline: Instant) -> Result<Reply, WebError> {
+    let head = HtmlHead { deadline, ..Default::default() };
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|err| failure(&err.without_url()))? {
+        if append_body(&mut body, &chunk, max, Some(&head))? {
+            break;
+        }
+    }
+    Ok(Reply::Body(body))
+}
+
+/// Only token boundaries are needed, not a second DOM. Raw-text modes and comments come from
+/// html5ever; template contents cannot end the enclosing head. Script is a stop signal here,
+/// never an instruction to execute website code.
+#[derive(Default)]
+struct HeadSink {
+    templates: std::cell::Cell<usize>,
+    progress: std::cell::Cell<bool>,
+}
+
+impl TokenSink for HeadSink {
+    type Handle = ();
+
+    fn process_token(&self, token: Token, _: u64) -> TokenSinkResult<()> {
+        // Repeated parse errors inside an unfinished attribute list are not real progress.
+        if !matches!(token, Token::ParseError(_)) {
+            self.progress.set(true);
+        }
+        if let TagToken(tag) = token {
+            match (tag.kind, tag.name.as_ref()) {
+                (StartTag, "template") => self.templates.set(self.templates.get().saturating_add(1)),
+                (EndTag, "template") => self.templates.set(self.templates.get().saturating_sub(1)),
+                (EndTag, "head") if self.templates.get() == 0 => return TokenSinkResult::Script(()),
+                (StartTag, "script") => return TokenSinkResult::RawData(RawKind::ScriptData),
+                (StartTag, "title" | "textarea") => return TokenSinkResult::RawData(RawKind::Rcdata),
+                (StartTag, "style" | "xmp" | "iframe" | "noembed" | "noframes" | "noscript") => {
+                    return TokenSinkResult::RawData(RawKind::Rawtext);
+                }
+                _ => {}
+            }
+        }
+        TokenSinkResult::Continue
+    }
+}
+
+struct HtmlHead {
+    tokenizer: Tokenizer<HeadSink>,
+    input: BufferQueue,
+    without_token: std::cell::Cell<usize>,
+    deadline: Instant,
+}
+
+impl Default for HtmlHead {
+    fn default() -> Self {
+        Self {
+            tokenizer: Tokenizer::new(HeadSink::default(), Default::default()),
+            input: BufferQueue::default(),
+            without_token: std::cell::Cell::new(0),
+            deadline: Instant::now() + DEADLINE,
+        }
+    }
+}
+
+impl HtmlHead {
+    fn end_after(&self, bytes: &[u8]) -> Result<Option<usize>, WebError> {
+        // HTML delimiters are ASCII. Preserve one scanner byte per source byte even for invalid
+        // UTF-8 or a split multibyte sequence; the retained source itself is never rewritten.
+        let mut offset = 0;
+        while offset < bytes.len() {
+            if Instant::now() >= self.deadline {
+                return Err(WebError::Failed);
+            }
+            let available = HEAD_TOKEN_MAX_BYTES.saturating_sub(self.without_token.get());
+            let count = HEAD_FEED_BYTES.min(available).min(bytes.len() - offset);
+            if count == 0 {
+                return Err(WebError::Failed);
+            }
+            let ascii: String =
+                bytes[offset..offset + count].iter().map(|b| if b.is_ascii() { char::from(*b) } else { 'x' }).collect();
+            self.input.push_back(ascii.into());
+            self.tokenizer.sink.progress.set(false);
+            let result = self.tokenizer.feed(&self.input);
+            if Instant::now() >= self.deadline {
+                return Err(WebError::Failed);
+            }
+            // Count the whole last portion conservatively when a token ended somewhere in it:
+            // no pending tag can exceed the cap, including the suffix after that last token.
+            self.without_token.set(if self.tokenizer.sink.progress.get() {
+                count
+            } else {
+                self.without_token.get() + count
+            });
+            if matches!(result, TokenizerResult::Script(())) {
+                let mut remaining = 0;
+                while let Some(rest) = self.input.pop_front() {
+                    remaining += rest.len();
+                }
+                return (offset + count).checked_sub(remaining).map(Some).ok_or(WebError::Failed);
+            }
+            offset += count;
+        }
+        Ok(None)
+    }
+}
+
+/// The picture budget still rejects oversized bodies. A page may finish at its closing head,
+/// including when that tag crosses a transport chunk; bytes beyond the budget are never retained.
+fn append_body(body: &mut Vec<u8>, chunk: &[u8], max: usize, head: Option<&HtmlHead>) -> Result<bool, WebError> {
+    let remaining = max.checked_sub(body.len()).ok_or(WebError::Failed)?;
+    if head.is_none() && chunk.len() > remaining {
+        return Err(WebError::Failed);
+    }
+    let taken = &chunk[..chunk.len().min(remaining)];
+    if let Some(end) = head.map(|head| head.end_after(taken)).transpose()?.flatten() {
+        body.extend_from_slice(&taken[..end]);
+        return Ok(true);
+    }
+    body.extend_from_slice(taken);
+    if chunk.len() > remaining {
+        return Err(WebError::Failed);
+    }
+    Ok(false)
 }
 
 impl LogoWeb for SystemWeb {
@@ -200,32 +376,11 @@ impl LogoWeb for SystemWeb {
     }
 
     fn get<'a>(&'a self, url: &'a Url, max: usize) -> WebFuture<'a, Reply> {
-        Box::pin(async move {
-            let http = self.http().ok_or(WebError::Offline)?;
-            let accept = "image/svg+xml, image/png, image/*;q=0.9, text/html;q=0.8";
-            let sent = http.get(url.clone()).header(ACCEPT, accept).send().await;
-            // The error loses its address before anything looks at it.
-            let mut response = sent.map_err(|err| failure(&err.without_url()))?;
-            let status = response.status();
-            if status.is_redirection() {
-                let location = response.headers().get(LOCATION).and_then(|value| value.to_str().ok());
-                return Ok(location.map_or(Reply::Status(status.as_u16()), |to| Reply::Redirect(to.to_string())));
-            }
-            if !status.is_success() {
-                return Ok(Reply::Status(status.as_u16()));
-            }
-            if response.content_length().is_some_and(|length| length > max as u64) {
-                return Err(WebError::Failed);
-            }
-            let mut body = Vec::new();
-            while let Some(chunk) = response.chunk().await.map_err(|err| failure(&err.without_url()))? {
-                if body.len() + chunk.len() > max {
-                    return Err(WebError::Failed);
-                }
-                body.extend_from_slice(&chunk);
-            }
-            Ok(Reply::Body(body))
-        })
+        Box::pin(self.request(url, max, false))
+    }
+
+    fn head<'a>(&'a self, url: &'a Url, max: usize) -> WebFuture<'a, Reply> {
+        Box::pin(self.request(url, max, true))
     }
 }
 
@@ -498,7 +653,7 @@ impl SenderLogos {
         })
     }
 
-    /// The logo of `domain` after the module docs, as a round PNG of [`LOGO_PIXELS`] on white;
+    /// The logo of `domain` after the module docs, as a round PNG of [`LOGO_PIXELS`] with its backing;
     /// `Ok(None)` when the domain has none, [`WebError::Offline`] when neither the DNS for its BIMI
     /// record nor its website answered, [`WebError::Unreached`] when the DNS answered but neither of
     /// the domain's own addresses (its touch icon and start page) could be reached: a domain that
@@ -513,6 +668,25 @@ impl SenderLogos {
         {
             return Ok(Some(logo));
         }
+        let Ok(start) = Url::parse(&format!("https://{domain}/")) else { return Ok(None) };
+        let page = self.fetch_mode(start, PAGE_MAX_BYTES, true).await;
+        let page_down = page == Err(WebError::Offline);
+        let candidates = match page {
+            Ok(Some((at, page)))
+                if at.host_str().is_some_and(|host| host == domain || host.ends_with(&format!(".{domain}"))) =>
+            {
+                symbols(&String::from_utf8_lossy(&page), &at).into_iter().take(PAGE_CANDIDATES).collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        };
+        // A publisher's SVG mark, not an app tile, is the first website choice for every domain.
+        for symbol in candidates.iter().filter(|symbol| symbol.svg) {
+            if let Some((_, picture)) = self.reach(symbol.url.clone(), SVG_MAX_BYTES).await
+                && let Some(logo) = drawn(picture, Drawn::Svg).await
+            {
+                return Ok(Some(logo));
+            }
+        }
         let Ok(touch) = Url::parse(&format!("https://{domain}/apple-touch-icon.png")) else { return Ok(None) };
         let touch = self.fetch(touch, RASTER_MAX_BYTES).await;
         let touch_down = touch == Err(WebError::Offline);
@@ -521,24 +695,16 @@ impl SenderLogos {
         {
             return Ok(Some(logo));
         }
-        let Ok(start) = Url::parse(&format!("https://{domain}/")) else { return Ok(None) };
-        let (at, page) = match self.fetch(start, PAGE_MAX_BYTES).await {
-            Ok(Some(found)) => found,
-            Err(WebError::Offline) if touch_down && dns_down => return Err(WebError::Offline),
-            Err(WebError::Offline) if touch_down => return Err(WebError::Unreached),
-            _ => return Ok(None),
-        };
-        let own = at.host_str().is_some_and(|host| host == domain || host.ends_with(&format!(".{domain}")));
-        if !own {
-            return Ok(None);
-        }
-        for symbol in symbols(&String::from_utf8_lossy(&page), &at).into_iter().take(PAGE_CANDIDATES) {
+        for symbol in candidates.into_iter().filter(|symbol| !symbol.svg) {
             let max = if symbol.svg { SVG_MAX_BYTES } else { RASTER_MAX_BYTES };
             let Some((_, picture)) = self.reach(symbol.url, max).await else { continue };
             let logo = drawn(picture, if symbol.svg { Drawn::Svg } else { Drawn::Raster }).await;
             if logo.is_some() {
                 return Ok(logo);
             }
+        }
+        if page_down && touch_down {
+            return Err(if dns_down { WebError::Offline } else { WebError::Unreached });
         }
         Ok(None)
     }
@@ -564,14 +730,19 @@ impl SenderLogos {
     /// The body at `url` and the address it came from, after at most [`MAX_REDIRECTS`] redirects,
     /// each address `https` on the public internet ([`checked_url`]); `Ok(None)` for an address
     /// refused, another answer than the page, or a failed request. Only [`WebError::Offline`] fails.
-    async fn fetch(&self, mut url: Url, max: usize) -> Result<Option<(Url, Vec<u8>)>, WebError> {
+    async fn fetch(&self, url: Url, max: usize) -> Result<Option<(Url, Vec<u8>)>, WebError> {
+        self.fetch_mode(url, max, false).await
+    }
+
+    async fn fetch_mode(&self, mut url: Url, max: usize, head: bool) -> Result<Option<(Url, Vec<u8>)>, WebError> {
         for _ in 0..=MAX_REDIRECTS {
             if url.scheme() != "https" {
                 return Ok(None);
             }
             let Ok(checked) = checked_url(url.as_str(), Guard::PUBLIC) else { return Ok(None) };
             url = checked;
-            match self.web.get(&url, max).await {
+            let reply = if head { self.web.head(&url, max).await } else { self.web.get(&url, max).await };
+            match reply {
                 Ok(Reply::Body(body)) => return Ok(Some((url, body))),
                 Ok(Reply::Redirect(to)) => match url.join(&to) {
                     Ok(next) => url = next,
@@ -665,11 +836,11 @@ struct Symbol {
     svg: bool,
 }
 
-/// The symbols the HTML page `html` at `base` names, best first: `apple-touch-icon` (the largest
-/// first), an SVG `icon`, a PNG `icon` (the largest first). Only `https` addresses.
+/// The symbols the HTML page `html` at `base` names, best first: SVG `icon`, touch icons, PNG icons,
+/// each largest first with document order breaking ties. Only `https` addresses.
 fn symbols(html: &str, base: &Url) -> Vec<Symbol> {
     let document = dom_query::Document::from(html);
-    // (rank, size, symbol): rank 0 the touch icons, 1 SVG, 2 PNG.
+    // (rank, size, symbol): rank 0 SVG marks, 1 touch icons, 2 PNG.
     let mut found: Vec<(u8, u32, Symbol)> = Vec::new();
     for link in document.select("link[rel][href]").iter() {
         let rel = link.attr("rel").map(|rel| rel.to_ascii_lowercase()).unwrap_or_default();
@@ -690,9 +861,9 @@ fn symbols(html: &str, base: &Url) -> Vec<Symbol> {
         let touch = rels.iter().any(|rel| rel.starts_with("apple-touch-icon"));
         let icon = rels.contains(&"icon");
         if touch {
-            found.push((0, size, Symbol { url, svg: false }));
+            found.push((1, size, Symbol { url, svg: false }));
         } else if icon && (kind == "image/svg+xml" || path.ends_with(".svg")) {
-            found.push((1, size, Symbol { url, svg: true }));
+            found.push((0, size, Symbol { url, svg: true }));
         } else if icon && (kind == "image/png" || path.ends_with(".png")) {
             found.push((2, size, Symbol { url, svg: false }));
         }
@@ -761,7 +932,7 @@ enum Drawn {
 }
 
 /// A raster picture (PNG, JPEG, GIF, WebP) decoded within the limits of the module docs and fitted
-/// onto white; `None` when it is too large, too small or cannot be read.
+/// onto its round backing; `None` when it is too large, too small or cannot be read.
 pub fn from_raster(bytes: &[u8]) -> Option<Vec<u8>> {
     let picture = raster(bytes, None, RASTER_MAX_PIXELS)?;
     if picture.width().min(picture.height()) < RASTER_MIN_PIXELS {
@@ -787,17 +958,59 @@ fn raster(bytes: &[u8], format: Option<image::ImageFormat>, max_side: u32) -> Op
     Some(reader.decode().ok()?.to_rgba8())
 }
 
-/// Discard only transparent/near-white outer padding, never a dark or coloured background. The
-/// farthest corner of each content pixel (not just its centre) determines a safe circular fit.
+/// Only near-square, opaque tiles with a uniform outer band and a substantial contrasting mark
+/// have a carrier colour. Photos, gradients, transparent art, plain rectangles and isolated noise
+/// retain the conservative white backing. The carrier is extended, never removed or recoloured.
+fn carrier_color(picture: &RgbaImage) -> Option<Rgba<u8>> {
+    let (width, height) = picture.dimensions();
+    if width.max(height) * 10 > width.min(height) * 11 {
+        return None;
+    }
+    let reference = *picture.pixels().next()?;
+    if reference.0[..3].iter().all(|c| *c >= 243) {
+        return None;
+    }
+    let band = (width.min(height) / 64).max(1);
+    let (mut sums, mut count) = ([0u64; 3], 0u64);
+    for (_, _, p) in picture
+        .enumerate_pixels()
+        .filter(|(x, y, _)| *x < band || *y < band || *x >= width - band || *y >= height - band)
+    {
+        if p[3] < 247 || colour_distance(p, &reference) > 12 {
+            return None;
+        }
+        for (sum, channel) in sums.iter_mut().zip(&p.0[..3]) {
+            *sum += u64::from(*channel);
+        }
+        count += 1;
+    }
+    let mut colour = Rgba([0, 0, 0, 255]);
+    for (channel, sum) in colour.0[..3].iter_mut().zip(sums) {
+        *channel = sum.checked_div(count)? as u8;
+    }
+    let contrasting = picture
+        .pixels()
+        .filter(|p| p[3] > 8 && u32::from(colour_distance(p, &colour)) * u32::from(p[3]) > 32 * 255)
+        .count();
+    (contrasting >= (width as usize * height as usize).div_ceil(200).max(4)).then_some(colour)
+}
+
+fn colour_distance(a: &Rgba<u8>, b: &Rgba<u8>) -> u8 {
+    a.0[..3].iter().zip(&b.0[..3]).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0)
+}
+
+/// The farthest corner of each motif pixel (not just its centre) determines a safe circular fit.
+/// White/transparent padding is trimmed; a confidently uniform coloured tile becomes a round carrier.
 fn fitted(mut picture: RgbaImage) -> Option<Vec<u8>> {
+    let background = carrier_color(&picture).unwrap_or(Rgba([255; 4]));
     let (mut left, mut top, mut right, mut bottom) = (picture.width(), picture.height(), 0, 0);
     let mut mask = Vec::with_capacity((picture.width() * picture.height()) as usize);
     for (x, y, pixel) in picture.enumerate_pixels_mut() {
         let alpha = u32::from(pixel[3]);
-        for channel in &mut pixel.0[..3] {
-            *channel = ((u32::from(*channel) * alpha + 255 * (255 - alpha) + 127) / 255) as u8;
+        for (channel, bg) in pixel.0[..3].iter_mut().zip(&background.0[..3]) {
+            *channel = ((u32::from(*channel) * alpha + u32::from(*bg) * (255 - alpha) + 127) / 255) as u8;
         }
-        let content = alpha > 8 && pixel.0[..3].iter().any(|channel| *channel < 243);
+        let content = alpha > 8 && colour_distance(pixel, &background) > 12;
         mask.push(content);
         pixel[3] = 255;
         if content {
@@ -833,7 +1046,7 @@ fn fitted(mut picture: RgbaImage) -> Option<Vec<u8>> {
     let fitted = loop {
         let (mut left, mut top, mut right, mut bottom) = (fitted.width(), fitted.height(), 0, 0);
         for (x, y, pixel) in fitted.enumerate_pixels() {
-            if pixel.0[..3].iter().any(|channel| *channel < 243) {
+            if colour_distance(pixel, &background) > 12 {
                 left = left.min(x);
                 top = top.min(y);
                 right = right.max(x);
@@ -847,7 +1060,7 @@ fn fitted(mut picture: RgbaImage) -> Option<Vec<u8>> {
         let (cx, cy) = (crop.width() as f32 / 2.0, crop.height() as f32 / 2.0);
         let radius = crop
             .enumerate_pixels()
-            .filter(|(_, _, p)| p.0[..3].iter().any(|c| *c < 243))
+            .filter(|(_, _, p)| colour_distance(p, &background) > 12)
             .map(|(x, y, _)| ((x as f32 + 0.5 - cx).abs() + 0.5).hypot((y as f32 + 0.5 - cy).abs() + 0.5))
             .fold(0.0f32, f32::max);
         if radius <= MOTIF_RADIUS {
@@ -862,7 +1075,7 @@ fn fitted(mut picture: RgbaImage) -> Option<Vec<u8>> {
             image::imageops::FilterType::Triangle,
         );
     };
-    let mut canvas = RgbaImage::from_pixel(LOGO_PIXELS, LOGO_PIXELS, Rgba([255, 255, 255, 255]));
+    let mut canvas = RgbaImage::from_pixel(LOGO_PIXELS, LOGO_PIXELS, background);
     let x = (LOGO_PIXELS - fitted.width()) / 2;
     let y = (LOGO_PIXELS - fitted.height()) / 2;
     image::imageops::overlay(&mut canvas, &fitted, i64::from(x), i64::from(y));
@@ -993,6 +1206,208 @@ pub(crate) mod tests {
         }
     }
 
+    /// Publisher fixtures are test inputs only: GitHub's touch PNG/favicon SVG and the JPEG at
+    /// https://unternehmer.reisen/wp-content/uploads/2026/03/cropped-Favicon_UR360-GmbH_Unternehmer-Reisen-Experten-180x180.jpg
+    /// (retrieved 2026-11-07). Never private mail, and never a runtime brand catalogue.
+    #[tokio::test]
+    async fn a_published_svg_mark_precedes_the_square_app_icon_for_any_domain() {
+        for domain in ["github.example", "another.example"] {
+            let page = format!(
+                "<head><link rel='apple-touch-icon' href='/touch.png'><link rel='icon' type='image/svg+xml' href='https://assets.example/mark.svg'></head>{}",
+                "x".repeat(PAGE_MAX_BYTES)
+            );
+            let (web, logos) = with_web(
+                FakeWeb::default()
+                    .page(&format!("https://{domain}/"), Reply::Body(page.into_bytes()))
+                    .page(&format!("https://{domain}/apple-touch-icon.png"), Reply::Body(fixture("github-touch.png")))
+                    .page("https://assets.example/mark.svg", Reply::Body(fixture("github-mark.svg"))),
+            );
+            let found = logos.find(domain).await.expect("asked").expect("a logo");
+            assert!(
+                decoded(&found) == decoded(&from_svg(&fixture("github-mark.svg")).expect("published circular mark")),
+                "the actual SVG mark, not a ring substitute or the square touch PNG"
+            );
+            assert_eq!(web.asked(), [format!("https://{domain}/"), "https://assets.example/mark.svg".into()]);
+        }
+    }
+
+    #[test]
+    fn uniform_square_logo_carriers_fill_the_round_avatar_without_clipping_the_mark() {
+        let raw = fixture("published-black-tile.jpg");
+        let logo = decoded(&from_raster(&raw).expect("published JPEG"));
+        for (x, y) in [(64, 2), (2, 64), (125, 64), (64, 125)] {
+            let p = logo.get_pixel(x, y);
+            assert!(
+                p.0[..3].iter().all(|c| *c < 16) && p[3] == 255,
+                "the black carrier fills the disc, not a square on white: {x},{y}: {p:?}"
+            );
+        }
+        let mut left = 128u32;
+        let mut right = 0;
+        let mut green = 0;
+        for (x, y, p) in logo.enumerate_pixels() {
+            if p[3] > 8 && p.0[..3].iter().any(|c| *c > 32) {
+                left = left.min(x);
+                right = right.max(x);
+                assert!(
+                    (x as f32 + 0.5 - 64.0).hypot(y as f32 + 0.5 - 64.0) <= 58.0,
+                    "the actual globe/ring fits safely"
+                );
+            }
+            if p[1] > p[0].saturating_add(30) && p[1] > p[2] {
+                green += 1;
+            }
+        }
+        assert!(right - left >= 98, "the mark itself grows: {left}..{right}");
+        assert!(green > 50, "the coloured ring is not recoloured");
+        assert_eq!(logo.get_pixel(0, 0)[3], 0);
+        // Same rule for another colour and synthetic mark, not a publisher-specific exception.
+        let mut tile = RgbaImage::from_pixel(180, 180, Rgba([25, 70, 110, 255]));
+        for y in 65..115 {
+            for x in 40..140 {
+                tile.put_pixel(x, y, Rgba([240, 240, 240, 255]));
+            }
+        }
+        let logo = decoded(&from_raster(&encoded(tile, image::ImageFormat::Png)).expect("coloured tile"));
+        assert_eq!(logo.get_pixel(64, 2), &Rgba([25, 70, 110, 255]));
+        assert_eq!(logo.get_pixel(64, 64), &Rgba([240, 240, 240, 255]));
+    }
+
+    #[test]
+    fn nonuniform_or_rectangular_backgrounds_are_not_interpreted_as_round_carriers() {
+        let mut photo = RgbaImage::from_fn(180, 180, |x, y| Rgba([(x / 2) as u8, (y / 2) as u8, 20, 255]));
+        photo.put_pixel(90, 90, Rgba([255; 4]));
+        let logo = decoded(&from_raster(&encoded(photo, image::ImageFormat::Png)).expect("nonuniform image"));
+        assert_eq!(logo.get_pixel(64, 2), &Rgba([255; 4]), "no invented background for a photo/gradient");
+        let logo = decoded(&from_svg(&fixture("rectangular-mark.svg")).expect("actual rectangular mark"));
+        let (_, _, w, h) = motif_bounds(&logo);
+        assert!((w as f32 / h as f32 - 2.0).abs() < 0.06 && w >= 98, "the rectangle is not rounded or cropped");
+    }
+
+    #[test]
+    fn html_head_reads_are_bounded_across_transport_chunks_without_weakening_picture_limits() {
+        let mut body = Vec::new();
+        let reader = HtmlHead::default();
+        assert_eq!(
+            append_body(&mut body, b"<head><link rel='icon' href='/mark.svg'></he", 128, Some(&reader)),
+            Ok(false)
+        );
+        assert_eq!(append_body(&mut body, b"Ad><body>not needed", 128, Some(&reader)), Ok(true));
+        assert!(body.ends_with(b"</heAd>"));
+        assert!(!body.windows(4).any(|w| w == b"body"));
+        for head in [false, true] {
+            let mut body = Vec::new();
+            let reader = head.then(HtmlHead::default);
+            assert_eq!(append_body(&mut body, &[b'x'; 129], 128, reader.as_ref()), Err(WebError::Failed));
+            assert!(body.len() <= 128);
+        }
+        let mut body = Vec::new();
+        assert_eq!(
+            append_body(&mut body, b"<head></head>some image bytes", 8, None),
+            Err(WebError::Failed),
+            "a head tag never bypasses image byte limits"
+        );
+        assert!(body.is_empty());
+        let mut body = vec![b'x'; 128];
+        assert_eq!(
+            append_body(&mut body, b"</head>", 128, Some(&HtmlHead::default())),
+            Err(WebError::Failed),
+            "closing head beyond the budget cannot rescue an oversized head"
+        );
+    }
+
+    #[test]
+    fn a_large_html_head_can_arrive_one_byte_at_a_time() {
+        let mut body = Vec::new();
+        let reader = HtmlHead::default();
+        for _ in 0..PAGE_MAX_BYTES - 7 {
+            assert_eq!(append_body(&mut body, b"x", PAGE_MAX_BYTES, Some(&reader)), Ok(false));
+        }
+        for (index, byte) in b"</HeAd>".iter().enumerate() {
+            assert_eq!(append_body(&mut body, &[*byte], PAGE_MAX_BYTES, Some(&reader)), Ok(index == 6));
+        }
+        assert_eq!(body.len(), PAGE_MAX_BYTES);
+        assert!(body.ends_with(b"</HeAd>"));
+    }
+
+    #[test]
+    fn head_end_inside_comments_raw_text_or_attributes_does_not_hide_the_icon() {
+        for prefix in [
+            "<!-- example </head> -->",
+            "<script>const example = '</head>';</script>",
+            "<style>/* </head> */</style>",
+            "<title>Example </head></title>",
+            "<meta name='example' content='</head>'>",
+            "<template></head></template>",
+            "<script><!--<script></script></head>--></script>",
+            "<meta content='Grüße &amp; </head>'>",
+        ] {
+            let html = format!("<head>{prefix}<link rel='icon' href='/mark.svg'></head><body>not needed");
+            for chunk_size in [1, 2, 7, html.len()] {
+                let reader = HtmlHead::default();
+                let mut body = Vec::new();
+                let mut stopped = false;
+                for chunk in html.as_bytes().chunks(chunk_size) {
+                    if append_body(&mut body, chunk, PAGE_MAX_BYTES, Some(&reader)).expect("bounded") {
+                        stopped = true;
+                        break;
+                    }
+                }
+                assert!(stopped, "{prefix}, chunks {chunk_size}");
+                assert_eq!(
+                    symbols(&String::from_utf8_lossy(&body), &Url::parse("https://example.com/").expect("url")).len(),
+                    1,
+                    "{prefix}"
+                );
+                assert_eq!(body, html.as_bytes()[..html.find("<body>").expect("body")]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_single_html_tag_with_thousands_of_attributes_is_refused() {
+        let attributes: String = (0..5000).map(|n| format!(" a{n}")).collect();
+        let html = format!("<head><meta{attributes}></head>");
+        assert!(html.len() < PAGE_MAX_BYTES);
+        let mut body = Vec::new();
+        assert_eq!(
+            append_body(&mut body, html.as_bytes(), PAGE_MAX_BYTES, Some(&HtmlHead::default())),
+            Err(WebError::Failed)
+        );
+    }
+
+    #[test]
+    fn html_parser_limits_apply_across_chunks_and_ignore_error_token_noise() {
+        for attributes in [(0..70_000).map(|n| format!(" a{n}")).collect::<String>(), " a".repeat(20_000)] {
+            let html = format!("<head><meta{attributes}></head>");
+            assert!(html.len() < PAGE_MAX_BYTES);
+            for chunk_size in [1, 511, html.len()] {
+                let head = HtmlHead::default();
+                let mut body = Vec::new();
+                let result = html
+                    .as_bytes()
+                    .chunks(chunk_size)
+                    .try_for_each(|chunk| append_body(&mut body, chunk, PAGE_MAX_BYTES, Some(&head)).map(|_| ()));
+                assert_eq!(result, Err(WebError::Failed), "chunk size {chunk_size}");
+            }
+        }
+        let expired = HtmlHead { deadline: Instant::now(), ..Default::default() };
+        assert_eq!(
+            append_body(&mut Vec::new(), b"<head></head>", PAGE_MAX_BYTES, Some(&expired)),
+            Err(WebError::Failed)
+        );
+    }
+
+    #[test]
+    fn every_earlier_processing_revision_is_refreshed_once() {
+        for revision in 0..PROCESSING_REVISION {
+            let old: Asked =
+                serde_json::from_value(serde_json::json!({"at":Utc::now(),"found":true,"revision":revision}))
+                    .expect("old entry");
+            assert!(old.due(Utc::now()), "revision {revision}");
+        }
+    }
+
     #[test]
     fn disappearing_asymmetric_fringe_cannot_push_content_outside_the_circle() {
         let mut raw = RgbaImage::from_pixel(400, 400, Rgba([255; 4]));
@@ -1018,7 +1433,7 @@ pub(crate) mod tests {
     fn processing_proofs() {
         let Some(dir) = std::env::var_os("TORRO_LOGO_PROOFS").map(PathBuf::from) else { return };
         std::fs::create_dir_all(&dir).expect("proof dir");
-        for name in ["padded-mark", "rectangular-mark"] {
+        for name in ["padded-mark", "rectangular-mark", "github-mark"] {
             let source = fixture(&format!("{name}.svg"));
             let tree = usvg::Tree::from_data(&source, &usvg::Options::default()).expect("fixture SVG");
             let size = tree.size().to_int_size();
@@ -1027,6 +1442,19 @@ pub(crate) mod tests {
             raw.save_png(dir.join(format!("{name}-raw.png"))).expect("raw SVG");
             std::fs::write(dir.join(format!("{name}-result.png")), from_svg(&source).expect("processed SVG"))
                 .expect("result SVG");
+        }
+        for (name, file) in [("github-touch", "github-touch.png"), ("published-black-tile", "published-black-tile.jpg")]
+        {
+            let source = fixture(file);
+            image::load_from_memory(&source)
+                .expect("publisher image")
+                .save(dir.join(format!("{name}-raw.png")))
+                .expect("raw publisher pixels");
+            std::fs::write(
+                dir.join(format!("{name}-result.png")),
+                from_raster(&source).expect("processed publisher image"),
+            )
+            .expect("publisher result");
         }
         for (name, width, height, background) in [
             ("wide-transparent", 160, 80, Rgba([0, 0, 0, 0])),
@@ -1068,6 +1496,23 @@ pub(crate) mod tests {
         pub(crate) fn asked(&self) -> Vec<String> {
             self.asked.lock().expect("lock").clone()
         }
+
+        fn reply(&self, url: &Url, max: usize, head: bool) -> Result<Reply, WebError> {
+            self.asked.lock().expect("lock").push(url.to_string());
+            if self.offline || self.http_offline {
+                return Err(WebError::Offline);
+            }
+            match self.pages.get(url.as_str()) {
+                Some(Reply::Body(bytes)) => {
+                    let mut body = Vec::new();
+                    let head = head.then(HtmlHead::default);
+                    append_body(&mut body, bytes, max, head.as_ref())?;
+                    Ok(Reply::Body(body))
+                }
+                Some(reply) => Ok(reply.clone()),
+                None => Ok(Reply::Status(404)),
+            }
+        }
     }
 
     impl LogoWeb for FakeWeb {
@@ -1081,17 +1526,11 @@ pub(crate) mod tests {
         }
 
         fn get<'a>(&'a self, url: &'a Url, max: usize) -> WebFuture<'a, Reply> {
-            Box::pin(async move {
-                self.asked.lock().expect("lock").push(url.to_string());
-                if self.offline || self.http_offline {
-                    return Err(WebError::Offline);
-                }
-                match self.pages.get(url.as_str()) {
-                    Some(Reply::Body(body)) if body.len() > max => Err(WebError::Failed),
-                    Some(reply) => Ok(reply.clone()),
-                    None => Ok(Reply::Status(404)),
-                }
-            })
+            Box::pin(async move { self.reply(url, max, false) })
+        }
+
+        fn head<'a>(&'a self, url: &'a Url, max: usize) -> WebFuture<'a, Reply> {
+            Box::pin(async move { self.reply(url, max, true) })
         }
     }
 
@@ -1142,7 +1581,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn without_bimi_the_touch_icon_and_then_the_start_page() {
+    async fn website_svg_then_touch_icons_precede_remaining_raster_icons() {
         let (_, logos) = with_web(
             FakeWeb::default()
                 .page("https://github.example/apple-touch-icon.png", Reply::Redirect("/fluidicon.png".into()))
@@ -1198,10 +1637,10 @@ pub(crate) mod tests {
             web.asked(),
             [
                 "https://shop.example/empty.svg",
-                "https://shop.example/apple-touch-icon.png",
                 "https://shop.example/",
-                "https://shop.example/empty.png",
                 "https://shop.example/external.svg",
+                "https://shop.example/apple-touch-icon.png",
+                "https://shop.example/empty.png",
                 "https://shop.example/large.png"
             ]
         );
@@ -1216,7 +1655,7 @@ pub(crate) mod tests {
             <link rel="icon" href="/mark.svg"><link rel="apple-touch-icon" sizes="120x120" href="/touch.png">
             <link rel="apple-touch-icon" sizes="180x180" href="/touch-large.png">"#;
         let paths: Vec<_> = symbols(html, &base).into_iter().map(|s| s.url.path().to_string()).collect();
-        assert_eq!(paths, ["/touch-large.png", "/touch.png", "/mark.svg", "/first.png", "/second.png", "/small.png"]);
+        assert_eq!(paths, ["/mark.svg", "/touch-large.png", "/touch.png", "/first.png", "/second.png", "/small.png"]);
     }
 
     #[tokio::test]
@@ -1322,7 +1761,12 @@ pub(crate) mod tests {
     fn svgs_without_scripts_references_or_too_many_bytes() {
         assert!(from_svg(&fixture("logo.svg")).is_some());
         let symbol = decoded(&from_svg(&fixture("logo.svg")).expect("a symbol"));
-        assert_eq!(symbol.get_pixel(64, 8), &Rgba([255, 255, 255, 255]), "a website's SVG keeps a white rim");
+        assert_eq!(
+            symbol.get_pixel(64, 2),
+            &Rgba([255, 204, 0, 255]),
+            "a uniform SVG carrier keeps its yellow background"
+        );
+        assert_eq!(symbol.get_pixel(0, 0)[3], 0, "the same circular clipping as raster input");
         assert_eq!(from_svg(&fixture("script.svg")), None, "a script");
         assert_eq!(from_svg(&fixture("external.svg")), None, "a picture from the web");
         let mut large = fixture("logo.svg");
@@ -1362,7 +1806,11 @@ pub(crate) mod tests {
         logos.want("none.example", now);
         settled(&logos).await;
         let asked = web.asked();
-        assert_eq!(asked.iter().filter(|url| url.contains("github")).count(), 1, "once per domain: {asked:?}");
+        assert_eq!(
+            asked.iter().filter(|url| url.contains("github")).count(),
+            2,
+            "one attempt: page, then touch icon: {asked:?}"
+        );
         assert!(logos.has("github.example") && !logos.has("none.example"));
         assert!(logos.png("github.example").is_some_and(|png| png.starts_with(b"\x89PNG")));
         #[cfg(unix)]
@@ -1484,7 +1932,7 @@ pub(crate) mod tests {
             } else {
                 assert!(!after.due(Utc::now()), "one reply ends early migration retries: {reply:?}");
                 let json = serde_json::to_value(after).expect("entry");
-                assert_eq!(json["revision"], 1);
+                assert_eq!(json["revision"], PROCESSING_REVISION);
             }
         }
     }

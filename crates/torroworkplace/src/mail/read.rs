@@ -1553,7 +1553,11 @@ pub(crate) mod tests {
             synced_with_logos(dir.path(), &server, Arc::clone(&web), &["github.example", "evil.example"]).await;
         let logos = service.sender_logos();
         crate::mail::service::tests::eventually("the logo is kept", || async { logos.has("github.example") }).await;
-        assert_eq!(web.asked(), ["https://github.example/apple-touch-icon.png"], "once, and only the signer's");
+        assert_eq!(
+            web.asked(),
+            ["https://github.example/", "https://github.example/apple-touch-icon.png"],
+            "one attempt, and only the signer's"
+        );
 
         let listed = || answer(&service, Reach::Suite, search(None, 10, None));
         assert_eq!(logo_of(listed().await, "Review requested").as_deref(), Some("github.example"));
@@ -1572,7 +1576,7 @@ pub(crate) mod tests {
         let forged = id_of(&service, "Your account").await;
         let refused = answer(&service, Reach::Suite, Request::GetSenderLogo { id: forged }).await;
         assert_eq!(code(&refused), "not-found");
-        assert_eq!(web.asked().len(), 1, "reading asks nothing");
+        assert_eq!(web.asked().len(), 2, "reading asks nothing");
 
         let mut rights = RightsTemplate::ReadOnly.rights();
         rights.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
@@ -1598,7 +1602,7 @@ pub(crate) mod tests {
         std::fs::remove_file(&kept).expect("remove logo");
         let missing = answer(&service, Reach::Suite, Request::GetSenderLogo { id: signed.clone() }).await;
         assert_eq!(code(&missing), "not-found");
-        assert_eq!(web.asked().len(), 1, "logo reads never fetch");
+        assert_eq!(web.asked().len(), 2, "logo reads never fetch");
         assert_eq!(
             server.lines().into_iter().filter(|line| line.contains("BODY.PEEK")).count(),
             mail_reads,

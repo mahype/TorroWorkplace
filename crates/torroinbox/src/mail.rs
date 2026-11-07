@@ -6810,6 +6810,85 @@ mod tests {
         assert!(demo.sender_logo("m:p1".into()).await.expect("other sender").is_none());
     }
 
+    /// Opt-in integration proof: PNGs emitted by the core's processing_proofs test pass through
+    /// the real circle_of widget, not a synthetic demo substitute. Each source is shown at the
+    /// list and reader sizes. Run with WGPU_BACKEND=gl for synchronous headless image loading.
+    #[test]
+    fn published_pipeline_logos_draw_in_the_real_circle_widget() {
+        use iced::widget::image::Handle;
+        use torro_gui::shots::{Shots, write};
+        let Some(dir) = std::env::var_os("TORRO_LOGO_INPUTS").map(std::path::PathBuf::from) else { return };
+        let handles = ["github-mark-result.png", "published-black-tile-result.png"].map(|name| {
+            let bytes = std::fs::read(dir.join(name)).expect("fresh core pipeline result");
+            assert_eq!(image::load_from_memory(&bytes).expect("core PNG").width(), 128);
+            Handle::from_bytes(bytes)
+        });
+        fn view(handles: &[Handle; 2]) -> Element<'_, ()> {
+            let [github, tile] = handles;
+            let face = widgets::Face::Icon(Icon::Mail);
+            container(
+                row![
+                    circle_of(face, None, Some(github), layout::list().avatar),
+                    circle_of(face, None, Some(github), size::avatar_lg()),
+                    circle_of(face, None, Some(tile), layout::list().avatar),
+                    circle_of(face, None, Some(tile), size::avatar_lg())
+                ]
+                .spacing(space::l()),
+            )
+            .padding(space::m())
+            .width(Fill)
+            .height(Fill)
+            .style(style::container::panel)
+            .into()
+        }
+        for (name, theme) in [("light", Theme::Light), ("dark", Theme::Dark)] {
+            let handles = handles.clone();
+            let app = iced::application(move || handles.clone(), |_: &mut [Handle; 2], _: ()| iced::Task::none(), view)
+                .theme(move |_: &[Handle; 2]| theme.clone())
+                .settings(torro_gui::settings());
+            let args = [
+                "--demo".to_string(),
+                "--shots".into(),
+                dir.join("widgets").to_str().expect("path").into(),
+                "--shot-size".into(),
+                "320x120".into(),
+                "--appearance".into(),
+                name.into(),
+            ];
+            let shots = Shots::from_args("published-sender-logos", &args).expect("valid shots").expect("requested");
+            let files = write(&app, &shots).expect("real widget rendered");
+            assert_eq!(files.len(), 1);
+            let proof = image::open(&files[0]).expect("widget PNG").to_rgb8();
+            let scale = proof.width() as f32 / 320.0;
+            let mut x = space::m();
+            for (index, edge) in [layout::list().avatar, size::avatar_lg(), layout::list().avatar, size::avatar_lg()]
+                .into_iter()
+                .enumerate()
+            {
+                let (left, top, side) = ((x * scale) as u32, (space::m() * scale) as u32, (edge * scale) as u32);
+                let (mut dark, mut bright, mut green) = (0, 0, 0);
+                for y in top..top + side {
+                    for x in left..left + side {
+                        let p = proof.get_pixel(x, y);
+                        dark += usize::from(p.0.iter().all(|c| *c < 90));
+                        bright += usize::from(p.0.iter().all(|c| *c > 200));
+                        green += usize::from(p[1] > p[0].saturating_add(25) && p[1] > p[2].saturating_add(5));
+                    }
+                }
+                let area = (side * side) as usize;
+                assert!(dark > area / 6, "{name} avatar {index}: the dark mark/carrier is loaded");
+                assert!(
+                    bright > area / if index < 2 { 8 } else { 40 },
+                    "{name} avatar {index}: the cat/globe is visible"
+                );
+                if index >= 2 {
+                    assert!(green > area / 200, "{name} avatar {index}: the coloured ring is visible");
+                }
+                x += edge + space::l();
+            }
+        }
+    }
+
     /// The source of the function `name` in this file, up to its closing brace.
     fn function_source<'s>(source: &'s str, name: &str) -> &'s str {
         let start = [format!("fn {name}<"), format!("fn {name}(")]

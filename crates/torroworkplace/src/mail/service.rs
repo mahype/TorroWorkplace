@@ -3391,7 +3391,11 @@ pub(crate) mod tests {
                 })
                 .await;
                 service.reload().await;
-                assert_eq!(web.asked(), ["https://github.example/apple-touch-icon.png"], "no repeated migration");
+                assert_eq!(
+                    web.asked(),
+                    ["https://github.example/", "https://github.example/apple-touch-icon.png"],
+                    "no repeated migration"
+                );
             } else {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 assert!(web.asked().is_empty(), "{mode}: no logo request");
