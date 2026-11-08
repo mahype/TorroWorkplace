@@ -397,9 +397,13 @@ pub mod sources {
         format!("{kind} · {}", account.label)
     }
 
-    /// Whether an account of `kind` brings rows ([`rows_of`]).
+    /// Whether an account of `kind` brings rows ([`rows_of`]). Every kind is named, so a new one
+    /// must be decided here as in [`rows_of`]; a test keeps both in step.
     fn brings(kind: SourceKind) -> bool {
-        matches!(kind, SourceKind::Github | SourceKind::Nextcloud | SourceKind::Ntfy | SourceKind::Mail)
+        match kind {
+            SourceKind::Github | SourceKind::Nextcloud | SourceKind::Ntfy | SourceKind::Mail => true,
+            SourceKind::Suite | SourceKind::Agent | SourceKind::Script | SourceKind::Talk => false,
+        }
     }
 
     /// The rows one account brings: its sources with a switch each, a mail account its three-step
@@ -671,6 +675,26 @@ pub mod sources {
             assert!(
                 layout.shown.last().is_some_and(|(_, _, footer)| footer.as_ref().is_some_and(|f| f.contains(muting)))
             );
+        }
+
+        /// [`brings`] says of every kind what [`rows_of`] does: a group exactly where there are rows.
+        #[tokio::test]
+        async fn brings_matches_the_rows_of_every_kind() {
+            let data = data().await;
+            let account = data.accounts.first().expect("a demo account");
+            for kind in [
+                SourceKind::Github,
+                SourceKind::Nextcloud,
+                SourceKind::Ntfy,
+                SourceKind::Mail,
+                SourceKind::Suite,
+                SourceKind::Agent,
+                SourceKind::Script,
+                SourceKind::Talk,
+            ] {
+                let source = SourceRef { kind, name: "demo".into() };
+                assert_eq!(brings(kind), !rows_of(account, &source, &data).is_empty(), "{kind:?}");
+            }
         }
 
         /// Every quiet source says why in words a person can act on.
