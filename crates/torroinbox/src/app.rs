@@ -9028,7 +9028,26 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             self.leave_settings();
             return Task::none();
         }
-        self.open_settings(None)
+        let closed = self.close_mail_cover().unwrap_or_else(Task::none);
+        Task::batch([closed, self.open_settings(None)])
+    }
+
+    /// The mail window keeps the panel button and the settings over an open mail and the overview's
+    /// panel (issue #545, [`TopRow::keep_buttons`]): a press on either closes the mail (medium,
+    /// narrow) or the overview's panel (medium) first, so what it opens is not hidden under them.
+    /// The task of closing it, `None` where nothing covered the window.
+    fn close_mail_cover(&mut self) -> Option<Task<Message>> {
+        if self.launch.kind != Kind::Mail || !matches!(self.class(), SizeClass::Medium | SizeClass::Narrow) {
+            return None;
+        }
+        if self.panel_open() {
+            self.close_panel();
+            return Some(Task::none());
+        }
+        if self.class() == SizeClass::Medium && self.mail_overview_shown() {
+            return Some(self.update(Message::CloseMailOverview));
+        }
+        None
     }
 
     /// The settings in the content area, at `section` when one is named (`--settings <section>`,
@@ -11015,6 +11034,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     fn toggle_sidebar(&mut self) -> Task<Message> {
         if !shell::has_sidebar(self.class()) {
             self.menu = None;
+            // Over an open mail the button stays (issue #545): it closes the mail and opens the drawer.
+            if let Some(closed) = self.close_mail_cover() {
+                self.drawer = true;
+                return closed;
+            }
             self.drawer = !self.drawer;
             return Task::none();
         }
@@ -11346,6 +11370,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .sidebar(label, Message::ToggleSidebar)
             .sidebar_surface(self.launch.kind == Kind::Mail)
             .sidebar_at_edge(self.launch.kind == Kind::Mail)
+            .keep_buttons(self.launch.kind == Kind::Mail)
             .settings(Message::OpenSettings)
             .settings_open(self.settings.is_some())
             .cover(self.cover())
@@ -22194,6 +22219,43 @@ mod tests {
         let first = app.messages.first().expect("demo mail").id.clone();
         let _ = app.update(Message::SelectMail(first));
         assert!(!app.mail_overview.open, "an opened mail closes it");
+    }
+
+    /// Issue #545: over an open mail (medium, narrow) and the overview's panel (medium) the top row
+    /// keeps the panel button and the settings; a press closes the mail or the panel first, then
+    /// opens the drawer or the settings.
+    #[test]
+    fn the_buttons_over_an_open_mail_close_it_first() {
+        for size in [MEDIUM, NARROW] {
+            let open_mail = |app: &mut App<DemoSource>| {
+                let first = app.messages.first().expect("demo mail").id.clone();
+                let _ = app.update(Message::SelectMail(first));
+                assert!(app.panel_open(), "{size:?}: the mail is open");
+            };
+            let mut app = mail_window(Density::Compact, &[]);
+            let _ = app.update(Message::Resized(size));
+            open_mail(&mut app);
+            let _ = app.update(Message::ToggleSidebar);
+            assert!(!app.panel_open() && app.drawer, "{size:?}: the mail closes, the drawer opens");
+            let _ = app.view();
+
+            let mut app = mail_window(Density::Compact, &[]);
+            let _ = app.update(Message::Resized(size));
+            open_mail(&mut app);
+            let _ = app.update(Message::OpenSettings);
+            assert!(!app.panel_open() && app.settings.is_some(), "{size:?}: the mail closes, the settings open");
+            let _ = app.view();
+        }
+        // The overview's panel in medium closes the same way.
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Resized(MEDIUM));
+        let _ = app.update(Message::ShowMailOverview);
+        assert_eq!(app.cover(), Cover::Panel);
+        let _ = app.update(Message::ToggleSidebar);
+        assert!(!app.mail_overview_shown() && app.drawer, "the overview closes, the drawer opens");
+        // Without anything open the button toggles the drawer as before.
+        let _ = app.update(Message::ToggleSidebar);
+        assert!(!app.drawer);
     }
 
     /// Issue #409: the span and the account ask for the numbers anew; the old ones stay meanwhile and
