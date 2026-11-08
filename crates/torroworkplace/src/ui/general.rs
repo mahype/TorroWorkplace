@@ -336,13 +336,7 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
     // an address or its line off (issue #548).
     let search_hint = hint(Address::Geocoder);
     let tiles_hint = hint(Address::Tiles);
-    // Decided by the lines the rows can have, not the one they show, so typing ("Press Enter to save")
-    // never moves the fields.
-    let peers = vec![
-        (tr("Place search"), Some(tr("Gets what you search for and this computer's IP address").to_string())),
-        (tr("Map tiles"), Some(tr("Gets the coordinates of the place").to_string())),
-        (tr("Map tiles"), Some(tr("Press Enter to save").to_string())),
-    ];
+    let peers = address_peers();
     let width = size::sidebar() + space::s() + segments_width(&KIND_CHOICES);
     let beside_hint = search_hint.clone();
     let search = address_row(
@@ -429,11 +423,35 @@ fn address_row<'a>(
 /// typed and not saved, else what that service gets. Always a line, so the row keeps its height
 /// when the hint comes and goes.
 fn address_detail(draft: &MapsDraft, maps: &Maps, which: Address) -> &'static str {
+    match draft.dirty(which, maps) {
+        true => save_hint(),
+        false => service_line(which),
+    }
+}
+
+/// "Press Enter to save": the line of an address row while its address is typed and not saved.
+fn save_hint() -> &'static str {
+    tr("Press Enter to save")
+}
+
+/// What the service of `which` gets, the line of its address row while nothing is typed.
+fn service_line(which: Address) -> &'static str {
     match which {
-        _ if draft.dirty(which, maps) => tr("Press Enter to save"),
         Address::Geocoder => tr("Gets what you search for and this computer's IP address"),
         Address::Tiles => tr("Gets the coordinates of the place"),
     }
+}
+
+/// The names and every line the two address rows can show ([`address_detail`]), which
+/// [`address_row`] measures: decided by the lines they can have, not the one they show, so typing
+/// ("Press Enter to save") never moves the fields (issue #548).
+fn address_peers() -> Vec<(&'static str, Option<String>)> {
+    let row = |name: &'static str, line: &str| (name, Some(line.to_string()));
+    vec![
+        row(tr("Place search"), service_line(Address::Geocoder)),
+        row(tr("Map tiles"), service_line(Address::Tiles)),
+        row(tr("Map tiles"), save_hint()),
+    ]
 }
 
 /// An address field of "Maps": an input of the suite, drawn at 40 % (`style::text_input`'s disabled
@@ -534,6 +552,24 @@ mod tests {
         let off = Settings { components_off: [Component::Workspaces].into_iter().collect(), ..Settings::default() };
         drop(startup(&off));
         drop(view(&State::default(), &data));
+    }
+
+    /// Issue #548: the address rows of "Maps" decide beside or under by every line they can show –
+    /// the service's and "Press Enter to save" – so typing never moves the fields.
+    #[test]
+    fn the_address_rows_measure_every_line_they_can_show() {
+        let data = Data::default();
+        let maps = &data.settings.maps;
+        let mut state = State::default();
+        let peers = address_peers();
+        let lines: Vec<&str> = peers.iter().filter_map(|(_, line)| line.as_deref()).collect();
+        for which in [Address::Geocoder, Address::Tiles] {
+            assert!(lines.contains(&address_detail(&state.maps, maps, which)), "{which:?} at rest");
+            let _ = update(&mut state, Message::AddressInput(which, "https://example.org/{z}/{x}/{y}".into()), &data);
+            assert!(lines.contains(&address_detail(&state.maps, maps, which)), "{which:?} typed");
+        }
+        let names: Vec<&str> = peers.iter().map(|(name, _)| *name).collect();
+        assert!(names.contains(&tr("Place search")) && names.contains(&tr("Map tiles")));
     }
 
     /// Issue #548: "Run setup again" stands in the group Startup and opens the first-run setup.
