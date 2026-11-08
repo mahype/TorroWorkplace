@@ -393,10 +393,14 @@ im Eingang, nur die Oberfläche teilt sich auf.
   angehefteten Ordnern (Symbol und Ordnername auf einer Zeile, darunter klein die Adresse des Kontos, wenn das Fenster
   Ordner aus mehr als einem Konto hat) und **Pin folders ›** (deutsch „Ordner pinnen“). Einen Punkt „Archive“ gibt es
   dort seit #476 nicht mehr: Das Archiv ist die Gruppe „Archive“ im Filtermenü des Suchfelds (siehe unten). Am
-  **unteren Rand** steht das **Kontenfeld** (#476, bis dahin ganz oben; zwei Zeilen ohne Avatare: „All accounts“ über
-  den Domains, „{n} accounts“ über den gewählten Domains oder die Domain des einen Kontos über seiner Adresse; sein
+  **unteren Rand** steht das **Kontenfeld** (#476, bis dahin ganz oben; zwei Zeilen ohne Avatare): Ab drei aktiven
+  Konten steht unter „All accounts“ nochmals „All accounts“ (deutsch „Alle Konten“), bei einer expliziten Auswahl
+  unter „{n} accounts“ nur „Selected accounts“ (deutsch „Ausgewählte Konten“), statt die Domains aufzuzählen (#566).
+  Bis zwei Konten bleiben die Domains mit „ · “ getrennt, bei einem explizit gewählten Konto steht seine Domain über
+  seiner Adresse; eine leere Auswahl zeigt „No accounts“ ohne Unterzeile. Das gilt auch in der Schublade und für
+  den Tooltip der Leiste. Sein
   Menü „Show accounts“ öffnet nach oben, wählt eines, mehrere oder alle, je Zeile mit der Zahl ungelesener Mails in
-  „All“ und „Only this“, unten „Manage accounts…“; die Wahl bleibt in `ui.json`), in der Leiste sein Symbol unten;
+  „All“ und „Only this“, unten „Manage accounts…“; die Wahl bleibt in `ui.json`. In der Leiste steht sein Symbol unten;
   ohne Mail-Konto fehlt es. Das Menü
   der mittleren und schmalen Kopfleiste ordnet genauso. Das Mail-Fenster startet in „All“. Die Smart views
   „Invitations“ und „With attachments“ gibt es seit #337 nicht mehr: Einladungen sind die Kategorie „Invitation“,
