@@ -72,6 +72,27 @@ läuft auch der llama.cpp-Server und beide beantworten `/v1/models` gleich; die 
 kein Modell geladen ist. Strata sagt nicht, ob ein Modell Werkzeuge kann (`tools` bleibt unbekannt); seine Modelle
 rechnen auf diesem Rechner (`remote: false`) und unterliegen der Datenregel wie die von Ollama.
 
+**Ollama Cloud** (#587) ist ein zusätzliches, unabhängiges Cloud-Konto (`ollama_cloud`,
+`ai:ollama_cloud@ollama.com`), kein Schalter am lokalen Ollama. In Konten und Erststart unter
+„Online service“ auswählen und einen [API-Schlüssel](https://ollama.com/settings/keys) eingeben:
+`https://ollama.com/v1` ist vorbelegt, kein Adressfeld, lokaler Server oder CLI-Login nötig.
+Beim Verbinden prüft der Dienst den Schlüssel einmal mit der geschützten, nicht-generierenden
+`GET /api/usage?range=24h`-Abfrage (Scope `self`, Totals und Buckets werden geprüft und verworfen).
+Die öffentliche Modellliste `/api/tags` beweist keinen gültigen Schlüssel; spätere Modellabfragen
+erneuern deshalb weder den Auth-Prüfzeitpunkt noch löschen sie ein bestehendes Auth-Problem.
+Direkte Modell-IDs bleiben unverändert, etwa `gpt-oss:20b` und das Entscheidungsmodell `clef:27b`,
+ohne zusätzlichen `:cloud`-Suffix. Nur gemeldete Fähigkeiten werden übernommen; Gewichte, Kontext
+und Dateigröße bleiben unbekannt. Chat/Tools/Streaming nutzen `/v1/chat/completions`, Entscheiden
+`/v1/systemone`; Cloud bekommt kein automatisch erzwungenes Abschalten des Denkens.
+Alle Modelle sind entfernt und zunächst aus, auch hinter einem Loopback-Proxy. Verbinden allein
+aktiviert kein Modell und keine Mailfreigabe. Lokales Ollama bleibt daneben unabhängig nutzbar.
+Ollama kann für SystemOne einen bezahlten Tarif oder Guthaben verlangen.
+
+Quellen (08.11.2026): [Direktzugang](https://docs.ollama.com/api/openai-compatibility),
+[Cloud usage](https://docs.ollama.com/api/cloud-usage), [Katalog](https://ollama.com/api/tags),
+[SystemOne](https://docs.ollama.com/api/systemone), [Datenschutz](https://ollama.com/privacy).
+„Cloud · US“ benennt die mögliche Verarbeitung, keine Zusage eines bestimmten Rechenzentrums.
+
 **Jev** (Cloud · US, geschlossene Gewichte) schreibt keinen Text, es entscheidet nur: Es nimmt nur den Platz
 *Sortieren*, ein Chat damit wird mit einer Meldung abgelehnt. Eine Modell-Liste hat Jev nicht; der Kern kennt
 das eine Modell fest und prüft den Schlüssel beim Verbinden mit einer kleinen Probe-Entscheidung. Wie jedes

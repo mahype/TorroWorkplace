@@ -19,6 +19,23 @@ Modell genannt und sein Erscheinen automatisch geprüft. Navigation und Abbreche
 der Inhalt scrollt. Der neue Fünf-Schritte-Rahmen bleibt #326, der Lauf gegen echtes Strata #335.
 #359 ist übernommen; #334 wird hier nicht erneut umgesetzt.
 
+### Direkte Ollama Cloud (#587)
+
+In beiden Wegen steht zusätzlich „Ollama Cloud“ im Online-Anbietermenü nach OpenRouter. Zwölf
+Anbieter: Das Menü bietet Suche mit Tastaturfokus. Bei lokalen Funden bleibt der Online-Weg über
+„Other provider“ erreichbar. Das Cloud-Formular zeigt „Cloud · US“, den Datenhinweis, ein
+maskiertes Schlüsselfeld und „Create an API key“, kein bearbeitbares Adressfeld. Enter/Verbinden
+meldet einen leeren Schlüssel lokal; nach einem Fehler bleibt das Formular zur erneuten Eingabe.
+Zurück oder Verlassen verwirft Schlüssel und Fehler. Ein verbundener Account bleibt bei späteren
+Vorbereitungsfehlern verbunden; ohne Vorschläge wird das ausdrücklich angezeigt.
+
+Nur gelistete passende Modelle werden vorgeschlagen: `gpt-oss:20b` für Chat, `clef:27b` für
+Sortieren. Es gibt keinen lokalen Download. Übernehmen ist eine bewusste Aktion; vor Cloud-Sortieren
+nennt die Zustimmung Konto und Modell. Abbrechen erhält das bisherige Ziel und die Erlaubnis.
+Formular und Zustimmung lassen sich nicht durch das Weiter/Enter des Erststarts umgehen.
+Der vorhandene Einrichtungsrahmen bleibt unverändert; kein Vorgriff auf #326.
+Technik und offizielle Quellen: [KI-Konten](ki.md#anbieter).
+
 ---
 
 Stand: 2026-10-14. **Freigegeben** (Entscheidungen am Ende). Klickbarer Entwurf:
