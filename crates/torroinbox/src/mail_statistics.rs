@@ -12,8 +12,8 @@
 //!   `OverviewCategory::days`) above every category with its count, share and how much was opened
 //!   ([`category_lines`]); a click chooses the line, at first the largest.
 //!
-//! Span and account are the overview's ([`mail_overview::controls`]): in the head's buttons in the wide
-//! window, under the tabs in the medium and narrow ones, where the figures stand two by two. The settings host scrolls the page and gives it the whole width
+//! Span and account are the overview's ([`mail_overview::controls`]), right-aligned under the tabs
+//! in every size. Figures fit their measured labels and values in four, two or one columns. The settings host scrolls the page and gives it the whole width
 //! (#464). Names and addresses come from mail (`untrusted`) and are drawn as plain text.
 
 use iced::widget::text::Wrapping;
@@ -32,7 +32,7 @@ use torro_mail::Category;
 use torro_settings_ui::Page;
 
 use crate::app::{Message, UnsubscribeAsk};
-use crate::mail_overview::{self, Numbers, OverviewData, Place, Tab, by_age, came_in};
+use crate::mail_overview::{self, Numbers, OverviewData, Tab, by_age, came_in};
 use crate::{insights, list, mail};
 
 /// From how many mails a sender can be "Rarely opened".
@@ -193,20 +193,14 @@ pub fn category_columns(overview: &MailOverview, held: &OverviewCategory, range:
 
 /// The statistics page as the settings host takes it: the tabs, span and account, and the chosen
 /// tab's content – or loading, the error with "Retry", the empty span; while another span or account
-/// loads the numbers stay with "Updating…" over them. `data.place` is [`Place::Page`] in the wide
-/// window, with span and account in the head's buttons, else [`Place::Narrow`], with them under the
-/// tabs and the figures two by two.
+/// loads the numbers stay with "Updating…" over them. Filters are always below the tabs, the
+/// timestamp below the content; the window head has no additional actions.
 pub fn page(data: OverviewData<'_>) -> Page<'_, Message> {
     let state = data.state;
     let labels = Tab::ALL.iter().map(|tab| (tab.label().to_owned(), None)).collect();
     let chosen = Tab::ALL.iter().position(|tab| *tab == state.tab).unwrap_or_default();
-    let narrow = data.place == Place::Narrow;
     let mut blocks: Vec<Element<'_, Message>> = vec![widgets::tabs(labels, chosen, Message::MailStatisticsTab)];
-    // Below the wide window the header bar has no room for them (issue #485): under the tabs.
-    if narrow {
-        blocks.push(mail_overview::controls(state, &data.accounts, true));
-    }
-    blocks.push(typo::text(typo::meta(), mail_overview::head_line(&data)).style(theme::text_3).into());
+    blocks.push(mail_overview::controls(state, &data.accounts, true));
     match mail_overview::numbers(state) {
         Numbers::Loading => blocks.push(widgets::loading()),
         Numbers::Failed => {
@@ -226,9 +220,11 @@ pub fn page(data: OverviewData<'_>) -> Page<'_, Message> {
             }
         }
     }
+    if let Some(note) = mail_overview::as_of(&data) {
+        blocks.push(note);
+    }
     let body = column(blocks).spacing(layout::section_gap()).width(Fill);
-    let page = Page::new(body);
-    if narrow { page } else { page.actions(vec![mail_overview::controls(state, &data.accounts, false)]) }
+    Page::new(body)
 }
 
 /// What the chosen tab shows of `overview`.
@@ -236,16 +232,7 @@ fn tab_blocks<'a>(data: &OverviewData<'a>, overview: &MailOverview) -> Vec<Eleme
     let state = data.state;
     match state.tab {
         Tab::Overview => {
-            // Below the wide window two by two: four tiles side by side cut their words (issue #485).
-            let [first, second, third, fourth] = figures(overview);
-            let mut blocks = match data.place {
-                Place::Page => vec![widgets::stat_grid(vec![first, second, third, fourth])],
-                Place::Panel | Place::Narrow => {
-                    let grids =
-                        column![widgets::stat_grid(vec![first, second]), widgets::stat_grid(vec![third, fourth])];
-                    vec![grids.spacing(space::m()).into()]
-                }
-            };
+            let mut blocks = vec![figure_grid(figures(overview))];
             blocks.push(comes_in_table(overview, state.range, state.table, data.catalogue));
             blocks
         }
@@ -253,6 +240,36 @@ fn tab_blocks<'a>(data: &OverviewData<'a>, overview: &MailOverview) -> Vec<Eleme
         Tab::Inbox => vec![inbox_card(overview, data.catalogue)],
         Tab::Categories => categories_tab(overview, state, data.catalogue),
     }
+}
+
+/// Fit the actual labels and tabular values, not the window class. Notes wrap inside each tile.
+fn figure_columns(figures: &[StatFigure], width: f32) -> usize {
+    let minimum = figures
+        .iter()
+        .map(|figure| {
+            typo::text_width(&figure.label, typo::meta())
+                .max(typo::text_width(&figure.value, typo::display().tabular()))
+                + 2.0 * space::l()
+        })
+        .fold(0.0, f32::max);
+    [4, 2, 1].into_iter().find(|&count| minimum * count as f32 + space::m() * (count - 1) as f32 <= width).unwrap_or(1)
+}
+
+fn figure_grid<'a>(figures: [StatFigure; 4]) -> Element<'a, Message> {
+    responsive(move |room| {
+        let count = figure_columns(&figures, room.width);
+        column(figures.chunks(count).map(|chunk| {
+            row(chunk.iter().cloned().map(|figure| widgets::stat_tile(figure.label, figure.value, figure.note)))
+                .spacing(space::m())
+                .width(Fill)
+                .into()
+        }))
+        .spacing(space::m())
+        .width(Fill)
+        .into()
+    })
+    .height(Length::Shrink)
+    .into()
 }
 
 /// "What comes in" with "Table": the columns per day by main category, or the same numbers as a
@@ -306,7 +323,7 @@ fn categories_tab<'a>(
         let name = category_name(catalogue, chosen.category);
         let series = vec![ChartSeries { name: name.clone(), color: mail_overview::slot(chosen.group) }];
         let note = if state.range == StatsRange::Quarter { tr("per week") } else { tr("per day") };
-        blocks.push(widgets::chart_card(name, note, widgets::column_chart(series, columns)));
+        blocks.push(widgets::chart_card(name, note, widgets::volume_chart(series, columns)));
     }
     let lines = category_lines(overview);
     let largest = lines.iter().map(|held| held.count).max().unwrap_or(0);
@@ -332,39 +349,50 @@ fn category_row<'a>(
     (largest, whole, widths): (u32, u32, mail_overview::NumberWidths),
     selected: bool,
 ) -> Element<'a, Message> {
-    let mark = held.category.map(|category| {
-        let (_, group) = mail::category_look(catalogue, category);
-        let (_, colour) = mail::group_look(catalogue, held.group.unwrap_or(group));
-        let symbol = catalogue
-            .iter()
-            .find(|info| info.category == category)
-            .map_or_else(|| category.default_icon(), |info| info.icon);
-        (mail::category_symbol(symbol), colour)
-    });
-    let opened = trf(
-        "Opened {n} of {total}",
-        &[("n", &format_count(u64::from(held.opened))), ("total", &format_count(u64::from(held.count)))],
-    );
-    // What was opened under the name, lined up with it, so the line fits a narrow window too.
-    let name = column![
-        row![
-            mail_overview::category_mark(mark),
-            widgets::ellipsized(typo::body(), category_name(catalogue, held.category), theme::text)
-        ]
-        .spacing(space::s())
-        .align_y(Alignment::Center),
-        container(widgets::ellipsized(typo::meta(), opened, theme::text_3))
-            .padding(Padding::ZERO.left(icon::SIZE_SM + space::s())),
-    ];
-    let [bar, count, share] =
-        mail_overview::category_numbers(held.count, largest, insights::percent(held.count, whole), widths);
-    let line = row![container(name).width(Fill), bar, count, share].spacing(space::m()).align_y(Alignment::Center);
-    button(line)
-        .width(Fill)
-        .padding([space::xs(), space::s()])
-        .style(style::button::sidebar_item(selected))
-        .on_press(Message::MailStatisticsCategory(held.category))
-        .into()
+    let held = held.clone();
+    let catalogue = catalogue.to_vec();
+    responsive(move |room| {
+        let mark = held.category.map(|category| {
+            let (_, group) = mail::category_look(&catalogue, category);
+            let (_, colour) = mail::group_look(&catalogue, held.group.unwrap_or(group));
+            let symbol = catalogue
+                .iter()
+                .find(|info| info.category == category)
+                .map_or_else(|| category.default_icon(), |info| info.icon);
+            (mail::category_symbol(symbol), colour)
+        });
+        let opened = trf(
+            "Opened {n} of {total}",
+            &[("n", &format_count(u64::from(held.opened))), ("total", &format_count(u64::from(held.count)))],
+        );
+        // What was opened under the name, lined up with it, so the line fits a narrow window too.
+        let name = column![
+            row![
+                mail_overview::category_mark(mark),
+                widgets::ellipsized(typo::body(), category_name(&catalogue, held.category), theme::text)
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center),
+            container(widgets::ellipsized(typo::meta(), opened, theme::text_3))
+                .padding(Padding::ZERO.left(icon::SIZE_SM + space::s())),
+        ];
+        let [bar, count, share] =
+            mail_overview::category_numbers(held.count, largest, insights::percent(held.count, whole), widths);
+        let category = held.category;
+        let mut line = row![container(name).width(Fill)].spacing(space::m()).align_y(Alignment::Center);
+        if room.width >= size::panel() {
+            line = line.push(bar);
+        }
+        let line = line.push(count).push(share);
+        button(line)
+            .width(Fill)
+            .padding([space::xs(), space::s()])
+            .style(style::button::sidebar_item(selected))
+            .on_press(Message::MailStatisticsCategory(category))
+            .into()
+    })
+    .height(Length::Shrink)
+    .into()
 }
 
 /// "Who sends the most": a line per sender with how much it sends, how much of it is opened and –
@@ -386,12 +414,19 @@ fn senders_card<'a>(
     } else {
         responsive(move |room| {
             let wide = room.width >= size::form_max();
+            let number_width = senders
+                .iter()
+                .map(|sender| {
+                    typo::text_width(&format_count(u64::from(sender.count)), typo::body_strong().tabular())
+                        .max(typo::text_width(&per_week(sender.count, days), typo::meta().tabular()))
+                })
+                .fold(0.0, f32::max);
             // Words or icons once for the whole card, by the widest bar a row can have, so the bars do
             // not switch between rows; measured at the row's real width.
             let words = widgets::row_actions_words(&widest_actions(), room.width);
             let lines = senders.iter().map(|sender| {
                 let muting = muting.as_deref() == Some(sender.address.as_str());
-                sender_line(sender, &catalogue, days, (wide, words), muting, &mute_at)
+                sender_line(sender, &catalogue, days, (wide, words, number_width), muting, &mute_at)
             });
             column(lines).spacing(space::xs()).into()
         })
@@ -409,7 +444,7 @@ fn sender_line<'a>(
     sender: &OverviewSender,
     catalogue: &[CategoryInfo],
     days: usize,
-    (wide, words): (bool, bool),
+    (wide, words, number_width): (bool, bool, f32),
     muting: bool,
     mute_at: &Anchor,
 ) -> Element<'a, Message> {
@@ -455,16 +490,15 @@ fn sender_line<'a>(
             );
         }
         let read =
-            column![typo::text(typo::meta().tabular(), opened).style(theme::text_2).wrapping(Wrapping::None), bar]
-                .spacing(space::xs());
+            column![widgets::ellipsized(typo::meta().tabular(), opened, theme::text_2), bar].spacing(space::xs());
         line = line.push(container(read).width(Length::FillPortion(2)));
     }
     let number = column![
         typo::text(typo::body_strong().tabular(), format_count(u64::from(sender.count))),
-        typo::text(typo::meta(), per_week(sender.count, days)).style(theme::text_3).wrapping(Wrapping::None),
+        typo::text(typo::meta().tabular(), per_week(sender.count, days)).style(theme::text_3).wrapping(Wrapping::None),
     ]
     .align_x(Alignment::End);
-    line = line.push(number);
+    line = line.push(container(number).width(number_width).align_right(number_width));
     // No surface of its own (the bar floats over it): the row stays on the axis of the card's title.
     let row_ = container(line).width(Fill).padding(Padding::ZERO.top(space::xs()).bottom(space::xs()));
     let actions = sender_actions(&sender.address, sender.unsubscribe.as_ref(), &name, muting, mute_at);
@@ -515,21 +549,19 @@ fn inbox_card<'a>(overview: &MailOverview, catalogue: &[CategoryInfo]) -> Elemen
         body = body.push(widgets::share_strip(inbox_parts(overview, catalogue), None));
         let age = |label: &'static str, n: u32| {
             row![
-                typo::text(typo::meta(), label).style(theme::text_3),
+                typo::text(typo::meta(), label).style(theme::text_3).width(Fill),
                 typo::text(typo::meta().tabular(), format_count(u64::from(n))).style(theme::text),
             ]
-            .spacing(space::xs())
+            .spacing(space::m())
             .align_y(Alignment::Center)
         };
-        let ages = row![
+        let ages = column![
             typo::text(typo::meta(), tr("By age")).style(theme::text_3),
             age(tr("Today"), today),
             age(tr("This week"), week),
             age(tr("Older"), older),
         ]
-        .spacing(space::l())
-        .align_y(Alignment::Center)
-        .wrap();
+        .spacing(space::s());
         body = body.push(ages);
     }
     if let Some(old) = tidy(overview) {
@@ -547,6 +579,53 @@ mod tests {
     use super::*;
     use crate::mail_overview::tests::{day, overview};
     use crate::mail_overview::{demo, nothing};
+
+    #[test]
+    fn figure_columns_fit_actual_labels_and_large_values() {
+        let figures = figures(&overview());
+        assert_eq!(figure_columns(&figures, 1200.0), 4);
+        assert!(figure_columns(&figures, 480.0) <= 2);
+        assert_eq!(figure_columns(&figures, 220.0), 1);
+        let large = figures.map(|mut figure| {
+            figure.value = "4 294 967 295".into();
+            figure
+        });
+        assert!(figure_columns(&large, 720.0) <= 2);
+    }
+
+    #[tokio::test]
+    async fn large_figure_tiles_keep_their_text_inside_the_measured_grid() {
+        use iced::Size;
+        use iced::advanced::{layout::Limits, renderer::Headless, widget::Tree};
+        let renderer =
+            iced::Renderer::new(theme::font(), typo::body().size, Some("tiny-skia")).await.expect("headless renderer");
+        let figures = figures(&overview()).map(|mut figure| {
+            figure.value = format_count(u64::from(u32::MAX));
+            figure.note = tr("What comes in, who sends it and what you open shows up here.").into();
+            figure
+        });
+        for width in [272.0, 352.0, 720.0, 1200.0] {
+            let mut element = figure_grid(figures.clone());
+            let mut tree = Tree::new(&element);
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &Limits::new(Size::ZERO, Size::new(width, 2000.0)),
+            );
+            fn check(node: &iced::advanced::layout::Node) {
+                for child in node.children() {
+                    assert!(
+                        child.bounds().x + child.size().width <= node.size().width + 0.01,
+                        "{:?} exceeds {:?}",
+                        child.bounds(),
+                        node.size()
+                    );
+                    check(child);
+                }
+            }
+            check(&node);
+        }
+    }
 
     #[test]
     fn the_figures_count_the_inbox_what_came_people_and_ads() {

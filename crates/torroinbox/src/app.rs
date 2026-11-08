@@ -1651,6 +1651,8 @@ pub enum Open {
     MailOverviewError,
     /// The overview of a span without mail and an empty inbox, kept for good.
     MailOverviewEmpty,
+    /// A forced quarter with large, uneven volumes (#565).
+    MailOverviewFull,
     /// Settings › Statistics on its tab "Overview" (issue #485).
     Statistics,
     /// … with the day chart as a table.
@@ -1661,6 +1663,11 @@ pub enum Open {
     StatisticsInbox,
     /// … on its tab "Categories".
     StatisticsCategories,
+    /// Forced statistics fixtures for layout checks (#565), never refreshed from the demo source.
+    StatisticsFull,
+    StatisticsEmpty,
+    StatisticsLoading,
+    StatisticsError,
     /// "All" with the demo's first newsletter open and the question "Unsubscribe from …?"
     /// over the window (issue #416).
     Unsubscribe,
@@ -1696,7 +1703,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 104] = [
+    const ALL: [(&'static str, Open); 109] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1780,6 +1787,11 @@ impl Open {
         ("mail-overview-loading", Open::MailOverviewLoading),
         ("mail-overview-error", Open::MailOverviewError),
         ("mail-overview-empty", Open::MailOverviewEmpty),
+        ("mail-overview-full", Open::MailOverviewFull),
+        ("statistics-full", Open::StatisticsFull),
+        ("statistics-empty", Open::StatisticsEmpty),
+        ("statistics-loading", Open::StatisticsLoading),
+        ("statistics-error", Open::StatisticsError),
         ("statistics", Open::Statistics),
         ("statistics-table", Open::StatisticsTable),
         ("statistics-senders", Open::StatisticsSenders),
@@ -1837,7 +1849,12 @@ impl Open {
     /// other state.
     fn statistics_tab(self) -> Option<mail_overview::Tab> {
         match self {
-            Open::Statistics | Open::StatisticsTable => Some(mail_overview::Tab::Overview),
+            Open::Statistics
+            | Open::StatisticsTable
+            | Open::StatisticsFull
+            | Open::StatisticsEmpty
+            | Open::StatisticsLoading
+            | Open::StatisticsError => Some(mail_overview::Tab::Overview),
             Open::StatisticsSenders => Some(mail_overview::Tab::Senders),
             Open::StatisticsInbox => Some(mail_overview::Tab::Inbox),
             Open::StatisticsCategories => Some(mail_overview::Tab::Categories),
@@ -2666,20 +2683,53 @@ fn today() -> chrono::NaiveDate {
 /// overview state, with the table, or with numbers that never come (loading), an error or nothing
 /// counted up to `today`.
 fn staged_overview(open: Option<Open>, today: chrono::NaiveDate) -> mail_overview::State {
+    let full = matches!(open, Some(Open::MailOverviewFull | Open::StatisticsFull));
+    let range = if full { torro_ipc::StatsRange::Quarter } else { torro_ipc::StatsRange::Month };
     let data = |result| {
-        let key = mail_overview::Key { account: None, range: torro_ipc::StatsRange::Month };
+        let key = mail_overview::Key { account: None, range };
         Some(mail_overview::Loaded { key, at: Instant::now(), result })
     };
     mail_overview::State {
         open: matches!(
             open,
-            Some(Open::MailOverview | Open::MailOverviewLoading | Open::MailOverviewError | Open::MailOverviewEmpty)
+            Some(
+                Open::MailOverview
+                    | Open::MailOverviewLoading
+                    | Open::MailOverviewError
+                    | Open::MailOverviewEmpty
+                    | Open::MailOverviewFull
+            )
         ),
+        range,
         table: open == Some(Open::StatisticsTable),
         tab: open.and_then(Open::statistics_tab).unwrap_or_default(),
         data: match open {
-            Some(Open::MailOverviewError) => data(Err(DEMO_ERROR.to_owned())),
-            Some(Open::MailOverviewEmpty) => data(Ok(mail_overview::nothing(today, torro_ipc::StatsRange::Month))),
+            Some(Open::MailOverviewError | Open::StatisticsError) => data(Err(DEMO_ERROR.to_owned())),
+            Some(Open::MailOverviewEmpty | Open::StatisticsEmpty) => data(Ok(mail_overview::nothing(today, range))),
+            Some(Open::MailOverviewFull | Open::StatisticsFull) => {
+                let source = torro_inbox::demo::DemoSource::new(Utc::now());
+                let inbox = source.by_role(torro_mail::Role::Inbox, None, None, Order::NewestFirst);
+                let mut overview = mail_overview::demo(today, range, false, &inbox);
+                for (at, day) in overview.days.iter_mut().enumerate() {
+                    for (slot, group) in day.groups.iter_mut().enumerate() {
+                        group.count = if at % 11 == 0 { 0 } else { group.count * if slot == 0 { 1 } else { 12_345 } };
+                    }
+                }
+                for held in &mut overview.categories {
+                    held.count *= 12_345;
+                    held.opened *= 12_345;
+                    for count in &mut held.days {
+                        *count *= 12_345;
+                    }
+                }
+                for sender in &mut overview.senders {
+                    sender.name =
+                        Some("International newsletter and product announcements — a very long sender name".to_owned());
+                    sender.count *= 12_345;
+                    sender.opened *= 12_345;
+                }
+                data(Ok(overview))
+            }
             _ => None,
         },
         ..mail_overview::State::default()
@@ -6613,10 +6663,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.menu != Some(Menu::Mute) {
             self.mail_overview.muting = None;
         }
-        let forced = matches!(
-            self.launch.open,
-            Some(Open::MailOverviewLoading | Open::MailOverviewError | Open::MailOverviewEmpty)
-        );
+        let forced = self.launch.demo
+            && matches!(
+                self.launch.open,
+                Some(
+                    Open::MailOverviewLoading
+                        | Open::MailOverviewError
+                        | Open::MailOverviewEmpty
+                        | Open::MailOverviewFull
+                        | Open::StatisticsFull
+                        | Open::StatisticsEmpty
+                        | Open::StatisticsLoading
+                        | Open::StatisticsError
+                )
+            );
         let overview = self.mail_overview_shown();
         let shown = overview || self.statistics_shown();
         // Once per window; after an error again when the overview comes into view anew (review of
@@ -6699,7 +6759,19 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
 
     /// What the overview and the statistics page (issue #485) draw from.
     fn overview_data(&self, place: mail_overview::Place, mute_at: &Anchor) -> mail_overview::OverviewData<'_> {
-        let accounts = self.mail_groups().into_iter().map(|group| (group.account, group.title)).collect();
+        let full = self.launch.demo && matches!(self.launch.open, Some(Open::MailOverviewFull | Open::StatisticsFull));
+        let accounts = self
+            .mail_groups()
+            .into_iter()
+            .map(|group| {
+                let title = if full {
+                    format!("{} — International correspondence and product announcements", group.title)
+                } else {
+                    group.title
+                };
+                (group.account, title)
+            })
+            .collect();
         mail_overview::OverviewData {
             state: &self.mail_overview,
             catalogue: &self.categories,
@@ -21304,6 +21376,65 @@ mod tests {
                 Launch::parse(&args(&["--demo", "--open", state])),
                 Err(LaunchError::Conflict("--open statistics…", _))
             ));
+        }
+    }
+
+    #[test]
+    fn forced_statistics_fixtures_are_demo_only_and_never_reloaded() {
+        for state in
+            ["mail-overview-full", "statistics-full", "statistics-empty", "statistics-loading", "statistics-error"]
+        {
+            assert!(Launch::parse(&args(&["--view", "mail", "--open", state])).is_err(), "demo only");
+            let mut app = mail_window(Density::Compact, &["--open", state]);
+            for size in [WIDE, MEDIUM, NARROW] {
+                let _ = app.update(Message::Resized(size));
+                let _ = app.update(Message::Tick);
+                assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::MailOverview(..))), "{state}: no reload");
+                assert!(app.statistics_shown() || app.mail_overview_shown());
+                let _ = app.view();
+            }
+            match state {
+                "mail-overview-full" | "statistics-full" => {
+                    assert_eq!(app.mail_overview.range, torro_ipc::StatsRange::Quarter);
+                    let overview = app.mail_overview.overview().expect("full");
+                    assert_eq!(overview.days.len(), 90);
+                    assert!(mail_overview::came_in(overview) > 1_000_000);
+                }
+                "statistics-empty" => assert!(mail_overview::is_empty(app.mail_overview.overview().expect("empty"))),
+                "statistics-loading" => assert!(app.mail_overview.data.is_none()),
+                "statistics-error" => assert!(app.mail_overview.data.as_ref().expect("answer").result.is_err()),
+                _ => unreachable!(),
+            }
+        }
+        assert!(Launch::parse(&args(&["--demo", "--view", "mail", "--open", "statistics-unknown"])).is_err());
+    }
+
+    #[test]
+    fn all_statistics_ranges_and_accounts_are_shared_with_the_overview() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        deliver_overview(&mut app);
+        for range in mail_overview::RANGES {
+            let _ = app.update(Message::ShowMailStatistics);
+            let _ = app.update(Message::MailOverviewRange(range));
+            deliver_overview(&mut app);
+            let account = app.mail_groups().first().expect("an account").account.clone();
+            let _ = app.update(Message::MailOverviewAccount(mail_overview::AccountChoice {
+                account: Some(account.clone()),
+                label: "Long account display name".into(),
+            }));
+            deliver_overview(&mut app);
+            let key = app.mail_overview.key();
+            assert_eq!(key.range, range);
+            assert_eq!(key.account.as_deref(), Some(account.as_str()));
+            let _ = app.update(Message::MailOverviewTable(true));
+            for tab in 0..4 {
+                let _ = app.update(Message::MailStatisticsTab(tab));
+            }
+            let _ = app.update(Message::ShowMailOverview);
+            assert_eq!(app.mail_overview.key(), key);
+            assert!(app.mail_overview.table);
+            assert_eq!(app.mail_overview.tab, mail_overview::Tab::Categories);
         }
     }
 
