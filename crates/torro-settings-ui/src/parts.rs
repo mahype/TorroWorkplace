@@ -36,9 +36,14 @@ pub fn setting_row<'a, M: 'a>(
     let tall = detail.is_some();
     let mut lines = column![widgets::ellipsized(typo::body(), label, theme::text)];
     if let Some(detail) = detail {
-        lines = lines.push(typo::text(typo::meta(), detail).style(theme::text_2).width(Fill));
+        // A word longer than the line (a path, an address) breaks too, never runs over the control.
+        let detail = typo::text(typo::meta(), detail).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
+        lines = lines.push(detail.width(Fill));
     }
-    let text = row![].push(mark).push(lines.width(Fill)).spacing(space::m()).align_y(Alignment::Center);
+    // The air of a grown row belongs to the text alone, so a tall control keeps the row's least
+    // height (review of #543).
+    let lines = lines.width(Fill).padding([space::s(), 0.0]);
+    let text = row![].push(mark).push(lines).spacing(space::m()).align_y(Alignment::Center);
     // The row spans the page, its text keeps the reading width (issue #464).
     growing_frame(
         row![widgets::reading_cell(text.width(Fill)), control.into()].spacing(space::l()).align_y(Alignment::Center),
@@ -47,16 +52,14 @@ pub fn setting_row<'a, M: 'a>(
 }
 
 /// `content` as one line of a settings group that grows with it (issue #543): at least as high as
-/// [`row_frame`] makes it, and when the content needs more (a wrapped detail), its height with
-/// `space::s()` above and below; 16 at the sides like [`row_frame`]. A strut of the least height
-/// minus the air keeps the short rows where they were.
+/// [`row_frame`] makes it (a strut of that height keeps the short rows where they were), and when
+/// the content needs more (a wrapped detail), its own height – the content brings its air, as
+/// [`setting_row`]'s text does; 16 at the sides like [`row_frame`].
 fn growing_frame<'a, M: 'a>(content: impl Into<Element<'a, M>>, tall: bool) -> Element<'a, M> {
     let least = if tall { size::header() + space::m() } else { size::header() };
-    // The air above and below comes from the padding; the strut holds the rest of the least height.
-    let inner = (least - space::s() - space::s()).max(0.0);
-    let strut = blank().height(inner);
+    let strut = blank().height(least);
     let content = container(content).width(Fill);
-    container(row![strut, content].align_y(Alignment::Center)).width(Fill).padding([space::s(), space::l()]).into()
+    container(row![strut, content].align_y(Alignment::Center)).width(Fill).padding([0.0, space::l()]).into()
 }
 
 /// `content` as one line of a settings group: as high as the header bar (64 in Torro, 76 with two lines of
