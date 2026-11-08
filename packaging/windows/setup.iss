@@ -27,7 +27,13 @@ WizardStyle=modern
 CloseApplications=yes
 CloseApplicationsFilter=*.exe
 RestartApplications=no
+AllowCancelDuringInstall=yes
 SetupLogging=yes
+
+[Dirs]
+; Inno processes directories AFTER Restart Manager and calls ProcessEvents immediately afterwards,
+; before uninstall information or payload files. Even an existing directory runs this callback.
+Name: "{app}"; BeforeInstall: CheckReadyToCopy
 
 [Files]
 #include AddBackslash(Payload) + "files.iss"
@@ -37,7 +43,48 @@ Name: "{commonprograms}\Torro Workplace\{#AppTitle}"; Filename: "{app}\{#AppProg
 
 [Code]
 var
-  ReadyToCopy: Boolean;
+  FatalFailure: Boolean;
+
+function InitializeSetup(): Boolean;
+var
+  Index: Integer;
+begin
+  Result := True;
+  for Index := 1 to ParamCount do
+    if Pos('/nocancel', Lowercase(ParamStr(Index))) = 1 then begin
+      Result := False;
+      Log('/NOCANCEL is not supported: installer safety requires native cancellation.');
+    end;
+end;
+
+procedure CancelButtonClick(CurPageID: Integer; var Cancel, Confirm: Boolean);
+begin
+  if FatalFailure then begin
+    Cancel := True;
+    Confirm := False;
+  end;
+end;
+
+procedure FailInstallation(Reason: String);
+begin
+  { Inno swallows exceptions in Before/AfterInstall. Set its native NeedToAbortInstall instead:
+    WizardForm.Close -> MainForm.Close -> CancelButtonClick -> native ProcessEvents -> fatal abort.
+    Show/enable the Cancel control also in /VERYSILENT so MainForm.Close's guards hold. }
+  if FatalFailure then exit;
+  FatalFailure := True;
+  Log(Reason);
+  WizardForm.Show;
+  WizardForm.Enabled := True;
+  WizardForm.CancelButton.Visible := True;
+  WizardForm.CancelButton.Enabled := True;
+  WizardForm.Close;
+end;
+
+function CanCopy(): Boolean;
+begin
+  { Also blocks the next sidecar if a per-file verification failed after the preceding copy. }
+  Result := not FatalFailure;
+end;
 
 function OpenForPreflight(FileName: String; Access, ShareMode: LongWord;
   Security: NativeUInt; Creation, Flags: LongWord; Template: NativeUInt): NativeUInt;
@@ -145,47 +192,68 @@ procedure CheckUnlocked(FileName: String);
 var
   Handle: NativeUInt;
 begin
+  if FatalFailure then exit;
   FileName := ExpandConstant('{app}\') + FileName;
   if not FileExists(FileName) then exit;
   { Opening without truncation tests actual write/exclusive access, including mapped executables.
     This runs AFTER Restart Manager's close attempt, BEFORE the first payload copy. }
   Handle := OpenForPreflight(FileName, $40000000, 0, 0, 3, 0, 0);
-  if Handle = NativeUInt(-1) then
-    RaiseException('Setup was cancelled because an application file is still in use or not writable. Close the apps and background service, then run Setup again.');
-  ClosePreflightHandle(Handle);
+  if Handle = NativeUInt(-1) then begin
+    FailInstallation('Setup was cancelled because an application file is still in use or not writable. Close the apps and background service, then run Setup again.');
+    exit;
+  end;
+  if not ClosePreflightHandle(Handle) then
+    FailInstallation('Could not close the preflight file handle. Setup was cancelled.');
 end;
 
 procedure CheckReadyToCopy();
 begin
-  if ReadyToCopy then exit;
-  if not FixedDestination() or not Preflight() then
-    RaiseException('The installation destination or ownership changed. Setup was cancelled.');
+  if FatalFailure then exit;
+  try
+    if not FixedDestination() or not Preflight() then begin
+      FailInstallation('The installation destination or ownership changed. Setup was cancelled.');
+      exit;
+    end;
 #include AddBackslash(Payload) + "locks.iss"
-  ReadyToCopy := True;
+  except
+    FailInstallation('Could not complete the installation preflight. Setup was cancelled.');
+  end;
 end;
 
 procedure VerifyProgram(ProgramName, ExpectedHash: String);
 begin
-  { A file-error dialog must never let Skip advance a sidecar/marker beyond its executable.
-    Raising here is inside PerformInstall, so Inno rolls the entire installation back. }
-  if GetSHA256OfFile(ExpandConstant('{app}\') + ProgramName + '.exe') <> ExpectedHash then
-    RaiseException('An application file was not installed correctly. Setup will roll back.');
+  { Never let Skip advance a sidecar beyond its executable. Hash/read failures must take the
+    native cancellation path too, not escape as a swallowed callback exception. }
+  try
+    if GetSHA256OfFile(ExpandConstant('{app}\') + ProgramName + '.exe') <> ExpectedHash then
+      FailInstallation('An application file was not installed correctly. Setup was cancelled.');
+  except
+    FailInstallation('Could not verify an application file. Setup was cancelled.');
+  end;
 end;
 
 procedure VerifyVersion(ProgramName: String);
 var
   Value: AnsiString;
 begin
-  if not LoadStringFromFile(ExpandConstant('{app}\') + ProgramName + '.version', Value) then
-    RaiseException('Could not verify the installed version. Setup will roll back.');
-  if Trim(String(Value)) <> '{#AppVersion}' then
-    RaiseException('The installed version does not match the executable. Setup will roll back.');
+  try
+    if not LoadStringFromFile(ExpandConstant('{app}\') + ProgramName + '.version', Value) then
+      FailInstallation('Could not verify the installed version. Setup was cancelled.');
+    if Trim(String(Value)) <> '{#AppVersion}' then
+      FailInstallation('The installed version does not match the executable. Setup was cancelled.');
+  except
+    FailInstallation('Could not verify the installed version. Setup was cancelled.');
+  end;
 end;
 
 procedure WriteMarker(ProgramName: String);
 begin
-  if not SaveStringToFile(ExpandConstant('{app}\') + ProgramName + '.exe.torro-package.json', MarkerText(ProgramName), False) then
-    RaiseException('Could not write the native installer marker.');
+  try
+    if not SaveStringToFile(ExpandConstant('{app}\') + ProgramName + '.exe.torro-package.json', MarkerText(ProgramName), False) then
+      FailInstallation('Could not write the native installer marker. Setup was cancelled.');
+  except
+    FailInstallation('Could not write the native installer marker. Setup was cancelled.');
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

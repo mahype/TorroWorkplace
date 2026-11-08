@@ -96,6 +96,12 @@ Danach `dist plan --tag v0.1.0` und die Offline-Vertragstests ausführen. Keine 
   erhöht gestartet, kein Systemdienst angelegt und keine persönlichen Daten gelöscht. SmartScreen kann
   wegen fehlender Signatur warnen (Entscheidung X.10). Die Unterstützung der Apps selbst wird durch
   einen Installer nicht erweitert; bekannte Plattformlücken bleiben bestehen.
+  Inno fängt Fehler in Dateieintrag-Callbacks ab: Die Schutzprüfungen setzen deshalb den nativen
+  Abbruch über `WizardForm.Close` und sperren nach einem Fehler weitere Payload-Einträge. Die
+  Sperrprüfung liegt an einem Verzeichniseintrag nach Restart Manager und vor den Dateikopien;
+  direkt danach verarbeitet Inno den Abbruch. `/NOCANCEL` wird abgelehnt, auch stille Installationen
+  müssen sicher abbrechen können. Dieser Ablauf ist am gepinnten Inno-Quelltext statisch geprüft;
+  der echte Windows-VM-Nachweis steht weiter aus.
 - macOS: Developer ID Application, Hardened Runtime, Zeitstempel, Notarisierung und Heften für Bündel
   und Image. Keine Universal-Binary; Intel-Runner endet voraussichtlich Herbst 2027. Gleiche
   Service-Bundle-ID und gleiches Team erhalten den Schlüsselbundzugriff; `TorroVersion` enthält RCs,

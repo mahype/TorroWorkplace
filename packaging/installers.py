@@ -236,9 +236,9 @@ def build_windows(folder, out, tag):
                 # Marker uses an Inno {code:...} constant so Program Files is resolved by Windows,
                 # not guessed from the build runner's locale or drive.
                 lines.extend([
-                    f'Source: "{binaries[program]}"; DestDir: "{{app}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; BeforeInstall: CheckReadyToCopy; AfterInstall: VerifyProgram(\'{program}\', \'{digest(binaries[program])}\')',
-                    f'Source: "{scratch / (program + ".version")}"; DestDir: "{{app}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; AfterInstall: VerifyVersion(\'{program}\')',
-                    f'Source: "{scratch / (program + ".exe.torro-package.json")}"; DestDir: "{{app}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; AfterInstall: WriteMarker(\'{program}\')',
+                    f'Source: "{binaries[program]}"; DestDir: "{{app}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; Check: CanCopy; AfterInstall: VerifyProgram(\'{program}\', \'{digest(binaries[program])}\')',
+                    f'Source: "{scratch / (program + ".version")}"; DestDir: "{{app}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; Check: CanCopy; AfterInstall: VerifyVersion(\'{program}\')',
+                    f'Source: "{scratch / (program + ".exe.torro-package.json")}"; DestDir: "{{app}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; Check: CanCopy; AfterInstall: WriteMarker(\'{program}\')',
                 ])
                 (scratch / (program + ".version")).write_text(ver + "\n")
                 # Inno writes a fixed, administrator-only install marker from an expanded template.

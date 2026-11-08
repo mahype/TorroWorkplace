@@ -234,7 +234,7 @@ class Installers(unittest.TestCase):
                 self.assertIn(f"VerifyProgram('{part}', '{pkg.digest(payload / (part + '.exe'))}')", files)
                 self.assertIn(f"VerifyVersion('{part}')", files)
                 self.assertIn(f"WriteMarker('{part}')", files)
-            self.assertEqual(files.count("BeforeInstall: CheckReadyToCopy"), len(pkg.windows_payload(app)))
+            self.assertEqual(files.count("Check: CanCopy"), 3 * len(pkg.windows_payload(app)))
             self.assertEqual(files.count("sharedfile uninsnosharedfileprompt 64bit"), 3 * len(pkg.windows_payload(app)))
             name = next(str(a)[2:] for a in args if str(a).startswith("/F"))
             (out / (name + ".exe")).write_bytes(b"fixture setup")
@@ -255,6 +255,15 @@ class Installers(unittest.TestCase):
         self.assertIn("OpenForPreflight(FileName, $40000000, 0, 0, 3, 0, 0)", spec)
         self.assertNotIn("ssPostInstall", spec)
         self.assertIn("GetSHA256OfFile", spec)
+        self.assertIn('Name: "{app}"; BeforeInstall: CheckReadyToCopy', spec)
+        self.assertIn("WizardForm.Close;", spec)
+        self.assertIn("FatalFailure := True;", spec)
+        self.assertIn("Result := not FatalFailure;", spec)
+        self.assertIn("Confirm := False;", spec)
+        self.assertIn("AllowCancelDuringInstall=yes", spec)
+        self.assertIn("Pos('/nocancel'", spec)
+        callbacks = spec[spec.index("procedure CheckUnlocked"):spec.index("procedure CurStepChanged")]
+        self.assertNotIn("RaiseException", callbacks)
 
     def test_release_gates_are_mandatory_and_build_jobs_have_no_manual_or_pr_trigger(self):
         workflow = (pkg.ROOT.parent / ".github/workflows/release.yml").read_text()

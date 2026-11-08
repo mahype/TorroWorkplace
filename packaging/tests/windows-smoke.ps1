@@ -34,6 +34,8 @@ Set-Content $data 'personal data'
 $custom = Join-Path $env:TEMP ('torro-custom-' + [guid]::NewGuid())
 $process = Start-Process (Setup-For $Newer 'torroworkplace') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$custom") -Wait -PassThru
 if ($process.ExitCode -eq 0 -or (Test-Path $custom) -or (Test-Path $root)) { throw 'Custom destination was accepted or changed files' }
+$process = Start-Process (Setup-For $Newer 'torroworkplace') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCANCEL') -Wait -PassThru
+if ($process.ExitCode -eq 0 -or (Test-Path $root)) { throw 'Disabling safety cancellation was accepted' }
 # Both dependency removal orders; every app is installed, reinstalled and upgraded in each pass.
 foreach ($reverse in @($false, $true)) {
     foreach ($app in $apps) { Run-Installer (Setup-For $Older $app.program) }

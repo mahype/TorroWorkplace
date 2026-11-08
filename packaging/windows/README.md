@@ -68,6 +68,12 @@ payload program, version and marker before the first program is copied; unresolv
 Per-file hash/version checks also prevent Skip from advancing metadata beyond an old executable. Setup
 never starts an app elevated, installs a system service, or removes personal data.
 
+Inno swallows Before/AfterInstall exceptions. Safety failures therefore request native cancellation
+through `WizardForm.Close` and block all subsequent payload entries, rather than relying on a thrown
+exception. The lock gate runs from `[Dirs]`, after Restart Manager; Inno processes cancellation before
+copying any application files. `/NOCANCEL` is rejected so this works in silent mode too. This path is
+source-checked against pinned Inno 7.1.1 but still requires the actual Windows-VM smoke test.
+
 Unsigned by decision: users may see SmartScreen. `tests/windows-smoke.ps1` (relative to `packaging/`)
 must be run only in a fresh disposable x64 Windows VM as administrator, with older RC and newer stable
 Setups. It tests all apps, repeat/upgrade, downgrade refusal, both uninstall orders and shared lifetimes.
