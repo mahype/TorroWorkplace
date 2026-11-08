@@ -1585,7 +1585,10 @@ impl Editor {
         let matching = |name: &str| zone::matches(name, query);
         let machine = self.machine_zone.clone().filter(|name| matching(name));
         let own = self.form.time_zone.clone().filter(|own| Some(own) != self.machine_zone.as_ref() && matching(own));
-        let found = zone::search(query, ZONE_RESULTS).into_iter().map(str::to_string).collect();
+        // A zone listed above does not come again among the results (design review of #543).
+        let listed = |name: &&str| Some(*name) == machine.as_deref() || Some(*name) == own.as_deref();
+        let found = zone::search(query, ZONE_RESULTS).into_iter().filter(|name| !listed(name)).map(str::to_string);
+        let found = found.collect();
         let sections = [
             (tr("Your time zone"), machine.into_iter().collect()),
             (tr("This event"), own.into_iter().collect()),
@@ -3954,10 +3957,15 @@ mod tests {
         assert!(matches!(editor.update(Message::ZoneFirst), Action::None));
         assert_eq!(editor.form.time_zone.as_deref(), Some("Europe/Berlin"), "the zone stays");
         assert_eq!(editor.popup, Some(Popup::Zone), "the menu stays open");
-        // Words that match the event's zone keep its section and drop this computer's.
+        // Words that match the event's zone keep its section and drop this computer's; the zone
+        // is not listed a second time among the results.
         editor.update(Message::ZoneQuery("berlin".into()));
-        let titles: Vec<&str> = editor.zone_sections().into_iter().map(|(title, _)| title).collect();
-        assert_eq!(titles, [tr("This event"), tr("Time zones")]);
+        let sections = editor.zone_sections();
+        assert_eq!(sections, [(tr("This event"), vec!["Europe/Berlin".to_string()])]);
+        editor.update(Message::ZoneQuery("europe".into()));
+        let sections = editor.zone_sections();
+        assert_eq!(sections[0].0, tr("This event"));
+        assert!(!sections[1].1.contains(&"Europe/Berlin".to_string()), "Berlin only once");
         // Nothing typed: this computer's zone and the event's, no search results.
         editor.update(Message::ZoneQuery(String::new()));
         let sections = editor.zone_sections();
