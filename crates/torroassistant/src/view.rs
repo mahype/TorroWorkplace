@@ -922,8 +922,7 @@ impl App {
         } else if self.sending {
             widgets::busy_button(tr("Sending…"), style::button::primary)
         } else {
-            let ready = self.choice.is_some() && !self.editor.text().trim().is_empty();
-            widgets::text_button(Some(Icon::Send), tr("Send"), style::button::primary, ready.then_some(Message::Send))
+            send_button(class, self.choice.is_some() && !self.editor.text().trim().is_empty())
         });
         let mut composer = column![editor, controls].spacing(space::s());
         // What the next message may do (issue #132): the mode, and the access it leaves in words.
@@ -1164,8 +1163,13 @@ impl App {
         }
         let shown = self.glance_answer();
         let content: Element<'_, Message> = if strip {
-            // A flat strip: the answer takes the height, the composer stands beside it.
-            row![shown, container(composer).width(size::props()).center_y(Fill)].spacing(space::m()).into()
+            // A flat strip: the answer takes the height, the composer stands beside it at the bottom,
+            // and the answer's last line – or the quiet word – on the field's middle line (issue #547),
+            // so both share one axis. Only a written answer ends in body text.
+            let answer = self.transcript.last_answer().is_some_and(|entry| self.answer_shows(entry.seq));
+            let last = if answer && !self.waits_in_glance() { body } else { typo::meta() };
+            let shown = container(shown).height(Fill).padding(Padding::ZERO.bottom(glance_lift(last)));
+            row![shown, container(composer).width(size::props()).align_bottom(Fill)].spacing(space::m()).into()
         } else {
             let mut column = column![].spacing(space::s());
             if self.current.is_some() {
@@ -1367,6 +1371,33 @@ fn prompt_state<'a>(title: &'a str, hint: &'a str, action: Option<(&'a str, Mess
     container(content).center(Fill).padding(space::xl()).into()
 }
 
+/// "Send" of the composer (issue #547): primary while a message can go, else framed (`boxed`) and off,
+/// so it never reads as a dark red block. In narrow windows only its icon, as the mail button does.
+fn send_button<'a>(class: SizeClass, ready: bool) -> Element<'a, Message> {
+    let on_press = ready.then_some(Message::Send);
+    match (class, ready) {
+        (SizeClass::Wide | SizeClass::Medium, true) => {
+            widgets::text_button(Some(Icon::Send), tr("Send"), style::button::primary, on_press)
+        }
+        (SizeClass::Wide | SizeClass::Medium, false) => {
+            widgets::text_button(Some(Icon::Send), tr("Send"), style::button::boxed, on_press)
+        }
+        (SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip, true) => {
+            widgets::compact_button(Icon::Send, tr("Send"), style::button::primary, on_press)
+        }
+        (SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip, false) => {
+            widgets::boxed_button(Icon::Send, tr("Send"), on_press)
+        }
+    }
+}
+
+/// How far the answer of the strip stands above its bottom (issue #547): the middle of its last line,
+/// in `last`, on the middle line of the field beside it, which stands at the bottom.
+fn glance_lift(last: typo::Level) -> f32 {
+    let field = typo::line_height(typo::body()) + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom;
+    ((field - typo::line_height(last)) / 2.0).max(0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1387,6 +1418,22 @@ mod tests {
         let mut app = App::new(backend, Source::from_args(vec!["--demo".to_string()]), launch).0;
         let _ = app.update(Message::CoreReady);
         app
+    }
+
+    /// Issue #547: "Send" builds in every class, ready or not, and the strip lifts the answer's last
+    /// line onto the middle line of its field – a line of meta text a little more than one of body.
+    #[test]
+    fn send_and_the_strip_line_up() {
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow, SizeClass::Mini, SizeClass::Strip] {
+            for ready in [true, false] {
+                drop(send_button(class, ready));
+            }
+        }
+        assert_eq!(glance_lift(typo::body()), style::INPUT_PADDING.top);
+        assert!(glance_lift(typo::meta()) >= glance_lift(typo::body()));
+        let mut app = launched(&[]);
+        let _ = app.update(Message::Resized(Size::new(1200.0, 200.0)));
+        let _ = app.view();
     }
 
     /// Issue #459: the main window and a chat window show the shell with its top row – panel button
