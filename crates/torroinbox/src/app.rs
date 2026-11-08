@@ -6921,18 +6921,18 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let destination = if dialog { None } else { Some(SaveTo::Target("demo-invoices".into())) };
         self.menu = None;
         self.show_save_menu(id, &scope);
-        if let Some(ticket) = self.begin_save(id, scope.clone(), destination) {
-            if let Some(job) = self.saves.iter_mut().find(|job| job.ticket == ticket) {
-                job.state = state;
-                job.explanation = if open == Open::SaveShortened {
-                    trf(
-                        "Saved to {where}, shortened: the mail is too long",
-                        &[("where", &job.place.as_deref().unwrap_or("Invoices"))],
-                    )
-                } else {
-                    text
-                };
-            }
+        if let Some(ticket) = self.begin_save(id, scope.clone(), destination)
+            && let Some(job) = self.saves.iter_mut().find(|job| job.ticket == ticket)
+        {
+            job.state = state;
+            job.explanation = if open == Open::SaveShortened {
+                trf(
+                    "Saved to {where}, shortened: the mail is too long",
+                    &[("where", &job.place.as_deref().unwrap_or("Invoices"))],
+                )
+            } else {
+                text
+            };
         }
     }
 
