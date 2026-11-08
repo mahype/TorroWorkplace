@@ -54,7 +54,7 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, SidebarMode};
 use torro_gui::theme::{self, Appearance, palette, size, space};
-use torro_gui::widgets::{self, Trail};
+use torro_gui::widgets::{self, DROPDOWN_SEARCH, Dropdown, DropdownEvent, Trail};
 use torro_gui::{style, typo};
 use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, Level, Rights, Selection};
 use torro_ipc::web::{SearchProviderId, SearchProviderInfo};
@@ -257,6 +257,17 @@ pub struct State {
     web_allowed: bool,
     /// The assistant's rights for `web` were sent in this setup: at most once.
     web_granted: bool,
+    /// The dropdown that is open: the decision model for mail or the assistant's account (issue #554).
+    menus: Dropdown<SetupMenu>,
+}
+
+/// A dropdown of the setup (issue #554).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SetupMenu {
+    /// "Decision model" under "Sort mail into categories".
+    SortModel,
+    /// "Assistant" under "Use for".
+    Engine,
 }
 
 impl State {
@@ -295,6 +306,7 @@ impl State {
             providers: None,
             web_allowed: true,
             web_granted: false,
+            menus: Dropdown::default(),
         }
     }
 
@@ -486,7 +498,7 @@ pub enum Message {
     Source(SourceRef, bool),
     /// "Quiet during busy events".
     Quiet(bool),
-    /// The AI account a new chat of the assistant starts with, by engine id.
+    /// The AI account a new chat of the assistant starts with, by engine id. Closes its dropdown.
     Engine(String),
     /// Enable or disable model sorting of mail in the recommended AI setup.
     SortMail(bool),
@@ -494,8 +506,10 @@ pub enum Message {
     UseCloud,
     /// "Cancel" in that question, a click next to it, or Escape: the switch stays off.
     CancelCloud,
-    /// Choose a decision model for mail from the connected AI accounts.
+    /// Choose a decision model for mail from the connected AI accounts. Closes its dropdown.
     SortModel(String, String),
+    /// The trigger or the menu of a dropdown of the setup (issue #554).
+    Menus(DropdownEvent<SetupMenu>),
     /// The search providers of the web step (task WEB.7): the view of Assistant › Settings › Tools.
     Web(web::Message),
     /// "Let the assistant use it" on the web step.
@@ -709,7 +723,12 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             state.quiet = Some(quiet);
             stay(set(SettingKey::QuietWhenBusy, serde_json::Value::Bool(quiet)))
         }
+        Message::Menus(event) => match state.menus.update(event) {
+            true => stay(Action::Focus(DROPDOWN_SEARCH.into())),
+            false => stay(Action::None),
+        },
         Message::Engine(engine) => {
+            state.menus.close();
             state.engine = Some(engine.clone());
             let default = torro_core::settings::AssistantDefault { engine, model: None, effort: None };
             stay(set(SettingKey::AssistantDefault, torro_core::settings::AssistantDefault::to_value(Some(&default))))
@@ -746,6 +765,7 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             stay(Action::None)
         }
         Message::SortModel(engine, model) => {
+            state.menus.close();
             state.asking_cloud = None;
             state.pending_sort = None;
             state.confirmed_sort = None;
@@ -1310,9 +1330,24 @@ fn mail_sorting_request(state: &State, data: &Data) -> Option<Request> {
     Some(Request::SetAiSlot { slot: AiSlot::Decide, engine: Some(engine), model: Some(model), effort })
 }
 
-/// Escape: stop waiting for the browser or adding another Nextcloud, else one step back; nothing
+/// Escape: close the open dropdown, stop waiting for the browser or adding another Nextcloud, else one step back; nothing
 /// on the first step.
 pub fn escape(state: &State) -> Option<Message> {
+    if state.menus.open().is_some() {
+        return Some(Message::Menus(DropdownEvent::Close));
+    }
+    // The dropdown of "Choose a provider", in the dialog or on the AI step (issue #554).
+    if let Some(dialog) = &state.dialog
+        && let Some(close) = wizard::escape(dialog)
+    {
+        return Some(Message::Dialog(close));
+    }
+    if state.dialog.is_none()
+        && state.step == Step::Ai
+        && let Some(close) = torro_settings_ui::accounts::ai_setup::escape(&state.ai_setup)
+    {
+        return Some(Message::AiSetup(close));
+    }
     if state.asking_cloud.is_some() {
         return Some(Message::CancelCloud);
     }
@@ -1418,16 +1453,32 @@ pub fn header(state: &State, class: SizeClass) -> Element<'_, Message> {
 }
 
 /// The add-account dialog over the whole window, while it is open; else the question before sorting
-/// mail in the cloud (issue #424).
+/// mail in the cloud (issue #424); else the open dropdown (issue #554).
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
     if state.dialog.is_none()
         && let Some((model, provider)) = &state.asking_cloud
     {
         return Some(torro_settings_ui::parts::cloud_consent(model, provider, Message::UseCloud, Message::CancelCloud));
     }
+    if state.dialog.is_none()
+        && let Some(menu) = pages::menu(state, data)
+    {
+        return Some(menu);
+    }
+    if state.dialog.is_none()
+        && state.step == Step::Ai
+        && let Some(menu) = torro_settings_ui::accounts::ai_setup::overlay(&state.ai_setup)
+    {
+        return Some(menu.map(Message::AiSetup));
+    }
     let dialog = state.dialog.as_ref()?;
     let content = wizard::view(dialog, data).map(Message::Dialog);
-    Some(super::dialog(content, size::form_max(), Message::Dialog(wizard::Message::Close)))
+    let layer = super::dialog(content, size::form_max(), Message::Dialog(wizard::Message::Close));
+    // The open dropdown of the dialog over it (issue #554).
+    Some(match wizard::overlay(dialog) {
+        Some(menu) => iced::widget::stack![layer, menu.map(Message::Dialog)].into(),
+        None => layer,
+    })
 }
 
 /// The page of the current step over the fixed footer.
@@ -1498,6 +1549,24 @@ mod tests {
             | Outcome::Close(Action::Send(Request::SetSetting { key, value })) => Some((*key, value.clone())),
             _ => None,
         }
+    }
+
+    /// Issue #554: the setup's choices are dropdowns: opening one asks for the search field's focus
+    /// and shows it over the page, Escape closes it before it goes a step back, a choice closes it.
+    #[test]
+    fn the_dropdowns_of_the_setup_open_and_close() {
+        let data = data();
+        let mut setup = state(Step::Ai);
+        let opened = update(&mut setup, Message::Menus(DropdownEvent::Toggle(SetupMenu::Engine)), &data);
+        assert!(matches!(opened, Outcome::Stay(Action::Focus(_))), "{opened:?}");
+        assert!(pages::menu(&setup, &data).is_some() && overlay(&setup, &data).is_some());
+        assert!(matches!(escape(&setup), Some(Message::Menus(DropdownEvent::Close))), "Escape closes the menu first");
+        let _ = update(&mut setup, Message::Engine("ai:openrouter@openrouter.ai".into()), &data);
+        assert_eq!(setup.menus.open(), None, "a choice closes it");
+        let _ = update(&mut setup, Message::Menus(DropdownEvent::Toggle(SetupMenu::SortModel)), &data);
+        assert_eq!(setup.menus.open(), Some(&SetupMenu::SortModel));
+        let _ = update(&mut setup, Message::Menus(DropdownEvent::Close), &data);
+        assert!(pages::menu(&setup, &data).is_none());
     }
 
     #[test]

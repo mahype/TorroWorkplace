@@ -23,11 +23,12 @@
 //! [`Message::New`]: "Create filter…" at a mail (`from:<address>`) and "Create filter from search…".
 
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, row, space as blank};
+use iced::widget::{column, container, row, space as blank, stack};
 use iced::{Alignment, Element, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::Icon;
 use torro_gui::theme::{palette, size, space};
+use torro_gui::widgets::{Align, Dropdown, DropdownEvent, MenuItem, MenuSection};
 use torro_gui::{style, typo, widgets};
 use torro_ipc::{Request, Response};
 use torro_mail::{Category, CategoryGroup, FILTER_QUERY_MAX, FilterFile, MailFilter};
@@ -47,6 +48,17 @@ pub struct State {
     preview: Preview,
     saving: Option<Saving>,
     apply: Option<Apply>,
+    /// The dropdowns of the dialog, over it (issue #554).
+    menus: Dropdown<Menu>,
+}
+
+/// The dropdowns of the dialog (issue #554).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Menu {
+    /// "Account".
+    Account,
+    /// "Category" of "Set category".
+    Category,
 }
 
 impl State {
@@ -179,9 +191,19 @@ pub enum Message {
     Close,
     /// "Done" under the result of a run.
     Dismiss,
+    /// The trigger or the menu of a dropdown of the dialog (issue #554).
+    Menus(DropdownEvent<Menu>),
 }
 
 pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
+    // Any other click of the dialog – a choice of the open dropdown among them – closes it.
+    if let Message::Menus(event) = message {
+        if state.menus.update(event) {
+            return Action::Focus(widgets::DROPDOWN_SEARCH);
+        }
+        return Action::None;
+    }
+    state.menus.close();
     match message {
         Message::New { query, account } => {
             open(state, Form::new(query, account));
@@ -294,6 +316,9 @@ fn first_category(data: &Data) -> Category {
 /// What Escape means while the dialog is open: its question first, then "Cancel". `None` without
 /// it.
 pub fn escape(state: &State) -> Option<Message> {
+    if state.menus.open().is_some() {
+        return Some(Message::Menus(DropdownEvent::Close));
+    }
     state.is_open().then_some(Message::Close)
 }
 
@@ -621,7 +646,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
     };
     let search = widgets::group(
         tr("Search"),
-        vec![row_frame(query, false), setting_row(None, tr("Account"), None, super::categorization::choice_box(account_picker(form, data)))],
+        vec![row_frame(query, false), setting_row(None, tr("Account"), None, super::categorization::choice_box(dropdown_button(&state.menus, Menu::Account, &account_choices(form, data), &form.account)))],
         Some(
             tr("Written like a search: from:, to:, subject:, has:attachment … On new mail, plain words are looked for in the subject and the addresses.")
                 .to_string(),
@@ -638,7 +663,12 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
             None,
             tr("Category"),
             None,
-            super::categorization::choice_box(category_picker(form, data)),
+            super::categorization::choice_box(dropdown_button(
+                &state.menus,
+                Menu::Category,
+                &category_choices(form, data),
+                &form.category.unwrap_or(Category::Promotion),
+            )),
         ));
     }
     then.push(super::categorization::check_row(
@@ -701,11 +731,44 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
         .push(widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Close)))
         .push(save);
     let content = content.push(buttons);
-    Some(crate::parts::dialog(
+    let dialog = crate::parts::dialog(
         iced::widget::scrollable(content).style(style::scrollable),
         size::form_max(),
         Message::Close,
-    ))
+    );
+    // An open dropdown stands over the dialog, in the same layer (issue #554).
+    Some(match dropdown(state, form, data) {
+        Some(menu) => stack![dialog, menu].into(),
+        None => dialog,
+    })
+}
+
+/// The open dropdown of the dialog under its field, the chosen entry marked.
+fn dropdown<'a>(state: &'a State, form: &'a Form, data: &'a Data) -> Option<Element<'a, Message>> {
+    let key = state.menus.open()?;
+    let sections = match key {
+        Menu::Account => entries(account_choices(form, data), &form.account, Message::Account),
+        Menu::Category => {
+            entries(category_choices(form, data), &form.category.unwrap_or(Category::Promotion), Message::Category)
+        }
+    };
+    Some(state.menus.view(key, sections, size::props(), Align::Start, Message::Menus))
+}
+
+/// `choices` as the entries of a dropdown, `chosen` marked; a pick sends `on_pick`.
+fn entries<'a, T: Clone + PartialEq>(
+    choices: Vec<Choice<T>>,
+    chosen: &T,
+    on_pick: impl Fn(T) -> Message,
+) -> Vec<MenuSection<'a, Message>> {
+    let items = choices
+        .into_iter()
+        .map(|choice| {
+            let current = choice.value == *chosen;
+            MenuItem::plain(choice.words, on_pick(choice.value)).current(current)
+        })
+        .collect();
+    vec![MenuSection::new(items)]
 }
 
 /// A mistake under a part of the dialog, in the colour of mistakes.
@@ -733,7 +796,7 @@ fn question<'a>(asked: Ask) -> Element<'a, Message> {
 
 /// The categories of the catalogue, by group, "Group · Name"; one that is gone stays chosen as
 /// "Unknown category" until another is picked.
-fn category_picker<'a>(form: &'a Form, data: &'a Data) -> Element<'a, Message> {
+fn category_choices(form: &Form, data: &Data) -> Vec<Choice<Category>> {
     let mut categories: Vec<Choice<Category>> = CategoryGroup::ALL
         .into_iter()
         .flat_map(|group| data.categories.iter().filter(move |info| info.group == group))
@@ -742,11 +805,11 @@ fn category_picker<'a>(form: &'a Form, data: &'a Data) -> Element<'a, Message> {
     if let Some(gone) = form.category.filter(|held| !data.categories.iter().any(|info| info.category == *held)) {
         categories.push(Choice::new(gone, tr("Unknown category")));
     }
-    choose(categories, form.category, Message::Category)
+    categories
 }
 
 /// "All accounts" and every mail account.
-fn account_picker<'a>(form: &'a Form, data: &'a Data) -> Element<'a, Message> {
+fn account_choices(form: &Form, data: &Data) -> Vec<Choice<Option<String>>> {
     let mut accounts = vec![Choice::new(None, tr("All accounts"))];
     accounts.extend(
         data.accounts
@@ -759,10 +822,10 @@ fn account_picker<'a>(form: &'a Form, data: &'a Data) -> Element<'a, Message> {
     {
         accounts.push(Choice::new(Some(gone.clone()), account_label(data, gone)));
     }
-    choose(accounts, Some(form.account.clone()), Message::Account)
+    accounts
 }
 
-/// One choice of a pick list: what it stands for and its words.
+/// One choice of a dropdown: what it stands for and its words.
 #[derive(Debug, Clone)]
 struct Choice<T> {
     value: T,
@@ -787,22 +850,16 @@ impl<T> std::fmt::Display for Choice<T> {
     }
 }
 
-/// A pick list of `choices` in the look of a row's choice, with `chosen` closed in it.
-fn choose<'a, T: Clone + PartialEq + 'a>(
-    choices: Vec<Choice<T>>,
-    chosen: Option<T>,
-    on_pick: impl Fn(T) -> Message + 'a,
+/// The trigger of a dropdown of `choices` as wide as its place, with the words of `chosen` (issue
+/// #554).
+fn dropdown_button<'a, T: PartialEq>(
+    menus: &Dropdown<Menu>,
+    key: Menu,
+    choices: &[Choice<T>],
+    chosen: &T,
 ) -> Element<'a, Message> {
-    let chosen = chosen.and_then(|wanted| choices.iter().find(|held| held.value == wanted).cloned());
-    iced::widget::pick_list(choices, chosen, move |choice: Choice<T>| on_pick(choice.value))
-        .width(iced::Fill)
-        .padding(style::pick_list_padding())
-        .text_size(typo::caption().size)
-        .text_line_height(typo::caption().line_height)
-        .font(typo::caption().font)
-        .style(style::pick_list)
-        .menu_style(style::pick_list_menu)
-        .into()
+    let words = choices.iter().find(|held| held.value == *chosen).map(|held| held.words.clone()).unwrap_or_default();
+    menus.button_fill(key, words, Message::Menus)
 }
 
 #[cfg(test)]
@@ -1100,5 +1157,25 @@ mod tests {
         assert!(data.mail_filters.iter().all(|filter| filter.file.is_none() || filter.file == Some(FilterFile::Trash)));
         let answer = demo.call(Request::PreviewMailFilter { query: "from:x".into(), account: None }).await;
         assert!(matches!(answer, Ok(Response::MailFilterPreview { count: 12, .. })));
+    }
+
+    /// Issue #554: the dialog's dropdowns open over it with the focus on their search, Escape closes
+    /// the dropdown before the dialog, and a pick closes it.
+    #[test]
+    fn the_dialogs_dropdowns_open_over_it_and_close() {
+        let (data, mut state) = (data(), State::default());
+        let _ = last(&mut state, &data, vec![Message::New { query: String::new(), account: None }]);
+        let opened = update::<()>(&mut state, Message::Menus(DropdownEvent::Toggle(Menu::Account)), &data);
+        assert_eq!(opened, Action::Focus(widgets::DROPDOWN_SEARCH));
+        assert!(dropdown(&state, state.form.as_ref().expect("open"), &data).is_some());
+        assert!(matches!(escape(&state), Some(Message::Menus(DropdownEvent::Close))));
+        let _ = update::<()>(&mut state, Message::Account(Some(ACCOUNT.into())), &data);
+        assert!(state.menus.open().is_none(), "a pick closes the dropdown");
+        assert!(matches!(escape(&state), Some(Message::Close)), "then Escape closes the dialog");
+        let toggle = Message::Menus(DropdownEvent::Toggle(Menu::Category));
+        let _ = last(&mut state, &data, vec![Message::SetCategory(true), toggle]);
+        assert!(overlay(&state, &data).is_some());
+        let _ = update::<()>(&mut state, Message::Category(Category::Invoice), &data);
+        assert!(state.menus.open().is_none());
     }
 }

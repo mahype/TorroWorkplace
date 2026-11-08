@@ -993,7 +993,6 @@ pub(crate) mod tests {
         assert_eq!(size::HAIRLINE, 1.0, "a line stays one logical pixel");
         let sides = l.control_padding.horizontal;
         assert_eq!(style::button_padding(), iced::Padding::new(0.0).left(sides).right(sides));
-        assert_eq!(style::pick_list_padding(), iced::Padding::new(6.0).left(sides).right(sides));
     }
 
     #[test]

@@ -172,47 +172,78 @@ pub fn switch<'a, M: Clone + 'a>(on: bool, change: impl Fn(bool) -> M + 'a) -> E
     iced::widget::toggler(on).size(style::CHECK_SIZE).style(style::toggler).on_toggle(change).into()
 }
 
-/// A row's choice as a pick list in the look of a secondary button ("Show new mail", "Mail
-/// colors"): `options` as their `Display` says, `chosen` in the closed list.
-pub fn picker<'a, T, L, M>(options: L, chosen: T, on_pick: impl Fn(T) -> M + 'a) -> Element<'a, M>
-where
-    T: std::fmt::Display + PartialEq + Clone + 'a,
-    L: std::borrow::Borrow<[T]> + 'a,
-    M: Clone + 'a,
-{
-    styled_pick_list(options, chosen, on_pick).into()
+/// A row of a settings group whose choice of up to four options is a [`widgets::segmented`] control
+/// (issue #554, the rule of choices): beside `label` (and its `detail`) while both fit, under them
+/// where they do not (`widgets::segment_column`). `options` are the words and what each sends,
+/// `active` the one chosen. More options take a `widgets::Dropdown`.
+pub fn segmented_row<'a, M: Clone + 'a>(
+    label: &'a str,
+    detail: Option<String>,
+    options: Vec<(String, M)>,
+    active: usize,
+) -> Element<'a, M> {
+    let mut rows = segmented_rows(vec![SegmentedRow { label, detail, options, active }]);
+    rows.pop().unwrap_or_else(|| iced::widget::space().into())
 }
 
-/// [`picker`] as wide as its row: for a narrow page where the list stands under its label and
-/// several lists should line up (the slots of the control centre's AI section). Never a fixed width:
-/// a pick list cuts a value that does not fit without "…".
-pub fn picker_fill<'a, T, L, M>(options: L, chosen: T, on_pick: impl Fn(T) -> M + 'a) -> Element<'a, M>
-where
-    T: std::fmt::Display + PartialEq + Clone + 'a,
-    L: std::borrow::Borrow<[T]> + 'a,
-    M: Clone + 'a,
-{
-    styled_pick_list(options, chosen, on_pick).width(Fill).into()
+/// One row of [`segmented_rows`]: what [`segmented_row`] takes.
+pub struct SegmentedRow<'a, M> {
+    /// The row's name.
+    pub label: &'a str,
+    /// The line under the name, if any.
+    pub detail: Option<String>,
+    /// The words of the segments and what each sends.
+    pub options: Vec<(String, M)>,
+    /// The segment chosen.
+    pub active: usize,
 }
 
-/// The pick list of [`picker`] and [`picker_fill`] in the suite's look.
-fn styled_pick_list<'a, T, L, M>(
-    options: L,
-    chosen: T,
-    on_pick: impl Fn(T) -> M + 'a,
-) -> iced::widget::PickList<'a, T, L, T, M>
-where
-    T: std::fmt::Display + PartialEq + Clone + 'a,
-    L: std::borrow::Borrow<[T]> + 'a,
-    M: Clone + 'a,
-{
-    iced::widget::pick_list(options, Some(chosen), on_pick)
-        .padding(style::pick_list_padding())
-        .text_size(typo::caption().size)
-        .text_line_height(typo::caption().line_height)
-        .font(typo::caption().font)
-        .style(style::pick_list)
-        .menu_style(style::pick_list_menu)
+/// Several [`segmented_row`]s that decide together (design review of #554): all beside their labels
+/// in one column as wide as the widest control, or all under them, so the controls of a page stand
+/// on one axis instead of some beside and some under their labels.
+pub fn segmented_rows<'a, M: Clone + 'a>(rows: Vec<SegmentedRow<'a, M>>) -> Vec<Element<'a, M>> {
+    let slot = rows
+        .iter()
+        .map(|row| {
+            let words: Vec<&str> = row.options.iter().map(|(word, _)| word.as_str()).collect();
+            widgets::segmented_width(&words)
+        })
+        .fold(0.0, f32::max);
+    let texts: Vec<(&'a str, Option<String>)> = rows.iter().map(|row| (row.label, row.detail.clone())).collect();
+    rows.into_iter()
+        .map(|SegmentedRow { label, detail, options, active }| {
+            let texts = texts.clone();
+            iced::widget::responsive(move |room| {
+                let peers = texts.iter().map(|(label, detail)| (*label, detail.as_deref()));
+                let column = widgets::segment_column(slot, peers, room.width);
+                widgets::segment_row(label, detail.clone(), widgets::segmented(options.clone(), active), column)
+            })
+            .height(iced::Length::Shrink)
+            .into()
+        })
+        .collect()
+}
+
+/// A settings row whose control is `width` wide (issue #554): `beside` – the whole row, the control
+/// at its end – while `label` and `detail` fit beside it (`widgets::segment_column`), else the label
+/// and detail with `under` on a line of its own below them. For a row whose control holds segments
+/// next to something else (an address field, "Remove"), where [`segmented_row`] does not fit.
+pub fn stacking_row<'a, M: 'a>(
+    label: impl Into<String>,
+    detail: Option<String>,
+    width: f32,
+    beside: impl Fn() -> Element<'a, M> + 'a,
+    under: impl Fn() -> Element<'a, M> + 'a,
+) -> Element<'a, M> {
+    let label = label.into();
+    iced::widget::responsive(move |room| {
+        match widgets::segment_column(width, [(label.as_str(), detail.as_deref())], room.width) {
+            Some(_) => beside(),
+            None => widgets::segment_row(label.clone(), detail.clone(), under(), None),
+        }
+    })
+    .height(iced::Length::Shrink)
+    .into()
 }
 
 /// "131K context", "1M context": how much fits into one conversation, rounded to thousands or, from

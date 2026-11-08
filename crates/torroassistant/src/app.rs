@@ -1089,7 +1089,9 @@ impl App {
                 } else if self.menu.is_some() || self.drawer {
                     self.close_menus();
                 } else if self.settings.is_some() {
-                    self.settings = None;
+                    // Through the host: its open section menu or a page's own menu closes first
+                    // (review of #554), else the host answers `Outcome::Close`.
+                    return self.update(Message::SettingsHost(torro_settings_ui::host::Message::Back));
                 } else {
                     self.notice = None;
                 }

@@ -20,13 +20,13 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, pick_list, responsive, row, scrollable};
+use iced::widget::{Space, column, container, responsive, row, scrollable};
 use iced::{Alignment, Element, Fill, Length, Theme};
 use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, ChartColor, palette, size, space};
 use torro_gui::units::format_count;
-use torro_gui::widgets::{self, Anchor, ChartColumn, ChartSeries};
+use torro_gui::widgets::{self, Anchor, ChartColumn, ChartSeries, Dropdown};
 use torro_gui::{datetime, layout, style, typo};
 use torro_ipc::StatsRange;
 use torro_ipc::inbox::CategoryInfo;
@@ -128,6 +128,9 @@ pub struct State {
     /// The overview or the statistics page showed at the last look: coming into view again checks the
     /// age of the numbers.
     pub showing: bool,
+    /// The account dropdown of the overview and the statistics page (issue #554); its menu is
+    /// `App::overview_account_menu`.
+    pub account_menu: Dropdown<()>,
 }
 
 impl Default for State {
@@ -144,6 +147,7 @@ impl Default for State {
             muting: None,
             stale: false,
             showing: false,
+            account_menu: Dropdown::default(),
         }
     }
 }
@@ -216,132 +220,6 @@ pub struct AccountChoice {
 impl std::fmt::Display for AccountChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.label)
-    }
-}
-
-/// Options keep their identity and full name; only the closed selection is ellipsized. Iced's
-/// native menu draws single-height rows without wrapping, so provide measured line breaks and
-/// enough row padding for the longest name. The closed control keeps its normal height.
-#[derive(Clone)]
-struct AccountLabel {
-    choice: AccountChoice,
-    text: String,
-}
-
-impl PartialEq for AccountLabel {
-    fn eq(&self, other: &Self) -> bool {
-        self.choice.account == other.choice.account
-    }
-}
-
-impl std::fmt::Display for AccountLabel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.text)
-    }
-}
-
-fn account_label(choice: AccountChoice, width: f32) -> AccountLabel {
-    let mut text = String::new();
-    let mut line = String::new();
-    for character in choice.label.chars() {
-        let mut next = line.clone();
-        next.push(character);
-        if !line.is_empty() && typo::text_width(&next, typo::caption()) > width {
-            let split = line
-                .rfind(char::is_whitespace)
-                .map_or(line.len(), |at| at + line[at..].chars().next().map_or(0, char::len_utf8));
-            text.push_str(&line[..split]);
-            text.push('\n');
-            line = line[split..].to_owned();
-        }
-        line.push(character);
-    }
-    text.push_str(&line);
-    AccountLabel { choice, text }
-}
-
-/// Only overrides the closed control's height. All native selection, keyboard and menu behaviour
-/// stays with PickList; its larger vertical padding is reserved for the multiline menu rows.
-struct AccountPicker<'a>(Element<'a, Message>);
-
-impl iced::advanced::Widget<Message, Theme, iced::Renderer> for AccountPicker<'_> {
-    fn tag(&self) -> iced::advanced::widget::tree::Tag {
-        self.0.as_widget().tag()
-    }
-    fn state(&self) -> iced::advanced::widget::tree::State {
-        self.0.as_widget().state()
-    }
-    fn children(&self) -> Vec<iced::advanced::widget::Tree> {
-        self.0.as_widget().children()
-    }
-    fn diff(&self, tree: &mut iced::advanced::widget::Tree) {
-        self.0.as_widget().diff(tree);
-    }
-    fn size(&self) -> iced::Size<Length> {
-        iced::Size::new(self.0.as_widget().size().width, Length::Fixed(size::control_sm()))
-    }
-    fn layout(
-        &mut self,
-        tree: &mut iced::advanced::widget::Tree,
-        renderer: &iced::Renderer,
-        limits: &iced::advanced::layout::Limits,
-    ) -> iced::advanced::layout::Node {
-        let node = self.0.as_widget_mut().layout(tree, renderer, limits);
-        iced::advanced::layout::Node::new(iced::Size::new(node.size().width, size::control_sm()))
-    }
-    fn operate(
-        &mut self,
-        tree: &mut iced::advanced::widget::Tree,
-        layout: iced::advanced::Layout<'_>,
-        renderer: &iced::Renderer,
-        operation: &mut dyn iced::advanced::widget::Operation,
-    ) {
-        self.0.as_widget_mut().operate(tree, layout, renderer, operation);
-    }
-    fn update(
-        &mut self,
-        tree: &mut iced::advanced::widget::Tree,
-        event: &iced::Event,
-        layout: iced::advanced::Layout<'_>,
-        cursor: iced::mouse::Cursor,
-        renderer: &iced::Renderer,
-        clipboard: &mut dyn iced::advanced::Clipboard,
-        shell: &mut iced::advanced::Shell<'_, Message>,
-        viewport: &iced::Rectangle,
-    ) {
-        self.0.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
-    }
-    fn mouse_interaction(
-        &self,
-        tree: &iced::advanced::widget::Tree,
-        layout: iced::advanced::Layout<'_>,
-        cursor: iced::mouse::Cursor,
-        viewport: &iced::Rectangle,
-        renderer: &iced::Renderer,
-    ) -> iced::mouse::Interaction {
-        self.0.as_widget().mouse_interaction(tree, layout, cursor, viewport, renderer)
-    }
-    fn draw(
-        &self,
-        tree: &iced::advanced::widget::Tree,
-        renderer: &mut iced::Renderer,
-        theme: &Theme,
-        style: &iced::advanced::renderer::Style,
-        layout: iced::advanced::Layout<'_>,
-        cursor: iced::mouse::Cursor,
-        viewport: &iced::Rectangle,
-    ) {
-        self.0.as_widget().draw(tree, renderer, theme, style, layout, cursor, viewport);
-    }
-    fn overlay<'b>(
-        &'b mut self,
-        tree: &'b mut iced::advanced::widget::Tree,
-        layout: iced::advanced::Layout<'b>,
-        renderer: &iced::Renderer,
-        viewport: &iced::Rectangle,
-        translation: iced::Vector,
-    ) -> Option<iced::advanced::overlay::Element<'b, Message, Theme, iced::Renderer>> {
-        self.0.as_widget_mut().overlay(tree, layout, renderer, viewport, translation)
     }
 }
 
@@ -719,6 +597,7 @@ pub fn controls<'a>(state: &State, accounts: &[(String, String)], wrap: bool) ->
     let choices = account_choices(accounts);
     let chosen = RANGES.iter().position(|range| *range == state.range).unwrap_or_default();
     let account = state.account.clone();
+    let anchor = state.account_menu.anchor(&());
     responsive(move |room| {
         let ranges =
             widgets::segmented(RANGES.map(|range| (range_name(range), Message::MailOverviewRange(range))), chosen);
@@ -730,26 +609,15 @@ pub fn controls<'a>(state: &State, accounts: &[(String, String)], wrap: bool) ->
         let stacked = wrap && range_width + space::s() + natural.min(size::sidebar()) > room.width;
         let available = if stacked { room.width } else { (room.width - range_width - space::s()).max(0.0) };
         let width = natural.min(size::sidebar()).min(available);
-        let text_width = (width - size::control_sm()).max(0.0);
-        let shown: Vec<_> = choices.iter().cloned().map(|choice| account_label(choice, text_width)).collect();
-        let lines = shown.iter().map(|label| label.text.lines().count()).max().unwrap_or(1);
-        let selected = selected
-            .map(|choice| AccountLabel { text: typo::ellipsize(&choice.label, typo::caption(), text_width), choice });
-        let mut padding = style::pick_list_padding();
-        let extra = lines.saturating_sub(1) as f32 * typo::line_height(typo::caption()) / 2.0;
-        padding.top += extra;
-        padding.bottom += extra;
-        let accounts: Element<'a, Message> =
-            pick_list(shown, selected, |label: AccountLabel| Message::MailOverviewAccount(label.choice))
-                .width(width)
-                .padding(padding)
-                .text_size(typo::caption().size)
-                .text_line_height(typo::caption().line_height)
-                .font(typo::caption().font)
-                .style(style::pick_list)
-                .menu_style(style::pick_list_menu)
-                .into();
-        let accounts = widgets::with_tooltip(Element::new(AccountPicker(accounts)), hint);
+        let accounts = widgets::with_tooltip(
+            container(widgets::select_button_fill(
+                &anchor,
+                hint.clone(),
+                Message::MailOverviewAccountMenu(widgets::DropdownEvent::Toggle(())),
+            ))
+            .width(width),
+            hint,
+        );
         if stacked {
             column![container(ranges).width(Fill).align_right(Fill), container(accounts).width(Fill).align_right(Fill)]
                 .spacing(space::s())
@@ -1168,26 +1036,17 @@ pub(crate) mod tests {
 
     #[test]
     fn account_menu_options_preserve_distinguishing_suffixes_and_original_values() {
-        let choices: Vec<_> = ["A", "B"]
-            .map(|suffix| AccountChoice {
-                account: Some(format!("mail:{suffix}@example.org")),
-                label: format!("International correspondence and product announcements — Account {suffix}"),
-            })
-            .into_iter()
-            .collect();
-        for width in [120.0, 204.0] {
-            let labels: Vec<_> = choices.iter().cloned().map(|choice| account_label(choice, width)).collect();
-            assert_ne!(labels[0].text, labels[1].text, "suffixes remain visible before selection");
-            for (choice, label) in choices.iter().zip(&labels) {
-                assert_eq!(label.text.replace('\n', ""), choice.label, "no text discarded");
-                assert_eq!(&label.choice, choice, "selection publishes the original value");
-                assert!(label.text.lines().all(|line| typo::text_width(line, typo::caption()) <= width));
-                let closed = AccountLabel {
-                    choice: choice.clone(),
-                    text: typo::ellipsize(&choice.label, typo::caption(), width),
-                };
-                assert!(closed == *label, "native selected-row identity ignores display wrapping");
-            }
+        let accounts = ["A", "B"].map(|suffix| {
+            (
+                format!("mail:{suffix}@example.org"),
+                format!("International correspondence and product announcements — Account {suffix}"),
+            )
+        });
+        let choices = account_choices(&accounts);
+        assert_ne!(choices[1].label, choices[2].label);
+        for (choice, (id, name)) in choices.iter().skip(1).zip(&accounts) {
+            assert_eq!(choice.account.as_ref(), Some(id));
+            assert_eq!(&choice.label, name, "the shared Torro menu gets the complete tooltip text");
         }
     }
 

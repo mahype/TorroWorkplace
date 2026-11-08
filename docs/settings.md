@@ -73,8 +73,8 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 - **Detailseiten** (dritte Ebene: ein Konto, ein Client, ein Server, #314) haben einen festen
   Aufbau aus den Bausteinen in `torro_gui::widgets`: Kopf (`detail_head`: Kachel, Name, eine
   Meta-Zeile, Status-Pille nur bei Aussagekraft, eine Aktion, der Rest im „…“-Menü) · Reiter
-  (`tabs`, nur ab mehr als drei Gruppen, „Overview“ zuerst; zu schmal werden sie eine
-  Auswahlliste) · Offene Fragen (`question_card`, nur wenn etwas wartet) · Kennzahlen
+  (`tabs`, nur ab mehr als drei Gruppen, „Overview“ zuerst; zu schmal lassen sie sich
+  seitlich schieben, #554) · Offene Fragen (`question_card`, nur wenn etwas wartet) · Kennzahlen
   (`stat_grid`, 2–4 mit Bezug) · Anteile (`share_strip` mit Legende) · Tabellen (`settings_table`,
   nur für viele gleichartige Dinge; die Wertspalten bleiben so breit wie bei `content_max`, #464) · Einstellungspaare (`setting_pairs`, links Titel und Warum-Satz,
   rechts das Bedienelement) · Speicherleiste. Keine Statistik als Einstellungszeile, jede Zahl nur

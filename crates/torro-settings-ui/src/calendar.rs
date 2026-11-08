@@ -11,13 +11,18 @@
 //! The floating card "Night" at the moon on the timeline's canvas (`torrocalendar::app`) is the
 //! app's own quick way to the same setting; this section is the full page behind the gear and
 //! does not touch it.
+//!
+//! Every choice is a Torro dropdown (issue #554): the default reminder a plain menu, the quarter
+//! hours of night and working hours a menu with search. Each section keeps which one is open in its
+//! [`reminders::State`], [`night::State`] or [`working_hours::State`] and shows it in its `overlay`.
 
-use iced::widget::{column, pick_list, row, toggler};
+use iced::widget::{column, row, toggler};
 use iced::{Alignment, Element};
 
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Quarter;
 use torro_gui::theme::{self, space};
+use torro_gui::widgets::{Align, DROPDOWN_SEARCH, Dropdown, DropdownEvent, MenuItem, MenuSection};
 use torro_gui::{layout, style, typo, widgets};
 use torro_ipc::{Request, SettingKey};
 
@@ -31,11 +36,27 @@ pub mod reminders {
 
     use super::*;
 
+    /// The dropdowns of the page.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum Choice {
+        /// "Default reminder".
+        DefaultLead,
+    }
+
+    /// What the page keeps between frames: which dropdown is open.
+    #[derive(Debug, Clone, Default, PartialEq)]
+    pub struct State {
+        pub menus: Dropdown<Choice>,
+    }
+
     /// What a row changes (`settings.set_setting reminders`): only its own field, so two windows
     /// changing different fields never overwrite each other. A calendar's own reminder kind is
-    /// [`crate::collections::Message::Reminder`], not here.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    /// [`crate::collections::Message::Reminder`], not here. [`Message::Menus`] only opens and
+    /// closes the dropdown.
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Message {
+        /// The dropdown of the default reminder opened, closed or was searched.
+        Menus(DropdownEvent<Choice>),
         Enabled(bool),
         DefaultLead(Lead),
         AllDisplays(bool),
@@ -48,10 +69,12 @@ pub mod reminders {
     }
 
     impl Message {
-        /// The change as the value of `settings.set_setting reminders`: only this field.
-        fn value(self) -> serde_json::Value {
+        /// The change as the value of `settings.set_setting reminders`: only this field; `None` for
+        /// the dropdown's own events, which change nothing.
+        fn value(self) -> Option<serde_json::Value> {
             use serde_json::json;
-            match self {
+            Some(match self {
+                Message::Menus(_) => return None,
                 Message::Enabled(on) => json!({"enabled": on}),
                 Message::DefaultLead(Lead(minutes)) => json!({"defaultLead": minutes}),
                 Message::AllDisplays(on) => json!({"allDisplays": on}),
@@ -64,7 +87,7 @@ pub mod reminders {
                 Message::FreeEvents(on) => json!({"freeEvents": on}),
                 Message::OutsideWorkHours(on) => json!({"outsideWorkHours": on}),
                 Message::NeverDuringCall(on) => json!({"neverDuringCall": on}),
-            }
+            })
         }
     }
 
@@ -97,14 +120,39 @@ pub mod reminders {
         }
     }
 
-    pub fn update<A>(message: Message) -> Action<A> {
-        Action::send(Request::SetSetting { key: SettingKey::Reminders, value: message.value() })
+    /// Opening the dropdown asks for the focus of its search field; a choice closes it.
+    pub fn update<A>(state: &mut State, message: Message) -> Action<A> {
+        if let Message::Menus(event) = message {
+            return if state.menus.update(event) { Action::Focus(DROPDOWN_SEARCH) } else { Action::None };
+        }
+        state.menus.close();
+        match message.value() {
+            Some(value) => Action::send(Request::SetSetting { key: SettingKey::Reminders, value }),
+            None => Action::None,
+        }
     }
 
     /// "Reminders" (on/off, default, every display, sound) and "Which events" (task ER2.4).
-    pub fn view(data: &Data) -> Element<'_, Message> {
+    pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         let reminders = &data.settings.reminders;
-        column(vec![group(reminders.clone()), which_events(reminders)]).spacing(layout::section_gap()).into()
+        column(vec![group(state, reminders.clone()), which_events(reminders)]).spacing(layout::section_gap()).into()
+    }
+
+    /// The open dropdown of the default reminder, under its button.
+    pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+        let key = state.menus.open()?;
+        let chosen = Lead(data.settings.reminders.default_lead);
+        let items = Lead::ALL
+            .into_iter()
+            .map(|lead| MenuItem::plain(lead.to_string(), Message::DefaultLead(lead)).current(lead == chosen))
+            .collect();
+        let sections = vec![MenuSection::new(items)];
+        Some(state.menus.view(key, sections, widgets::menu_width(), Align::End, Message::Menus))
+    }
+
+    /// Escape closes the open dropdown first.
+    pub fn escape(state: &State) -> Option<Message> {
+        state.menus.open().map(|_| Message::Menus(DropdownEvent::Close))
     }
 
     /// A switch for one field of the reminders.
@@ -113,14 +161,8 @@ pub mod reminders {
     }
 
     /// The group "Reminders": on or off, the default reminder, every display, the sound.
-    fn group(reminders: Reminders) -> Element<'static, Message> {
-        let lead = pick_list(Lead::ALL, Some(Lead(reminders.default_lead)), Message::DefaultLead)
-            .padding(style::pick_list_padding())
-            .text_size(typo::caption().size)
-            .text_line_height(typo::caption().line_height)
-            .font(typo::caption().font)
-            .style(style::pick_list)
-            .menu_style(style::pick_list_menu);
+    fn group(state: &State, reminders: Reminders) -> Element<'static, Message> {
+        let lead = state.menus.button(Choice::DefaultLead, Lead(reminders.default_lead).to_string(), Message::Menus);
         widgets::group(
             tr("Reminders"),
             vec![
@@ -193,6 +235,10 @@ pub mod reminders {
             }
         }
 
+        fn update(message: Message) -> Action<()> {
+            super::update(&mut State::default(), message)
+        }
+
         /// Every row of the reminders changes only its own field (task ER2.4).
         #[test]
         fn each_row_sets_only_its_field() {
@@ -226,9 +272,28 @@ pub mod reminders {
         #[tokio::test]
         async fn the_page_builds_with_default_and_stored_reminders() {
             let default = Data::default();
-            let _: Element<'_, Message> = view(&default);
+            let state = State::default();
+            let _: Element<'_, Message> = view(&state, &default);
             let stored = Data { settings: torro_core::settings::Settings::default(), ..Data::default() };
-            let _: Element<'_, Message> = view(&stored);
+            let _: Element<'_, Message> = view(&state, &stored);
+            assert!(overlay(&state, &stored).is_none(), "no dropdown is open");
+        }
+
+        /// Issue #554: the default reminder is a Torro dropdown; opening it asks for the focus,
+        /// Escape closes it, a choice closes it and saves.
+        #[test]
+        fn the_dropdown_opens_closes_and_chooses() {
+            let (mut state, data) = (State::default(), Data::default());
+            let open = super::update::<()>(&mut state, Message::Menus(DropdownEvent::Toggle(Choice::DefaultLead)));
+            assert_eq!(open, Act::Focus(DROPDOWN_SEARCH));
+            assert!(overlay(&state, &data).is_some());
+            assert_eq!(escape(&state), Some(Message::Menus(DropdownEvent::Close)));
+            let chosen = super::update::<()>(&mut state, Message::DefaultLead(Lead(Some(5))));
+            assert_eq!(sent(chosen), serde_json::json!({"defaultLead": 5}));
+            assert_eq!((state.menus.open(), escape(&state)), (None, None), "the choice closes it");
+            let _ = super::update::<()>(&mut state, Message::Menus(DropdownEvent::Toggle(Choice::DefaultLead)));
+            assert_eq!(super::update::<()>(&mut state, Message::Menus(DropdownEvent::Close)), Act::None);
+            assert!(overlay(&state, &data).is_none());
         }
     }
 }
@@ -241,31 +306,53 @@ pub mod night {
 
     use super::*;
 
-    /// "From" or "Until" of the night.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    /// What the page keeps between frames: which of its two dropdowns is open.
+    #[derive(Debug, Clone, Default, PartialEq)]
+    pub struct State {
+        pub menus: Dropdown<End>,
+    }
+
+    /// "From" or "Until" of the night, or the dropdowns opening and closing.
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Message {
+        Menus(DropdownEvent<End>),
         From(Quarter),
         To(Quarter),
     }
 
     /// The whole night goes as one value, with the other end as the stored settings have it, so
-    /// two windows never leave half of it behind.
-    pub fn update<A>(message: Message, data: &Data) -> Action<A> {
+    /// two windows never leave half of it behind. Opening a dropdown asks for the focus of its
+    /// search field; a choice closes it.
+    pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
         let night = data.settings.night;
         let night = match message {
+            Message::Menus(event) => return menus(&mut state.menus, event),
             Message::From(from) => Night { from, ..night },
             Message::To(to) => Night { to, ..night },
         };
+        state.menus.close();
         Action::send(Request::SetSetting { key: SettingKey::Night, value: night.to_value() })
     }
 
-    pub fn view(data: &Data) -> Element<'_, Message> {
+    pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         let footer = tr(
             "The timeline folds the night away and the radar shades it; neither counts it as free time. The same time twice means no night.",
         );
         let night = data.settings.night;
-        let row = setting_row(None, tr("Night"), None, from_until(night.from, night.to, Message::From, Message::To));
+        let control = from_until(&state.menus, night.from, night.to, Message::Menus);
+        let row = setting_row(None, tr("Night"), None, control);
         widgets::group(tr("Night"), vec![row], Some(footer.to_string()))
+    }
+
+    /// The open dropdown of "From" or "Until", with search.
+    pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+        let night = data.settings.night;
+        quarter_menu(&state.menus, night.from, night.to, Message::From, Message::To, Message::Menus)
+    }
+
+    /// Escape closes the open dropdown first.
+    pub fn escape(state: &State) -> Option<Message> {
+        state.menus.open().map(|_| Message::Menus(DropdownEvent::Close))
     }
 
     #[cfg(test)]
@@ -287,6 +374,10 @@ pub mod night {
             Quarter::new(hour, minute).expect("quarter")
         }
 
+        fn update(message: Message, data: &Data) -> Action<()> {
+            super::update(&mut State::default(), message, data)
+        }
+
         /// A time of the night sets the whole night, with the other end kept.
         #[test]
         fn a_time_sets_the_whole_night() {
@@ -303,7 +394,24 @@ pub mod night {
 
         #[test]
         fn the_page_builds() {
-            let _: Element<'_, Message> = view(&Data::default());
+            let _: Element<'_, Message> = view(&State::default(), &Data::default());
+        }
+
+        /// Issue #554: "From" opens a dropdown with search and the focus; Escape closes it; a
+        /// quarter hour closes it and sets the night.
+        #[test]
+        fn the_dropdown_opens_closes_and_chooses() {
+            let (mut state, data) = (State::default(), Data::default());
+            let open = super::update::<()>(&mut state, Message::Menus(DropdownEvent::Toggle(End::From)), &data);
+            assert_eq!(open, Act::Focus(DROPDOWN_SEARCH));
+            assert!(overlay(&state, &data).is_some());
+            let _ = super::update::<()>(&mut state, Message::Menus(DropdownEvent::Query("23".into())), &data);
+            assert_eq!(state.menus.query(), "23");
+            assert_eq!(escape(&state), Some(Message::Menus(DropdownEvent::Close)));
+            let chosen = super::update::<()>(&mut state, Message::From(quarter(23, 0)), &data);
+            assert_eq!(sent(chosen), serde_json::json!({"from": "23:00", "to": "06:00"}));
+            assert!(overlay(&state, &data).is_none(), "the choice closes it");
+            assert_eq!(escape(&state), None);
         }
     }
 }
@@ -315,9 +423,16 @@ pub mod working_hours {
 
     use super::*;
 
-    /// "From" or "Until" of the working hours.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    /// What the page keeps between frames: which of its two dropdowns is open.
+    #[derive(Debug, Clone, Default, PartialEq)]
+    pub struct State {
+        pub menus: Dropdown<End>,
+    }
+
+    /// "From" or "Until" of the working hours, or the dropdowns opening and closing.
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Message {
+        Menus(DropdownEvent<End>),
         From(Quarter),
         To(Quarter),
     }
@@ -344,24 +459,42 @@ pub mod working_hours {
                 WorkingHours { from, to: at(to.minutes().max(from.minutes() + room)) }
             }
             Message::To(to) => WorkingHours { to, ..hours },
+            // The dropdowns' own events change no time.
+            Message::Menus(_) => hours,
         }
     }
 
     /// Both ends go as one value, with the other as the stored settings have it, so two windows
-    /// never leave half of it behind.
-    pub fn update<A>(message: Message, data: &Data) -> Action<A> {
+    /// never leave half of it behind. Opening a dropdown asks for the focus of its search field; a
+    /// choice closes it.
+    pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
+        if let Message::Menus(event) = message {
+            return menus(&mut state.menus, event);
+        }
+        state.menus.close();
         let hours = changed(data.settings.working_hours, message);
         Action::send(Request::SetSetting { key: SettingKey::WorkingHours, value: hours.to_value() })
     }
 
-    pub fn view(data: &Data) -> Element<'_, Message> {
+    pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         let footer = tr(
             "The calendar draws your working hours as a thin line in day, week, timeline and radar. The same time twice means no working hours.",
         );
         let hours = data.settings.working_hours;
-        let control = from_until(hours.from, hours.to, Message::From, Message::To);
+        let control = from_until(&state.menus, hours.from, hours.to, Message::Menus);
         let row = setting_row(None, tr("Working hours"), None, control);
         widgets::group(tr("Working hours"), vec![row], Some(footer.to_string()))
+    }
+
+    /// The open dropdown of "From" or "Until", with search.
+    pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+        let hours = data.settings.working_hours;
+        quarter_menu(&state.menus, hours.from, hours.to, Message::From, Message::To, Message::Menus)
+    }
+
+    /// Escape closes the open dropdown first.
+    pub fn escape(state: &State) -> Option<Message> {
+        state.menus.open().map(|_| Message::Menus(DropdownEvent::Close))
     }
 
     #[cfg(test)]
@@ -385,6 +518,10 @@ pub mod working_hours {
 
         fn hours(from: Quarter, to: Quarter) -> WorkingHours {
             WorkingHours { from, to }
+        }
+
+        fn update(message: Message, data: &Data) -> Action<()> {
+            super::update(&mut State::default(), message, data)
         }
 
         /// A time sets both ends, with the other kept while it stays in order.
@@ -423,34 +560,74 @@ pub mod working_hours {
 
         #[test]
         fn the_page_builds() {
-            let _: Element<'_, Message> = view(&Data::default());
+            let _: Element<'_, Message> = view(&State::default(), &Data::default());
+        }
+
+        /// Issue #554: "Until" opens a dropdown with the focus; a quarter hour closes it.
+        #[test]
+        fn the_dropdown_opens_and_a_choice_closes_it() {
+            let (mut state, data) = (State::default(), Data::default());
+            let open = super::update::<()>(&mut state, Message::Menus(DropdownEvent::Toggle(End::Until)), &data);
+            assert_eq!(open, Act::Focus(DROPDOWN_SEARCH));
+            assert!(overlay(&state, &data).is_some());
+            let chosen = super::update::<()>(&mut state, Message::To(quarter(16, 0)), &data);
+            assert_eq!(sent(chosen), serde_json::json!({"from": "08:00", "to": "16:00"}));
+            assert!(overlay(&state, &data).is_none());
+            let short = hours(quarter(9, 0), quarter(10, 0));
+            assert_eq!(changed(short, Message::Menus(DropdownEvent::Close)), short);
         }
     }
 }
 
-/// "From" and "Until", each a list of the quarter hours of a day: the control of the night and of
-/// the working hours.
-fn from_until<M: Clone + 'static>(
+/// The two dropdowns of a span of the day: "From" and "Until" of the night and of the working hours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum End {
+    From,
+    Until,
+}
+
+/// An event of the dropdowns of [`End`]: opening one asks for the focus of its search field.
+fn menus<A>(menus: &mut Dropdown<End>, event: DropdownEvent<End>) -> Action<A> {
+    if menus.update(event) { Action::Focus(DROPDOWN_SEARCH) } else { Action::None }
+}
+
+/// "From" and "Until", each a dropdown of the quarter hours of a day: the control of the night and
+/// of the working hours.
+fn from_until<'a, M: Clone + 'a>(
+    menus: &Dropdown<End>,
+    from: Quarter,
+    to: Quarter,
+    on_menus: fn(DropdownEvent<End>) -> M,
+) -> Element<'a, M> {
+    let label = |text: &'static str| typo::text(typo::meta(), text).style(theme::text_2);
+    row(vec![
+        label(tr("From")).into(),
+        menus.button(End::From, from.to_string(), on_menus),
+        label(tr("Until")).into(),
+        menus.button(End::Until, to.to_string(), on_menus),
+    ])
+    .spacing(space::s())
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// The open dropdown of [`from_until`]: the 96 quarter hours with search (issue #554), the
+/// chosen one marked.
+fn quarter_menu<'a, M: Clone + 'a>(
+    menus: &'a Dropdown<End>,
     from: Quarter,
     to: Quarter,
     on_from: fn(Quarter) -> M,
     on_to: fn(Quarter) -> M,
-) -> Element<'static, M> {
-    let label = |text: &'static str| typo::text(typo::meta(), text).style(theme::text_2);
-    row(vec![label(tr("From")).into(), time_field(from, on_from), label(tr("Until")).into(), time_field(to, on_to)])
-        .spacing(space::s())
-        .align_y(Alignment::Center)
-        .into()
-}
-
-/// A time on the quarter hour as a pick list in the look of a secondary button.
-fn time_field<M: Clone + 'static>(time: Quarter, on_pick: fn(Quarter) -> M) -> Element<'static, M> {
-    pick_list(Quarter::all().collect::<Vec<_>>(), Some(time), on_pick)
-        .padding(style::pick_list_padding())
-        .text_size(typo::caption().size)
-        .text_line_height(typo::caption().line_height)
-        .font(typo::caption().font)
-        .style(style::pick_list)
-        .menu_style(style::pick_list_menu)
-        .into()
+    on_menus: fn(DropdownEvent<End>) -> M,
+) -> Option<Element<'a, M>> {
+    let key = menus.open()?;
+    let (chosen, on_pick) = match key {
+        End::From => (from, on_from),
+        End::Until => (to, on_to),
+    };
+    let items = Quarter::all()
+        .map(|quarter| MenuItem::plain(quarter.to_string(), on_pick(quarter)).current(quarter == chosen))
+        .collect();
+    Some(menus.view(key, vec![MenuSection::new(items)], widgets::menu_width(), Align::End, on_menus))
 }

@@ -200,7 +200,7 @@ use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Utc
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, pick_list, row, rule, stack, text_editor, text_input};
+use iced::widget::{Space, column, container, row, rule, stack, text_editor, text_input};
 use iced::{Alignment, Element, Fill, Padding, Point, Rectangle, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::design::Density;
@@ -220,7 +220,8 @@ use torro_gui::split::{self, Limits, Split, SplitEvent};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{
-    self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, RailEvent, RailGroup, ToastAction, Trail,
+    self, Align, Anchor, DROPDOWN_SEARCH, Dropdown, DropdownEvent, Mark, MenuItem, MenuSection, Placement, RailEvent,
+    RailGroup, ToastAction, Trail,
 };
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
@@ -2639,6 +2640,8 @@ fn settings_escape(pane: &SettingsPane) -> Option<SettingsMessage> {
         CATEGORIZATION_SECTION => settings_mail::escape(state).map(SettingsMessage::Mail),
         ATTACHMENTS_SECTION => settings_mail::attachments_escape(state).map(SettingsMessage::Mail),
         settings_mail::ACCOUNTS_SECTION => settings_mail::accounts_escape(state).map(SettingsMessage::Mail),
+        // Its dropdown (issue #554).
+        settings_mail::READING_SECTION => settings_mail::reading_escape(state).map(SettingsMessage::Mail),
         _ => None,
     }
 }
@@ -2966,6 +2969,9 @@ pub struct App<S> {
     /// The calendar picked on an invitation's card (task E8.3c, [`App::invite_calendar`]); `None`
     /// until one is picked.
     invite_pick: Option<String>,
+    /// The open dropdown of a field (issue #554): a property of "Make task" or "Make event", or the
+    /// calendar of an invitation's card.
+    fields: Dropdown<Field>,
     /// The events of the shown calendars around the invitation of the message read (task E8.3c):
     /// the message's id and what `calendar.list_events` answered for it.
     invite_events: Option<(String, Result<Vec<CalendarEvent>, String>)>,
@@ -3320,6 +3326,9 @@ pub enum Message {
     TaskList(TaskList),
     /// The dialog's due day.
     TaskDue(Due),
+    /// The trigger or the menu of a field's dropdown (issue #554): a property of "Make task" or
+    /// "Make event", or the calendar of an invitation's card.
+    Fields(DropdownEvent<Field>),
     /// "Create task", or `Enter` in the dialog.
     TaskConfirm,
     /// The source's answer to `inbox.create_task_from_item`, with the name of the list for the
@@ -3702,6 +3711,8 @@ pub enum Message {
     MailOverviewRange(torro_ipc::StatsRange),
     /// The account menu of the overview: one account, or every one.
     MailOverviewAccount(mail_overview::AccountChoice),
+    /// The trigger or the menu of the overview's account dropdown (issue #554).
+    MailOverviewAccountMenu(DropdownEvent<()>),
     /// "Table" of the statistics page: the day chart's numbers as a table (`true`) or as columns.
     MailOverviewTable(bool),
     /// "Retry" after the overview could not load.
@@ -4430,6 +4441,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             logos: mail::Logos::new(),
             invite_calendars: None,
             invite_pick: None,
+            fields: Dropdown::default(),
             invite_events: None,
             folders: Vec::new(),
             messages: Vec::new(),
@@ -4619,6 +4631,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             if self.menu.is_some()
                 || self.drawer
                 || self.panel_open()
+                || self.dropdown_open()
                 || self.hint.is_some()
                 || self.settings.is_some()
                 || self.view.search().is_some()
@@ -5020,6 +5033,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     self.hint = None;
                 }
             }
+            // While a dropdown is open its menu has the keys (issue #554): Enter must not create the
+            // task of the dialog under it.
+            Message::Key(_) if self.dropdown_open() => {}
             Message::Key(key) => {
                 if let Some(command) = keys::command(self.focus(), key) {
                     // Keys inside an open menu (its digits, the bell's arrows) leave it where it is.
@@ -5216,8 +5232,19 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::TaskLists(result) => return self.take_lists(result),
             Message::TaskTitle(title) => self.task.title = title,
-            Message::TaskList(list) => self.task.list = Some(list),
-            Message::TaskDue(due) => self.task.due = due,
+            Message::TaskList(list) => {
+                self.fields.close();
+                self.task.list = Some(list);
+            }
+            Message::TaskDue(due) => {
+                self.fields.close();
+                self.task.due = due;
+            }
+            Message::Fields(event) => {
+                if self.fields.update(event) {
+                    return operation::focus(DROPDOWN_SEARCH);
+                }
+            }
             Message::TaskConfirm => return self.create_task(),
             Message::TaskCreated(Ok(()), list) => {
                 self.note(trf("Task created in {list}", &[("list", &list)]));
@@ -5232,10 +5259,19 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::Calendars(result) => self.take_calendars(result),
             Message::EventTitle(title) => self.event.title = title,
-            Message::EventCalendar(calendar) => self.event.calendar = Some(calendar),
+            Message::EventCalendar(calendar) => {
+                self.fields.close();
+                self.event.calendar = Some(calendar);
+            }
             Message::EventDay(day) => self.event.day = day,
-            Message::EventStart(start) => self.event.start = start,
-            Message::EventLength(length) => self.event.length = length,
+            Message::EventStart(start) => {
+                self.fields.close();
+                self.event.start = start;
+            }
+            Message::EventLength(length) => {
+                self.fields.close();
+                self.event.length = length;
+            }
             Message::EventConfirm => return self.create_event(),
             Message::EventCreated(Ok(()), calendar) => {
                 self.note(trf("Event created in {calendar}", &[("calendar", &calendar)]));
@@ -5398,7 +5434,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::CloseMenu => self.close_menus(),
             Message::Escape => {
-                if self.rail_open.is_some() {
+                if self.dropdown_open() {
+                    // An open dropdown lies over everything, the dialog it belongs to included
+                    // (issue #554): Escape closes it first and leaves the dialog open.
+                    self.close_dropdowns();
+                } else if self.rail_open.is_some() {
                     // The open group of the rail lies in front of everything but the menus, which close it.
                     self.rail_open = None;
                     self.rail_pending = None;
@@ -5413,8 +5453,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     return self.update(Message::SettingsPage(message));
                 } else if self.settings.is_some() {
                     // The settings cover the content area; Escape gives it back (task S.20). What
-                    // was open behind them – the panel, a search – comes back with it.
-                    self.leave_settings();
+                    // was open behind them – the panel, a search – comes back with it. Through the
+                    // host: its open section menu or a page's own menu closes first (review of #554).
+                    return self.update(Message::SettingsHost(host::Message::Back));
                 } else if self.suggesting {
                     self.suggesting = false;
                 } else if self.focus_reply.is_some() {
@@ -6100,7 +6141,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::AnswerInvitation(account, id, answer) => return self.answer_invitation(account, id, answer),
             Message::InvitationAnswered(id, answer, result) => return self.invitation_answered(id, answer, result),
-            Message::InviteCalendar(calendar) => self.invite_pick = Some(calendar.id),
+            Message::InviteCalendar(calendar) => {
+                self.fields.close();
+                self.invite_pick = Some(calendar.id);
+            }
             Message::InviteCalendars(result) => self.invite_calendars = Some(result),
             Message::InviteEvents(id, result) => {
                 if self.letter.as_ref().is_some_and(|letter| letter.id == id) {
@@ -6148,7 +6192,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 }
             }
             Message::MailOverviewRange(range) => self.mail_overview.range = range,
-            Message::MailOverviewAccount(choice) => self.mail_overview.account = choice.account,
+            Message::MailOverviewAccount(choice) => {
+                self.mail_overview.account_menu.close();
+                self.mail_overview.account = choice.account;
+            }
+            Message::MailOverviewAccountMenu(event) => {
+                if self.mail_overview.account_menu.update(event) {
+                    return operation::focus(DROPDOWN_SEARCH);
+                }
+            }
             Message::MailOverviewTable(table) => self.mail_overview.table = table,
             Message::MailOverviewRetry => {
                 self.mail_overview.data = None;
@@ -8671,6 +8723,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .map(|dialog| dialog.map(|message| Message::SettingsPage(SettingsMessage::Mail(message))))
     }
 
+    /// Whether the open settings show only a dropdown of their page, no dialog ([`settings_mail::menu_only`]).
+    fn settings_menu_only(&self) -> bool {
+        let Some(pane) = self.settings.as_ref() else { return false };
+        let SettingsState::Mail(state) = &pane.sections else { return false };
+        settings_mail::menu_only(state, pane.host.data(), pane.host.current().id)
+    }
+
     /// The header bar and the content area of the open settings, as the host draws them. Statistics
     /// (issue #485) is the window's own page, its "Mute" menu hanging at `mute_at`.
     fn settings_frame<'a>(
@@ -10889,8 +10948,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.is_glance() {
             return Cover::Nothing;
         }
-        // A dialog of the settings (the save target's editor) lies in the window, under the top row.
-        let question = self.settings_dialog(class).is_some();
+        // A dialog of the settings (the save target's editor) lies in the window, under the top row;
+        // a dropdown of a settings page dims nothing (review of #554).
+        let question = self.settings_dialog(class).is_some() && !self.settings_menu_only();
         // The overview's panel covers the band like a mail's (issue #409).
         let panel = self.panel_open() || (class == SizeClass::Medium && self.mail_overview_shown());
         Cover::dialog(question).or(Cover::panel(class, panel)).or(Cover::drawer(class, self.drawer))
@@ -11070,7 +11130,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             let mute = (self.menu == Some(Menu::Mute) && self.menu_at == MenuAt::Overview).then(|| {
                 widgets::floating(&overview_at, Placement::Below(Align::End), self.mute_menu(), Message::CloseMenu)
             });
-            let overlay = self.settings_dialog(class).or(mute).or(frame.overlay);
+            // The account dropdown of the statistics page (issue #554) at its button.
+            let overlay =
+                self.settings_dialog(class).or(mute).or_else(|| self.overview_account_menu()).or(frame.overlay);
             return shell::shell(class, sidebar, frame.header, frame.body, None)
                 .rail(settings_rail)
                 .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
@@ -11180,8 +11242,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 Some(widgets::floating(&category_at, below, self.choice_menu(title), Message::CloseMenu))
             }
             Some(Menu::Pick) => Some(widgets::floating(&snooze_at, below, self.picker(), Message::CloseMenu)),
-            Some(Menu::Task) => Some(widgets::floating(&task_at, dialog, self.task_dialog(), Message::CloseMenu)),
-            Some(Menu::Event) => Some(widgets::floating(&event_at, dialog, self.event_dialog(), Message::CloseMenu)),
+            // The open dropdown of a field over its dialog, in the same layer (issue #554).
+            Some(Menu::Task) => Some(over_dialog(&task_at, dialog, self.task_dialog(), self.field_menu())),
+            Some(Menu::Event) => Some(over_dialog(&event_at, dialog, self.event_dialog(), self.field_menu())),
             Some(Menu::Hide) => Some(widgets::floating(
                 &hide_at,
                 below,
@@ -11247,6 +11310,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         // The open group of the collapsed rail, over the whole window like a menu (task E14.3); it
         // never shows with one (`App::update` closes it when a menu opens).
         let layer = layer.or_else(|| self.rail_layer(class, &anchors));
+        // The dropdowns of an invitation's card and of the overview (issue #554), with no menu open.
+        let layer = layer.or_else(|| self.field_menu()).or_else(|| self.overview_account_menu());
         // "Focus & reply" (task E19.5) in place of list and reader, laid out alike in every size; no
         // panel, no action rail.
         if let Some(focus) = self.focusing() {
@@ -11778,6 +11843,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     _ => None,
                 },
                 calendar: self.invite_calendar(),
+                menus: Some(&self.fields),
                 events: match &self.invite_events {
                     Some((id, Ok(events))) if *id == letter.id => Some(events),
                     _ => None,
@@ -13106,10 +13172,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             None => widgets::prop_placeholder(tr("Loading lists…")),
             Some(Err(_)) => widgets::prop_placeholder(tr("Couldn't load the task lists.")),
             Some(Ok(lists)) if lists.is_empty() => widgets::prop_placeholder(tr("No task lists yet")),
-            Some(Ok(lists)) => choice(lists.clone(), self.task.list.clone(), Message::TaskList),
+            Some(Ok(_)) => choice(&self.fields, Field::TaskList, self.task.list.as_ref()),
         };
         // A folder's message asks for its due day as an entry does (task E8.1b).
-        let due = choice(self.task.due.offered(), Some(self.task.due), Message::TaskDue);
+        let due = choice(&self.fields, Field::TaskDue, Some(&self.task.due));
         // The note always (issue #120): the AI writes one there, the person may too.
         let notes = dialog_field(tr("Notes"), &self.task.notes, Message::TaskNotes);
         let rows = column![
@@ -13160,7 +13226,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             None => widgets::prop_placeholder(tr("Loading calendars…")),
             Some(Err(_)) => widgets::prop_placeholder(tr("Couldn't load the calendars.")),
             Some(Ok(calendars)) if calendars.is_empty() => widgets::prop_placeholder(tr("No calendars yet")),
-            Some(Ok(calendars)) => choice(calendars.clone(), self.event.calendar.clone(), Message::EventCalendar),
+            Some(Ok(_)) => choice(&self.fields, Field::EventCalendar, self.event.calendar.as_ref()),
         };
         let (today, day) = (local_today(self.now), self.event.day);
         let previous = (day > today).then(|| Message::EventDay(day - Days::new(1)));
@@ -13172,8 +13238,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         ]
         .spacing(space::xs())
         .align_y(Alignment::Center);
-        let start = choice(self.event.start.offered(), Some(self.event.start), Message::EventStart);
-        let length = choice(self.event.length.offered(), Some(self.event.length), Message::EventLength);
+        let start = choice(&self.fields, Field::EventStart, Some(&self.event.start));
+        let length = choice(&self.fields, Field::EventLength, Some(&self.event.length));
         let mut rows = column![
             widgets::prop_line(tr("Calendar"), Some(Mark::Icon(Icon::Calendar)), calendar, None),
             widgets::prop_line(tr("Day"), Some(Mark::Icon(Icon::CalendarDays)), day_row, None),
@@ -13212,8 +13278,59 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.menu = if self.menu == Some(menu) { None } else { Some(menu) };
     }
 
+    /// Whether a dropdown is open (issue #554): a field's or the overview's account menu.
+    fn dropdown_open(&self) -> bool {
+        self.fields.open().is_some() || self.mail_overview.account_menu.open().is_some()
+    }
+
+    /// Closes the open dropdown, if one is.
+    fn close_dropdowns(&mut self) {
+        self.fields.close();
+        self.mail_overview.account_menu.close();
+    }
+
+    /// The open menu of a field's dropdown (issue #554), under its field: the values of the field,
+    /// the chosen one marked; with [`widgets::SEARCH_FROM`] values or more with a search field.
+    fn field_menu(&self) -> Option<Element<'_, Message>> {
+        let key = self.fields.open()?;
+        let ok = |list: &Option<Result<Vec<TaskList>, String>>| match list {
+            Some(Ok(list)) => list.clone(),
+            _ => Vec::new(),
+        };
+        let sections = match key {
+            Field::TaskList => choice_section(ok(&self.lists), self.task.list.as_ref(), Message::TaskList),
+            Field::TaskDue => choice_section(self.task.due.offered(), Some(&self.task.due), Message::TaskDue),
+            Field::EventCalendar => {
+                choice_section(ok(&self.calendars), self.event.calendar.as_ref(), Message::EventCalendar)
+            }
+            Field::EventStart => {
+                choice_section(self.event.start.offered(), Some(&self.event.start), Message::EventStart)
+            }
+            Field::EventLength => {
+                choice_section(self.event.length.offered(), Some(&self.event.length), Message::EventLength)
+            }
+            Field::InviteCalendar => {
+                choice_section(ok(&self.invite_calendars), self.invite_calendar(), Message::InviteCalendar)
+            }
+        };
+        Some(self.fields.view(key, sections, widgets::menu_width(), Align::Start, Message::Fields))
+    }
+
+    /// The open menu of the overview's account dropdown (issue #554), under its button.
+    fn overview_account_menu(&self) -> Option<Element<'_, Message>> {
+        let menus = &self.mail_overview.account_menu;
+        let key = menus.open()?;
+        let accounts: Vec<(String, String)> =
+            self.mail_groups().into_iter().map(|group| (group.account, group.title)).collect();
+        let choices = mail_overview::account_choices(&accounts);
+        let chosen = choices.iter().find(|choice| choice.account == self.mail_overview.account).cloned();
+        let sections = choice_section(choices, chosen.as_ref(), Message::MailOverviewAccount);
+        Some(menus.view(key, sections, widgets::menu_width(), Align::Start, Message::MailOverviewAccountMenu))
+    }
+
     fn close_menus(&mut self) {
         self.menu = None;
+        self.close_dropdowns();
         // A context menu opened later without a right-click hangs under the row, not at an old point.
         self.context_point = None;
         self.drawer = false;
@@ -13944,23 +14061,63 @@ fn choice_menu_width(choices: &[Choice]) -> f32 {
     needed.fold(widgets::menu_width(), f32::max).ceil().min(size::panel())
 }
 
-/// A pick list in the suite's look for a property of the dialog of "Make task" (and the calendar of
-/// an invitation's card, task E8.3c, `mail::invite_card`): `options` shown
-/// by their names, `selected` in it, `on_pick` with the one picked. As high as a small button,
-/// as wide as its row.
-pub(crate) fn choice<'a, T>(options: Vec<T>, selected: Option<T>, on_pick: fn(T) -> Message) -> Element<'a, Message>
-where
-    T: ToString + PartialEq + Clone + 'a,
-{
-    pick_list(options, selected, on_pick)
-        .width(Fill)
-        .padding(style::pick_list_padding())
-        .text_size(typo::caption().size)
-        .text_line_height(typo::caption().line_height)
-        .font(typo::caption().font)
-        .style(style::pick_list)
-        .menu_style(style::pick_list_menu)
-        .into()
+/// A field with a dropdown (issue #554): a property of "Make task" or "Make event", or the
+/// calendar of an invitation's card. One is open at a time ([`App::field_menu`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Field {
+    TaskList,
+    TaskDue,
+    EventCalendar,
+    EventStart,
+    EventLength,
+    InviteCalendar,
+}
+
+/// The trigger of a field's dropdown (issue #554) for a property of the dialog of "Make task" (and
+/// the calendar of an invitation's card, task E8.3c, `mail::invite_card`): the `selected` value in a
+/// button as high as a small button and as wide as its row; its menu is [`App::field_menu`].
+pub(crate) fn choice<'a, T: ToString>(
+    menus: &Dropdown<Field>,
+    key: Field,
+    selected: Option<&T>,
+) -> Element<'a, Message> {
+    let label = selected.map(ToString::to_string).unwrap_or_default();
+    menus.button_fill(key, label, Message::Fields)
+}
+
+/// The values of a dropdown as one section of its menu, each by its name, `selected` marked; a
+/// value sends `on_pick` with itself.
+pub(crate) fn choice_section<'a, T: ToString + PartialEq>(
+    options: Vec<T>,
+    selected: Option<&T>,
+    on_pick: fn(T) -> Message,
+) -> Vec<MenuSection<'a, Message>> {
+    let items = options
+        .into_iter()
+        .map(|option| {
+            let current = selected == Some(&option);
+            MenuItem::plain(option.to_string(), on_pick(option)).current(current)
+        })
+        .collect();
+    vec![MenuSection::new(items)]
+}
+
+/// The floating `dialog` at `anchor`, with the open dropdown of one of its fields over it, if one is
+/// (issue #554). While the menu is open the dialog is inert (`widgets::inert`): Iced hands a click to
+/// the dialog's layer before the menu's, and a button under an entry would take it.
+fn over_dialog<'a>(
+    anchor: &widgets::Anchor,
+    placement: Placement,
+    dialog: Element<'a, Message>,
+    menu: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    match menu {
+        Some(menu) => {
+            let dialog = widgets::floating(anchor, placement, widgets::inert(dialog), Message::CloseMenu);
+            stack![dialog, menu].into()
+        }
+        None => widgets::floating(anchor, placement, dialog, Message::CloseMenu),
+    }
 }
 
 /// `text` without the spaces around it, `None` when nothing is left: a note or place of a dialog
@@ -15776,6 +15933,51 @@ mod tests {
         let result = block_on(app.inbox.create_task_from_item(id, list.id, title, due)).map_err(|err| err.to_string());
         let _ = app.update(Message::TaskCreated(result, list.name));
         load(app);
+    }
+
+    /// Issue #554: a property of "Make task" opens its dropdown over the dialog; a choice closes it,
+    /// keys stay out while it is open, and Escape closes the dropdown before the dialog.
+    #[test]
+    fn a_field_of_the_dialog_opens_its_dropdown_and_escape_closes_it_first() {
+        let mut app = at("demo-6");
+        let _ = press(&mut app, Key::T);
+        deliver_lists(&mut app);
+        let _ = app.update(Message::Fields(DropdownEvent::Toggle(Field::TaskDue)));
+        assert!(app.fields.is_open(&Field::TaskDue));
+        assert!(app.field_menu().is_some(), "its menu over the dialog");
+        let _ = app.view();
+        let _ = app.update(Message::TaskDue(Due::Tomorrow));
+        assert_eq!((app.fields.open(), app.task.due), (None, Due::Tomorrow), "a choice closes it");
+
+        let _ = app.update(Message::Fields(DropdownEvent::Toggle(Field::TaskList)));
+        let sent = app.sent.len();
+        let _ = press(&mut app, Key::Enter);
+        assert_eq!(app.sent.len(), sent, "Enter under an open dropdown creates no task");
+        let _ = app.update(Message::Escape);
+        assert_eq!((app.fields.open(), app.menu), (None, Some(Menu::Task)), "the dropdown goes first");
+        let _ = app.update(Message::Escape);
+        assert_eq!(app.menu, None, "then the dialog");
+
+        let _ = press(&mut app, Key::T);
+        let _ = app.update(Message::Fields(DropdownEvent::Toggle(Field::TaskList)));
+        let _ = app.update(Message::CloseMenu);
+        assert_eq!(app.fields.open(), None, "closing the dialog closes its dropdown");
+    }
+
+    /// Issue #554: the start of "Make event" has more values than [`widgets::SEARCH_FROM`]; its
+    /// dropdown builds with a search that finds none as well.
+    #[test]
+    fn the_start_of_an_event_has_a_dropdown_with_search() {
+        let mut app = at("demo-6");
+        let _ = app.update(Message::AskEvent("demo-6".into()));
+        assert!(app.event.start.offered().len() >= widgets::SEARCH_FROM);
+        let _ = app.update(Message::Fields(DropdownEvent::Toggle(Field::EventStart)));
+        let _ = app.update(Message::Fields(DropdownEvent::Query("no such time".into())));
+        assert!(app.field_menu().is_some());
+        let _ = app.view();
+        let start = app.event.start.offered()[1];
+        let _ = app.update(Message::EventStart(start));
+        assert_eq!((app.fields.open(), app.event.start), (None, start));
     }
 
     fn demo_list(index: usize) -> TaskList {
@@ -21214,7 +21416,11 @@ mod tests {
         assert!(app.mail_overview.updating(), "a late month is dropped");
         let account = app.mail_groups().first().expect("an account").account.clone();
         let choice = mail_overview::AccountChoice { account: Some(account.clone()), label: account.clone() };
+        let _ = app.update(Message::MailOverviewAccountMenu(DropdownEvent::Toggle(())));
+        assert!(app.overview_account_menu().is_some(), "the dropdown of the accounts (issue #554)");
+        let _ = app.view();
         let _ = app.update(Message::MailOverviewAccount(choice));
+        assert_eq!(app.mail_overview.account_menu.open(), None, "a choice closes it");
         assert_eq!(app.sent.last(), Some(&Sent::MailOverview(Some(account), torro_ipc::StatsRange::Week)));
         deliver_overview(&mut app);
         assert!(!app.mail_overview.updating());
@@ -21436,6 +21642,36 @@ mod tests {
             assert!(app.mail_overview.table);
             assert_eq!(app.mail_overview.tab, mail_overview::Tab::Categories);
         }
+    }
+
+    #[test]
+    fn statistics_account_dropdown_keeps_full_names_and_closes_before_the_page() {
+        let choices: Vec<_> = ["A", "B"]
+            .map(|suffix| mail_overview::AccountChoice {
+                account: Some(format!("mail:{suffix}@example.org")),
+                label: format!("International correspondence and product announcements — Account {suffix}"),
+            })
+            .into_iter()
+            .collect();
+        let sections = choice_section(choices.clone(), choices.first(), Message::MailOverviewAccount);
+        for (item, choice) in sections[0].items.iter().zip(&choices) {
+            assert_eq!(item.label, choice.label, "the menu's ellipsized label keeps its complete tooltip text");
+            assert!(matches!(&item.on_press, Message::MailOverviewAccount(value) if value == choice));
+        }
+        assert!(sections[0].items[0].current);
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::ShowMailStatistics);
+        let _ = app.update(Message::MailOverviewAccountMenu(DropdownEvent::Toggle(())));
+        assert!(app.mail_overview.account_menu.open().is_some());
+        assert!(app.overview_account_menu().is_some());
+        let _ = app.update(Message::Escape);
+        assert!(app.mail_overview.account_menu.open().is_none());
+        assert!(app.statistics_shown(), "Escape closes the dropdown, not the statistics page");
+        let _ = app.update(Message::MailOverviewAccountMenu(DropdownEvent::Toggle(())));
+        let _ = app.update(Message::MailOverviewAccount(choices[1].clone()));
+        assert_eq!(app.mail_overview.account, choices[1].account);
+        assert!(app.mail_overview.account_menu.open().is_none());
     }
 
     /// Issue #122: a menu hangs at the button clicked – the row's, also while the reader shows the

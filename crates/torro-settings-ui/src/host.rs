@@ -719,6 +719,7 @@ impl Host {
                 Task::perform(ask, move |result| Message::AiAnswered(asked.clone(), Box::new(result)))
             }))),
             accounts::Action::OpenUrl(url) => Outcome::OpenUrl(url),
+            accounts::Action::Focus(field) => Outcome::Work(iced::widget::operation::focus(field)),
         }
     }
 
@@ -1065,6 +1066,12 @@ impl Host {
             // Escape on a suite page closes its question or dropdown first, on Accounts or AI its
             // dialog or the account's page.
             Message::Back => {
+                // The section menu of the medium and narrow header first (review of #554): open, it
+                // is what Escape closes, not the settings.
+                if self.menu {
+                    self.menu = false;
+                    return Outcome::None;
+                }
                 if let Some(close) =
                     self.accounts.as_ref().filter(|_| self.on_accounts_page()).and_then(accounts::escape)
                 {
@@ -1286,9 +1293,9 @@ impl Host {
             None => Vec::new(),
         };
         let up = sub_page.as_ref().map(|(_, back)| back.clone());
-        // On a page below the section the section's name opens the menu in every form but the list
-        // (issue #473), so the section's navigation stays at hand.
-        let menu_form = form == Form::Menu || (form == Form::Steps && sub_page.is_some() && !on_list);
+        // The section's name opens the menu in every form but the list (issue #473; in the narrow form
+        // on the section's own page too since issue #554), so the section's navigation stays at hand.
+        let menu_form = form == Form::Menu || (form == Form::Steps && !on_list);
         let header = self.header(form, on_list, sub_page, actions, &anchor, wrap);
         let body = match (form, on_list) {
             (Form::Steps, true) => self.page_area(class, self.list_rows(false, &[], None, wrap), None, None),
@@ -1378,15 +1385,21 @@ impl Host {
         let leading = vec![widgets::icon_button(Icon::ChevronLeft, label, Some(back))];
         let menu = || wrap(Message::Menu);
         let title: Element<'a, M> = match (form, on_list) {
-            // Narrow: the path has no room; the name of what is open is enough. On a page below the
-            // section it opens the section's menu, as in the medium form (issue #473).
+            // Narrow: the path has no room; the name of what is open is enough. It opens the section's
+            // menu, as in the medium form, on a page below the section (issue #473) and on the
+            // section's own page (issue #554): "‹ [Reminders ▾]"; the arrow still leads to the list.
             (Form::Steps, true) => shell::header_title(Some(shell::SETTINGS_ICON), tr("Settings"), None),
-            (Form::Steps, false) => match sub_page {
-                Some((name, _)) => {
+            (Form::Steps, false) => {
+                let name = sub_page.map_or_else(|| section.name().to_string(), |(name, _)| name);
+                if actions.is_empty() {
                     widgets::menu_button(anchor, Some(section.icon), widgets::path_menu_label(&name), menu())
+                } else {
+                    // Beside the page's own buttons a name has no room in a narrow header ("Sort
+                    // existing mail…" ran under the settings button, design review of #554): the
+                    // section's icon and the chevron, the name as tooltip.
+                    widgets::with_tooltip(widgets::menu_button(anchor, Some(section.icon), "", menu()), name)
                 }
-                None => shell::header_title(Some(section.icon), section.name(), None),
-            },
+            }
             // Medium: the section's menu stays in front of the page below it (issue #473).
             (Form::Menu, _) => match sub_page {
                 Some((name, _)) => row![
@@ -1814,7 +1827,8 @@ mod tests {
     }
 
     /// Issue #473: in the narrow form a page below a section keeps the section's menu in the header,
-    /// and the menu opens over it; on the section's own page the narrow form has none.
+    /// and the menu opens over it; since issue #554 the section's own page has it too ("‹ [Reminders
+    /// ▾]"), only the list has none.
     #[test]
     fn a_narrow_page_below_a_section_keeps_its_menu() {
         let mut host = host();
@@ -1822,7 +1836,15 @@ mod tests {
         host.menu = true;
         let below = page().sub_page("Work", Message::Back);
         assert!(host.view(SizeClass::Narrow, below, |m| m).overlay.is_some(), "the menu over the page");
-        assert!(host.view(SizeClass::Narrow, page(), |m| m).overlay.is_none(), "no menu on the section");
+        assert!(host.view(SizeClass::Narrow, page(), |m| m).overlay.is_some(), "the menu on the section");
+        // Beside a page's own button the menu button keeps only its icon (review of #554), and
+        // still opens the menu.
+        let busy =
+            page().actions(vec![widgets::text_button(None, "Sort existing mail…", style::button::secondary, None)]);
+        assert!(host.view(SizeClass::Narrow, busy, |m| m).overlay.is_some(), "the menu beside page actions");
+        let _: Outcome<()> = host.update(Message::Close);
+        assert!(host.view(SizeClass::Narrow, page(), |m| m).overlay.is_none(), "closed again");
+        host.menu = true;
         host.list = true;
         let below = page().sub_page("Work", Message::Back);
         assert!(host.view(SizeClass::Narrow, below, |m| m).overlay.is_none(), "none over the list");
@@ -2014,6 +2036,16 @@ mod tests {
     #[test]
     fn escape_closes_the_settings() {
         let mut host = host();
+        assert!(matches!(host.update::<()>(Message::Back), Outcome::Close));
+    }
+
+    /// Review of #554: with the section menu of the header open, Escape closes the menu first and
+    /// only the next one the settings.
+    #[test]
+    fn escape_closes_the_section_menu_first() {
+        let mut host = host();
+        let _: Outcome<()> = host.update(Message::Menu);
+        assert!(matches!(host.update::<()>(Message::Back), Outcome::None));
         assert!(matches!(host.update::<()>(Message::Back), Outcome::Close));
     }
 
