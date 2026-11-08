@@ -1042,6 +1042,12 @@ impl Ui {
                 launch::demo_connections(&mut self.data);
                 vec![Message::Select(Section::Connections)]
             }
+            // The same on a tab chosen (issue #548): Built-in or Your servers.
+            Open::ConnectionsBuiltIn | Open::ConnectionsOwn => {
+                launch::demo_connections(&mut self.data);
+                let tab = if open == Open::ConnectionsBuiltIn { 0 } else { 2 };
+                vec![Message::Select(Section::Connections), Message::Connections(connections::Message::Tab(tab))]
+            }
             // The same, on the page of the tool `web`'s search providers.
             Open::SearchProviders => {
                 launch::demo_connections(&mut self.data);
@@ -1720,6 +1726,9 @@ impl Ui {
     fn select(&mut self, section: Section) {
         if matches!(self.section, Section::Accounts | Section::Ai) {
             accounts::leave(&mut self.accounts);
+        }
+        if self.section == Section::Connections && section != Section::Connections {
+            connections::leave(&mut self.connections);
         }
         suite::leave(&mut self.general.suite);
         self.section = section;
@@ -3610,6 +3619,16 @@ mod tests {
         assert_eq!(full.section, Section::Connections);
         assert!(full.data.settings.tools.pdf.folder.is_some() && full.data.tools.iter().all(|tool| tool.enabled));
         assert_eq!(full.trail(Section::Connections), Trail::Count(connections::count(&full.data)));
+        // Issue #548: the list opens on the tab of the demo's GitHub, which stopped after errors; the
+        // two other tabs open as states of their own.
+        assert_eq!(connections::list_tab(&full.connections, &full.data), connections::ListTab::Catalog);
+        for (name, tab) in
+            [("connections-builtin", connections::ListTab::BuiltIn), ("connections-own", connections::ListTab::Own)]
+        {
+            let ui = started(&["--demo", "--open", name]);
+            assert_eq!(ui.section, Section::Connections, "{name}");
+            assert_eq!(connections::list_tab(&ui.connections, &ui.data), tab, "{name}");
+        }
         let mut empty = started(&["--demo", "--open", "connections-empty"]);
         assert_eq!((empty.section, empty.trail(Section::Connections)), (Section::Connections, Trail::None));
         assert!(!connections::assistant_may_use(&empty.data, torro_core::settings::ToolId::Pdf));

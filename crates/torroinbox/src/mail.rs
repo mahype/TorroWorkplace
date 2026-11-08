@@ -38,8 +38,8 @@
 //!   collapsed rail beside it; [`entry_panel`] is that panel for a mail entry.
 //! - The task made of a mail (task E8.7b) stands over its text as a card ([`task_card`], "Open
 //!   task"); "Task" on a folder's message makes one ([`MailSource::create_todo_from_mail`]).
-//! - Saving attachments (task M12.6, issue #290): each attachment is a split chip – rows in the panel
-//!   – whose name does what the setting `mail_attachments.click` says ([`click_act`], [`FileAct`]) and
+//! - Saving attachments (task M12.6, issues #290, #572): each attachment is a full-width row
+//!   whose name does what the setting `mail_attachments.click` says ([`click_act`], [`FileAct`]) and
 //!   whose triangle opens its menu ([`file_menu`]: Open, Save to Downloads, Save as…, the save targets
 //!   with where the file would go, "Suggested", "Click", "Manage save targets…"); "Save all ▾" from two
 //!   on, and "Save attachments (n)" in the rail's File ([`all_act`]). Where a file would go comes from
@@ -2987,7 +2987,7 @@ pub enum Bars<'a> {
     Split,
     /// Task E14.3, for the mail window in medium and narrow: the reader's head in the panel – the
     /// sender without the subject, which the panel's title says ([`head`]) –, a line, the mail; the
-    /// attachments as chips in the panel's footer ([`panel_foot`]). Every action stands in the mail's
+    /// attachments as rows in the panel's footer ([`panel_foot`]). Every action stands in the mail's
     /// action rail, which the window puts at the panel's right (`Panel::side`, collapsed and without
     /// its button, [`action_groups`]).
     Command {
@@ -3303,7 +3303,7 @@ pub struct ReaderEntry<'a> {
 /// 2. fixed, the mail's **attachments** in their block ([`attachment_line`], task M12.6), whose
 ///    menus hang at `anchors`.
 ///
-/// The head and the attachments line up with the mail's text, at the side of the reading padding.
+/// The head lines up with the mail's text; attachments use the panel padding to leave names more room.
 /// No bar over the mail and no buttons in its head: every action stands in the rail, with its key.
 /// `entry` is the mail entry the mail belongs to, `None` for a folder's message.
 pub fn reader<'a>(
@@ -3315,7 +3315,7 @@ pub fn reader<'a>(
     let anchors = anchors.clone();
     let page = responsive(move |bounds| {
         let widths = reader_widths(bounds.width);
-        let side = layout::reading_padding().left;
+        let side = layout::panel_padding().left;
         let clearance = (widgets::floating_rail_room() - head_padding().right).max(0.0);
         let head = container(head_in(&reading, entry, widths.head, clearance)).width(Fill).padding(head_padding());
         // Issue #456: the rail floats at the right edge; the head runs on under it, the mail's text
@@ -3331,7 +3331,7 @@ pub fn reader<'a>(
             .height(Fill);
         // The block keeps clear of the floating rail, as the mail's text: in a low window the rail
         // would cover the last triangle or "Save all ▾" (issue #491).
-        let line = attachment_line(&reading, &anchors, (widths.head - room).max(0.0), side, room);
+        let line = attachment_line(&reading, &anchors, (bounds.width - 2.0 * side - room).max(0.0), side, room);
         column![page].push(line).into()
     });
     widgets::with_floating_rail(page, rail)
@@ -3348,7 +3348,7 @@ fn head_padding() -> Padding {
 /// How wide the parts of the reader are ([`reader_widths`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ReaderWidths {
-    /// The head – subject, sender, invitation, task – and the attachments: inside the reading padding's
+    /// The head – subject, sender, invitation, task: inside the reading padding's
     /// sides.
     head: f32,
     /// The mail's text: the reading column ([`reading_width`]), at most [`size::reading_max`].
@@ -4101,10 +4101,10 @@ fn display_items<'a>(reading: &Reading<'_>) -> Vec<RailItem<'a, Message>> {
 /// The mail's attachments at the reader's bottom (task M12.6, design A of
 /// `docs/prototypes/inbox/mail-anhaenge.html`): a framed block (`widgets::file_block`) whose head
 /// says "Attachments" and "{n} files · {size}" ([`files_meta`]), with "Save all ▾" at its right
-/// from two attachments on ([`save_all_control`]), and under it each attachment as a split chip
-/// ([`attachment_chips`]), which scroll inside the block beyond two lines. [`space::s()`] above it,
+/// from two attachments on ([`save_all_control`]), and under it each attachment as a full-width row
+/// ([`attachment_row`]), which scroll inside the block beyond two lines. [`space::s()`] above it,
 /// [`space::l()`] below and `side` at the sides, at the right `clear` more (the floating rail's room,
-/// issue #491); the chips wrap on a line `room` wide. The triangles' menus hang at `anchors`. `None`
+/// issue #491); the rows use all of `room`. The triangles' menus hang at `anchors`. `None`
 /// while the mail loads, after an error and for a mail without attachments (inline pictures are
 /// none).
 pub fn attachment_line<'a>(
@@ -4117,10 +4117,9 @@ pub fn attachment_line<'a>(
     let files = files_of(reading)?;
     let action = save_all_control(reading, &files, anchors, false);
     let head = widgets::file_block_head(tr("Attachments"), files_meta(&files), action);
-    // The block's frame and its inner padding at the sides (`widgets::file_block`) take from the
-    // chips' line.
-    let inner = (room - 2.0 * (space::m() + size::HAIRLINE)).max(0.0);
-    let block = widgets::file_block(head, attachment_chips(reading, &files, anchors, inner));
+    let rows = files.iter().enumerate().map(|(at, file)| attachment_row(reading, at, file, anchors));
+    let rows = container(bounded_scroll(column(rows))).max_height(rows_max_height(FOOT_ROWS));
+    let block = container(widgets::file_block(head, rows)).max_width(room);
     Some(
         container(block)
             .width(Fill)
@@ -4173,33 +4172,10 @@ fn save_all_control<'a>(
     })
 }
 
-/// The chips of the attachments `files`, wrapping on a line `room` wide, [`space::s()`] apart
-/// ([`attachment_chip`]). At most [`FILE_LINES`] lines show; more scroll inside the block (scroll bar
-/// beside the chips only then), so a mail with many attachments keeps its text in a low window.
-fn attachment_chips<'a>(
-    reading: &Reading<'_>,
-    files: &[&AttachmentInfo],
-    anchors: &detail::Anchors,
-    room: f32,
-) -> Element<'a, Message> {
-    let alone = files.len() == 1;
-    let chips = files.iter().enumerate().map(|(at, file)| attachment_chip(reading, at, file, anchors, room, alone));
-    let chips = row(chips).spacing(space::s()).wrap().vertical_spacing(space::s());
-    container(bounded_scroll(chips)).max_height(chips_max_height()).into()
-}
-
-/// How many lines of chips the reader's attachment block shows before it scrolls.
-const FILE_LINES: f32 = 2.0;
-
 /// How many attachment rows the panel shows before they scroll.
 const FILE_ROWS: f32 = 4.0;
 
-/// The most the chips of the reader's block take: [`FILE_LINES`] chips and the gaps between them.
-fn chips_max_height() -> f32 {
-    FILE_LINES * size::control() + (FILE_LINES - 1.0) * space::s()
-}
-
-/// How many attachment rows the mail window's footer shows before they scroll: the floating action rail
+/// How many attachment rows the mail window's reader and footer show before they scroll: the floating action rail
 /// stands over the panel's body only, so a taller footer would cut it off in a low window (issue #491).
 const FOOT_ROWS: f32 = 2.0;
 
@@ -4210,36 +4186,13 @@ fn rows_max_height(rows: f32) -> f32 {
 
 /// `content` in a vertical scrollable as high as it is, up to what its parent allows: the suite's
 /// scroll bar, which takes its room beside the content only while there is something to scroll, so
-/// it never covers a chip's triangle or a row's.
+/// it never covers an attachment row's triangle.
 fn bounded_scroll<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     scrollable(content)
         .direction(scrollable::Direction::Vertical(style::scrollbar().spacing(space::xs())))
         .style(style::scrollable)
         .width(Fill)
         .into()
-}
-
-/// The attachment `file`, the `at`-th of the mail's, as a split chip (`widgets::split_file_chip`) on
-/// a line `room` wide: its name – cut with "…" where it would take more than half the line, or the
-/// whole line when it is `alone` ([`chip_name_room`]) – and its size. A click on it does what the setting says
-/// ([`Message::OpenAttachment`], [`click_act`]), the tooltip says what and the whole name ("Open:
-/// invoice.pdf", [`click_tooltip`]); the triangle opens its menu ([`Message::AskAttachment`]) and,
-/// while that menu is open, carries its anchor (`anchors.attachment`).
-fn attachment_chip<'a>(
-    reading: &Reading<'_>,
-    at: usize,
-    file: &AttachmentInfo,
-    anchors: &detail::Anchors,
-    room: f32,
-    alone: bool,
-) -> Element<'a, Message> {
-    let name = attachment_name(file);
-    let weight = size_text(file.size);
-    let shown = typo::ellipsize(&name, typo::body(), chip_name_room(&weight, room, alone));
-    let open = Some(Message::OpenAttachment(reading.id.to_owned(), file.part.clone()));
-    let menu = Some(Message::AskAttachment(reading.id.to_owned(), at));
-    let anchor = (reading.file_menu == Some(at)).then_some(&anchors.attachment);
-    widgets::split_file_chip(shown, weight, click_tooltip(reading, file), open, menu, anchor)
 }
 
 /// The name of an attachment on one line, else "Attachment".
@@ -4249,22 +4202,10 @@ fn attachment_name(file: &AttachmentInfo) -> String {
 }
 
 /// "Open: invoice.pdf", "Save to Invoices: invoice.pdf": what a click on the attachment's name does
-/// ([`click_act`]) and its whole name, the tooltip of its chip and its row.
+/// ([`click_act`]) and its whole name, the tooltip of its row.
 fn click_tooltip(reading: &Reading<'_>, file: &AttachmentInfo) -> String {
     let act = click_act(reading.click, reading.saving, &file.part);
     trf("{action}: {name}", &[("action", &act_words(&act, reading.saving, false)), ("name", &attachment_name(file))])
-}
-
-/// How wide the name on an attachment's chip may be ([`attachment_chip`]): half the line's `room`,
-/// less what the chip needs beside the name – its padding, the paperclip, the gaps, its size `weight`
-/// and the triangle after its line – so one long name never takes a line of its own. A chip `alone`
-/// shares the line with no other and may take all of it (design review of #502: a short name was
-/// cut in a wide reader).
-fn chip_name_room(weight: &str, room: f32, alone: bool) -> f32 {
-    let triangle = icon::SIZE_SM + 2.0 * space::s() + size::HAIRLINE;
-    let frame = 2.0 * space::m() + icon::SIZE_SM + 2.0 * space::s() + typo::text_width(weight, typo::meta()) + triangle;
-    let line = if alone { room } else { room / 2.0 };
-    (line - frame).max(0.0)
 }
 
 /// One button of the panel's mail standards ([`panel_standards`]).
@@ -4811,7 +4752,8 @@ pub fn file_menu_card_feedback<'a>(
             list = list.push(crate::app::menu_line());
         }
         if let Some(title) = section.title {
-            list = list.push(crate::app::menu_caption(&title));
+            let title = typo::text(typo::caption(), title).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
+            list = list.push(container(title).width(Fill).padding(style::ITEM_PADDING));
         }
         list = list.extend(section.items.into_iter().map(|item| {
             let state = feedback(&item.on_press);
@@ -6634,11 +6576,10 @@ mod tests {
         });
     }
 
-    /// Task E11.3, issue #491: the attachments stand as chips at the reader's bottom once the mail is
-    /// in – none while it loads, none for inline pictures –, the head holds none, and a long name
-    /// ends in "…" before it takes half the line.
+    /// Attachments stand as full-width rows at the reader's bottom once the mail is loaded (#572),
+    /// never while loading or for inline pictures; the head holds none.
     #[test]
-    fn attachments_are_chips_at_the_bottom() {
+    fn attachments_are_rows_at_the_bottom() {
         let anchors = detail::Anchors::default();
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             assert!(attachment_line(reading, &anchors, 800.0, 24.0, 0.0).is_some(), "the budget's sheet");
@@ -6651,15 +6592,6 @@ mod tests {
             let line = attachment_line(reading, &anchors, 800.0, 24.0, 0.0);
             assert!(line.is_none(), "the newsletter's pictures are inline");
         });
-        let room = chip_name_room("3 KB", 800.0, false);
-        assert!(room > 0.0 && room < 400.0, "{room}");
-        let long = "quarterly-budget-review-with-all-departments-and-travel-costs-final-v7.xlsx";
-        let shown = typo::ellipsize(long, typo::body(), room);
-        assert!(shown != long && shown.ends_with('…'), "{shown}");
-        assert_eq!(typo::ellipsize("budget-q4.csv", typo::body(), room), "budget-q4.csv", "a short name whole");
-        assert_eq!(chip_name_room("3 KB", 0.0, false), 0.0, "never below nothing");
-        let alone = chip_name_room("179 KB", 376.0, true);
-        assert_eq!(typo::ellipsize("offer-relaunch.pdf", typo::body(), alone), "offer-relaunch.pdf", "#502");
         // The head says who wrote to whom and nothing about files (issue #491).
         let source = include_str!("mail.rs");
         assert!(!function_source(source, "sender_block").contains("attachment"), "no attachments in the head");
@@ -6668,13 +6600,66 @@ mod tests {
         assert_eq!(words, ["--view", "mail", "--message=m:w1", "--demo"], "its own mail window");
     }
 
+    /// Real layout, not a text-width estimate: long names must never squeeze the menu trigger (#572).
+    #[tokio::test]
+    async fn attachment_rows_reserve_the_menu_button_for_long_names() {
+        use iced::Size;
+        use iced::advanced::{layout::Limits, renderer::Headless, widget::Tree};
+
+        {
+            let mut fonts = iced_test::renderer::graphics::text::font_system().write().expect("font system");
+            for font in torro_gui::fonts() {
+                fonts.load_font(font.into());
+            }
+        }
+        let renderer =
+            iced::Renderer::new(theme::font(), typo::body().size, Some("tiny-skia")).await.expect("headless renderer");
+        reading_of("m:p3", MailFormat::Text, true, |reading| {
+            let Some(Ok(mail)) = reading.loaded else { panic!("loaded invoice") };
+            for name in ["W".repeat(100) + ".pdf", "attachment_".repeat(30) + ".pdf"] {
+                let mut mail = mail.clone();
+                for file in &mut mail.attachments {
+                    file.filename = Some(name.clone());
+                }
+                let loaded = Ok(mail);
+                let reading = Reading { loaded: Some(&loaded), ..*reading };
+                for width in [190.0, 250.0, 400.0, 800.0] {
+                    let mut element = attachment_line(&reading, &detail::Anchors::default(), width, 0.0, 0.0)
+                        .expect("attachment block");
+                    let mut tree = Tree::new(&element);
+                    let node = element.as_widget_mut().layout(
+                        &mut tree,
+                        &renderer,
+                        &Limits::new(Size::ZERO, Size::new(width, 400.0)),
+                    );
+                    // Outer padding, width cap, frame, block column, body padding, height cap,
+                    // scrollable, then the column containing one full-width row per attachment.
+                    let block = &node.children()[0].children()[0].children()[0];
+                    let rows = &block.children()[2].children()[0].children()[0].children()[0];
+                    assert_eq!(rows.children().len(), 2, "one row per invoice attachment");
+                    for row in rows.children() {
+                        let parts = row.children()[0].children();
+                        let triangle = &parts[1];
+                        assert_eq!(triangle.size(), Size::new(size::control_sm(), size::control_sm()), "at {width}");
+                        let mut chevron = triangle;
+                        while let [child] = chevron.children() {
+                            chevron = child;
+                        }
+                        assert_eq!(chevron.size().width, icon::SIZE, "the chevron stays whole at {width}");
+                        assert!(triangle.bounds().x + triangle.size().width <= width, "menu stays in the row");
+                        assert!(parts[0].size().width > width / 2.0, "the filename action gets most of the row");
+                    }
+                }
+            }
+        });
+    }
+
     /// Design review of #290 (state "full"): a mail with many attachments (the demo's minutes,
-    /// `m:w6`) keeps its block to two lines of chips and the panel's footer to four rows; the rest
+    /// `m:w6`) keeps its block and footer to two full-width rows; the rest
     /// scrolls inside them, so the mail keeps its room in a low window.
     #[test]
     fn many_attachments_scroll_inside_their_block_and_rows() {
         let anchors = detail::Anchors::default();
-        assert_eq!(chips_max_height(), 2.0 * size::control() + space::s());
         assert_eq!(rows_max_height(FILE_ROWS), 4.0 * size::control());
         assert!(rows_max_height(FOOT_ROWS) < rows_max_height(FILE_ROWS), "the footer leaves the rail its height");
         reading_of("m:w6", MailFormat::Text, true, |reading| {
@@ -7116,7 +7101,7 @@ mod tests {
             "head",
             "sender_block",
             "attachment_line",
-            "attachment_chip",
+            "attachment_row",
             "action_groups",
             // The mail window's panel (task E11.4).
             "entry_panel",
@@ -7124,7 +7109,7 @@ mod tests {
             "sender_block",
             "panel_letter",
             "panel_foot",
-            "attachment_chips",
+            "attachment_rows",
         ];
         for name in parts {
             assert!(!function_source(source, name).contains(concat!("button::", "primary")), "{name}");

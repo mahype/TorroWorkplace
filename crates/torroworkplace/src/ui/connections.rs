@@ -2,14 +2,24 @@
 //! for its clients beyond its own commands – its built-in tools and the MCP servers it is a client of.
 //! The assistant's settings only point here since this task (`torro_settings_ui::assistant::tools`).
 //!
+//! The list has three tabs (issue #548, `widgets::tabs`), so the long page splits into what belongs
+//! together: **Built-in** (Allowed folders and Built-in tools), **Catalog** and **Your servers**. Until
+//! the person chooses one, the list opens on the tab of a server that stopped after errors, else of
+//! one whose tools wait, else on Built-in ([`list_tab`]); "Add server…" goes on at Your servers. The
+//! tab shown stays while a page below the list is open and after "‹"; one the list picked itself
+//! only until the section is left ([`leave`]).
+//!
 //! ```text
+//! Built-in
 //! Allowed folders    a row per folder the tools that work with files may reach, Read or Read and write · Add folder…
 //! Built-in tools     Organize files (switch) · whether the assistant may use it · No allowed folders (while none)
 //!                    Make PDFs (switch) · whether the assistant may use it · Folder · Templates ›
 //!                    Search the web (switch) · whether the assistant may use it · Search providers ›
 //!   › PDF templates  Letter · Report · Note: paper, margins, font size, header, footer, page numbers, logo
 //!   › Search providers  a group per provider of the tool `web` (`torro_settings_ui::assistant::web`)
+//! Catalog
 //! Catalog            a row per entry of the core's catalog, with the status of an installed one
+//! Your servers
 //! Your own servers   a row per server a person added, with its status
 //! ```
 //!
@@ -54,13 +64,15 @@
 //! fingerprint ([`Message::AllowTools`]). A list that changed meanwhile (`conflict`) is read again
 //! (`extensions.get_extension`) and shown for another look.
 //!
-//! **A server's page** ([`Page::Server`]): its status in words with a dot and its switch
+//! **A server's page** ([`Page::Server`]) has the tabs Overview, Tools, Secrets (only for a server
+//! with secrets) and Output ([`server_tabs`]); it opens on Tools while tools wait for the person,
+//! else on Overview, which holds Status, Folder and Remove. Its status in words with a dot and its switch
 //! (`extensions.set_enabled`), its version with "Update" when the catalog has another one
 //! (`extensions.update_extension`), its tools with access and state and "Allow tools" for those
 //! that wait, its secrets as "Stored" or "Missing" with "Replace…" (`extensions.set_secret`), its
 //! output (`extensions.read_logs`, read when the page opens, in a field to select and copy from),
 //! and "Remove…" with a question first (`extensions.remove_extension`). A catalog server that works on the
-//! person's files (issue #303, ArtCraft: [`CatalogEntry::folder`]) has the group "Folder" before its tools: the
+//! person's files (issue #303, ArtCraft: [`CatalogEntry::folder`]) has the group "Folder" in Overview: the
 //! folder chosen for it or "No folder chosen", and "Choose…" with a menu of the allowed folders and "None"
 //! (`extensions.set_folder`, [`Message::SetFolder`]); a refusal shows above the page. One without a bound of its own
 //! (GridCraft, [`FolderCheck::TorroOnly`]) says so there, in its catalog row and its dialogs. Who may use it is set per
@@ -202,7 +214,8 @@ impl<T> Listing<T> {
 /// The page of the section that is shown.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Page {
-    /// The four parts: allowed folders, built-in tools, catalog, own servers.
+    /// The list in its three tabs ([`ListTab`]): allowed folders and built-in tools, catalog, own
+    /// servers.
     #[default]
     List,
     /// "PDF templates", below the PDF tool's row "Templates": Letter, Report and Note.
@@ -211,6 +224,31 @@ pub enum Page {
     SearchProviders,
     /// The page of the installed server with this id (task MA.8), below its row in the list.
     Server(String),
+}
+
+/// A tab of the list (issue #548), in the order shown ([`LIST_TABS`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListTab {
+    /// "Built-in": the allowed folders and the built-in tools.
+    BuiltIn,
+    /// "Catalog": the catalog's entries and the catalog servers it no longer has.
+    Catalog,
+    /// "Your servers": the servers a person added.
+    Own,
+}
+
+/// The list's tabs in their order; [`Message::Tab`] takes the place in it.
+const LIST_TABS: [ListTab; 3] = [ListTab::BuiltIn, ListTab::Catalog, ListTab::Own];
+
+/// A tab of a server's page (issue #548); which a server has is [`server_tabs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerTab {
+    /// Status, Folder (for a server that works on files) and Remove.
+    Overview,
+    Tools,
+    /// Only for a server with secrets.
+    Secrets,
+    Output,
 }
 
 /// A dropdown of the page "PDF templates" (issue #554): the margins or the font size of a template.
@@ -226,6 +264,13 @@ pub enum TemplateMenu {
 #[derive(Debug, Default)]
 pub struct State {
     pub page: Page,
+    /// The tab of the list the person chose; `None` until then, when [`list_tab`] picks it. Kept
+    /// while a page below the list is open, so "‹" comes back to it.
+    tab: Option<ListTab>,
+    /// The tab [`list_tab`] had picked when a server's page opened: "‹" comes back to it, though a
+    /// reload meanwhile (tools allowed, a server stopping) would pick another. Dropped when the
+    /// section is left ([`leave`]), so the next visit picks again.
+    held: Option<ListTab>,
     draft: Option<Draft>,
     /// Shown above the page until the next chooser opens.
     problem: Option<String>,
@@ -615,6 +660,9 @@ struct ServerState {
     /// The menu of "Choose…" in "Folder" is open (issue #303), under its button ([`ServerState::anchor`]).
     folders_open: bool,
     anchor: Anchor,
+    /// The tab shown: the one [`server_tab`] picked when the page opened, then the one the person
+    /// chose. `None` only for a server that is not installed.
+    tab: Option<ServerTab>,
 }
 
 /// A request of a server's page on its way.
@@ -745,6 +793,10 @@ pub enum Message {
     Web(web::Message),
     /// The back button of a page below the list, or Escape there.
     Back,
+    /// A tab of the list, by its place in [`LIST_TABS`].
+    Tab(usize),
+    /// A tab of a server's page, by its place in the open server's [`server_tabs`].
+    ServerTab(usize),
     /// A paper of the template's segments.
     Paper(PdfTemplateId, Paper),
     /// The margins of the template's dropdown, top, right, bottom, left. Closes the dropdown.
@@ -916,6 +968,22 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.menus.close();
             saved_draft(state, data)
         }
+        Message::Tab(at) => {
+            if let Some(tab) = LIST_TABS.get(at) {
+                state.tab = Some(*tab);
+            }
+            Action::None
+        }
+        Message::ServerTab(at) => {
+            if let Page::Server(id) = &state.page
+                && let Some(tab) = server_of(data, id).and_then(|server| server_tabs(server).get(at).copied())
+            {
+                state.server.tab = Some(tab);
+                // The menu hangs at "Choose…" in Overview: another tab has no anchor for it.
+                state.server.folders_open = false;
+            }
+            Action::None
+        }
         Message::Paper(id, paper) => changed(data, id, |template| template.paper = paper),
         Message::Margins(id, margins) => {
             state.menus.close();
@@ -945,8 +1013,12 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::Retry => Action::Reload,
         Message::Open(id) => {
+            state.held = Some(list_tab(state, data));
+            // The page's tab shown first holds while it is open (issue #548), so a reload (tools allowed,
+            // changed tools reported) never swaps the tab under the person.
             state.page = Page::Server(id.clone());
             state.server = ServerState::default();
+            state.server.tab = server_of(data, &id).map(|server| server_tab(&state.server, server));
             logs_request(id)
         }
         Message::Install(entry) => {
@@ -1413,6 +1485,8 @@ fn custom_installed(state: &mut State, id: String, outcome: Outcome<'_>) {
             state.custom =
                 (!pasted.is_empty()).then(|| Box::new(Custom { pasted, step: CustomStep::Choose, ..Custom::new() }));
             state.install = Some(Install { step: Step::Tools(Box::new(server.clone())), ..Install::new(id) });
+            // The list goes on where the new server stands.
+            state.tab = Some(ListTab::Own);
         }
         Outcome::Refused(code, why) => custom.problem = Some(Problem { what: custom_problem(code, false), why }),
         Outcome::Logs(_) | Outcome::Done => {}
@@ -1688,15 +1762,77 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
     let words = matches!(class, SizeClass::Wide | SizeClass::Medium);
     let body: Element<'a, Message> = match &state.page {
         Page::List => {
-            column![folders_group(data, words), tools_group(data, words), catalog_group(data, words), own_group(data)]
-                .spacing(layout::section_gap())
-                .into()
+            let tab = list_tab(state, data);
+            let at = LIST_TABS.iter().position(|shown| *shown == tab).unwrap_or(0);
+            let part: Element<'a, Message> = match tab {
+                ListTab::BuiltIn => {
+                    column![folders_group(data, words), tools_group(data, words)].spacing(layout::section_gap()).into()
+                }
+                ListTab::Catalog => catalog_group(data, words),
+                ListTab::Own => own_group(data),
+            };
+            column![widgets::tabs(list_labels(data), at, Message::Tab), part].spacing(layout::section_gap()).into()
         }
         Page::PdfTemplates => templates_page(state, data, words),
         Page::SearchProviders => providers_page(state, data, class),
         Page::Server(id) => server_page(state, data, id, words),
     };
     column![].push(state.problem.clone().map(notice)).push(body).spacing(layout::section_gap()).into()
+}
+
+/// The section is left: the list picks its tab again on the next visit, unless the person chose one.
+pub fn leave(state: &mut State) {
+    state.held = None;
+}
+
+/// The tab of the list shown: the one the person chose, else the one held since a server's page
+/// opened ([`State::held`]), else the tab of the first server that
+/// stopped after errors, else of the first whose tools wait for the person (a catalog server's in
+/// Catalog, one's own in Your servers), else Built-in. So what needs the person, which the sidebar
+/// marks ([`alert`]), is in sight when the section opens.
+pub fn list_tab(state: &State, data: &Data) -> ListTab {
+    if let Some(tab) = state.tab.or(state.held) {
+        return tab;
+    }
+    let servers = data.extensions.entries();
+    let tab_of = |server: &ExtensionInfo| match server.source {
+        Source::Catalog { .. } => ListTab::Catalog,
+        Source::Custom => ListTab::Own,
+    };
+    servers
+        .iter()
+        .find(|server| matches!(server.status, Status::Crashed { .. }))
+        .or_else(|| servers.iter().find(|server| server.status == Status::Review))
+        .map_or(ListTab::BuiltIn, tab_of)
+}
+
+/// The words of the list's tabs: Catalog with the number of its rows, Your servers with the number of
+/// servers a person added; without a number while their list failed.
+fn list_labels(data: &Data) -> Vec<(String, Option<u64>)> {
+    let catalog = match &data.catalog {
+        Listing::Failed(_) => None,
+        Listing::Entries(entries) => {
+            let known = |entry: &str| entries.iter().any(|listed| listed.id == entry);
+            let gone = data
+                .extensions
+                .entries()
+                .iter()
+                .filter(|server| matches!(&server.source, Source::Catalog { entry, .. } if !known(entry)))
+                .count();
+            Some((entries.len() + gone) as u64)
+        }
+    };
+    let own = match &data.extensions {
+        Listing::Failed(_) => None,
+        Listing::Entries(servers) => {
+            Some(servers.iter().filter(|server| server.source == Source::Custom).count() as u64)
+        }
+    };
+    vec![
+        (tr("Built-in").to_string(), None),
+        (tr("Catalog").to_string(), catalog),
+        (tr("Your servers").to_string(), own),
+    ]
 }
 
 /// "Built-in tools": per tool its switch with what it does and whether the assistant may use it, for
@@ -2205,9 +2341,10 @@ fn missing_sentence(entry: &CatalogEntry) -> String {
 
 // ----- A server's page ---------------------------------------------------------------------------
 
-/// The page of the server `id`: a refusal of the page's last request, then its status, tools,
-/// secrets (when it has any), output and "Remove…". A server no longer installed (removed elsewhere)
-/// is one sentence.
+/// The page of the server `id`: a refusal of the page's last request, then its tabs
+/// ([`server_tabs`]) and the tab shown ([`server_tab`]): Overview with its status, its folder (for a
+/// server that works on files) and "Remove…"; its tools; its secrets; its output. A server no longer
+/// installed (removed elsewhere) is one sentence, without tabs.
 fn server_page<'a>(state: &'a State, data: &'a Data, id: &str, words: bool) -> Element<'a, Message> {
     let Some(server) = server_of(data, id) else {
         let gone = setting_row(None, tr("This MCP server isn't installed any more"), None, Space::new());
@@ -2218,17 +2355,54 @@ fn server_page<'a>(state: &'a State, data: &'a Data, id: &str, words: bool) -> E
     if let Some(problem) = &page.problem {
         parts.push(notice(problem.clone()));
     }
-    parts.push(status_group(page, data, server, words));
-    if let Some(check) = folder_check(data, server) {
-        parts.push(folder_group(page, data, server, check, words));
+    let tabs = server_tabs(server);
+    let tab = server_tab(page, server);
+    let labels = tabs
+        .iter()
+        .map(|tab| match tab {
+            ServerTab::Overview => (tr("Overview").to_string(), None),
+            ServerTab::Tools => (tr("Tools").to_string(), Some(server.tools.len() as u64)),
+            ServerTab::Secrets => (tr("Secrets").to_string(), Some(server.secrets.len() as u64)),
+            ServerTab::Output => (tr("Output").to_string(), None),
+        })
+        .collect();
+    let at = tabs.iter().position(|shown| *shown == tab).unwrap_or(0);
+    parts.push(widgets::tabs(labels, at, Message::ServerTab));
+    match tab {
+        ServerTab::Overview => {
+            parts.push(status_group(page, data, server, words));
+            if let Some(check) = folder_check(data, server) {
+                parts.push(folder_group(page, data, server, check, words));
+            }
+            parts.push(remove_group(page, words));
+        }
+        ServerTab::Tools => parts.push(tools_of_server(page, server, words)),
+        ServerTab::Secrets => parts.push(secrets_group(server, words)),
+        ServerTab::Output => parts.push(output_group(page)),
     }
-    parts.push(tools_of_server(page, server, words));
-    if !server.secrets.is_empty() {
-        parts.push(secrets_group(server, words));
-    }
-    parts.push(output_group(page));
-    parts.push(remove_group(page, words));
     column(parts).spacing(layout::section_gap()).into()
+}
+
+/// The tabs of `server`'s page in their order: Overview, Tools, Secrets only when it has secrets,
+/// Output.
+fn server_tabs(server: &ExtensionInfo) -> Vec<ServerTab> {
+    let mut tabs = vec![ServerTab::Overview, ServerTab::Tools];
+    if !server.secrets.is_empty() {
+        tabs.push(ServerTab::Secrets);
+    }
+    tabs.push(ServerTab::Output);
+    tabs
+}
+
+/// The tab of `server`'s page shown: the one held in `page` while the server has it, else Tools while
+/// a tool waits for the person ("Allow tools" stands there), else Overview. Opening the page holds
+/// what this picks then ([`Message::Open`]).
+fn server_tab(page: &ServerState, server: &ExtensionInfo) -> ServerTab {
+    match page.tab.filter(|tab| server_tabs(server).contains(tab)) {
+        Some(tab) => tab,
+        None if server.tools.iter().any(|tool| tool.state == ToolState::Review) => ServerTab::Tools,
+        None => ServerTab::Overview,
+    }
 }
 
 /// "Status": how the server stands with its switch, and where it comes from with "Update" when the
@@ -2277,8 +2451,9 @@ fn status_row<'a>(
 /// word says it all.
 fn status_detail(server: &ExtensionInfo, never_allowed: bool) -> Option<String> {
     match &server.status {
-        Status::Review if never_allowed => Some(tr("Allow its tools below to switch it on.").into()),
-        Status::Review => Some(tr("Changed tools wait for you below; the others are offered as before.").into()),
+        // The tools stand on the tab Tools since issue #548, no longer below the status.
+        Status::Review if never_allowed => Some(tr("Allow its tools under Tools to switch it on.").into()),
+        Status::Review => Some(tr("Changed tools wait for you under Tools; the others are offered as before.").into()),
         Status::Crashed { reason } => {
             Some(format!("{} {}", crash_reason(*reason), tr("Switch it off and on again to try again.")))
         }
@@ -4470,6 +4645,128 @@ mod tests {
         assert_eq!(escape(&state), Some(Message::BackToForm));
     }
 
+    /// Issue #548: until the person chooses a tab, the list opens on the tab of what needs them – a
+    /// catalog server that stopped after errors, else one's own whose tools wait – else on Built-in.
+    /// Catalog and Your servers count their rows; a list that failed has no number.
+    #[test]
+    fn the_list_opens_on_the_tab_that_needs_the_person() {
+        let calm = |data: &mut Data, waiting: bool| {
+            if let Listing::Entries(servers) = &mut data.extensions {
+                for server in servers.iter_mut() {
+                    if matches!(server.status, Status::Crashed { .. }) || (waiting && server.status == Status::Review) {
+                        server.status = Status::Running;
+                    }
+                }
+            }
+        };
+        let mut data = data();
+        let state = State::default();
+        assert_eq!(list_tab(&state, &data), ListTab::Catalog, "GitHub stopped after errors");
+        calm(&mut data, false);
+        assert_eq!(list_tab(&state, &data), ListTab::Own, "only Notes, one's own, waits");
+        calm(&mut data, true);
+        assert_eq!(list_tab(&state, &data), ListTab::BuiltIn, "nothing needs the person");
+
+        let own = data.extensions.entries().iter().filter(|server| server.source == Source::Custom).count();
+        let labels = list_labels(&data);
+        let words: Vec<&str> = labels.iter().map(|(word, _)| word.as_str()).collect();
+        assert_eq!(words, [tr("Built-in"), tr("Catalog"), tr("Your servers")]);
+        assert_eq!(labels[0].1, None);
+        assert!(labels[1].1.is_some_and(|rows| rows as usize >= data.catalog.entries().len()));
+        assert_eq!(labels[2].1, Some(own as u64));
+        data.catalog = Listing::Failed("unsupported".into());
+        data.extensions = Listing::Failed("unsupported".into());
+        assert!(list_labels(&data).iter().all(|(_, count)| count.is_none()));
+    }
+
+    /// Review of #580: the tab picked by itself holds while a server's page is open and after "‹",
+    /// though the servers changed meanwhile; leaving the section lets the list pick again.
+    #[test]
+    fn the_picked_tab_holds_until_the_section_is_left() {
+        let mut data = data();
+        let mut state = State::default();
+        assert_eq!(list_tab(&state, &data), ListTab::Catalog, "GitHub stopped after errors");
+        let _ = update(&mut state, Message::Open("github".into()), &data);
+        if let Listing::Entries(servers) = &mut data.extensions {
+            for server in servers.iter_mut().filter(|server| matches!(server.status, Status::Crashed { .. })) {
+                server.status = Status::Running;
+            }
+        }
+        let _ = update(&mut state, Message::Back, &data);
+        assert_eq!(list_tab(&state, &data), ListTab::Catalog, "back where the person came from");
+        leave(&mut state);
+        assert_eq!(list_tab(&state, &data), ListTab::Own, "picked again: only Notes waits");
+        let _ = update(&mut state, Message::Tab(0), &data);
+        leave(&mut state);
+        assert_eq!(list_tab(&state, &data), ListTab::BuiltIn, "a tab chosen stays");
+    }
+
+    /// Issue #548: a tab chosen stays while a server's page is open and after "‹"; a place beyond the
+    /// tabs changes nothing. Every tab draws in every size.
+    #[test]
+    fn the_chosen_tab_stays_after_a_server_s_page() {
+        let data = data();
+        let mut state = State::default();
+        for (at, tab) in LIST_TABS.iter().enumerate() {
+            assert!(matches!(update(&mut state, Message::Tab(at), &data), Action::None));
+            assert_eq!(list_tab(&state, &data), *tab);
+            for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+                let _ = view(&state, &data, class);
+            }
+        }
+        let _ = update(&mut state, Message::Tab(0), &data);
+        let _ = update(&mut state, Message::Open("github".into()), &data);
+        let _ = update(&mut state, Message::Back, &data);
+        assert_eq!((state.page.clone(), list_tab(&state, &data)), (Page::List, ListTab::BuiltIn));
+        let _ = update(&mut state, Message::Tab(LIST_TABS.len()), &data);
+        assert_eq!(list_tab(&state, &data), ListTab::BuiltIn, "no such tab");
+    }
+
+    /// Issue #548: a server's page has Overview, Tools, Secrets only with secrets, and Output; it
+    /// opens on Tools while tools wait, else on Overview. Choosing a tab closes the folder menu, whose
+    /// button stands in Overview; a place beyond the tabs changes nothing.
+    #[test]
+    fn a_server_s_page_has_tabs_and_opens_on_waiting_tools() {
+        let data = data();
+        let server = |id: &str| server_of(&data, id).expect("a demo server");
+        assert_eq!(server_tabs(server("time")), [ServerTab::Overview, ServerTab::Tools, ServerTab::Output]);
+        assert_eq!(
+            server_tabs(server("github")),
+            [ServerTab::Overview, ServerTab::Tools, ServerTab::Secrets, ServerTab::Output]
+        );
+        let mut state = State::default();
+        let _ = update(&mut state, Message::Open("notes".into()), &data);
+        assert_eq!(server_tab(&state.server, server("notes")), ServerTab::Tools, "its tools wait");
+        // Allowed and reloaded, the page stays on Tools.
+        let mut allowed = data.clone();
+        if let Listing::Entries(servers) = &mut allowed.extensions {
+            for tool in servers.iter_mut().filter(|server| server.id == "notes").flat_map(|server| &mut server.tools) {
+                tool.state = ToolState::Allowed;
+            }
+        }
+        let notes = server_of(&allowed, "notes").expect("Notes");
+        assert_eq!(server_tab(&state.server, notes), ServerTab::Tools, "no jump after the person's own click");
+        let _ = update(&mut state, Message::Open("time".into()), &data);
+        assert_eq!(server_tab(&state.server, server("time")), ServerTab::Overview);
+        state.server.folders_open = true;
+        let _ = update(&mut state, Message::ServerTab(2), &data);
+        assert_eq!(server_tab(&state.server, server("time")), ServerTab::Output);
+        assert!(!state.server.folders_open);
+        let _ = update(&mut state, Message::ServerTab(9), &data);
+        assert_eq!(server_tab(&state.server, server("time")), ServerTab::Output, "no such tab");
+        let _ = update(&mut state, Message::Open("github".into()), &data);
+        for at in 0..server_tabs(server("github")).len() {
+            let _ = update(&mut state, Message::ServerTab(at), &data);
+            assert_eq!(
+                Some(server_tab(&state.server, server("github"))),
+                server_tabs(server("github")).get(at).copied()
+            );
+            for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+                let _ = view(&state, &data, class);
+            }
+        }
+    }
+
     /// Acceptance: "Add server" sends exactly one `install_extension` with `custom`, the secret as
     /// `Secret`, the plain value as it is; the answer goes on as the catalog does: the reported tools,
     /// "Allow tools" with their fingerprint.
@@ -4492,7 +4789,9 @@ mod tests {
         assert!(!format!("{request:?}").contains("tok_pasted_123"), "a request shows no secret either");
 
         let answer = launch::demo_answer(&request, &data).expect("the demo adds it");
+        let _ = update(&mut state, Message::Tab(0), &data);
         let _ = answered(&mut state, what, &Ok(answer));
+        assert_eq!(list_tab(&state, &data), ListTab::Own, "issue #548: the list goes on at the new server");
         assert!(state.custom.is_none(), "one server: the form has done its job");
         assert_eq!(state.install.as_ref().and_then(Install::installed), Some("weather-api"));
         assert!(overlay(&state, &data, SizeClass::Wide).is_some(), "the tools it reported, with no catalog entry");

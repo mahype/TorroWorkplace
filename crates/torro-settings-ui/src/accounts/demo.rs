@@ -90,7 +90,7 @@ pub fn demo_data() -> Data {
                 server: "https://work.example.net".into(),
                 login_name: "anna".into(),
                 last_sync: Some(now - Duration::days(2)),
-                problem: Some("The server did not answer".into()),
+                problem: Some(tr("The server did not answer").into()),
             },
             collections: vec![
                 team("demo:/work/calendars/team/", "Team", CollectionKind::Events, "#5B8CFF"),
@@ -473,7 +473,7 @@ fn mailbox_account(now: DateTime<Utc>) -> AccountInfo {
 /// the firm's own server, whose certificate a person trusted (task M11.4), so its page shows the row.
 fn work_mail_account(now: DateTime<Utc>) -> AccountInfo {
     let mut account = mail_account("anna@work.example.net", "imap.work.example.net", now - Duration::days(2));
-    let problem = "The server did not answer".to_string();
+    let problem = tr("The server did not answer").to_string();
     if let AccountState::Connected { problem: state_problem, .. } = &mut account.state {
         *state_problem = Some(problem.clone());
     }

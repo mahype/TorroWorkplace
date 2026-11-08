@@ -20,9 +20,11 @@
 //!
 //! Layout: wide windows lay the cards out in a grid that gets more columns with the width; medium
 //! ones too once two cards of `size::panel()` fit (the design review of #411 found one stretched
-//! column too wide), else one column no wider than `size::content_max()`; narrow ones one column.
-//! The narrow header keeps "Check for updates" and "Update all" as
-//! icons and the search moves over the cards.
+//! column too wide), else one column; narrow ones one column. One column comes only where two cards
+//! do not fit (or the catalog has a single app, which the suite's catalog of all its apps never has),
+//! so it is never wider than two cards and needs no cap of its own (issue #548). The
+//! narrow header keeps "Check for updates" and "Update all" as icons and the search moves over the
+//! cards.
 
 use chrono::{DateTime, Utc};
 use iced::widget::text::Wrapping;
@@ -555,11 +557,11 @@ fn heading<'a>(title: &'a str, count: usize) -> Element<'a, Message> {
 }
 
 /// The cards in rows of `columns`; a last row that is not full keeps the width of the others. One
-/// column is never wider than [`size::content_max()`]: a card stretched over a medium window reads
-/// badly.
+/// column spans the page: [`columns_for`] gives one only where two cards do not fit or there is a
+/// single card, which the catalog of all the suite's apps never is.
 fn grid<'a>(cards: Vec<Element<'a, Message>>, columns: usize) -> Element<'a, Message> {
     if columns <= 1 {
-        return column(cards).spacing(size::card_gap()).max_width(size::content_max()).into();
+        return column(cards).spacing(size::card_gap()).into();
     }
     let mut rows = column![].spacing(size::card_gap());
     let mut cards = cards.into_iter().peekable();
@@ -1226,7 +1228,7 @@ mod tests {
         assert_eq!(columns(3.0 * size::panel() + 2.0 * size::card_gap(), 6), 3);
         assert_eq!(columns(5000.0, 3), 3);
         assert_eq!(columns(5000.0, 0), 1);
-        // Medium: two columns once two cards fit, else one (capped at the content's width).
+        // Medium: two columns once two cards fit, else one.
         let two = 2.0 * size::panel() + size::card_gap();
         assert_eq!(columns_for(SizeClass::Medium, two, 6), 2);
         assert_eq!(columns_for(SizeClass::Medium, two - 1.0, 6), 1);

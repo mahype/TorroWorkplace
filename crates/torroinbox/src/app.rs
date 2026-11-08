@@ -1759,6 +1759,9 @@ pub enum Open {
     Trash,
     /// "Drafts" of the mail window (issue #502): the drafts of every account.
     Drafts,
+    /// The Notification Hub's and the App Feed's settings at Sources on the tab Mail (issue #546);
+    /// the mail window has no such page and opens as it would without it.
+    SourcesMail,
 }
 
 impl Open {
@@ -1774,7 +1777,7 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 116] = [
+    const ALL: [(&'static str, Open); 117] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1891,6 +1894,7 @@ impl Open {
         ("mail-accounts-selected", Open::MailAccountsSelected),
         ("trash", Open::Trash),
         ("drafts", Open::Drafts),
+        ("sources-mail", Open::SourcesMail),
     ];
 
     /// The demo page of the backup states, which open the mail window's settings at the first
@@ -2815,6 +2819,10 @@ fn staged_overview(open: Option<Open>, today: chrono::NaiveDate) -> mail_overvie
         ..mail_overview::State::default()
     }
 }
+
+/// The section of the Notification Hub's and the App Feed's settings with the sources, which
+/// `--open sources-mail` opens on its tab Mail (issue #546).
+const SOURCES_SECTION: &str = "sources";
 
 /// The section of the settings that lists the rules: where "All rules" in the bell's menu leads in
 /// the windows that have it ([`Message::OpenRules`]). A test keeps it among the inbox's sections.
@@ -4650,11 +4658,18 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .clone()
             .or_else(|| staged.then(|| settings_mail::ACCOUNTS_SECTION.to_string()))
             .or_else(|| app.staged_categorization.is_some().then(|| CATEGORIZATION_SECTION.to_string()))
-            .or_else(|| open.and_then(Open::statistics_tab).map(|_| STATISTICS_SECTION.to_string()));
+            .or_else(|| open.and_then(Open::statistics_tab).map(|_| STATISTICS_SECTION.to_string()))
+            .or_else(|| app.sources_mail().then(|| SOURCES_SECTION.to_string()));
         let task = match section {
             Some(section) => Task::batch([task, app.open_settings(Some(&section))]),
             None => task,
         };
+        // `--open sources-mail`: the page shows its tab Mail, as a click on it would.
+        if app.sources_mail()
+            && let Some(SettingsPane { sections: SettingsState::Inbox(state), .. }) = app.settings.as_mut()
+        {
+            state.sources.tab = Some(SourceKind::Mail);
+        }
         (app, task)
     }
 
@@ -9121,6 +9136,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.open_settings(None)
     }
 
+    /// Whether the demo state is `--open sources-mail` in a window whose settings have Sources (the
+    /// Notification Hub and the App Feed, issue #546).
+    fn sources_mail(&self) -> bool {
+        self.launch.open == Some(Open::SourcesMail) && self.launch.kind != Kind::Mail
+    }
+
     /// The settings in the content area, at `section` when one is named (`--settings <section>`,
     /// "All rules"; an unknown word leaves the first section open) – a fresh [`Host`] with the
     /// sections of this window's kind and its first load, which goes over
@@ -12411,6 +12432,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// beside it – up to [`size::panel()`], less in a narrower window – and as high as the window
     /// leaves. `None` while the mail is not loaded or has no such attachment.
     fn file_menu(&self, at: Option<usize>) -> Option<Element<'_, Message>> {
+        let sections = self.file_menu_sections(at)?;
+        let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
+        let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
+        Some(mail::file_menu_card_feedback(sections, width, tallest, |message| self.save_feedback(message)))
+    }
+
+    /// An attachment's full name heads its actions, independently of truncation in the reader (#572).
+    fn file_menu_sections(&self, at: Option<usize>) -> Option<Vec<MenuSection<'_, Message>>> {
         let reading = self.reading()?;
         let files = mail::files_of(&reading)?;
         let part = match at {
@@ -12419,11 +12448,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         };
         let category = reading.summary().and_then(|summary| summary.category);
         let menu = mail::FileMenu { id: reading.id, part, saving: reading.saving, click: reading.click, category };
-        let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
-        let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
-        Some(mail::file_menu_card_feedback(mail::file_menu(menu), width, tallest, |message| {
-            self.save_feedback(message)
-        }))
+        let mut sections = mail::file_menu(menu);
+        if let Some(at) = at {
+            let name = files.get(at)?.filename.as_deref().map(list::one_line).filter(|name| !name.is_empty());
+            sections.first_mut()?.title = Some(name.unwrap_or_else(|| tr("Attachment").to_owned()).into());
+        }
+        Some(sections)
     }
 
     /// The content below the header: an error line if there is one, and the list – left-aligned
@@ -12499,7 +12529,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             });
             return container(content.push(board).width(Fill).height(Fill)).width(Fill).into();
         } else if self.is_insights() {
-            // The hub's Insights (task E8.8b), which caps its own width.
+            // The hub's Insights (task E8.8b), over the full width (issue #546).
             let page = insights::view(InsightsData { insights: &self.insights, class, today: local_today(self.now) });
             return container(content.push(page).width(Fill).height(Fill)).width(Fill).into();
         } else if self.is_hub() {
@@ -18861,6 +18891,25 @@ mod tests {
         draw_everywhere(&mut app);
     }
 
+    /// Issue #572: even a name longer than the row's room stays complete in its own menu.
+    #[test]
+    fn attachment_menus_identify_each_file_without_shortening_its_name() {
+        let mut app = invoice();
+        let name = "quarterly-budget-review-with-all-departments-and-travel-costs-final-v7.xlsx";
+        let Some(Letter { loaded: Some(Ok(mail)), .. }) = app.letter.as_mut() else { panic!("loaded invoice") };
+        mail.attachments[0].filename = Some(name.into());
+        for at in 0..2 {
+            let reading = app.reading().expect("reading");
+            let files = mail::files_of(&reading).expect("attachments");
+            let filename = files[at].filename.as_deref().expect("filename");
+            let sections = app.file_menu_sections(Some(at)).expect("menu");
+            assert_eq!(sections[0].title.as_deref(), Some(filename));
+        }
+        assert!(app.file_menu_sections(None).expect("all files")[0].title.is_none());
+        assert!(app.file_menu_sections(Some(usize::MAX)).is_none());
+        draw_everywhere(&mut app);
+    }
+
     /// Task M12.6: the triangles open the menus at the mail held – an attachment's, "Save all" from the
     /// block and from the rail –, the same again closes them, and every size draws them; a cancelled
     /// dialog sends nothing and says nothing.
@@ -23853,6 +23902,22 @@ mod tests {
         assert_eq!(hub.settings.as_ref().map(|pane| pane.host.current().id), Some("rules"));
         let mail = overview_at(&["--view", "mail", "--settings", "reading"]);
         assert_eq!(mail.settings.as_ref().map(|pane| pane.host.current().id), Some("reading"));
+    }
+
+    /// Issue #546: `--open sources-mail` opens the settings at Sources on the tab Mail in the
+    /// Notification Hub and the App Feed; the mail window, which has no Sources, opens as without it.
+    #[test]
+    fn sources_mail_opens_sources_on_the_tab_mail() {
+        for view in ["hub", "notifications"] {
+            let app = overview_at(&["--view", view, "--open", "sources-mail"]);
+            let pane = app.settings.as_ref().expect("the settings are open");
+            assert_eq!(pane.host.current().id, SOURCES_SECTION, "{view}");
+            let SettingsState::Inbox(state) = &pane.sections else { panic!("{view}: the inbox's sections") };
+            assert_eq!(state.sources.tab, Some(SourceKind::Mail), "{view}");
+        }
+        assert!(settings_inbox::SECTIONS.iter().any(|section| section.id == SOURCES_SECTION));
+        let mail = overview_at(&["--view", "mail", "--open", "sources-mail"]);
+        assert!(mail.settings.is_none(), "the mail window has no Sources");
     }
 
     /// Task S.20: "All rules" opens the section Rules in the windows that have it; the mail window,

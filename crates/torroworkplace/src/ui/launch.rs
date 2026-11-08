@@ -155,6 +155,11 @@ pub enum Open {
     /// with DuckDuckGo and Wikipedia, and the demo's servers: two of the catalog (one running, one
     /// stopped after errors) and one of one's own with tools to review ([`demo_connections`]).
     Connections,
+    /// The same on the tab "Built-in" (issue #548): `connections` opens on Catalog, where the demo's
+    /// GitHub stopped after errors.
+    ConnectionsBuiltIn,
+    /// The same on the tab "Your servers" (issue #548).
+    ConnectionsOwn,
     /// The page of the search providers below the tool `web` (task WEB.6, here since #302), as
     /// `connections` sets them up.
     SearchProviders,
@@ -254,7 +259,7 @@ impl Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 137] = [
+    pub const ALL: [(&'static str, Open); 139] = [
         ("setup-ai-form", Open::AiSetup("form")),
         ("setup-ai-consent", Open::AiSetup("consent")),
         ("setup-ai-download", Open::AiSetup("download")),
@@ -345,6 +350,8 @@ impl Open {
         ("connect-client-done", Open::ConnectClientDone),
         ("connect-client-other", Open::ConnectClientOther),
         ("connections", Open::Connections),
+        ("connections-builtin", Open::ConnectionsBuiltIn),
+        ("connections-own", Open::ConnectionsOwn),
         ("connections-empty", Open::ConnectionsEmpty),
         ("search-providers", Open::SearchProviders),
         ("catalog-install", Open::CatalogInstall),
