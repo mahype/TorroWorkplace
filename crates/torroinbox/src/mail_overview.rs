@@ -13,7 +13,8 @@
 //! - **Blocks**, top down: the head (title, account, span, "As of", the switches, [`controls`]), "What
 //!   comes in" – columns per day by main category ([`series`], [`columns`]) and the categories with
 //!   their share ([`category_rows`]) – with "Details ›" to the statistics page in the settings, and
-//!   "What's new" (`news.rs`) once the numbers are there or failed. The figures, the senders, the inbox and the day chart's
+//!   "What's new" (`news.rs`) beside it (under it where the page is narrow, issue #545) once the
+//!   numbers are there or failed. The figures, the senders, the inbox and the day chart's
 //!   table ([`day_table`]) are the statistics page's.
 
 use std::time::{Duration, Instant};
@@ -525,18 +526,22 @@ pub(crate) fn numbers(state: &State) -> Numbers<'_> {
     }
 }
 
-/// The overview: its head, then loading, the error with "Retry", the empty span, or "What comes in",
-/// and "What's new" under it once the numbers are there or failed (`news::block`, left out without
-/// announcements), scrolling. Only the statistics take the whole width; the other blocks keep their
-/// reading width. While another span or account loads the numbers stay with "Updating…" over them.
+/// The overview: its head, then loading, the error with "Retry", the empty span, or "What comes in"
+/// and "What's new" beside it once the numbers are there (`widgets::page_columns`, issue #545: two
+/// independent blocks), "What's new" alone under the error or the empty span (`news::block`, left out
+/// without announcements), scrolling. The page fills the width beside the sidebar; only the head's
+/// words and the announcements' text keep their reading width. While another span or account loads
+/// the numbers stay with "Updating…" over them.
 pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
     let state = data.state;
-    let mut blocks: Vec<Element<'_, Message>> = vec![head(&data)];
-    let mut statistics = None;
+    let news = data.news;
+    let mut blocks: Vec<Element<'_, Message>> = vec![widgets::reading_cell(head(&data))];
     match numbers(state) {
+        // While the numbers load, "What's new" waits too: the card would push it down once they came.
         Numbers::Loading => blocks.push(widgets::loading()),
         Numbers::Failed => {
             blocks.push(widgets::error_state(tr("Couldn't load the overview."), Message::MailOverviewRetry));
+            blocks.extend(news::block(news));
         }
         Numbers::Ready { overview, updating } => {
             if updating {
@@ -547,35 +552,23 @@ pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
                     tr("No mail in this span."),
                     tr("What comes in and of which kind shows up here."),
                 ));
+                blocks.extend(news::block(news));
             } else {
-                statistics = Some(blocks.len());
-                blocks.push(comes_in_card(overview, state.range, data.catalogue));
+                let (range, catalogue) = (state.range, data.catalogue);
+                blocks.push(widgets::page_columns(move || {
+                    let mut columns = vec![comes_in_card(overview, range, catalogue)];
+                    columns.extend(news::block(news));
+                    columns
+                }));
             }
         }
     }
-    // While the numbers load, "What's new" waits too: the card would push it down once they came.
-    if !matches!(numbers(state), Numbers::Loading) {
-        blocks.extend(news::block(data.news));
-    }
-    let content = column(blocks.into_iter().enumerate().map(|(at, block)| {
-        if Some(at) == statistics {
-            block
-        } else {
-            let block = container(block).width(Fill).max_width(size::content_max());
-            let block = container(block).width(Fill);
-            match data.place {
-                Place::Panel => block.into(),
-                Place::Page | Place::Narrow => block.center_x(Fill).into(),
-            }
-        }
-    }))
-    .spacing(layout::section_gap())
-    .width(Fill);
+    let content = column(blocks).spacing(layout::section_gap()).width(Fill);
     match data.place {
         // The panel scrolls its body itself; inset, the blocks line up with its title.
         Place::Panel => torro_gui::panel::inset(content),
         Place::Page | Place::Narrow => {
-            let page = container(content).width(Fill).center_x(Fill).padding(layout::page_padding());
+            let page = container(content).width(Fill).padding(layout::page_padding());
             scrollable(page)
                 .direction(scrollable::Direction::Vertical(style::scrollbar()))
                 .style(style::scrollable)
@@ -944,8 +937,11 @@ pub(crate) mod tests {
         }
     }
 
+    /// Issue #545: the page fills the width beside the sidebar. "What comes in" and "What's new" stand
+    /// side by side, top-aligned, where two form widths fit, else under each other; the head starts at
+    /// the page's edge and keeps its reading width.
     #[tokio::test]
-    async fn only_the_statistics_fill_the_overview_width() {
+    async fn the_overview_fills_the_width_with_its_blocks_side_by_side() {
         use iced::Size;
         use iced::advanced::{layout::Limits, renderer::Headless, widget::Tree};
 
@@ -954,7 +950,7 @@ pub(crate) mod tests {
         let mut state = State::default();
         state.data = Some(Loaded { key: state.key(), at: Instant::now(), result: Ok(overview()) });
         let news = news::State { items: Some(Ok(news::demo())), asked: true };
-        for width in [1200.0, 320.0] {
+        for (width, columns) in [(3000.0, 2), (1000.0, 1)] {
             let mut page = view(OverviewData {
                 state: &state,
                 catalogue: &[],
@@ -967,13 +963,30 @@ pub(crate) mod tests {
             let mut tree = Tree::new(&page);
             let node =
                 page.as_widget_mut().layout(&mut tree, &renderer, &Limits::new(Size::ZERO, Size::new(width, 1000.0)));
-            let blocks = node.children()[0].children()[0].children();
-            let room = width - layout::page_padding().left - layout::page_padding().right;
-            assert_eq!(blocks[1].size().width, room, "statistics use all available room");
-            for at in [0, 2] {
-                let bounds = blocks[at].children()[0].bounds();
-                assert_eq!(bounds.width, room.min(size::content_max()), "head and news keep their reading width");
-                assert_eq!(bounds.x, (room - bounds.width) / 2.0, "head and news stay centered");
+            // Layout positions are relative to the parent: the content at the page's padding, the
+            // blocks at the content's left edge.
+            let content = &node.children()[0].children()[0];
+            let (left, room) =
+                (layout::page_padding().left, width - layout::page_padding().left - layout::page_padding().right);
+            assert_eq!((content.bounds().x, content.bounds().width), (left, room), "{width}: the page fills the width");
+            let blocks = content.children();
+            let head = blocks[0].children()[0].bounds();
+            assert_eq!(head.x, 0.0, "{width}: the head starts at the page's edge, not centred");
+            assert!(head.width <= size::content_max(), "{width}: the head keeps its reading width");
+            let both = blocks[1].bounds();
+            assert_eq!((both.x, both.width), (0.0, room), "{width}: the blocks fill the page");
+            // The responsive cell holds a row of columns, or the one column itself.
+            let laid = &blocks[1].children()[0];
+            if columns == 1 {
+                let parts = laid.children();
+                assert_eq!(parts.len(), 2, "card and news under each other");
+                assert!(parts[1].bounds().y > parts[0].bounds().y);
+                assert_eq!(parts[0].bounds().width, room);
+            } else {
+                let parts = laid.children();
+                assert_eq!(parts.len(), columns, "{width}: side by side");
+                assert_eq!(parts[0].bounds().y, parts[1].bounds().y, "top-aligned");
+                assert!(parts[1].bounds().x > parts[0].bounds().x + parts[0].bounds().width);
             }
         }
     }
