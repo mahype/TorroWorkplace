@@ -1913,6 +1913,7 @@ impl MailStore {
 
     /// Explicit retry only; polling must never turn a failed category call into 'no model'.
     /// Already accepted failures belong to the runner and are not resurrected here.
+    #[cfg(test)]
     pub fn retry_workflow_preparation(&self, message: &str) -> Result<bool, MailStoreError> {
         Ok(self.db.execute(
             "UPDATE workflow_events SET state = 'waiting_body', failure = NULL

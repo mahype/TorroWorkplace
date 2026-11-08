@@ -130,8 +130,8 @@ pub(crate) async fn propose(
     check_data_rule(host, access.place)?;
     let choice = choices.get(selected).ok_or(WorkflowError::Invalid)?;
     let spec = DraftSpec {
-        name: choice.name.clone(),
-        description: choice.description.clone(),
+        name: tr(&choice.name).into(),
+        description: tr(&choice.description).into(),
         mail: input.mail.into(),
         save_target: input.save_target.into(),
         package: choice.package.clone(),

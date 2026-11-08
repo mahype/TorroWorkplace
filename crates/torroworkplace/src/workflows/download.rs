@@ -89,8 +89,8 @@ fn checked(input: &str, hosts: &[String]) -> Result<Link, Failure> {
     if url.path_segments().is_none_or(|segments| {
         segments.into_iter().any(|segment| {
             !decoded(segment).is_ok_and(|decoded| {
-                !forbidden.iter().any(|bad| decoded.eq_ignore_ascii_case(bad))
-                    && !(domain == STRIPE_PAGE
+                !(forbidden.iter().any(|bad| decoded.eq_ignore_ascii_case(bad))
+                    || domain == STRIPE_PAGE
                         && ["receipt", "receipts"].iter().any(|bad| decoded.eq_ignore_ascii_case(bad)))
             })
         })

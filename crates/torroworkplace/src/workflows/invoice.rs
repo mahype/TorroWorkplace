@@ -3,8 +3,8 @@
 
 use std::cell::RefCell;
 use std::fmt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use html5ever::tendril::StrTendril;
@@ -92,13 +92,20 @@ pub struct Copy {
 
 /// This digest deliberately includes the exact embedded font bytes, parser/profile and typesetter versions.
 pub fn binding() -> String {
-    let fonts = crate::tools::pdf::PdfFonts::standard();
-    let mut hash = Sha256::new();
-    hash.update(b"paddle_setapp/1;html5ever/0.39.0;bounded-token-profile/1;typesetter/1;A4/15mm/11pt");
-    hash.update(&fonts.text);
-    hash.update(&fonts.strong);
-    hash.update(&fonts.heading);
-    hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+    static BINDING: OnceLock<String> = OnceLock::new();
+    BINDING
+        .get_or_init(|| {
+            // These are immutable bytes embedded in this binary, not the person's configured font.
+            // Rehashing them before every download chunk would stall otherwise bounded retrievals.
+            let fonts = crate::tools::pdf::PdfFonts::standard();
+            let mut hash = Sha256::new();
+            hash.update(b"paddle_setapp/1;html5ever/0.39.0;bounded-token-profile/1;typesetter/1;A4/15mm/11pt");
+            hash.update(&fonts.text);
+            hash.update(&fonts.strong);
+            hash.update(&fonts.heading);
+            hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+        })
+        .clone()
 }
 
 /// Admission moves into the actual blocking worker, not the cancelable async waiting future.
@@ -146,6 +153,7 @@ pub(super) async fn verify_worker_admission_after_cancellation() {
     drop(CONVERTERS.acquire().await.expect("permit released by actual worker"));
 }
 
+#[cfg(test)]
 pub fn extract(bytes: &[u8], content_type: Option<&str>) -> Result<Invoice, Error> {
     extract_with(bytes, content_type, &Budget::new(None))
 }
@@ -497,10 +505,7 @@ fn known_outside(tree: &Tree, mut node: usize) -> bool {
 }
 
 fn normalize(text: &str) -> String {
-    text.split(|c| matches!(c, ' ' | '\t' | '\r' | '\n' | '\u{c}'))
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
+    text.split([' ', '\t', '\r', '\n', '\u{c}']).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 fn safe_node(node: &Node) -> Result<(), Error> {

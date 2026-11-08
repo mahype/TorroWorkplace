@@ -177,8 +177,8 @@ impl Service {
                 };
                 let (package, origin) = templates::instantiate(&template_id, revision, &digest, host.as_deref())?;
                 let spec = wire::DraftSpec {
-                    name: template.name,
-                    description: template.description,
+                    name: tr(&template.name).into(),
+                    description: tr(&template.description).into(),
                     mail: message,
                     save_target,
                     package,

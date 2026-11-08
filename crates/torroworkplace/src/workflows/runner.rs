@@ -1166,6 +1166,9 @@ async fn retrieve(
                     let copy = invoice::convert(source.bytes, Some(source.content_type), Some(Arc::clone(&cancelled)))
                         .await
                         .map_err(|_| failure(RunReason::Unsupported))?;
+                    if copy.pages == 0 || copy.pages > 50 {
+                        return Err(failure(RunReason::Unsupported));
+                    }
                     body = Some(download::Body {
                         bytes: copy.bytes,
                         content_type: "application/pdf".into(),
@@ -1470,13 +1473,13 @@ mod bounded_pdf {
                     let text = std::str::from_utf8(word).map_err(|_| ())?;
                     if let Ok(first) = text.parse::<i64>() {
                         let saved = self.at;
-                        if let Ok(second) = self.number() {
-                            if self.keyword(b"R").is_ok() {
-                                return Ok(Value::Ref((
-                                    u32::try_from(first).map_err(|_| ())?,
-                                    u16::try_from(second).map_err(|_| ())?,
-                                )));
-                            }
+                        if let Ok(second) = self.number()
+                            && self.keyword(b"R").is_ok()
+                        {
+                            return Ok(Value::Ref((
+                                u32::try_from(first).map_err(|_| ())?,
+                                u16::try_from(second).map_err(|_| ())?,
+                            )));
                         }
                         self.at = saved;
                         Ok(Value::Int(first))
@@ -1556,10 +1559,10 @@ mod bounded_pdf {
             }
             let value = self.object(id)?;
             let dict = value.dict()?;
-            if let Some(parent) = parent {
-                if get(dict, b"Parent")?.reference()? != parent {
-                    return Err(());
-                }
+            if let Some(parent) = parent
+                && get(dict, b"Parent")?.reference()? != parent
+            {
+                return Err(());
             }
             if name(dict, b"Type", b"Page") {
                 return Ok(1);

@@ -2624,7 +2624,8 @@ impl MailService {
         }
     }
 
-    /// Resume an unacknowledged failed input only after an explicit retry decision.
+    /// Test support for explicit source retries. Product retries are deliberate `RunWorkflow` jobs.
+    #[cfg(test)]
     pub async fn retry_workflow_preparation(&self, account: &str, message: &str) -> Result<bool, MailError> {
         let store = self.store(account).await?;
         let message = message.to_string();
