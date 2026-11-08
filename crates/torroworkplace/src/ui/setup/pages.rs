@@ -662,7 +662,16 @@ fn cloud_groups() -> Vec<(&'static str, Vec<AiProvider>)> {
     vec![
         (tr("For sorting mail"), vec![AiProvider::Jev]),
         (tr("Open models"), vec![AiProvider::OpenRouter]),
-        (tr("Providers"), vec![AiProvider::Anthropic, AiProvider::OpenAi, AiProvider::Gemini, AiProvider::Mistral]),
+        (
+            tr("Providers"),
+            vec![
+                AiProvider::OllamaCloud,
+                AiProvider::Anthropic,
+                AiProvider::OpenAi,
+                AiProvider::Gemini,
+                AiProvider::Mistral,
+            ],
+        ),
         (
             tr("Providers in China"),
             vec![AiProvider::DeepSeek, AiProvider::Qwen, AiProvider::Kimi, AiProvider::Glm, AiProvider::MiniMax],

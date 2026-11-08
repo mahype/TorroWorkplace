@@ -1296,7 +1296,8 @@ mod tests {
         assert!(overlay(&state).is_some());
         assert_eq!(escape(&state), Some(Message::Menus(DropdownEvent::Close)));
         update(&mut state, Message::Online(AiProvider::OpenRouter), &data);
-        assert!(overlay(&state).is_none() && escape(&state).is_none(), "a choice closes it");
+        assert!(overlay(&state).is_none(), "a choice closes the provider menu");
+        assert_eq!(escape(&state), Some(Message::Back), "Escape now goes back from the open form");
     }
 
     #[test]
