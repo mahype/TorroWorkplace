@@ -166,10 +166,12 @@ pub fn models_request(data: &Data) -> Option<Request> {
 /// The state of every section that keeps some; the app owns one of these next to its host.
 #[derive(Debug, Default)]
 pub struct State {
+    /// General: which of its dropdowns ("Account", "Model") is open (issue #547).
+    pub general: general::State,
     /// Profile: the typed profile, a note being written, the questions over it.
     pub profile: profile::State,
-    /// Voice: what "Say something" is doing and what it heard. General, Bots and History read
-    /// everything from [`Data`] and keep nothing.
+    /// Voice: what "Say something" is doing and what it heard, and its dropdown of the microphone.
+    /// Bots and History read everything from [`Data`] and keep nothing.
     pub voice: voice::State,
     /// Access: whose rights are open, the first start's choice, the editor's draft. Tools keeps
     /// nothing since task MA.7: it only leads to the control centre.
@@ -191,7 +193,7 @@ pub enum Message {
 /// What a section's widget reported, and what the host is to do about it.
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
-        Message::General(message) => general::update(message, data),
+        Message::General(message) => general::update(&mut state.general, message, data),
         Message::Access(message) => access::update(&mut state.access, message, data),
         Message::Profile(message) => profile::update(&mut state.profile, message, data),
         // "Access" at a bot opens this section at that very bot.
@@ -219,7 +221,7 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str, class: SizeClas
         "tools" => wrap(Page::new(tools::view()), Message::Tools),
         "voice" => wrap(Page::new(voice::view(&state.voice, data)), Message::Voice),
         "history" => wrap(Page::new(history::view(data)), Message::History),
-        _ => wrap(Page::new(general::view(data)), Message::General),
+        _ => wrap(Page::new(general::view(&state.general, data)), Message::General),
     }
 }
 
@@ -270,17 +272,25 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) {
     voice::answered(&mut state.voice, result);
 }
 
-/// The dialog of the open section over the whole window, while one is open.
+/// The dialog of the open section over the whole window, while one is open: an open dropdown of
+/// General or Voice first (issue #547), then a dialog of Profile or Access. A dropdown closes with a
+/// click next to it, so the one open belongs to the section on screen.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
-    profile::overlay(&state.profile, data)
-        .map(|dialog| dialog.map(Message::Profile))
+    general::overlay(&state.general, data)
+        .map(|menu| menu.map(Message::General))
+        .or_else(|| voice::overlay(&state.voice, data).map(|menu| menu.map(Message::Voice)))
+        .or_else(|| profile::overlay(&state.profile, data).map(|dialog| dialog.map(Message::Profile)))
         .or_else(|| access::overlay(&state.access, data).map(|dialog| dialog.map(Message::Access)))
 }
 
-/// What Escape means in these sections: close the question, stop typing a note. `None` leaves it to
-/// the host, which closes the settings.
+/// What Escape means in these sections: close an open dropdown, the question, stop typing a note.
+/// `None` leaves it to the host, which closes the settings.
 pub fn escape(state: &State) -> Option<Message> {
-    profile::escape(&state.profile).map(Message::Profile).or_else(|| access::escape(&state.access).map(Message::Access))
+    general::escape(&state.general)
+        .map(Message::General)
+        .or_else(|| voice::escape(&state.voice).map(Message::Voice))
+        .or_else(|| profile::escape(&state.profile).map(Message::Profile))
+        .or_else(|| access::escape(&state.access).map(Message::Access))
 }
 
 /// What stands between the window and closing these settings: the question a section must ask
