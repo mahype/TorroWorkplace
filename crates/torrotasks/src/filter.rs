@@ -1081,18 +1081,20 @@ impl Editor {
         let task = match message {
             Message::Account(id) => self.switch_account(id, source),
             Message::Repos(account, result) => {
+                let mut focus = Task::none();
                 if account == self.account {
                     self.repos = Load::of(result);
                     self.settle_repo();
                     // Nothing to choose from: an open dropdown would stay empty, so it closes. One
-                    // opened while they loaded shows now, its search field (if any) focused then.
+                    // opened while they loaded shows now, its search field (if any) focused then;
+                    // the labels of the repository just preselected are asked for below either way.
                     if !self.has_repo_choices() {
                         self.repo_menu.close();
                     } else if self.repo_menu.open().is_some() {
-                        return (operation::focus(widgets::DROPDOWN_SEARCH), Outcome::Stay);
+                        focus = operation::focus(widgets::DROPDOWN_SEARCH);
                     }
                 }
-                Task::none()
+                focus
             }
             Message::Described { account, repo, result } => {
                 if account == self.account {
@@ -2694,12 +2696,19 @@ mod tests {
             (dialog.repo_to_remember().as_deref(), editor(&dialog).repo_menu.open().is_none()),
             (Some("mahype/notes"), true)
         );
-        // Opened while they load, the dropdown focuses its search field once they are there.
-        let mut dialog = new_dialog();
-        let _ = dialog.update(Message::RepoMenu(DropdownEvent::Toggle(())), &demo());
-        let repos = block_on(demo().list_github_repos(GITHUB_ACCOUNT.into())).map_err(|err| err.to_string());
-        let (task, _) = dialog.update(Message::Repos(GITHUB_ACCOUNT.into(), repos), &demo());
-        assert!(task.units() > 0 && editor(&dialog).repo_menu.open().is_some());
+        // Opened while they load, the dropdown focuses its search field once they are there: one
+        // task more than for a closed one, whose preselected repository's labels are asked for too.
+        let arrive = |open: bool| {
+            let mut dialog = new_dialog();
+            if open {
+                let _ = dialog.update(Message::RepoMenu(DropdownEvent::Toggle(())), &demo());
+            }
+            let repos = block_on(demo().list_github_repos(GITHUB_ACCOUNT.into())).map_err(|err| err.to_string());
+            let (task, _) = dialog.update(Message::Repos(GITHUB_ACCOUNT.into(), repos), &demo());
+            (task.units(), editor(&dialog).repo_menu.open().is_some())
+        };
+        let ((open_units, open), (closed_units, _)) = (arrive(true), arrive(false));
+        assert!(open && closed_units > 0 && open_units > closed_units, "{open_units} / {closed_units}");
         // An open dropdown closes when the repositories cannot be read: there is nothing to choose,
         // and the field opens nothing then (nor for an account that reaches none).
         let mut dialog = new_dialog();
