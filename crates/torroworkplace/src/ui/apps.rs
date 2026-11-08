@@ -21,7 +21,8 @@
 //! Layout: wide windows lay the cards out in a grid that gets more columns with the width; medium
 //! ones too once two cards of `size::panel()` fit (the design review of #411 found one stretched
 //! column too wide), else one column; narrow ones one column. One column comes only where two cards
-//! do not fit, so it is never wider than two cards and needs no cap of its own (issue #548). The
+//! do not fit (or the catalog has a single app, which the suite's catalog of all its apps never has),
+//! so it is never wider than two cards and needs no cap of its own (issue #548). The
 //! narrow header keeps "Check for updates" and "Update all" as icons and the search moves over the
 //! cards.
 
@@ -556,8 +557,8 @@ fn heading<'a>(title: &'a str, count: usize) -> Element<'a, Message> {
 }
 
 /// The cards in rows of `columns`; a last row that is not full keeps the width of the others. One
-/// column spans the page: [`columns_for`] gives one only where two cards do not fit, so a card is
-/// never stretched over a wide window.
+/// column spans the page: [`columns_for`] gives one only where two cards do not fit or there is a
+/// single card, which the catalog of all the suite's apps never is.
 fn grid<'a>(cards: Vec<Element<'a, Message>>, columns: usize) -> Element<'a, Message> {
     if columns <= 1 {
         return column(cards).spacing(size::card_gap()).into();

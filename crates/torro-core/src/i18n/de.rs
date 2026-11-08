@@ -6702,15 +6702,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Tools moved to the control centre", "Die Werkzeuge sind in die Steuerzentrale umgezogen"),
     ("Under MCP servers › Built-in tools", "Unter MCP-Server › Eingebaute Werkzeuge"),
     // Control centre › MCP servers: catalog, installing, a server's page (MA.8, #302)
-    ("Allow its tools below to switch it on.", "Erlaube unten seine Werkzeuge, um ihn einzuschalten."),
+    (
+        "Allow its tools under Tools to switch it on.",
+        "Erlaube seine Werkzeuge unter „Werkzeuge“, um ihn einzuschalten.",
+    ),
     ("Allow the tools as they are listed here.", "Erlaube die Werkzeuge so, wie sie hier stehen."),
     ("Allow the tools of {name}?", "Werkzeuge von {name} erlauben?"),
     ("Allow tools", "Werkzeuge erlauben"),
     ("Allowing…", "Wird erlaubt…"),
     ("Changed since you allowed it", "Geändert, seit du es erlaubt hast"),
     (
-        "Changed tools wait for you below; the others are offered as before.",
-        "Geänderte Werkzeuge warten unten auf dich; die anderen werden weiter angeboten.",
+        "Changed tools wait for you under Tools; the others are offered as before.",
+        "Geänderte Werkzeuge warten unter „Werkzeuge“ auf dich; die anderen werden weiter angeboten.",
     ),
     ("Enter it to install the server.", "Gib es ein, um den Server zu installieren."),
     ("Enter the new value.", "Gib den neuen Wert ein."),

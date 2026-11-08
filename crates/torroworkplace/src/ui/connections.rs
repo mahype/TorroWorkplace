@@ -71,7 +71,7 @@
 //! that wait, its secrets as "Stored" or "Missing" with "Replace…" (`extensions.set_secret`), its
 //! output (`extensions.read_logs`, read when the page opens, in a field to select and copy from),
 //! and "Remove…" with a question first (`extensions.remove_extension`). A catalog server that works on the
-//! person's files (issue #303, ArtCraft: [`CatalogEntry::folder`]) has the group "Folder" before its tools: the
+//! person's files (issue #303, ArtCraft: [`CatalogEntry::folder`]) has the group "Folder" in Overview: the
 //! folder chosen for it or "No folder chosen", and "Choose…" with a menu of the allowed folders and "None"
 //! (`extensions.set_folder`, [`Message::SetFolder`]); a refusal shows above the page. One without a bound of its own
 //! (GridCraft, [`FolderCheck::TorroOnly`]) says so there, in its catalog row and its dialogs. Who may use it is set per
@@ -1007,8 +1007,13 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::Retry => Action::Reload,
         Message::Open(id) => {
+            // The tabs shown so far hold from now on (issue #548): the list's for "‹", the page's while
+            // it is open, so a reload (tools allowed, a server stopping) never swaps the tab under the
+            // person.
+            state.tab = Some(list_tab(state, data));
             state.page = Page::Server(id.clone());
             state.server = ServerState::default();
+            state.server.tab = server_of(data, &id).map(|server| server_tab(&state.server, server));
             logs_request(id)
         }
         Message::Install(entry) => {
@@ -2434,8 +2439,9 @@ fn status_row<'a>(
 /// word says it all.
 fn status_detail(server: &ExtensionInfo, never_allowed: bool) -> Option<String> {
     match &server.status {
-        Status::Review if never_allowed => Some(tr("Allow its tools below to switch it on.").into()),
-        Status::Review => Some(tr("Changed tools wait for you below; the others are offered as before.").into()),
+        // The tools stand on the tab Tools since issue #548, no longer below the status.
+        Status::Review if never_allowed => Some(tr("Allow its tools under Tools to switch it on.").into()),
+        Status::Review => Some(tr("Changed tools wait for you under Tools; the others are offered as before.").into()),
         Status::Crashed { reason } => {
             Some(format!("{} {}", crash_reason(*reason), tr("Switch it off and on again to try again.")))
         }
@@ -4697,6 +4703,16 @@ mod tests {
         let mut state = State::default();
         let _ = update(&mut state, Message::Open("notes".into()), &data);
         assert_eq!(server_tab(&state.server, server("notes")), ServerTab::Tools, "its tools wait");
+        // Allowed and reloaded, the page stays on Tools; the list keeps the tab it showed for "‹".
+        let mut allowed = data.clone();
+        if let Listing::Entries(servers) = &mut allowed.extensions {
+            for tool in servers.iter_mut().filter(|server| server.id == "notes").flat_map(|server| &mut server.tools) {
+                tool.state = ToolState::Allowed;
+            }
+        }
+        let notes = server_of(&allowed, "notes").expect("Notes");
+        assert_eq!(server_tab(&state.server, notes), ServerTab::Tools, "no jump after the person's own click");
+        assert_eq!(state.tab, Some(ListTab::Catalog), "the tab shown when the page opened");
         let _ = update(&mut state, Message::Open("time".into()), &data);
         assert_eq!(server_tab(&state.server, server("time")), ServerTab::Overview);
         state.server.folders_open = true;

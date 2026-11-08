@@ -582,7 +582,7 @@ nach „‹“.
 Zustimmung warten, sonst auf Overview. Inhalt: Status mit Wort und Symbol, der Schalter an/aus, die Werkzeuge mit Zugriff und Stand
 („Changed since you allowed it“, mit „Allow tools“), Geheimnisse als „Stored“ bzw. „Missing“ mit „Replace…“, „Output“
 (die letzte Ausgabe zum Kopieren), „Update“, wenn der Katalog eine neuere Version hat, und „Remove…“ mit Rückfrage.
-Ein Server, der mit Dateien arbeitet (#303, ArtCraft), hat vor den Werkzeugen die Gruppe **„Folder“**: der gewählte
+Ein Server, der mit Dateien arbeitet (#303, ArtCraft), hat im Reiter Overview die Gruppe **„Folder“**: der gewählte
 freigegebene Ordner (mit Achtungspunkt, wenn er gerade nicht nutzbar ist) oder „No folder chosen“, „Choose…“ mit den
 freigegebenen Ordnern und „None“ (`extensions.set_folder`, nur Menschen, MCP Never), ohne freigegebene Ordner „Add
 folder…“; gesperrte Werkzeuge stehen als „Blocked by Torro“.
