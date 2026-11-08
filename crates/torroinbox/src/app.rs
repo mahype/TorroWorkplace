@@ -12017,6 +12017,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// ([`App::reader_head`]) follows behind the line of the split.
     fn mail_head<'a>(&'a self, class: SizeClass, nav: &Anchor, filters: &Anchor) -> Element<'a, Message> {
         let mut list = row![].spacing(space::xs()).align_y(Alignment::Center);
+        // Narrow, the mark says which window this is, as in the hub and the app feed (issue #545).
+        if class == SizeClass::Narrow {
+            list = list.extend(self.narrow_leading());
+        }
         if shell::sidebar_mode(class, self.sidebar) != Some(SidebarMode::Expanded) {
             let icon = Some(self.launch.kind.view_icon(&self.view));
             list = list.push(widgets::menu_button(nav, icon, self.view_label(), Message::ToggleNav));
