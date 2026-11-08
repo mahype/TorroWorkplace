@@ -4817,7 +4817,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("All known mail", "Alle bekannten E-Mails"),
     ("All emails", "Alle E-Mails"),
     ("Last 30 days", "Letzte 30 Tage"),
-    ("Last year", "Letztes Jahr"),
     ("Start sorting", "Sortierung starten"),
     (
         "The preview and progress count all selected mail. Sidebar badges count unread mail only.",
@@ -5559,10 +5558,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Add Nextcloud account…", "Nextcloud-Konto hinzufügen…"),
     ("Add ntfy account…", "ntfy-Konto hinzufügen…"),
     ("No account yet.", "Noch kein Konto."),
-    (
-        "One account for the whole suite: connected here, every app knows it.",
-        "Ein Konto für die ganze Suite: hier verbunden, kennt es jede App.",
-    ),
     ("Allow API keys", "API-Schlüssel erlauben"),
     ("Allow MCP", "MCP erlauben"),
     (

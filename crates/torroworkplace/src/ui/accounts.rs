@@ -47,6 +47,7 @@ pub fn act(action: Action) -> super::Action {
         Action::Send(request) => super::Action::Send(request),
         Action::AskAi(asks) => super::Action::AskAi(asks),
         Action::OpenUrl(url) => super::Action::OpenUrl(url),
+        Action::Focus(field) => super::Action::Focus(field.into()),
     }
 }
 

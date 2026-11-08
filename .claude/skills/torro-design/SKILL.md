@@ -92,6 +92,14 @@ aus einem Guss wirkt:
   ist `widgets::path_menu_button` (`TEXT_2`). Auf einer **Unterseite** bleibt die Navigation des Bereichs in jeder Größe (#473): Breit in der Liste
   (die Kinder unter dem Abschnitt, alle Geschwister wie alle Konten, #475), Mittel und Schmal als Menüknopf des
   Abschnitts vor dem Namen („‹ [☁ Accounts ▾] › ein Konto“, schmal „‹ [☁ ein Konto ▾]“), nie nur der Pfeil.
+- **Mail-Ausnahme der oberen Zeile** (#564, angenommenes Zielbild): Die gesamte normale Kopffläche
+  verwendet die aktive Seitenleistenfarbe samt Kontrastfarben (`TopRow::sidebar_surface`), auch in
+  Mail-Einstellungen und Fokusansicht; keine fest dunkle Farbe. Die Suchfeld-Innenfläche bleibt als
+  Eingabe erkennbar, Menüs und Tooltips behalten das Fenster-Theme. Nur breit mit tatsächlich
+  ausgeklappter Seitenleiste steht `panel-left` oben rechts über ihr, mit `space::s()` Abstand vor
+  der Trennlinie (`TopRow::sidebar_at_edge`); er folgt ihrer gezogenen Breite. Mit Icon-Leiste,
+  schmal und im Drawer bleibt er neben der Ampel. Andere Apps behalten die oben beschriebene
+  geteilte Kopffläche und feste Knopfposition. Mini und Leiste bleiben Anzeigen ohne diesen Kopf.
 - **Mail-Fenster** (#451): über der Liste Suchfeld, Sortieren, Aktualisieren; über dem Leser Betreff, „6 von 9“, ⌃ ⌄
   und „In neuem Fenster“. Die **Aktionsleiste schwebt** als Karte (Menü-Stil, Radius `lg`) senkrecht mittig am rechten
   Rand über der Mail (`widgets::floating_rail`); der Text hält `widgets::floating_rail_room()` Abstand, der Kopf läuft
@@ -462,6 +470,15 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
     (`widgets::choice_chip`, auch für mehrere zugleich), alle Optionen sichtbar.
   - **Mehr als etwa 4:** ein Dropdown (`widgets::select_button` mit `widgets::menu`), der gewählte Wert steht im Knopf.
   - **Ab etwa 12:** ein Dropdown mit Suche (`widgets::search_menu`, oben).
+  - **Der Baustein dafür** (#554): `widgets::Dropdown<K>` im State der Seite bzw. App (welches Menü offen ist, die
+    Suche, ein Anker je Auslöser) mit der Nachricht `DropdownEvent<K>` (`Toggle`, `Query`, `Close`); Auslöser
+    `Dropdown::button` bzw. `button_fill` (ein `select_button`), das Menü `Dropdown::view` im Overlay (über einem
+    Dialog im selben Overlay darüber). `widgets::choice_menu` entscheidet selbst: unter `widgets::SEARCH_FROM` (12)
+    Einträgen ein Menü, das ab `size::panel()` rollt, ab 12 ein `search_menu` (Filter ohne Groß/Klein, Abschnitte ohne
+    Treffer fallen weg, Enter wählt den ersten Treffer). Öffnet `Dropdown::update` ein Menü (`true`), fokussiert der
+    Aufrufer `widgets::DROPDOWN_SEARCH`; jede Wahl und Escape schließen. Werte ohne Icon als `MenuItem::plain`, der
+    gewählte mit `.current(true)`. **Iceds `pick_list` gibt es in der Suite nicht** (`scripts/design-check.sh` meldet
+    es), auch nicht über `parts`.
   - **Keine langen Zeilenlisten zum Anklicken** für eine Einzelauswahl (etwa die Chat-Modelle eines Anbieters oder
     eine Liste von Kalendern, aus der einer gewählt wird). Listen mit Zeilen sind für Dinge, die jedes für sich
     etwas tun (an/aus, öffnen, entfernen), nicht für „eins davon“.
@@ -539,7 +556,12 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   `docs/settings.md` „Wie es aussieht“), rechts die Seite. Jede Seite mit **mehr als drei Gruppen** bekommt Reiter
   (`widgets::tabs`, unten), nicht nur Detailseiten; bis drei Gruppen stehen sie untereinander. Abschnittsseiten aus
   `widgets::group` (Titel, Zeilen `size::header()` bzw. 12 höher mit
-  Untertitel, Trennlinien, erklärender Satz darunter in `TEXT_2`) – keine eigenen Karten. Eine sichtbare Aktion je Zeile,
+  Untertitel, Trennlinien, erklärender Satz darunter in `TEXT_2`) – keine eigenen Karten. **Jede Seite beginnt mit dem
+  Titel ihrer ersten Gruppe** (#554), ohne eigenen großen Titel oder Unterzeile darüber: Die Kopfzeile nennt die Seite
+  schon. Auf Accounts ist der Anbieter der Gruppentitel, sein Satz steht unter der Gruppe; auf AI heißt die Gruppe
+  „Accounts“, damit Kopfzeile und Gruppe nicht beide „AI“ sagen. Im schmalen Fenster zeigt die Kopfzeile den Abschnitt
+  als Menüknopf („‹ [🔔 Reminders ▾]“) wie in Mittel; hat die Seite eigene Knöpfe, nur Icon und Chevron, der Name
+  steht im Tooltip. Eine sichtbare Aktion je Zeile,
   der Rest im „…“-Menü. Was wohin gehört (App oder Steuerzentrale, auch die Rechte für API und MCP je App), regelt
   `docs/settings.md`, Abschnitt „Die Regel“; der Skill wiederholt es nicht. **Detailseiten** (dritte Ebene, #314, `docs/settings.md`) folgen einem festen Aufbau aus
   diesen Bausteinen (Anschauen: `cargo run -p torro-gui --example gallery -- --detail`, dazu `--light`,
@@ -550,7 +572,9 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
     `size::form_max()` rutschen Pille und Knöpfe unter die Meta-Zeile.
   - `tabs(labels, selected, on_select)`: Reiter mit Unterstrich, `size::control_lg()` hoch; gewählt `TEXT`,
     `body_strong`, Strich 2 px in `TEXT`, sonst `TEXT_2`; Zahl in `meta`/`TEXT_3`; eine `LINE` unter der Reihe. Passt die
-    Reihe nicht (`tabs_width`), wird sie eine Auswahlliste, nie waagerecht scrollend. Nie Rot, nie `segmented`
+    Reihe nicht (`tabs_width`), lässt sie sich seitlich schieben (#554), mit einem Verlauf `space::l()` breit am
+    rechten Rand, der zeigt, dass mehr folgt; liegt der gewählte Reiter jenseits der Breite, steht die Reihe am
+    rechten Ende. Nie eine Auswahlliste. Nie Rot, nie `segmented`
     (`segmented` wechselt die Ansicht derselben Daten, Reiter den Teil eines Objekts oder einer Seite). Erst ab mehr als
     drei Gruppen, dann aber auf jeder Seite.
   - `question_card(mark, title, detail, actions)`: was auf eine Entscheidung wartet, direkt unter den Reitern;
@@ -617,6 +641,8 @@ Regeln:
 - **Mini und Leiste sind Anzeigen, keine Mini-Apps:** keine Werkzeugleiste, keine Formulare, keine
   Dialoge. Höchstens eine Ein-Klick-Aktion, die den Zweck der Kachel ist (z. B. abhaken). Ruhig,
   aus der Distanz lesbar, Kopfzahl in `typo::display()`.
+- **Mini und Mini hoch auf dem Mac** (#554, entschieden): Oben bleibt der Streifen der Ampel frei (die Höhe der oberen
+  Zeile, Mitte bei y = 20). Der Leerraum dort ist kein Befund; im Bild von `shots.sh` fehlt nur die Ampel selbst.
 - **Groß heißt nicht gestreckt:** Leselisten (Mail, Aufgaben, Chat) und Fließtext max. `size::content_max()`,
   Formulare `size::form_max()`, zentriert bzw. links mit Seitenleiste; zusätzlicher Platz geht an Inhalt (mehr Tage,
   Detail daneben, mehr Spalten), nicht an Leerraum zwischen Elementen.
@@ -710,6 +736,11 @@ Kante bis 4096; ersetzt die sechs, Datei `<präfix>-1000x700.png`). Der erste Fe
   den ganzen Bildschirm (`--reminders`, ein eigenes Fenster je Bildschirm; mit `--shots` lehnt der
   Kalender ihre Zustände mit Exit 64 ab) und Schriftwechsel zur
   Laufzeit (eine Schrift, die erst nach dem Start geladen wird, zeigt eine Ersatzschrift). Dafür bleibt `shoot.sh` (unten).
+- **Mail-Kopf (#564):** Kopf und Inhaltstrenner nach Ziehen der Sidebar-/Listenbreite auf einer
+  Achse prüfen; ausgeklappt, Icon-Leiste, Drawer, Einstellungen und Fokusansicht ansehen, in
+  allen Abstandsstufen hell/dunkel sowie mit eigener dunkler Sidebar im Hellmodus (z. B. `channelr`).
+  Schalter und `[` müssen weiter umschalten. Native Ampel-Abstände und Fensterziehen bleiben
+  ohne echtes Fenster ausdrücklich ungeprüft.
 - Zeilen `[…/emulator.rs:…] action = …` auf stderr kommen vom Emulator, der manche Aktionen nicht
   ausführt (z. B. die Frage nach dem Erscheinungsbild des Systems), und sind kein Fehler.
   `… not settled after 10 s` heißt: Die Ansicht kam nicht zur Ruhe, das Bild zeigt den Stand nach

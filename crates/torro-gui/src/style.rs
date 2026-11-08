@@ -25,10 +25,10 @@
 //! selected = `selected`; focus = `focus_ring` (2 px); disabled = 40 % opacity of the normal look
 //! and *no* hover surface. Selection is always neutral, never Torro red: red is only
 //! [`button::primary`]. Iced 0.14 gives keyboard focus only to text inputs and text editors, so only
-//! those have a focus state here; buttons, checkboxes and pick lists cannot be focused yet.
+//! those have a focus state here; buttons and checkboxes cannot be focused yet.
 //!
 //! Framed controls on `raised` ([`button::secondary`], [`button::boxed`], [`button::chip`],
-//! [`button::choice_chip`], [`button::preview_tile`] and [`pick_list`]) also draw their border in `line_selected` while hovered,
+//! [`button::choice_chip`] and [`button::preview_tile`]) also draw their border in `line_selected` while hovered,
 //! pressed or open: in dark mode `hover` is almost the colour of `raised` (#16171A on #141518), so the
 //! surface alone would give no feedback. A *chosen* chip or segment is `selected` with the same
 //! `line_selected` border; the fill (and a chip's check mark) tells it from a hovered one.
@@ -38,7 +38,6 @@
 //! and size together; apps should prefer those.
 
 use iced::widget;
-use iced::widget::overlay::menu;
 use iced::{Background, Border, Color, Padding, Shadow, Theme, border};
 
 use crate::theme::{Palette, palette, radius};
@@ -56,13 +55,6 @@ pub fn button_padding() -> Padding {
 /// Padding of a text input or editor: 6 top and bottom, 8 left and right; with the 20-px line of
 /// [`crate::typo::body()`] that is the 32-px [`crate::theme::size::control()`].
 pub const INPUT_PADDING: Padding = Padding { top: 6.0, right: 8.0, bottom: 6.0, left: 8.0 };
-/// Padding of a pick list: 6 top and bottom, at the sides the design's control padding like a
-/// button (10 in the standard); with the 16-px line of [`crate::typo::caption()`] that is the 28-px
-/// [`crate::theme::size::control_sm()`] of a button.
-pub fn pick_list_padding() -> Padding {
-    let sides = crate::layout::control_padding();
-    Padding { top: 6.0, bottom: 6.0, ..sides }
-}
 /// Padding of the segmented control's frame ([`container::segmented`]) around its segments.
 pub const SEGMENT_INSET: f32 = 2.0;
 /// Height of a menu item (menus are 2 px roomier than sidebar rows, as in Linear).
@@ -701,45 +693,6 @@ pub fn text_editor_paper(theme: &Theme, status: widget::text_editor::Status) -> 
     widget::text_editor::Style { background: Background::Color(Color::TRANSPARENT), border, ..framed }
 }
 
-/// A pick list (`pick_list(…).style(style::pick_list).menu_style(style::pick_list_menu)`): looks
-/// like [`button::secondary`] – `raised`, `line_strong` border, radius [`radius::sm()`], text
-/// `text`, arrow and placeholder `text_3`. Hover `hover`, open `selected`; both with a
-/// `line_selected` border like the other framed controls (module docs).
-///
-/// Text [`crate::typo::caption()`] (size, font *and* `text_line_height`) with padding
-/// [`pick_list_padding`] gives the height [`crate::theme::size::control_sm()`]. Iced 0.14 pick lists
-/// have no disabled state.
-pub fn pick_list(theme: &Theme, status: widget::pick_list::Status) -> widget::pick_list::Style {
-    let p = palette(theme);
-    let (background, border) = match status {
-        widget::pick_list::Status::Active => (p.raised, p.line_strong),
-        widget::pick_list::Status::Hovered => (p.hover, p.line_selected),
-        widget::pick_list::Status::Opened { .. } => (p.selected, p.line_selected),
-    };
-    widget::pick_list::Style {
-        text_color: p.text,
-        placeholder_color: p.text_3,
-        handle_color: p.text_3,
-        background: Background::Color(background),
-        border: outline(border, radius::sm()),
-    }
-}
-
-/// The menu a pick list opens: like [`container::menu`] (`menu`, `line_strong`, radius
-/// [`radius::md()`], shadow); the item under the pointer is `selected` with `text`, as in
-/// [`button::menu_item`].
-pub fn pick_list_menu(theme: &Theme) -> menu::Style {
-    let p = palette(theme);
-    menu::Style {
-        background: Background::Color(p.menu),
-        border: outline(p.line_strong, radius::md()),
-        text_color: p.text,
-        selected_text_color: p.text,
-        selected_background: Background::Color(p.selected),
-        shadow: p.shadow,
-    }
-}
-
 /// The colour of the check mark on a filled check box or task circle: `panel` (white in light
 /// mode, near black in dark mode), ≥ 3:1 on every calendar colour of the mode.
 fn check_mark(p: &Palette) -> Color {
@@ -1044,9 +997,6 @@ mod tests {
                 same(bg(&button::list_row(true)(&theme, Status::Hovered)), p.selected),
                 "{mode}: hover hides selection"
             );
-            let open = pick_list(&theme, widget::pick_list::Status::Opened { is_hovered: false });
-            assert_eq!(open.background, Background::Color(p.selected));
-            assert_eq!(pick_list_menu(&theme).selected_background, Background::Color(p.selected));
             for on in [true, false] {
                 let t = toggler(&theme, widget::toggler::Status::Active { is_toggled: on });
                 assert_ne!(t.background, Background::Color(p.accent), "{mode}: toggler is red");
@@ -1108,9 +1058,6 @@ mod tests {
                     assert_eq!(style(&theme, status).border.color, p.line_selected, "{mode}: {name} {status:?}");
                 }
             }
-            let hovered = pick_list(&theme, widget::pick_list::Status::Hovered);
-            assert_eq!(hovered.border.color, p.line_selected, "{mode}: pick list hover");
-            assert_eq!(pick_list(&theme, widget::pick_list::Status::Active).border.color, p.line_strong);
         }
     }
 
@@ -1365,7 +1312,6 @@ mod tests {
         assert_eq!(container::popover(&theme).shadow, p.shadow);
         assert_eq!(container::chip(&theme).border.radius, radius::xs().into());
         assert_eq!(container::kbd(&theme).text_color, Some(p.text_3));
-        assert_eq!(pick_list_menu(&theme).shadow, p.shadow);
         assert_eq!(button::secondary(&theme, Status::Active).border.radius, radius::sm().into());
         assert_eq!(button::segment(true)(&theme, Status::Active).border.radius, radius::xs().into());
     }

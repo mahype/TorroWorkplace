@@ -20,13 +20,13 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, pick_list, responsive, row, scrollable};
+use iced::widget::{Space, column, container, responsive, row, scrollable};
 use iced::{Alignment, Element, Fill, Length, Theme};
 use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, ChartColor, palette, size, space};
 use torro_gui::units::format_count;
-use torro_gui::widgets::{self, Anchor, ChartColumn, ChartSeries};
+use torro_gui::widgets::{self, Anchor, ChartColumn, ChartSeries, Dropdown};
 use torro_gui::{datetime, layout, style, typo};
 use torro_ipc::StatsRange;
 use torro_ipc::inbox::CategoryInfo;
@@ -128,6 +128,9 @@ pub struct State {
     /// The overview or the statistics page showed at the last look: coming into view again checks the
     /// age of the numbers.
     pub showing: bool,
+    /// The account dropdown of the overview and the statistics page (issue #554); its menu is
+    /// `App::overview_account_menu`.
+    pub account_menu: Dropdown<()>,
 }
 
 impl Default for State {
@@ -144,6 +147,7 @@ impl Default for State {
             muting: None,
             stale: false,
             showing: false,
+            account_menu: Dropdown::default(),
         }
     }
 }
@@ -613,15 +617,8 @@ pub fn controls<'a>(state: &State, accounts: &[(String, String)], wrap: bool) ->
     let choices = account_choices(accounts);
     let chosen = RANGES.iter().position(|range| *range == state.range).unwrap_or_default();
     let ranges = widgets::segmented(RANGES.map(|range| (range_name(range), Message::MailOverviewRange(range))), chosen);
-    let selected = choices.iter().find(|choice| choice.account == state.account).cloned();
-    let accounts: Element<'a, Message> = pick_list(choices, selected, Message::MailOverviewAccount)
-        .padding(style::pick_list_padding())
-        .text_size(typo::caption().size)
-        .text_line_height(typo::caption().line_height)
-        .font(typo::caption().font)
-        .style(style::pick_list)
-        .menu_style(style::pick_list_menu)
-        .into();
+    let selected = choices.iter().find(|choice| choice.account == state.account).map(|choice| choice.label.clone());
+    let accounts = state.account_menu.button((), selected.unwrap_or_default(), Message::MailOverviewAccountMenu);
     let controls = row![ranges, accounts].spacing(space::s()).align_y(Alignment::Center);
     if wrap { controls.wrap().into() } else { controls.into() }
 }

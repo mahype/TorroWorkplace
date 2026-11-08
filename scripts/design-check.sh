@@ -13,6 +13,7 @@
 #   - Color::from_rgb…
 #   - Iced standard button styles (button::primary …), i.e. not style::button::…
 #   - Font::DEFAULT
+#   - pick_list( – Iced's own dropdown; use torro_gui::widgets::Dropdown (issue #554)
 # Exceptions go on the line or the line before: `// design-check: allow <reason>`.
 # Code after `#[cfg(test)]` (test modules) is not checked.
 #
@@ -81,6 +82,7 @@ function braces(s,   o, c) {
 function check_line(s, lineno, allowed,   t, pre, end, name, rest) {
     if (s ~ /Color::from_rgb/) report(lineno, "Color::from_rgb: use a colour from torro_gui::theme", allowed)
     if (s ~ /Font::DEFAULT/) report(lineno, "Font::DEFAULT: use typo::… (the design font)", allowed)
+    if (s ~ /(^|[^A-Za-z0-9_])pick_list\(/) report(lineno, "pick_list(: use torro_gui::widgets::Dropdown", allowed)
 
     t = s
     while (match(t, /button::(primary|secondary|text|success|danger)/)) {
@@ -208,6 +210,10 @@ fn view() -> Element<'_, Message> {
     let bad_font = Font::DEFAULT; // want
     let bad_button = button("x").style(button::primary); // want
     let bad_button_text = button("x").style(button::text); // want
+    let bad_pick = pick_list(options, chosen, Message::Pick); // want
+    let bad_pick_path = iced::widget::pick_list(options, chosen, Message::Pick); // want
+    let ok_pick = widgets::Dropdown::default(); // ok
+    let ok_pick_style = style::pick_list_padding(); // ok
     let bad_multi = container(x)
         .padding( // want
             12.0,
