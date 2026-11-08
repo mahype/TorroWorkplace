@@ -7,9 +7,11 @@
 //! - **Profile:** name, short description, picture (the first letter of the name or one of the
 //!   suite's symbols, [`torro_ipc::assistant::AVATARS`]) and the personality, typed into a draft
 //!   and saved with "Save" (`assistant.update_profile`, only the fields that changed). Three
-//!   templates ("Calm and brief", "Friendly", "Formal") fill the personality as a starting point;
-//!   "Discard changes" brings back what is stored. A blank name and a personality over 4,000
-//!   characters are named after the first "Save", not before.
+//!   templates ("Calm and brief", "Friendly", "Formal") fill the personality as a starting point.
+//!   Two groups, "Name and picture" and "Personality" (issue #547); "Save" and "Discard" stand in
+//!   the suite's save bar ([`crate::Page::save_bar`]), only while something is changed, with what
+//!   keeps "Save" back in place of "Profile changed" after the first try – a blank name, a
+//!   personality over 4,000 characters. Enter in a field saves as before.
 //! - **Memory:** the notes (`assistant.list_memories`), each with "Edit" (`assistant.remember` with
 //!   `replaces`) and "Forget" (`assistant.forget`, after asking); "Add note" in the header bar.
 //!   A note kept from models outside this computer says so ("This computer only").
@@ -43,7 +45,7 @@ use torro_ipc::assistant::{
 };
 
 use super::{Action, avatar};
-use crate::parts::{chevron, confirm, field, pressable, row_frame, setting_row};
+use crate::parts::{chevron, confirm, field, pressable, setting_row};
 use crate::{Data, Page};
 
 /// The id of the field a note is typed into: it takes the focus when "Add note" or "Edit" opens it
@@ -217,9 +219,9 @@ pub enum Message {
     Avatar(String),
     Personality(text_editor::Action),
     Template(Template),
-    /// "Save" under the profile.
+    /// "Save" in the save bar, Enter in a field.
     Save,
-    /// "Discard changes".
+    /// "Discard" in the save bar.
     Discard,
     /// "Add note" in the header bar.
     AddNote,
@@ -420,7 +422,13 @@ pub fn page<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Page<'a, 
     }
     match (state.sub, state.draft.as_ref()) {
         (Some(Sub::Profile), Some(draft)) => {
-            Page::new(profile_page(draft, &profile_of(data))).sub_page(tr("Profile"), Message::Back)
+            let page = Page::new(profile_page(draft)).sub_page(tr("Profile"), Message::Back);
+            match save_summary(draft, &profile_of(data)) {
+                Some(summary) => {
+                    page.save_bar(widgets::save_bar(summary, Some(Message::Discard), Some(Message::Save), false))
+                }
+                None => page,
+            }
         }
         (Some(Sub::Memory), _) => {
             let label = tr("Add note");
@@ -481,9 +489,15 @@ fn inset<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
     container(content).width(Fill).padding([space::m(), space::l()]).into()
 }
 
-/// Name, description, picture and personality, then "Save" and "Discard changes".
-fn profile_page<'a>(draft: &'a Draft, stored: &Profile) -> Element<'a, Message> {
-    let save_on = draft.changes(stored).is_some();
+/// The words of the save bar while the profile holds changes (issue #547): what keeps "Save" back
+/// once it was pressed, else "Profile changed". `None` while nothing is changed: no bar.
+fn save_summary(draft: &Draft, stored: &Profile) -> Option<String> {
+    draft.changes(stored)?;
+    Some(draft.problem().filter(|_| draft.tried).unwrap_or_else(|| tr("Profile changed").to_string()))
+}
+
+/// "Name and picture" (name, description, picture) and "Personality"; "Save" is the page's save bar.
+fn profile_page(draft: &Draft) -> Element<'_, Message> {
     let name = field(DEFAULT_NAME, &draft.name).on_input(Message::Name).on_submit(Message::Save);
     let description = field(tr("Your assistant for this computer"), &draft.description)
         .on_input(Message::Description)
@@ -528,25 +542,14 @@ fn profile_page<'a>(draft: &'a Draft, stored: &Profile) -> Element<'a, Message> 
         row![blank::horizontal(), counter],
     ]
     .spacing(space::s());
-    let save_style: widgets::ButtonStyle = if save_on { style::button::primary } else { style::button::secondary };
-    let mut buttons = row![blank::horizontal()].spacing(space::s()).align_y(Alignment::Center);
-    if save_on {
-        buttons = buttons.push(widgets::text_button(
-            None,
-            tr("Discard changes"),
-            style::button::ghost,
-            Some(Message::Discard),
-        ));
-    }
-    buttons = buttons.push(widgets::text_button(None, tr("Save"), save_style, save_on.then_some(Message::Save)));
-    let mut page = column![
-        widgets::group(tr("Name"), vec![row_frame(name, false)], None),
-        widgets::group(
-            tr("Description"),
-            vec![row_frame(description, false)],
-            Some(tr("Shown under the name in the chat.").to_string()),
-        ),
-        widgets::group(tr("Picture"), vec![inset(picture)], None),
+    let about = tr("Shown under the name in the chat.").to_string();
+    let identity = vec![
+        widgets::segment_row(tr("Name"), None, name, None),
+        widgets::segment_row(tr("Description"), Some(about), description, None),
+        widgets::segment_row(tr("Picture"), None, picture, None),
+    ];
+    column![
+        widgets::group(tr("Name and picture"), identity, None),
         widgets::group(
             tr("Personality"),
             vec![inset(personality)],
@@ -556,15 +559,8 @@ fn profile_page<'a>(draft: &'a Draft, stored: &Profile) -> Element<'a, Message> 
             ),
         ),
     ]
-    .spacing(layout::section_gap());
-    // A problem shows after the first "Save" only, next to the button that found it.
-    let problem = draft.problem().filter(|_| draft.tried);
-    let mut bottom = column![buttons].spacing(space::s());
-    if let Some(problem) = problem {
-        bottom = bottom.push(row![blank::horizontal(), problem_text(problem)]);
-    }
-    page = page.push(bottom);
-    page.into()
+    .spacing(layout::section_gap())
+    .into()
 }
 
 /// The notes with "Edit" and "Forget", a note being typed first when it is new.
@@ -748,6 +744,36 @@ mod tests {
                 &[("count", &(MAX_PERSONALITY_CHARS + 1)), ("max", &MAX_PERSONALITY_CHARS)]
             ))
         );
+    }
+
+    /// Issue #547: the profile saves through the suite's save bar, shown only while something is
+    /// changed – "Profile changed", after a refused "Save" what keeps it back – and gone again once
+    /// "Discard" brings back what is stored.
+    #[tokio::test]
+    async fn the_save_bar_shows_only_while_the_profile_is_changed() {
+        let data = with_notes().await;
+        let mut state = State::default();
+        let _ = update(&mut state, Message::OpenProfile, &data);
+        assert!(page(&state, &data, SizeClass::Wide).save_bar.is_none(), "nothing changed");
+        let stored = profile_of(&data);
+        assert_eq!(save_summary(state.draft.as_ref().expect("a draft"), &stored), None);
+
+        let _ = update(&mut state, Message::Description("Helps with mail".into()), &data);
+        assert!(page(&state, &data, SizeClass::Wide).save_bar.is_some());
+        let draft = state.draft.as_ref().expect("a draft");
+        assert_eq!(save_summary(draft, &stored), Some(tr("Profile changed").to_string()));
+
+        let _ = update(&mut state, Message::Name(" ".into()), &data);
+        assert_eq!(
+            save_summary(state.draft.as_ref().expect("a draft"), &stored),
+            Some(tr("Profile changed").to_string())
+        );
+        assert!(matches!(update(&mut state, Message::Save, &data), Act::None), "a blank name is held back");
+        let named = Some(tr("Give the assistant a name.").to_string());
+        assert_eq!(save_summary(state.draft.as_ref().expect("a draft"), &stored), named, "after the first try");
+
+        let _ = update(&mut state, Message::Discard, &data);
+        assert!(page(&state, &data, SizeClass::Narrow).save_bar.is_none(), "discarded: no bar");
     }
 
     #[tokio::test]
