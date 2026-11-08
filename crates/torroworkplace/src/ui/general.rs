@@ -331,13 +331,19 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
         segments(&KIND_CHOICES, KindChoice(maps.geocoder_kind), |chosen: KindChoice| Message::GeocoderKind(chosen.0))
     };
     // Field and segments beside the name while they fit, under it in a narrow window: the field
-    // across the row, the segments below it (design review of #554).
+    // across the row, the segments below it (design review of #554). "Map tiles" decides with it, so
+    // both address fields stand beside their names or both under them, and a narrow window never cuts
+    // an address or its line off (issue #548).
     let search_hint = hint(Address::Geocoder);
+    let tiles_hint = hint(Address::Tiles);
+    let peers = [(tr("Place search"), search_hint.clone()), (tr("Map tiles"), tiles_hint.clone())];
+    let width = size::sidebar() + space::s() + segments_width(&KIND_CHOICES);
     let beside_hint = search_hint.clone();
-    let search = stacking_row(
+    let search = address_row(
         tr("Place search"),
         search_hint,
-        size::sidebar() + space::s() + segments_width(&KIND_CHOICES),
+        peers.clone(),
+        width,
         move || {
             let search = row![address(Address::Geocoder, Maps::PHOTON), kind()]
                 .spacing(space::s())
@@ -347,14 +353,12 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
         },
         move || column![address(Address::Geocoder, Maps::PHOTON), kind()].spacing(space::s()).into(),
     );
-    // Like "Place search": the field beside the name while it fits, else across the row under it, so
-    // a narrow window never cuts the address off (issue #548).
-    let tiles_hint = hint(Address::Tiles);
     let beside_hint = tiles_hint.clone();
-    let tiles = stacking_row(
+    let tiles = address_row(
         tr("Map tiles"),
         tiles_hint,
-        size::sidebar(),
+        peers,
+        width,
         move || {
             let tiles = container(address(Address::Tiles, Maps::OSM_TILES)).width(Length::FillPortion(2));
             setting_row(None, tr("Map tiles"), beside_hint.clone(), tiles)
@@ -391,6 +395,28 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
         block = block.push(notice(trf("Not saved: {reason}", &[("reason", &tr(why))])));
     }
     block.push(row(links).spacing(space::xs()).wrap().vertical_spacing(space::xs())).into()
+}
+
+/// An address row of "Maps": `beside` – the whole row with its field – while the names and lines of
+/// both address rows (`peers`) fit beside `width`, else the name and line with `under` on a line of
+/// its own below them. Like `stacking_row`, but decided for both rows together (issue #548).
+fn address_row<'a>(
+    label: &'static str,
+    detail: Option<String>,
+    peers: [(&'static str, Option<String>); 2],
+    width: f32,
+    beside: impl Fn() -> Element<'a, Message> + 'a,
+    under: impl Fn() -> Element<'a, Message> + 'a,
+) -> Element<'a, Message> {
+    iced::widget::responsive(move |room| {
+        let texts = peers.iter().map(|(label, detail)| (*label, detail.as_deref()));
+        match widgets::segment_column(width, texts, room.width) {
+            Some(_) => beside(),
+            None => widgets::segment_row(label, detail.clone(), under(), None),
+        }
+    })
+    .height(Length::Shrink)
+    .into()
 }
 
 /// The line under the name of an address row of "Maps": "Press Enter to save" while its address is
