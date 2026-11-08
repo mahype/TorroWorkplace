@@ -5,13 +5,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use iced::widget::{column, container, pick_list, responsive};
+use iced::widget::{column, container, responsive};
 use iced::{Element, Subscription};
 use torro_core::account::Secret;
 use torro_core::ai::{AiProvider, AiSlot, LocalProgram};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::Icon;
 use torro_gui::theme::{self, size, space};
+use torro_gui::widgets::{Align, Dropdown, DropdownEvent, MenuItem, MenuSection};
 use torro_gui::{layout, style, typo, widgets};
 use torro_ipc::{
     AiCandidate, AiObservation, AiObservationStatus, AiPreparationKind, AiRecommendation, AiServer, Request, Response,
@@ -48,6 +49,8 @@ pub struct State {
     current: Option<(AiSlot, AiCandidate)>,
     pull: Option<String>,
     demo: bool,
+    /// The dropdown of "Choose a provider" (issue #554: the suite's dropdown, not Iced's pick list).
+    menus: Dropdown<()>,
 }
 
 impl Default for State {
@@ -77,6 +80,7 @@ impl Default for State {
             current: None,
             pull: None,
             demo: false,
+            menus: Dropdown::default(),
         }
     }
 }
@@ -100,6 +104,8 @@ pub enum Message {
     Confirm,
     Cancel,
     Retry,
+    /// The dropdown of "Choose a provider" opens, closes or is clicked next to.
+    Menus(DropdownEvent<()>),
 }
 
 #[derive(Debug)]
@@ -267,6 +273,14 @@ fn compatible_recommendation(mut recommendation: AiRecommendation) -> AiRecommen
 }
 
 pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
+    if let Message::Menus(event) = message {
+        // Eleven providers: a plain menu without search, so nothing asks for the focus.
+        state.menus.update(event);
+        return Action::None;
+    }
+    if matches!(message, Message::Online(_)) {
+        state.menus.close();
+    }
     if !state.active && !matches!(message, Message::Tick) {
         state.active = true;
     }
@@ -608,6 +622,22 @@ fn set(state: &mut State) -> Action {
     )
 }
 
+/// The open dropdown of "Choose a provider" under its button, if it is open (issue #554). The page
+/// or dialog that shows [`view`] lays it over itself.
+pub fn overlay(state: &State) -> Option<Element<'_, Message>> {
+    let key = state.menus.open()?;
+    let items = AiProvider::CLOUD
+        .iter()
+        .map(|provider| MenuItem::plain(ProviderChoice(*provider).to_string(), Message::Online(*provider)))
+        .collect();
+    Some(state.menus.view(key, vec![MenuSection::new(items)], widgets::menu_width(), Align::End, Message::Menus))
+}
+
+/// What Escape means here: close the open dropdown, if one is.
+pub fn escape(state: &State) -> Option<Message> {
+    state.menus.open().map(|_| Message::Menus(DropdownEvent::Close))
+}
+
 pub fn view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
     responsive(move |bounds| view_in(state, data, bounds.width < size::form_max())).into()
 }
@@ -837,15 +867,7 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
         .collect(),
         Some(tr("Torro checks automatically while this page is open. GPT4All: enable the Local API Server.").into()),
     );
-    let provider =
-        pick_list(AiProvider::CLOUD.map(ProviderChoice).to_vec(), None::<ProviderChoice>, |p| Message::Online(p.0))
-            .placeholder(tr("Choose provider"))
-            .padding(style::pick_list_padding())
-            .text_size(typo::caption().size)
-            .text_line_height(typo::caption().line_height)
-            .font(typo::caption().font)
-            .style(style::pick_list)
-            .menu_style(style::pick_list_menu);
+    let provider = state.menus.button((), tr("Choose provider"), Message::Menus);
     let online = widgets::group(
         tr("Online service"),
         vec![setup_row(narrow, tr("Choose a provider"), Some(tr("Connect with an API key").into()), provider)],
@@ -1119,6 +1141,19 @@ mod tests {
         let Action::AskAi(mut asks) = action else { panic!("owned request") };
         let (Asked::Setup { owner, run, .. }, request) = asks.remove(0) else { panic!("setup tag") };
         (owner, run, request)
+    }
+
+    /// Issue #554: "Choose a provider" is the suite's dropdown; Escape and a choice close it.
+    #[test]
+    fn the_provider_dropdown_opens_and_closes() {
+        let data = super::super::demo::demo_data();
+        let mut state = State::default();
+        assert!(overlay(&state).is_none());
+        update(&mut state, Message::Menus(DropdownEvent::Toggle(())), &data);
+        assert!(overlay(&state).is_some());
+        assert_eq!(escape(&state), Some(Message::Menus(DropdownEvent::Close)));
+        update(&mut state, Message::Online(AiProvider::OpenRouter), &data);
+        assert!(overlay(&state).is_none() && escape(&state).is_none(), "a choice closes it");
     }
 
     #[test]

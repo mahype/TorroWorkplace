@@ -691,6 +691,22 @@ impl State {
     }
 }
 
+/// The open dropdown of the AI step ("Choose a provider", issue #554), to lay over the dialog.
+pub fn overlay<'a>(state: &'a State) -> Option<iced::Element<'a, Message>> {
+    if state.step != Step::AiChoose {
+        return None;
+    }
+    super::ai_setup::overlay(&state.setup).map(|menu| menu.map(Message::Setup))
+}
+
+/// What Escape means inside the dialog before it closes it: the AI step's open dropdown.
+pub fn escape(state: &State) -> Option<Message> {
+    if state.step != Step::AiChoose {
+        return None;
+    }
+    super::ai_setup::escape(&state.setup).map(Message::Setup)
+}
+
 pub fn ai_subscription(state: &State) -> iced::Subscription<Message> {
     if state.step == Step::AiChoose {
         super::ai_setup::subscription(&state.setup).map(Message::Setup)

@@ -37,8 +37,8 @@
 //! A developer tool, not part of an app: its own labels are not translated.
 
 use iced::widget::{
-    Space, button, checkbox, column, container, pick_list, radio, responsive, row, rule, scrollable, text_editor,
-    text_input, toggler,
+    Space, button, checkbox, column, container, radio, responsive, row, rule, scrollable, text_editor, text_input,
+    toggler,
 };
 use iced::{Alignment, Background, Color, Element, Fill, Length, Subscription, Theme, border};
 use torro_gui::icon::{self, Icon, icon};
@@ -500,13 +500,7 @@ impl Gallery {
                     .padding(style::INPUT_PADDING)
                     .width(260)
                     .style(style::text_input),
-                pick_list(VIEWS, self.view, Msg::View)
-                    .padding(style::pick_list_padding())
-                    .text_size(typo::caption().size)
-                    .text_line_height(typo::caption().line_height)
-                    .font(typo::caption().font)
-                    .style(style::pick_list)
-                    .menu_style(style::pick_list_menu),
+                widgets::select_button(&Anchor::new(), self.view.unwrap_or("Week"), Msg::Noop),
                 checkbox(self.checked)
                     .label("Work")
                     .on_toggle(Msg::Check)
@@ -963,58 +957,19 @@ fn inputs(notes: &text_editor::Content) -> Element<'_, Msg> {
             cell(state, editor)
         })
         .collect();
-    let pick_states: [(&str, pick_list::Status); 3] = [
-        ("Normal", pick_list::Status::Active),
-        ("Hover", pick_list::Status::Hovered),
-        ("Open", pick_list::Status::Opened { is_hovered: false }),
+    // Issue #554: the dropdown of the suite – its trigger, the plain menu (fewer than twelve
+    // entries) and the menu with search (twelve and more), drawn in place.
+    let entry = |label: String, current: bool| MenuItem::plain(label, Msg::Noop).current(current);
+    let few = vec![MenuSection::new(VIEWS.iter().map(|v| entry((*v).to_string(), *v == "Week")).collect())];
+    let many =
+        vec![MenuSection::new((0..24).map(|q| entry(format!("{:02}:{:02}", 8 + q / 4, q % 4 * 15), q == 8)).collect())];
+    let picks: Vec<Element<'_, Msg>> = vec![
+        cell("select_button", widgets::select_button(&Anchor::new(), "Week", Msg::Noop)),
+        cell("choice_menu", widgets::choice_menu(few, widgets::menu_width(), "", |_| Msg::Noop, Msg::Noop)),
+        cell("choice_menu (search)", widgets::choice_menu(many, widgets::menu_width(), "10", |_| Msg::Noop, Msg::Noop)),
     ];
-    let mut picks: Vec<Element<'_, Msg>> = pick_states
-        .into_iter()
-        .map(|(state, status)| {
-            let pick = pick_list(VIEWS, Some("Week"), |_| Msg::Noop)
-                .padding(style::pick_list_padding())
-                .text_size(typo::caption().size)
-                .text_line_height(typo::caption().line_height)
-                .font(typo::caption().font)
-                .style(move |t, _| style::pick_list(t, status));
-            cell(state, pick)
-        })
-        .collect();
-    picks.push(cell("Menu (pick_list_menu)", pick_menu()));
-    column![line("text_input", inputs), line("text_editor", editors), line("pick_list", picks)]
+    column![line("text_input", inputs), line("text_editor", editors), line("Dropdown", picks)]
         .spacing(space::l())
-        .into()
-}
-
-/// The pick list's menu drawn in place: Iced opens it only on click.
-fn pick_menu() -> Element<'static, Msg> {
-    let items = VIEWS.iter().map(|v| {
-        let hovered = *v == "Week";
-        container(typo::text(typo::body(), *v))
-            .width(160)
-            .padding(style::button_padding())
-            .center_y(style::MENU_ITEM_HEIGHT)
-            .style(move |t: &Theme| {
-                let m = style::pick_list_menu(t);
-                container::Style {
-                    text_color: Some(if hovered { m.selected_text_color } else { m.text_color }),
-                    background: hovered.then_some(m.selected_background),
-                    ..container::Style::default()
-                }
-            })
-            .into()
-    });
-    container(column(items))
-        .style(|t: &Theme| {
-            let m = style::pick_list_menu(t);
-            container::Style {
-                background: Some(m.background),
-                border: m.border,
-                shadow: m.shadow,
-                text_color: Some(m.text_color),
-                ..container::Style::default()
-            }
-        })
         .into()
 }
 

@@ -55,7 +55,9 @@
 //! if self.menu.is_some() { widgets::escape().map(|()| Message::CloseMenu) } else { Subscription::none() }
 //! ```
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -71,6 +73,7 @@ use iced::{
 use iced::{border, keyboard, mouse};
 
 mod context_area;
+mod guard;
 
 use torro_core::design::{ListLook, ListSelection};
 use torro_core::i18n::tr;
@@ -2310,6 +2313,11 @@ impl<'a, M> MenuItem<'a, M> {
         }
     }
 
+    /// An entry with `label` alone, no mark in front: a value of a dropdown ("10 minutes", "22:00").
+    pub fn plain(label: impl IntoFragment<'a>, on_press: M) -> Self {
+        Self { mark: None, ..Self::new(Icon::Check, label, on_press) }
+    }
+
     /// The same entry with `text` as a second line in `typo::meta()` in `text_3`, cut with "…" when
     /// it is too long. The entry is twice as high as one without it.
     ///
@@ -2495,18 +2503,24 @@ pub fn menu<'a, M: Clone + 'a>(sections: Vec<MenuSection<'a, M>>) -> Element<'a,
 /// of Settings › Categorization, issue #454: account, size, where it computes). Never narrower than
 /// [`menu_width`].
 pub fn menu_wide<'a, M: Clone + 'a>(sections: Vec<MenuSection<'a, M>>, width: f32) -> Element<'a, M> {
-    let mut list = column![];
+    let list = column(menu_rows(sections));
+    container(list).width(width.max(menu_width())).padding(style::MENU_INSET).style(style::container::menu).into()
+}
+
+/// The rows of a menu card: each section's title and entries, a line between sections.
+fn menu_rows<'a, M: Clone + 'a>(sections: Vec<MenuSection<'a, M>>) -> Vec<Element<'a, M>> {
+    let mut rows: Vec<Element<'a, M>> = Vec::new();
     for (i, section) in sections.into_iter().enumerate() {
         if i > 0 {
-            list = list.push(container(rule::horizontal(LINE).style(style::rule)).padding([space::xs(), 0.0]));
+            rows.push(container(rule::horizontal(LINE).style(style::rule)).padding([space::xs(), 0.0]).into());
         }
         if let Some(title) = section.title {
             let label = typo::text(typo::caption(), title).style(theme::text_3);
-            list = list.push(container(label).padding(Padding::new(space::s()).bottom(space::xs())));
+            rows.push(container(label).padding(Padding::new(space::s()).bottom(space::xs())).into());
         }
-        list = list.extend(section.items.into_iter().map(menu_entry));
+        rows.extend(section.items.into_iter().map(menu_entry));
     }
-    container(list).width(width.max(menu_width())).padding(style::MENU_INSET).style(style::container::menu).into()
+    rows
 }
 
 /// A long choice in a floating menu (issue #299, the fonts of Appearance): a search field at the top
@@ -2567,6 +2581,249 @@ pub fn search_menu<'a, M: Clone + 'a>(
 /// The entries of a [`search_menu`], or the words it shows instead when the search found none.
 fn search_results<M>(items: Vec<Element<'_, M>>) -> Result<Vec<Element<'_, M>>, &'static str> {
     if items.is_empty() { Err(tr("No matches")) } else { Ok(items) }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Dropdowns (issue #554)
+// ---------------------------------------------------------------------------------------------
+
+/// From how many entries a dropdown ([`choice_menu`]) gets a search field (the rule of choices in
+/// the design skill, section 5): fewer stand in a plain menu, this many and more in a
+/// [`search_menu`].
+pub const SEARCH_FROM: usize = 12;
+
+/// The id of the search field of a [`choice_menu`]: focus it when a dropdown opens
+/// ([`Dropdown::update`] says when), with `iced::widget::operation::focus(DROPDOWN_SEARCH)` or a
+/// settings page's `Action::Focus`. Only one dropdown is open at a time, so one id serves them all.
+pub const DROPDOWN_SEARCH: &str = "torro-dropdown-search";
+
+/// Which dropdown of a page or window is open, the words in its search field and where each
+/// trigger is on screen (issue #554). The page keeps one in its state, keyed by its own small enum
+/// of choices (`K`), and routes every [`DropdownEvent`] to [`Dropdown::update`].
+///
+/// The trigger is a [`select_button`] at [`Dropdown::anchor`] that sends
+/// [`DropdownEvent::Toggle`]; the open menu is [`Dropdown::view`] in the page's overlay. A choice in
+/// the menu and Escape close it ([`Dropdown::close`]).
+///
+/// ```ignore
+/// // state: menus: Dropdown<Choice>; message: Menus(DropdownEvent<Choice>)
+/// let button = widgets::select_button(&state.menus.anchor(&Choice::Lead), label, Message::Menus(DropdownEvent::Toggle(Choice::Lead)));
+/// // overlay:
+/// let key = state.menus.open()?;
+/// Some(state.menus.view(key, sections, widgets::menu_width(), Align::End, Message::Menus))
+/// ```
+#[derive(Debug, Clone)]
+pub struct Dropdown<K> {
+    open: Option<K>,
+    query: String,
+    /// One anchor per trigger, kept across frames: the trigger writes its bounds while the window is
+    /// laid out, the menu reads them in the same frame.
+    anchors: RefCell<HashMap<K, Anchor>>,
+}
+
+impl<K> Default for Dropdown<K> {
+    fn default() -> Self {
+        Self { open: None, query: String::new(), anchors: RefCell::new(HashMap::new()) }
+    }
+}
+
+impl<K: PartialEq> PartialEq for Dropdown<K> {
+    /// Equal when the same dropdown is open with the same words; where the triggers are is no state.
+    fn eq(&self, other: &Self) -> bool {
+        self.open == other.open && self.query == other.query
+    }
+}
+
+/// What the trigger and the menu of a [`Dropdown`] report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DropdownEvent<K> {
+    /// The trigger of `K` was pressed: open its menu with an empty search field, or close it when
+    /// it is the one open.
+    Toggle(K),
+    /// The words in the search field changed.
+    Query(String),
+    /// A click next to the menu, Escape, or Enter without a match: close it.
+    Close,
+}
+
+impl<K: Clone + Eq + Hash> Dropdown<K> {
+    /// Applies `event`; `true` when a menu has just opened, so the caller focuses
+    /// [`DROPDOWN_SEARCH`].
+    pub fn update(&mut self, event: DropdownEvent<K>) -> bool {
+        match event {
+            DropdownEvent::Toggle(key) => {
+                if self.open.as_ref() == Some(&key) {
+                    self.close();
+                    false
+                } else {
+                    self.open = Some(key);
+                    self.query.clear();
+                    true
+                }
+            }
+            DropdownEvent::Query(words) => {
+                self.query = words;
+                false
+            }
+            DropdownEvent::Close => {
+                self.close();
+                false
+            }
+        }
+    }
+
+    /// The dropdown that is open, if one is.
+    pub fn open(&self) -> Option<&K> {
+        self.open.as_ref()
+    }
+
+    /// Whether the dropdown of `key` is open.
+    pub fn is_open(&self, key: &K) -> bool {
+        self.open.as_ref() == Some(key)
+    }
+
+    /// The words in the search field of the open dropdown.
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// Closes the open dropdown, if one is, and clears its search.
+    pub fn close(&mut self) {
+        self.open = None;
+        self.query.clear();
+    }
+
+    /// The anchor of the trigger of `key`: pass it to the [`select_button`] that opens it.
+    pub fn anchor(&self, key: &K) -> Anchor {
+        self.anchors.borrow_mut().entry(key.clone()).or_default().clone()
+    }
+
+    /// The trigger of `key`: a [`select_button`] with `label` (the chosen value) at this key's
+    /// anchor that sends [`DropdownEvent::Toggle`] through `on_event`.
+    pub fn button<'a, M: Clone + 'a>(
+        &self,
+        key: K,
+        label: impl IntoFragment<'a>,
+        on_event: impl Fn(DropdownEvent<K>) -> M,
+    ) -> Element<'a, M> {
+        let anchor = self.anchor(&key);
+        select_button(&anchor, label, on_event(DropdownEvent::Toggle(key)))
+    }
+
+    /// A [`Dropdown::button`] as wide as its place ([`select_button_fill`]), for a field in a dialog
+    /// or a narrow row.
+    pub fn button_fill<'a, M: Clone + 'a>(
+        &self,
+        key: K,
+        label: impl IntoFragment<'a>,
+        on_event: impl Fn(DropdownEvent<K>) -> M,
+    ) -> Element<'a, M> {
+        let anchor = self.anchor(&key);
+        select_button_fill(&anchor, label, on_event(DropdownEvent::Toggle(key)))
+    }
+
+    /// The open menu of `key` as a floating layer under its trigger, lined up by `align`: a
+    /// [`choice_menu`] of `sections`, `width` wide (at least [`menu_width`]). `on_event` wraps the
+    /// dropdown's own events in the caller's message; a click next to the menu closes it.
+    pub fn view<'a, M: Clone + 'a>(
+        &'a self,
+        key: &K,
+        sections: Vec<MenuSection<'a, M>>,
+        width: f32,
+        align: Align,
+        on_event: impl Fn(DropdownEvent<K>) -> M + 'a,
+    ) -> Element<'a, M>
+    where
+        K: 'a,
+    {
+        let close = on_event(DropdownEvent::Close);
+        let menu = choice_menu(
+            sections,
+            width,
+            &self.query,
+            move |words| on_event(DropdownEvent::Query(words)),
+            close.clone(),
+        );
+        floating(&self.anchor(key), Placement::Below(align), menu, close)
+    }
+}
+
+/// The menu of a dropdown (issue #554, the rule of choices): with fewer than [`SEARCH_FROM`]
+/// entries a [`menu_wide`] that scrolls past [`size::panel()`]; with more a [`search_menu`] whose
+/// field ([`DROPDOWN_SEARCH`]) filters the entries by `query` without regard to case. Sections
+/// without a match drop out, Enter takes [`first_choice`], and without one sends `on_close`.
+/// `on_query` comes with every change of the field; Escape passes the field by ([`escape_free`]) and
+/// reaches the window, which closes the menu.
+/// Over a floating dialog, draw the dialog [`inert`] while the menu is open.
+pub fn choice_menu<'a, M: Clone + 'a>(
+    sections: Vec<MenuSection<'a, M>>,
+    width: f32,
+    query: &'a str,
+    on_query: impl Fn(String) -> M + 'a,
+    on_close: M,
+) -> Element<'a, M> {
+    let width = width.max(menu_width());
+    let entries: usize = sections.iter().map(|section| section.items.len()).sum();
+    if entries < SEARCH_FROM {
+        let body = scrollable(column(menu_rows(sections)))
+            .direction(scrollable::Direction::Vertical(style::scrollbar()))
+            .style(style::scrollable)
+            .height(Length::Shrink)
+            .width(Fill);
+        let card = container(container(body).max_height(size::panel()))
+            .width(width)
+            .padding(style::MENU_INSET)
+            .style(style::container::menu);
+        return card.into();
+    }
+    let shown = matching_sections(sections, query);
+    let enter = first_choice(&shown, query).unwrap_or_else(|| on_close.clone());
+    escape_free(search_menu(DROPDOWN_SEARCH, query, on_query, enter, menu_rows(shown), width))
+}
+
+/// What Enter in the search field of a dropdown takes from `sections` (already filtered by
+/// `query`): the first match while words are typed; with an empty field the current entry, so
+/// opening a menu and pressing Enter never changes the choice (the first entry is often "Off").
+pub fn first_choice<M: Clone>(sections: &[MenuSection<'_, M>], query: &str) -> Option<M> {
+    let mut items = sections.iter().flat_map(|section| section.items.iter());
+    let item = if query.trim().is_empty() { items.find(|item| item.current) } else { items.next() };
+    item.map(|item| item.on_press.clone())
+}
+
+/// `menu` whose search field never sees Escape (issue #554): a focused field keeps the key to itself
+/// otherwise, and the window's Escape – which closes the open menu first – would come only on the
+/// second press. The key stays uncaptured, so the window gets it.
+pub fn escape_free<'a, M: 'a>(menu: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    guard::EscapeArea { content: menu.into() }.into()
+}
+
+/// `content` drawn as it is but deaf to the pointer and the keys: a floating dialog or card while a
+/// dropdown of it is open (issue #554). Iced hands an event to every floating layer, the lower one
+/// first, so a button of the dialog under the menu would take a click meant for an entry; inert,
+/// the click reaches the menu, and a click on the dialog closes the menu.
+///
+/// ```ignore
+/// let card = if state.menus.open().is_some() { widgets::inert(card) } else { card };
+/// ```
+pub fn inert<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    guard::Inert { content: content.into() }.into()
+}
+
+/// The sections of a dropdown with only the entries whose label holds `query` (trimmed, without
+/// regard to case); sections left without an entry drop out. An empty query keeps everything.
+pub fn matching_sections<'a, M>(sections: Vec<MenuSection<'a, M>>, query: &str) -> Vec<MenuSection<'a, M>> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return sections;
+    }
+    sections
+        .into_iter()
+        .filter_map(|section| {
+            let items: Vec<MenuItem<'a, M>> =
+                section.items.into_iter().filter(|item| item.label.to_lowercase().contains(&query)).collect();
+            (!items.is_empty()).then_some(MenuSection { items, ..section })
+        })
+        .collect()
 }
 
 /// The action rail as a context menu: its groups form vertical sections with separators.
@@ -5236,35 +5493,6 @@ pub fn status_pill<'a, M: 'a>(status: Status, label: String) -> Element<'a, M> {
 /// The strip under the chosen tab.
 const TAB_MARK: f32 = 2.0;
 
-/// One tab as the pick list shows it when the tabs do not fit: its label and count, and its index.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TabChoice {
-    /// Where the tab stands in the row.
-    pub index: usize,
-    label: String,
-}
-
-impl std::fmt::Display for TabChoice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.label)
-    }
-}
-
-/// The tabs as the choices of the pick list ("Folders 12").
-pub fn tab_choices(labels: &[(String, Option<u64>)]) -> Vec<TabChoice> {
-    labels
-        .iter()
-        .enumerate()
-        .map(|(index, (label, count))| {
-            let label = match count {
-                Some(n) => format!("{label} {}", crate::units::format_count(*n)),
-                None => label.clone(),
-            };
-            TabChoice { index, label }
-        })
-        .collect()
-}
-
 /// The width a row of [`tabs`] needs: each tab's padding, its word in `BODY_STRONG` (the chosen
 /// look, so choosing one never makes the row too wide) and its count in `META`, and the gaps.
 pub fn tabs_width(labels: &[(String, Option<u64>)]) -> f32 {
@@ -5287,8 +5515,12 @@ pub fn tabs_width(labels: &[(String, Option<u64>)]) -> f32 {
 /// A `line` runs under the whole row. Never red, and no [`segmented`]: a segmented control changes
 /// the view of the same data, tabs change the part of an object.
 ///
-/// When the row does not fit ([`tabs_width`]), the tabs become a pick list – never a row that
-/// scrolls sideways. `on_select` gets the index of the tab.
+/// When the row does not fit ([`tabs_width`]), it scrolls sideways (issue #554), with a fade
+/// [`space::l()`] wide at its right edge that says more follow; while the chosen tab would stand
+/// beyond the room, the row starts scrolled to its right end and the fade stands at its left edge,
+/// where the hidden tabs are. `on_select` gets the index of the tab.
+///
+/// The fade runs into `PANEL`: tabs stand on a page or a panel, never on a menu or a raised card.
 ///
 /// ```ignore
 /// let labels = vec![(tr("Overview").to_string(), None), (tr("Folders").to_string(), Some(12))];
@@ -5300,27 +5532,37 @@ pub fn tabs<'a, M: Clone + 'a>(
     on_select: fn(usize) -> M,
 ) -> Element<'a, M> {
     responsive(move |room| {
-        if room.width >= tabs_width(&labels) {
-            let line = rule::horizontal(LINE).style(style::rule);
-            let row = row(labels
-                .iter()
-                .enumerate()
-                .map(|(i, (label, count))| tab(label.clone(), *count, i == selected, on_select(i))))
-            .spacing(space::xs());
-            column![row, line].into()
-        } else {
-            let choices = tab_choices(&labels);
-            let chosen = choices.get(selected).cloned();
-            let pick = iced::widget::pick_list(choices, chosen, move |choice: TabChoice| on_select(choice.index))
-                .padding(style::pick_list_padding())
-                .text_size(typo::body().size)
-                .text_line_height(typo::body().line_height)
-                .font(typo::body().font)
-                .style(style::pick_list)
-                .menu_style(style::pick_list_menu);
-            // A pick list needs no line under it; it would read as a row of tabs without tabs.
-            pick.into()
+        let needed = tabs_width(&labels);
+        let strip = row(labels
+            .iter()
+            .enumerate()
+            .map(|(i, (label, count))| tab(label.clone(), *count, i == selected, on_select(i))))
+        .spacing(space::xs());
+        let line = rule::horizontal(LINE).style(style::rule);
+        if room.width >= needed {
+            return column![strip, line].into();
         }
+        let hidden = scrollable::Scrollbar::new().width(0).scroller_width(0);
+        let scroll =
+            scrollable(strip).direction(scrollable::Direction::Horizontal(hidden)).style(style::scrollable).width(Fill);
+        // Anchored at the right while the chosen tab lies past the room. The scrollable keeps its
+        // offset from its anchor, so a change of anchor would mirror the row: the other anchor gets a
+        // tree of its own (one container more), and with it a fresh offset from its own edge.
+        let at_end = tabs_width(&labels[..(selected + 1).min(labels.len())]) > room.width;
+        let scroll: Element<'a, M> = if at_end { container(scroll.anchor_right()).into() } else { scroll.into() };
+        // Towards the hidden tabs: at the right while the row starts at its left, else mirrored.
+        let angle = if at_end { -std::f32::consts::FRAC_PI_2 } else { std::f32::consts::FRAC_PI_2 };
+        let fade = container(blank().width(space::l()).height(Fill)).style(move |t: &Theme| {
+            let panel = palette(t).panel;
+            let fade = iced::gradient::Linear::new(iced::Radians(angle))
+                .add_stop(0.0, Color { a: 0.0, ..panel })
+                .add_stop(1.0, panel);
+            container::Style { background: Some(Background::Gradient(fade.into())), ..container::Style::default() }
+        });
+        let fade = container(fade).width(Fill).height(size::control_lg());
+        let fade = if at_end { fade.align_left(Fill) } else { fade.align_right(Fill) };
+        let faded = stack![scroll, fade];
+        column![faded, line].into()
     })
     .height(Length::Shrink)
     .into()
@@ -7247,7 +7489,8 @@ mod tests {
         assert_eq!(tabs_width(&[]), 0.0);
     }
 
-    /// DS.3: every tab reports its own index, also from the pick list of a narrow row.
+    /// DS.3: every tab reports its own index; a row too narrow for its tabs still builds (it scrolls
+    /// sideways since issue #554 instead of becoming a pick list).
     #[test]
     fn tabs_report_their_index() {
         #[derive(Debug, Clone, PartialEq)]
@@ -7255,12 +7498,86 @@ mod tests {
             Tab(usize),
         }
         let labels = vec![("Overview".to_string(), None), ("Folders".to_string(), Some(4796))];
-        let choices = tab_choices(&labels);
-        assert_eq!(choices.iter().map(|c| c.index).collect::<Vec<_>>(), vec![0, 1]);
-        assert_eq!(choices[1].to_string(), format!("Folders {}", crate::units::format_count(4796)));
         let on_select: fn(usize) -> Msg = Msg::Tab;
-        assert_eq!(on_select(choices[1].index), Msg::Tab(1));
-        let _: Element<'_, Msg> = tabs(labels, 1, Msg::Tab);
+        assert_eq!(on_select(1), Msg::Tab(1));
+        let _: Element<'_, Msg> = tabs(labels.clone(), 1, Msg::Tab);
+        let _: Element<'_, Msg> = tabs(labels, 7, Msg::Tab);
+    }
+
+    /// Issue #554: a toggle opens a dropdown with an empty search and says so; the same toggle
+    /// closes it, another one moves to it, and a close ends it.
+    #[test]
+    fn a_dropdown_toggles_and_closes() {
+        let mut menus: Dropdown<u8> = Dropdown::default();
+        assert!(menus.update(DropdownEvent::Toggle(1)), "opening asks for the focus");
+        assert!(menus.is_open(&1));
+        assert!(!menus.update(DropdownEvent::Query("ab".into())));
+        assert_eq!(menus.query(), "ab");
+        assert!(menus.update(DropdownEvent::Toggle(2)), "another one opens");
+        assert_eq!((menus.open(), menus.query()), (Some(&2), ""), "with a fresh search");
+        assert!(!menus.update(DropdownEvent::Toggle(2)), "the same one closes");
+        assert_eq!(menus.open(), None);
+        menus.update(DropdownEvent::Toggle(3));
+        menus.update(DropdownEvent::Close);
+        assert_eq!(menus.open(), None);
+        assert_eq!(menus, Dropdown::default(), "anchors are no state");
+    }
+
+    /// Issue #554: a dropdown keeps one anchor per trigger across frames.
+    #[test]
+    fn a_dropdown_keeps_its_anchors() {
+        let menus: Dropdown<u8> = Dropdown::default();
+        let first = menus.anchor(&1);
+        first.set(Rectangle::new(Point::new(1.0, 2.0), Size::new(3.0, 4.0)));
+        assert_eq!(menus.anchor(&1).get(), first.get());
+        assert_eq!(menus.anchor(&2).get(), None);
+    }
+
+    /// Issue #554: the search filters labels without regard to case and drops empty sections.
+    #[test]
+    fn a_dropdown_search_filters_its_entries() {
+        let sections = || {
+            vec![
+                MenuSection::titled(
+                    "Local",
+                    vec![MenuItem::new(Icon::Clock, "llama3", 1), MenuItem::new(Icon::Clock, "Qwen", 2)],
+                ),
+                MenuSection::titled("Cloud", vec![MenuItem::new(Icon::Cloud, "Claude", 3)]),
+            ]
+        };
+        let labels = |sections: Vec<MenuSection<'_, i32>>| {
+            sections.into_iter().flat_map(|s| s.items).map(|i| i.label.to_string()).collect::<Vec<_>>()
+        };
+        assert_eq!(labels(matching_sections(sections(), "  ")), vec!["llama3", "Qwen", "Claude"]);
+        assert_eq!(labels(matching_sections(sections(), "LLA")), vec!["llama3"]);
+        assert_eq!(matching_sections(sections(), "cla").len(), 1, "the local section drops out");
+        assert!(matching_sections(sections(), "nothing").is_empty());
+    }
+
+    /// Issue #554 (review): Enter in an empty search keeps the current entry, never the first one
+    /// ("Off"); with words it takes the first match, and without a current entry nothing.
+    #[test]
+    fn enter_keeps_the_choice_until_words_are_typed() {
+        let sections = vec![MenuSection::new(vec![
+            MenuItem::plain("Off", 0),
+            MenuItem::plain("llama3", 1).current(true),
+            MenuItem::plain("qwen", 2),
+        ])];
+        assert_eq!(first_choice(&sections, " "), Some(1));
+        assert_eq!(first_choice(&matching_sections(sections.clone(), "q"), "q"), Some(2));
+        let none = vec![MenuSection::new(vec![MenuItem::plain("Off", 0)])];
+        assert_eq!(first_choice(&none, ""), None);
+    }
+
+    /// Issue #554: eleven entries stand in a plain menu, twelve get the search field; both build.
+    #[test]
+    fn a_dropdown_gets_its_search_at_twelve() {
+        let items =
+            |n: i32| vec![MenuSection::new((0..n).map(|i| MenuItem::new(Icon::Clock, format!("{i}"), i)).collect())];
+        assert_eq!(SEARCH_FROM, 12);
+        let _: Element<'_, i32> = choice_menu(items(11), menu_width(), "", |_| -1, -1);
+        let _: Element<'_, i32> = choice_menu(items(12), menu_width(), "3", |_| -1, -1);
+        let _: Element<'_, i32> = choice_menu(items(12), menu_width(), "none", |_| -1, -1);
     }
 
     /// DS.3: the head builds without pill and buttons, and with them; narrow it stacks them.

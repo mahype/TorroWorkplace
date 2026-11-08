@@ -30,7 +30,7 @@ use torro_ipc::{Request, Response, SettingKey};
 use torro_setups::{LoadMode, TemplateSummary};
 
 use super::template_form::{self, Facts, Form, Mode, Step};
-use super::{Action, Data, Header, confirm, dialog, picker, setting_row};
+use super::{Action, Data, Header, confirm, dialog, segments, segments_width, setting_row, stacking_row};
 use crate::workspace_keys;
 
 /// Page-local state: at most one row has its menu open, at most one dialog or confirmation is open.
@@ -305,13 +305,24 @@ fn shortcuts_row<'a>(data: &'a Data) -> Element<'a, Message> {
     let keys = format!("{} … 0", workspace_keys::label(modifiers, 1));
     let problem =
         data.status.as_ref().and_then(|status| status.shortcuts.as_ref()).and_then(|keys| keys.problem.clone());
-    let (mark, detail) = match problem {
-        Some(problem) => (Some(widgets::status_dot(widgets::Status::Attention)), problem),
-        None => (None, trf("{keys} load a template", &[("keys", &keys)])),
-    };
-    let choices: Vec<Modifiers> = ShortcutModifiers::ALL.into_iter().map(Modifiers).collect();
-    let choice = picker(choices, Modifiers(modifiers), |chosen: Modifiers| Message::Modifiers(chosen.0));
-    setting_row(Some(lead(mark)), tr("Shortcuts"), Some(detail), choice)
+    let attention = problem.is_some();
+    let detail = problem.unwrap_or_else(|| trf("{keys} load a template", &[("keys", &keys)]));
+    let choices = ShortcutModifiers::ALL.map(Modifiers);
+    let choice = move || segments(&choices, Modifiers(modifiers), |chosen: Modifiers| Message::Modifiers(chosen.0));
+    // Beside the name while it fits, under it in a narrow window (design review of #554); stacked,
+    // the line under the name says what is wrong, without the dot.
+    let beside_detail = detail.clone();
+    stacking_row(
+        tr("Shortcuts"),
+        Some(detail),
+        // The dot's column in front of the name takes from the room too.
+        segments_width(&choices) + size::control_sm() + space::m(),
+        move || {
+            let mark = attention.then(|| widgets::status_dot(widgets::Status::Attention));
+            setting_row(Some(lead(mark)), tr("Shortcuts"), Some(beside_detail.clone()), choice())
+        },
+        choice,
+    )
 }
 
 /// The group without a window manager: which one this system needs, and what to do.
@@ -355,7 +366,7 @@ fn lead<'a>(content: Option<Element<'a, Message>>) -> Element<'a, Message> {
     container(row![].push(content)).center_x(size::control_sm()).into()
 }
 
-/// A choice of modifiers in the picker, written as this system's keyboard names them.
+/// A choice of modifiers in its segments, written as this system's keyboard names them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Modifiers(ShortcutModifiers);
 
