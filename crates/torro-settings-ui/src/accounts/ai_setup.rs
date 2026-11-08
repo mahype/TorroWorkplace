@@ -22,6 +22,7 @@ use super::{Action, Asked, Seen};
 use crate::parts::setting_row;
 
 static OWNER: AtomicU64 = AtomicU64::new(1);
+const KEY_FIELD: &str = "ai-setup-key";
 
 #[derive(Debug)]
 pub struct State {
@@ -87,6 +88,8 @@ impl Default for State {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
+    /// Deterministic shared states used only by the non-network demo hosts.
+    Demo(&'static str),
     Tick,
     Connect(String),
     Online(AiProvider),
@@ -150,6 +153,7 @@ pub fn leave(state: &mut State) {
     state.run = state.run.wrapping_add(1);
     state.flight = None;
     state.key = Secret::default();
+    state.error = None;
     state.form = None;
     state.consent = false;
     state.allowed_remote = None;
@@ -166,6 +170,12 @@ pub fn active(state: &State) -> bool {
 }
 pub fn connected(state: &State) -> bool {
     state.selected.is_some()
+}
+
+/// The host's Enter/Continue must not leave an open connection form or a consent decision.
+pub fn primary(state: &State) -> Option<Message> {
+    (state.form.is_some() || state.consent || state.current.is_some() || matches!(state.flight, Some(Work::Connect)))
+        .then_some(Message::Submit)
 }
 
 /// The host's explicit sorting choice also governs shared preparation, not just Continue.
@@ -191,7 +201,11 @@ pub fn status(state: &State) -> Option<&'static str> {
     } else if matches!(state.flight, Some(Work::Connect)) {
         Some(tr("Connecting…"))
     } else if state.flight.is_some() {
-        Some(tr("Looking on this computer…"))
+        Some(if state.selected.as_deref().and_then(super::ai_provider) == Some(AiProvider::OllamaCloud) {
+            tr("Loading models…")
+        } else {
+            tr("Looking on this computer…")
+        })
     } else {
         None
     }
@@ -274,9 +288,7 @@ fn compatible_recommendation(mut recommendation: AiRecommendation) -> AiRecommen
 
 pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
     if let Message::Menus(event) = message {
-        // Eleven providers: a plain menu without search, so nothing asks for the focus.
-        state.menus.update(event);
-        return Action::None;
+        return if state.menus.update(event) { Action::Focus(widgets::DROPDOWN_SEARCH) } else { Action::None };
     }
     if matches!(message, Message::Online(_)) {
         state.menus.close();
@@ -294,10 +306,15 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
         state.flight = None;
     }
     match message {
+        Message::Demo(scenario) => {
+            demo(state, scenario, data);
+            Action::None
+        }
         Message::Tick if !state.active => open(state),
         Message::Tick if state.flight.is_some() || state.form.is_some() || state.consent => Action::None,
         Message::Tick if state.pull.is_some() => send(state, Work::Pulls, Request::AiPulls),
         Message::Tick if state.selected.is_some() => refresh(state),
+        Message::Retry if state.form.is_some() => update(state, Message::Submit, data),
         Message::Tick | Message::Retry => open(state),
         Message::Install(url) => {
             state.install = true;
@@ -322,10 +339,14 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
             Action::None
         }
         Message::Online(provider) if may_change_account(state) => {
+            state.key = Secret::default();
+            state.error = None;
             state.form = Some((provider, None, provider.default_url().unwrap_or_default().to_string()));
             Action::None
         }
         Message::Other if may_change_account(state) => {
+            state.key = Secret::default();
+            state.error = None;
             state.form = Some((AiProvider::OpenAiCompatible, None, String::new()));
             Action::None
         }
@@ -341,9 +362,15 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
         }
         Message::Submit if state.flight.is_none() => {
             let Some((provider, program, address)) = state.form.clone() else { return Action::None };
+            if provider == AiProvider::OllamaCloud && state.key.is_blank() {
+                state.error = Some(tr("Enter an API key to connect Ollama Cloud.").into());
+                return Action::Focus(KEY_FIELD);
+            }
+            state.error = None;
             let key = std::mem::take(&mut state.key);
             let request = match program {
                 Some(program) => Request::ConnectLocalAi { program, server: Some(address), key },
+                None if provider == AiProvider::OllamaCloud => Request::ConnectAi { provider, server: None, key },
                 None => Request::ConnectAi { provider, server: Some(address), key },
             };
             send(state, Work::Connect, request)
@@ -351,6 +378,7 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
         Message::Back if may_change_account(state) => {
             state.form = None;
             state.key = Secret::default();
+            state.error = None;
             state.selected = None;
             state.focus = None;
             state.ways = true;
@@ -635,7 +663,15 @@ pub fn overlay(state: &State) -> Option<Element<'_, Message>> {
 
 /// What Escape means here: close the open dropdown, if one is.
 pub fn escape(state: &State) -> Option<Message> {
-    state.menus.open().map(|_| Message::Menus(DropdownEvent::Close))
+    if state.menus.open().is_some() {
+        Some(Message::Menus(DropdownEvent::Close))
+    } else if state.consent {
+        Some(Message::Cancel)
+    } else if state.form.is_some() && state.flight.is_none() {
+        Some(Message::Back)
+    } else {
+        None
+    }
 }
 
 pub fn view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
@@ -686,6 +722,8 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
             tr("Connecting…")
         } else if state.current.is_some() {
             tr("Preparing model…")
+        } else if state.selected.as_deref().and_then(super::ai_provider) == Some(AiProvider::OllamaCloud) {
+            tr("Loading models…")
         } else {
             tr("Looking on this computer…")
         };
@@ -707,10 +745,21 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
     }
     if let Some((provider, program, address)) = &state.form {
         let name = program.as_deref().and_then(LocalProgram::from_id).map_or(provider.name(), LocalProgram::name);
-        let address = super::wizard::field(tr("Server address"), address)
-            .on_input_maybe(state.flight.is_none().then_some(Message::Address))
-            .on_submit_maybe(state.flight.is_none().then_some(Message::Submit));
+        parts = parts.push(typo::text(typo::body_strong(), name));
+        if *provider == AiProvider::OllamaCloud {
+            parts = parts
+                .push(typo::text(typo::meta(), provider.seat().label()).style(theme::text_2))
+                .push(typo::text(typo::body(), tr("Connect directly online. No local installation is needed.")))
+                .push(typo::text(typo::body(), tr("Text goes to this provider. Mail stays here unless you allow it.")));
+        } else {
+            let address = super::wizard::field(tr("Server address"), address)
+                .on_input_maybe(state.flight.is_none().then_some(Message::Address))
+                .on_submit_maybe(state.flight.is_none().then_some(Message::Submit));
+            parts =
+                parts.push(column![typo::text(typo::caption(), tr("Server address")), address].spacing(space::xs()));
+        }
         let key = super::wizard::field(tr("API key"), state.key.expose())
+            .id(KEY_FIELD)
             .secure(true)
             .on_input_maybe(state.flight.is_none().then_some(|key| Message::Key(Secret::new(key))))
             .on_submit_maybe(state.flight.is_none().then_some(Message::Submit));
@@ -726,8 +775,6 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
             ));
         }
         return parts
-            .push(typo::text(typo::body_strong(), name))
-            .push(column![typo::text(typo::caption(), tr("Server address")), address].spacing(space::xs()))
             .push(column![typo::text(typo::caption(), tr("API key")), key].spacing(space::xs()))
             .push(widgets::text_button(
                 None,
@@ -906,6 +953,9 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
             };
             let name = data.accounts().iter().find(|a| &a.id == account).map_or(fallback, |a| a.label.as_str());
             parts = parts.push(typo::text(typo::body_strong(), name.to_string()));
+            if super::ai_provider(account) == Some(AiProvider::OllamaCloud) {
+                parts = parts.push(typo::text(typo::meta(), tr("Connected")).style(theme::text_2));
+            }
         }
         for preparation in recommendation.preparations.iter().filter(|p| Some(&p.account) == state.selected.as_ref()) {
             let index = *state.choices.get(preparation.slot.key()).unwrap_or(&0);
@@ -972,7 +1022,11 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
                 if !candidate.local {
                     suggestions.push(setup_row(
                         narrow,
-                        tr("Computation location unknown"),
+                        if state.selected.as_deref().and_then(super::ai_provider) == Some(AiProvider::OllamaCloud) {
+                            AiProvider::OllamaCloud.seat().label()
+                        } else {
+                            tr("Computation location unknown")
+                        },
                         Some(tr("Mail needs your explicit permission.").into()),
                         iced::widget::Space::new(),
                     ));
@@ -993,6 +1047,12 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
                 Some(format!("{model} · {}", suggestion.reason)),
                 iced::widget::Space::new(),
             ));
+        }
+        if suggestions.is_empty()
+            && state.selected.as_deref().and_then(super::ai_provider) == Some(AiProvider::OllamaCloud)
+        {
+            parts = parts
+                .push(typo::text(typo::body(), tr("Account connected. No suggested models are available right now.")));
         }
         if !suggestions.is_empty() {
             parts = parts.push(widgets::group(tr("Our suggestion for this PC"), suggestions, None)).push(
@@ -1022,6 +1082,7 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
                 .iter()
                 .find(|a| Some(&a.id) == state.selected.as_ref())
                 .map(|a| a.label.as_str())
+                .or_else(|| state.selected.as_deref().and_then(super::ai_provider).map(AiProvider::name))
                 .or(state.selected.as_deref())
                 .unwrap_or_default();
             parts = parts.push(typo::text(typo::body_strong(), format!("{} · {account}", candidate.model)));
@@ -1044,6 +1105,14 @@ pub fn demo(state: &mut State, scenario: &str, data: &dyn Seen) {
     state.flight = None;
     state.found.clear();
     state.observations.clear();
+    state.form = None;
+    state.selected = None;
+    state.key = Secret::default();
+    state.error = None;
+    state.consent = false;
+    state.queue.clear();
+    state.current = None;
+    state.pull = None;
     let Some(Response::AiRecommendation { mut recommendation }) = super::demo::demo_answer(&Request::AiRecommend, data)
     else {
         return;
@@ -1057,6 +1126,50 @@ pub fn demo(state: &mut State, scenario: &str, data: &dyn Seen) {
         unified_memory: false,
     };
     match scenario {
+        "cloud-selection" => {
+            state.ways = true;
+        }
+        "cloud-menu" => {
+            state.ways = true;
+            state.menus.update(DropdownEvent::Toggle(()));
+        }
+        "cloud-form" | "cloud-running" | "cloud-error" => {
+            state.form = Some((AiProvider::OllamaCloud, None, "https://ollama.com/v1".into()));
+            if scenario == "cloud-running" {
+                state.flight = Some(Work::Connect);
+            }
+            if scenario == "cloud-error" {
+                state.error = Some(torro_core::ai::AiError::Auth.to_string());
+            }
+        }
+        "cloud-empty" | "cloud-connected" | "cloud-consent" => {
+            let account = "ai:ollama_cloud@ollama.com".to_string();
+            state.selected = Some(account.clone());
+            state.base = "https://ollama.com/v1".into();
+            recommendation.slots.clear();
+            recommendation.preparations.clear();
+            if scenario != "cloud-empty" {
+                for (slot, model) in [(AiSlot::Chat, "gpt-oss:20b"), (AiSlot::Decide, "clef:27b")] {
+                    recommendation.preparations.push(torro_ipc::AiPreparation {
+                        account: account.clone(),
+                        slot,
+                        candidates: vec![AiCandidate {
+                            model: model.into(),
+                            size_bytes: 0,
+                            fits: true,
+                            local: false,
+                            preparation: AiPreparationKind::Ready,
+                            by_chat: false,
+                        }],
+                    });
+                }
+            }
+            if scenario == "cloud-consent" {
+                let candidate = recommendation.preparations[1].candidates[0].clone();
+                state.queue = vec![(AiSlot::Decide, candidate)];
+                state.consent = true;
+            }
+        }
         "found" => state.found.push(AiServer {
             provider: AiProvider::Ollama,
             program: None,
@@ -1136,6 +1249,36 @@ pub fn demo(state: &mut State, scenario: &str, data: &dyn Seen) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ollama_cloud_form_requires_a_key_and_retries_the_connection_not_discovery() {
+        let data = super::super::demo::demo_data();
+        let provider = serde_json::from_str("\"ollama_cloud\"").expect("provider");
+        let mut state = State::default();
+        assert!(matches!(update(&mut state, Message::Menus(DropdownEvent::Toggle(())), &data), Action::Focus(id)
+            if id == widgets::DROPDOWN_SEARCH));
+        update(&mut state, Message::Online(provider), &data);
+        assert!(matches!(update(&mut state, Message::Submit, &data), Action::Focus(_)));
+        assert!(state.flight.is_none() && state.error.is_some());
+        update(&mut state, Message::Key(Secret::new("synthetic-key")), &data);
+        let (owner, run, request) = tag(update(&mut state, Message::Submit, &data));
+        assert!(
+            matches!(request, Request::ConnectAi { provider: p, server: None, key } if p == provider && !key.is_blank())
+        );
+        assert!(state.key.is_blank());
+        answered(&mut state, owner, run, &Ok(Response::Error { code: "auth".into(), message: "refused".into() }));
+        assert!(state.form.is_some() && state.error.is_some() && state.selected.is_none());
+        update(&mut state, Message::Key(Secret::new("replacement")), &data);
+        let (_, _, request) = tag(update(&mut state, Message::Retry, &data));
+        assert!(matches!(request, Request::ConnectAi { server: None, .. }));
+        state.flight = None;
+        update(&mut state, Message::Back, &data);
+        assert!(state.key.is_blank() && state.error.is_none() && state.form.is_none());
+        state.key = Secret::new("discard on leave");
+        state.error = Some("old error".into());
+        leave(&mut state);
+        assert!(state.key.is_blank() && state.error.is_none());
+    }
 
     fn tag(action: Action) -> (u64, u64, Request) {
         let Action::AskAi(mut asks) = action else { panic!("owned request") };

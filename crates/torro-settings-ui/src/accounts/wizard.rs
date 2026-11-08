@@ -2488,6 +2488,8 @@ pub enum Demo {
     AiServer,
     /// The Ollama found on this computer connected.
     AiDone,
+    /// Shared direct-cloud states for design inspection (issue #587).
+    AiCloud(&'static str),
     /// ntfy (task E5.14): the server step, nothing typed.
     NtfyServer,
     /// The topics step with two topics of `push.example.org` typed.
@@ -2513,9 +2515,12 @@ impl Demo {
     pub fn start(self) -> Start {
         match self {
             Demo::TorroMail | Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => Start::TorroMail,
-            Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone => {
-                Start::At(Provider::Ai)
-            }
+            Demo::AiProviders
+            | Demo::AiOpenRouter
+            | Demo::AiRefused
+            | Demo::AiServer
+            | Demo::AiDone
+            | Demo::AiCloud(_) => Start::At(Provider::Ai),
             Demo::NtfyServer | Demo::NtfyTopics | Demo::NtfyInvalid | Demo::NtfyLogin | Demo::NtfyDone => {
                 Start::At(Provider::Ntfy)
             }
@@ -2547,6 +2552,7 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
     let openrouter = Message::ChooseAi(AiProvider::OpenRouter);
     match demo {
         Demo::AiProviders => return Vec::new(),
+        Demo::AiCloud(scenario) => return vec![Message::Setup(super::ai_setup::Message::Demo(scenario))],
         Demo::AiOpenRouter => return vec![openrouter],
         // "wrong" is the key the demo refuses.
         Demo::AiRefused => return vec![openrouter, Message::AiKeyChanged(Secret::new("wrong")), Message::Continue],
@@ -2562,7 +2568,9 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
     }
     let address = match demo {
         Demo::TorroMail | Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => None,
-        Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone => None,
+        Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone | Demo::AiCloud(_) => {
+            None
+        }
         Demo::NtfyServer | Demo::NtfyTopics | Demo::NtfyInvalid | Demo::NtfyLogin | Demo::NtfyDone => None,
         Demo::Address => None,
         Demo::Unsupported => Some("anna@outlook.com"),
@@ -2606,7 +2614,8 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
         Demo::Address | Demo::Found | Demo::Unsupported | Demo::Gmail | Demo::NotFound => {}
         // Returned above.
         Demo::TorroMail | Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => {}
-        Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone => {}
+        Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone | Demo::AiCloud(_) => {
+        }
         Demo::NtfyServer | Demo::NtfyTopics | Demo::NtfyInvalid | Demo::NtfyLogin | Demo::NtfyDone => {}
     }
     steps

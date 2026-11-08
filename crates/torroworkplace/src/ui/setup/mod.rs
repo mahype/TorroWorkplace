@@ -569,6 +569,15 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             stay(act(state.nextcloud.start(data)))
         }
         Message::Next if state.step == Step::Nextcloud && state.nextcloud.running() => stay(Action::None),
+        Message::Next
+            if state.step == Step::Ai && torro_settings_ui::accounts::ai_setup::primary(&state.ai_setup).is_some() =>
+        {
+            stay(super::accounts::act(torro_settings_ui::accounts::ai_setup::update(
+                &mut state.ai_setup,
+                torro_settings_ui::accounts::ai_setup::Message::Submit,
+                data,
+            )))
+        }
         // On the calendar and tasks steps the primary button sends the open form.
         Message::Next if state.in_form() => stay(submit_form(state)),
         // Leaving the web step forward gives the assistant its rights for `web`, if ticked; "Skip" does not. While
@@ -1929,6 +1938,28 @@ mod tests {
     }
 
     #[test]
+    fn ollama_cloud_forms_and_shared_consent_cannot_be_skipped_with_enter() {
+        use torro_settings_ui::accounts::ai_setup;
+        let mut data = data();
+        data.settings.ai_slots = Default::default();
+        data.settings.ai_assignments.clear();
+        let mut setup = state(Step::Ai);
+        ai_setup::demo(&mut setup.ai_setup, "cloud-form", &data);
+        assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::Focus(_))));
+        assert_eq!(setup.step, Step::Ai);
+        ai_setup::demo(&mut setup.ai_setup, "cloud-consent", &data);
+        assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
+        assert_eq!(setup.step, Step::Ai);
+        let before = data.settings.clone();
+        assert!(matches!(
+            update(&mut setup, Message::AiSetup(ai_setup::Message::Cancel), &data),
+            Outcome::Stay(Action::None)
+        ));
+        assert_eq!(data.settings, before, "cancel sends no assignment or permission");
+        assert!(ai_setup::primary(&setup.ai_setup).is_none());
+    }
+
+    #[test]
     fn a_sorting_opt_out_also_applies_to_the_shared_suggestion_flow() {
         use torro_settings_ui::accounts::ai_setup;
         let mut data = data();
@@ -2109,7 +2140,7 @@ mod tests {
 
     #[test]
     fn network_sorting_selection_waits_for_bound_consent_and_next_cannot_bypass_it() {
-        for provider in AiProvider::LOCAL {
+        for provider in AiProvider::LOCAL.into_iter().chain([AiProvider::OllamaCloud]) {
             let mut data = data();
             let mut account = data.accounts.iter().find(|account| account.kind == "ai").expect("AI").clone();
             let engine = format!("ai:{}@192.168.1.20:8080", provider.id());
