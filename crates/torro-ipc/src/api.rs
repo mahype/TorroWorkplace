@@ -4637,7 +4637,10 @@ static SAVE_ATTACHMENTS: Command = Command {
                   (the MCP tool takes the id itself as `to`, the API `{\"target\": \"<id>\"}`), each file by its own \
                   date, and returns the paths. A file is never overwritten; `skipped` lists files whose identical \
                   content was there already, `failed` the ones that could not be saved while the others are. Only a \
-                  person chooses other paths. File names come from the message and are `untrusted`.",
+                  person chooses other paths. Saved and skipped paths are verified as regular non-symlink files of \
+                  exactly the expected length and contents. Verification failures are listed per file (forbidden \
+                  for denied access, otherwise error); empty or partial results are not full success. This is a \
+                  point-in-time check, not a cloud-sync guarantee. File names come from the message and are `untrusted`.",
 };
 
 // Issue #501: the mail itself as PDF or picture, to the same places as attachments.
@@ -4657,7 +4660,9 @@ static SAVE_MAIL_AS: Command = Command {
                   mail_list_save_targets (the MCP tool takes the id itself as `to`, the API \
                   `{\"target\": \"<id>\"}`). A file is never overwritten; returns the path, `skipped` when the same \
                   file was there already and `shortened` when the mail was too long and its end is cut. Only a \
-                  person chooses other paths.",
+                  person chooses other paths. Before success, the service verifies the final regular non-symlink \
+                  file's length and rendered bytes, also for skipped files (forbidden for denied access, otherwise \
+                  error). Shortened exports remain incomplete. This is a point-in-time check, not a cloud-sync guarantee.",
 };
 
 // Mail filters (issue #339): a filter works lastingly on the person's mail, so every change and every

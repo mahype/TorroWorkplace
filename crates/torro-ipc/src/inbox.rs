@@ -201,7 +201,9 @@ impl SaveTargets {
 }
 
 /// What `mail.save_attachments` did ([`InboxClient::save_attachments`], issue #290). File names are
-/// data from outside; the paths are where the files lie now.
+/// data from outside; each saved/skipped final path was verified by the service as a regular
+/// non-symlink file of the expected length and contents. Mixed or empty results are not full success;
+/// verification is point-in-time, not a cloud-sync guarantee.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SavedAttachments {
     /// The files written.
@@ -214,6 +216,8 @@ pub struct SavedAttachments {
 }
 
 /// What `mail.save_message_as` wrote ([`InboxClient::save_mail_as`], issue #501).
+/// The service verified the regular, non-symlink final file's length and rendered bytes, including
+/// `skipped`. `shortened` remains incomplete, even after verification. No cloud-sync guarantee.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SavedMail {
     /// The file's absolute path; with `skipped` the file with the same content found there.

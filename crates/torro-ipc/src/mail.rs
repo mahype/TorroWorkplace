@@ -482,6 +482,8 @@ pub struct ExportPlan {
 }
 
 /// One attachment `mail.save_attachments` wrote, or found there already with the same content.
+/// The service verified the final path is a regular non-symlink file with the expected length and
+/// every expected byte. This is a point-in-time check, not a cloud-sync guarantee.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SavedFile {
