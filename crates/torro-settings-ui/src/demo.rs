@@ -261,7 +261,9 @@ impl Demo {
     /// have to be unwrapped, and the workspace allows no `expect` outside tests.
     ///
     /// Synced a few minutes ago, as the control centre's sample accounts are (`accounts::demo`):
-    /// Settings › Accounts of an app shows the same "Last synced" as the control centre.
+    /// Settings › Accounts of an app shows the same "Last synced" as the control centre. With
+    /// [`Demo::with_pim_sample`] the calendar and GitHub accounts are the apps' own, synced just now
+    /// as their sidebar has them.
     fn accounts(&self) -> Vec<AccountInfo> {
         let synced = Some(Utc::now() - chrono::Duration::minutes(4));
         let connected = |server: &str, login: &str| AccountState::Connected {
