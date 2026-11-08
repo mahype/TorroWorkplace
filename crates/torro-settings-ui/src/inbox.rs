@@ -751,14 +751,15 @@ pub mod rules {
     /// The page: every rule in the order [`ordered`] gives them, each with what it caught seen
     /// from `now`, or a sentence where rules come from.
     pub fn view<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
-        if data.rules.is_empty() {
+        let listed = listed(&data.rules);
+        if listed.is_empty() {
             return widgets::empty_state(
                 tr("No rules"),
                 tr("A rule appears here when you mute something with the bell or move notices to a lane for good."),
             );
         }
         let caught = |rule: &Rule| data.rule_hits.iter().find(|hit| hit.rule == rule.id);
-        let rows = ordered(&data.rules)
+        let rows = listed
             .into_iter()
             .map(|rule| rule_row(state, rule, caught(rule), now, &data.categories))
             .collect::<Vec<_>>();
@@ -790,7 +791,14 @@ pub mod rules {
         row_frame(row![lines.width(Fill), button].spacing(space::l()).align_y(Alignment::Center), true)
     }
 
-    /// The rules for the page: remembered lanes first, then muted sources, then muted traits, each
+    /// The rules this page lists, in the order [`ordered`] gives them: all but the trusted senders
+    /// (issue #546). They work on mail alone and stand where they work, in the mail window under
+    /// Categorization › Spam and Phishing ("Trusted senders").
+    fn listed(rules: &[Rule]) -> Vec<&Rule> {
+        ordered(rules).into_iter().filter(|rule| rule.effect != RuleEffect::Trusted).collect()
+    }
+
+    /// The rules in the order of the page: remembered lanes first, then muted sources, then muted traits, each
     /// kind in the core's order (oldest first), so a new rule always lands at the end of its kind.
     /// (Senders and domains hidden from mail are gone with issue #339.)
     fn ordered(rules: &[Rule]) -> Vec<&Rule> {
@@ -1081,6 +1089,19 @@ pub mod rules {
                 Some(trf("Nothing caught since {day}", &[("day", &old)]))
             );
             assert_eq!(caught(&muted, None, now()), None);
+        }
+
+        /// Issue #546: trusted senders are mail's (Categorization › Spam and Phishing); the page
+        /// leaves them out, and with only them it says where rules come from.
+        #[test]
+        fn trusted_senders_are_not_listed_here() {
+            let trusted = rule("t", SourceRef::mail("anna@example.org"), RuleEffect::Trusted);
+            let rules = vec![trusted.clone(), rule("m", SourceRef::script("backup"), RuleEffect::Muted)];
+            let ids: Vec<&str> = listed(&rules).iter().map(|rule| rule.id.as_str()).collect();
+            assert_eq!(ids, ["m"]);
+            let only = vec![trusted];
+            assert!(listed(&only).is_empty(), "only trusted senders: the empty state");
+            let _: Element<'_, Message> = view(&State::default(), &Data { rules: only, ..Data::default() }, now());
         }
 
         /// With and without rules the page builds; without any it says where rules come from.
