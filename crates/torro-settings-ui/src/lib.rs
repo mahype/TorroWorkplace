@@ -603,19 +603,33 @@ mod tests {
     }
 
     /// Issue #410: no section leads to the control centre for accounts or AI any more – both are
-    /// sections of the app's own settings ([`Host::with_accounts`]).
+    /// sections of the app's own settings ([`Host::with_accounts`]). Since issue #547 two ways to AI
+    /// do, and only with the main application, which then sets the models for the whole suite:
+    /// "Manage models…" of the assistant's General ([`assistant::general::manage_target`]) and "Open
+    /// Torro Workplace" of an app window's AI section (where [`accounts::ai_parts`] says `refer`).
+    /// Without the main application both stay in the window, as this test checks too.
     #[test]
     fn no_section_sends_accounts_or_ai_to_the_control_centre() {
+        let allowed = [
+            ("assistant/general.rs", "Action::ControlCentre(AI_SECTION.to_string())"),
+            ("accounts/mod.rs", "Message::ControlCentre(\"ai\")"),
+        ];
         let mut found = Vec::new();
         visit(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut |file: &Path, text: &str| {
             for line in code_of(text) {
                 let names = ["\"accounts\"", "\"ai\"", "AI_SECTION", "ACCOUNTS_SECTION"];
-                if line.contains("ControlCentre(") && names.iter().any(|name| line.contains(name)) {
+                let known = allowed.iter().any(|(name, code)| file.ends_with(name) && line.contains(code));
+                if line.contains("ControlCentre(") && names.iter().any(|name| line.contains(name)) && !known {
                     found.push(format!("{}: {}", file.display(), line.trim()));
                 }
             }
         });
         assert!(found.is_empty(), "a section still leads to the control centre: {found:?}");
+        // Without the main application neither of the two leads out of the window.
+        assert_eq!(assistant::general::manage_target(false), Action::<assistant::AppAction>::Open("ai"));
+        for app in torro_core::AppId::ALL {
+            assert!(!accounts::ai_parts(Some(app.window_class), false).refer, "{}", app.window_class);
+        }
     }
 
     /// The code of a source file: without comments (a doc comment may name what the code must not
