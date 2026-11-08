@@ -6811,9 +6811,21 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
 
     /// What the overview and the statistics page (issue #485) draw from.
     fn overview_data(&self, place: mail_overview::Place, mute_at: &Anchor) -> mail_overview::OverviewData<'_> {
+        mail_overview::OverviewData {
+            state: &self.mail_overview,
+            catalogue: &self.categories,
+            accounts: self.overview_accounts(),
+            now: self.now,
+            place,
+            mute_at: mute_at.clone(),
+            news: &self.news,
+        }
+    }
+
+    /// The same unabridged names for the bounded trigger and each account menu entry.
+    fn overview_accounts(&self) -> Vec<(String, String)> {
         let full = self.launch.demo && matches!(self.launch.open, Some(Open::MailOverviewFull | Open::StatisticsFull));
-        let accounts = self
-            .mail_groups()
+        self.mail_groups()
             .into_iter()
             .map(|group| {
                 let title = if full {
@@ -6823,16 +6835,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 };
                 (group.account, title)
             })
-            .collect();
-        mail_overview::OverviewData {
-            state: &self.mail_overview,
-            catalogue: &self.categories,
-            accounts,
-            now: self.now,
-            place,
-            mute_at: mute_at.clone(),
-            news: &self.news,
-        }
+            .collect()
     }
 
     /// The message whose whole mail the panel wants: in a folder the one under the cursor while
@@ -13320,12 +13323,46 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     fn overview_account_menu(&self) -> Option<Element<'_, Message>> {
         let menus = &self.mail_overview.account_menu;
         let key = menus.open()?;
-        let accounts: Vec<(String, String)> =
-            self.mail_groups().into_iter().map(|group| (group.account, group.title)).collect();
+        let accounts = self.overview_accounts();
         let choices = mail_overview::account_choices(&accounts);
+        let searching = choices.len() >= widgets::SEARCH_FROM;
         let chosen = choices.iter().find(|choice| choice.account == self.mail_overview.account).cloned();
         let sections = choice_section(choices, chosen.as_ref(), Message::MailOverviewAccount);
-        Some(menus.view(key, sections, widgets::menu_width(), Align::Start, Message::MailOverviewAccountMenu))
+        let shown = if searching { widgets::matching_sections(sections, menus.query()) } else { sections };
+        let close = Message::MailOverviewAccountMenu(DropdownEvent::Close);
+        let enter = widgets::first_choice(&shown, menus.query()).unwrap_or_else(|| close.clone());
+        // The suite's plain menu rows clip long words. Only these account rows add a tooltip so
+        // identically prefixed names remain distinguishable before making a selection (#565).
+        let items: Vec<Element<'_, Message>> = shown
+            .into_iter()
+            .flat_map(|section| section.items)
+            .map(|item| {
+                let full = item.label.to_string();
+                widgets::with_tooltip(widgets::menu_item(item), full)
+            })
+            .collect();
+        let menu: Element<'_, Message> = if searching {
+            widgets::escape_free(widgets::search_menu(
+                DROPDOWN_SEARCH,
+                menus.query(),
+                |words| Message::MailOverviewAccountMenu(DropdownEvent::Query(words)),
+                enter,
+                items,
+                widgets::menu_width(),
+            ))
+        } else {
+            let body = iced::widget::scrollable(column(items))
+                .direction(iced::widget::scrollable::Direction::Vertical(style::scrollbar()))
+                .style(style::scrollable)
+                .height(iced::Length::Shrink)
+                .width(Fill);
+            container(container(body).max_height(size::panel()))
+                .width(widgets::menu_width())
+                .padding(style::MENU_INSET)
+                .style(style::container::menu)
+                .into()
+        };
+        Some(widgets::floating(&menus.anchor(key), Placement::Below(Align::End), menu, close))
     }
 
     fn close_menus(&mut self) {
@@ -21672,6 +21709,21 @@ mod tests {
         let _ = app.update(Message::MailOverviewAccount(choices[1].clone()));
         assert_eq!(app.mail_overview.account, choices[1].account);
         assert!(app.mail_overview.account_menu.open().is_none());
+        let template = app.folders.first().expect("demo folder").clone();
+        app.folders = (0..15)
+            .map(|at| torro_mail::Folder {
+                id: format!("inbox-{at}"),
+                account: format!("mail:account-{at}@example.org"),
+                ..template.clone()
+            })
+            .collect();
+        let _ = app.update(Message::MailOverviewAccountMenu(DropdownEvent::Toggle(())));
+        let _ = app.update(Message::MailOverviewAccountMenu(DropdownEvent::Query("account-14".into())));
+        assert!(app.overview_account_menu().is_some(), "the searchable menu retains its tooltip rows");
+        let _ = app.view();
+        let _ = app.update(Message::Escape);
+        assert!(app.mail_overview.account_menu.open().is_none());
+        assert!(app.statistics_shown());
     }
 
     /// Issue #122: a menu hangs at the button clicked – the row's, also while the reader shows the
