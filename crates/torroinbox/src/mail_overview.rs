@@ -10,11 +10,11 @@
 //!   numbers stay while another span or account loads ("Updating…") and are asked anew once they are
 //!   older than [`FRESH`]. Span and account hold for the statistics page too (`mail_statistics.rs`),
 //!   which keeps its tab and chosen category here ([`State::tab`], [`State::category`]).
-//! - **Blocks**, top down: the head (title, account, span, "As of", the switches, [`controls`]), "What
+//! - **Blocks**, top down: right-aligned filters ([`controls`]), "What
 //!   comes in" – columns per day by main category ([`series`], [`columns`]) and the categories with
 //!   their share ([`category_rows`]) – with "Details ›" to the statistics page in the settings, and
-//!   "What's new" (`news.rs`) beside it (under it where the page is narrow, issue #545) once the
-//!   numbers are there or failed. The figures, the senders, the inbox and the day chart's
+//!   a quiet "As of" footer, and "What's new" (`news.rs`) beside them (under them where the page is
+//!   narrow, issue #545) once the numbers are there or failed. The figures, the senders, the inbox and the day chart's
 //!   table ([`day_table`]) are the statistics page's.
 
 use std::time::{Duration, Instant};
@@ -238,15 +238,6 @@ pub fn range_name(range: StatsRange) -> &'static str {
         StatsRange::Week => tr("7 days"),
         StatsRange::Month => tr("30 days"),
         StatsRange::Quarter => tr("90 days"),
-    }
-}
-
-/// The span in the head's line: "Last 30 days".
-pub(crate) fn range_words(range: StatsRange) -> &'static str {
-    match range {
-        StatsRange::Week => tr("Last 7 days"),
-        StatsRange::Month => tr("Last 30 days"),
-        StatsRange::Quarter => tr("Last 90 days"),
     }
 }
 
@@ -526,37 +517,46 @@ pub(crate) fn numbers(state: &State) -> Numbers<'_> {
     }
 }
 
-/// The overview: its head, then loading, the error with "Retry", the empty span, or "What comes in"
-/// and "What's new" beside it once the numbers are there (`widgets::page_columns`, issue #545: two
-/// independent blocks), "What's new" alone under the error or the empty span (`news::block`, left out
-/// without announcements), scrolling. The page fills the width beside the sidebar; only the head's
-/// words and the announcements' text keep their reading width. While another span or account loads
-/// the numbers stay with "Updating…" over them.
+/// The overview: its filters, then loading, the error with "Retry", the empty span, or "What comes in"
+/// with "As of" under it and "What's new" beside them once the numbers are there
+/// (`widgets::page_columns`, issue #545: two independent blocks); under the error or the empty span
+/// "As of" and "What's new" follow at their reading width (`news::block`, left out without
+/// announcements). Scrolling. The page fills the width beside the sidebar. While another span or
+/// account loads the numbers stay with "Updating…" over them.
 pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
     let state = data.state;
     let news = data.news;
-    let mut blocks: Vec<Element<'_, Message>> = vec![widgets::reading_cell(head(&data))];
+    let mut blocks: Vec<Element<'_, Message>> = vec![head(&data)];
+    // At their reading width, left-aligned with the statistics (issue #565).
+    fn reading(block: Element<'_, Message>) -> Element<'_, Message> {
+        container(container(block).width(Fill).max_width(size::content_max())).width(Fill).into()
+    }
     match numbers(state) {
         // While the numbers load, "What's new" waits too: the card would push it down once they came.
         Numbers::Loading => blocks.push(widgets::loading()),
         Numbers::Failed => {
             blocks.push(widgets::error_state(tr("Couldn't load the overview."), Message::MailOverviewRetry));
-            blocks.extend(news::block(news));
+            blocks.extend(as_of(&data).map(reading));
+            blocks.extend(news::block(news).map(reading));
         }
         Numbers::Ready { overview, updating } => {
             if updating {
-                blocks.push(widgets::refresh_note(tr("Updating…")));
+                blocks.push(reading(widgets::refresh_note(tr("Updating…"))));
             }
             if is_empty(overview) {
-                blocks.push(widgets::empty_state(
+                blocks.push(reading(widgets::empty_state(
                     tr("No mail in this span."),
                     tr("What comes in and of which kind shows up here."),
-                ));
-                blocks.extend(news::block(news));
+                )));
+                blocks.extend(as_of(&data).map(reading));
+                blocks.extend(news::block(news).map(reading));
             } else {
-                let (range, catalogue) = (state.range, data.catalogue);
+                let (range, catalogue, now) = (state.range, data.catalogue, data.now);
                 blocks.push(widgets::page_columns(move || {
-                    let mut columns = vec![comes_in_card(overview, range, catalogue)];
+                    let card = comes_in_card(overview, range, catalogue);
+                    let stamp = trf("As of {time}", &[("time", &datetime::format_moment(overview.as_of, now))]);
+                    let stamp = typo::text(typo::meta().tabular(), stamp).style(theme::text_3);
+                    let mut columns = vec![column![card, stamp].spacing(layout::section_gap()).into()];
                     columns.extend(news::block(news));
                     columns
                 }));
@@ -579,28 +579,17 @@ pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
     }
 }
 
-/// The head: the line of account, span and "As of" ([`head_line`]), the switches ([`controls`]) under
-/// it, wrapping where the room is narrow. No title: the window's top row, the panel's title and the
-/// narrow header say "Overview" already (issue #485); the reader's column is too narrow for the line
-/// beside the switches.
+/// The shared filters, aligned to the chart's right edge. The redundant account/span sentence is
+/// gone; the timestamp belongs to the displayed answer, below the numbers.
 fn head<'a>(data: &OverviewData<'a>) -> Element<'a, Message> {
-    let meta = typo::text(typo::meta(), head_line(data)).style(theme::text_3);
-    column![meta, controls(data.state, &data.accounts, true)].spacing(space::s()).into()
+    controls(data.state, &data.accounts, true)
 }
 
-/// The line under the title: the account, the span and when the numbers were counted.
-pub(crate) fn head_line(data: &OverviewData<'_>) -> String {
-    let state = data.state;
-    let choices = account_choices(&data.accounts);
-    let account_label = choices
-        .iter()
-        .find(|choice| choice.account == state.account)
-        .map_or_else(|| tr("All accounts").to_owned(), |choice| choice.label.clone());
-    let mut line = vec![account_label, range_words(state.range).to_owned()];
-    if let Some(overview) = state.overview() {
-        line.push(trf("As of {time}", &[("time", &datetime::format_moment(overview.as_of, data.now))]));
-    }
-    line.join(" · ")
+/// Quiet footer of the answer actually on screen, including while a new filter is loading.
+pub(crate) fn as_of<'a>(data: &OverviewData<'a>) -> Option<Element<'a, Message>> {
+    let overview = data.state.overview()?;
+    let note = trf("As of {time}", &[("time", &datetime::format_moment(overview.as_of, data.now))]);
+    Some(typo::text(typo::meta().tabular(), note).style(theme::text_3).into())
 }
 
 /// The switches of span ("7 days | 30 days | 90 days") and account, one choice for the overview and
@@ -609,11 +598,42 @@ pub(crate) fn head_line(data: &OverviewData<'_>) -> String {
 pub fn controls<'a>(state: &State, accounts: &[(String, String)], wrap: bool) -> Element<'a, Message> {
     let choices = account_choices(accounts);
     let chosen = RANGES.iter().position(|range| *range == state.range).unwrap_or_default();
-    let ranges = widgets::segmented(RANGES.map(|range| (range_name(range), Message::MailOverviewRange(range))), chosen);
-    let selected = choices.iter().find(|choice| choice.account == state.account).map(|choice| choice.label.clone());
-    let accounts = state.account_menu.button((), selected.unwrap_or_default(), Message::MailOverviewAccountMenu);
-    let controls = row![ranges, accounts].spacing(space::s()).align_y(Alignment::Center);
-    if wrap { controls.wrap().into() } else { controls.into() }
+    let account = state.account.clone();
+    let anchor = state.account_menu.anchor(&());
+    responsive(move |room| {
+        let ranges =
+            widgets::segmented(RANGES.map(|range| (range_name(range), Message::MailOverviewRange(range))), chosen);
+        let range_width = widgets::segmented_width(&RANGES.map(range_name));
+        let selected = choices.iter().find(|choice| choice.account == account).cloned();
+        let hint = selected.as_ref().map_or_else(|| tr("All accounts").to_owned(), |choice| choice.label.clone());
+        let natural = choices.iter().map(|choice| typo::text_width(&choice.label, typo::caption())).fold(0.0, f32::max)
+            + size::control_sm();
+        let stacked = wrap && range_width + space::s() + natural.min(size::sidebar()) > room.width;
+        let available = if stacked { room.width } else { (room.width - range_width - space::s()).max(0.0) };
+        let width = natural.min(size::sidebar()).min(available);
+        let accounts = widgets::with_tooltip(
+            container(widgets::select_button_fill(
+                &anchor,
+                hint.clone(),
+                Message::MailOverviewAccountMenu(widgets::DropdownEvent::Toggle(())),
+            ))
+            .width(width),
+            hint,
+        );
+        if stacked {
+            column![container(ranges).width(Fill).align_right(Fill), container(accounts).width(Fill).align_right(Fill)]
+                .spacing(space::s())
+                .width(Fill)
+                .into()
+        } else {
+            container(row![ranges, accounts].spacing(space::s()).align_y(Alignment::Center))
+                .width(Fill)
+                .align_right(Fill)
+                .into()
+        }
+    })
+    .height(Length::Shrink)
+    .into()
 }
 
 /// The note of the day chart: what a column is.
@@ -637,7 +657,7 @@ pub(crate) fn day_chart<'a>(
     if let Some(switch) = switch {
         top = top.push(switch);
     }
-    column![top, widgets::column_chart(series, columns)].spacing(space::m()).into()
+    column![top, widgets::volume_chart(series, columns)].spacing(space::l()).into()
 }
 
 /// "What comes in": the columns per day by main category, the categories with their share and
@@ -937,9 +957,9 @@ pub(crate) mod tests {
         }
     }
 
-    /// Issue #545: the page fills the width beside the sidebar. "What comes in" and "What's new" stand
-    /// side by side, top-aligned, where two form widths fit, else under each other; the head starts at
-    /// the page's edge and keeps its reading width.
+    /// Issues #565, #545: the filters and the statistics fill the page. "What comes in" with "As of"
+    /// and "What's new" stand side by side, top-aligned, where two form widths fit, else under each
+    /// other, left-aligned at the statistics' edge.
     #[tokio::test]
     async fn the_overview_fills_the_width_with_its_blocks_side_by_side() {
         use iced::Size;
@@ -950,7 +970,7 @@ pub(crate) mod tests {
         let mut state = State::default();
         state.data = Some(Loaded { key: state.key(), at: Instant::now(), result: Ok(overview()) });
         let news = news::State { items: Some(Ok(news::demo())), asked: true };
-        for (width, columns) in [(3000.0, 2), (1000.0, 1)] {
+        for (width, columns) in [(3000.0, 2), (1200.0, 1), (320.0, 1)] {
             let mut page = view(OverviewData {
                 state: &state,
                 catalogue: &[],
@@ -970,24 +990,83 @@ pub(crate) mod tests {
                 (layout::page_padding().left, width - layout::page_padding().left - layout::page_padding().right);
             assert_eq!((content.bounds().x, content.bounds().width), (left, room), "{width}: the page fills the width");
             let blocks = content.children();
-            let head = blocks[0].children()[0].bounds();
-            assert_eq!(head.x, 0.0, "{width}: the head starts at the page's edge, not centred");
-            assert!(head.width <= size::content_max(), "{width}: the head keeps its reading width");
+            assert_eq!(blocks[0].size().width, room, "{width}: filters use the statistics' right edge");
             let both = blocks[1].bounds();
             assert_eq!((both.x, both.width), (0.0, room), "{width}: the blocks fill the page");
             // The responsive cell holds a row of columns, or the one column itself.
-            let laid = &blocks[1].children()[0];
+            let parts = blocks[1].children()[0].children();
             if columns == 1 {
-                let parts = laid.children();
-                assert_eq!(parts.len(), 2, "card and news under each other");
+                assert_eq!(parts.len(), 2, "{width}: statistics and news under each other");
                 assert!(parts[1].bounds().y > parts[0].bounds().y);
-                assert_eq!(parts[0].bounds().width, room);
+                assert_eq!(parts[0].bounds().width, room, "{width}: statistics use all available room");
+                assert_eq!(parts[1].bounds().x, 0.0, "{width}: news share the statistics' left edge");
             } else {
-                let parts = laid.children();
                 assert_eq!(parts.len(), columns, "{width}: side by side");
                 assert_eq!(parts[0].bounds().y, parts[1].bounds().y, "top-aligned");
                 assert!(parts[1].bounds().x > parts[0].bounds().x + parts[0].bounds().width);
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn filter_groups_end_at_the_right_edge_and_long_accounts_wrap_without_overflow() {
+        use iced::Size;
+        use iced::advanced::{layout::Limits, renderer::Headless, widget::Tree};
+        let renderer =
+            iced::Renderer::new(theme::font(), typo::body().size, Some("tiny-skia")).await.expect("headless renderer");
+        let state = State::default();
+        let accounts = vec![(
+            "mail:long@example.org".into(),
+            "A very long account name with many words and a long address@example.org".into(),
+        )];
+        for width in [272.0, 352.0, 720.0, 1200.0] {
+            let mut element = controls(&state, &accounts, true);
+            let mut tree = Tree::new(&element);
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &Limits::new(Size::ZERO, Size::new(width, 1000.0)),
+            );
+            fn check(node: &iced::advanced::layout::Node) {
+                for child in node.children() {
+                    let bounds = child.bounds();
+                    assert!(
+                        bounds.x >= -0.01 && bounds.x + bounds.width <= node.size().width + 0.01,
+                        "child {bounds:?} exceeds {:?}",
+                        node.size()
+                    );
+                    check(child);
+                }
+            }
+            check(&node);
+            assert_eq!(node.size().width, width);
+            let content = &node.children()[0];
+            if width < 720.0 {
+                assert_eq!(content.children().len(), 2, "two right-aligned filter lines");
+                for line in content.children() {
+                    let group = line.children()[0].bounds();
+                    assert!((group.x + group.width - width).abs() < 0.01);
+                }
+            } else {
+                let group = content.children()[0].bounds();
+                assert!((group.x + group.width - width).abs() < 0.01);
+            }
+        }
+    }
+
+    #[test]
+    fn account_menu_options_preserve_distinguishing_suffixes_and_original_values() {
+        let accounts = ["A", "B"].map(|suffix| {
+            (
+                format!("mail:{suffix}@example.org"),
+                format!("International correspondence and product announcements — Account {suffix}"),
+            )
+        });
+        let choices = account_choices(&accounts);
+        assert_ne!(choices[1].label, choices[2].label);
+        for (choice, (id, name)) in choices.iter().skip(1).zip(&accounts) {
+            assert_eq!(choice.account.as_ref(), Some(id));
+            assert_eq!(&choice.label, name, "the shared Torro menu gets the complete tooltip text");
         }
     }
 
