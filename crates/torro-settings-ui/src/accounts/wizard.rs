@@ -262,6 +262,7 @@ impl Provider {
 
 #[derive(Debug, Default)]
 pub struct State {
+    pub(crate) setup: super::ai_setup::State,
     step: Step,
     /// The step the dialog opened at (task S.30): a provider's first step, TorroMail's accounts, or
     /// the catalog of [`State::new`]. It has no "Back", and "Back" towards the catalog leads here.
@@ -690,8 +691,17 @@ impl State {
     }
 }
 
+pub fn ai_subscription(state: &State) -> iced::Subscription<Message> {
+    if state.step == Step::AiChoose {
+        super::ai_setup::subscription(&state.setup).map(Message::Setup)
+    } else {
+        iced::Subscription::none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
+    Setup(super::ai_setup::Message),
     /// Cancel, Done, Escape or a click next to the dialog.
     Close,
     /// Back from GitHub's token field to its two ways, and from those to the catalog.
@@ -932,7 +942,7 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
             });
             true
         }
-        (Step::AiChoose, Ok(Response::AiServers { servers })) if state.ai.searching => {
+        (Step::AiChoose, Ok(Response::AiServers { servers, .. })) if state.ai.searching => {
             state.ai.searching = false;
             state.ai.found = Some(servers.clone());
             true
@@ -1073,6 +1083,7 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
     // Every message first looks at the latest data, so a finished sign-in is noticed at once.
     observe(state, data);
     match message {
+        Message::Setup(message) => super::ai_setup::update(&mut state.setup, message, data),
         // The dialog goes away with its state; the password goes first all the same.
         Message::Close => {
             state.mail.password = Secret::default();
@@ -1121,7 +1132,7 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
                 if provider == Provider::Ai {
                     state.ai.searching = true;
                     state.ai.found = None;
-                    return Action::Send(Request::FindAiServers);
+                    return super::ai_setup::open(&mut state.setup);
                 }
             }
             Action::None
@@ -1472,7 +1483,7 @@ pub fn view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
             }
             None => Space::new().into(),
         },
-        Step::AiChoose => ai_step(state),
+        Step::AiChoose => super::ai_setup::view(&state.setup, data).map(Message::Setup),
         Step::AiKey => ai_key_step(state),
         Step::AiServer => ai_server_step(state),
         Step::AiConnecting | Step::NtfyChecking => {
@@ -1709,37 +1720,9 @@ fn signing_in_step(data: &dyn Seen) -> Element<'_, Message> {
 
 // ----- AI providers (task KI.1a) --------------------------------------------------------------------
 
-/// The AI providers, Open First: the servers on this computer, each found one with "Connect", then
-/// OpenRouter and any other server, each a row that opens its form.
-fn ai_step(state: &State) -> Element<'_, Message> {
-    let local = AiProvider::LOCAL.into_iter().map(|provider| local_ai_row(&state.ai, provider)).collect();
-    let footer = tr("Models on this computer run here. Nothing you ask them leaves it.");
-    let way = |provider, name: &'static str, summary: String| {
-        pressable(setting_row(None, name, Some(summary), chevron()), Some(Message::ChooseAi(provider)))
-    };
-    // Jev only sorts mail (issue #323): a group of its own right after this computer, as in the setup.
-    let sorting = vec![way(AiProvider::Jev, AiProvider::Jev.name(), ai_summary(AiProvider::Jev))];
-    let mut others: Vec<Element<'_, Message>> = AiProvider::CLOUD
-        .into_iter()
-        .filter(|provider| *provider != AiProvider::Jev)
-        .map(|provider| way(provider, provider.name(), ai_summary(provider)))
-        .collect();
-    others.push(way(
-        AiProvider::OpenAiCompatible,
-        tr("Other OpenAI-compatible server"),
-        tr("vLLM, llama.cpp or a server of your own").to_string(),
-    ));
-    column![
-        widgets::group(tr("On this computer"), local, Some(footer.to_string())),
-        widgets::group(tr("For sorting mail"), sorting, None),
-        widgets::group(tr("More providers"), others, None),
-    ]
-    .spacing(layout::section_gap())
-    .into()
-}
-
 /// What a cloud provider's row says in the AI step: OpenRouter what it offers, Jev where it is and
 /// that it only sorts mail (issue #323), every other provider where it is.
+#[cfg(test)]
 fn ai_summary(provider: AiProvider) -> String {
     match provider {
         AiProvider::OpenRouter => tr("Open models from many makers, with one API key").to_string(),
@@ -1748,35 +1731,8 @@ fn ai_summary(provider: AiProvider) -> String {
     }
 }
 
-/// A server on this computer: while looking, "Looking on this computer…"; found, its address and
-/// models with "Connect" (or "Connected" when an account is there already); else "Not running on
-/// this computer". Never colour alone: the dot goes with the words.
-fn local_ai_row(ai: &AiSetup, provider: AiProvider) -> Element<'_, Message> {
-    let Some(found) = &ai.found else {
-        return setting_row(None, provider.name(), Some(tr("Looking on this computer…").to_string()), Space::new());
-    };
-    let Some(server) = found.iter().find(|server| server.provider == provider) else {
-        let dot = widgets::status_dot(widgets::Status::Inactive);
-        return setting_row(
-            Some(dot),
-            provider.name(),
-            Some(tr("Not running on this computer").to_string()),
-            Space::new(),
-        );
-    };
-    let control: Element<'_, Message> = if server.account.is_some() {
-        widgets::pill(None, tr("Connected"))
-    } else if ai.connecting.as_deref() == Some(server.url.as_str()) {
-        typo::text(typo::meta(), tr("Connecting…")).style(theme::text_2).into()
-    } else {
-        let press = ai.connecting.is_none().then(|| Message::ConnectLocalAi(provider, server.url.clone()));
-        widgets::text_button(None, tr("Connect"), style::button::secondary, press)
-    };
-    let dot = widgets::status_dot(widgets::Status::Ok);
-    setting_row(Some(dot), provider.name(), Some(local_ai_detail(server)), control)
-}
-
 /// "localhost:11434 · 3 models": where it runs and what it has.
+#[cfg(test)]
 fn local_ai_detail(server: &AiServer) -> String {
     let rest = server.url.split_once("://").map_or(server.url.as_str(), |(_, rest)| rest);
     let host = rest.split('/').next().unwrap_or(rest);
@@ -2251,10 +2207,12 @@ fn footer(state: &State) -> Element<'_, Message> {
     });
     // A TorroMail account taken over on its step is done, not cancelled.
     let taken_over = state.step == Step::TorroMail && state.torromail.imported;
-    let cancel =
-        (!taken_over).then(|| widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Close)));
+    let ai_connected = state.step == Step::AiChoose && super::ai_setup::connected(&state.setup);
+    let cancel = (!taken_over && !ai_connected)
+        .then(|| widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Close)));
     let primary = |label, message| Some(widgets::text_button(None, label, style::button::primary, message));
     let next = match state.step {
+        Step::AiChoose if ai_connected => primary(tr("Done"), Some(Message::Close)),
         Step::TorroMail if taken_over => primary(tr("Done"), Some(Message::Close)),
         Step::MailConnecting => state.mail.certificates.pending().map(|asked| trust_button(asked, true, None)),
         Step::Provider
@@ -2769,11 +2727,7 @@ mod tests {
         for (provider, step) in expected {
             let (mut state, action) = State::at(provider, &data);
             assert_eq!((state.step, state.origin, state.provider), (step, step, provider), "{provider:?}");
-            assert_eq!(
-                matches!(action, Action::Send(Request::FindAiServers)),
-                provider == Provider::Ai,
-                "{provider:?}"
-            );
+            assert_eq!(matches!(action, Action::AskAi(_)), provider == Provider::Ai, "{provider:?}");
             assert!(!has_back(&state), "{provider:?}: nothing to go back to");
             assert!(matches!(update(&mut state, Message::Back, &data), Action::None));
             assert_eq!(state.step, step, "{provider:?}: Back stays");
@@ -3843,7 +3797,7 @@ mod tests {
     // ----- AI providers (task KI.1a) -----
 
     fn ai_server(provider: AiProvider, url: &str, account: Option<&str>) -> AiServer {
-        AiServer { provider, url: url.into(), models: 3, account: account.map(str::to_string) }
+        AiServer { provider, program: None, url: url.into(), models: 3, account: account.map(str::to_string) }
     }
 
     /// The AI providers, opened from the catalog: the search went out.
@@ -3897,7 +3851,7 @@ mod tests {
     /// The AI providers as AI's "Add" opens them: the search went out.
     fn at_ai() -> State {
         let (state, action) = State::at(Provider::Ai, &Data::default());
-        assert!(matches!(action, Action::Send(Request::FindAiServers)), "{action:?}");
+        assert!(matches!(action, Action::AskAi(_)), "{action:?}");
         assert_eq!(state.step, Step::AiChoose);
         state
     }
@@ -3921,7 +3875,7 @@ mod tests {
         let mut state = at_ai();
         drop(view(&state, &Data::default()));
         let found = vec![ai_server(AiProvider::Ollama, "http://localhost:11434/v1", None)];
-        assert!(answered(&mut state, &Ok(Response::AiServers { servers: found })));
+        assert!(answered(&mut state, &Ok(Response::AiServers { servers: found, observations: Vec::new() })));
         assert!(state.ai.found.as_ref().is_some_and(|found| found.len() == 1));
         assert_eq!(
             local_ai_detail(&ai_server(AiProvider::Ollama, "http://localhost:11434/v1", None)),

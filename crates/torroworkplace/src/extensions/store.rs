@@ -277,6 +277,7 @@ impl SystemSecrets {
             mail: None,
             mail_settings: None,
             ai: None,
+            ai_program: None,
             ntfy: None,
         }
     }

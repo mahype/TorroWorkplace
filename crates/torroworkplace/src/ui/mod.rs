@@ -1109,6 +1109,16 @@ impl Ui {
                 }
                 messages
             }
+            Open::AiSetup(scenario) => {
+                self.data.settings.ai_slots = Default::default();
+                self.data.settings.ai_assignments.clear();
+                self.data.ai_deciders_from =
+                    self.data.accounts.iter().filter(|a| a.kind == "ai").map(|a| a.id.clone()).collect();
+                let mut state = setup::State::new(setup::Step::Ai, &self.data.settings);
+                accounts::ai_setup::demo(&mut state.ai_setup, scenario, &self.data);
+                self.setup = Some(state);
+                vec![]
+            }
             Open::Setup(step) => {
                 // The step Documents (issue #303) shows one app of each state: GridCraft only installed.
                 if step == setup::Step::Documents {
@@ -1317,6 +1327,12 @@ impl Ui {
             // A second start of the control centre brings this window to the front (issue #279).
             torro_gui::instance::subscription().map(|()| Message::Raise),
         ];
+        if let Some(setup) = self.setup.as_ref().filter(|s| s.step() == setup::Step::Ai) {
+            all.push(
+                accounts::ai_setup::subscription(&setup.ai_setup)
+                    .map(|message| Message::Setup(setup::Message::AiSetup(message))),
+            );
+        }
         // The demo has nothing to reload.
         if !self.launch.demo && !self.waiting {
             all.push(iced::time::every(every).map(|_| Message::Tick));
@@ -1544,6 +1560,13 @@ impl Ui {
             // Only the group "Models" gets these: it shows a refusal under its slot itself.
             Message::AiAnswered(asked, result) => {
                 let reload = if asked.changes() { self.reload() } else { Task::none() };
+                if let accounts::Asked::Setup { owner, run, .. } = asked
+                    && let Some(setup) = self.setup.as_mut()
+                    && accounts::ai_setup::owns(&setup.ai_setup, owner)
+                {
+                    let action = accounts::ai_setup::answered(&mut setup.ai_setup, owner, run, &result);
+                    return Task::batch([self.perform(accounts::act(action)), reload]);
+                }
                 let next = accounts::act(accounts::ai_answered(&mut self.accounts, asked, &result));
                 return Task::batch([self.perform(next), reload]);
             }
