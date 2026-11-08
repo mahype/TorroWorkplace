@@ -786,8 +786,8 @@ impl canvas::Program<Message> for Timeline {
             line(&mut frame, Point::new(x, top), Point::new(x, height), p.line);
             let covered = (x - now_x).abs() < now_label_width();
             if (hour - self.first).is_multiple_of(step) && !covered {
-                let at = Point::new(x, label_row / 2.0);
                 let hour_label = format!("{hour:02}:00");
+                let at = Point::new(label_center(x, text_width(&hour_label, typo::micro()), width), label_row / 2.0);
                 label(&mut frame, &hour_label, at, typo::micro(), p.text_3, TextAlign::Center, Vertical::Center);
             }
         }
@@ -925,6 +925,14 @@ fn draw_lines(frame: &mut Frame, clip: Rectangle, x: f32, fitted: &[(String, typ
             y += line_height(*level);
         }
     });
+}
+
+/// Where an hour label `label_width` wide is centred: on its line at `x`, moved in just enough
+/// that it stays on a canvas `width` wide. The first hour sits `space::l()` from the edge, which a
+/// level with less room (Dense) makes narrower than half a label (design review of #543).
+fn label_center(x: f32, label_width: f32, width: f32) -> f32 {
+    let half = label_width / 2.0;
+    if width < label_width { width / 2.0 } else { x.clamp(half, width - half) }
 }
 
 /// Now: a 1-px red line down the track with a dot at its top, and the time as a red pill with
@@ -1363,6 +1371,14 @@ mod tests {
         let plate = beside_plate(block, 0.0, 600.0, &fit_lines(80.0, 600.0, &short)).expect("one line");
         assert!(plate.width < 100.0);
         assert_eq!(beside_plate(block, 0.0, 600.0, &[]), None, "no plate without text");
+    }
+
+    #[test]
+    fn hour_labels_stay_on_the_canvas() {
+        assert_eq!(label_center(100.0, 30.0, 800.0), 100.0, "centred on its line");
+        assert_eq!(label_center(12.0, 30.0, 800.0), 15.0, "moved in at the left edge");
+        assert_eq!(label_center(795.0, 30.0, 800.0), 785.0, "and at the right edge");
+        assert_eq!(label_center(5.0, 30.0, 20.0), 10.0, "a canvas narrower than the label");
     }
 
     #[test]
