@@ -1737,10 +1737,7 @@ pub enum Open {
     CategorizationFilter,
     /// … with a run of "Sort existing mail" going, its line under the head.
     CategorizationRunning,
-    /// … with the menu of "Sort with model" open.
-    CategorizationModel,
-    /// #359: a new LAN model waiting for the person's Use, and a saved one without permission.
-    CategorizationConsent,
+    /// #359: a saved model elsewhere without the permission, waiting for the person's OK.
     CategorizationWaiting,
     /// "All" of the mail window with the menu of the account field open (issue #455).
     MailAccounts,
@@ -1767,7 +1764,7 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 111] = [
+    const ALL: [(&'static str, Open); 109] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1871,8 +1868,6 @@ impl Open {
         ("categorization-sort", Open::CategorizationSort),
         ("categorization-filter", Open::CategorizationFilter),
         ("categorization-running", Open::CategorizationRunning),
-        ("categorization-model", Open::CategorizationModel),
-        ("categorization-consent", Open::CategorizationConsent),
         ("categorization-waiting", Open::CategorizationWaiting),
         ("mail-accounts", Open::MailAccounts),
         ("mail-accounts-many", Open::MailAccountsMany),
@@ -1904,8 +1899,6 @@ impl Open {
             Open::CategorizationSort => Some("sort"),
             Open::CategorizationFilter => Some("filter"),
             Open::CategorizationRunning => Some("running"),
-            Open::CategorizationModel => Some("model"),
-            Open::CategorizationConsent => Some("consent"),
             Open::CategorizationWaiting => Some("waiting"),
             _ => None,
         }

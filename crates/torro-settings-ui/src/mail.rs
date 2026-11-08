@@ -4567,213 +4567,11 @@ mod tests {
         }]
     }
 
-    /// What `message` sends on the Categorization page over `data`, one request after the other.
-    fn sent(message: categorization::Message, data: &Data) -> Vec<torro_ipc::Request> {
-        match categorization::update::<()>(&mut Default::default(), message, data) {
-            Action::Send(requests) => requests,
-            Action::None => Vec::new(),
-            _ => panic!("a request or nothing"),
-        }
-    }
-
-    /// `ai.set_slot decide` with `model` of `engine`.
-    fn set_slot(engine: &str, model: &str) -> torro_ipc::Request {
-        torro_ipc::Request::SetAiSlot {
-            slot: torro_core::ai::AiSlot::Decide,
-            engine: Some(engine.into()),
-            model: Some(model.into()),
-            effort: None,
-        }
-    }
-
-    /// The exception taken back (`engine: null`).
-    fn no_exception() -> torro_ipc::Request {
-        torro_ipc::Request::SetAiAssignment {
-            function: torro_core::ai::AiFunction::InboxCategorize,
-            engine: None,
-            model: None,
-            effort: None,
-            enabled: false,
-        }
-    }
-
-    /// Issue #325 (task MW.3): picking a model sets the slot Sorting – no new exception after the
-    /// slots took the old assignment over –, and takes an exception back after the slot; the switch
-    /// "off" is the exception switched off with what sorts now, "on" takes it back, and fills an
-    /// empty slot with what sorted last.
+    /// Issue #424: the models of a local server reached over the network compute elsewhere; the
+    /// person chooses one in Settings › AI, which asks before mail leaves (issue #545).
     #[test]
-    fn the_model_goes_into_the_slot_and_the_switch_is_the_exception() {
-        use categorization::Message;
-        use torro_core::ai::AiModel;
-        let ollama = "ai:ollama@localhost:11434";
-        let mut by_slot = local_model_data();
-        by_slot.settings.ai_slots.decide = Some(slot("nimble"));
-        assert!(categorization::in_effect(&by_slot).is_ready(), "the slot sorts");
-
-        // LM Studio computes here by its account, listed or not.
-        let here = "ai:lm_studio@localhost:1234";
-        assert_eq!(sent(Message::Model(here.into(), "tev1".into()), &by_slot), [set_slot(here, "tev1")]);
-        let off = sent(Message::Enabled(false), &by_slot);
-        let [torro_ipc::Request::SetAiAssignment { engine, model, enabled, .. }] = off.as_slice() else {
-            panic!("the exception switched off: {off:?}")
-        };
-        assert_eq!((engine.as_deref(), model.as_deref(), *enabled), (Some(ollama), Some("nimble"), false));
-
-        // Switched off by the exception: the page says so, "on" takes the exception back.
-        let switched_off = Data { assignments: exception("nimble", false), ..by_slot.clone() };
-        assert!(!categorization::in_effect(&switched_off).is_ready());
-        assert_eq!(sent(Message::Enabled(true), &switched_off), [no_exception()]);
-        assert_eq!(
-            sent(Message::Model(here.into(), "tev1".into()), &switched_off),
-            [no_exception(), set_slot(here, "tev1")],
-            "the exception goes first, then the slot"
-        );
-        // Without a slot, "on" puts what sorted last into it before the exception goes.
-        let listed = AiModel { decision: Some(true), remote: Some(false), enabled: true, ..AiModel::named("nimble") };
-        let no_slot = Data {
-            assignments: exception("nimble", false),
-            decider_models: vec![(ollama.to_string(), listed)],
-            ..local_model_data()
-        };
-        assert_eq!(sent(Message::Enabled(true), &no_slot), [set_slot(ollama, "nimble"), no_exception()]);
-        // Nothing sorts: nothing to switch off.
-        assert!(sent(Message::Enabled(false), &Data::default()).is_empty());
-    }
-
-    /// The daemon of [`a_refused_take_back_sets_no_slot`]: refuses taking the exception back and notes
-    /// every request it gets.
-    struct Refusing(std::sync::Mutex<Vec<torro_ipc::Request>>);
-
-    impl crate::Backend for Refusing {
-        fn call(&self, request: torro_ipc::Request) -> crate::Answer {
-            let refused = matches!(request, torro_ipc::Request::SetAiAssignment { engine: None, .. });
-            self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(request);
-            Box::pin(async move {
-                match refused {
-                    true => Err("Settings cannot be written.".to_string()),
-                    false => Ok(torro_ipc::Response::Ok),
-                }
-            })
-        }
-    }
-
-    /// Review of #325 (R6): picking a model while an exception stands sends the take-back first; the
-    /// daemon refusing it stops there, so the slot is not set and nothing sorts in between.
-    #[tokio::test]
-    async fn a_refused_take_back_sets_no_slot() {
-        use categorization::Message;
-        let mut data = Data { assignments: exception("nimble", true), ..local_model_data() };
-        data.settings.ai_slots.decide = Some(slot("nimble"));
-        let requests = sent(Message::Model("ai:lm_studio@localhost:1234".into(), "tev1".into()), &data);
-        let backend = std::sync::Arc::new(Refusing(std::sync::Mutex::new(Vec::new())));
-        let failed = crate::send(backend.clone(), requests, Vec::new()).await;
-        assert_eq!(failed.err().as_deref(), Some("Settings cannot be written."));
-        let got = backend.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        assert_eq!(got, [no_exception()], "no ai.set_slot after the refusal");
-    }
-
-    /// Issue #424: a model in the cloud is set only after its question – "Cancel" sends nothing, "Use"
-    /// what a pick sends; one that sorts with the consent sets at once. In effect without the consent
-    /// it waits, and picking it asks again. Switching on never takes one in the cloud by itself.
-    #[test]
-    fn a_model_in_the_cloud_asks_before_it_sorts() {
-        use categorization::Message;
-        use torro_core::ai::AiModel;
-
-        let ollama = "ai:ollama@localhost:11434";
-        let model = |id: &str, remote: bool| {
-            let model = AiModel { decision: Some(true), remote: Some(remote), enabled: true, ..AiModel::named(id) };
-            (ollama.to_string(), model)
-        };
-        let mut data =
-            Data { decider_models: vec![model("clef:cloud", true), model("nimble", false)], ..local_model_data() };
-        data.settings.ai_slots.decide = Some(slot("nimble"));
-        let update = |state: &mut categorization::State, message, data: &Data| -> Vec<torro_ipc::Request> {
-            match categorization::update::<()>(state, message, data) {
-                Action::Send(requests) => requests,
-                Action::None => Vec::new(),
-                _ => panic!("a request or nothing"),
-            }
-        };
-        let pick = || Message::Model(ollama.into(), "clef:cloud".into());
-
-        let mut state = super::State::default();
-        assert!(update(&mut state.categorization, pick(), &data).is_empty(), "nothing before the answer");
-        assert!(categorization::asking_cloud(&state.categorization));
-        assert!(categorization::overlay(&state.categorization, &data).is_some());
-        assert!(super::overlay(&state, &data, "categorization", torro_gui::layout::SizeClass::Wide).is_some());
-        let Some(super::Message::Categorization(Message::CancelCloud)) = super::escape(&state) else {
-            panic!("Escape cancels the question")
-        };
-        assert!(update(&mut state.categorization, Message::CancelCloud, &data).is_empty(), "Cancel changes nothing");
-        assert!(!categorization::asking_cloud(&state.categorization) && super::escape(&state).is_none());
-
-        let _ = update(&mut state.categorization, pick(), &data);
-        assert_eq!(update(&mut state.categorization, Message::UseCloud, &data), [set_slot(ollama, "clef:cloud")]);
-        assert!(!categorization::asking_cloud(&state.categorization));
-        assert!(update(&mut state.categorization, Message::UseCloud, &data).is_empty(), "asked once, set once");
-
-        // It sorts with the consent: picked again, nothing to ask; a model here never asks.
-        data.settings.ai_slots.decide = Some(slot("clef:cloud"));
-        data.settings.decide_mail_to_cloud = Some(true);
-        assert_eq!(sent(pick(), &data), [set_slot(ollama, "clef:cloud")]);
-        assert_eq!(sent(Message::Model(ollama.into(), "nimble".into()), &data), [set_slot(ollama, "nimble")]);
-        let _ = categorization::view(&Default::default(), &data);
-
-        // In effect without the consent (an old setting, or an agent kept the mail here): it waits.
-        data.settings.decide_mail_to_cloud = Some(false);
-        assert!(categorization::in_effect(&data).is_ready());
-        assert!(sent(pick(), &data).is_empty(), "picking it asks again");
-        let _ = categorization::view(&Default::default(), &data);
-
-        // Switching on with an empty slot takes the first model here, never one in the cloud.
-        data.settings.ai_slots.decide = None;
-        assert_eq!(sent(Message::Enabled(true), &data), [set_slot(ollama, "nimble")]);
-        let cloud_only = Data { decider_models: vec![model("clef:cloud", true)], ..data.clone() };
-        assert!(sent(Message::Enabled(true), &cloud_only).is_empty(), "nothing here to sort with");
-        // What sorted last in the cloud, switched off, asks before it sorts again.
-        let mut last = Data { assignments: exception("clef:cloud", false), ..data.clone() };
-        last.decider_models = data.decider_models.clone();
-        let mut state = categorization::State::default();
-        assert!(update(&mut state, Message::Enabled(true), &last).is_empty());
-        assert!(categorization::asking_cloud(&state));
-        assert_eq!(update(&mut state, Message::UseCloud, &last), [set_slot(ollama, "clef:cloud"), no_exception()]);
-        // The same for an account in the cloud that picks its model itself ("Automatic").
-        let openrouter = "ai:openrouter@openrouter.ai";
-        let automatic = torro_core::ai::AiAssignment {
-            function: torro_core::ai::AiFunction::InboxCategorize,
-            engine: Some(openrouter.into()),
-            model: None,
-            effort: None,
-            enabled: false,
-        };
-        let info = torro_ipc::AiAssignmentInfo { assignment: automatic, label: String::new(), needs_decision: true };
-        let auto = Data { assignments: vec![info], ..data.clone() };
-        let mut state = categorization::State::default();
-        assert!(update(&mut state, Message::Enabled(true), &auto).is_empty());
-        assert!(categorization::overlay(&state, &auto).is_some());
-        let slot = torro_ipc::Request::SetAiSlot {
-            slot: torro_core::ai::AiSlot::Decide,
-            engine: Some(openrouter.into()),
-            model: None,
-            effort: None,
-        };
-        assert_eq!(update(&mut state, Message::UseCloud, &auto), [slot, no_exception()]);
-        // A server of one's own picks elsewhere in the core's eyes, also at this computer's address.
-        let own = "ai:openai_compatible@localhost:8080";
-        let mut mine = auto.clone();
-        for info in &mut mine.assignments {
-            info.assignment.engine = Some(own.into());
-        }
-        let mut state = categorization::State::default();
-        assert!(update(&mut state, Message::Enabled(true), &mine).is_empty());
-        assert!(categorization::asking_cloud(&state));
-    }
-
-    #[test]
-    fn network_models_are_elsewhere_and_new_choices_require_consent() {
-        use categorization::Message;
-        use torro_core::ai::{AiModel, AiProvider, AiSlot, SlotModel};
+    fn network_models_are_elsewhere() {
+        use torro_core::ai::{AiModel, AiProvider};
         for provider in AiProvider::LOCAL {
             let mut data = local_model_data();
             let mut account = crate::accounts::demo::demo_network_account();
@@ -4791,48 +4589,11 @@ mod tests {
                 .collect();
             let (fast, other, elsewhere) = categorization::grouped(&data);
             assert!(fast.is_empty() && other.is_empty() && elsewhere.len() == 2);
-            data.settings.ai_slots.decide =
-                Some(SlotModel { engine: engine.clone(), model: Some("first".into()), effort: None });
-            data.settings.decide_mail_to_cloud = Some(true);
-            let pick = || Message::Model(engine.clone(), "second".into());
-            let mut state = categorization::State::default();
-            assert!(matches!(categorization::update::<()>(&mut state, pick(), &data), Action::None));
-            assert!(categorization::asking_cloud(&state));
-            assert!(matches!(categorization::update::<()>(&mut state, Message::CancelCloud, &data), Action::None));
-            assert_eq!(data.settings.ai_slots.decide.as_ref().and_then(|slot| slot.model.as_deref()), Some("first"));
-            categorization::update::<()>(&mut state, pick(), &data);
-            let Action::Send(requests) = categorization::update::<()>(&mut state, Message::UseCloud, &data) else {
-                panic!("Use sends choice")
-            };
-            assert_eq!(requests, [set_slot(&engine, "second")]);
-            data.settings.ai_slots.decide = None;
-            data.settings.decide_mail_to_cloud = Some(false);
-            let assignment = torro_core::ai::AiAssignment {
-                function: torro_core::ai::AiFunction::InboxCategorize,
-                engine: Some(engine.clone()),
-                model: None,
-                effort: None,
-                enabled: false,
-            };
-            data.assignments =
-                vec![torro_ipc::AiAssignmentInfo { assignment, label: String::new(), needs_decision: true }];
-            assert!(matches!(categorization::update::<()>(&mut state, Message::Enabled(true), &data), Action::None));
-            assert!(categorization::asking_cloud(&state), "Automatic uses the address too");
-            let Action::Send(requests) = categorization::update::<()>(&mut state, Message::UseCloud, &data) else {
-                panic!("confirmed Automatic")
-            };
-            assert!(matches!(&requests[0], torro_ipc::Request::SetAiSlot { slot: AiSlot::Decide, model: None, .. }));
-            data.accounts.retain(|account| account.id != engine);
-            assert!(
-                sent(Message::Model(engine, "unlisted".into()), &data).is_empty(),
-                "unknown accounts are not local"
-            );
         }
     }
 
-    /// Task S.26 (and MW.3): only models turned on are offered for sorting mail – switching it on
-    /// with nothing set puts the first one that is on into the slot, and with none on there is
-    /// nothing to switch on.
+    /// Task S.26 (and MW.3): only models turned on are offered for sorting mail; with none on there
+    /// is nothing to offer, and the page still builds.
     #[test]
     fn sorting_mail_offers_only_models_that_are_on() {
         use torro_core::ai::AiModel;
@@ -4841,13 +4602,15 @@ mod tests {
             let model = AiModel { decision: Some(true), enabled, remote: Some(false), ..AiModel::named(id) };
             ("ai:ollama@localhost:11434".to_string(), model)
         };
+        let ids = |data: &Data| -> Vec<String> {
+            categorization::offered(data).into_iter().map(|(_, model)| model.id).collect()
+        };
         let data = Data { decider_models: vec![decider("off", false), decider("on", true)], ..local_model_data() };
-        let on = sent(categorization::Message::Enabled(true), &data);
-        assert_eq!(on, [set_slot("ai:ollama@localhost:11434", "on")], "the model that is off is not offered");
+        assert_eq!(ids(&data), ["on"], "the model that is off is not offered");
         let _ = categorization::view(&Default::default(), &data);
 
         let none = Data { decider_models: vec![decider("off", false)], ..Data::default() };
-        assert!(sent(categorization::Message::Enabled(true), &none).is_empty(), "nothing on, nothing to switch on");
+        assert!(ids(&none).is_empty(), "nothing on, nothing offered");
         let _ = categorization::view(&Default::default(), &none);
     }
 
@@ -4929,57 +4692,6 @@ mod tests {
         let (fast, other, _) = categorization::grouped(&data);
         assert!(fast.is_empty());
         assert_eq!(other.len(), 2);
-        let _ = categorization::view(&Default::default(), &data);
-    }
-
-    /// Issue #431: a model row names its account and what is known of its size, in this order; unknown
-    /// parts are left out, and a model without any size says only its account. Where it computes says
-    /// the head of its part (issue #424).
-    #[test]
-    fn a_model_row_names_account_place_and_size() {
-        use torro_core::ai::AiModel;
-
-        let ollama = "ai:ollama@localhost:11434";
-        let openai = "ai:openai@api.openai.com";
-        let account = |id: &str, label: &str| -> torro_ipc::AccountInfo {
-            serde_json::from_value(serde_json::json!({
-                "id": id,
-                "kind": "ai",
-                "label": label,
-                "state": {"state": "connected", "server": "localhost", "login_name": "me"},
-                "collections": [],
-            }))
-            .expect("an account")
-        };
-        let mut data = Data { accounts: vec![account(ollama, "Ollama"), account(openai, "OpenAI")], ..Data::default() };
-        let local = AiModel {
-            parameters: Some("8.2B".into()),
-            quantization: Some("Q4_K_M".into()),
-            size: Some(5_225_388_164),
-            remote: Some(false),
-            enabled: true,
-            ..AiModel::named("qwen3:8b")
-        };
-        let disk = torro_gui::units::format_bytes(5_225_388_164);
-        assert_eq!(categorization::model_facts(&data, ollama, &local), format!("Ollama · 8.2B · {disk} · Q4_K_M"));
-
-        let cloud = AiModel {
-            parameters: Some("671B".into()),
-            context: Some(131_072),
-            remote: Some(true),
-            enabled: true,
-            ..AiModel::named("deepseek:cloud")
-        };
-        let context = crate::parts::context_text(131_072);
-        assert_eq!(categorization::model_facts(&data, ollama, &cloud), format!("Ollama · 671B · {context}"));
-
-        let plain = AiModel { enabled: true, tools: Some(true), ..AiModel::named("gpt-5-mini") };
-        assert_eq!(categorization::model_facts(&data, openai, &plain), "OpenAI");
-
-        // The page builds with a note line under the facts, too (a chat model answers in a fixed format).
-        let chat = AiModel { tools: Some(true), decision: Some(false), ..cloud };
-        data.decider_models = vec![(ollama.to_string(), local), (ollama.to_string(), chat)];
-        data.settings.decide_mail_to_cloud = Some(true);
         let _ = categorization::view(&Default::default(), &data);
     }
 
