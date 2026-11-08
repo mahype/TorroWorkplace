@@ -829,13 +829,15 @@ fn columns<'a>(data: &BoardData<'a>, count: usize, width: f32) -> Element<'a, Me
 }
 
 /// The sides of a column's head in `density`: rows (compact) stand their tile a row's side padding in
-/// from the column's edge (`list::sized_row`), so the head's tile follows them onto one axis (issue
-/// #546); cards start at the edge, as the head does.
+/// from the column's edge (`list::sized_row`), centred in the lead of the row (`list::mark_width`),
+/// so the head's tile follows them onto one axis (issue #546); cards start at the edge, as the head
+/// does.
 fn head_sides(density: Density) -> Padding {
     match density {
         Density::Compact => {
             let pad = layout::row_padding();
-            Padding::new(0.0).left(pad.left).right(pad.right)
+            let centred = ((list::mark_width() - list::tile()) / 2.0).max(0.0);
+            Padding::new(0.0).left(pad.left + centred).right(pad.right)
         }
         Density::Comfortable => Padding::ZERO,
     }
@@ -1139,7 +1141,11 @@ mod tests {
     fn a_heads_tile_stands_on_the_axis_of_its_entries() {
         let pad = layout::row_padding();
         let compact = head_sides(Density::Compact);
-        assert_eq!((compact.left, compact.right, compact.top, compact.bottom), (pad.left, pad.right, 0.0, 0.0));
+        let centred = (list::mark_width() - list::tile()) / 2.0;
+        assert_eq!(
+            (compact.left, compact.right, compact.top, compact.bottom),
+            (pad.left + centred, pad.right, 0.0, 0.0)
+        );
         assert_eq!(head_sides(Density::Comfortable), Padding::ZERO);
     }
 
