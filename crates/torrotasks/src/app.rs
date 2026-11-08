@@ -246,7 +246,7 @@ pub enum Open {
     Drop,
     /// The dialog "New GitHub filter list" of the first GitHub account, as after the choice.
     FilterNew,
-    /// The same with the list of repositories open.
+    /// The same with the dropdown of repositories open.
     FilterRepos,
     /// The dialog "Edit filter list" of the first filter list, shown behind it.
     FilterEdit,
@@ -2444,7 +2444,7 @@ impl App {
     fn settings_backend(&self) -> Arc<dyn SettingsBackend> {
         match &self.source {
             Source::Core(client) => Arc::new(CoreSettings { socket: client.socket.clone() }),
-            Source::Demo(_) => Arc::new(torro_settings_ui::demo::Demo::new()),
+            Source::Demo(_) => Arc::new(torro_settings_ui::demo::Demo::with_pim_sample()),
         }
     }
 
@@ -2637,9 +2637,10 @@ impl App {
         if let Some(open) = dialog {
             let opened = self.open_filter_dialog(open);
             return match self.launch.open {
-                Some(Open::FilterRepos) => {
-                    Task::batch([opened, self.update(Message::Filter(filter::Message::TogglePicker))])
-                }
+                Some(Open::FilterRepos) => Task::batch([
+                    opened,
+                    self.update(Message::Filter(filter::Message::RepoMenu(widgets::DropdownEvent::Toggle(())))),
+                ]),
                 Some(Open::FilterSearch) => Task::batch([opened, operation::snap_to_end(filter::FORM_SCROLL)]),
                 _ => opened,
             };
@@ -4923,13 +4924,13 @@ mod tests {
         let _ = app.update(Message::OpenFilterDialog(filter::Open::New(GITHUB_ACCOUNT.into())));
         let _ = app.update(repos());
         assert_eq!(app.filter_dialog.as_ref().and_then(filter::Dialog::repo_to_remember).as_deref(), Some(design));
-        // Escape closes the list of repositories before the dialog.
-        let _ = app.update(Message::Filter(filter::Message::TogglePicker));
+        // Escape closes the dropdown of repositories before the dialog.
+        let _ = app.update(Message::Filter(filter::Message::RepoMenu(widgets::DropdownEvent::Toggle(()))));
         let _ = app.update(Message::Escape);
         assert!(app.filter_dialog.is_some());
         let _ = app.update(Message::Escape);
         assert!(app.filter_dialog.is_none());
-        // The states for pictures: the open list of repositories, a list of one repository.
+        // The states for pictures: the open dropdown of repositories, a list of one repository.
         let app = launched_with_accounts(&["--demo", "--open", "filter-repos"]);
         assert!(matches!(app.filter_dialog, Some(filter::Dialog::Edit(_))));
         let app = launched_with_accounts(&["--demo", "--open", "filter-repo"]);

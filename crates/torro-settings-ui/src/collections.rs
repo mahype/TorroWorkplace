@@ -15,6 +15,7 @@
 //! question 3 of `docs/settings.md` and stays open. This section is the suite-wide, lasting choice
 //! behind the gear, not a replacement for them.
 
+use iced::widget::space as blank;
 use iced::widget::{column, container, responsive, row, toggler};
 use iced::{Alignment, Element, Fill, Length};
 
@@ -75,7 +76,7 @@ pub fn page(data: &Data, role: Role) -> Element<'_, Message> {
 /// (and, for a shown calendar, its reminder kind); a quiet hint while none does.
 ///
 /// An account that fetches calendars and lists from a server but has none yet keeps its place with
-/// one sentence instead of rows ([`may_hold`], [`waiting_group`]): before the first sync that
+/// one row that says so ([`may_hold`], [`waiting_group`]): before the first sync that
 /// worked there is nothing to list, and an account that quietly fell out of the page looked like
 /// one that was never set up.
 fn page_in(data: &Data, role: Role, one_line: bool) -> Element<'_, Message> {
@@ -111,17 +112,16 @@ fn page_in(data: &Data, role: Role, one_line: bool) -> Element<'_, Message> {
     column(built).spacing(layout::section_gap()).into()
 }
 
-/// An account that could hold collections of `role` but has none yet: its name as a group title
-/// and one sentence under it, which says what to do about it. No frame – an empty group would be a
-/// bare box.
+/// An account that could hold collections of `role` but has none yet: a group like its
+/// neighbours, with one row that says so and what to do about it. A bare sentence between two
+/// framed groups looked like something else than a group of this page (issue #544).
 fn waiting_group<'a>(label: &'a str, role: Role) -> Element<'a, Message> {
-    let hint = match role {
-        Role::Calendar => tr("No calendars yet. Use “Sync now” at this account under Accounts."),
-        Role::TaskList => tr("No task lists yet. Use “Sync now” at this account under Accounts."),
+    let title = match role {
+        Role::Calendar => tr("No calendars yet"),
+        Role::TaskList => tr("No task lists yet"),
     };
-    column![widgets::section_title(label), typo::text(typo::body(), hint).style(theme::text_2)]
-        .spacing(space::s())
-        .into()
+    let hint = tr("Use “Sync now” at this account under Accounts.");
+    widgets::group(label, vec![widgets::group_row(title, Some(hint.to_string()), blank())], None)
 }
 
 /// Whether `account` is one whose page said "nothing here yet" before task S.19, so an account
@@ -343,7 +343,7 @@ mod tests {
     }
 
     /// Found in the review of task S.22: an account that fetches calendars and lists from a server
-    /// but has none yet keeps its place with one sentence; the kinds whose page never had such a
+    /// but has none yet keeps its place with a group of one row that says so; the kinds whose page never had such a
     /// group (mail, ntfy, AI, GitHub) stay out of it.
     ///
     /// The rule is the kind of account, as the control centre's account page had it, and nothing

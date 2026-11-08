@@ -760,10 +760,13 @@ Speicher, kein Dienst, nichts wird gespeichert): `wizard-nextcloud wizard-mail w
 wizard-mail-certificate-public wizard-ai wizard-torromail account-detail account-detail-ai sorting-menu menu drawer remove delete-template rename-template design
 design-schemes design-switched design-fonts design-fonts-search api-empty api-off api-detail api-new-key api-revoke create-key create-key-done mcp-empty mcp-off
 mcp-detail mcp-hooks mcp-new-key mcp-disconnect mcp-bots mcp-orphans connect-client
-connect-client-rights connect-client-done connect-client-other connections connections-empty search-providers catalog-install
+connect-client-rights connect-client-done connect-client-other connections connections-builtin connections-own
+connections-empty search-providers catalog-install
 catalog-install-tools extension-detail extension-review extension-crashed extension-folder extension-unbounded
 extension-unusable custom-server custom-server-paste custom-server-choose setup-documents` (`sorting-menu`: Settings › AI mit offenem Menü von „Sorting“, „Decision models (fast)“ vor „Other models“ (#421),
-`connections`: MCP servers mit eigenen Werkzeugen, Katalog und eigenen Servern (#302),
+`connections`: MCP servers mit eigenen Werkzeugen, Katalog und eigenen Servern (#302), seit #548 auf dem Reiter
+„Catalog“ (der Demo-Server GitHub ist abgestürzt), `connections-builtin` und `connections-own`: dieselbe auf den
+Reitern „Built-in“ und „Your servers“,
 `search-providers`: die Anbieter der Websuche unter dem Werkzeug „Web“ (#305),
 `catalog-install`/`catalog-install-tools`: Installieren aus dem Katalog vor und nach dem Lesen der Werkzeuge,
 `extension-review`: Seite eines Servers mit Werkzeugen, die auf „Allow tools“ warten, `extension-crashed`: dieselbe

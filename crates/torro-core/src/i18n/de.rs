@@ -375,6 +375,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Starts Torro Workplace in the background when you log in, so the tray icon and your workspaces are ready.",
         "Startet Torro Workplace im Hintergrund, wenn du dich anmeldest, damit Tray-Icon und Workspaces sofort bereitstehen.",
     ),
+    (
+        "Starts Torro Workplace in the background when you log in, so the tray icon and your workspaces are ready. Running the setup again keeps what is connected.",
+        "Startet Torro Workplace im Hintergrund, wenn du dich anmeldest, damit Tray-Icon und Workspaces sofort bereitstehen. Startest du die Einrichtung erneut, bleibt alles Verbundene erhalten.",
+    ),
+    ("App language", "Sprache der Apps"),
     ("Startup", "Start"),
     ("System", "System"),
     // Control centre: first-run setup (W.4)
@@ -595,7 +600,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Open setup", "Einrichtung öffnen"),
     ("Run setup again", "Einrichtung erneut starten"),
     ("The setup has steps you have not seen yet.", "Die Einrichtung hat Schritte, die du noch nicht kennst."),
-    ("What is connected stays; the steps show it.", "Was verbunden ist, bleibt; die Schritte zeigen es."),
     (
         "You put the setup off. Continue where you like; everything connected is kept.",
         "Du hast die Einrichtung verschoben. Mach weiter, wo du willst; alles Verbundene bleibt.",
@@ -2106,9 +2110,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Choose a repository", "Repository wählen"),
     ("All repositories", "Alle Repositories"),
     ("Several repositories", "Mehrere Repositories"),
-    ("Find a repository…", "Repository suchen…"),
-    ("No repository matches.", "Kein Repository passt."),
-    ("{n} more. Type to narrow the list.", "{n} weitere. Tippe, um die Liste einzugrenzen."),
     ("Last used", "Zuletzt verwendet"),
     ("Private", "Privat"),
     ("Show", "Anzeigen"),
@@ -2321,6 +2322,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Password was refused", "Passwort wurde abgelehnt"),
     ("The server cannot be reached.", "Der Server ist nicht erreichbar."),
+    // Problem of the demo accounts in the settings (issue #546)
+    ("The server did not answer", "Der Server hat nicht geantwortet"),
     // Mail provider in the add-account wizard (M7.2)
     ("Advanced", "Erweitert"),
     ("Appointments and events", "Termine und Ereignisse"),
@@ -4552,14 +4555,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Calendars appear here once an account has one.", "Kalender erscheinen hier, sobald ein Konto einen hat."),
     ("No lists", "Keine Listen"),
     ("Lists appear here once an account has one.", "Listen erscheinen hier, sobald ein Konto eine hat."),
-    (
-        "No calendars yet. Use “Sync now” at this account under Accounts.",
-        "Noch keine Kalender. Nutze „Jetzt synchronisieren“ bei diesem Konto unter Konten.",
-    ),
-    (
-        "No task lists yet. Use “Sync now” at this account under Accounts.",
-        "Noch keine Aufgabenlisten. Nutze „Jetzt synchronisieren“ bei diesem Konto unter Konten.",
-    ),
+    ("Use “Sync now” at this account under Accounts.", "Nutze „Jetzt synchronisieren“ bei diesem Konto unter Konten."),
     (
         "Choose which kinds of events may remind you, whatever their own reminder says.",
         "Wähle, welche Art von Terminen überhaupt erinnern darf, unabhängig von der eigenen Erinnerung des Termins.",
@@ -6669,6 +6665,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("is not an object", "ist kein Objekt"),
     // Control centre › MCP servers, and the assistant's Tools that moved there (MA.7, #302)
     ("Built-in tools", "Eingebaute Werkzeuge"),
+    ("Built-in", "Eingebaut"),
     (
         "A tool works only while it is on here and a client's rights allow it. Only you can switch it on and choose the folder and the logos.",
         "Ein Werkzeug arbeitet nur, solange es hier eingeschaltet ist und die Rechte eines Clients es erlauben. Nur du kannst es einschalten und den Ordner und die Logos wählen.",
@@ -6684,6 +6681,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The catalog is empty", "Der Katalog ist leer"),
     ("No longer in the catalog", "Nicht mehr im Katalog"),
     ("Your own servers", "Eigene Server"),
+    ("Your servers", "Eigene Server"),
     (
         "Programs or addresses that speak MCP, added by you. They run as you on this computer.",
         "Programme oder Adressen, die MCP sprechen, von dir hinzugefügt. Sie laufen mit deinen Rechten auf diesem Rechner.",
@@ -6696,15 +6694,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Tools moved to the control centre", "Die Werkzeuge sind in die Steuerzentrale umgezogen"),
     ("Under MCP servers › Built-in tools", "Unter MCP-Server › Eingebaute Werkzeuge"),
     // Control centre › MCP servers: catalog, installing, a server's page (MA.8, #302)
-    ("Allow its tools below to switch it on.", "Erlaube unten seine Werkzeuge, um ihn einzuschalten."),
+    (
+        "Allow its tools under Tools to switch it on.",
+        "Erlaube seine Werkzeuge unter „Werkzeuge“, um ihn einzuschalten.",
+    ),
     ("Allow the tools as they are listed here.", "Erlaube die Werkzeuge so, wie sie hier stehen."),
     ("Allow the tools of {name}?", "Werkzeuge von {name} erlauben?"),
     ("Allow tools", "Werkzeuge erlauben"),
     ("Allowing…", "Wird erlaubt…"),
     ("Changed since you allowed it", "Geändert, seit du es erlaubt hast"),
     (
-        "Changed tools wait for you below; the others are offered as before.",
-        "Geänderte Werkzeuge warten unten auf dich; die anderen werden weiter angeboten.",
+        "Changed tools wait for you under Tools; the others are offered as before.",
+        "Geänderte Werkzeuge warten unter „Werkzeuge“ auf dich; die anderen werden weiter angeboten.",
     ),
     ("Enter it to install the server.", "Gib es ein, um den Server zu installieren."),
     ("Enter the new value.", "Gib den neuen Wert ein."),
