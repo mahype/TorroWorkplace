@@ -26,6 +26,7 @@ use torro_setups::LoadMode;
 
 use crate::mail::{MoveRole, MoveTarget};
 use crate::tools::ToolId;
+use crate::workflows as wf;
 use crate::{AccountInfo, ClientInfo, Request, Response};
 
 /// The part of the suite a person grants rights for.
@@ -58,6 +59,8 @@ pub enum Area {
     /// reading, write adds drafts, flags and moving, full adds the trash and deleting for good.
     /// Sending is write plus a switch of its own ([`Rights::outbound`]).
     Mail,
+    /// Versioned mail workflows, rules and runs; off in every rights template until a person enables it.
+    Workflows,
     /// Connected accounts (Nextcloud, later GitHub, Slack …) and sync.
     Accounts,
     /// The AI accounts' models and, later, which function uses which model (task KI.1a,
@@ -100,7 +103,7 @@ pub enum Area {
 
 impl Area {
     /// Every area, in the order of the enum.
-    pub const ALL: [Area; 18] = [
+    pub const ALL: [Area; 19] = [
         Area::System,
         Area::Workspaces,
         Area::Calendar,
@@ -109,6 +112,7 @@ impl Area {
         Area::Github,
         Area::Inbox,
         Area::Mail,
+        Area::Workflows,
         Area::Accounts,
         Area::Ai,
         Area::Assistant,
@@ -129,11 +133,11 @@ impl Area {
     }
 
     /// The templates grant this area ([`RightsTemplate::rights`]): every grantable area but
-    /// `assistant` and `bots`, which a person switches on per client (decision 7 in
+    /// `assistant`, `bots` and `workflows`, which a person switches on per client (decision 7 in
     /// `docs/assistent.md`): sending the assistant or a bot a message makes it work with its own
     /// rights, so *Full access* for an agent must not hand it theirs too.
     pub fn in_templates(self) -> bool {
-        self.grantable() && !matches!(self, Area::Assistant | Area::Bots)
+        self.grantable() && !matches!(self, Area::Assistant | Area::Bots | Area::Workflows)
     }
 
     /// The name in rights: `calendar`. Every command name starts with it, except those of
@@ -148,6 +152,7 @@ impl Area {
             Area::Github => "github",
             Area::Inbox => "inbox",
             Area::Mail => "mail",
+            Area::Workflows => "workflows",
             Area::Accounts => "accounts",
             Area::Ai => "ai",
             Area::Assistant => "assistant",
@@ -1254,6 +1259,7 @@ impl Request {
     pub fn kept_for_people(&self) -> bool {
         let switches_on = |value: &serde_json::Value| value != &serde_json::Value::Bool(false);
         match self {
+            Request::AuthorizeWorkflow { .. } | Request::RevokeWorkflowAuthorization { .. } => true,
             Request::SetSetting {
                 key:
                     crate::SettingKey::VoiceEnabled
@@ -1630,6 +1636,35 @@ impl Request {
     /// until it names its command, so no function reaches the UI without API and MCP.
     pub fn operation(&self) -> Operation {
         let command = match self {
+            Request::ListWorkflowTemplates => &wf::LIST_TEMPLATES,
+            Request::GetWorkflowTemplate { .. } => &wf::GET_TEMPLATE,
+            Request::InstantiateWorkflowTemplate { .. } => &wf::INSTANTIATE_TEMPLATE,
+            Request::ListWorkflows => &wf::LIST_WORKFLOWS,
+            Request::GetWorkflow { .. } => &wf::GET_WORKFLOW,
+            Request::ProposeWorkflow { .. } => &wf::PROPOSE_WORKFLOW,
+            Request::CreateWorkflowDraft { .. } => &wf::CREATE_DRAFT,
+            Request::UpdateWorkflowDraft { .. } => &wf::UPDATE_DRAFT,
+            Request::SaveWorkflow { .. } => &wf::SAVE_WORKFLOW,
+            Request::DuplicateWorkflow { .. } => &wf::DUPLICATE_WORKFLOW,
+            Request::SetWorkflowEnabled { .. } => &wf::SET_WORKFLOW_ENABLED,
+            Request::RemoveWorkflow { .. } => &wf::REMOVE_WORKFLOW,
+            Request::PreviewWorkflowRun { .. } => &wf::PREVIEW_RUN,
+            Request::RunWorkflow { .. } => &wf::RUN,
+            Request::ListWorkflowRuns { .. } => &wf::LIST_RUNS,
+            Request::GetWorkflowRun { .. } => &wf::GET_RUN,
+            Request::CancelWorkflowRun { .. } => &wf::CANCEL_RUN,
+            Request::GetWorkflowDocument { .. } => &wf::GET_DOCUMENT,
+            Request::OpenWorkflowDocument { .. } => &wf::OPEN_DOCUMENT,
+            Request::ShowWorkflowDocument { .. } => &wf::SHOW_DOCUMENT,
+            Request::ListWorkflowRules => &wf::LIST_RULES,
+            Request::CreateWorkflowRule { .. } => &wf::CREATE_RULE,
+            Request::UpdateWorkflowRule { .. } => &wf::UPDATE_RULE,
+            Request::DuplicateWorkflowRule { .. } => &wf::DUPLICATE_RULE,
+            Request::SetWorkflowRuleEnabled { .. } => &wf::SET_RULE_ENABLED,
+            Request::RemoveWorkflowRule { .. } => &wf::REMOVE_RULE,
+            Request::PreviewWorkflowRule { .. } => &wf::PREVIEW_RULE,
+            Request::AuthorizeWorkflow { .. } => &wf::AUTHORIZE,
+            Request::RevokeWorkflowAuthorization { .. } => &wf::REVOKE,
             Request::Ping => &PING,
             Request::Status => &STATUS,
             Request::Quit => &QUIT,
@@ -2189,6 +2224,35 @@ pub static CATALOGUE: &[&Command] = &[
     // Tool preselection is bounded and follows catalogue order. An additive pure helper
     // must not displace an existing first-step tool (notably web search for mail-reading bots).
     &PREPARE_MAIL_PASTE,
+    &wf::LIST_TEMPLATES,
+    &wf::GET_TEMPLATE,
+    &wf::INSTANTIATE_TEMPLATE,
+    &wf::LIST_WORKFLOWS,
+    &wf::GET_WORKFLOW,
+    &wf::PROPOSE_WORKFLOW,
+    &wf::CREATE_DRAFT,
+    &wf::UPDATE_DRAFT,
+    &wf::SAVE_WORKFLOW,
+    &wf::DUPLICATE_WORKFLOW,
+    &wf::SET_WORKFLOW_ENABLED,
+    &wf::REMOVE_WORKFLOW,
+    &wf::PREVIEW_RUN,
+    &wf::RUN,
+    &wf::LIST_RUNS,
+    &wf::GET_RUN,
+    &wf::CANCEL_RUN,
+    &wf::GET_DOCUMENT,
+    &wf::OPEN_DOCUMENT,
+    &wf::SHOW_DOCUMENT,
+    &wf::LIST_RULES,
+    &wf::CREATE_RULE,
+    &wf::UPDATE_RULE,
+    &wf::DUPLICATE_RULE,
+    &wf::SET_RULE_ENABLED,
+    &wf::REMOVE_RULE,
+    &wf::PREVIEW_RULE,
+    &wf::AUTHORIZE,
+    &wf::REVOKE,
 ];
 
 /// The commands that send something out of the computer on the person's behalf
@@ -5593,7 +5657,7 @@ mod tests {
     /// One request of every kind. Kept complete by `samples_cover_the_catalogue`.
     fn samples() -> Vec<Request> {
         let now = Utc::now();
-        vec![
+        let mut samples = vec![
             Request::Ping,
             Request::Status,
             Request::Quit,
@@ -6247,7 +6311,9 @@ mod tests {
                 keep: torro_contacts::Keep::Both,
                 etag: "\"1\"".into(),
             },
-        ]
+        ];
+        samples.extend(wf::test_samples());
+        samples
     }
 
     const BOOK: &str = "nextcloud:anna@cloud.example.org/contacts";
@@ -6514,6 +6580,9 @@ mod tests {
                         // Point 11: installing decides which code runs (issue #411).
                         | "apps.install_app"
                         | "apps.update_apps"
+                        // Lasting workflow execution authority belongs only to a person (issue #556).
+                        | "workflows.authorize_workflow"
+                        | "workflows.revoke_workflow_authorization"
                 );
             assert_eq!(command.mcp == Mcp::Never, kept_back, "{}", command.name);
             // Only the app key may manage clients, so all of their commands are admin commands.
@@ -8567,7 +8636,7 @@ mod tests {
     fn the_tools_are_granted_like_any_area_with_a_selection() {
         assert!(Area::Tools.grantable() && Area::Tools.in_templates());
         assert_eq!((Area::Tools.name(), Area::Tools.prefix()), ("tools", "tools"));
-        assert_eq!(Area::ALL.len(), 18, "issue #302 added extensions, issue #351 contacts");
+        assert_eq!(Area::ALL.len(), 19, "issue #556 added workflows");
         // Moving to the trash deletes (issue #304), so `tools` has all four levels.
         assert_eq!(levels(Area::Tools), [Level::NoAccess, Level::Read, Level::Write, Level::Full]);
         let access = |request: Request| (request.operation().area(), request.operation().access);
@@ -8788,7 +8857,7 @@ mod tests {
     fn no_server_opens_by_itself() {
         assert!(Area::Extensions.grantable() && Area::Extensions.in_templates());
         assert_eq!((Area::Extensions.name(), Area::Extensions.prefix()), ("extensions", "extensions"));
-        assert_eq!(Area::ALL.len(), 18, "issue #351 added contacts");
+        assert_eq!(Area::ALL.len(), 19, "issue #556 added workflows");
         let call = |access: Access| ["time"].map(|id| (id, "get_current_time", access));
 
         let mut json = serde_json::to_value(RightsTemplate::FullAccess.rights()).expect("json");
