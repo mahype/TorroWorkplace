@@ -9,8 +9,9 @@
 //!   with the days after, each under its name ([`later_days`]).
 //! - **Strip** ([`strip`]): today as a horizontal timeline on a canvas – timed events as tinted
 //!   blocks with their colour bar (a block too narrow for its title has it beside, on the free
-//!   track: [`title_spots`]), all-day ones as chips on the left, the now line in red. It spans
-//!   today's events and now, at least 08:00–18:00.
+//!   track: [`title_spots`], on a plate of the panel the hour and now lines stop at: [`beside_plate`],
+//!   issue #543), all-day ones as chips on the left, the now line in red. It spans today's events
+//!   and now, at least 08:00–18:00.
 //!
 //! Both are displays, not small apps: no buttons, forms or dialogs (a larger tile is the tiling
 //! manager's job). They are rebuilt only with the app's minute tick and on new data.
@@ -794,12 +795,23 @@ impl canvas::Program<Message> for Timeline {
         let blocks = self.blocks(width, height);
         let readable: Vec<f32> = self.entries.iter().map(|e| readable_width(&e.title)).collect();
         let spots = title_spots(&blocks, &readable, self.x_of(self.last as f32 * 60.0, width));
+        let mut beside = Vec::new();
         for ((entry, &rect), spot) in self.entries.iter().zip(&blocks).zip(spots) {
             let tone = Tone::of(&p, entry.color, entry.end <= self.now);
-            block(&mut frame, rect, entry, &tone, spot);
+            block(&mut frame, rect, &tone);
+            match spot {
+                TitleSpot::Inside => inside_text(&mut frame, rect, entry, &tone),
+                TitleSpot::Beside { x, width } => beside.push((rect, entry, tone, x, width)),
+                TitleSpot::Bare => {}
+            }
         }
 
         now_line(&mut frame, &p, now_x, top, height, width, self.now.time());
+        // Titles beside their block come last, on the panel: the hour and now lines stop at
+        // them instead of running through the letters (issue #543).
+        for (rect, entry, tone, x, room) in beside {
+            beside_text(&mut frame, &p, rect, entry, &tone, x, room);
+        }
         vec![frame.into_geometry()]
     }
 }
@@ -827,50 +839,86 @@ impl Tone {
     }
 }
 
-/// An event block: rounded `radius::xs()`, the bar on the left, and its text where `spot` says
-/// ([`title_spots`]): inside title, time range and place from the top, each cut with "…" to the
-/// block's width; beside the title and, when a line more fits, the time range; or none.
-fn block(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone, spot: TitleSpot) {
+/// An event block: rounded `radius::xs()`, the bar on the left, the tinted fill. Its text goes
+/// where [`title_spots`] says: [`inside_text`] or [`beside_text`].
+fn block(frame: &mut Frame, rect: Rectangle, tone: &Tone) {
     frame.fill(&Path::rounded_rectangle(rect.position(), rect.size(), Radius::from(radius::xs())), tone.bar);
     let body = Size::new((rect.width - BAR).max(0.0), rect.height);
     frame.fill(
         &Path::rounded_rectangle(Point::new(rect.x + BAR, rect.y), body, Radius::new(0.0).right(radius::xs())),
         tone.fill,
     );
-    let range = format!("{} – {}", format_time(entry.start.time()), format_time(entry.end.time()));
-    match spot {
-        TitleSpot::Inside => {
-            let lines = [
-                (entry.title.as_str(), typo::caption(), tone.title),
-                (range.as_str(), typo::micro(), tone.time),
-                (entry.location.as_deref().unwrap_or_default(), typo::meta(), tone.place),
-            ];
-            let clip = Rectangle { width: (rect.width - TEXT_RIGHT).max(0.0), ..rect };
-            text_lines(frame, clip, rect.x + TEXT_LEFT, rect.width - TEXT_LEFT - TEXT_RIGHT, &lines);
-        }
-        TitleSpot::Beside { x, width } => {
-            // Without a fill behind it a cut time ("09:30 – 1…") would read as a wrong one: the
-            // range comes whole or not at all. The place stays in the block's larger views.
-            let range = if text_width(&range, typo::micro()) <= width { range.as_str() } else { "" };
-            let lines = [(entry.title.as_str(), typo::caption(), tone.title), (range, typo::micro(), tone.time)];
-            text_lines(frame, Rectangle { x, width, ..rect }, x, width, &lines);
-        }
-        TitleSpot::Bare => {}
-    }
 }
 
-/// Lines of text from the top of `clip` at `x`, each cut with "…" to `room`; stops at the first
-/// empty line or the first that has no height left in `clip`.
-fn text_lines(frame: &mut Frame, clip: Rectangle, x: f32, room: f32, lines: &[(&str, typo::Level, Color)]) {
+/// The time range of `entry`: "09:30 – 10:00".
+fn time_range(entry: &Entry) -> String {
+    format!("{} – {}", format_time(entry.start.time()), format_time(entry.end.time()))
+}
+
+/// The text inside a block: title, time range and place from the top, each cut with "…" to the
+/// block's width.
+fn inside_text(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone) {
+    let range = time_range(entry);
+    let lines = [
+        (entry.title.as_str(), typo::caption(), tone.title),
+        (range.as_str(), typo::micro(), tone.time),
+        (entry.location.as_deref().unwrap_or_default(), typo::meta(), tone.place),
+    ];
+    let clip = Rectangle { width: (rect.width - TEXT_RIGHT).max(0.0), ..rect };
+    let room = rect.width - TEXT_LEFT - TEXT_RIGHT;
+    draw_lines(frame, clip, rect.x + TEXT_LEFT, &fit_lines(rect.height, room, &lines));
+}
+
+/// The text beside a block too narrow for it, from `x` and cut to `room`: the title and, when a
+/// line more fits, the time range – on a plate of the panel ([`beside_plate`]), so the hour and
+/// now lines drawn before stop at it (issue #543).
+fn beside_text(frame: &mut Frame, p: &Palette, rect: Rectangle, entry: &Entry, tone: &Tone, x: f32, room: f32) {
+    // A cut time ("09:30 – 1…") would read as a wrong one: the range comes whole or not at all.
+    // The place stays in the block's larger views.
+    let range = time_range(entry);
+    let range = if text_width(&range, typo::micro()) <= room { range.as_str() } else { "" };
+    let lines = [(entry.title.as_str(), typo::caption(), tone.title), (range, typo::micro(), tone.time)];
+    let fitted = fit_lines(rect.height, room, &lines);
+    if let Some(plate) = beside_plate(rect.y, x, room, &fitted) {
+        frame.fill_rectangle(plate.position(), plate.size(), p.panel);
+    }
+    draw_lines(frame, Rectangle { x, width: room, ..rect }, x, &fitted);
+}
+
+/// The plate under the lines `fitted` beside a block whose top is at `top`, the text starting
+/// at `x` with `room` up to the next block: from `space::xs()` before the text (the block's
+/// edge) to `space::xs()` after its widest line – never past `x + room`, so it stays clear of
+/// the next block – and from the block's top to the last line. `None` without a line.
+fn beside_plate(top: f32, x: f32, room: f32, fitted: &[(String, typo::Level, Color)]) -> Option<Rectangle> {
+    let widest = fitted.iter().map(|(text, level, _)| text_width(text, *level)).reduce(f32::max)?;
+    let left = x - space::xs();
+    let width = (widest + 2.0 * space::xs()).min(room + space::xs());
+    let height = TEXT_TOP + fitted.iter().map(|(_, level, _)| line_height(*level)).sum::<f32>();
+    Some(Rectangle::new(Point::new(left, top), Size::new(width, height)))
+}
+
+/// The lines of `lines` that are drawn in a box `height` high, each cut with "…" to `room`:
+/// from `TEXT_TOP` down, up to the first empty line or the first without height left.
+fn fit_lines(height: f32, room: f32, lines: &[(&str, typo::Level, Color)]) -> Vec<(String, typo::Level, Color)> {
+    let mut y = TEXT_TOP;
+    let mut out = Vec::new();
+    for &(content, level, color) in lines {
+        if content.is_empty() || y + line_height(level) > height {
+            break;
+        }
+        out.push((ellipsize(content, level, room), level, color));
+        y += line_height(level);
+    }
+    out
+}
+
+/// The `fitted` lines from the top of `clip` at `x` ([`fit_lines`]), clipped to it.
+fn draw_lines(frame: &mut Frame, clip: Rectangle, x: f32, fitted: &[(String, typo::Level, Color)]) {
     frame.with_clip(clip, |frame| {
         let mut y = clip.y + TEXT_TOP;
-        for &(content, level, color) in lines {
-            if content.is_empty() || y + line_height(level) > clip.y + clip.height {
-                break;
-            }
-            let text = ellipsize(content, level, room);
-            label(frame, &text, Point::new(x, y), level, color, TextAlign::Left, Vertical::Top);
-            y += line_height(level);
+        for (text, level, color) in fitted {
+            label(frame, text, Point::new(x, y), *level, *color, TextAlign::Left, Vertical::Top);
+            y += line_height(*level);
         }
     });
 }
@@ -1283,6 +1331,29 @@ mod tests {
         let TitleSpot::Beside { width: room, .. } = spots[0] else { return };
         assert!(room < blocks[1].x - blocks[0].x, "it ends before the review");
         assert!(matches!(spots[2], TitleSpot::Beside { .. }));
+    }
+
+    /// Issue #543: a title beside its block stands on a plate of the panel that ends with the
+    /// text, never wider than its room and the gap before it, and starts at the block's top.
+    #[test]
+    fn a_title_beside_its_block_stands_on_a_plate_within_its_room() {
+        let entry = timed("Daily Standup with the whole team", at(9, 30), at(10, 0));
+        let lines = [(entry.title.as_str(), typo::caption(), Color::BLACK)];
+        for room in [40.0, 120.0, 600.0] {
+            let fitted = fit_lines(80.0, room, &lines);
+            let x = 200.0;
+            let plate = beside_plate(30.0, x, room, &fitted).expect("one line");
+            assert!(plate.width <= room + space::xs(), "{} > {room} + gap", plate.width);
+            assert_eq!(plate.x, x - space::xs());
+            assert_eq!(plate.y, 30.0, "flush with the block's top");
+            assert!(plate.x + plate.width <= x + room + WIDTH_SLACK, "clear of the next block");
+            assert_eq!(plate.height, TEXT_TOP + line_height(typo::caption()));
+        }
+        // A short title: the plate ends right after it, not at the end of the room.
+        let short = [("Lunch", typo::caption(), Color::BLACK)];
+        let plate = beside_plate(0.0, 0.0, 600.0, &fit_lines(80.0, 600.0, &short)).expect("one line");
+        assert!(plate.width < 100.0);
+        assert_eq!(beside_plate(0.0, 0.0, 600.0, &[]), None, "no plate without text");
     }
 
     #[test]
