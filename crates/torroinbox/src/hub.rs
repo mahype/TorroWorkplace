@@ -23,9 +23,10 @@
 //!   then the snoozed entries and when they wake, the soonest first.
 //! - **Sizes** ([`layout`]): wide and medium lay Agents out as a grid of cards; Decide and Follow
 //!   up take the full width where only two cards fit a line and stand side by side where three do
-//!   ([`section_blocks`], task E8.12); To sort is one card per line, at most a reading width, its
-//!   buttons at the right in fixed columns ([`SortSlots`]) and without a caption of its own while
-//!   the window shows it alone; narrow shows the numbers instead of the tiles, one card per line,
+//!   ([`section_blocks`], task E8.12); To sort is one card per line, as wide as the blocks above it
+//!   (issue #546), its buttons at the right in fixed columns ([`SortSlots`]) and without a caption
+//!   of its own while the window shows it alone; narrow shows the numbers instead of the tiles (each
+//!   over its word, in one line, [`numbers_line`]), one card per line,
 //!   big Allow and Deny (for decisions only), and To sort as cards with their buttons below. The
 //!   compact density draws Agents and To sort as rows with the action bar; approvals stay cards, so
 //!   Allow and Deny are always there. Mini and strip show the glance, as every window.
@@ -882,7 +883,7 @@ pub fn span(sections: &Sections<'_>, tiles: usize, layout: Layout, id: &str) -> 
     let mut y = inset(layout.narrow).top;
     if !layout.only_to_sort {
         if layout.narrow && !numbers(sections).is_empty() {
-            y += typo::line_height(typo::display()) + gap;
+            y += numbers_height() + gap;
         } else if !layout.narrow && tiles > 0 {
             y += tile_height() + gap;
         }
@@ -1009,7 +1010,7 @@ fn blocks<'a>(data: &HubData<'a>, width: f32) -> Element<'a, Message> {
         if layout.narrow {
             let numbers = numbers(&sections);
             if !numbers.is_empty() {
-                blocks.push(numbers_line(numbers));
+                blocks.push(numbers_line(numbers, width));
             }
         } else {
             let tiles = tiles(data.items);
@@ -1038,8 +1039,9 @@ fn blocks<'a>(data: &HubData<'a>, width: f32) -> Element<'a, Message> {
 }
 
 /// One section `width` wide with `per_line` cards a line: its caption ([`has_caption`]), then its
-/// rows, its To sort cards (at most [`size::content_max()`] wide outside the narrow layout, task
-/// E8.12, finding 8) or its grid of cards.
+/// rows, its To sort cards or its grid of cards. To sort is as wide as the blocks above it (issue
+/// #546), so the right edge of "Act now" does not jump; its buttons stay in fixed columns
+/// ([`SortSlots`]).
 fn section_view<'a>(
     data: &HubData<'a>,
     section: Section,
@@ -1049,8 +1051,6 @@ fn section_view<'a>(
 ) -> Element<'a, Message> {
     let layout = data.layout;
     let sorting = section == Section::ToSort;
-    // A wide window does not stretch To sort: one card per line reads best at the reading width.
-    let width = if sorting && !layout.narrow { width.min(size::content_max()) } else { width };
     let body: Element<'a, Message> = if as_rows(section, layout) {
         let rows = items.iter().map(|item| entry_row(item, data, width));
         column![rule::horizontal(size::HAIRLINE).style(style::rule), column(rows)].width(Fill).into()
@@ -1065,8 +1065,7 @@ fn section_view<'a>(
     if has_caption(section, layout) {
         parts = parts.push(caption(section.title(), items.len()));
     }
-    let parts = parts.push(body);
-    if sorting && !layout.narrow { container(parts).max_width(size::content_max()).into() } else { parts.into() }
+    parts.push(body).into()
 }
 
 /// The line about quiet `width` wide: the moon and the words in `text_2`, cut with "…".
@@ -1102,18 +1101,28 @@ fn grid<'a>(cells: Vec<Element<'a, Message>>, columns: usize) -> Element<'a, Mes
     column(lines).spacing(gap).width(Fill).into()
 }
 
-/// The numbers of the narrow layout: each section's number in `DISPLAY`, its word beside it.
-fn numbers_line<'a>(numbers: Vec<(usize, &'static str)>) -> Element<'a, Message> {
+/// The numbers of the narrow layout `width` wide (issue #546): a cell of equal width per section, its
+/// number in `DISPLAY` over its word in `META`, the word cut with "…" to its cell – one line that never
+/// runs out of the window and is always [`numbers_height`] high, so [`span`] stays right.
+fn numbers_line<'a>(numbers: Vec<(usize, &'static str)>, width: f32) -> Element<'a, Message> {
+    let gap = space::m();
+    let count = numbers.len().max(1) as f32;
+    let cell = ((width - (count - 1.0) * gap) / count).max(0.0);
     let parts = numbers.into_iter().map(|(count, word)| {
-        row![
+        let word = typo::ellipsize(word, typo::meta(), cell);
+        column![
             typo::text(typo::display().tabular(), count.to_string()).style(theme::text).wrapping(Wrapping::None),
-            typo::text(typo::body(), word).style(theme::text_2).wrapping(Wrapping::None),
+            typo::text(typo::meta(), word).style(theme::text_2).wrapping(Wrapping::None),
         ]
-        .spacing(space::s())
-        .align_y(Alignment::Center)
+        .width(Fill)
         .into()
     });
-    row(parts).spacing(space::xl()).align_y(Alignment::Center).into()
+    row(parts).spacing(gap).width(Fill).into()
+}
+
+/// The height of [`numbers_line`]: a number over its word.
+fn numbers_height() -> f32 {
+    typo::line_height(typo::display()) + typo::line_height(typo::meta())
 }
 
 /// The row of tiles `width` wide: the first `columns` of `tiles`, the chosen one (`filter`) drawn
@@ -1826,16 +1835,13 @@ mod tests {
         let height = sort_height(sections.to_sort[1], wide);
         assert_eq!(sort.1 - sort.0, height);
         assert_eq!(span(&sections, tiles, wide, "demo-8"), None, "Info is not here");
-        // Narrow and compact: the numbers, then rows under a line.
+        // Narrow and compact: the numbers, each over its word (issue #546), then rows under a line.
         let narrow = layout(440.0, SizeClass::Narrow, Density::Compact, false);
+        assert_eq!(numbers_height(), typo::line_height(typo::display()) + typo::line_height(typo::meta()));
         let (_, end) = span(&sections, 0, narrow, "demo-3").expect("the approval");
         assert_eq!(
             end,
-            inset(true).top
-                + typo::line_height(typo::display())
-                + block_gap(true)
-                + caption
-                + card_height(sections.decide[0], true)
+            inset(true).top + numbers_height() + block_gap(true) + caption + card_height(sections.decide[0], true)
         );
         assert!(card_height(sections.decide[0], true) > card_height(sections.decide[0], false), "big Allow and Deny");
         // Compact: the agents are rows under a line, the approval keeps its card.
