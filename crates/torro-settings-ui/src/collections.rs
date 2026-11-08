@@ -343,7 +343,7 @@ mod tests {
     }
 
     /// Found in the review of task S.22: an account that fetches calendars and lists from a server
-    /// but has none yet keeps its place with one sentence; the kinds whose page never had such a
+    /// but has none yet keeps its place with a group of one row that says so; the kinds whose page never had such a
     /// group (mail, ntfy, AI, GitHub) stay out of it.
     ///
     /// The rule is the kind of account, as the control centre's account page had it, and nothing

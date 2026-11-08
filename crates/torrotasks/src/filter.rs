@@ -1083,11 +1083,14 @@ impl Editor {
             Message::Repos(account, result) => {
                 if account == self.account {
                     self.repos = Load::of(result);
-                    // Nothing to choose from: an open dropdown would stay empty, so it closes.
-                    if self.repos.ready().is_none_or(|repos| repos.is_empty()) {
-                        self.repo_menu.close();
-                    }
                     self.settle_repo();
+                    // Nothing to choose from: an open dropdown would stay empty, so it closes. One
+                    // opened while they loaded shows now, its search field (if any) focused then.
+                    if !self.has_repo_choices() {
+                        self.repo_menu.close();
+                    } else if self.repo_menu.open().is_some() {
+                        return (operation::focus(widgets::DROPDOWN_SEARCH), Outcome::Stay);
+                    }
                 }
                 Task::none()
             }
@@ -1106,6 +1109,13 @@ impl Editor {
                 if let Some(repo) = self.single_repo() {
                     self.details.remove(&repo.to_lowercase());
                 }
+                Task::none()
+            }
+            // Without repositories (they failed, or the account reaches none) the field opens
+            // nothing: an open dropdown nobody sees would only swallow the next Escape.
+            Message::RepoMenu(widgets::DropdownEvent::Toggle(()))
+                if self.repo_menu.open().is_none() && !self.has_repo_choices() && self.repos != Load::Loading =>
+            {
                 Task::none()
             }
             Message::RepoMenu(event) => {
@@ -1205,7 +1215,9 @@ impl Editor {
             }
             // Back while the list is being saved would lose the answer: the arrow is off then.
             Message::Back if self.back && !self.saving => return (Task::none(), Outcome::Back),
-            Message::Escape if self.repo_menu.open().is_some() => {
+            // Only a dropdown that can be seen takes Escape; one waiting for the repositories closes
+            // with the dialog.
+            Message::Escape if self.repo_menu.open().is_some() && self.has_repo_choices() => {
                 self.repo_menu.close();
                 Task::none()
             }
@@ -1446,13 +1458,17 @@ impl Editor {
         self.with_repo_menu(container(view).width(Fill).height(Fill).style(style::container::panel_flush).into())
     }
 
+    /// Whether the repositories are there and there is at least one to choose.
+    fn has_repo_choices(&self) -> bool {
+        self.repos.ready().is_some_and(|repos| !repos.is_empty())
+    }
+
     /// `view` with the dropdown of repositories floating over it, while it is open and there is a
     /// repository to choose; `view` is then deaf to the pointer, so a click beside the menu only
     /// closes it (the pattern of the mail app's dialogs). While the repositories load, an open
     /// dropdown waits and shows as soon as they are there.
     fn with_repo_menu<'a>(&'a self, view: Element<'a, Message>) -> Element<'a, Message> {
-        let choices = self.repos.ready().is_some_and(|repos| !repos.is_empty());
-        if self.repo_menu.open().is_none() || !choices {
+        if self.repo_menu.open().is_none() || !self.has_repo_choices() {
             return view;
         }
         let menu = self.repo_menu.view(&(), self.repo_sections(), size::panel(), Align::Start, Message::RepoMenu);
@@ -2636,11 +2652,17 @@ mod tests {
     fn back_leads_to_the_choice_and_escape_closes_the_dropdown_of_repositories_first() {
         let mut dialog = new_dialog();
         assert_eq!(dialog.update(Message::Back, &demo()).1, Outcome::Back);
+        repos_arrive(&mut dialog);
         let _ = dialog.update(Message::RepoMenu(DropdownEvent::Toggle(())), &demo());
         assert!(editor(&dialog).repo_menu.open().is_some());
         assert_eq!(dialog.update(Message::Escape, &demo()).1, Outcome::Stay);
         assert!(editor(&dialog).repo_menu.open().is_none(), "Escape closed the dropdown");
         assert_eq!(dialog.update(Message::Escape, &demo()).1, Outcome::Close, "and then the dialog");
+        // A dropdown still waiting for the repositories is not seen: Escape closes the dialog.
+        let mut waiting = new_dialog();
+        let _ = waiting.update(Message::RepoMenu(DropdownEvent::Toggle(())), &demo());
+        assert!(editor(&waiting).repo_menu.open().is_some());
+        assert_eq!(waiting.update(Message::Escape, &demo()).1, Outcome::Close);
         let mut edit = Dialog::edit(&list(1, &["label:bug"]), GITHUB_ACCOUNT.into(), String::new()).expect("dialog");
         assert_eq!(edit.update(Message::Back, &demo()).1, Outcome::Stay, "editing has no choice to go back to");
     }
@@ -2672,11 +2694,23 @@ mod tests {
             (dialog.repo_to_remember().as_deref(), editor(&dialog).repo_menu.open().is_none()),
             (Some("mahype/notes"), true)
         );
-        // An open dropdown closes when the repositories cannot be read: there is nothing to choose.
+        // Opened while they load, the dropdown focuses its search field once they are there.
+        let mut dialog = new_dialog();
+        let _ = dialog.update(Message::RepoMenu(DropdownEvent::Toggle(())), &demo());
+        let repos = block_on(demo().list_github_repos(GITHUB_ACCOUNT.into())).map_err(|err| err.to_string());
+        let (task, _) = dialog.update(Message::Repos(GITHUB_ACCOUNT.into(), repos), &demo());
+        assert!(task.units() > 0 && editor(&dialog).repo_menu.open().is_some());
+        // An open dropdown closes when the repositories cannot be read: there is nothing to choose,
+        // and the field opens nothing then (nor for an account that reaches none).
         let mut dialog = new_dialog();
         let _ = dialog.update(Message::RepoMenu(DropdownEvent::Toggle(())), &demo());
         let _ = dialog.update(Message::Repos(GITHUB_ACCOUNT.into(), Err("offline".into())), &demo());
         assert!(editor(&dialog).repo_menu.open().is_none());
+        let _ = dialog.update(Message::RepoMenu(DropdownEvent::Toggle(())), &demo());
+        assert!(editor(&dialog).repo_menu.open().is_none(), "nothing to open");
+        let _ = dialog.update(Message::Repos(GITHUB_ACCOUNT.into(), Ok(Vec::new())), &demo());
+        let _ = dialog.update(Message::RepoMenu(DropdownEvent::Toggle(())), &demo());
+        assert!(editor(&dialog).repo_menu.open().is_none(), "no repository");
         // Repositories that could not be read: Retry asks again.
         let mut dialog = new_dialog();
         let _ = dialog.update(Message::Repos(GITHUB_ACCOUNT.into(), Err("offline".into())), &demo());
