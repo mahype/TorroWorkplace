@@ -579,7 +579,7 @@ nach „‹“.
 
 **Die Seite eines Servers** hat seit #548 die Reiter **Overview** (Status, Folder, Remove), **Tools** (mit Zahl),
 **Secrets** (mit Zahl, nur bei einem Server mit Geheimnissen) und **Output**; sie öffnet auf Tools, wenn Werkzeuge auf
-Zustimmung warten, sonst auf Overview. Inhalt: Status mit Wort und Symbol, der Schalter an/aus, die Werkzeuge mit Zugriff und Stand
+Zustimmung warten, sonst auf Overview, und bleibt auf ihrem Reiter, bis die Person einen anderen wählt. Inhalt: Status mit Wort und Symbol, der Schalter an/aus, die Werkzeuge mit Zugriff und Stand
 („Changed since you allowed it“, mit „Allow tools“), Geheimnisse als „Stored“ bzw. „Missing“ mit „Replace…“, „Output“
 (die letzte Ausgabe zum Kopieren), „Update“, wenn der Katalog eine neuere Version hat, und „Remove…“ mit Rückfrage.
 Ein Server, der mit Dateien arbeitet (#303, ArtCraft), hat im Reiter Overview die Gruppe **„Folder“**: der gewählte

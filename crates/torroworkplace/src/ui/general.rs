@@ -336,7 +336,13 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
     // an address or its line off (issue #548).
     let search_hint = hint(Address::Geocoder);
     let tiles_hint = hint(Address::Tiles);
-    let peers = [(tr("Place search"), search_hint.clone()), (tr("Map tiles"), tiles_hint.clone())];
+    // Decided by the lines the rows can have, not the one they show, so typing ("Press Enter to save")
+    // never moves the fields.
+    let peers = vec![
+        (tr("Place search"), Some(tr("Gets what you search for and this computer's IP address").to_string())),
+        (tr("Map tiles"), Some(tr("Gets the coordinates of the place").to_string())),
+        (tr("Map tiles"), Some(tr("Press Enter to save").to_string())),
+    ];
     let width = size::sidebar() + space::s() + segments_width(&KIND_CHOICES);
     let beside_hint = search_hint.clone();
     let search = address_row(
@@ -397,13 +403,13 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
     block.push(row(links).spacing(space::xs()).wrap().vertical_spacing(space::xs())).into()
 }
 
-/// An address row of "Maps": `beside` – the whole row with its field – while the names and lines of
-/// both address rows (`peers`) fit beside `width`, else the name and line with `under` on a line of
+/// An address row of "Maps": `beside` – the whole row with its field – while every name and line of
+/// the address rows (`peers`) fits beside `width`, else the name and line with `under` on a line of
 /// its own below them. Like `stacking_row`, but decided for both rows together (issue #548).
 fn address_row<'a>(
     label: &'static str,
     detail: Option<String>,
-    peers: [(&'static str, Option<String>); 2],
+    peers: Vec<(&'static str, Option<String>)>,
     width: f32,
     beside: impl Fn() -> Element<'a, Message> + 'a,
     under: impl Fn() -> Element<'a, Message> + 'a,

@@ -655,7 +655,8 @@ struct ServerState {
     /// The menu of "Choose…" in "Folder" is open (issue #303), under its button ([`ServerState::anchor`]).
     folders_open: bool,
     anchor: Anchor,
-    /// The tab the person chose on this page; `None` until then, when [`server_tab`] picks it.
+    /// The tab shown: the one [`server_tab`] picked when the page opened, then the one the person
+    /// chose. `None` only for a server that is not installed.
     tab: Option<ServerTab>,
 }
 
@@ -1007,10 +1008,8 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::Retry => Action::Reload,
         Message::Open(id) => {
-            // The tabs shown so far hold from now on (issue #548): the list's for "‹", the page's while
-            // it is open, so a reload (tools allowed, a server stopping) never swaps the tab under the
-            // person.
-            state.tab = Some(list_tab(state, data));
+            // The page's tab shown first holds while it is open (issue #548), so a reload (tools allowed,
+            // changed tools reported) never swaps the tab under the person.
             state.page = Page::Server(id.clone());
             state.server = ServerState::default();
             state.server.tab = server_of(data, &id).map(|server| server_tab(&state.server, server));
@@ -2383,8 +2382,9 @@ fn server_tabs(server: &ExtensionInfo) -> Vec<ServerTab> {
     tabs
 }
 
-/// The tab of `server`'s page shown: the one the person chose while the server has it, else Tools
-/// while a tool waits for the person ("Allow tools" stands there), else Overview.
+/// The tab of `server`'s page shown: the one held in `page` while the server has it, else Tools while
+/// a tool waits for the person ("Allow tools" stands there), else Overview. Opening the page holds
+/// what this picks then ([`Message::Open`]).
 fn server_tab(page: &ServerState, server: &ExtensionInfo) -> ServerTab {
     match page.tab.filter(|tab| server_tabs(server).contains(tab)) {
         Some(tab) => tab,
@@ -4703,7 +4703,7 @@ mod tests {
         let mut state = State::default();
         let _ = update(&mut state, Message::Open("notes".into()), &data);
         assert_eq!(server_tab(&state.server, server("notes")), ServerTab::Tools, "its tools wait");
-        // Allowed and reloaded, the page stays on Tools; the list keeps the tab it showed for "‹".
+        // Allowed and reloaded, the page stays on Tools.
         let mut allowed = data.clone();
         if let Listing::Entries(servers) = &mut allowed.extensions {
             for tool in servers.iter_mut().filter(|server| server.id == "notes").flat_map(|server| &mut server.tools) {
@@ -4712,7 +4712,6 @@ mod tests {
         }
         let notes = server_of(&allowed, "notes").expect("Notes");
         assert_eq!(server_tab(&state.server, notes), ServerTab::Tools, "no jump after the person's own click");
-        assert_eq!(state.tab, Some(ListTab::Catalog), "the tab shown when the page opened");
         let _ = update(&mut state, Message::Open("time".into()), &data);
         assert_eq!(server_tab(&state.server, server("time")), ServerTab::Overview);
         state.server.folders_open = true;
