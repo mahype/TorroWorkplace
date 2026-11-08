@@ -10,10 +10,10 @@
 //!   numbers stay while another span or account loads ("Updating…") and are asked anew once they are
 //!   older than [`FRESH`]. Span and account hold for the statistics page too (`mail_statistics.rs`),
 //!   which keeps its tab and chosen category here ([`State::tab`], [`State::category`]).
-//! - **Blocks**, top down: the head (title, account, span, "As of", the switches, [`controls`]), "What
+//! - **Blocks**, top down: right-aligned filters ([`controls`]), "What
 //!   comes in" – columns per day by main category ([`series`], [`columns`]) and the categories with
 //!   their share ([`category_rows`]) – with "Details ›" to the statistics page in the settings, and
-//!   "What's new" (`news.rs`) once the numbers are there or failed. The figures, the senders, the inbox and the day chart's
+//!   a quiet "As of" footer and left-aligned "What's new" (`news.rs`) once the numbers are there or failed. The figures, the senders, the inbox and the day chart's
 //!   table ([`day_table`]) are the statistics page's.
 
 use std::time::{Duration, Instant};
@@ -237,15 +237,6 @@ pub fn range_name(range: StatsRange) -> &'static str {
         StatsRange::Week => tr("7 days"),
         StatsRange::Month => tr("30 days"),
         StatsRange::Quarter => tr("90 days"),
-    }
-}
-
-/// The span in the head's line: "Last 30 days".
-pub(crate) fn range_words(range: StatsRange) -> &'static str {
-    match range {
-        StatsRange::Week => tr("Last 7 days"),
-        StatsRange::Month => tr("Last 30 days"),
-        StatsRange::Quarter => tr("Last 90 days"),
     }
 }
 
@@ -553,20 +544,20 @@ pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
             }
         }
     }
+    if let Some(note) = as_of(&data) {
+        blocks.push(note);
+    }
     // While the numbers load, "What's new" waits too: the card would push it down once they came.
     if !matches!(numbers(state), Numbers::Loading) {
         blocks.extend(news::block(data.news));
     }
     let content = column(blocks.into_iter().enumerate().map(|(at, block)| {
-        if Some(at) == statistics {
+        if at == 0 || Some(at) == statistics {
             block
         } else {
             let block = container(block).width(Fill).max_width(size::content_max());
             let block = container(block).width(Fill);
-            match data.place {
-                Place::Panel => block.into(),
-                Place::Page | Place::Narrow => block.center_x(Fill).into(),
-            }
+            block.into()
         }
     }))
     .spacing(layout::section_gap())
@@ -586,28 +577,17 @@ pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
     }
 }
 
-/// The head: the line of account, span and "As of" ([`head_line`]), the switches ([`controls`]) under
-/// it, wrapping where the room is narrow. No title: the window's top row, the panel's title and the
-/// narrow header say "Overview" already (issue #485); the reader's column is too narrow for the line
-/// beside the switches.
+/// The shared filters, aligned to the chart's right edge. The redundant account/span sentence is
+/// gone; the timestamp belongs to the displayed answer, below the numbers.
 fn head<'a>(data: &OverviewData<'a>) -> Element<'a, Message> {
-    let meta = typo::text(typo::meta(), head_line(data)).style(theme::text_3);
-    column![meta, controls(data.state, &data.accounts, true)].spacing(space::s()).into()
+    controls(data.state, &data.accounts, true)
 }
 
-/// The line under the title: the account, the span and when the numbers were counted.
-pub(crate) fn head_line(data: &OverviewData<'_>) -> String {
-    let state = data.state;
-    let choices = account_choices(&data.accounts);
-    let account_label = choices
-        .iter()
-        .find(|choice| choice.account == state.account)
-        .map_or_else(|| tr("All accounts").to_owned(), |choice| choice.label.clone());
-    let mut line = vec![account_label, range_words(state.range).to_owned()];
-    if let Some(overview) = state.overview() {
-        line.push(trf("As of {time}", &[("time", &datetime::format_moment(overview.as_of, data.now))]));
-    }
-    line.join(" · ")
+/// Quiet footer of the answer actually on screen, including while a new filter is loading.
+pub(crate) fn as_of<'a>(data: &OverviewData<'a>) -> Option<Element<'a, Message>> {
+    let overview = data.state.overview()?;
+    let note = trf("As of {time}", &[("time", &datetime::format_moment(overview.as_of, data.now))]);
+    Some(typo::text(typo::meta().tabular(), note).style(theme::text_3).into())
 }
 
 /// The switches of span ("7 days | 30 days | 90 days") and account, one choice for the overview and
@@ -616,11 +596,42 @@ pub(crate) fn head_line(data: &OverviewData<'_>) -> String {
 pub fn controls<'a>(state: &State, accounts: &[(String, String)], wrap: bool) -> Element<'a, Message> {
     let choices = account_choices(accounts);
     let chosen = RANGES.iter().position(|range| *range == state.range).unwrap_or_default();
-    let ranges = widgets::segmented(RANGES.map(|range| (range_name(range), Message::MailOverviewRange(range))), chosen);
-    let selected = choices.iter().find(|choice| choice.account == state.account).map(|choice| choice.label.clone());
-    let accounts = state.account_menu.button((), selected.unwrap_or_default(), Message::MailOverviewAccountMenu);
-    let controls = row![ranges, accounts].spacing(space::s()).align_y(Alignment::Center);
-    if wrap { controls.wrap().into() } else { controls.into() }
+    let account = state.account.clone();
+    let anchor = state.account_menu.anchor(&());
+    responsive(move |room| {
+        let ranges =
+            widgets::segmented(RANGES.map(|range| (range_name(range), Message::MailOverviewRange(range))), chosen);
+        let range_width = widgets::segmented_width(&RANGES.map(range_name));
+        let selected = choices.iter().find(|choice| choice.account == account).cloned();
+        let hint = selected.as_ref().map_or_else(|| tr("All accounts").to_owned(), |choice| choice.label.clone());
+        let natural = choices.iter().map(|choice| typo::text_width(&choice.label, typo::caption())).fold(0.0, f32::max)
+            + size::control_sm();
+        let stacked = wrap && range_width + space::s() + natural.min(size::sidebar()) > room.width;
+        let available = if stacked { room.width } else { (room.width - range_width - space::s()).max(0.0) };
+        let width = natural.min(size::sidebar()).min(available);
+        let accounts = widgets::with_tooltip(
+            container(widgets::select_button_fill(
+                &anchor,
+                hint.clone(),
+                Message::MailOverviewAccountMenu(widgets::DropdownEvent::Toggle(())),
+            ))
+            .width(width),
+            hint,
+        );
+        if stacked {
+            column![container(ranges).width(Fill).align_right(Fill), container(accounts).width(Fill).align_right(Fill)]
+                .spacing(space::s())
+                .width(Fill)
+                .into()
+        } else {
+            container(row![ranges, accounts].spacing(space::s()).align_y(Alignment::Center))
+                .width(Fill)
+                .align_right(Fill)
+                .into()
+        }
+    })
+    .height(Length::Shrink)
+    .into()
 }
 
 /// The note of the day chart: what a column is.
@@ -644,7 +655,7 @@ pub(crate) fn day_chart<'a>(
     if let Some(switch) = switch {
         top = top.push(switch);
     }
-    column![top, widgets::column_chart(series, columns)].spacing(space::m()).into()
+    column![top, widgets::volume_chart(series, columns)].spacing(space::l()).into()
 }
 
 /// "What comes in": the columns per day by main category, the categories with their share and
@@ -945,7 +956,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn only_the_statistics_fill_the_overview_width() {
+    async fn filters_and_statistics_fill_the_width_and_news_stay_left_aligned() {
         use iced::Size;
         use iced::advanced::{layout::Limits, renderer::Headless, widget::Tree};
 
@@ -970,11 +981,72 @@ pub(crate) mod tests {
             let blocks = node.children()[0].children()[0].children();
             let room = width - layout::page_padding().left - layout::page_padding().right;
             assert_eq!(blocks[1].size().width, room, "statistics use all available room");
-            for at in [0, 2] {
-                let bounds = blocks[at].children()[0].bounds();
-                assert_eq!(bounds.width, room.min(size::content_max()), "head and news keep their reading width");
-                assert_eq!(bounds.x, (room - bounds.width) / 2.0, "head and news stay centered");
+            assert_eq!(blocks[0].size().width, room, "filters use the statistics' right edge");
+            let bounds = blocks.last().expect("news").children()[0].bounds();
+            assert_eq!(bounds.width, room.min(size::content_max()), "news keep their reading width");
+            assert_eq!(bounds.x, 0.0, "news share the statistics' left edge");
+        }
+    }
+
+    #[tokio::test]
+    async fn filter_groups_end_at_the_right_edge_and_long_accounts_wrap_without_overflow() {
+        use iced::Size;
+        use iced::advanced::{layout::Limits, renderer::Headless, widget::Tree};
+        let renderer =
+            iced::Renderer::new(theme::font(), typo::body().size, Some("tiny-skia")).await.expect("headless renderer");
+        let state = State::default();
+        let accounts = vec![(
+            "mail:long@example.org".into(),
+            "A very long account name with many words and a long address@example.org".into(),
+        )];
+        for width in [272.0, 352.0, 720.0, 1200.0] {
+            let mut element = controls(&state, &accounts, true);
+            let mut tree = Tree::new(&element);
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &Limits::new(Size::ZERO, Size::new(width, 1000.0)),
+            );
+            fn check(node: &iced::advanced::layout::Node) {
+                for child in node.children() {
+                    let bounds = child.bounds();
+                    assert!(
+                        bounds.x >= -0.01 && bounds.x + bounds.width <= node.size().width + 0.01,
+                        "child {bounds:?} exceeds {:?}",
+                        node.size()
+                    );
+                    check(child);
+                }
             }
+            check(&node);
+            assert_eq!(node.size().width, width);
+            let content = &node.children()[0];
+            if width < 720.0 {
+                assert_eq!(content.children().len(), 2, "two right-aligned filter lines");
+                for line in content.children() {
+                    let group = line.children()[0].bounds();
+                    assert!((group.x + group.width - width).abs() < 0.01);
+                }
+            } else {
+                let group = content.children()[0].bounds();
+                assert!((group.x + group.width - width).abs() < 0.01);
+            }
+        }
+    }
+
+    #[test]
+    fn account_menu_options_preserve_distinguishing_suffixes_and_original_values() {
+        let accounts = ["A", "B"].map(|suffix| {
+            (
+                format!("mail:{suffix}@example.org"),
+                format!("International correspondence and product announcements — Account {suffix}"),
+            )
+        });
+        let choices = account_choices(&accounts);
+        assert_ne!(choices[1].label, choices[2].label);
+        for (choice, (id, name)) in choices.iter().skip(1).zip(&accounts) {
+            assert_eq!(choice.account.as_ref(), Some(id));
+            assert_eq!(&choice.label, name, "the shared Torro menu gets the complete tooltip text");
         }
     }
 
