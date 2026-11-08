@@ -1675,8 +1675,8 @@ fn finished(state: &mut State) -> Action {
     recommend(state)
 }
 
-/// `ai.set_assignment inbox.categorize` with `engine: null`: the exception taken back, as Settings ›
-/// Categorization sends it.
+/// `ai.set_assignment inbox.categorize` with `engine: null`: the exception taken back before a model
+/// goes into Sorting (since #545 the only place where the sorting model is chosen).
 fn no_exception() -> Request {
     Request::SetAiAssignment {
         function: AiFunction::InboxCategorize,
@@ -2725,7 +2725,13 @@ fn list<'a>(
             rows.push(quiet_row(tr("No account yet.")));
         }
         rows.push(add_row(fixed, fixed == Group::Mail && offers_import(state)));
-        about = Some(fixed.about().to_string());
+        // The mail window has no chat (issue #545): its AI is for sorting only.
+        about = Some(match fixed {
+            Group::Ai if state.in_mail() => {
+                tr("Models for sorting mail, on this computer or in the cloud.").to_string()
+            }
+            _ => fixed.about().to_string(),
+        });
     }
     // On AI the header names the section already: its first group is the accounts, not "AI" again
     // ("AI › AI", design review of #554). Elsewhere the provider names the group.
@@ -2934,14 +2940,14 @@ fn slots_group<'a>(state: &'a State, data: &'a dyn Seen, stacked: bool) -> Optio
         if slot == AiSlot::Decide
             && let Some((provider, seat)) = sorting_place(data, &state.models)
         {
-            rows.push(mail_note(provider, seat, data.settings().mail_to_cloud));
+            rows.push(mail_note(provider, seat, chat_note_off(state, data)));
         }
         if let Some(suggestion) = suggestion_of(state, slot).filter(|suggestion| {
             !holds(data, slot, suggestion.engine.as_deref(), suggestion.model.as_deref()) || suggestion.engine.is_none()
         }) {
             rows.push(suggestion_row(state, suggestion, stacked));
             if slot == AiSlot::Decide && !suggestion.local {
-                rows.push(mail_note(suggestion.provider.name(), &suggestion.seat, data.settings().mail_to_cloud));
+                rows.push(mail_note(suggestion.provider.name(), &suggestion.seat, chat_note_off(state, data)));
             }
         }
     }
@@ -3417,6 +3423,12 @@ fn failure_row<'a>(failure: &'a SlotFailure, stacked: bool) -> Element<'a, Messa
 /// sorting only." and, while the chat may read none, "The chat still gets no mail." As high as the rows
 /// around it ([`row_frame`]); wraps rather than cutting off: it is the one sentence here that must be
 /// read whole.
+/// Whether the note under Sorting leaves out "The chat still gets no mail.": while the chat may read
+/// mail, and in the mail window, which has no chat (issue #545).
+fn chat_note_off(state: &State, data: &dyn Seen) -> bool {
+    data.settings().mail_to_cloud || state.in_mail()
+}
+
 fn mail_note<'a>(provider: &str, seat: &str, chat_reads_mail: bool) -> Element<'a, Message> {
     let mut sentence = mail_sentence(provider, seat);
     if !chat_reads_mail {
@@ -4955,6 +4967,9 @@ mod tests {
             assert_eq!(state.slots(), slots, "{window:?}");
             assert_eq!(state.in_mail(), window == Some(AppId::INBOX_MAIL));
             assert_eq!(ai_groups(&state, &data, false).len(), groups, "{window:?}: slots and data rule");
+            // In mail the note under Sorting never names the chat; elsewhere it follows the data rule.
+            let expected = if state.in_mail() { true } else { data.settings().mail_to_cloud };
+            assert_eq!(chat_note_off(&state, &data), expected, "{window:?}");
             drop(list(&state, &data, Utc::now(), None, true, false));
         }
     }
@@ -6666,8 +6681,7 @@ mod tests {
     }
 
     /// Review of #325 (F2, R6): while an exception of sorting is stored, putting a model into Sorting – from
-    /// the list or by "Use suggestion" – takes it back first, then `ai.set_slot`, as Settings ›
-    /// Categorization does, so the slot sorts and meanwhile no exception the person stopped sorts again;
+    /// the list or by "Use suggestion" – takes it back first, then `ai.set_slot`, so the slot sorts and meanwhile no exception the person stopped sorts again;
     /// also for the model the slot has already. A take-back that fails stops with its reason and sets no
     /// slot. The chat's slot never touches it.
     #[test]

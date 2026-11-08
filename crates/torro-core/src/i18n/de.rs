@@ -5621,6 +5621,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Models for chatting and for sorting mail, on this computer or in the cloud.",
         "Modelle zum Chatten und zum Einordnen von E-Mails, auf diesem Rechner oder in der Cloud.",
     ),
+    (
+        "Models for sorting mail, on this computer or in the cloud.",
+        "Modelle zum Einordnen von E-Mails, auf diesem Rechner oder in der Cloud.",
+    ),
     ("Name the client and choose what it may do.", "Gib dem Client einen Namen und wähle, was er darf."),
     ("No model is turned on", "Kein Modell ist eingeschaltet"),
     ("No models match.", "Kein Modell passt."),
