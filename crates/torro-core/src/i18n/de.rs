@@ -7209,6 +7209,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{model} reads your mail at {provider} in the cloud. Use it?",
         "{model} liest deine E-Mails bei {provider} in der Cloud. Übernehmen?",
     ),
+    ("Switched off – choose a model to switch it on", "Ausgeschaltet – wähle ein Modell, um es einzuschalten"),
     ("Waiting for your OK – mail stays here", "Wartet auf dein OK – E-Mails bleiben hier"),
     // The tiers and reasons of the recommended models (MW.5, issue #325); "Medium", "This computer" and
     // "Needs {program}" stand above.

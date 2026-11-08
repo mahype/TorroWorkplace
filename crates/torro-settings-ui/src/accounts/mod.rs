@@ -3095,6 +3095,11 @@ fn slot_detail(state: &State, data: &dyn Seen, slot: AiSlot) -> (String, bool) {
             let account = ai_accounts(data).find(|account| account.id == engine).map(|account| account.label.as_str());
             (trf("Turned off at {account}", &[("account", &account.unwrap_or(engine))]), true)
         }
+        // Switched off by a stored exception (the old "Off" of Categorization, or an agent): the slot
+        // holds a model, but nothing sorts until one is chosen here again (review of #545).
+        _ if slot == AiSlot::Decide && sorting_switched_off(data) => {
+            (tr("Switched off – choose a model to switch it on").to_string(), true)
+        }
         _ if slot == AiSlot::Decide && waits_for_consent(state, data) => {
             (tr("Waiting for your OK – mail stays here").to_string(), true)
         }
@@ -3103,6 +3108,13 @@ fn slot_detail(state: &State, data: &dyn Seen, slot: AiSlot) -> (String, bool) {
         }
         _ => (slot_about(slot).to_string(), false),
     }
+}
+
+/// Sorting is switched off by a stored exception `inbox.categorize` that is off: choosing a model for
+/// *Sorting* takes it back ([`displaced`]) and switches sorting on again.
+fn sorting_switched_off(data: &dyn Seen) -> bool {
+    let exception = data.settings().ai_assignments.get(&AiFunction::InboxCategorize);
+    exception.is_some_and(|own| own.engine.is_some() && !own.enabled)
 }
 
 /// *Sorting* holds a model in the cloud ([`sorts_elsewhere`]) while its permission is off (issue #424):
@@ -4971,6 +4983,38 @@ mod tests {
             let expected = if state.in_mail() { true } else { data.settings().mail_to_cloud };
             assert_eq!(chat_note_off(&state, &data), expected, "{window:?}");
             drop(list(&state, &data, Utc::now(), None, true, false));
+        }
+    }
+
+    /// Review of #545: sorting switched off by a stored exception says so under *Sorting*, with the way
+    /// back; without it, or with an exception that sorts, the line stays as it was.
+    #[test]
+    fn sorting_switched_off_by_an_exception_says_so() {
+        let mut data = demo_data();
+        demo_ollama(&mut data);
+        let state = State::default().in_window(AppId::INBOX_MAIL);
+        let before = slot_detail(&state, &data, AiSlot::Decide);
+        assert!(!sorting_switched_off(&data));
+        assert_ne!(before.0, tr("Switched off – choose a model to switch it on"));
+        for enabled in [false, true] {
+            let mut data = data.clone();
+            data.settings.ai_assignments.insert(
+                AiFunction::InboxCategorize,
+                torro_core::ai::AiAssignment {
+                    function: AiFunction::InboxCategorize,
+                    engine: Some("ai:ollama@localhost:11434".into()),
+                    model: Some("nimble".into()),
+                    effort: None,
+                    enabled,
+                },
+            );
+            assert_eq!(sorting_switched_off(&data), !enabled);
+            let (line, alert) = slot_detail(&state, &data, AiSlot::Decide);
+            assert_eq!(line == tr("Switched off – choose a model to switch it on"), !enabled, "{enabled}");
+            if !enabled {
+                assert!(alert, "with the alert");
+            }
+            assert_ne!(slot_detail(&state, &data, AiSlot::Chat).0, tr("Switched off – choose a model to switch it on"));
         }
     }
 
