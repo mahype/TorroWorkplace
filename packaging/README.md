@@ -9,7 +9,7 @@ here is a draft until the maintainer has created the repositories and secrets li
 | `linux/` | one `.desktop` file and SVG icon per app, systemd user unit | AUR packages, manual installs, the app catalog |
 | `aur/` | `PKGBUILD.core.in` (`torroworkplace-bin`: the service, program and systemd unit), `PKGBUILD.in` (a `-bin` package per app, each depending on `torroworkplace-bin`), `PKGBUILD.main.in` (`torro-workplace`: the main application's `.desktop` entry and icon), `PKGBUILD.suite.in` (`torro-suite` meta package for all of them) | `.github/workflows/publish-aur.yml` |
 | `macos/` | `make-app.sh`, `Info.plist.in`, `icons/` (1024 px PNG per app): wrap a GUI binary into a `.app`, optionally with an embedded bundle (the core's service) | `.github/workflows/publish-macos-app.yml`, `scripts/macos-dev-bundles.sh` |
-| `windows/` | `.ico` per program, embedded by each crate's `build.rs` | `cargo build` for Windows targets |
+| `windows/` | `.ico` per program, embedded by each crate's `build.rs`; all-users Inno `setup.iss` | `cargo build`, `installers.py build-windows` |
 | `homebrew/` | meta formula `torro-suite.rb` and `Brewfile` for the tap (the formulae of the seven programs come from `dist`; each app's formula depends on `torroworkplace`) | copy into `mahype/homebrew-torro` once |
 | `scoop/` | one Scoop manifest per app (its zip plus `torroworkplace`), `torroworkplace.json` for the main application, `torro-suite.json` for all (Windows, later) | copy into `mahype/scoop-torro` once |
 
@@ -54,3 +54,37 @@ development identity when there is one (`scripts/macos-dev-cert.sh`), else ad ho
 The per-app Homebrew formulae are not written by hand: `dist` generates them on every release
 (see `dist-workspace.toml`); their dependency on `torroworkplace` comes from `[package.metadata.dist.dependencies.homebrew]`
 in each app crate's `Cargo.toml`.
+
+## Native downloads (#589)
+
+`apps.json` is the seven-app installer matrix (stable identity, actual program, launch arguments and
+companions). `installers.py` uses only Python's standard library and never downloads or publishes:
+
+```sh
+python3 installers.py build-linux --tag v0.1.0 --input ../target/distrib --output ../target/installers
+python3 installers.py build-windows --tag v0.1.0 --input ../target/distrib --output ../target/installers
+python3 installers.py verify --tag v0.1.0 --input ../target/installers --output ../target/installers
+python3 installers.py downloads --tag v0.1.0 --input ../target/installers --output ../target/installers
+```
+
+Run from this directory. Builders require dist archives, their `.sha256`, and `plan-dist-manifest.json`
+for exactly the requested tag and seven apps. Supply nFPM **2.48.0** (`NFPM`) or Inno Setup **7.1.1**
+(`ISCC`) after checking the pinned hashes in `build-installers.yml`. `verify`/`downloads` need the
+merged Linux/Windows manifests, all native packages/Setups, and 14 signed/stapled DMGs with checksums.
+Outputs are staged until the requested matrix succeeds; unsafe archive paths/links are rejected.
+
+Linux: eight packages per format and architecture, not eight copies of the service. Each program's
+adjacent `<program>.torro-package.json` declares schema 1, manager (`deb`, `rpm`, `pacman`), package and
+canonical `/usr/bin/<program>` path. The core owns its marker; the Workplace launcher-only package
+does not claim that file. Windows Setup owns the corresponding `.exe.torro-package.json` and SemVer
+`.version` alongside the shared program in Program Files. The catalog leaves valid AND broken markers
+alone; it checks all targets/companions before starting a job. Legacy unmarked installs remain supported.
+
+macOS: `make-dmg.sh` accepts one app plus its companions, validates their signatures/staples, includes
+an Applications link and English instructions, signs/notarises/staples/verifies the image. No unsigned
+fallback. Bundle archives remain available for existing consumers.
+
+Offline tests: `python3 -m unittest discover -s packaging/tests` from the repository root. Destructive
+platform smoke scripts live in `tests/` and require disposable systems plus `TORRO_INSTALLER_SMOKE=1`.
+See [docs/release.md](../docs/release.md) for open platform evidence and release gates, and
+[docs/install.md](../docs/install.md) for user instructions. No release proof is claimed by unit tests.

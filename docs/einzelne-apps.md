@@ -106,10 +106,16 @@ Jede App gibt es einzeln, und jede bringt den Dienst mit. Einzelheiten zum Bauen
 | Linux (AUR) | Jedes App-Paket hängt an `torroworkplace-bin` (nur Dienst und systemd-Einheit), Mail und App Feed auch an `torroinbox-bin`. Die Hauptanwendung ist das eigene Paket `torro-workplace` (Starter-Eintrag und Icon), `torro-suite` zieht alle. |
 | Homebrew | Jede Formel hängt an `mahype/torro/torroworkplace`, Mail und App Feed auch an `torroinbox`. |
 | Windows (Scoop) | Jedes Manifest lädt die eigene `.zip` und `torroworkplace` dazu (Mail und App Feed auch `torroinbox`), Verknüpfung nur für die eigene App. `torroworkplace.json` ist die Hauptanwendung, `torro-suite.json` alle. |
+| Linux (direkte DEB/RPM/pacman, #589) | Acht Pakete je Format/Architektur: Dienst `torroworkplace-bin`, Steuerzentralen-Starter `torro-workplace`, sechs App-Pakete. Dienst mindestens gleicher Version, Mail/App Feed auch Hub. Keine neue Paketquelle. |
+| Windows (Setup, #589) | Systemweiter Installer je App: eigener Starter/Uninstaller, Dienst und Hub gemeinsam und referenzgezählt; Administratorrechte, keine erhöhten App-Starts oder Datenlöschung. |
+| macOS (DMG, #589) | App-Bündel mit Dienst; Mail/App Feed zusätzlich Hub, Kalender Reminder. Alle angezeigten Apps nach Applications ziehen. Image und Bündel signiert, notarisiert und geheftet. |
 
-Die Archive und Installer je Programm im Release bleiben ohne Dienst: Wer unter Linux oder Windows eine App so von
+Die alten Programmarchive und Skriptinstaller im Release bleiben ohne Dienst: Wer unter Linux oder Windows eine App so von
 Hand lädt, braucht `torroworkplace` dazu. Diese Archive legen auch keinen Starter-Eintrag bzw. keine
 Startmenü-Verknüpfung an; ohne sie gilt die Hauptanwendung als nicht installiert, und der Dienst läuft still.
+
+Die nativen Downloads stehen samt Begleitpaketen im Release-Index `downloads.md`. Anleitung:
+[install.md](install.md). Der echte Release- und Plattformnachweis für #589 steht noch aus.
 
 ## Mehrere Kopien des Dienstes (#411)
 
@@ -164,6 +170,16 @@ startet danach den Dienst neu; das Fenster des Auftrags wartet auf ihn und holt 
 offene Steuerzentrale verbindet sich neu und nutzt wie jedes offene Fenster die neue Version, sobald sie geschlossen
 wird (Entscheidung 5). In Entwicklungs-Builds antworten Installieren, Aktualisieren und
 Entfernen mit `unsupported`.
+
+**Begrenzte Ausnahme #589:** DEB/RPM/pacman/Windows-Setup werden über paket-eigene Marker neben den
+Programmen erkannt (Schema, Manager, Paket, kanonischer Programmpfad). Beschädigte Marker sperren
+Änderungen ebenfalls. Vor jedem Auftrag werden alle Zielobjekte einschließlich fehlender Abhängigkeiten
+und tatsächlicher Zielpfade geprüft; ein verwaltetes Ziel liefert `conflict`, ohne Teiländerung.
+Die Herkunft des Dienstes gilt nur für fehlende Apps, nicht für vorhandene fremde Kopien. Native
+Windows-Verzeichnisse werden auch vom `.old`-Aufräumen ausgenommen. Installieren/Aktualisieren verweist
+auf Downloads, Entfernen auf apt/dnf/pacman bzw. `control appwiz.cpl`. Bestehendes Layout und
+API/MCP-Rechte bleiben; Installieren/Aktualisieren weiterhin `Never`. Ohne Marker gelten weiter die
+bisherigen Manager und selbstverwalteten Installationen; macOS wird wie bisher selbst verwaltet.
 
 ## Oberfläche, API, MCP
 

@@ -50,3 +50,23 @@ Check the result: the file has seven entries, and each is a PNG of the size in i
 
 `build.rs` only does something when the build target is Windows; it needs a resource compiler there (`rc.exe` from the
 Windows SDK with MSVC, or `llvm-rc` when cross building).
+
+## All-users Setup (#589)
+
+`setup.iss` is compiled with integrity-pinned Inno Setup **7.1.1** by `../installers.py build-windows`.
+Seven stable AppIds (`io.github.mahype.<app-id>`), each with its own uninstall log/directory and Start
+menu entry. Installation is x64/admin-only into the fixed `{autopf64}\TorroWorkplace` directory;
+Workplace's shortcut passes `ui`. Other apps do not silently add the control-centre shortcut.
+
+Each Setup includes its executable, the service and (Mail/App Feed) the Hub. Shared executables,
+native markers and SemVer companion files use `sharedfile uninsnosharedfileprompt 64bit`, with
+`UninstallLogMode=append`, so repeating/upgrading one app and uninstalling another retain components
+until the last owner goes. Preflight rejects downgrades, missing/inconsistent markers and foreign files
+before copying. Windows Restart Manager handles files in use; decline closing them to abort. Setup
+never starts an app elevated, installs a system service, or removes personal data.
+
+Unsigned by decision: users may see SmartScreen. `tests/windows-smoke.ps1` (relative to `packaging/`)
+must be run only in a fresh disposable x64 Windows VM as administrator, with older RC and newer stable
+Setups. It tests all apps, repeat/upgrade, downgrade refusal, both uninstall orders and shared lifetimes.
+UAC, SmartScreen, app start and locked-file cancellation still need manual verification. See
+[installation](../../docs/install.md) and [release gates](../../docs/release.md).
