@@ -47,6 +47,11 @@ Mail; Aufgaben: Nextcloud, Mail und GitHub; Notification Hub und App Feed: Nextc
 Hauptanwendung. Die Steuerzentrale zeigt dieselben Seiten mit allen Anbietern und je Konto „Used by …“, welche
 installierten Apps es nutzen; sie ist die Übersicht, nicht der einzige Weg. Fehlt einer App ein Konto, zeigt sie
 je Anbieter einen Knopf, der „Add account“ in der App öffnet ([einzelne-apps.md](einzelne-apps.md)).
+Die Seite „AI“ einer App zeigt seit #547 (Entscheidung 5 in #528) mit Hauptanwendung nur die KI-Konten, die
+eigene Modellzeile der App (Mail: „Sorting“; der Assistent stellt „Chat“ unter General ein, dort mit Denkstufe und
+„The one used last“) und „Open Torro Workplace“; Modell-Schalter der Konten, die übrigen Zeilen und die Datenregel
+stehen dann nur in der Steuerzentrale. Ohne Hauptanwendung bleibt die ganze Seite, im Assistenten ohne die Zeile
+„Chat“.
 
 Vorbild sind die Einstellungen von **TorroWhisper** (Aufbau, Seiten, Speichern) und
 **TorroMail** (Konten, Anbieter-Katalog, Einrichtungsassistent, Zugriff für KI-Clients). Beide
@@ -180,7 +185,7 @@ seit #530 nicht mehr. Hat eine Seite mehr als drei Gruppen, teilen Reiter (`widg
 
 | App | Abschnitte | kommt heute von |
 |---|---|---|
-| **Assistant** | General (Status an/aus mit Verweis auf Access; neue Chats: Engine, Modell, Denkstufe) · Profile (Profil und Gedächtnis) · **Access** (seit #231: Rechte des Assistenten und je Bot, „Turn on assistant“, „Turn off assistant…“) · Bots (Liste; je Bot „Edit“ öffnet den Bot-Editor, „Access“ öffnet Access beim Bot) · Tools (seit #302 nur ein Verweis auf MCP servers › Built-in tools) · Voice (Sprechen, Antworten vorlesen, Mikrofon, Programme auf diesem Rechner) · History (Unterhaltungen aufheben) · API and MCP (#531: was Schlüssel und MCP-Clients mit Assistent und Bots dürfen) | Seite Assistant ohne Datenregel und „Engines“; Access aus Agents & API (#231) |
+| **Assistant** | General (Status an/aus mit Verweis auf Access; neue Chats: Konto und Modell als Dropdowns, Denkstufe als Segmente, #547) · Profile (Profil mit Speicherleiste und Gedächtnis) · **Access** (seit #231: Rechte des Assistenten und je Bot, „Turn on assistant“, „Turn off assistant…“; seit #547 in Reitern Access · Selections · Bots, beim Bot Access · Selections) · Bots (Liste; je Bot „Edit“ öffnet den Bot-Editor, „Access“ öffnet Access beim Bot) · Tools (seit #302 nur ein Verweis auf MCP servers › Built-in tools) · Voice (Sprechen, Antworten vorlesen, Mikrofon als Dropdown, Programme auf diesem Rechner) · History (Unterhaltungen aufheben, als Segmente) · AI (#547: mit Hauptanwendung nur KI-Konten und Verweis) · API and MCP (#531: was Schlüssel und MCP-Clients mit Assistent und Bots dürfen) | Seite Assistant ohne Datenregel und „Engines“; Access aus Agents & API (#231) |
 | **Calendar** | Calendars (welche die Suite zeigt, je Konto gruppiert; Art der Erinnerung je Kalender) · Reminders (an/aus, Vorlauf, alle Bildschirme, Ton, welche Termine) · Night (die Karte am Mond in der Zeitleiste bleibt als schneller Weg) · API and MCP (#531) | Kontodetail „Calendars and lists“; General › Calendar, › Reminders, › Which events, › Calendars |
 | **Tasks** | Lists (welche die Suite zeigt, je Konto gruppiert) · API and MCP (#531, Aufgaben und GitHub) | Kontodetail „Calendars and lists“ |
 | **Notification Hub** (Fensterarten Notification Hub und App Feed) | Notifications (still bei Terminen) · Sources (je Konto: Nextcloud-Benachrichtigungen und Talk, GitHub, je ntfy-Server stumm oder an, je Mail-Konto „Show new mail“) · Rules (Liste mit „Remove“) · API and MCP (#531) | Seite Notification Hub; Abschnitte „Notification Hub“ der Kontoseiten |
