@@ -697,7 +697,8 @@ pub const SETTINGS_ICON: Icon = Icon::SlidersHorizontal;
 /// - Then the app's header ([`header_bar`]), padded as in the header bar, with a line below, and the
 ///   settings ([`SETTINGS_ICON`]) at the right end, marked while they are open.
 /// - Mail opts into [`TopRow::sidebar_surface`] for one sidebar-coloured head and
-///   [`TopRow::sidebar_at_edge`] for the expanded sidebar's button at its right edge (issue #564).
+///   [`TopRow::sidebar_at_edge`] for the expanded sidebar's button at its right edge (issue #564),
+///   and into [`TopRow::keep_buttons`] for the panel button and the settings over an open mail (#545).
 ///
 /// The free row drags the window. What an overlay lays over the top of the window ([`Cover`]) dims
 /// or covers the row as it did the band. The sizes of the lights' room are points (divided by
@@ -716,6 +717,7 @@ pub struct TopRow<M> {
     sidebar: Option<(&'static str, M)>,
     sidebar_surface: bool,
     sidebar_at_edge: bool,
+    keep_buttons: bool,
     settings: Option<M>,
     settings_open: bool,
     zoom: f32,
@@ -732,6 +734,7 @@ impl<M> TopRow<M> {
             sidebar: None,
             sidebar_surface: false,
             sidebar_at_edge: false,
+            keep_buttons: false,
             settings: None,
             settings_open: false,
             zoom,
@@ -766,6 +769,14 @@ impl<M> TopRow<M> {
     /// lead and the drawer keep their usual position beside the lights. Off for existing callers.
     pub fn sidebar_at_edge(mut self, enabled: bool) -> Self {
         self.sidebar_at_edge = enabled;
+        self
+    }
+
+    /// Keeps the panel button and the settings in reach over a side panel ([`Cover::Panel`],
+    /// [`Cover::Filled`]), at the places they have without it (mail, issue #545): the app closes the
+    /// panel when either is pressed. Off for existing callers, whose panel covers the whole row.
+    pub fn keep_buttons(mut self, enabled: bool) -> Self {
+        self.keep_buttons = enabled;
         self
     }
 
@@ -850,8 +861,44 @@ fn with_top_row<'a, M: Clone + 'a>(
     stack![below, mouse_area(band).on_press(on_drag)].into()
 }
 
-/// The pieces of the top row as `cover` leaves them (see [`TopRow`]).
+/// Whether the top row lays its panel button and settings over `cover` (issue #545): only where the
+/// caller `keep`s them ([`TopRow::keep_buttons`]) and a side panel covers the row. A dialog dims the
+/// whole window and the drawer has its own lead, so both stay as they were.
+fn keeps_buttons(cover: Cover, keep: bool) -> bool {
+    keep && matches!(cover, Cover::Panel | Cover::Filled(_))
+}
+
+/// The pieces of the top row as `cover` leaves them (see [`TopRow`]), and over a side panel the
+/// buttons the caller keeps ([`keeps_buttons`]).
 fn top_row_band<'a, M: Clone + 'a>(
+    top: TopRow<M>,
+    header: Element<'a, M>,
+    class: SizeClass,
+    lead: Option<f32>,
+) -> Element<'a, M> {
+    if !keeps_buttons(top.cover, top.keep_buttons) {
+        return covered_row(top, header, class, lead);
+    }
+    let buttons = kept_buttons(&top);
+    stack![covered_row(top, header, class, lead), buttons].into()
+}
+
+/// The panel button at the left and the settings at the right, where the row without a cover has
+/// them; the room between takes no press, so the window still drags there. The lead lies on the
+/// dimmed head, in the sidebar's palette where the head has it; the settings lie on the panel.
+fn kept_buttons<'a, M: Clone + 'a>(top: &TopRow<M>) -> Element<'a, M> {
+    let lead = container(compact_lead(top)).height(Fill).center_y(Fill);
+    let lead = if top.sidebar_surface && top.cover == Cover::Panel { in_sidebar(lead) } else { lead.into() };
+    let mut pieces = row![lead, blank::horizontal()];
+    if let Some(on_press) = top.settings.clone() {
+        pieces = pieces.push(settings_button(on_press, top.settings_open)).push(blank().width(settings_gap(top.zoom)));
+    }
+    // Over the line the uncovered row draws below its buttons, so they stay at the same height.
+    column![pieces.height(Fill).align_y(Alignment::Center), blank().height(LINE)].into()
+}
+
+/// The pieces of the top row as `cover` leaves them, without the kept buttons.
+fn covered_row<'a, M: Clone + 'a>(
     top: TopRow<M>,
     header: Element<'a, M>,
     class: SizeClass,
@@ -1515,6 +1562,55 @@ mod tests {
         ui.point_at(iced::Point::new(size::sidebar() - space::s() - size::control_sm() / 2.0, TOP_ROW / 2.0));
         ui.simulate(iced_test::simulator::click());
         assert!(!ui.into_messages().any(|m| m == Press::Sidebar), "no message means no button");
+    }
+
+    /// Issue #545: only a caller that keeps its buttons gets them over a side panel, at the places
+    /// they have without it; a dialog and the drawer stay as they were, and the free row drags.
+    #[test]
+    fn kept_buttons_stay_in_reach_over_a_side_panel_only() {
+        #[derive(Debug, Clone, PartialEq)]
+        enum Press {
+            Sidebar,
+            Settings,
+            Drag,
+        }
+        let filled = Cover::Filled(Surface::Panel);
+        for cover in [Cover::Nothing, Cover::Dialog, Cover::Drawer, Cover::Panel, filled] {
+            for keep in [false, true] {
+                let kept = keeps_buttons(cover, keep);
+                assert_eq!(kept, keep && matches!(cover, Cover::Panel | Cover::Filled(_)), "{cover:?}, {keep}");
+                for (class, zoom) in [(SizeClass::Medium, 1.0), (SizeClass::Narrow, 1.0), (SizeClass::Medium, 1.5)] {
+                    let width = 800.0;
+                    let height = TOP_ROW / zoom;
+                    let press = |x: f32| {
+                        let top = TopRow::new(zoom, Press::Drag)
+                            .sidebar(tr("Show sidebar"), Press::Sidebar)
+                            .settings(Press::Settings)
+                            .sidebar_surface(true)
+                            .keep_buttons(keep)
+                            .cover(cover);
+                        let band = top_row_band(top, blank().into(), class, None);
+                        let band: Element<'_, Press> = mouse_area(band).on_press(Press::Drag).into();
+                        let mut ui =
+                            iced_test::Simulator::with_size(iced::Settings::default(), Size::new(width, height), band);
+                        ui.point_at(iced::Point::new(x, height / 2.0));
+                        ui.simulate(iced_test::simulator::click());
+                        ui.into_messages().collect::<Vec<_>>()
+                    };
+                    let sidebar = lights_room(zoom) + SIDEBAR_GAP + size::control_sm() / 2.0;
+                    let settings = width - settings_gap(zoom) - settings_edge() / 2.0;
+                    let open = matches!(cover, Cover::Nothing | Cover::Drawer);
+                    let reach = |messages: Vec<Press>, wanted: Press| messages.contains(&wanted);
+                    assert_eq!(reach(press(sidebar), Press::Sidebar), open || kept, "{cover:?}, {keep}, {class:?}");
+                    let settings_open = open && cover != Cover::Drawer || kept;
+                    assert_eq!(reach(press(settings), Press::Settings), settings_open, "{cover:?}, {keep}, {class:?}");
+                    if kept {
+                        // Left of the medium panel, which takes presses of its own as before.
+                        assert_eq!(press(width * 0.3), vec![Press::Drag], "the free row drags: {cover:?}");
+                    }
+                }
+            }
+        }
     }
 
     /// Issue #564: drawing the header must supply the whole sidebar palette, not just its background.
