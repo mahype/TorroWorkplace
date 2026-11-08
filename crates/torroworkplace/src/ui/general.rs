@@ -3,9 +3,10 @@
 //!
 //! - **General** ([`view`]): "Language" ([`suite::language`]); "Maps" ([`maps`], task TE.10) switches
 //!   the calendar's place search and small map on and sets their services; "Startup" ([`startup`])
-//!   has the "Start at login" switch and the one of Workspaces; "Setup" runs the first-run setup
-//!   again. The group "Apps" of task S.21 is the section Apps since issue #411: each app's card
-//!   switches it, opens it and names its window class there (`super::apps`).
+//!   has the "Start at login" switch, the one of Workspaces and "Run setup again" for the first-run
+//!   setup (issue #548: one group less instead of tabs, so the page stays at a glance). The group
+//!   "Apps" of task S.21 is the section Apps since issue #411: each app's card switches it, opens it
+//!   and names its window class there (`super::apps`).
 //! - **Appearance** ([`appearance`], its own page in the sidebar since S.14, so it is found at a
 //!   glance): the suite's page of `torro_settings_ui::suite` (issue #408), which an app without the
 //!   main application shows too; how it looks and works is described there.
@@ -254,20 +255,21 @@ fn leave_address(state: &mut State, maps: &Maps, which: Address) -> Option<Reque
     save_address(state, maps, which)
 }
 
-/// The page General: language, maps, startup, setup.
+/// The page General: language, maps, startup.
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     // Its groups side by side where the page is wide (issue #464).
     widgets::page_columns(move || {
         let settings = &data.settings;
         let language = suite::language(settings, Place::ControlCentre).map(Message::Suite);
-        vec![language, maps(state, &settings.maps), startup(settings), setup()]
+        vec![language, maps(state, &settings.maps), startup(settings)]
     })
 }
 
-/// The group "Startup": "Start at login" as the suite's page has it ([`suite::startup`]), and the
+/// The group "Startup": "Start at login" as the suite's page has it ([`suite::startup`]), the
 /// switch of Workspaces, which came here from the group "Apps" (issue #411): Workspaces has no
 /// window and no card in the app catalog, and what it does at login – the templates that load there –
-/// belongs with starting.
+/// belongs with starting; and "Run setup again" (task W.9), which had a group of its own until
+/// issue #548 – the first-run setup is how the suite starts out, so it stands with starting too.
 fn startup(settings: &Settings) -> Element<'_, Message> {
     let at_login = switch(settings.start_at_login, |on| Message::Suite(suite::Message::StartAtLogin(on)));
     let workspaces =
@@ -280,25 +282,17 @@ fn startup(settings: &Settings) -> Element<'_, Message> {
             Some(tr("Save and restore window layouts").to_string()),
             workspaces,
         ),
-    ];
-    let footer =
-        tr("Starts Torro Workplace in the background when you log in, so the tray icon and your workspaces are ready.");
-    widgets::group(tr("Startup"), rows, Some(footer.to_string()))
-}
-
-/// The group "Setup": run the first-run setup again.
-fn setup<'a>() -> Element<'a, Message> {
-    let run = widgets::text_button(None, tr("Run setup again"), style::button::secondary, Some(Message::RunSetup));
-    widgets::group(
-        tr("Setup"),
-        vec![setting_row(
+        setting_row(
             None,
             tr("First-run setup"),
             Some(tr("Nextcloud, components, accounts and AI, step by step").to_string()),
-            run,
-        )],
-        Some(tr("What is connected stays; the steps show it.").to_string()),
-    )
+            widgets::text_button(None, tr("Run setup again"), style::button::secondary, Some(Message::RunSetup)),
+        ),
+    ];
+    let footer = tr(
+        "Starts Torro Workplace in the background when you log in, so the tray icon and your workspaces are ready. Running the setup again keeps what is connected.",
+    );
+    widgets::group(tr("Startup"), rows, Some(footer.to_string()))
 }
 
 /// The links under "Maps": the usage rules of the OpenStreetMap services (map tiles and Nominatim on
@@ -337,13 +331,19 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
         segments(&KIND_CHOICES, KindChoice(maps.geocoder_kind), |chosen: KindChoice| Message::GeocoderKind(chosen.0))
     };
     // Field and segments beside the name while they fit, under it in a narrow window: the field
-    // across the row, the segments below it (design review of #554).
+    // across the row, the segments below it (design review of #554). "Map tiles" decides with it, so
+    // both address fields stand beside their names or both under them, and a narrow window never cuts
+    // an address or its line off (issue #548).
     let search_hint = hint(Address::Geocoder);
+    let tiles_hint = hint(Address::Tiles);
+    let peers = address_peers();
+    let width = size::sidebar() + space::s() + segments_width(&KIND_CHOICES);
     let beside_hint = search_hint.clone();
-    let search = stacking_row(
+    let search = address_row(
         tr("Place search"),
         search_hint,
-        size::sidebar() + space::s() + segments_width(&KIND_CHOICES),
+        peers.clone(),
+        width,
         move || {
             let search = row![address(Address::Geocoder, Maps::PHOTON), kind()]
                 .spacing(space::s())
@@ -353,7 +353,18 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
         },
         move || column![address(Address::Geocoder, Maps::PHOTON), kind()].spacing(space::s()).into(),
     );
-    let tiles = container(address(Address::Tiles, Maps::OSM_TILES)).width(Length::FillPortion(2));
+    let beside_hint = tiles_hint.clone();
+    let tiles = address_row(
+        tr("Map tiles"),
+        tiles_hint,
+        peers,
+        width,
+        move || {
+            let tiles = container(address(Address::Tiles, Maps::OSM_TILES)).width(Length::FillPortion(2));
+            setting_row(None, tr("Map tiles"), beside_hint.clone(), tiles)
+        },
+        move || address(Address::Tiles, Maps::OSM_TILES).into(),
+    );
     let apps = app_choices();
     let open_with =
         move || segments(&app_choices(), AppChoice(maps.open_with), |chosen: AppChoice| Message::OpenWith(chosen.0));
@@ -372,7 +383,7 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
             switch(maps.enabled, Message::MapsOn),
         ),
         search,
-        setting_row(None, tr("Map tiles"), hint(Address::Tiles), tiles),
+        tiles,
         open_with,
     ];
     let footer = tr("Off until you turn it on. Both services are run by others, under their own rules.");
@@ -386,15 +397,61 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
     block.push(row(links).spacing(space::xs()).wrap().vertical_spacing(space::xs())).into()
 }
 
+/// An address row of "Maps": `beside` – the whole row with its field – while every name and line of
+/// the address rows (`peers`) fits beside `width`, else the name and line with `under` on a line of
+/// its own below them. Like `stacking_row`, but decided for both rows together (issue #548).
+fn address_row<'a>(
+    label: &'static str,
+    detail: Option<String>,
+    peers: Vec<(&'static str, Option<String>)>,
+    width: f32,
+    beside: impl Fn() -> Element<'a, Message> + 'a,
+    under: impl Fn() -> Element<'a, Message> + 'a,
+) -> Element<'a, Message> {
+    iced::widget::responsive(move |room| {
+        let texts = peers.iter().map(|(label, detail)| (*label, detail.as_deref()));
+        match widgets::segment_column(width, texts, room.width) {
+            Some(_) => beside(),
+            None => widgets::segment_row(label, detail.clone(), under(), None),
+        }
+    })
+    .height(Length::Shrink)
+    .into()
+}
+
 /// The line under the name of an address row of "Maps": "Press Enter to save" while its address is
 /// typed and not saved, else what that service gets. Always a line, so the row keeps its height
 /// when the hint comes and goes.
 fn address_detail(draft: &MapsDraft, maps: &Maps, which: Address) -> &'static str {
+    match draft.dirty(which, maps) {
+        true => save_hint(),
+        false => service_line(which),
+    }
+}
+
+/// "Press Enter to save": the line of an address row while its address is typed and not saved.
+fn save_hint() -> &'static str {
+    tr("Press Enter to save")
+}
+
+/// What the service of `which` gets, the line of its address row while nothing is typed.
+fn service_line(which: Address) -> &'static str {
     match which {
-        _ if draft.dirty(which, maps) => tr("Press Enter to save"),
         Address::Geocoder => tr("Gets what you search for and this computer's IP address"),
         Address::Tiles => tr("Gets the coordinates of the place"),
     }
+}
+
+/// The names and every line the two address rows can show ([`address_detail`]), which
+/// [`address_row`] measures: decided by the lines they can have, not the one they show, so typing
+/// ("Press Enter to save") never moves the fields (issue #548).
+fn address_peers() -> Vec<(&'static str, Option<String>)> {
+    let row = |name: &'static str, line: &str| (name, Some(line.to_string()));
+    vec![
+        row(tr("Place search"), service_line(Address::Geocoder)),
+        row(tr("Map tiles"), service_line(Address::Tiles)),
+        row(tr("Map tiles"), save_hint()),
+    ]
 }
 
 /// An address field of "Maps": an input of the suite, drawn at 40 % (`style::text_input`'s disabled
@@ -495,6 +552,33 @@ mod tests {
         let off = Settings { components_off: [Component::Workspaces].into_iter().collect(), ..Settings::default() };
         drop(startup(&off));
         drop(view(&State::default(), &data));
+    }
+
+    /// Issue #548: the address rows of "Maps" decide beside or under by every line they can show –
+    /// the service's and "Press Enter to save" – so typing never moves the fields.
+    #[test]
+    fn the_address_rows_measure_every_line_they_can_show() {
+        let data = Data::default();
+        let maps = &data.settings.maps;
+        let mut state = State::default();
+        let peers = address_peers();
+        let lines: Vec<&str> = peers.iter().filter_map(|(_, line)| line.as_deref()).collect();
+        for which in [Address::Geocoder, Address::Tiles] {
+            assert!(lines.contains(&address_detail(&state.maps, maps, which)), "{which:?} at rest");
+            let _ = update(&mut state, Message::AddressInput(which, "https://example.org/{z}/{x}/{y}".into()), &data);
+            assert!(lines.contains(&address_detail(&state.maps, maps, which)), "{which:?} typed");
+        }
+        let names: Vec<&str> = peers.iter().map(|(name, _)| *name).collect();
+        assert!(names.contains(&tr("Place search")) && names.contains(&tr("Map tiles")));
+    }
+
+    /// Issue #548: "Run setup again" stands in the group Startup and opens the first-run setup.
+    #[test]
+    fn run_setup_again_opens_the_setup() {
+        let data = Data::default();
+        let action = update(&mut State::default(), Message::RunSetup, &data);
+        assert!(matches!(action, Action::OpenSetup), "{action:?}");
+        drop(startup(&data.settings));
     }
 
     /// Task TE.10: the switch, the protocol of the place search and "Open in Maps with" each set
