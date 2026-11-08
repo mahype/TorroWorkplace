@@ -4,6 +4,11 @@ Stand: 2026-10-11. **Konzept zur Besprechung.** Beantwortet die offene Frage „
 Suite“ aus [roadmap.md](roadmap.md#offene-fragen). Die Entscheidungen, die noch offen sind,
 stehen am Ende.
 
+Die Erweiterung um wiederverwendbare, begrenzte Dokument-Abläufe wird in
+[mail-workflows.md](mail-workflows.md) beschrieben, einschließlich Vorlagen, eigener Autorisierung,
+browserfreiem Abruf und gekennzeichneten HTML-Rechnungskopien. Dort steht auch der aktuelle
+Implementierungsstand; eine gespeicherte Definition schaltet keine Automatik ein.
+
 ## Ausgangslage
 
 - **Workplace** kennt genau ein Konto: Nextcloud (`AccountKind::Nextcloud`, `accounts.json`,
@@ -534,6 +539,42 @@ Dreieck für dieses Menü (#491).
   er `forbidden` mit einem Hinweis auf die Systemeinstellungen.
 - Agenten speichern nach der gewöhnlichen Schreibregel; die Freigabe nennt Betreff, Zahl der Dateien und Ziel aus dem
   Speicher des Dienstes und ist an die Mail gebunden.
+
+## Dokument-Abläufe und Automatik (#556)
+
+Der verbindliche Umfang und der noch laufende Integrations-/Abnahmestand stehen in
+[mail-workflows.md](mail-workflows.md). Ein **Ablauf** beschreibt den begrenzten Dokumentweg,
+eine **Regel** Konto, Auslöser und Bedingung; das **Ablageziel** bleibt das bestehende Ziel unter
+Attachments. Ein **Lauf** protokolliert den konkreten Versuch. Das sind keine zusätzlichen Aktionen
+im `MailFilter` und kein Ersatz für die bestehenden Kategorie-Filter.
+
+Im Torro-Menü des Lesers und im Rechtsklickmenü der Liste führen dieselben Aktionen zur Einrichtung
+oder Wiederverwendung. KI-Entwurf und mitgelieferte Vorlagen für direkte PDFs, Stripe-Rechnungen und
+Paddle/Setapp-Kopien führen in dieselbe Prüfung. Eine Vorlage braucht keine KI und erzeugt nur einen
+inaktiven, ungetesteten Entwurf, ohne Abruf, Grant oder Regel. Die lokale Vorschau lädt und schreibt
+nichts; der ausdrücklich bestätigte **Test hat echte Außenwirkung und legt eine Datei ab**.
+Erst danach kann gespeichert werden: Das erste Speichern schaltet den Ablauf zur bewussten
+manuellen Wiederverwendung ein, erteilt aber keinen Dauergrant und aktiviert keine Regel. Manuelle
+App-Klicks sind einmalige Aufträge; sämtliche clientseitigen `workflows.run` benötigen eine konkrete
+menschliche Freigabe mit jobgebundenem Einmalgrant. Automatik braucht zusätzlich dauerhafte
+Autorisierung (nur Mensch/App-Schlüssel) und eine aktivierte eigene Regel. Deaktivierung oder
+Widerruf stoppen über die Ausführungsepoche auch bereits laufende manuelle Einmalaufträge.
+
+Mail › Settings › Automation verwaltet Workflows, Rules und Runs. Automatik kennt neue Mail und echte
+Kategoriezuweisung, unabhängig von `notify`, `\Seen` und Absenderlogos. Sie braucht bestätigte Domains
+und einen geprüften Absender. Eine dauerhafte Baseline schließt Erst-/Resetbestände auch nach einem
+Crash aus; nach Aktivierung werden höchstens sieben Tage nachgeholt. Altbestand nur nach Vorschau
+und ausdrücklicher Auswahl, nie allein durch Einschalten. Bulk, Neukategorisierung und Automation
+lösen keine weiteren Läufe aus. Queue (zwei Worker, 100 offene Jobs), persistente Deduplizierung auch
+für Tests und bestätigte Wiederholungs-Generationen verhindern unbemerkte Mehrfachabrufe.
+
+„Retrieved documents“ bleibt getrennt von Originalanhängen. Herkunft unterscheidet Anbieter-PDF
+und auf jeder Seite gekennzeichnete HTML-Rechnungskopie; Paddle wird vollständig, nicht im
+Anbieterlayout nachgebaut. Der begrenzte PDF-Containerparser unterstützt klassische Xref-Tabellen,
+keine komprimierten Xref-/ObjStm-Varianten, und dekomprimiert keine Streams, Fonts oder Bilder.
+Fehlende/geänderte Dateien werden sichtbar statt automatisch neu geladen; Entfernen eines Ablaufs
+oder einer Regel behält Dateien und Deduplizierung. Portallogins, Browser- und Skriptautomation sowie
+ein Ausbau von #260/#79 gehören nicht zu diesem Umfang.
 
 ## Filter
 
