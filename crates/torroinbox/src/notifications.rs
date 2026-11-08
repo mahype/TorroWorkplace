@@ -811,7 +811,11 @@ fn columns<'a>(data: &BoardData<'a>, count: usize, width: f32) -> Element<'a, Me
     let shown = columns.len().max(1) as f32;
     let inner = ((width - list::cards_side() - (shown - 1.0) * gap) / shown).max(0.0);
     let inset = list::cards_inset();
-    let heads = columns.iter().map(|column| container(head(column, inner, data.sources)).width(Fill).into());
+    let sides = head_sides(data.density);
+    let head_width = (inner - sides.left - sides.right).max(0.0);
+    let heads = columns
+        .iter()
+        .map(|column| container(head(column, head_width, data.sources)).padding(sides).width(Fill).into());
     let heads = container(row(heads).spacing(gap))
         .padding(Padding::new(0.0).top(inset.top).left(inset.left).right(inset.right));
     let item_gap = if data.density == Density::Comfortable { gap } else { 0.0 };
@@ -822,6 +826,19 @@ fn columns<'a>(data: &BoardData<'a>, count: usize, width: f32) -> Element<'a, Me
     });
     let bodies = container(row(bodies).spacing(gap)).padding(inset);
     column![heads, scroll(bodies.into())].width(Fill).height(Fill).into()
+}
+
+/// The sides of a column's head in `density`: rows (compact) stand their tile a row's side padding in
+/// from the column's edge (`list::sized_row`), so the head's tile follows them onto one axis (issue
+/// #546); cards start at the edge, as the head does.
+fn head_sides(density: Density) -> Padding {
+    match density {
+        Density::Compact => {
+            let pad = layout::row_padding();
+            Padding::new(0.0).left(pad.left).right(pad.right)
+        }
+        Density::Comfortable => Padding::ZERO,
+    }
 }
 
 /// The head of a column `width` wide: the source's tile, its name – with the account where `known`
@@ -1114,6 +1131,16 @@ mod tests {
         };
         assert_eq!(walk(2).collect::<Vec<_>>(), walk(6).collect::<Vec<_>>());
         assert_eq!(app_columns(&items, 100).len(), 12, "one column per source when there is room");
+    }
+
+    /// Issue #546: in the compact density a column's head stands its tile on the axis of the rows'
+    /// tiles (a row's side padding in); over cards it starts at the edge, as the cards do.
+    #[test]
+    fn a_heads_tile_stands_on_the_axis_of_its_entries() {
+        let pad = layout::row_padding();
+        let compact = head_sides(Density::Compact);
+        assert_eq!((compact.left, compact.right, compact.top, compact.bottom), (pad.left, pad.right, 0.0, 0.0));
+        assert_eq!(head_sides(Density::Comfortable), Padding::ZERO);
     }
 
     #[test]
