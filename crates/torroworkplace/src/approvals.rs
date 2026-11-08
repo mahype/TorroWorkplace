@@ -3818,6 +3818,7 @@ fn mail_saved_as(format: torro_ipc::mail::ExportFormat, to: &torro_ipc::mail::Sa
     match format {
         ExportFormat::Pdf => trf("Save the mail {subject} as PDF to {target}", &args),
         ExportFormat::Png => trf("Save the mail {subject} as an image to {target}", &args),
+        ExportFormat::Eml => trf("Save the mail {subject} as EML to {target}", &args),
     }
 }
 

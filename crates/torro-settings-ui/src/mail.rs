@@ -119,7 +119,7 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
         torro_ipc::Request::Settings,
         torro_ipc::Request::Accounts,
         // "Attachments" (task M12.7): the save targets and the Downloads folder.
-        torro_ipc::Request::ListSaveTargets { id: None },
+        torro_ipc::Request::ListSaveTargets { id: None, export_only: false },
         torro_ipc::Request::MailAccountStats { account: None },
         // "Categorization" (task E12.10): what is assigned and how far the backlog has come.
         torro_ipc::Request::AiAssignments,
@@ -4434,7 +4434,7 @@ mod tests {
             vec![
                 torro_ipc::Request::Settings,
                 torro_ipc::Request::Accounts,
-                torro_ipc::Request::ListSaveTargets { id: None },
+                torro_ipc::Request::ListSaveTargets { id: None, export_only: false },
                 torro_ipc::Request::MailAccountStats { account: None },
                 torro_ipc::Request::AiAssignments,
                 torro_ipc::Request::GetCategorization,
@@ -4870,7 +4870,8 @@ mod tests {
                 model(ollama, "glm:cloud", Some(false), Some(true), Some(true)),
                 model(openrouter, "qwen/qwen3-14b", None, Some(true), None),
                 model("ai:lm_studio@localhost:1234", "gemma", None, None, None),
-                model("ai:openai_compatible@127.0.0.1:8000", "mine", None, None, None),
+                model("ai:openai_compatible@127.0.0.1:8000", "mine", None, None, Some(false)),
+                model("ai:openai_compatible@127.0.0.1:8000", "unknown", None, None, None),
                 model("ai:openai_compatible@gpu.example.org", "far", None, None, None),
             ],
             ..local_model_data()
@@ -4878,7 +4879,7 @@ mod tests {
         let ids = |data: &Data| -> Vec<String> {
             categorization::offered(data).into_iter().map(|(_, model)| model.id).collect()
         };
-        let all = ["nimble", "qwen3:8b", "glm:cloud", "qwen/qwen3-14b", "gemma", "mine", "far"];
+        let all = ["nimble", "qwen3:8b", "glm:cloud", "qwen/qwen3-14b", "gemma", "mine", "unknown", "far"];
         assert_eq!(ids(&data), all, "mail stays here, and the cloud is offered all the same");
         data.settings.decide_mail_to_cloud = Some(true);
         assert_eq!(ids(&data), all);
@@ -4886,7 +4887,7 @@ mod tests {
         let (fast, other, cloud) = categorization::grouped(&data);
         assert_eq!(names(fast), ["nimble"]);
         assert_eq!(names(other), ["gemma", "qwen3:8b", "mine"], "by account");
-        assert_eq!(names(cloud), ["glm:cloud", "far", "qwen/qwen3-14b"]);
+        assert_eq!(names(cloud), ["glm:cloud", "unknown", "far", "qwen/qwen3-14b"]);
         data.settings.ai_slots.decide = Some(slot("qwen3:8b"));
         let _ = categorization::view(&Default::default(), &data);
     }

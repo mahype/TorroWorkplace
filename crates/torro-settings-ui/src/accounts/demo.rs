@@ -226,12 +226,34 @@ fn ai_label(account: &torro_core::Account) -> String {
 /// other request, which the caller answers itself.
 pub fn demo_answer(request: &Request, data: &dyn Seen) -> Option<Response> {
     match request {
+        Request::ConnectLocalAi { program, server, key } => {
+            let Some(program) = torro_core::ai::LocalProgram::from_id(program) else {
+                return Some(Response::Error {
+                    code: "unsupported".into(),
+                    message: tr("Unknown local AI program.").into(),
+                });
+            };
+            let request = Request::ConnectAi {
+                provider: AiProvider::OpenAiCompatible,
+                server: Some(server.as_deref().unwrap_or(program.default_url()).to_string()),
+                key: key.clone(),
+            };
+            demo_answer(&request, data).map(|response| match response {
+                Response::Account { mut account } => {
+                    account.label = program.name().into();
+                    Response::Account { account }
+                }
+                other => other,
+            })
+        }
         Request::DiscoverServices { address } => Some(demo_discovery(address)),
         // AI providers (task KI.1a): Ollama runs on this computer, LM Studio does not; the key
         // "wrong" is refused, every other connection works and stores nothing.
         Request::FindAiServers => Some(Response::AiServers {
+            observations: Vec::new(),
             servers: vec![AiServer {
                 provider: AiProvider::Ollama,
+                program: None,
                 url: "http://localhost:11434/v1".into(),
                 models: 4,
                 account: None,
@@ -648,6 +670,7 @@ fn demo_recommendation(data: &dyn Seen) -> torro_ipc::AiRecommendation {
         tier: "gpu".into(),
         tier_label: tr("Graphics card").into(),
         slots,
+        preparations: Vec::new(),
     }
 }
 

@@ -3597,8 +3597,10 @@ impl Core {
         };
         let answer = match admitted {
             Ok((id, rights)) => match key.and_then(|key| self.clients.lent_approvals(key).map(|own| (key, own))) {
-                Some((key, own)) => self.handle_lent(key, &own, id, rights, request, scope).await,
-                None => self.handle_client(id, rights, request, &Via::default()).await,
+                // Approval execution can re-enter dispatch. Keep the client dispatch frame on
+                // the heap as requests and account metadata grow (issue #527).
+                Some((key, own)) => Box::pin(self.handle_lent(key, &own, id, rights, request, scope)).await,
+                None => Box::pin(self.handle_client(id, rights, request, &Via::default())).await,
             },
             Err(refused) => Err(refused),
         };
@@ -4633,16 +4635,18 @@ impl Core {
             }
             // Saving a mail as PDF or picture (issue #501): its subject and the target by what the
             // core's stores hold, the approval pinned to the mail as saving its attachments is.
-            (Request::SaveMailAs { id, to, .. }, _) => {
+            (Request::SaveMailAs { id, format, to }, _) => {
                 if info.is_none() {
                     return Err(Refused::Forbidden { command });
                 }
-                let (found, pinned) = match self.mail_as_to_approve(id, rights).await {
-                    Ok(found) => found,
-                    Err(refused) => return Ok(*refused),
-                };
-                let target = match to {
-                    torro_ipc::mail::SaveTo::Target(target) => {
+                let (found, pinned, checked_target) =
+                    match self.mail_as_to_approve(id, *format, to, rights, &self.save_context()).await {
+                        Ok(found) => found,
+                        Err(refused) => return Ok(*refused),
+                    };
+                let target = match (to, checked_target) {
+                    (_, Some(spec)) => Some(spec.name),
+                    (torro_ipc::mail::SaveTo::Target(target), _) => {
                         self.mail.save_targets().get(target).ok().flatten().map(|target| target.spec.name)
                     }
                     _ => None,
@@ -5321,9 +5325,16 @@ impl Core {
             }
         }
         // A mail is saved as PDF or picture only as the person was shown it (issue #501).
-        if let Request::SaveMailAs { id, .. } = &request {
-            match self.mail_as_to_approve(id, rights).await {
-                Ok((_, now)) if Some(now.as_str()) == fingerprint => {}
+        if let Request::SaveMailAs { id, format, to } = &request {
+            let context = self.save_context();
+            match self.mail_as_to_approve(id, *format, to, rights, &context).await {
+                Ok((_, now, target)) if Some(now.as_str()) == fingerprint => {
+                    if *format == torro_ipc::mail::ExportFormat::Eml {
+                        // Like restore above: keep the deep IMAP/spool future out of every approved call's stack.
+                        return Box::pin(crate::mail::save::approved_eml(&self.mail, reach, &context, id, to, target))
+                            .await;
+                    }
+                }
                 Ok(_) => {
                     let message = "the mail changed after the approval was asked for; nothing was saved, ask again";
                     return Response::Error { code: "conflict".into(), message: message.into() };
@@ -6085,11 +6096,12 @@ impl Core {
             // over each other.
             Request::ConnectAi { provider, server, key } => {
                 let _writing = self.calendar_sign_ins.lock().await;
-                match self.ai.connect(provider, server.as_deref(), key).await {
+                match Box::pin(self.ai.connect(provider, server.as_deref(), key)).await {
                     Ok(account) => Response::Account { account },
                     Err(err) => ai_error(&err),
                 }
             }
+            request @ Request::ConnectLocalAi { .. } => Box::pin(self.answer_local_ai(request)).await,
             // Boxed and apart, so this match grows by one arm only: its poll frame is deep in the
             // stack already when an approved command or the inbox's quiet runs it again.
             request @ (Request::ConnectNtfy { .. } | Request::SetNtfyLogin { .. } | Request::SetNtfyTopic { .. }) => {
@@ -6104,7 +6116,7 @@ impl Core {
             Request::SetModelEnabled { account, model, enabled } => {
                 Box::pin(self.set_model_enabled(&account, &model, enabled, client)).await
             }
-            Request::FindAiServers => Response::AiServers { servers: self.ai.find_local().await },
+            Request::FindAiServers => Box::pin(self.find_ai_servers()).await,
             Request::AiAssignments => self.ai_assignments().await,
             Request::SetAiAssignment { function, engine, model, effort, enabled } => {
                 let wanted = torro_core::ai::AiAssignment { function, engine, model, effort, enabled };
@@ -6197,7 +6209,7 @@ impl Core {
             | Request::UpdateSaveTarget { .. }
             | Request::RemoveSaveTarget { .. }
             | Request::SaveMailAttachments { .. }
-            | Request::SaveMailAs { .. }) => Box::pin(self.save_request(request, reach)).await,
+            | Request::SaveMailAs { .. }) => self.save_request(request, reach).await,
             // Running a mail filter (issue #339) also puts the category it set on the inbox entries
             // of those mails, as the category jobs do.
             request @ Request::ApplyMailFilter { .. } => self.apply_mail_filter(request, reach).await,
@@ -6228,6 +6240,7 @@ impl Core {
             // Boxed: `change_mail` is a large future (about 10 KB in a debug build), and an approved
             // move into the trash reaches it in the second pass through this function.
             | Request::SaveDraft { .. }) => Box::pin(self.change_mail(request, reach)).await,
+            request @ Request::PrepareMailPaste { .. } => prepare_mail_paste(&request),
             request @ (Request::PrepareMailImage { .. } | Request::UploadMailImage { .. } | Request::ReleaseMailImages { .. }) => {
                 self.image_request(request, reach, caller).await
             }
@@ -6760,6 +6773,29 @@ impl Core {
     /// rights name none of the mail accounts, gets no suggestion for Sorting, so the answer never
     /// tells it that mail is there (as `inbox.list_categories`). Reads only, stores nothing.
     /// `error` with the list's own words when the built-in list is broken.
+    /// Keep connection and discovery's temporaries out of central dispatch. Approval handling
+    /// re-enters it; even a small increase can exhaust a debug test thread's stack.
+    async fn answer_local_ai(&self, request: Request) -> Response {
+        let Request::ConnectLocalAi { program, server, key } = request else {
+            return Response::Error { code: "unsupported".into(), message: tr("Unknown local AI program.").into() };
+        };
+        let Some(program) = torro_core::ai::LocalProgram::from_id(&program) else {
+            return Response::Error { code: "unsupported".into(), message: tr("Unknown local AI program.").into() };
+        };
+        let _writing = self.calendar_sign_ins.lock().await;
+        match self.ai.connect_program(program, server.as_deref(), key).await {
+            Ok(account) => Response::Account { account },
+            Err(err) => ai_error(&err),
+        }
+    }
+
+    async fn find_ai_servers(&self) -> Response {
+        match self.ai.scan_local().await {
+            Ok((servers, observations)) => Response::AiServers { servers, observations },
+            Err(err) => ai_error(&err),
+        }
+    }
+
     async fn ai_recommend(&self, reach: Reach<'_>) -> Response {
         use crate::account::recommend;
         let list = match recommend::List::builtin() {
@@ -8705,19 +8741,27 @@ impl Core {
     /// The requests of saving attachments for `reach` (issue #290, [`crate::mail::save::answer`]).
     /// Removing a target that the click on an attachment named sets the click back to `open`
     /// (setting `mail_attachment_click`), so it opens files again instead of naming a target gone.
-    async fn save_request(&self, request: Request, reach: Reach<'_>) -> Response {
-        let removed = match &request {
-            Request::RemoveSaveTarget { id } => Some(id.clone()),
-            _ => None,
-        };
-        let context = self.save_context();
-        let response = crate::mail::save::answer(&self.mail, reach, &context, request).await;
-        if let (Some(id), Response::SaveTargets { .. }) = (removed, &response)
-            && let Err(err) = self.settings.release_attachment_click(&id)
-        {
-            eprintln!("torroworkplace: mail: cannot set the click on attachments back to open: {err}");
-        }
-        response
+    /// Construct the expanded export future here, not in the dispatcher: approved requests already
+    /// hold two dispatcher frames, and boxing at their call site still builds the future on the stack.
+    fn save_request<'a>(
+        &'a self,
+        request: Request,
+        reach: Reach<'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send + 'a>> {
+        Box::pin(async move {
+            let removed = match &request {
+                Request::RemoveSaveTarget { id } => Some(id.clone()),
+                _ => None,
+            };
+            let context = self.save_context();
+            let response = crate::mail::save::answer(&self.mail, reach, &context, request).await;
+            if let (Some(id), Response::SaveTargets { .. }) = (removed, &response)
+                && let Err(err) = self.settings.release_attachment_click(&id)
+            {
+                eprintln!("torroworkplace: mail: cannot set the click on attachments back to open: {err}");
+            }
+            response
+        })
     }
 
     /// For `mail.save_attachments` of a client (task M12.3): what its approval shows, from the
@@ -8742,11 +8786,38 @@ impl Core {
     async fn mail_as_to_approve(
         &self,
         id: &str,
+        format: torro_ipc::mail::ExportFormat,
+        to: &torro_ipc::mail::SaveTo,
         rights: &torro_ipc::api::Rights,
-    ) -> Result<(crate::mail::save::ToApprove, String), Box<Response>> {
+        context: &crate::mail::save::Context,
+    ) -> Result<(crate::mail::save::ToApprove, String, Option<torro_mail::SaveTargetSpec>), Box<Response>> {
         let found = crate::mail::save::message_to_approve(&self.mail, Reach::Client(rights), id).await?;
         let mail = self.mail_to_approve(&found.account, id, rights).await?;
-        Ok((found, mail_fingerprint(&mail)))
+        let mut fingerprint = mail_fingerprint(&mail);
+        let mut target = None;
+        if format == torro_ipc::mail::ExportFormat::Eml {
+            use torro_ipc::mail::SaveTo;
+            if let SaveTo::Target(id) = to {
+                target = Some(
+                    self.mail
+                        .save_targets()
+                        .get(id)
+                        .map_err(|err| Box::new(err.response()))?
+                        .ok_or_else(|| Box::new(crate::mail::save::TargetError::NotFound.response()))?
+                        .spec,
+                );
+            }
+            let destination = serde_json::json!({
+                "to": to, "target": target,
+                "downloads": if matches!(to, SaveTo::Downloads) { context.downloads.as_ref() } else { None },
+            });
+            use sha2::{Digest, Sha256};
+            fingerprint = Sha256::digest(format!("{fingerprint}\0{destination}").as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+        }
+        Ok((found, fingerprint, target))
     }
 
     /// For the approval of `tasks.create_todo_from_mail` (task E8.7a): the mail as the store holds
@@ -12208,6 +12279,26 @@ async fn list_screens(wm: &impl WindowManager) -> Response {
         })
         .collect();
     Response::Screens { screens }
+}
+
+/// Keep the pure converter's temporaries out of the already-large async dispatch frame.
+fn prepare_mail_paste(request: &Request) -> Response {
+    if let Some(refused) = torro_ipc::mail::limit_refusal(request) {
+        return refused;
+    }
+    let Request::PrepareMailPaste { html, text } = request else {
+        return refusal("error", "expected a paste request".into());
+    };
+    match torro_mail::html::prepare_paste(html.as_deref(), text.as_deref()) {
+        Ok(paste) => Response::MailPaste {
+            markup: paste.markup,
+            plain: paste.plain,
+            plain_markup: paste.plain_markup,
+            formatted: paste.formatted,
+            untrusted: true,
+        },
+        Err(error) => refusal("error", error.to_string()),
+    }
 }
 
 /// A failure as a response with a stable code for scripts.
@@ -15677,10 +15768,11 @@ mod tests {
             saved.iter().all(|file| std::path::Path::new(&file.path).starts_with(base.canonicalize().expect("base")))
         );
 
-        let part = match ask(&core, Some(&key), Request::ListSaveTargets { id: Some(id.clone()) }).await {
-            Response::SaveTargets { files, .. } => files[1].part.clone(),
-            other => panic!("targets: {other:?}"),
-        };
+        let part =
+            match ask(&core, Some(&key), Request::ListSaveTargets { id: Some(id.clone()), export_only: false }).await {
+                Response::SaveTargets { files, .. } => files[1].part.clone(),
+                other => panic!("targets: {other:?}"),
+            };
         // A part named twice is one file, as the core saves it.
         let one =
             Request::SaveMailAttachments { id: id.clone(), parts: vec![part.clone(), part], to: SaveTo::Downloads };
@@ -15699,7 +15791,7 @@ mod tests {
         outside.mail_accounts = Selection::Only(Vec::new());
         let (_, stranger) = client(&core, outside).await;
         let before = core.approvals.list(None, Utc::now()).await.unwrap_or_default().len();
-        let plan = Request::ListSaveTargets { id: Some(id.clone()) };
+        let plan = Request::ListSaveTargets { id: Some(id.clone()), export_only: false };
         assert_eq!(code(&ask(&core, Some(&stranger), plan).await), "not-found");
         let save = Request::SaveMailAttachments { id, parts: Vec::new(), to: SaveTo::Downloads };
         assert_eq!(code(&ask(&core, Some(&stranger), save).await), "not-found");
@@ -15794,6 +15886,67 @@ mod tests {
         let save = Request::SaveMailAs { id, format: ExportFormat::Png, to: SaveTo::Downloads };
         assert_eq!(code(&ask(&core, Some(&stranger), save).await), "not-found");
         assert_eq!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().len(), before, "nobody asked");
+    }
+
+    #[tokio::test]
+    async fn eml_approvals_pin_the_destination_and_preserve_account_and_path_protection() {
+        use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake::FakeImap;
+        use torro_ipc::mail::{ExportFormat, SaveTo};
+        let _serial = crate::mail::eml::TESTS.lock().await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let raw = crate::mail::save::tests::raw_on(Utc::now(), "Original", &[("data.bin", b"data")]);
+        server.add("INBOX", &raw, &[]);
+        let secrets = crate::account::github::tests::MemoryTokens::default();
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&account, PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let core = core(dir.path()).with_mail(mail);
+        let id = crate::mail::save::tests::message_id(&core.mail, "Original").await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let base = dir.path().join("exports");
+        std::fs::create_dir(&base).expect("exports");
+        let target = torro_mail::SaveTargetSpec::new("Originals", base.to_string_lossy());
+        let made = save_target(ask(&core, Some(&app_key), Request::CreateSaveTarget { target }).await);
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, key) = client(&core, rights.clone()).await;
+        let save =
+            Request::SaveMailAs { id: id.clone(), format: ExportFormat::Eml, to: SaveTo::Target(made.id.clone()) };
+        let asked = waits(ask(&core, Some(&key), save.clone()).await);
+        assert!(asked.summary.contains("EML"));
+        let mut changed = made.spec.clone();
+        changed.file_name = "changed.{ext}".into();
+        core.mail.save_targets().update(&made.id, changed, &torro_mail::Category::BUILT_IN).expect("changed target");
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("{allowed:?}") };
+        assert_eq!(code(&response), "conflict");
+        assert_eq!(std::fs::read_dir(&base).expect("empty").count(), 0);
+        let asked = waits(ask(&core, Some(&key), save.clone()).await);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("{allowed:?}") };
+        let Response::SavedMail { path, skipped: false, shortened: false } = *response else { panic!("{response:?}") };
+        assert!(std::path::Path::new(&path).starts_with(base.canonicalize().expect("base")));
+        assert_eq!(std::fs::read(&path).expect("original"), raw.as_bytes());
+        for to in [SaveTo::File(path), SaveTo::Folder(base.to_string_lossy().into_owned())] {
+            assert_eq!(
+                code(
+                    &ask(&core, Some(&key), Request::SaveMailAs { id: id.clone(), format: ExportFormat::Eml, to })
+                        .await
+                ),
+                "forbidden"
+            );
+        }
+        rights.mail_accounts = Selection::Only(Vec::new());
+        let (_, stranger) = client(&core, rights).await;
+        assert_eq!(code(&ask(&core, Some(&stranger), save).await), "not-found");
+        assert_eq!(
+            code(&ask(&core, Some(&stranger), Request::ListSaveTargets { id: Some(id), export_only: true }).await),
+            "not-found"
+        );
     }
 
     /// The answer's file of a `tools.create_pdf`, also as an approval kept it.
@@ -24399,6 +24552,37 @@ mod tests {
         rights
     }
 
+    #[tokio::test]
+    async fn paste_is_pure_read_with_no_accounts_or_outbound_permission_and_bounded_on_every_door() {
+        let dir = tempfile::tempdir().expect("temp");
+        let core = core(dir.path());
+        let request =
+            Request::PrepareMailPaste { html: Some("<b>世界</b><img src='cid:foreign'>".into()), text: None };
+        let mut rights = Rights::none();
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        let (_, key) = client(&core, rights.clone()).await;
+        let response = ask(&core, Some(&key), request.clone()).await;
+        assert!(
+            matches!(response, Response::MailPaste { markup, formatted: true, untrusted: true, .. } if markup == "**世界**")
+        );
+        let (_, no_read) = client(&core, Rights::none()).await;
+        assert_eq!(code(&ask(&core, Some(&no_read), request.clone()).await), "forbidden");
+        rights.denied.insert("mail.prepare_paste".into());
+        let (_, denied) = client(&core, rights).await;
+        assert_eq!(code(&ask(&core, Some(&denied), request).await), "forbidden");
+        let app = crate::clients::tests::app_key(dir.path());
+        for key in [&app, &key] {
+            for request in [
+                Request::PrepareMailPaste { html: None, text: Some("x".repeat(torro_ipc::mail::MAX_BODY_BYTES + 1)) },
+                Request::PrepareMailPaste { html: None, text: Some("*".repeat(600_000)) },
+                Request::PrepareMailPaste { html: Some("<svg>".repeat(65)), text: None },
+            ] {
+                assert_eq!(code(&ask(&core, Some(key), request).await), "error");
+            }
+        }
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists());
+    }
+
     /// `confirm: on_delete` makes deleting wait; the summary names what the store holds, never
     /// what the client says; after the person's yes it runs.
     #[tokio::test]
@@ -26236,8 +26420,8 @@ mod tests {
             ..audited(dir.path())
         }
         .with_mail(mail);
-        let connect = Request::ConnectAi {
-            provider: AiProvider::OpenAiCompatible,
+        let connect = Request::ConnectLocalAi {
+            program: "gpt4all".into(),
             server: Some(server.url("/v1")),
             key: torro_ipc::Secret::default(),
         };
@@ -26357,8 +26541,8 @@ mod tests {
             ..audited(dir.path())
         }
         .with_mail(mail);
-        let connect = Request::ConnectAi {
-            provider: AiProvider::OpenAiCompatible,
+        let connect = Request::ConnectLocalAi {
+            program: "gpt4all".into(),
             server: Some(server.url("/v1")),
             key: torro_ipc::Secret::default(),
         };
@@ -26486,8 +26670,8 @@ mod tests {
             ..audited(dir.path())
         }
         .with_mail(mail);
-        let connect = Request::ConnectAi {
-            provider: AiProvider::OpenAiCompatible,
+        let connect = Request::ConnectLocalAi {
+            program: "gpt4all".into(),
             server: Some(server.url("/v1")),
             key: torro_ipc::Secret::default(),
         };
@@ -26912,11 +27096,17 @@ mod tests {
     #[tokio::test]
     async fn the_recommendation_suggests_sorting_only_with_mail_the_caller_may_read() {
         use torro_core::ai::AiSlot;
+        let assert_visible = |answer: &Response, expected: &[AiSlot]| {
+            assert_eq!(suggested_slots(answer), expected, "legacy slots: {answer:?}");
+            let Response::AiRecommendation { recommendation } = answer else { panic!("recommendation") };
+            let prepared: Vec<_> = recommendation.preparations.iter().map(|p| p.slot).collect();
+            assert_eq!(prepared, expected, "account preparations follow the same mail rights: {answer:?}");
+        };
         let ollama = fake_ollama_deciding_here_and_elsewhere().await;
         let alone = tempfile::tempdir().expect("temp dir");
         let core = core_with_ai(alone.path(), &MemoryTokens::default(), Vec::new()).with_probe(Measured(large_pc()));
         core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await.expect("ollama");
-        assert_eq!(suggested_slots(&core.handle(Request::AiRecommend).await), [AiSlot::Chat], "no mail, no sorting");
+        assert_visible(&core.handle(Request::AiRecommend).await, &[AiSlot::Chat]);
 
         let dir = tempfile::tempdir().expect("temp dir");
         let imap = FakeImap::start(MAIL_PASSWORD).await;
@@ -26927,24 +27117,24 @@ mod tests {
         core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await.expect("ollama");
         let app_key = crate::clients::tests::app_key(dir.path());
         let both = [AiSlot::Chat, AiSlot::Decide];
-        assert_eq!(suggested_slots(&ask(&core, Some(&app_key), Request::AiRecommend).await), both);
+        assert_visible(&ask(&core, Some(&app_key), Request::AiRecommend).await, &both);
 
         let mut blind = RightsTemplate::ReadOnly.rights();
         blind.areas.insert(Area::Mail, AreaRights { level: Level::NoAccess, admin: false });
         let (_, blind) = client(&core, blind).await;
         let answer = ask(&core, Some(&blind), Request::AiRecommend).await;
-        assert_eq!(suggested_slots(&answer), [AiSlot::Chat], "no mail rights: {answer:?}");
+        assert_visible(&answer, &[AiSlot::Chat]);
 
         let mut elsewhere = RightsTemplate::ReadOnly.rights();
         elsewhere.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
         let (_, elsewhere) = client(&core, elsewhere).await;
         let answer = ask(&core, Some(&elsewhere), Request::AiRecommend).await;
-        assert_eq!(suggested_slots(&answer), [AiSlot::Chat], "another account only: {answer:?}");
+        assert_visible(&answer, &[AiSlot::Chat]);
 
         let mut reading = RightsTemplate::ReadOnly.rights();
         reading.mail_accounts = Selection::Only(vec![anna]);
         let (_, reading) = client(&core, reading).await;
-        assert_eq!(suggested_slots(&ask(&core, Some(&reading), Request::AiRecommend).await), both);
+        assert_visible(&ask(&core, Some(&reading), Request::AiRecommend).await, &both);
     }
 
     /// An Ollama with a deciding model here (`nimble`) and one that decides elsewhere
@@ -27276,6 +27466,104 @@ mod tests {
         );
     }
 
+    /// A test-only Jev proxy whose replies wait for explicit permits, not wall-clock delays.
+    /// Arrival notifications let the test change permission or prove overlapping requests first.
+    struct GatedJev {
+        base: String,
+        armed: Arc<std::sync::atomic::AtomicBool>,
+        arrived: tokio::sync::mpsc::UnboundedReceiver<()>,
+        release: Arc<tokio::sync::Semaphore>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl GatedJev {
+        async fn start(upstream: &httpmock::MockServer) -> Self {
+            use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("Jev proxy");
+            let base = format!("http://{}/v1", listener.local_addr().expect("proxy address"));
+            let upstream = upstream.url("/v1/systemone");
+            let http = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("proxy HTTP client");
+            let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let release = Arc::new(tokio::sync::Semaphore::new(0));
+            let (started, arrived) = tokio::sync::mpsc::unbounded_channel();
+            let (waiting, permits) = (armed.clone(), release.clone());
+            let task = tokio::spawn(async move {
+                let mut requests = tokio::task::JoinSet::new();
+                while let Ok((stream, _)) = listener.accept().await {
+                    let (upstream, http, waiting, permits, started) =
+                        (upstream.clone(), http.clone(), waiting.clone(), permits.clone(), started.clone());
+                    requests.spawn(async move {
+                        let mut stream = tokio::io::BufReader::new(stream);
+                        let mut line = String::new();
+                        stream.read_line(&mut line).await.expect("request line");
+                        assert!(line.starts_with("POST /v1/systemone "), "{line}");
+                        let mut length = None;
+                        loop {
+                            line.clear();
+                            assert_ne!(stream.read_line(&mut line).await.expect("request header"), 0);
+                            if line == "\r\n" {
+                                break;
+                            }
+                            if let Some((name, value)) = line.split_once(':')
+                                && name.eq_ignore_ascii_case("content-length")
+                            {
+                                length = Some(value.trim().parse::<usize>().expect("body length"));
+                            }
+                        }
+                        let mut body = vec![0; length.expect("fixed-length JSON request")];
+                        stream.read_exact(&mut body).await.expect("request body");
+                        if waiting.load(std::sync::atomic::Ordering::Acquire) {
+                            started.send(()).expect("test observes requests");
+                            permits.acquire().await.expect("release reply").forget();
+                        }
+                        let response = http
+                            .post(upstream)
+                            .bearer_auth(crate::account::ai::tests::KEY)
+                            .header("content-type", "application/json")
+                            .body(body)
+                            .send()
+                            .await
+                            .expect("upstream response");
+                        let status = response.status().as_u16();
+                        let body = response.bytes().await.expect("response body");
+                        let header = format!(
+                            "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let mut stream = stream.into_inner();
+                        stream.write_all(header.as_bytes()).await.expect("response header");
+                        stream.write_all(&body).await.expect("response body");
+                    });
+                }
+            });
+            Self { base, armed, arrived, release, task }
+        }
+
+        fn arm(&self) {
+            self.armed.store(true, std::sync::atomic::Ordering::Release);
+        }
+
+        async fn wait_for(&mut self, count: usize) {
+            for _ in 0..count {
+                tokio::time::timeout(std::time::Duration::from_secs(10), self.arrived.recv())
+                    .await
+                    .expect("requests reach Jev before any reply is released")
+                    .expect("proxy is running");
+            }
+        }
+    }
+
+    impl Drop for GatedJev {
+        fn drop(&mut self) {
+            // Dropping the accept task also drops its JoinSet and aborts all waiting connections.
+            self.task.abort();
+        }
+    }
+
     /// Issue #420: a core whose inbox holds one mail for each of `subjects`, the first the newest, and
     /// that sorts with Jev on `jev`, mail let out for sorting. The fake IMAP server comes along: it must
     /// outlive the run.
@@ -27284,6 +27572,10 @@ mod tests {
         jev: &httpmock::MockServer,
         subjects: &[String],
     ) -> (Core, FakeImap) {
+        core_sorting_with_jev_at(dir, &jev.url("/v1"), subjects).await
+    }
+
+    async fn core_sorting_with_jev_at(dir: &std::path::Path, endpoint: &str, subjects: &[String]) -> (Core, FakeImap) {
         use crate::mail::service::tests::{mail_account, service_in, store_accounts};
         use torro_core::ai::AiSlot;
 
@@ -27308,7 +27600,7 @@ mod tests {
         let core = Core { ai: Arc::new(crate::account::ai::tests::service(dir, &keys, Vec::new())), ..audited(dir) }
             .with_mail(mail);
         let key = torro_core::account::Secret::new(crate::account::ai::tests::KEY);
-        let engine = core.ai.connect(AiProvider::Jev, Some(&jev.url("/v1")), key).await.expect("jev").id;
+        let engine = core.ai.connect(AiProvider::Jev, Some(endpoint), key).await.expect("jev").id;
         assert_eq!(core.handle(switch(&engine, torro_core::ai::JEV_MODEL, true)).await, Response::Ok);
         let slot = set_slot(AiSlot::Decide, Some(&engine), Some(torro_core::ai::JEV_MODEL));
         assert!(matches!(core.handle(slot).await, Response::AiAssignments { .. }));
@@ -27704,21 +27996,24 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let jev = httpmock::MockServer::start_async().await;
         let decides = mock_jev_after(&jev, std::time::Duration::ZERO, None).await;
-        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Hello 1".to_string()]).await;
+        let mut gate = GatedJev::start(&jev).await;
+        let (core, _imap) = core_sorting_with_jev_at(dir.path(), &gate.base, &["Hello 1".to_string()]).await;
         decides.delete_async().await;
-        // Busy, and slow to say so: the person keeps mail here before the first refusal comes.
+        // Hold the first actual request until the person has kept mail here.
         let busy = jev
             .mock_async(|when, then| {
                 when.method("POST").path("/v1/systemone");
-                then.status(429).delay(std::time::Duration::from_millis(400)).json_body(serde_json::json!({}));
+                then.status(429).json_body(serde_json::json!({}));
             })
             .await;
 
         let start = Request::StartCategoryJob { scope: torro_ipc::inbox::CategoryJobScope::default() };
+        gate.arm();
         assert!(matches!(core.handle(start).await, Response::CategoryJob { job: Some(_) }));
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        gate.wait_for(1).await;
         let keep = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(false) };
         assert_eq!(core.handle(keep).await, Response::Ok);
+        gate.release.add_permits(1);
 
         let job = job_ended(&core, std::time::Duration::from_secs(10)).await;
         assert_eq!(job.state, CategoryJobState::Failed);
@@ -27773,26 +28068,26 @@ mod tests {
             .await
     }
 
-    /// Issue #420 (PR review): the backlog run asks Jev several mails at once too – 12 mails at 300 ms
-    /// an answer take less than one after the other would (3.6 s) –, goes past a mail the server
-    /// refuses and leaves that one without a category.
+    /// Issue #420 (PR review): several backlog requests reach Jev before the first reply is released.
+    /// A refused mail remains uncategorized and does not stop the remaining mails.
     #[tokio::test]
     async fn the_backlog_run_asks_jev_several_mails_at_once_and_goes_past_a_refused_one() {
         let dir = tempfile::tempdir().expect("temp dir");
         let jev = httpmock::MockServer::start_async().await;
         let refused = mock_jev_refusing(&jev).await;
-        mock_jev_after(&jev, std::time::Duration::from_millis(300), Some("Broken")).await;
+        mock_jev_after(&jev, std::time::Duration::ZERO, Some("Broken")).await;
         let subjects: Vec<String> =
             (1..=12).map(|n| if n == 6 { format!("Broken {n}") } else { format!("Hello {n}") }).collect();
-        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &subjects).await;
+        let mut gate = GatedJev::start(&jev).await;
+        let (core, _imap) = core_sorting_with_jev_at(dir.path(), &gate.base, &subjects).await;
 
-        let started = std::time::Instant::now();
+        gate.arm();
         let backlog = Request::CatchUpCategories { cancel: false, again: false };
         assert!(matches!(core.handle(backlog).await, Response::Categorization { .. }));
+        gate.wait_for(2).await;
+        gate.release.add_permits(subjects.len());
         let came = backlog_ended(&core, std::time::Duration::from_secs(10)).await;
-        let took = started.elapsed();
         assert_eq!(came, (12, 12), "through every mail");
-        assert!(took < std::time::Duration::from_millis(12 * 300), "took {took:?}");
         assert_eq!(refused.calls_async().await, 1);
         for (subject, sorted) in sorted_subjects(&core).await {
             assert_eq!(sorted, subject.starts_with("Hello"), "{subject}");
@@ -28502,7 +28797,7 @@ mod tests {
             assert!(!matches!(answer, Response::Error { .. }), "{answer:?}");
             answers.push(answer);
         }
-        let Response::AiServers { servers } = &answers[2] else { panic!("servers") };
+        let Response::AiServers { servers, .. } = &answers[2] else { panic!("servers") };
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].account.as_deref(), Some(account.id.as_str()));
         // A server that is gone: the error says so, without the key.
@@ -28534,6 +28829,37 @@ mod tests {
     }
 
     // ----- The assistant's answers with a model (task C.2) -----
+
+    #[tokio::test]
+    async fn named_local_program_connections_are_app_only_and_unknown_ids_are_unsupported() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let mock = fake_ollama().await;
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        let request = |program: &str| Request::ConnectLocalAi {
+            program: program.into(),
+            server: Some(mock.url("/v1")),
+            key: torro_ipc::Secret::default(),
+        };
+        let Err(refused) = Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), request("jan"))).await
+        else {
+            panic!("app only");
+        };
+        assert_eq!(refused, Refused::Lacks { command: "accounts.connect_local_ai", lack: Lack::ForPeople });
+        assert_eq!(code(&ask(&core, Some(&app_key), request("unknown")).await), "unsupported");
+        let Response::Account { account } = ask(&core, Some(&app_key), request("jan")).await else {
+            panic!("connected Jan");
+        };
+        let Response::AiModels { models, .. } =
+            ask(&core, Some(&app_key), Request::AiModels { account: account.id, all: true }).await
+        else {
+            panic!("models");
+        };
+        assert!(models.iter().all(|model| model.remote == Some(true)));
+        assert!(audit_lines(dir.path()).iter().all(|line| line.ids.is_empty()));
+    }
 
     use crate::assistant::tests::{Script, Scripted, calls, says};
     use crate::assistant::{Host, Limits, ModelAccess, Place};

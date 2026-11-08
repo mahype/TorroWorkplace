@@ -415,7 +415,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         // TorroMail's accounts (task M7.4): no address, and no id of another app's keychain.
         Request::TorroMailAccounts | Request::ImportTorroMailAccount { .. } => Vec::new(),
         // AI accounts (task KI.1a): never the address typed nor the key; finding names nothing.
-        Request::ConnectAi { .. } | Request::FindAiServers => Vec::new(),
+        Request::ConnectAi { .. } | Request::ConnectLocalAi { .. } | Request::FindAiServers => Vec::new(),
         // ntfy (task E5.12): never the address, a topic or the login; a topic's account only.
         Request::ConnectNtfy { .. } | Request::SetNtfyLogin { .. } => Vec::new(),
         Request::SetNtfyTopic { account: name, .. } => vec![account(name)],
@@ -488,7 +488,7 @@ pub fn ids(request: &Request) -> Vec<String> {
             };
             [Some(format!("message:{}", hashed(message))), target].into_iter().flatten().collect()
         }
-        Request::ListSaveTargets { id } => id.iter().map(|message| format!("message:{}", hashed(message))).collect(),
+        Request::ListSaveTargets { id, .. } => id.iter().map(|message| format!("message:{}", hashed(message))).collect(),
         // Mail filters (issue #339): a filter by the id the core made (`f<n>`, hex digits) and the
         // account it names, never its search or category – the person's words about their mail.
         Request::ListMailFilters => Vec::new(),
@@ -558,6 +558,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::DeleteMail { .. }
         | Request::SaveDraft { .. }
         | Request::PrepareMailImage { .. }
+        | Request::PrepareMailPaste { .. }
         | Request::UploadMailImage { .. }
         | Request::ReleaseMailImages { .. }
         | Request::SendDraft { .. }

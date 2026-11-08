@@ -45,7 +45,9 @@ use iced::widget::{column, container, row, rule, scrollable, svg};
 use iced::{Alignment, Element, Fill, Theme};
 use torro_core::AppId;
 use torro_core::account::Secret;
-use torro_core::ai::{AiAssignment, AiFunction, AiModel, AiProvider, AiSlot};
+#[cfg(test)]
+use torro_core::ai::AiProvider;
+use torro_core::ai::{AiAssignment, AiFunction, AiModel, AiSlot};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Component, ComponentSwitch, Language, Settings, SetupState, ToolId};
 use torro_gui::icon::{self, Icon};
@@ -56,7 +58,7 @@ use torro_gui::widgets::{self, DROPDOWN_SEARCH, Dropdown, DropdownEvent, Trail};
 use torro_gui::{style, typo};
 use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, Level, Rights, Selection};
 use torro_ipc::web::{SearchProviderId, SearchProviderInfo};
-use torro_ipc::{AiServer, ClientInfo, Request, Response, SettingKey};
+use torro_ipc::{ClientInfo, Request, Response, SettingKey};
 use torro_settings_ui::assistant::web;
 
 use super::accounts::act;
@@ -190,6 +192,7 @@ pub fn steps(off: &BTreeSet<Component>) -> Vec<Step> {
 /// The setup while it is open.
 #[derive(Debug)]
 pub struct State {
+    pub(super) ai_setup: torro_settings_ui::accounts::ai_setup::State,
     step: Step,
     /// The furthest step reached; those before it count as passed.
     reached: Step,
@@ -231,14 +234,6 @@ pub struct State {
     muted: BTreeMap<String, bool>,
     /// "Quiet during busy events" as switched here.
     quiet: Option<bool>,
-    /// The AI step (task W.8): the servers found on this computer; `None` before the answer.
-    ai_found: Option<Vec<AiServer>>,
-    /// `FindAiServers` was sent and has not answered.
-    ai_searching: bool,
-    /// The address of the local server being connected.
-    ai_connecting: Option<String>,
-    /// The addresses of local servers connected in this setup.
-    ai_connected: BTreeSet<String>,
     /// Mail sorting is recommended on; an explicit choice here overrides the stored assignment.
     sort_mail: Option<bool>,
     sort_model: Option<(String, String)>,
@@ -299,10 +294,7 @@ impl State {
             dialog: None,
             muted: BTreeMap::new(),
             quiet: None,
-            ai_found: None,
-            ai_searching: false,
-            ai_connecting: None,
-            ai_connected: BTreeSet::new(),
+            ai_setup: torro_settings_ui::accounts::ai_setup::State::default(),
             sort_mail: None,
             sort_model: None,
             asking_cloud: None,
@@ -335,8 +327,6 @@ impl State {
             || self.github.checking()
             || self.caldav.as_ref().is_some_and(CalDavSignIn::connecting)
             || self.dialog.as_ref().is_some_and(wizard::State::busy)
-            || self.ai_searching
-            || self.ai_connecting.is_some()
             || web::checking(&self.web)
             || !self.switched.is_empty()
     }
@@ -412,6 +402,9 @@ impl State {
     }
 
     fn go(&mut self, step: Step) {
+        if self.step == Step::Ai && step != Step::Ai {
+            torro_settings_ui::accounts::ai_setup::leave(&mut self.ai_setup);
+        }
         self.step = step;
         self.reached = self.reached.max(step);
         self.error = None;
@@ -451,6 +444,7 @@ enum Mark {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    AiSetup(torro_settings_ui::accounts::ai_setup::Message),
     /// A step in the list was clicked.
     Go(Step),
     /// The primary button or Enter: on to the next step, on the last one finish.
@@ -504,12 +498,6 @@ pub enum Message {
     Source(SourceRef, bool),
     /// "Quiet during busy events".
     Quiet(bool),
-    /// "Connect" on a server found on this computer: its provider and address.
-    ConnectLocalAi(AiProvider, String),
-    /// "Add key" on a cloud provider: the add-account dialog at its key.
-    AddAiKey(AiProvider),
-    /// "Other server": the add-account dialog at the address of an OpenAI-compatible server.
-    OtherAiServer,
     /// The AI account a new chat of the assistant starts with, by engine id. Closes its dropdown.
     Engine(String),
     /// Enable or disable model sorting of mail in the recommended AI setup.
@@ -540,12 +528,17 @@ pub enum Outcome {
 }
 
 pub fn update(state: &mut State, message: Message, data: &Data) -> Outcome {
+    let sorting = mail_sorting_on(state, data);
+    torro_settings_ui::accounts::ai_setup::allow_sorting(&mut state.ai_setup, sorting);
     let outcome = handle(state, message, data);
+    let sorting = mail_sorting_on(state, data);
+    torro_settings_ui::accounts::ai_setup::allow_sorting(&mut state.ai_setup, sorting);
     // The AI step looks for servers on this computer the first time it is shown.
     match outcome {
-        Outcome::Stay(Action::None) if state.step == Step::Ai && state.ai_found.is_none() && !state.ai_searching => {
-            state.ai_searching = true;
-            Outcome::Stay(Action::Send(Request::FindAiServers))
+        Outcome::Stay(Action::None)
+            if state.step == Step::Ai && !torro_settings_ui::accounts::ai_setup::active(&state.ai_setup) =>
+        {
+            Outcome::Stay(super::accounts::act(torro_settings_ui::accounts::ai_setup::open(&mut state.ai_setup)))
         }
         outcome => outcome,
     }
@@ -556,6 +549,11 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
     // A finished sign-in is noticed before the message counts.
     observe(state, data);
     match message {
+        Message::AiSetup(message) => stay(super::accounts::act(torro_settings_ui::accounts::ai_setup::update(
+            &mut state.ai_setup,
+            message,
+            data,
+        ))),
         Message::Go(step) => {
             if state.steps().contains(&step) {
                 state.go(step);
@@ -725,14 +723,6 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             state.quiet = Some(quiet);
             stay(set(SettingKey::QuietWhenBusy, serde_json::Value::Bool(quiet)))
         }
-        Message::ConnectLocalAi(provider, server) if state.ai_connecting.is_none() => {
-            state.ai_connecting = Some(server.clone());
-            state.error = None;
-            stay(Action::Send(Request::ConnectAi { provider, server: Some(server), key: Secret::default() }))
-        }
-        Message::ConnectLocalAi(..) => stay(Action::None),
-        Message::AddAiKey(provider) => stay(open_ai_dialog(state, provider, data)),
-        Message::OtherAiServer => stay(open_ai_dialog(state, AiProvider::OpenAiCompatible, data)),
         Message::Menus(event) => match state.menus.update(event) {
             true => stay(Action::Focus(DROPDOWN_SEARCH.into())),
             false => stay(Action::None),
@@ -928,16 +918,6 @@ fn from_view(action: torro_settings_ui::Action<()>) -> Action {
     }
 }
 
-/// Opens the add-account dialog at the AI provider `provider`: its key, or the address of another
-/// server. The dialog looks for local servers as it opens, like the "Add" of AI.
-fn open_ai_dialog(state: &mut State, provider: AiProvider, data: &Data) -> Action {
-    let search = open_dialog(state, Some(wizard::Provider::Ai), data);
-    if let Some(dialog) = state.dialog.as_mut() {
-        wizard::update(dialog, wizard::Message::ChooseAi(provider), data);
-    }
-    search
-}
-
 /// Opens the add-account dialog over the setup the way Accounts does (task S.30): at the first step
 /// of `provider` ([`wizard::State::at`]), or at TorroMail's accounts ([`wizard::State::torromail`],
 /// which asks for them as it opens).
@@ -1088,9 +1068,6 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
         }
         return true;
     }
-    if let Some(taken) = ai_answered(state, result) {
-        return taken;
-    }
     // A refusal may be a provider's switch (answers do not say which request they are for): the switches
     // shown go back to what the core holds, and the next reload shows what it stored.
     if result.is_err() {
@@ -1119,30 +1096,6 @@ pub fn checked(state: &mut State, result: &Result<Response, String>) -> bool {
         web::sent(&mut state.web, Err(problem));
     }
     true
-}
-
-/// The answers of the AI step: the servers found on this computer (without an answer every one
-/// shows as not running), and a local server connected from its row. `None` when the answer is
-/// not the AI step's.
-fn ai_answered(state: &mut State, result: &Result<Response, String>) -> Option<bool> {
-    if state.ai_searching {
-        state.ai_searching = false;
-        state.ai_found = Some(match result {
-            Ok(Response::AiServers { servers }) => servers.clone(),
-            _ => Vec::new(),
-        });
-        return Some(true);
-    }
-    let server = state.ai_connecting.take()?;
-    match result {
-        Ok(Response::Account { .. }) => {
-            state.ai_connected.insert(server);
-            state.error = None;
-        }
-        Ok(Response::Error { message, .. }) | Err(message) => state.error = Some(message.clone()),
-        Ok(_) => state.error = Some(tr("Torro Workplace did not answer as expected. Try again.").to_string()),
-    }
-    Some(true)
 }
 
 /// The request that changes one setting.
@@ -1383,6 +1336,18 @@ pub fn escape(state: &State) -> Option<Message> {
     if state.menus.open().is_some() {
         return Some(Message::Menus(DropdownEvent::Close));
     }
+    // The dropdown of "Choose a provider", in the dialog or on the AI step (issue #554).
+    if let Some(dialog) = &state.dialog
+        && let Some(close) = wizard::escape(dialog)
+    {
+        return Some(Message::Dialog(close));
+    }
+    if state.dialog.is_none()
+        && state.step == Step::Ai
+        && let Some(close) = torro_settings_ui::accounts::ai_setup::escape(&state.ai_setup)
+    {
+        return Some(Message::AiSetup(close));
+    }
     if state.asking_cloud.is_some() {
         return Some(Message::CancelCloud);
     }
@@ -1500,9 +1465,20 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
     {
         return Some(menu);
     }
+    if state.dialog.is_none()
+        && state.step == Step::Ai
+        && let Some(menu) = torro_settings_ui::accounts::ai_setup::overlay(&state.ai_setup)
+    {
+        return Some(menu.map(Message::AiSetup));
+    }
     let dialog = state.dialog.as_ref()?;
     let content = wizard::view(dialog, data).map(Message::Dialog);
-    Some(super::dialog(content, size::form_max(), Message::Dialog(wizard::Message::Close)))
+    let layer = super::dialog(content, size::form_max(), Message::Dialog(wizard::Message::Close));
+    // The open dropdown of the dialog over it (issue #554).
+    Some(match wizard::overlay(dialog) {
+        Some(menu) => iced::widget::stack![layer, menu.map(Message::Dialog)].into(),
+        None => layer,
+    })
 }
 
 /// The page of the current step over the fixed footer.
@@ -1941,28 +1917,39 @@ mod tests {
     }
 
     #[test]
-    fn the_ai_step_looks_on_this_computer_once_and_connects_from_the_row() {
+    fn the_ai_step_starts_the_shared_owned_search_and_reopens_it_after_leaving() {
         let mut setup = state(Step::Inbox);
         let entered = update(&mut setup, Message::Next, &data());
         assert_eq!(setup.step, Step::Ai);
-        assert!(matches!(entered, Outcome::Stay(Action::Send(Request::FindAiServers))), "{entered:?}");
-        let found = super::super::launch::demo_answer(&Request::FindAiServers, &data()).ok_or("the demo answers");
-        assert!(answered(&mut setup, &found.map_err(String::from)));
-        assert_eq!(setup.ai_found.as_ref().map(Vec::len), Some(1));
+        assert!(matches!(entered, Outcome::Stay(Action::AskAi(_))), "{entered:?}");
         assert!(matches!(update(&mut setup, Message::Back, &data()), Outcome::Stay(Action::None)));
-        assert!(matches!(update(&mut setup, Message::Next, &data()), Outcome::Stay(Action::None)), "looked once");
-
-        let press = Message::ConnectLocalAi(AiProvider::Ollama, "http://localhost:11434/v1".into());
-        assert!(matches!(update(&mut setup, press, &data()), Outcome::Stay(Action::Send(Request::ConnectAi { .. }))));
-        assert!(setup.busy());
-        assert!(answered(&mut setup, &Err("The AI server could not be reached.".into())));
-        assert_eq!(setup.error.as_deref(), Some("The AI server could not be reached."));
-
-        let key = update(&mut setup, Message::AddAiKey(AiProvider::DeepSeek), &data());
-        assert!(matches!(key, Outcome::Stay(Action::Send(Request::FindAiServers))), "the dialog looks too");
-        assert!(setup.dialog_open());
+        assert!(matches!(update(&mut setup, Message::Next, &data()), Outcome::Stay(Action::AskAi(_))));
         let engine = update(&mut setup, Message::Engine("ai:openrouter@openrouter.ai".into()), &data());
         assert!(matches!(sent(&engine), Some((SettingKey::AssistantDefault, _))));
+    }
+
+    #[test]
+    fn a_sorting_opt_out_also_applies_to_the_shared_suggestion_flow() {
+        use torro_settings_ui::accounts::ai_setup;
+        let mut data = data();
+        data.settings.ai_slots.decide = None;
+        data.settings.ai_assignments.remove(&AiFunction::InboxCategorize);
+        let mut setup = state(Step::Ai);
+        ai_setup::demo(&mut setup.ai_setup, "consent", &data);
+        update(&mut setup, Message::AiSetup(ai_setup::Message::Cancel), &data);
+        update(&mut setup, Message::SortMail(false), &data);
+        assert!(!mail_sorting_on(&setup, &data));
+        assert!(matches!(
+            update(&mut setup, Message::AiSetup(ai_setup::Message::Use), &data),
+            Outcome::Stay(Action::None)
+        ));
+        assert!(
+            matches!(
+                update(&mut setup, Message::AiSetup(ai_setup::Message::Confirm), &data),
+                Outcome::Stay(Action::None)
+            ),
+            "sorting stays opted out, even if a stale confirmation message arrives"
+        );
     }
 
     /// The AI step recommends a local model for sorting mail and stores it as main's mail settings
@@ -2007,10 +1994,7 @@ mod tests {
         waiting.ai_deciders_from.clear();
         let mut not_ready = state(Step::Ai);
         assert!(!pages::primary(&not_ready, &waiting).1, "continue waits until model choices are loaded");
-        assert!(matches!(
-            update(&mut not_ready, Message::Next, &waiting),
-            Outcome::Stay(Action::Send(Request::FindAiServers))
-        ));
+        assert!(matches!(update(&mut not_ready, Message::Next, &waiting), Outcome::Stay(Action::AskAi(_))));
         assert_eq!(not_ready.step, Step::Ai);
         assert_eq!(mail_deciders(&data).len(), 3, "remote models are selectable; disabled models are not");
         let mut setup = state(Step::Ai);
@@ -2163,7 +2147,7 @@ mod tests {
                 }
                 if !permission {
                     let mut waiting = state(Step::Ai);
-                    waiting.ai_found = Some(Vec::new());
+                    torro_settings_ui::accounts::ai_setup::demo(&mut waiting.ai_setup, "medium", &data);
                     update(&mut waiting, Message::SortModel(engine.clone(), "first".into()), &data);
                     assert!(waiting.asking_cloud.is_some());
                     update(&mut waiting, Message::UseCloud, &data);
@@ -2174,7 +2158,7 @@ mod tests {
                     );
                 }
                 let mut setup = state(Step::Ai);
-                setup.ai_found = Some(Vec::new());
+                torro_settings_ui::accounts::ai_setup::demo(&mut setup.ai_setup, "medium", &data);
                 assert!(matches!(
                     update(&mut setup, Message::SortModel(engine.clone(), "second".into()), &data),
                     Outcome::Stay(Action::None)
@@ -2214,7 +2198,7 @@ mod tests {
                 },
             );
             let mut setup = state(Step::Ai);
-            setup.ai_found = Some(Vec::new());
+            torro_settings_ui::accounts::ai_setup::demo(&mut setup.ai_setup, "medium", &data);
             update(&mut setup, Message::SortMail(true), &data);
             assert!(setup.asking_cloud.is_some(), "LAN Automatic asks too");
             assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
@@ -2236,7 +2220,7 @@ mod tests {
             AiModel { decision: Some(true), remote: Some(false), enabled: true, ..AiModel::named("nimble") },
         )];
         let mut setup = state(Step::Ai);
-        setup.ai_found = Some(Vec::new());
+        torro_settings_ui::accounts::ai_setup::demo(&mut setup.ai_setup, "medium", &data);
         update(&mut setup, Message::SortMail(false), &data);
         assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
         assert_eq!(setup.step, Step::Ai);
@@ -2255,7 +2239,7 @@ mod tests {
             Some(torro_core::ai::SlotModel { engine, model: Some("nimble".into()), effort: None });
         data.settings.decide_mail_to_cloud = Some(false);
         let mut setup = state(Step::Ai);
-        setup.ai_found = Some(Vec::new());
+        torro_settings_ui::accounts::ai_setup::demo(&mut setup.ai_setup, "medium", &data);
         update(&mut setup, Message::SortMail(false), &data);
         let sent = requests(update(&mut setup, Message::Next, &data));
         assert!(matches!(&sent[..], [Request::SetAiAssignment { enabled: false, .. }]));

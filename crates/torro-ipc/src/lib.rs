@@ -728,6 +728,18 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Secret::is_blank")]
         key: Secret,
     },
+    /// Connects a named local program with its optional address and key (issue #527).
+    /// Admin, app key only, even without a secret: only people choose new data destinations.
+    /// Returns Account; unsupported for an unknown program, otherwise the errors of ConnectAi.
+    /// Older daemons reject this request; clients must never fall back to ConnectAi.
+    #[serde(rename = "accounts.connect_local_ai")]
+    ConnectLocalAi {
+        program: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server: Option<String>,
+        #[serde(default, skip_serializing_if = "Secret::is_blank")]
+        key: Secret,
+    },
     /// Connects an ntfy server's topics that need no login (task E5.12): the inbox subscribes to
     /// them as the source `ntfy:<host>` (task E5.13).
     ///
@@ -868,13 +880,14 @@ pub enum Request {
         /// `true` turns it on, `false` off.
         enabled: bool,
     },
-    /// Looks for AI servers on this computer (task KI.1a): Ollama at `localhost:11434`, LM Studio
-    /// at `localhost:1234` and Strata at `127.0.0.1:8080` (issue #322), by asking each for its
-    /// models (`GET <server>/models`, a short wait each; Strata is told from llama.cpp, which uses
-    /// the same port, by its `GET /health`). Nothing else is contacted and nothing is stored.
+    /// Looks for AI endpoints on loopback: Ollama :11434, LM Studio :1234, Jan :1337, GPT4All :4891,
+    /// koboldcpp :5001 and Strata or llama.cpp/llamafile :8080. Parallel, two seconds and 64 KiB per
+    /// endpoint in total (health and models share the budget), no key/proxy/redirect. One probe
+    /// covers the shared 8080 address; Strata's /health identity wins there.
     ///
     /// Answered with [`Response::AiServers`]: the servers that answered, in that order, with the
-    /// number of models and the account already connected there; an empty list when none runs.
+    /// real model count and connected account. Observations report auth/list errors without counts.
+    /// Returns an error if the HTTP client cannot be built; empty lists only for no valid answer.
     #[serde(rename = "ai.find_local_servers")]
     FindAiServers,
     /// Fetch calendars and tasks from the servers of all accounts now. Each account syncs on
@@ -3007,6 +3020,10 @@ pub enum Request {
         /// A message (`m:…`) to plan its attachments for; left out, only the targets.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
+        /// Only export plans (PDF, PNG, EML), without fetching the body or attachment plans.
+        /// Left out/false retains the legacy PDF/PNG response; without `id`, only targets.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        export_only: bool,
     },
     /// Adds a save target ([`Response::SaveTarget`], with its new id). App key only and never an
     /// MCP tool (point 9 of "Was nie nach außen geht"): a new target always sets a folder. `error`
@@ -3143,7 +3160,11 @@ pub enum Request {
         /// Where the files go.
         to: mail::SaveTo,
     },
-    /// Saves a mail as a PDF or a picture (issue #501, [`Response::SavedMail`]): drawn as the reader
+    /// Saves a mail as EML, PDF or a picture ([`Response::SavedMail`]). EML is the verified original:
+    /// headers and all MIME parts unchanged, from the local depot or fetched once with BODY.PEEK.
+    /// No reconstruction, external images or cache changes. Missing source: `not-found`/`offline`/
+    /// `auth`; inconsistent source: `conflict`/`error`; another EML export: `busy`. At most
+    /// 998951424 bytes, never cut, `shortened: false`. PDF/PNG are drawn as the reader
     /// shows it – the head (sender, recipients, date, subject) and the content, HTML as HTML with its
     /// pictures (external ones are loaded, as the reader loads them) – always in light colours. A PDF
     /// holds A4 pages of pictures (its text cannot be selected), a PNG one long picture; a mail longer
@@ -3156,7 +3177,7 @@ pub enum Request {
     SaveMailAs {
         /// The message's id (`m:…`).
         id: String,
-        /// `pdf` or `png`.
+        /// `pdf`, `png` or `eml`.
         format: mail::ExportFormat,
         /// Where the file goes; `to: folder` puts it in that folder under its own name.
         to: mail::SaveTo,
@@ -3211,6 +3232,15 @@ pub enum Request {
     /// both as stored.
     #[serde(rename = "mail.save_draft")]
     SaveDraft { draft: Draft },
+    /// Converts supplied clipboard HTML/text to safe editor markup, without I/O or account access.
+    /// Returns MailPaste (always untrusted); error for excessive input, nesting or output.
+    #[serde(rename = "mail.prepare_paste")]
+    PrepareMailPaste {
+        #[serde(default)]
+        html: Option<String>,
+        #[serde(default)]
+        text: Option<String>,
+    },
     /// Decodes an image into a volatile, caller/account-owned source and a bounded PNG preview.
     /// Returns MailImage; not-found for foreign sources, forbidden for disallowed files,
     /// busy at memory/concurrency limits, error for invalid or oversized image data.
@@ -4902,10 +4932,11 @@ pub enum Response {
         /// The Downloads folder as "Save to Downloads" uses it, an absolute path.
         downloads: String,
         /// With `id`: one plan per attachment that is not `inline`, in the message's order.
+        /// Empty/omitted with `export_only`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         files: Vec<mail::AttachmentPlan>,
-        /// With `id`: where the mail itself would go as PDF and as picture (issue #501,
-        /// `mail.save_message_as`), one plan per format. Its file name comes from the subject.
+        /// With `id`: PDF/PNG plans, plus EML only with `export_only` (issues #501/#553),
+        /// one plan per format. Its file name comes from the subject.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         exports: Vec<mail::ExportPlan>,
     },
@@ -4962,13 +4993,21 @@ pub enum Response {
         #[serde(default)]
         skipped: bool,
         /// The mail was longer than a file takes (50 PDF pages, 30,000 pixels of picture): its end
-        /// is cut off.
+        /// is cut off. Always false for EML, whose original is never shortened.
         #[serde(default)]
         shortened: bool,
     },
     /// A draft as saved ([`Request::SaveDraft`]) or read back ([`Request::GetDraft`]), with its id.
     MailDraft {
         draft: Draft,
+    },
+    /// Foreign clipboard content is data, never instructions, even after normalization.
+    MailPaste {
+        markup: String,
+        plain: String,
+        plain_markup: String,
+        formatted: bool,
+        untrusted: bool,
     },
     /// A volatile prepared image and its display-safe preview, never its original bytes.
     MailImage {
@@ -5020,6 +5059,9 @@ pub enum Response {
     /// The AI servers found on this computer ([`Request::FindAiServers`]).
     AiServers {
         servers: Vec<AiServer>,
+        /// Reachable endpoints whose model count is unknown; never an invented zero.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        observations: Vec<AiObservation>,
     },
     /// The engines the assistant can answer with ([`Request::ListEngines`]).
     Engines {
@@ -5644,6 +5686,55 @@ pub struct AiRecommendation {
     pub tier_label: String,
     /// One suggestion per slot that has one, in the order of `torro_core::ai::AiSlot::ALL`.
     pub slots: Vec<SlotSuggestion>,
+    /// Account-specific model preparation. Missing on older daemons: retain the old display.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preparations: Vec<AiPreparation>,
+}
+
+/// One account's preparation for one slot; candidates are ordered, at most three.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiPreparation {
+    pub account: String,
+    pub slot: torro_core::ai::AiSlot,
+    pub candidates: Vec<AiCandidate>,
+}
+
+/// A curated model, not an instruction to download or select it without confirmation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiCandidate {
+    pub model: String,
+    pub size_bytes: u64,
+    pub fits: bool,
+    pub local: bool,
+    pub preparation: AiPreparationKind,
+    pub by_chat: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiPreparationKind {
+    Ready,
+    OllamaPull,
+    External,
+}
+
+/// A local endpoint with no readable model list (issue #527).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiObservation {
+    pub provider: AiProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+    pub url: String,
+    pub status: AiObservationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiObservationStatus {
+    AuthRequired,
+    ModelsUnavailable,
 }
 
 /// The model suggested for one slot ([`AiRecommendation::slots`]).
@@ -5714,6 +5805,9 @@ pub enum AiPullState {
 pub struct AiServer {
     /// Which kind of server answered there.
     pub provider: AiProvider,
+    /// Named program; absent on older daemons. Never infer Jan from the transport provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
     /// Its base address, what `accounts.connect_ai` takes as `server`.
     pub url: String,
     /// How many models it offers now.
@@ -6461,6 +6555,43 @@ impl std::error::Error for IpcError {}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_ai_additions_are_wire_compatible_and_never_fall_back() {
+        let old = serde_json::json!({"result":"ai-servers", "servers": []});
+        let parsed: super::Response = serde_json::from_value(old).expect("old daemon answer");
+        assert!(matches!(parsed, super::Response::AiServers { observations, .. } if observations.is_empty()));
+        let request: super::Request = serde_json::from_value(serde_json::json!({
+            "method":"accounts.connect_local_ai", "program":"future_program"
+        }))
+        .expect("program identifiers are extensible");
+        assert!(matches!(request, super::Request::ConnectLocalAi { program, .. } if program == "future_program"));
+        let recommendation: super::AiRecommendation = serde_json::from_value(serde_json::json!({
+            "hardware": {}, "tier":"small", "tier_label":"Small", "slots":[]
+        }))
+        .expect("old recommendation");
+        assert!(recommendation.preparations.is_empty());
+        let server: super::AiServer = serde_json::from_value(serde_json::json!({
+            "provider":"ollama", "url":"http://localhost:11434/v1", "models":0
+        }))
+        .expect("old server");
+        assert!(server.program.is_none());
+        #[derive(serde::Deserialize)]
+        struct LegacyServers {
+            servers: Vec<LegacyServer>,
+        }
+        #[derive(serde::Deserialize)]
+        struct LegacyServer {
+            provider: torro_core::ai::AiProvider,
+            models: usize,
+        }
+        let legacy: LegacyServers = serde_json::from_value(serde_json::json!({
+            "servers":[{"provider":"openai_compatible", "program":"jan", "models":1}],
+            "observations": [{"program":"jan", "status":"auth_required"}]
+        }))
+        .expect("old client ignores extra fields");
+        assert_eq!(legacy.servers[0].provider, torro_core::ai::AiProvider::OpenAiCompatible);
+        assert_eq!(legacy.servers[0].models, 1);
+    }
     use super::*;
 
     #[test]

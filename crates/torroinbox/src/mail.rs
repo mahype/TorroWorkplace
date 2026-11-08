@@ -203,6 +203,9 @@ pub trait MailSource: Send + Sync {
     /// plan's `sure`. [`InboxError::NotFound`] for a message the window may not see.
     fn save_targets(&self, id: Option<String>) -> impl Future<Output = Result<SaveTargets, InboxError>> + Send;
 
+    /// Export-only plans, including EML, without fetching the mail's body.
+    fn export_targets(&self, id: Option<String>) -> impl Future<Output = Result<SaveTargets, InboxError>> + Send;
+
     /// `mail.save_attachments` (task M12.6): saves the attachments `parts` of the message `id` – none:
     /// every one that is not `inline` ("Save all") – where `to` says. `to: file` and `folder` carry the
     /// path a person chose in the system's dialog (the window holds the app key). Answers what was
@@ -596,6 +599,10 @@ impl MailSource for InboxClient {
         InboxClient::save_targets(self, id).await
     }
 
+    async fn export_targets(&self, id: Option<String>) -> Result<SaveTargets, InboxError> {
+        InboxClient::export_targets(self, id).await
+    }
+
     async fn save_attachments(
         &self,
         id: String,
@@ -828,11 +835,23 @@ impl MailSource for DemoSource {
         let (files, exports) = match id {
             Some(id) => {
                 let mail = DemoSource::get_mail(self, &id)?;
-                (demo_plans(&mail, &targets), demo_exports(&mail, &targets))
+                (
+                    demo_plans(&mail, &targets),
+                    demo_exports(&mail, &targets).into_iter().filter(|plan| plan.format != ExportFormat::Eml).collect(),
+                )
             }
             None => (Vec::new(), Vec::new()),
         };
         Ok(SaveTargets { targets, downloads: torro_inbox::demo::DEMO_DOWNLOADS.to_owned(), files, exports })
+    }
+
+    async fn export_targets(&self, id: Option<String>) -> Result<SaveTargets, InboxError> {
+        let targets = torro_inbox::demo::save_targets();
+        let exports = match id {
+            Some(id) => demo_exports(&DemoSource::get_mail(self, &id)?, &targets),
+            None => Vec::new(),
+        };
+        Ok(SaveTargets { targets, downloads: torro_inbox::demo::DEMO_DOWNLOADS.to_owned(), files: Vec::new(), exports })
     }
 
     /// The demo writes no file (issue #290): it answers where the core would have put each one
@@ -1018,6 +1037,10 @@ impl MailSource for crate::empty::EmptySource {
             Some(_) => Err(InboxError::NotFound),
             None => Ok(SaveTargets::default()),
         }
+    }
+
+    async fn export_targets(&self, id: Option<String>) -> Result<SaveTargets, InboxError> {
+        MailSource::save_targets(self, id).await
     }
 
     async fn save_attachments(
@@ -3723,12 +3746,16 @@ fn file_items<'a>(
 /// from the list's context menu at the row) once the mail shows attachments.
 fn save_items<'a>(reading: &Reading<'_>, anchors: &detail::Anchors) -> Vec<RailItem<'a, Message>> {
     let loaded = matches!(reading.loaded, Some(Ok(_)));
-    let ask = |format: ExportFormat| loaded.then(|| Message::AskSaveMailAs(reading.id.to_owned(), format));
+    let ask = |format: ExportFormat| {
+        (loaded || (format == ExportFormat::Eml && reading.summary().is_some()))
+            .then(|| Message::AskSaveMailAs(reading.id.to_owned(), format))
+    };
     let mut items = vec![
         RailItem::new(Icon::FileType, tr("Save as PDF"), "", ask(ExportFormat::Pdf)).opens_menu().at(&anchors.save_pdf),
         RailItem::new(Icon::Image, tr("Save as image"), "", ask(ExportFormat::Png))
             .opens_menu()
             .at(&anchors.save_image),
+        RailItem::new(Icon::Mail, tr("Save as EML"), "", ask(ExportFormat::Eml)).opens_menu().at(&anchors.save_eml),
     ];
     if let Some(files) = files_of(reading) {
         let words = trf("Save attachments ({n})", &[("n", &files.len())]);
@@ -3746,7 +3773,7 @@ pub fn context_groups<'a>(groups: Vec<RailGroup<'a, Message>>, id: &str) -> Vec<
     groups
         .into_iter()
         .map(|mut group| {
-            let format = |item: &RailItem<'a, Message>| matches!(item.icon, Icon::FileType | Icon::Image);
+            let format = |item: &RailItem<'a, Message>| matches!(item.icon, Icon::FileType | Icon::Image | Icon::Mail);
             let Some(at) = group.items.iter().position(format).filter(|_| group.icon == Icon::Save) else {
                 return group;
             };
@@ -4735,6 +4762,7 @@ pub fn export_menu<'a>(menu: ExportMenu<'_>) -> Vec<MenuSection<'a, Message>> {
     let title = match menu.format {
         ExportFormat::Pdf => tr("Save as PDF"),
         ExportFormat::Png => tr("Save as image"),
+        ExportFormat::Eml => tr("Save as EML"),
     };
     let ways = vec![entry(Icon::Download, FileAct::Downloads), entry(Icon::Save, FileAct::Choose)];
     let mut sections = vec![MenuSection::titled(title, ways)];
@@ -4851,8 +4879,9 @@ fn demo_exports(mail: &Mail, targets: &[torro_mail::SaveTarget]) -> Vec<ExportPl
                 month_names: months.clone(),
             };
             let kind = match format {
-                ExportFormat::Pdf => torro_mail::FileKind::Pdf,
-                ExportFormat::Png => torro_mail::FileKind::Image,
+                ExportFormat::Pdf => Some(torro_mail::FileKind::Pdf),
+                ExportFormat::Png => Some(torro_mail::FileKind::Image),
+                ExportFormat::Eml => None,
             };
             let file_name = export_file_name(summary, format);
             let mut plan = ExportPlan { format, file_name, places: Vec::new(), suggested: Vec::new() };
@@ -4862,8 +4891,7 @@ fn demo_exports(mail: &Mail, targets: &[torro_mail::SaveTarget]) -> Vec<ExportPl
                     plan.places.push(PlannedPlace { target: target.id.clone(), folders, file });
                 }
                 let suggest = &target.spec.suggest;
-                if torro_mail::save_target::suggestion(suggest, summary.category, Some(kind), &facts.sender_address)
-                    .is_some()
+                if torro_mail::save_target::suggestion(suggest, summary.category, kind, &facts.sender_address).is_some()
                 {
                     plan.suggested.push(target.id.clone());
                 }
@@ -6036,6 +6064,7 @@ mod tests {
                         vec![
                             tr("Save as PDF").to_owned(),
                             tr("Save as image").to_owned(),
+                            tr("Save as EML").to_owned(),
                             trf("Save attachments ({n})", &[("n", &1)]),
                         ]
                     ),
@@ -6102,7 +6131,7 @@ mod tests {
                     vec!["E", "W", "B", "S", "L", "#"],
                     vec!["T", "C", ""],
                     vec!["", ""],
-                    vec!["", "", ""],
+                    vec!["", "", "", ""],
                     vec!["M"],
                     vec![""],
                     vec!["", "", "Esc"]
@@ -6146,6 +6175,7 @@ mod tests {
                     tr("Category…").to_owned(),
                     tr("Save as PDF").to_owned(),
                     tr("Save as image").to_owned(),
+                    tr("Save as EML").to_owned(),
                     trf("Save attachments ({n})", &[("n", &1)]),
                     tr("Mute…").to_owned()
                 ]
@@ -6238,7 +6268,7 @@ mod tests {
             // Issue #501: the attachments are saved from the group Save, a click on whose icon asks for
             // the PDF's menu.
             let save = &group(&groups, tr("Save"));
-            assert!(matches!(save.items[2].press(), Some(Message::AskSaveAttachments(id)) if id == "m:w1"));
+            assert!(matches!(save.items[3].press(), Some(Message::AskSaveAttachments(id)) if id == "m:w1"));
             assert!(matches!(save.first_press(), Some(Message::AskSaveMailAs(id, ExportFormat::Pdf)) if id == "m:w1"));
             assert_eq!(save.icon, Icon::Save);
             assert_eq!(group(&groups, tr("File")).icon, Icon::Check, "the group's fixed icon");

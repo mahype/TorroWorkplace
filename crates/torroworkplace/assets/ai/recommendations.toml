@@ -160,6 +160,92 @@ size_bytes = 2497293931
 license = "apache-2.0"
 open_weights = true
 
+# External runtimes: Qwen chat models, including the slower sorting fallback. Sizes are the
+# corresponding Ollama Q4 downloads above, an estimate for choosing a GGUF, not an exact file size.
+# Only these explicit ids/aliases are recognised. Other GGUF/quantisation ids need manual choice;
+# never infer SystemOne/decision support from a model's name. Torro downloads none of these.
+
+[[external]]
+tier = "small"
+slot = "decide"
+model = "qwen3-4b"
+aliases = ["Qwen/Qwen3-4B", "qwen3:4b"]
+size_bytes = 2497293931
+license = "apache-2.0"
+open_weights = true
+
+[[external]]
+tier = "medium"
+slot = "chat"
+model = "qwen3-4b"
+aliases = ["Qwen/Qwen3-4B", "qwen3:4b"]
+size_bytes = 2497293931
+license = "apache-2.0"
+open_weights = true
+
+[[external]]
+tier = "medium"
+slot = "decide"
+model = "qwen3-4b"
+aliases = ["Qwen/Qwen3-4B", "qwen3:4b"]
+size_bytes = 2497293931
+license = "apache-2.0"
+open_weights = true
+
+[[external]]
+tier = "large"
+slot = "chat"
+model = "qwen3-14b"
+aliases = ["Qwen/Qwen3-14B", "qwen3:14b"]
+size_bytes = 9276198565
+license = "apache-2.0"
+open_weights = true
+
+[[external]]
+tier = "large"
+slot = "decide"
+model = "qwen3-4b"
+aliases = ["Qwen/Qwen3-4B", "qwen3:4b"]
+size_bytes = 2497293931
+license = "apache-2.0"
+open_weights = true
+
+[[external]]
+tier = "gpu"
+slot = "chat"
+model = "qwen3-14b"
+aliases = ["Qwen/Qwen3-14B", "qwen3:14b"]
+size_bytes = 9276198565
+license = "apache-2.0"
+open_weights = true
+
+[[external]]
+tier = "gpu"
+slot = "decide"
+model = "qwen3-4b"
+aliases = ["Qwen/Qwen3-4B", "qwen3:4b"]
+size_bytes = 2497293931
+license = "apache-2.0"
+open_weights = true
+
+[[external]]
+tier = "mac_large"
+slot = "chat"
+model = "qwen3-32b"
+aliases = ["Qwen/Qwen3-32B", "qwen3:32b"]
+size_bytes = 20201253829
+license = "apache-2.0"
+open_weights = true
+
+[[external]]
+tier = "mac_large"
+slot = "decide"
+model = "qwen3-4b"
+aliases = ["Qwen/Qwen3-4B", "qwen3:4b"]
+size_bytes = 2497293931
+license = "apache-2.0"
+open_weights = true
+
 # Cloud, in no particular order here: the core asks the providers in Torro's order (Open First).
 
 [[cloud]]

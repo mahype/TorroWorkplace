@@ -109,6 +109,21 @@ Nachrichtenbetreff mit Dateiname/MIME-Teil und Quellkonto oder bei RAM-Quellen Q
 Der Dienst schlägt diese Angaben erst nach Rechte-/Eigentumsprüfung nach; unbekannte Quellen bleiben als
 unbekannt markiert. Steuer- und Richtungszeichen werden für die Anzeige entschärft, Bilddaten nie angezeigt.
 
+**Zwischenablage-HTML (#462):** `mail.prepare_paste` (`Request::PrepareMailPaste`, MCP
+`mail_prepare_paste`) nimmt optional `html` und `text` als übergebenen Inhalt, niemals einen Clipboard- oder
+Dateizugriff. `Mail/Read` genügt ohne Kontofreigabe und ohne Versandrecht; ein einzeln gesperrter Befehl bleibt
+verboten. Es wird nichts gespeichert, registriert, geladen oder gesendet. Die Antwort `mail-paste` enthält
+`markup`, `plain`, `plain_markup`, `formatted` und immer `untrusted:true`: Inhalt ist Datenmaterial, nie Anweisung.
+Erlaubte Formatierung sind B/I/U, Listen, Zitate und http/https/mailto-Links. Office-Stile werden semantisch
+normalisiert, Tabellen zu Text; aktive Inhalte, alle Bildquellen (auch CID) und eigene Signatur-/Historienklassen
+entfallen. `plain` bevorzugt die Textalternative des Aufrufers, sonst gesäubertes HTML; `plain_markup` maskiert
+auch Listen- und Zitatpräfixe. Teilwortformatierung wird Text. Leere Eingaben liefern leere Strings und
+`formatted:false`. Je Eingabe und je konvertierter Ausgabe gelten höchstens 1 MiB, vor rekursiver Verarbeitung
+höchstens 64 Elementebenen; Überschreitungen sind `error`, nie gekürzt. Zusätzlich muss der vollständige
+JSON-Request samt Envelope, Escaping und Newline ins unveränderte 1-MiB-Transportlimit passen. Die Oberfläche
+erweitert nur den bestehenden serialisierten Reservations-/Upload-/Lease-/CID-Pfad; keine zusätzlichen
+`mail.save_draft`-Dateirechte und kein agentenseitiger Zwischenablagezugriff.
+
 Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalog** in `torro-ipc`
 (`api.rs`). Er beschreibt jeden Befehl:
 
@@ -139,7 +154,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `contacts` ²⁸ | `list_address_books`, `list_contacts`, `get_contact`, `get_photo`, `list_groups`, `upcoming_birthdays` | `create_contact`, `add_to_contact`, `set_favorite`, `add_to_group`, `mark_used`, `move_contact`, `resolve_conflict` mit `both` | `update_contact`, `remove_from_group`, `set_photo`, `delete_contact`, `resolve_conflict` mit `mine`/`theirs` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ², `move_category` ²⁹ |
-| `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `get_draft`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `prepare_image`, `upload_image`, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages`, `release_images` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
+| `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `get_draft`, `prepare_paste`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `prepare_image`, `upload_image`, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages`, `release_images` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
 | `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |
@@ -1078,7 +1093,7 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
 5. **Geheimnisse entgegennehmen oder übertragen** (Token einfügen `accounts.set_github_token`,
    Anmeldung mit Passwort `accounts.connect_caldav`, `accounts.connect_mail` und
    `accounts.reconfigure_mail` (Zugangsdaten eines Mail-Kontos prüfen und speichern, #343), API-Schlüssel eines
-   KI-Kontos `accounts.connect_ai`, Anmeldung bei ntfy `accounts.set_ntfy_login`, Schlüssel eines
+   KI-Kontos `accounts.connect_ai` oder `accounts.connect_local_ai` (auch ohne Schlüssel: Menschen wählen Datenziele), Anmeldung bei ntfy `accounts.set_ntfy_login`, Schlüssel eines
    Websuche-Anbieters `accounts.set_search_key` (#305), Import aus einem fremden Schlüsselbund): nur mit
    dem App-Schlüssel, also nur aus der Oberfläche. Ein Agent nimmt nie ein Passwort entgegen und
    reicht es weiter. Darum setzt auch **Server und vertraute Zertifikate eines Mail-Kontos** nur ein Mensch
@@ -1223,7 +1238,19 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    „Save all to folder…“) nur mit dem App-Schlüssel (`Request::kept_for_people`): Den Pfad wählt ein Mensch im
    Dialog des Systems. Clients speichern nach `downloads` oder in ein Ziel (`{"target": …}`), mit der gewöhnlichen
    Schreibregel (Test `only_people_choose_where_attachments_go` in `torro-ipc`). Dasselbe gilt für
-   `mail.save_message_as` (Issue #501, die Mail selbst als PDF oder Bild).
+    `mail.save_message_as` (Issues #501/#553, die Mail selbst als PDF, Bild oder EML).
+    Die Exportvorschau `mail.list_save_targets` mit `id` und **`export_only: true`** liest nur die
+    gespeicherte Zusammenfassung: `files` ist leer und entfällt im JSON, Exportpläne für `pdf`, `png`, `eml`,
+    kein Body-/Netzabruf.
+    Ohne Opt-in bleiben ausschließlich PDF-/PNG-Pläne im bisherigen Antwortformat, ohne `id` nur Ziele.
+    EML (`message/rfc822`) enthält die geprüften Originalbytes mit allen MIME-Teilen und Anhängen,
+    keine Rekonstruktion. Ein lokal fehlendes oder nicht beweisbar vollständiges Original wird einmal
+    per IMAP `BODY.PEEK[]` geholt; weder externe Bilder noch Lesemarkierung oder Cacheänderung.
+    Fehlende UID/andere UIDVALIDITY: `not-found`; Netz/Anmeldung: `offline`/`auth` mit Originalhinweis;
+    unvollständige Daten, fehlende Größe und I/O: `error`; veränderte Zuordnung/Metadaten: `conflict`.
+    Höchstens 998951424 Bytes und ein EML-Export gleichzeitig (`busy`), niemals Kürzung
+    (`shortened: false`). Freigaben binden EML zusätzlich an die Zielspezifikation (bei Downloads
+    den eingestellten Ordner); Änderungen während der Wartezeit erfordern eine neue Anfrage.
 
 11. **Eine App installieren oder aktualisieren** (Issue #411, App-Katalog): `apps.install_app` und
    `apps.update_apps` nur mit dem App-Schlüssel (`Mcp::Never`). Grund: Wer installiert oder aktualisiert,

@@ -1128,7 +1128,7 @@ fn describe(request: &Request) -> String {
         Request::TorroMailAccounts => "torromail accounts".into(),
         Request::ImportTorroMailAccount { .. } => "import torromail account".into(),
         // Never the address or the key (task KI.1a).
-        Request::ConnectAi { .. } => "connect ai".into(),
+        Request::ConnectAi { .. } | Request::ConnectLocalAi { .. } => "connect ai".into(),
         // Never a topic: on a public server its name is a password (task E5.12).
         Request::ConnectNtfy { .. } => "connect ntfy".into(),
         Request::SetNtfyLogin { .. } => "set ntfy login".into(),
@@ -1164,6 +1164,7 @@ fn describe(request: &Request) -> String {
         Request::SaveMailAttachments { parts, .. } => format!("save {} mail attachments", parts.len()),
         Request::SaveMailAs { format: torro_ipc::mail::ExportFormat::Pdf, .. } => "save mail as pdf".into(),
         Request::SaveMailAs { format: torro_ipc::mail::ExportFormat::Png, .. } => "save mail as image".into(),
+        Request::SaveMailAs { format: torro_ipc::mail::ExportFormat::Eml, .. } => "save mail as eml".into(),
         // Never a filter's search, account or folder (issue #339).
         Request::ListMailFilters => "list mail filters".into(),
         Request::CreateMailFilter { .. } => "create a mail filter".into(),
@@ -1176,6 +1177,7 @@ fn describe(request: &Request) -> String {
         Request::DeleteMail { ids, .. } => format!("delete {} messages", ids.len()),
         Request::SaveDraft { .. } => "save draft".into(),
         Request::PrepareMailImage { .. } => "prepare mail image".into(),
+        Request::PrepareMailPaste { .. } => "prepare mail paste".into(),
         Request::UploadMailImage { .. } => "upload mail image".into(),
         Request::ReleaseMailImages { .. } => "release mail images".into(),
         Request::SendDraft { .. } => "send draft".into(),
