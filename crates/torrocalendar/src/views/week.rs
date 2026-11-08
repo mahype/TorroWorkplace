@@ -11,8 +11,8 @@
 //! "2 h free"; a red line with its time in the axis marks now. A thin, muted line at the left edge
 //! of each day column runs through the working hours (task K.33, `Settings::working_hours`), behind
 //! the events. Weekends are set off a little; in the week, today's
-//! column (header, all-day strip and hours) is washed with a trace of the accent, so the eye
-//! finds it at once.
+//! column (header, all-day strip and hours) is washed with the neutral selection grey, so the
+//! eye finds it at once; red stays for the day circle and the now line (issue #543).
 //!
 //! Click on an empty slot → `NewEvent { date, time }` (time rounded down to the half hour), on
 //! an all-day row cell → `NewEvent { date, time: None }`, on an event → `OpenEvent(index)`. The
@@ -82,11 +82,12 @@ const SHORT_TIME_WIDTH: f32 = 36.0;
 const MIN_TITLE_LETTERS: usize = 4;
 /// Weekend columns get this much of the window background over the panel (`.daycols > .weekend`).
 const WEEKEND_SHADE: f32 = 0.35;
-/// Today's column in the week gets this much of the accent over its ground: enough to find it at
-/// a glance, too little to compete with the events or the red of the day circle and now line.
-/// Red shows far less on the near-black panel than on white, so dark mode takes more of it.
-const TODAY_WASH_DARK: f32 = 0.10;
-const TODAY_WASH_LIGHT: f32 = 0.05;
+/// Today's column in the week gets this much of the neutral selection grey (`Palette::selected`)
+/// over its ground: enough to tell it from the weekend's shade at a glance, too little to compete
+/// with the events. No accent: red is the brand, kept for the day circle and the now line (design
+/// skill, section 1, issue #543). The grey lies closer to the panel in dark mode, so dark takes more.
+const TODAY_WASH_DARK: f32 = 0.6;
+const TODAY_WASH_LIGHT: f32 = 0.5;
 /// Gaps between events this long or longer show "2 h free" (minutes).
 pub(super) const FREE_MINUTES: f32 = 120.0;
 /// The time label of the now line: the axis figures at 500 on a 16-high pill, white on red
@@ -320,7 +321,7 @@ impl Plan {
     }
 
     /// The ground of the day column `column` in the grid: the panel, a little darker (lighter)
-    /// at the weekend, with the accent wash ([`today_wash`]) on today in the week.
+    /// at the weekend, with the neutral wash ([`today_wash`]) on today in the week.
     fn ground(&self, theme: &Theme, column: usize) -> Color {
         let p = palette(theme);
         let base = match self.days.get(column) {
@@ -376,10 +377,10 @@ pub(super) fn title(event: &CalendarEvent) -> String {
     if summary.is_empty() { tr(UNTITLED).to_string() } else { summary.to_string() }
 }
 
-/// `ground` with the trace of the accent that sets today's column off in the week.
+/// `ground` with the neutral grey that sets today's column off in the week.
 fn today_wash(theme: &Theme, ground: Color) -> Color {
     let share = if theme.extended_palette().is_dark { TODAY_WASH_DARK } else { TODAY_WASH_LIGHT };
-    mix(ground, palette(theme).accent, share)
+    mix(ground, palette(theme).selected, share)
 }
 
 fn is_weekend(day: NaiveDate) -> bool {
@@ -403,8 +404,8 @@ pub(super) fn left_press(event: &Event, bounds: Rectangle, cursor: mouse::Cursor
 
 /// Day header (`.dayhead`): "Mon 5" per column, the weekday in `text_3`, the number in `text_2`
 /// (weekends `text_3`); today's weekday in `text` and its number white in a red circle. With
-/// several days, today's cell also gets the column's accent wash, so the band runs from the header
-/// down through the hours.
+/// several days, today's cell also gets the column's neutral wash, so the band runs from the
+/// header down through the hours.
 ///
 /// With the narrow axis the columns are too slim for both side by side, so the weekday goes
 /// above its number, as in the mock-up's week strip (`.strip`).
@@ -1103,6 +1104,9 @@ mod tests {
         assert_eq!(washed, [false, false, true, false, false, false, false]);
         assert_eq!(week.ground(t, 2), today_wash(t, p.panel));
         assert_ne!(week.ground(t, 2), p.panel);
+        // Neutral: the selection grey over the panel, no trace of the accent (issue #543).
+        assert_eq!(week.ground(t, 2), mix(p.panel, p.selected, TODAY_WASH_DARK));
+        assert_ne!(week.ground(t, 2), mix(p.panel, p.accent, TODAY_WASH_DARK));
         assert_eq!(week.ground(t, 1), p.panel);
         assert_eq!(week.ground(t, 5), mix(p.panel, p.bg, WEEKEND_SHADE));
         // Today on a Sunday: the wash over the weekend shade.
