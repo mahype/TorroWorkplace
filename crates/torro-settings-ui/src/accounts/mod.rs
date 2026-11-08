@@ -304,6 +304,18 @@ impl State {
         State { window: Some(app.window_class), ..self }
     }
 
+    /// Whether the page stands in the mail window (issue #545): there AI shows only the slot that
+    /// sorts mail. The chat belongs to the assistant and the data rule to the suite, and without the
+    /// assistant mail has no chat they would hold for.
+    fn in_mail(&self) -> bool {
+        self.window == Some(AppId::INBOX_MAIL.window_class)
+    }
+
+    /// The slots the AI section shows in this window ([`State::in_mail`]).
+    fn slots(&self) -> &'static [AiSlot] {
+        if self.in_mail() { &[AiSlot::Decide] } else { &AiSlot::ALL }
+    }
+
     /// Whether a group may offer to open the window `class` ([`moved_group`]): not the one the page
     /// stands in, and not one of an app that is not installed.
     fn opens(&self, class: &str, data: &dyn Seen) -> bool {
@@ -2724,15 +2736,21 @@ fn list<'a>(
         // other, a model's name, the computer's line or where mail goes would be cut off there.
         let groups = responsive(move |room: iced::Size| {
             let stacked = stacked || room.width < size::form_max();
-            column![]
-                .push(slots_group(state, data, stacked))
-                .push(data_rule_group(data))
-                .spacing(layout::section_gap())
-                .into()
+            column(ai_groups(state, data, stacked)).spacing(layout::section_gap()).into()
         });
         page = page.push(groups.height(iced::Length::Shrink));
     }
     page.into()
+}
+
+/// The groups under the accounts of AI: the slots ([`slots_group`], left out without an AI account)
+/// and the data rule ([`data_rule_group`]), which the mail window leaves out ([`State::in_mail`]).
+fn ai_groups<'a>(state: &'a State, data: &'a dyn Seen, stacked: bool) -> Vec<Element<'a, Message>> {
+    let mut groups: Vec<Element<'a, Message>> = slots_group(state, data, stacked).into_iter().collect();
+    if !state.in_mail() {
+        groups.push(data_rule_group(data));
+    }
+    groups
 }
 
 /// The providers as chips above the list in the narrow class (task S.37), the shown one chosen.
@@ -2908,7 +2926,7 @@ fn mail_sentence(provider: &str, seat: &str) -> String {
 fn slots_group<'a>(state: &'a State, data: &'a dyn Seen, stacked: bool) -> Option<Element<'a, Message>> {
     ai_accounts(data).next()?;
     let mut rows = vec![computer_row(&state.slots, stacked)];
-    for slot in AiSlot::ALL {
+    for &slot in state.slots() {
         rows.push(slot_row(state, data, slot, stacked));
         if let Some(failure) = state.slots.failed.as_ref().filter(|failure| failure.slot == slot) {
             rows.push(failure_row(failure, stacked));
@@ -4917,6 +4935,28 @@ mod tests {
         assert!(!offers_import(&broken) && !unlisted(&broken));
         assert!(!answered(&mut broken, &Err("no template".into())), "only the one answer it waited for");
         draw(&state, &data);
+    }
+
+    /// Issue #545: in the mail window AI shows only the slot that sorts and no data rule; the control
+    /// centre and the assistant keep both slots and the rule.
+    #[test]
+    fn the_mail_window_shows_only_sorting_and_no_data_rule() {
+        let mut data = demo_data();
+        demo_ollama(&mut data);
+        for (window, slots, groups) in [
+            (None, &AiSlot::ALL[..], 2),
+            (Some(AppId::INBOX_MAIL), &[AiSlot::Decide][..], 1),
+            (Some(AppId::ASSISTANT), &AiSlot::ALL[..], 2),
+        ] {
+            let state = match window {
+                Some(app) => State::default().in_window(app),
+                None => State::default(),
+            };
+            assert_eq!(state.slots(), slots, "{window:?}");
+            assert_eq!(state.in_mail(), window == Some(AppId::INBOX_MAIL));
+            assert_eq!(ai_groups(&state, &data, false).len(), groups, "{window:?}: slots and data rule");
+            drop(list(&state, &data, Utc::now(), None, true, false));
+        }
     }
 
     /// Task S.30: the data rule stands under AI and its switch sends the setting, never a right.
