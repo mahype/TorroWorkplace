@@ -19866,6 +19866,29 @@ mod tests {
         assert!(!standard.drawer && !standard.accounts_chosen && standard.mail_accounts.is_none());
     }
 
+    /// Issue #570: the account icon has its own column before both labels, without changing the action.
+    #[test]
+    fn the_account_field_keeps_room_for_its_icon_and_opens_the_same_menu() {
+        let mut app = mail_window(Density::Compact, &[]);
+        app.folders.retain(|folder| folder.account == torro_inbox::demo::MAIL_ACCOUNTS[1]);
+        let anchor = Anchor::new();
+        let field = app.mail_sidebar_foot(SidebarMode::Expanded, &anchor).pop().expect("account field");
+        let mut ui = iced_test::Simulator::with_size(
+            iced::Settings::default(),
+            iced::Size::new(size::sidebar(), size::control_lg() * 2.0),
+            field,
+        );
+        let title = ui.find(tr("All accounts")).expect("title").bounds();
+        let detail = ui.find(app.account_field_text().1).expect("detail").bounds();
+        let text_inset = space::m() + torro_gui::icon::SIZE + space::s();
+        assert!((title.x - text_inset).abs() < 0.1, "icon and token gap before the left-aligned title");
+        assert!((detail.x - title.x).abs() < 0.1, "both labels share the text column");
+        ui.click(tr("All accounts")).expect("account field can be clicked");
+        let messages: Vec<_> = ui.into_messages().collect();
+        assert!(matches!(messages.as_slice(), [Message::ToggleMailAccounts]));
+        assert!(app.mail_accounts.is_none(), "rendering does not change the selection");
+    }
+
     /// Issue #559: the fixed footer keeps compose directly above accounts, including the drawer.
     #[test]
     fn mail_compose_stands_below_navigation_and_above_accounts() {

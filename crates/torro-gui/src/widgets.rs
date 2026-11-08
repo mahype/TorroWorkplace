@@ -3125,8 +3125,8 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
     Color { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: a.a }
 }
 
-/// The large field at the top of the mail window's sidebar that chooses the accounts shown (issue
-/// #455, `docs/prototypes/mail-layout/`): two lines without avatars – `title` in `BODY_STRONG`
+/// The field at the foot of the mail window's sidebar that chooses the accounts shown (issues
+/// #455, #559, #570): a users icon before two lines without avatars – `title` in `BODY_STRONG`
 /// ("All accounts", "2 accounts", the account's domain) and `detail` in `META`, `text_3` (the names,
 /// the address) –, both cut with "…" to the width there is, and the up-down chevron at the end. As
 /// wide as the sidebar, on `raised` with a `line_strong` frame and radius `sm`; hover lightens it.
@@ -3150,9 +3150,13 @@ pub fn account_select<'a, M: Clone + 'a>(
         let shown = typo::ellipsize(&detail, typo::meta(), size.width);
         typo::text(typo::meta(), shown).style(theme::text_3).wrapping(Wrapping::None).into()
     });
-    let content = row![column![title, detail].width(Fill), toned(Icon::ChevronsUpDown, icon::SIZE, Tone::Text3)]
-        .spacing(space::s())
-        .align_y(Alignment::Center);
+    let content = row![
+        toned(Icon::Users, icon::SIZE, Tone::Text2),
+        column![title, detail].width(Fill),
+        toned(Icon::ChevronsUpDown, icon::SIZE, Tone::Text3)
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
     let b = button(content)
         .width(Fill)
         .padding(Padding::new(space::s()).left(space::m()))
