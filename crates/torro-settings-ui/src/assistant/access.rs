@@ -1,13 +1,19 @@
 //! Assistant › Access (task S.34, concept `docs/settings.md` › "Assistent und Bots"): what the
 //! assistant and each of its bots may use, in the assistant's own window.
 //!
+//! Three tabs (issue #547: more than three groups take tabs):
+//!
 //! ```text
-//! Status            the assistant on or off
-//! Start from        while it is off: the starting points of its rights ([`Preset`])
-//! What the assistant may use   the rights editor ([`crate::rights`], tools named as MCP tools)
-//! Bots              a row per bot; it opens the rights editor of the bot's own client
-//! Turn off assistant…          while it is on, after a question; last, as what destroys
+//! Access       Status            the assistant on or off
+//!              Start from        while it is off: the starting points of its rights ([`Preset`])
+//!              What the assistant may use   the rights editor's access group and "Ask first"
+//!              Turn off assistant…          while it is on, after a question; last, as what destroys
+//! Selections   the calendars, lists, accounts … of each area it may use ([`rights::Part`])
+//! Bots         a row per bot; it opens the rights editor of the bot's own client
 //! ```
+//!
+//! A bot's page has the first two tabs, Access and Selections, of its own client. A tab only
+//! changes what is shown; it sends nothing.
 //!
 //! While the assistant has no client the page is its first start: "Start from" and the rights it
 //! is offered, which "Turn on assistant" in the header sends along with `clients.create_client`
@@ -51,7 +57,7 @@ use torro_ipc::{ClientInfo, Request, Response};
 
 use super::{Action, avatar};
 use crate::parts::{chevron, confirm, pressable, setting_row};
-use crate::rights::{self, Known, Naming};
+use crate::rights::{self, Known, Naming, Part};
 use crate::{Data, Page};
 
 /// The section's id, as the list, `--settings access` and [`crate::Action::Open`] name it.
@@ -106,9 +112,34 @@ impl Preset {
     }
 }
 
-/// The section's state: whose rights are open, the first start's choice and the editor's draft.
+/// The tabs of the page (issue #547); a bot's page has the first two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Access,
+    Selections,
+    Bots,
+}
+
+impl Tab {
+    /// Every tab, in the order of the row; the index is what [`Message::Tab`] carries.
+    pub const ALL: [Tab; 3] = [Tab::Access, Tab::Selections, Tab::Bots];
+
+    /// Its word, translated.
+    pub fn label(self) -> &'static str {
+        match self {
+            Tab::Access => tr("Access"),
+            Tab::Selections => tr("Selections"),
+            Tab::Bots => tr("Bots"),
+        }
+    }
+}
+
+/// The section's state: whose rights are open, the tab, the first start's choice and the editor's
+/// draft.
 #[derive(Debug)]
 pub struct State {
+    /// The tab on screen; a bot opened or closed starts at Access again.
+    tab: Tab,
     /// The bot (its [`BotSummary::id`]) whose rights are open on a page below the section; `None`
     /// shows the section's own page, the assistant's.
     bot: Option<String>,
@@ -126,6 +157,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         State {
+            tab: Tab::Access,
             bot: None,
             choice: Rights::assistant(),
             creating: false,
@@ -137,6 +169,8 @@ impl Default for State {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// A tab of the row, by its place in [`Tab::ALL`]: shows that part, sends nothing.
+    Tab(usize),
     /// A row of "Start from" on the first start.
     Preset(Preset),
     /// "Turn on assistant" in the header of the first start.
@@ -170,6 +204,12 @@ pub enum Message {
 /// Nothing else is ever sent, and only as [`crate::Action::Send`].
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
+        Message::Tab(index) => {
+            // A bot's page has no tab Bots.
+            let tabs = tabs(open_bot(state, data).is_some());
+            state.tab = tabs.get(index).copied().unwrap_or(Tab::Access);
+            Action::None
+        }
         Message::Preset(preset) => {
             if super::client(data).is_none() {
                 state.choice = preset.rights();
@@ -226,6 +266,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
 /// assistant's page instead. The editor closes its open areas; a waiting draft is saved as usual.
 pub fn show(state: &mut State, bot: Option<String>) {
     state.bot = bot;
+    state.tab = Tab::Access;
     state.asking = false;
     rights::leave(&mut state.rights);
 }
@@ -323,58 +364,102 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 
 // ----- Views --------------------------------------------------------------------------------
 
+/// The tabs of a page: Access, Selections and – not on a bot's page – Bots.
+fn tabs(bot: bool) -> &'static [Tab] {
+    match bot {
+        true => &Tab::ALL[..2],
+        false => &Tab::ALL,
+    }
+}
+
+/// The tab on screen, as far as the page has it: a bot's page shows Access for Bots.
+fn shown_tab(state: &State, bot: bool) -> Tab {
+    if tabs(bot).contains(&state.tab) { state.tab } else { Tab::Access }
+}
+
+/// The row of tabs over a page, `bot` for a bot's page.
+fn tab_row<'a>(state: &State, bot: bool) -> Element<'a, Message> {
+    let tabs = tabs(bot);
+    let labels = tabs.iter().map(|tab| (tab.label().to_string(), None)).collect();
+    let chosen = tabs.iter().position(|tab| *tab == shown_tab(state, bot)).unwrap_or(0);
+    widgets::tabs(labels, chosen, Message::Tab)
+}
+
 /// The page: a bot's rights below the section while one is open, else the assistant's – on, or its
-/// first start with "Turn on assistant" in the header, the page's one primary button.
+/// first start with "Turn on assistant" in the header, the page's one primary button. Each under its
+/// row of tabs.
 pub fn page<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Page<'a, Message> {
     if let Some(bot) = open_bot(state, data) {
-        return Page::new(bot_page(state, data, bot)).sub_page(bot.name.clone(), Message::Back);
+        let body = column![tab_row(state, true), bot_page(state, data, bot)].spacing(layout::section_gap());
+        return Page::new(body).sub_page(bot.name.clone(), Message::Back);
     }
-    match super::client(data) {
-        Some(client) => Page::new(assistant_page(state, data, client)),
-        None => Page::new(first_start(state, data)).actions(vec![turn_on_button(state, class)]),
+    let client = super::client(data);
+    let body = match shown_tab(state, false) {
+        Tab::Access => access_tab(state, data, client),
+        Tab::Selections => {
+            let rights = client.map_or(&state.choice, |client| rights::shown(&state.rights, client));
+            editor(state, data, rights, ASSISTANT_CLIENT, tr("What the assistant may use"), Part::Selections)
+        }
+        Tab::Bots => bots_group(state, data),
+    };
+    let page = Page::new(column![tab_row(state, false), body].spacing(layout::section_gap()));
+    match client {
+        Some(_) => page,
+        None => page.actions(vec![turn_on_button(state, class)]),
     }
 }
 
-/// The assistant on: its status, the editor, the bots, and last "Turn off assistant…" – what
-/// undoes the page stands at its end, after everything it would take away.
-fn assistant_page<'a>(state: &'a State, data: &'a Data, client: &'a ClientInfo) -> Element<'a, Message> {
-    let rights = rights::shown(&state.rights, client);
-    let editor = rights::view(
-        &state.rights,
-        rights,
-        ASSISTANT_CLIENT,
-        Known::of(data),
-        Naming::Tools,
-        tr("What the assistant may use"),
-    );
-    let off = widgets::text_button(None, tr("Turn off assistant…"), style::button::danger, Some(Message::AskTurnOff));
-    column![status_group(true), editor.map(Message::Rights), bots_group(state, data), on_axis(off)]
-        .spacing(layout::section_gap())
-        .into()
+/// A part of the rights editor for `rights` of a client of `kind`, its messages wrapped.
+fn editor<'a>(
+    state: &'a State,
+    data: &'a Data,
+    rights: &'a Rights,
+    kind: &'a str,
+    title: &'a str,
+    part: Part,
+) -> Element<'a, Message> {
+    rights::view_part(&state.rights, rights, kind, Known::of(data), Naming::Tools, title, part).map(Message::Rights)
 }
 
-/// The assistant's first start: that it is off, "Start from", the rights it is offered, the bots.
-fn first_start<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let editor = rights::view(
-        &state.rights,
-        &state.choice,
-        ASSISTANT_CLIENT,
-        Known::of(data),
-        Naming::Tools,
-        tr("What the assistant may use"),
-    );
-    column![status_group(false), preset_group(&state.choice), editor.map(Message::Rights), bots_group(state, data)]
+/// The tab Access of the assistant: its status, on the first start "Start from", what it may use
+/// and "Ask first", and while it is on last "Turn off assistant…" – what undoes the page stands at
+/// its end, after everything it would take away.
+fn access_tab<'a>(state: &'a State, data: &'a Data, client: Option<&'a ClientInfo>) -> Element<'a, Message> {
+    let title = tr("What the assistant may use");
+    match client {
+        Some(client) => {
+            let rights = rights::shown(&state.rights, client);
+            let off =
+                widgets::text_button(None, tr("Turn off assistant…"), style::button::danger, Some(Message::AskTurnOff));
+            column![
+                status_group(true),
+                editor(state, data, rights, ASSISTANT_CLIENT, title, Part::Access),
+                on_axis(off)
+            ]
+            .spacing(layout::section_gap())
+            .into()
+        }
+        None => column![
+            status_group(false),
+            preset_group(&state.choice),
+            editor(state, data, &state.choice, ASSISTANT_CLIENT, title, Part::Access),
+        ]
         .spacing(layout::section_gap())
-        .into()
+        .into(),
+    }
 }
 
-/// A bot's page: the editor of its own client, or, where the core lists none, what to do.
+/// A bot's page under its tabs: the part of the editor of its own client, or, where the core lists
+/// none, what to do.
 fn bot_page<'a>(state: &'a State, data: &'a Data, bot: &'a BotSummary) -> Element<'a, Message> {
     match shown_client(state, data) {
         Some(client) => {
             let rights = rights::shown(&state.rights, client);
-            rights::view(&state.rights, rights, BOT_CLIENT, Known::of(data), Naming::Tools, tr("What the bot may use"))
-                .map(Message::Rights)
+            let part = match shown_tab(state, true) {
+                Tab::Selections => Part::Selections,
+                Tab::Access | Tab::Bots => Part::Access,
+            };
+            editor(state, data, rights, BOT_CLIENT, tr("What the bot may use"), part)
         }
         None => {
             let detail = tr("Save the bot once more in its editor; until then it may use nothing.");
@@ -617,6 +702,40 @@ mod tests {
 
     fn page_of<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
         page(state, data, SizeClass::Wide)
+    }
+
+    /// Issue #547: the page has the tabs Access, Selections and Bots, a bot's page the first two; a
+    /// tab sends nothing, and opening or leaving a bot starts at Access again.
+    #[tokio::test]
+    async fn the_tabs_show_a_part_and_send_nothing() {
+        let data = data().await;
+        let (bot, _) = travel(&data);
+        let mut state = State::default();
+        assert_eq!(shown_tab(&state, false), Tab::Access);
+        for (index, tab) in Tab::ALL.into_iter().enumerate() {
+            assert_eq!(update(&mut state, Message::Tab(index), &data), Act::None, "{tab:?}");
+            assert_eq!(shown_tab(&state, false), tab);
+            for on in [&data, &turned_off(&data)] {
+                for class in [SizeClass::Wide, SizeClass::Narrow] {
+                    let _ = page(&state, on, class).body;
+                }
+            }
+        }
+        assert_eq!(update(&mut state, Message::Tab(7), &data), Act::None);
+        assert_eq!(shown_tab(&state, false), Tab::Access, "an index past the row is Access");
+
+        let _ = update(&mut state, Message::Tab(1), &data);
+        let _ = update(&mut state, Message::OpenBot(bot.id.clone()), &data);
+        assert_eq!(shown_tab(&state, true), Tab::Access, "a bot opens at Access");
+        assert_eq!(tabs(true), [Tab::Access, Tab::Selections]);
+        let _ = update(&mut state, Message::Tab(1), &data);
+        assert_eq!(shown_tab(&state, true), Tab::Selections);
+        let _ = page_of(&state, &data).body;
+        let _ = update(&mut state, Message::Tab(2), &data);
+        assert_eq!(shown_tab(&state, true), Tab::Access, "a bot's page has no tab Bots");
+        let _ = update(&mut state, Message::Tab(1), &data);
+        let _ = update(&mut state, Message::Back, &data);
+        assert_eq!(shown_tab(&state, false), Tab::Access, "back at Access");
     }
 
     /// A draft goes once the core took it and the reload brought it, and drops when the send
