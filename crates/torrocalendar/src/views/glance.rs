@@ -812,6 +812,8 @@ impl canvas::Program<Message> for Timeline {
         for (rect, entry, tone, x, room) in beside {
             beside_text(&mut frame, &p, rect, entry, &tone, x, room);
         }
+        // A plate in the top lane would hide half of the now line's dot: it comes back on top.
+        frame.fill(&Path::circle(Point::new(now_x, top), NOW_DOT), p.accent);
         vec![frame.into_geometry()]
     }
 }
