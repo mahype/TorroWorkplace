@@ -1587,8 +1587,9 @@ impl Editor {
         let own = self.form.time_zone.clone().filter(|own| Some(own) != self.machine_zone.as_ref() && matching(own));
         // A zone listed above does not come again among the results (design review of #543).
         let listed = |name: &&str| Some(*name) == machine.as_deref() || Some(*name) == own.as_deref();
-        let found = zone::search(query, ZONE_RESULTS).into_iter().filter(|name| !listed(name)).map(str::to_string);
-        let found = found.collect();
+        // Two more from the search, so the results still fill their [`ZONE_RESULTS`] without them.
+        let found = zone::search(query, ZONE_RESULTS + 2).into_iter().filter(|name| !listed(name));
+        let found = found.take(ZONE_RESULTS).map(str::to_string).collect();
         let sections = [
             (tr("Your time zone"), machine.into_iter().collect()),
             (tr("This event"), own.into_iter().collect()),

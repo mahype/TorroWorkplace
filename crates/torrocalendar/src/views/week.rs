@@ -1119,7 +1119,7 @@ mod tests {
         let day = plan(at(7, 0, 0).date(), 1, at(7, 14, 20));
         assert!(!day.is_marked_today(0));
         assert_eq!(day.ground(t, 0), p.panel);
-        // Light mode washes too, more gently.
+        // Light mode washes too, with more of the grey (its weekend shade is grey as well).
         let light = theme::light();
         let white = Palette::light().panel;
         assert_ne!(week.ground(&light, 2), white);
