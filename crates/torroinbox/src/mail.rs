@@ -926,7 +926,7 @@ impl MailSource for DemoSource {
 
     /// The demo sends nothing and keeps no calendar: an invitation of its own ([`demo_invite`]) is
     /// answered as sent, any other message is no invitation; a calendar it does not have
-    /// ([`crate::hub::DEMO_CALENDARS`]) is not found.
+    /// ([`crate::hub::HubSource::list_invitation_calendars`]) is not found.
     async fn respond_to_invitation(
         &self,
         _account: String,
@@ -935,7 +935,8 @@ impl MailSource for DemoSource {
         collection: Option<String>,
     ) -> Result<Delivery, InboxError> {
         let mail = DemoSource::get_mail(self, &id)?;
-        if collection.is_some_and(|wanted| !crate::hub::DEMO_CALENDARS.iter().any(|(id, _)| *id == wanted)) {
+        let calendars = crate::hub::HubSource::list_invitation_calendars(self).await?;
+        if collection.is_some_and(|wanted| !calendars.iter().any(|calendar| calendar.id == wanted)) {
             return Err(InboxError::NotFound);
         }
         match demo_invite(&mail.summary.id, mail.summary.date) {
@@ -2743,6 +2744,20 @@ pub fn invite_card<'a>(
     side: InviteSide<'a>,
     attention: Color,
 ) -> Element<'a, Message> {
+    invite_card_in(invite, summary, now, answering, side, attention, false)
+}
+
+/// A resized wide reader may be much narrower than a panel: then the decorative tile must not
+/// take the title's last few pixels. No invitation text is hidden to make it fit.
+fn invite_card_in<'a>(
+    invite: &Invite,
+    summary: &MessageSummary,
+    now: DateTime<Utc>,
+    answering: bool,
+    side: InviteSide<'a>,
+    attention: Color,
+    compact: bool,
+) -> Element<'a, Message> {
     let tile = widgets::source_tile(widgets::TileFace::Icon(Icon::Calendar), widgets::TileSize::Large, None);
     let title = match list::one_line(&invite.title) {
         title if title.is_empty() => tr("(no title)").to_owned(),
@@ -2762,8 +2777,12 @@ pub fn invite_card<'a>(
     ]
     .width(Fill)
     .align_x(Alignment::Start);
-    let head = row![tile, words].spacing(space::m()).width(Fill).align_y(Alignment::Start);
-    let mut parts: Vec<Element<'a, Message>> = vec![head.into()];
+    let head: Element<'a, Message> = if compact {
+        column![tile, words].spacing(space::s()).width(Fill).into()
+    } else {
+        row![tile, words].spacing(space::m()).width(Fill).align_y(Alignment::Start).into()
+    };
+    let mut parts: Vec<Element<'a, Message>> = vec![head];
     if invite_over(invite, now) {
         parts.push(typo::text(typo::meta(), tr("This event is over.")).style(theme::text_3).into());
         return widgets::card(parts, false, None);
@@ -3140,7 +3159,8 @@ fn command_body<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, width
     // The head lines up with the title, 16 from the panel's edges (`panel::inset`), and runs to the
     // panel's right edge under the floating rail (issue #457); the mail keeps clear of the rail.
     let room = (width - 2.0 * space::l()).max(0.0);
-    let head = head(reading, entry, room);
+    let clearance = (widgets::floating_rail_room() - space::l()).max(0.0);
+    let head = head_in(reading, entry, room, clearance);
     let mut body = column![panel::inset(head)];
     // An entry keeps its properties (status, lane, source, time), as `detail::panel` shows them.
     if let Some(entry) = entry {
@@ -3296,7 +3316,8 @@ pub fn reader<'a>(
     let page = responsive(move |bounds| {
         let widths = reader_widths(bounds.width);
         let side = layout::reading_padding().left;
-        let head = container(head(&reading, entry, widths.head)).width(Fill).padding(head_padding());
+        let clearance = (widgets::floating_rail_room() - head_padding().right).max(0.0);
+        let head = container(head_in(&reading, entry, widths.head, clearance)).width(Fill).padding(head_padding());
         // Issue #456: the rail floats at the right edge; the head runs on under it, the mail's text
         // keeps clear of it.
         let room = widgets::floating_rail_room();
@@ -3389,12 +3410,22 @@ fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, M
 /// subject stands in the top row over the reader, or as the panel's title. No buttons – the
 /// actions stand in the rail (task E14.3), the attachments at the mail's bottom (issue #491).
 pub fn head<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, room: f32) -> Element<'a, Message> {
+    head_in(reading, entry, room, 0.0)
+}
+
+/// Additional rail clearance after accounting for the caller's existing right padding. Ordinary
+/// mail still uses the original head; only invitation details need this protected column.
+fn head_in<'a>(
+    reading: &Reading<'a>,
+    entry: Option<ReaderEntry<'a>>,
+    room: f32,
+    clearance: f32,
+) -> Element<'a, Message> {
     let mut head = column![].spacing(space::l()).width(Fill);
     let summary = reading.summary();
     // The original mail keeps its existing widths. Only Torro's invitation details must stay
     // clear of the floating action rail, including in a narrow panel or a resized wide reader.
-    let clearance =
-        if summary.is_some_and(|summary| summary.invite.is_some()) { widgets::floating_rail_room() } else { 0.0 };
+    let clearance = if summary.is_some_and(|summary| summary.invite.is_some()) { clearance } else { 0.0 };
     let room = (room - clearance).max(0.0);
     if let Some(summary) = summary {
         let sender = sender_block(reading, summary, room);
@@ -3428,8 +3459,15 @@ pub fn head<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, room: f32
     if let Some(summary) = summary
         && let Some(invite) = &summary.invite
     {
-        head =
-            head.push(invite_card(invite, summary, reading.now, reading.answering, reading.invite, reading.attention));
+        head = head.push(invite_card_in(
+            invite,
+            summary,
+            reading.now,
+            reading.answering,
+            reading.invite,
+            reading.attention,
+            room < size::props(),
+        ));
     }
     if let Some(task) = reading.task {
         head = head.push(task_card(task, reading.now));
@@ -3552,7 +3590,6 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
         };
         if compact {
             let mut words = column![
-                row(face).push(date_text()).spacing(space::m()).width(Fill).align_y(Alignment::Start),
                 typo::text(typo::body_strong(), name)
                     .style(theme::text)
                     .width(Fill)
@@ -3561,6 +3598,10 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
             ]
             .width(Fill)
             .spacing(space::xs());
+            if let Some(face) = face {
+                words = column![face, words].width(Fill).spacing(space::s());
+            }
+            words = words.push(date_text());
             if summary.flags.contains(&Flag::Flagged) {
                 words =
                     words.push(widgets::with_tooltip(small_icon(Icon::Flag, Some(reading.attention)), tr("Flagged")));
@@ -7108,10 +7149,10 @@ mod tests {
             }
         }
         let command = function_source(source, "command_body");
-        for part in ["head(", "detail::properties(", "panel_letter(", "floating_rail_room()"] {
+        for part in ["head_in(", "detail::properties(", "panel_letter(", "floating_rail_room()"] {
             assert!(command.contains(part), "{part}");
         }
-        assert!(command.contains("head(reading, entry, room)"), "the head, which has no subject (#457)");
+        assert!(command.contains("head_in(reading, entry, room, clearance)"), "the head, which has no subject (#457)");
         assert!(!command.contains("panel_standards") && !command.contains("header("), "none of the split");
         let split = function_source(source, "split_body");
         assert!(split.contains("panel_standards(") && split.contains("header("), "the hub's panel as in E9.4");
@@ -7806,7 +7847,7 @@ mod tests {
             let mut ui = iced_test::Simulator::with_size(
                 iced::Settings::default(),
                 iced::Size::new(width, 1800.0),
-                head(&reading, Some(ReaderEntry { item: &item, hide: true }), width),
+                head_in(&reading, Some(ReaderEntry { item: &item, hide: true }), width, widgets::floating_rail_room()),
             );
             let sender = ui
                 .find(|candidate: Candidate<'_>| match candidate {
@@ -7816,6 +7857,14 @@ mod tests {
                 .expect("full sender name, not an ellipsis");
             assert!(sender.height > typo::line_height(typo::body_strong()), "{sender:?}");
             assert_eq!(sender.width, width - widgets::floating_rail_room(), "compact names keep their whole column");
+            let date = torro_gui::datetime::format_moment(summary.date, reading.now);
+            let date_box = ui
+                .find(|candidate: Candidate<'_>| match candidate {
+                    Candidate::Text { content, bounds, .. } if content == date => Some(bounds),
+                    _ => None,
+                })
+                .expect("the complete date");
+            assert_eq!(date_box.width, sender.width, "the avatar never takes width from a compact date");
             let explanation = ui
                 .find(|candidate: Candidate<'_>| match candidate {
                     Candidate::Text { content, bounds, .. } if content == why => Some(bounds),
@@ -7825,6 +7874,31 @@ mod tests {
             assert_eq!(explanation.x, 0.0);
             assert_eq!(explanation.width, width - widgets::floating_rail_room());
         });
+    }
+
+    #[test]
+    fn a_very_narrow_invitation_card_gives_the_title_its_own_row() {
+        use iced_test::selector::Candidate;
+        let summary = demo::mail_sample(now()).remove(0).summary;
+        let title = "Calendar migration planning";
+        let invite = Invite {
+            title: title.into(),
+            start: now() + chrono::TimeDelta::days(1),
+            end: None,
+            all_day: false,
+            answered: None,
+        };
+        let width = 140.0;
+        let card = invite_card_in(&invite, &summary, now(), false, InviteSide::default(), Color::BLACK, true);
+        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), iced::Size::new(width, 1000.0), card);
+        let bounds = ui
+            .find(|candidate: Candidate<'_>| match candidate {
+                Candidate::Text { content, bounds, .. } if content == title => Some(bounds),
+                _ => None,
+            })
+            .expect("complete title");
+        assert_eq!(bounds.width, width - layout::panel_padding().left - layout::panel_padding().right);
+        assert!(bounds.y >= layout::panel_padding().top + size::tile_lg(), "the tile is above the title: {bounds:?}");
     }
 
     /// Task E8.3: a message's card answers and archives (`r`, `e`), and is as high as its parts.

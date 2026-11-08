@@ -5717,11 +5717,6 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                                 tr("Calendar coordination for the distributed product team")
                             ));
                         }
-                        for item in self.items.iter_mut().chain(&mut self.for_me).chain(self.detail.iter_mut()) {
-                            if holds(item, &id) {
-                                item.reason = Some(torro_inbox::LaneReason::Automated);
-                            }
-                        }
                     }
                 }
                 let invite = result.as_ref().ok().and_then(|mail| mail.summary.invite.clone());
@@ -23301,6 +23296,19 @@ mod tests {
         }
         let plain = block_on(app.inbox.list_calendars()).expect("event dialog calendars");
         assert_eq!(plain[0], demo_calendar(0), "the event dialog keeps the ordinary calendar names");
+        for calendar in block_on(app.inbox.list_invitation_calendars()).expect("invitation calendars") {
+            assert_eq!(
+                block_on(MailSource::respond_to_invitation(
+                    app.inbox.as_ref(),
+                    summary.account.clone(),
+                    summary.id.clone(),
+                    InvitationAnswer::Accept,
+                    Some(calendar.id)
+                )),
+                Ok(Delivery::Accepted),
+                "every advertised demo calendar accepts the answer, including CalDAV"
+            );
+        }
     }
 
     // ----- Notifications window (E8.4) ------------------------------------------------------
