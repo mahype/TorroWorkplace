@@ -5703,6 +5703,21 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 if let Ok(mail) = &mut result {
                     keep_answer(&self.answers, &mut mail.summary);
                     keep_pile(self.listed_pile(&mail.summary.id), &mut mail.summary);
+                    // Exercise long Torro headings in the invitation screenshot, never live mail
+                    // or the original demo message body (issue #569).
+                    if self.launch.demo && self.launch.open == Some(Open::Invitation) {
+                        if let Some(invite) = &mut mail.summary.invite {
+                            invite.title =
+                                tr("Planning the shared calendar migration and the next steps for the whole team")
+                                    .into();
+                        }
+                        if let Some(from) = &mut mail.summary.from {
+                            from.name = Some(format!(
+                                "Maria Berg — {}",
+                                tr("Calendar coordination for the distributed product team")
+                            ));
+                        }
+                    }
                 }
                 let invite = result.as_ref().ok().and_then(|mail| mail.summary.invite.clone());
                 let unread = result.as_ref().is_ok_and(|mail| !mail.summary.flags.contains(&Flag::Seen))
@@ -10253,7 +10268,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             return events;
         }
         let inbox = self.inbox.clone();
-        let calendars = async move { inbox.list_calendars().await.map_err(|err| err.to_string()) };
+        let calendars = async move { inbox.list_invitation_calendars().await.map_err(|err| err.to_string()) };
         Task::batch([events, Task::perform(calendars, Message::InviteCalendars)])
     }
 
@@ -13707,6 +13722,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// the chosen one marked; with [`widgets::SEARCH_FROM`] values or more with a search field.
     fn field_menu(&self) -> Option<Element<'_, Message>> {
         let key = self.fields.open()?;
+        if *key == Field::InviteCalendar {
+            return Some(self.invitation_calendar_menu());
+        }
         let ok = |list: &Option<Result<Vec<TaskList>, String>>| match list {
             Some(Ok(list)) => list.clone(),
             _ => Vec::new(),
@@ -13728,6 +13746,54 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
         };
         Some(self.fields.view(key, sections, widgets::menu_width(), Align::Start, Message::Fields))
+    }
+
+    /// The existing calendar dropdown with room for connection names (issue #569). Its standard
+    /// menu entries retain their look and selection messages; clipped options expose the full
+    /// label as a tooltip. The chosen label is also always shown wrapped on the invitation card.
+    fn invitation_calendar_menu(&self) -> Element<'_, Message> {
+        let calendars = match &self.invite_calendars {
+            Some(Ok(calendars)) => calendars.clone(),
+            _ => Vec::new(),
+        };
+        let inset = 2.0 * style::MENU_INSET + style::ITEM_PADDING.left + style::ITEM_PADDING.right;
+        let trail = icon::SIZE_SM + space::s();
+        let needed = calendars
+            .iter()
+            .map(|c| typo::text_width(&c.name, typo::body()) + inset + trail)
+            .fold(widgets::menu_width(), f32::max);
+        let width = needed.min(size::reading_max()).min((self.size.width - 2.0 * space::s()).max(0.0));
+        let searchable = calendars.len() >= widgets::SEARCH_FROM;
+        let sections = choice_section(calendars, self.invite_calendar(), Message::InviteCalendar);
+        let sections = widgets::matching_sections(sections, if searchable { self.fields.query() } else { "" });
+        let close = Message::Fields(DropdownEvent::Close);
+        let enter = widgets::first_choice(&sections, self.fields.query()).unwrap_or_else(|| close.clone());
+        let rows = sections
+            .into_iter()
+            .flat_map(|s| s.items)
+            .map(|item| invitation_calendar_option(item, width, (width - inset - trail).max(0.0)))
+            .collect::<Vec<_>>();
+        let card = if searchable {
+            widgets::escape_free(widgets::search_menu(
+                DROPDOWN_SEARCH,
+                self.fields.query(),
+                |words| Message::Fields(DropdownEvent::Query(words)),
+                enter,
+                rows,
+                width,
+            ))
+        } else {
+            let body = iced::widget::scrollable(column(rows))
+                .width(Fill)
+                .direction(iced::widget::scrollable::Direction::Vertical(style::scrollbar()))
+                .style(style::scrollable);
+            container(container(body).max_height(size::panel()))
+                .width(width)
+                .padding(style::MENU_INSET)
+                .style(style::container::menu)
+                .into()
+        };
+        widgets::floating(&self.fields.anchor(&Field::InviteCalendar), Placement::Below(Align::Start), card, close)
     }
 
     /// The open menu of the overview's account dropdown (issue #554), under its button.
@@ -14549,6 +14615,29 @@ pub(crate) fn choice_section<'a, T: ToString + PartialEq>(
         })
         .collect();
     vec![MenuSection::new(items)]
+}
+
+/// Long, unbroken logins and URL segments must remain readable before selecting a calendar.
+fn invitation_calendar_tip(label: String, width: f32) -> Element<'static, Message> {
+    let text = typo::text(typo::caption(), label).style(theme::text_2).width(Fill).wrapping(Wrapping::WordOrGlyph);
+    container(text)
+        .width(width)
+        .padding([style::KBD_PADDING.top + style::KBD_PADDING.bottom, space::s()])
+        .style(style::container::menu)
+        .into()
+}
+
+fn invitation_calendar_option(item: MenuItem<'_, Message>, width: f32, text_room: f32) -> Element<'_, Message> {
+    let label = item.label.to_string();
+    let item = MenuItem { label: typo::ellipsize(&label, typo::body(), text_room).into(), ..item };
+    iced::widget::tooltip(
+        widgets::menu_item(item),
+        invitation_calendar_tip(label, width),
+        iced::widget::tooltip::Position::Bottom,
+    )
+    .gap(space::xs())
+    .delay(Duration::from_millis(500))
+    .into()
 }
 
 /// The floating `dialog` at `anchor`, with the open dropdown of one of its fields over it, if one is
@@ -23106,6 +23195,45 @@ mod tests {
         );
     }
 
+    /// Issue #569: a long, unbroken connection remains readable while hovering an option.
+    #[test]
+    fn invitation_calendar_hover_wraps_unbroken_identifiers() {
+        use iced_test::selector::Candidate;
+        let label = format!(
+            "Personal — CalDAV · https://dav.example/{} · {}@example.org",
+            "path".repeat(40),
+            "account".repeat(25)
+        );
+        let calendar = TaskList { id: "demo/calendar/personal".into(), name: label.clone() };
+        let item = MenuItem::plain(label.clone(), Message::InviteCalendar(calendar));
+        let width = 280.0;
+        let option = container(invitation_calendar_option(item, width, width - space::xxl())).width(width);
+        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), Size::new(320.0, 800.0), option);
+        let position = Point::new(space::m(), space::m());
+        ui.point_at(position);
+        ui.simulate([iced::Event::Mouse(iced::mouse::Event::CursorMoved { position })]);
+        let dir = tempfile::tempdir().expect("hover snapshots");
+        let before = dir.path().join("before");
+        assert!(ui.snapshot(&Theme::Dark).expect("initial hover").matches_hash(&before).expect("store hash"));
+        // Iced's tooltip overlay does not expose text to widget operations. Verify that the real
+        // delayed hover appears, then inspect the same tooltip content's layout separately.
+        std::thread::sleep(Duration::from_millis(510));
+        assert!(!ui.snapshot(&Theme::Dark).expect("tooltip open").matches_hash(&before).expect("compare hash"));
+        let mut ui = iced_test::Simulator::with_size(
+            iced::Settings::default(),
+            Size::new(320.0, 800.0),
+            invitation_calendar_tip(label.clone(), width),
+        );
+        let bounds = ui
+            .find(|candidate: Candidate<'_>| match candidate {
+                Candidate::Text { content, bounds, .. } if content == label => Some(bounds),
+                _ => None,
+            })
+            .expect("the tooltip content retains the complete label");
+        assert!(bounds.x >= 0.0 && bounds.x + bounds.width <= 320.0, "{bounds:?}");
+        assert!(bounds.height > typo::line_height(typo::caption()) * 3.0, "unbroken segments wrap: {bounds:?}");
+    }
+
     /// Task E8.3c: reading an invitation asks for the events around it and – once – the calendars;
     /// the card offers the calendar, and the one picked goes with the answer: the first one before a
     /// pick, none while the calendars are not in (the core chooses then).
@@ -23135,24 +23263,52 @@ mod tests {
             sent.expect("an answer")
         };
         assert_eq!(answer(&mut app), None, "no calendars yet: the core's choice");
-        let calendars = block_on(app.inbox.list_calendars()).map_err(|err| err.to_string());
-        let _ = app.update(Message::InviteCalendars(calendars));
-        assert_eq!(app.invite_calendar(), Some(&demo_calendar(0)), "the first, as the core would take");
-        assert_eq!(answer(&mut app), Some(demo_calendar(0).id));
-        let _ = app.update(Message::InviteCalendar(demo_calendar(1)));
-        assert_eq!(answer(&mut app), Some(demo_calendar(1).id), "the one picked");
+        let calendars = block_on(app.inbox.list_invitation_calendars()).expect("invitation calendars");
+        let first = calendars[0].clone();
+        let second = calendars[1].clone();
+        assert_eq!(first.name.split(" — ").next(), second.name.split(" — ").next(), "same calendar name");
+        assert_ne!(first.name, second.name, "different connections");
+        let _ = app.update(Message::InviteCalendars(Ok(calendars)));
+        assert_eq!(app.invite_calendar(), Some(&first), "the first, as the core would take");
+        assert_eq!(answer(&mut app), Some(first.id.clone()));
+        app.last_calendar = Some(second.id.clone());
+        assert_eq!(app.invite_calendar(), Some(&second), "the last event's calendar by id");
+        let _ = app.update(Message::Fields(DropdownEvent::Toggle(Field::InviteCalendar)));
+        let _ = app.update(Message::Escape);
+        assert!(app.reading && app.fields.open().is_none(), "Escape closes only the dropdown");
+        let _ = app.update(Message::InviteCalendar(second.clone()));
+        assert_eq!(answer(&mut app), Some(second.id.clone()), "the one picked, never its display label");
 
         let events = block_on(MailSource::list_events(app.inbox.as_ref(), start, end)).map_err(|err| err.to_string());
         let _ = app.update(Message::InviteEvents(summary.id.clone(), events));
         let reading = app.reading().expect("the invitation is read");
         assert!(reading.invite.events.is_some() && reading.invite.calendars.is_some());
-        assert_eq!(reading.invite.calendar, Some(&demo_calendar(1)));
+        assert_eq!(reading.invite.calendar, Some(&second));
         draw_everywhere(&mut app);
         let _ = app.update(Message::InviteEvents("m:other".into(), Ok(Vec::new())));
         assert!(
             app.invite_events.as_ref().is_some_and(|(id, _)| *id == summary.id),
             "another mail's events are dropped"
         );
+        for calendars in [Ok(Vec::new()), Err("offline".into())] {
+            let _ = app.update(Message::InviteCalendars(calendars));
+            assert_eq!(answer(&mut app), None, "empty or failed: the core chooses as before");
+        }
+        let plain = block_on(app.inbox.list_calendars()).expect("event dialog calendars");
+        assert_eq!(plain[0], demo_calendar(0), "the event dialog keeps the ordinary calendar names");
+        for calendar in block_on(app.inbox.list_invitation_calendars()).expect("invitation calendars") {
+            assert_eq!(
+                block_on(MailSource::respond_to_invitation(
+                    app.inbox.as_ref(),
+                    summary.account.clone(),
+                    summary.id.clone(),
+                    InvitationAnswer::Accept,
+                    Some(calendar.id)
+                )),
+                Ok(Delivery::Accepted),
+                "every advertised demo calendar accepts the answer, including CalDAV"
+            );
+        }
     }
 
     // ----- Notifications window (E8.4) ------------------------------------------------------
