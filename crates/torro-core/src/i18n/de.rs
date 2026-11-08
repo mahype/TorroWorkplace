@@ -1426,6 +1426,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Unpin folder", "Ordner lösen"),
     ("Shown mail accounts", "Angezeigte E-Mail-Konten"),
     ("All accounts", "Alle Konten"),
+    ("Selected accounts", "Ausgewählte Konten"),
     ("No accounts", "Keine Konten"),
     ("{count} accounts", "{count} Konten"),
     ("new for you", "neu für dich"),

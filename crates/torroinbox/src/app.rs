@@ -1685,6 +1685,10 @@ pub enum Open {
     CategorizationWaiting,
     /// "All" of the mail window with the menu of the account field open (issue #455).
     MailAccounts,
+    /// Four mail accounts, all active, with the drawer open and the account menu closed (#566).
+    MailAccountsMany,
+    /// Three of those four accounts active, with the same compact field in the drawer.
+    MailAccountsSelected,
     /// "Trash" of the mail window (issue #455): the mail in the trash of every account.
     Trash,
     /// "Drafts" of the mail window (issue #502): the drafts of every account.
@@ -1692,7 +1696,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 102] = [
+    const ALL: [(&'static str, Open); 104] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1793,6 +1797,8 @@ impl Open {
         ("categorization-consent", Open::CategorizationConsent),
         ("categorization-waiting", Open::CategorizationWaiting),
         ("mail-accounts", Open::MailAccounts),
+        ("mail-accounts-many", Open::MailAccountsMany),
+        ("mail-accounts-selected", Open::MailAccountsSelected),
         ("trash", Open::Trash),
         ("drafts", Open::Drafts),
     ];
@@ -2330,11 +2336,13 @@ impl Launch {
     }
 
     /// The demo's sample around [`Launch::start`]: with one mail account for `--open pinned-one`
-    /// (issue #476, [`torro_inbox::demo::DemoSource::single`]), else both.
+    /// (issue #476), four for the compact account field (#566), else both.
     pub fn demo_source(&self) -> torro_inbox::demo::DemoSource {
         use torro_inbox::demo::DemoSource;
         if self.open == Some(Open::PinnedOne) {
             DemoSource::single(self.start())
+        } else if matches!(self.open, Some(Open::MailAccountsMany | Open::MailAccountsSelected)) {
+            DemoSource::many(self.start())
         } else {
             DemoSource::new(self.start())
         }
@@ -4389,8 +4397,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             found: Found::default(),
             highlights: Vec::new(),
             folds: Vec::new(),
-            mail_accounts: None,
-            accounts_chosen: false,
+            mail_accounts: (open == Some(Open::MailAccountsSelected)).then(|| {
+                torro_inbox::demo::MAIL_ACCOUNTS
+                    .iter()
+                    .copied()
+                    .chain(["mail:anna@club.example.net"])
+                    .map(str::to_owned)
+                    .collect()
+            }),
+            accounts_chosen: matches!(open, Some(Open::MailAccountsMany | Open::MailAccountsSelected)),
             // Issue #476: a folder of each account pinned, or the one account's; chosen, so nothing
             // stored replaces them.
             pinned_folders: match open {
@@ -4439,7 +4454,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             },
             menu_at: MenuAt::default(),
             context_point: None,
-            drawer: matches!(open, Some(Open::Drawer)),
+            drawer: matches!(open, Some(Open::Drawer | Open::MailAccountsMany | Open::MailAccountsSelected)),
             sidebar: SidebarMode::default(),
             density: layout::density(),
             order: Order::default(),
@@ -12369,16 +12384,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .collect()
     }
 
-    /// The two lines of the account field (issue #455): "All accounts" over the domains of every
-    /// account, "{count} accounts" over the domains chosen, or one account's domain over its address;
-    /// the domains apart by " · ".
+    /// The account field's two lines (#455, #566): at most two accounts name their domains,
+    /// separated by " · ", or the chosen one's address. Three or more get a compact summary.
     fn account_field_text(&self) -> (String, String) {
         let domains =
             |accounts: &mut dyn Iterator<Item = &str>| accounts.map(mail_domain).collect::<Vec<_>>().join(" · ");
         match &self.mail_accounts {
             None => {
                 let every = mail::by_account(&self.folders);
-                (tr("All accounts").to_owned(), domains(&mut every.iter().map(|group| group.account)))
+                let detail = if every.len() > 2 {
+                    tr("All accounts").to_owned()
+                } else {
+                    domains(&mut every.iter().map(|group| group.account))
+                };
+                (tr("All accounts").to_owned(), detail)
             }
             Some(chosen) if chosen.is_empty() => (tr("No accounts").to_owned(), String::new()),
             Some(chosen) if chosen.len() == 1 => {
@@ -12386,7 +12405,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Some(chosen) => (
                 trf("{count} accounts", &[("count", &chosen.len().to_string())]),
-                domains(&mut chosen.iter().map(String::as_str)),
+                if chosen.len() > 2 {
+                    tr("Selected accounts").to_owned()
+                } else {
+                    domains(&mut chosen.iter().map(String::as_str))
+                },
             ),
         }
     }
@@ -18658,6 +18681,129 @@ mod tests {
             ui.simulate(iced_test::simulator::click());
             assert!(ui.into_messages().next().is_none(), "compose remains disabled without an account");
         }
+    }
+
+    /// Issue #566: only up to two accounts name their domains; folders do not inflate the count.
+    #[test]
+    fn the_account_field_summarizes_many_accounts_without_changing_the_selection() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let template = app.folders[0].clone();
+        let accounts = [
+            "mail:one@first.example",
+            "mail:two@second.example",
+            "mail:three@third.example",
+            "mail:four@fourth.example",
+        ];
+        for count in 0..=4 {
+            app.folders = accounts[..count]
+                .iter()
+                .flat_map(|account| {
+                    ["Inbox", "Archive"].map(|name| torro_mail::Folder {
+                        id: format!("{account}/{name}"),
+                        account: (*account).to_owned(),
+                        name: name.to_owned(),
+                        ..template.clone()
+                    })
+                })
+                .collect();
+            app.mail_accounts = None;
+            let detail = if count > 2 {
+                tr("All accounts").to_owned()
+            } else {
+                accounts[..count].iter().map(|account| mail_domain(account)).collect::<Vec<_>>().join(" · ")
+            };
+            assert_eq!(app.account_field_text(), (tr("All accounts").to_owned(), detail), "{count} accounts");
+            assert_eq!(app.mail_accounts, None);
+        }
+        for count in 0..=4 {
+            let chosen: Vec<String> = accounts[..count].iter().map(|account| (*account).to_owned()).collect();
+            app.mail_accounts = Some(chosen.clone());
+            let want = match count {
+                0 => (tr("No accounts").to_owned(), String::new()),
+                1 => (mail_domain(accounts[0]).to_owned(), mail::address(accounts[0]).to_owned()),
+                _ => (
+                    trf("{count} accounts", &[("count", &count.to_string())]),
+                    if count > 2 {
+                        tr("Selected accounts").to_owned()
+                    } else {
+                        accounts[..count].iter().map(|account| mail_domain(account)).collect::<Vec<_>>().join(" · ")
+                    },
+                ),
+            };
+            assert_eq!(app.account_field_text(), want, "{count} chosen");
+            assert_eq!(app.mail_accounts, Some(chosen), "rendering preserves even an explicit full selection");
+        }
+        app.mail_accounts = Some(vec!["mail:missing@unknown.example".to_owned()]);
+        app.folders.clear();
+        assert_eq!(app.account_field_text(), ("unknown.example".to_owned(), "missing@unknown.example".to_owned()));
+        assert_eq!(app.mail_accounts, Some(vec!["mail:missing@unknown.example".to_owned()]), "no ID cleanup");
+    }
+
+    /// Issue #566: restoring and choosing accounts keep their existing semantics, regardless of the label.
+    #[test]
+    fn compact_account_labels_preserve_account_selection_actions() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let accounts: Vec<String> =
+            mail::by_account(&app.folders).iter().map(|group| group.account.to_owned()).collect();
+        let stored = Some(vec![accounts[0].clone(), "mail:missing@unknown.example".to_owned()]);
+        let _ = app.update(Message::StoredMailAccounts(stored.clone()));
+        assert_eq!(app.mail_accounts, stored);
+        let _ = app.account_field_text();
+        assert_eq!(app.mail_accounts, stored, "display never cleans up restored IDs");
+        let _ = app.update(Message::OnlyMailAccount(accounts[0].clone()));
+        assert_eq!(app.mail_accounts, Some(vec![accounts[0].clone()]));
+        assert!(app.accounts_chosen);
+        let _ = app.update(Message::StoredMailAccounts(Some(Vec::new())));
+        assert_eq!(app.mail_accounts, Some(vec![accounts[0].clone()]), "late restore cannot overwrite a choice");
+        let _ = app.update(Message::ToggleMailAccount(accounts[1].clone()));
+        assert_eq!(app.mail_accounts, None, "ticking every account returns to All");
+        for account in &accounts {
+            let _ = app.update(Message::ToggleMailAccount(account.clone()));
+        }
+        assert_eq!(app.mail_accounts, Some(Vec::new()));
+        assert_eq!(app.account_field_text(), (tr("No accounts").to_owned(), String::new()));
+        let _ = app.update(Message::SelectAllMailAccounts);
+        assert_eq!(app.mail_accounts, None);
+        let _ = app.update(Message::StoredMailAccounts(stored));
+        assert_eq!(app.mail_accounts, None, "All is also an explicit user choice");
+    }
+
+    /// Issue #566: reproducible four-account states, with no changes to the ordinary demo.
+    #[test]
+    fn the_account_summary_demo_states_choose_four_or_three_accounts() {
+        for open in ["mail-accounts-many", "mail-accounts-selected"] {
+            assert!(Launch::parse(&args(&["--view", "mail", "--open", open])).is_err(), "demo only");
+            let mut app = mail_window(Density::Compact, &["--open", open]);
+            let groups = mail::by_account(&app.folders);
+            assert_eq!(groups.len(), 4);
+            assert!(app.drawer && app.menu.is_none() && app.accounts_chosen);
+            if open == "mail-accounts-many" {
+                assert_eq!(app.mail_accounts, None);
+                assert_eq!(app.account_field_text(), (tr("All accounts").to_owned(), tr("All accounts").to_owned()));
+            } else {
+                let chosen = app.mail_accounts.as_ref().expect("three chosen");
+                assert_eq!(chosen.len(), 3);
+                assert!(chosen.iter().all(|account| groups.iter().any(|group| group.account == account)));
+                assert_eq!(
+                    app.account_field_text(),
+                    (trf("{count} accounts", &[("count", &"3")]), tr("Selected accounts").to_owned())
+                );
+            }
+            let selection = app.mail_accounts.clone();
+            let _ = app.update(Message::StoredMailAccounts(Some(Vec::new())));
+            assert_eq!(app.mail_accounts, selection, "demo state wins over restored state");
+            draw_everywhere(&mut app);
+            let _ = app.update(Message::OnlyMailAccount(torro_inbox::demo::MAIL_ACCOUNTS[0].to_owned()));
+            let all: Vec<String> =
+                mail::by_account(&app.folders).iter().map(|group| group.account.to_owned()).collect();
+            for account in &all[1..] {
+                let _ = app.update(Message::ToggleMailAccount(account.clone()));
+            }
+            assert_eq!(app.mail_accounts, None, "all four ticked is All");
+        }
+        let standard = mail_window(Density::Compact, &[]);
+        assert_eq!(mail::by_account(&standard.folders).len(), 2);
+        assert!(!standard.drawer && !standard.accounts_chosen && standard.mail_accounts.is_none());
     }
 
     /// Issue #559: the fixed footer keeps compose directly above accounts, including the drawer.
