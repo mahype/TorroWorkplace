@@ -201,9 +201,9 @@ echten Mails.
 
 - Solange die Erlaubnis des Platzes *Sortieren* aus ist (`decide_mail_to_cloud`, [ki.md](ki.md), Abschnitt
   „Erlaubnis je Platz“), gehen Mails nur an Modelle **auf diesem Rechner** (`AiModel::remote`,
-  `data_rule::place_of`, [ki.md](ki.md) Grundsatz 4). Modelle in der Cloud stehen trotzdem in der Auswahl,
-  getrennt unter „In the cloud – mail leaves this computer“ und mit Wolke (#424); eins zu wählen fragt
-  vorher („Sort mail in the cloud?“), und erst „Use“ gibt die Erlaubnis. Ein lokales Modell nimmt sie zurück.
+  `data_rule::place_of`, [ki.md](ki.md) Grundsatz 4). Modelle in der Cloud stehen trotzdem in der Auswahl
+  unter Einstellungen › AI, Platz *Sorting* (seit #545 der einzige Ort), getrennt unter „Elsewhere“ und mit Wolke
+  (#424); eins zu wählen fragt vorher („Send mail outside this computer?“), und erst „Use“ gibt die Erlaubnis. Ein lokales Modell nimmt sie zurück.
   **Jev ist ein Cloud-Modell**: Es ist nach dem Verbinden aus wie jedes Cloud-Modell und bekommt Mail nur
   mit dieser Erlaubnis.
   „Automatic“ an einem Konto auf

@@ -238,8 +238,8 @@ Der eine Schalter aus Grundsatz 4 gilt jetzt je Platz:
   anderswo rechnen, unter „Elsewhere“ mit Wolke. Ein Modell dort fragt vorher
    („Send mail outside this computer?“, „Use“/„Cancel“), auch beim Wechsel auf ein anderes, weil die Zustimmung einem
   Anbieter gilt; erst „Use“ setzt Modell und Erlaubnis. Steht ein Modell in der Cloud im Platz, aber die
-  Erlaubnis ist aus (alte Einstellung, oder ein Agent hat sie abgeschaltet), zeigen AI › Sorting und Categorization „Waiting for
-  your OK – mail stays here“; es noch einmal zu wählen fragt wieder. Dieselbe Rückfrage stellt die Einrichtung,
+  Erlaubnis ist aus (alte Einstellung, oder ein Agent hat sie abgeschaltet), zeigt AI › Sorting „Waiting for
+  your OK – mail stays here“ (Categorization einen gleichbedeutenden längeren Satz); es noch einmal zu wählen fragt wieder. Dieselbe Rückfrage stellt die Einrichtung,
    wenn ihr Schalter „Sort mail“ ein ausgeschaltetes Modell anderswo wieder einschalten würde oder ein neues
    Modell anderswo gewählt wird, auch mit vorhandener Erlaubnis. Abbrechen behält die bisherige Auswahl;
    „Continue“ umgeht eine ausstehende Zustimmung nicht. Wohin Mail geht, sagt die Zeile unter
@@ -288,8 +288,8 @@ Einstellungen zeigt beim Ersatzweg „Answers in a fixed format, slower“.
 - **Entscheidermodelle zuerst** (#421): Wo ein Modell zum Sortieren gewählt wird (AI, Platz *Sorting*; seit #545
   nicht mehr in Mail-Fenster › Categorization), stehen die Entscheidermodelle oben unter „Decision models (fast)“,
   die Chat-Modelle des Ersatzwegs darunter unter „Other models“; ein Satz sagt, dass Entscheidermodelle direkt
-  antworten und viel schneller einordnen. Ohne Entscheidermodell zeigt das Mail-Fenster an Stelle der ersten Gruppe
-  „No decision model“ mit dem Weg zu Einstellungen › AI, wo „Use suggestion“ eines zum Laden anbietet. Die API
+  antworten und viel schneller einordnen. Ohne Entscheidermodell zeigt Mail › Categorization unter „Sort with model“ die
+  Zeile „No decision model“ mit dem Weg zu Einstellungen › AI, wo „Use suggestion“ eines zum Laden anbietet. Die API
   braucht dafür nichts Neues: `ai.list_models` sagt mit `decision`, welches Modell direkt entscheidet.
 
 ## API und MCP
