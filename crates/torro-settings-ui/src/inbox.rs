@@ -5,8 +5,10 @@
 //! ```text
 //! Notifications  quiet during busy events
 //! Sources        per account: Nextcloud notifications and Talk, GitHub, an ntfy server,
-//!                and per mail account "Show new mail" (All / Only "For me" / Off)
-//! Rules          every lasting rule with "Remove"
+//!                and per mail account "Show new mail" (All / Only "For me" / Off);
+//!                more than three groups get a tab per provider (issue #546)
+//! Rules          every lasting rule with "Remove", but the trusted senders, which are
+//!                mail's (Categorization › Spam and Phishing, issue #546)
 //! ```
 //!
 //! The mail window has its own sections ([`crate::mail`]); these two windows show these three and
@@ -63,8 +65,10 @@ pub fn wanted() -> Vec<Request> {
 /// The state of every section that keeps some; the app owns one of these next to its host.
 #[derive(Debug, Default)]
 pub struct State {
-    /// Rules: whose "Remove" is on its way. Notifications and Sources keep nothing – they show
-    /// what [`Data`] holds.
+    /// Sources: the chosen tab (issue #546). Notifications keeps nothing – it shows what [`Data`]
+    /// holds.
+    pub sources: sources::State,
+    /// Rules: whose "Remove" is on its way.
     pub rules: rules::State,
 }
 
@@ -80,7 +84,7 @@ pub enum Message {
 pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
     match message {
         Message::Notifications(message) => notifications::update(message),
-        Message::Sources(message) => sources::update(message, data),
+        Message::Sources(message) => sources::update(&mut state.sources, message, data),
         Message::Rules(message) => rules::update(&mut state.rules, message),
     }
 }
@@ -89,7 +93,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
 /// Notifications, the section the gear lands on; the host only ever asks for one of [`SECTIONS`].
 pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Message> {
     match section {
-        "sources" => Page::new(sources::view(data).map(Message::Sources)),
+        "sources" => Page::new(sources::view(&state.sources, data).map(Message::Sources)),
         // Ends and "since" are said from now, as the core counts them.
         "rules" => Page::new(rules::view(&state.rules, data, Utc::now()).map(Message::Rules)),
         _ => Page::new(notifications::view(data).map(Message::Notifications)),
@@ -166,7 +170,8 @@ pub mod notifications {
 }
 
 /// "Sources": per account a switch for every source it brings, and per mail account the choice
-/// which new mail becomes an entry.
+/// which new mail becomes an entry. With more than three groups the page has a tab per provider
+/// (Nextcloud · GitHub · Mail · ntfy, issue #546), each with the groups of its accounts.
 ///
 /// Muting goes through `inbox.mute_source`, which knows whole sources: a Nextcloud's
 /// notifications, its Talk, a GitHub account, an ntfy **server**. A mail account has its own field
@@ -178,9 +183,21 @@ pub mod sources {
 
     use super::*;
 
+    /// What the page keeps while it is open: the chosen tab (issue #546); `None`, or a kind whose
+    /// tab is gone, shows the first tab.
+    #[derive(Debug, Default)]
+    pub struct State {
+        pub tab: Option<SourceKind>,
+    }
+
+    /// The order of the tabs: one per provider that has a group ([`tabs_of`]).
+    const TAB_ORDER: [SourceKind; 4] = [SourceKind::Nextcloud, SourceKind::Github, SourceKind::Mail, SourceKind::Ntfy];
+
     /// What a row of this section changes.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Message {
+        /// The tab at this index of the tabs shown ([`tabs_of`]) was chosen; only the page changes.
+        Tab(usize),
         /// The switch of one source (`inbox.mute_source`).
         Shown { source: SourceRef, shown: bool },
         /// "Show new mail" of the mail account with this id (`accounts.update_mail_account`,
@@ -188,8 +205,14 @@ pub mod sources {
         Notify { account: String, notify: Notify },
     }
 
-    pub fn update<A>(message: Message, data: &Data) -> Action<A> {
+    pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
         match message {
+            Message::Tab(index) => {
+                if let Some(&kind) = tabs_of(&groups(data)).get(index) {
+                    state.tab = Some(kind);
+                }
+                Action::None
+            }
             Message::Shown { source, shown } => Action::send(Request::MuteSource { source, muted: !shown }),
             Message::Notify { account, notify } => {
                 let mut requests = vec![notify_request(account.clone(), notify)];
@@ -257,40 +280,110 @@ pub mod sources {
         }
     }
 
-    /// The page: one group per account that brings a source, in the order the accounts come; a
-    /// quiet hint while none does.
-    ///
-    /// What muting means stands once, under the last group, as the suite's settings pages say such
-    /// a sentence once; a kind with more to say (mail, ntfy) says it at its own group.
-    pub fn view(data: &Data) -> Element<'_, Message> {
-        let groups: Vec<(String, Vec<Element<'_, Message>>, Option<String>)> = data
-            .accounts
+    /// A group of the page: the provider of its account, the account and its rows.
+    struct Group<'a> {
+        kind: SourceKind,
+        account: &'a AccountInfo,
+        source: SourceRef,
+    }
+
+    /// One group per account that brings a source, in the order the accounts come.
+    fn groups(data: &Data) -> Vec<Group<'_>> {
+        data.accounts
             .iter()
             // A sign-in that still runs has no id and brings nothing yet.
             .filter(|account| !account.id.is_empty())
             .filter_map(|account| {
                 let source = account.id.parse::<SourceRef>().ok()?;
-                let rows = rows_of(account, &source, data);
-                (!rows.is_empty()).then(|| (group_title(account, &source), rows, footer_of(&source)))
+                brings(source.kind).then_some(Group { kind: source.kind, account, source })
+            })
+            .collect()
+    }
+
+    /// The tabs of a page with `groups`: none up to three groups (they stand one under the other),
+    /// else one per provider with a group, in [`TAB_ORDER`] (issue #546, design skill, section 5).
+    fn tabs_of(groups: &[Group<'_>]) -> Vec<SourceKind> {
+        if groups.len() <= 3 {
+            return Vec::new();
+        }
+        TAB_ORDER.into_iter().filter(|kind| groups.iter().any(|group| group.kind == *kind)).collect()
+    }
+
+    /// The word of a provider's tab: its product name, "Mail" for mail accounts.
+    fn tab_label(kind: SourceKind, groups: &[Group<'_>]) -> String {
+        match kind {
+            SourceKind::Mail => tr("Mail").to_owned(),
+            _ => groups.iter().find(|group| group.kind == kind).map(|group| group.source.label()).unwrap_or_default(),
+        }
+    }
+
+    /// What the page shows of `groups` with `state`: the tabs, the chosen one, and per group shown its
+    /// title and the sentence under it.
+    struct Layout<'g, 'a> {
+        tabs: Vec<SourceKind>,
+        chosen: Option<SourceKind>,
+        shown: Vec<(&'g Group<'a>, String, Option<String>)>,
+    }
+
+    /// Lays out `groups` ([`Layout`]): with tabs ([`tabs_of`]) only the chosen provider's groups,
+    /// each titled with its account; without, all of them as "GitHub · anna-berg".
+    ///
+    /// What a kind has to say of its own (mail, ntfy, [`footer_of`]) stands once, under its last
+    /// group; what muting means stands once under the last group of the page or tab, as the suite's
+    /// settings pages say such a sentence once – not on the tab Mail, whose accounts are not muted
+    /// but choose what they show.
+    fn layout_of<'g, 'a>(state: &State, groups: &'g [Group<'a>]) -> Layout<'g, 'a> {
+        let tabs = tabs_of(groups);
+        let chosen = state.tab.filter(|kind| tabs.contains(kind)).or_else(|| tabs.first().copied());
+        let picked: Vec<&Group<'a>> =
+            groups.iter().filter(|group| chosen.is_none_or(|kind| group.kind == kind)).collect();
+        let muting = (chosen != Some(SourceKind::Mail))
+            .then(|| tr("A muted source brings nothing new; what is already in the Notification Hub stays."));
+        let last = picked.len().saturating_sub(1);
+        let shown = picked
+            .iter()
+            .enumerate()
+            .map(|(at, &group)| {
+                let last_of_kind = !picked[at + 1..].iter().any(|later| later.kind == group.kind);
+                let own = footer_of(&group.source).filter(|_| last_of_kind);
+                let footer = match (own, muting.filter(|_| at == last)) {
+                    (Some(own), Some(muting)) => Some(format!("{own} {muting}")),
+                    (Some(own), None) => Some(own),
+                    (None, muting) => muting.map(str::to_string),
+                };
+                let title = if chosen.is_some() {
+                    group.account.label.clone()
+                } else {
+                    group_title(group.account, &group.source)
+                };
+                (group, title, footer)
             })
             .collect();
+        Layout { tabs, chosen, shown }
+    }
+
+    /// The page: one group per account that brings a source, in the order the accounts come – with
+    /// more than three, a tab per provider and the groups of the chosen one ([`layout_of`]); a quiet
+    /// hint while none does.
+    pub fn view<'a>(state: &State, data: &'a Data) -> Element<'a, Message> {
+        let groups = groups(data);
         if groups.is_empty() {
             return widgets::empty_state(
                 tr("No sources"),
                 tr("Sources appear here once an account brings notifications or mail."),
             );
         }
-        let muting = tr("A muted source brings nothing new; what is already in the Notification Hub stays.");
-        let last = groups.len() - 1;
-        let built = groups.into_iter().enumerate().map(|(at, (title, rows, own))| {
-            let footer = match (at == last, own) {
-                (true, Some(own)) => Some(format!("{own} {muting}")),
-                (true, None) => Some(muting.to_string()),
-                (false, own) => own,
-            };
-            widgets::group(title, rows, footer)
-        });
-        column(built).spacing(layout::section_gap()).into()
+        let Layout { tabs, chosen, shown } = layout_of(state, &groups);
+        let built = shown
+            .into_iter()
+            .map(|(group, title, footer)| widgets::group(title, rows_of(group.account, &group.source, data), footer));
+        let page = column(built).spacing(layout::section_gap());
+        if tabs.is_empty() {
+            return page.into();
+        }
+        let labels = tabs.iter().map(|&kind| (tab_label(kind, &groups), None)).collect();
+        let selected = tabs.iter().position(|kind| Some(*kind) == chosen).unwrap_or_default();
+        column([widgets::tabs(labels, selected, Message::Tab), page.into()]).spacing(layout::section_gap()).into()
     }
 
     /// How a group is named: what kind of account it is and its name ("GitHub · anna-berg"), so a
@@ -302,6 +395,11 @@ pub mod sources {
             _ => source.label(),
         };
         format!("{kind} · {}", account.label)
+    }
+
+    /// Whether an account of `kind` brings rows ([`rows_of`]).
+    fn brings(kind: SourceKind) -> bool {
+        matches!(kind, SourceKind::Github | SourceKind::Nextcloud | SourceKind::Ntfy | SourceKind::Mail)
     }
 
     /// The rows one account brings: its sources with a switch each, a mail account its three-step
@@ -409,9 +507,14 @@ pub mod sources {
         #[test]
         fn a_switch_mutes_and_unmutes_its_source() {
             let source = SourceRef::github("anna-berg");
-            let off: Action<()> = update(Message::Shown { source: source.clone(), shown: false }, &Data::default());
+            let off: Action<()> = update(
+                &mut State::default(),
+                Message::Shown { source: source.clone(), shown: false },
+                &Data::default(),
+            );
             assert_eq!(off, Action::send(Request::MuteSource { source: source.clone(), muted: true }));
-            let on: Action<()> = update(Message::Shown { source: source.clone(), shown: true }, &Data::default());
+            let on: Action<()> =
+                update(&mut State::default(), Message::Shown { source: source.clone(), shown: true }, &Data::default());
             assert_eq!(on, Action::send(Request::MuteSource { source, muted: false }));
         }
 
@@ -420,7 +523,11 @@ pub mod sources {
         fn show_new_mail_sets_only_notify() {
             let account = "mail:anna@mailbox.org";
             for notify in [Notify::All, Notify::ForMeOnly, Notify::Off] {
-                let action: Action<()> = update(Message::Notify { account: account.into(), notify }, &Data::default());
+                let action: Action<()> = update(
+                    &mut State::default(),
+                    Message::Notify { account: account.into(), notify },
+                    &Data::default(),
+                );
                 assert_eq!(
                     action,
                     Action::Send(vec![notify_request(account.into(), notify)]),
@@ -456,7 +563,8 @@ pub mod sources {
                 Data { accounts: vec![account.clone()], sources: vec![muted(source.clone())], ..Data::default() };
             assert_eq!(mail_notify(&account, &source, &data), Notify::Off, "the mute wins over the stored field");
 
-            let on: Action<()> = update(Message::Notify { account: id.into(), notify: Notify::All }, &data);
+            let on: Action<()> =
+                update(&mut State::default(), Message::Notify { account: id.into(), notify: Notify::All }, &data);
             assert_eq!(
                 on,
                 Action::Send(vec![
@@ -465,7 +573,8 @@ pub mod sources {
                 ]),
                 "the field and the old rule, in that order"
             );
-            let off: Action<()> = update(Message::Notify { account: id.into(), notify: Notify::Off }, &data);
+            let off: Action<()> =
+                update(&mut State::default(), Message::Notify { account: id.into(), notify: Notify::Off }, &data);
             assert_eq!(off, Action::Send(vec![notify_request(id.into(), Notify::Off)]), "off is only the field");
 
             // Without the old rule the row shows what the account stores.
@@ -483,8 +592,85 @@ pub mod sources {
                 .filter(|account| account.id.parse::<SourceRef>().is_ok_and(|source| source.kind != SourceKind::Suite))
                 .count();
             assert!(with_sources > 0, "the demo has an account with sources");
-            let _: Element<'_, Message> = view(&data);
-            let _: Element<'_, Message> = view(&Data::default());
+            let _: Element<'_, Message> = view(&State::default(), &data);
+            let _: Element<'_, Message> = view(&State::default(), &Data::default());
+        }
+
+        /// Issue #546: the demo's six groups get a tab per provider, in the order Nextcloud, GitHub,
+        /// Mail, ntfy; a tab shows its groups titled with the account, the mail sentence once under
+        /// the last mail account and no muting sentence there; a click on a tab only changes the page.
+        #[tokio::test]
+        async fn more_than_three_groups_get_a_tab_per_provider() {
+            let data = data().await;
+            let groups = groups(&data);
+            assert!(groups.len() > 3, "the demo has more than three groups");
+            let tabs = tabs_of(&groups);
+            assert_eq!(tabs, TAB_ORDER, "every provider, in order");
+            let words: Vec<String> = tabs.iter().map(|&kind| tab_label(kind, &groups)).collect();
+            assert_eq!(words, ["Nextcloud", "GitHub", tr("Mail"), "ntfy"]);
+
+            let mut state = State::default();
+            let first = layout_of(&state, &groups);
+            assert_eq!(first.chosen, Some(SourceKind::Nextcloud), "the first tab without a choice");
+            assert!(first.shown.iter().all(|(group, _, _)| group.kind == SourceKind::Nextcloud));
+
+            let mail_at = tabs.iter().position(|&kind| kind == SourceKind::Mail).expect("the tab Mail");
+            let action: Action<()> = update(&mut state, Message::Tab(mail_at), &data);
+            assert_eq!(action, Action::None, "a tab changes only the page");
+            assert_eq!(state.tab, Some(SourceKind::Mail));
+            let mail = layout_of(&state, &groups);
+            assert!(mail.shown.len() > 1, "the demo has more than one mail account");
+            assert!(
+                mail.shown
+                    .iter()
+                    .all(|(group, title, _)| group.kind == SourceKind::Mail && *title == group.account.label)
+            );
+            let sentence = tr("Only \"For me\" leaves out newsletters and other automatic mail.");
+            let footers: Vec<&String> = mail.shown.iter().filter_map(|(_, _, footer)| footer.as_ref()).collect();
+            assert_eq!(footers, [sentence], "the mail sentence once, no muting sentence on the tab Mail");
+            assert!(mail.shown.last().is_some_and(|(_, _, footer)| footer.is_some()), "under the last mail account");
+
+            // A tab that is gone falls back to the first.
+            let gone = State { tab: Some(SourceKind::Suite) };
+            assert_eq!(layout_of(&gone, &groups).chosen, Some(SourceKind::Nextcloud));
+            let _: Element<'_, Message> = view(&state, &data);
+        }
+
+        /// Up to three groups stand one under the other without tabs, titled "Kind · account", the
+        /// muting sentence once under the last.
+        #[tokio::test]
+        async fn up_to_three_groups_have_no_tabs() {
+            let mut data = data().await;
+            let keep: Vec<AccountInfo> = data
+                .accounts
+                .iter()
+                .filter(|account| account.id.parse::<SourceRef>().is_ok_and(|source| brings(source.kind)))
+                .take(3)
+                .cloned()
+                .collect();
+            data.accounts = keep;
+            let groups = groups(&data);
+            assert_eq!(groups.len(), 3);
+            assert!(tabs_of(&groups).is_empty());
+            let layout = layout_of(&State::default(), &groups);
+            assert_eq!(layout.chosen, None);
+            assert_eq!(layout.shown.len(), 3);
+            assert!(
+                layout
+                    .shown
+                    .iter()
+                    .all(|(group, title, _)| title.ends_with(&group.account.label) && title.contains(" · "))
+            );
+            let muting = tr("A muted source brings nothing new; what is already in the Notification Hub stays.");
+            let with_muting = layout
+                .shown
+                .iter()
+                .filter(|(_, _, footer)| footer.as_ref().is_some_and(|f| f.contains(muting)))
+                .count();
+            assert_eq!(with_muting, 1);
+            assert!(
+                layout.shown.last().is_some_and(|(_, _, footer)| footer.as_ref().is_some_and(|f| f.contains(muting)))
+            );
         }
 
         /// Every quiet source says why in words a person can act on.

@@ -1752,6 +1752,9 @@ pub enum Open {
     Trash,
     /// "Drafts" of the mail window (issue #502): the drafts of every account.
     Drafts,
+    /// The Notification Hub's and the App Feed's settings at Sources on the tab Mail (issue #546);
+    /// the mail window has no such page and opens as it would without it.
+    SourcesMail,
 }
 
 impl Open {
@@ -1767,7 +1770,7 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 111] = [
+    const ALL: [(&'static str, Open); 112] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1879,6 +1882,7 @@ impl Open {
         ("mail-accounts-selected", Open::MailAccountsSelected),
         ("trash", Open::Trash),
         ("drafts", Open::Drafts),
+        ("sources-mail", Open::SourcesMail),
     ];
 
     /// The demo page of the backup states, which open the mail window's settings at the first
@@ -2765,6 +2769,10 @@ fn staged_overview(open: Option<Open>, today: chrono::NaiveDate) -> mail_overvie
         ..mail_overview::State::default()
     }
 }
+
+/// The section of the Notification Hub's and the App Feed's settings with the sources, which
+/// `--open sources-mail` opens on its tab Mail (issue #546).
+const SOURCES_SECTION: &str = "sources";
 
 /// The section of the settings that lists the rules: where "All rules" in the bell's menu leads in
 /// the windows that have it ([`Message::OpenRules`]). A test keeps it among the inbox's sections.
@@ -4600,11 +4608,18 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .clone()
             .or_else(|| staged.then(|| settings_mail::ACCOUNTS_SECTION.to_string()))
             .or_else(|| app.staged_categorization.is_some().then(|| CATEGORIZATION_SECTION.to_string()))
-            .or_else(|| open.and_then(Open::statistics_tab).map(|_| STATISTICS_SECTION.to_string()));
+            .or_else(|| open.and_then(Open::statistics_tab).map(|_| STATISTICS_SECTION.to_string()))
+            .or_else(|| app.sources_mail().then(|| SOURCES_SECTION.to_string()));
         let task = match section {
             Some(section) => Task::batch([task, app.open_settings(Some(&section))]),
             None => task,
         };
+        // `--open sources-mail`: the page shows its tab Mail, as a click on it would.
+        if app.sources_mail()
+            && let Some(SettingsPane { sections: SettingsState::Inbox(state), .. }) = app.settings.as_mut()
+        {
+            state.sources.tab = Some(SourceKind::Mail);
+        }
         (app, task)
     }
 
@@ -9035,6 +9050,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// "All rules"; an unknown word leaves the first section open) – a fresh [`Host`] with the
     /// sections of this window's kind and its first load, which goes over
     /// [`App::settings_backend`] and never over this window's own source.
+    /// Whether the demo state is `--open sources-mail` in a window whose settings have Sources (the
+    /// Notification Hub and the App Feed, issue #546).
+    fn sources_mail(&self) -> bool {
+        self.launch.open == Some(Open::SourcesMail) && self.launch.kind != Kind::Mail
+    }
+
     fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
         let kind = self.launch.kind;
         // Settings open already leave their state in the memory first, for the new host.
@@ -23484,6 +23505,22 @@ mod tests {
         assert_eq!(hub.settings.as_ref().map(|pane| pane.host.current().id), Some("rules"));
         let mail = overview_at(&["--view", "mail", "--settings", "reading"]);
         assert_eq!(mail.settings.as_ref().map(|pane| pane.host.current().id), Some("reading"));
+    }
+
+    /// Issue #546: `--open sources-mail` opens the settings at Sources on the tab Mail in the
+    /// Notification Hub and the App Feed; the mail window, which has no Sources, opens as without it.
+    #[test]
+    fn sources_mail_opens_sources_on_the_tab_mail() {
+        for view in ["hub", "notifications"] {
+            let app = overview_at(&["--view", view, "--open", "sources-mail"]);
+            let pane = app.settings.as_ref().expect("the settings are open");
+            assert_eq!(pane.host.current().id, SOURCES_SECTION, "{view}");
+            let SettingsState::Inbox(state) = &pane.sections else { panic!("{view}: the inbox's sections") };
+            assert_eq!(state.sources.tab, Some(SourceKind::Mail), "{view}");
+        }
+        assert!(settings_inbox::SECTIONS.iter().any(|section| section.id == SOURCES_SECTION));
+        let mail = overview_at(&["--view", "mail", "--open", "sources-mail"]);
+        assert!(mail.settings.is_none(), "the mail window has no Sources");
     }
 
     /// Task S.20: "All rules" opens the section Rules in the windows that have it; the mail window,
