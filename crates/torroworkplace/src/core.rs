@@ -26130,6 +26130,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ollama_cloud_connect_activation_and_mail_targets_are_for_people_only() {
+        use torro_core::ai::{AiSlot, SlotModel};
+        use torro_ipc::inbox::{CategoryJob, CategoryJobControl, CategoryJobScope, CategoryJobState};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let cloud = crate::account::ai::tests::fake_ollama_cloud().await;
+        let keys = MemoryTokens::default();
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, client_key) = client(&core, rights.clone()).await;
+        let connect = Request::ConnectAi {
+            provider: AiProvider::OllamaCloud,
+            server: Some(cloud.url("/v1")),
+            key: torro_ipc::Secret::new(AI_KEY),
+        };
+        assert_eq!(code(&ask(&core, Some(&client_key), connect.clone()).await), "forbidden");
+        let Response::Account { account } = core.handle(connect).await else { panic!("connected") };
+        let engine = &account.id;
+        assert!(!core.settings.current().mail_to_cloud_in(AiSlot::Chat));
+        assert!(!core.settings.current().mail_to_cloud_in(AiSlot::Decide));
+        let models = core.ai.models(engine, true).await.expect("models");
+        assert!(core.ai.mark_enabled(engine, models).await.iter().all(|m| !m.enabled));
+        let turn_on = switch(engine, "clef:27b", true);
+        assert_eq!(core.turns_on_elsewhere(&turn_on, Reach::Suite).await, Ok(true));
+        assert_eq!(code(&core.handle_within(turn_on.clone(), Reach::Client(&rights)).await), "forbidden");
+        assert_eq!(core.handle(turn_on).await, Response::Ok);
+        for model in [Some("clef:27b"), None] {
+            let slot = SlotModel { engine: engine.clone(), model: model.map(str::to_string), effort: None };
+            assert_eq!(core.checked_slot(AiSlot::Decide, &slot, false).await, Ok(true));
+            assert_eq!(
+                code(&core.checked_slot(AiSlot::Decide, &slot, true).await.expect_err("client refused")),
+                "forbidden"
+            );
+            for enabled in [false, true] {
+                let assignment = set_sorting(Some(engine), model, enabled);
+                assert_eq!(code(&core.handle_within(assignment, Reach::Client(&rights)).await), "forbidden");
+            }
+            assert!(matches!(
+                core.handle(set_slot(AiSlot::Decide, Some(engine), model)).await,
+                Response::AiAssignments { .. }
+            ));
+            assert!(core.settings.current().mail_to_cloud_in(AiSlot::Decide));
+            assert!(!core.settings.current().mail_to_cloud_in(AiSlot::Chat), "permissions remain separate");
+            core.handle(Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(false) })
+                .await;
+            let scope = CategoryJobScope {
+                engine: Some(engine.clone()),
+                model: model.map(str::to_string),
+                ..Default::default()
+            };
+            assert_eq!(
+                category_job_decider(&core.settings, &core.ai, &scope).await,
+                Err(if model.is_some() { categorize::Refusal::NotLocal } else { categorize::Refusal::NoModel })
+            );
+            let scope = CategoryJobScope { model: Some("clef:27b".into()), ..scope };
+            let start = Request::StartCategoryJob { scope: scope.clone() };
+            assert_eq!(core.turns_on_elsewhere(&start, Reach::Suite).await, Ok(true));
+            assert_eq!(code(&core.handle_within(start, Reach::Client(&rights)).await), "forbidden");
+            let now = Utc::now();
+            let job = CategoryJob {
+                id: core.inbox.new_category_job_id().expect("id"),
+                scope,
+                state: CategoryJobState::Paused,
+                accounts: Vec::new(),
+                errors: Vec::new(),
+                started_at: now,
+                updated_at: now,
+                generation: 1,
+                model_in_cloud: Some(true),
+                sorted_with: None,
+                run_millis: 0,
+                left_seconds: None,
+            };
+            core.inbox.save_category_job(&job).expect("paused");
+            let resume = Request::ControlCategoryJob { id: job.id.clone(), action: CategoryJobControl::Resume };
+            assert_eq!(core.turns_on_elsewhere(&resume, Reach::Suite).await, Ok(true));
+            assert_eq!(code(&core.handle_within(resume, Reach::Client(&rights)).await), "forbidden");
+            assert_eq!(
+                core.inbox.category_job(Some(&job.id)).expect("read").expect("job").state,
+                CategoryJobState::Paused
+            );
+        }
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("audit");
+        assert!(!log.contains(AI_KEY));
+    }
+
+    #[tokio::test]
     async fn network_runtimes_require_mail_permission_for_models_and_automatic() {
         use torro_core::ai::{AiModel, AiSlot};
         for provider in AiProvider::LOCAL {

@@ -3047,7 +3047,9 @@ static CONNECT_AI: Command = Command {
     description: "Connects an AI account (Ollama, LM Studio, Strata, OpenRouter, Anthropic, another cloud provider, \
                   Jev for sorting mail, or any other OpenAI-compatible server) with the address and API key a person entered in the control \
                   centre: checks it with the server, keeps the key in the system keychain and adds the account. \
-                  Returns the account, never the key. Only the app key may use it.",
+                  Direct Ollama Cloud (`ollama_cloud`) defaults to https://ollama.com/v1, requires a key and checks protected usage before reading its public catalogue; no local server or inference is needed. \
+                  Errors include auth (refused key), busy (rate limit), offline and error (blank key or malformed response). \
+                  Connecting enables no model and grants no mail permission. Returns the account, never the key. Only the app key may use it.",
 };
 
 // Like `connect_github`: for agents and scripts the core only shows the control centre, where a
@@ -3118,8 +3120,9 @@ static LIST_MODELS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Lists the models of an AI account (id `ai:…` from accounts_list_accounts), asked from its server \
-                  now (Jev: a fixed list): id, name, whether it can call tools, whether its weights are open and whether it runs \
+                  now (Jev: a fixed list; direct Ollama Cloud: public /api/tags, no authentication recheck): id, name, whether it can call tools, whether its weights are open and whether it runs \
                   elsewhere relative to its server (`remote`: Ollama's cloud models compute on ollama.com), where the server tells. \
+                  Direct Ollama Cloud is always remote and initially disabled, even behind loopback; missing capabilities, weights, context and disk size remain unknown. \
                   `remote: false` does not mean this computer: every LAN or public server counts as elsewhere for mail. `context` is \
                   the tokens of one conversation, where the server tells; Ollama also names `parameters` (`8.2B`), \
                   `quantization` (`Q4_K_M`) and `size` (bytes on the server's disk, only for models on that server, never \
@@ -7302,6 +7305,7 @@ mod tests {
                 "lm_studio",
                 "strata",
                 "openrouter",
+                "ollama_cloud",
                 "anthropic",
                 "openai_compatible",
                 "openai",

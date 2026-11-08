@@ -2,6 +2,22 @@
 //! within a group; the test in `mod.rs` checks for duplicates and matching placeholders.
 
 pub(super) static TABLE: &[(&str, &str)] = &[
+    // Direct Ollama Cloud (#587).
+    ("Enter an API key to connect Ollama Cloud.", "Gib einen API-Schlüssel ein, um Ollama Cloud zu verbinden."),
+    ("Enter the API key again to retry.", "Gib den API-Schlüssel zum erneuten Verbinden noch einmal ein."),
+    ("Suggested models", "Modellvorschläge"),
+    (
+        "The AI server did not answer as expected. Try again.",
+        "Der KI-Server hat nicht wie erwartet geantwortet. Versuche es noch einmal.",
+    ),
+    (
+        "Connect directly online. No local installation is needed.",
+        "Direkt online verbinden. Eine lokale Installation ist nicht nötig.",
+    ),
+    (
+        "Account connected. No suggested models are available right now.",
+        "Konto verbunden. Derzeit sind keine Modellvorschläge verfügbar.",
+    ),
     // Clipboard paste (#462).
     (
         "The message is too large. Shorten it before saving or sending.",

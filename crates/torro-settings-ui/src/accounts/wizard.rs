@@ -1532,6 +1532,9 @@ fn subtitle(state: &State) -> &'static str {
         (Step::MailConnecting, _) if state.mail.certificates.pending().is_some() => certificate_title(),
         (Step::MailConnecting, _) => tr("Signing in to your provider."),
         (Step::MailCertificate, _) => certificate_title(),
+        (Step::AiChoose, _) if super::ai_setup::awaiting_consent(&state.setup) => {
+            tr("Mail needs your explicit permission.")
+        }
         (Step::AiChoose, _) => tr("Choose where your AI models run."),
         (Step::AiKey, _) if cloud(state) == AiProvider::OpenRouter => tr("Paste an API key from OpenRouter."),
         (Step::AiKey, _) => tr("Paste an API key from the provider."),
@@ -2208,6 +2211,22 @@ fn has_back(state: &State) -> bool {
 /// Error text left, "Back" where there is a step to go back to ([`has_back`]), "Cancel" and the
 /// step's primary button right.
 fn footer(state: &State) -> Element<'_, Message> {
+    if state.step == Step::AiChoose && super::ai_setup::awaiting_consent(&state.setup) {
+        // The decision owns the only primary action; Done must not compete with consent.
+        return Space::new().into();
+    }
+    if state.step == Step::AiChoose
+        && let Some(actions) = super::ai_setup::cloud_form_actions(&state.setup)
+    {
+        return row![
+            blank::horizontal(),
+            widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Close)),
+            actions.map(Message::Setup),
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center)
+        .into();
+    }
     let error: Element<'_, Message> = match &state.error {
         Some(error) => typo::text(typo::body(), error.as_str())
             .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) })
@@ -2228,6 +2247,20 @@ fn footer(state: &State) -> Element<'_, Message> {
         .then(|| widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Close)));
     let primary = |label, message| Some(widgets::text_button(None, label, style::button::primary, message));
     let next = match state.step {
+        Step::AiChoose if super::ai_setup::primary_label(&state.setup).is_some() => {
+            super::ai_setup::primary_label(&state.setup).map(|(label, enabled)| {
+                if enabled {
+                    widgets::text_button(
+                        None,
+                        label,
+                        style::button::primary,
+                        Some(Message::Setup(super::ai_setup::Message::Submit)),
+                    )
+                } else {
+                    widgets::busy_button(label, style::button::primary)
+                }
+            })
+        }
         Step::AiChoose if ai_connected => primary(tr("Done"), Some(Message::Close)),
         Step::TorroMail if taken_over => primary(tr("Done"), Some(Message::Close)),
         Step::MailConnecting => state.mail.certificates.pending().map(|asked| trust_button(asked, true, None)),
@@ -2488,6 +2521,8 @@ pub enum Demo {
     AiServer,
     /// The Ollama found on this computer connected.
     AiDone,
+    /// Shared direct-cloud states for design inspection (issue #587).
+    AiCloud(&'static str),
     /// ntfy (task E5.14): the server step, nothing typed.
     NtfyServer,
     /// The topics step with two topics of `push.example.org` typed.
@@ -2513,9 +2548,12 @@ impl Demo {
     pub fn start(self) -> Start {
         match self {
             Demo::TorroMail | Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => Start::TorroMail,
-            Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone => {
-                Start::At(Provider::Ai)
-            }
+            Demo::AiProviders
+            | Demo::AiOpenRouter
+            | Demo::AiRefused
+            | Demo::AiServer
+            | Demo::AiDone
+            | Demo::AiCloud(_) => Start::At(Provider::Ai),
             Demo::NtfyServer | Demo::NtfyTopics | Demo::NtfyInvalid | Demo::NtfyLogin | Demo::NtfyDone => {
                 Start::At(Provider::Ntfy)
             }
@@ -2547,6 +2585,7 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
     let openrouter = Message::ChooseAi(AiProvider::OpenRouter);
     match demo {
         Demo::AiProviders => return Vec::new(),
+        Demo::AiCloud(scenario) => return vec![Message::Setup(super::ai_setup::Message::Demo(scenario))],
         Demo::AiOpenRouter => return vec![openrouter],
         // "wrong" is the key the demo refuses.
         Demo::AiRefused => return vec![openrouter, Message::AiKeyChanged(Secret::new("wrong")), Message::Continue],
@@ -2562,7 +2601,9 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
     }
     let address = match demo {
         Demo::TorroMail | Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => None,
-        Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone => None,
+        Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone | Demo::AiCloud(_) => {
+            None
+        }
         Demo::NtfyServer | Demo::NtfyTopics | Demo::NtfyInvalid | Demo::NtfyLogin | Demo::NtfyDone => None,
         Demo::Address => None,
         Demo::Unsupported => Some("anna@outlook.com"),
@@ -2606,7 +2647,8 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
         Demo::Address | Demo::Found | Demo::Unsupported | Demo::Gmail | Demo::NotFound => {}
         // Returned above.
         Demo::TorroMail | Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => {}
-        Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone => {}
+        Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone | Demo::AiCloud(_) => {
+        }
         Demo::NtfyServer | Demo::NtfyTopics | Demo::NtfyInvalid | Demo::NtfyLogin | Demo::NtfyDone => {}
     }
     steps

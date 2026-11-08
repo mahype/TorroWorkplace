@@ -244,17 +244,47 @@ impl OpenAiCompatible {
         OpenAiCompatible { wire: Wire::new(http, base, key, Auth::Bearer), provider, program: None }
     }
 
-    /// Whether the server takes this account: OpenRouter's key with `GET <base>/key` (its model
-    /// list is public, so it would not tell), any other server by listing its models.
+    /// Whether the server takes this account: OpenRouter's key with `GET <base>/key`; direct
+    /// Ollama Cloud with protected usage followed by its catalogue. Their public lists prove no
+    /// key. Other servers are checked by listing models. Only connecting calls this method.
     pub async fn check(&self) -> Result<(), AiError> {
         match self.provider {
             AiProvider::OpenRouter => self.wire.send(self.wire.request(reqwest::Method::GET, "key")).await.map(drop),
+            AiProvider::OllamaCloud => {
+                // Public models are no auth proof. Only connect makes this protected, non-generating
+                // request (limited to 10/minute), never discovery, model refresh or background polling.
+                if self.wire.key.as_ref().is_none_or(Secret::is_blank) {
+                    return Err(AiError::Invalid(trf(
+                        "{provider} needs an API key. Create one on its website.",
+                        &[("provider", &self.provider.name())],
+                    )));
+                }
+                let url = format!("{}/api/usage?range=24h", openai::ollama_root(&self.wire.base));
+                let response = self.wire.send(self.wire.authorized(self.wire.http.get(url))).await?;
+                let bytes = self.wire.body(response).await?;
+                let usage: Value = serde_json::from_slice(&bytes)
+                    .map_err(|_| AiError::Format(tr("The AI server did not answer as expected. Try again.").into()))?;
+                if usage.get("scope").and_then(Value::as_str) != Some("self")
+                    || !usage.get("totals").is_some_and(Value::is_object)
+                    || !usage.get("buckets").is_some_and(Value::is_array)
+                {
+                    return Err(AiError::Format(tr("The AI server did not answer as expected. Try again.").into()));
+                }
+                self.list().await.map(drop)
+            }
             _ => self.list().await.map(drop),
         }
     }
 
-    /// `GET <base>/models`, without asking Ollama about tools: what finding a server needs.
+    /// `GET <base>/models`, without asking local Ollama about tools: what finding a server needs.
+    /// Direct Ollama Cloud uses its public `GET <root>/api/tags` with reported capabilities.
     pub async fn list(&self) -> Result<Vec<AiModel>, AiError> {
+        if self.provider == AiProvider::OllamaCloud {
+            let url = format!("{}/api/tags", openai::ollama_root(&self.wire.base));
+            let response = self.wire.send(self.wire.authorized(self.wire.http.get(url))).await?;
+            return openai::parse_ollama_cloud_models(&self.wire.body(response).await?)
+                .map_err(|err| self.wire.scrubbed(err));
+        }
         let response = self.wire.send(self.wire.request(reqwest::Method::GET, "models")).await?;
         let body = self.wire.body(response).await?;
         let mut models = openai::parse_models(&body).map_err(|err| self.wire.scrubbed(err))?;
@@ -469,7 +499,7 @@ impl Provider for OpenAiCompatible {
         request: &'a systemone::DecisionRequest,
     ) -> BoxFuture<'a, Result<systemone::DecisionReply, AiError>> {
         Box::pin(async move {
-            if self.provider != AiProvider::Ollama {
+            if !matches!(self.provider, AiProvider::Ollama | AiProvider::OllamaCloud) {
                 return Err(AiError::Invalid(
                     tr("Only Ollama and Jev offer decision models at the moment. Pick a model of one of them.").into(),
                 ));
@@ -1275,14 +1305,19 @@ impl AiAccounts {
     /// `all` only those not known to have closed weights ([`ai::open_weights_only`]). Reading
     /// changes no data, only how the account is shown: an answer renews when it last answered, a
     /// refused key becomes its problem until it answers again. A fixed list is no answer, so it
-    /// leaves both alone; for Jev a decision tells ([`AiAccounts::decide`]). The whole list is kept for
+    /// leaves both alone; the public Ollama Cloud catalogue likewise cannot verify authentication.
+    /// For Jev a decision tells ([`AiAccounts::decide`]). The whole list is kept for
     /// [`AiAccounts::known_models`]. The one exception (#231): the first list after the update keeps
     /// on what "Automatic" used at the account ([`AiAccounts::take_over`]), once.
     pub async fn models(&self, id: &str, all: bool) -> Result<Vec<AiModel>, AiError> {
         let result = self.provider(id).await?.models().await;
         if let Some(slot) = self.slots.write().await.iter_mut().find(|slot| slot.account.id == id) {
             match &result {
-                Ok(models) if slot.provider().fixed_models().is_some() => slot.models = Some(models.clone()),
+                Ok(models)
+                    if slot.provider().fixed_models().is_some() || slot.provider() == AiProvider::OllamaCloud =>
+                {
+                    slot.models = Some(models.clone());
+                }
                 Ok(models) => {
                     slot.checked = Some(Utc::now());
                     slot.problem = None;
@@ -1364,7 +1399,7 @@ impl AiAccounts {
                 id,
                 provider,
                 program,
-                local: ai::is_this_computer(&server),
+                local: provider != AiProvider::OllamaCloud && ai::is_this_computer(&server),
                 models,
             });
         }
@@ -1829,6 +1864,256 @@ pub(crate) mod tests {
     use crate::account::github::tests::{MemoryTokens, accounts_file};
 
     pub(crate) const KEY: &str = "sk-or-v1-0123456789SECRETabcdef";
+
+    pub(crate) async fn fake_ollama_cloud() -> MockServer {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET")
+                    .path("/api/usage")
+                    .query_param("range", "24h")
+                    .header("authorization", format!("Bearer {KEY}"));
+                then.status(200).json_body(json!({"scope":"self", "totals":{}, "buckets":[]}));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/api/usage");
+                then.status(401);
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/api/tags");
+                then.status(200).json_body(json!({"models":[
+                    {"name":"gpt-oss:20b", "capabilities":["completion","tools","thinking"]},
+                    {"name":"clef:27b", "capabilities":["decision"]}
+                ]}));
+            })
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn ollama_cloud_refresh_never_repeats_the_rate_limited_usage_check() {
+        let server = MockServer::start_async().await;
+        let usage = server
+            .mock_async(|when, then| {
+                when.method("GET")
+                    .path("/api/usage")
+                    .query_param("range", "24h")
+                    .header("authorization", format!("Bearer {KEY}"));
+                then.status(200).json_body(json!({"scope":"self","totals":{},"buckets":[]}));
+            })
+            .await;
+        let catalog = server
+            .mock_async(|when, then| {
+                when.method("GET").path("/api/tags");
+                then.status(200).json_body(json!({"models":[]}));
+            })
+            .await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ai = service(dir.path(), &MemoryTokens::default(), Vec::new());
+        let info =
+            ai.connect(AiProvider::OllamaCloud, Some(&server.url("/v1")), Secret::new(KEY)).await.expect("connected");
+        for _ in 0..3 {
+            ai.models(&info.id, true).await.expect("refresh");
+        }
+        assert_eq!(usage.calls_async().await, 1, "only Connect checks the key");
+        assert_eq!(catalog.calls_async().await, 4);
+    }
+
+    #[tokio::test]
+    async fn ollama_cloud_checks_usage_before_storage_and_public_lists_do_not_check_auth() {
+        let provider = serde_json::from_str("\"ollama_cloud\"").expect("provider");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let cloud = fake_ollama_cloud().await;
+        let local = fake_ollama().await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let base = cloud.url("/v1");
+        let id = Account::ai(provider, &base).id;
+        let public = OpenAiCompatible::new(http(), provider, &base, Some(Secret::new("wrong")));
+        assert_eq!(public.list().await.expect("public list").len(), 2);
+        assert_eq!(ai.connect(provider, Some(&base), Secret::new("wrong")).await, Err(AiError::Auth));
+        assert!(matches!(ai.connect(provider, Some(&base), Secret::new("  ")).await, Err(AiError::Invalid(_))));
+        assert!(ai.infos().await.is_empty() && !accounts_file(dir.path()).exists());
+        assert!(keys.get_plain(&id).is_none());
+        let info = ai.connect(provider, Some(&base), Secret::new(KEY)).await.expect("connect");
+        assert_eq!(info.id, id);
+        assert_eq!(Account::ai(provider, "https://ollama.com/v1").id, "ai:ollama_cloud@ollama.com");
+        assert_eq!(keys.get_plain(&id).as_deref(), Some(KEY));
+        let local_info =
+            ai.connect(AiProvider::Ollama, Some(&local.url("/v1")), Secret::default()).await.expect("local");
+        assert_ne!(info.id, local_info.id);
+        assert!(on(&ai, &id).await.is_empty());
+        assert!(!on(&ai, &local_info.id).await.is_empty());
+        let checked;
+        {
+            let mut slots = ai.slots.write().await;
+            let slot = slots.iter_mut().find(|s| s.account.id == id).expect("cloud slot");
+            checked = slot.checked;
+            slot.problem = Some("previous auth failure".into());
+        }
+        assert_eq!(ai.models(&id, true).await.expect("models").len(), 2);
+        {
+            let slots = ai.slots.read().await;
+            let slot = slots.iter().find(|s| s.account.id == id).expect("cloud slot");
+            assert_eq!(slot.checked, checked);
+            assert_eq!(slot.problem.as_deref(), Some("previous auth failure"));
+        }
+        ai.set_enabled(&id, "gpt-oss:20b", true).await.expect("enable");
+        assert!(!ai.connected().await.iter().find(|c| c.id == id).expect("cloud").local);
+        let stored = std::fs::read_to_string(accounts_file(dir.path())).expect("file");
+        for shown in [stored, format!("{info:?}"), serde_json::to_string(&info).expect("json"), format!("{public:?}")] {
+            assert!(!shown.contains(KEY));
+        }
+        drop(ai);
+        let restarted = service(dir.path(), &keys, Vec::new());
+        restarted.load().await.expect("load");
+        assert_eq!(restarted.infos().await.len(), 2);
+        assert_eq!(on(&restarted, &id).await, ["gpt-oss:20b"]);
+        assert!(!on(&restarted, &local_info.id).await.is_empty());
+        assert!(restarted.runs_elsewhere(&id, "unknown").await.expect("remote"));
+    }
+
+    #[tokio::test]
+    async fn ollama_cloud_invalid_usage_names_the_ai_server_not_workplace() {
+        for body in ["not JSON", r#"{"scope":"self","totals":[]}"#] {
+            let server = MockServer::start_async().await;
+            server
+                .mock_async(|when, then| {
+                    when.method("GET").path("/api/usage");
+                    then.status(200).body(body);
+                })
+                .await;
+            let client =
+                OpenAiCompatible::new(http(), AiProvider::OllamaCloud, &server.url("/v1"), Some(Secret::new(KEY)));
+            assert_eq!(
+                client.check().await,
+                Err(AiError::Format(tr("The AI server did not answer as expected. Try again.").into()))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ollama_cloud_errors_and_invalid_lists_never_store_keys_or_follow_redirects() {
+        let provider = serde_json::from_str("\"ollama_cloud\"").expect("provider");
+        let target = MockServer::start_async().await;
+        let redirected = target
+            .mock_async(|when, then| {
+                when.any_request();
+                then.status(200);
+            })
+            .await;
+        for (status, usage, catalog, code) in [
+            (401, json!({"error":KEY}), json!({"models":[]}), "auth"),
+            (403, json!({"error":KEY}), json!({"models":[]}), "auth"),
+            (429, json!({"error":{"message":KEY}}), json!({"models":[]}), "busy"),
+            (500, json!({"error":{"message":KEY}}), json!({"models":[]}), "error"),
+            (302, json!({}), json!({"models":[]}), "error"),
+            (200, json!({"scope":"other","totals":{},"buckets":[]}), json!({"models":[]}), "error"),
+            (200, json!({"scope":"self","totals":[],"buckets":[]}), json!({"models":[]}), "error"),
+            (200, json!({"scope":"self","totals":{}}), json!({"models":[]}), "error"),
+            (200, json!({"scope":"self","totals":{},"buckets":[]}), json!({}), "error"),
+        ] {
+            let server = MockServer::start_async().await;
+            server
+                .mock_async(|when, then| {
+                    when.method("GET").path("/api/usage");
+                    then.status(status).header("location", target.url("/stolen")).json_body(usage);
+                })
+                .await;
+            server
+                .mock_async(|when, then| {
+                    when.method("GET").path("/api/tags");
+                    then.status(200).json_body(catalog);
+                })
+                .await;
+            let dir = tempfile::tempdir().expect("temp dir");
+            let keys = MemoryTokens::default();
+            let ai = service(dir.path(), &keys, Vec::new());
+            let base = server.url("/v1");
+            let err = ai.connect(provider, Some(&base), Secret::new(KEY)).await.expect_err("refused");
+            assert_eq!(err.code(), code);
+            assert!(!format!("{err:?} {err}").contains(KEY));
+            assert!(ai.infos().await.is_empty() && !accounts_file(dir.path()).exists());
+            assert!(keys.get_plain(&Account::ai(provider, &base).id).is_none());
+        }
+        assert_eq!(redirected.calls_async().await, 0);
+        let client = OpenAiCompatible::new(http(), provider, NOBODY, Some(Secret::new(KEY)));
+        assert_eq!(client.check().await, Err(AiError::Offline));
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/api/usage");
+                then.status(200).json_body(json!({"scope":"self","totals":{},"buckets":[]}));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/api/tags");
+                then.status(200).json_body(json!({"models":[]}));
+            })
+            .await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ai = service(dir.path(), &MemoryTokens::default(), Vec::new());
+        let info = ai.connect(provider, Some(&server.url("/v1")), Secret::new(KEY)).await.expect("empty is valid");
+        assert!(ai.models(&info.id, true).await.expect("empty").is_empty());
+    }
+
+    #[tokio::test]
+    async fn ollama_cloud_streams_tools_replays_them_and_decides_directly() {
+        let provider = serde_json::from_str("\"ollama_cloud\"").expect("provider");
+        let server = fake_ollama_cloud().await;
+        let tools = server
+            .mock_async(|when, then| {
+                when.method("POST")
+                    .path("/v1/chat/completions")
+                    .header("authorization", format!("Bearer {KEY}"))
+                    .json_body_includes(r#"{"model":"gpt-oss:20b","reasoning_effort":"high"}"#);
+                then.status(200).header("content-type", "text/event-stream").body(OLLAMA_TOOL_CALL);
+            })
+            .await;
+        let client = OpenAiCompatible::new(http(), provider, &server.url("/v1"), Some(Secret::new(KEY)));
+        let mut asked = ask_calendar();
+        asked.model = "gpt-oss:20b".into();
+        asked.effort = Some(Effort::High);
+        let reply = client.chat(&asked, &mut |_| {}).await.expect("tool call");
+        assert_eq!(reply.tool_calls.len(), 1);
+        asked.effort = None;
+        asked.messages.push(ChatMessage::assistant(reply.text, reply.tool_calls));
+        asked.messages.push(ChatMessage::tool("call_x1", "[]"));
+        let replay = server
+            .mock_async(|when, then| {
+                when.method("POST")
+                    .path("/v1/chat/completions")
+                    .header("authorization", format!("Bearer {KEY}"))
+                    .json_body(openai::chat_body_for(provider, &asked, true));
+                then.status(200)
+                    .json_body(json!({"choices":[{"message":{"content":"No events"},"finish_reason":"stop"}]}));
+            })
+            .await;
+        let mut text = String::new();
+        assert_eq!(client.chat(&asked, &mut |s| text.push_str(s)).await.expect("reply").text, "No events");
+        assert_eq!(text, "No events");
+        let decisions = server
+            .mock_async(|when, then| {
+                when.method("POST")
+                    .path("/v1/systemone")
+                    .header("authorization", format!("Bearer {KEY}"))
+                    .json_body_includes(r#"{"model":"clef:27b"}"#);
+                then.status(200).json_body(json!({"model":"clef:27b","answers":{"ok":{"type":"noul","noul":0.9}}}));
+            })
+            .await;
+        let request = systemone::DecisionRequest {
+            model: "clef:27b".into(),
+            state: "check".into(),
+            questions: [("ok".into(), systemone::Question::Noul { instructions: "Is this a check?".into() })].into(),
+        };
+        assert!(client.decide(&request).await.expect("decision").noul("ok").is_some());
+        assert_eq!((tools.calls_async().await, replay.calls_async().await, decisions.calls_async().await), (1, 1, 1));
+    }
 
     /// Like [`http_client`], without the system's proxy, so a proxy set on the test machine never
     /// sees the fake servers.

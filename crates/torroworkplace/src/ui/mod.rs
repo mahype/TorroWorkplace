@@ -766,6 +766,10 @@ impl Ui {
             // The dialog opens where the demo state starts (task S.30): at a group's "Add" or at
             // "Import from TorroMail…".
             Open::WizardMail(demo) | Open::WizardAi(demo) => {
+                if matches!(demo, wizard::Demo::AiCloud(_)) {
+                    self.data.settings.ai_slots = Default::default();
+                    self.data.settings.ai_assignments.clear();
+                }
                 let start = match demo.start() {
                     wizard::Start::At(provider) => accounts::Message::Add(provider),
                     wizard::Start::TorroMail => accounts::Message::ImportTorroMail,
@@ -3857,6 +3861,14 @@ mod tests {
             "wizard-ai-refused",
             "wizard-ai-server",
             "wizard-ai-done",
+            "wizard-ai-cloud-selection",
+            "wizard-ai-cloud-menu",
+            "wizard-ai-cloud-form",
+            "wizard-ai-cloud-running",
+            "wizard-ai-cloud-error",
+            "wizard-ai-cloud-empty",
+            "wizard-ai-cloud-connected",
+            "wizard-ai-cloud-consent",
         ] {
             let mail = started(&["--demo", "--open", state]);
             let expected = if state.starts_with("wizard-ai") { Section::Ai } else { Section::Accounts };

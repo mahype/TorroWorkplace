@@ -261,6 +261,16 @@ pub fn demo_answer(request: &Request, data: &dyn Seen) -> Option<Response> {
         }),
         // The models of an AI account (task S.31), the same for every account but Ollama (task MW.8); a
         // switch is taken, nothing is stored.
+        Request::AiModels { account, .. } if account == "ai:ollama_cloud@ollama.com" => {
+            let models = torro_core::ai::openai::parse_ollama_cloud_models(
+                br#"{"models":[
+                {"name":"gpt-oss:20b","capabilities":["completion","tools","thinking"]},
+                {"name":"clef:27b","capabilities":["decision"]}
+            ]}"#,
+            )
+            .ok()?;
+            Some(Response::AiModels { account: account.clone(), models })
+        }
         Request::AiModels { account, .. } if account == DEMO_NETWORK => {
             Some(Response::AiModels { account: account.clone(), models: demo_network_models() })
         }

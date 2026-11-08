@@ -259,7 +259,7 @@ impl Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 139] = [
+    pub const ALL: [(&'static str, Open); 155] = [
         ("setup-ai-form", Open::AiSetup("form")),
         ("setup-ai-consent", Open::AiSetup("consent")),
         ("setup-ai-download", Open::AiSetup("download")),
@@ -271,6 +271,14 @@ impl Open {
         ("setup-ai-auth", Open::AiSetup("auth")),
         ("setup-ai-external", Open::AiSetup("external")),
         ("setup-ai-error", Open::AiSetup("error")),
+        ("setup-ai-cloud-selection", Open::AiSetup("cloud-selection")),
+        ("setup-ai-cloud-menu", Open::AiSetup("cloud-menu")),
+        ("setup-ai-cloud-form", Open::AiSetup("cloud-form")),
+        ("setup-ai-cloud-running", Open::AiSetup("cloud-running")),
+        ("setup-ai-cloud-error", Open::AiSetup("cloud-error")),
+        ("setup-ai-cloud-empty", Open::AiSetup("cloud-empty")),
+        ("setup-ai-cloud-connected", Open::AiSetup("cloud-connected")),
+        ("setup-ai-cloud-consent", Open::AiSetup("cloud-consent")),
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -299,6 +307,14 @@ impl Open {
         ("wizard-ai-refused", Open::WizardAi(wizard::Demo::AiRefused)),
         ("wizard-ai-server", Open::WizardAi(wizard::Demo::AiServer)),
         ("wizard-ai-done", Open::WizardAi(wizard::Demo::AiDone)),
+        ("wizard-ai-cloud-selection", Open::WizardAi(wizard::Demo::AiCloud("cloud-selection"))),
+        ("wizard-ai-cloud-menu", Open::WizardAi(wizard::Demo::AiCloud("cloud-menu"))),
+        ("wizard-ai-cloud-form", Open::WizardAi(wizard::Demo::AiCloud("cloud-form"))),
+        ("wizard-ai-cloud-running", Open::WizardAi(wizard::Demo::AiCloud("cloud-running"))),
+        ("wizard-ai-cloud-error", Open::WizardAi(wizard::Demo::AiCloud("cloud-error"))),
+        ("wizard-ai-cloud-empty", Open::WizardAi(wizard::Demo::AiCloud("cloud-empty"))),
+        ("wizard-ai-cloud-connected", Open::WizardAi(wizard::Demo::AiCloud("cloud-connected"))),
+        ("wizard-ai-cloud-consent", Open::WizardAi(wizard::Demo::AiCloud("cloud-consent"))),
         ("wizard-ntfy", Open::WizardMail(wizard::Demo::NtfyServer)),
         ("wizard-ntfy-topics", Open::WizardMail(wizard::Demo::NtfyTopics)),
         ("wizard-ntfy-invalid", Open::WizardMail(wizard::Demo::NtfyInvalid)),

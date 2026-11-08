@@ -697,7 +697,10 @@ pub enum Request {
     ///
     /// The core writes the address as `torro_core::ai::normalize_base` does, refuses a key that
     /// would travel without TLS to another computer, then checks the account with the server:
-    /// OpenRouter's key with `GET <server>/key`, any other server by listing its models. Only then
+    /// OpenRouter's key with `GET <server>/key`; direct Ollama Cloud (`ollama_cloud`, default
+    /// `https://ollama.com/v1`) with protected `GET <root>/api/usage?range=24h` and its public
+    /// `<root>/api/tags` catalogue. A public list alone never verifies that key. Other servers by
+    /// listing their models. Only then
     /// does it keep the key in the system keychain, under the account id
     /// `ai:<provider>@<host>` (`torro_core::Account::ai`), and add the account; the same provider
     /// at the same host again replaces address and key.
@@ -705,14 +708,14 @@ pub enum Request {
     /// Answered with [`Response::Account`]: the account as `accounts.list_accounts` lists it
     /// (`kind: "ai"`), never with the key. Error codes: `auth` when the server refuses the key or
     /// wants one, `offline` when it cannot be reached, `not-found` when nothing answers at the
-    /// address, `error` for an address that is none, a key over plain `http` to another computer,
+    /// address, `busy` for rate limits, `error` for an address that is none, a key over plain `http` to another computer,
     /// a cloud provider without a key, an unexpected answer or a keychain that refuses. Only the app key
     /// may send it: every client key gets `forbidden`, whatever its rights, because it hands the
     /// core a secret (`docs/api.md`, "Was nie nach außen geht", 5); it never waits for an approval
     /// either.
     #[serde(rename = "accounts.connect_ai")]
     ConnectAi {
-        /// Which kind of server: `ollama`, `lm_studio`, `strata`, `openrouter`, `openai_compatible`, or a cloud
+        /// Which kind of server: `ollama`, `lm_studio`, `strata`, `openrouter`, `ollama_cloud`, `openai_compatible`, or a cloud
         /// provider with a key of its own (tasks W.3, KI.1b): `anthropic`, `openai`, `gemini`,
         /// `mistral`, `deepseek`, `qwen`, `kimi`, `glm`, `minimax`, and `jev` (issue #323, TypeSafe's
         /// decision model, which only sorts mail and is checked with one small decision). A cloud

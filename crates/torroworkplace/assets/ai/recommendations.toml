@@ -160,6 +160,16 @@ size_bytes = 2497293931
 license = "apache-2.0"
 open_weights = true
 
+[[cloud]]
+provider = "ollama_cloud"
+slot = "chat"
+model_prefix = "gpt-oss:20b"
+
+[[cloud]]
+provider = "ollama_cloud"
+slot = "decide"
+model_prefix = "clef:27b"
+
 # External runtimes: Qwen chat models, including the slower sorting fallback. Sizes are the
 # corresponding Ollama Q4 downloads above, an estimate for choosing a GGUF, not an exact file size.
 # Only these explicit ids/aliases are recognised. Other GGUF/quantisation ids need manual choice;
