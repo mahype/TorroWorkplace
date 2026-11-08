@@ -10803,6 +10803,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
         TopRow::new(self.zoom.factor(), Message::DragWindow)
             .sidebar(label, Message::ToggleSidebar)
+            .sidebar_surface(self.launch.kind == Kind::Mail)
+            .sidebar_at_edge(self.launch.kind == Kind::Mail)
             .settings(Message::OpenSettings)
             .settings_open(self.settings.is_some())
             .cover(self.cover())
@@ -14741,6 +14743,121 @@ mod tests {
             let _ = app.update(Message::ToggleSidebar);
             assert!(!app.drawer, "{size:?}: and closes it again");
             assert_eq!(app.sidebar, SidebarMode::Expanded, "{size:?}: the wide choice stays");
+        }
+    }
+
+    /// Issue #564: one reachable switch; only mail's expanded wide sidebar moves it to its edge.
+    #[test]
+    fn the_mail_top_row_keeps_one_sidebar_switch_in_every_layout_and_in_settings() {
+        use iced_test::selector::Candidate;
+        for kind in ["mail", "hub", "notifications"] {
+            for settings in [false, true] {
+                for size in [WIDE, MEDIUM, NARROW] {
+                    for mode in [SidebarMode::Expanded, SidebarMode::Rail] {
+                        for drawer in [false, true] {
+                            let mut app = overview_at(&["--view", kind]);
+                            app.size = size;
+                            app.sidebar = mode;
+                            app.drawer = drawer;
+                            if settings {
+                                let _ = app.update(Message::OpenSettings);
+                            }
+                            let width = app.sidebar_room();
+                            let was_drawer = app.drawer;
+                            // Settings deliberately force the rail, regardless of the stored wide choice.
+                            let moved = kind == "mail" && !settings && size == WIDE && mode == SidebarMode::Expanded;
+                            let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), size, app.view());
+                            // The icon's centring container exposes the button's bounds, no test-only ID.
+                            let switch = ui
+                                .find(|candidate: Candidate<'_>| match candidate {
+                                    Candidate::Container { bounds, .. }
+                                        if bounds.y < 40.0
+                                            && (bounds.width - size::control_sm()).abs() < 0.01
+                                            && (bounds.height - size::control_sm()).abs() < 0.01 =>
+                                    {
+                                        Some(bounds)
+                                    }
+                                    _ => None,
+                                })
+                                .expect("sidebar button is the first top-row control");
+                            if moved {
+                                assert!(
+                                    (switch.x + switch.width + space::s() - width).abs() < 0.01,
+                                    "{kind}, {size:?}, {mode:?}, settings {settings}: {switch:?}, {width}"
+                                );
+                            } else {
+                                assert!(switch.x < shell::rail() + size::control_sm(), "compact position: {switch:?}");
+                            }
+                            ui.point_at(switch.center());
+                            ui.simulate(iced_test::simulator::click());
+                            let messages: Vec<_> = ui.into_messages().collect();
+                            assert_eq!(
+                                messages.iter().filter(|m| matches!(m, Message::ToggleSidebar)).count(),
+                                1,
+                                "{kind}, {size:?}, {mode:?}, drawer {drawer}, settings {settings}"
+                            );
+                            for message in messages {
+                                let _ = app.update(message);
+                            }
+                            assert_eq!(app.sidebar, if size == WIDE { mode.toggled() } else { mode });
+                            assert_eq!(app.drawer, size != WIDE && !was_drawer);
+                            let _ = app.update(Message::Key(Key::Sidebar));
+                            assert_eq!(app.sidebar, mode, "[ uses the same action");
+                            assert_eq!(app.drawer, size != WIDE && was_drawer);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Issue #564: compare actual header geometry with the body's split, after both widths move.
+    #[test]
+    fn the_mail_head_dividers_follow_the_body_after_resizing_both_columns() {
+        use iced_test::selector::Candidate;
+        for side in [200.0, 320.0] {
+            for list in [360.0, 520.0] {
+                for mode in [SidebarMode::Expanded, SidebarMode::Rail] {
+                    let mut app = mail_window(Density::Compact, &[]);
+                    app.size = Size::new(1600.0, 1000.0);
+                    app.sidebar = mode;
+                    app.side = Split::with(Some(side));
+                    app.split = Split::with(Some(list));
+                    let content_x =
+                        if mode == SidebarMode::Expanded { app.sidebar_room() } else { shell::rail() } + size::HAIRLINE;
+                    let width = app.split.width(app.split_limits());
+                    let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), app.size, app.view());
+                    let body = ui
+                        .find(|candidate: Candidate<'_>| match candidate {
+                            Candidate::Container { bounds, .. }
+                                if bounds.y >= 40.0
+                                    && (bounds.x - content_x).abs() < 0.01
+                                    && (bounds.width - width).abs() < 0.01 =>
+                            {
+                                Some(bounds)
+                            }
+                            _ => None,
+                        })
+                        .expect("body's list pane");
+                    let head_width = width + split::handle_width() / 2.0
+                        - space::l()
+                        - shell::head_inset(SizeClass::Wide, mode, app.zoom.factor());
+                    let head = ui
+                        .find(|candidate: Candidate<'_>| match candidate {
+                            Candidate::Container { bounds, .. }
+                                if bounds.y < 40.0 && bounds.x > 0.0 && (bounds.width - head_width).abs() < 0.01 =>
+                            {
+                                Some(bounds)
+                            }
+                            _ => None,
+                        })
+                        .expect("header's list part");
+                    assert!(
+                        (head.x + head.width - (body.x + body.width + split::handle_width() / 2.0)).abs() < 0.01,
+                        "{side}, {list}, {mode:?}: head {head:?}, body {body:?}"
+                    );
+                }
+            }
         }
     }
 
