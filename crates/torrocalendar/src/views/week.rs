@@ -85,9 +85,10 @@ const WEEKEND_SHADE: f32 = 0.35;
 /// Today's column in the week gets this much of the neutral selection grey (`Palette::selected`)
 /// over its ground: enough to tell it from the weekend's shade at a glance, too little to compete
 /// with the events. No accent: red is the brand, kept for the day circle and the now line (design
-/// skill, section 1, issue #543). The grey lies closer to the panel in dark mode, so dark takes more.
+/// skill, section 1, issue #543). In light mode the weekend's shade goes towards grey as well, so
+/// today takes more there, or the two would read alike (design review of #543).
 const TODAY_WASH_DARK: f32 = 0.6;
-const TODAY_WASH_LIGHT: f32 = 0.5;
+const TODAY_WASH_LIGHT: f32 = 0.75;
 /// Gaps between events this long or longer show "2 h free" (minutes).
 pub(super) const FREE_MINUTES: f32 = 120.0;
 /// The time label of the now line: the axis figures at 500 on a 16-high pill, white on red
