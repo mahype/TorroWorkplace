@@ -2749,14 +2749,20 @@ pub fn invite_card<'a>(
         title => title,
     };
     let words = column![
-        container(typo::text(typo::body_strong(), title).style(theme::text).wrapping(Wrapping::None)).clip(true),
-        container(
-            typo::text(typo::meta().tabular(), invite_when(invite, now)).style(theme::text_2).wrapping(Wrapping::None)
-        )
-        .clip(true),
+        typo::text(typo::body_strong(), title)
+            .style(theme::text)
+            .width(Fill)
+            .align_x(Alignment::Start)
+            .wrapping(Wrapping::WordOrGlyph),
+        typo::text(typo::meta().tabular(), invite_when(invite, now))
+            .style(theme::text_2)
+            .width(Fill)
+            .align_x(Alignment::Start)
+            .wrapping(Wrapping::WordOrGlyph),
     ]
-    .width(Fill);
-    let head = row![tile, words].spacing(space::m()).align_y(Alignment::Center);
+    .width(Fill)
+    .align_x(Alignment::Start);
+    let head = row![tile, words].spacing(space::m()).width(Fill).align_y(Alignment::Start);
     let mut parts: Vec<Element<'a, Message>> = vec![head.into()];
     if invite_over(invite, now) {
         parts.push(typo::text(typo::meta(), tr("This event is over.")).style(theme::text_3).into());
@@ -2769,16 +2775,30 @@ pub fn invite_card<'a>(
             false => small_icon(Icon::CircleAlert, Some(attention)),
         };
         let text = typo::text(typo::meta(), overlap_text(invite, events, now)).style(theme::text_2);
-        let line = row![mark, container(text.wrapping(Wrapping::None)).clip(true)].spacing(space::s());
-        parts.push(line.align_y(Alignment::Center).into());
+        let line = row![mark, text.width(Fill).align_x(Alignment::Start).wrapping(Wrapping::WordOrGlyph)]
+            .spacing(space::s())
+            .width(Fill);
+        parts.push(line.align_y(Alignment::Start).into());
     }
     if side.calendars.is_some_and(|calendars| open && !calendars.is_empty()) {
         let unanchored = torro_gui::widgets::Dropdown::default();
         let menus = side.menus.unwrap_or(&unanchored);
         let pick = crate::app::choice(menus, crate::app::Field::InviteCalendar, side.calendar);
-        // As wide as a property column: a dropdown across a wide reader would read as a field.
-        let line = widgets::prop_line(tr("Calendar"), Some(Mark::Icon(Icon::Calendar)), pick, None);
-        parts.push(container(line).max_width(size::props()).into());
+        let mut field = column![typo::text(typo::caption(), tr("Calendar")).style(theme::text_3), pick]
+            .width(Fill)
+            .spacing(space::xs())
+            .align_x(Alignment::Start);
+        // The trigger is compact; the full selected connection is always readable without hovering.
+        if let Some(calendar) = side.calendar {
+            field = field.push(
+                typo::text(typo::meta(), calendar.name.clone())
+                    .style(theme::text_2)
+                    .width(Fill)
+                    .align_x(Alignment::Start)
+                    .wrapping(Wrapping::WordOrGlyph),
+            );
+        }
+        parts.push(field.into());
     }
     let chips = answers().into_iter().map(|(icon, word, answer)| {
         let on = invite.answered == Some(answer);
@@ -3377,7 +3397,9 @@ pub fn head<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, room: f32
         head = head.push(match entry.map(|entry| entry.item).filter(|item| item.reason.is_some()) {
             Some(item) => {
                 let why = typo::text(typo::meta(), detail::lane_text(item)).style(theme::text_3);
-                column![sender, why.wrapping(Wrapping::WordOrGlyph)].spacing(space::s()).into()
+                let why = if summary.invite.is_some() { why.width(Fill).align_x(Alignment::Start) } else { why };
+                let lines = column![sender, why.wrapping(Wrapping::WordOrGlyph)].spacing(space::s());
+                if summary.invite.is_some() { lines.width(Fill).align_x(Alignment::Start).into() } else { lines.into() }
             }
             None => sender,
         });
@@ -3509,6 +3531,49 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
     let face = (edge > 0.0).then(|| circle(edge));
     let words_room = (room - face.as_ref().map_or(0.0, |_| edge + space::m())).max(0.0);
     let date = torro_gui::datetime::format_moment(summary.date, reading.now);
+    // Invitation names are Torro's detail text, not a compact list row. Give long names their
+    // full column; ordinary mail keeps its two compact, ellipsized lines below.
+    if summary.invite.is_some() {
+        let mut names = column![
+            typo::text(typo::body_strong(), name)
+                .style(theme::text)
+                .width(Fill)
+                .align_x(Alignment::Start)
+                .wrapping(Wrapping::WordOrGlyph),
+        ]
+        .width(Fill)
+        .spacing(space::xs());
+        if summary.flags.contains(&Flag::Flagged) {
+            names = names.push(widgets::with_tooltip(small_icon(Icon::Flag, Some(reading.attention)), tr("Flagged")));
+        }
+        if let Some(held) = summary.category {
+            names = names.push(category_pill(held, reading.categories));
+        }
+        let first = row![names, typo::text(typo::meta().tabular(), date).style(theme::text_3)]
+            .width(Fill)
+            .spacing(space::m())
+            .align_y(Alignment::Start);
+        let mut to = list::one_line(address);
+        if !summary.to.is_empty() {
+            to = format!("{to} → {}", self::names(&summary.to));
+        }
+        if let Some(Ok(mail)) = reading.loaded
+            && !mail.cc.is_empty()
+        {
+            to = format!("{to} · {}", trf("cc {names}", &[("names", &self::names(&mail.cc))]));
+        }
+        let words = column![
+            first,
+            typo::text(typo::meta(), to)
+                .style(theme::text_3)
+                .width(Fill)
+                .align_x(Alignment::Start)
+                .wrapping(Wrapping::WordOrGlyph)
+        ]
+        .width(Fill)
+        .spacing(space::xs());
+        return row(face).push(words).width(Fill).spacing(space::m()).align_y(Alignment::Start).into();
+    }
     let date_room = typo::text_width(&date, typo::meta()) + space::m();
     // A flagged mail says so at its sender: the name leaves room for the flag.
     let flagged = summary.flags.contains(&Flag::Flagged);
@@ -7627,6 +7692,86 @@ mod tests {
         let at = datetime::format_time(datetime::to_local(morning.start).time());
         let named = trf("Overlaps with {title} at {time}", &[("title", &"Climbing".to_owned()), ("time", &at)]);
         assert_eq!(overlap_text(&hike, &[morning], now()), named, "the hike's day has the time alone");
+    }
+
+    /// Issue #569: the invitation's title and selected connection wrap over the whole card, while
+    /// the calendar's trigger takes the width below its label, even in a narrow panel.
+    #[test]
+    fn invitation_text_and_calendar_use_the_card_width_and_wrap() {
+        use iced_test::selector::Candidate;
+        let summary = demo::mail_sample(now()).remove(0).summary;
+        let title = "Planning the shared calendar migration and the next steps for everyone in the distributed team";
+        let invite = Invite {
+            title: title.into(),
+            start: now() + chrono::TimeDelta::days(1),
+            end: None,
+            all_day: false,
+            answered: None,
+        };
+        let calendars = [TaskList {
+            id: "a/c".into(),
+            name: "Personal — Nextcloud · https://cloud.example.org/nextcloud/remote.php/dav/calendars · anna.very.long.account@example.org".into(),
+        }];
+        let side = InviteSide { calendars: Some(&calendars), calendar: calendars.first(), ..InviteSide::default() };
+        for width in [280.0, 480.0, 800.0] {
+            let card = invite_card(&invite, &summary, now(), false, side, palette(&Theme::Dark).attention);
+            let mut ui =
+                iced_test::Simulator::with_size(iced::Settings::default(), iced::Size::new(width, 1000.0), card);
+            let bounds = |ui: &mut iced_test::Simulator<'_, Message, Theme, iced::Renderer>, value: &str| {
+                ui.find(|candidate: Candidate<'_>| match candidate {
+                    Candidate::Text { content, bounds, .. } if content == value => Some(bounds),
+                    _ => None,
+                })
+                .expect("the full text is present")
+            };
+            let title_box = bounds(&mut ui, title);
+            let calendar_box = bounds(&mut ui, &calendars[0].name);
+            assert!(calendar_box.width > width - 2.0 * layout::panel_padding().left - space::m(), "{calendar_box:?}");
+            if width < 500.0 {
+                assert!(
+                    calendar_box.height > typo::line_height(typo::meta()),
+                    "long connection wraps: {calendar_box:?}"
+                );
+                assert!(title_box.height > typo::line_height(typo::body_strong()), "long title wraps: {title_box:?}");
+            }
+            assert!(title_box.x >= calendar_box.x && title_box.x < calendar_box.x + size::tile_lg() + space::l());
+        }
+    }
+
+    #[test]
+    fn invitation_sender_and_torro_explanation_are_left_aligned_and_full_width() {
+        use iced_test::selector::Candidate;
+        reading_of("m:w4", MailFormat::Text, true, |reading| {
+            let mut summary = reading.summary().expect("summary").clone();
+            summary.invite = demo_invite("m:w4", summary.date);
+            let name = "Maria Berg — Calendar coordination for the entire distributed product development team";
+            summary.from.as_mut().expect("sender").name = Some(name.into());
+            let reading = Reading { summary: Some(&summary), loaded: None, ..*reading };
+            let mut item = mail_entry();
+            item.reason = Some(torro_inbox::LaneReason::Automated);
+            let why = detail::lane_text(&item);
+            let width = 280.0;
+            let mut ui = iced_test::Simulator::with_size(
+                iced::Settings::default(),
+                iced::Size::new(width, 1800.0),
+                head(&reading, Some(ReaderEntry { item: &item, hide: true }), width),
+            );
+            let sender = ui
+                .find(|candidate: Candidate<'_>| match candidate {
+                    Candidate::Text { content, bounds, .. } if content == name => Some(bounds),
+                    _ => None,
+                })
+                .expect("full sender name, not an ellipsis");
+            assert!(sender.height > typo::line_height(typo::body_strong()), "{sender:?}");
+            let explanation = ui
+                .find(|candidate: Candidate<'_>| match candidate {
+                    Candidate::Text { content, bounds, .. } if content == why => Some(bounds),
+                    _ => None,
+                })
+                .expect("Torro's explanation");
+            assert_eq!(explanation.x, 0.0);
+            assert_eq!(explanation.width, width);
+        });
     }
 
     /// Task E8.3: a message's card answers and archives (`r`, `e`), and is as high as its parts.
