@@ -178,6 +178,38 @@ pub fn primary(state: &State) -> Option<Message> {
         .then_some(Message::Submit)
 }
 
+/// The host describes the same action as Enter, without offering a no-op button during work.
+pub fn primary_label(state: &State) -> Option<(&'static str, bool)> {
+    primary(state)?;
+    Some(if state.consent {
+        (tr("Send mail outside this computer?"), false)
+    } else if state.current.is_some() || state.pull.is_some() {
+        (tr("Preparing model…"), false)
+    } else if state.flight.is_some() {
+        (tr("Connecting…"), false)
+    } else {
+        (tr("Connect"), true)
+    })
+}
+
+/// A pending mail decision replaces the long overview rather than being appended below it.
+pub fn awaiting_consent(state: &State) -> bool {
+    state.consent
+}
+
+/// The first-run host also gives the new cloud form its own short page.
+pub fn foreground(state: &State) -> bool {
+    state.consent || state.form.as_ref().is_some_and(|(provider, _, _)| *provider == AiProvider::OllamaCloud)
+}
+
+fn key_reentry(state: &State) -> Option<&'static str> {
+    (state.error.is_some()
+        && state.error.as_deref() != Some(tr("Enter an API key to connect Ollama Cloud."))
+        && state.key.is_blank()
+        && state.form.as_ref().is_some_and(|(provider, _, _)| *provider == AiProvider::OllamaCloud))
+    .then(|| tr("Enter the API key again to retry."))
+}
+
 /// The host's explicit sorting choice also governs shared preparation, not just Continue.
 pub fn allow_sorting(state: &mut State, allowed: bool) {
     state.sorting = allowed;
@@ -716,6 +748,13 @@ fn can_use(state: &State, data: &dyn Seen) -> bool {
 }
 
 fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a, Message> {
+    if state.consent {
+        return consent_view(state, data);
+    }
+    if state.form.as_ref().is_some_and(|(provider, _, _)| *provider == AiProvider::OllamaCloud) {
+        return cloud_form(state);
+    }
+    let cloud = state.selected.as_deref().and_then(super::ai_provider) == Some(AiProvider::OllamaCloud);
     let mut parts = column![].spacing(layout::section_gap());
     if state.flight.is_some() || state.pull.is_some() {
         let status = if matches!(state.flight, Some(Work::Connect)) {
@@ -746,18 +785,10 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
     if let Some((provider, program, address)) = &state.form {
         let name = program.as_deref().and_then(LocalProgram::from_id).map_or(provider.name(), LocalProgram::name);
         parts = parts.push(typo::text(typo::body_strong(), name));
-        if *provider == AiProvider::OllamaCloud {
-            parts = parts
-                .push(typo::text(typo::meta(), provider.seat().label()).style(theme::text_2))
-                .push(typo::text(typo::body(), tr("Connect directly online. No local installation is needed.")))
-                .push(typo::text(typo::body(), tr("Text goes to this provider. Mail stays here unless you allow it.")));
-        } else {
-            let address = super::wizard::field(tr("Server address"), address)
-                .on_input_maybe(state.flight.is_none().then_some(Message::Address))
-                .on_submit_maybe(state.flight.is_none().then_some(Message::Submit));
-            parts =
-                parts.push(column![typo::text(typo::caption(), tr("Server address")), address].spacing(space::xs()));
-        }
+        let address = super::wizard::field(tr("Server address"), address)
+            .on_input_maybe(state.flight.is_none().then_some(Message::Address))
+            .on_submit_maybe(state.flight.is_none().then_some(Message::Submit));
+        parts = parts.push(column![typo::text(typo::caption(), tr("Server address")), address].spacing(space::xs()));
         let key = super::wizard::field(tr("API key"), state.key.expose())
             .id(KEY_FIELD)
             .secure(true)
@@ -790,7 +821,9 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
             ))
             .into();
     }
-    if let Some(recommendation) = &state.recommendation {
+    if let Some(recommendation) = &state.recommendation
+        && !cloud
+    {
         let memory = recommendation
             .hardware
             .memory_bytes
@@ -952,9 +985,17 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
                 None => account.as_str(),
             };
             let name = data.accounts().iter().find(|a| &a.id == account).map_or(fallback, |a| a.label.as_str());
-            parts = parts.push(typo::text(typo::body_strong(), name.to_string()));
-            if super::ai_provider(account) == Some(AiProvider::OllamaCloud) {
-                parts = parts.push(typo::text(typo::meta(), tr("Connected")).style(theme::text_2));
+            if cloud {
+                parts = parts.push(
+                    iced::widget::row![
+                        widgets::state_pill(widgets::Mark::Icon(Icon::CircleCheck), tr("Connected")),
+                        typo::text(typo::meta(), AiProvider::OllamaCloud.seat().label()).style(theme::text_2),
+                    ]
+                    .spacing(space::s())
+                    .align_y(iced::Alignment::Center),
+                );
+            } else {
+                parts = parts.push(typo::text(typo::body_strong(), name.to_string()));
             }
         }
         for preparation in recommendation.preparations.iter().filter(|p| Some(&p.account) == state.selected.as_ref()) {
@@ -1019,14 +1060,10 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
                         typo::text(typo::meta(), tr("Checks automatically")).style(theme::text_2),
                     ));
                 }
-                if !candidate.local {
+                if !candidate.local && !cloud {
                     suggestions.push(setup_row(
                         narrow,
-                        if state.selected.as_deref().and_then(super::ai_provider) == Some(AiProvider::OllamaCloud) {
-                            AiProvider::OllamaCloud.seat().label()
-                        } else {
-                            tr("Computation location unknown")
-                        },
+                        tr("Computation location unknown"),
                         Some(tr("Mail needs your explicit permission.").into()),
                         iced::widget::Space::new(),
                     ));
@@ -1055,14 +1092,14 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
                 .push(typo::text(typo::body(), tr("Account connected. No suggested models are available right now.")));
         }
         if !suggestions.is_empty() {
-            parts = parts.push(widgets::group(tr("Our suggestion for this PC"), suggestions, None)).push(
-                widgets::text_button(
-                    None,
-                    tr("Use suggestion"),
-                    style::button::secondary,
-                    can_use(state, data).then_some(Message::Use),
-                ),
-            );
+            let title = if cloud { tr("Suggested models") } else { tr("Our suggestion for this PC") };
+            let hint = cloud.then(|| tr("Mail needs your explicit permission.").to_string());
+            parts = parts.push(widgets::group(title, suggestions, hint)).push(widgets::text_button(
+                None,
+                tr("Use suggestion"),
+                style::button::secondary,
+                can_use(state, data).then_some(Message::Use),
+            ));
         }
     }
     if state.pull.is_some() {
@@ -1073,29 +1110,91 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
             Some(Message::Cancel),
         ));
     }
-    if state.consent {
-        if let Some((_, candidate)) =
-            state.current.as_ref().or_else(|| state.queue.iter().find(|(slot, _)| *slot == AiSlot::Decide))
-        {
-            let account = data
-                .accounts()
-                .iter()
-                .find(|a| Some(&a.id) == state.selected.as_ref())
-                .map(|a| a.label.as_str())
-                .or_else(|| state.selected.as_deref().and_then(super::ai_provider).map(AiProvider::name))
-                .or(state.selected.as_deref())
-                .unwrap_or_default();
-            parts = parts.push(typo::text(typo::body_strong(), format!("{} · {account}", candidate.model)));
-        }
-        parts = parts
-            .push(typo::text(
-                typo::body(),
-                tr("Mail goes to this model outside this computer and cannot be taken back."),
-            ))
-            .push(widgets::text_button(None, tr("Use"), style::button::secondary, Some(Message::Confirm)))
-            .push(widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::Cancel)));
-    }
     parts.into()
+}
+
+fn cloud_form(state: &State) -> Element<'_, Message> {
+    let ready = state.flight.is_none();
+    let provider = column![
+        typo::text(typo::body_strong(), AiProvider::OllamaCloud.name()),
+        typo::text(typo::meta(), AiProvider::OllamaCloud.seat().label()).style(theme::text_2),
+    ]
+    .spacing(space::xs());
+    let explanation = column![
+        typo::text(typo::body(), tr("Connect directly online. No local installation is needed.")),
+        typo::text(typo::body(), tr("Text goes to this provider. Mail stays here unless you allow it.")),
+    ]
+    .spacing(space::s());
+    let key = super::wizard::field(tr("API key"), state.key.expose())
+        .id(KEY_FIELD)
+        .secure(true)
+        .on_input_maybe(ready.then_some(|key| Message::Key(Secret::new(key))))
+        .on_submit_maybe(ready.then_some(Message::Submit));
+    let mut field = column![
+        column![typo::text(typo::caption(), tr("API key")), key].spacing(space::xs()),
+        widgets::text_button(
+            Some(Icon::ArrowUpRight),
+            tr("Create an API key"),
+            style::button::ghost,
+            Some(Message::KeyPage),
+        ),
+    ]
+    .spacing(space::s());
+    if let Some(error) = &state.error {
+        field = field.push(crate::parts::notice(error.clone()));
+        if let Some(hint) = key_reentry(state) {
+            field = field.push(typo::text(typo::meta(), hint).style(theme::text_2));
+        }
+    }
+    let connect = if ready {
+        widgets::text_button(None, tr("Connect"), style::button::secondary, Some(Message::Submit))
+    } else {
+        widgets::busy_button(tr("Connecting…"), style::button::secondary)
+    };
+    let actions = iced::widget::row![
+        widgets::text_button(None, tr("Back"), style::button::ghost, ready.then_some(Message::Back)),
+        connect,
+    ]
+    .spacing(space::s());
+    column![provider, explanation, field, actions].spacing(layout::section_gap()).into()
+}
+
+fn consent_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
+    let model = state
+        .current
+        .as_ref()
+        .or_else(|| state.queue.iter().find(|(slot, _)| *slot == AiSlot::Decide))
+        .map(|(_, candidate)| candidate.model.as_str())
+        .unwrap_or_default();
+    let account = data
+        .accounts()
+        .iter()
+        .find(|a| Some(&a.id) == state.selected.as_ref())
+        .map(|a| a.label.as_str())
+        .or_else(|| state.selected.as_deref().and_then(super::ai_provider).map(AiProvider::name))
+        .or(state.selected.as_deref())
+        .unwrap_or_default();
+    let question = trf(
+        "{model} reads your mail at {provider} outside this computer. Use it?",
+        &[("model", &model), ("provider", &account)],
+    );
+    let actions = iced::widget::row![
+        widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Cancel)),
+        widgets::text_button(None, tr("Use"), style::button::primary, Some(Message::Confirm)),
+    ]
+    .spacing(space::s());
+    column![
+        typo::text(typo::title(), tr("Send mail outside this computer?")),
+        column![
+            typo::text(typo::body(), question),
+            typo::text(typo::body(), tr("Mail goes to this model outside this computer and cannot be taken back."))
+                .style(theme::text_2),
+        ]
+        .spacing(space::s()),
+        actions,
+    ]
+    .spacing(space::l())
+    .into()
 }
 
 /// Deterministic, non-network states for headless design inspection.
@@ -1251,6 +1350,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cloud_primary_feedback_distinguishes_forms_work_and_explicit_consent() {
+        let data = super::super::demo::demo_data();
+        let mut state = State::default();
+        demo(&mut state, "cloud-form", &data);
+        assert!(foreground(&state));
+        assert_eq!(primary_label(&state), Some((tr("Connect"), true)));
+        demo(&mut state, "cloud-running", &data);
+        assert_eq!(primary_label(&state), Some((tr("Connecting…"), false)));
+        demo(&mut state, "cloud-consent", &data);
+        assert!(foreground(&state) && awaiting_consent(&state));
+        assert_eq!(primary_label(&state), Some((tr("Send mail outside this computer?"), false)));
+        assert!(matches!(update(&mut state, Message::Submit, &data), Action::None));
+        assert!(state.consent && state.flight.is_none(), "Enter never supplies consent");
+        update(&mut state, Message::Cancel, &data);
+        assert!(!foreground(&state) && primary_label(&state).is_none());
+        demo(&mut state, "download", &data);
+        assert_eq!(primary_label(&state), Some((tr("Preparing model…"), false)));
+    }
+
+    #[test]
     fn ollama_cloud_form_requires_a_key_and_retries_the_connection_not_discovery() {
         let data = super::super::demo::demo_data();
         let provider = serde_json::from_str("\"ollama_cloud\"").expect("provider");
@@ -1268,7 +1387,11 @@ mod tests {
         assert!(state.key.is_blank());
         answered(&mut state, owner, run, &Ok(Response::Error { code: "auth".into(), message: "refused".into() }));
         assert!(state.form.is_some() && state.error.is_some() && state.selected.is_none());
+        assert_eq!(key_reentry(&state), Some(tr("Enter the API key again to retry.")));
+        assert!(matches!(update(&mut state, Message::Retry, &data), Action::Focus(_)));
+        assert!(state.flight.is_none(), "retry without a key cannot make another request");
         update(&mut state, Message::Key(Secret::new("replacement")), &data);
+        assert!(key_reentry(&state).is_none());
         let (_, _, request) = tag(update(&mut state, Message::Retry, &data));
         assert!(matches!(request, Request::ConnectAi { server: None, .. }));
         state.flight = None;

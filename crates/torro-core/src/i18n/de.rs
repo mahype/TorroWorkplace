@@ -4,6 +4,8 @@
 pub(super) static TABLE: &[(&str, &str)] = &[
     // Direct Ollama Cloud (#587).
     ("Enter an API key to connect Ollama Cloud.", "Gib einen API-Schlüssel ein, um Ollama Cloud zu verbinden."),
+    ("Enter the API key again to retry.", "Gib den API-Schlüssel zum erneuten Verbinden noch einmal ein."),
+    ("Suggested models", "Modellvorschläge"),
     (
         "Connect directly online. No local installation is needed.",
         "Direkt online verbinden. Eine lokale Installation ist nicht nötig.",

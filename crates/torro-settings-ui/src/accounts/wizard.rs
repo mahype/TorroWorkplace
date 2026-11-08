@@ -1532,6 +1532,9 @@ fn subtitle(state: &State) -> &'static str {
         (Step::MailConnecting, _) if state.mail.certificates.pending().is_some() => certificate_title(),
         (Step::MailConnecting, _) => tr("Signing in to your provider."),
         (Step::MailCertificate, _) => certificate_title(),
+        (Step::AiChoose, _) if super::ai_setup::awaiting_consent(&state.setup) => {
+            tr("Mail needs your explicit permission.")
+        }
         (Step::AiChoose, _) => tr("Choose where your AI models run."),
         (Step::AiKey, _) if cloud(state) == AiProvider::OpenRouter => tr("Paste an API key from OpenRouter."),
         (Step::AiKey, _) => tr("Paste an API key from the provider."),
@@ -2208,6 +2211,10 @@ fn has_back(state: &State) -> bool {
 /// Error text left, "Back" where there is a step to go back to ([`has_back`]), "Cancel" and the
 /// step's primary button right.
 fn footer(state: &State) -> Element<'_, Message> {
+    if state.step == Step::AiChoose && super::ai_setup::awaiting_consent(&state.setup) {
+        // The decision owns the only primary action; Done must not compete with consent.
+        return Space::new().into();
+    }
     let error: Element<'_, Message> = match &state.error {
         Some(error) => typo::text(typo::body(), error.as_str())
             .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) })
@@ -2228,6 +2235,20 @@ fn footer(state: &State) -> Element<'_, Message> {
         .then(|| widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Close)));
     let primary = |label, message| Some(widgets::text_button(None, label, style::button::primary, message));
     let next = match state.step {
+        Step::AiChoose if super::ai_setup::primary_label(&state.setup).is_some() => {
+            super::ai_setup::primary_label(&state.setup).map(|(label, enabled)| {
+                if enabled {
+                    widgets::text_button(
+                        None,
+                        label,
+                        style::button::primary,
+                        Some(Message::Setup(super::ai_setup::Message::Submit)),
+                    )
+                } else {
+                    widgets::busy_button(label, style::button::primary)
+                }
+            })
+        }
         Step::AiChoose if ai_connected => primary(tr("Done"), Some(Message::Close)),
         Step::TorroMail if taken_over => primary(tr("Done"), Some(Message::Close)),
         Step::MailConnecting => state.mail.certificates.pending().map(|asked| trust_button(asked, true, None)),

@@ -1492,7 +1492,11 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 
 /// The page of the current step over the fixed footer.
 pub fn body<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
-    let page = pages::view(state, data, class);
+    let page = if state.step == Step::Ai && torro_settings_ui::accounts::ai_setup::foreground(&state.ai_setup) {
+        torro_settings_ui::accounts::ai_setup::view(&state.ai_setup, data).map(Message::AiSetup)
+    } else {
+        pages::view(state, data, class)
+    };
     let page = container(container(page).width(Fill).max_width(size::form_max())).padding(page_margin(class));
     let page = scrollable(page)
         .direction(scrollable::Direction::Vertical(style::scrollbar()))
@@ -1504,6 +1508,11 @@ pub fn body<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
 /// The footer: the step's status at the left; "Back" (not in narrow, where the header has it),
 /// "Skip" where the step can be skipped, and the primary button.
 fn footer<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
+    if state.step == Step::Ai && torro_settings_ui::accounts::ai_setup::awaiting_consent(&state.ai_setup) {
+        return container(typo::text(typo::meta(), tr("Mail needs your explicit permission.")).style(theme::text_2))
+            .padding(layout::row_padding())
+            .into();
+    }
     let status: Option<Element<'a, Message>> = match &state.error {
         Some(error) => Some(problem(error.clone())),
         None => pages::status(state, data).map(|text| typo::text(typo::body(), text).style(theme::text_2).into()),
@@ -1515,14 +1524,31 @@ fn footer<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a,
     if let Some((label, message)) = pages::skip(state, data) {
         buttons = buttons.push(widgets::text_button(None, label, style::button::secondary, Some(message)));
     }
-    let (label, enabled) = pages::primary(state, data);
-    buttons = buttons.push(widgets::text_button(None, label, style::button::primary, enabled.then_some(Message::Next)));
+    let (label, enabled) = primary(state, data);
+    let busy = state.step == Step::Ai
+        && !enabled
+        && torro_settings_ui::accounts::ai_setup::primary_label(&state.ai_setup).is_some();
+    buttons = buttons.push(if busy {
+        widgets::busy_button(label, style::button::primary)
+    } else {
+        widgets::text_button(None, label, style::button::primary, enabled.then_some(Message::Next))
+    });
     let left = container(row![].push(status)).width(Fill).clip(true);
     container(row![left, buttons].spacing(space::l()).align_y(Alignment::Center))
         .width(Fill)
         .center_y(size::header() + space::m())
         .padding(layout::row_padding())
         .into()
+}
+
+/// Shared connection/preparation state overrides the host's ordinary Continue action.
+fn primary(state: &State, data: &Data) -> (&'static str, bool) {
+    if state.step == Step::Ai
+        && let Some(primary) = torro_settings_ui::accounts::ai_setup::primary_label(&state.ai_setup)
+    {
+        return primary;
+    }
+    pages::primary(state, data)
 }
 
 /// A problem in the footer: an alert icon in the error colour, the text in `text` – the colour is
@@ -1945,9 +1971,15 @@ mod tests {
         data.settings.ai_assignments.clear();
         let mut setup = state(Step::Ai);
         ai_setup::demo(&mut setup.ai_setup, "cloud-form", &data);
+        assert_eq!(primary(&setup, &data), (tr("Connect"), true));
         assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::Focus(_))));
         assert_eq!(setup.step, Step::Ai);
+        ai_setup::demo(&mut setup.ai_setup, "cloud-running", &data);
+        assert_eq!(primary(&setup, &data), (tr("Connecting…"), false));
+        assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
+        assert_eq!(setup.step, Step::Ai);
         ai_setup::demo(&mut setup.ai_setup, "cloud-consent", &data);
+        assert_eq!(primary(&setup, &data), (tr("Send mail outside this computer?"), false));
         assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
         assert_eq!(setup.step, Step::Ai);
         let before = data.settings.clone();
