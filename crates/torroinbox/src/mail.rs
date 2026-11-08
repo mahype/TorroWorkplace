@@ -2872,6 +2872,8 @@ fn small_icon<'a>(which: Icon, colour: Option<Color>) -> Element<'a, Message> {
 /// What the panel shows of a mail.
 #[derive(Debug, Clone, Copy)]
 pub struct Reading<'a> {
+    /// Workflow results are separate from this mail's original attachments.
+    pub workflows: Option<&'a crate::workflows::State>,
     /// The message's id.
     pub id: &'a str,
     /// The catalogue of categories (task E15.2), for the name and group of the mail's pill.
@@ -3172,8 +3174,11 @@ fn command_body<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, width
     }
     // A HTML mail starts right under the line, so its background meets it (issue #377).
     let gap = if html_filling(reading).is_some() { 0.0 } else { space::l() };
-    let letter =
-        container(column(panel_letter(reading))).padding(Padding::new(0.0).right(widgets::floating_rail_room()));
+    let documents = reading.workflows.and_then(|state| crate::workflows::documents(state, reading.id));
+    // Retrieved files are not MIME attachments. Scrolling this separate block with the mail keeps
+    // the fixed original-attachment footer and the floating action rail usable in low windows.
+    let letter = container(column(panel_letter(reading)).push(documents))
+        .padding(Padding::new(0.0).right(widgets::floating_rail_room()));
     body.spacing(space::l()).push(column![panel::bleed(line()), letter].spacing(gap)).into()
 }
 
@@ -3323,7 +3328,9 @@ pub fn reader<'a>(
         let room = widgets::floating_rail_room();
         let mail = container(reader_mail(&reading, reader_widths((bounds.width - room).max(0.0))))
             .padding(Padding::new(0.0).right(room));
-        let page = column![head, rule::horizontal(size::HAIRLINE).style(style::rule), mail];
+        let documents = reading.workflows.and_then(|state| crate::workflows::documents(state, reading.id));
+        let documents = documents.map(|block| container(block).padding(Padding::ZERO.right(room)));
+        let page = column![head, rule::horizontal(size::HAIRLINE).style(style::rule), mail].push(documents);
         let page = scrollable(page)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)
@@ -3978,10 +3985,12 @@ fn torro_items<'a>(
         // #500); "Re-categorize" needs an entry, as the model decides for one.
         let task = Some(Message::AskMailTask(reading.id.to_owned()));
         let category = Some(Message::AskMailCategory(reading.id.to_owned()));
-        return vec![
+        let mut items = vec![
             RailItem::new(Icon::ListTodo, tr("Task"), "T", task).at(&anchors.task),
             RailItem::new(Icon::Tag, tr("Category…"), "", category).at(&anchors.category),
         ];
+        items.extend(workflow_items(reading));
+        return items;
     };
     let id = || item.id.clone();
     let mut items = vec![
@@ -3998,7 +4007,23 @@ fn torro_items<'a>(
                 .push(RailItem::new(Icon::Sparkles, tr("Re-categorize"), "", Some(Message::Reclassify(id()))).accent());
         }
     }
+    items.extend(workflow_items(reading));
     items
+}
+
+/// Shared by the Torro rail and its context menu; the established Task action stays first.
+fn workflow_items<'a>(reading: &Reading<'_>) -> Vec<RailItem<'a, Message>> {
+    vec![
+        RailItem::new(
+            Icon::Sparkles,
+            tr("Create workflow with AI…"),
+            "",
+            Some(Message::WorkflowSetup(reading.id.to_owned())),
+        )
+        .accent(),
+        RailItem::new(Icon::ListChecks, tr("Run workflow"), "", Some(Message::ChooseWorkflow(reading.id.to_owned())))
+            .opens_menu(),
+    ]
 }
 
 /// The items of the rail's group "Mark" ([`action_groups`]): Flag or Unflag, Mark read or Mark
@@ -5992,6 +6017,7 @@ mod tests {
         let summary = mail.as_ref().ok().map(|mail| mail.summary.clone());
         let unsubscribed = HashSet::new();
         let reading = Reading {
+            workflows: None,
             logos: no_logos(),
             sent: false,
             categories: &[],
@@ -6168,7 +6194,16 @@ mod tests {
                             tr("Delete").to_owned(),
                         ]
                     ),
-                    (tr("Torro").to_owned(), strings(&[tr("Task"), tr("Event"), tr("Category…")])),
+                    (
+                        tr("Torro").to_owned(),
+                        strings(&[
+                            tr("Task"),
+                            tr("Event"),
+                            tr("Category…"),
+                            tr("Create workflow with AI…"),
+                            tr("Run workflow")
+                        ])
+                    ),
                     (tr("Mark").to_owned(), mark_words(reading)),
                     // Issue #501: the mail as PDF or picture, and the budget's sheet (task M12.6).
                     (
@@ -6241,7 +6276,7 @@ mod tests {
                 [
                     vec!["R", "", "F"],
                     vec!["E", "W", "B", "S", "L", "#"],
-                    vec!["T", "C", ""],
+                    vec!["T", "C", "", "", ""],
                     vec!["", ""],
                     vec!["", "", "", ""],
                     vec!["M"],
@@ -6334,9 +6369,30 @@ mod tests {
             let deciding = Reading { deciding: true, ..*reading };
             let groups = action_groups(&deciding, entry, &folders, false, &anchors);
             let torro = &group(&groups, tr("Torro")).items;
-            let last = torro.last().expect("an item");
-            assert_eq!(last.label, tr("Re-categorize"));
-            assert!(last.accent && matches!(last.press(), Some(Message::Reclassify(id)) if id == item.id));
+            let recategorize = torro.iter().find(|item| item.label == tr("Re-categorize")).expect("re-categorize");
+            assert!(
+                recategorize.accent && matches!(recategorize.press(), Some(Message::Reclassify(id)) if id == item.id)
+            );
+        });
+    }
+
+    #[test]
+    fn workflow_entry_points_are_identical_in_the_rail_and_context_menu() {
+        reading_of("m:w1", MailFormat::Text, true, |reading| {
+            let groups = action_groups(reading, None, &folders(), true, &detail::Anchors::default());
+            let context = context_groups(groups.clone(), reading.id);
+            for groups in [&groups, &context] {
+                let items = &group(groups, tr("Torro")).items;
+                assert!(
+                    matches!(items.first().and_then(|i| i.press()), Some(Message::AskMailTask(id)) if id == reading.id)
+                );
+                assert!(
+                    matches!(sends(groups, tr("Torro"), tr("Create workflow with AI…")), Some(Message::WorkflowSetup(id)) if id == reading.id)
+                );
+                assert!(
+                    matches!(sends(groups, tr("Torro"), tr("Run workflow")), Some(Message::ChooseWorkflow(id)) if id == reading.id)
+                );
+            }
         });
     }
 
@@ -6386,7 +6442,7 @@ mod tests {
             assert_eq!(group(&groups, tr("File")).icon, Icon::Check, "the group's fixed icon");
             assert!(group(&groups, tr("File")).first_press().is_some(), "a click archives");
             let torro = &group(&groups, tr("Torro")).items;
-            assert_eq!(torro.len(), 2, "Task and, issue #500, Category…");
+            assert_eq!(torro.len(), 4, "Task and Category stay first; workflow setup and reuse follow");
             assert!(matches!(torro[0].press(), Some(Message::AskMailTask(id)) if id == "m:w1"));
             assert!(matches!(torro[1].press(), Some(Message::AskMailCategory(id)) if id == "m:w1"));
             let mute = sends(&groups, tr("Mute"), tr("Mute…"));
@@ -7283,6 +7339,7 @@ mod tests {
                     .expect("the demo plans");
                     let none_left = HashSet::new();
                     let reading = Reading {
+                        workflows: None,
                         logos: no_logos(),
                         sent: false,
                         categories: &[],

@@ -69,7 +69,7 @@ pub fn areas(app: AppId) -> &'static [Area] {
         "torro-calendar" => &[Area::Calendar],
         "torro-tasks" => &[Area::Tasks, Area::Github],
         "torro-inbox" | "torro-inbox-notifications" => &[Area::Inbox],
-        "torro-inbox-mail" => &[Area::Mail],
+        "torro-inbox-mail" => &[Area::Mail, Area::Workflows],
         "torro-assistant" => &[Area::Assistant, Area::Bots],
         _ => &[],
     }
@@ -490,7 +490,7 @@ mod tests {
             }
         }
         assert_eq!(areas(AppId::TASKS), [Area::Tasks, Area::Github]);
-        assert_eq!(areas(AppId::INBOX_MAIL), [Area::Mail]);
+        assert_eq!(areas(AppId::INBOX_MAIL), [Area::Mail, Area::Workflows]);
         assert_eq!(areas(AppId::INBOX_NOTIFICATIONS), areas(AppId::INBOX));
         assert!(AppId::ALL.iter().all(|app| !areas(*app).contains(&Area::Contacts)), "contacts stay shared");
     }

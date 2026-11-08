@@ -80,6 +80,7 @@ mod notifications;
 mod overview;
 mod search;
 mod suggest;
+mod workflows;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

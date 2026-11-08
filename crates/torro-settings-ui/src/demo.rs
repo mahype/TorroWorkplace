@@ -103,6 +103,7 @@ fn demo_months() -> Vec<MailMonthCount> {
 /// Sample data for the sections, answered from memory.
 #[derive(Debug, Default)]
 pub struct Demo {
+    workflow_demo: Mutex<crate::mail::automation::DemoState>,
     settings: Settings,
     sent: Mutex<Vec<Request>>,
     category_job: Mutex<Option<CategoryJob>>,
@@ -171,6 +172,7 @@ impl Demo {
             ..Settings::default()
         };
         Demo {
+            workflow_demo: Mutex::new(crate::mail::automation::DemoState::default()),
             settings,
             sent: Mutex::new(Vec::new()),
             category_job: Mutex::new(None),
@@ -1197,6 +1199,12 @@ impl Backend for Demo {
     /// it ([`Demo::sent`]). A request the demo has no sample for is answered as done too: a
     /// section shows its empty state then instead of an error nobody can act on.
     fn call(&self, request: Request) -> Answer {
+        let workflow_answer =
+            self.workflow_demo.lock().unwrap_or_else(std::sync::PoisonError::into_inner).answer(&request);
+        if let Some(answer) = workflow_answer {
+            self.note(request);
+            return Box::pin(async move { Ok(answer) });
+        }
         let answer = match &request {
             Request::Settings => Response::Settings { settings: self.settings.clone() },
             Request::ListClients => Response::Clients { clients: self.clients() },
