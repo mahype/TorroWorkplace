@@ -173,7 +173,7 @@ fn shows_calendar(message: &Message) -> bool {
 /// The menus that open over the window; at most one at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Menu {
-    /// "Week ▾" in the medium and narrow header: the views and the calendars.
+    /// "Week ▾" in the header (every size since issue #543): the views and the calendars.
     View,
 }
 
@@ -354,7 +354,7 @@ pub enum Open {
     EditorSeries,
     /// The timeline with the night's card open under "Nights" in the header.
     Night,
-    /// The view menu ("Week ▾"); only the medium and narrow header have it.
+    /// The view menu ("Week ▾"), in the header of every size (issue #543).
     Menu,
     /// The sidebar drawer of the medium and narrow layouts.
     Drawer,
