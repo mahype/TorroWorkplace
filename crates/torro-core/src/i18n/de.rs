@@ -2,6 +2,24 @@
 //! within a group; the test in `mod.rs` checks for duplicates and matching placeholders.
 
 pub(super) static TABLE: &[(&str, &str)] = &[
+    // Clipboard paste (#462).
+    (
+        "The message is too large. Shorten it before saving or sending.",
+        "Die Nachricht ist zu groß. Kürze sie vor dem Speichern oder Senden.",
+    ),
+    (
+        "A paste is still being prepared. Try again shortly.",
+        "Eine Einfügung wird noch vorbereitet. Versuche es gleich erneut.",
+    ),
+    ("Couldn't paste the clipboard.", "Der Inhalt der Zwischenablage konnte nicht eingefügt werden."),
+    ("Couldn't read the clipboard.", "Die Zwischenablage konnte nicht gelesen werden."),
+    (
+        "Couldn't replace the pasted text. Paste again.",
+        "Der eingefügte Text konnte nicht ersetzt werden. Füge ihn erneut ein.",
+    ),
+    ("Keep text only", "Nur Text behalten"),
+    ("Pasted with formatting", "Mit Formatierung eingefügt"),
+    ("The message is too large to paste more text.", "Die Nachricht ist zu groß, um weiteren Text einzufügen."),
     // Shared AI onboarding (#527).
     (
         "Connect an AI program or an online service. Choose knowingly where your text goes.",

@@ -1177,6 +1177,7 @@ fn describe(request: &Request) -> String {
         Request::DeleteMail { ids, .. } => format!("delete {} messages", ids.len()),
         Request::SaveDraft { .. } => "save draft".into(),
         Request::PrepareMailImage { .. } => "prepare mail image".into(),
+        Request::PrepareMailPaste { .. } => "prepare mail paste".into(),
         Request::UploadMailImage { .. } => "upload mail image".into(),
         Request::ReleaseMailImages { .. } => "release mail images".into(),
         Request::SendDraft { .. } => "send draft".into(),

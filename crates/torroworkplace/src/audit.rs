@@ -558,6 +558,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::DeleteMail { .. }
         | Request::SaveDraft { .. }
         | Request::PrepareMailImage { .. }
+        | Request::PrepareMailPaste { .. }
         | Request::UploadMailImage { .. }
         | Request::ReleaseMailImages { .. }
         | Request::SendDraft { .. }
