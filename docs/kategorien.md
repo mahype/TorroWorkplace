@@ -294,10 +294,10 @@ Einträge von GitHub, Talk und ntfy lassen die Kategorie leer. Sie haben mit ihr
 | Alle Kategorien vorab zählen | Einstellungen › Categorization | `inbox.preview_clear_categories` · Read | `inbox_preview_clear_categories` |
 | Kategorien aller Mails entfernen | Einstellungen › Categorization | `inbox.clear_categories` · Delete, mit expliziter All-Konten-Bestätigung und optionaler Deaktivierung der Automatik | `inbox_clear_categories` |
 | Entfernen pausieren, fortsetzen, abbrechen | Einstellungen › Categorization | `inbox.control_clear_categories` · Delete | `inbox_control_clear_categories` |
-| Entscheidermodelle anbieten | Einstellungen › Categorization | `ai.list_models` um das Feld `decision` erweitert · Read | vorhanden |
-| Plätze und Zuordnung lesen | Steuerzentrale › AI, Einstellungen › Categorization | `ai.list_assignments` (Feld `slots`) · Read | `ai_list_assignments` |
-| Modell für *Sortieren* setzen | Steuerzentrale › AI, Einstellungen › Categorization | `ai.set_slot` mit `slot: decide` · Admin; ein Modell anderswo nur Menschen | `ai_set_slot` (Freigabe) |
-| Ausnahme je Funktion setzen | Einstellungen › Categorization | `ai.set_assignment` · Admin | `ai_set_assignment` |
+| Entscheidermodelle anbieten | Einstellungen › AI, Platz *Sorting* (#545) | `ai.list_models` um das Feld `decision` erweitert · Read | vorhanden |
+| Plätze und Zuordnung lesen | Steuerzentrale › AI, Einstellungen › AI und › Categorization | `ai.list_assignments` (Feld `slots`) · Read | `ai_list_assignments` |
+| Modell für *Sortieren* setzen | Steuerzentrale › AI, Einstellungen › AI (Categorization verweist dorthin, #545) | `ai.set_slot` mit `slot: decide` · Admin; ein Modell anderswo nur Menschen | `ai_set_slot` (Freigabe) |
+| Ausnahme je Funktion zurücknehmen | Einstellungen › AI, beim Setzen von *Sorting* (#545: Categorization setzt keine mehr) | `ai.set_assignment` · Admin | `ai_set_assignment` |
 | Warnzeichen sehen (Issue #506) | Band bzw. leise Zeile im Leser | Feld `warnings` in `mail.get_message` · Read; für einen Client-Schlüssel ohne die Zeichen, die Adressbücher und andere Konten verraten würden | `mail_get_message` |
 | Abgefangenes sehen (Issue #506) | Unerwünscht › Betrug bzw. Spam | Feld und Filter `caught` in `mail.search_messages` · Read | `mail_search_messages` |
 | „Kein Betrug“ (Issue #506) | Knopf im Band | `inbox.release_mail` mit `trust` · Admin (ein Agent nur mit Freigabe, der App-Schlüssel direkt) | `inbox_release_mail` |

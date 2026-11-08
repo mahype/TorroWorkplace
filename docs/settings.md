@@ -366,7 +366,7 @@ Konten steht die Datenregel „Mail to cloud models“ (vorher in den Rechten de
   es. Der Satz unter der Gruppe sagt, dass Entscheidungsmodelle direkt antworten und viel schneller einordnen als
   Chat-Modelle. Ist schmaler als ein Formular, steht das
   Bedienelement jeder Zeile unter ihrem Text, damit nichts abgeschnitten wird. Ein Modell für Sorting nimmt vorher eine gespeicherte Ausnahme
-  `inbox.categorize` zurück (`ai.set_assignment` mit `engine: null`, wie Einstellungen › Categorization), damit der
+  `inbox.categorize` zurück (`ai.set_assignment` mit `engine: null`), damit der
   Platz sortiert. Unter „Data rule“ steht nur die Erlaubnis des Chats, `mailToCloud` („Chat may read mail outside this
   computer“). Die für Sorting, `decideMailToCloud`, hat keinen eigenen Schalter (#424): Das Menü von Sorting zeigt nach
   „Other models“ den Abschnitt „Elsewhere“, jede Zeile mit Wolke; ein Modell dort

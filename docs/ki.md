@@ -232,12 +232,13 @@ Der eine Schalter aus Grundsatz 4 gilt jetzt je Platz:
 - `mail_to_cloud` ist die Erlaubnis für **Chat**, mit der Bedeutung von bisher.
 - `decide_mail_to_cloud` ist die Erlaubnis für **Sortieren**. Sie folgt der Wahl: Setzt man für Sortieren ein
   Modell anderswo (Cloud, Server im Netz), wird sie eingeschaltet (`ai.set_slot` setzt sie mit); wählt man ein
-  Modell hier oder „None“, wird sie zurückgenommen. Einen eigenen Schalter hat sie nicht mehr (#424): Beide
-  Auswahlen (Mail-Fenster › Categorization und Steuerzentrale › AI › Sorting) bieten alle Modelle an, die
-   anderswo unter „Elsewhere · mail leaves this computer“ (im Menü von Sorting kurz „Elsewhere“) mit Wolke. Ein Modell dort fragt vorher
+  Modell hier oder „None“, wird sie zurückgenommen. Einen eigenen Schalter hat sie nicht mehr (#424): Die
+  Auswahl unter AI › Sorting (Steuerzentrale und Einstellungen des Mail-Fensters; Mail › Categorization verweist
+  seit #545 nur dorthin) bietet alle Modelle an, die
+  anderswo rechnen, unter „Elsewhere“ mit Wolke. Ein Modell dort fragt vorher
    („Send mail outside this computer?“, „Use“/„Cancel“), auch beim Wechsel auf ein anderes, weil die Zustimmung einem
   Anbieter gilt; erst „Use“ setzt Modell und Erlaubnis. Steht ein Modell in der Cloud im Platz, aber die
-  Erlaubnis ist aus (alte Einstellung, oder ein Agent hat sie abgeschaltet), zeigen beide Orte „Waiting for
+  Erlaubnis ist aus (alte Einstellung, oder ein Agent hat sie abgeschaltet), zeigen AI › Sorting und Categorization „Waiting for
   your OK – mail stays here“; es noch einmal zu wählen fragt wieder. Dieselbe Rückfrage stellt die Einrichtung,
    wenn ihr Schalter „Sort mail“ ein ausgeschaltetes Modell anderswo wieder einschalten würde oder ein neues
    Modell anderswo gewählt wird, auch mit vorhandener Erlaubnis. Abbrechen behält die bisherige Auswahl;
@@ -284,8 +285,8 @@ Einstellungen zeigt beim Ersatzweg „Answers in a fixed format, slower“.
 - Das Chat-Modell gibt **keine Konfidenz**. Seine Kategorie gilt ohne Schwellwert und ohne Zahl; was es nicht
   sinnvoll beantwortet, wird `other`.
 - Der Text der Mail bleibt im Zaun `<message>` wie bisher; die Anweisungen stehen nur im System-Text.
-- **Entscheidermodelle zuerst** (#421): Wo ein Modell zum Sortieren gewählt wird (Steuerzentrale › AI, Platz
-  *Sorting*, und Mail-Fenster › Categorization), stehen die Entscheidermodelle oben unter „Decision models (fast)“,
+- **Entscheidermodelle zuerst** (#421): Wo ein Modell zum Sortieren gewählt wird (AI, Platz *Sorting*; seit #545
+  nicht mehr in Mail-Fenster › Categorization), stehen die Entscheidermodelle oben unter „Decision models (fast)“,
   die Chat-Modelle des Ersatzwegs darunter unter „Other models“; ein Satz sagt, dass Entscheidermodelle direkt
   antworten und viel schneller einordnen. Ohne Entscheidermodell zeigt das Mail-Fenster an Stelle der ersten Gruppe
   „No decision model“ mit dem Weg zu Einstellungen › AI, wo „Use suggestion“ eines zum Laden anbietet. Die API
@@ -305,7 +306,7 @@ Einstellungen zeigt beim Ersatzweg „Answers in a fixed format, slower“.
 | Herunterladen | Steuerzentrale › AI, „Use suggestion“ | `ai.pull_model` · Admin; nur Modelle der Liste, nur Ollama auf diesem Rechner. Die Antwort zeigt den neuen Download als `running`; lehnt Ollama ihn sofort ab, steht er dort als `failed`; ist Ollama nicht erreichbar, kommt `offline` und nichts wird angelegt – außer er wurde inzwischen abgebrochen, dann die Liste mit ihm als `cancelled`. Antwortet der Start `busy`, hängt sich „Use suggestion“ an den laufenden Download desselben Modells | `ai_pull_model` (Freigabe) |
 | Stand der Downloads | dieselben Orte | `ai.list_pulls` · Read | `ai_list_pulls` |
 | Download abbrechen | „Cancel“ | `ai.cancel_pull` · Write | `ai_cancel_pull` |
-| Erlaubnis *Sortieren* | Wahl eines Modells in der Cloud mit Rückfrage (Mail-Fenster › Categorization, Steuerzentrale › AI › Sorting); kein eigener Schalter (#424) | eingeschaltet von `ai.set_slot` bzw. `ai.set_assignment` mit einem Modell anderswo; `settings.set_setting decide_mail_to_cloud` · Admin, einschalten nur Menschen; `ai.set_slot` setzt sie mit; ausgeschaltet hält ein laufender Sortierauftrag mit einem Modell anderswo vor der nächsten Mail an (`failed`) | `settings_set_setting` nur `false` |
+| Erlaubnis *Sortieren* | Wahl eines Modells in der Cloud mit Rückfrage (AI › Sorting, in der Steuerzentrale und im Mail-Fenster, #545); kein eigener Schalter (#424) | eingeschaltet von `ai.set_slot` bzw. `ai.set_assignment` mit einem Modell anderswo; `settings.set_setting decide_mail_to_cloud` · Admin, einschalten nur Menschen; `ai.set_slot` setzt sie mit; ausgeschaltet hält ein laufender Sortierauftrag mit einem Modell anderswo vor der nächsten Mail an (`failed`) | `settings_set_setting` nur `false` |
 | Eintrag zusammenfassen | Paneel „Summarize“ | `inbox.summarize_item` · Write (löst einen Modellaufruf aus) | `inbox_summarize_item` |
 
 Neuer Bereich `ai` im Katalog für die Einstellungen; die Funktionen selbst gehören zu dem Bereich, in
