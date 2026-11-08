@@ -2809,8 +2809,9 @@ pub fn inert<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
     guard::Inert { content: content.into() }.into()
 }
 
-/// The sections of a dropdown with only the entries whose label holds `query` (trimmed, without
-/// regard to case); sections left without an entry drop out. An empty query keeps everything.
+/// The sections of a dropdown with only the entries whose label or detail line holds `query`
+/// (trimmed, without regard to case): a model menu shows its account as the detail, so the account
+/// finds equally named models (issue #573). Sections left without an entry drop out. An empty query keeps everything.
 pub fn matching_sections<'a, M>(sections: Vec<MenuSection<'a, M>>, query: &str) -> Vec<MenuSection<'a, M>> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
@@ -2819,8 +2820,14 @@ pub fn matching_sections<'a, M>(sections: Vec<MenuSection<'a, M>>, query: &str) 
     sections
         .into_iter()
         .filter_map(|section| {
-            let items: Vec<MenuItem<'a, M>> =
-                section.items.into_iter().filter(|item| item.label.to_lowercase().contains(&query)).collect();
+            let items: Vec<MenuItem<'a, M>> = section
+                .items
+                .into_iter()
+                .filter(|item| {
+                    item.label.to_lowercase().contains(&query)
+                        || item.detail.as_ref().is_some_and(|detail| detail.to_lowercase().contains(&query))
+                })
+                .collect();
             (!items.is_empty()).then_some(MenuSection { items, ..section })
         })
         .collect()
@@ -7552,6 +7559,27 @@ mod tests {
         assert_eq!(labels(matching_sections(sections(), "LLA")), vec!["llama3"]);
         assert_eq!(matching_sections(sections(), "cla").len(), 1, "the local section drops out");
         assert!(matching_sections(sections(), "nothing").is_empty());
+    }
+
+    /// Issue #573: the search also finds the account in the detail line, so equally named models
+    /// on several accounts can be told apart.
+    #[test]
+    fn a_dropdown_search_finds_the_account_in_the_detail() {
+        let sections = vec![MenuSection::new(vec![
+            MenuItem::new(Icon::Clock, "llama3", 1).detail("ollama@home"),
+            MenuItem::new(Icon::Clock, "llama3", 2).detail("ollama@work"),
+            MenuItem::new(Icon::Cloud, "Claude", 3).detail("openrouter"),
+        ])];
+        let picks = |query: &str| {
+            matching_sections(sections.clone(), query)
+                .into_iter()
+                .flat_map(|s| s.items)
+                .map(|i| i.on_press)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(picks("OLLAMA"), vec![1, 2]);
+        assert_eq!(picks("@work"), vec![2]);
+        assert_eq!(picks("claude"), vec![3]);
     }
 
     /// Issue #554 (review): Enter in an empty search keeps the current entry, never the first one
