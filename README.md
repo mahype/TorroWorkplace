@@ -1,16 +1,19 @@
 # TorroWorkplace
 
-A suite of small, separate desktop apps around one core — calendar, tasks, and more to
-come — built to be tiled side by side by a tiling window manager instead of living inside
-one big program.
-The core, `torroworkplace`, is a background service with a tray icon. It comes first: it saves
-the active workspace of the tiling window manager as a template and rebuilds it on demand —
-Hyprland on Linux, AeroSpace on macOS, GlazeWM on Windows. Later it starts the apps, holds
-accounts and sync for all of them and offers one MCP server for AI agents. Each app is its own
-process and its own window with a stable app id, so the window manager can place it.
+An actively developed suite of small desktop apps around a shared Rust core — including
+calendar, tasks, inbox/mail, assistant and workspace management. Apps can be arranged side by
+side by a tiling window manager instead of living inside one large tabbed program.
+The `torroworkplace` core provides the shared service, tray, workspace templates, settings,
+IPC and agent-facing MCP integration. The codebase also contains dedicated apps and shared
+libraries for calendars, tasks, inbox/mail, notifications and AI assistance. The intended
+window-manager integrations are Hyprland on Linux, AeroSpace on macOS and GlazeWM on Windows.
+See the architecture documents for platform-specific implementation details.
 
-**Status: planning / scaffold.** Nothing usable yet. See [docs/core.md](docs/core.md) and
-[docs/roadmap.md](docs/roadmap.md).
+**Status: active development (November 2026).** The repository contains substantial
+implementations, and recent merged pull requests cover calendar, tasks, inbox/mail, assistant
+and control-centre functionality. This is not a declaration of production readiness or
+feature completeness. For current scope and open work, see [roadmap](docs/roadmap.md),
+[core architecture](docs/core.md), [vision](docs/vision.md) and the [issue workflow](docs/issue-workflow.md).
 
 ## What's in here
 
@@ -19,11 +22,16 @@ process and its own window with a stable app id, so the window manager can place
 | `crates/torro-core` | Shared config, paths, theme tokens |
 | `crates/torroworkplace` | The core: service, tray icon, control centre, MCP (`torroworkplace`) |
 | `crates/torro-ipc` | How apps talk to the core (local socket) |
-| `crates/torro-wm` | Window manager backends: Hyprland, AeroSpace, GlazeWM (planned) |
-| `crates/torro-setups` | Workspace templates: capture, save, restore (planned) |
+| `crates/torro-wm` | Window-manager abstraction and platform backends (support varies by platform) |
+| `crates/torro-setups` | Workspace template capture, storage and restoration |
 | `crates/torro-pim` | Event/Todo model, provider traits, offline cache, sync |
 | `crates/torro-pim-caldav` | CalDAV/iCal provider (Nextcloud, iCloud, …) |
 | `crates/torro-tui` | Shared ratatui widgets and theme |
+| `crates/torro-settings-ui` | Shared settings UI components |
+| `crates/torroinbox`, `crates/torro-inbox-*` | Inbox, mail and notification views |
+| `crates/torro-mail*` | Mail model, IMAP and backup components |
+| `crates/torroassistant` | AI assistant app |
+| `crates/torro-contacts` | Contacts support |
 | `crates/torrotasks` | Tasks app (`torrotasks`) |
 | `crates/torrocalendar` | Calendar app (`torrocalendar`) |
 | `apps/workspace-setups` | Reference: the earlier Omarchy plugin for workspace templates, being rebuilt in Rust |
