@@ -467,6 +467,23 @@ ist wie bisher keine abgesicherte Transaktion.
 
 ## Anhänge ablegen
 
+**Rückmeldung beim Speichern (#560).** Das Zielmenü bleibt bis zum bewussten Schließen sichtbar.
+Rechts am angeklickten Ziel erscheint sofort eine Arbeitsanzeige; erst wenn der Dienst die endgültige
+Datei als reguläre Datei (kein abschließender Symlink) mit der erwarteten Länge und allen erwarteten
+Bytes geprüft hat, ersetzt ein grüner Haken die Pfeile. Das gilt für einzelne Anhänge, „Alle speichern“
+und die Mail als PDF/Bild – nach Downloads, Rechnungen oder in eigene Ablageziele. Identische
+Bestandsdateien zählen nach derselben Prüfung als Erfolg. Die Prüfung ist eine Momentaufnahme,
+keine Zusage zur Cloud-Synchronisierung.
+
+Fehler haben ein Fehlerzeichen mit Erklärung, Teilerfolge und gekürzte Exporte ein Warnzeichen mit
+Anzahl/Details statt eines pauschalen Hakens; die vollständige Erklärung steht am Eintrag als Tooltip.
+„Speichern unter …“ zeigt während der Zielwahl einen ruhigen Hinweis, nach Bestätigung die
+Arbeitsanzeige am selben Eintrag, nach Abbruch einen neutralen Hinweis ohne Speicherauftrag.
+Mehrfachklicks und überlappende Einzel-/Alle-Aufträge derselben Mail am selben Ziel werden gesperrt;
+andere Ziele bleiben unabhängig, höchstens ein Zieldialog ist offen. Schließen oder Mailwechsel
+heben laufende Sperren nicht auf; Endstände verschwinden dabei. Späte Hinweise nennen die
+Ursprungsmail. Nach Abschluss oder bei geschlossenem Menü gibt es keinen Speicher-Animationstakt.
+
 Konzept und Entscheidungen: Issue #290, Aufgaben M12 in [`tasks/mail.md`](tasks/mail.md). Ein Anhang lässt sich
 öffnen, nach Downloads sichern, über „Save as…“ sichern oder in ein **Ablageziel** legen: einen Ordner mit einem
 Schema für Unterordner und Dateinamen (`{year}/{month}`, `{name}.{ext}` …), einer Datumsquelle (Mail oder Datum im

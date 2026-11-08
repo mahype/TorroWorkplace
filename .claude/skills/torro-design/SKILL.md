@@ -282,6 +282,16 @@ aus einem Guss wirkt:
 
 ## 5. Zustände und Bausteine
 
+**Unmittelbare Rückmeldung ist Pflicht (#560).** Jede Aktion erhält sofort eine passende sichtbare
+Reaktion. Laufend, erfolgreich und fehlgeschlagen bleiben unterscheidbar, mit Wort oder Icon statt
+nur Farbe. Teilerfolg und Abbruch sind kein Erfolg. Beispiel Speicher-Untermenü: Es bleibt bis zum
+bewussten Schließen offen; rechts am angeklickten Ziel drehen sich während der Speicherung die
+`RefreshCw`-Pfeile. Erst nach Prüfung der tatsächlichen Zieldatei durch den Dienst erscheint ein grüner
+`CircleCheck`. Fehler zeigen `CircleX` mit Erklärung, Teilerfolge und gekürzte Exporte `TriangleAlert`
+mit Anzahl/Details. Zielwahl im Dialog und Abbruch haben einen ruhigen neutralen Hinweis. Laufende
+Einträge bleiben voll lesbar und nehmen keinen zweiten Klick (`widgets::menu_item_feedback`);
+Pfad, Vorschlag und Status gehören eindeutig zur Aktion, Mail und Ablage.
+
 **Listen (`[list]`, #291, `layout::list()` → `ListLook`).** Ein Design bestimmt, *wie* Listen gezeichnet
 werden, nie *wo* etwas steht: dieselben Zellen an derselben Stelle in jedem Design, nichts kommt hinzu
 oder fällt weg (kein Spaltenkopf, keine Großbuchstaben). `style` – `rows` (Zeilen mit ihren Zeilen: alle drei
@@ -633,10 +643,12 @@ Regeln:
   in Schmal wird nur die *dargestellte* Ansicht angepasst).
 - **Dauerbetrieb:** nichts blinkt oder bewegt sich ohne Anlass; neu zeichnen nur bei Änderung bzw.
   im Minutentakt; keine Spinner im Ruhezustand; geringe CPU- und GPU-Last.
-  **Ausnahme** (#422): Läuft ein Sync wirklich (oder wartet sein Lauf), drehen sich die Pfeile von
+  **Arbeitsfeedback** (#422, #560): Läuft ein Sync wirklich (oder wartet sein Lauf), drehen sich die Pfeile von
   „Syncing…“ (`PageAction::spinning`, `widgets::spin_angle`, ein Umlauf je 1,2 s); der Knopf nimmt dann keinen
   Klick. Nur dafür und nur solange: Der Takt zum Neuzeichnen (50 ms) läuft allein in dieser Zeit, danach steht
-  alles still. `busy_button` bleibt ruhig.
+  alles still. Dasselbe gilt für sichtbare tatsächlich laufende Speicheraktionen; bei Dialogwahl,
+  Erfolg, Teilerfolg, Fehler oder Abbruch läuft kein Animationstimer. Geschlossene Menüs brauchen
+  keinen Speichertakt; ihre aktiven Auftragssperren bleiben erhalten. `busy_button` bleibt ruhig.
 - **HiDPI:** alle Maße logisch; Icons als Vektor; Linien 1 logischer Pixel.
 - Mindestgröße der Fenster 200×120 (`torro_gui::window`), damit Mini und Leiste möglich sind.
 - Fenstertitel und Inhalt ohne Doppelungen; keine Fake-Titelleiste.
@@ -652,10 +664,17 @@ Regeln:
 
 - Wenn Animation, dann 120–200 ms, ease-out, nur für Orientierung (öffnen, verschieben). Nie
   Pflicht, um etwas zu verstehen.
+- Arbeitsanzeigen sind die Ausnahme: Nur während tatsächlicher Arbeit und nur sichtbar animieren
+  (Abschnitt 6). Erfolg, Teilerfolg, Fehler und Abbruch stehen still; Dialogwarten ist keine Arbeit.
 
 ## 9. Sichtprüfung (Pflicht bei UI-Änderungen)
 
 Tests reichen bei Oberfläche nicht. Jede geänderte Ansicht in **allen Größenklassen** ansehen.
+Aktionsfeedback immer mitprüfen: laufend, bestätigter Erfolg, Fehler, Teilerfolg und Abbruch.
+Für das Speicher-Untermenü gibt es in `torroinbox` die nebenwirkungsfreien Demo-Zustände
+`save-running`, `save-success`, `save-error`, `save-partial`, `save-choosing`, `save-cancelled`,
+`save-shortened`. Der Demo-Spinner hat einen festen Winkel ohne Timer; echte Dialoge und Bewegung
+zusätzlich von Hand prüfen. Alle drei Abstandsstufen sowie Hell/Dunkel sind Pflicht.
 
 **Der Weg auf jedem System: `shots.sh`, ohne Fenster (#492).** Die App zeichnet ihre Demo-Ansicht im
 Speicher (`--demo --shots <ordner>`, `torro_gui::shots`) und legt sie als PNG ab: kein Fenster, kein
@@ -772,6 +791,8 @@ Fenster nicht die angeforderte Größe (Mindestgröße), ist das ein Befund.
 - [ ] Icons aus `torro_gui::icon`, keine Unicode-Glyphen
 - [ ] Kontraste eingehalten, kein Text in `FAINT`
 - [ ] Leer-, Lade-, Fehlerzustand vorhanden; Formularfehler erst nach Speicherversuch
+- [ ] Jede Aktion reagiert unmittelbar sichtbar; laufend/Erfolg/Fehler unterscheidbar, Teilerfolg und
+      Abbruch nie als voller Erfolg; Erklärung erreichbar, keine Bewegung ohne tatsächliche Arbeit
 - [ ] Tastatur: Fokus sichtbar, Enter/Escape/Pfeile, Kurzbefehle
 - [ ] In allen sechs Größen angesehen: Layout wechselt sinnvoll, nichts abgeschnitten, groß nicht gestreckt
 - [ ] Alle Texte über `tr()`, englisch, Satzschreibung
