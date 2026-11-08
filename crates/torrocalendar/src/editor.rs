@@ -75,7 +75,7 @@ mod zone;
 
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, image, row, rule, scrollable, svg, text, text_editor, text_input, toggler};
+use iced::widget::{column, container, image, row, rule, svg, text, text_editor, text_input, toggler};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Theme, keyboard};
 use torro_core::i18n::{tr, trc, trf};
 use torro_core::settings::Maps;
@@ -873,9 +873,11 @@ impl Editor {
             }
             Message::ZoneQuery(query) => self.zone_query = query,
             Message::PickZone(name) => return self.set_zone(name),
+            // Enter takes the first entry the menu shows: with nothing typed this computer's zone;
+            // with words that match nothing, nothing (issue #543), as the menu says "No matches".
             Message::ZoneFirst => {
-                let first = zone::search(&self.zone_query, 1).first().map(|name| name.to_string());
-                if let Some(name) = first.or_else(|| self.machine_zone.clone()) {
+                let first = self.zone_sections().into_iter().flat_map(|(_, names)| names).next();
+                if let Some(name) = first {
                     return self.set_zone(name);
                 }
             }
@@ -1574,43 +1576,46 @@ impl Editor {
         widgets::menu(vec![MenuSection::titled(tr("Repeat"), items), MenuSection::new(vec![custom])])
     }
 
-    /// The time zone menu: a search over the IANA names, this computer's zone, the event's zone, and
-    /// what the search finds (at most [`ZONE_RESULTS`]).
+    /// The sections of the time zone menu, each a title and its zone names: this computer's zone
+    /// ("Your time zone"), the event's own ("This event") and what the search finds ("Time zones",
+    /// at most [`ZONE_RESULTS`]). With words typed the first two stay only while their name
+    /// matches ([`zone::matches`]), sections without a zone fall away.
+    fn zone_sections(&self) -> Vec<(&'static str, Vec<String>)> {
+        let query = self.zone_query.as_str();
+        let matching = |name: &str| zone::matches(name, query);
+        let machine = self.machine_zone.clone().filter(|name| matching(name));
+        let own = self.form.time_zone.clone().filter(|own| Some(own) != self.machine_zone.as_ref() && matching(own));
+        let found = zone::search(query, ZONE_RESULTS).into_iter().map(str::to_string).collect();
+        let sections = [
+            (tr("Your time zone"), machine.into_iter().collect()),
+            (tr("This event"), own.into_iter().collect()),
+            (tr("Time zones"), found),
+        ];
+        sections.into_iter().filter(|(_, names): &(_, Vec<String>)| !names.is_empty()).collect()
+    }
+
+    /// The time zone menu (issue #543, the design skill's menu with a search): a flat search field
+    /// over the IANA names, then [`Editor::zone_sections`]. The field keeps no Escape to itself, so
+    /// one press closes the menu ([`widgets::escape_free`]).
     fn zone_menu(&self) -> Element<'_, Message> {
-        let search = text_input(tr("Search time zones"), &self.zone_query)
-            .id(ZONE_SEARCH_ID)
-            .on_input(Message::ZoneQuery)
-            .on_submit(Message::ZoneFirst)
-            .padding(style::INPUT_PADDING)
-            .size(typo::body().size)
-            .line_height(typo::body().line_height)
-            .font(typo::body().font)
-            .style(style::text_input);
         let shown = self.shown_zone();
-        let item = |name: &str| {
-            MenuItem::new(Icon::Globe, zone::readable(name), Message::PickZone(name.to_string()))
-                .current(shown == Some(name))
-        };
-        let mut list = column![container(search).padding(Padding::new(space::xs()))];
-        if let Some(machine) = &self.machine_zone {
-            list = list.push(caption(tr("Your time zone"))).push(widgets::menu_item(item(machine)));
+        let mut items: Vec<Element<'_, Message>> = Vec::new();
+        for (title, names) in self.zone_sections() {
+            items.push(caption(title));
+            items.extend(names.into_iter().map(|name| {
+                let current = shown == Some(name.as_str());
+                let label = zone::readable(&name);
+                widgets::menu_item(MenuItem::new(Icon::Globe, label, Message::PickZone(name)).current(current))
+            }));
         }
-        if let Some(own) = self.form.time_zone.as_deref().filter(|own| Some(*own) != self.machine_zone.as_deref()) {
-            list = list.push(caption(tr("This event"))).push(widgets::menu_item(item(own)));
-        }
-        let found = zone::search(&self.zone_query, ZONE_RESULTS);
-        if !found.is_empty() {
-            let rows = column(found.into_iter().map(|name| widgets::menu_item(item(name))));
-            let rows = scrollable(rows)
-                .direction(scrollable::Direction::Vertical(style::scrollbar()))
-                .style(style::scrollable)
-                .height(Length::Shrink);
-            list = list.push(caption(tr("Time zones"))).push(container(rows).max_height(zone_list_height()));
-        } else if !self.zone_query.trim().is_empty() {
-            let none = typo::text(typo::body(), tr("No time zone found")).style(theme::text_3);
-            list = list.push(container(none).padding(style::ITEM_PADDING.top(space::s()).bottom(space::s())));
-        }
-        container(list).width(widgets::menu_width()).padding(style::MENU_INSET).style(style::container::menu).into()
+        widgets::escape_free(widgets::search_menu(
+            ZONE_SEARCH_ID,
+            &self.zone_query,
+            Message::ZoneQuery,
+            Message::ZoneFirst,
+            items,
+            widgets::menu_width(),
+        ))
     }
 
     /// "Show as": busy or free.
@@ -2355,11 +2360,6 @@ fn caption<'a>(title: &'static str) -> Element<'a, Message> {
     container(typo::text(typo::caption(), title).style(theme::text_3))
         .padding(Padding::new(space::s()).bottom(space::xs()))
         .into()
-}
-
-/// How tall the list of found zones may get before it scrolls: eight entries.
-fn zone_list_height() -> f32 {
-    style::MENU_ITEM_HEIGHT * 8.0
 }
 
 /// A line between the groups of rows: with the column's spacing 16 above and below it, the gap
@@ -3937,6 +3937,34 @@ mod tests {
         assert_eq!(saved.time_zone.as_deref(), Some("America/New_York"));
         assert_eq!(saved.start, EventTime::DateTime(at(2026, 10, 27, 14, 0).and_utc()), "10:00 in New York");
         assert!(editor.popup.is_none());
+    }
+
+    /// Issue #543: with words that match nothing, Enter keeps the zone (the menu says "No
+    /// matches") instead of taking this computer's; with nothing typed it takes this computer's.
+    #[test]
+    fn enter_in_the_zone_search_takes_what_the_menu_shows() {
+        let mut event = timed();
+        event.time_zone = Some("Europe/Berlin".into());
+        let mut editor = Editor::edit(&event, &calendars());
+        editor.machine_zone = Some("Asia/Tokyo".into());
+        editor.update(Message::ToggleZones);
+        editor.update(Message::ZoneQuery("atlantis".into()));
+        assert!(editor.zone_sections().is_empty(), "no section without a match");
+        let _ = editor.layer(&Anchor::new(), |m| m).expect("the menu shows");
+        assert!(matches!(editor.update(Message::ZoneFirst), Action::None));
+        assert_eq!(editor.form.time_zone.as_deref(), Some("Europe/Berlin"), "the zone stays");
+        assert_eq!(editor.popup, Some(Popup::Zone), "the menu stays open");
+        // Words that match the event's zone keep its section and drop this computer's.
+        editor.update(Message::ZoneQuery("berlin".into()));
+        let titles: Vec<&str> = editor.zone_sections().into_iter().map(|(title, _)| title).collect();
+        assert_eq!(titles, [tr("This event"), tr("Time zones")]);
+        // Nothing typed: this computer's zone and the event's, no search results.
+        editor.update(Message::ZoneQuery(String::new()));
+        let sections = editor.zone_sections();
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0], (tr("Your time zone"), vec!["Asia/Tokyo".to_string()]));
+        let (saved, _) = saves_with(&mut editor, Message::ZoneFirst);
+        assert_eq!(saved.time_zone.as_deref(), Some("Asia/Tokyo"));
     }
 
     #[test]

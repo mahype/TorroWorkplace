@@ -61,21 +61,33 @@ pub(super) fn abbreviation(name: &str, at: DateTime<Utc>) -> Option<String> {
     tz.offset_from_utc_datetime(&at.naive_utc()).abbreviation().map(str::to_string)
 }
 
+/// The words of `query` the zone names are matched against: lower case, split at white space.
+fn words(query: &str) -> Vec<String> {
+    query.split_whitespace().map(str::to_lowercase).collect()
+}
+
+/// Whether the zone `name` contains every one of `words` (any case, a space matching `_`).
+fn holds(name: &str, words: &[String]) -> bool {
+    let name = name.to_lowercase().replace('_', " ");
+    words.iter().all(|word| name.contains(word.as_str()))
+}
+
+/// Whether the zone `name` matches `query` by the rule of [`search`]: it contains every word (any
+/// case, a space matching `_` and `/`). An empty query matches every zone (issue #543: the menu's
+/// own sections stay while nothing is typed).
+pub(super) fn matches(name: &str, query: &str) -> bool {
+    holds(name, &words(query))
+}
+
 /// The zones whose name contains every word of `query` (any case, a space matching `_` and `/`), in
 /// alphabetical order, at most `limit`; none for an empty query.
 pub(super) fn search(query: &str, limit: usize) -> Vec<&'static str> {
-    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    let words = words(query);
     if words.is_empty() {
         return Vec::new();
     }
-    let mut found: Vec<&'static str> = TZ_VARIANTS
-        .iter()
-        .map(|tz| tz.name())
-        .filter(|name| {
-            let name = name.to_lowercase().replace('_', " ");
-            words.iter().all(|word| name.contains(word.as_str()))
-        })
-        .collect();
+    let mut found: Vec<&'static str> =
+        TZ_VARIANTS.iter().map(|tz| tz.name()).filter(|name| holds(name, &words)).collect();
     found.sort_unstable();
     found.truncate(limit);
     found
@@ -126,5 +138,16 @@ mod tests {
         assert!(search("EUROPE", 5).len() == 5, "at most the limit");
         assert!(search("  ", 10).is_empty());
         assert!(search("atlantis", 10).is_empty());
+    }
+
+    #[test]
+    fn a_zone_matches_by_the_rule_of_the_search() {
+        assert!(matches("America/New_York", "new york"));
+        assert!(matches("America/New_York", "AMERICA new"));
+        assert!(matches("Europe/Berlin", "  "), "nothing typed matches every zone");
+        assert!(!matches("Europe/Berlin", "new york"));
+        for name in search("europe", 50) {
+            assert!(matches(name, "europe"), "{name}");
+        }
     }
 }
