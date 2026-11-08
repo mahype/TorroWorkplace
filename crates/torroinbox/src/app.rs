@@ -6484,6 +6484,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// system's dialog first (the answer comes as [`Message::SaveChosen`]).
     fn file_act(&mut self, id: String, part: Option<String>, act: mail::FileAct) -> Task<Message> {
         if act != mail::FileAct::Open {
+            let to = match &act {
+                mail::FileAct::Downloads => Some(SaveTo::Downloads),
+                mail::FileAct::Target(target) => Some(SaveTo::Target(target.clone())),
+                _ => None,
+            };
+            if self.save_conflicts(&id, &SaveScope::Attachments(part.clone()), &to, None) {
+                return Task::none();
+            }
             self.show_save_menu(&id, &SaveScope::Attachments(part.clone()));
         }
         match (act, part) {
@@ -6543,6 +6551,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// Carries out `act` of the menu of `format` for the mail `id` (issue #501): saves to Downloads or
     /// a target, or asks the system's save dialog first ([`Message::SaveChosen`]).
     fn save_mail_act(&mut self, id: String, format: ExportFormat, act: mail::FileAct) -> Task<Message> {
+        let to = match &act {
+            mail::FileAct::Downloads => Some(SaveTo::Downloads),
+            mail::FileAct::Target(target) => Some(SaveTo::Target(target.clone())),
+            _ => None,
+        };
+        if self.save_conflicts(&id, &SaveScope::Export(format), &to, None) {
+            return Task::none();
+        }
         self.show_save_menu(&id, &SaveScope::Export(format));
         match act {
             mail::FileAct::Downloads => self.save_mail(id, format, SaveTo::Downloads),
@@ -6771,7 +6787,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let mut expected = job.expected.clone();
                 expected.sort();
                 let valid = files.iter().all(|file| {
-                    std::path::Path::new(&file.path).is_absolute()
+                    self.save_result_path(&file.path)
                         && match &job.destination {
                             Some(SaveTo::File(path)) => path == &file.path,
                             _ => true,
@@ -6813,7 +6829,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         match result {
             Err(error) => self.finish_save(ticket, SaveState::Error, error, None),
             Ok(saved)
-                if !std::path::Path::new(&saved.path).is_absolute()
+                if !self.save_result_path(&saved.path)
                     || matches!(&job.destination, Some(SaveTo::File(path)) if path != &saved.path) =>
             {
                 self.finish_save(
@@ -6848,6 +6864,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.saves.retain(|job| job.state.active() || job.visible);
     }
 
+    fn save_result_path(&self, path: &str) -> bool {
+        // DemoSource describes a fictional Linux home on every platform and never writes files.
+        // Real dialog inputs and real service results must still be native absolute paths.
+        std::path::Path::new(path).is_absolute() || (self.launch.demo && path.starts_with('/'))
+    }
+
     fn clear_save_feedback(&mut self) {
         self.saves.retain(|job| job.state.active());
         for job in &mut self.saves {
@@ -6861,6 +6883,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             return;
         }
         let Some(open) = self.launch.open.filter(|open| open.save_demo()) else { return };
+        // These fixtures already have PDF/PNG plans in the attachment response. Seed the independent
+        // export preview too, without another request or a body fetch, so the PDF status is visible.
+        if self.exports_of(id).is_none() {
+            self.export_plans = self.saving.clone();
+        }
         let (scope, state, text) = match open {
             Open::SaveRunning => {
                 (SaveScope::Attachments(Some("2".into())), SaveState::Running, tr("Saving…").to_owned())
@@ -6892,13 +6919,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         };
         let dialog = matches!(state, SaveState::Choosing | SaveState::Cancelled);
         let destination = if dialog { None } else { Some(SaveTo::Target("demo-invoices".into())) };
+        self.menu = None;
+        self.show_save_menu(id, &scope);
         if let Some(ticket) = self.begin_save(id, scope.clone(), destination) {
             if let Some(job) = self.saves.iter_mut().find(|job| job.ticket == ticket) {
                 job.state = state;
-                job.explanation = text;
+                job.explanation = if open == Open::SaveShortened {
+                    trf(
+                        "Saved to {where}, shortened: the mail is too long",
+                        &[("where", &job.place.as_deref().unwrap_or("Invoices"))],
+                    )
+                } else {
+                    text
+                };
             }
-            self.menu = None;
-            self.show_save_menu(id, &scope);
         }
     }
 
@@ -18211,6 +18245,7 @@ mod tests {
         let target = SaveTo::Target("demo-invoices".into());
         let _ = app.update(Message::SaveAll("m:p3".into()));
         assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), Vec::new(), target.clone())));
+        let _ = app.update(Message::AttachmentsSaved(app.next_save, Err("completed attempt".into())));
         let _ = app.update(Message::OpenAttachment("m:p3".into(), "2".into()));
         assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), vec!["2".into()], target)));
     }
@@ -18296,6 +18331,7 @@ mod tests {
     #[test]
     fn the_triangles_open_their_menus_and_a_cancelled_dialog_sends_nothing() {
         let mut app = invoice();
+        let dir = tempfile::tempdir().expect("dialog destinations");
         let _ = app.update(Message::AskAttachment("m:p3".into(), 1));
         assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Attachment(1)), true));
         assert!(app.reading().is_some_and(|reading| reading.file_menu == Some(1)), "its triangle carries the anchor");
@@ -18315,12 +18351,15 @@ mod tests {
         assert_eq!(app.sent.len(), before, "cancelled without a request");
         assert_eq!(app.saves.last().map(|job| job.state), Some(SaveState::Cancelled));
         let _ = app.update(Message::FileAct("m:p3".into(), Some("2".into()), mail::FileAct::Choose));
-        let _ = app.update(Message::SaveChosen(app.next_save, Some("/home/anna/Bill.pdf".into())));
-        let file = SaveTo::File("/home/anna/Bill.pdf".into());
+        let bill = dir.path().join("Bill.pdf");
+        let _ = app.update(Message::SaveChosen(app.next_save, Some(bill.clone())));
+        let file = SaveTo::File(bill.to_string_lossy().into_owned());
         assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), vec!["2".into()], file)));
+        let _ = app.update(Message::AttachmentsSaved(app.next_save, Err("completed attempt".into())));
         let _ = app.update(Message::FileAct("m:p3".into(), None, mail::FileAct::Choose));
-        let _ = app.update(Message::SaveChosen(app.next_save, Some("/home/anna/Bills".into())));
-        let folder = SaveTo::Folder("/home/anna/Bills".into());
+        let bills = dir.path().join("Bills");
+        let _ = app.update(Message::SaveChosen(app.next_save, Some(bills.clone())));
+        let folder = SaveTo::Folder(bills.to_string_lossy().into_owned());
         assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), Vec::new(), folder)));
     }
 
@@ -18419,6 +18458,7 @@ mod tests {
     #[test]
     fn saving_the_mail_shows_a_hint_with_show_in_folder() {
         let mut app = invoice();
+        let dir = tempfile::tempdir().expect("dialog destination");
         let saving = app.saving_of("m:p3").cloned().expect("the plans");
         let plan = saving.export(ExportFormat::Pdf).cloned().expect("a plan for the PDF");
         let menu = mail::ExportMenu { id: "m:p3", format: ExportFormat::Pdf, saving: Some(&saving), category: None };
@@ -18471,10 +18511,11 @@ mod tests {
         let _ = app.update(Message::SaveChosen(app.next_save, None));
         assert_eq!(app.sent.len(), before, "cancelled");
         let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Png, mail::FileAct::Choose));
-        let _ = app.update(Message::SaveChosen(app.next_save, Some("/home/anna/Mail.png".into())));
-        let file = SaveTo::File("/home/anna/Mail.png".into());
+        let path = dir.path().join("Mail.png");
+        let _ = app.update(Message::SaveChosen(app.next_save, Some(path.clone())));
+        let file = SaveTo::File(path.to_string_lossy().into_owned());
         assert_eq!(app.sent.last(), Some(&Sent::SaveMail("m:p3".into(), ExportFormat::Png, file)));
-        let done = torro_ipc::inbox::SavedMail { path: "/home/anna/Mail.png".into(), ..Default::default() };
+        let done = torro_ipc::inbox::SavedMail { path: path.to_string_lossy().into_owned(), ..Default::default() };
         let _ = app.update(Message::MailSaved(app.next_save, Ok(done)));
         let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Png, mail::FileAct::Downloads));
         assert_eq!(app.sent.last(), Some(&Sent::SaveMail("m:p3".into(), ExportFormat::Png, SaveTo::Downloads)));
@@ -18584,6 +18625,7 @@ mod tests {
     #[test]
     fn save_feedback_is_immediate_scoped_and_preserves_the_menu_anchor() {
         let mut app = invoice_in(&["--view", "mail"]);
+        let dir = tempfile::tempdir().expect("destination");
         app.size = WIDE;
         let id = "m:p3".to_owned();
         let single = Message::FileAct(id.clone(), Some("2".into()), mail::FileAct::Downloads);
@@ -18606,7 +18648,10 @@ mod tests {
         assert_eq!(app.sent.len(), count + 1, "independent destination");
         assert!(app.next_save > first);
         let saved = SavedAttachments {
-            saved: vec![torro_ipc::mail::SavedFile { part: "2".into(), path: "/downloads/invoice.pdf".into() }],
+            saved: vec![torro_ipc::mail::SavedFile {
+                part: "2".into(),
+                path: dir.path().join("invoice.pdf").to_string_lossy().into_owned(),
+            }],
             ..Default::default()
         };
         let _ = app.update(Message::AttachmentsSaved(first, Ok(saved.clone())));
@@ -18614,8 +18659,9 @@ mod tests {
         let _ = app.update(Message::AttachmentsSaved(first, Err("duplicate must be ignored".into())));
         assert!(matches!(app.save_feedback(&single).map(|f| f.kind), Some(widgets::MenuFeedbackKind::Success)));
         app.menu_at = MenuAt::Row;
-        let _ = app.update(Message::FileAct(id, Some("2".into()), mail::FileAct::Downloads));
-        assert_eq!(app.menu_at, MenuAt::Row, "existing anchor survives");
+        let _ = app.update(Message::FileAct(id, Some("3".into()), mail::FileAct::Downloads));
+        assert_eq!(app.menu, Some(Menu::Attachment(1)), "direct click reveals the new file's menu");
+        assert_eq!(app.menu_at, MenuAt::Panel, "new file's anchor");
         draw_everywhere(&mut app);
         let _ = app.update(Message::CloseMenu);
         assert!(!app.save_spinning());
@@ -18629,6 +18675,7 @@ mod tests {
     #[test]
     fn save_dialog_has_one_ticket_and_cancel_or_stale_answers_never_save() {
         let mut app = invoice();
+        let dir = tempfile::tempdir().expect("dialog destinations");
         let choose = Message::FileAct("m:p3".into(), Some("2".into()), mail::FileAct::Choose);
         let _ = app.update(choose.clone());
         let first = app.next_save;
@@ -18640,36 +18687,39 @@ mod tests {
         assert!(matches!(app.save_feedback(&choose).map(|f| f.kind), Some(widgets::MenuFeedbackKind::Cancelled)));
         let _ = app.update(choose.clone());
         let second = app.next_save;
-        let _ = app.update(Message::SaveChosen(first, Some("/old/path.pdf".into())));
+        let _ = app.update(Message::SaveChosen(first, Some(dir.path().join("old.pdf"))));
         assert_eq!(app.next_save, second);
         assert_eq!(app.saves.last().map(|job| job.state), Some(SaveState::Choosing));
         let _ = app.update(Message::SaveChosen(second, Some("relative.pdf".into())));
         assert!(matches!(app.save_feedback(&choose).map(|f| f.kind), Some(widgets::MenuFeedbackKind::Error)));
         let _ = app.update(choose.clone());
-        let _ = app.update(Message::SaveChosen(app.next_save, Some("/chosen/invoice.pdf".into())));
+        let invoice = dir.path().join("invoice.pdf");
+        let _ = app.update(Message::SaveChosen(app.next_save, Some(invoice.clone())));
         let ticket = app.next_save;
         assert_eq!(
             app.saves.last().and_then(|job| job.destination.clone()),
-            Some(SaveTo::File("/chosen/invoice.pdf".into()))
+            Some(SaveTo::File(invoice.to_string_lossy().into_owned()))
         );
         assert!(app.save_feedback(&choose).is_some_and(|f| f.blocked));
         let count = app.sent.len();
-        let _ = app.update(Message::SaveChosen(ticket, Some("/duplicate.pdf".into())));
+        let _ = app.update(Message::SaveChosen(ticket, Some(dir.path().join("duplicate.pdf"))));
         assert_eq!(app.sent.len(), count, "dialog answer is accepted only once");
     }
 
     #[test]
     fn saved_checks_require_exact_nonempty_scope_and_shortened_is_a_warning() {
+        let dir = tempfile::tempdir().expect("saved paths");
+        let path = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
         let file = |part: &str, path: &str| torro_ipc::mail::SavedFile { part: part.into(), path: path.into() };
         for (saved, state) in [
             (SavedAttachments::default(), SaveState::Error),
             (SavedAttachments { saved: vec![file("2", "")], ..Default::default() }, SaveState::Error),
-            (SavedAttachments { saved: vec![file("3", "/wrong")], ..Default::default() }, SaveState::Partial),
+            (SavedAttachments { saved: vec![file("3", &path("wrong"))], ..Default::default() }, SaveState::Partial),
             (
-                SavedAttachments { saved: vec![file("2", "/a"), file("2", "/b")], ..Default::default() },
+                SavedAttachments { saved: vec![file("2", &path("a")), file("2", &path("b"))], ..Default::default() },
                 SaveState::Partial,
             ),
-            (SavedAttachments { skipped: vec![file("2", "/same")], ..Default::default() }, SaveState::Success),
+            (SavedAttachments { skipped: vec![file("2", &path("same"))], ..Default::default() }, SaveState::Success),
         ] {
             let mut app = invoice();
             let _ = app.update(Message::FileAct("m:p3".into(), Some("2".into()), mail::FileAct::Downloads));
@@ -18682,10 +18732,25 @@ mod tests {
         let ticket = app.next_save;
         let _ = app.update(Message::MailSaved(
             ticket,
-            Ok(torro_ipc::inbox::SavedMail { path: "/mail.png".into(), shortened: true, skipped: true }),
+            Ok(torro_ipc::inbox::SavedMail { path: path("mail.png"), shortened: true, skipped: true }),
         ));
         assert_eq!(app.saves.last().map(|job| job.state), Some(SaveState::Partial));
         assert!(!app.save_spinning());
+    }
+
+    #[test]
+    fn save_paths_keep_fictional_demo_results_separate_from_native_dialogs() {
+        let dir = tempfile::tempdir().expect("native destination");
+        let mut app = invoice();
+        app.launch.demo = false;
+        assert!(app.save_result_path(&dir.path().join("file.pdf").to_string_lossy()));
+        assert!(!app.save_result_path("relative.pdf"));
+        assert!(!app.save_result_path(""));
+        if cfg!(windows) {
+            assert!(!app.save_result_path("/home/anna/Downloads/file.pdf"));
+        }
+        app.launch.demo = true;
+        assert!(app.save_result_path("/home/anna/Downloads/file.pdf"));
     }
 
     #[test]
@@ -18724,6 +18789,29 @@ mod tests {
                 let _ = app.update(Message::SaveTargets(id, saving));
             }
             assert_eq!(app.saves.len(), 1, "{open}");
+            let job = app.saves.first().expect("fixture");
+            let sections = match &job.scope {
+                SaveScope::Attachments(part) => mail::file_menu(mail::FileMenu {
+                    id: &job.mail,
+                    part: part.as_deref(),
+                    saving: app.saving_of(&job.mail),
+                    click: &app.look.click,
+                    category: None,
+                }),
+                SaveScope::Export(format) => mail::export_menu(mail::ExportMenu {
+                    id: &job.mail,
+                    format: *format,
+                    saving: app.exports_of(&job.mail),
+                    category: None,
+                }),
+            };
+            assert!(
+                sections
+                    .iter()
+                    .flat_map(|section| &section.items)
+                    .any(|item| app.save_feedback(&item.on_press).is_some()),
+                "fixture feedback is actually rendered: {open}"
+            );
             assert!(!app.save_spinning(), "fixed snapshot angle: {open}");
             assert!(
                 !app.sent.iter().any(|sent| matches!(
