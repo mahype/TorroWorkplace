@@ -9010,7 +9010,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
 
     /// The gear, or "Settings" in the sidebar and the menu: the settings take the content area, or
     /// give it back to the entries. Nothing open behind them is lost – the panel, the search and
-    /// the cursor stay until a click shows them again ([`shows_entries`]).
+    /// the cursor stay until a click shows them again ([`shows_entries`]) –, except in the medium and
+    /// narrow mail window, where they close an open mail or the overview's panel first (issue #545,
+    /// [`App::close_mail_cover`]).
     fn toggle_settings(&mut self) -> Task<Message> {
         // The settings take the content area: not over a reply on its way.
         if self.holds_round() {

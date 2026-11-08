@@ -3419,16 +3419,16 @@ fn failure_row<'a>(failure: &'a SlotFailure, stacked: bool) -> Element<'a, Messa
     }
 }
 
-/// Where *Sorting* sends mail, said where the choice is made: "Mail goes to OpenRouter (Cloud · US) for
-/// sorting only." and, while the chat may read none, "The chat still gets no mail." As high as the rows
-/// around it ([`row_frame`]); wraps rather than cutting off: it is the one sentence here that must be
-/// read whole.
 /// Whether the note under Sorting leaves out "The chat still gets no mail.": while the chat may read
 /// mail, and in the mail window, which has no chat (issue #545).
 fn chat_note_off(state: &State, data: &dyn Seen) -> bool {
     data.settings().mail_to_cloud || state.in_mail()
 }
 
+/// Where *Sorting* sends mail, said where the choice is made: "Mail goes to OpenRouter (Cloud · US) for
+/// sorting only." and, while the chat may read none, "The chat still gets no mail." As high as the rows
+/// around it ([`row_frame`]); wraps rather than cutting off: it is the one sentence here that must be
+/// read whole.
 fn mail_note<'a>(provider: &str, seat: &str, chat_reads_mail: bool) -> Element<'a, Message> {
     let mut sentence = mail_sentence(provider, seat);
     if !chat_reads_mail {

@@ -4804,8 +4804,8 @@ mod tests {
     }
 
     /// PR review #242: a model assigned for sorting mail that is turned off in Accounts is not shown
-    /// as sorting – the core sorts nothing then: its row says so, and "Manage models…" leads to the
-    /// accounts. Not while the sorting is off, the model on, or the account's models not in yet.
+    /// as sorting – the core sorts nothing then: its row says so, and "Sort with model" leads to
+    /// Settings › AI. Not while the sorting is off, the model on, or the account's models not in yet.
     #[test]
     fn a_sorting_model_turned_off_says_so() {
         use torro_core::ai::{AiAssignment, AiFunction, AiModel};

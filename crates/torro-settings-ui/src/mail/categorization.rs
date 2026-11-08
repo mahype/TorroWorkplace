@@ -518,7 +518,7 @@ fn own_exception(data: &Data) -> Option<AiAssignment> {
 
 /// The models that may sort mail: every AI account's models that can – decision models, and chat
 /// models with tools through the fallback (task MW.3) – and are turned on (task S.26). Those in the
-/// cloud too (issue #424): picking one asks first.
+/// cloud too (issue #424); Settings › AI asks before one sorts (issue #545).
 pub(super) fn offered(data: &Data) -> Vec<(String, AiModel)> {
     deciders(data).into_iter().filter(|(_, model)| model.enabled).collect()
 }
@@ -554,7 +554,7 @@ pub fn assigned_off(data: &Data) -> Option<(String, String)> {
 /// A model offered for sorting with its AI account (`ai:…`).
 pub(super) type Offered = (String, AiModel);
 
-/// The models offered ([`offered`]) in the parts of the menu, as [`grouped`] splits them.
+/// The models offered ([`offered`]) by where and how they sort, as [`grouped`] splits them.
 pub(super) type Parts = (Vec<Offered>, Vec<Offered>, Vec<Offered>);
 
 /// The models offered by where they compute (issue #424) and how they sort (issue #421): on this

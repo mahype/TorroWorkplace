@@ -5308,7 +5308,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Edit categories", "Kategorien bearbeiten"),
     ("Categories the model may choose", "Kategorien, die das Modell wählen darf"),
-    ("In the cloud · mail leaves this computer", "In der Cloud · Mails verlassen diesen Computer"),
     ("New filter…", "Neuer Filter…"),
     ("From someone in your address books", "Von jemandem aus deinen Adressbüchern"),
     (
