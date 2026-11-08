@@ -58,7 +58,8 @@ in each app crate's `Cargo.toml`.
 ## Native downloads (#589)
 
 `apps.json` is the seven-app installer matrix (stable identity, actual program, launch arguments and
-companions). `installers.py` uses only Python's standard library and never downloads or publishes:
+companions). `installers.py` supports Python 3.10+ (including Ubuntu 22.04), uses only the standard
+library and never downloads or publishes:
 
 ```sh
 python3 installers.py build-linux --tag v0.1.0 --input ../target/distrib --output ../target/installers

@@ -90,6 +90,13 @@ class Installers(unittest.TestCase):
             for dependency in app["requires"]:
                 self.assertIn(dependency, pkg.windows_payload(app))
 
+    def test_streaming_digest_supports_the_runners_python_without_file_digest(self):
+        path = self.root / "payload"
+        path.write_bytes(b"payload" * 200_000)
+        expected = pkg.hashlib.sha256(path.read_bytes()).hexdigest()
+        with patch.object(pkg.hashlib, "file_digest", None, create=True):
+            self.assertEqual(pkg.digest(path), expected)
+
     def test_native_packages_have_unique_ownership_dependencies_and_markers(self):
         owners = set()
         binaries = {a["program"]: self.root / a["program"] for a in pkg.apps()}
@@ -222,6 +229,12 @@ class Installers(unittest.TestCase):
                 self.assertIn(part + ".version", files)
                 self.assertEqual((payload / (part + ".version")).read_text().strip(), "0.1.0")
                 self.assertIn(f"CheckProgram('{part}')", (payload / "checks.iss").read_text())
+                for suffix in (".exe", ".version", ".exe.torro-package.json"):
+                    self.assertIn(f"CheckUnlocked('{part}{suffix}')", (payload / "locks.iss").read_text())
+                self.assertIn(f"VerifyProgram('{part}', '{pkg.digest(payload / (part + '.exe'))}')", files)
+                self.assertIn(f"VerifyVersion('{part}')", files)
+                self.assertIn(f"WriteMarker('{part}')", files)
+            self.assertEqual(files.count("BeforeInstall: CheckReadyToCopy"), len(pkg.windows_payload(app)))
             self.assertEqual(files.count("sharedfile uninsnosharedfileprompt 64bit"), 3 * len(pkg.windows_payload(app)))
             name = next(str(a)[2:] for a in args if str(a).startswith("/F"))
             (out / (name + ".exe")).write_bytes(b"fixture setup")
@@ -231,6 +244,17 @@ class Installers(unittest.TestCase):
             pkg.build_windows(self.root, out, "v0.1.0")
         self.assertEqual(len(set(compiled)), 7)
         self.assertEqual(len(list(out.glob("*-setup.exe"))), 7)
+
+    def test_setup_enforces_destination_and_refusal_before_copying(self):
+        spec = (pkg.ROOT / "windows/setup.iss").read_text()
+        self.assertIn("else if not Preflight()", spec)
+        self.assertIn("if not FixedDestination() then", spec)
+        self.assertIn("CurStep = ssInstall", spec)
+        self.assertIn("WizardForm.PreparingNoRadio.Visible and WizardForm.PreparingNoRadio.Checked", spec)
+        self.assertIn('"locks.iss"', spec)
+        self.assertIn("OpenForPreflight(FileName, $40000000, 0, 0, 3, 0, 0)", spec)
+        self.assertNotIn("ssPostInstall", spec)
+        self.assertIn("GetSHA256OfFile", spec)
 
     def test_release_gates_are_mandatory_and_build_jobs_have_no_manual_or_pr_trigger(self):
         workflow = (pkg.ROOT.parent / ".github/workflows/release.yml").read_text()

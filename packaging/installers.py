@@ -55,7 +55,10 @@ def regular(path):
 
 def digest(path):
     with regular(path).open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+        hashed = hashlib.sha256()
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            hashed.update(block)
+        return hashed.hexdigest()
 
 
 def checked(path):
@@ -228,22 +231,25 @@ def build_windows(folder, out, tag):
         for app in apps():
             lines = []
             checks = []
+            locks = []
             for program in windows_payload(app):
                 # Marker uses an Inno {code:...} constant so Program Files is resolved by Windows,
                 # not guessed from the build runner's locale or drive.
                 lines.extend([
-                    f'Source: "{binaries[program]}"; DestDir: "{{app}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit',
-                    f'Source: "{scratch / (program + ".version")}"; DestDir: "{{app}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit',
-                    f'Source: "{scratch / (program + ".exe.torro-package.json")}"; DestDir: "{{app}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit',
+                    f'Source: "{binaries[program]}"; DestDir: "{{app}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; BeforeInstall: CheckReadyToCopy; AfterInstall: VerifyProgram(\'{program}\', \'{digest(binaries[program])}\')',
+                    f'Source: "{scratch / (program + ".version")}"; DestDir: "{{app}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; AfterInstall: VerifyVersion(\'{program}\')',
+                    f'Source: "{scratch / (program + ".exe.torro-package.json")}"; DestDir: "{{app}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; AfterInstall: WriteMarker(\'{program}\')',
                 ])
                 (scratch / (program + ".version")).write_text(ver + "\n")
                 # Inno writes a fixed, administrator-only install marker from an expanded template.
                 mark = marker(program, "setup", program, "@PROGRAM@")
                 (scratch / (program + ".exe.torro-package.json")).write_text(json.dumps(mark))
                 checks.append(f"  if not CheckProgram('{program}') then begin Result := False; exit; end;")
+                for suffix in (".exe", ".version", ".exe.torro-package.json"):
+                    locks.append(f"  CheckUnlocked('{program}{suffix}');")
             (scratch / "files.iss").write_text("\n".join(lines) + "\n")
             (scratch / "checks.iss").write_text("\n".join(checks) + "\n")
-            (scratch / "markers.iss").write_text("\n".join(f"  WriteMarker('{p}');" for p in windows_payload(app)) + "\n")
+            (scratch / "locks.iss").write_text("\n".join(locks) + "\n")
             name = f'{app["program"]}-{ver}-{WINDOWS}-setup'
             run([tool, f"/DAppProgram={app['program']}", f"/DAppIdentity={app['id']}", f"/DAppTitle={app['title']}",
                  f"/DAppArgs={' '.join(app['args'])}", f"/DAppVersion={ver}", f"/DResourceVersion={resource}",

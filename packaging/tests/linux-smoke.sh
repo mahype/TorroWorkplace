@@ -7,7 +7,6 @@ set -euo pipefail
 [ "$#" = 3 ] || exit 1
 format="$1" older="$2" newer="$3"
 arch="$(uname -m)"
-packages=(torroworkplace-bin torro-workplace torroinbox-bin torro-inbox-mail-bin torro-inbox-notifications-bin torrocalendar-bin torrotasks-bin torroassistant-bin)
 [ ! -e /usr/bin/torroworkplace ] || { echo "Existing installation; refusing" >&2; exit 1; }
 files() {
   case "$format:$arch" in

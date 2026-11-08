@@ -62,7 +62,10 @@ Each Setup includes its executable, the service and (Mail/App Feed) the Hub. Sha
 native markers and SemVer companion files use `sharedfile uninsnosharedfileprompt 64bit`, with
 `UninstallLogMode=append`, so repeating/upgrading one app and uninstalling another retain components
 until the last owner goes. Preflight rejects downgrades, missing/inconsistent markers and foreign files
-before copying. Windows Restart Manager handles files in use; decline closing them to abort. Setup
+before copying. `/DIR` and saved nonstandard destinations are rejected. Declining Restart Manager
+closure aborts before installation. After its close attempt an exclusive-access check covers every
+payload program, version and marker before the first program is copied; unresolved locks abort.
+Per-file hash/version checks also prevent Skip from advancing metadata beyond an old executable. Setup
 never starts an app elevated, installs a system service, or removes personal data.
 
 Unsigned by decision: users may see SmartScreen. `tests/windows-smoke.ps1` (relative to `packaging/`)

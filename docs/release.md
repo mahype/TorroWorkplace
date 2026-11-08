@@ -89,7 +89,10 @@ Danach `dist plan --tag v0.1.0` und die Offline-Vertragstests ausführen. Keine 
   Uninstaller und Startmenüeintrag (Workplace startet `ui`). Gemeinsame Programme, Marker und
   SemVer-Begleitdateien sind 64-Bit-`sharedfile` mit `uninsnosharedfileprompt` und
   `UninstallLogMode=append`. Downgrades oder fremde/beschädigte Dateien blockieren vor dem Kopieren.
-  Restart Manager bietet das Schließen belegter Dateien an; Ablehnung muss abbrechen. Keine App wird
+  `/DIR` und gespeicherte abweichende Pfade werden abgelehnt. Die Ablehnung im Restart Manager bricht
+  vor der Installation ab; nach dessen Schließversuch prüft ein exklusiver Zugriff alle Programme und
+  Begleitdateien vor dem ersten Kopieren. Verbleibende Sperren brechen ab, Hash-/Versionsprüfungen
+  verhindern das Fortschreiben von Metadaten nach „Skip“. Keine App wird
   erhöht gestartet, kein Systemdienst angelegt und keine persönlichen Daten gelöscht. SmartScreen kann
   wegen fehlender Signatur warnen (Entscheidung X.10). Die Unterstützung der Apps selbst wird durch
   einen Installer nicht erweitert; bekannte Plattformlücken bleiben bestehen.

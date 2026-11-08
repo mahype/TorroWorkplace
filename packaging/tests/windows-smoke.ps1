@@ -7,8 +7,8 @@ if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Pri
 $root = Join-Path $env:ProgramFiles 'TorroWorkplace'
 if (Test-Path $root) { throw 'Existing installation; refusing destructive tests' }
 $apps = (Get-Content (Join-Path $PSScriptRoot '../apps.json') -Raw | ConvertFrom-Json).apps
-function Run-Installer($File) {
-    $process = Start-Process $File -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+function Run-Installer($File, $Extra = @()) {
+    $process = Start-Process $File -ArgumentList (@('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') + $Extra) -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "Installer failed: $File ($($process.ExitCode))" }
 }
 function Setup-For($Folder, $Program) {
@@ -31,9 +31,20 @@ function Check-Payload($Installed) {
 $data = Join-Path $env:LOCALAPPDATA 'torrotasks/installer-smoke-preserve.txt'
 New-Item (Split-Path $data) -ItemType Directory -Force | Out-Null
 Set-Content $data 'personal data'
+$custom = Join-Path $env:TEMP ('torro-custom-' + [guid]::NewGuid())
+$process = Start-Process (Setup-For $Newer 'torroworkplace') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$custom") -Wait -PassThru
+if ($process.ExitCode -eq 0 -or (Test-Path $custom) -or (Test-Path $root)) { throw 'Custom destination was accepted or changed files' }
 # Both dependency removal orders; every app is installed, reinstalled and upgraded in each pass.
 foreach ($reverse in @($false, $true)) {
     foreach ($app in $apps) { Run-Installer (Setup-For $Older $app.program) }
+    $beforeLocked = @(Get-ChildItem $root -File | Get-FileHash | Sort-Object Path | ForEach-Object { "$($_.Path):$($_.Hash)" })
+    $lock = [IO.File]::Open((Join-Path $root 'torroworkplace.exe'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    try {
+        $process = Start-Process (Setup-For $Newer 'torrocalendar') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCLOSEAPPLICATIONS') -Wait -PassThru
+        if ($process.ExitCode -eq 0) { throw 'Upgrade with unresolved shared-service lock was accepted' }
+    } finally { $lock.Dispose() }
+    $afterLocked = @(Get-ChildItem $root -File | Get-FileHash | Sort-Object Path | ForEach-Object { "$($_.Path):$($_.Hash)" })
+    if (Compare-Object $beforeLocked $afterLocked) { throw 'Locked upgrade changed program, version or marker files' }
     foreach ($app in $apps) { Run-Installer (Setup-For $Newer $app.program) }
     foreach ($app in $apps) { Run-Installer (Setup-For $Newer $app.program) }
     $remaining = @($apps | ForEach-Object { $_.id })
@@ -53,4 +64,4 @@ foreach ($reverse in @($false, $true)) {
         if (-not (Test-Path $data)) { throw 'Personal data removed' }
     }
 }
-Write-Output 'PASS: all apps, repeat, upgrade, downgrade refusal, both removal orders and shared-file lifetime'
+Write-Output 'PASS: fixed directory, unresolved-lock abort, all apps, repeat, upgrade, downgrade refusal, both removal orders and shared-file lifetime'
