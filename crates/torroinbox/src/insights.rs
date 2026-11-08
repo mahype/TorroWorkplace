@@ -15,9 +15,14 @@
 //! - **Where you could cut back** ([`cuts`]): the core's suggestions – much came in, little was
 //!   opened –, each with its ready suggestion as button ([`suggestion`], task E8.12: "Sender to Info",
 //!   "Mute app" …), which mutes it (`inbox.mute_item` with the suggestion's scope and effect, the
-//!   "For" of the window as in the bell's menu; the toast offers the undo). At most a reading width.
+//!   "For" of the window as in the bell's menu; the toast offers the undo). A card over the full
+//!   width, its head and rows in shared columns, the buttons' column as wide as the widest button
+//!   ([`cut_widths`], issue #546).
 //! - **Table view** ([`day_table`], [`hour_table`]): the same numbers as the charts, as tables, for
-//!   reading them exactly and where colour does not reach.
+//!   reading them exactly and where colour does not reach; one under the other, the numbers at the
+//!   reading width and the name taking the rest (`widgets::settings_table`).
+//! - **Width:** a page of figures has no upper bound (issue #546): it fills the window beside the
+//!   sidebar.
 //! - **Sizes:** wide puts the two charts side by side and the figures in a row; medium stacks the
 //!   charts and puts the figures two by two (task E8.12); narrow puts the span and the table switch
 //!   at the top of the page, the figures two by two and every suggestion's numbers under its name.
@@ -29,7 +34,8 @@
 use std::future::Future;
 
 use chrono::{Days, NaiveDate};
-use iced::widget::{column, container, row, rule, scrollable};
+use iced::widget::text::Wrapping;
+use iced::widget::{Space, column, container, responsive, row, rule, scrollable};
 use iced::{Alignment, Element, Fill, Length};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
@@ -510,7 +516,7 @@ pub fn controls<'a>(insights: &Insights) -> Vec<Element<'a, Message>> {
 }
 
 /// The page: loading, the error with "Retry", the empty span, or the figures, the charts (or their
-/// tables) and the suggestions, at most two reading widths wide and scrolling. While another span
+/// tables) and the suggestions, over the full width and scrolling. While another span
 /// loads, the numbers of the last one stay with "Updating…" over them (issue #396); loading stands
 /// only where none came yet.
 pub fn view(data: InsightsData<'_>) -> Element<'_, Message> {
@@ -539,35 +545,36 @@ pub fn view(data: InsightsData<'_>) -> Element<'_, Message> {
     }
     blocks.push(figure_tiles(stats, figures_two_by_two(data.class)));
     let series = series(stats);
-    let (days, hours) = if data.insights.table {
-        (day_table_card(stats, &series, data.today), hour_table_card(stats))
+    blocks.push(if data.insights.table {
+        // A table per card, one under the other (issue #546): the days' seven rows beside the
+        // hours' 24 left a large gap.
+        column![day_table_card(stats, &series, data.today), hour_table_card(stats)].spacing(size::card_gap()).into()
     } else {
-        (day_chart_card(stats, series, data.today), hour_chart_card(stats))
-    };
-    blocks.push(if data.class == SizeClass::Wide {
-        row![container(days).width(Length::FillPortion(2)), container(hours).width(Length::FillPortion(1))]
-            .spacing(size::card_gap())
-            .into()
-    } else {
-        column![days, hours].spacing(size::card_gap()).into()
+        let (days, hours) = (day_chart_card(stats, series, data.today), hour_chart_card(stats));
+        if data.class == SizeClass::Wide {
+            row![container(days).width(Length::FillPortion(2)), container(hours).width(Length::FillPortion(1))]
+                .spacing(size::card_gap())
+                .into()
+        } else {
+            column![days, hours].spacing(size::card_gap()).into()
+        }
     });
-    // At most a reading width, as the hub's To sort (task E8.12, finding 8): its button would stand
-    // far from what it mutes.
-    blocks.push(container(cut_back(stats, narrow)).width(Fill).max_width(size::content_max()).into());
+    blocks.push(cut_back(stats, narrow));
     page(blocks, narrow)
 }
 
-/// `blocks` one under the other with the section gap, inside the hub's inset, scrolling, at most
-/// the hub's width.
+/// `blocks` one under the other with the section gap, inside the hub's inset, scrolling. A page of
+/// figures has no upper bound (issue #546, skill `torro-design`, section 6): it fills the width
+/// beside the sidebar, its tables keep their numbers at the reading width.
 fn page(blocks: Vec<Element<'_, Message>>, narrow: bool) -> Element<'_, Message> {
     let gap = if narrow { space::l() } else { layout::section_gap() };
     let content = container(column(blocks).spacing(gap).width(Fill)).padding(hub::inset(narrow));
-    let scrolled = scrollable(content)
+    scrollable(content)
         .direction(scrollable::Direction::Vertical(style::scrollbar()))
         .style(style::scrollable)
         .width(Fill)
-        .height(Fill);
-    container(scrolled).width(Fill).max_width(hub::max_width()).height(Fill).into()
+        .height(Fill)
+        .into()
 }
 
 /// Whether the four figures stand two by two in a window of `class`: below the wide layout (task
@@ -628,53 +635,92 @@ fn hour_chart_card<'a>(stats: &InboxStats) -> Element<'a, Message> {
 
 fn day_table_card<'a>(stats: &InboxStats, series: &[Series], today: NaiveDate) -> Element<'a, Message> {
     let (head, rows, total) = day_table(stats, series, today);
-    widgets::chart_card(day_title(stats.range), tr("Came in"), widgets::data_table(head, rows, Some(total)))
+    widgets::chart_card(day_title(stats.range), tr("Came in"), widgets::settings_table(head, rows, Some(total)))
 }
 
 fn hour_table_card<'a>(stats: &InboxStats) -> Element<'a, Message> {
     let (head, rows, total) = hour_table(stats);
-    widgets::chart_card(tr("By hour of day"), tr("All sources"), widgets::data_table(head, rows, Some(total)))
+    widgets::chart_card(tr("By hour of day"), tr("All sources"), widgets::settings_table(head, rows, Some(total)))
 }
 
-/// "Where you could cut back": the suggestions with their numbers and buttons, or a line that
-/// there are none.
+/// "Where you could cut back" as a card over the full width (issue #546): the suggestions with their
+/// numbers and buttons, or a line that there are none. Wide and medium lay them out as a table whose
+/// head and rows share their columns ([`cut_widths`], [`cut_line`]); narrow puts every suggestion's
+/// numbers under its name ([`cut_card`]).
 fn cut_back<'a>(stats: &InboxStats, narrow: bool) -> Element<'a, Message> {
-    let head = row![
-        typo::text(typo::body_strong(), tr("Where you could cut back")).width(Fill),
-        typo::text(typo::meta(), tr("Much came in, little was opened")).style(theme::text_3),
-    ]
-    .spacing(space::s())
-    .align_y(Alignment::Center);
-    let mut block = column![head].spacing(space::s());
+    let title = tr("Where you could cut back");
+    let note = tr("Much came in, little was opened");
     let cuts = cuts(stats);
     if cuts.is_empty() {
         let none = tr("Nothing stands out: what comes in, you mostly open.");
-        return block.push(typo::text(typo::body(), none).style(theme::text_2)).into();
+        return widgets::chart_card(title, note, typo::text(typo::body(), none).style(theme::text_2));
     }
-    if !narrow {
-        block = block.push(cut_head());
+    if narrow {
+        let mut body = column![];
+        for (i, cut) in cuts.into_iter().enumerate() {
+            if i > 0 {
+                body = body.push(rule::horizontal(size::HAIRLINE).style(style::rule));
+            }
+            body = body.push(cut_card(cut));
+        }
+        return widgets::chart_card(title, note, body);
     }
-    for cut in cuts {
-        block = block.push(rule::horizontal(size::HAIRLINE).style(style::rule));
-        block = block.push(if narrow { cut_card(cut) } else { cut_row(cut) });
-    }
-    block.into()
+    let table = responsive(move |room| {
+        let widths = cut_widths(room.width, cuts.iter().map(|cut| cut.word));
+        let caption = |words: &'static str| -> Element<'a, Message> {
+            typo::text(typo::caption(), words).style(theme::text_3).wrapping(Wrapping::None).into()
+        };
+        let mut body =
+            column![cut_line(caption(tr("What")), caption(tr("Came in")), caption(tr("Opened")), None, widths)];
+        for cut in cuts.clone() {
+            body = body.push(rule::horizontal(size::HAIRLINE).style(style::rule));
+            body = body.push(cut_row(cut, widths));
+        }
+        body.width(Fill).into()
+    })
+    .height(Length::Shrink);
+    widgets::chart_card(title, note, table)
 }
 
-/// The captions over the suggestions' columns (wide, medium).
-fn cut_head<'a>() -> Element<'a, Message> {
-    let caption = |words: &'static str| typo::text(typo::caption(), words).style(theme::text_3);
-    container(
-        row![
-            caption(tr("What")).width(Length::FillPortion(5)),
-            container(caption(tr("Came in"))).width(Length::FillPortion(1)).align_right(Length::FillPortion(1)),
-            caption(tr("Opened")).width(Length::FillPortion(2)),
-            container(caption("")).width(Length::FillPortion(2)),
-        ]
-        .spacing(space::l()),
-    )
-    .padding(layout::row_padding())
-    .into()
+/// The widths of the columns of "Where you could cut back" beside the name (wide, medium).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CutWidths {
+    /// "Came in" and "Opened" each: as a table's number column ([`widgets::table_value_width`]), but
+    /// never narrower than the share bar with "100 %" beside it.
+    pub value: f32,
+    /// The buttons: as wide as the widest of `words`, so no button runs over its frame (issue #546).
+    pub button: f32,
+}
+
+/// The columns of a table of suggestions `width` wide whose buttons say `words` ([`CutWidths`]).
+pub fn cut_widths<'w>(width: f32, words: impl IntoIterator<Item = &'w str>) -> CutWidths {
+    let button = words.into_iter().map(|word| widgets::text_button_width(true, word)).fold(0.0, f32::max);
+    let least = widgets::PROGRESS_WIDTH + space::s() + typo::text_width("100 %", typo::meta().tabular());
+    let value = widgets::table_value_width(width - button - space::s(), 2).max(least);
+    CutWidths { value, button }
+}
+
+/// A line of the table of suggestions: `what` filling the row, `new` right-aligned and `opened` in
+/// the number columns, `button` (none in the head) right-aligned in its column – the head and the
+/// rows from this one function, so their columns line up. Gaps and sides as a `widgets::data_table`,
+/// [`size::header()`] high with the content centred, so the button keeps its height in every design.
+fn cut_line<'a>(
+    what: Element<'a, Message>,
+    new: Element<'a, Message>,
+    opened: Element<'a, Message>,
+    button: Option<Element<'a, Message>>,
+    widths: CutWidths,
+) -> Element<'a, Message> {
+    let button: Element<'a, Message> = button.unwrap_or_else(|| Space::new().into());
+    let line = row![
+        container(what).width(Fill).clip(true),
+        container(new).align_right(widths.value),
+        container(opened).width(widths.value),
+        container(button).align_right(widths.button),
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
+    container(line).center_y(size::header()).padding([0.0, space::s()]).into()
 }
 
 /// The icon of a suggestion's source, quiet.
@@ -686,7 +732,7 @@ fn source_mark<'a>(source: &SourceRef) -> Element<'a, Message> {
 
 /// A suggestion in one line (wide, medium): icon and what it mutes, what came in, the share opened
 /// with its bar, and the button.
-fn cut_row<'a>(cut: Cut) -> Element<'a, Message> {
+fn cut_row<'a>(cut: Cut, widths: CutWidths) -> Element<'a, Message> {
     let what = row![
         source_mark(&cut.source),
         container(widgets::ellipsized(typo::body(), cut.label, theme::text)).width(Fill)
@@ -700,22 +746,7 @@ fn cut_row<'a>(cut: Cut) -> Element<'a, Message> {
     ]
     .spacing(space::s())
     .align_y(Alignment::Center);
-    let line = row![
-        container(what).width(Length::FillPortion(5)),
-        container(new).width(Length::FillPortion(1)).align_right(Length::FillPortion(1)),
-        container(opened).width(Length::FillPortion(2)),
-        container(mute_button(cut.mute, cut.word)).width(Length::FillPortion(2)).align_right(Length::FillPortion(2)),
-    ]
-    .spacing(space::l())
-    .align_y(Alignment::Center);
-    container(line).center_y(size::header()).padding(cut_row_padding(layout::row_padding())).into()
-}
-
-/// The padding of a suggestion's row ([`cut_row`]) from the row padding `pad`: only its sides. The
-/// row is [`size::header()`] high and centres its content, so padding above and below would only
-/// squeeze the "Mute" button (18 above and below a row of 64 left the button of 36 only 28).
-fn cut_row_padding(pad: iced::Padding) -> iced::Padding {
-    iced::Padding::new(0.0).left(pad.left).right(pad.right)
+    cut_line(what.into(), new.into(), opened.into(), Some(mute_button(cut.mute, cut.word)), widths)
 }
 
 /// A suggestion where it is narrow: what it mutes, its numbers below, the button at the right.
@@ -880,21 +911,28 @@ mod tests {
         ]
     }
 
-    /// Issue #291 (review of the three designs): a suggestion's row of a fixed height takes only the
-    /// sides of the row padding, so its "Mute" button keeps its height in every design (with 18 above
-    /// and below a row of 64 squeezed the button of 36 to 28).
+    /// Issue #291 (review of the three designs): a suggestion's row is `size::header()` high with
+    /// no padding above and below, so its "Mute" button keeps its height in every design.
     #[test]
     fn a_suggestions_row_holds_its_mute_button_in_every_design() {
         for id in torro_core::design::BUILT_IN_IDS {
             let d = torro_core::design::load(id).expect("a built-in design");
-            let pad = d.layout.row_padding;
-            let full =
-                iced::Padding { top: pad.vertical, right: pad.horizontal, bottom: pad.vertical, left: pad.horizontal };
-            let sides = cut_row_padding(full);
-            assert_eq!((sides.left, sides.right), (pad.horizontal, pad.horizontal), "{id}: the sides stay");
-            let inner = d.size.header - sides.top - sides.bottom;
-            assert!(inner >= d.size.control_sm, "{id}: {inner} inside the row holds the button");
+            assert!(d.size.header >= d.size.control_sm, "{id}: the row holds the button");
         }
+    }
+
+    /// Issue #546: the button column is as wide as the widest button, so "Mute app" and "Mute these"
+    /// stay in their frame; the number columns hold the share bar with "100 %".
+    #[test]
+    fn the_button_column_is_as_wide_as_the_widest_button() {
+        let words = [tr("Mute app"), tr("Newsletters to Info"), tr("Mute these")];
+        let widths = cut_widths(1200.0, words);
+        let widest = words.iter().map(|word| widgets::text_button_width(true, word)).fold(0.0, f32::max);
+        assert_eq!(widths.button, widest);
+        assert!(widths.button >= widgets::text_button_width(true, tr("Mute app")));
+        let least = widgets::PROGRESS_WIDTH + space::s() + typo::text_width("100 %", typo::meta().tabular());
+        assert!(cut_widths(300.0, words).value >= least, "a narrow card keeps the bar and its share");
+        assert_eq!(widths.value, cut_widths(3000.0, words).value, "the numbers stay at the reading width");
     }
 
     #[test]

@@ -2323,6 +2323,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Password was refused", "Passwort wurde abgelehnt"),
     ("The server cannot be reached.", "Der Server ist nicht erreichbar."),
+    // Problem of the demo accounts in the settings (issue #546)
+    ("The server did not answer", "Der Server hat nicht geantwortet"),
     // Mail provider in the add-account wizard (M7.2)
     ("Advanced", "Erweitert"),
     ("Appointments and events", "Termine und Ereignisse"),
