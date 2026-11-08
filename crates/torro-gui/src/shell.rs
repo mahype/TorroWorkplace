@@ -696,6 +696,8 @@ pub const SETTINGS_ICON: Icon = Icon::SlidersHorizontal;
 ///   (issue #530): the panel button stands at the same place in every form.
 /// - Then the app's header ([`header_bar`]), padded as in the header bar, with a line below, and the
 ///   settings ([`SETTINGS_ICON`]) at the right end, marked while they are open.
+/// - Mail opts into [`TopRow::sidebar_surface`] for one sidebar-coloured head and
+///   [`TopRow::sidebar_at_edge`] for the expanded sidebar's button at its right edge (issue #564).
 ///
 /// The free row drags the window. What an overlay lays over the top of the window ([`Cover`]) dims
 /// or covers the row as it did the band. The sizes of the lights' room are points (divided by
@@ -712,6 +714,8 @@ pub const SETTINGS_ICON: Icon = Icon::SlidersHorizontal;
 #[derive(Debug, Clone)]
 pub struct TopRow<M> {
     sidebar: Option<(&'static str, M)>,
+    sidebar_surface: bool,
+    sidebar_at_edge: bool,
     settings: Option<M>,
     settings_open: bool,
     zoom: f32,
@@ -726,6 +730,8 @@ impl<M> TopRow<M> {
     pub fn new(zoom: f32, on_drag: M) -> Self {
         TopRow {
             sidebar: None,
+            sidebar_surface: false,
+            sidebar_at_edge: false,
             settings: None,
             settings_open: false,
             zoom,
@@ -747,6 +753,25 @@ impl<M> TopRow<M> {
     pub fn sidebar(mut self, label: &'static str, on_press: M) -> Self {
         self.sidebar = Some((label, on_press));
         self
+    }
+
+    /// Draws the entire normal head in the sidebar's palette (mail, issue #564), including its
+    /// text and controls. Menus and tooltips keep the window's theme. Off for existing callers.
+    pub fn sidebar_surface(mut self, enabled: bool) -> Self {
+        self.sidebar_surface = enabled;
+        self
+    }
+
+    /// Places the panel button at the expanded sidebar's right edge (mail, issue #564). The compact
+    /// lead and the drawer keep their usual position beside the lights. Off for existing callers.
+    pub fn sidebar_at_edge(mut self, enabled: bool) -> Self {
+        self.sidebar_at_edge = enabled;
+        self
+    }
+
+    /// The normal head's surface; opaque overlays keep their own surface instead.
+    fn head_surface(&self) -> Surface {
+        if self.sidebar_surface { Surface::Sidebar } else { Surface::Panel }
     }
 
     /// The settings button ("Settings", [`SETTINGS_ICON`]), which sends `on_press`. Every window with
@@ -871,16 +896,28 @@ fn plain_row<'a, M: Clone + 'a>(
             // The compact lead lies on the panel, as the header does, and the line runs under both.
             let row = row![container(lead).height(Fill).center_y(Fill), head_row(top, header_padded(header, class))];
             let part = column![row.height(Fill), rule::horizontal(LINE).style(style::rule)];
-            container(part).width(Fill).height(Fill).style(style::container::panel_flush).into()
+            head_background(top, part.into())
         }
     }
 }
 
-/// The lead over the expanded sidebar, `width` wide: the lights' room and the panel button right after
-/// it, on the sidebar's surface, then the line beside the sidebar.
+/// The lead over the expanded sidebar, `width` wide. Mail may put the button at its right edge;
+/// the drawer always keeps the compact lead beside the lights.
 fn expanded_lead<'a, M: Clone + 'a>(top: &TopRow<M>, width: f32) -> Element<'a, M> {
-    let side = container(compact_lead(top))
-        .width((width - LINE).max(0.0))
+    let at_edge = top.sidebar_at_edge && top.cover != Cover::Drawer;
+    let lead = if at_edge {
+        let mut pieces = row![blank().width(lights_room(top.zoom)), blank::horizontal()];
+        if let Some((label, on_press)) = top.sidebar.clone() {
+            pieces = pieces.push(widgets::icon_button(Icon::PanelLeft, label, Some(on_press)));
+        }
+        pieces.push(blank().width(space::s())).align_y(Alignment::Center).into()
+    } else {
+        compact_lead(top)
+    };
+    // The body's expanded sidebar is `width` plus its separator. The drawer instead includes
+    // its line in `size::sidebar()`. Keep existing callers' geometry, opt mail into the exact axis.
+    let side = container(lead)
+        .width((if at_edge { width } else { width - LINE }).max(0.0))
         .height(Fill)
         .center_y(Fill)
         .style(style::container::sidebar);
@@ -888,7 +925,7 @@ fn expanded_lead<'a, M: Clone + 'a>(top: &TopRow<M>, width: f32) -> Element<'a, 
 }
 
 /// The lead's pieces: the lights' room and the panel button, then the gap before the header. The same
-/// over the expanded sidebar, beside the rail and in narrow windows, so the button never moves.
+/// over the expanded sidebar by default, beside the rail and in narrow windows.
 fn compact_lead<'a, M: Clone + 'a>(top: &TopRow<M>) -> Element<'a, M> {
     let mut pieces = row![blank().width(lights_room(top.zoom))];
     if let Some((label, on_press)) = top.sidebar.clone() {
@@ -901,7 +938,13 @@ fn compact_lead<'a, M: Clone + 'a>(top: &TopRow<M>) -> Element<'a, M> {
 fn head_part<'a, M: Clone + 'a>(top: &TopRow<M>, header: Element<'a, M>, class: SizeClass) -> Element<'a, M> {
     let row = head_row(top, header_padded(header, class));
     let part = column![row.height(Fill), rule::horizontal(LINE).style(style::rule)];
-    container(part).width(Fill).height(Fill).style(style::container::panel_flush).into()
+    head_background(top, part.into())
+}
+
+/// Replace the inner panel too: merely colouring an outer row leaves a strip beside the search.
+fn head_background<'a, M: 'a>(top: &TopRow<M>, part: Element<'a, M>) -> Element<'a, M> {
+    let area = container(part).width(Fill).height(Fill).style(surface_style(top.head_surface()));
+    if top.sidebar_surface { in_sidebar(area) } else { area.into() }
 }
 
 /// `header` with the padding of the header bar in `class`, centred in the row.
@@ -1406,6 +1449,137 @@ mod tests {
     enum Msg {
         Switcher(Switcher),
         Close,
+    }
+
+    /// Issue #564: mail opts in; every existing caller keeps the split surfaces and fixed button.
+    #[test]
+    fn the_mail_top_row_options_are_independent_and_off_by_default() {
+        let top = TopRow::new(1.0, Msg::Close);
+        assert!(!top.sidebar_surface && !top.sidebar_at_edge);
+        let surface = top.clone().sidebar_surface(true);
+        assert!(surface.sidebar_surface && !surface.sidebar_at_edge);
+        let edge = top.sidebar_at_edge(true);
+        assert!(!edge.sidebar_surface && edge.sidebar_at_edge);
+        assert!(!surface.sidebar_surface(false).sidebar_surface);
+        assert!(!edge.sidebar_at_edge(false).sidebar_at_edge);
+    }
+
+    /// Issue #564: the moved button follows the real sidebar width, not its default or the zoom.
+    #[test]
+    fn the_expanded_button_moves_only_when_requested_and_never_in_the_drawer() {
+        #[derive(Debug, Clone, PartialEq)]
+        enum Press {
+            Sidebar,
+            Drag,
+        }
+        for zoom in [1.0, 1.5] {
+            for width in [size::sidebar() * 0.75, size::sidebar(), size::sidebar() * 2.0] {
+                for edge in [false, true] {
+                    for cover in
+                        [Cover::Nothing, Cover::Drawer, Cover::Dialog, Cover::Panel, Cover::Filled(Surface::Panel)]
+                    {
+                        let top = TopRow::new(zoom, Press::Drag)
+                            .sidebar(tr("Collapse sidebar"), Press::Sidebar)
+                            .sidebar_at_edge(edge)
+                            .sidebar_surface(true)
+                            .cover(cover);
+                        let moved = edge && cover != Cover::Drawer;
+                        let x = if moved {
+                            width - space::s() - size::control_sm() / 2.0
+                        } else {
+                            lights_room(zoom) + SIDEBAR_GAP + size::control_sm() / 2.0
+                        };
+                        let mut ui = iced_test::Simulator::with_size(
+                            iced::Settings::default(),
+                            Size::new(1000.0, TOP_ROW / zoom),
+                            top_row_band(top, blank().into(), SizeClass::Wide, Some(width)),
+                        );
+                        ui.point_at(iced::Point::new(x, TOP_ROW / zoom / 2.0));
+                        ui.simulate(iced_test::simulator::click());
+                        let pressed = ui.into_messages().filter(|m| *m == Press::Sidebar).count();
+                        assert_eq!(
+                            pressed,
+                            usize::from(matches!(cover, Cover::Nothing | Cover::Drawer)),
+                            "{zoom}, {width}, {edge}, {cover:?}"
+                        );
+                    }
+                }
+            }
+        }
+        let top = TopRow::new(1.0, Press::Drag).sidebar_at_edge(true);
+        let mut ui = iced_test::Simulator::with_size(
+            iced::Settings::default(),
+            Size::new(1000.0, TOP_ROW),
+            top_row_band(top, blank().into(), SizeClass::Wide, Some(size::sidebar())),
+        );
+        ui.point_at(iced::Point::new(size::sidebar() - space::s() - size::control_sm() / 2.0, TOP_ROW / 2.0));
+        ui.simulate(iced_test::simulator::click());
+        assert!(!ui.into_messages().any(|m| m == Press::Sidebar), "no message means no button");
+    }
+
+    /// Issue #564: drawing the header must supply the whole sidebar palette, not just its background.
+    #[test]
+    fn the_mail_head_draws_in_the_sidebar_palette_in_both_modes() {
+        use std::sync::{Arc, Mutex};
+        // Palette readers in the other tests do not all take SWITCHING. Keep a real scheme switch
+        // in a child process so this rendering test cannot change their colours mid-assertion.
+        const CHILD: &str = "TORRO_TEST_MAIL_HEAD_PALETTE";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args(["--exact", "shell::tests::the_mail_head_draws_in_the_sidebar_palette_in_both_modes"])
+                .env(CHILD, "1")
+                .output()
+                .expect("run palette test in isolation");
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let original = scheme::active();
+        for scheme in [
+            torro_core::design::ColorScheme::standard(),
+            torro_core::design::load_color_scheme(
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../color-schemes"),
+                "channelr",
+            )
+            .expect("built-in scheme"),
+        ] {
+            scheme::set(scheme);
+            for window in [theme::theme(), theme::light()] {
+                for enabled in [false, true] {
+                    for lead in [None, Some(size::sidebar()), Some(320.0)] {
+                        let seen = Arc::new(Mutex::new(None));
+                        let captured = seen.clone();
+                        let header = container(blank()).width(Fill).height(Fill).style(move |t| {
+                            *captured.lock().expect("probe") = Some(palette(t));
+                            container::Style::default()
+                        });
+                        let top = TopRow::new(1.0, Msg::Close).sidebar_surface(enabled);
+                        let surface = top.head_surface();
+                        let expected = if enabled { theme::sidebar_theme(&window) } else { window.clone() };
+                        assert_eq!(
+                            surface_style(surface)(&expected).background,
+                            Some(Background::Color(if enabled {
+                                palette(&expected).sidebar
+                            } else {
+                                palette(&expected).panel
+                            }))
+                        );
+                        let mut ui = iced_test::Simulator::with_size(
+                            iced::Settings::default(),
+                            Size::new(800.0, TOP_ROW),
+                            top_row_band(top, header.into(), SizeClass::Medium, lead),
+                        );
+                        let _ = ui.snapshot(&window).expect("draw the actual header");
+                        assert_eq!(*seen.lock().expect("probe"), Some(palette(&expected)));
+                    }
+                }
+            }
+        }
+        scheme::set((*original).clone());
     }
 
     #[test]
