@@ -696,6 +696,22 @@ impl InboxClient {
         }
     }
 
+    /// The writable calendars for an invitation, in the same order and with the same ids as
+    /// [`Self::list_calendars`], with connection and account in their display names (issue #569).
+    /// Uses only `calendar.list_calendars` and `accounts.list_accounts`. Missing or forbidden account
+    /// metadata is explicitly unknown, never a reason to prevent answering an invitation.
+    pub async fn list_invitation_calendars(&self) -> Result<Vec<TaskList>, InboxError> {
+        let mut calendars = self.list_calendars().await?;
+        if !calendars.is_empty() {
+            let accounts = match self.ask(Request::Accounts).await {
+                Ok(Response::Accounts { accounts }) => accounts,
+                _ => Vec::new(),
+            };
+            invitation_calendar_names(&mut calendars, &accounts);
+        }
+        Ok(calendars)
+    }
+
     /// `mail.respond_to_invitation` (task E8.3b; the window's Accept · Maybe · Decline, task E8.3c):
     /// answers the invitation in the message `id` (`m:…`) of the mail account `account`
     /// (`mail:<address>`) with `answer`. The core replies to the organizer from the account and puts
@@ -1240,6 +1256,101 @@ impl InboxSource for InboxClient {
     }
 }
 
+/// Only the names change: ids and ordering remain the core's, including when metadata is missing.
+fn invitation_calendar_names(calendars: &mut [TaskList], accounts: &[crate::AccountInfo]) {
+    use std::collections::{HashMap, HashSet};
+    use torro_core::i18n::tr;
+    use torro_pim::account::{AccountState, account_of};
+
+    for calendar in calendars.iter_mut() {
+        let account = account_of(&calendar.id, accounts, |account| &account.id);
+        let provider = match account.map(|account| account.kind.as_str()) {
+            Some("nextcloud") => "Nextcloud",
+            Some("caldav" | "mail") => "CalDAV",
+            _ => tr("Unknown provider"),
+        };
+        let server = account
+            .and_then(|account| match account.kind.as_str() {
+                // A mail account's state describes mail, not its calendar service.
+                "mail" => account.mail.as_ref()?.caldav.as_deref(),
+                "nextcloud" | "caldav" => match &account.state {
+                    AccountState::Connected { server, .. } | AccountState::SigningIn { server, .. } => {
+                        Some(server.as_str())
+                    }
+                    AccountState::NotConnected => None,
+                },
+                _ => None,
+            })
+            .and_then(invitation_connection)
+            .unwrap_or_else(|| tr("Unknown connection").into());
+        let login = account
+            .and_then(|account| match account.kind.as_str() {
+                "mail" => {
+                    let address = account.mail.as_ref()?.address.trim();
+                    torro_mail::account_id(address).ok().map(|_| address.to_owned())
+                }
+                _ => match &account.state {
+                    AccountState::Connected { login_name, .. } => Some(invitation_text(login_name)),
+                    _ => None,
+                },
+            })
+            .filter(|login| !login.is_empty() && !login.contains("://"))
+            .unwrap_or_else(|| tr("Unknown account").into());
+        let name = invitation_text(&calendar.name);
+        let name = if name.is_empty() { tr("Unnamed calendar") } else { &name };
+        calendar.name = format!("{name} — {provider} · {server} · {login}");
+    }
+    let mut totals = HashMap::new();
+    for calendar in calendars.iter() {
+        *totals.entry(calendar.name.clone()).or_insert(0) += 1;
+    }
+    // Reserve all original names as well: a server-supplied name may itself end in " (1)".
+    let mut used: HashSet<String> = calendars.iter().map(|calendar| calendar.name.clone()).collect();
+    let mut next = HashMap::new();
+    for calendar in calendars {
+        if totals.get(&calendar.name).copied().unwrap_or(0) > 1 {
+            let n = next.entry(calendar.name.clone()).or_insert(0);
+            loop {
+                *n += 1;
+                let name = format!("{} ({n})", calendar.name);
+                if used.insert(name.clone()) {
+                    calendar.name = name;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// An account's calendar URL without credentials, query or fragment. Never falls back to an id.
+fn invitation_connection(server: &str) -> Option<String> {
+    let mut url = url::Url::parse(server).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return None;
+    }
+    url.set_username("").ok()?;
+    url.set_password(None).ok()?;
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(invitation_text(url.as_str()))
+}
+
+/// Neutralizes hidden direction/format controls so foreign labels cannot reorder the connection.
+fn invitation_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| {
+            !matches!(c,
+                '\u{00ad}' | '\u{061c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}'
+                | '\u{2060}'..='\u{206f}' | '\u{feff}'
+            )
+        })
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use std::future::Future;
@@ -1749,6 +1860,151 @@ mod tests {
 
     fn day(day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, day).expect("valid date")
+    }
+
+    fn invitation_account(id: &str, kind: &str, server: &str, login: &str) -> crate::AccountInfo {
+        crate::AccountInfo {
+            id: id.into(),
+            kind: kind.into(),
+            label: "https://label:LABEL_SECRET@wrong.example/?token=LABEL_TOKEN".into(),
+            state: torro_pim::account::AccountState::Connected {
+                server: server.into(),
+                login_name: login.into(),
+                last_sync: None,
+                problem: None,
+            },
+            collections: Vec::new(),
+            scopes: None,
+            mail: None,
+            ntfy: None,
+            services: None,
+        }
+    }
+
+    fn invitation_lists(ids: &[&str]) -> Vec<TaskList> {
+        ids.iter().map(|id| TaskList { id: (*id).into(), name: "Personal".into() }).collect()
+    }
+
+    #[test]
+    fn invitation_labels_keep_connections_accounts_order_and_ids_without_secrets() {
+        let accounts = vec![
+            invitation_account(
+                "nc",
+                "nextcloud",
+                "https://user:SERVER_SECRET@cloud.example:8443/team?token=QUERY_SECRET#FRAGMENT_SECRET",
+                "anna",
+            ),
+            invitation_account("nc/sub", "nextcloud", "https://cloud.example/other", "anna"),
+            invitation_account("dav", "caldav", "https://cloud.example/team", "paul"),
+        ];
+        let mut calendars = invitation_lists(&["nc/c1", "nc/sub/c2", "dav/c3"]);
+        let ids: Vec<_> = calendars.iter().map(|c| c.id.clone()).collect();
+        invitation_calendar_names(&mut calendars, &accounts);
+        assert_eq!(calendars.iter().map(|c| c.id.clone()).collect::<Vec<_>>(), ids);
+        assert_eq!(calendars[0].name, "Personal — Nextcloud · https://cloud.example:8443/team · anna");
+        assert_eq!(calendars[1].name, "Personal — Nextcloud · https://cloud.example/other · anna");
+        assert_eq!(calendars[2].name, "Personal — CalDAV · https://cloud.example/team · paul");
+        assert!(
+            calendars
+                .iter()
+                .all(|c| !c.name.contains("SECRET") && !c.name.contains("TOKEN") && !c.name.contains("user:"))
+        );
+    }
+
+    #[test]
+    fn invitation_labels_handle_missing_metadata_and_number_sanitized_duplicates() {
+        use torro_core::i18n::tr;
+        let mut calendars = invitation_lists(&["a/1", "a/2", "missing/3", "a/4"]);
+        calendars[0].name = "Personal\u{202e}".into();
+        calendars[3].name = "\n\u{2066}".into();
+        let accounts = [invitation_account("a", "caldav", "file:///SECRET", "\n\u{202e}")];
+        invitation_calendar_names(&mut calendars, &accounts);
+        let base = format!("Personal — CalDAV · {} · {}", tr("Unknown connection"), tr("Unknown account"));
+        assert_eq!(calendars[0].name, format!("{base} (1)"));
+        assert_eq!(calendars[1].name, format!("{base} (2)"));
+        assert!(calendars[2].name.contains(tr("Unknown provider")));
+        assert!(calendars[3].name.starts_with(tr("Unnamed calendar")));
+        assert!(
+            calendars.iter().all(|c| !c.name.chars().any(|c| c.is_control() || c == '\u{202e}' || c == '\u{2066}'))
+        );
+        for server in ["not a URL", "ftp://cloud.example/SECRET", "https:///", ""] {
+            let mut calendars = invitation_lists(&["a/1"]);
+            invitation_calendar_names(&mut calendars, &[invitation_account("a", "future", server, "anna")]);
+            assert!(calendars[0].name.contains(tr("Unknown connection")));
+            assert!(calendars[0].name.contains(tr("Unknown provider")));
+        }
+    }
+
+    #[test]
+    fn invitation_mail_uses_caldav_not_the_mail_server_or_account_label() {
+        use torro_core::i18n::tr;
+        let mut account = invitation_account("mail:a", "mail", "https://imap.example/WRONG", "wrong-login");
+        let mut calendars = invitation_lists(&["mail:a/1"]);
+        invitation_calendar_names(&mut calendars, &[account.clone()]);
+        assert!(calendars[0].name.contains(tr("Unknown connection")));
+        assert!(!calendars[0].name.contains("imap.example") && !calendars[0].name.contains("wrong-login"));
+        account.mail = Some(crate::MailView {
+            address: "anna@example.org".into(),
+            sender_name: String::new(),
+            imap: torro_mail::Endpoint { host: "imap.example".into(), port: 993, security: torro_mail::Security::Tls },
+            smtp: torro_mail::Endpoint { host: "smtp.example".into(), port: 465, security: torro_mail::Security::Tls },
+            caldav: Some("https://dav.example/calendars/anna".into()),
+            settings: Default::default(),
+            open_roles: Vec::new(),
+            mail: Default::default(),
+            calendars: None,
+            trusted_certificates: Vec::new(),
+        });
+        let mut calendars = invitation_lists(&["mail:a/1"]);
+        invitation_calendar_names(&mut calendars, &[account.clone()]);
+        assert_eq!(calendars[0].name, "Personal — CalDAV · https://dav.example/calendars/anna · anna@example.org");
+        account.mail.as_mut().expect("mail").address = "https://user:SECRET@cloud.example/".into();
+        let mut calendars = invitation_lists(&["mail:a/1"]);
+        invitation_calendar_names(&mut calendars, &[account]);
+        assert!(calendars[0].name.ends_with(tr("Unknown account")));
+    }
+
+    #[tokio::test]
+    async fn invitation_calendars_use_existing_requests_and_tolerate_missing_accounts() {
+        use std::sync::{Arc, Mutex};
+        use torro_core::i18n::tr;
+        for code in ["forbidden", "not-found", "error", "unexpected"] {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let requests = seen.clone();
+            let core = start(move |request| {
+                let requests = requests.clone();
+                async move {
+                    requests.lock().expect("requests").push(format!("{request:?}"));
+                    match request {
+                        Request::Accounts if code == "unexpected" => Response::Ok,
+                        Request::Accounts => Response::Error { code: code.into(), message: "missing".into() },
+                        other => answer(other),
+                    }
+                }
+            })
+            .await;
+            let calendars = core.client().list_invitation_calendars().await.expect("calendars stay usable");
+            assert_eq!(calendars.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["work", "events"]);
+            assert!(calendars.iter().all(|c| c.name.contains(tr("Unknown connection"))));
+            assert_eq!(*seen.lock().expect("requests"), ["Ping", "CalendarCollections", "Accounts"]);
+        }
+        let core = start(|request| async move {
+            match request {
+                Request::CalendarCollections => Response::Collections { collections: Vec::new() },
+                Request::Ping => answer(Request::Ping),
+                _ => panic!("no metadata needed for an empty calendar list"),
+            }
+        })
+        .await;
+        assert!(core.client().list_invitation_calendars().await.expect("empty").is_empty());
+        let core = start(|request| async move {
+            match request {
+                Request::Ping => answer(Request::Ping),
+                _ => Response::Error { code: "forbidden".into(), message: "no calendars".into() },
+            }
+        })
+        .await;
+        assert_eq!(core.client().list_invitation_calendars().await, Err(InboxError::Forbidden));
     }
 
     /// An event of `collection` titled `title` from `start` for an hour (a timed one) or without end.

@@ -7360,6 +7360,7 @@ dependencies = [
  "torro-mail",
  "torro-pim",
  "torro-setups",
+ "url",
  "windows-sys 0.59.0",
 ]
 

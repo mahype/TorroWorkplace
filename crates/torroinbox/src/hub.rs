@@ -87,6 +87,12 @@ pub trait HubSource: Send + Sync {
     /// events), each as id and name, in the core's order.
     fn list_calendars(&self) -> impl Future<Output = Result<Vec<TaskList>, InboxError>> + Send;
 
+    /// The same calendar ids for answering an invitation, with connection metadata in the names.
+    /// Sources without account metadata keep their ordinary names.
+    fn list_invitation_calendars(&self) -> impl Future<Output = Result<Vec<TaskList>, InboxError>> + Send {
+        self.list_calendars()
+    }
+
     /// `inbox.create_event_from_item`: an event of the entry `id` in the calendar `calendar` from
     /// `start` to `end`, titled `title` (`None`: the entry's title); the entry is done then.
     fn create_event_from_item(
@@ -106,6 +112,10 @@ impl HubSource for InboxClient {
 
     async fn list_calendars(&self) -> Result<Vec<TaskList>, InboxError> {
         InboxClient::list_calendars(self).await
+    }
+
+    async fn list_invitation_calendars(&self) -> Result<Vec<TaskList>, InboxError> {
+        InboxClient::list_invitation_calendars(self).await
     }
 
     async fn create_event_from_item(
@@ -139,6 +149,18 @@ impl HubSource for DemoSource {
 
     async fn list_calendars(&self) -> Result<Vec<TaskList>, InboxError> {
         Ok(DEMO_CALENDARS.iter().map(|(id, name)| TaskList { id: (*id).into(), name: (*name).into() }).collect())
+    }
+
+    async fn list_invitation_calendars(&self) -> Result<Vec<TaskList>, InboxError> {
+        let connections = [
+            (DEMO_CALENDARS[0].0, "Nextcloud · https://cloud-a.example/nextcloud · anna"),
+            (DEMO_CALENDARS[1].0, "Nextcloud · https://cloud-b.example/nextcloud · anna"),
+            ("demo/calendar/caldav", "CalDAV · https://dav.example/calendars · anna@example.org"),
+        ];
+        Ok(connections
+            .into_iter()
+            .map(|(id, connection)| TaskList { id: id.into(), name: format!("{} — {connection}", tr("Personal")) })
+            .collect())
     }
 
     async fn create_event_from_item(

@@ -108,6 +108,34 @@ spricht nur über IPC mit dem Dienst wie Kalender und Aufgaben.
 | **Schmal** | Liste; Nachricht öffnet sich darüber mit Zurück; die Übersicht ersetzt die Liste, „‹ Ansicht“ führt zurück |
 | **Mini / Leiste** | Anzeige, keine Mini-App: ungelesen je Konto, die drei neuesten Absender. Frage: „Wer wartet auf mich?“ |
 
+**Übersicht und Statistik (#565).** Zeitraum (7/30/90 Tage) und Konto stehen in beiden Ansichten
+rechtsbündig über den Zahlen, in den Einstellungen immer unter den vier Reitern. Reicht die tatsächliche
+Inhaltsbreite nicht, stehen die beiden Filtergruppen rechts untereinander. Lange Kontonamen werden mit
+„…“ gekürzt und sind im Tooltip vollständig lesbar; das Dropdown bleibt begrenzt. Der wiederholte Satz
+mit Konto und Zeitraum entfällt. „As of …“ steht leise unter dem Inhalt und bezieht sich auf die
+tatsächlich angezeigte Antwort, auch während „Updating…“ die nächste Auswahl lädt. Ohne Antwort fehlt
+die Fußnote; Laden, Fehler mit „Retry“ und der leere Zeitraum bleiben eigene Zustände.
+
+Die vier Kennzahlen bleiben ausschließlich in Einstellungen › Statistik › Overview: ein Raster mit
+vier, zwei oder einer Spalte nach den gemessenen Beschriftungen und Werten, mit umbrechenden Notizen.
+Die Übersicht behält Diagramm, Kategorien, „Details ›“ und linksbündige Neuigkeiten in Lesebreite.
+Beide Diagrammstellen benutzen dieselbe additive Säulendarstellung (`widgets::volume_chart`): Nullbasis,
+höchstens vier runde Achsenintervalle, präzise proportionale Stapel ohne Mindesthöhen, dezentes Raster
+und feste Kategorienfarben. Die Inhaltsbreite bestimmt die Höhe (vier bzw. fünf Zeilen). Beschriftungen
+werden nach gemessenen Abständen ausgedünnt, nicht die Säulen; der neueste Zeitpunkt bleibt benannt.
+Jede Säule hat über ihre ganze Höhe einen Tooltip mit Datum, Summe und allen Reihenwerten. Die
+Datentabelle und die Wochen-Buckets bei 90 Tagen bleiben unverändert. Kategorien ohne Tagesdaten
+älterer Dienste zeigen weiterhin kein Tagesdiagramm. Andere Diagrammnutzer bleiben unverändert.
+
+Reproduzierbare Prüfzustände mit `torroinbox --demo --view mail --open <zustand> --shots <ordner>`:
+`mail-overview`, `mail-overview-{empty,loading,error,full}`, `statistics`,
+`statistics-{table,senders,inbox,categories,empty,loading,error,full}`. `full` zeigt 90 Tage mit großen,
+ungleichen Werten, Nulltagen und langen Namen; erzwungene Zustände werden nicht nachgeladen. Die
+Prüfmatrix umfasst alle sechs Fenstergrößen, hell/dunkel und Standard/Komfort/Dicht; zusätzlich sind
+schmale Lesespalte, Zoom 150 %, Filterwechsel, Tastatur und Diagramm-Tooltips zu prüfen. `--open`
+bleibt ausschließlich Demo; unbekannte Zustände enden mit Exit 64. API/MCP und Berechnungen bleiben
+unverändert.
+
 - **Schreiben in einem eigenen Fenster.** Im Tiling kachelt es sich neben die Liste, man kann
   beim Schreiben nachlesen. Im Fenster-Modus als Paneel. Aufbau nach Fassung A (#460, Entwurf
   [`prototypes/mail-compose/`](prototypes/mail-compose/index.html)): Kopfzeile mit Anhängen, Schließen und Senden,
