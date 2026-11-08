@@ -6465,6 +6465,18 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         self.menu_at = MenuAt::Panel;
         self.toggle_menu(menu);
+        if self.menu.is_some() {
+            let scope = match menu {
+                Menu::Attachment(at) => self.reading().and_then(|reading| {
+                    Some(SaveScope::Attachments(Some(mail::files_of(&reading)?.get(at)?.part.clone())))
+                }),
+                Menu::SaveAll { .. } => Some(SaveScope::Attachments(None)),
+                _ => None,
+            };
+            if let Some(scope) = scope {
+                self.reveal_save_feedback(id, &scope);
+            }
+        }
     }
 
     /// Carries out `act` for the attachment `part` of the mail `id` – `None`: all of them that are not
@@ -6519,6 +6531,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             self.menu_at = MenuAt::Panel;
         }
         self.toggle_menu(Menu::SaveMail(format));
+        if self.menu.is_some() {
+            self.reveal_save_feedback(id, &SaveScope::Export(format));
+        }
         if self.menu.is_some() && self.exports_of(id).is_none() {
             return self.ask_export_targets(id);
         }
@@ -6572,18 +6587,31 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.letter.as_ref().is_none_or(|letter| letter.id != id) {
             return;
         }
-        // Keep an existing anchor (including the row/context menu); direct clicks use the file chip.
-        if matches!(self.menu, Some(Menu::Attachment(_) | Menu::SaveAll { .. } | Menu::SaveMail(_))) {
-            return;
-        }
-        self.menu_at = MenuAt::Panel;
-        self.menu = match scope {
+        let wanted = match scope {
             SaveScope::Attachments(Some(part)) => self.reading().and_then(|reading| {
                 mail::files_of(&reading)?.iter().position(|file| &file.part == part).map(Menu::Attachment)
             }),
             SaveScope::Attachments(None) => Some(Menu::SaveAll { rail: false }),
             SaveScope::Export(format) => Some(Menu::SaveMail(*format)),
         };
+        // Keep the anchor only for this action's menu; a direct click on another file/group must
+        // reveal that action, not hide its spinner in the previous file's menu.
+        let same = self.menu == wanted
+            || matches!((self.menu, wanted), (Some(Menu::SaveAll { .. }), Some(Menu::SaveAll { .. })));
+        if !same {
+            self.clear_save_feedback();
+            self.menu_at = MenuAt::Panel;
+            self.menu = wanted;
+        }
+        self.reveal_save_feedback(id, scope);
+    }
+
+    fn reveal_save_feedback(&mut self, id: &str, scope: &SaveScope) {
+        for job in &mut self.saves {
+            if job.mail == id && &job.scope == scope && job.state.active() {
+                job.visible = true;
+            }
+        }
     }
 
     fn save_conflicts(&self, mail: &str, scope: &SaveScope, to: &Option<SaveTo>, except: Option<u64>) -> bool {
@@ -6603,17 +6631,28 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.save_conflicts(id, &scope, &to, None) {
             return None;
         }
-        let Letter { loaded: Some(Ok(loaded)), .. } = self.letter.as_ref().filter(|letter| letter.id == id)? else {
-            return None;
+        let reading = self.reading().filter(|reading| reading.id == id)?;
+        let summary = reading.summary()?;
+        let loaded = match reading.loaded {
+            Some(Ok(mail)) => Some(mail),
+            _ => None,
         };
         let expected = match &scope {
-            SaveScope::Attachments(Some(part)) => vec![part.clone()],
-            SaveScope::Attachments(None) => {
-                loaded.attachments.iter().filter(|file| !file.inline).map(|file| file.part.clone()).collect()
+            SaveScope::Attachments(Some(part)) => {
+                loaded?.attachments.iter().find(|file| &file.part == part)?;
+                vec![part.clone()]
             }
-            SaveScope::Export(_) => Vec::new(),
+            SaveScope::Attachments(None) => {
+                loaded?.attachments.iter().filter(|file| !file.inline).map(|file| file.part.clone()).collect()
+            }
+            // EML uses only summary metadata, including after a reader failure (#553).
+            SaveScope::Export(ExportFormat::Eml) => Vec::new(),
+            SaveScope::Export(_) => {
+                loaded?;
+                Vec::new()
+            }
         };
-        let subject = list::one_line(&loaded.summary.subject);
+        let subject = list::one_line(&summary.subject);
         let entry = match &to {
             Some(SaveTo::Downloads) => mail::FileAct::Downloads,
             Some(SaveTo::Target(id)) => mail::FileAct::Target(id.clone()),
@@ -6621,7 +6660,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         };
         let place = to.as_ref().and_then(|to| match &scope {
             SaveScope::Attachments(part) => mail::save_place(to, self.saving_of(id), part.as_deref()),
-            SaveScope::Export(format) => mail::save_mail_place(to, self.saving_of(id), *format),
+            SaveScope::Export(format) => mail::save_mail_place(to, self.exports_of(id), *format),
         });
         self.next_save = self.next_save.checked_add(1)?;
         // A new attempt replaces only its own terminal feedback, not another destination's status.
@@ -6666,7 +6705,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         let place = match &job.scope {
             SaveScope::Attachments(part) => mail::save_place(&to, self.saving_of(&job.mail), part.as_deref()),
-            SaveScope::Export(format) => mail::save_mail_place(&to, self.saving_of(&job.mail), *format),
+            SaveScope::Export(format) => mail::save_mail_place(&to, self.exports_of(&job.mail), *format),
         };
         if let Some(job) = self.saves.iter_mut().find(|job| job.ticket == ticket) {
             job.destination = Some(to);
@@ -6919,7 +6958,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         let sections = match self.menu {
             Some(Menu::SaveMail(format)) => self.reading().map(|reading| {
-                mail::export_menu(mail::ExportMenu { id: reading.id, format, saving: reading.saving, category: None })
+                mail::export_menu(mail::ExportMenu {
+                    id: reading.id,
+                    format,
+                    saving: self.exports_of(reading.id),
+                    category: None,
+                })
             }),
             Some(Menu::Attachment(at)) => self.reading().and_then(|reading| {
                 let files = mail::files_of(&reading)?;
@@ -13548,7 +13592,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     }
 
     fn toggle_menu(&mut self, menu: Menu) {
-        if self.menu == Some(menu) {
+        if self.menu.is_some() {
             self.clear_save_feedback();
         }
         self.menu = if self.menu == Some(menu) { None } else { Some(menu) };
@@ -18472,15 +18516,15 @@ mod tests {
         assert_eq!(name, &expected, "summary fallback");
         assert!(name.ends_with(".eml"));
         let before = app.sent.len();
-        let _ = app.update(Message::SaveMailChosen("m:p3".into(), ExportFormat::Eml, None));
+        let _ = app.update(Message::SaveChosen(app.next_save, None));
         assert_eq!(app.sent.len(), before, "cancel never saves");
         let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Eml, mail::FileAct::Downloads));
         let before = app.sent.len();
         let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Eml, mail::FileAct::Downloads));
         assert_eq!(app.sent.len(), before, "no duplicate save");
-        let _ = app.update(Message::MailSaved("m:p3".into(), ExportFormat::Eml, None, Err("offline".into())));
-        assert!(!app.exporting.contains(&("m:p3".into(), ExportFormat::Eml)));
-        assert!(app.error.is_some());
+        let _ = app.update(Message::MailSaved(app.next_save, Err("offline".into())));
+        assert!(app.saves.iter().all(|job| !job.state.active()));
+        assert!(app.saves.last().is_some_and(|job| job.state == SaveState::Error && job.explanation == "offline"));
     }
 
     /// Task M12.6: after saving the hint says where – with "Show in folder", which opens the folder of
@@ -18570,7 +18614,7 @@ mod tests {
         let _ = app.update(Message::AttachmentsSaved(first, Err("duplicate must be ignored".into())));
         assert!(matches!(app.save_feedback(&single).map(|f| f.kind), Some(widgets::MenuFeedbackKind::Success)));
         app.menu_at = MenuAt::Row;
-        let _ = app.update(Message::FileAct(id, Some("3".into()), mail::FileAct::Downloads));
+        let _ = app.update(Message::FileAct(id, Some("2".into()), mail::FileAct::Downloads));
         assert_eq!(app.menu_at, MenuAt::Row, "existing anchor survives");
         draw_everywhere(&mut app);
         let _ = app.update(Message::CloseMenu);

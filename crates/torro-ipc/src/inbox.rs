@@ -216,7 +216,7 @@ pub struct SavedAttachments {
 }
 
 /// What `mail.save_message_as` wrote ([`InboxClient::save_mail_as`], issue #501).
-/// The service verified the regular, non-symlink final file's length and rendered bytes, including
+/// The service verified the regular, non-symlink final file's length and original/rendered bytes, including
 /// `skipped`. `shortened` remains incomplete, even after verification. No cloud-sync guarantee.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SavedMail {

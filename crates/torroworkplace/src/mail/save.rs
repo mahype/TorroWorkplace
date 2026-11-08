@@ -950,12 +950,18 @@ impl Job {
             }
         })?;
         temporary.as_file().sync_all().map_err(|err| Problem::of(&err))?;
-        if let Some(path) = replace {
+        let written = if let Some(path) = replace {
             replaceable(&path)?;
             temporary.persist(&path).map_err(|err| Problem::of(&err.error))?;
-            return Ok(Written::Saved(path));
-        }
-        publish_new(temporary, &dir, &name, rule, &mut source.file, source.bytes)
+            Written::Saved(path)
+        } else {
+            publish_new(temporary, &dir, &name, rule, &mut source.file, source.bytes)?
+        };
+        let path = match &written {
+            Written::Saved(path) | Written::Skipped(path) => path,
+        };
+        verify_source(path, &mut source.file, source.bytes).map_err(|err| Problem::of(&err))?;
+        Ok(written)
     }
 
     /// Writes `bytes` (blocking).
@@ -1022,27 +1028,14 @@ fn replaceable(path: &Path) -> Result<(), Problem> {
 
 /// Bounded equality check, never following a known symbolic link or buffering a whole original.
 fn same_file(path: &Path, source: &mut fs::File, bytes: u64) -> bool {
-    use std::io::{Read, Seek};
-    if !fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() == bytes) {
-        return false;
-    }
-    let Ok(mut there) = fs::File::open(path) else { return false };
-    if source.rewind().is_err() {
-        return false;
-    }
-    let (mut a, mut b) = ([0u8; 64 * 1024], [0u8; 64 * 1024]);
-    let mut left = bytes;
-    while left > 0 {
-        let count = left.min(a.len() as u64) as usize;
-        if source.read_exact(&mut a[..count]).is_err()
-            || there.read_exact(&mut b[..count]).is_err()
-            || a[..count] != b[..count]
-        {
-            return false;
-        }
-        left -= count as u64;
-    }
-    there.read(&mut b[..1]).is_ok_and(|read| read == 0)
+    verify_source(path, source, bytes).is_ok()
+}
+
+/// EML keeps its bounded-memory original path; never buffer a whole original for verification.
+fn verify_source(path: &Path, source: &mut fs::File, bytes: u64) -> io::Result<()> {
+    use std::io::Seek;
+    source.rewind()?;
+    verify_reader(path, source, bytes, |_| {})
 }
 
 /// The folder `folders` below `base`, made one at a time: each one, once made (or found), is
@@ -1113,8 +1106,12 @@ fn verify_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 fn verify_file_opened(path: &Path, bytes: &[u8], opened: impl FnOnce(&Path)) -> io::Result<()> {
+    verify_reader(path, &mut io::Cursor::new(bytes), bytes.len() as u64, opened)
+}
+
+fn verify_reader(path: &Path, source: &mut impl Read, bytes: u64, opened: impl FnOnce(&Path)) -> io::Result<()> {
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "saved file verification failed");
-    let plain = |meta: &fs::Metadata| meta.is_file() && meta.len() == bytes.len() as u64;
+    let plain = |meta: &fs::Metadata| meta.is_file() && meta.len() == bytes;
     let before = fs::symlink_metadata(path)?;
     if !plain(&before) {
         return Err(invalid());
@@ -1125,16 +1122,23 @@ fn verify_file_opened(path: &Path, bytes: &[u8], opened: impl FnOnce(&Path)) -> 
         return Err(invalid());
     }
     opened(path);
-    let mut buffer = [0; 64 * 1024];
-    for expected in bytes.chunks(buffer.len()) {
-        let block = &mut buffer[..expected.len()];
-        file.read_exact(block)?;
-        if block != expected {
+    let (mut buffer, mut expected) = ([0; 64 * 1024], [0; 64 * 1024]);
+    let mut left = bytes;
+    while left > 0 {
+        let count = left.min(buffer.len() as u64) as usize;
+        source.read_exact(&mut expected[..count])?;
+        file.read_exact(&mut buffer[..count])?;
+        if buffer[..count] != expected[..count] {
             return Err(invalid());
         }
+        left -= count as u64;
     }
     let after = fs::symlink_metadata(path)?;
-    if file.read(&mut buffer[..1])? != 0 || !plain(&after) || !same_file_metadata(&held, &after) {
+    if file.read(&mut buffer[..1])? != 0
+        || source.read(&mut expected[..1])? != 0
+        || !plain(&after)
+        || !same_file_metadata(&held, &after)
+    {
         return Err(invalid());
     }
     Ok(())
@@ -1380,6 +1384,27 @@ pub(crate) mod tests {
     use crate::mail::sync::fake::FakeImap;
 
     const ANNA: &str = "mail:anna@example.org";
+
+    #[test]
+    fn streamed_original_verification_checks_all_bytes_and_both_ends() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("mail.eml");
+        let bytes = vec![42; 150_000];
+        fs::write(&path, &bytes).expect("destination");
+        let mut source = tempfile::tempfile().expect("source");
+        source.write_all(&bytes).expect("original");
+        verify_source(&path, &mut source, bytes.len() as u64).expect("streamed original");
+        let mut wrong = bytes.clone();
+        wrong[100_000] = 43;
+        fs::write(&path, &wrong).expect("wrong destination");
+        assert!(verify_source(&path, &mut source, bytes.len() as u64).is_err());
+        assert_eq!(fs::read(&path).expect("failure left it untouched"), wrong);
+        fs::write(&path, &bytes[..bytes.len() - 1]).expect("short destination");
+        assert!(verify_source(&path, &mut source, bytes.len() as u64).is_err());
+        fs::write(&path, &bytes).expect("destination restored");
+        source.set_len(bytes.len() as u64 - 1).expect("short source");
+        assert!(verify_source(&path, &mut source, bytes.len() as u64).is_err());
+    }
 
     #[test]
     fn verification_failures_after_writing_keep_files_and_allow_partial_results() {

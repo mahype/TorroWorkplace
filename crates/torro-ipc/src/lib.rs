@@ -3177,7 +3177,7 @@ pub enum Request {
     /// for `to: file`. `not-found` for a message the caller does not reach, an unknown target, or a
     /// target whose folder is missing; `forbidden` for `to: file` or `folder` from a client;
     /// `offline` when the mail cannot be fetched; `error` when it cannot be drawn or written.
-    /// A regular final file (no symlink), its length and all rendered bytes are verified before
+    /// A regular final file (no symlink), its length and all original/rendered bytes are verified before
     /// success, including identical existing files; denied verification is `forbidden`, else `error`.
     /// `shortened` is a verified but incomplete export, not full success or a cloud-sync guarantee.
     #[serde(rename = "mail.save_message_as")]

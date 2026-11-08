@@ -4661,7 +4661,8 @@ static SAVE_MAIL_AS: Command = Command {
                   `{\"target\": \"<id>\"}`). A file is never overwritten; returns the path, `skipped` when the same \
                   file was there already and `shortened` when the mail was too long and its end is cut. Only a \
                   person chooses other paths. Before success, the service verifies the final regular non-symlink \
-                  file's length and rendered bytes, also for skipped files (forbidden for denied access, otherwise \
+                  file's length and expected contents (original EML or rendered PDF/PNG), also for skipped files \
+                  (forbidden for denied access, otherwise \
                   error). Shortened exports remain incomplete. This is a point-in-time check, not a cloud-sync guarantee.",
 };
 
