@@ -918,7 +918,7 @@ impl App {
         }
         controls = controls.push(Space::new().width(Fill));
         controls = controls.push(if self.transcript.running() {
-            widgets::text_button(Some(Icon::Square), tr("Stop"), style::button::secondary, Some(Message::Stop))
+            stop_button(class)
         } else if self.sending {
             widgets::busy_button(tr("Sending…"), style::button::primary)
         } else {
@@ -1158,10 +1158,8 @@ impl App {
         };
         let mut composer = row![field].spacing(space::s()).align_y(Alignment::Center);
         if self.transcript.running() {
-            composer =
-                composer.push(widgets::text_button(None, tr("Stop"), style::button::secondary, Some(Message::Stop)));
+            composer = composer.push(stop_button(class));
         }
-        let shown = self.glance_answer(strip);
         let content: Element<'_, Message> = if strip {
             // A flat strip: the answer takes the height, the composer stands beside it at the bottom,
             // and the answer's last line – or the quiet word – on the field's middle line (issue #547),
@@ -1169,7 +1167,7 @@ impl App {
             // line of meta text in place of the field, on the bottom edge already.
             let answer = self.transcript.last_answer().is_some_and(|entry| self.answer_shows(entry.seq));
             let last = if answer && !self.waits_in_glance() { body } else { typo::meta() };
-            let shown = container(shown)
+            let shown = container(self.glance_answer(true))
                 .height(Fill)
                 .align_bottom(Fill)
                 .padding(Padding::ZERO.bottom(if self.bot_gone() { 0.0 } else { glance_lift(last) }));
@@ -1180,6 +1178,16 @@ impl App {
                 let title = typo::ellipsize(&self.conversation_title(), typo::meta(), self.size.width);
                 column = column.push(typo::text(typo::meta(), title).style(theme::text_3).wrapping(Wrapping::None));
             }
+            // Only whole lines (design review of #547): the answer, scrolled to its end, gets a height
+            // of whole lines at the bottom of its room, so no line is cut in half at the top.
+            let shown = responsive(move |room| {
+                let line = typo::line_height(typo::body());
+                let whole = (room.height / line).floor() * line;
+                container(container(self.glance_answer(false)).height(whole.max(0.0)))
+                    .height(Fill)
+                    .align_bottom(Fill)
+                    .into()
+            });
             column.push(shown).push(composer).into()
         };
         container(content)
@@ -1248,33 +1256,32 @@ impl App {
             .approvals()
             .into_iter()
             .find_map(|id| self.approvals.get(id).filter(|approval| approval.state.is_pending()));
-        let content: Element<'_, Message> = if let Some(approval) = waiting {
-            column![
-                row![
-                    tinted(Icon::ShieldAlert, icon::SIZE, |p| p.attention_text),
-                    typo::text(typo::body_strong(), tr("Approval needed"))
-                ]
-                .spacing(space::s())
-                .align_y(Alignment::Center),
+        if let Some(approval) = waiting {
+            // The heading stays above what scrolls (design review of #547): scrolled to its end, a
+            // small tile would show only the last sentence, without what it is about.
+            let heading = row![
+                tinted(Icon::ShieldAlert, icon::SIZE, |p| p.attention_text),
+                typo::text(typo::body_strong(), tr("Approval needed"))
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+            let words = column![
                 typo::text(typo::body(), approval.summary.as_str()).wrapping(Wrapping::WordOrGlyph),
                 typo::text(typo::meta(), tr("Allow or deny it in a larger window.")).style(theme::text_3),
             ]
-            .spacing(space::xs())
-            .into()
-        } else if let Some(entry) = self.transcript.last_answer().filter(|entry| self.answer_shows(entry.seq)) {
-            self.entry(entry, answer_colours(palette(&self.theme())))
-        } else if self.transcript.running() {
-            typo::text(typo::meta(), tr("Working …")).style(theme::text_3).into()
-        } else {
-            typo::text(typo::meta(), tr("Ask anything – the answer shows here.")).style(theme::text_3).into()
-        };
-        scrollable(container(content).width(Fill))
-            .direction(scrollable::Direction::Vertical(style::scrollbar()))
-            .anchor_bottom()
-            .style(style::scrollable)
-            .width(Fill)
-            .height(if strip { iced::Length::Shrink } else { Fill })
-            .into()
+            .spacing(space::xs());
+            let height = if strip { iced::Length::Shrink } else { Fill };
+            return column![heading, glance_scrollable(words.into(), strip)].spacing(space::xs()).height(height).into();
+        }
+        let content: Element<'_, Message> =
+            if let Some(entry) = self.transcript.last_answer().filter(|entry| self.answer_shows(entry.seq)) {
+                self.entry(entry, answer_colours(palette(&self.theme())))
+            } else if self.transcript.running() {
+                typo::text(typo::meta(), tr("Working …")).style(theme::text_3).into()
+            } else {
+                typo::text(typo::meta(), tr("Ask anything – the answer shows here.")).style(theme::text_3).into()
+            };
+        glance_scrollable(content, strip)
     }
 }
 
@@ -1378,6 +1385,31 @@ fn prompt_state<'a>(title: &'a str, hint: &'a str, action: Option<(&'a str, Mess
     container(content).center(Fill).padding(space::xl()).into()
 }
 
+/// What scrolls in the glance, scrolled to its end: as high as it is in the strip (so it can stand
+/// at the bottom, issue #547), else as high as its room.
+fn glance_scrollable(content: Element<'_, Message>, strip: bool) -> Element<'_, Message> {
+    scrollable(container(content).width(Fill))
+        .direction(scrollable::Direction::Vertical(style::scrollbar()))
+        .anchor_bottom()
+        .style(style::scrollable)
+        .width(Fill)
+        .height(if strip { iced::Length::Shrink } else { Fill })
+        .into()
+}
+
+/// "Stop" while an answer runs: with its word where there is room, only its icon in narrow windows
+/// and tiles (design review of #547), where the word was squeezed to a dot.
+fn stop_button<'a>(class: SizeClass) -> Element<'a, Message> {
+    match class {
+        SizeClass::Wide | SizeClass::Medium => {
+            widgets::text_button(Some(Icon::Square), tr("Stop"), style::button::secondary, Some(Message::Stop))
+        }
+        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
+            widgets::compact_button(Icon::Square, tr("Stop"), style::button::secondary, Some(Message::Stop))
+        }
+    }
+}
+
 /// "Send" of the composer (issue #547): primary while a message can go, else framed (`boxed`) and off,
 /// so it never reads as a dark red block. In narrow windows only its icon, as the mail button does.
 fn send_button<'a>(class: SizeClass, ready: bool) -> Element<'a, Message> {
@@ -1435,6 +1467,7 @@ mod tests {
             for ready in [true, false] {
                 drop(send_button(class, ready));
             }
+            drop(stop_button(class));
         }
         assert_eq!(glance_lift(typo::body()), style::INPUT_PADDING.top);
         assert!(glance_lift(typo::meta()) >= glance_lift(typo::body()));
