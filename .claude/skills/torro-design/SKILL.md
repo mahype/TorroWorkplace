@@ -100,10 +100,14 @@ aus einem Guss wirkt:
   der Trennlinie (`TopRow::sidebar_at_edge`); er folgt ihrer gezogenen Breite. Mit Icon-Leiste,
   schmal und im Drawer bleibt er neben der Ampel. Andere Apps behalten die oben beschriebene
   geteilte Kopffläche und feste Knopfposition. Mini und Leiste bleiben Anzeigen ohne diesen Kopf.
+  Über einer offenen Mail (Mittel, Schmal) und dem Paneel der Übersicht (Mittel) bleiben `panel-left` und die
+  Einstellungen an ihrer Stelle (`TopRow::keep_buttons`, #545); ein Klick schließt erst die Mail bzw. das Paneel, dann
+  öffnet er Schublade bzw. Einstellungen. Der Rest der Zeile bleibt gedimmt bzw. abgedeckt. Andere Apps behalten die
+  ganz abgedeckte Zeile (der Termin-Editor des Kalenders).
 - **Mail-Fenster** (#451): über der Liste Suchfeld, Sortieren, Aktualisieren; über dem Leser Betreff, „6 von 9“, ⌃ ⌄
   und „In neuem Fenster“. Die **Aktionsleiste schwebt** als Karte (Menü-Stil, Radius `lg`) senkrecht mittig am rechten
-  Rand über der Mail (`widgets::floating_rail`); der Text hält `widgets::floating_rail_room()` Abstand, der Kopf läuft
-  darunter durch. Die **Mail-Zeile** hat zwei Zeilen (Absender · Büroklammer · Zeit, Betreff · Markierungen), Tagesköpfe
+  Rand über der Mail (`widgets::floating_rail`); Text und Kopf halten `widgets::floating_rail_room()` Abstand (#545:
+  die Leiste verdeckte sonst die Zeit am Ende des Kopfes). Die **Mail-Zeile** hat zwei Zeilen (Absender · Büroklammer · Zeit, Betreff · Markierungen), Tagesköpfe
   und vorn den Kreis des Absenders (`widgets::sender_circle`, Farbe aus `Palette::sender` über die Adresse). Die **Anhänge**
   stehen unter der Mail, nicht im Kopf (#491): breit als Kacheln (`widgets::split_file_chip`) in einem Block unten im
   Leser, mit Abstand zur schwebenden Leiste, mittel und schmal als Zeilen im festen Fuß des Paneels.
@@ -391,7 +395,7 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   **einer Leiste, die seit #456 über der Mail schwebt** (`widgets::floating_rail`, Entwurf
   `docs/prototypes/mail-layout/`): eine Karte im Menü-Stil mit Schatten, Radius `lg`, senkrecht mittig, `space::s()`
   vom rechten Rand des Lesers bzw. Paneels (`widgets::with_floating_rail`, `Panel::floating`); der Text der Mail hält
-  `widgets::floating_rail_room()` Abstand, der Kopf läuft darunter durch. Die Liste hat keine Knöpfe. Gruppen
+  `widgets::floating_rail_room()` Abstand, ebenso ihr Kopf (#545). Die Liste hat keine Knöpfe. Gruppen
   (`widgets::RailGroup`) in fester Reihenfolge Reply · File · Torro · Mark · Save, unten abgesetzt Mute · Display ·
   More (`RailGroup::foot`), jede nur mit dem, was für die Mail geht; was gerade nicht geht, steht aus (`RailItem` ohne
   Nachricht, 40 %, ohne `kbd`). **Feste Gruppen-Icons** (Reply, Check, ListTodo, Flag, Save, BellOff, Ellipsis), egal
@@ -662,8 +666,8 @@ Regeln:
     zwei Spalten, ab 3 × `form_max()` + 2 × `section_gap()` drei, nie mehr Spalten als Blöcke; die Blöcke der Reihe
     nach, oben bündig. Gefahrenzone („Remove…“, „Revoke…“) steht immer einspaltig darunter. So umbrechen
     Darstellung, Allgemein und Workspaces der Steuerzentrale, die Seiten eines Kontos, eines Programmschlüssels und
-    eines MCP-Clients, Mail „Lesen und Schreiben“, Übersicht und Sicherung eines Mail-Kontos und Allgemein des
-    Assistenten; alle anderen Seiten bleiben einspaltig über die ganze Breite.
+    eines MCP-Clients, Mail „Lesen und Schreiben“, Übersicht und Sicherung eines Mail-Kontos, die Übersicht des Mail-Fensters
+    („What comes in“ und „What's new“, #545) und Allgemein des Assistenten; alle anderen Seiten bleiben einspaltig über die ganze Breite.
   - Schmal und Mini, Dialoge (`form_max`) und Assistenten bleiben, wie sie sind.
 - Zustand bleibt beim Größenwechsel erhalten (Auswahl, Scrollposition, Datum, gewählte Ansicht –
   in Schmal wird nur die *dargestellte* Ansicht angepasst).
