@@ -13032,15 +13032,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let compose = (!self.folders.is_empty()).then_some(Message::Switcher(Switcher::New));
         match mode {
             SidebarMode::Expanded => new_mail_button(compose),
-            SidebarMode::Rail => {
-                let pen = match compose {
-                    Some(compose) => {
-                        widgets::compact_button(Icon::SquarePen, tr("New email"), style::button::primary, Some(compose))
-                    }
-                    None => widgets::boxed_button(Icon::SquarePen, tr("New email"), None),
-                };
-                container(pen).center_x(Fill).into()
-            }
+            SidebarMode::Rail => rail_mail_button(compose),
         }
     }
 
@@ -14314,9 +14306,7 @@ fn new_mail_button<'a>(on_press: Option<Message>) -> Element<'a, Message> {
         .hint(shortcuts::Command::NewMail, shortcuts::System::current())
         .unwrap_or_default();
     let on = on_press.is_some();
-    let pen = icon::icon(Icon::SquarePen, icon::SIZE_SM).style(move |t: &Theme, _| iced::widget::svg::Style {
-        color: Some(if on { palette(t).on_accent } else { palette(t).text }),
-    });
+    let pen = new_mail_pen(on);
     let mut content =
         row![pen, typo::text(typo::body_strong(), tr("New email")).wrapping(Wrapping::None), Space::new().width(Fill),]
             .spacing(space::s())
@@ -14324,14 +14314,43 @@ fn new_mail_button<'a>(on_press: Option<Message>) -> Element<'a, Message> {
     if !key.is_empty() {
         content = content.push(if on { widgets::kbd_on_accent(key, true) } else { widgets::kbd(key) });
     }
-    let look = if on { style::button::primary } else { style::button::boxed };
-    let button = iced::widget::button(container(content).center_y(Fill))
+    new_mail_surface(container(content).center_y(Fill).into(), style::ITEM_PADDING, on_press)
+}
+
+/// "New email" in the collapsed sidebar (issue #536): the same button surface as a navigation row of the rail –
+/// full width, [`size::row_sidebar`] high, the pen centred on the icon axis of the rows – with the words as
+/// tooltip at its right.
+fn rail_mail_button<'a>(on_press: Option<Message>) -> Element<'a, Message> {
+    let pen = container(new_mail_pen(on_press.is_some())).center_x(Fill).center_y(Fill);
+    widgets::tooltip_beside(new_mail_surface(pen.into(), Padding::ZERO, on_press), tr("New email"))
+}
+
+/// The pen of "New email": the size of a navigation row's mark, light on the accent while the button is on.
+fn new_mail_pen<'a>(on: bool) -> Element<'a, Message> {
+    icon::icon(Icon::SquarePen, icon::SIZE)
+        .style(move |t: &Theme, _| iced::widget::svg::Style {
+            color: Some(if on { palette(t).on_accent } else { palette(t).text }),
+        })
+        .opacity(if on { 1.0 } else { style::DISABLED_ALPHA })
+        .into()
+}
+
+/// The button around "New email" in either mode: the row height and side padding of a sidebar row, so
+/// that pen and words start on the axis of the rows' marks and names. Accent with a mail account; framed
+/// and off without one (decision 2 of #476).
+fn new_mail_surface<'a>(
+    content: Element<'a, Message>,
+    padding: Padding,
+    on_press: Option<Message>,
+) -> Element<'a, Message> {
+    let look = if on_press.is_some() { style::button::primary } else { style::button::boxed };
+    iced::widget::button(content)
         .width(Fill)
-        .height(size::control())
-        .padding(Padding::new(0.0).left(space::m()).right(space::s()))
+        .height(size::row_sidebar())
+        .padding(padding)
         .style(look)
-        .on_press_maybe(on_press);
-    button.into()
+        .on_press_maybe(on_press)
+        .into()
 }
 
 /// The header's button that turns the order (task E8.15): the icon and word of the order shown
@@ -19863,6 +19882,19 @@ mod tests {
             ui.click(tr("New email")).expect("compose can be clicked");
             assert!(ui.into_messages().any(|message| matches!(message, Message::Switcher(Switcher::New))));
         }
+    }
+
+    /// Issue #536: "New email" stands on the axis of the navigation – its label starts where the label of
+    /// "All" does. (The height and the collapsed button are checked by eye, `shots.sh`.)
+    #[test]
+    fn mail_compose_lines_up_with_the_navigation_rows() {
+        let mut app = mail_window(Density::Compact, &[]);
+        app.size = WIDE;
+        app.drawer = false;
+        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), WIDE, app.view());
+        let all = ui.find(tr("All")).expect("navigation").bounds();
+        let compose = ui.find(tr("New email")).expect("compose").bounds();
+        assert!((all.x - compose.x).abs() < 0.5, "labels start on one axis: {} vs {}", all.x, compose.x);
     }
 
     /// Issue #559: the account menu uses the top-right button's action, including remembered settings.
