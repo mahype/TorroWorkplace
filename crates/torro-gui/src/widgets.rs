@@ -464,6 +464,12 @@ pub(crate) fn tooltip_right<'a, M: 'a>(
     tip(content, text, tooltip::Position::Right)
 }
 
+/// `content` with `label` as tooltip at its right, for a button of the collapsed sidebar that is not a
+/// row ([`sidebar_item_in`]) but must stand like one – the mail window's "New email" (issue #536).
+pub fn tooltip_beside<'a, M: 'a>(content: impl Into<Element<'a, M>>, label: impl IntoFragment<'a>) -> Element<'a, M> {
+    tooltip_right(content, label, Trail::None)
+}
+
 /// A [`tooltip_right`] with `detail` under the label in `typo::caption()` and `text_3`: the rail's
 /// tooltip of a row with a second line ([`sidebar_item_detail_in`]), which says what the row says.
 fn tooltip_right_detail<'a, M: 'a>(
