@@ -57,6 +57,7 @@ pub fn chat_body_for(provider: AiProvider, request: &ChatRequest, stream: bool) 
             AiProvider::OpenRouter => body["reasoning"] = json!({ "effort": effort.id() }),
             // Gemini maps OpenAI's `reasoning_effort` onto its thinking budget.
             AiProvider::Ollama
+            | AiProvider::OllamaCloud
             | AiProvider::LmStudio
             | AiProvider::Strata
             | AiProvider::OpenAiCompatible
@@ -330,6 +331,42 @@ pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
         .collect())
 }
 
+/// The direct cloud catalogue at `GET <root>/api/tags` (issue #587). Unlike local tags, only the
+/// capabilities are evidence here: sizes may describe stubs, weights and context stay unknown.
+/// A missing capabilities field is unknown, never a guess based on the model's name.
+pub fn parse_ollama_cloud_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
+    let answer: Value = serde_json::from_slice(body).map_err(|_| not_json())?;
+    let list = answer
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format_error(tr("The answer has no model list.")))?;
+    list.iter()
+        .map(|entry| {
+            let invalid = || format_error(tr("The answer has no model list."));
+            let id =
+                entry.get("name").and_then(Value::as_str).filter(|id| !id.trim().is_empty()).ok_or_else(invalid)?;
+            let capabilities = match entry.get("capabilities") {
+                None => None,
+                Some(value) => {
+                    let list = value.as_array().ok_or_else(invalid)?;
+                    if list.iter().any(|v| !v.is_string()) {
+                        return Err(invalid());
+                    }
+                    Some(list)
+                }
+            };
+            let supports = |name| capabilities.map(|list| list.iter().any(|v| v.as_str() == Some(name)));
+            Ok(AiModel {
+                tools: supports("tools"),
+                reasoning: supports("thinking"),
+                decision: supports("decision"),
+                remote: Some(true),
+                ..AiModel::named(id)
+            })
+        })
+        .collect()
+}
+
 /// The address of Ollama's own API for the OpenAI-compatible `base`: without its `/v1`
 /// (`http://localhost:11434/v1` → `http://localhost:11434`).
 pub fn ollama_root(base: &str) -> &str {
@@ -582,6 +619,45 @@ fn format_error(message: &str) -> AiError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ollama_cloud_catalog_keeps_ids_and_only_reported_capabilities() {
+        let models = parse_ollama_cloud_models(
+            br#"{"models":[
+            {"name":"gpt-oss:20b","capabilities":["completion","tools","thinking"],"size":123,"context_length":999},
+            {"name":"clef:27b","capabilities":["decision"]},
+            {"name":"unknown"}
+        ]}"#,
+        )
+        .expect("catalog");
+        assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["gpt-oss:20b", "clef:27b", "unknown"]);
+        assert_eq!((models[0].tools, models[0].reasoning, models[0].decision), (Some(true), Some(true), Some(false)));
+        assert_eq!((models[1].tools, models[1].decision), (Some(false), Some(true)));
+        assert_eq!((models[2].tools, models[2].reasoning, models[2].decision), (None, None, None));
+        assert!(models.iter().all(|m| m.remote == Some(true)
+            && !m.enabled
+            && m.open_weights.is_none()
+            && m.size.is_none()
+            && m.context.is_none()
+            && m.parameters.is_none()
+            && m.quantization.is_none()));
+        assert!(parse_ollama_cloud_models(br#"{"models":[]}"#).expect("empty catalog").is_empty());
+        for body in [
+            "{}",
+            "{\"models\":null}",
+            "{\"models\":{}}",
+            "{\"models\":[{}]}",
+            "{\"models\":[{\"name\":\"x\",\"capabilities\":false}]}",
+            "not json",
+        ] {
+            assert!(matches!(parse_ollama_cloud_models(body.as_bytes()), Err(AiError::Format(_))));
+        }
+        let provider = serde_json::from_str("\"ollama_cloud\"").expect("provider");
+        let mut request = request();
+        request.effort = Some(crate::ai::Effort::High);
+        assert_eq!(chat_body_for(provider, &request, true)["reasoning_effort"], "high");
+        request.effort = None;
+        assert!(chat_body_for(provider, &request, true).get("reasoning_effort").is_none());
+    }
     use super::*;
     use crate::ai::ToolSpec;
 

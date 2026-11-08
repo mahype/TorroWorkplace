@@ -60,6 +60,9 @@ pub enum AiProvider {
     /// model list says which can call tools and which have open weights. Written `openrouter`.
     #[serde(rename = "openrouter")]
     OpenRouter,
+    /// Direct Ollama Cloud, without a local Ollama installation. Its public catalogue is not an
+    /// authentication check; connecting checks the protected usage endpoint instead (issue #587).
+    OllamaCloud,
     /// Anthropic's API (`https://api.anthropic.com/v1`), the Claude models. The only provider that
     /// speaks a protocol of its own ([`anthropic`]) instead of the OpenAI-compatible one.
     Anthropic,
@@ -174,11 +177,12 @@ impl AiProvider {
     /// Every provider in the order the suite lists them (Open First): this computer, open models in
     /// the cloud, the providers, those run from China, Jev (it only sorts mail, issue #323), and any
     /// other server last.
-    pub const ALL: [AiProvider; 15] = [
+    pub const ALL: [AiProvider; 16] = [
         AiProvider::Ollama,
         AiProvider::LmStudio,
         AiProvider::Strata,
         AiProvider::OpenRouter,
+        AiProvider::OllamaCloud,
         AiProvider::Anthropic,
         AiProvider::OpenAi,
         AiProvider::Gemini,
@@ -197,8 +201,9 @@ impl AiProvider {
     pub const LOCAL: [AiProvider; 3] = [AiProvider::Ollama, AiProvider::LmStudio, AiProvider::Strata];
 
     /// The cloud providers with an API key of their own (task W.3), in the order of [`AiProvider::ALL`].
-    pub const CLOUD: [AiProvider; 11] = [
+    pub const CLOUD: [AiProvider; 12] = [
         AiProvider::OpenRouter,
+        AiProvider::OllamaCloud,
         AiProvider::Anthropic,
         AiProvider::OpenAi,
         AiProvider::Gemini,
@@ -216,6 +221,7 @@ impl AiProvider {
     pub fn name(self) -> &'static str {
         match self {
             AiProvider::Ollama => "Ollama",
+            AiProvider::OllamaCloud => "Ollama Cloud",
             AiProvider::LmStudio => "LM Studio",
             AiProvider::Strata => "Strata",
             AiProvider::OpenRouter => "OpenRouter",
@@ -238,6 +244,7 @@ impl AiProvider {
     pub fn id(self) -> &'static str {
         match self {
             AiProvider::Ollama => "ollama",
+            AiProvider::OllamaCloud => "ollama_cloud",
             AiProvider::LmStudio => "lm_studio",
             AiProvider::Strata => "strata",
             AiProvider::OpenRouter => "openrouter",
@@ -261,6 +268,7 @@ impl AiProvider {
     pub fn default_url(self) -> Option<&'static str> {
         match self {
             AiProvider::Ollama => Some("http://localhost:11434/v1"),
+            AiProvider::OllamaCloud => Some("https://ollama.com/v1"),
             AiProvider::LmStudio => Some("http://localhost:1234/v1"),
             AiProvider::Strata => Some("http://127.0.0.1:8080/v1"),
             AiProvider::OpenRouter => Some("https://openrouter.ai/api/v1"),
@@ -306,6 +314,7 @@ impl AiProvider {
     pub fn key_url(self) -> Option<&'static str> {
         match self {
             AiProvider::OpenRouter => Some("https://openrouter.ai/settings/keys"),
+            AiProvider::OllamaCloud => Some("https://ollama.com/settings/keys"),
             // Checked on 2026-10-19; the older address under `console.anthropic.com` redirects here.
             AiProvider::Anthropic => Some("https://platform.claude.com/settings/keys"),
             AiProvider::OpenAi => Some("https://platform.openai.com/api-keys"),
@@ -329,6 +338,7 @@ impl AiProvider {
             AiProvider::OpenAiCompatible => Seat::OwnServer,
             // TypeSafe is in San Francisco (decision 2 of the plan for issue #323).
             AiProvider::OpenRouter
+            | AiProvider::OllamaCloud
             | AiProvider::Anthropic
             | AiProvider::OpenAi
             | AiProvider::Gemini
@@ -1190,6 +1200,33 @@ pub fn key_may_travel(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ollama_cloud_is_a_separate_remote_provider_even_behind_loopback() {
+        let provider: AiProvider = serde_json::from_str("\"ollama_cloud\"").expect("cloud provider");
+        assert_eq!(provider.name(), "Ollama Cloud");
+        assert_eq!(provider.default_url(), Some("https://ollama.com/v1"));
+        assert_eq!(provider.key_url(), Some("https://ollama.com/settings/keys"));
+        assert_eq!(provider.seat(), Seat::Us);
+        assert!(provider.needs_key() && !provider.open_weights());
+        assert!(AiProvider::CLOUD.contains(&provider) && !AiProvider::LOCAL.contains(&provider));
+        for base in ["https://ollama.com/v1", "http://localhost:11434/v1"] {
+            assert_eq!(automatic_place_of(provider, base), Place::Remote);
+            for remote in [None, Some(false), Some(true)] {
+                for id in ["gpt-oss:20b", "unknown", "clef:27b"] {
+                    let model = placed(id, remote);
+                    assert_eq!(place_of(provider, base, &model), Place::Remote);
+                    let mut switches = ModelSwitches::default();
+                    assert!(!switches.is_on("ai:ollama_cloud@ollama.com", &model, false));
+                    switches.turn_on("ai:ollama_cloud@ollama.com", id);
+                    let switches: ModelSwitches =
+                        serde_json::from_value(serde_json::to_value(switches).expect("json")).expect("saved switches");
+                    assert!(switches.is_on("ai:ollama_cloud@ollama.com", &model, false));
+                    assert!(!switches.is_on("ai:ollama@localhost:11434", &model, false));
+                }
+            }
+        }
+    }
 
     fn model(id: &str, open_weights: Option<bool>) -> AiModel {
         AiModel {

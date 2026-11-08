@@ -400,6 +400,28 @@ mod tests {
     }
 
     #[test]
+    fn ollama_cloud_never_bypasses_mail_or_messenger_rules() {
+        use torro_core::ai::{AiModel, AiProvider};
+        for base in ["https://ollama.com/v1", "http://localhost:11434/v1"] {
+            let place = place_of(AiProvider::OllamaCloud, base, &AiModel::named("gpt-oss:20b"));
+            let request = Request::GetDraft { id: "mail:1".into() };
+            assert!(for_model(&request, &Response::Ok, place).withheld);
+            for permission in [false, true] {
+                let reader = Reader { place, rule: DataRule { mail_to_cloud: permission } };
+                assert_eq!(for_model(&request, &Response::Ok, reader).withheld, !permission);
+                for kind in [SourceKind::Mail, SourceKind::Nextcloud, SourceKind::Talk] {
+                    let source = SourceRef { kind, name: "private".into() };
+                    let response = Response::Item { item: item("1", source, "Private contents") };
+                    let screened = for_model(&Request::GetItem { id: "1".into() }, &response, reader);
+                    let withheld = kind != SourceKind::Mail || !permission;
+                    assert_eq!(screened.withheld, withheld);
+                    assert_eq!(screened.value.to_string().contains("Private contents"), !withheld);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_draft_read_back_goes_to_local_models_only() {
         // Issue #502: the answer is a `mail-draft` like a saved one, but it may quote the mail it
         // answers; a model elsewhere reads that something was withheld, or the error.

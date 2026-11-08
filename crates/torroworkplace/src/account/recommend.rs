@@ -579,6 +579,7 @@ fn cloud_suggestion(list: &List, slot: AiSlot, accounts: &[Connected], reason: &
         let entry = list.cloud.iter().find(|entry| entry.provider == provider && entry.slot == slot)?;
         accounts.iter().filter(|account| account.provider == provider && !account.local).find_map(|account| {
             match &account.models {
+                None if provider == AiProvider::OllamaCloud => None,
                 None => Some((account, None)),
                 Some(models) => best_of(models, &entry.model_prefix, slot).map(|model| (account, Some(model))),
             }
@@ -635,6 +636,37 @@ fn starts_with_ignoring_case(id: &str, prefix: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ollama_cloud_only_prepares_listed_models_without_a_download() {
+        let provider = serde_json::from_str("\"ollama_cloud\"").expect("provider");
+        let id = "ai:ollama_cloud@ollama.com";
+        for models in [
+            None,
+            Some(vec![]),
+            Some(vec![model("other", Some(true), None)]),
+            Some(vec![model("gpt-oss:20b", Some(false), None), model("clef:27b", Some(false), Some(false))]),
+        ] {
+            let account = account(id, provider, false, models);
+            let got = suggest(&Hardware::default(), builtin(), &[account], true);
+            assert!(got.preparations.iter().all(|p| p.account != id));
+            assert!(got.slots.iter().all(|s| s.engine.as_deref() != Some(id)));
+        }
+        let account = account(
+            id,
+            provider,
+            false,
+            Some(vec![model("gpt-oss:20b", Some(true), Some(false)), model("clef:27b", Some(false), Some(true))]),
+        );
+        let got = suggest(&Hardware::default(), builtin(), &[account], true);
+        assert_eq!(got.preparations.len(), 2);
+        for p in &got.preparations {
+            assert_eq!(p.account, id);
+            assert_eq!(p.candidates.len(), 1);
+            let c = &p.candidates[0];
+            assert!(!c.local && c.preparation == AiPreparationKind::Ready && c.size_bytes == 0 && !c.by_chat);
+            assert_eq!(c.model, if p.slot == AiSlot::Chat { "gpt-oss:20b" } else { "clef:27b" });
+        }
+    }
     #[test]
     fn preparations_stay_with_the_chosen_account_and_external_never_means_pull() {
         let mut jan = account(
