@@ -103,7 +103,7 @@ function MarkerText(ProgramName: String): String;
 var
   ProgramPath: String;
 begin
-  ProgramPath := ExpandConstant('{app}\') + ProgramName + '.exe';
+  ProgramPath := ExpandConstant('{autopf64}\TorroWorkplace\') + ProgramName + '.exe';
   StringChangeEx(ProgramPath, '\', '\\', True);
   Result := '{"schema": 1, "manager": "setup", "package": "' + ProgramName + '", "program": "' + ProgramPath + '"}';
 end;
@@ -161,6 +161,10 @@ var
 begin
   Path := ExpandConstant('{app}\') + ProgramName;
   Result := True;
+  if DirExists(Path + '.exe') or DirExists(Path + '.exe.torro-package.json') or DirExists(Path + '.version') then begin
+    Result := False;
+    exit;
+  end;
   if FileExists(Path + '.exe') or FileExists(Path + '.exe.torro-package.json') or FileExists(Path + '.version') then begin
     Result := LoadStringFromFile(Path + '.exe.torro-package.json', OldMarker) and
       LoadStringFromFile(Path + '.version', OldMarker);
