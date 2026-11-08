@@ -3159,7 +3159,7 @@ pub fn account_select<'a, M: Clone + 'a>(
     .align_y(Alignment::Center);
     let b = button(content)
         .width(Fill)
-        .padding(Padding::new(space::s()).left(space::m()))
+        .padding(Padding::new(space::s()).left(style::ITEM_PADDING.left))
         .style(|t: &Theme, status: button::Status| {
             let p = palette(t);
             let background = match status {

@@ -19880,7 +19880,7 @@ mod tests {
         );
         let title = ui.find(tr("All accounts")).expect("title").bounds();
         let detail = ui.find(app.account_field_text().1).expect("detail").bounds();
-        let text_inset = space::m() + torro_gui::icon::SIZE + space::s();
+        let text_inset = style::ITEM_PADDING.left + torro_gui::icon::SIZE + space::s();
         assert!((title.x - text_inset).abs() < 0.1, "icon and token gap before the left-aligned title");
         assert!((detail.x - title.x).abs() < 0.1, "both labels share the text column");
         ui.click(tr("All accounts")).expect("account field can be clicked");
