@@ -71,6 +71,8 @@ use iced::{
 use iced::{border, keyboard, mouse};
 
 mod context_area;
+mod volume_chart;
+pub use volume_chart::volume_chart;
 
 use torro_core::design::{ListLook, ListSelection};
 use torro_core::i18n::tr;
