@@ -12027,7 +12027,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             list = list.extend(self.narrow_leading());
         }
         if shell::sidebar_mode(class, self.sidebar) != Some(SidebarMode::Expanded) {
-            let icon = Some(self.launch.kind.view_icon(&self.view));
+            // Narrow, the mark stands right before it: a second envelope would only repeat it.
+            let icon = (class != SizeClass::Narrow).then(|| self.launch.kind.view_icon(&self.view));
             list = list.push(widgets::menu_button(nav, icon, self.view_label(), Message::ToggleNav));
         }
         if class != SizeClass::Wide {
