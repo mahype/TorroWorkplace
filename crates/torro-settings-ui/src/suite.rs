@@ -441,15 +441,7 @@ pub enum Place {
 /// (under it when the window is narrow, issue #548), so three choices stand as one control. Deutsch is
 /// shown in its own name, like the language picker of any app.
 pub fn language<'a>(settings: &Settings, place: Place) -> Element<'a, Message> {
-    let languages = [Language::System, Language::English, Language::German];
-    let active = languages.iter().position(|language| *language == settings.language).unwrap_or(0);
-    let options = vec![
-        (tr("System").to_string(), Message::Language(Language::System)),
-        ("English".to_string(), Message::Language(Language::English)),
-        // Shown in its own name on purpose: someone who cannot read the current language
-        // must still find their way back.
-        ("Deutsch".to_string(), Message::Language(Language::German)),
-    ];
+    let (options, active) = language_segments(settings.language);
     widgets::group(
         tr("Language"),
         vec![crate::parts::segmented_row(tr("App language"), None, options, active)],
@@ -465,6 +457,21 @@ pub fn language<'a>(settings: &Settings, place: Place) -> Element<'a, Message> {
             .to_string(),
         ),
     )
+}
+
+/// The segments of "App language" – System, English, Deutsch, each with the message that chooses it –
+/// and the place of `chosen` among them.
+fn language_segments(chosen: Language) -> (Vec<(String, Message)>, usize) {
+    let languages = [Language::System, Language::English, Language::German];
+    let active = languages.iter().position(|language| *language == chosen).unwrap_or(0);
+    let options = vec![
+        (tr("System").to_string(), Message::Language(Language::System)),
+        ("English".to_string(), Message::Language(Language::English)),
+        // Shown in its own name on purpose: someone who cannot read the current language
+        // must still find their way back.
+        ("Deutsch".to_string(), Message::Language(Language::German)),
+    ];
+    (options, active)
 }
 
 /// The group "Startup" with the "Start at login" switch; its sentence says what starts.
@@ -1831,6 +1838,20 @@ mod tests {
             panic!("expected SetSetting, got {action:?}");
         };
         (key, value)
+    }
+
+    /// Issue #548: "App language" is one segment of System, English and Deutsch, the language set
+    /// active, each segment choosing its own.
+    #[test]
+    fn the_language_is_one_segment_with_the_chosen_one_active() {
+        for (at, language) in [Language::System, Language::English, Language::German].into_iter().enumerate() {
+            let (options, active) = language_segments(language);
+            assert_eq!(active, at, "{language:?}");
+            assert!(matches!(&options[active].1, Message::Language(shown) if *shown == language), "{language:?}");
+        }
+        let (options, _) = language_segments(Language::System);
+        let words: Vec<&str> = options.iter().map(|(word, _)| word.as_str()).collect();
+        assert_eq!(words, [tr("System"), "English", "Deutsch"], "issue #548: one segment of three");
     }
 
     #[test]
