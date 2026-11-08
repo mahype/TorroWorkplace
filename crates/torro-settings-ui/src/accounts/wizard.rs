@@ -2215,6 +2215,18 @@ fn footer(state: &State) -> Element<'_, Message> {
         // The decision owns the only primary action; Done must not compete with consent.
         return Space::new().into();
     }
+    if state.step == Step::AiChoose
+        && let Some(actions) = super::ai_setup::cloud_form_actions(&state.setup)
+    {
+        return row![
+            blank::horizontal(),
+            widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Close)),
+            actions.map(Message::Setup),
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center)
+        .into();
+    }
     let error: Element<'_, Message> = match &state.error {
         Some(error) => typo::text(typo::body(), error.as_str())
             .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) })

@@ -1518,21 +1518,28 @@ fn footer<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a,
         None => pages::status(state, data).map(|text| typo::text(typo::body(), text).style(theme::text_2).into()),
     };
     let mut buttons = row![].spacing(space::s()).align_y(Alignment::Center);
-    if class != SizeClass::Narrow && state.neighbour(false).is_some() {
+    let cloud_actions = (state.step == Step::Ai)
+        .then(|| torro_settings_ui::accounts::ai_setup::cloud_form_actions(&state.ai_setup))
+        .flatten();
+    if cloud_actions.is_none() && class != SizeClass::Narrow && state.neighbour(false).is_some() {
         buttons = buttons.push(widgets::text_button(None, tr("Back"), style::button::ghost, Some(Message::Back)));
     }
     if let Some((label, message)) = pages::skip(state, data) {
         buttons = buttons.push(widgets::text_button(None, label, style::button::secondary, Some(message)));
     }
-    let (label, enabled) = primary(state, data);
-    let busy = state.step == Step::Ai
-        && !enabled
-        && torro_settings_ui::accounts::ai_setup::primary_label(&state.ai_setup).is_some();
-    buttons = buttons.push(if busy {
-        widgets::busy_button(label, style::button::primary)
+    if let Some(actions) = cloud_actions {
+        buttons = buttons.push(actions.map(Message::AiSetup));
     } else {
-        widgets::text_button(None, label, style::button::primary, enabled.then_some(Message::Next))
-    });
+        let (label, enabled) = primary(state, data);
+        let busy = state.step == Step::Ai
+            && !enabled
+            && torro_settings_ui::accounts::ai_setup::primary_label(&state.ai_setup).is_some();
+        buttons = buttons.push(if busy {
+            widgets::busy_button(label, style::button::primary)
+        } else {
+            widgets::text_button(None, label, style::button::primary, enabled.then_some(Message::Next))
+        });
+    }
     let left = container(row![].push(status)).width(Fill).clip(true);
     container(row![left, buttons].spacing(space::l()).align_y(Alignment::Center))
         .width(Fill)

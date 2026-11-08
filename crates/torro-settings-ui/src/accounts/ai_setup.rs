@@ -1146,17 +1146,26 @@ fn cloud_form(state: &State) -> Element<'_, Message> {
             field = field.push(typo::text(typo::meta(), hint).style(theme::text_2));
         }
     }
+    column![provider, explanation, field].spacing(layout::section_gap()).into()
+}
+
+/// Both hosts put this sole cloud-form action row in their fixed footer, outside the scroller.
+pub fn cloud_form_actions(state: &State) -> Option<Element<'_, Message>> {
+    if !state.form.as_ref().is_some_and(|(provider, _, _)| *provider == AiProvider::OllamaCloud) || state.consent {
+        return None;
+    }
+    let ready = state.flight.is_none();
     let connect = if ready {
-        widgets::text_button(None, tr("Connect"), style::button::secondary, Some(Message::Submit))
+        widgets::text_button(None, tr("Connect"), style::button::primary, Some(Message::Submit))
     } else {
-        widgets::busy_button(tr("Connecting…"), style::button::secondary)
+        widgets::busy_button(tr("Connecting…"), style::button::primary)
     };
     let actions = iced::widget::row![
         widgets::text_button(None, tr("Back"), style::button::ghost, ready.then_some(Message::Back)),
         connect,
     ]
     .spacing(space::s());
-    column![provider, explanation, field, actions].spacing(layout::section_gap()).into()
+    Some(actions.into())
 }
 
 fn consent_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
@@ -1355,15 +1364,19 @@ mod tests {
         let mut state = State::default();
         demo(&mut state, "cloud-form", &data);
         assert!(foreground(&state));
+        assert!(cloud_form_actions(&state).is_some(), "hosts own the one fixed Back/Connect row");
         assert_eq!(primary_label(&state), Some((tr("Connect"), true)));
         demo(&mut state, "cloud-running", &data);
+        assert!(cloud_form_actions(&state).is_some(), "the same row reports work without a second action");
         assert_eq!(primary_label(&state), Some((tr("Connecting…"), false)));
         demo(&mut state, "cloud-consent", &data);
         assert!(foreground(&state) && awaiting_consent(&state));
+        assert!(cloud_form_actions(&state).is_none(), "connection actions never compete with consent");
         assert_eq!(primary_label(&state), Some((tr("Send mail outside this computer?"), false)));
         assert!(matches!(update(&mut state, Message::Submit, &data), Action::None));
         assert!(state.consent && state.flight.is_none(), "Enter never supplies consent");
         update(&mut state, Message::Cancel, &data);
+        assert!(cloud_form_actions(&state).is_none());
         assert!(!foreground(&state) && primary_label(&state).is_none());
         demo(&mut state, "download", &data);
         assert_eq!(primary_label(&state), Some((tr("Preparing model…"), false)));
