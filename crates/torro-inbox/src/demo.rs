@@ -279,6 +279,28 @@ impl DemoSource {
         demo
     }
 
+    /// The standard sample with two extra, empty inboxes (issue #566), for compact account labels.
+    pub fn many(now: DateTime<Utc>) -> DemoSource {
+        let demo = DemoSource::new(now);
+        {
+            let mut data = demo.lock();
+            for (id, account) in
+                [("f:club-inbox", "mail:anna@club.example.net"), ("f:studio-inbox", "mail:anna@studio.example.net")]
+            {
+                data.folders.push(Folder {
+                    id: id.to_owned(),
+                    account: account.to_owned(),
+                    name: "Inbox".to_owned(),
+                    path: "INBOX".to_owned(),
+                    role: Some(Role::Inbox),
+                    unread: 0,
+                    total: 0,
+                });
+            }
+        }
+        demo
+    }
+
     fn now(&self) -> DateTime<Utc> {
         Utc::now() + self.offset
     }
@@ -2672,6 +2694,31 @@ mod tests {
         let private = SourceRef::mail(MAIL_ACCOUNTS[1].trim_start_matches("mail:"));
         assert!(!demo.lock().items.iter().any(|item| item.source == private), "no entry of the other account");
         assert!(DemoSource::new(now()).lock().items.iter().any(|item| item.source == private), "which the demo has");
+    }
+
+    /// Issue #566: two empty extra inboxes leave the standard demo's folders and mail untouched.
+    #[test]
+    fn the_many_demo_adds_two_empty_accounts() {
+        let standard = DemoSource::new(now());
+        let many = DemoSource::many(now());
+        let original = standard.mail_folders().expect("standard folders");
+        let folders = many.mail_folders().expect("four accounts' folders");
+        assert_eq!(folders.len(), original.len() + 2);
+        assert_eq!(&folders[..original.len()], original.as_slice());
+        let accounts: BTreeSet<_> = folders.iter().map(|folder| folder.account.as_str()).collect();
+        assert_eq!(accounts.len(), 4);
+        let ids: BTreeSet<_> = folders.iter().map(|folder| folder.id.as_str()).collect();
+        assert_eq!(ids.len(), folders.len(), "unique folder IDs");
+        for folder in &folders[original.len()..] {
+            assert!(!MAIL_ACCOUNTS.contains(&folder.account.as_str()), "new account IDs");
+            assert_eq!(
+                (folder.role, folder.path.as_str(), folder.unread, folder.total),
+                (Some(Role::Inbox), "INBOX", 0, 0)
+            );
+            assert!(many.by_role(Role::Inbox, Some(&folder.account), None, Order::NewestFirst).is_empty());
+        }
+        assert_eq!(role_ids(&many, Role::Inbox, None), role_ids(&standard, Role::Inbox, None));
+        assert_eq!(standard.mail_folders().expect("unchanged standard").len(), original.len());
     }
 
     /// Task E18.3: "Archive" lists the archived mail of both accounts, "All" every mail of both
