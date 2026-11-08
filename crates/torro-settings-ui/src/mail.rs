@@ -2767,6 +2767,17 @@ pub mod accounts {
             assert!(current_account(&state).is_none(), "back on the list");
         }
 
+        /// Issue #545: "Keep on this device" is one choice of three in segments; the old header-only
+        /// setting chooses none, and the tab still draws with it.
+        #[test]
+        fn storage_is_a_segmented_choice_of_three() {
+            use torro_ipc::mail::MailCacheMode;
+            assert_eq!(storage::offline_segment(MailCacheMode::AllOffline), 0);
+            assert_eq!(storage::offline_segment(MailCacheMode::SinceDate), 1);
+            assert_eq!(storage::offline_segment(MailCacheMode::MaxSize), 2);
+            assert_eq!(storage::offline_segment(MailCacheMode::HeadersOnly), 3, "no segment chosen");
+        }
+
         /// A storage choice from an account tab sends that account's policy only after its value
         /// is valid. Invalid dates never reach the daemon.
         #[test]
@@ -3728,7 +3739,7 @@ pub mod reading {
 pub mod storage {
     use iced::Element;
     use iced::Length;
-    use iced::widget::{column, container, radio, responsive, row, space as blank};
+    use iced::widget::{column, container, responsive, row, space as blank};
     use torro_core::i18n::{tr, trf};
     use torro_gui::theme::{self, space};
     use torro_gui::units::{format_bytes, format_count};
@@ -3739,7 +3750,7 @@ pub mod storage {
     use torro_gui::widgets::{Align, Dropdown, DropdownEvent, MenuItem, MenuSection};
 
     use super::*;
-    use crate::parts::{field, row_frame};
+    use crate::parts::{self, field, row_frame};
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Retention {
@@ -4125,6 +4136,16 @@ pub mod storage {
         widgets::chart_card(tr("Online and on this device"), "", body)
     }
 
+    /// The modes of "Keep on this device", in the order of their segments.
+    const OFFLINE_MODES: [MailCacheMode; 3] =
+        [MailCacheMode::AllOffline, MailCacheMode::SinceDate, MailCacheMode::MaxSize];
+
+    /// The segment of `mode`, past the last for one without a segment (the old header-only setting):
+    /// then none is chosen.
+    pub(super) fn offline_segment(mode: MailCacheMode) -> usize {
+        OFFLINE_MODES.iter().position(|offered| *offered == mode).unwrap_or(OFFLINE_MODES.len())
+    }
+
     fn offline_choices<'a>(state: &'a State, data: &'a Data, account: &'a str) -> Element<'a, Message> {
         let current = policy(data, account);
         let chosen = state.pending_mode.unwrap_or(match current.mode {
@@ -4153,17 +4174,12 @@ pub mod storage {
             .size_input
             .clone()
             .unwrap_or_else(|| current.max_local_mb.map_or_else(String::new, |mb| mb.to_string()));
-        let choice = |label, mode| {
-            row_frame(
-                radio(label, mode, Some(chosen), Message::Select).size(style::CHECK_SIZE).style(style::radio),
-                false,
-            )
-        };
-        let mut rows = vec![
-            choice(tr("All emails"), MailCacheMode::AllOffline),
-            choice(tr("Mail from date"), MailCacheMode::SinceDate),
-            choice(tr("Limit local size"), MailCacheMode::MaxSize),
-        ];
+        // One choice of three (issue #545): segments, all visible, not radio rows. The old header-only
+        // setting matches none of them, so no segment is chosen until the person picks one.
+        let words = [tr("All emails"), tr("Mail from date"), tr("Limit local size")];
+        let options =
+            words.iter().zip(OFFLINE_MODES).map(|(word, mode)| (word.to_string(), Message::Select(mode))).collect();
+        let mut rows = vec![parts::segmented_row(tr("Keep on this device"), None, options, offline_segment(chosen))];
         if current.mode == MailCacheMode::HeadersOnly && state.pending_mode.is_none() {
             rows.insert(
                 0,
