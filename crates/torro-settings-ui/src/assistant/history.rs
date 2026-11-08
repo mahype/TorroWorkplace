@@ -4,7 +4,8 @@
 //!
 //! 30 days, 90 days, a year or forever (`settings.set_setting assistant_retention`), and a number
 //! of days set through the API is listed among them in order ([`retention_options`]). Pinned
-//! conversations are kept whatever is chosen.
+//! conversations are kept whatever is chosen. A segmented control since issue #547 (the rule of
+//! choices: up to four options); only a number of days set through the API makes it a fifth.
 
 use iced::Element;
 
@@ -15,14 +16,14 @@ use torro_ipc::{Request, SettingKey};
 
 use super::Action;
 use crate::Data;
-use crate::parts::choice;
+use crate::parts::segmented_row;
 
 /// The retention times the section offers, shortest first.
 const RETENTIONS: [Retention; 4] = [Retention::Days(30), Retention::Days(90), Retention::Days(365), Retention::Forever];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Message {
-    /// A row of "Keep conversations".
+    /// A segment of "Keep".
     Retention(Retention),
 }
 
@@ -36,16 +37,17 @@ pub fn update(message: Message, _data: &Data) -> Action {
 
 // ----- Views --------------------------------------------------------------------------------
 
-/// "Keep conversations": a row per retention time, a check at the stored one.
+/// "Keep conversations": one row "Keep" with a segment per retention time, the stored one chosen.
 pub fn view(data: &Data) -> Element<'_, Message> {
     if !super::is_on(data) {
         return super::off_group(tr("History"));
     }
     let current = data.settings.assistant_retention;
-    let rows = retention_options(current)
-        .into_iter()
-        .map(|retention| choice(retention_label(retention), retention == current, Message::Retention(retention)))
-        .collect();
+    let options = retention_options(current);
+    let active = options.iter().position(|retention| *retention == current).unwrap_or(0);
+    let options =
+        options.into_iter().map(|retention| (retention_label(retention), Message::Retention(retention))).collect();
+    let rows = vec![segmented_row(tr("Keep"), None, options, active)];
     let footer = tr("Conversations are deleted this long after their last message. Pinned ones are kept.");
     widgets::group(tr("Keep conversations"), rows, Some(footer.to_string()))
 }

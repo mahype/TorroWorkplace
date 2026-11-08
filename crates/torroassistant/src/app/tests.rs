@@ -1287,6 +1287,29 @@ fn the_sections_reach_the_editor_and_access() {
     assert_eq!(sent(&mut app), [Request::GetBot { id: TRAVEL.into() }]);
 }
 
+/// Issue #547: the demo states of the settings open their section and press on its page once the
+/// data is in – the profile editor, with a changed name its save bar, and the tabs of Access.
+#[test]
+fn the_settings_demo_states_open_their_page() {
+    for (word, section) in [
+        ("profile-editor", "profile"),
+        ("profile-changed", "profile"),
+        ("access-selections", "access"),
+        ("access-bots", "access"),
+    ] {
+        let mut app = started(&["--open", word]);
+        assert_eq!(pane(&app).host.current().id, section, "{word}");
+        settings_loaded(&mut app);
+        assert!(app.settings_steps.is_empty(), "{word}: pressed once the data is in");
+        let pane = pane(&app);
+        let page = settings::page(&pane.sections, pane.host.data(), section, SizeClass::Wide);
+        if section == "profile" {
+            assert!(page.sub_page.is_some(), "{word}: the editor is open");
+            assert_eq!(page.save_bar.is_some(), word == "profile-changed", "{word}");
+        }
+    }
+}
+
 /// `--bot <id> --settings access` opens Access at that bot in the bot's window (task S.34).
 #[test]
 fn settings_access_with_a_bot_starts_at_the_bot() {

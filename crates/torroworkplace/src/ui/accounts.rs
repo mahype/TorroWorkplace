@@ -48,6 +48,8 @@ pub fn act(action: Action) -> super::Action {
         Action::AskAi(asks) => super::Action::AskAi(asks),
         Action::OpenUrl(url) => super::Action::OpenUrl(url),
         Action::Focus(field) => super::Action::Focus(field.into()),
+        // Only an app window's AI section opens the control centre (issue #547); this is it.
+        Action::ControlCentre(_) => super::Action::None,
     }
 }
 

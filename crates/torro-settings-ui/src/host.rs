@@ -720,6 +720,8 @@ impl Host {
             }))),
             accounts::Action::OpenUrl(url) => Outcome::OpenUrl(url),
             accounts::Action::Focus(field) => Outcome::Work(iced::widget::operation::focus(field)),
+            // "Open Torro Workplace" of an app window's AI section (issue #547).
+            accounts::Action::ControlCentre(section) => Outcome::ControlCentre(section),
         }
     }
 

@@ -5711,6 +5711,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Turned off in Settings › AI", "Abgeschaltet unter Einstellungen › KI"),
     ("Turned off at {account}", "Abgeschaltet bei {account}"),
+    // Assistant settings after the suite's rules (#547).
+    ("Keep", "Aufbewahren"),
+    (
+        "Models and the data rule are set there for the whole suite.",
+        "Modelle und Datenregel stellst du dort für die ganze Suite ein.",
+    ),
+    ("Name and picture", "Name und Bild"),
+    ("Nothing to choose while no area has access.", "Nichts zu wählen, solange kein Bereich Zugriff hat."),
+    ("Profile changed", "Profil geändert"),
+    ("Selections", "Auswahl"),
+    ("Turn on models in Torro Workplace › AI.", "Schalte Modelle unter Torro Workplace › KI an."),
+    ("Turned off in Torro Workplace › AI", "Abgeschaltet unter Torro Workplace › KI"),
     ("{text}; sorted mail stays on this computer", "{text}; sortierte Mail bleibt auf diesem Rechner"),
     ("Let {engine} ({model}) be the model for {slot}", "{engine} ({model}) für {slot} nehmen"),
     ("Sorting may no longer send mail to the cloud.", "Sortieren darf keine Mail mehr in die Cloud schicken."),

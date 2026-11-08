@@ -645,6 +645,9 @@ Regeln:
 - **Mini und Leiste sind Anzeigen, keine Mini-Apps:** keine Werkzeugleiste, keine Formulare, keine
   Dialoge. Höchstens eine Ein-Klick-Aktion, die den Zweck der Kachel ist (z. B. abhaken). Ruhig,
   aus der Distanz lesbar, Kopfzahl in `typo::display()`.
+  **Ausnahme Assistent** (#547, entschieden): Mini und Leiste behalten ihr eine Eingabefeld, weil schnelles
+  Fragen der Zweck der Kachel ist – ein Feld, kein Formular, keine Menüs. In der Leiste stehen Feld (unten)
+  und letzte Zeile der Antwort bzw. Leertext auf einer Mittellinie.
 - **Mini und Mini hoch auf dem Mac** (#554, entschieden): Oben bleibt der Streifen der Ampel frei (die Höhe der oberen
   Zeile, Mitte bei y = 20). Der Leerraum dort ist kein Befund; im Bild von `shots.sh` fehlt nur die Ampel selbst.
 - **Groß heißt nicht gestreckt:** Leselisten (Mail, Aufgaben, Chat) und Fließtext max. `size::content_max()`,

@@ -97,11 +97,19 @@ pub enum Open {
     BotGone,
     /// "Train or plane to Vienna?": the assistant proposes a bot; the card "Ask Travel planner?".
     BotProposal,
+    /// The settings at Profile, its editor open (issue #547).
+    ProfileEditor,
+    /// The profile editor with the name changed: the save bar shows (issue #547).
+    ProfileChanged,
+    /// The settings at Access, its tab Selections (issue #547).
+    AccessSelections,
+    /// The settings at Access, its tab Bots (issue #547).
+    AccessBots,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 26] = [
+    pub const ALL: [(&'static str, Open); 30] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
@@ -128,6 +136,10 @@ impl Open {
         ("bot-asked", Open::BotAsked),
         ("bot-gone", Open::BotGone),
         ("bot-proposal", Open::BotProposal),
+        ("profile-editor", Open::ProfileEditor),
+        ("profile-changed", Open::ProfileChanged),
+        ("access-selections", Open::AccessSelections),
+        ("access-bots", Open::AccessBots),
     ];
 }
 

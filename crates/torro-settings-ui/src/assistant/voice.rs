@@ -2,8 +2,10 @@
 //! task C.9, concept `docs/assistent.md`, "Sprache"): talking to the assistant by voice.
 //!
 //! Talking by voice on or off (`settings.set_setting voice_enabled`), the fixed wake word, "Speak
-//! answers", the microphone when the recording program can list them, and below the four programs
-//! the listener needs with whether each was found (`settings.voice_status`).
+//! answers", the microphone when the recording program can list them – a Torro dropdown in the group
+//! "Voice" since issue #547, as the number of microphones is open ([`State::menus`], [`overlay`]) –,
+//! and below the four programs the listener needs with whether each was found
+//! (`settings.voice_status`).
 //!
 //! Everything runs on this computer. Switching it on is a person's switch (point 6 of "Was nie nach
 //! außen geht" in `docs/api.md`): only here and in the tray, never through an agent.
@@ -31,13 +33,13 @@ use iced::{Element, Subscription};
 
 use torro_core::i18n::{tr, trf};
 use torro_gui::theme;
-use torro_gui::widgets::{self, Status};
+use torro_gui::widgets::{self, Align, DROPDOWN_SEARCH, Dropdown, DropdownEvent, MenuItem, MenuSection, Status};
 use torro_gui::{layout, style, typo};
 use torro_ipc::{Request, Response, SettingKey, VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus};
 
 use super::Action;
 use crate::Data;
-use crate::parts::{choice, setting_row};
+use crate::parts::setting_row;
 
 /// How long between two asks while the listener has not followed what was switched.
 const VOICE_POLL: Duration = Duration::from_secs(2);
@@ -47,10 +49,20 @@ const VOICE_POLL: Duration = Duration::from_secs(2);
 /// the row shows what last came, and "Installed something?" asks by hand.
 const VOICE_POLLS: u8 = 5;
 
-/// Section state: what "Say something" is doing, and what the listener is still expected to
-/// follow. Everything else the section shows comes from [`Data`].
+/// The dropdowns of the page (issue #547).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Choice {
+    /// "Microphone": the system's default or one the recording program lists.
+    Microphone,
+}
+
+/// Section state: what "Say something" is doing, what the listener is still expected to follow, and
+/// whether the dropdown of the microphone is open. Everything else the section shows comes from
+/// [`Data`].
 #[derive(Debug, Default)]
 pub struct State {
+    /// Which dropdown is open (issue #547).
+    pub menus: Dropdown<Choice>,
     /// "Say something" is recording.
     testing: bool,
     /// What the last test heard.
@@ -75,11 +87,13 @@ pub enum Heard {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
+    /// The dropdown of the microphone opened, closed or was searched; changes nothing.
+    Menus(DropdownEvent<Choice>),
     /// "Talk to the assistant" on or off.
     Enabled(bool),
     /// "Speak answers" on or off.
     SpeakAnswers(bool),
-    /// A microphone's row; `None` for the system's default.
+    /// An entry of the dropdown "Microphone"; `None` for the system's default.
     Microphone(Option<String>),
     /// "Installed something?" / "Check again": ask how voice stands again.
     Check,
@@ -92,6 +106,11 @@ pub enum Message {
 
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
+        // Opening the dropdown asks for the focus of its search field (many microphones).
+        Message::Menus(event) => match state.menus.update(event) {
+            true => Action::Focus(DROPDOWN_SEARCH),
+            false => Action::None,
+        },
         Message::Enabled(on) => {
             // Only switching on needs the programs; off is always possible.
             if on && data.voice.as_ref().is_some_and(|status| !status.can_listen()) {
@@ -106,6 +125,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::SpeakAnswers(speak) => set(SettingKey::SpeakAnswers, serde_json::Value::Bool(speak)),
         Message::Microphone(name) => {
+            state.menus.close();
             set(SettingKey::Microphone, name.map_or(serde_json::Value::Null, serde_json::Value::String))
         }
         // Nothing to send: the host loads the sections' data again, the status with it.
@@ -186,26 +206,57 @@ fn followed(on: bool, status: Option<&VoiceStatus>) -> bool {
 
 // ----- Views --------------------------------------------------------------------------------
 
-/// Voice, the microphone where one can be named, and the programs on this computer.
+/// Voice, with the microphone where one can be named, and the programs on this computer.
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     if !super::is_on(data) {
         return super::off_group(tr("Voice"));
     }
-    let mut page = column![voice_group(state, data)].spacing(layout::section_gap());
-    page = page.extend(microphone_group(data));
-    page.push(programs_group(data)).into()
+    column![voice_group(state, data), programs_group(data)].spacing(layout::section_gap()).into()
 }
 
-/// "Voice": on or off with what the listener does, the wake word, "Speak answers" and the test.
+/// The open dropdown of the microphone, under its button: the system's default and every
+/// microphone the recording program lists, the chosen one marked.
+pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    let key = state.menus.open().filter(|_| super::is_on(data))?;
+    let microphones = data.voice.as_ref().map(|voice| &voice.microphones).filter(|list| !list.is_empty())?;
+    let chosen = data.settings.voice.microphone.as_deref();
+    let default = MenuItem::plain(tr("System default"), Message::Microphone(None)).current(chosen.is_none());
+    let items = std::iter::once(default)
+        .chain(microphones.iter().map(|name| {
+            MenuItem::plain(name.as_str(), Message::Microphone(Some(name.clone())))
+                .current(chosen == Some(name.as_str()))
+        }))
+        .collect();
+    let sections = vec![MenuSection::new(items)];
+    Some(state.menus.view(key, sections, widgets::menu_width(), Align::End, Message::Menus))
+}
+
+/// Fresh data came ([`super::received`]): with no microphone listed any more the dropdown closes, so
+/// it neither takes the next Escape nor opens again by itself later.
+pub fn loaded(state: &mut State, data: &Data) {
+    if !super::is_on(data) || data.voice.as_ref().is_none_or(|voice| voice.microphones.is_empty()) {
+        state.menus.close();
+    }
+}
+
+/// Escape closes the open dropdown first.
+pub fn escape(state: &State) -> Option<Message> {
+    state.menus.open().map(|_| Message::Menus(DropdownEvent::Close))
+}
+
+/// "Voice": on or off with what the listener does, the wake word, "Speak answers", the microphone
+/// and the test.
 fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let settings = &data.settings.voice;
     let can_listen = data.voice.as_ref().is_none_or(VoiceStatus::can_listen);
-    let (status, detail) = voice_state(settings.enabled, data.voice.as_ref());
+    let (_, detail) = voice_state(settings.enabled, data.voice.as_ref());
     let switch = toggler(settings.enabled)
         .size(style::CHECK_SIZE)
         .style(style::toggler)
         .on_toggle_maybe((settings.enabled || can_listen).then_some(Message::Enabled));
-    let on = setting_row(Some(widgets::status_dot(status)), tr("Talk to the assistant"), Some(detail), switch);
+    // No dot in front (design review of #547): the rows of the group keep one axis; the line under
+    // it says how the listener stands.
+    let on = setting_row(None, tr("Talk to the assistant"), Some(detail), switch);
     let word = typo::text(typo::body(), tr("Hey Torro")).style(theme::text_2);
     let wake = setting_row(None, tr("Wake word"), Some(tr("Your own wake word comes later").to_string()), word);
     let speak =
@@ -225,30 +276,29 @@ fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let footer = tr(
         "Say “Hey Torro” and your question. Everything stays on this computer. Approvals are only given with a click, never by voice.",
     );
-    widgets::group(tr("Voice"), vec![on, wake, speak, test], Some(footer.to_string()))
+    let mut rows = vec![on, wake, speak];
+    rows.extend(microphone_row(state, data));
+    rows.push(test);
+    widgets::group(tr("Voice"), rows, Some(footer.to_string()))
 }
 
-/// "Microphone": the system's default and every microphone the recording program lists, a check
-/// at the chosen one. None when it lists none.
-fn microphone_group(data: &Data) -> Option<Element<'_, Message>> {
+/// "Microphone" with its dropdown (issue #547): the system's default or the chosen one. None when
+/// the recording program lists no microphone.
+fn microphone_row<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
     let microphones = &data.voice.as_ref()?.microphones;
     if microphones.is_empty() {
         return None;
     }
-    let chosen = data.settings.voice.microphone.as_deref();
-    let mut rows = vec![choice(tr("System default"), chosen.is_none(), Message::Microphone(None))];
-    rows.extend(
-        microphones
-            .iter()
-            .map(|name| choice(name.as_str(), chosen == Some(name.as_str()), Message::Microphone(Some(name.clone())))),
-    );
-    Some(widgets::group(tr("Microphone"), rows, None))
+    let label = data.settings.voice.microphone.clone().unwrap_or_else(|| tr("System default").to_string());
+    let button = state.menus.button(Choice::Microphone, label, Message::Menus);
+    Some(setting_row(None, tr("Microphone"), None, button))
 }
 
 /// "Programs on this computer": the four parts with whether each was found, and the way to ask
 /// again.
 fn programs_group(data: &Data) -> Element<'_, Message> {
-    let again = widgets::text_button(None, tr("Check again"), style::button::ghost, Some(Message::Check));
+    // Like "Say something": one look for the row actions of the page (design review of #547).
+    let again = widgets::text_button(None, tr("Check again"), style::button::secondary, Some(Message::Check));
     let rows = match &data.voice {
         None => vec![setting_row(None, tr("The programs could not be checked"), None, again)],
         Some(status) if !status.installed => vec![setting_row(
@@ -552,6 +602,33 @@ mod tests {
         assert_eq!(program_state(&program(VoicePart::Speech, Some(VoiceMissing::Model))).0, Status::Attention);
         assert_eq!(program_state(&program(VoicePart::Recorder, Some(VoiceMissing::Program))).0, Status::Error);
         assert_eq!(part_label(VoicePart::SpeechToText), tr("Speech to text"));
+    }
+
+    /// Issue #547: the microphone is a dropdown in "Voice" – opening it asks for the focus, Escape
+    /// closes it, a choice closes it and sends the setting; without microphones there is no row and
+    /// no menu.
+    #[tokio::test]
+    async fn the_microphone_is_a_dropdown() {
+        let data = Data { voice: Some(status(VoiceState::Listening, None)), ..data().await };
+        let mut state = State::default();
+        assert!(overlay(&state, &data).is_none() && escape(&state).is_none());
+        let open = update(&mut state, Message::Menus(DropdownEvent::Toggle(Choice::Microphone)), &data);
+        assert_eq!(open, Act::Focus(DROPDOWN_SEARCH));
+        assert!(overlay(&state, &data).is_some());
+        assert_eq!(escape(&state), Some(Message::Menus(DropdownEvent::Close)));
+        let _ = view(&state, &data);
+        let chosen = update(&mut state, Message::Microphone(Some("alsa_input.usb".into())), &data);
+        assert_eq!(sent(chosen), (SettingKey::Microphone, serde_json::json!("alsa_input.usb")));
+        assert_eq!((state.menus.open(), escape(&state)), (None, None), "the choice closes it");
+        // A tick of the clock leaves an open menu open.
+        let _ = update(&mut state, Message::Menus(DropdownEvent::Toggle(Choice::Microphone)), &data);
+        let _ = update(&mut state, Message::Poll, &data);
+        assert!(state.menus.open().is_some());
+        let none =
+            Data { voice: Some(VoiceStatus { microphones: Vec::new(), ..status(VoiceState::Off, None) }), ..data };
+        assert!(microphone_row(&state, &none).is_none() && overlay(&state, &none).is_none());
+        loaded(&mut state, &none);
+        assert_eq!(escape(&state), None, "closed with the list gone");
     }
 
     /// The section builds with the status known, unknown, the app missing, while a test runs and

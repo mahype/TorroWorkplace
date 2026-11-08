@@ -1124,6 +1124,67 @@ pub fn view<'a>(
     .into()
 }
 
+/// A part of the editor, for a page that shows it under tabs (issue #547, the assistant's Access):
+/// what the client may do, or what it may reach in each area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    /// The access group titled as [`view`] titles it, and "Ask first".
+    Access,
+    /// The selection of each area the rights reach (calendars, task lists, repositories, inbox
+    /// sources, mail accounts, tools).
+    Selections,
+}
+
+/// One [`Part`] of the editor, laid out as [`view`] lays out the whole: the same groups, the same
+/// column, the same messages. Without any area to choose from, [`Part::Selections`] says so in one
+/// quiet row.
+pub fn view_part<'a>(
+    state: &'a State,
+    rights: &'a Rights,
+    kind: &'a str,
+    known: Known<'a>,
+    naming: Naming,
+    title: &'a str,
+    part: Part,
+) -> Element<'a, Message> {
+    responsive(move |size| {
+        let column_at = control_column(size.width);
+        let groups = match part {
+            Part::Access => vec![
+                access_group(state, rights, &known, column_at, kind, naming, title, None),
+                confirm_group(rights.confirm, column_at),
+            ],
+            Part::Selections => {
+                let groups = selection_groups(state, rights, &known, column_at);
+                if groups.is_empty() { vec![no_selection_group()] } else { groups }
+            }
+        };
+        column(groups).spacing(torro_gui::layout::section_gap()).into()
+    })
+    .height(Length::Shrink)
+    .into()
+}
+
+/// The selection of each area `rights` reach, in the order of [`Pick::ALL`].
+fn selection_groups<'a>(
+    state: &'a State,
+    rights: &Rights,
+    known: &Known,
+    column: Option<f32>,
+) -> Vec<Element<'a, Message>> {
+    Pick::ALL
+        .into_iter()
+        .filter(|pick| rights.area(pick.area()).level != Level::NoAccess)
+        .map(|pick| selection_group(&state.repo_input, pick, rights, known, column))
+        .collect()
+}
+
+/// [`Part::Selections`] while no area is open: one quiet row that says where the choice comes from.
+fn no_selection_group<'a>() -> Element<'a, Message> {
+    let line = typo::text(typo::body(), tr("Nothing to choose while no area has access.")).style(theme::text_3);
+    widgets::group(tr("Selections"), vec![row_frame(line, false)], None)
+}
+
 /// The groups of the editor for `rights` of a client of `kind`: the access group titled `title`
 /// (levels, admin switches, sending, the commands of every open area), "Ask first", and the
 /// selection of each area the rights reach (calendars, task lists, repositories, inbox sources,
@@ -1142,9 +1203,7 @@ pub fn groups<'a>(
         access_group(state, rights, known, column, kind, naming, title, None),
         confirm_group(rights.confirm, column),
     ];
-    for pick in Pick::ALL.into_iter().filter(|pick| rights.area(pick.area()).level != Level::NoAccess) {
-        groups.push(selection_group(&state.repo_input, pick, rights, known, column));
-    }
+    groups.extend(selection_groups(state, rights, known, column));
     groups
 }
 
