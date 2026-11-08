@@ -7,6 +7,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Enter the API key again to retry.", "Gib den API-Schlüssel zum erneuten Verbinden noch einmal ein."),
     ("Suggested models", "Modellvorschläge"),
     (
+        "The AI server did not answer as expected. Try again.",
+        "Der KI-Server hat nicht wie erwartet geantwortet. Versuche es noch einmal.",
+    ),
+    (
         "Connect directly online. No local installation is needed.",
         "Direkt online verbinden. Eine lokale Installation ist nicht nötig.",
     ),

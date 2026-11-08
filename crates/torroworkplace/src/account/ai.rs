@@ -262,14 +262,13 @@ impl OpenAiCompatible {
                 let url = format!("{}/api/usage?range=24h", openai::ollama_root(&self.wire.base));
                 let response = self.wire.send(self.wire.authorized(self.wire.http.get(url))).await?;
                 let bytes = self.wire.body(response).await?;
-                let usage: Value = serde_json::from_slice(&bytes).map_err(|_| {
-                    AiError::Format(tr("Torro Workplace did not answer as expected. Try again.").into())
-                })?;
+                let usage: Value = serde_json::from_slice(&bytes)
+                    .map_err(|_| AiError::Format(tr("The AI server did not answer as expected. Try again.").into()))?;
                 if usage.get("scope").and_then(Value::as_str) != Some("self")
                     || !usage.get("totals").is_some_and(Value::is_object)
                     || !usage.get("buckets").is_some_and(Value::is_array)
                 {
-                    return Err(AiError::Format(tr("Torro Workplace did not answer as expected. Try again.").into()));
+                    return Err(AiError::Format(tr("The AI server did not answer as expected. Try again.").into()));
                 }
                 self.list().await.map(drop)
             }
@@ -1976,6 +1975,25 @@ pub(crate) mod tests {
         assert_eq!(on(&restarted, &id).await, ["gpt-oss:20b"]);
         assert!(!on(&restarted, &local_info.id).await.is_empty());
         assert!(restarted.runs_elsewhere(&id, "unknown").await.expect("remote"));
+    }
+
+    #[tokio::test]
+    async fn ollama_cloud_invalid_usage_names_the_ai_server_not_workplace() {
+        for body in ["not JSON", r#"{"scope":"self","totals":[]}"#] {
+            let server = MockServer::start_async().await;
+            server
+                .mock_async(|when, then| {
+                    when.method("GET").path("/api/usage");
+                    then.status(200).body(body);
+                })
+                .await;
+            let client =
+                OpenAiCompatible::new(http(), AiProvider::OllamaCloud, &server.url("/v1"), Some(Secret::new(KEY)));
+            assert_eq!(
+                client.check().await,
+                Err(AiError::Format(tr("The AI server did not answer as expected. Try again.").into()))
+            );
+        }
     }
 
     #[tokio::test]
