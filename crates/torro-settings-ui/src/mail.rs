@@ -1377,15 +1377,24 @@ pub mod accounts {
 
     /// The widths of the inventory and the sync column of an account's row `width` wide: 4 and 3 of the
     /// 10 parts (name 3) of the room beside the padding, the gaps and the chevron – but no more than at
-    /// [`size::content_max()`], so in a wide page only the name grows (issue #464).
-    pub(super) fn list_columns(width: f32) -> (f32, f32) {
-        let parts = |width: f32| {
-            let room = (width - 5.0 * space::l() - torro_gui::icon::SIZE).max(0.0);
-            (room * 0.4, room * 0.3)
-        };
+    /// [`size::content_max()`], so in a wide page only the name grows (issue #464). The sync column
+    /// grows to `sync_needs`, the width of its longest line ([`sync_width`]), as far as the name keeps
+    /// its part (issue #545: "Last synced …" was cut while the name had room).
+    pub(super) fn list_columns(width: f32, sync_needs: f32) -> (f32, f32) {
+        let room = |width: f32| (width - 5.0 * space::l() - torro_gui::icon::SIZE).max(0.0);
+        let parts = |width: f32| (room(width) * 0.4, room(width) * 0.3);
         let (inventory, sync) = parts(width);
         let (inventory_max, sync_max) = parts(size::content_max());
-        (inventory.min(inventory_max), sync.min(sync_max))
+        let (inventory, sync) = (inventory.min(inventory_max), sync.min(sync_max));
+        let name_least = room(width).min(room(size::content_max())) * 0.3;
+        let free = (room(width) - inventory - name_least).max(0.0);
+        (inventory, sync.max(sync_needs.min(free)))
+    }
+
+    /// How wide the sync column must be for `label` on one line: its words, the dot before them and
+    /// the gap between.
+    pub(super) fn sync_width(label: &str) -> f32 {
+        typo::text_width(label, typo::meta()) + space::s() + space::s()
     }
 
     /// A compact inventory per account. Every bar compares RFC822.SIZE values from the same
@@ -1393,19 +1402,27 @@ pub mod accounts {
     fn list(data: &Data) -> Element<'_, Message> {
         let accounts = mail_accounts(data);
         let now = Utc::now();
-        let mut rows: Vec<Element<'_, Message>> = accounts
+        let listed: Vec<_> = accounts
             .into_iter()
             .map(|(account, mail)| {
                 let stats = data.mail_stats.iter().find(|stats| stats.account == account.id);
-                let name = mail.sender_name.trim().to_string();
-                let address = account.label.clone();
-                let id = account.id.clone();
                 let sync = mail.mail.last_sync.or_else(|| stats.and_then(|stats| stats.last_sync));
                 // As the suite's Accounts says it (design review of #410): a dot and "Last synced …".
                 let (sync_status, sync_label) = match sync_problem(mail, stats) {
                     Some(_) => (Status::Error, tr("Sync problem").to_string()),
                     None => (Status::Ok, crate::accounts::last_synced_text(sync, now)),
                 };
+                (account, mail, stats, sync_status, sync_label)
+            })
+            .collect();
+        // One column for every row: as wide as the longest line of any of them.
+        let sync_needs = listed.iter().map(|(.., label)| sync_width(label)).fold(0.0, f32::max);
+        let mut rows: Vec<Element<'_, Message>> = listed
+            .into_iter()
+            .map(|(account, mail, stats, sync_status, sync_label)| {
+                let name = mail.sender_name.trim().to_string();
+                let address = account.label.clone();
+                let id = account.id.clone();
                 let stats = stats.cloned();
                 let entry = responsive(move |room| {
                     let inventory = inventory_content(stats.as_ref());
@@ -1429,12 +1446,12 @@ pub mod accounts {
                     } else {
                         // The parts 3 : 4 : 3 up to the reading width; wider, inventory and sync keep
                         // that width and the name gets the rest (issue #464).
-                        let (inventory_width, sync_width) = list_columns(room.width);
+                        let (inventory_width, sync_width) = list_columns(room.width, sync_needs);
                         container(
                             row![
                                 name_col.width(Length::Fill),
                                 container(inventory).width(inventory_width),
-                                // Room for "Last synced 59 min ago" beside its dot.
+                                // Room for its longest line beside the dot (issue #545).
                                 sync_col.width(sync_width),
                                 chevron(),
                             ]
@@ -2338,11 +2355,33 @@ pub mod accounts {
         /// they had at the reading width; only the name grows.
         #[test]
         fn only_the_name_of_an_account_row_grows() {
-            let at_max = list_columns(size::content_max());
-            assert_eq!(list_columns(3840.0), at_max);
-            let (inventory, sync) = list_columns(700.0);
+            let at_max = list_columns(size::content_max(), 0.0);
+            assert_eq!(list_columns(3840.0, 0.0), at_max);
+            let (inventory, sync) = list_columns(700.0, 0.0);
             assert!(inventory < at_max.0 && sync < at_max.1, "narrower than the reading width, the parts");
             assert!((inventory / sync - 4.0 / 3.0).abs() < 1e-3);
+        }
+
+        /// Issue #545: "Last synced 59 min ago" stands whole in a page of a window 1600 wide (in each
+        /// language the tests run in), the name keeps at least its part, and the column never gets
+        /// narrower than before.
+        #[test]
+        fn the_sync_column_is_as_wide_as_its_longest_line() {
+            let now = Utc::now();
+            let label = crate::accounts::last_synced_text(Some(now - chrono::Duration::minutes(59)), now);
+            let needs = sync_width(&label);
+            // The page beside the sidebar and the settings' list of sections, in its padding.
+            let width = 1600.0 - size::sidebar() - size::sidebar() - 2.0 * layout::page_padding().left;
+            let (inventory, sync) = list_columns(width, needs);
+            assert!(sync >= needs, "{sync} for {needs}: {label}");
+            let room = width - 5.0 * space::l() - torro_gui::icon::SIZE;
+            assert!(room - inventory - sync >= room.min(size::content_max()) * 0.3 - 1e-3, "the name keeps its part");
+            for width in [680.0, 900.0, width, 3840.0] {
+                let before = list_columns(width, 0.0);
+                let after = list_columns(width, needs);
+                assert_eq!(after.0, before.0, "{width}: the inventory stays");
+                assert!(after.1 >= before.1, "{width}: never narrower");
+            }
         }
 
         /// A mail account as `accounts.list_accounts` answers it.
