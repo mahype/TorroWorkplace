@@ -881,22 +881,24 @@ fn beside_text(frame: &mut Frame, p: &Palette, rect: Rectangle, entry: &Entry, t
     let range = if text_width(&range, typo::micro()) <= room { range.as_str() } else { "" };
     let lines = [(entry.title.as_str(), typo::caption(), tone.title), (range, typo::micro(), tone.time)];
     let fitted = fit_lines(rect.height, room, &lines);
-    if let Some(plate) = beside_plate(rect.y, x, room, &fitted) {
+    if let Some(plate) = beside_plate(rect, x, room, &fitted) {
         frame.fill_rectangle(plate.position(), plate.size(), p.panel);
     }
     draw_lines(frame, Rectangle { x, width: room, ..rect }, x, &fitted);
 }
 
-/// The plate under the lines `fitted` beside a block whose top is at `top`, the text starting
-/// at `x` with `room` up to the next block: from `space::xs()` before the text (the block's
-/// edge) to `space::xs()` after its widest line – never past `x + room`, so it stays clear of
-/// the next block – and from the block's top to the last line. `None` without a line.
-fn beside_plate(top: f32, x: f32, room: f32, fitted: &[(String, typo::Level, Color)]) -> Option<Rectangle> {
+/// The plate under the lines `fitted` beside `block`, the text starting at `x` with `room` up to
+/// the next block: from `space::xs()` before the text (the block's edge) to `space::xs()` after
+/// its widest line – never past `x + room`, so it stays clear of the next block – and from the
+/// block's top to `space::xs()` under the last line, so the hour line does not touch the letters,
+/// never below the block (a block in the lane under it may lie close). `None` without a line.
+fn beside_plate(block: Rectangle, x: f32, room: f32, fitted: &[(String, typo::Level, Color)]) -> Option<Rectangle> {
     let widest = fitted.iter().map(|(text, level, _)| text_width(text, *level)).reduce(f32::max)?;
     let left = x - space::xs();
     let width = (widest + 2.0 * space::xs()).min(room + space::xs());
-    let height = TEXT_TOP + fitted.iter().map(|(_, level, _)| line_height(*level)).sum::<f32>();
-    Some(Rectangle::new(Point::new(left, top), Size::new(width, height)))
+    let lines = fitted.iter().map(|(_, level, _)| line_height(*level)).sum::<f32>();
+    let height = (TEXT_TOP + lines + space::xs()).min(block.height);
+    Some(Rectangle::new(Point::new(left, block.y), Size::new(width, height)))
 }
 
 /// The lines of `lines` that are drawn in a box `height` high, each cut with "…" to `room`:
@@ -1341,21 +1343,26 @@ mod tests {
     fn a_title_beside_its_block_stands_on_a_plate_within_its_room() {
         let entry = timed("Daily Standup with the whole team", at(9, 30), at(10, 0));
         let lines = [(entry.title.as_str(), typo::caption(), Color::BLACK)];
+        let block = Rectangle::new(Point::new(180.0, 30.0), Size::new(16.0, 80.0));
         for room in [40.0, 120.0, 600.0] {
-            let fitted = fit_lines(80.0, room, &lines);
+            let fitted = fit_lines(block.height, room, &lines);
             let x = 200.0;
-            let plate = beside_plate(30.0, x, room, &fitted).expect("one line");
+            let plate = beside_plate(block, x, room, &fitted).expect("one line");
             assert!(plate.width <= room + space::xs(), "{} > {room} + gap", plate.width);
             assert_eq!(plate.x, x - space::xs());
             assert_eq!(plate.y, 30.0, "flush with the block's top");
             assert!(plate.x + plate.width <= x + room + WIDTH_SLACK, "clear of the next block");
-            assert_eq!(plate.height, TEXT_TOP + line_height(typo::caption()));
+            assert_eq!(plate.height, TEXT_TOP + line_height(typo::caption()) + space::xs());
         }
+        // Never below its block: a low block's plate ends with it.
+        let low = Rectangle { height: TEXT_TOP + line_height(typo::caption()), ..block };
+        let plate = beside_plate(low, 200.0, 120.0, &fit_lines(low.height, 120.0, &lines)).expect("one line");
+        assert_eq!(plate.height, low.height);
         // A short title: the plate ends right after it, not at the end of the room.
         let short = [("Lunch", typo::caption(), Color::BLACK)];
-        let plate = beside_plate(0.0, 0.0, 600.0, &fit_lines(80.0, 600.0, &short)).expect("one line");
+        let plate = beside_plate(block, 0.0, 600.0, &fit_lines(80.0, 600.0, &short)).expect("one line");
         assert!(plate.width < 100.0);
-        assert_eq!(beside_plate(0.0, 0.0, 600.0, &[]), None, "no plate without text");
+        assert_eq!(beside_plate(block, 0.0, 600.0, &[]), None, "no plate without text");
     }
 
     #[test]
