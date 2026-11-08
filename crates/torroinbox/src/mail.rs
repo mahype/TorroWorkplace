@@ -3156,8 +3156,8 @@ pub fn body<'a>(reading: &Reading<'a>, bars: Bars<'a>, anchors: &detail::Anchors
 /// collapsed rail beside it (task E14.3) takes its width from the body.
 fn command_body<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, width: f32) -> Element<'a, Message> {
     let line = || rule::horizontal(size::HAIRLINE).style(style::rule);
-    // The head lines up with the title, 16 from the panel's edges (`panel::inset`), and runs to the
-    // panel's right edge under the floating rail (issue #457); the mail keeps clear of the rail.
+    // The head lines up with the title, 16 from the panel's edges (`panel::inset`), and keeps clear of
+    // the floating rail as the mail does (issue #545: the rail covered the time at its end).
     let room = (width - 2.0 * space::l()).max(0.0);
     let clearance = (widgets::floating_rail_room() - space::l()).max(0.0);
     let head = head_in(reading, entry, room, clearance);
@@ -3166,7 +3166,7 @@ fn command_body<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, width
     if let Some(entry) = entry {
         // "Follow up" in the mail window's words (task E19.4).
         let properties = detail::properties(entry.item, reading.now, true);
-        // Clear of the floating rail, as the mail (review of #467): only the head runs on under it.
+        // Clear of the floating rail, as the mail and the head (review of #467).
         let section = widgets::prop_section(tr("Properties"), properties);
         body = body.push(container(section).padding(Padding::new(0.0).right(widgets::floating_rail_room())));
     }
@@ -3318,8 +3318,8 @@ pub fn reader<'a>(
         let side = layout::panel_padding().left;
         let clearance = (widgets::floating_rail_room() - head_padding().right).max(0.0);
         let head = container(head_in(&reading, entry, widths.head, clearance)).width(Fill).padding(head_padding());
-        // Issue #456: the rail floats at the right edge; the head runs on under it, the mail's text
-        // keeps clear of it.
+        // Issue #456: the rail floats at the right edge; the head and the mail's text keep clear of it
+        // (issue #545).
         let room = widgets::floating_rail_room();
         let mail = container(reader_mail(&reading, reader_widths((bounds.width - room).max(0.0))))
             .padding(Padding::new(0.0).right(room));
@@ -3413,8 +3413,9 @@ pub fn head<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, room: f32
     head_in(reading, entry, room, 0.0)
 }
 
-/// Additional rail clearance after accounting for the caller's existing right padding. Ordinary
-/// mail still uses the original head; only invitation details need this protected column.
+/// [`head`] with `clearance` kept free at its right for the floating action rail, beyond the caller's
+/// own right padding. Every mail keeps it (issue #545: the rail covered the time at the head's end),
+/// not only invitations (issue #569).
 fn head_in<'a>(
     reading: &Reading<'a>,
     entry: Option<ReaderEntry<'a>>,
@@ -3423,9 +3424,7 @@ fn head_in<'a>(
 ) -> Element<'a, Message> {
     let mut head = column![].spacing(space::l()).width(Fill);
     let summary = reading.summary();
-    // The original mail keeps its existing widths. Only Torro's invitation details must stay
-    // clear of the floating action rail, including in a narrow panel or a resized wide reader.
-    let clearance = if summary.is_some_and(|summary| summary.invite.is_some()) { clearance } else { 0.0 };
+    // Clear of the floating action rail, in a narrow panel and a resized wide reader alike.
     let room = (room - clearance).max(0.0);
     if let Some(summary) = summary {
         let sender = sender_block(reading, summary, room);
@@ -7138,6 +7137,10 @@ mod tests {
             assert!(command.contains(part), "{part}");
         }
         assert!(command.contains("head_in(reading, entry, room, clearance)"), "the head, which has no subject (#457)");
+        // Issue #545: every head keeps clear of the floating rail, in the panel and in the reader.
+        assert!(reader.contains("head_in(&reading, entry, widths.head, clearance)"), "the reader's head too");
+        let head_in = function_source(source, "head_in");
+        assert!(!head_in.contains("{ clearance } else { 0.0 }"), "not only invitations keep clear");
         assert!(!command.contains("panel_standards") && !command.contains("header("), "none of the split");
         let split = function_source(source, "split_body");
         assert!(split.contains("panel_standards(") && split.contains("header("), "the hub's panel as in E9.4");

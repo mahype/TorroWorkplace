@@ -1744,10 +1744,7 @@ pub enum Open {
     CategorizationFilter,
     /// … with a run of "Sort existing mail" going, its line under the head.
     CategorizationRunning,
-    /// … with the menu of "Sort with model" open.
-    CategorizationModel,
-    /// #359: a new LAN model waiting for the person's Use, and a saved one without permission.
-    CategorizationConsent,
+    /// #359: a saved model elsewhere without the permission, waiting for the person's OK.
     CategorizationWaiting,
     /// "All" of the mail window with the menu of the account field open (issue #455).
     MailAccounts,
@@ -1777,7 +1774,7 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 117] = [
+    const ALL: [(&'static str, Open); 115] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1886,8 +1883,6 @@ impl Open {
         ("categorization-sort", Open::CategorizationSort),
         ("categorization-filter", Open::CategorizationFilter),
         ("categorization-running", Open::CategorizationRunning),
-        ("categorization-model", Open::CategorizationModel),
-        ("categorization-consent", Open::CategorizationConsent),
         ("categorization-waiting", Open::CategorizationWaiting),
         ("mail-accounts", Open::MailAccounts),
         ("mail-accounts-many", Open::MailAccountsMany),
@@ -1920,8 +1915,6 @@ impl Open {
             Open::CategorizationSort => Some("sort"),
             Open::CategorizationFilter => Some("filter"),
             Open::CategorizationRunning => Some("running"),
-            Open::CategorizationModel => Some("model"),
-            Open::CategorizationConsent => Some("consent"),
             Open::CategorizationWaiting => Some("waiting"),
             _ => None,
         }
@@ -9122,7 +9115,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
 
     /// The gear, or "Settings" in the sidebar and the menu: the settings take the content area, or
     /// give it back to the entries. Nothing open behind them is lost – the panel, the search and
-    /// the cursor stay until a click shows them again ([`shows_entries`]).
+    /// the cursor stay until a click shows them again ([`shows_entries`]) –, except in the medium and
+    /// narrow mail window, where they close an open mail or the overview's panel first (issue #545,
+    /// [`App::close_mail_cover`]).
     fn toggle_settings(&mut self) -> Task<Message> {
         // The settings take the content area: not over a reply on its way.
         if self.holds_round() {
@@ -9133,7 +9128,26 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             self.leave_settings();
             return Task::none();
         }
-        self.open_settings(None)
+        let closed = self.close_mail_cover().unwrap_or_else(Task::none);
+        Task::batch([closed, self.open_settings(None)])
+    }
+
+    /// The mail window keeps the panel button and the settings over an open mail and the overview's
+    /// panel (issue #545, [`TopRow::keep_buttons`]): a press on either closes the mail (medium,
+    /// narrow) or the overview's panel (medium) first, so what it opens is not hidden under them.
+    /// The task of closing it, `None` where nothing covered the window.
+    fn close_mail_cover(&mut self) -> Option<Task<Message>> {
+        if self.launch.kind != Kind::Mail || !matches!(self.class(), SizeClass::Medium | SizeClass::Narrow) {
+            return None;
+        }
+        if self.panel_open() {
+            self.close_panel();
+            return Some(Task::none());
+        }
+        if self.class() == SizeClass::Medium && self.mail_overview_shown() {
+            return Some(self.update(Message::CloseMailOverview));
+        }
+        None
     }
 
     /// Whether the demo state is `--open sources-mail` in a window whose settings have Sources (the
@@ -11126,6 +11140,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     fn toggle_sidebar(&mut self) -> Task<Message> {
         if !shell::has_sidebar(self.class()) {
             self.menu = None;
+            // Over an open mail the button stays (issue #545): it closes the mail and opens the drawer.
+            if let Some(closed) = self.close_mail_cover() {
+                self.drawer = true;
+                return closed;
+            }
             self.drawer = !self.drawer;
             return Task::none();
         }
@@ -11457,10 +11476,21 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .sidebar(label, Message::ToggleSidebar)
             .sidebar_surface(self.launch.kind == Kind::Mail)
             .sidebar_at_edge(self.launch.kind == Kind::Mail)
+            .keep_buttons(self.launch.kind == Kind::Mail)
             .settings(Message::OpenSettings)
             .settings_open(self.settings.is_some())
             .cover(self.cover())
-            .panel_width(self.panel_width(class))
+            .panel_width(self.covering_width(class))
+    }
+
+    /// How wide the panel over the medium window is, which the top row repeats: a mail's with the
+    /// room of its floating rail ([`App::panel_width`]), the overview's [`size::panel()`] alone – it
+    /// has no rail, and the row's panel stood wider than the panel below it (issue #545).
+    fn covering_width(&self, class: SizeClass) -> f32 {
+        match self.panel_open() {
+            true => self.panel_width(class),
+            false => size::panel(),
+        }
     }
 
     /// What lies over the top of the window, which the top row repeats: a dialog of the settings, the
@@ -12103,8 +12133,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// ([`App::reader_head`]) follows behind the line of the split.
     fn mail_head<'a>(&'a self, class: SizeClass, nav: &Anchor, filters: &Anchor) -> Element<'a, Message> {
         let mut list = row![].spacing(space::xs()).align_y(Alignment::Center);
+        // Narrow, the mark says which window this is, as in the hub and the app feed (issue #545).
+        if class == SizeClass::Narrow {
+            list = list.extend(self.narrow_leading());
+        }
         if shell::sidebar_mode(class, self.sidebar) != Some(SidebarMode::Expanded) {
-            let icon = Some(self.launch.kind.view_icon(&self.view));
+            // Narrow, the mark stands right before it: a second envelope would only repeat it.
+            let icon = (class != SizeClass::Narrow).then(|| self.launch.kind.view_icon(&self.view));
             list = list.push(widgets::menu_button(nav, icon, self.view_label(), Message::ToggleNav));
         }
         if class != SizeClass::Wide {
@@ -22441,6 +22476,50 @@ mod tests {
         let first = app.messages.first().expect("demo mail").id.clone();
         let _ = app.update(Message::SelectMail(first));
         assert!(!app.mail_overview.open, "an opened mail closes it");
+    }
+
+    /// Issue #545: over an open mail (medium, narrow) and the overview's panel (medium) the top row
+    /// keeps the panel button and the settings; a press closes the mail or the panel first, then
+    /// opens the drawer or the settings.
+    #[test]
+    fn the_buttons_over_an_open_mail_close_it_first() {
+        for size in [MEDIUM, NARROW] {
+            let open_mail = |app: &mut App<DemoSource>| {
+                let first = app.messages.first().expect("demo mail").id.clone();
+                let _ = app.update(Message::SelectMail(first));
+                assert!(app.panel_open(), "{size:?}: the mail is open");
+            };
+            let mut app = mail_window(Density::Compact, &[]);
+            let _ = app.update(Message::Resized(size));
+            open_mail(&mut app);
+            let _ = app.update(Message::ToggleSidebar);
+            assert!(!app.panel_open() && app.drawer, "{size:?}: the mail closes, the drawer opens");
+            let _ = app.view();
+
+            let mut app = mail_window(Density::Compact, &[]);
+            let _ = app.update(Message::Resized(size));
+            open_mail(&mut app);
+            let _ = app.update(Message::OpenSettings);
+            assert!(!app.panel_open() && app.settings.is_some(), "{size:?}: the mail closes, the settings open");
+            let _ = app.view();
+        }
+        // The overview's panel in medium closes the same way.
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Resized(MEDIUM));
+        let _ = app.update(Message::ShowMailOverview);
+        assert_eq!(app.cover(), Cover::Panel);
+        let _ = app.update(Message::ToggleSidebar);
+        assert!(!app.mail_overview_shown() && app.drawer, "the overview closes, the drawer opens");
+        // Without anything open the button toggles the drawer as before.
+        let _ = app.update(Message::ToggleSidebar);
+        assert!(!app.drawer);
+        // The overview's panel has no rail: the row repeats its own width, a mail's grows by the rail.
+        let _ = app.update(Message::ShowMailOverview);
+        assert_eq!(app.covering_width(SizeClass::Medium), size::panel());
+        let _ = app.update(Message::CloseMailOverview);
+        let first = app.messages.first().expect("demo mail").id.clone();
+        let _ = app.update(Message::SelectMail(first));
+        assert_eq!(app.covering_width(SizeClass::Medium), app.panel_width(SizeClass::Medium));
     }
 
     /// Issue #409: the span and the account ask for the numbers anew; the old ones stay meanwhile and

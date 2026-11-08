@@ -16,10 +16,9 @@
 //!   rules ([`super::editor`]). "+ New category in …" in its group; then "Other filters" – the mail
 //!   filters that set no category (they mark read or go to the trash) –, and at the bottom "Remove
 //!   categories from all mail…", which removes only the categories.
-//! - **AI** ([`ai_tab`]): "Sort with model", a menu instead of a switch and a list – "Off" first,
-//!   then the models on this computer (decision models "Fast", chat models "Slower") and in the
-//!   cloud ("Cloud", picking one asks first, issue #424). A line under it says what the choice
-//!   means; "Categories the model may choose" leads to the tab Categories.
+//! - **AI** ([`ai_tab`]): "Sort with model" names the model that sorts and leads to Settings › AI,
+//!   the one place where it is chosen (issue #545). A line under it says what the choice means;
+//!   "Categories the model may choose" leads to the tab Categories.
 //! - **Sort existing mail** ([`sort_dialog`]): accounts, folders, time span, what to apply ("Fixed
 //!   rules", the model), what to do with mail that has a category, a preview with how long it takes,
 //!   "Start sorting"; while a run or a removal goes, a line with its progress stands under the head
@@ -37,7 +36,7 @@ use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{palette, size, space};
 use torro_gui::units::{format_count, format_duration};
-use torro_gui::widgets::{Align, Anchor, Dropdown, DropdownEvent, MenuItem, MenuSection, Placement, Trail};
+use torro_gui::widgets::{Align, Anchor, MenuItem, MenuSection, Placement};
 use torro_gui::{layout, style, theme, typo, widgets};
 use torro_ipc::inbox::{CategoryInfo, CategoryJobControl, CategoryJobPreview, CategoryJobScope, CategoryJobState};
 use torro_ipc::{Request, Response};
@@ -72,11 +71,6 @@ pub struct State {
     pub(super) editor: editor::State,
     pub(super) filters: filters::State,
     tab: Tab,
-    /// The dropdown of "Sort with model", with its search (issue #554).
-    menus: Dropdown<Menu>,
-    /// A model in the cloud picked while the question before it sorts is open (issue #424): only
-    /// "Use" sets it, "Cancel" changes nothing.
-    asking_cloud: Option<CloudPick>,
     /// The groups folded on this page.
     folded: BTreeSet<CategoryGroup>,
     /// The group whose "…" menu is open.
@@ -96,17 +90,6 @@ pub struct State {
     previews_waiting: u32,
 }
 
-/// A model in the cloud waiting for the question before it sorts mail (issue #424).
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CloudPick {
-    /// Its AI account (`ai:…`).
-    engine: String,
-    /// What the question calls it: the model's name, or the account's.
-    name: String,
-    /// What "Use" sends: what the pick would have sent without the question.
-    requests: Vec<Request>,
-}
-
 /// What the dialog "Sort existing mail" holds while it is open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SortForm {
@@ -123,13 +106,6 @@ struct SortForm {
     again: bool,
     /// The menu of accounts or folders that is open.
     menu: Option<SortMenu>,
-}
-
-/// The dropdowns of the page (issue #554).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Menu {
-    /// "Sort with model".
-    Model,
 }
 
 /// The menus of the dialog "Sort existing mail".
@@ -179,19 +155,8 @@ impl std::fmt::Display for Period {
 pub enum Message {
     /// One of the tabs, by its index.
     Tab(usize),
-    /// The trigger of "Sort with model" or its menu: open, close, the words in its search (issue
-    /// #554).
-    Menus(DropdownEvent<Menu>),
-    /// "Off" in the menu (`false`): the model sorts nothing. `true` sorts again with the slot, or
-    /// what sorted last.
-    Enabled(bool),
-    /// A model picked for sorting mail. One in the cloud asks first (issue #424).
-    Model(String, String),
-    /// "Use" in the question before a model in the cloud sorts mail.
-    UseCloud,
-    /// "Cancel" in that question, a click next to it, or Escape: nothing changes.
-    CancelCloud,
-    /// "Manage models…": which models are on is set in the section AI.
+    /// "Sort with model" and "No decision model": the model is chosen in the section AI (issue
+    /// #545).
     ManageModels,
     /// Escape during a drag: it ends, nothing moves.
     CancelDrag,
@@ -258,56 +223,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             close_menus(state);
             Action::None
         }
-        Message::Menus(event) => {
-            if state.menus.update(event) {
-                return Action::Focus(widgets::DROPDOWN_SEARCH);
-            }
-            Action::None
-        }
-        Message::Enabled(true) => switched_on(state, data),
-        // Off is the exception switched off, with what sorts now: it goes before the slot and keeps
-        // sorting off, also while the slot changes. Nothing sorts, nothing to switch off.
-        Message::Enabled(false) => {
-            state.menus.close();
-            let held = in_effect(data);
-            match held.engine {
-                Some(engine) => Action::send(Request::SetAiAssignment {
-                    function: AiFunction::InboxCategorize,
-                    engine: Some(engine),
-                    model: held.model,
-                    effort: held.effort,
-                    enabled: false,
-                }),
-                None => Action::None,
-            }
-        }
-        // Picking a model switches the sorting on. A model in the cloud asks first (issue #424) –
-        // choosing it is the consent that mail leaves this computer –, unless it sorts already with
-        // that consent.
-        Message::Model(engine, model) => {
-            state.menus.close();
-            let pick = in_cloud(data, &engine, Some(&model)).filter(|_| !consented(data, &engine, &model));
-            let requests = use_model(data, engine, Some(model));
-            match pick {
-                Some(pick) => {
-                    state.asking_cloud = Some(CloudPick { requests, ..pick });
-                    Action::None
-                }
-                None => Action::Send(requests),
-            }
-        }
-        Message::UseCloud => match state.asking_cloud.take() {
-            Some(pick) => Action::Send(pick.requests),
-            None => Action::None,
-        },
-        Message::CancelCloud => {
-            state.asking_cloud = None;
-            Action::None
-        }
-        Message::ManageModels => {
-            state.menus.close();
-            Action::Open(crate::assistant::AI_SECTION)
-        }
+        Message::ManageModels => Action::Open(crate::assistant::AI_SECTION),
         Message::CancelDrag => {
             state.category_drag = None;
             Action::None
@@ -414,7 +330,6 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
 
 /// Closes every menu of the page; a drag ends without a move.
 fn close_menus(state: &mut State) {
-    state.menus.close();
     state.group_menu = None;
     state.category_drag = None;
 }
@@ -528,13 +443,10 @@ pub fn sent(state: &mut State, result: &Result<Data, String>) -> Option<Message>
     filters::sent(&mut state.filters, result).map(|id| Message::Filters(filters::Message::ApplyNow(id)))
 }
 
-/// What Escape means on this page, first what lies on top: the question before a model in the cloud
-/// sorts, a dialog, a menu, a drag, then a page of the editor (asking first when something typed
-/// would go). `None` leaves it to the window, which closes the settings.
+/// What Escape means on this page, first what lies on top: a dialog, a menu, a drag, then a page of
+/// the editor (asking first when something typed would go). `None` leaves it to the window, which
+/// closes the settings.
 pub fn escape(state: &State) -> Option<Message> {
-    if state.asking_cloud.is_some() {
-        return Some(Message::CancelCloud);
-    }
     if let Some(form) = &state.sort {
         return Some(match form.menu {
             Some(_) => Message::SortMenu(None),
@@ -546,9 +458,6 @@ pub fn escape(state: &State) -> Option<Message> {
     }
     if let Some(message) = filters::escape(&state.filters) {
         return Some(Message::Filters(message));
-    }
-    if state.menus.open().is_some() {
-        return Some(Message::Menus(DropdownEvent::Close));
     }
     if state.category_drag.is_some() {
         return Some(Message::CancelDrag);
@@ -572,53 +481,7 @@ pub fn dragging(state: &State) -> Option<Dragging> {
     state.category_drag.map(|_| Dragging::Category)
 }
 
-/// The question before a model in the cloud sorts mail is open (issue #424).
-pub fn asking_cloud(state: &State) -> bool {
-    state.asking_cloud.is_some()
-}
-
 // ----- the model -----
-
-/// `model` of `engine` goes into the slot Sorting. An exception would stand before it, so it is
-/// taken back – first (review of #325): setting the slot can let Sorting's mail out, and meanwhile
-/// an exception the person switched off would sort again. The requests go one after the other and
-/// stop at the first refused ([`crate::send`]), so a refused take-back sets no slot.
-fn use_model(data: &Data, engine: String, model: Option<String>) -> Vec<Request> {
-    let effort = data.settings.ai_slots.decide.as_ref().and_then(|slot| slot.effort);
-    let mut requests: Vec<Request> = stored_exception(data).map(|_| no_exception()).into_iter().collect();
-    requests.push(set_slot(engine, model, effort));
-    requests
-}
-
-/// The model `id` of `engine` when it computes in the cloud, as the question names it; `None` for one
-/// on this computer. A listed model by what its server says ([`stays_here`]); one the list lacks by
-/// its name with unknown evidence. "Automatic" uses the shared loopback rule as the core does.
-fn in_cloud(data: &Data, engine: &str, id: Option<&str>) -> Option<CloudPick> {
-    let pick = |name: String| CloudPick { engine: engine.to_string(), name, requests: Vec::new() };
-    let Some(id) = id else {
-        let server =
-            data.accounts.iter().find(|account| account.id == engine).map_or("", crate::accounts::account_server);
-        let here = crate::accounts::ai_provider(engine).is_some_and(|provider| {
-            torro_core::ai::automatic_place_of(provider, server) == torro_core::ai::Place::Local
-        });
-        return (!here).then(|| pick(account_label(data, engine)));
-    };
-    let listed = data
-        .decider_models
-        .iter()
-        .find(|(account, model)| account == engine && crate::accounts::same_model(&model.id, id));
-    let model = listed.map_or_else(|| AiModel::named(id), |(_, model)| model.clone());
-    (!stays_here(data, engine, &model)).then(|| pick(model.name))
-}
-
-/// `model` of `engine` sorts now with the person's consent that mail leaves this computer.
-fn consented(data: &Data, engine: &str, model: &str) -> bool {
-    let held = in_effect(data);
-    held.is_ready()
-        && held.engine.as_deref() == Some(engine)
-        && held.model.as_deref().is_some_and(|held| crate::accounts::same_model(held, model))
-        && data.settings.mail_to_cloud_in(AiSlot::Decide)
-}
 
 /// The exception stored for sorting mail (`ai.set_assignment inbox.categorize`), on or off.
 fn stored_exception(data: &Data) -> Option<AiAssignment> {
@@ -653,64 +516,9 @@ fn own_exception(data: &Data) -> Option<AiAssignment> {
     stored_exception(data).filter(|held| held.enabled)
 }
 
-/// Sorting on again: the exception switched off is taken back, so the slot sorts again. Without a
-/// slot, it gets what sorted last or the first model offered on this computer. What sorted last in
-/// the cloud without the consent asks first (issue #424): this never lets mail out by itself.
-fn switched_on<A>(state: &mut State, data: &Data) -> Action<A> {
-    let exception = stored_exception(data);
-    let mut requests = Vec::new();
-    let mut cloud = None;
-    if data.settings.ai_slots.decide.is_none() {
-        if let Some(held) = &exception
-            && let Some(engine) = &held.engine
-            && !data.settings.mail_to_cloud_in(AiSlot::Decide)
-        {
-            cloud = in_cloud(data, engine, held.model.as_deref());
-        }
-        let from_exception = exception
-            .as_ref()
-            .and_then(|held| held.engine.clone().map(|engine| set_slot(engine, held.model.clone(), held.effort)));
-        let first = || {
-            offered(data)
-                .into_iter()
-                .find(|(engine, model)| stays_here(data, engine, model))
-                .map(|(engine, model)| set_slot(engine, Some(model.id), None))
-        };
-        match from_exception.or_else(first) {
-            Some(request) => requests.push(request),
-            None => return Action::None,
-        }
-    }
-    requests.extend(exception.map(|_| no_exception()));
-    match (requests.is_empty(), cloud) {
-        (true, _) => Action::None,
-        (false, Some(pick)) => {
-            state.asking_cloud = Some(CloudPick { requests, ..pick });
-            Action::None
-        }
-        (false, None) => Action::Send(requests),
-    }
-}
-
-/// `ai.set_slot decide` with `engine` and `model`.
-fn set_slot(engine: String, model: Option<String>, effort: Option<torro_core::ai::Effort>) -> Request {
-    Request::SetAiSlot { slot: AiSlot::Decide, engine: Some(engine), model, effort }
-}
-
-/// `ai.set_assignment inbox.categorize` with `engine: null`: the exception taken back.
-fn no_exception() -> Request {
-    Request::SetAiAssignment {
-        function: AiFunction::InboxCategorize,
-        engine: None,
-        model: None,
-        effort: None,
-        enabled: false,
-    }
-}
-
 /// The models that may sort mail: every AI account's models that can – decision models, and chat
 /// models with tools through the fallback (task MW.3) – and are turned on (task S.26). Those in the
-/// cloud too (issue #424): picking one asks first.
+/// cloud too (issue #424); Settings › AI asks before one sorts (issue #545).
 pub(super) fn offered(data: &Data) -> Vec<(String, AiModel)> {
     deciders(data).into_iter().filter(|(_, model)| model.enabled).collect()
 }
@@ -746,7 +554,7 @@ pub fn assigned_off(data: &Data) -> Option<(String, String)> {
 /// A model offered for sorting with its AI account (`ai:…`).
 pub(super) type Offered = (String, AiModel);
 
-/// The models offered ([`offered`]) in the parts of the menu, as [`grouped`] splits them.
+/// The models offered ([`offered`]) by where and how they sort, as [`grouped`] splits them.
 pub(super) type Parts = (Vec<Offered>, Vec<Offered>, Vec<Offered>);
 
 /// The models offered by where they compute (issue #424) and how they sort (issue #421): on this
@@ -773,13 +581,6 @@ pub(super) fn grouped(data: &Data) -> Parts {
     let (fast, other) = local.into_iter().partition(decides);
     let (cloud_fast, cloud_other): (Vec<Offered>, Vec<Offered>) = cloud.into_iter().partition(decides);
     (fast, other, cloud_fast.into_iter().chain(cloud_other).collect())
-}
-
-/// What a model says under its name (issue #431): its account and how big it is.
-pub(super) fn model_facts(data: &Data, engine: &str, model: &AiModel) -> String {
-    let mut facts = vec![account_label(data, engine)];
-    facts.extend(crate::parts::size_facts(model));
-    facts.join(" · ")
 }
 
 /// What the account `id` is called; the id itself when it is gone from the list.
@@ -822,14 +623,34 @@ fn chosen(data: &Data) -> Chosen {
         (None, Some(id)) => id.clone(),
         (None, None) => account_label(data, &engine),
     };
-    match in_cloud(data, &engine, held.model.as_deref()) {
-        Some(_) => Chosen::Cloud {
+    match elsewhere(data, &engine, held.model.as_deref()) {
+        true => Chosen::Cloud {
             name,
             provider: account_label(data, &engine),
             waiting: !data.settings.mail_to_cloud_in(AiSlot::Decide),
         },
-        None => Chosen::Here(name),
+        false => Chosen::Here(name),
     }
+}
+
+/// Whether the model `id` of `engine` computes outside this computer. A listed model by what its
+/// server says ([`stays_here`]); one the list lacks by its name with unknown evidence. "Automatic"
+/// (no `id`) uses the shared loopback rule as the core does.
+fn elsewhere(data: &Data, engine: &str, id: Option<&str>) -> bool {
+    let Some(id) = id else {
+        let server =
+            data.accounts.iter().find(|account| account.id == engine).map_or("", crate::accounts::account_server);
+        let here = crate::accounts::ai_provider(engine).is_some_and(|provider| {
+            torro_core::ai::automatic_place_of(provider, server) == torro_core::ai::Place::Local
+        });
+        return !here;
+    };
+    let listed = data
+        .decider_models
+        .iter()
+        .find(|(account, model)| account == engine && crate::accounts::same_model(&model.id, id));
+    let model = listed.map_or_else(|| AiModel::named(id), |(_, model)| model.clone());
+    !stays_here(data, engine, &model)
 }
 
 // ----- the order of rules and filters -----
@@ -873,7 +694,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     }
     let tab = match state.tab {
         Tab::Categories => categories_tab(state, data),
-        Tab::Ai => ai_tab(state, data),
+        Tab::Ai => ai_tab(data),
     };
     let about = typo::text(typo::body(), tr("Fixed rules and the AI sort every new mail as it arrives."))
         .style(theme::text_2)
@@ -996,15 +817,21 @@ fn state_word(state: CategoryJobState) -> String {
 
 // ----- tab AI -----
 
-/// "Sort with model" with its menu and the line about the choice, the model's special cases, and
-/// "Categories the model may choose".
-fn ai_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+/// "Sort with model" with the model that sorts and the line about it, the model's special cases, and
+/// "Categories the model may choose". The model is chosen in Settings › AI only (issue #545): the row
+/// leads there, as "Appearance ↗" in the sidebar does.
+fn ai_tab<'a>(data: &'a Data) -> Element<'a, Message> {
     let current = chosen(data);
     let label = match &current {
         Chosen::Off => tr("Off").to_string(),
         Chosen::Here(name) | Chosen::Cloud { name, .. } => name.clone(),
     };
-    let pick = state.menus.button(Menu::Model, label, Message::Menus);
+    let jump = || {
+        icon::icon(Icon::ArrowUpRight, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
+    };
+    let pick = row![typo::text(typo::body(), label).style(theme::text_2).wrapping(Wrapping::None), jump()]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
     let mut rows: Vec<Element<'a, Message>> = Vec::new();
     // The model in effect, turned off since: the core sorts nothing with it (PR review #242).
     if let Some((engine, name)) = assigned_off(data) {
@@ -1021,13 +848,12 @@ fn ai_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             Some(trf("Outside this computer at {provider}", &[("provider", provider)]))
         }
     };
-    rows.push(setting_row(None, tr("Sort with model"), detail, pick));
+    rows.push(pressable(setting_row(None, tr("Sort with model"), detail, pick), Some(Message::ManageModels)));
     // Only chat models on this computer (issue #421): the way to a fast one, which Settings › AI
     // offers to download.
     let (fast, other, _) = grouped(data);
     if fast.is_empty() && !other.is_empty() {
-        let arrow = icon::icon(Icon::ArrowUpRight, icon::SIZE)
-            .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
+        let arrow = jump();
         let detail = tr("Sorting runs slower with a chat model. Settings › AI suggests one to download.");
         rows.push(pressable(
             setting_row(None, tr("No decision model"), Some(detail.to_string()), arrow),
@@ -1067,56 +893,7 @@ fn ai_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         ),
         Some(Message::Tab(0)),
     );
-    // A jump to Settings › AI, as "Appearance ↗" in the sidebar: no "…", nothing opens here.
-    let arrow =
-        icon::icon(Icon::ArrowUpRight, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
-    let manage = pressable(setting_row(None, tr("Manage models"), None, arrow), Some(Message::ManageModels));
-    column![sorting, widgets::group(tr("Model"), vec![may, manage], None)].spacing(layout::section_gap()).into()
-}
-
-/// The menu of "Sort with model": "Off", the models on this computer (decision models "Fast", chat
-/// models "Slower"), those in the cloud ("Cloud"), and "More models: Settings › AI".
-fn model_menu<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let (fast, other, cloud) = grouped(data);
-    let held = in_effect(data);
-    let consent = data.settings.mail_to_cloud_in(AiSlot::Decide);
-    let items = |models: Vec<Offered>, tag: &'a str, in_cloud: bool| -> Vec<MenuItem<'a, Message>> {
-        models
-            .into_iter()
-            .map(|(engine, model)| {
-                let is = held.is_ready()
-                    && held.engine.as_deref() == Some(engine.as_str())
-                    && held.model.as_deref() == Some(model.id.as_str())
-                    && (!in_cloud || consent);
-                let item =
-                    MenuItem::new(Icon::Check, model.name.clone(), Message::Model(engine.clone(), model.id.clone()))
-                        .detail(model_facts(data, &engine, &model))
-                        .tag(tag, false)
-                        .current(is);
-                let item = MenuItem { mark: None, ..item };
-                if in_cloud { item.trail(Trail::Icon(Icon::Cloud)) } else { item }
-            })
-            .collect()
-    };
-    let off = MenuItem { mark: None, ..MenuItem::new(Icon::Check, tr("Off"), Message::Enabled(false)) }
-        .current(!held.is_ready());
-    let mut sections = vec![MenuSection::new(vec![off])];
-    if !fast.is_empty() {
-        sections.push(MenuSection::titled(tr("On this computer · decision models"), items(fast, tr("Fast"), false)));
-    }
-    if !other.is_empty() {
-        sections.push(MenuSection::titled(tr("On this computer · chat models"), items(other, tr("Slower"), false)));
-    }
-    if !cloud.is_empty() {
-        sections.push(MenuSection::titled(
-            tr("Elsewhere · mail leaves this computer"),
-            items(cloud, tr("Elsewhere"), true),
-        ));
-    }
-    let more = MenuItem::new(torro_gui::shell::SETTINGS_ICON, tr("More models: Settings › AI"), Message::ManageModels);
-    sections.push(MenuSection::new(vec![more]));
-    // A dropdown with search from twelve entries on (issue #554): many models on one server.
-    state.menus.view(&Menu::Model, sections, size::panel(), Align::End, Message::Menus)
+    column![sorting, widgets::group(tr("Model"), vec![may], None)].spacing(layout::section_gap()).into()
 }
 
 // ----- tab Categories -----
@@ -1553,14 +1330,9 @@ fn check_style(theme: &Theme, status: checkbox::Status) -> checkbox::Style {
     style::checkbox(palette(theme).text_2)(theme, status)
 }
 
-/// What lies over the window while it is open, the topmost first: the question before a model in
-/// the cloud sorts, "Sort existing mail" with its menus, "Delete …?", "Remove categories from all
+/// What lies over the window while it is open, the topmost first: "Sort existing mail" with its menus, "Delete …?", "Remove categories from all
 /// mail?", the filter's dialog, then a menu of the page.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
-    if let Some(pick) = &state.asking_cloud {
-        let provider = account_label(data, &pick.engine);
-        return Some(crate::parts::cloud_consent(&pick.name, &provider, Message::UseCloud, Message::CancelCloud));
-    }
     if let Some(form) = &state.sort {
         let anchors = SortAnchors::default();
         let dialog = sort_dialog(state, form, data, &anchors);
@@ -1588,14 +1360,11 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
     if let Some(popover) = editor::overlay(&state.editor, data) {
         return Some(popover.map(Message::Editor));
     }
-    if state.menus.is_open(&Menu::Model) {
-        return Some(model_menu(state, data));
-    }
     group_menu(state)
 }
 
 /// The messages that put the page into a state of `--demo --open categorization-…` (torroinbox):
-/// a tab, a dialog or the menu of the model, as a person would click it.
+/// a tab or a dialog, as a person would click it.
 pub fn scene(name: &str) -> Option<Vec<Message>> {
     Some(match name {
         "ai" => vec![Message::Tab(1)],
@@ -1607,10 +1376,6 @@ pub fn scene(name: &str) -> Option<Vec<Message>> {
         "sort" => vec![Message::OpenSort { rules_only: false }],
         "filter" => vec![Message::NewFilter],
         "running" => vec![Message::OpenSort { rules_only: false }, Message::StartJob],
-        "model" => vec![Message::Tab(1), Message::Menus(DropdownEvent::Toggle(Menu::Model))],
-        "consent" => {
-            vec![Message::Tab(1), Message::Model(crate::accounts::demo::DEMO_NETWORK.into(), "nimble:latest".into())]
-        }
         _ => return None,
     })
 }
@@ -1665,54 +1430,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_mail_demos_offer_network_models_and_show_consent_and_waiting() {
+    async fn the_mail_demos_offer_network_models_and_show_waiting() {
         let data = demo().await;
         let engine = crate::accounts::demo::DEMO_NETWORK;
         let (_, _, elsewhere) = grouped(&data);
         assert!(elsewhere.iter().any(|(account, model)| account == engine && model.id == "nimble:latest"));
-        let mut state = State::default();
-        for message in scene("model").expect("model menu") {
-            assert!(sent(update::<()>(&mut state, message, &data)).is_empty());
-        }
-        assert_eq!(state.tab, Tab::Ai);
-        assert!(state.menus.is_open(&Menu::Model));
-        let mut state = State::default();
-        for message in scene("consent").expect("consent scene") {
-            assert!(sent(update::<()>(&mut state, message, &data)).is_empty());
-        }
-        assert_eq!(state.tab, Tab::Ai);
-        assert!(asking_cloud(&state));
-        assert!(overlay(&state, &data).is_some());
+        // The model is chosen in Settings › AI (issue #545): no scenes of a menu or its question here.
+        assert!(scene("model").is_none() && scene("consent").is_none());
 
         let backend: Arc<dyn crate::Backend> = Arc::new(crate::demo::Demo::with_network_sorting());
         let waiting = crate::load(backend, super::super::wanted()).await;
         assert!(waiting.error.is_none(), "{:?}", waiting.error);
         assert!(matches!(chosen(&waiting), Chosen::Cloud { waiting: true, .. }));
         assert!(!waiting.settings.mail_to_cloud_in(AiSlot::Decide));
+        let mut state = State::default();
+        let _ = update::<()>(&mut state, Message::Tab(1), &waiting);
+        let _ = view(&state, &waiting);
     }
 
-    /// Issue #454: the model is chosen in a menu with "Off" first, no switch; "Off" keeps sorting
-    /// off by the exception, and the menu draws with its parts.
+    /// Issue #545: "Sort with model" names the model and leads to Settings › AI, where it is chosen;
+    /// the tab sends nothing itself and lays nothing over the window.
     #[tokio::test]
-    async fn the_model_is_a_menu_with_off_first() {
-        let mut data = demo().await;
+    async fn the_model_is_chosen_in_settings_ai() {
+        let data = demo().await;
         let mut state = State::default();
-        let opened = update::<()>(&mut state, Message::Menus(DropdownEvent::Toggle(Menu::Model)), &data);
-        assert_eq!(opened, Action::Focus(widgets::DROPDOWN_SEARCH), "opening focuses the search");
-        assert!(overlay(&state, &data).is_some(), "the menu");
-        assert!(matches!(escape(&state), Some(Message::Menus(DropdownEvent::Close))));
-        let _ = update::<()>(&mut state, Message::Menus(DropdownEvent::Query("nim".into())), &data);
-        let _ = model_menu(&state, &data);
-        data.settings.ai_slots.decide = Some(torro_core::ai::SlotModel {
-            engine: "ai:ollama@localhost:11434".into(),
-            model: Some("nimble".into()),
-            effort: None,
-        });
-        let off = sent(update::<()>(&mut state, Message::Enabled(false), &data));
-        assert!(matches!(off.as_slice(), [Request::SetAiAssignment { enabled: false, .. }]), "{off:?}");
-        assert!(!state.menus.is_open(&Menu::Model), "picking closes the menu");
-        let _ = model_menu(&state, &data);
+        let _ = update::<()>(&mut state, Message::Tab(1), &data);
         let _ = view(&state, &data);
+        assert!(overlay(&state, &data).is_none(), "no menu, no question");
+        assert!(escape(&state).is_none());
+        let opened = update::<()>(&mut state, Message::ManageModels, &data);
+        assert_eq!(opened, Action::Open(crate::assistant::AI_SECTION));
     }
 
     /// Issue #481: the filters without a category stand under "Other filters" with their switch; a

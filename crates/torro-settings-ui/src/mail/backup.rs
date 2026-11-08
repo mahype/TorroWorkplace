@@ -23,7 +23,7 @@ use torro_ipc::mail::{
 use torro_ipc::{Request, Response};
 
 use crate::Action;
-use crate::parts::{choice, field, row_frame, setting_row};
+use crate::parts::{self, field, row_frame, setting_row};
 
 /// The request that is on its way; at most one per account page, so answers never cross. Verify
 /// and Plan remember the archive they asked about: an answer for another file is dropped.
@@ -620,10 +620,12 @@ fn error_row<'a>(rows: &mut Vec<Element<'a, Message>>, state: &State, place: Pla
 fn backup_group(state: &State) -> Element<'_, Message> {
     let ready = state.pending.is_none() && !state.active_job();
     let submit = || ready.then_some(Message::Create);
+    // Two options (issue #545): segments, not a heading over two choice rows.
+    let sources = [(tr("Server"), BackupScope::Server), (tr("Local"), BackupScope::Local)];
+    let active = sources.iter().position(|(_, source)| *source == state.source).unwrap_or(sources.len());
+    let sources = sources.into_iter().map(|(word, source)| (word.to_string(), Message::Source(source))).collect();
     let mut rows = vec![
-        row_frame(typo::text(typo::body_strong(), tr("Backup source")), false),
-        choice(tr("Server"), state.source == BackupScope::Server, Message::Source(BackupScope::Server)),
-        choice(tr("Local"), state.source == BackupScope::Local, Message::Source(BackupScope::Local)),
+        parts::segmented_row(tr("Backup source"), None, sources, active),
         setting_row(
             None,
             tr("From date"),
@@ -655,7 +657,8 @@ fn backup_group(state: &State) -> Element<'_, Message> {
         ),
     ];
     if state.calendar_open {
-        rows.insert(4, calendar(state));
+        // Under "From date".
+        rows.insert(2, calendar(state));
     }
     let creating = (state.pending == Some(Pending::Create)).then_some(tr("Starting backup…"));
     rows.push(buttons(vec![action(tr("Create backup"), creating, submit())]));
@@ -810,8 +813,10 @@ fn plan_rows<'a>(rows: &mut Vec<Element<'a, Message>>, state: &State, plan: &'a 
     }
     if !plan.complete_archive {
         rows.push(status_line(Tone::Attention, tr("The archive is incomplete.").into(), None));
-        rows.push(choice(tr("Do not restore"), !state.allow_incomplete, Message::AllowIncomplete(false)));
-        rows.push(choice(tr("Accept incomplete archive"), state.allow_incomplete, Message::AllowIncomplete(true)));
+        // A yes or no, which no segment says in a word (issue #545): a switch, off until the person
+        // accepts.
+        let accept = parts::switch(state.allow_incomplete, Message::AllowIncomplete);
+        rows.push(setting_row(None, tr("Accept incomplete archive"), None, accept));
     }
     if plan.unconfirmed > 0 {
         let text = match plan.unconfirmed {
@@ -822,16 +827,11 @@ fn plan_rows<'a>(rows: &mut Vec<Element<'a, Message>>, state: &State, plan: &'a 
             ),
         };
         rows.push(status_line(Tone::Attention, text, None));
-        rows.push(choice(tr("Do not upload again"), !state.retry_unconfirmed, Message::RetryUnconfirmed(false)));
-        rows.push(choice(
-            tr("Upload unconfirmed mail again"),
-            state.retry_unconfirmed,
-            Message::RetryUnconfirmed(true),
-        ));
+        let again = parts::switch(state.retry_unconfirmed, Message::RetryUnconfirmed);
+        rows.push(setting_row(None, tr("Upload unconfirmed mail again"), None, again));
     }
-    rows.push(row_frame(typo::text(typo::body_strong(), tr("Restore confirmation")), false));
-    rows.push(choice(tr("Not reviewed"), !state.confirm_restore, Message::ConfirmRestore(false)));
-    rows.push(choice(tr("I reviewed the plan"), state.confirm_restore, Message::ConfirmRestore(true)));
+    let reviewed = parts::switch(state.confirm_restore, Message::ConfirmRestore);
+    rows.push(setting_row(None, tr("I reviewed the plan"), None, reviewed));
     let restoring = (state.pending == Some(Pending::Apply)).then_some(tr("Restoring…"));
     rows.push(buttons(vec![action(tr("Restore mail"), restoring, state.can_apply(account).then_some(Message::Apply))]));
 }
@@ -1216,6 +1216,27 @@ mod tests {
         let _: Action<()> = update(&mut state, ACCOUNT, Message::Create);
         let _: Action<()> = update(&mut state, ACCOUNT, Message::RestoreFile("anna.zip".into()));
         assert!(state.problem_at(Place::Create).is_some());
+    }
+
+    /// Issue #545: every yes or no of the restore test is one row with a switch, which starts off;
+    /// the backup's source is one row of segments, with the calendar under "From date".
+    #[test]
+    fn the_restore_questions_are_switches_that_start_off() {
+        let state = State::default();
+        assert!(!state.allow_incomplete && !state.retry_unconfirmed && !state.confirm_restore);
+        let count = |plan: &RestorePlan| {
+            let mut rows = Vec::new();
+            plan_rows(&mut rows, &state, plan, ACCOUNT);
+            rows.len()
+        };
+        let (clean, incomplete, unconfirmed) = (plan(true, 0), plan(false, 0), plan(true, 2));
+        let base = count(&clean);
+        // The line that says why, and the one switch – no row against it.
+        assert_eq!(count(&incomplete), base + 2);
+        assert_eq!(count(&unconfirmed), base + 2);
+        let open = State { calendar_open: true, ..State::default() };
+        let _ = backup_group(&open);
+        let _ = backup_group(&state);
     }
 
     #[test]

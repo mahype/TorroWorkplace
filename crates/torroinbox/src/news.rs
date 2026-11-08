@@ -11,7 +11,7 @@ use std::future::Future;
 
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row};
-use iced::{Alignment, Element, Fill, Padding, Theme};
+use iced::{Alignment, Element, Padding, Theme};
 use torro_core::i18n::{tr, trc};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, palette, size, space};
@@ -173,7 +173,8 @@ fn line(announcement: &Announcement) -> Element<'_, Message> {
     let lead = (edge - typo::line_height(typo::body_strong())).max(0.0) / 2.0;
     row![
         container(mark).center_y(edge),
-        container(words).width(Fill).padding(Padding::ZERO.top(lead)),
+        // The words keep their reading width in a wide page; date and ✕ stay at the line's end.
+        widgets::reading_cell(container(words).padding(Padding::ZERO.top(lead))),
         container(date).center_y(edge),
         dismiss,
     ]

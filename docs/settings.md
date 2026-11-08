@@ -51,7 +51,7 @@ Die Seite „AI“ einer App zeigt seit #547 (Entscheidung 5 in #528) mit Haupta
 eigene Modellzeile der App (Mail: „Sorting“; der Assistent stellt „Chat“ unter General ein, dort mit Denkstufe und
 „The one used last“) und „Open Torro Workplace“; Modell-Schalter der Konten, die übrigen Zeilen und die Datenregel
 stehen dann nur in der Steuerzentrale. Ohne Hauptanwendung bleibt die ganze Seite, im Assistenten ohne die Zeile
-„Chat“.
+„Chat“, in Mail ohne „Chat“ und ohne Datenregel (#545).
 
 Vorbild sind die Einstellungen von **TorroWhisper** (Aufbau, Seiten, Speichern) und
 **TorroMail** (Konten, Anbieter-Katalog, Einrichtungsassistent, Zugriff für KI-Clients). Beide
@@ -191,7 +191,7 @@ Konto zählen nicht (#543).
 | **Calendar** | Calendars (welche die Suite zeigt, je Konto gruppiert; Art der Erinnerung je Kalender) · Reminders (an/aus, Vorlauf, alle Bildschirme, Ton, welche Termine) · Night (die Karte am Mond in der Zeitleiste bleibt als schneller Weg) · API and MCP (#531) | Kontodetail „Calendars and lists“; General › Calendar, › Reminders, › Which events, › Calendars |
 | **Tasks** | Lists (welche die Suite zeigt, je Konto gruppiert) · API and MCP (#531, Aufgaben und GitHub) | Kontodetail „Calendars and lists“ |
 | **Notification Hub** (Fensterarten Notification Hub und App Feed) | Notifications (still bei Terminen) · Sources (je Konto: Nextcloud-Benachrichtigungen und Talk, GitHub, je ntfy-Server stumm oder an, je Mail-Konto „Show new mail“; ab vier Gruppen Reiter je Anbieter Nextcloud · GitHub · Mail · ntfy, #546) · Rules (Liste mit „Remove“; vertraute Absender stehen nur unter Mail › Categorization › Spam und Phishing, #546) · API and MCP (#531) | Seite Notification Hub; Abschnitte „Notification Hub“ der Kontoseiten |
-| **Mail** (Fensterart Mail) | Accounts (je Mail-Konto Absendername, Signatur, „Write new mail as“, offene Ordnerfragen, Backup und Restore) · Reading („Show mail as“, „Mail colors“) · Attachments („Click on an attachment“, Downloads-Ordner, Ablageziele mit Editor; M12.7, #290) · Categorization (Tabs Categories, dann AI, seit #481; Kopf mit „Sort existing mail…“ und Fortschritt; Regeln und Filter einer Kategorie stehen auf ihrer Seite, Filter ohne Kategorie unter „Other filters“, eine eigene Seite „Filters“ gibt es nicht mehr; [kategorien.md](kategorien.md), [mail.md](mail.md#filter)) · Statistics (#485: Reiter Overview, Senders, Inbox, Categories; Zeitraum und Konto wie die Übersicht; „Details ›“ der Übersicht führt hin; [mail.md](mail.md)) · Keyboard shortcuts (E10.3) · API and MCP (#531) | Kontodetail Mail; Appearance › Mail; Mail-Backup #267 |
+| **Mail** (Fensterart Mail) | Accounts (je Mail-Konto Absendername, Signatur, „Write new mail as“, offene Ordnerfragen, Backup und Restore) · Reading („Show mail as“, „Mail colors“) · Attachments („Click on an attachment“, Downloads-Ordner, Ablageziele mit Editor; M12.7, #290) · Categorization (Tabs Categories, dann AI, seit #481; das Modell wählt man unter AI, #545; Kopf mit „Sort existing mail…“ und Fortschritt; Regeln und Filter einer Kategorie stehen auf ihrer Seite, Filter ohne Kategorie unter „Other filters“, eine eigene Seite „Filters“ gibt es nicht mehr; [kategorien.md](kategorien.md), [mail.md](mail.md#filter)) · Statistics (#485: Reiter Overview, Senders, Inbox, Categories; Zeitraum und Konto wie die Übersicht; „Details ›“ der Übersicht führt hin; [mail.md](mail.md)) · Keyboard shortcuts (E10.3) · API and MCP (#531) | Kontodetail Mail; Appearance › Mail; Mail-Backup #267 |
 
 Keine App zeigt „Appearance“ als eigene Seite (nur den Verweis). **Ausnahme seit #408:** Fehlt die
 Hauptanwendung, zeigt jede App statt der beiden Verweise die Abschnitte Appearance und General (Language,
@@ -373,13 +373,17 @@ Konten steht die Datenregel „Mail to cloud models“ (vorher in den Rechten de
   es. Der Satz unter der Gruppe sagt, dass Entscheidungsmodelle direkt antworten und viel schneller einordnen als
   Chat-Modelle. Ist schmaler als ein Formular, steht das
   Bedienelement jeder Zeile unter ihrem Text, damit nichts abgeschnitten wird. Ein Modell für Sorting nimmt vorher eine gespeicherte Ausnahme
-  `inbox.categorize` zurück (`ai.set_assignment` mit `engine: null`, wie Einstellungen › Categorization), damit der
+  `inbox.categorize` zurück (`ai.set_assignment` mit `engine: null`), damit der
   Platz sortiert. Unter „Data rule“ steht nur die Erlaubnis des Chats, `mailToCloud` („Chat may read mail outside this
   computer“). Die für Sorting, `decideMailToCloud`, hat keinen eigenen Schalter (#424): Das Menü von Sorting zeigt nach
   „Other models“ den Abschnitt „Elsewhere“, jede Zeile mit Wolke; ein Modell dort
   fragt vorher („Send mail outside this computer?“, „Cancel“/„Use“, auch „Use suggestion“ für ein Modell anderswo), und
   erst „Use“ setzt Modell und Erlaubnis. Ein Modell hier oder „None“ nimmt sie zurück. Steht ein Modell in der
   Cloud im Platz und die Erlaubnis ist aus, sagt die Zeile unter Sorting „Waiting for your OK – mail stays here“.
+- **Im Mail-Fenster** (#545) zeigt AI nur den Platz *Sorting* und keine Datenregel, auch ohne Hauptanwendung: Der
+  Chat gehört zum Assistenten, die Datenregel zur Suite, und ohne Assistent gibt es in Mail keinen Chat, für den sie
+  gälte. Das Sortiermodell wählt man nur hier; Mail › Categorization, Reiter AI, zeigt es als Zeile „Sort with model“
+  mit ↗, die hierher führt.
 - **Was angeschaltet ist, gilt überall:** Die Auswahlen der Module (Assistent › New chats, die Auswahl
   pro Chat, der Bot-Editor, später die KI-Funktionen der Inbox) bieten nur angeschaltete Modelle an.
   Ist keins an, sagen sie es in einem Satz mit „Turn on models in Settings › AI“.
@@ -884,7 +888,7 @@ Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this compu
 | New chats (The one used last, Engine), Model, Effort | womit ein neuer Chat beginnt | Assistant › New chats, Model, Effort; Einrichtung › AI › Use for (nur Engine) | `aiSlots.chat` (Platz Chat; `assistantDefault` nur noch Übernahme) | `ai.set_slot chat`; `set_setting assistant_default` als Alias | Assistent | bleibt, Assistent |
 | Engines (Zeile je KI-Konto) | nur Anzeige, führt zu Accounts | Assistant › Engines | – | `assistant.list_engines` | – | streichen, ersetzt durch Verweis auf AI |
 | What the assistant may use (Stufe je Bereich), Approval (Ask first), Auswahl (All/Selected je Kalender, Liste, Repo, Quelle, Mail-Konto), Send on my behalf, Admin-Schalter | Rechte des Assistenten | Assistant › Rechte-Gruppen (`agents::rights_groups`) | `clients.json` | `clients.update_client`, MCP bewusst nie | Assistent | umziehen nach Agents & API |
-| Mail to cloud models | Datenregel für Mail, **gilt für die ganze Suite**; je Platz: `mailToCloud` für Chat, `decideMailToCloud` für Sorting (#325; seit #424 die Wahl eines Modells in der Cloud mit Rückfrage, kein Schalter) | Assistant; jede Bot-Seite; AI › Data rule (nur Chat); AI › Sorting und Mail › Categorization | `mailToCloud`, `decideMailToCloud` | `set_setting mail_to_cloud`, `set_setting decide_mail_to_cloud` (anschalten nur Menschen) | alle KI-Nutzer | umziehen nach AI, ein Ort |
+| Mail to cloud models | Datenregel für Mail, **gilt für die ganze Suite**; je Platz: `mailToCloud` für Chat, `decideMailToCloud` für Sorting (#325; seit #424 die Wahl eines Modells in der Cloud mit Rückfrage, kein Schalter) | Assistant; jede Bot-Seite; AI › Data rule (nur Chat, nicht im Mail-Fenster, #545); AI › Sorting (Mail › Categorization verweist dorthin, #545) | `mailToCloud`, `decideMailToCloud` | `set_setting mail_to_cloud`, `set_setting decide_mail_to_cloud` (anschalten nur Menschen) | alle KI-Nutzer | umziehen nach AI, ein Ort |
 | Profile: Name, Description, Picture, Personality | wer der Assistent ist und wie er spricht | Assistant › Profile (Unterseite) | `<config>/assistant/profile.json`, `persona.md` | `assistant.update_profile` | Assistent | bleibt, Assistent |
 | Memory: Add note, Edit, Forget | Gedächtnis | Assistant › Profile › Memory | `memory.md` | `assistant.remember`, `assistant.forget` | Assistent | bleibt, Assistent |
 | Bots (Zeile je Bot) › What the bot may use … | Rechte eines Bots | Assistant › Bots › Bot; Assistent-App › Bot-Editor › Access (nur Stufen und Ask first) | `clients.json` | `clients.update_client`, MCP bewusst nie | Assistent | umziehen nach Agents & API; der Bot-Editor verweist dorthin |

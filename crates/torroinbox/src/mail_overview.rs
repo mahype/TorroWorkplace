@@ -13,7 +13,8 @@
 //! - **Blocks**, top down: right-aligned filters ([`controls`]), "What
 //!   comes in" – columns per day by main category ([`series`], [`columns`]) and the categories with
 //!   their share ([`category_rows`]) – with "Details ›" to the statistics page in the settings, and
-//!   a quiet "As of" footer and left-aligned "What's new" (`news.rs`) once the numbers are there or failed. The figures, the senders, the inbox and the day chart's
+//!   a quiet "As of" footer, and "What's new" (`news.rs`) beside them (under them where the page is
+//!   narrow, issue #545) once the numbers are there or failed. The figures, the senders, the inbox and the day chart's
 //!   table ([`day_table`]) are the statistics page's.
 
 use std::time::{Duration, Instant};
@@ -516,57 +517,58 @@ pub(crate) fn numbers(state: &State) -> Numbers<'_> {
     }
 }
 
-/// The overview: its head, then loading, the error with "Retry", the empty span, or "What comes in",
-/// and "What's new" under it once the numbers are there or failed (`news::block`, left out without
-/// announcements), scrolling. Only the statistics take the whole width; the other blocks keep their
-/// reading width. While another span or account loads the numbers stay with "Updating…" over them.
+/// The overview: its filters, then loading, the error with "Retry", the empty span, or "What comes in"
+/// with "As of" under it and "What's new" beside them once the numbers are there
+/// (`widgets::page_columns`, issue #545: two independent blocks); under the error or the empty span
+/// "As of" and "What's new" follow at their reading width (`news::block`, left out without
+/// announcements). Scrolling. The page fills the width beside the sidebar. While another span or
+/// account loads the numbers stay with "Updating…" over them.
 pub fn view(data: OverviewData<'_>) -> Element<'_, Message> {
     let state = data.state;
+    let news = data.news;
     let mut blocks: Vec<Element<'_, Message>> = vec![head(&data)];
-    let mut statistics = None;
+    // At their reading width, left-aligned with the statistics (issue #565).
+    fn reading(block: Element<'_, Message>) -> Element<'_, Message> {
+        container(container(block).width(Fill).max_width(size::content_max())).width(Fill).into()
+    }
     match numbers(state) {
+        // While the numbers load, "What's new" waits too: the card would push it down once they came.
         Numbers::Loading => blocks.push(widgets::loading()),
         Numbers::Failed => {
             blocks.push(widgets::error_state(tr("Couldn't load the overview."), Message::MailOverviewRetry));
+            blocks.extend(as_of(&data).map(reading));
+            blocks.extend(news::block(news).map(reading));
         }
         Numbers::Ready { overview, updating } => {
             if updating {
-                blocks.push(widgets::refresh_note(tr("Updating…")));
+                blocks.push(reading(widgets::refresh_note(tr("Updating…"))));
             }
             if is_empty(overview) {
-                blocks.push(widgets::empty_state(
+                blocks.push(reading(widgets::empty_state(
                     tr("No mail in this span."),
                     tr("What comes in and of which kind shows up here."),
-                ));
+                )));
+                blocks.extend(as_of(&data).map(reading));
+                blocks.extend(news::block(news).map(reading));
             } else {
-                statistics = Some(blocks.len());
-                blocks.push(comes_in_card(overview, state.range, data.catalogue));
+                let (range, catalogue, now) = (state.range, data.catalogue, data.now);
+                blocks.push(widgets::page_columns(move || {
+                    let card = comes_in_card(overview, range, catalogue);
+                    let stamp = trf("As of {time}", &[("time", &datetime::format_moment(overview.as_of, now))]);
+                    let stamp = typo::text(typo::meta().tabular(), stamp).style(theme::text_3);
+                    let mut columns = vec![column![card, stamp].spacing(layout::section_gap()).into()];
+                    columns.extend(news::block(news));
+                    columns
+                }));
             }
         }
     }
-    if let Some(note) = as_of(&data) {
-        blocks.push(note);
-    }
-    // While the numbers load, "What's new" waits too: the card would push it down once they came.
-    if !matches!(numbers(state), Numbers::Loading) {
-        blocks.extend(news::block(data.news));
-    }
-    let content = column(blocks.into_iter().enumerate().map(|(at, block)| {
-        if at == 0 || Some(at) == statistics {
-            block
-        } else {
-            let block = container(block).width(Fill).max_width(size::content_max());
-            let block = container(block).width(Fill);
-            block.into()
-        }
-    }))
-    .spacing(layout::section_gap())
-    .width(Fill);
+    let content = column(blocks).spacing(layout::section_gap()).width(Fill);
     match data.place {
         // The panel scrolls its body itself; inset, the blocks line up with its title.
         Place::Panel => torro_gui::panel::inset(content),
         Place::Page | Place::Narrow => {
-            let page = container(content).width(Fill).center_x(Fill).padding(layout::page_padding());
+            let page = container(content).width(Fill).padding(layout::page_padding());
             scrollable(page)
                 .direction(scrollable::Direction::Vertical(style::scrollbar()))
                 .style(style::scrollable)
@@ -955,8 +957,11 @@ pub(crate) mod tests {
         }
     }
 
+    /// Issues #565, #545: the filters and the statistics fill the page. "What comes in" with "As of"
+    /// and "What's new" stand side by side, top-aligned, where two form widths fit, else under each
+    /// other, left-aligned at the statistics' edge.
     #[tokio::test]
-    async fn filters_and_statistics_fill_the_width_and_news_stay_left_aligned() {
+    async fn the_overview_fills_the_width_with_its_blocks_side_by_side() {
         use iced::Size;
         use iced::advanced::{layout::Limits, renderer::Headless, widget::Tree};
 
@@ -965,7 +970,7 @@ pub(crate) mod tests {
         let mut state = State::default();
         state.data = Some(Loaded { key: state.key(), at: Instant::now(), result: Ok(overview()) });
         let news = news::State { items: Some(Ok(news::demo())), asked: true };
-        for width in [1200.0, 320.0] {
+        for (width, columns) in [(3000.0, 2), (1200.0, 1), (320.0, 1)] {
             let mut page = view(OverviewData {
                 state: &state,
                 catalogue: &[],
@@ -978,13 +983,28 @@ pub(crate) mod tests {
             let mut tree = Tree::new(&page);
             let node =
                 page.as_widget_mut().layout(&mut tree, &renderer, &Limits::new(Size::ZERO, Size::new(width, 1000.0)));
-            let blocks = node.children()[0].children()[0].children();
-            let room = width - layout::page_padding().left - layout::page_padding().right;
-            assert_eq!(blocks[1].size().width, room, "statistics use all available room");
-            assert_eq!(blocks[0].size().width, room, "filters use the statistics' right edge");
-            let bounds = blocks.last().expect("news").children()[0].bounds();
-            assert_eq!(bounds.width, room.min(size::content_max()), "news keep their reading width");
-            assert_eq!(bounds.x, 0.0, "news share the statistics' left edge");
+            // Layout positions are relative to the parent: the content at the page's padding, the
+            // blocks at the content's left edge.
+            let content = &node.children()[0].children()[0];
+            let (left, room) =
+                (layout::page_padding().left, width - layout::page_padding().left - layout::page_padding().right);
+            assert_eq!((content.bounds().x, content.bounds().width), (left, room), "{width}: the page fills the width");
+            let blocks = content.children();
+            assert_eq!(blocks[0].size().width, room, "{width}: filters use the statistics' right edge");
+            let both = blocks[1].bounds();
+            assert_eq!((both.x, both.width), (0.0, room), "{width}: the blocks fill the page");
+            // The responsive cell holds a row of columns, or the one column itself.
+            let parts = blocks[1].children()[0].children();
+            if columns == 1 {
+                assert_eq!(parts.len(), 2, "{width}: statistics and news under each other");
+                assert!(parts[1].bounds().y > parts[0].bounds().y);
+                assert_eq!(parts[0].bounds().width, room, "{width}: statistics use all available room");
+                assert_eq!(parts[1].bounds().x, 0.0, "{width}: news share the statistics' left edge");
+            } else {
+                assert_eq!(parts.len(), columns, "{width}: side by side");
+                assert_eq!(parts[0].bounds().y, parts[1].bounds().y, "top-aligned");
+                assert!(parts[1].bounds().x > parts[0].bounds().x + parts[0].bounds().width);
+            }
         }
     }
 

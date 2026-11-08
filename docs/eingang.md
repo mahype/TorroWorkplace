@@ -482,7 +482,7 @@ aus E9.4.
 - **Schwebend** (#456, Entwurf `prototypes/mail-layout/`): eine Karte senkrecht mittig am rechten Rand über der Mail,
   in jeder Größe, im Paneel an dessen rechtem Rand. Ein Icon je Gruppe, ein Klick tut die erste Aktion der Gruppe, Hover
   öffnet links daneben das Klappfeld der Gruppe mit Icon, Wort und Taste je Zeile (nicht bei Display). Der Text der Mail
-  hält Abstand zur Leiste, der Kopf läuft darunter durch. Die ausgeklappte Leiste, ihr Knopf und die Taste `]` sind
+  und ihr Kopf halten Abstand zur Leiste (#545). Die ausgeklappte Leiste, ihr Knopf und die Taste `]` sind
   entfallen (#333 damit hinfällig).
 - **Menüs und Dialoge** einer Aktion (Follow up, Move to, Task, Event, Category, Mute) öffnen links neben ihrer Zeile,
   eingeklappt neben dem Icon ihrer Gruppe; auch über die Taste geöffnet hängen sie an der Leiste.

@@ -221,7 +221,7 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
     /// A card floating over title and body at the right edge, in the middle of their height (issue
     /// #456: the mail's action rail, `widgets::floating_rail`), [`space::s()`] in from the edge. The
     /// panel grows by `room` where it is not as wide as the window; the body keeps what must stay
-    /// readable clear of the card itself (the mail's head runs on under it, issue #457).
+    /// readable clear of the card itself (the mail's head and text, issues #457, #545).
     pub fn floating(mut self, card: impl Into<Element<'a, M>>, room: f32) -> Self {
         self.floating = Some((card.into(), room));
         self

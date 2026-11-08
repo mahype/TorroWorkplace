@@ -315,6 +315,13 @@ impl State {
         State { window: Some(app.window_class), ..self }
     }
 
+    /// Whether the page stands in the mail window (issue #545): there AI shows only the slot that
+    /// sorts mail ([`ai_parts`]). The chat belongs to the assistant and the data rule to the suite, and
+    /// mail has no chat they would hold for.
+    fn in_mail(&self) -> bool {
+        self.window == Some(AppId::INBOX_MAIL.window_class)
+    }
+
     /// Whether a group may offer to open the window `class` ([`moved_group`]): not the one the page
     /// stands in, and not one of an app that is not installed.
     fn opens(&self, class: &str, data: &dyn Seen) -> bool {
@@ -1678,8 +1685,8 @@ fn finished(state: &mut State) -> Action {
     recommend(state)
 }
 
-/// `ai.set_assignment inbox.categorize` with `engine: null`: the exception taken back, as Settings ›
-/// Categorization sends it.
+/// `ai.set_assignment inbox.categorize` with `engine: null`: the exception taken back before a model
+/// goes into Sorting (since #545 the only place where the sorting model is chosen).
 fn no_exception() -> Request {
     Request::SetAiAssignment {
         function: AiFunction::InboxCategorize,
@@ -2728,7 +2735,13 @@ fn list<'a>(
             rows.push(quiet_row(tr("No account yet.")));
         }
         rows.push(add_row(fixed, fixed == Group::Mail && offers_import(state)));
-        about = Some(fixed.about().to_string());
+        // The mail window has no chat (issue #545): its AI is for sorting only.
+        about = Some(match fixed {
+            Group::Ai if state.in_mail() => {
+                tr("Models for sorting mail, on this computer or in the cloud.").to_string()
+            }
+            _ => fixed.about().to_string(),
+        });
     }
     // On AI the header names the section already: its first group is the accounts, not "AI" again
     // ("AI › AI", design review of #554). Elsewhere the provider names the group.
@@ -2773,8 +2786,13 @@ pub struct AiParts {
 ///   row to the control centre for the rest; the assistant sets *Chat* under General.
 /// - An app window without it: every slot – but *Chat* in the assistant, which sets it under General
 ///   with its effort – and the data rule, since there is no other place.
+/// - The mail window, with or without it: only *Sorting* and never the data rule (issue #545): mail
+///   has no chat, so neither the chat's slot nor its rule hold there.
 pub fn ai_parts(window: Option<&str>, main_app: bool) -> AiParts {
     let Some(window) = window else { return AiParts { slots: AiSlot::ALL.to_vec(), data_rule: true, refer: false } };
+    if !main_app && window == AppId::INBOX_MAIL.window_class {
+        return AiParts { slots: vec![AiSlot::Decide], data_rule: false, refer: false };
+    }
     if main_app {
         let slots = match window == AppId::INBOX_MAIL.window_class {
             true => vec![AiSlot::Decide],
@@ -2989,14 +3007,14 @@ fn slots_group<'a>(
         if slot == AiSlot::Decide
             && let Some((provider, seat)) = sorting_place(data, &state.models)
         {
-            rows.push(mail_note(provider, seat, data.settings().mail_to_cloud));
+            rows.push(mail_note(provider, seat, chat_note_off(state, data)));
         }
         if let Some(suggestion) = suggestion_of(state, slot).filter(|suggestion| {
             !holds(data, slot, suggestion.engine.as_deref(), suggestion.model.as_deref()) || suggestion.engine.is_none()
         }) {
             rows.push(suggestion_row(state, suggestion, stacked));
             if slot == AiSlot::Decide && !suggestion.local {
-                rows.push(mail_note(suggestion.provider.name(), &suggestion.seat, data.settings().mail_to_cloud));
+                rows.push(mail_note(suggestion.provider.name(), &suggestion.seat, chat_note_off(state, data)));
             }
         }
     }
@@ -3144,6 +3162,11 @@ fn slot_detail(state: &State, data: &dyn Seen, slot: AiSlot) -> (String, bool) {
             let account = ai_accounts(data).find(|account| account.id == engine).map(|account| account.label.as_str());
             (trf("Turned off at {account}", &[("account", &account.unwrap_or(engine))]), true)
         }
+        // Switched off by a stored exception (the old "Off" of Categorization, or an agent): the slot
+        // holds a model, but nothing sorts until one is chosen here again (review of #545).
+        _ if slot == AiSlot::Decide && sorting_switched_off(data) => {
+            (tr("Switched off – choose a model to switch it on").to_string(), true)
+        }
         _ if slot == AiSlot::Decide && waits_for_consent(state, data) => {
             (tr("Waiting for your OK – mail stays here").to_string(), true)
         }
@@ -3152,6 +3175,13 @@ fn slot_detail(state: &State, data: &dyn Seen, slot: AiSlot) -> (String, bool) {
         }
         _ => (slot_about(slot).to_string(), false),
     }
+}
+
+/// Sorting is switched off by a stored exception `inbox.categorize` that is off: choosing a model for
+/// *Sorting* takes it back ([`displaced`]) and switches sorting on again.
+fn sorting_switched_off(data: &dyn Seen) -> bool {
+    let exception = data.settings().ai_assignments.get(&AiFunction::InboxCategorize);
+    exception.is_some_and(|own| own.engine.is_some() && !own.enabled)
 }
 
 /// *Sorting* holds a model in the cloud ([`sorts_elsewhere`]) while its permission is off (issue #424):
@@ -3466,6 +3496,12 @@ fn failure_row<'a>(failure: &'a SlotFailure, stacked: bool) -> Element<'a, Messa
         true => models_row(Some(alert.into()), failure.message.as_str(), None, false, Some(retry), true),
         false => setting_row(Some(alert.into()), failure.message.as_str(), None, retry),
     }
+}
+
+/// Whether the note under Sorting leaves out "The chat still gets no mail.": while the chat may read
+/// mail, and in the mail window, which has no chat (issue #545).
+fn chat_note_off(state: &State, data: &dyn Seen) -> bool {
+    data.settings().mail_to_cloud || state.in_mail()
 }
 
 /// Where *Sorting* sends mail, said where the choice is made: "Mail goes to OpenRouter (Cloud · US) for
@@ -4995,6 +5031,64 @@ mod tests {
         assert!(!offers_import(&broken) && !unlisted(&broken));
         assert!(!answered(&mut broken, &Err("no template".into())), "only the one answer it waited for");
         draw(&state, &data);
+    }
+
+    /// Issue #545: in the mail window AI shows only the slot that sorts and no data rule; the control
+    /// centre and the assistant keep both slots and the rule.
+    #[test]
+    fn the_mail_window_shows_only_sorting_and_no_data_rule() {
+        let mut data = demo_data();
+        demo_ollama(&mut data);
+        for window in [None, Some(AppId::INBOX_MAIL), Some(AppId::ASSISTANT)] {
+            let state = match window {
+                Some(app) => State::default().in_window(app),
+                None => State::default(),
+            };
+            assert_eq!(state.in_mail(), window == Some(AppId::INBOX_MAIL));
+            if state.in_mail() {
+                for main_app in [false, true] {
+                    let parts = ai_parts(state.window, main_app);
+                    assert_eq!(parts.slots, [AiSlot::Decide], "{main_app}: only Sorting");
+                    assert!(!parts.data_rule, "{main_app}: no data rule");
+                }
+            }
+            // In mail the note under Sorting never names the chat; elsewhere it follows the data rule.
+            let expected = if state.in_mail() { true } else { data.settings().mail_to_cloud };
+            assert_eq!(chat_note_off(&state, &data), expected, "{window:?}");
+            drop(list(&state, &data, Utc::now(), None, true, false));
+        }
+    }
+
+    /// Review of #545: sorting switched off by a stored exception says so under *Sorting*, with the way
+    /// back; without it, or with an exception that sorts, the line stays as it was.
+    #[test]
+    fn sorting_switched_off_by_an_exception_says_so() {
+        let mut data = demo_data();
+        demo_ollama(&mut data);
+        let state = State::default().in_window(AppId::INBOX_MAIL);
+        let before = slot_detail(&state, &data, AiSlot::Decide);
+        assert!(!sorting_switched_off(&data));
+        assert_ne!(before.0, tr("Switched off – choose a model to switch it on"));
+        for enabled in [false, true] {
+            let mut data = data.clone();
+            data.settings.ai_assignments.insert(
+                AiFunction::InboxCategorize,
+                torro_core::ai::AiAssignment {
+                    function: AiFunction::InboxCategorize,
+                    engine: Some("ai:ollama@localhost:11434".into()),
+                    model: Some("nimble".into()),
+                    effort: None,
+                    enabled,
+                },
+            );
+            assert_eq!(sorting_switched_off(&data), !enabled);
+            let (line, alert) = slot_detail(&state, &data, AiSlot::Decide);
+            assert_eq!(line == tr("Switched off – choose a model to switch it on"), !enabled, "{enabled}");
+            if !enabled {
+                assert!(alert, "with the alert");
+            }
+            assert_ne!(slot_detail(&state, &data, AiSlot::Chat).0, tr("Switched off – choose a model to switch it on"));
+        }
     }
 
     /// Task S.30: the data rule stands under AI and its switch sends the setting, never a right.
@@ -6704,8 +6798,7 @@ mod tests {
     }
 
     /// Review of #325 (F2, R6): while an exception of sorting is stored, putting a model into Sorting – from
-    /// the list or by "Use suggestion" – takes it back first, then `ai.set_slot`, as Settings ›
-    /// Categorization does, so the slot sorts and meanwhile no exception the person stopped sorts again;
+    /// the list or by "Use suggestion" – takes it back first, then `ai.set_slot`, so the slot sorts and meanwhile no exception the person stopped sorts again;
     /// also for the model the slot has already. A take-back that fails stops with its reason and sets no
     /// slot. The chat's slot never touches it.
     #[test]
@@ -6932,7 +7025,9 @@ mod tests {
         assert_eq!(ai_parts(Some(mail), true), AiParts { slots: vec![AiSlot::Decide], data_rule: false, refer: true });
         assert_eq!(ai_parts(Some(assistant), true), AiParts { slots: Vec::new(), data_rule: false, refer: true });
         assert_eq!(ai_parts(Some(calendar), true), AiParts { slots: Vec::new(), data_rule: false, refer: true });
-        assert_eq!(ai_parts(Some(mail), false), all, "without the main application: the only place");
+        // Issue #545: mail has no chat, so neither the chat's slot nor the data rule, also without it.
+        let sorting = AiParts { slots: vec![AiSlot::Decide], data_rule: false, refer: false };
+        assert_eq!(ai_parts(Some(mail), false), sorting, "without the main application: only Sorting");
         assert_eq!(ai_parts(Some(calendar), false), all);
         assert_eq!(
             ai_parts(Some(assistant), false),
