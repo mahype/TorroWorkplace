@@ -1161,14 +1161,18 @@ impl App {
             composer =
                 composer.push(widgets::text_button(None, tr("Stop"), style::button::secondary, Some(Message::Stop)));
         }
-        let shown = self.glance_answer();
+        let shown = self.glance_answer(strip);
         let content: Element<'_, Message> = if strip {
             // A flat strip: the answer takes the height, the composer stands beside it at the bottom,
             // and the answer's last line – or the quiet word – on the field's middle line (issue #547),
-            // so both share one axis. Only a written answer ends in body text.
+            // so both share one axis. Only a written answer ends in body text; a deleted bot has a
+            // line of meta text in place of the field, on the bottom edge already.
             let answer = self.transcript.last_answer().is_some_and(|entry| self.answer_shows(entry.seq));
             let last = if answer && !self.waits_in_glance() { body } else { typo::meta() };
-            let shown = container(shown).height(Fill).padding(Padding::ZERO.bottom(glance_lift(last)));
+            let shown = container(shown)
+                .height(Fill)
+                .align_bottom(Fill)
+                .padding(Padding::ZERO.bottom(if self.bot_gone() { 0.0 } else { glance_lift(last) }));
             row![shown, container(composer).width(size::props()).align_bottom(Fill)].spacing(space::m()).into()
         } else {
             let mut column = column![].spacing(space::s());
@@ -1197,7 +1201,9 @@ impl App {
     /// its scrolling, so the scroll bar never lies over it; with room for fewer than three lines the
     /// answer above it shrinks to one line cut with "…" (`chat::answer_line`), without room for one
     /// it is left out.
-    fn glance_answer(&self) -> Element<'_, Message> {
+    ///
+    /// In the strip (`strip`) the answer is only as high as it is, so it can stand at the bottom.
+    fn glance_answer(&self, strip: bool) -> Element<'_, Message> {
         let card = self.newest_card_line();
         let answer = self.transcript.last_answer().filter(|entry| self.answer_shows(entry.seq));
         match (card, answer) {
@@ -1205,7 +1211,7 @@ impl App {
                 let answer = responsive(move |room| {
                     let line_height = typo::line_height(typo::body());
                     if room.height >= GLANCE_LINES * line_height {
-                        return self.glance_scroll();
+                        return self.glance_scroll(strip);
                     }
                     // Not even one line: the card alone says what came of it.
                     if room.height < line_height {
@@ -1222,7 +1228,7 @@ impl App {
                 });
                 column![answer, card].spacing(space::s()).into()
             }
-            _ => self.glance_scroll(),
+            _ => self.glance_scroll(strip),
         }
     }
 
@@ -1235,7 +1241,7 @@ impl App {
     }
 
     /// The scrolling part of [`App::glance_answer`]: the approval, the answer, or a quiet word.
-    fn glance_scroll(&self) -> Element<'_, Message> {
+    fn glance_scroll(&self, strip: bool) -> Element<'_, Message> {
         let waiting = self
             .transcript
             .approvals()
@@ -1266,7 +1272,7 @@ impl App {
             .anchor_bottom()
             .style(style::scrollable)
             .width(Fill)
-            .height(Fill)
+            .height(if strip { iced::Length::Shrink } else { Fill })
             .into()
     }
 }
