@@ -81,7 +81,7 @@ use torro_gui::{layout, style, typo, widgets};
 use torro_ipc::{ColorSchemeInfo, DesignInfo, FontInfo, FontOrigin, Request, Response, SettingKey};
 
 use crate::Backend;
-use crate::parts::{choice, confirm, row_frame, setting_row, switch};
+use crate::parts::{confirm, row_frame, setting_row, switch};
 
 /// The section words of the two pages, as `--settings` and `--section` take them.
 pub const APPEARANCE: &str = "appearance";
@@ -437,21 +437,22 @@ pub enum Place {
     App,
 }
 
-/// The group "Language", a list of choices – one row each, the whole row is the button, a check mark
-/// at the chosen one (Deutsch is shown in its own name, like the language picker of any app).
+/// The group "Language": "App language" as a segment of System, English and Deutsch beside its name
+/// (under it when the window is narrow, issue #548), so three choices stand as one control. Deutsch is
+/// shown in its own name, like the language picker of any app.
 pub fn language<'a>(settings: &Settings, place: Place) -> Element<'a, Message> {
-    let chosen = settings.language;
-    let language =
-        |label: &'static str, language: Language| choice(label, chosen == language, Message::Language(language));
+    let languages = [Language::System, Language::English, Language::German];
+    let active = languages.iter().position(|language| *language == settings.language).unwrap_or(0);
+    let options = vec![
+        (tr("System").to_string(), Message::Language(Language::System)),
+        ("English".to_string(), Message::Language(Language::English)),
+        // Shown in its own name on purpose: someone who cannot read the current language
+        // must still find their way back.
+        ("Deutsch".to_string(), Message::Language(Language::German)),
+    ];
     widgets::group(
         tr("Language"),
-        vec![
-            language(tr("System"), Language::System),
-            language("English", Language::English),
-            // Shown in its own name on purpose: someone who cannot read the current language
-            // must still find their way back.
-            language("Deutsch", Language::German),
-        ],
+        vec![crate::parts::segmented_row(tr("App language"), None, options, active)],
         Some(
             match place {
                 Place::ControlCentre => {
