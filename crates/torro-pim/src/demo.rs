@@ -1070,41 +1070,49 @@ fn demo_repo(repo: &str) -> Option<GitHubRepoDetails> {
     Some(details)
 }
 
+/// The accounts of the sample ([`DemoSource::accounts`]): the work and the home account and the
+/// GitHub account, all connected and just synced. Public so the settings of the apps' demo
+/// (`torro_settings_ui::demo::Demo::with_pim_sample`) show the same accounts as their sidebar
+/// (issue #544).
+pub fn sample_accounts() -> Vec<PimAccount> {
+    let github = PimAccount {
+        id: GITHUB_ACCOUNT.into(),
+        label: GITHUB_LOGIN.into(),
+        kind: GITHUB_KIND.into(),
+        state: AccountState::Connected {
+            server: "https://github.com".into(),
+            login_name: GITHUB_LOGIN.into(),
+            last_sync: Some(Utc::now()),
+            problem: None,
+        },
+        // A token that may write issues, so ticking one closes it (task G.5).
+        scopes: Some(vec!["repo".into(), "read:org".into()]),
+    };
+    ACCOUNTS
+        .iter()
+        .map(|id| {
+            let host = id.split_once('@').map_or(*id, |(_, host)| host);
+            PimAccount {
+                id: (*id).into(),
+                label: format!("anna@{host}"),
+                kind: "nextcloud".into(),
+                state: AccountState::Connected {
+                    server: format!("https://{host}"),
+                    login_name: "anna".into(),
+                    last_sync: Some(Utc::now()),
+                    problem: None,
+                },
+                scopes: None,
+            }
+        })
+        .chain([github])
+        .collect()
+}
+
 impl PimSource for DemoSource {
-    /// The work and the home account and the GitHub account, all connected and just synced.
+    /// The sample's accounts ([`sample_accounts`]).
     async fn accounts(&self) -> Result<Vec<PimAccount>, ProviderError> {
-        let github = PimAccount {
-            id: GITHUB_ACCOUNT.into(),
-            label: GITHUB_LOGIN.into(),
-            kind: GITHUB_KIND.into(),
-            state: AccountState::Connected {
-                server: "https://github.com".into(),
-                login_name: GITHUB_LOGIN.into(),
-                last_sync: Some(Utc::now()),
-                problem: None,
-            },
-            // A token that may write issues, so ticking one closes it (task G.5).
-            scopes: Some(vec!["repo".into(), "read:org".into()]),
-        };
-        Ok(ACCOUNTS
-            .iter()
-            .map(|id| {
-                let host = id.split_once('@').map_or(*id, |(_, host)| host);
-                PimAccount {
-                    id: (*id).into(),
-                    label: format!("anna@{host}"),
-                    kind: "nextcloud".into(),
-                    state: AccountState::Connected {
-                        server: format!("https://{host}"),
-                        login_name: "anna".into(),
-                        last_sync: Some(Utc::now()),
-                        problem: None,
-                    },
-                    scopes: None,
-                }
-            })
-            .chain([github])
-            .collect())
+        Ok(sample_accounts())
     }
 
     async fn connect_nextcloud(&self, server: String) -> Result<String, ProviderError> {

@@ -2258,7 +2258,7 @@ impl App {
     fn settings_backend(&self) -> Arc<dyn SettingsBackend> {
         match &self.source {
             Source::Core(client) => Arc::new(CoreSettings { socket: client.socket.clone() }),
-            Source::Demo(_) => Arc::new(torro_settings_ui::demo::Demo::new()),
+            Source::Demo(_) => Arc::new(torro_settings_ui::demo::Demo::with_pim_sample()),
         }
     }
 
