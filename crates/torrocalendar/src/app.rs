@@ -173,7 +173,7 @@ fn shows_calendar(message: &Message) -> bool {
 /// The menus that open over the window; at most one at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Menu {
-    /// "Week ▾" in the medium and narrow header: the views and the calendars.
+    /// "Week ▾" in the header (every size since issue #543): the views and the calendars.
     View,
 }
 
@@ -354,7 +354,7 @@ pub enum Open {
     EditorSeries,
     /// The timeline with the night's card open under "Nights" in the header.
     Night,
-    /// The view menu ("Week ▾"); only the medium and narrow header have it.
+    /// The view menu ("Week ▾"), in the header of every size (issue #543).
     Menu,
     /// The sidebar drawer of the medium and narrow layouts.
     Drawer,
@@ -1577,12 +1577,11 @@ impl App {
                 let (views, field) = (Anchor::new(), Anchor::new());
                 // The night's card floats beside a moon on the view's canvas, or under "Nights".
                 let (night_view, night_button) = (Anchor::new(), Anchor::new());
-                let menu = self.menu.and_then(|menu| match menu {
-                    // Only the medium and narrow header have the "Week ▾" button the menu hangs
-                    // from.
-                    Menu::View => (!shell::has_sidebar(class)).then(|| {
+                // Every header has the "Week ▾" button the menu hangs from (issue #543).
+                let menu = self.menu.map(|menu| match menu {
+                    Menu::View => {
                         widgets::floating(&views, Placement::Below(Align::End), self.view_menu(), Message::CloseMenu)
-                    }),
+                    }
                 });
                 let night = self.night_card.map(|card| {
                     let (anchor, placement) = match card.at {
@@ -1634,11 +1633,12 @@ impl App {
 
     /// The header bar (`calendar.html`, `.header`):
     ///
-    /// - **Wide:** "October 2026 Week 41", "Today", ‹ ›; at the right the views as a segmented
-    ///   control, refresh and "New event". The timeline adds "Nights" before the views; without a
-    ///   night it opens the card "Night" (anchored at `night_button`) instead.
-    /// - **Medium:** the views (and calendars) in "Week ▾"; the rail beside it has the panel button.
-    ///   The timeline's "Nights" is the moon alone.
+    /// - **Wide:** "October 2026 Week 41", "Today", ‹ ›; at the right the views (and calendars) in
+    ///   "Week ▾", refresh and "New event". Six views are more than a segmented control holds
+    ///   (design skill, section 5, issue #543). The timeline adds "Nights" before the views; without
+    ///   a night it opens the card "Night" (anchored at `night_button`) instead.
+    /// - **Medium:** the same, the rail beside it has the panel button. The timeline's "Nights" is
+    ///   the moon alone.
     /// - **Narrow:** without the note and "Today" (the small month in the drawer and the T key go
     ///   to today), the day as "Wed, 7 Oct", and "New event" reduced to "+". "Day ▾" names the
     ///   view shown ([`App::shown`]). The top row leaves no room for ‹ › and refresh (issue #459):
@@ -1682,14 +1682,7 @@ impl App {
                 };
                 trailing.push(widgets::anchored(night_button, button));
             }
-            if class == SizeClass::Wide {
-                let segments = CalView::ALL.map(|view| (view.label(), Message::SetView(view)));
-                let active = CalView::ALL.iter().position(|view| *view == self.view).unwrap_or_default();
-                trailing.push(widgets::segmented(segments, active));
-            } else {
-                trailing.push(select());
-            }
-            trailing.extend([refresh, primary]);
+            trailing.extend([select(), refresh, primary]);
             shell::header_bar([], title, trailing)
         } else {
             // The short date: the long one ("Monday, 12 October 2026") squeezes the buttons.
@@ -1812,8 +1805,9 @@ impl App {
         shell::sidebar(head, items, footer)
     }
 
-    /// The menu under "Week ▾": the views with their keys, then the calendars with a check box
-    /// that shows and hides them (the menu stays open for that). In a narrow window, whose header
+    /// The menu under "Week ▾", the same in every size: the views with their keys, then the
+    /// calendars with a check box that shows and hides them (the menu stays open for that). In a
+    /// narrow window, whose header
     /// has no room for the refresh button (issue #459), "Refresh" follows at the end.
     fn view_menu(&self) -> Element<'_, Message> {
         let views = CalView::ALL
@@ -2029,11 +2023,8 @@ impl App {
             CalView::Day if self.class() == SizeClass::Narrow => {
                 column![week_strip::view(&data), views::week::day_under_strip(data, self.working_hours)].into()
             }
-            // One day is not stretched over a wide window: it keeps a list's reading width at the
-            // sidebar (design skill, section 6), and the properties column says what comes next.
-            CalView::Day if shell::has_props(self.class()) => {
-                container(views::week::view(data, self.working_hours)).max_width(size::content_max()).into()
-            }
+            // A day fills the width up to the properties column ("Up next"), like the week: a grid
+            // is no reading list, a narrower one only left a gap before the column (issue #543).
             CalView::Day | CalView::Week => views::week::view(data, self.working_hours),
             CalView::Month => views::month::view(data),
             CalView::Agenda => views::agenda::view(data, self.class()),
@@ -2778,6 +2769,20 @@ mod tests {
         assert_eq!((app.menu, app.drawer), (None, true), "opening the drawer closes the menu");
         let _ = app.update(Message::CloseMenu);
         assert_eq!((app.menu, app.drawer), (None, false));
+    }
+
+    /// Issue #543: six views are more than a segmented control holds, so the wide header has
+    /// "Week ▾" too, and its menu opens there as in the medium and narrow ones.
+    #[test]
+    fn the_wide_header_opens_the_view_menu() {
+        let mut app = demo_app();
+        let _ = app.update(Message::Resized(class_size(SizeClass::Wide)));
+        assert_eq!(app.class(), SizeClass::Wide);
+        let _ = app.update(Message::ToggleMenu(Menu::View));
+        assert_eq!(app.menu, Some(Menu::View));
+        let _ = app.view();
+        let _ = app.update(Message::SetView(CalView::Agenda));
+        assert_eq!((app.view, app.menu), (CalView::Agenda, None));
     }
 
     #[test]

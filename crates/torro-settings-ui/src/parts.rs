@@ -17,14 +17,16 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::{style, typo, widgets};
 
-/// A row of a settings group (`widgets::group`) with the metrics of `widgets::group_row` – 44
-/// high, 56 with a `detail`, 16 at the sides, 16 before the `control` – plus an optional `mark`
-/// in front (a status or calendar dot) and label and detail on one line each, so a long account
-/// name never breaks the row. A line too long for its room is cut with "…" and shows the whole
-/// text as a tooltip (`widgets::ellipsized`, task S.22): `BODY` in `text` for the label, `META` in
-/// `text_2` for the detail. Both colours are set explicitly, because a surrounding button
-/// ([`pressable`]) would otherwise hand the text its own – so a row of a *disabled* button does
-/// not fade; no page builds one, and `ui/general.rs` draws its unusable design packs itself.
+/// A row of a settings group (`widgets::group`) with the metrics of `widgets::group_row` – at
+/// least as high as the header bar, 12 more with a `detail`, 16 at the sides, 16 before the
+/// `control` – plus an optional `mark` in front (a status or calendar dot). The label stays on one
+/// line, so a long account name never breaks the row: too long for its room it is cut with "…" and
+/// shows the whole text as a tooltip (`widgets::ellipsized`, task S.22), `BODY` in `text`. The
+/// explaining `detail` (`META` in `text_2`) wraps instead (issue #543: a sentence cut with "…" in a
+/// narrow window said half of it), and the row grows with it ([`growing_frame`]). Both colours are
+/// set explicitly, because a surrounding button ([`pressable`]) would otherwise hand the text its
+/// own – so a row of a *disabled* button does not fade; no page builds one, and `ui/general.rs`
+/// draws its unusable design packs itself.
 pub fn setting_row<'a, M: 'a>(
     mark: Option<Element<'a, M>>,
     label: impl IntoFragment<'a>,
@@ -34,14 +36,30 @@ pub fn setting_row<'a, M: 'a>(
     let tall = detail.is_some();
     let mut lines = column![widgets::ellipsized(typo::body(), label, theme::text)];
     if let Some(detail) = detail {
-        lines = lines.push(widgets::ellipsized(typo::meta(), detail, theme::text_2));
+        // A word longer than the line (a path, an address) breaks too, never runs over the control.
+        let detail = typo::text(typo::meta(), detail).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
+        lines = lines.push(detail.width(Fill));
     }
-    let text = row![].push(mark).push(lines.width(Fill)).spacing(space::m()).align_y(Alignment::Center);
+    // The air of a grown row belongs to the text alone, so a tall control keeps the row's least
+    // height (review of #543).
+    let lines = lines.width(Fill).padding([space::s(), 0.0]);
+    let text = row![].push(mark).push(lines).spacing(space::m()).align_y(Alignment::Center);
     // The row spans the page, its text keeps the reading width (issue #464).
-    row_frame(
+    growing_frame(
         row![widgets::reading_cell(text.width(Fill)), control.into()].spacing(space::l()).align_y(Alignment::Center),
         tall,
     )
+}
+
+/// `content` as one line of a settings group that grows with it (issue #543): at least as high as
+/// [`row_frame`] makes it (a strut of that height keeps the short rows where they were), and when
+/// the content needs more (a wrapped detail), its own height – the content brings its air, as
+/// [`setting_row`]'s text does; 16 at the sides like [`row_frame`].
+fn growing_frame<'a, M: 'a>(content: impl Into<Element<'a, M>>, tall: bool) -> Element<'a, M> {
+    let least = if tall { size::header() + space::m() } else { size::header() };
+    let strut = blank().height(least);
+    let content = container(content).width(Fill);
+    container(row![strut, content].align_y(Alignment::Center)).width(Fill).padding([0.0, space::l()]).into()
 }
 
 /// `content` as one line of a settings group: as high as the header bar (64 in Torro, 76 with two lines of
