@@ -12321,6 +12321,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// beside it – up to [`size::panel()`], less in a narrower window – and as high as the window
     /// leaves. `None` while the mail is not loaded or has no such attachment.
     fn file_menu(&self, at: Option<usize>) -> Option<Element<'_, Message>> {
+        let sections = self.file_menu_sections(at)?;
+        let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
+        let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
+        Some(mail::file_menu_card_feedback(sections, width, tallest, |message| self.save_feedback(message)))
+    }
+
+    /// An attachment's full name heads its actions, independently of truncation in the reader (#572).
+    fn file_menu_sections(&self, at: Option<usize>) -> Option<Vec<MenuSection<'_, Message>>> {
         let reading = self.reading()?;
         let files = mail::files_of(&reading)?;
         let part = match at {
@@ -12329,11 +12337,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         };
         let category = reading.summary().and_then(|summary| summary.category);
         let menu = mail::FileMenu { id: reading.id, part, saving: reading.saving, click: reading.click, category };
-        let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
-        let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
-        Some(mail::file_menu_card_feedback(mail::file_menu(menu), width, tallest, |message| {
-            self.save_feedback(message)
-        }))
+        let mut sections = mail::file_menu(menu);
+        if let Some(at) = at {
+            let name = files.get(at)?.filename.as_deref().map(list::one_line).filter(|name| !name.is_empty());
+            sections.first_mut()?.title = Some(name.unwrap_or_else(|| tr("Attachment").to_owned()).into());
+        }
+        Some(sections)
     }
 
     /// The content below the header: an error line if there is one, and the list – left-aligned
@@ -18660,6 +18669,25 @@ mod tests {
             let _ = app.update(Message::SaveAll("m:p3".into()));
             assert_eq!(app.sent.last(), Some(&sent));
         }
+        draw_everywhere(&mut app);
+    }
+
+    /// Issue #572: even a name longer than the row's room stays complete in its own menu.
+    #[test]
+    fn attachment_menus_identify_each_file_without_shortening_its_name() {
+        let mut app = invoice();
+        let name = "quarterly-budget-review-with-all-departments-and-travel-costs-final-v7.xlsx";
+        let Some(Letter { loaded: Some(Ok(mail)), .. }) = app.letter.as_mut() else { panic!("loaded invoice") };
+        mail.attachments[0].filename = Some(name.into());
+        for at in 0..2 {
+            let reading = app.reading().expect("reading");
+            let files = mail::files_of(&reading).expect("attachments");
+            let filename = files[at].filename.as_deref().expect("filename");
+            let sections = app.file_menu_sections(Some(at)).expect("menu");
+            assert_eq!(sections[0].title.as_deref(), Some(filename));
+        }
+        assert!(app.file_menu_sections(None).expect("all files")[0].title.is_none());
+        assert!(app.file_menu_sections(Some(usize::MAX)).is_none());
         draw_everywhere(&mut app);
     }
 
