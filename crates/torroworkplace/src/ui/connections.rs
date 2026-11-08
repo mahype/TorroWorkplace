@@ -6,7 +6,8 @@
 //! together: **Built-in** (Allowed folders and Built-in tools), **Catalog** and **Your servers**. Until
 //! the person chooses one, the list opens on the tab of a server that stopped after errors, else of
 //! one whose tools wait, else on Built-in ([`list_tab`]); "Add server…" goes on at Your servers. The
-//! tab chosen stays while a page below the list is open and after "‹".
+//! tab shown stays while a page below the list is open and after "‹"; one the list picked itself
+//! only until the section is left ([`leave`]).
 //!
 //! ```text
 //! Built-in
@@ -266,6 +267,10 @@ pub struct State {
     /// The tab of the list the person chose; `None` until then, when [`list_tab`] picks it. Kept
     /// while a page below the list is open, so "‹" comes back to it.
     tab: Option<ListTab>,
+    /// The tab [`list_tab`] had picked when a server's page opened: "‹" comes back to it, though a
+    /// reload meanwhile (tools allowed, a server stopping) would pick another. Dropped when the
+    /// section is left ([`leave`]), so the next visit picks again.
+    held: Option<ListTab>,
     draft: Option<Draft>,
     /// Shown above the page until the next chooser opens.
     problem: Option<String>,
@@ -1008,6 +1013,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::Retry => Action::Reload,
         Message::Open(id) => {
+            state.held = Some(list_tab(state, data));
             // The page's tab shown first holds while it is open (issue #548), so a reload (tools allowed,
             // changed tools reported) never swaps the tab under the person.
             state.page = Page::Server(id.clone());
@@ -1774,12 +1780,18 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
     column![].push(state.problem.clone().map(notice)).push(body).spacing(layout::section_gap()).into()
 }
 
-/// The tab of the list shown: the one the person chose, else the tab of the first server that
+/// The section is left: the list picks its tab again on the next visit, unless the person chose one.
+pub fn leave(state: &mut State) {
+    state.held = None;
+}
+
+/// The tab of the list shown: the one the person chose, else the one held since a server's page
+/// opened ([`State::held`]), else the tab of the first server that
 /// stopped after errors, else of the first whose tools wait for the person (a catalog server's in
 /// Catalog, one's own in Your servers), else Built-in. So what needs the person, which the sidebar
 /// marks ([`alert`]), is in sight when the section opens.
 pub fn list_tab(state: &State, data: &Data) -> ListTab {
-    if let Some(tab) = state.tab {
+    if let Some(tab) = state.tab.or(state.held) {
         return tab;
     }
     let servers = data.extensions.entries();
@@ -4665,6 +4677,28 @@ mod tests {
         data.catalog = Listing::Failed("unsupported".into());
         data.extensions = Listing::Failed("unsupported".into());
         assert!(list_labels(&data).iter().all(|(_, count)| count.is_none()));
+    }
+
+    /// Review of #580: the tab picked by itself holds while a server's page is open and after "‹",
+    /// though the servers changed meanwhile; leaving the section lets the list pick again.
+    #[test]
+    fn the_picked_tab_holds_until_the_section_is_left() {
+        let mut data = data();
+        let mut state = State::default();
+        assert_eq!(list_tab(&state, &data), ListTab::Catalog, "GitHub stopped after errors");
+        let _ = update(&mut state, Message::Open("github".into()), &data);
+        if let Listing::Entries(servers) = &mut data.extensions {
+            for server in servers.iter_mut().filter(|server| matches!(server.status, Status::Crashed { .. })) {
+                server.status = Status::Running;
+            }
+        }
+        let _ = update(&mut state, Message::Back, &data);
+        assert_eq!(list_tab(&state, &data), ListTab::Catalog, "back where the person came from");
+        leave(&mut state);
+        assert_eq!(list_tab(&state, &data), ListTab::Own, "picked again: only Notes waits");
+        let _ = update(&mut state, Message::Tab(0), &data);
+        leave(&mut state);
+        assert_eq!(list_tab(&state, &data), ListTab::BuiltIn, "a tab chosen stays");
     }
 
     /// Issue #548: a tab chosen stays while a server's page is open and after "‹"; a place beyond the

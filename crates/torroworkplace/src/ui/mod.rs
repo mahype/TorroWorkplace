@@ -1727,6 +1727,9 @@ impl Ui {
         if matches!(self.section, Section::Accounts | Section::Ai) {
             accounts::leave(&mut self.accounts);
         }
+        if self.section == Section::Connections && section != Section::Connections {
+            connections::leave(&mut self.connections);
+        }
         suite::leave(&mut self.general.suite);
         self.section = section;
         self.close_menus();

@@ -557,7 +557,7 @@ drei Reitern: **Built-in** (Allowed folders und Built-in tools), **Catalog** (mi
 servers** (mit der Zahl der eigenen Server). Solange die Person keinen Reiter gewählt hat, öffnet die Seite auf dem
 Reiter eines Servers, der nach Fehlern steht, sonst eines Servers mit wartenden Werkzeugen, sonst auf Built-in; nach
 „Add server…“ steht sie auf Your servers. Der gewählte Reiter bleibt, während die Seite eines Servers offen ist, und
-nach „‹“.
+nach „‹“; ein automatisch gewählter ebenso, bis die Person den Abschnitt verlässt.
 
 - **Allowed folders** (#304): die Ordner, in denen Werkzeuge mit Dateien arbeiten, je „Read“ oder „Read and write“,
   „Add folder…“ und „Remove“; nur ein Mensch ändert die Liste.
