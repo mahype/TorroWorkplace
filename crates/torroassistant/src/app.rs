@@ -569,6 +569,9 @@ pub struct App {
     /// What the settings showed when they last closed, for the next time they open (issue #394):
     /// they are there at once with it and update in place.
     settings_memory: torro_settings_ui::Memory,
+    /// What a demo state presses on its settings page once their first load is in (issue #547,
+    /// [`settings_state`]); empty otherwise.
+    settings_steps: Vec<settings::Message>,
     pub(crate) appearance: Appearance,
     pub(crate) system_mode: Mode,
     pub(crate) zoom: Zoom,
@@ -660,6 +663,7 @@ impl App {
             notice: None,
             settings: None,
             settings_memory: torro_settings_ui::Memory::default(),
+            settings_steps: Vec::new(),
             appearance: Appearance::System,
             system_mode: Mode::None,
             launch,
@@ -699,6 +703,14 @@ impl App {
             {
                 settings::show_access(&mut pane.sections, Some(bot.clone()));
             }
+        }
+        // A demo state of the settings (issue #547): their section, and what is pressed on its page
+        // once the data is in.
+        if let Some((section, steps)) = settings_state(app.launch.open) {
+            if app.settings.is_none() {
+                tasks.push(app.open_settings(Some(section)));
+            }
+            app.settings_steps = steps;
         }
         (app, Task::batch(tasks))
     }
@@ -1053,6 +1065,14 @@ impl App {
                 // them (task S.34).
                 settings::received(&mut pane.sections, &message);
                 let outcome = pane.host.update(message);
+                // A demo state's steps go once the page has its data (issue #547): only then does
+                // the profile editor start from the stored profile.
+                if pane.host.loaded() {
+                    for step in std::mem::take(&mut self.settings_steps) {
+                        let action = settings::update(&mut pane.sections, step, pane.host.data());
+                        let _ = pane.host.act(action);
+                    }
+                }
                 return self.settings_outcome(outcome);
             }
             Message::SettingsPage(message) => {
@@ -2085,6 +2105,23 @@ impl App {
     fn note_failure(&mut self, what: &str, refusal: &Refusal) {
         eprintln!("{}: {what} ({}: {})", MAIN.binary, refusal.code, refusal.message);
         self.note(what.to_owned());
+    }
+}
+
+/// The settings section a demo state opens and what it then presses on the page (issue #547), so the
+/// profile editor, its save bar and the tabs of Access can be photographed; `None` for every other
+/// state.
+fn settings_state(open: Option<Open>) -> Option<(&'static str, Vec<settings::Message>)> {
+    use settings::{access, profile};
+    let open_profile = settings::Message::Profile(profile::Message::OpenProfile);
+    match open? {
+        Open::ProfileEditor => Some(("profile", vec![open_profile])),
+        Open::ProfileChanged => {
+            Some(("profile", vec![open_profile, settings::Message::Profile(profile::Message::Name("Jarvis".into()))]))
+        }
+        Open::AccessSelections => Some((access::ID, vec![settings::Message::Access(access::Message::Tab(1))])),
+        Open::AccessBots => Some((access::ID, vec![settings::Message::Access(access::Message::Tab(2))])),
+        _ => None,
     }
 }
 

@@ -918,12 +918,11 @@ impl App {
         }
         controls = controls.push(Space::new().width(Fill));
         controls = controls.push(if self.transcript.running() {
-            widgets::text_button(Some(Icon::Square), tr("Stop"), style::button::secondary, Some(Message::Stop))
+            stop_button(class)
         } else if self.sending {
             widgets::busy_button(tr("Sending…"), style::button::primary)
         } else {
-            let ready = self.choice.is_some() && !self.editor.text().trim().is_empty();
-            widgets::text_button(Some(Icon::Send), tr("Send"), style::button::primary, ready.then_some(Message::Send))
+            send_button(class, self.choice.is_some() && !self.editor.text().trim().is_empty())
         });
         let mut composer = column![editor, controls].spacing(space::s());
         // What the next message may do (issue #132): the mode, and the access it leaves in words.
@@ -1159,19 +1158,36 @@ impl App {
         };
         let mut composer = row![field].spacing(space::s()).align_y(Alignment::Center);
         if self.transcript.running() {
-            composer =
-                composer.push(widgets::text_button(None, tr("Stop"), style::button::secondary, Some(Message::Stop)));
+            composer = composer.push(stop_button(class));
         }
-        let shown = self.glance_answer();
         let content: Element<'_, Message> = if strip {
-            // A flat strip: the answer takes the height, the composer stands beside it.
-            row![shown, container(composer).width(size::props()).center_y(Fill)].spacing(space::m()).into()
+            // A flat strip: the answer takes the height, the composer stands beside it at the bottom,
+            // and the answer's last line – or the quiet word – on the field's middle line (issue #547),
+            // so both share one axis. Only a written answer ends in body text; a deleted bot has a
+            // line of meta text in place of the field, on the bottom edge already.
+            let answer = self.transcript.last_answer().is_some_and(|entry| self.answer_shows(entry.seq));
+            let last = if answer && !self.waits_in_glance() { body } else { typo::meta() };
+            let shown = container(self.glance_answer(true))
+                .height(Fill)
+                .align_bottom(Fill)
+                .padding(Padding::ZERO.bottom(if self.bot_gone() { 0.0 } else { glance_lift(last) }));
+            row![shown, container(composer).width(size::props()).align_bottom(Fill)].spacing(space::m()).into()
         } else {
             let mut column = column![].spacing(space::s());
             if self.current.is_some() {
                 let title = typo::ellipsize(&self.conversation_title(), typo::meta(), self.size.width);
                 column = column.push(typo::text(typo::meta(), title).style(theme::text_3).wrapping(Wrapping::None));
             }
+            // Only whole lines (design review of #547): the answer, scrolled to its end, gets a height
+            // of whole lines at the bottom of its room, so no line is cut in half at the top.
+            let shown = responsive(move |room| {
+                let line = typo::line_height(typo::body());
+                let whole = (room.height / line).floor() * line;
+                container(container(self.glance_answer(false)).height(whole.max(0.0)))
+                    .height(Fill)
+                    .align_bottom(Fill)
+                    .into()
+            });
             column.push(shown).push(composer).into()
         };
         container(content)
@@ -1193,7 +1209,9 @@ impl App {
     /// its scrolling, so the scroll bar never lies over it; with room for fewer than three lines the
     /// answer above it shrinks to one line cut with "…" (`chat::answer_line`), without room for one
     /// it is left out.
-    fn glance_answer(&self) -> Element<'_, Message> {
+    ///
+    /// In the strip (`strip`) the answer is only as high as it is, so it can stand at the bottom.
+    fn glance_answer(&self, strip: bool) -> Element<'_, Message> {
         let card = self.newest_card_line();
         let answer = self.transcript.last_answer().filter(|entry| self.answer_shows(entry.seq));
         match (card, answer) {
@@ -1201,7 +1219,8 @@ impl App {
                 let answer = responsive(move |room| {
                     let line_height = typo::line_height(typo::body());
                     if room.height >= GLANCE_LINES * line_height {
-                        return self.glance_scroll();
+                        // In the strip the answer stands on the card, not at the top (issue #547).
+                        return container(self.glance_scroll(strip)).height(Fill).align_bottom(Fill).into();
                     }
                     // Not even one line: the card alone says what came of it.
                     if room.height < line_height {
@@ -1218,7 +1237,7 @@ impl App {
                 });
                 column![answer, card].spacing(space::s()).into()
             }
-            _ => self.glance_scroll(),
+            _ => self.glance_scroll(strip),
         }
     }
 
@@ -1231,39 +1250,38 @@ impl App {
     }
 
     /// The scrolling part of [`App::glance_answer`]: the approval, the answer, or a quiet word.
-    fn glance_scroll(&self) -> Element<'_, Message> {
+    fn glance_scroll(&self, strip: bool) -> Element<'_, Message> {
         let waiting = self
             .transcript
             .approvals()
             .into_iter()
             .find_map(|id| self.approvals.get(id).filter(|approval| approval.state.is_pending()));
-        let content: Element<'_, Message> = if let Some(approval) = waiting {
-            column![
-                row![
-                    tinted(Icon::ShieldAlert, icon::SIZE, |p| p.attention_text),
-                    typo::text(typo::body_strong(), tr("Approval needed"))
-                ]
-                .spacing(space::s())
-                .align_y(Alignment::Center),
+        if let Some(approval) = waiting {
+            // The heading stays above what scrolls (design review of #547): scrolled to its end, a
+            // small tile would show only the last sentence, without what it is about.
+            let heading = row![
+                tinted(Icon::ShieldAlert, icon::SIZE, |p| p.attention_text),
+                typo::text(typo::body_strong(), tr("Approval needed"))
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+            let words = column![
                 typo::text(typo::body(), approval.summary.as_str()).wrapping(Wrapping::WordOrGlyph),
                 typo::text(typo::meta(), tr("Allow or deny it in a larger window.")).style(theme::text_3),
             ]
-            .spacing(space::xs())
-            .into()
-        } else if let Some(entry) = self.transcript.last_answer().filter(|entry| self.answer_shows(entry.seq)) {
-            self.entry(entry, answer_colours(palette(&self.theme())))
-        } else if self.transcript.running() {
-            typo::text(typo::meta(), tr("Working …")).style(theme::text_3).into()
-        } else {
-            typo::text(typo::meta(), tr("Ask anything – the answer shows here.")).style(theme::text_3).into()
-        };
-        scrollable(container(content).width(Fill))
-            .direction(scrollable::Direction::Vertical(style::scrollbar()))
-            .anchor_bottom()
-            .style(style::scrollable)
-            .width(Fill)
-            .height(Fill)
-            .into()
+            .spacing(space::xs());
+            let height = if strip { iced::Length::Shrink } else { Fill };
+            return column![heading, glance_scrollable(words.into(), strip)].spacing(space::xs()).height(height).into();
+        }
+        let content: Element<'_, Message> =
+            if let Some(entry) = self.transcript.last_answer().filter(|entry| self.answer_shows(entry.seq)) {
+                self.entry(entry, answer_colours(palette(&self.theme())))
+            } else if self.transcript.running() {
+                typo::text(typo::meta(), tr("Working …")).style(theme::text_3).into()
+            } else {
+                typo::text(typo::meta(), tr("Ask anything – the answer shows here.")).style(theme::text_3).into()
+            };
+        glance_scrollable(content, strip)
     }
 }
 
@@ -1367,6 +1385,58 @@ fn prompt_state<'a>(title: &'a str, hint: &'a str, action: Option<(&'a str, Mess
     container(content).center(Fill).padding(space::xl()).into()
 }
 
+/// What scrolls in the glance, scrolled to its end: as high as it is in the strip (so it can stand
+/// at the bottom, issue #547), else as high as its room.
+fn glance_scrollable(content: Element<'_, Message>, strip: bool) -> Element<'_, Message> {
+    scrollable(container(content).width(Fill))
+        .direction(scrollable::Direction::Vertical(style::scrollbar()))
+        .anchor_bottom()
+        .style(style::scrollable)
+        .width(Fill)
+        .height(if strip { iced::Length::Shrink } else { Fill })
+        .into()
+}
+
+/// "Stop" while an answer runs: with its word where there is room, only its icon in narrow windows
+/// and tiles (design review of #547), where the word was squeezed to a dot.
+fn stop_button<'a>(class: SizeClass) -> Element<'a, Message> {
+    match class {
+        SizeClass::Wide | SizeClass::Medium => {
+            widgets::text_button(Some(Icon::Square), tr("Stop"), style::button::secondary, Some(Message::Stop))
+        }
+        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
+            widgets::compact_button(Icon::Square, tr("Stop"), style::button::secondary, Some(Message::Stop))
+        }
+    }
+}
+
+/// "Send" of the composer (issue #547): primary while a message can go, else framed (`boxed`) and off,
+/// so it never reads as a dark red block. In narrow windows only its icon, as the mail button does.
+fn send_button<'a>(class: SizeClass, ready: bool) -> Element<'a, Message> {
+    let on_press = ready.then_some(Message::Send);
+    match (class, ready) {
+        (SizeClass::Wide | SizeClass::Medium, true) => {
+            widgets::text_button(Some(Icon::Send), tr("Send"), style::button::primary, on_press)
+        }
+        (SizeClass::Wide | SizeClass::Medium, false) => {
+            widgets::text_button(Some(Icon::Send), tr("Send"), style::button::boxed, on_press)
+        }
+        (SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip, true) => {
+            widgets::compact_button(Icon::Send, tr("Send"), style::button::primary, on_press)
+        }
+        (SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip, false) => {
+            widgets::boxed_button(Icon::Send, tr("Send"), on_press)
+        }
+    }
+}
+
+/// How far the answer of the strip stands above its bottom (issue #547): the middle of its last line,
+/// in `last`, on the middle line of the field beside it, which stands at the bottom.
+fn glance_lift(last: typo::Level) -> f32 {
+    let field = typo::line_height(typo::body()) + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom;
+    ((field - typo::line_height(last)) / 2.0).max(0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1387,6 +1457,23 @@ mod tests {
         let mut app = App::new(backend, Source::from_args(vec!["--demo".to_string()]), launch).0;
         let _ = app.update(Message::CoreReady);
         app
+    }
+
+    /// Issue #547: "Send" builds in every class, ready or not, and the strip lifts the answer's last
+    /// line onto the middle line of its field – a line of meta text a little more than one of body.
+    #[test]
+    fn send_and_the_strip_line_up() {
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow, SizeClass::Mini, SizeClass::Strip] {
+            for ready in [true, false] {
+                drop(send_button(class, ready));
+            }
+            drop(stop_button(class));
+        }
+        assert_eq!(glance_lift(typo::body()), style::INPUT_PADDING.top);
+        assert!(glance_lift(typo::meta()) >= glance_lift(typo::body()));
+        let mut app = launched(&[]);
+        let _ = app.update(Message::Resized(Size::new(1200.0, 200.0)));
+        let _ = app.view();
     }
 
     /// Issue #459: the main window and a chat window show the shell with its top row – panel button

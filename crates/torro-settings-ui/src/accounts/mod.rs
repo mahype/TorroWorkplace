@@ -22,6 +22,14 @@
 //! the daemon, one for the whole suite. What the page reads comes through [`Seen`], what it wants
 //! done goes out as an [`Action`]; the demo's samples and answers are [`demo`].
 //!
+//! **What an app window shows of AI (issue #547, decision 5 of #528).** The control centre shows the
+//! whole section. In an app window with the main application installed, the page keeps the AI
+//! accounts and the app's own slot – Mail its *Sorting*; the assistant sets *Chat* under General,
+//! where its effort is – and points at the control centre for the rest ("Open Torro Workplace",
+//! [`Message::ControlCentre`]): the other slots, the data rule, and on an AI account's page its
+//! model switches. Without the main application an app window is the only place, so it keeps
+//! everything but what the app sets elsewhere (the assistant's *Chat*). [`ai_parts`] decides.
+//!
 //! **The two slots (issue #325, task MW.8).** Above the data rule the AI section has the group
 //! "Models" ([`slots_group`]): the computer as measured, then *Chat* and *Sorting*, each with the
 //! model chosen as a pick list of the models turned on that serve the slot ("None" empties it,
@@ -181,6 +189,9 @@ pub enum Action {
     /// Put the keyboard focus into the text field with this id: the search field of a model menu
     /// that has just opened ([`widgets::DROPDOWN_SEARCH`], issue #554).
     Focus(&'static str),
+    /// Open the control centre at this section (issue #547): "Open Torro Workplace" of an app
+    /// window's AI section, where the models, the other slots and the data rule are set.
+    ControlCentre(String),
 }
 
 /// The provider of the add-account dialog for an account of `kind` (`nextcloud`, `mail`, `github`,
@@ -749,6 +760,9 @@ pub enum Message {
     ConfirmCloud,
     /// "Cancel" in that question, a click next to it, or Escape: nothing changes.
     CancelCloud,
+    /// "Open Torro Workplace" in an app window's AI section (issue #547): the control centre at
+    /// this section.
+    ControlCentre(&'static str),
 }
 
 /// A choice of *Sorting* in the cloud waiting for its question (issue #424): what "Use" carries out –
@@ -1158,6 +1172,7 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
             state.login = None;
             Action::None
         }
+        Message::ControlCentre(section) => Action::ControlCentre(section.to_string()),
     }
 }
 
@@ -2720,19 +2735,68 @@ fn list<'a>(
     let title = if shown == Listed::Fixed(Group::Ai) { tr("Accounts").into() } else { shown.title() };
     page = page.push(widgets::group(title, rows, about));
     if shown == Listed::Fixed(Group::Ai) {
+        let parts = ai_parts(state.window, torro_gui::installed::main_app());
         // Stacked also where the page is narrower than a form (design review of #325): beside each
         // other, a model's name, the computer's line or where mail goes would be cut off there.
         let groups = responsive(move |room: iced::Size| {
             let stacked = stacked || room.width < size::form_max();
             column![]
-                .push(slots_group(state, data, stacked))
-                .push(data_rule_group(data))
+                .push(slots_group(state, data, &parts.slots, stacked))
+                .push(parts.data_rule.then(|| data_rule_group(data)))
+                .push(parts.refer.then(refer_group))
                 .spacing(layout::section_gap())
                 .into()
         });
         page = page.push(groups.height(iced::Length::Shrink));
     }
     page.into()
+}
+
+/// What the AI section shows besides the accounts (issue #547, decision 5 of #528): the slots of
+/// its group "Models", the data rule, or the row that opens the control centre instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiParts {
+    /// The slots of the group "Models"; none leaves the group out.
+    pub slots: Vec<AiSlot>,
+    /// The data rule "Chat may read mail outside this computer".
+    pub data_rule: bool,
+    /// "Open Torro Workplace" ([`refer_group`]) in place of what the control centre sets; on an AI
+    /// account's page also in place of its model switches.
+    pub refer: bool,
+}
+
+/// What the AI section shows in `window` (by its class; `None` in the control centre) while the main
+/// application is installed or not (`main_app`):
+///
+/// - The control centre: everything.
+/// - An app window with the main application: only the app's own slot – Mail's *Sorting* – and the
+///   row to the control centre for the rest; the assistant sets *Chat* under General.
+/// - An app window without it: every slot – but *Chat* in the assistant, which sets it under General
+///   with its effort – and the data rule, since there is no other place.
+pub fn ai_parts(window: Option<&str>, main_app: bool) -> AiParts {
+    let Some(window) = window else { return AiParts { slots: AiSlot::ALL.to_vec(), data_rule: true, refer: false } };
+    if main_app {
+        let slots = match window == AppId::INBOX_MAIL.window_class {
+            true => vec![AiSlot::Decide],
+            false => Vec::new(),
+        };
+        return AiParts { slots, data_rule: false, refer: true };
+    }
+    let assistant = window == AppId::ASSISTANT.window_class;
+    let slots = AiSlot::ALL.into_iter().filter(|slot| !(assistant && *slot == AiSlot::Chat)).collect();
+    AiParts { slots, data_rule: true, refer: false }
+}
+
+/// "Torro Workplace" in an app window's AI section with the main application (issue #547): one row
+/// that opens the control centre at AI, with the arrow of another window, where the models, the other
+/// slots and the data rule are set for the whole suite.
+fn refer_group<'a>() -> Element<'a, Message> {
+    let arrow: Element<'a, Message> = icon::icon(Icon::ArrowUpRight, icon::SIZE)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
+        .into();
+    let detail = tr("Models and the data rule are set there for the whole suite.");
+    let line = setting_row(None, tr("Open Torro Workplace"), Some(detail.to_string()), arrow);
+    widgets::group(tr("Torro Workplace"), vec![pressable(line, Some(Message::ControlCentre("ai")))], None)
 }
 
 /// The providers as chips above the list in the narrow class (task S.37), the shown one chosen.
@@ -2905,10 +2969,19 @@ fn mail_sentence(provider: &str, seat: &str) -> String {
 /// slot its row with the list of models, why the last step failed, where *Sorting* sends mail, and
 /// what Torro suggests. Not shown without an AI account: the section's "Add" comes first. `stacked`
 /// (narrow): every row puts its control under its text ([`models_row`]).
-fn slots_group<'a>(state: &'a State, data: &'a dyn Seen, stacked: bool) -> Option<Element<'a, Message>> {
+fn slots_group<'a>(
+    state: &'a State,
+    data: &'a dyn Seen,
+    slots: &[AiSlot],
+    stacked: bool,
+) -> Option<Element<'a, Message>> {
     ai_accounts(data).next()?;
+    // Only the slots this window sets (issue #547, [`ai_parts`]); none leaves the group out.
+    if slots.is_empty() {
+        return None;
+    }
     let mut rows = vec![computer_row(&state.slots, stacked)];
-    for slot in AiSlot::ALL {
+    for slot in slots.iter().copied() {
         rows.push(slot_row(state, data, slot, stacked));
         if let Some(failure) = state.slots.failed.as_ref().filter(|failure| failure.slot == slot) {
             rows.push(failure_row(failure, stacked));
@@ -3615,6 +3688,11 @@ fn detail<'a>(
         widgets::page_columns(move || {
             let (collections, rights) = match account.kind.as_str() {
                 "github" => (None, Some(permissions_group(account.scopes.as_deref()))),
+                // In an app window with the main application the models are switched in the
+                // control centre (issue #547): the row that opens it stands in their place.
+                AI_KIND if ai_parts(state.window, torro_gui::installed::main_app()).refer => {
+                    (None, Some(refer_group()))
+                }
                 AI_KIND => (None, Some(models_group(state, account))),
                 _ => (collections_moved(state, data), None),
             };
@@ -6839,6 +6917,43 @@ mod tests {
         let _ = ai_answered(&mut state, asked, &Ok(refused));
         let failure = state.slots.failed.as_ref().expect("the reason shows");
         assert!(matches!(*failure.retry, Message::PollPulls), "{:?}", failure.retry);
+    }
+
+    /// Issue #547 (decision 5 of #528): the control centre shows the whole AI section; an app window
+    /// with the main application only its own slot and the row to the control centre; without it every
+    /// slot and the data rule – but the assistant's *Chat*, which it sets under General.
+    #[test]
+    fn an_app_window_shows_of_ai_what_it_sets_itself() {
+        let (mail, assistant, calendar) =
+            (AppId::INBOX_MAIL.window_class, AppId::ASSISTANT.window_class, AppId::CALENDAR.window_class);
+        let all = AiParts { slots: AiSlot::ALL.to_vec(), data_rule: true, refer: false };
+        assert_eq!(ai_parts(None, true), all, "the control centre");
+        assert_eq!(ai_parts(None, false), all);
+        assert_eq!(ai_parts(Some(mail), true), AiParts { slots: vec![AiSlot::Decide], data_rule: false, refer: true });
+        assert_eq!(ai_parts(Some(assistant), true), AiParts { slots: Vec::new(), data_rule: false, refer: true });
+        assert_eq!(ai_parts(Some(calendar), true), AiParts { slots: Vec::new(), data_rule: false, refer: true });
+        assert_eq!(ai_parts(Some(mail), false), all, "without the main application: the only place");
+        assert_eq!(ai_parts(Some(calendar), false), all);
+        assert_eq!(
+            ai_parts(Some(assistant), false),
+            AiParts { slots: vec![AiSlot::Decide], data_rule: true, refer: false },
+            "the assistant sets Chat under General"
+        );
+
+        // The pages build in every window, the slots group left out where it has no slot.
+        let (_, data) = shown(false);
+        for window in [AppId::INBOX_MAIL, AppId::ASSISTANT, AppId::CALENDAR] {
+            let mut state = State::default().in_window(window);
+            draw_ai(&state, &data);
+            assert!(slots_group(&state, &data, &[], false).is_none(), "no slot, no group");
+            let ai = data.accounts.iter().find(|account| account.kind == AI_KIND).expect("the demo has one");
+            state.selected = Some(ai.id.clone());
+            draw_ai(&state, &data);
+        }
+        // "Open Torro Workplace" opens the control centre at AI.
+        let action = update(&mut State::default(), Message::ControlCentre("ai"), &data);
+        assert_eq!(action, Action::ControlCentre("ai".to_string()));
+        drop(refer_group());
     }
 
     fn draw_ai(state: &State, data: &Data) {
