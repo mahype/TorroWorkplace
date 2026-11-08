@@ -2386,7 +2386,59 @@ pub fn menu_item<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
     menu_entry(item)
 }
 
+/// Opt-in feedback at the right of a menu entry; ordinary menus keep their existing behaviour.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MenuFeedbackKind {
+    Running(iced::Radians),
+    Success,
+    Error,
+    Warning,
+    Choosing,
+    Cancelled,
+}
+
+/// A readable status with its full explanation as a tooltip. Blocked entries stay fully legible.
+#[derive(Debug, Clone)]
+pub struct MenuFeedback {
+    pub kind: MenuFeedbackKind,
+    pub explanation: String,
+    pub blocked: bool,
+}
+
+/// Status ink for the menu's resting, hovered and selected surfaces. The decorative success token
+/// can be too bright in light mode; derive its small-icon ink from the palette, never a local green.
+fn menu_feedback_colour(p: &Palette, kind: MenuFeedbackKind) -> Color {
+    let mut colour = match kind {
+        MenuFeedbackKind::Success => p.ok,
+        MenuFeedbackKind::Error => p.error_text,
+        MenuFeedbackKind::Warning => p.attention_text,
+        _ => p.text_3,
+    };
+    for _ in 0..8 {
+        if [p.menu, p.hover, p.selected].iter().all(|surface| colour.relative_contrast(*surface) >= 3.0) {
+            return colour;
+        }
+        colour = Color {
+            r: (colour.r + p.text.r) / 2.0,
+            g: (colour.g + p.text.g) / 2.0,
+            b: (colour.b + p.text.b) / 2.0,
+            a: 1.0,
+        };
+    }
+    p.text
+}
+
+/// Like [`menu_item`], with an optional status. Running/blocked entries cannot send another click;
+/// colour is confined to the status icon, never the target's text or background.
+pub fn menu_item_feedback<'a, M: Clone + 'a>(item: MenuItem<'a, M>, feedback: Option<MenuFeedback>) -> Element<'a, M> {
+    menu_entry_feedback(item, feedback)
+}
+
 fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
+    menu_entry_feedback(item, None)
+}
+
+fn menu_entry_feedback<'a, M: Clone + 'a>(item: MenuItem<'a, M>, feedback: Option<MenuFeedback>) -> Element<'a, M> {
     let height = menu_entry_height(item.detail.is_some());
     let label: Element<'a, M> = match item.detail {
         Some(detail) => column![menu_label(item.label), detail_line(detail)].width(Fill).into(),
@@ -2407,6 +2459,26 @@ fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
         content = content.push(tag_view(tag));
     }
     content = content.push(trail_view(item.trail));
+    if let Some(feedback) = &feedback {
+        let status: Element<'a, M> = match feedback.kind {
+            MenuFeedbackKind::Running(angle) => {
+                spin_icon(angle, icon::SIZE, |t, s| style::button::menu_item(false)(t, s))
+            }
+            kind => {
+                let which = match kind {
+                    MenuFeedbackKind::Success => Icon::CircleCheck,
+                    MenuFeedbackKind::Error => Icon::CircleX,
+                    MenuFeedbackKind::Warning => Icon::TriangleAlert,
+                    MenuFeedbackKind::Choosing => Icon::Folder,
+                    _ => Icon::CircleDashed,
+                };
+                icon(which, icon::SIZE)
+                    .style(move |t, _| svg::Style { color: Some(menu_feedback_colour(&palette(t), kind)) })
+                    .into()
+            }
+        };
+        content = content.push(status);
+    }
     if item.current {
         content = content.push(container(blank()).width(ICON_GAP).height(ICON_GAP).style(|t| container::Style {
             background: Some(Background::Color(palette(t).text_2)),
@@ -2414,17 +2486,25 @@ fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
             ..container::Style::default()
         }));
     }
+    let blocked = feedback.as_ref().is_some_and(|f| f.blocked || matches!(f.kind, MenuFeedbackKind::Running(_)));
     let entry = button(container(content).center_y(Fill))
         .width(Fill)
         .height(height)
         .padding(style::ITEM_PADDING)
-        .style(style::button::menu_item(false))
-        .on_press(item.on_press);
-    if item.nested {
+        .style(move |t, status| {
+            let status = if blocked { button::Status::Active } else { status };
+            style::button::menu_item(false)(t, status)
+        })
+        .on_press_maybe((!blocked).then_some(item.on_press));
+    let entry: Element<'a, M> = if item.nested {
         // The whole entry moves in, hover surface included, as in the sidebar's branch.
         container(entry).padding(Padding::new(0.0).left(branch_indent())).into()
     } else {
         entry.into()
+    };
+    match feedback {
+        Some(feedback) => with_tooltip(entry, feedback.explanation),
+        None => entry,
     }
 }
 
@@ -8022,6 +8102,51 @@ mod tests {
         assert!(child.nested);
         assert_eq!(child.trail, Trail::Count(2), "nesting keeps the rest of the entry");
         let _: Element<'_, Msg> = menu(vec![MenuSection::new(vec![child])]);
+    }
+
+    #[test]
+    fn menu_feedback_is_opt_in_and_all_states_keep_target_details() {
+        for kind in [
+            MenuFeedbackKind::Running(iced::Radians(0.5)),
+            MenuFeedbackKind::Success,
+            MenuFeedbackKind::Error,
+            MenuFeedbackKind::Warning,
+            MenuFeedbackKind::Choosing,
+            MenuFeedbackKind::Cancelled,
+        ] {
+            let item = MenuItem::new(Icon::Folder, "Invoices", Msg::Go)
+                .detail("Invoices › 2026 › 09")
+                .tag("Suggested", true)
+                .tag("Click", false);
+            let feedback = MenuFeedback {
+                kind,
+                explanation: "Status and details".into(),
+                blocked: matches!(kind, MenuFeedbackKind::Running(_) | MenuFeedbackKind::Choosing),
+            };
+            let _: Element<'_, Msg> = menu_item_feedback(item, Some(feedback));
+        }
+        let _: Element<'_, Msg> = menu_item_feedback(MenuItem::new(Icon::Sun, "Today", Msg::Go), None);
+        let _: Element<'_, Msg> = menu_item(MenuItem::new(Icon::Sun, "Today", Msg::Go));
+    }
+
+    #[test]
+    fn menu_feedback_icons_have_nontext_contrast_in_both_modes() {
+        for p in [Palette::light(), Palette::dark()] {
+            for kind in [
+                MenuFeedbackKind::Success,
+                MenuFeedbackKind::Error,
+                MenuFeedbackKind::Warning,
+                MenuFeedbackKind::Choosing,
+                MenuFeedbackKind::Cancelled,
+            ] {
+                let colour = menu_feedback_colour(&p, kind);
+                for surface in [p.menu, p.hover, p.selected] {
+                    assert!(colour.relative_contrast(surface) >= 3.0, "{kind:?}: icon must remain legible");
+                }
+            }
+            let green = menu_feedback_colour(&p, MenuFeedbackKind::Success);
+            assert!(green.g > green.r && green.g > green.b, "success remains green");
+        }
     }
 
     /// Issue #300 (task E17.1): the children of a group sit one icon and its gap further in, and the

@@ -4632,6 +4632,16 @@ pub fn file_menu<'a>(menu: FileMenu<'_>) -> Vec<MenuSection<'a, Message>> {
 /// beyond: the card of `widgets::menu`, wider, so the path and the two words of an entry stay
 /// readable (`widgets::menu_width` cut "Invoices › 2026 › 03" beside "Suggested" and "Click").
 pub fn file_menu_card<'a>(sections: Vec<MenuSection<'a, Message>>, width: f32, tallest: f32) -> Element<'a, Message> {
+    file_menu_card_feedback(sections, width, tallest, |_| None)
+}
+
+/// The same save menu with opt-in, action-scoped feedback; paths, suggestions and anchors stay put.
+pub fn file_menu_card_feedback<'a>(
+    sections: Vec<MenuSection<'a, Message>>,
+    width: f32,
+    tallest: f32,
+    feedback: impl Fn(&Message) -> Option<widgets::MenuFeedback>,
+) -> Element<'a, Message> {
     let mut list = column![];
     for (at, section) in sections.into_iter().enumerate() {
         if at > 0 {
@@ -4640,7 +4650,10 @@ pub fn file_menu_card<'a>(sections: Vec<MenuSection<'a, Message>>, width: f32, t
         if let Some(title) = section.title {
             list = list.push(crate::app::menu_caption(&title));
         }
-        list = list.extend(section.items.into_iter().map(widgets::menu_item));
+        list = list.extend(section.items.into_iter().map(|item| {
+            let state = feedback(&item.on_press);
+            widgets::menu_item_feedback(item, state)
+        }));
     }
     let body = scrollable(list).height(iced::Length::Shrink).width(Fill);
     container(container(body).max_height(tallest))
