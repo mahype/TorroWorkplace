@@ -4354,7 +4354,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "It is part of a series. Other apps and your phone see the change.",
         "Er gehört zu einer Serie. Andere Apps und dein Handy sehen die Änderung.",
     ),
-    ("No time zone found", "Keine Zeitzone gefunden"),
     ("On day {n}", "Am {n}."),
     ("On the first {day}", "Am ersten {day}"),
     ("On the second {day}", "Am zweiten {day}"),
@@ -4375,7 +4374,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Die Personen dieses Termins bekommen eine Nachricht von deinem Server",
     ),
     ("Repeat", "Wiederholung"),
-    ("Search time zones", "Zeitzonen durchsuchen"),
     ("Show as", "Anzeigen als"),
     ("Tentative", "Vorläufig"),
     (

@@ -555,12 +555,18 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   einzeilig „09:30 Titel“; unbestätigt gestrichelter Rahmen ohne Fläche; Aufgaben im Raster als
   Umriss mit Kreis; vergangene 55 % Deckkraft; freie Zeit als „2 h free“ in `TEXT_3`.
   **Heute** = roter Kreis mit weißer Zahl; **Jetzt** = rote Linie 1 px mit Punkt und Zeitlabel in
-  der Achse.
+  der Achse. Die Heute-Spalte der Woche ist **neutral** abgehoben (`SELECTED` über dem Grund, #543), nie rot getönt.
+  In der Leiste steht der Titel eines zu kurzen Termins neben dem Block auf einer Platte in `PANEL`: Stunden- und
+  Jetzt-Linie enden an der Schrift, die Platte endet mit dem Text und vor dem nächsten Block (#543).
 - **Einstellungsseiten:** links im Inhalt ein **Untermenü** mit den Abschnitten der App (Host der Einstellungen,
   `docs/settings.md` „Wie es aussieht“), rechts die Seite. Jede Seite mit **mehr als drei Gruppen** bekommt Reiter
-  (`widgets::tabs`, unten), nicht nur Detailseiten; bis drei Gruppen stehen sie untereinander. Abschnittsseiten aus
-  `widgets::group` (Titel, Zeilen `size::header()` bzw. 12 höher mit
-  Untertitel, Trennlinien, erklärender Satz darunter in `TEXT_2`) – keine eigenen Karten. **Jede Seite beginnt mit dem
+  (`widgets::tabs`, unten), nicht nur Detailseiten; bis drei Gruppen stehen sie untereinander. Gruppen derselben Art
+  je Konto (die Kalender bzw. Listen eines Kontos, #543) zählen dafür nicht: Sie sind eine Liste, die mit den Konten
+  wächst, keine Teile der Seite. Abschnittsseiten aus
+  `widgets::group` (Titel, Zeilen mindestens `size::header()` bzw. 12 höher mit
+  Untertitel, Trennlinien, erklärender Satz darunter in `TEXT_2`) – keine eigenen Karten. Der Titel einer Zeile bleibt
+  einzeilig mit „…“, ihre erklärende Unterzeile bricht um, und die Zeile wächst dann mit `space::s()` oben und unten
+  (`parts::setting_row`, #543). **Jede Seite beginnt mit dem
   Titel ihrer ersten Gruppe** (#554), ohne eigenen großen Titel oder Unterzeile darüber: Die Kopfzeile nennt die Seite
   schon. Auf Accounts ist der Anbieter der Gruppentitel, sein Satz steht unter der Gruppe; auf AI heißt die Gruppe
   „Accounts“, damit Kopfzeile und Gruppe nicht beide „AI“ sagen. Im schmalen Fenster zeigt die Kopfzeile den Abschnitt
@@ -580,7 +586,7 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
     rechten Rand, der zeigt, dass mehr folgt; liegt der gewählte Reiter jenseits der Breite, steht die Reihe am
     rechten Ende. Nie eine Auswahlliste. Nie Rot, nie `segmented`
     (`segmented` wechselt die Ansicht derselben Daten, Reiter den Teil eines Objekts oder einer Seite). Erst ab mehr als
-    drei Gruppen, dann aber auf jeder Seite.
+    drei Gruppen, dann aber auf jeder Seite; Gruppen derselben Art je Konto zählen nicht (#543).
   - `question_card(mark, title, detail, actions)`: was auf eine Entscheidung wartet, direkt unter den Reitern;
     `RAISED`, Rand `LINE_STRONG`, Radius `sm`, Icon in Attention, Knöpfe rechts oder darunter; mehrere mit
     `size::card_gap()`.
