@@ -105,7 +105,7 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | **Approvals** | Was Agenten zur Freigabe vorlegen, und was entschieden wurde | v1 |
 | **Workspaces** | Fenstermanager, Tasten 1 … 0 mit wählbarem Modifikator, Vorlagen bearbeiten, aktualisieren, löschen, beim Anmelden laden. Strategie je Fenster später; die F1–F10 der alten App sind verworfen. Siehe [Workspaces (#243)](#workspaces-243) | #243 (WS.6), Rest später |
 | **Appearance** | Abstände (Komfort, Standard, Dicht), Schrift, Farben (Farbschema, hell/dunkel), Zoom ([design-pakete.md](design-pakete.md)); gilt für alle Apps, die Apps verweisen hierher | v1 |
-| **General** | Sprache (System / English / Deutsch), Start beim Anmelden (dort auch der Schalter für Workspaces), Einrichtung erneut. Die frühere Gruppe **Apps** (je App „On“ und „Open“) ist seit #411 der Abschnitt **Apps** | v1 |
+| **General** | Sprache (System / English / Deutsch als Segmente, #548), Start beim Anmelden (dort auch der Schalter für Workspaces und seit #548 „Run setup again“). Die frühere Gruppe **Apps** (je App „On“ und „Open“) ist seit #411 der Abschnitt **Apps** | v1 |
 | **Updates** | Steht seit #411 im Abschnitt Apps: der Dienst prüft täglich und beim Öffnen von Apps, ohne Schalter; „⟳“ prüft sofort, der Fuß zeigt, wann zuletzt geprüft wurde | #411 |
 | **Diagnostics** | Log-Datei, Sync-Protokoll, Verbindung testen | später |
 | **Help** | Kurzanleitung, Tastenkürzel, Links | später |
@@ -552,7 +552,12 @@ Quellen der Einrichtungswege:
 ### MCP servers (#302)
 
 Die Seite „MCP servers“ (bis zur Nacharbeit von #302 „MCP connections“, `--section connections`, Aufgaben
-MA.7–MA.9) zeigt, was Torro für seine Clients ausführt, außer den eigenen Befehlen. Sie hat vier Teile:
+MA.7–MA.9) zeigt, was Torro für seine Clients ausführt, außer den eigenen Befehlen. Sie hat vier Teile, seit #548 auf
+drei Reitern: **Built-in** (Allowed folders und Built-in tools), **Catalog** (mit der Zahl seiner Zeilen) und **Your
+servers** (mit der Zahl der eigenen Server). Solange die Person keinen Reiter gewählt hat, öffnet die Seite auf dem
+Reiter eines Servers, der nach Fehlern steht, sonst eines Servers mit wartenden Werkzeugen, sonst auf Built-in; nach
+„Add server…“ steht sie auf Your servers. Der gewählte Reiter bleibt, während die Seite eines Servers offen ist, und
+nach „‹“.
 
 - **Allowed folders** (#304): die Ordner, in denen Werkzeuge mit Dateien arbeiten, je „Read“ oder „Read and write“,
   „Add folder…“ und „Remove“; nur ein Mensch ändert die Liste.
@@ -572,7 +577,9 @@ MA.7–MA.9) zeigt, was Torro für seine Clients ausführt, außer den eigenen B
   in den Schlüsselbund. „Paste configuration“ liest einen `mcpServers`-Block (Format von Claude Desktop); enthält er
   mehrere Server, wählt man aus.
 
-**Die Seite eines Servers:** Status mit Wort und Symbol, der Schalter an/aus, die Werkzeuge mit Zugriff und Stand
+**Die Seite eines Servers** hat seit #548 die Reiter **Overview** (Status, Folder, Remove), **Tools** (mit Zahl),
+**Secrets** (mit Zahl, nur bei einem Server mit Geheimnissen) und **Output**; sie öffnet auf Tools, wenn Werkzeuge auf
+Zustimmung warten, sonst auf Overview. Inhalt: Status mit Wort und Symbol, der Schalter an/aus, die Werkzeuge mit Zugriff und Stand
 („Changed since you allowed it“, mit „Allow tools“), Geheimnisse als „Stored“ bzw. „Missing“ mit „Replace…“, „Output“
 (die letzte Ausgabe zum Kopieren), „Update“, wenn der Katalog eine neuere Version hat, und „Remove…“ mit Rückfrage.
 Ein Server, der mit Dateien arbeitet (#303, ArtCraft), hat vor den Werkzeugen die Gruppe **„Folder“**: der gewählte
@@ -805,7 +812,7 @@ ihre Zeile hat.
 |---|---|---|---|---|---|---|
 | Language (System, English, Deutsch) | Sprache der Suite für danach gestartete Programme | General › Language; Einrichtung › Welcome | `language` | `set_setting language` | alle | bleibt, Suite |
 | Start at login | Kern beim Anmelden starten | General › Startup | `startAtLogin` + Autostart-Eintrag | `set_setting start_at_login` | alle | bleibt, Suite |
-| Run setup again | Einrichtung öffnen (Aktion) | General › Setup; Overview „Open setup“ | `setup` | `set_setting setup` | alle | bleibt, Suite |
+| Run setup again | Einrichtung öffnen (Aktion) | General › Startup (seit #548); Overview „Open setup“ | `setup` | `set_setting setup` | alle | bleibt, Suite |
 | Night (From, Until) | Nacht für Zeitleiste und Radar des Kalenders | General › Calendar; Kalender › Karte am Mond | `night` | `set_setting night` | Kalender | umziehen nach Kalender, doppelt |
 | Show reminders | Erinnerungen an Termine an oder aus | General › Reminders | `reminders.enabled` | `set_setting reminders` | Kalender | umziehen nach Kalender |
 | Default reminder | Vorlauf für Termine ohne eigene Erinnerung | General › Reminders | `reminders.defaultLead` | `set_setting reminders` | Kalender | umziehen nach Kalender |
