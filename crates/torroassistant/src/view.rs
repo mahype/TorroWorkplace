@@ -1211,7 +1211,8 @@ impl App {
                 let answer = responsive(move |room| {
                     let line_height = typo::line_height(typo::body());
                     if room.height >= GLANCE_LINES * line_height {
-                        return self.glance_scroll(strip);
+                        // In the strip the answer stands on the card, not at the top (issue #547).
+                        return container(self.glance_scroll(strip)).height(Fill).align_bottom(Fill).into();
                     }
                     // Not even one line: the card alone says what came of it.
                     if room.height < line_height {
