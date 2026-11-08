@@ -2023,11 +2023,8 @@ impl App {
             CalView::Day if self.class() == SizeClass::Narrow => {
                 column![week_strip::view(&data), views::week::day_under_strip(data, self.working_hours)].into()
             }
-            // One day is not stretched over a wide window: it keeps a list's reading width at the
-            // sidebar (design skill, section 6), and the properties column says what comes next.
-            CalView::Day if shell::has_props(self.class()) => {
-                container(views::week::view(data, self.working_hours)).max_width(size::content_max()).into()
-            }
+            // A day fills the width up to the properties column ("Up next"), like the week: a grid
+            // is no reading list, a narrower one only left a gap before the column (issue #543).
             CalView::Day | CalView::Week => views::week::view(data, self.working_hours),
             CalView::Month => views::month::view(data),
             CalView::Agenda => views::agenda::view(data, self.class()),
