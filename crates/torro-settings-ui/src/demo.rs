@@ -304,7 +304,7 @@ impl Demo {
                     server: "https://work.example.net".into(),
                     login_name: "anna".into(),
                     last_sync: Some(Utc::now() - chrono::Duration::days(2)),
-                    problem: Some("The server did not answer".into()),
+                    problem: Some(tr("The server did not answer").into()),
                 },
                 vec![collection(SHARED_CALENDAR, "Shared", CollectionKind::Events, Some("#B06F12"), false)],
             ),
