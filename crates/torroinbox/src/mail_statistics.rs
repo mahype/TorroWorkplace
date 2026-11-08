@@ -259,10 +259,12 @@ fn figure_grid<'a>(figures: [StatFigure; 4]) -> Element<'a, Message> {
     responsive(move |room| {
         let count = figure_columns(&figures, room.width);
         column(figures.chunks(count).map(|chunk| {
-            row(chunk.iter().cloned().map(|figure| widgets::stat_tile(figure.label, figure.value, figure.note)))
-                .spacing(space::m())
-                .width(Fill)
-                .into()
+            let row: Element<'a, Message> =
+                row(chunk.iter().cloned().map(|figure| widgets::stat_tile(figure.label, figure.value, figure.note)))
+                    .spacing(space::m())
+                    .width(Fill)
+                    .into();
+            Element::new(figure_row::FigureRow(row))
         }))
         .spacing(space::m())
         .width(Fill)
@@ -270,6 +272,99 @@ fn figure_grid<'a>(figures: [StatFigure; 4]) -> Element<'a, Message> {
     })
     .height(Length::Shrink)
     .into()
+}
+
+/// Extend only the tile containers' backgrounds to the measured row height. The existing stat tile
+/// still measures and positions its own text; no fixed heights or changed shared widget behaviour.
+mod figure_row {
+    use crate::app::Message;
+    use iced::advanced::layout::{self, Layout};
+    use iced::advanced::widget::{Operation, Tree, tree};
+    use iced::advanced::{Clipboard, Shell, Widget, mouse, overlay, renderer};
+    use iced::{Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector};
+
+    pub(super) struct FigureRow<'a>(pub(super) Element<'a, Message>);
+
+    impl Widget<Message, Theme, Renderer> for FigureRow<'_> {
+        fn tag(&self) -> tree::Tag {
+            self.0.as_widget().tag()
+        }
+        fn state(&self) -> tree::State {
+            self.0.as_widget().state()
+        }
+        fn children(&self) -> Vec<Tree> {
+            self.0.as_widget().children()
+        }
+        fn diff(&self, tree: &mut Tree) {
+            self.0.as_widget().diff(tree);
+        }
+        fn size(&self) -> Size<Length> {
+            self.0.as_widget().size()
+        }
+        fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
+            let row = self.0.as_widget_mut().layout(tree, renderer, limits);
+            let tiles = row
+                .children()
+                .iter()
+                .map(|tile| {
+                    layout::Node::with_children(
+                        Size::new(tile.size().width, row.size().height),
+                        tile.children().to_vec(),
+                    )
+                    .move_to(tile.bounds().position())
+                })
+                .collect();
+            layout::Node::with_children(row.size(), tiles)
+        }
+        fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
+            self.0.as_widget_mut().operate(tree, layout, renderer, operation);
+        }
+        fn update(
+            &mut self,
+            tree: &mut Tree,
+            event: &Event,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            renderer: &Renderer,
+            clipboard: &mut dyn Clipboard,
+            shell: &mut Shell<'_, Message>,
+            viewport: &Rectangle,
+        ) {
+            self.0.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
+        }
+        fn mouse_interaction(
+            &self,
+            tree: &Tree,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            viewport: &Rectangle,
+            renderer: &Renderer,
+        ) -> mouse::Interaction {
+            self.0.as_widget().mouse_interaction(tree, layout, cursor, viewport, renderer)
+        }
+        fn draw(
+            &self,
+            tree: &Tree,
+            renderer: &mut Renderer,
+            theme: &Theme,
+            style: &renderer::Style,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            viewport: &Rectangle,
+        ) {
+            self.0.as_widget().draw(tree, renderer, theme, style, layout, cursor, viewport);
+        }
+        fn overlay<'b>(
+            &'b mut self,
+            tree: &'b mut Tree,
+            layout: Layout<'b>,
+            renderer: &Renderer,
+            viewport: &Rectangle,
+            translation: Vector,
+        ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+            self.0.as_widget_mut().overlay(tree, layout, renderer, viewport, translation)
+        }
+    }
 }
 
 /// "What comes in" with "Table": the columns per day by main category, or the same numbers as a
@@ -599,11 +694,13 @@ mod tests {
         use iced::advanced::{layout::Limits, renderer::Headless, widget::Tree};
         let renderer =
             iced::Renderer::new(theme::font(), typo::body().size, Some("tiny-skia")).await.expect("headless renderer");
-        let figures = figures(&overview()).map(|mut figure| {
+        let mut figures = figures(&overview()).map(|mut figure| {
             figure.value = format_count(u64::from(u32::MAX));
             figure.note = tr("What comes in, who sends it and what you open shows up here.").into();
             figure
         });
+        figures[0].note = tr("Today").into();
+        figures[2].note = tr("Today").into();
         for width in [272.0, 352.0, 720.0, 1200.0] {
             let mut element = figure_grid(figures.clone());
             let mut tree = Tree::new(&element);
@@ -612,6 +709,12 @@ mod tests {
                 &renderer,
                 &Limits::new(Size::ZERO, Size::new(width, 2000.0)),
             );
+            for row in node.children()[0].children() {
+                assert!(
+                    row.children().iter().all(|tile| (tile.size().height - row.size().height).abs() < 0.01),
+                    "tile backgrounds share the row's measured bottom edge"
+                );
+            }
             fn check(node: &iced::advanced::layout::Node) {
                 for child in node.children() {
                     assert!(
