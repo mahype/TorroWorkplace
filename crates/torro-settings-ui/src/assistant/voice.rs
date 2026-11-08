@@ -249,12 +249,14 @@ pub fn escape(state: &State) -> Option<Message> {
 fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let settings = &data.settings.voice;
     let can_listen = data.voice.as_ref().is_none_or(VoiceStatus::can_listen);
-    let (status, detail) = voice_state(settings.enabled, data.voice.as_ref());
+    let (_, detail) = voice_state(settings.enabled, data.voice.as_ref());
     let switch = toggler(settings.enabled)
         .size(style::CHECK_SIZE)
         .style(style::toggler)
         .on_toggle_maybe((settings.enabled || can_listen).then_some(Message::Enabled));
-    let on = setting_row(Some(widgets::status_dot(status)), tr("Talk to the assistant"), Some(detail), switch);
+    // No dot in front (design review of #547): the rows of the group keep one axis; the line under
+    // it says how the listener stands.
+    let on = setting_row(None, tr("Talk to the assistant"), Some(detail), switch);
     let word = typo::text(typo::body(), tr("Hey Torro")).style(theme::text_2);
     let wake = setting_row(None, tr("Wake word"), Some(tr("Your own wake word comes later").to_string()), word);
     let speak =
@@ -295,7 +297,8 @@ fn microphone_row<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Me
 /// "Programs on this computer": the four parts with whether each was found, and the way to ask
 /// again.
 fn programs_group(data: &Data) -> Element<'_, Message> {
-    let again = widgets::text_button(None, tr("Check again"), style::button::ghost, Some(Message::Check));
+    // Like "Say something": one look for the row actions of the page (design review of #547).
+    let again = widgets::text_button(None, tr("Check again"), style::button::secondary, Some(Message::Check));
     let rows = match &data.voice {
         None => vec![setting_row(None, tr("The programs could not be checked"), None, again)],
         Some(status) if !status.installed => vec![setting_row(

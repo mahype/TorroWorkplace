@@ -422,8 +422,10 @@ pub fn page<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Page<'a, 
     }
     match (state.sub, state.draft.as_ref()) {
         (Some(Sub::Profile), Some(draft)) => {
-            let page = Page::new(profile_page(draft)).sub_page(tr("Profile"), Message::Back);
-            match save_summary(draft, &profile_of(data)) {
+            // Named after the assistant, as its row (design review of #547): not "Profile › Profile".
+            let stored = profile_of(data);
+            let page = Page::new(profile_page(draft)).sub_page(stored.name.clone(), Message::Back);
+            match save_summary(draft, &stored) {
                 Some(summary) => {
                     page.save_bar(widgets::save_bar(summary, Some(Message::Discard), Some(Message::Save), false))
                 }
@@ -894,7 +896,8 @@ mod tests {
         let _ = page(&state, &Data { memories: Vec::new(), ..data.clone() }, SizeClass::Wide);
         let _ = update(&mut state, Message::OpenProfile, &data);
         let shown = page(&state, &data, SizeClass::Wide).sub_page.map(|(name, _)| name);
-        assert_eq!(shown.as_deref(), Some(tr("Profile")));
+        // Named after the assistant (design review of #547), not "Profile" a second time.
+        assert_eq!(shown, Some(profile_of(&data).name));
         let _ = update(&mut state, Message::OpenMemory, &data);
         for class in [SizeClass::Wide, SizeClass::Narrow] {
             let memory = page(&state, &data, class);

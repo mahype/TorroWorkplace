@@ -189,8 +189,8 @@ fn status_group(data: &Data) -> Element<'_, Message> {
         (Status::Inactive, tr("The assistant is off"), tr("Turn it on under Access"))
     };
     let row = setting_row(Some(widgets::status_dot(dot)), label, Some(word.to_string()), chevron());
-    let footer = tr("Turning the assistant on or off and what it may use are set under Access.");
-    widgets::group(tr("Status"), vec![pressable(row, Some(Message::Access))], Some(footer.to_string()))
+    // No sentence under it (design review of #547): the row says already where it is changed.
+    widgets::group(tr("Status"), vec![pressable(row, Some(Message::Access))], None)
 }
 
 /// The stored default of new chats, while its engine is offered.
