@@ -2811,7 +2811,8 @@ pub fn inert<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
 
 /// The sections of a dropdown with only the entries whose label or detail line holds `query`
 /// (trimmed, without regard to case): a model menu shows its account as the detail, so the account
-/// finds equally named models (issue #573). Sections left without an entry drop out. An empty query keeps everything.
+/// finds equally named models (issue #573). Sections left without an entry drop out. An empty query
+/// keeps everything.
 pub fn matching_sections<'a, M>(sections: Vec<MenuSection<'a, M>>, query: &str) -> Vec<MenuSection<'a, M>> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
