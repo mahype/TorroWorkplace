@@ -3117,16 +3117,17 @@ pub fn body<'a>(reading: &Reading<'a>, bars: Bars<'a>, anchors: &detail::Anchors
 /// collapsed rail beside it (task E14.3) takes its width from the body.
 fn command_body<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, width: f32) -> Element<'a, Message> {
     let line = || rule::horizontal(size::HAIRLINE).style(style::rule);
-    // The head lines up with the title, 16 from the panel's edges (`panel::inset`), and runs to the
-    // panel's right edge under the floating rail (issue #457); the mail keeps clear of the rail.
-    let room = (width - 2.0 * space::l()).max(0.0);
-    let head = head(reading, entry, room);
+    // The head lines up with the title, 16 from the panel's edges (`panel::inset`), and keeps clear
+    // of the floating rail as the mail does (issue #545: the rail covered the time at its end).
+    let clear = widgets::floating_rail_room();
+    let room = (width - 2.0 * space::l() - clear).max(0.0);
+    let head = container(head(reading, entry, room)).padding(Padding::new(0.0).right(clear));
     let mut body = column![panel::inset(head)];
     // An entry keeps its properties (status, lane, source, time), as `detail::panel` shows them.
     if let Some(entry) = entry {
         // "Follow up" in the mail window's words (task E19.4).
         let properties = detail::properties(entry.item, reading.now, true);
-        // Clear of the floating rail, as the mail (review of #467): only the head runs on under it.
+        // Clear of the floating rail, as the mail and the head (review of #467).
         let section = widgets::prop_section(tr("Properties"), properties);
         body = body.push(container(section).padding(Padding::new(0.0).right(widgets::floating_rail_room())));
     }
@@ -3276,12 +3277,13 @@ pub fn reader<'a>(
     let page = responsive(move |bounds| {
         let widths = reader_widths(bounds.width);
         let side = layout::reading_padding().left;
-        let head = container(head(&reading, entry, widths.head)).width(Fill).padding(head_padding());
-        // Issue #456: the rail floats at the right edge; the head runs on under it, the mail's text
-        // keeps clear of it.
+        // Issue #456: the rail floats at the right edge. The head and the mail's text keep clear of
+        // it (issue #545: the time at the head's end stood under the rail).
         let room = widgets::floating_rail_room();
-        let mail = container(reader_mail(&reading, reader_widths((bounds.width - room).max(0.0))))
-            .padding(Padding::new(0.0).right(room));
+        let clear = reader_widths((bounds.width - room).max(0.0));
+        let head = container(head(&reading, entry, clear.head)).width(Fill).padding(head_padding());
+        let head = container(head).padding(Padding::new(0.0).right(room));
+        let mail = container(reader_mail(&reading, clear)).padding(Padding::new(0.0).right(room));
         let page = column![head, rule::horizontal(size::HAIRLINE).style(style::rule), mail];
         let page = scrollable(page)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
@@ -6994,6 +6996,10 @@ mod tests {
         for part in ["head(", "detail::properties(", "panel_letter(", "floating_rail_room()"] {
             assert!(command.contains(part), "{part}");
         }
+        // Issue #545: the head keeps clear of the floating rail too, in the panel and in the reader.
+        assert!(command.contains("width - 2.0 * space::l() - clear"), "the panel's head loses the rail's room");
+        assert!(reader.contains("head(&reading, entry, clear.head)"), "the reader's head loses the rail's room");
+        assert!(reader.contains("container(head).padding(Padding::new(0.0).right(room))"), "and keeps clear of it");
         assert!(command.contains("head(reading, entry, room)"), "the head, which has no subject (#457)");
         assert!(!command.contains("panel_standards") && !command.contains("header("), "none of the split");
         let split = function_source(source, "split_body");
