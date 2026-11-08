@@ -9046,16 +9046,16 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.open_settings(None)
     }
 
-    /// The settings in the content area, at `section` when one is named (`--settings <section>`,
-    /// "All rules"; an unknown word leaves the first section open) – a fresh [`Host`] with the
-    /// sections of this window's kind and its first load, which goes over
-    /// [`App::settings_backend`] and never over this window's own source.
     /// Whether the demo state is `--open sources-mail` in a window whose settings have Sources (the
     /// Notification Hub and the App Feed, issue #546).
     fn sources_mail(&self) -> bool {
         self.launch.open == Some(Open::SourcesMail) && self.launch.kind != Kind::Mail
     }
 
+    /// The settings in the content area, at `section` when one is named (`--settings <section>`,
+    /// "All rules"; an unknown word leaves the first section open) – a fresh [`Host`] with the
+    /// sections of this window's kind and its first load, which goes over
+    /// [`App::settings_backend`] and never over this window's own source.
     fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
         let kind = self.launch.kind;
         // Settings open already leave their state in the memory first, for the new host.
@@ -12430,7 +12430,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             });
             return container(content.push(board).width(Fill).height(Fill)).width(Fill).into();
         } else if self.is_insights() {
-            // The hub's Insights (task E8.8b), which caps its own width.
+            // The hub's Insights (task E8.8b), over the full width (issue #546).
             let page = insights::view(InsightsData { insights: &self.insights, class, today: local_today(self.now) });
             return container(content.push(page).width(Fill).height(Fill)).width(Fill).into();
         } else if self.is_hub() {
