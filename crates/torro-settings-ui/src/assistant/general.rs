@@ -159,6 +159,15 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
     Some(state.menus.view(key, sections, widgets::menu_width(), Align::End, Message::Menus))
 }
 
+/// Fresh data came (a load, or the reload after a send, [`super::received`]): a dropdown whose menu
+/// can no longer show – "Model" after another window chose "The one used last" or the account went –
+/// closes, so it neither takes the next Escape nor opens again by itself later.
+pub fn loaded(state: &mut State, data: &Data) {
+    if state.menus.is_open(&Choice::Model) && current_default(data).is_none() {
+        state.menus.close();
+    }
+}
+
 /// Escape closes the open dropdown first.
 pub fn escape(state: &State) -> Option<Message> {
     state.menus.open().map(|_| Message::Menus(DropdownEvent::Close))
@@ -496,5 +505,11 @@ mod tests {
         let _ = super::update(&mut state, Message::Menus(DropdownEvent::Toggle(Choice::Model)), &last);
         assert!(overlay(&state, &last).is_none());
         let _ = view(&state, &last);
+        // Fresh data without a default closes it: no Escape for a menu nobody sees.
+        loaded(&mut state, &last);
+        assert_eq!((state.menus.open(), escape(&state)), (None, None));
+        let _ = super::update(&mut state, Message::Menus(DropdownEvent::Toggle(Choice::Engine)), &last);
+        loaded(&mut state, &last);
+        assert!(state.menus.is_open(&Choice::Engine), "Account can always show");
     }
 }

@@ -259,10 +259,24 @@ pub fn save_now(state: &mut State) -> Action {
 /// [`access::loaded`]). Every other message is left alone.
 pub fn received(state: &mut State, message: &crate::host::Message) {
     match message {
-        crate::host::Message::Sent { changed, result } => access::sent(&mut state.access, *changed, result),
-        crate::host::Message::Loaded(data) => access::loaded(&mut state.access, data),
+        crate::host::Message::Sent { changed, result } => {
+            access::sent(&mut state.access, *changed, result);
+            if let Ok(data) = &**result {
+                dropdowns_loaded(state, data);
+            }
+        }
+        crate::host::Message::Loaded(data) => {
+            access::loaded(&mut state.access, data);
+            dropdowns_loaded(state, data);
+        }
         _ => {}
     }
+}
+
+/// Fresh data reached General and Voice (issue #547): a dropdown that can no longer show closes.
+fn dropdowns_loaded(state: &mut State, data: &Data) {
+    general::loaded(&mut state.general, data);
+    voice::loaded(&mut state.voice, data);
 }
 
 /// The answer to a section's [`crate::Action::Ask`], as the host handed it to the app

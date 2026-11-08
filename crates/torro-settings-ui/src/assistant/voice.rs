@@ -231,6 +231,14 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
     Some(state.menus.view(key, sections, widgets::menu_width(), Align::End, Message::Menus))
 }
 
+/// Fresh data came ([`super::received`]): with no microphone listed any more the dropdown closes, so
+/// it neither takes the next Escape nor opens again by itself later.
+pub fn loaded(state: &mut State, data: &Data) {
+    if data.voice.as_ref().is_none_or(|voice| voice.microphones.is_empty()) {
+        state.menus.close();
+    }
+}
+
 /// Escape closes the open dropdown first.
 pub fn escape(state: &State) -> Option<Message> {
     state.menus.open().map(|_| Message::Menus(DropdownEvent::Close))
@@ -616,6 +624,8 @@ mod tests {
         let none =
             Data { voice: Some(VoiceStatus { microphones: Vec::new(), ..status(VoiceState::Off, None) }), ..data };
         assert!(microphone_row(&state, &none).is_none() && overlay(&state, &none).is_none());
+        loaded(&mut state, &none);
+        assert_eq!(escape(&state), None, "closed with the list gone");
     }
 
     /// The section builds with the status known, unknown, the app missing, while a test runs and
