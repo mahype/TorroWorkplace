@@ -130,8 +130,8 @@ pub(crate) async fn propose(
     check_data_rule(host, access.place)?;
     let choice = choices.get(selected).ok_or(WorkflowError::Invalid)?;
     let spec = DraftSpec {
-        name: tr(&choice.name).into(),
-        description: tr(&choice.description).into(),
+        name: tr(choice.name).into(),
+        description: tr(choice.description).into(),
         mail: input.mail.into(),
         save_target: input.save_target.into(),
         package: choice.package.clone(),
@@ -197,8 +197,8 @@ async fn configured_model(
 /// This is deliberately not the model's free-form text. All persistent text is service-owned;
 /// even a label such as a private URL, encoded token or account number in the mail is never copied.
 struct Candidate {
-    name: String,
-    description: String,
+    name: &'static str,
+    description: &'static str,
     package: Package,
 }
 
@@ -229,15 +229,16 @@ fn candidates(html: &str) -> Result<Vec<Candidate>, WorkflowError> {
             // pages, receipts and guessed .pdf suffixes are not evidence of an invoice download.
             _ if download::select(html, &host, None, true).is_ok() => {
                 choices.push(Candidate {
-                    name: tr("Invoice PDF").into(),
-                    description: tr("Downloads the selected mail's unambiguous PDF link, verifies it and saves it to the selected target. No login or resource loading.").into(),
+                    name: "Invoice PDF",
+                    description: "Downloads the selected mail's unambiguous PDF link, verifies it and saves it to the selected target. No login or resource loading.",
                     package: Package::direct_pdf(&host),
                 });
                 continue;
             }
             _ => continue,
         };
-        choices.push(Candidate { name: template.name, description: template.description, package: template.package });
+        let (name, description) = templates::labels(&template.id)?;
+        choices.push(Candidate { name, description, package: template.package });
     }
     if choices.is_empty() {
         return Err(WorkflowError::Unsupported);

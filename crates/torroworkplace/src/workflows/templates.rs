@@ -5,6 +5,25 @@ use torro_ipc::workflows::{InvoiceProfile, Package, Step, TemplateOrigin, Workfl
 
 use super::{Error, invoice};
 
+/// Service-owned labels remain static so the UI's initial draft language can be translated safely.
+pub(super) fn labels(id: &str) -> Result<(&'static str, &'static str), Error> {
+    match id {
+        "direct_pdf" => Ok((
+            "Direct PDF",
+            "Uses one unambiguous direct PDF link in the selected mail. The draft binds its exact host from that mail; no login or resource loading.",
+        )),
+        "stripe_invoice" => Ok((
+            "Stripe invoice",
+            "Retrieves an original invoice PDF through the bounded Stripe JSON resolver. No receipt, payment, login or browser actions; expired links need manual review.",
+        )),
+        "paddle_setapp_invoice_copy" => Ok((
+            "Paddle / Setapp invoice copy",
+            "Creates a clearly marked local PDF copy of the complete supported Paddle invoice HTML. No supplier-layout imitation, resource loading or login; unproven variants are refused.",
+        )),
+        _ => Err(Error::NotFound),
+    }
+}
+
 pub fn list() -> Result<Vec<WorkflowTemplate>, Error> {
     let direct = Package::direct_pdf("files.example.org");
     let stripe = Package {
@@ -34,36 +53,23 @@ pub fn list() -> Result<Vec<WorkflowTemplate>, Error> {
     };
     paddle.binding.typesetter = 1;
     paddle.binding.fonts_digest = invoice::binding();
-    [
-        (
-            "direct_pdf",
-            "Direct PDF",
-            "Uses one unambiguous direct PDF link in the selected mail. The draft binds its exact host from that mail; no login or resource loading.",
-            direct,
-        ),
-        (
-            "stripe_invoice",
-            "Stripe invoice",
-            "Retrieves an original invoice PDF through the bounded Stripe JSON resolver. No receipt, payment, login or browser actions; expired links need manual review.",
-            stripe,
-        ),
-        (
-            "paddle_setapp_invoice_copy",
-            "Paddle / Setapp invoice copy",
-            "Creates a clearly marked local PDF copy of the complete supported Paddle invoice HTML. No supplier-layout imitation, resource loading or login; unproven variants are refused.",
-            paddle,
-        ),
-    ]
-    .into_iter()
-    .map(|(id, name, description, package)| {
-        let revision = 1u32;
-        let encoded = serde_json::to_vec(&(id, revision, name, description, &package)).map_err(|_| Error::Blocked)?;
-        Ok(WorkflowTemplate {
-            id: id.into(), revision, digest: Sha256::digest(encoded).iter().map(|byte| format!("{byte:02x}")).collect(),
-            name: name.into(), description: description.into(), package,
+    [("direct_pdf", direct), ("stripe_invoice", stripe), ("paddle_setapp_invoice_copy", paddle)]
+        .into_iter()
+        .map(|(id, package)| {
+            let (name, description) = labels(id)?;
+            let revision = 1u32;
+            let encoded =
+                serde_json::to_vec(&(id, revision, name, description, &package)).map_err(|_| Error::Blocked)?;
+            Ok(WorkflowTemplate {
+                id: id.into(),
+                revision,
+                digest: Sha256::digest(encoded).iter().map(|byte| format!("{byte:02x}")).collect(),
+                name: name.into(),
+                description: description.into(),
+                package,
+            })
         })
-    })
-    .collect()
+        .collect()
 }
 
 pub fn get(id: &str) -> Result<WorkflowTemplate, Error> {
