@@ -1710,6 +1710,8 @@ pub enum Open {
     MailOverviewError,
     /// The overview of a span without mail and an empty inbox, kept for good.
     MailOverviewEmpty,
+    /// A forced quarter with large, uneven volumes (#565).
+    MailOverviewFull,
     /// Settings › Statistics on its tab "Overview" (issue #485).
     Statistics,
     /// … with the day chart as a table.
@@ -1720,6 +1722,11 @@ pub enum Open {
     StatisticsInbox,
     /// … on its tab "Categories".
     StatisticsCategories,
+    /// Forced statistics fixtures for layout checks (#565), never refreshed from the demo source.
+    StatisticsFull,
+    StatisticsEmpty,
+    StatisticsLoading,
+    StatisticsError,
     /// "All" with the demo's first newsletter open and the question "Unsubscribe from …?"
     /// over the window (issue #416).
     Unsubscribe,
@@ -1767,7 +1774,7 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 111] = [
+    const ALL: [(&'static str, Open); 116] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1858,6 +1865,11 @@ impl Open {
         ("mail-overview-loading", Open::MailOverviewLoading),
         ("mail-overview-error", Open::MailOverviewError),
         ("mail-overview-empty", Open::MailOverviewEmpty),
+        ("mail-overview-full", Open::MailOverviewFull),
+        ("statistics-full", Open::StatisticsFull),
+        ("statistics-empty", Open::StatisticsEmpty),
+        ("statistics-loading", Open::StatisticsLoading),
+        ("statistics-error", Open::StatisticsError),
         ("statistics", Open::Statistics),
         ("statistics-table", Open::StatisticsTable),
         ("statistics-senders", Open::StatisticsSenders),
@@ -1915,7 +1927,12 @@ impl Open {
     /// other state.
     fn statistics_tab(self) -> Option<mail_overview::Tab> {
         match self {
-            Open::Statistics | Open::StatisticsTable => Some(mail_overview::Tab::Overview),
+            Open::Statistics
+            | Open::StatisticsTable
+            | Open::StatisticsFull
+            | Open::StatisticsEmpty
+            | Open::StatisticsLoading
+            | Open::StatisticsError => Some(mail_overview::Tab::Overview),
             Open::StatisticsSenders => Some(mail_overview::Tab::Senders),
             Open::StatisticsInbox => Some(mail_overview::Tab::Inbox),
             Open::StatisticsCategories => Some(mail_overview::Tab::Categories),
@@ -2746,20 +2763,53 @@ fn today() -> chrono::NaiveDate {
 /// overview state, with the table, or with numbers that never come (loading), an error or nothing
 /// counted up to `today`.
 fn staged_overview(open: Option<Open>, today: chrono::NaiveDate) -> mail_overview::State {
+    let full = matches!(open, Some(Open::MailOverviewFull | Open::StatisticsFull));
+    let range = if full { torro_ipc::StatsRange::Quarter } else { torro_ipc::StatsRange::Month };
     let data = |result| {
-        let key = mail_overview::Key { account: None, range: torro_ipc::StatsRange::Month };
+        let key = mail_overview::Key { account: None, range };
         Some(mail_overview::Loaded { key, at: Instant::now(), result })
     };
     mail_overview::State {
         open: matches!(
             open,
-            Some(Open::MailOverview | Open::MailOverviewLoading | Open::MailOverviewError | Open::MailOverviewEmpty)
+            Some(
+                Open::MailOverview
+                    | Open::MailOverviewLoading
+                    | Open::MailOverviewError
+                    | Open::MailOverviewEmpty
+                    | Open::MailOverviewFull
+            )
         ),
+        range,
         table: open == Some(Open::StatisticsTable),
         tab: open.and_then(Open::statistics_tab).unwrap_or_default(),
         data: match open {
-            Some(Open::MailOverviewError) => data(Err(DEMO_ERROR.to_owned())),
-            Some(Open::MailOverviewEmpty) => data(Ok(mail_overview::nothing(today, torro_ipc::StatsRange::Month))),
+            Some(Open::MailOverviewError | Open::StatisticsError) => data(Err(DEMO_ERROR.to_owned())),
+            Some(Open::MailOverviewEmpty | Open::StatisticsEmpty) => data(Ok(mail_overview::nothing(today, range))),
+            Some(Open::MailOverviewFull | Open::StatisticsFull) => {
+                let source = torro_inbox::demo::DemoSource::new(Utc::now());
+                let inbox = source.by_role(torro_mail::Role::Inbox, None, None, Order::NewestFirst);
+                let mut overview = mail_overview::demo(today, range, false, &inbox);
+                for (at, day) in overview.days.iter_mut().enumerate() {
+                    for (slot, group) in day.groups.iter_mut().enumerate() {
+                        group.count = if at % 11 == 0 { 0 } else { group.count * if slot == 0 { 1 } else { 12_345 } };
+                    }
+                }
+                for held in &mut overview.categories {
+                    held.count *= 12_345;
+                    held.opened *= 12_345;
+                    for count in &mut held.days {
+                        *count *= 12_345;
+                    }
+                }
+                for sender in &mut overview.senders {
+                    sender.name =
+                        Some("International newsletter and product announcements — a very long sender name".to_owned());
+                    sender.count *= 12_345;
+                    sender.opened *= 12_345;
+                }
+                data(Ok(overview))
+            }
             _ => None,
         },
         ..mail_overview::State::default()
@@ -5703,6 +5753,21 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 if let Ok(mail) = &mut result {
                     keep_answer(&self.answers, &mut mail.summary);
                     keep_pile(self.listed_pile(&mail.summary.id), &mut mail.summary);
+                    // Exercise long Torro headings in the invitation screenshot, never live mail
+                    // or the original demo message body (issue #569).
+                    if self.launch.demo && self.launch.open == Some(Open::Invitation) {
+                        if let Some(invite) = &mut mail.summary.invite {
+                            invite.title =
+                                tr("Planning the shared calendar migration and the next steps for the whole team")
+                                    .into();
+                        }
+                        if let Some(from) = &mut mail.summary.from {
+                            from.name = Some(format!(
+                                "Maria Berg — {}",
+                                tr("Calendar coordination for the distributed product team")
+                            ));
+                        }
+                    }
                 }
                 let invite = result.as_ref().ok().and_then(|mail| mail.summary.invite.clone());
                 let unread = result.as_ref().is_ok_and(|mail| !mail.summary.flags.contains(&Flag::Seen))
@@ -7146,10 +7211,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.menu != Some(Menu::Mute) {
             self.mail_overview.muting = None;
         }
-        let forced = matches!(
-            self.launch.open,
-            Some(Open::MailOverviewLoading | Open::MailOverviewError | Open::MailOverviewEmpty)
-        );
+        let forced = self.launch.demo
+            && matches!(
+                self.launch.open,
+                Some(
+                    Open::MailOverviewLoading
+                        | Open::MailOverviewError
+                        | Open::MailOverviewEmpty
+                        | Open::MailOverviewFull
+                        | Open::StatisticsFull
+                        | Open::StatisticsEmpty
+                        | Open::StatisticsLoading
+                        | Open::StatisticsError
+                )
+            );
         let overview = self.mail_overview_shown();
         let shown = overview || self.statistics_shown();
         // Once per window; after an error again when the overview comes into view anew (review of
@@ -7232,16 +7307,31 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
 
     /// What the overview and the statistics page (issue #485) draw from.
     fn overview_data(&self, place: mail_overview::Place, mute_at: &Anchor) -> mail_overview::OverviewData<'_> {
-        let accounts = self.mail_groups().into_iter().map(|group| (group.account, group.title)).collect();
         mail_overview::OverviewData {
             state: &self.mail_overview,
             catalogue: &self.categories,
-            accounts,
+            accounts: self.overview_accounts(),
             now: self.now,
             place,
             mute_at: mute_at.clone(),
             news: &self.news,
         }
+    }
+
+    /// The same unabridged names for the bounded trigger and each account menu entry.
+    fn overview_accounts(&self) -> Vec<(String, String)> {
+        let full = self.launch.demo && matches!(self.launch.open, Some(Open::MailOverviewFull | Open::StatisticsFull));
+        self.mail_groups()
+            .into_iter()
+            .map(|group| {
+                let title = if full {
+                    format!("{} — International correspondence and product announcements", group.title)
+                } else {
+                    group.title
+                };
+                (group.account, title)
+            })
+            .collect()
     }
 
     /// The message whose whole mail the panel wants: in a folder the one under the cursor while
@@ -10253,7 +10343,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             return events;
         }
         let inbox = self.inbox.clone();
-        let calendars = async move { inbox.list_calendars().await.map_err(|err| err.to_string()) };
+        let calendars = async move { inbox.list_invitation_calendars().await.map_err(|err| err.to_string()) };
         Task::batch([events, Task::perform(calendars, Message::InviteCalendars)])
     }
 
@@ -13716,6 +13806,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// the chosen one marked; with [`widgets::SEARCH_FROM`] values or more with a search field.
     fn field_menu(&self) -> Option<Element<'_, Message>> {
         let key = self.fields.open()?;
+        if *key == Field::InviteCalendar {
+            return Some(self.invitation_calendar_menu());
+        }
         let ok = |list: &Option<Result<Vec<TaskList>, String>>| match list {
             Some(Ok(list)) => list.clone(),
             _ => Vec::new(),
@@ -13739,16 +13832,98 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         Some(self.fields.view(key, sections, widgets::menu_width(), Align::Start, Message::Fields))
     }
 
+    /// The existing calendar dropdown with room for connection names (issue #569). Its standard
+    /// menu entries retain their look and selection messages; clipped options expose the full
+    /// label as a tooltip. The chosen label is also always shown wrapped on the invitation card.
+    fn invitation_calendar_menu(&self) -> Element<'_, Message> {
+        let calendars = match &self.invite_calendars {
+            Some(Ok(calendars)) => calendars.clone(),
+            _ => Vec::new(),
+        };
+        let inset = 2.0 * style::MENU_INSET + style::ITEM_PADDING.left + style::ITEM_PADDING.right;
+        let trail = icon::SIZE_SM + space::s();
+        let needed = calendars
+            .iter()
+            .map(|c| typo::text_width(&c.name, typo::body()) + inset + trail)
+            .fold(widgets::menu_width(), f32::max);
+        let width = needed.min(size::reading_max()).min((self.size.width - 2.0 * space::s()).max(0.0));
+        let searchable = calendars.len() >= widgets::SEARCH_FROM;
+        let sections = choice_section(calendars, self.invite_calendar(), Message::InviteCalendar);
+        let sections = widgets::matching_sections(sections, if searchable { self.fields.query() } else { "" });
+        let close = Message::Fields(DropdownEvent::Close);
+        let enter = widgets::first_choice(&sections, self.fields.query()).unwrap_or_else(|| close.clone());
+        let rows = sections
+            .into_iter()
+            .flat_map(|s| s.items)
+            .map(|item| invitation_calendar_option(item, width, (width - inset - trail).max(0.0)))
+            .collect::<Vec<_>>();
+        let card = if searchable {
+            widgets::escape_free(widgets::search_menu(
+                DROPDOWN_SEARCH,
+                self.fields.query(),
+                |words| Message::Fields(DropdownEvent::Query(words)),
+                enter,
+                rows,
+                width,
+            ))
+        } else {
+            let body = iced::widget::scrollable(column(rows))
+                .width(Fill)
+                .direction(iced::widget::scrollable::Direction::Vertical(style::scrollbar()))
+                .style(style::scrollable);
+            container(container(body).max_height(size::panel()))
+                .width(width)
+                .padding(style::MENU_INSET)
+                .style(style::container::menu)
+                .into()
+        };
+        widgets::floating(&self.fields.anchor(&Field::InviteCalendar), Placement::Below(Align::Start), card, close)
+    }
+
     /// The open menu of the overview's account dropdown (issue #554), under its button.
     fn overview_account_menu(&self) -> Option<Element<'_, Message>> {
         let menus = &self.mail_overview.account_menu;
         let key = menus.open()?;
-        let accounts: Vec<(String, String)> =
-            self.mail_groups().into_iter().map(|group| (group.account, group.title)).collect();
+        let accounts = self.overview_accounts();
         let choices = mail_overview::account_choices(&accounts);
+        let searching = choices.len() >= widgets::SEARCH_FROM;
         let chosen = choices.iter().find(|choice| choice.account == self.mail_overview.account).cloned();
         let sections = choice_section(choices, chosen.as_ref(), Message::MailOverviewAccount);
-        Some(menus.view(key, sections, widgets::menu_width(), Align::Start, Message::MailOverviewAccountMenu))
+        let shown = if searching { widgets::matching_sections(sections, menus.query()) } else { sections };
+        let close = Message::MailOverviewAccountMenu(DropdownEvent::Close);
+        let enter = widgets::first_choice(&shown, menus.query()).unwrap_or_else(|| close.clone());
+        // The suite's plain menu rows clip long words. Only these account rows add a tooltip so
+        // identically prefixed names remain distinguishable before making a selection (#565).
+        let items: Vec<Element<'_, Message>> = shown
+            .into_iter()
+            .flat_map(|section| section.items)
+            .map(|item| {
+                let full = item.label.to_string();
+                widgets::with_tooltip(widgets::menu_item(item), full)
+            })
+            .collect();
+        let menu: Element<'_, Message> = if searching {
+            widgets::escape_free(widgets::search_menu(
+                DROPDOWN_SEARCH,
+                menus.query(),
+                |words| Message::MailOverviewAccountMenu(DropdownEvent::Query(words)),
+                enter,
+                items,
+                widgets::menu_width(),
+            ))
+        } else {
+            let body = iced::widget::scrollable(column(items))
+                .direction(iced::widget::scrollable::Direction::Vertical(style::scrollbar()))
+                .style(style::scrollable)
+                .height(iced::Length::Shrink)
+                .width(Fill);
+            container(container(body).max_height(size::panel()))
+                .width(widgets::menu_width())
+                .padding(style::MENU_INSET)
+                .style(style::container::menu)
+                .into()
+        };
+        Some(widgets::floating(&menus.anchor(key), Placement::Below(Align::End), menu, close))
     }
 
     fn close_menus(&mut self) {
@@ -14558,6 +14733,29 @@ pub(crate) fn choice_section<'a, T: ToString + PartialEq>(
         })
         .collect();
     vec![MenuSection::new(items)]
+}
+
+/// Long, unbroken logins and URL segments must remain readable before selecting a calendar.
+fn invitation_calendar_tip(label: String, width: f32) -> Element<'static, Message> {
+    let text = typo::text(typo::caption(), label).style(theme::text_2).width(Fill).wrapping(Wrapping::WordOrGlyph);
+    container(text)
+        .width(width)
+        .padding([style::KBD_PADDING.top + style::KBD_PADDING.bottom, space::s()])
+        .style(style::container::menu)
+        .into()
+}
+
+fn invitation_calendar_option(item: MenuItem<'_, Message>, width: f32, text_room: f32) -> Element<'_, Message> {
+    let label = item.label.to_string();
+    let item = MenuItem { label: typo::ellipsize(&label, typo::body(), text_room).into(), ..item };
+    iced::widget::tooltip(
+        widgets::menu_item(item),
+        invitation_calendar_tip(label, width),
+        iced::widget::tooltip::Position::Bottom,
+    )
+    .gap(space::xs())
+    .delay(Duration::from_millis(500))
+    .into()
 }
 
 /// The floating `dialog` at `anchor`, with the open dropdown of one of its fields over it, if one is
@@ -22412,6 +22610,110 @@ mod tests {
         }
     }
 
+    #[test]
+    fn forced_statistics_fixtures_are_demo_only_and_never_reloaded() {
+        for state in
+            ["mail-overview-full", "statistics-full", "statistics-empty", "statistics-loading", "statistics-error"]
+        {
+            assert!(Launch::parse(&args(&["--view", "mail", "--open", state])).is_err(), "demo only");
+            let mut app = mail_window(Density::Compact, &["--open", state]);
+            for size in [WIDE, MEDIUM, NARROW] {
+                let _ = app.update(Message::Resized(size));
+                let _ = app.update(Message::Tick);
+                assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::MailOverview(..))), "{state}: no reload");
+                assert!(app.statistics_shown() || app.mail_overview_shown());
+                let _ = app.view();
+            }
+            match state {
+                "mail-overview-full" | "statistics-full" => {
+                    assert_eq!(app.mail_overview.range, torro_ipc::StatsRange::Quarter);
+                    let overview = app.mail_overview.overview().expect("full");
+                    assert_eq!(overview.days.len(), 90);
+                    assert!(mail_overview::came_in(overview) > 1_000_000);
+                }
+                "statistics-empty" => assert!(mail_overview::is_empty(app.mail_overview.overview().expect("empty"))),
+                "statistics-loading" => assert!(app.mail_overview.data.is_none()),
+                "statistics-error" => assert!(app.mail_overview.data.as_ref().expect("answer").result.is_err()),
+                _ => unreachable!(),
+            }
+        }
+        assert!(Launch::parse(&args(&["--demo", "--view", "mail", "--open", "statistics-unknown"])).is_err());
+    }
+
+    #[test]
+    fn all_statistics_ranges_and_accounts_are_shared_with_the_overview() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        deliver_overview(&mut app);
+        for range in mail_overview::RANGES {
+            let _ = app.update(Message::ShowMailStatistics);
+            let _ = app.update(Message::MailOverviewRange(range));
+            deliver_overview(&mut app);
+            let account = app.mail_groups().first().expect("an account").account.clone();
+            let _ = app.update(Message::MailOverviewAccount(mail_overview::AccountChoice {
+                account: Some(account.clone()),
+                label: "Long account display name".into(),
+            }));
+            deliver_overview(&mut app);
+            let key = app.mail_overview.key();
+            assert_eq!(key.range, range);
+            assert_eq!(key.account.as_deref(), Some(account.as_str()));
+            let _ = app.update(Message::MailOverviewTable(true));
+            for tab in 0..4 {
+                let _ = app.update(Message::MailStatisticsTab(tab));
+            }
+            let _ = app.update(Message::ShowMailOverview);
+            assert_eq!(app.mail_overview.key(), key);
+            assert!(app.mail_overview.table);
+            assert_eq!(app.mail_overview.tab, mail_overview::Tab::Categories);
+        }
+    }
+
+    #[test]
+    fn statistics_account_dropdown_keeps_full_names_and_closes_before_the_page() {
+        let choices: Vec<_> = ["A", "B"]
+            .map(|suffix| mail_overview::AccountChoice {
+                account: Some(format!("mail:{suffix}@example.org")),
+                label: format!("International correspondence and product announcements — Account {suffix}"),
+            })
+            .into_iter()
+            .collect();
+        let sections = choice_section(choices.clone(), choices.first(), Message::MailOverviewAccount);
+        for (item, choice) in sections[0].items.iter().zip(&choices) {
+            assert_eq!(item.label, choice.label, "the menu's ellipsized label keeps its complete tooltip text");
+            assert!(matches!(&item.on_press, Message::MailOverviewAccount(value) if value == choice));
+        }
+        assert!(sections[0].items[0].current);
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::ShowMailStatistics);
+        let _ = app.update(Message::MailOverviewAccountMenu(DropdownEvent::Toggle(())));
+        assert!(app.mail_overview.account_menu.open().is_some());
+        assert!(app.overview_account_menu().is_some());
+        let _ = app.update(Message::Escape);
+        assert!(app.mail_overview.account_menu.open().is_none());
+        assert!(app.statistics_shown(), "Escape closes the dropdown, not the statistics page");
+        let _ = app.update(Message::MailOverviewAccountMenu(DropdownEvent::Toggle(())));
+        let _ = app.update(Message::MailOverviewAccount(choices[1].clone()));
+        assert_eq!(app.mail_overview.account, choices[1].account);
+        assert!(app.mail_overview.account_menu.open().is_none());
+        let template = app.folders.first().expect("demo folder").clone();
+        app.folders = (0..15)
+            .map(|at| torro_mail::Folder {
+                id: format!("inbox-{at}"),
+                account: format!("mail:account-{at}@example.org"),
+                ..template.clone()
+            })
+            .collect();
+        let _ = app.update(Message::MailOverviewAccountMenu(DropdownEvent::Toggle(())));
+        let _ = app.update(Message::MailOverviewAccountMenu(DropdownEvent::Query("account-14".into())));
+        assert!(app.overview_account_menu().is_some(), "the searchable menu retains its tooltip rows");
+        let _ = app.view();
+        let _ = app.update(Message::Escape);
+        assert!(app.mail_overview.account_menu.open().is_none());
+        assert!(app.statistics_shown());
+    }
+
     /// Issue #122: a menu hangs at the button clicked – the row's, also while the reader shows the
     /// same entry beside it, or the reader's –, and one opened by a key at the reader while it is
     /// open, else at the row. Keys inside the open menu leave it where it is.
@@ -23134,6 +23436,45 @@ mod tests {
         );
     }
 
+    /// Issue #569: a long, unbroken connection remains readable while hovering an option.
+    #[test]
+    fn invitation_calendar_hover_wraps_unbroken_identifiers() {
+        use iced_test::selector::Candidate;
+        let label = format!(
+            "Personal — CalDAV · https://dav.example/{} · {}@example.org",
+            "path".repeat(40),
+            "account".repeat(25)
+        );
+        let calendar = TaskList { id: "demo/calendar/personal".into(), name: label.clone() };
+        let item = MenuItem::plain(label.clone(), Message::InviteCalendar(calendar));
+        let width = 280.0;
+        let option = container(invitation_calendar_option(item, width, width - space::xxl())).width(width);
+        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), Size::new(320.0, 800.0), option);
+        let position = Point::new(space::m(), space::m());
+        ui.point_at(position);
+        ui.simulate([iced::Event::Mouse(iced::mouse::Event::CursorMoved { position })]);
+        let dir = tempfile::tempdir().expect("hover snapshots");
+        let before = dir.path().join("before");
+        assert!(ui.snapshot(&Theme::Dark).expect("initial hover").matches_hash(&before).expect("store hash"));
+        // Iced's tooltip overlay does not expose text to widget operations. Verify that the real
+        // delayed hover appears, then inspect the same tooltip content's layout separately.
+        std::thread::sleep(Duration::from_millis(510));
+        assert!(!ui.snapshot(&Theme::Dark).expect("tooltip open").matches_hash(&before).expect("compare hash"));
+        let mut ui = iced_test::Simulator::with_size(
+            iced::Settings::default(),
+            Size::new(320.0, 800.0),
+            invitation_calendar_tip(label.clone(), width),
+        );
+        let bounds = ui
+            .find(|candidate: Candidate<'_>| match candidate {
+                Candidate::Text { content, bounds, .. } if content == label => Some(bounds),
+                _ => None,
+            })
+            .expect("the tooltip content retains the complete label");
+        assert!(bounds.x >= 0.0 && bounds.x + bounds.width <= 320.0, "{bounds:?}");
+        assert!(bounds.height > typo::line_height(typo::caption()) * 3.0, "unbroken segments wrap: {bounds:?}");
+    }
+
     /// Task E8.3c: reading an invitation asks for the events around it and – once – the calendars;
     /// the card offers the calendar, and the one picked goes with the answer: the first one before a
     /// pick, none while the calendars are not in (the core chooses then).
@@ -23163,24 +23504,52 @@ mod tests {
             sent.expect("an answer")
         };
         assert_eq!(answer(&mut app), None, "no calendars yet: the core's choice");
-        let calendars = block_on(app.inbox.list_calendars()).map_err(|err| err.to_string());
-        let _ = app.update(Message::InviteCalendars(calendars));
-        assert_eq!(app.invite_calendar(), Some(&demo_calendar(0)), "the first, as the core would take");
-        assert_eq!(answer(&mut app), Some(demo_calendar(0).id));
-        let _ = app.update(Message::InviteCalendar(demo_calendar(1)));
-        assert_eq!(answer(&mut app), Some(demo_calendar(1).id), "the one picked");
+        let calendars = block_on(app.inbox.list_invitation_calendars()).expect("invitation calendars");
+        let first = calendars[0].clone();
+        let second = calendars[1].clone();
+        assert_eq!(first.name.split(" — ").next(), second.name.split(" — ").next(), "same calendar name");
+        assert_ne!(first.name, second.name, "different connections");
+        let _ = app.update(Message::InviteCalendars(Ok(calendars)));
+        assert_eq!(app.invite_calendar(), Some(&first), "the first, as the core would take");
+        assert_eq!(answer(&mut app), Some(first.id.clone()));
+        app.last_calendar = Some(second.id.clone());
+        assert_eq!(app.invite_calendar(), Some(&second), "the last event's calendar by id");
+        let _ = app.update(Message::Fields(DropdownEvent::Toggle(Field::InviteCalendar)));
+        let _ = app.update(Message::Escape);
+        assert!(app.reading && app.fields.open().is_none(), "Escape closes only the dropdown");
+        let _ = app.update(Message::InviteCalendar(second.clone()));
+        assert_eq!(answer(&mut app), Some(second.id.clone()), "the one picked, never its display label");
 
         let events = block_on(MailSource::list_events(app.inbox.as_ref(), start, end)).map_err(|err| err.to_string());
         let _ = app.update(Message::InviteEvents(summary.id.clone(), events));
         let reading = app.reading().expect("the invitation is read");
         assert!(reading.invite.events.is_some() && reading.invite.calendars.is_some());
-        assert_eq!(reading.invite.calendar, Some(&demo_calendar(1)));
+        assert_eq!(reading.invite.calendar, Some(&second));
         draw_everywhere(&mut app);
         let _ = app.update(Message::InviteEvents("m:other".into(), Ok(Vec::new())));
         assert!(
             app.invite_events.as_ref().is_some_and(|(id, _)| *id == summary.id),
             "another mail's events are dropped"
         );
+        for calendars in [Ok(Vec::new()), Err("offline".into())] {
+            let _ = app.update(Message::InviteCalendars(calendars));
+            assert_eq!(answer(&mut app), None, "empty or failed: the core chooses as before");
+        }
+        let plain = block_on(app.inbox.list_calendars()).expect("event dialog calendars");
+        assert_eq!(plain[0], demo_calendar(0), "the event dialog keeps the ordinary calendar names");
+        for calendar in block_on(app.inbox.list_invitation_calendars()).expect("invitation calendars") {
+            assert_eq!(
+                block_on(MailSource::respond_to_invitation(
+                    app.inbox.as_ref(),
+                    summary.account.clone(),
+                    summary.id.clone(),
+                    InvitationAnswer::Accept,
+                    Some(calendar.id)
+                )),
+                Ok(Delivery::Accepted),
+                "every advertised demo calendar accepts the answer, including CalDAV"
+            );
+        }
     }
 
     // ----- Notifications window (E8.4) ------------------------------------------------------
