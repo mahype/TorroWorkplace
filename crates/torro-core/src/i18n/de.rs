@@ -96,6 +96,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("The original message is no longer available.", "Die Originalnachricht ist nicht mehr verfügbar."),
     ("The original message is too large to export as EML.", "Die Originalnachricht ist für den EML-Export zu groß."),
+    // Verified mail saves (#560).
+    ("Choose a destination…", "Ablageziel wählen…"),
+    ("Save cancelled.", "Speichern abgebrochen."),
+    ("Saved and verified.", "Gespeichert und geprüft."),
+    ("The saved files could not all be confirmed.", "Nicht alle gespeicherten Dateien konnten bestätigt werden."),
+    ("The selected path cannot be used.", "Der gewählte Pfad kann nicht verwendet werden."),
+    ("This save is already running.", "Dieser Speichervorgang läuft bereits."),
+    ("{mail}: {result}", "{mail}: {result}"),
     // Embedded compose images (#461).
     ("As attachment", "Als Anhang"),
     ("Couldn't copy the images to the other account.", "Die Bilder konnten nicht ins andere Konto kopiert werden."),

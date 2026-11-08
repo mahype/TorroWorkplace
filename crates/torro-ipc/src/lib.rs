@@ -3146,6 +3146,10 @@ pub enum Request {
     },
     /// Saves attachments of a message ([`Response::SavedAttachments`]); a file is never overwritten
     /// except for `to: file`. A file that fails is listed and the others are saved all the same.
+    /// Both written and identical existing files are reported only after the service checks the
+    /// final path is a regular file, not a symlink, with exactly the expected length and contents.
+    /// Verification failures are per-file `failed` entries (`forbidden` for denied access, else `error`).
+    /// This is a point-in-time check, not a guarantee of later availability or cloud synchronisation.
     /// `not-found` for a message the caller does not reach, an unknown part or target, or a target
     /// whose folder is missing; `forbidden` for `to: file` or `folder` from a client; `error` for
     /// `to: file` with more than one attachment.
@@ -3173,6 +3177,9 @@ pub enum Request {
     /// for `to: file`. `not-found` for a message the caller does not reach, an unknown target, or a
     /// target whose folder is missing; `forbidden` for `to: file` or `folder` from a client;
     /// `offline` when the mail cannot be fetched; `error` when it cannot be drawn or written.
+    /// A regular final file (no symlink), its length and all original/rendered bytes are verified before
+    /// success, including identical existing files; denied verification is `forbidden`, else `error`.
+    /// `shortened` is a verified but incomplete export, not full success or a cloud-sync guarantee.
     #[serde(rename = "mail.save_message_as")]
     SaveMailAs {
         /// The message's id (`m:…`).
@@ -4971,7 +4978,8 @@ pub enum Response {
         /// There are more mails the filter finds than one call takes: call again.
         more: bool,
     },
-    /// What [`Request::SaveMailAttachments`] did. File names are data from outside.
+    /// What [`Request::SaveMailAttachments`] did, after final-file content verification by the service.
+    /// File names are data from outside. Empty or mixed results do not mean complete success.
     SavedAttachments {
         /// The files written.
         #[serde(default)]
@@ -4984,7 +4992,8 @@ pub enum Response {
         #[serde(default)]
         failed: Vec<mail::FailedFile>,
     },
-    /// What [`Request::SaveMailAs`] wrote (issue #501).
+    /// What [`Request::SaveMailAs`] wrote or found identical, verified at its final path (issue #560).
+    /// Verification is a moment in time; `shortened` means the export is incomplete.
     SavedMail {
         /// The file's absolute path; with `skipped` the file with the same content found there.
         path: String,

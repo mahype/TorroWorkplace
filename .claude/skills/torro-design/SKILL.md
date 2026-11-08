@@ -92,6 +92,14 @@ aus einem Guss wirkt:
   ist `widgets::path_menu_button` (`TEXT_2`). Auf einer **Unterseite** bleibt die Navigation des Bereichs in jeder Größe (#473): Breit in der Liste
   (die Kinder unter dem Abschnitt, alle Geschwister wie alle Konten, #475), Mittel und Schmal als Menüknopf des
   Abschnitts vor dem Namen („‹ [☁ Accounts ▾] › ein Konto“, schmal „‹ [☁ ein Konto ▾]“), nie nur der Pfeil.
+- **Mail-Ausnahme der oberen Zeile** (#564, angenommenes Zielbild): Die gesamte normale Kopffläche
+  verwendet die aktive Seitenleistenfarbe samt Kontrastfarben (`TopRow::sidebar_surface`), auch in
+  Mail-Einstellungen und Fokusansicht; keine fest dunkle Farbe. Die Suchfeld-Innenfläche bleibt als
+  Eingabe erkennbar, Menüs und Tooltips behalten das Fenster-Theme. Nur breit mit tatsächlich
+  ausgeklappter Seitenleiste steht `panel-left` oben rechts über ihr, mit `space::s()` Abstand vor
+  der Trennlinie (`TopRow::sidebar_at_edge`); er folgt ihrer gezogenen Breite. Mit Icon-Leiste,
+  schmal und im Drawer bleibt er neben der Ampel. Andere Apps behalten die oben beschriebene
+  geteilte Kopffläche und feste Knopfposition. Mini und Leiste bleiben Anzeigen ohne diesen Kopf.
 - **Mail-Fenster** (#451): über der Liste Suchfeld, Sortieren, Aktualisieren; über dem Leser Betreff, „6 von 9“, ⌃ ⌄
   und „In neuem Fenster“. Die **Aktionsleiste schwebt** als Karte (Menü-Stil, Radius `lg`) senkrecht mittig am rechten
   Rand über der Mail (`widgets::floating_rail`); der Text hält `widgets::floating_rail_room()` Abstand, der Kopf läuft
@@ -281,6 +289,16 @@ aus einem Guss wirkt:
 - Klickziele mindestens 24×24, sonst 28.
 
 ## 5. Zustände und Bausteine
+
+**Unmittelbare Rückmeldung ist Pflicht (#560).** Jede Aktion erhält sofort eine passende sichtbare
+Reaktion. Laufend, erfolgreich und fehlgeschlagen bleiben unterscheidbar, mit Wort oder Icon statt
+nur Farbe. Teilerfolg und Abbruch sind kein Erfolg. Beispiel Speicher-Untermenü: Es bleibt bis zum
+bewussten Schließen offen; rechts am angeklickten Ziel drehen sich während der Speicherung die
+`RefreshCw`-Pfeile. Erst nach Prüfung der tatsächlichen Zieldatei durch den Dienst erscheint ein grüner
+`CircleCheck`. Fehler zeigen `CircleX` mit Erklärung, Teilerfolge und gekürzte Exporte `TriangleAlert`
+mit Anzahl/Details. Zielwahl im Dialog und Abbruch haben einen ruhigen neutralen Hinweis. Laufende
+Einträge bleiben voll lesbar und nehmen keinen zweiten Klick (`widgets::menu_item_feedback`);
+Pfad, Vorschlag und Status gehören eindeutig zur Aktion, Mail und Ablage.
 
 **Listen (`[list]`, #291, `layout::list()` → `ListLook`).** Ein Design bestimmt, *wie* Listen gezeichnet
 werden, nie *wo* etwas steht: dieselben Zellen an derselben Stelle in jedem Design, nichts kommt hinzu
@@ -651,10 +669,12 @@ Regeln:
   in Schmal wird nur die *dargestellte* Ansicht angepasst).
 - **Dauerbetrieb:** nichts blinkt oder bewegt sich ohne Anlass; neu zeichnen nur bei Änderung bzw.
   im Minutentakt; keine Spinner im Ruhezustand; geringe CPU- und GPU-Last.
-  **Ausnahme** (#422): Läuft ein Sync wirklich (oder wartet sein Lauf), drehen sich die Pfeile von
+  **Arbeitsfeedback** (#422, #560): Läuft ein Sync wirklich (oder wartet sein Lauf), drehen sich die Pfeile von
   „Syncing…“ (`PageAction::spinning`, `widgets::spin_angle`, ein Umlauf je 1,2 s); der Knopf nimmt dann keinen
   Klick. Nur dafür und nur solange: Der Takt zum Neuzeichnen (50 ms) läuft allein in dieser Zeit, danach steht
-  alles still. `busy_button` bleibt ruhig.
+  alles still. Dasselbe gilt für sichtbare tatsächlich laufende Speicheraktionen; bei Dialogwahl,
+  Erfolg, Teilerfolg, Fehler oder Abbruch läuft kein Animationstimer. Geschlossene Menüs brauchen
+  keinen Speichertakt; ihre aktiven Auftragssperren bleiben erhalten. `busy_button` bleibt ruhig.
 - **HiDPI:** alle Maße logisch; Icons als Vektor; Linien 1 logischer Pixel.
 - Mindestgröße der Fenster 200×120 (`torro_gui::window`), damit Mini und Leiste möglich sind.
 - Fenstertitel und Inhalt ohne Doppelungen; keine Fake-Titelleiste.
@@ -670,10 +690,17 @@ Regeln:
 
 - Wenn Animation, dann 120–200 ms, ease-out, nur für Orientierung (öffnen, verschieben). Nie
   Pflicht, um etwas zu verstehen.
+- Arbeitsanzeigen sind die Ausnahme: Nur während tatsächlicher Arbeit und nur sichtbar animieren
+  (Abschnitt 6). Erfolg, Teilerfolg, Fehler und Abbruch stehen still; Dialogwarten ist keine Arbeit.
 
 ## 9. Sichtprüfung (Pflicht bei UI-Änderungen)
 
 Tests reichen bei Oberfläche nicht. Jede geänderte Ansicht in **allen Größenklassen** ansehen.
+Aktionsfeedback immer mitprüfen: laufend, bestätigter Erfolg, Fehler, Teilerfolg und Abbruch.
+Für das Speicher-Untermenü gibt es in `torroinbox` die nebenwirkungsfreien Demo-Zustände
+`save-running`, `save-success`, `save-error`, `save-partial`, `save-choosing`, `save-cancelled`,
+`save-shortened`. Der Demo-Spinner hat einen festen Winkel ohne Timer; echte Dialoge und Bewegung
+zusätzlich von Hand prüfen. Alle drei Abstandsstufen sowie Hell/Dunkel sind Pflicht.
 
 **Der Weg auf jedem System: `shots.sh`, ohne Fenster (#492).** Die App zeichnet ihre Demo-Ansicht im
 Speicher (`--demo --shots <ordner>`, `torro_gui::shots`) und legt sie als PNG ab: kein Fenster, kein
@@ -709,6 +736,11 @@ Kante bis 4096; ersetzt die sechs, Datei `<präfix>-1000x700.png`). Der erste Fe
   den ganzen Bildschirm (`--reminders`, ein eigenes Fenster je Bildschirm; mit `--shots` lehnt der
   Kalender ihre Zustände mit Exit 64 ab) und Schriftwechsel zur
   Laufzeit (eine Schrift, die erst nach dem Start geladen wird, zeigt eine Ersatzschrift). Dafür bleibt `shoot.sh` (unten).
+- **Mail-Kopf (#564):** Kopf und Inhaltstrenner nach Ziehen der Sidebar-/Listenbreite auf einer
+  Achse prüfen; ausgeklappt, Icon-Leiste, Drawer, Einstellungen und Fokusansicht ansehen, in
+  allen Abstandsstufen hell/dunkel sowie mit eigener dunkler Sidebar im Hellmodus (z. B. `channelr`).
+  Schalter und `[` müssen weiter umschalten. Native Ampel-Abstände und Fensterziehen bleiben
+  ohne echtes Fenster ausdrücklich ungeprüft.
 - Zeilen `[…/emulator.rs:…] action = …` auf stderr kommen vom Emulator, der manche Aktionen nicht
   ausführt (z. B. die Frage nach dem Erscheinungsbild des Systems), und sind kein Fehler.
   `… not settled after 10 s` heißt: Die Ansicht kam nicht zur Ruhe, das Bild zeigt den Stand nach
@@ -790,6 +822,8 @@ Fenster nicht die angeforderte Größe (Mindestgröße), ist das ein Befund.
 - [ ] Icons aus `torro_gui::icon`, keine Unicode-Glyphen
 - [ ] Kontraste eingehalten, kein Text in `FAINT`
 - [ ] Leer-, Lade-, Fehlerzustand vorhanden; Formularfehler erst nach Speicherversuch
+- [ ] Jede Aktion reagiert unmittelbar sichtbar; laufend/Erfolg/Fehler unterscheidbar, Teilerfolg und
+      Abbruch nie als voller Erfolg; Erklärung erreichbar, keine Bewegung ohne tatsächliche Arbeit
 - [ ] Tastatur: Fokus sichtbar, Enter/Escape/Pfeile, Kurzbefehle
 - [ ] In allen sechs Größen angesehen: Layout wechselt sinnvoll, nichts abgeschnitten, groß nicht gestreckt
 - [ ] Alle Texte über `tr()`, englisch, Satzschreibung

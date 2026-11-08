@@ -348,6 +348,56 @@ const RAIL_TICK: Duration = Duration::from_millis(30);
 /// second read as a smooth turn, and it only runs while a sync does.
 const SPIN_TICK: Duration = Duration::from_millis(50);
 
+/// A save belongs to its originating mail, scope and destination, never to the current selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SaveScope {
+    Attachments(Option<String>),
+    Export(ExportFormat),
+}
+
+impl SaveScope {
+    fn overlaps(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Attachments(a), Self::Attachments(b)) => a.is_none() || b.is_none() || a == b,
+            _ => self == other,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SaveState {
+    Choosing,
+    Running,
+    Success,
+    Error,
+    Partial,
+    Cancelled,
+}
+
+impl SaveState {
+    fn active(self) -> bool {
+        matches!(self, Self::Choosing | Self::Running)
+    }
+}
+
+/// Monotone ticket ids make duplicate and stale dialog/worker replies harmless. Active locks live
+/// beyond menu dismissal; terminal feedback only lives until dismissal, mail change or retry.
+#[derive(Debug, Clone)]
+struct SaveJob {
+    ticket: u64,
+    mail: String,
+    subject: String,
+    scope: SaveScope,
+    destination: Option<SaveTo>,
+    entry: mail::FileAct,
+    expected: Vec<String>,
+    place: Option<String>,
+    state: SaveState,
+    explanation: String,
+    since: Instant,
+    visible: bool,
+}
+
 /// "In 5 min" puts a reminder's entry off for this many minutes (task ER1.4).
 const REMINDER_SNOOZE_MINUTES: i64 = 5;
 
@@ -1599,6 +1649,14 @@ pub enum Open {
     /// That invoice after its first attachment was saved to its first save target: the hint with
     /// "Show in folder", kept for good.
     AttachmentSaved,
+    /// Stable, side-effect-free save feedback fixtures (issue #560).
+    SaveRunning,
+    SaveSuccess,
+    SaveError,
+    SavePartial,
+    SaveChoosing,
+    SaveCancelled,
+    SaveShortened,
     /// "All" with the context menu of its first mail open, right-clicked at the left of its row
     /// (issue #497): the menu starts at the pointer, the reading pane stays free.
     MailContext,
@@ -1704,7 +1762,19 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 109] = [
+    fn save_demo(self) -> bool {
+        matches!(
+            self,
+            Self::SaveRunning
+                | Self::SaveSuccess
+                | Self::SaveError
+                | Self::SavePartial
+                | Self::SaveChoosing
+                | Self::SaveCancelled
+                | Self::SaveShortened
+        )
+    }
+    const ALL: [(&'static str, Open); 116] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1767,6 +1837,13 @@ impl Open {
         ("save-group", Open::SaveGroup),
         ("save-format-menu", Open::SaveFormatMenu),
         ("attachment-saved", Open::AttachmentSaved),
+        ("save-running", Open::SaveRunning),
+        ("save-success", Open::SaveSuccess),
+        ("save-error", Open::SaveError),
+        ("save-partial", Open::SavePartial),
+        ("save-choosing", Open::SaveChoosing),
+        ("save-cancelled", Open::SaveCancelled),
+        ("save-shortened", Open::SaveShortened),
         ("mail-context", Open::MailContext),
         ("mail-context-low", Open::MailContextLow),
         ("category-group", Open::CategoryGroup),
@@ -2958,9 +3035,9 @@ pub struct App<S> {
     /// The senders (addresses in lower case) this window unsubscribed from while it runs (issue #416):
     /// their mail offers "Unsubscribe…" no more until the window starts again.
     unsubscribed: HashSet<String>,
-    /// The mails being saved as PDF or picture (issue #501, review of PR #514): a second click on the
-    /// same one in the same format waits for the first instead of making a second file.
-    exporting: HashSet<(String, ExportFormat)>,
+    /// Active save locks and feedback, scoped to their originating mail and destination (issue #560).
+    saves: Vec<SaveJob>,
+    next_save: u64,
     /// The logos of known senders (issue #453) by domain: each asked once while the window runs.
     logos: mail::Logos,
     /// The calendars an invitation's event can go to (task E8.3c), asked once the first invitation
@@ -3582,14 +3659,10 @@ pub enum Message {
     /// An entry of an attachment's menu (`Some(part)`) or of "Save all" (`None`), for the message with
     /// this id; also what a click on a name or "Save all" does by the setting.
     FileAct(String, Option<String>, mail::FileAct),
-    /// The save dialog of "Save as…" answered for the message and part: the file chosen, `None` when
-    /// it was cancelled – then nothing is sent and nothing said.
-    SaveAsChosen(String, String, Option<std::path::PathBuf>),
-    /// The folder dialog of "Save all to folder…" answered for the message, alike.
-    FolderChosen(String, Option<std::path::PathBuf>),
-    /// `mail.save_attachments` answered: the words of where, taken when it was sent
-    /// ([`mail::save_place`]), for the hint, and what was saved.
-    AttachmentsSaved(Option<String>, Result<SavedAttachments, String>),
+    /// A dialog answered for its ticket, which holds the originating mail, scope and target.
+    SaveChosen(u64, Option<std::path::PathBuf>),
+    /// The attachment worker answered for that same immutable ticket/context.
+    AttachmentsSaved(u64, Result<SavedAttachments, String>),
     /// "Save mail as" of the list's context menu (issue #501): the formats' menu at the row.
     AskSaveMailFormat(String),
     /// "Save as PDF" or "Save as image" for the message with this id (issue #501): the menu of the
@@ -3597,11 +3670,8 @@ pub enum Message {
     AskSaveMailAs(String, ExportFormat),
     /// An entry of that menu: save the message as the format to Downloads, a target, or ask where.
     SaveMail(String, ExportFormat, mail::FileAct),
-    /// The save dialog of "Save as…" for the mail answered: the file chosen, `None` when cancelled.
-    SaveMailChosen(String, ExportFormat, Option<std::path::PathBuf>),
-    /// `mail.save_message_as` answered: the words of where, taken when it was sent
-    /// ([`mail::save_mail_place`]), and where the file lies.
-    MailSaved(String, ExportFormat, Option<String>, Result<torro_ipc::inbox::SavedMail, String>),
+    /// The export worker answered for its originating ticket/context.
+    MailSaved(u64, Result<torro_ipc::inbox::SavedMail, String>),
     /// "Show in folder" in the hint after saving (task M12.6).
     ShowInFolder,
     /// The file manager was asked to show that folder.
@@ -4369,6 +4439,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     | Open::SaveGroup
                     | Open::SaveFormatMenu
                     | Open::AttachmentSaved
+                    | Open::SaveRunning
+                    | Open::SaveSuccess
+                    | Open::SaveError
+                    | Open::SavePartial
+                    | Open::SaveChoosing
+                    | Open::SaveCancelled
+                    | Open::SaveShortened
                     | Open::MailContext
                     | Open::MailContextLow
                     | Open::Invitations
@@ -4437,7 +4514,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             answers: Vec::new(),
             unsubscribe_ask: None,
             unsubscribed: HashSet::new(),
-            exporting: HashSet::new(),
+            saves: Vec::new(),
+            next_save: 0,
             logos: mail::Logos::new(),
             invite_calendars: None,
             invite_pick: None,
@@ -4670,7 +4748,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         // The arrows of "Syncing…" turn only while an account's sync really runs (issue #422);
         // otherwise nothing moves and nothing redraws.
-        if self.sync_spinning() {
+        if self.sync_spinning() || self.save_spinning() {
             subscriptions.push(iced::time::every(SPIN_TICK).map(|_| Message::SpinTick));
         }
         if self.split.dragging {
@@ -5901,6 +5979,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     self.error = Some(Failure::new(tr("Couldn't load the save targets."), err.clone()));
                 }
                 self.saving = Some((id.clone(), result));
+                if self.launch.open.is_some_and(Open::save_demo) {
+                    self.demo_save(&id);
+                }
                 // `--open attachment-saved`: the save that makes the hint, once the plans are in.
                 if first && let Some(saving) = self.saving_of(&id) {
                     let (part, target) = (saving.files.first(), saving.targets.first());
@@ -5930,61 +6011,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::AskSaveMailAs(id, format) => return self.ask_save_mail(&id, format),
             Message::SaveMail(id, format, act) => return self.save_mail_act(id, format, act),
-            Message::SaveMailChosen(id, format, Some(path)) => match path.to_str() {
-                Some(path) => return self.save_mail(id, format, SaveTo::File(path.to_owned())),
-                None => self.error = Some(Failure::new(tr("Couldn't save the mail."), path.display().to_string())),
-            },
-            // Cancelled in the dialog: nothing is sent, nothing is said.
-            Message::SaveMailChosen(_, _, None) => {}
-            Message::MailSaved(id, format, place, Ok(saved)) => {
-                self.exporting.remove(&(id, format));
-                let place = mail::saved_mail_place(place, &saved);
-                let folder = std::path::Path::new(&saved.path).parent().map(std::path::Path::to_path_buf);
-                let text = mail::saved_mail_text(&saved, &place);
-                self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder });
-            }
-            Message::MailSaved(id, format, _, Err(err)) => {
-                self.exporting.remove(&(id, format));
-                // The "Saving…" of this save goes with its answer.
-                if self.hint.as_ref().is_some_and(|hint| hint.text == tr("Saving…")) {
-                    self.hint = None;
-                }
-                self.error = Some(Failure::new(tr("Couldn't save the mail."), err));
-            }
+            Message::SaveChosen(ticket, path) => return self.save_chosen(ticket, path),
+            Message::MailSaved(ticket, result) => self.mail_saved(ticket, result),
             Message::SaveAll(id) => {
                 let act = mail::all_act(&self.look.click, self.saving_of(&id));
                 return self.file_act(id, None, act);
             }
             Message::FileAct(id, part, act) => return self.file_act(id, part, act),
-            Message::SaveAsChosen(id, part, Some(path)) => match path.to_str() {
-                Some(path) => return self.save_files(id, Some(part), SaveTo::File(path.to_owned())),
-                None => {
-                    self.error = Some(Failure::new(tr("Couldn't save the attachments."), path.display().to_string()))
-                }
-            },
-            Message::FolderChosen(id, Some(path)) => match path.to_str() {
-                Some(path) => return self.save_files(id, None, SaveTo::Folder(path.to_owned())),
-                None => {
-                    self.error = Some(Failure::new(tr("Couldn't save the attachments."), path.display().to_string()))
-                }
-            },
-            // Cancelled in the dialog: nothing is sent, nothing is said.
-            Message::SaveAsChosen(_, _, None) | Message::FolderChosen(_, None) => {}
-            Message::AttachmentsSaved(place, Ok(saved)) => {
-                if saved.saved.is_empty() && saved.skipped.is_empty() {
-                    // Nothing lies anywhere: say why, as the core said it (a folder macOS keeps closed).
-                    if let Some(failed) = saved.failed.first() {
-                        self.error = Some(Failure::new(tr("Couldn't save the attachments."), failed.message.clone()));
-                    }
-                    return Task::none();
-                }
-                let place = mail::saved_place(place, &saved);
-                let (text, folder) = (mail::saved_text(&saved, &place), mail::saved_folder(&saved));
-                self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder });
-            }
-            Message::AttachmentsSaved(_, Err(err)) => {
-                self.error = Some(Failure::new(tr("Couldn't save the attachments."), err));
-            }
+            Message::AttachmentsSaved(ticket, result) => self.attachments_saved(ticket, result),
             Message::ShowInFolder => {
                 if let Some(folder) = self.hint.as_ref().and_then(|hint| hint.folder.clone()) {
                     #[cfg(test)]
@@ -6533,16 +6567,38 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         self.menu_at = MenuAt::Panel;
         self.toggle_menu(menu);
+        if self.menu.is_some() {
+            let scope = match menu {
+                Menu::Attachment(at) => self.reading().and_then(|reading| {
+                    Some(SaveScope::Attachments(Some(mail::files_of(&reading)?.get(at)?.part.clone())))
+                }),
+                Menu::SaveAll { .. } => Some(SaveScope::Attachments(None)),
+                _ => None,
+            };
+            if let Some(scope) = scope {
+                self.reveal_save_feedback(id, &scope);
+            }
+        }
     }
 
     /// Carries out `act` for the attachment `part` of the mail `id` – `None`: all of them that are not
     /// `inline` (task M12.6): opens it as before, saves it to Downloads or a target, or asks the
-    /// system's dialog first (the answer comes as [`Message::SaveAsChosen`] or
-    /// [`Message::FolderChosen`]).
+    /// system's dialog first (the answer comes as [`Message::SaveChosen`]).
     fn file_act(&mut self, id: String, part: Option<String>, act: mail::FileAct) -> Task<Message> {
-        self.menu = None;
+        if act != mail::FileAct::Open {
+            let to = match &act {
+                mail::FileAct::Downloads => Some(SaveTo::Downloads),
+                mail::FileAct::Target(target) => Some(SaveTo::Target(target.clone())),
+                _ => None,
+            };
+            if self.save_conflicts(&id, &SaveScope::Attachments(part.clone()), &to, None) {
+                return Task::none();
+            }
+            self.show_save_menu(&id, &SaveScope::Attachments(part.clone()));
+        }
         match (act, part) {
             (mail::FileAct::Open, Some(part)) => {
+                self.close_menus();
                 #[cfg(test)]
                 self.sent.push(Sent::Attachment(id.clone(), part.clone()));
                 let inbox = self.inbox.clone();
@@ -6553,17 +6609,23 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             (mail::FileAct::Downloads, part) => self.save_files(id, part, SaveTo::Downloads),
             (mail::FileAct::Target(target), part) => self.save_files(id, part, SaveTo::Target(target)),
             (mail::FileAct::Choose, Some(part)) => {
+                let Some(ticket) = self.begin_save(&id, SaveScope::Attachments(Some(part.clone())), None) else {
+                    return Task::none();
+                };
                 let name = self
                     .file_of(&id, &part)
                     .map_or_else(|| tr("Attachment").to_owned(), |file| mail::dialog_name(self.saving_of(&id), file));
                 #[cfg(test)]
                 self.sent.push(Sent::SaveDialog(name.clone()));
-                Task::perform(choose_save_file(name), move |path| Message::SaveAsChosen(id.clone(), part.clone(), path))
+                Task::perform(choose_save_file(name), move |path| Message::SaveChosen(ticket, path))
             }
             (mail::FileAct::Choose, None) => {
+                let Some(ticket) = self.begin_save(&id, SaveScope::Attachments(None), None) else {
+                    return Task::none();
+                };
                 #[cfg(test)]
                 self.sent.push(Sent::FolderDialog);
-                Task::perform(choose_save_folder(), move |path| Message::FolderChosen(id.clone(), path))
+                Task::perform(choose_save_folder(), move |path| Message::SaveChosen(ticket, path))
             }
         }
     }
@@ -6579,6 +6641,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             self.menu_at = MenuAt::Panel;
         }
         self.toggle_menu(Menu::SaveMail(format));
+        if self.menu.is_some() {
+            self.reveal_save_feedback(id, &SaveScope::Export(format));
+        }
         if self.menu.is_some() && self.exports_of(id).is_none() {
             return self.ask_export_targets(id);
         }
@@ -6586,14 +6651,24 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     }
 
     /// Carries out `act` of the menu of `format` for the mail `id` (issue #501): saves to Downloads or
-    /// a target, or asks the system's save dialog first ([`Message::SaveMailChosen`]).
+    /// a target, or asks the system's save dialog first ([`Message::SaveChosen`]).
     fn save_mail_act(&mut self, id: String, format: ExportFormat, act: mail::FileAct) -> Task<Message> {
-        self.menu = None;
-        self.context_point = None;
+        let to = match &act {
+            mail::FileAct::Downloads => Some(SaveTo::Downloads),
+            mail::FileAct::Target(target) => Some(SaveTo::Target(target.clone())),
+            _ => None,
+        };
+        if self.save_conflicts(&id, &SaveScope::Export(format), &to, None) {
+            return Task::none();
+        }
+        self.show_save_menu(&id, &SaveScope::Export(format));
         match act {
             mail::FileAct::Downloads => self.save_mail(id, format, SaveTo::Downloads),
             mail::FileAct::Target(target) => self.save_mail(id, format, SaveTo::Target(target)),
             mail::FileAct::Choose => {
+                let Some(ticket) = self.begin_save(&id, SaveScope::Export(format), None) else {
+                    return Task::none();
+                };
                 // The headers of the mail `id`, not of one opened since.
                 let summary = match self.letter.as_ref().filter(|letter| letter.id == id) {
                     Some(Letter { loaded: Some(Ok(mail)), .. }) => Some(mail.summary.clone()),
@@ -6604,9 +6679,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let name = mail::export_dialog_name(self.exports_of(&id), format, summary.as_ref());
                 #[cfg(test)]
                 self.sent.push(Sent::SaveDialog(name.clone()));
-                Task::perform(choose_export_file(name, format), move |path| {
-                    Message::SaveMailChosen(id.clone(), format, path)
-                })
+                Task::perform(choose_export_file(name, format), move |path| Message::SaveChosen(ticket, path))
             }
             // No menu of the mail offers opening it.
             mail::FileAct::Open => Task::none(),
@@ -6616,37 +6689,445 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// `mail.save_message_as` for the mail `id` as `format` to `to` (issue #501); the words of where go
     /// along now, as for attachments ([`Message::MailSaved`]).
     fn save_mail(&mut self, id: String, format: ExportFormat, to: SaveTo) -> Task<Message> {
-        // Drawing can take a while (pictures load): say so, and let a second click wait for it.
-        if !self.exporting.insert((id.clone(), format)) {
-            return Task::none();
-        }
-        self.hint = Some(Hint { text: tr("Saving…").to_owned(), undo: None, shown: Instant::now(), folder: None });
-        #[cfg(test)]
-        self.sent.push(Sent::SaveMail(id.clone(), format, to.clone()));
-        let place = mail::save_mail_place(&to, self.exports_of(&id), format);
-        let (inbox, answered) = (self.inbox.clone(), id.clone());
-        Task::perform(
-            async move { MailSource::save_mail_as(inbox.as_ref(), id, format, to).await.map_err(|err| err.to_string()) },
-            move |saved| Message::MailSaved(answered.clone(), format, place.clone(), saved),
-        )
+        let Some(ticket) = self.begin_save(&id, SaveScope::Export(format), Some(to)) else { return Task::none() };
+        self.send_save(ticket)
     }
 
     /// `mail.save_attachments` for the attachment `part` of the mail `id` (`None`: all) to `to`; the
     /// words of where go along now, so the hint can say where even when another mail is open by the
     /// time the answer comes ([`Message::AttachmentsSaved`]).
     fn save_files(&mut self, id: String, part: Option<String>, to: SaveTo) -> Task<Message> {
-        let parts: Vec<String> = part.iter().cloned().collect();
-        #[cfg(test)]
-        self.sent.push(Sent::Save(id.clone(), parts.clone(), to.clone()));
-        let place = mail::save_place(&to, self.saving_of(&id), part.as_deref());
-        let inbox = self.inbox.clone();
-        Task::perform(
-            async move {
-                let saved = MailSource::save_attachments(inbox.as_ref(), id, parts, to).await;
-                saved.map_err(|err| err.to_string())
-            },
-            move |saved| Message::AttachmentsSaved(place.clone(), saved),
-        )
+        let Some(ticket) = self.begin_save(&id, SaveScope::Attachments(part), Some(to)) else { return Task::none() };
+        self.send_save(ticket)
+    }
+
+    fn show_save_menu(&mut self, id: &str, scope: &SaveScope) {
+        if self.letter.as_ref().is_none_or(|letter| letter.id != id) {
+            return;
+        }
+        let wanted = match scope {
+            SaveScope::Attachments(Some(part)) => self.reading().and_then(|reading| {
+                mail::files_of(&reading)?.iter().position(|file| &file.part == part).map(Menu::Attachment)
+            }),
+            SaveScope::Attachments(None) => Some(Menu::SaveAll { rail: false }),
+            SaveScope::Export(format) => Some(Menu::SaveMail(*format)),
+        };
+        // Keep the anchor only for this action's menu; a direct click on another file/group must
+        // reveal that action, not hide its spinner in the previous file's menu.
+        let same = self.menu == wanted
+            || matches!((self.menu, wanted), (Some(Menu::SaveAll { .. }), Some(Menu::SaveAll { .. })));
+        if !same {
+            self.clear_save_feedback();
+            self.menu_at = MenuAt::Panel;
+            self.menu = wanted;
+        }
+        self.reveal_save_feedback(id, scope);
+    }
+
+    fn reveal_save_feedback(&mut self, id: &str, scope: &SaveScope) {
+        for job in &mut self.saves {
+            if job.mail == id && &job.scope == scope && job.state.active() {
+                job.visible = true;
+            }
+        }
+    }
+
+    fn save_conflicts(&self, mail: &str, scope: &SaveScope, to: &Option<SaveTo>, except: Option<u64>) -> bool {
+        self.saves.iter().any(|job| {
+            Some(job.ticket) != except
+                && job.state.active()
+                && ((to.is_none() && job.state == SaveState::Choosing)
+                    || (to.is_none()
+                        && job.mail == mail
+                        && job.entry == mail::FileAct::Choose
+                        && job.scope.overlaps(scope))
+                    || (job.mail == mail && &job.destination == to && job.scope.overlaps(scope)))
+        })
+    }
+
+    fn begin_save(&mut self, id: &str, scope: SaveScope, to: Option<SaveTo>) -> Option<u64> {
+        if self.save_conflicts(id, &scope, &to, None) {
+            return None;
+        }
+        let reading = self.reading().filter(|reading| reading.id == id)?;
+        let summary = reading.summary()?;
+        let loaded = match reading.loaded {
+            Some(Ok(mail)) => Some(mail),
+            _ => None,
+        };
+        let expected = match &scope {
+            SaveScope::Attachments(Some(part)) => {
+                loaded?.attachments.iter().find(|file| &file.part == part)?;
+                vec![part.clone()]
+            }
+            SaveScope::Attachments(None) => {
+                loaded?.attachments.iter().filter(|file| !file.inline).map(|file| file.part.clone()).collect()
+            }
+            // EML uses only summary metadata, including after a reader failure (#553).
+            SaveScope::Export(ExportFormat::Eml) => Vec::new(),
+            SaveScope::Export(_) => {
+                loaded?;
+                Vec::new()
+            }
+        };
+        let subject = list::one_line(&summary.subject);
+        let entry = match &to {
+            Some(SaveTo::Downloads) => mail::FileAct::Downloads,
+            Some(SaveTo::Target(id)) => mail::FileAct::Target(id.clone()),
+            _ => mail::FileAct::Choose,
+        };
+        let place = to.as_ref().and_then(|to| match &scope {
+            SaveScope::Attachments(part) => mail::save_place(to, self.saving_of(id), part.as_deref()),
+            SaveScope::Export(format) => mail::save_mail_place(to, self.exports_of(id), *format),
+        });
+        self.next_save = self.next_save.checked_add(1)?;
+        // A new attempt replaces only its own terminal feedback, not another destination's status.
+        self.saves.retain(|job| job.state.active() || job.mail != id || job.scope != scope || job.entry != entry);
+        self.saves.push(SaveJob {
+            ticket: self.next_save,
+            mail: id.to_owned(),
+            subject,
+            scope,
+            destination: to.clone(),
+            entry,
+            expected,
+            place,
+            state: if to.is_some() { SaveState::Running } else { SaveState::Choosing },
+            explanation: if to.is_some() { tr("Saving…") } else { tr("Choose a destination…") }.to_owned(),
+            since: Instant::now(),
+            visible: true,
+        });
+        Some(self.next_save)
+    }
+
+    fn save_chosen(&mut self, ticket: u64, path: Option<std::path::PathBuf>) -> Task<Message> {
+        let Some(job) = self.saves.iter().find(|job| job.ticket == ticket && job.state == SaveState::Choosing).cloned()
+        else {
+            return Task::none();
+        };
+        let Some(path) = path else {
+            self.finish_save(ticket, SaveState::Cancelled, tr("Save cancelled.").to_owned(), None);
+            return Task::none();
+        };
+        let Some(path) = path.to_str().filter(|_| path.is_absolute()) else {
+            self.finish_save(ticket, SaveState::Error, tr("The selected path cannot be used.").to_owned(), None);
+            return Task::none();
+        };
+        let to = match job.scope {
+            SaveScope::Attachments(None) => SaveTo::Folder(path.to_owned()),
+            _ => SaveTo::File(path.to_owned()),
+        };
+        if self.save_conflicts(&job.mail, &job.scope, &Some(to.clone()), Some(ticket)) {
+            self.finish_save(ticket, SaveState::Cancelled, tr("This save is already running.").to_owned(), None);
+            return Task::none();
+        }
+        let place = match &job.scope {
+            SaveScope::Attachments(part) => mail::save_place(&to, self.saving_of(&job.mail), part.as_deref()),
+            SaveScope::Export(format) => mail::save_mail_place(&to, self.exports_of(&job.mail), *format),
+        };
+        if let Some(job) = self.saves.iter_mut().find(|job| job.ticket == ticket) {
+            job.destination = Some(to);
+            job.place = place;
+            job.state = SaveState::Running;
+            job.explanation = tr("Saving…").to_owned();
+            job.since = Instant::now();
+        }
+        self.send_save(ticket)
+    }
+
+    fn send_save(&mut self, ticket: u64) -> Task<Message> {
+        let Some(job) = self.saves.iter().find(|job| job.ticket == ticket && job.state == SaveState::Running).cloned()
+        else {
+            return Task::none();
+        };
+        let Some(to) = job.destination else { return Task::none() };
+        let (inbox, id) = (self.inbox.clone(), job.mail);
+        match job.scope {
+            SaveScope::Attachments(part) => {
+                let parts: Vec<String> = part.into_iter().collect();
+                #[cfg(test)]
+                self.sent.push(Sent::Save(id.clone(), parts.clone(), to.clone()));
+                Task::perform(
+                    async move {
+                        MailSource::save_attachments(inbox.as_ref(), id, parts, to).await.map_err(|err| err.to_string())
+                    },
+                    move |saved| Message::AttachmentsSaved(ticket, saved),
+                )
+            }
+            SaveScope::Export(format) => {
+                #[cfg(test)]
+                self.sent.push(Sent::SaveMail(id.clone(), format, to.clone()));
+                Task::perform(
+                    async move {
+                        MailSource::save_mail_as(inbox.as_ref(), id, format, to).await.map_err(|err| err.to_string())
+                    },
+                    move |saved| Message::MailSaved(ticket, saved),
+                )
+            }
+        }
+    }
+
+    fn attachments_saved(&mut self, ticket: u64, result: Result<SavedAttachments, String>) {
+        let Some(job) = self
+            .saves
+            .iter()
+            .find(|job| {
+                job.ticket == ticket
+                    && job.state == SaveState::Running
+                    && matches!(job.scope, SaveScope::Attachments(_))
+            })
+            .cloned()
+        else {
+            return;
+        };
+        match result {
+            Err(error) => self.finish_save(ticket, SaveState::Error, error, None),
+            Ok(saved) => {
+                let files: Vec<_> = saved.saved.iter().chain(&saved.skipped).collect();
+                let mut parts: Vec<_> = files.iter().map(|file| file.part.clone()).collect();
+                parts.sort();
+                let mut expected = job.expected.clone();
+                expected.sort();
+                let valid = files.iter().all(|file| {
+                    self.save_result_path(&file.path)
+                        && match &job.destination {
+                            Some(SaveTo::File(path)) => path == &file.path,
+                            _ => true,
+                        }
+                });
+                let complete = !expected.is_empty() && parts == expected && valid && saved.failed.is_empty();
+                let state = if complete {
+                    SaveState::Success
+                } else if !files.is_empty() && valid {
+                    SaveState::Partial
+                } else {
+                    SaveState::Error
+                };
+                let place = mail::saved_place(job.place, &saved);
+                let mut text = if files.is_empty() || !valid || (saved.failed.is_empty() && !complete) {
+                    tr("The saved files could not all be confirmed.").to_owned()
+                } else {
+                    mail::saved_text(&saved, &place)
+                };
+                for failed in &saved.failed {
+                    text.push_str(&format!("\n{}: {}", list::one_line(&failed.name), failed.message));
+                }
+                self.finish_save(ticket, state, text, mail::saved_folder(&saved));
+            }
+        }
+    }
+
+    fn mail_saved(&mut self, ticket: u64, result: Result<torro_ipc::inbox::SavedMail, String>) {
+        let Some(job) = self
+            .saves
+            .iter()
+            .find(|job| {
+                job.ticket == ticket && job.state == SaveState::Running && matches!(job.scope, SaveScope::Export(_))
+            })
+            .cloned()
+        else {
+            return;
+        };
+        match result {
+            Err(error) => self.finish_save(ticket, SaveState::Error, error, None),
+            Ok(saved)
+                if !self.save_result_path(&saved.path)
+                    || matches!(&job.destination, Some(SaveTo::File(path)) if path != &saved.path) =>
+            {
+                self.finish_save(
+                    ticket,
+                    SaveState::Error,
+                    tr("The saved files could not all be confirmed.").to_owned(),
+                    None,
+                )
+            }
+            Ok(saved) => {
+                let place = mail::saved_mail_place(job.place, &saved);
+                let folder = std::path::Path::new(&saved.path).parent().map(std::path::Path::to_path_buf);
+                let state = if saved.shortened { SaveState::Partial } else { SaveState::Success };
+                self.finish_save(ticket, state, mail::saved_mail_text(&saved, &place), folder);
+            }
+        }
+    }
+
+    fn finish_save(&mut self, ticket: u64, state: SaveState, text: String, folder: Option<std::path::PathBuf>) {
+        let current = self.letter.as_ref().map(|letter| letter.id.as_str());
+        if let Some(job) = self.saves.iter_mut().find(|job| job.ticket == ticket && job.state.active()) {
+            job.state = state;
+            job.explanation = text.clone();
+            let text = if current == Some(job.mail.as_str()) {
+                text
+            } else {
+                trf("{mail}: {result}", &[("mail", &job.subject), ("result", &text)])
+            };
+            // A status stays at its own menu entry; a late result names the originating mail.
+            self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder });
+        }
+        self.saves.retain(|job| job.state.active() || job.visible);
+    }
+
+    fn save_result_path(&self, path: &str) -> bool {
+        // DemoSource describes a fictional Linux home on every platform and never writes files.
+        // Real dialog inputs and real service results must still be native absolute paths.
+        std::path::Path::new(path).is_absolute() || (self.launch.demo && path.starts_with('/'))
+    }
+
+    fn clear_save_feedback(&mut self) {
+        self.saves.retain(|job| job.state.active());
+        for job in &mut self.saves {
+            job.visible = false;
+        }
+    }
+
+    /// Snapshot-only states never start a worker, a dialog or an animation subscription.
+    fn demo_save(&mut self, id: &str) {
+        if !self.saves.is_empty() {
+            return;
+        }
+        let Some(open) = self.launch.open.filter(|open| open.save_demo()) else { return };
+        // These fixtures already have PDF/PNG plans in the attachment response. Seed the independent
+        // export preview too, without another request or a body fetch, so the PDF status is visible.
+        if self.exports_of(id).is_none() {
+            self.export_plans = self.saving.clone();
+        }
+        let (scope, state, text) = match open {
+            Open::SaveRunning => {
+                (SaveScope::Attachments(Some("2".into())), SaveState::Running, tr("Saving…").to_owned())
+            }
+            Open::SaveSuccess => {
+                (SaveScope::Attachments(Some("2".into())), SaveState::Success, tr("Saved and verified.").to_owned())
+            }
+            Open::SaveError => (
+                SaveScope::Attachments(Some("2".into())),
+                SaveState::Error,
+                tr("The file could not be saved.").to_owned(),
+            ),
+            Open::SavePartial => (
+                SaveScope::Attachments(None),
+                SaveState::Partial,
+                trf("{n} saved, {name} failed", &[("n", &1), ("name", &"usage-september.pdf")]),
+            ),
+            Open::SaveChoosing => {
+                (SaveScope::Attachments(Some("2".into())), SaveState::Choosing, tr("Choose a destination…").to_owned())
+            }
+            Open::SaveCancelled => {
+                (SaveScope::Attachments(Some("2".into())), SaveState::Cancelled, tr("Save cancelled.").to_owned())
+            }
+            _ => (
+                SaveScope::Export(ExportFormat::Pdf),
+                SaveState::Partial,
+                trf("Saved to {where}, shortened: the mail is too long", &[("where", &"Invoices")]),
+            ),
+        };
+        let dialog = matches!(state, SaveState::Choosing | SaveState::Cancelled);
+        let destination = if dialog { None } else { Some(SaveTo::Target("demo-invoices".into())) };
+        self.menu = None;
+        self.show_save_menu(id, &scope);
+        if let Some(ticket) = self.begin_save(id, scope.clone(), destination)
+            && let Some(job) = self.saves.iter_mut().find(|job| job.ticket == ticket)
+        {
+            job.state = state;
+            job.explanation = if open == Open::SaveShortened {
+                trf(
+                    "Saved to {where}, shortened: the mail is too long",
+                    &[("where", &job.place.as_deref().unwrap_or("Invoices"))],
+                )
+            } else {
+                text
+            };
+        }
+    }
+
+    fn save_feedback(&self, message: &Message) -> Option<widgets::MenuFeedback> {
+        let (id, scope, entry) = match message {
+            Message::FileAct(id, part, entry) if *entry != mail::FileAct::Open => {
+                (id, SaveScope::Attachments(part.clone()), entry)
+            }
+            Message::SaveMail(id, format, entry) => (id, SaveScope::Export(*format), entry),
+            _ => return None,
+        };
+        let destination = match entry {
+            mail::FileAct::Downloads => Some(SaveTo::Downloads),
+            mail::FileAct::Target(id) => Some(SaveTo::Target(id.clone())),
+            _ => None,
+        };
+        let exact = self.saves.iter().rev().find(|job| {
+            job.mail == *id && job.scope == scope && job.entry == *entry && (job.state.active() || job.visible)
+        });
+        let blocked =
+            self.save_conflicts(id, &scope, &destination, None) || exact.is_some_and(|job| job.state.active());
+        let job = exact.or_else(|| {
+            self.saves.iter().find(|job| {
+                job.state.active() && job.mail == *id && job.destination == destination && job.scope.overlaps(&scope)
+            })
+        });
+        let kind = match job.map(|job| job.state) {
+            Some(SaveState::Running) => {
+                let angle = if self.launch.open.is_some_and(Open::save_demo) {
+                    iced::Radians(0.0)
+                } else {
+                    widgets::spin_angle(job?.since, Instant::now())
+                };
+                widgets::MenuFeedbackKind::Running(angle)
+            }
+            Some(SaveState::Choosing) => widgets::MenuFeedbackKind::Choosing,
+            Some(SaveState::Success) => widgets::MenuFeedbackKind::Success,
+            Some(SaveState::Error) => widgets::MenuFeedbackKind::Error,
+            Some(SaveState::Partial) => widgets::MenuFeedbackKind::Warning,
+            Some(SaveState::Cancelled) => widgets::MenuFeedbackKind::Cancelled,
+            None if blocked => widgets::MenuFeedbackKind::Choosing,
+            None => return None,
+        };
+        Some(widgets::MenuFeedback {
+            kind,
+            blocked,
+            explanation: job.map_or_else(|| tr("Choose a destination…").to_owned(), |job| job.explanation.clone()),
+        })
+    }
+
+    fn save_spinning(&self) -> bool {
+        if self.launch.open.is_some_and(Open::save_demo)
+            || self.settings.is_some()
+            || matches!(self.class(), SizeClass::Mini | SizeClass::Strip)
+        {
+            return false;
+        }
+        let sections = match self.menu {
+            Some(Menu::SaveMail(format)) => self.reading().map(|reading| {
+                mail::export_menu(mail::ExportMenu {
+                    id: reading.id,
+                    format,
+                    saving: self.exports_of(reading.id),
+                    category: None,
+                })
+            }),
+            Some(Menu::Attachment(at)) => self.reading().and_then(|reading| {
+                let files = mail::files_of(&reading)?;
+                Some(mail::file_menu(mail::FileMenu {
+                    id: reading.id,
+                    part: Some(&files.get(at)?.part),
+                    saving: reading.saving,
+                    click: reading.click,
+                    category: None,
+                }))
+            }),
+            Some(Menu::SaveAll { .. }) => self.reading().map(|reading| {
+                mail::file_menu(mail::FileMenu {
+                    id: reading.id,
+                    part: None,
+                    saving: reading.saving,
+                    click: reading.click,
+                    category: None,
+                })
+            }),
+            _ => None,
+        };
+        sections.is_some_and(|sections| {
+            sections.iter().flat_map(|s| &s.items).any(|item| {
+                self.save_feedback(&item.on_press)
+                    .is_some_and(|f| matches!(f.kind, widgets::MenuFeedbackKind::Running(_)))
+            })
+        })
     }
 
     /// Whether the open menu for an entry hangs at the panel's (or reader's) buttons rather than at
@@ -6864,6 +7345,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if wanted.as_deref() == self.letter.as_ref().map(|letter| letter.id.as_str()) {
             return Task::none();
         }
+        self.clear_save_feedback();
         let Some(id) = wanted else {
             self.letter = None;
             return Task::none();
@@ -10937,6 +11419,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
         TopRow::new(self.zoom.factor(), Message::DragWindow)
             .sidebar(label, Message::ToggleSidebar)
+            .sidebar_surface(self.launch.kind == Kind::Mail)
+            .sidebar_at_edge(self.launch.kind == Kind::Mail)
             .settings(Message::OpenSettings)
             .settings_open(self.settings.is_some())
             .cover(self.cover())
@@ -11899,7 +12383,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let menu = mail::ExportMenu { id: reading.id, format, saving: self.exports_of(reading.id), category };
         let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
         let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
-        Some(mail::file_menu_card(mail::export_menu(menu), width, tallest))
+        if self.saves.is_empty() {
+            return Some(mail::file_menu_card(mail::export_menu(menu), width, tallest));
+        }
+        Some(mail::file_menu_card_feedback(mail::export_menu(menu), width, tallest, |message| {
+            self.save_feedback(message)
+        }))
     }
 
     /// The card of an open attachment menu (task M12.6, `mail::file_menu`): of the attachment at `at`
@@ -11917,7 +12406,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let menu = mail::FileMenu { id: reading.id, part, saving: reading.saving, click: reading.click, category };
         let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
         let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
-        Some(mail::file_menu_card(mail::file_menu(menu), width, tallest))
+        Some(mail::file_menu_card_feedback(mail::file_menu(menu), width, tallest, |message| {
+            self.save_feedback(message)
+        }))
     }
 
     /// The content below the header: an error line if there is one, and the list – left-aligned
@@ -12616,15 +13107,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let compose = (!self.folders.is_empty()).then_some(Message::Switcher(Switcher::New));
         match mode {
             SidebarMode::Expanded => new_mail_button(compose),
-            SidebarMode::Rail => {
-                let pen = match compose {
-                    Some(compose) => {
-                        widgets::compact_button(Icon::SquarePen, tr("New email"), style::button::primary, Some(compose))
-                    }
-                    None => widgets::boxed_button(Icon::SquarePen, tr("New email"), None),
-                };
-                container(pen).center_x(Fill).into()
-            }
+            SidebarMode::Rail => rail_mail_button(compose),
         }
     }
 
@@ -13278,6 +13761,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     }
 
     fn toggle_menu(&mut self, menu: Menu) {
+        if self.menu.is_some() {
+            self.clear_save_feedback();
+        }
         self.menu = if self.menu == Some(menu) { None } else { Some(menu) };
     }
 
@@ -13366,6 +13852,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     }
 
     fn close_menus(&mut self) {
+        self.clear_save_feedback();
         self.menu = None;
         self.close_dropdowns();
         // A context menu opened later without a right-click hangs under the row, not at an old point.
@@ -13536,7 +14023,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 | Open::SaveEmlMenu
                 | Open::SaveGroup
                 | Open::SaveFormatMenu
-                | Open::AttachmentSaved),
+                | Open::AttachmentSaved
+                | Open::SaveRunning
+                | Open::SaveSuccess
+                | Open::SaveError
+                | Open::SavePartial
+                | Open::SaveChoosing
+                | Open::SaveCancelled
+                | Open::SaveShortened),
             ) => {
                 let invoice = |message: &&MessageSummary| {
                     message.category.is_some_and(|held| held.category == torro_mail::Category::Invoice)
@@ -13921,9 +14415,7 @@ fn new_mail_button<'a>(on_press: Option<Message>) -> Element<'a, Message> {
         .hint(shortcuts::Command::NewMail, shortcuts::System::current())
         .unwrap_or_default();
     let on = on_press.is_some();
-    let pen = icon::icon(Icon::SquarePen, icon::SIZE_SM).style(move |t: &Theme, _| iced::widget::svg::Style {
-        color: Some(if on { palette(t).on_accent } else { palette(t).text }),
-    });
+    let pen = new_mail_pen(on);
     let mut content =
         row![pen, typo::text(typo::body_strong(), tr("New email")).wrapping(Wrapping::None), Space::new().width(Fill),]
             .spacing(space::s())
@@ -13931,14 +14423,43 @@ fn new_mail_button<'a>(on_press: Option<Message>) -> Element<'a, Message> {
     if !key.is_empty() {
         content = content.push(if on { widgets::kbd_on_accent(key, true) } else { widgets::kbd(key) });
     }
-    let look = if on { style::button::primary } else { style::button::boxed };
-    let button = iced::widget::button(container(content).center_y(Fill))
+    new_mail_surface(container(content).center_y(Fill).into(), style::ITEM_PADDING, on_press)
+}
+
+/// "New email" in the collapsed sidebar (issue #536): the same button surface as a navigation row of the rail –
+/// full width, [`size::row_sidebar`] high, the pen centred on the icon axis of the rows – with the words as
+/// tooltip at its right.
+fn rail_mail_button<'a>(on_press: Option<Message>) -> Element<'a, Message> {
+    let pen = container(new_mail_pen(on_press.is_some())).center_x(Fill).center_y(Fill);
+    widgets::tooltip_beside(new_mail_surface(pen.into(), Padding::ZERO, on_press), tr("New email"))
+}
+
+/// The pen of "New email": the size of a navigation row's mark, light on the accent while the button is on.
+fn new_mail_pen<'a>(on: bool) -> Element<'a, Message> {
+    icon::icon(Icon::SquarePen, icon::SIZE)
+        .style(move |t: &Theme, _| iced::widget::svg::Style {
+            color: Some(if on { palette(t).on_accent } else { palette(t).text }),
+        })
+        .opacity(if on { 1.0 } else { style::DISABLED_ALPHA })
+        .into()
+}
+
+/// The button around "New email" in either mode: the row height and side padding of a sidebar row, so
+/// that pen and words start on the axis of the rows' marks and names. Accent with a mail account; framed
+/// and off without one (decision 2 of #476).
+fn new_mail_surface<'a>(
+    content: Element<'a, Message>,
+    padding: Padding,
+    on_press: Option<Message>,
+) -> Element<'a, Message> {
+    let look = if on_press.is_some() { style::button::primary } else { style::button::boxed };
+    iced::widget::button(content)
         .width(Fill)
-        .height(size::control())
-        .padding(Padding::new(0.0).left(space::m()).right(space::s()))
+        .height(size::row_sidebar())
+        .padding(padding)
         .style(look)
-        .on_press_maybe(on_press);
-    button.into()
+        .on_press_maybe(on_press)
+        .into()
 }
 
 /// The header's button that turns the order (task E8.15): the icon and word of the order shown
@@ -15007,6 +15528,121 @@ mod tests {
             let _ = app.update(Message::ToggleSidebar);
             assert!(!app.drawer, "{size:?}: and closes it again");
             assert_eq!(app.sidebar, SidebarMode::Expanded, "{size:?}: the wide choice stays");
+        }
+    }
+
+    /// Issue #564: one reachable switch; only mail's expanded wide sidebar moves it to its edge.
+    #[test]
+    fn the_mail_top_row_keeps_one_sidebar_switch_in_every_layout_and_in_settings() {
+        use iced_test::selector::Candidate;
+        for kind in ["mail", "hub", "notifications"] {
+            for settings in [false, true] {
+                for size in [WIDE, MEDIUM, NARROW] {
+                    for mode in [SidebarMode::Expanded, SidebarMode::Rail] {
+                        for drawer in [false, true] {
+                            let mut app = overview_at(&["--view", kind]);
+                            app.size = size;
+                            app.sidebar = mode;
+                            app.drawer = drawer;
+                            if settings {
+                                let _ = app.update(Message::OpenSettings);
+                            }
+                            let width = app.sidebar_room();
+                            let was_drawer = app.drawer;
+                            // Settings deliberately force the rail, regardless of the stored wide choice.
+                            let moved = kind == "mail" && !settings && size == WIDE && mode == SidebarMode::Expanded;
+                            let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), size, app.view());
+                            // The icon's centring container exposes the button's bounds, no test-only ID.
+                            let switch = ui
+                                .find(|candidate: Candidate<'_>| match candidate {
+                                    Candidate::Container { bounds, .. }
+                                        if bounds.y < 40.0
+                                            && (bounds.width - size::control_sm()).abs() < 0.01
+                                            && (bounds.height - size::control_sm()).abs() < 0.01 =>
+                                    {
+                                        Some(bounds)
+                                    }
+                                    _ => None,
+                                })
+                                .expect("sidebar button is the first top-row control");
+                            if moved {
+                                assert!(
+                                    (switch.x + switch.width + space::s() - width).abs() < 0.01,
+                                    "{kind}, {size:?}, {mode:?}, settings {settings}: {switch:?}, {width}"
+                                );
+                            } else {
+                                assert!(switch.x < shell::rail() + size::control_sm(), "compact position: {switch:?}");
+                            }
+                            ui.point_at(switch.center());
+                            ui.simulate(iced_test::simulator::click());
+                            let messages: Vec<_> = ui.into_messages().collect();
+                            assert_eq!(
+                                messages.iter().filter(|m| matches!(m, Message::ToggleSidebar)).count(),
+                                1,
+                                "{kind}, {size:?}, {mode:?}, drawer {drawer}, settings {settings}"
+                            );
+                            for message in messages {
+                                let _ = app.update(message);
+                            }
+                            assert_eq!(app.sidebar, if size == WIDE { mode.toggled() } else { mode });
+                            assert_eq!(app.drawer, size != WIDE && !was_drawer);
+                            let _ = app.update(Message::Key(Key::Sidebar));
+                            assert_eq!(app.sidebar, mode, "[ uses the same action");
+                            assert_eq!(app.drawer, size != WIDE && was_drawer);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Issue #564: compare actual header geometry with the body's split, after both widths move.
+    #[test]
+    fn the_mail_head_dividers_follow_the_body_after_resizing_both_columns() {
+        use iced_test::selector::Candidate;
+        for side in [200.0, 320.0] {
+            for list in [360.0, 520.0] {
+                for mode in [SidebarMode::Expanded, SidebarMode::Rail] {
+                    let mut app = mail_window(Density::Compact, &[]);
+                    app.size = Size::new(1600.0, 1000.0);
+                    app.sidebar = mode;
+                    app.side = Split::with(Some(side));
+                    app.split = Split::with(Some(list));
+                    let content_x =
+                        if mode == SidebarMode::Expanded { app.sidebar_room() } else { shell::rail() } + size::HAIRLINE;
+                    let width = app.split.width(app.split_limits());
+                    let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), app.size, app.view());
+                    let body = ui
+                        .find(|candidate: Candidate<'_>| match candidate {
+                            Candidate::Container { bounds, .. }
+                                if bounds.y >= 40.0
+                                    && (bounds.x - content_x).abs() < 0.01
+                                    && (bounds.width - width).abs() < 0.01 =>
+                            {
+                                Some(bounds)
+                            }
+                            _ => None,
+                        })
+                        .expect("body's list pane");
+                    let head_width = width + split::handle_width() / 2.0
+                        - space::l()
+                        - shell::head_inset(SizeClass::Wide, mode, app.zoom.factor());
+                    let head = ui
+                        .find(|candidate: Candidate<'_>| match candidate {
+                            Candidate::Container { bounds, .. }
+                                if bounds.y < 40.0 && bounds.x > 0.0 && (bounds.width - head_width).abs() < 0.01 =>
+                            {
+                                Some(bounds)
+                            }
+                            _ => None,
+                        })
+                        .expect("header's list part");
+                    assert!(
+                        (head.x + head.width - (body.x + body.width + split::handle_width() / 2.0)).abs() < 0.01,
+                        "{side}, {list}, {mode:?}: head {head:?}, body {body:?}"
+                    );
+                }
+            }
         }
     }
 
@@ -18056,6 +18692,7 @@ mod tests {
         let target = SaveTo::Target("demo-invoices".into());
         let _ = app.update(Message::SaveAll("m:p3".into()));
         assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), Vec::new(), target.clone())));
+        let _ = app.update(Message::AttachmentsSaved(app.next_save, Err("completed attempt".into())));
         let _ = app.update(Message::OpenAttachment("m:p3".into(), "2".into()));
         assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), vec!["2".into()], target)));
     }
@@ -18086,6 +18723,7 @@ mod tests {
     fn a_click_on_an_attachment_does_what_the_setting_says() {
         let mut app = invoice();
         let click = |app: &mut App<DemoSource>, click: AttachmentClick| {
+            app.saves.clear(); // Each setting is an independent scenario; duplicate locks are tested below.
             app.look.click = click;
             let _ = app.update(Message::OpenAttachment("m:p3".into(), "2".into()));
             app.sent.last().cloned()
@@ -18126,6 +18764,7 @@ mod tests {
             (AttachmentClick::Suggested, Sent::Save("m:p3".into(), Vec::new(), SaveTo::Downloads)),
             (AttachmentClick::SaveAs, Sent::FolderDialog),
         ] {
+            app.saves.clear();
             app.look.click = setting;
             let _ = app.update(Message::SaveAll("m:p3".into()));
             assert_eq!(app.sent.last(), Some(&sent));
@@ -18139,6 +18778,7 @@ mod tests {
     #[test]
     fn the_triangles_open_their_menus_and_a_cancelled_dialog_sends_nothing() {
         let mut app = invoice();
+        let dir = tempfile::tempdir().expect("dialog destinations");
         let _ = app.update(Message::AskAttachment("m:p3".into(), 1));
         assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Attachment(1)), true));
         assert!(app.reading().is_some_and(|reading| reading.file_menu == Some(1)), "its triangle carries the anchor");
@@ -18151,15 +18791,22 @@ mod tests {
         let _ = app.update(Message::AskSaveAll("m:other".into()));
         assert_eq!(app.menu, Some(Menu::SaveAll { rail: false }), "only for the mail held");
 
+        let _ = app.update(Message::FileAct("m:p3".into(), Some("2".into()), mail::FileAct::Choose));
+        let ticket = app.next_save;
         let before = app.sent.len();
-        let _ = app.update(Message::SaveAsChosen("m:p3".into(), "2".into(), None));
-        let _ = app.update(Message::FolderChosen("m:p3".into(), None));
-        assert_eq!((app.sent.len(), app.hint.as_ref(), app.error.as_ref()), (before, None, None), "cancelled");
-        let _ = app.update(Message::SaveAsChosen("m:p3".into(), "2".into(), Some("/home/anna/Bill.pdf".into())));
-        let file = SaveTo::File("/home/anna/Bill.pdf".into());
+        let _ = app.update(Message::SaveChosen(ticket, None));
+        assert_eq!(app.sent.len(), before, "cancelled without a request");
+        assert_eq!(app.saves.last().map(|job| job.state), Some(SaveState::Cancelled));
+        let _ = app.update(Message::FileAct("m:p3".into(), Some("2".into()), mail::FileAct::Choose));
+        let bill = dir.path().join("Bill.pdf");
+        let _ = app.update(Message::SaveChosen(app.next_save, Some(bill.clone())));
+        let file = SaveTo::File(bill.to_string_lossy().into_owned());
         assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), vec!["2".into()], file)));
-        let _ = app.update(Message::FolderChosen("m:p3".into(), Some("/home/anna/Bills".into())));
-        let folder = SaveTo::Folder("/home/anna/Bills".into());
+        let _ = app.update(Message::AttachmentsSaved(app.next_save, Err("completed attempt".into())));
+        let _ = app.update(Message::FileAct("m:p3".into(), None, mail::FileAct::Choose));
+        let bills = dir.path().join("Bills");
+        let _ = app.update(Message::SaveChosen(app.next_save, Some(bills.clone())));
+        let folder = SaveTo::Folder(bills.to_string_lossy().into_owned());
         assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), Vec::new(), folder)));
     }
 
@@ -18258,6 +18905,7 @@ mod tests {
     #[test]
     fn saving_the_mail_shows_a_hint_with_show_in_folder() {
         let mut app = invoice();
+        let dir = tempfile::tempdir().expect("dialog destination");
         let saving = app.saving_of("m:p3").cloned().expect("the plans");
         let plan = saving.export(ExportFormat::Pdf).cloned().expect("a plan for the PDF");
         let menu = mail::ExportMenu { id: "m:p3", format: ExportFormat::Pdf, saving: Some(&saving), category: None };
@@ -18273,17 +18921,18 @@ mod tests {
 
         let _ =
             app.update(Message::SaveMail("m:p3".into(), ExportFormat::Pdf, mail::FileAct::Target(target.id.clone())));
+        let ticket = app.next_save;
         let Some(Sent::SaveMail(id, format, to)) = app.sent.last().cloned() else { panic!("a save") };
         assert_eq!((id.as_str(), format, &to), ("m:p3", ExportFormat::Pdf, &SaveTo::Target(target.id.clone())));
         let saved = block_on(MailSource::save_mail_as(app.inbox.as_ref(), id.clone(), format, to.clone()));
         let saved = saved.expect("the demo answers");
         let place = mail::save_mail_place(&to, app.saving_of(&id), format);
-        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Saving…")), "while it draws");
+        assert_eq!(app.saves.last().map(|job| job.state), Some(SaveState::Running), "while it draws");
         let sends = app.sent.len();
         let again = mail::FileAct::Target(target.id.clone());
         let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Pdf, again));
         assert_eq!(app.sent.len(), sends, "a second click waits for the first");
-        let _ = app.update(Message::MailSaved(id.clone(), format, place.clone(), Ok(saved.clone())));
+        let _ = app.update(Message::MailSaved(ticket, Ok(saved.clone())));
         let hint = app.hint.clone().expect("a hint");
         let words = place.clone().expect("the target's words");
         assert_eq!(hint.text, trf("Saved to {where}", &[("where", &words)]));
@@ -18292,24 +18941,29 @@ mod tests {
         let _ = app.update(Message::ShowInFolder);
         assert_eq!(app.sent.last(), folder.map(Sent::ShowFolder).as_ref());
         let cut = torro_ipc::inbox::SavedMail { shortened: true, ..saved };
-        let _ = app.update(Message::MailSaved(id.clone(), format, place, Ok(cut)));
+        let _ = app.update(Message::SaveMail(id.clone(), format, mail::FileAct::Target(target.id.clone())));
+        let _ = app.update(Message::MailSaved(app.next_save, Ok(cut)));
         let shortened = trf("Saved to {where}, shortened: the mail is too long", &[("where", &words)]);
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.clone()), Some(shortened));
-        let _ = app.update(Message::MailSaved(id.clone(), format, None, Err("offline".into())));
-        let failure = app.error.take().expect("said");
-        assert_eq!((failure.what, failure.why.as_str()), (tr("Couldn't save the mail."), "offline"));
+        let _ = app.update(Message::SaveMail(id.clone(), format, mail::FileAct::Downloads));
+        let _ = app.update(Message::MailSaved(app.next_save, Err("offline".into())));
+        assert_eq!(
+            app.saves.last().map(|job| (job.state, job.explanation.as_str())),
+            Some((SaveState::Error, "offline"))
+        );
 
         let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Pdf, mail::FileAct::Choose));
         assert_eq!(app.sent.last(), Some(&Sent::SaveDialog(plan.file_name.clone())));
         let before = app.sent.len();
-        let _ = app.update(Message::SaveMailChosen("m:p3".into(), ExportFormat::Pdf, None));
+        let _ = app.update(Message::SaveChosen(app.next_save, None));
         assert_eq!(app.sent.len(), before, "cancelled");
-        let _ =
-            app.update(Message::SaveMailChosen("m:p3".into(), ExportFormat::Png, Some("/home/anna/Mail.png".into())));
-        let file = SaveTo::File("/home/anna/Mail.png".into());
+        let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Png, mail::FileAct::Choose));
+        let path = dir.path().join("Mail.png");
+        let _ = app.update(Message::SaveChosen(app.next_save, Some(path.clone())));
+        let file = SaveTo::File(path.to_string_lossy().into_owned());
         assert_eq!(app.sent.last(), Some(&Sent::SaveMail("m:p3".into(), ExportFormat::Png, file)));
-        let done = torro_ipc::inbox::SavedMail { path: "/home/anna/Mail.png".into(), ..Default::default() };
-        let _ = app.update(Message::MailSaved("m:p3".into(), ExportFormat::Png, None, Ok(done)));
+        let done = torro_ipc::inbox::SavedMail { path: path.to_string_lossy().into_owned(), ..Default::default() };
+        let _ = app.update(Message::MailSaved(app.next_save, Ok(done)));
         let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Png, mail::FileAct::Downloads));
         assert_eq!(app.sent.last(), Some(&Sent::SaveMail("m:p3".into(), ExportFormat::Png, SaveTo::Downloads)));
     }
@@ -18350,15 +19004,15 @@ mod tests {
         assert_eq!(name, &expected, "summary fallback");
         assert!(name.ends_with(".eml"));
         let before = app.sent.len();
-        let _ = app.update(Message::SaveMailChosen("m:p3".into(), ExportFormat::Eml, None));
+        let _ = app.update(Message::SaveChosen(app.next_save, None));
         assert_eq!(app.sent.len(), before, "cancel never saves");
         let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Eml, mail::FileAct::Downloads));
         let before = app.sent.len();
         let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Eml, mail::FileAct::Downloads));
         assert_eq!(app.sent.len(), before, "no duplicate save");
-        let _ = app.update(Message::MailSaved("m:p3".into(), ExportFormat::Eml, None, Err("offline".into())));
-        assert!(!app.exporting.contains(&("m:p3".into(), ExportFormat::Eml)));
-        assert!(app.error.is_some());
+        let _ = app.update(Message::MailSaved(app.next_save, Err("offline".into())));
+        assert!(app.saves.iter().all(|job| !job.state.active()));
+        assert!(app.saves.last().is_some_and(|job| job.state == SaveState::Error && job.explanation == "offline"));
     }
 
     /// Task M12.6: after saving the hint says where – with "Show in folder", which opens the folder of
@@ -18372,12 +19026,12 @@ mod tests {
             Some("2".into()),
             mail::FileAct::Target("demo-invoices".into()),
         ));
+        let ticket = app.next_save;
         let Some(Sent::Save(id, parts, to)) = app.sent.last().cloned() else { panic!("a save") };
         let saved = block_on(MailSource::save_attachments(app.inbox.as_ref(), id.clone(), parts, to.clone()));
-        let place = mail::save_place(&to, app.saving_of(&id), Some("2"));
         // Another mail opened before the answer: the hint still says where the file went.
         app.saving = None;
-        let _ = app.update(Message::AttachmentsSaved(place, saved.map_err(|err| err.to_string())));
+        let _ = app.update(Message::AttachmentsSaved(ticket, saved.map_err(|err| err.to_string())));
         let hint = app.hint.clone().expect("a hint");
         assert_eq!(hint.text, trf("Saved to {where}", &[("where", &"Invoices › 2026 › 09")]));
         assert_eq!(hint.undo, None);
@@ -18401,16 +19055,220 @@ mod tests {
             }],
             ..SavedAttachments::default()
         };
-        let _ = app.update(Message::AttachmentsSaved(Some(tr("Downloads").to_owned()), Ok(partly.clone())));
+        let _ = app.update(Message::FileAct("m:p3".into(), None, mail::FileAct::Downloads));
+        let _ = app.update(Message::AttachmentsSaved(app.next_save, Ok(partly.clone())));
         let text = app.hint.as_ref().map(|hint| hint.text.clone());
-        assert_eq!(text, Some(trf("{n} saved, {name} failed", &[("n", &1), ("name", &"usage-september.pdf")])));
+        assert!(text.is_some_and(|text| {
+            text.starts_with(&trf("{n} saved, {name} failed", &[("n", &1), ("name", &"usage-september.pdf")]))
+        }));
         app.hint = None;
         let none = SavedAttachments { saved: Vec::new(), ..partly };
-        let _ = app.update(Message::AttachmentsSaved(Some(tr("Downloads").to_owned()), Ok(none)));
-        assert_eq!(
-            (app.hint.as_ref(), app.error.as_ref().map(|failure| failure.why.as_str())),
-            (None, Some("Disk full"))
+        let _ = app.update(Message::FileAct("m:p3".into(), None, mail::FileAct::Downloads));
+        let _ = app.update(Message::AttachmentsSaved(app.next_save, Ok(none)));
+        assert!(app.hint.as_ref().is_some_and(|hint| hint.text.contains("Disk full")));
+        assert_eq!(app.saves.last().map(|job| job.state), Some(SaveState::Error));
+    }
+
+    #[test]
+    fn save_feedback_is_immediate_scoped_and_preserves_the_menu_anchor() {
+        let mut app = invoice_in(&["--view", "mail"]);
+        let dir = tempfile::tempdir().expect("destination");
+        app.size = WIDE;
+        let id = "m:p3".to_owned();
+        let single = Message::FileAct(id.clone(), Some("2".into()), mail::FileAct::Downloads);
+        let all = Message::FileAct(id.clone(), None, mail::FileAct::Downloads);
+        let _ = app.update(single.clone());
+        assert_eq!(app.menu, Some(Menu::Attachment(0)), "direct save opens its menu");
+        assert!(app.save_spinning());
+        let first = app.next_save;
+        assert!(
+            app.save_feedback(&single)
+                .is_some_and(|f| f.blocked && matches!(f.kind, widgets::MenuFeedbackKind::Running(_)))
         );
+        assert!(app.save_feedback(&all).is_some_and(|f| f.blocked), "overlapping group is locked");
+        let count = app.sent.len();
+        let _ = app.update(single.clone());
+        let _ = app.update(all);
+        assert_eq!(app.sent.len(), count, "no duplicate or overlapping request");
+        let other = Message::FileAct(id.clone(), Some("2".into()), mail::FileAct::Target("demo-invoices".into()));
+        let _ = app.update(other.clone());
+        assert_eq!(app.sent.len(), count + 1, "independent destination");
+        assert!(app.next_save > first);
+        let saved = SavedAttachments {
+            saved: vec![torro_ipc::mail::SavedFile {
+                part: "2".into(),
+                path: dir.path().join("invoice.pdf").to_string_lossy().into_owned(),
+            }],
+            ..Default::default()
+        };
+        let _ = app.update(Message::AttachmentsSaved(first, Ok(saved.clone())));
+        assert!(matches!(app.save_feedback(&single).map(|f| f.kind), Some(widgets::MenuFeedbackKind::Success)));
+        let _ = app.update(Message::AttachmentsSaved(first, Err("duplicate must be ignored".into())));
+        assert!(matches!(app.save_feedback(&single).map(|f| f.kind), Some(widgets::MenuFeedbackKind::Success)));
+        app.menu_at = MenuAt::Row;
+        let _ = app.update(Message::FileAct(id, Some("3".into()), mail::FileAct::Downloads));
+        assert_eq!(app.menu, Some(Menu::Attachment(1)), "direct click reveals the new file's menu");
+        assert_eq!(app.menu_at, MenuAt::Panel, "new file's anchor");
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::CloseMenu);
+        assert!(!app.save_spinning());
+        assert!(app.save_feedback(&single).is_none(), "terminal status ends on close");
+        assert!(app.save_feedback(&other).is_some_and(|f| f.blocked), "running locks survive close");
+        let ticket = app.next_save;
+        let _ = app.update(Message::AttachmentsSaved(ticket, Ok(saved)));
+        assert!(app.saves.iter().all(|job| job.ticket != ticket), "hidden terminal status is discarded");
+    }
+
+    #[test]
+    fn save_dialog_has_one_ticket_and_cancel_or_stale_answers_never_save() {
+        let mut app = invoice();
+        let dir = tempfile::tempdir().expect("dialog destinations");
+        let choose = Message::FileAct("m:p3".into(), Some("2".into()), mail::FileAct::Choose);
+        let _ = app.update(choose.clone());
+        let first = app.next_save;
+        let count = app.sent.len();
+        assert!(!app.save_spinning(), "no animation while choosing");
+        let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Pdf, mail::FileAct::Choose));
+        assert_eq!(app.sent.len(), count, "one dialog globally");
+        let _ = app.update(Message::SaveChosen(first, None));
+        assert!(matches!(app.save_feedback(&choose).map(|f| f.kind), Some(widgets::MenuFeedbackKind::Cancelled)));
+        let _ = app.update(choose.clone());
+        let second = app.next_save;
+        let _ = app.update(Message::SaveChosen(first, Some(dir.path().join("old.pdf"))));
+        assert_eq!(app.next_save, second);
+        assert_eq!(app.saves.last().map(|job| job.state), Some(SaveState::Choosing));
+        let _ = app.update(Message::SaveChosen(second, Some("relative.pdf".into())));
+        assert!(matches!(app.save_feedback(&choose).map(|f| f.kind), Some(widgets::MenuFeedbackKind::Error)));
+        let _ = app.update(choose.clone());
+        let invoice = dir.path().join("invoice.pdf");
+        let _ = app.update(Message::SaveChosen(app.next_save, Some(invoice.clone())));
+        let ticket = app.next_save;
+        assert_eq!(
+            app.saves.last().and_then(|job| job.destination.clone()),
+            Some(SaveTo::File(invoice.to_string_lossy().into_owned()))
+        );
+        assert!(app.save_feedback(&choose).is_some_and(|f| f.blocked));
+        let count = app.sent.len();
+        let _ = app.update(Message::SaveChosen(ticket, Some(dir.path().join("duplicate.pdf"))));
+        assert_eq!(app.sent.len(), count, "dialog answer is accepted only once");
+    }
+
+    #[test]
+    fn saved_checks_require_exact_nonempty_scope_and_shortened_is_a_warning() {
+        let dir = tempfile::tempdir().expect("saved paths");
+        let path = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
+        let file = |part: &str, path: &str| torro_ipc::mail::SavedFile { part: part.into(), path: path.into() };
+        for (saved, state) in [
+            (SavedAttachments::default(), SaveState::Error),
+            (SavedAttachments { saved: vec![file("2", "")], ..Default::default() }, SaveState::Error),
+            (SavedAttachments { saved: vec![file("3", &path("wrong"))], ..Default::default() }, SaveState::Partial),
+            (
+                SavedAttachments { saved: vec![file("2", &path("a")), file("2", &path("b"))], ..Default::default() },
+                SaveState::Partial,
+            ),
+            (SavedAttachments { skipped: vec![file("2", &path("same"))], ..Default::default() }, SaveState::Success),
+        ] {
+            let mut app = invoice();
+            let _ = app.update(Message::FileAct("m:p3".into(), Some("2".into()), mail::FileAct::Downloads));
+            let _ = app.update(Message::AttachmentsSaved(app.next_save, Ok(saved)));
+            assert_eq!(app.saves.last().map(|job| job.state), Some(state));
+            assert!(!app.save_spinning());
+        }
+        let mut app = invoice();
+        let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Png, mail::FileAct::Downloads));
+        let ticket = app.next_save;
+        let _ = app.update(Message::MailSaved(
+            ticket,
+            Ok(torro_ipc::inbox::SavedMail { path: path("mail.png"), shortened: true, skipped: true }),
+        ));
+        assert_eq!(app.saves.last().map(|job| job.state), Some(SaveState::Partial));
+        assert!(!app.save_spinning());
+    }
+
+    #[test]
+    fn save_paths_keep_fictional_demo_results_separate_from_native_dialogs() {
+        let dir = tempfile::tempdir().expect("native destination");
+        let mut app = invoice();
+        app.launch.demo = false;
+        assert!(app.save_result_path(&dir.path().join("file.pdf").to_string_lossy()));
+        assert!(!app.save_result_path("relative.pdf"));
+        assert!(!app.save_result_path(""));
+        if cfg!(windows) {
+            assert!(!app.save_result_path("/home/anna/Downloads/file.pdf"));
+        }
+        app.launch.demo = true;
+        assert!(app.save_result_path("/home/anna/Downloads/file.pdf"));
+    }
+
+    #[test]
+    fn late_save_replies_name_the_origin_and_never_update_another_mail() {
+        let mut app = invoice_in(&["--view", "mail"]);
+        let _ = app.update(Message::SaveMail("m:p3".into(), ExportFormat::Pdf, mail::FileAct::Downloads));
+        let ticket = app.next_save;
+        let subject = app.saves.last().expect("job").subject.clone();
+        let _ = app.update(Message::SelectMail("m:p1".into()));
+        deliver_letter(&mut app, "m:p1");
+        assert!(app.saves.iter().any(|job| job.ticket == ticket && job.state.active()));
+        let foreign = Message::SaveMail("m:p1".into(), ExportFormat::Pdf, mail::FileAct::Downloads);
+        assert!(app.save_feedback(&foreign).is_none());
+        let _ = app.update(Message::MailSaved(ticket, Err("offline".into())));
+        assert!(app.hint.as_ref().is_some_and(|hint| hint.text.contains(&subject) && hint.text.contains("offline")));
+        assert!(app.save_feedback(&foreign).is_none());
+        assert!(app.saves.is_empty(), "no stale terminal status when returning");
+    }
+
+    #[test]
+    fn save_demo_fixtures_are_static_and_side_effect_free() {
+        for open in [
+            "save-running",
+            "save-success",
+            "save-error",
+            "save-partial",
+            "save-choosing",
+            "save-cancelled",
+            "save-shortened",
+        ] {
+            let mut app = loaded(&["--view", "mail", "--open", open]);
+            if let Some(id) = app.wanted_letter() {
+                deliver_letter(&mut app, &id);
+                let saving = block_on(MailSource::save_targets(app.inbox.as_ref(), Some(id.clone())))
+                    .map_err(|err| err.to_string());
+                let _ = app.update(Message::SaveTargets(id, saving));
+            }
+            assert_eq!(app.saves.len(), 1, "{open}");
+            let job = app.saves.first().expect("fixture");
+            let sections = match &job.scope {
+                SaveScope::Attachments(part) => mail::file_menu(mail::FileMenu {
+                    id: &job.mail,
+                    part: part.as_deref(),
+                    saving: app.saving_of(&job.mail),
+                    click: &app.look.click,
+                    category: None,
+                }),
+                SaveScope::Export(format) => mail::export_menu(mail::ExportMenu {
+                    id: &job.mail,
+                    format: *format,
+                    saving: app.exports_of(&job.mail),
+                    category: None,
+                }),
+            };
+            assert!(
+                sections
+                    .iter()
+                    .flat_map(|section| &section.items)
+                    .any(|item| app.save_feedback(&item.on_press).is_some()),
+                "fixture feedback is actually rendered: {open}"
+            );
+            assert!(!app.save_spinning(), "fixed snapshot angle: {open}");
+            assert!(
+                !app.sent.iter().any(|sent| matches!(
+                    sent,
+                    Sent::Save(..) | Sent::SaveMail(..) | Sent::SaveDialog(_) | Sent::FolderDialog
+                )),
+                "{open}"
+            );
+            draw_everywhere(&mut app);
+        }
     }
 
     /// Issue #119: the text in the reader and the panel can be selected – never changed – and "Copy
@@ -19133,6 +19991,19 @@ mod tests {
             ui.click(tr("New email")).expect("compose can be clicked");
             assert!(ui.into_messages().any(|message| matches!(message, Message::Switcher(Switcher::New))));
         }
+    }
+
+    /// Issue #536: "New email" stands on the axis of the navigation – its label starts where the label of
+    /// "All" does. (The height and the collapsed button are checked by eye, `shots.sh`.)
+    #[test]
+    fn mail_compose_lines_up_with_the_navigation_rows() {
+        let mut app = mail_window(Density::Compact, &[]);
+        app.size = WIDE;
+        app.drawer = false;
+        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), WIDE, app.view());
+        let all = ui.find(tr("All")).expect("navigation").bounds();
+        let compose = ui.find(tr("New email")).expect("compose").bounds();
+        assert!((all.x - compose.x).abs() < 0.5, "labels start on one axis: {} vs {}", all.x, compose.x);
     }
 
     /// Issue #559: the account menu uses the top-right button's action, including remembered settings.

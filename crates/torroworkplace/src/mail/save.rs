@@ -27,7 +27,7 @@
 //! messages for the caller hold no path either (they may reach an agent).
 
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -672,6 +672,19 @@ impl Saved {
     fn response(self) -> Response {
         Response::SavedAttachments { saved: self.saved, skipped: self.skipped, failed: self.failed }
     }
+
+    fn record(&mut self, part: &str, name: &str, written: Result<Written, Problem>) {
+        match written {
+            Ok(Written::Saved(path)) => self.saved.push(SavedFile { part: part.into(), path: shown(&path) }),
+            Ok(Written::Skipped(path)) => self.skipped.push(SavedFile { part: part.into(), path: shown(&path) }),
+            Err(problem) => self.failed.push(FailedFile {
+                part: part.into(),
+                name: name.into(),
+                code: problem.code().into(),
+                message: problem.message(),
+            }),
+        }
+    }
 }
 
 /// `mail.save_attachments`: in this order the paths of `to: file | folder` (`error` unless absolute,
@@ -799,11 +812,7 @@ async fn save_one(raw: &[u8], part: &str, place: &Place, mail: &Mail<'_>, max_by
     };
     let bytes = attachment.bytes;
     let written = tokio::task::spawn_blocking(move || job.run(&bytes)).await.unwrap_or(Err(Problem::Write));
-    match written {
-        Ok(Written::Saved(path)) => saved.saved.push(SavedFile { part: part.into(), path: shown(&path) }),
-        Ok(Written::Skipped(path)) => saved.skipped.push(SavedFile { part: part.into(), path: shown(&path) }),
-        Err(problem) => saved.failed.push(fail(problem.code(), problem.message())),
-    }
+    saved.record(part, &name, written);
 }
 
 fn shown(path: &Path) -> String {
@@ -941,17 +950,32 @@ impl Job {
             }
         })?;
         temporary.as_file().sync_all().map_err(|err| Problem::of(&err))?;
-        if let Some(path) = replace {
+        let written = if let Some(path) = replace {
             replaceable(&path)?;
             temporary.persist(&path).map_err(|err| Problem::of(&err.error))?;
-            return Ok(Written::Saved(path));
-        }
-        publish_new(temporary, &dir, &name, rule, &mut source.file, source.bytes)
+            Written::Saved(path)
+        } else {
+            publish_new(temporary, &dir, &name, rule, &mut source.file, source.bytes)?
+        };
+        let path = match &written {
+            Written::Saved(path) | Written::Skipped(path) => path,
+        };
+        verify_source(path, &mut source.file, source.bytes).map_err(|err| Problem::of(&err))?;
+        Ok(written)
     }
 
     /// Writes `bytes` (blocking).
     fn run(self, bytes: &[u8]) -> Result<Written, Problem> {
-        match self {
+        self.run_verified(bytes, verify_file)
+    }
+
+    /// The verification seam exercises final-path failures after actual writes, without timing races.
+    fn run_verified(
+        self,
+        bytes: &[u8],
+        verify: impl FnOnce(&Path, &[u8]) -> io::Result<()>,
+    ) -> Result<Written, Problem> {
+        let written = match self {
             Job::New { dir, below, name, rule } => {
                 let dir = match below {
                     Some((base, folders)) => target_dir(&base, &folders)?,
@@ -960,7 +984,12 @@ impl Job {
                 write_new(&dir, &name, bytes, rule)
             }
             Job::Replace(file) => replace(&file, bytes),
-        }
+        }?;
+        let path = match &written {
+            Written::Saved(path) | Written::Skipped(path) => path,
+        };
+        verify(path, bytes).map_err(|err| Problem::of(&err))?;
+        Ok(written)
     }
 }
 
@@ -999,27 +1028,14 @@ fn replaceable(path: &Path) -> Result<(), Problem> {
 
 /// Bounded equality check, never following a known symbolic link or buffering a whole original.
 fn same_file(path: &Path, source: &mut fs::File, bytes: u64) -> bool {
-    use std::io::{Read, Seek};
-    if !fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() == bytes) {
-        return false;
-    }
-    let Ok(mut there) = fs::File::open(path) else { return false };
-    if source.rewind().is_err() {
-        return false;
-    }
-    let (mut a, mut b) = ([0u8; 64 * 1024], [0u8; 64 * 1024]);
-    let mut left = bytes;
-    while left > 0 {
-        let count = left.min(a.len() as u64) as usize;
-        if source.read_exact(&mut a[..count]).is_err()
-            || there.read_exact(&mut b[..count]).is_err()
-            || a[..count] != b[..count]
-        {
-            return false;
-        }
-        left -= count as u64;
-    }
-    there.read(&mut b[..1]).is_ok_and(|read| read == 0)
+    verify_source(path, source, bytes).is_ok()
+}
+
+/// EML keeps its bounded-memory original path; never buffer a whole original for verification.
+fn verify_source(path: &Path, source: &mut fs::File, bytes: u64) -> io::Result<()> {
+    use std::io::Seek;
+    source.rewind()?;
+    verify_reader(path, source, bytes, |_| {})
 }
 
 /// The folder `folders` below `base`, made one at a time: each one, once made (or found), is
@@ -1080,8 +1096,65 @@ fn numbered(name: &str, copy: u32) -> String {
 
 /// Whether `path` is a plain file (not a link) holding exactly `bytes`.
 fn same_content(path: &Path, bytes: &[u8]) -> bool {
-    let plain = fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() == bytes.len() as u64);
-    plain && fs::read(path).is_ok_and(|there| there == bytes)
+    verify_file(path, bytes).is_ok()
+}
+
+/// Checks the closed file at its final path, without allocating another attachment-sized buffer.
+/// Failures leave it untouched: another process may already have changed the destination.
+fn verify_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    verify_file_opened(path, bytes, |_| {})
+}
+
+fn verify_file_opened(path: &Path, bytes: &[u8], opened: impl FnOnce(&Path)) -> io::Result<()> {
+    verify_reader(path, &mut io::Cursor::new(bytes), bytes.len() as u64, opened)
+}
+
+fn verify_reader(path: &Path, source: &mut impl Read, bytes: u64, opened: impl FnOnce(&Path)) -> io::Result<()> {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "saved file verification failed");
+    let plain = |meta: &fs::Metadata| meta.is_file() && meta.len() == bytes;
+    let before = fs::symlink_metadata(path)?;
+    if !plain(&before) {
+        return Err(invalid());
+    }
+    let mut file = fs::File::open(path)?;
+    let held = file.metadata()?;
+    if !plain(&held) || !same_file_metadata(&before, &held) {
+        return Err(invalid());
+    }
+    opened(path);
+    let (mut buffer, mut expected) = ([0; 64 * 1024], [0; 64 * 1024]);
+    let mut left = bytes;
+    while left > 0 {
+        let count = left.min(buffer.len() as u64) as usize;
+        source.read_exact(&mut expected[..count])?;
+        file.read_exact(&mut buffer[..count])?;
+        if buffer[..count] != expected[..count] {
+            return Err(invalid());
+        }
+        left -= count as u64;
+    }
+    let after = fs::symlink_metadata(path)?;
+    if file.read(&mut buffer[..1])? != 0
+        || source.read(&mut expected[..1])? != 0
+        || !plain(&after)
+        || !same_file_metadata(&held, &after)
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+/// Bind the bytes read to the same final file, not a replacement of the same size. Unix exposes
+/// device/inode in safe std; other platforms have the portable creation/modification metadata.
+fn same_file_metadata(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if (a.dev(), a.ino()) != (b.dev(), b.ino()) {
+            return false;
+        }
+    }
+    a.created().ok() == b.created().ok() && a.modified().ok() == b.modified().ok()
 }
 
 /// Makes `path` with `bytes`; `AlreadyExists` when something is there (also a link, which is never
@@ -1089,6 +1162,7 @@ fn same_content(path: &Path, bytes: &[u8]) -> bool {
 fn create_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = fs::OpenOptions::new().write(true).create_new(true).open(path)?;
     if let Err(err) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        drop(file);
         let _ = fs::remove_file(path);
         return Err(err);
     }
@@ -1101,7 +1175,10 @@ fn replace(path: &Path, bytes: &[u8]) -> Result<Written, Problem> {
     if fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir() || meta.file_type().is_symlink()) {
         return Err(Problem::NotReplaceable);
     }
-    fs::write(path, bytes).map_err(|err| Problem::of(&err))?;
+    let mut file =
+        fs::OpenOptions::new().write(true).create(true).truncate(true).open(path).map_err(|err| Problem::of(&err))?;
+    file.write_all(bytes).and_then(|()| file.sync_all()).map_err(|err| Problem::of(&err))?;
+    drop(file);
     Ok(Written::Saved(path.to_path_buf()))
 }
 
@@ -1307,6 +1384,134 @@ pub(crate) mod tests {
     use crate::mail::sync::fake::FakeImap;
 
     const ANNA: &str = "mail:anna@example.org";
+
+    #[test]
+    fn streamed_original_verification_checks_all_bytes_and_both_ends() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("mail.eml");
+        let bytes = vec![42; 150_000];
+        fs::write(&path, &bytes).expect("destination");
+        let mut source = tempfile::tempfile().expect("source");
+        source.write_all(&bytes).expect("original");
+        verify_source(&path, &mut source, bytes.len() as u64).expect("streamed original");
+        let mut wrong = bytes.clone();
+        wrong[100_000] = 43;
+        fs::write(&path, &wrong).expect("wrong destination");
+        assert!(verify_source(&path, &mut source, bytes.len() as u64).is_err());
+        assert_eq!(fs::read(&path).expect("failure left it untouched"), wrong);
+        fs::write(&path, &bytes[..bytes.len() - 1]).expect("short destination");
+        assert!(verify_source(&path, &mut source, bytes.len() as u64).is_err());
+        fs::write(&path, &bytes).expect("destination restored");
+        source.set_len(bytes.len() as u64 - 1).expect("short source");
+        assert!(verify_source(&path, &mut source, bytes.len() as u64).is_err());
+    }
+
+    #[test]
+    fn verification_failures_after_writing_keep_files_and_allow_partial_results() {
+        for mode in ["new", "replace", "identical", "empty", "missing", "wrong", "truncated", "denied"] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = dir.path().join("attachment.pdf");
+            let job = match mode {
+                "replace" => {
+                    fs::write(&path, b"previous").expect("old file");
+                    Job::Replace(path.clone())
+                }
+                _ => {
+                    if mode == "identical" {
+                        fs::write(&path, b"expected").expect("identical");
+                    }
+                    Job::New {
+                        dir: dir.path().into(),
+                        below: None,
+                        name: "attachment.pdf".into(),
+                        rule: OnConflict::SkipIdentical,
+                    }
+                }
+            };
+            let bytes = if mode == "empty" { &b""[..] } else { &b"expected"[..] };
+            let written = job.run_verified(bytes, |path, bytes| {
+                match mode {
+                    "missing" => fs::remove_file(path)?,
+                    "wrong" => fs::write(path, b"opposite")?,
+                    "truncated" => fs::write(path, b"ex")?,
+                    "denied" => return Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+                    _ => {}
+                }
+                verify_file(path, bytes)
+            });
+            let mut saved = Saved::default();
+            saved.record("2", "attachment.pdf", written);
+            if matches!(mode, "missing" | "wrong" | "truncated" | "denied") {
+                assert_eq!(saved.failed.len(), 1, "{mode}");
+                assert_eq!(saved.failed[0].code, if mode == "denied" { "forbidden" } else { "error" });
+                assert!(saved.saved.is_empty() && saved.skipped.is_empty());
+                if mode != "missing" {
+                    assert!(path.is_file(), "verification must not delete: {mode}");
+                }
+            } else {
+                assert!(saved.failed.is_empty(), "{mode}");
+                assert_eq!(saved.saved.len() + saved.skipped.len(), 1, "{mode}");
+                assert_eq!(saved.skipped.len(), usize::from(mode == "identical"));
+                assert_eq!(fs::read(&path).expect("verified final file"), bytes);
+            }
+            let next =
+                Job::New { dir: dir.path().into(), below: None, name: "next.pdf".into(), rule: OnConflict::KeepBoth };
+            saved.record("3", "next.pdf", next.run(b"next"));
+            assert!(saved.saved.iter().any(|file| file.part == "3"), "next attachment still saved: {mode}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verification_rejects_a_same_sized_replacement_of_the_open_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("saved");
+        fs::write(&path, b"expected").expect("file");
+        let result = verify_file_opened(&path, b"expected", |path| {
+            fs::rename(path, dir.path().join("previous")).expect("move opened inode");
+            fs::write(path, b"opposite").expect("same-sized replacement");
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(path).expect("replacement left intact"), b"opposite");
+    }
+
+    #[test]
+    fn final_file_verification_checks_type_length_and_every_byte() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("saved.pdf");
+        let bytes = vec![42; 150_000];
+        assert!(verify_file(&path, &bytes).is_err(), "missing");
+        fs::write(&path, &bytes).expect("file");
+        verify_file(&path, &bytes).expect("verified");
+        let mut wrong = bytes.clone();
+        wrong[100_000] = 43;
+        assert!(verify_file(&path, &wrong).is_err(), "same length, wrong content in a later block");
+        assert!(verify_file(&path, &bytes[..bytes.len() - 1]).is_err(), "too long");
+        assert!(verify_file(&path, &[bytes.as_slice(), &[42]].concat()).is_err(), "truncated");
+        assert_eq!(fs::read(&path).expect("left intact"), bytes);
+        fs::write(&path, []).expect("empty");
+        verify_file(&path, &[]).expect("zero-byte files are real files");
+        assert!(verify_file(dir.path(), &[]).is_err(), "not a regular file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn final_file_verification_refuses_links_and_unreadable_files() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("saved");
+        fs::write(&path, b"contents").expect("file");
+        let link = dir.path().join("link");
+        symlink(&path, &link).expect("link");
+        assert!(verify_file(&link, b"contents").is_err());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).expect("permissions");
+        // Privileged test runners may still read mode 000; ordinary runners must report forbidden.
+        if fs::File::open(&path).is_err() {
+            let problem = verify_file(&path, b"contents").expect_err("unreadable");
+            assert_eq!(Problem::of(&problem).code(), "forbidden");
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("restore");
+    }
 
     fn targets_in(dir: &Path) -> SaveTargets {
         SaveTargets::at(Some(dir.join("mail").join(FILE_NAME)))
