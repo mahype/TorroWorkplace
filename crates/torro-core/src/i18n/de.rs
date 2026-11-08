@@ -2107,9 +2107,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Choose a repository", "Repository wählen"),
     ("All repositories", "Alle Repositories"),
     ("Several repositories", "Mehrere Repositories"),
-    ("Find a repository…", "Repository suchen…"),
-    ("No repository matches.", "Kein Repository passt."),
-    ("{n} more. Type to narrow the list.", "{n} weitere. Tippe, um die Liste einzugrenzen."),
     ("Last used", "Zuletzt verwendet"),
     ("Private", "Privat"),
     ("Show", "Anzeigen"),
@@ -4556,14 +4553,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Calendars appear here once an account has one.", "Kalender erscheinen hier, sobald ein Konto einen hat."),
     ("No lists", "Keine Listen"),
     ("Lists appear here once an account has one.", "Listen erscheinen hier, sobald ein Konto eine hat."),
-    (
-        "No calendars yet. Use “Sync now” at this account under Accounts.",
-        "Noch keine Kalender. Nutze „Jetzt synchronisieren“ bei diesem Konto unter Konten.",
-    ),
-    (
-        "No task lists yet. Use “Sync now” at this account under Accounts.",
-        "Noch keine Aufgabenlisten. Nutze „Jetzt synchronisieren“ bei diesem Konto unter Konten.",
-    ),
+    ("Use “Sync now” at this account under Accounts.", "Nutze „Jetzt synchronisieren“ bei diesem Konto unter Konten."),
     (
         "Choose which kinds of events may remind you, whatever their own reminder says.",
         "Wähle, welche Art von Terminen überhaupt erinnern darf, unabhängig von der eigenen Erinnerung des Termins.",

@@ -114,6 +114,8 @@ pub struct Demo {
     catalogue: Mutex<Option<Vec<torro_mail::CategoryDef>>>,
     /// Why the sample mail account does not sync ([`Demo::with_mail_problem`]); `None` normally.
     mail_problem: Option<String>,
+    /// The calendar and GitHub accounts are those of the apps' own sample ([`Demo::with_pim_sample`]).
+    pim_sample: bool,
 }
 
 impl Demo {
@@ -177,7 +179,23 @@ impl Demo {
             cache_job: Mutex::new(None),
             catalogue: Mutex::new(None),
             mail_problem: None,
+            pim_sample: false,
         }
+    }
+
+    /// The demo of the settings in the calendar and the tasks app (issue #544): their calendar and
+    /// GitHub accounts are the ones their sidebar shows (`torro_pim::demo`), with the calendars and
+    /// lists the sample has there – a picture of the settings must not show other accounts than the
+    /// window around it. "Work" of the sample reminds with "Full screen" and the travel planner reads
+    /// its "Work" and "Family"; nothing is hidden. Mail, ntfy and AI stay as in [`Demo::new`].
+    pub fn with_pim_sample() -> Demo {
+        let mut demo = Demo { pim_sample: true, ..Demo::new() };
+        demo.settings.hidden_collections.clear();
+        demo.settings.reminders.calendars.clear();
+        if let Some(work) = pim_id("Work") {
+            demo.settings.reminders.calendars.insert(work, CalendarReminders::FullScreen);
+        }
+        demo
     }
 
     /// The sample settings it answers `settings.settings` with.
@@ -204,8 +222,10 @@ impl Demo {
         };
         let mut travel = Rights::none();
         travel.areas.insert(Area::Calendar, AreaRights { level: Level::Read, admin: false });
-        travel.calendars =
-            Selection::Only(vec![WORK_CALENDAR.into(), "nextcloud:anna@cloud.example.org/family".into()]);
+        travel.calendars = match self.pim_sample {
+            true => Selection::Only(["Work", "Family"].into_iter().filter_map(pim_id).collect()),
+            false => Selection::Only(vec![WORK_CALENDAR.into(), "nextcloud:anna@cloud.example.org/family".into()]),
+        };
         let mut backup = Rights::none();
         backup.areas.insert(Area::Calendar, AreaRights { level: Level::Read, admin: false });
         backup.calendars = travel.calendars.clone();
@@ -241,7 +261,9 @@ impl Demo {
     /// have to be unwrapped, and the workspace allows no `expect` outside tests.
     ///
     /// Synced a few minutes ago, as the control centre's sample accounts are (`accounts::demo`):
-    /// Settings › Accounts of an app shows the same "Last synced" as the control centre.
+    /// Settings › Accounts of an app shows the same "Last synced" as the control centre. With
+    /// [`Demo::with_pim_sample`] the calendar and GitHub accounts are the apps' own, synced just now
+    /// as their sidebar has them.
     fn accounts(&self) -> Vec<AccountInfo> {
         let synced = Some(Utc::now() - chrono::Duration::minutes(4));
         let connected = |server: &str, login: &str| AccountState::Connected {
@@ -331,7 +353,15 @@ impl Demo {
             connected("http://localhost:11434", ""),
             Vec::new(),
         ));
-        accounts
+        if !self.pim_sample {
+            return accounts;
+        }
+        // The apps' own sample first, in place of the calendar and GitHub accounts above.
+        let mut sample = pim_accounts();
+        sample.extend(
+            accounts.into_iter().filter(|account| !matches!(account.kind.as_str(), "nextcloud" | "caldav" | "github")),
+        );
+        sample
     }
 
     /// The calendars (`events`) or the task lists of the sample accounts the suite shows, as
@@ -1487,6 +1517,42 @@ impl Backend for Demo {
     }
 }
 
+/// The calendars and task lists of the apps' own sample (`torro_pim::demo::sample`), without its
+/// GitHub filter lists: those are made in the tasks app, not fetched with an account
+/// (`account_infos` in the core gives a GitHub account no collections either).
+fn pim_collections() -> Vec<Collection> {
+    let (collections, _, _) = torro_pim::demo::sample(chrono::Local::now().date_naive());
+    collections.into_iter().filter(|collection| collection.source.is_none()).collect()
+}
+
+/// The id of the collection of the apps' own sample named `name` ("Work", "Family").
+fn pim_id(name: &str) -> Option<String> {
+    pim_collections().into_iter().find(|collection| collection.name == name).map(|collection| collection.id)
+}
+
+/// The accounts of the apps' own sample (`torro_pim::demo::sample_accounts`) as
+/// `accounts.list_accounts` answers them: each with the collections whose id starts with its own.
+fn pim_accounts() -> Vec<AccountInfo> {
+    let collections = pim_collections();
+    torro_pim::demo::sample_accounts()
+        .into_iter()
+        .map(|account| {
+            let prefix = format!("{}/", account.id);
+            AccountInfo {
+                collections: collections.iter().filter(|c| c.id.starts_with(&prefix)).cloned().collect(),
+                id: account.id,
+                kind: account.kind,
+                label: account.label,
+                state: account.state,
+                scopes: account.scopes,
+                mail: None,
+                ntfy: None,
+                services: None,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1539,6 +1605,38 @@ mod tests {
         assert_eq!(stats.months.iter().map(|month| month.messages).sum::<u64>(), stats.messages);
         assert_eq!(stats.months.iter().map(|month| month.cached_bodies).sum::<u64>(), stats.cached_bodies);
         assert!(stats.months.iter().all(|month| month.cached_bodies <= month.messages && month.messages > 0));
+    }
+
+    /// Issue #544: the settings of the calendar and the tasks app show the accounts of their own
+    /// sample, each list at its account; mail, ntfy and AI stay.
+    #[test]
+    fn the_pim_sample_brings_the_apps_own_accounts() {
+        let demo = Demo::with_pim_sample();
+        let accounts = demo.accounts();
+        let pim: Vec<AccountInfo> =
+            accounts.iter().filter(|a| matches!(a.kind.as_str(), "nextcloud" | "caldav" | "github")).cloned().collect();
+        let sample = torro_pim::demo::sample_accounts();
+        let ids = |list: &[AccountInfo]| list.iter().map(|a| a.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&pim), sample.iter().map(|a| a.id.clone()).collect::<Vec<_>>());
+        assert_eq!(ids(&accounts[..pim.len()]), ids(&pim), "the sample first");
+        let listed: Vec<&Collection> = pim.iter().flat_map(|a| a.collections.iter()).collect();
+        let expected = pim_collections();
+        assert_eq!(listed.len(), expected.len(), "every calendar and list of the sample");
+        for account in &pim {
+            assert!(
+                account.collections.iter().all(|c| c.id.starts_with(&format!("{}/", account.id))),
+                "{}",
+                account.id
+            );
+        }
+        let github = pim.iter().find(|a| a.kind == "github").expect("the GitHub account");
+        assert!(github.collections.is_empty(), "filter lists are made in the app, not fetched");
+        assert!(accounts.iter().any(|a| a.kind == "mail") && accounts.iter().any(|a| a.kind == "ntfy"));
+        assert!(demo.settings().hidden_collections.is_empty());
+        let work = pim_id("Work").expect("Work");
+        assert_eq!(demo.settings().reminders.calendars.get(&work), Some(&CalendarReminders::FullScreen));
+        // The plain demo keeps the control centre's sample accounts.
+        assert!(Demo::new().accounts().iter().any(|a| a.id == "nextcloud:anna@cloud.example.org"));
     }
 
     /// A change is answered as done and remembered, but nothing is kept.
