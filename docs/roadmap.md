@@ -1,5 +1,15 @@
 # Roadmap
 
+> **Status note (November 2026):** This document includes historical phase plans and
+> is not a complete feature-by-feature implementation report. The repository has since
+> grown to include calendar, tasks, mail/inbox, assistant, notifications and settings
+> implementations. Recent merged PRs include #590 (calendar), #588 (assistant),
+> #585 (tasks), #583 (mail window), #581 (notifications) and #580 (control centre).
+> A crate or merged PR proves code exists, **not** that a feature is fully tested,
+> released or production-ready. Use current code, closed issues and merged PRs to
+> establish the exact status of an individual feature. Work follows [CLAUDE.md](../CLAUDE.md)
+> and [the issue workflow](issue-workflow.md).
+
 Die Planung steht in diesem Dokument, die Aufgaben der aktuellen Phase unter [tasks/](tasks/). GitHub-Issues sind für Fehler und Einzelthemen da, nicht für die Vorausplanung.
 
 ## Phase 0: Planung und Gerüst ✅
@@ -64,7 +74,7 @@ Am 2026-10-11 aus der Übersicht über die Nextcloud-Schnittstellen ausgewählt.
 ## Phase 2: Kern auf allen Systemen
 
 1. **Steuerzentrale** (`torroworkplace ui`, Iced): Vorlagen benennen, Strategien je Fenster, Einstellungen.
-2. **Tastenplätze F1–F10** und **Wiederherstellen beim Anmelden**.
+2. **Tastenplätze 1–0** und **Wiederherstellen beim Anmelden** (in #243 bereits umgesetzt; hier als historische Phase-2-Planung aufgeführt).
 3. **Backend AeroSpace** (macOS), LaunchAgent, Tastenkürzel in `~/.aerospace.toml`.
 4. **Backend GlazeWM** (Windows), Autostart, Tastenkürzel in der GlazeWM-Konfiguration.
 5. Funktionen aus workspace-setups nachziehen: automatische Strategie, Floating und Vollbild,
@@ -77,7 +87,7 @@ werden und der Kern mit einem Befehl installiert ist.
 Aufgaben für macOS und Windows (Named Pipes, Tray, AeroSpace, GlazeWM, Autostart, Signatur):
 [tasks/plattformen.md](tasks/plattformen.md).
 
-## Phase 3: Konten, Sync und MCP im Kern
+## Phase 3: Konten, Sync und MCP im Kern (historischer Phasenplan; Teile bereits implementiert)
 
 - Konten einmal im Kern einrichten, Passwörter im Schlüsselbund; Nextcloud zuerst, Anmeldung über
   Login Flow v2 (Browser statt Passwort, App-Passwort widerrufbar)
@@ -85,7 +95,7 @@ Aufgaben für macOS und Windows (Named Pipes, Tray, AeroSpace, GlazeWM, Autostar
 - App-Verwaltung: Suite-Apps finden, starten, fokussieren
 - ein MCP-Server für die Suite (`torroworkplace mcp`)
 
-## Phase 4: Apps auf dem Kern
+## Phase 4: Apps auf dem Kern (historischer Phasenplan; App-Entwicklung bereits aktiv)
 
 - **Aufgaben** (`torrotasks`) und **Kalender** (`torrocalendar`), GUI mit Iced auf demselben Kern
 - Kalender-Darstellung: Ideen und Prototypen (Tagesspirale, Jahresring) in [calendar-views.md](calendar-views.md)
@@ -97,6 +107,14 @@ Aufgaben für macOS und Windows (Named Pipes, Tray, AeroSpace, GlazeWM, Autostar
 - Omarchy-Leistenwidgets
 - weitere Provider: Google Calendar, Todoist
 - TorroMail, TorroCast und TorroEQ in den Suite-Installer und das Tray-Menü aufnehmen
+
+## Aktueller Entwicklungsstand (Orientierung)
+
+- **Workspace-Kern:** Prototyp und Vorlagenfunktionen sind in [core.md](core.md) und Issue #243 dokumentiert.
+- **Kalender und Aufgaben:** Implementierungen vorhanden; aktuelle Änderungen in PRs #590 und #585.
+- **Inbox, Mail und Benachrichtigungen:** Implementierungen vorhanden; aktuelle Änderungen u. a. in PRs #583, #584 und #581.
+- **KI-Assistent und Steuerzentrale:** Implementierungen vorhanden; aktuelle Änderungen in PRs #588 und #580.
+- **Reifegrad:** Für jede Funktion gesondert anhand Code, Tests und Release-Stand prüfen; diese Übersicht behauptet keine allgemeine Produktionsreife.
 
 ## Entschieden
 
