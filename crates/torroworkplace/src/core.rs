@@ -1278,7 +1278,14 @@ async fn decide_mail_with(
         Occasion::Arrival { .. } => {
             let expected = contact.then(by_contact);
             let kept = mail
-                .set_category_if_unchanged(account, message, expected, decided.category)
+                .set_workflow_category_if_unchanged(
+                    account,
+                    message,
+                    expected,
+                    decided.category,
+                    crate::mail::store::WorkflowCategoryOrigin::Arrival,
+                    Utc::now(),
+                )
                 .await
                 .map_err(|err| DecideError::Mail(err.to_string()))?;
             if !kept {
@@ -2590,6 +2597,8 @@ pub struct Core {
     /// ([`MailService::system`]), loaded only by [`Core::start`]; tests use their own, and one
     /// without a home directory unless they bring it ([`MailService::without_home`]).
     mail: Arc<MailService>,
+    /// Versioned mail workflows and their durable journal, shared by all front doors (#556).
+    workflows: crate::workflows::Service,
     /// Progress and cancellation for archive jobs in this core process.
     backup_jobs: BackupJobs,
     restore_plans: RestorePlans,
@@ -2753,6 +2762,11 @@ impl Core {
             ai: Arc::new(AiAccounts::system()),
             ntfy: Arc::new(NtfyAccounts::system()),
             mail,
+            workflows: if cfg!(test) {
+                crate::workflows::Service::memory()
+            } else {
+                crate::workflows::Service::system()
+            },
             backup_jobs: BackupJobs::default(),
             restore_plans: RestorePlans::default(),
             mail_dirs: None,
@@ -3349,6 +3363,7 @@ impl Core {
         let mail_off = !self.settings.current().component_on(torro_core::settings::Component::Mail);
         self.mail.pause_from_start(mail_off);
         self.mail.start();
+        self.start_workflows();
         // GitHub, Nextcloud, Talk and ntfy in the inbox (task E5.2).
         crate::sources::start(self.sources());
         // The assistant's retention (task C.1): read anew each time, so a changed setting applies
@@ -3383,6 +3398,119 @@ impl Core {
                 tokio::time::sleep(FILTER_LISTS_EVERY).await;
             }
         });
+    }
+
+    /// Durable workflow recovery runs before either of the two bounded workers can claim a job.
+    fn start_workflows(self: &Arc<Self>) {
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            while !core.mail.loaded() {
+                tokio::time::sleep(ACCOUNTS_STEP).await;
+            }
+            if core.workflows.recover(&core.clients, &core.mail, &|scope| core.workflow_gate(scope)).is_err() {
+                eprintln!("torroworkplace: workflow recovery is blocked; journal left unchanged");
+                return;
+            }
+            for _ in 0..2 {
+                let core = Arc::clone(&core);
+                tokio::spawn(async move {
+                    loop {
+                        let gate = |scope: &crate::workflows::Scope| core.workflow_gate(scope);
+                        if core.workflows.work(&core.clients, &core.mail, &gate).await.is_err() {
+                            // Fixed diagnostic only: never print a source URL, path or mail-derived value.
+                            eprintln!("torroworkplace: workflow worker paused by journal or access checks");
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                });
+            }
+            let _preparation = crate::mail::inbox_feed::start_workflow_preparation(
+                Arc::clone(&core.mail),
+                Some(core.workflow_categorizer()),
+            );
+            loop {
+                if core.workflows.ingest(&core.clients, &core.mail, &|scope| core.workflow_gate(scope)).await.is_err() {
+                    eprintln!("torroworkplace: workflow event handoff paused; source events retained");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        });
+    }
+
+    /// Unlike the notification decider, errors remain errors and persistence belongs to the mail outbox CAS.
+    fn workflow_categorizer(&self) -> crate::mail::inbox_feed::WorkflowCategorizer {
+        let (settings, ai, mail, inbox) =
+            (self.settings.clone(), Arc::clone(&self.ai), Arc::clone(&self.mail), Arc::clone(&self.inbox));
+        Arc::new(move |account, message| {
+            let (settings, ai, mail, inbox) =
+                (settings.clone(), Arc::clone(&ai), Arc::clone(&mail), Arc::clone(&inbox));
+            Box::pin(async move {
+                use crate::mail::store::WorkflowMailFailure::CategoryFailed;
+                let current = settings.current();
+                let function = torro_core::ai::AiFunction::InboxCategorize;
+                let assignment = assignment_in_effect(&current, function);
+                let Some(engine) =
+                    assignment.as_ref().filter(|held| held.is_ready()).and_then(|held| held.engine.clone())
+                else {
+                    return Ok(None);
+                };
+                let Some((provider, server)) = ai.server(&engine).await else { return Ok(None) };
+                // A provider/network failure is NOT the absence of a configured model.
+                let models = ai.models(&engine, true).await.map_err(|_| CategoryFailed)?;
+                let models = ai.mark_enabled(&engine, models).await;
+                let here = |model: &torro_core::ai::AiModel| {
+                    crate::assistant::place_of(provider, &server, model) == Place::Local
+                };
+                let local_only = !current.mail_to_cloud_in(function.slot());
+                let chosen = categorize::chosen(
+                    assignment.as_ref(),
+                    &models,
+                    here,
+                    local_only,
+                    !elsewhere_of(provider, &server, None),
+                );
+                let (engine, model) = match chosen {
+                    Ok(chosen) => chosen,
+                    Err(categorize::Refusal::NoModel) => return Ok(None),
+                    Err(_) => return Err(CategoryFailed),
+                };
+                if inbox.category_clear_blocked().map_err(|_| CategoryFailed)? {
+                    return Err(CategoryFailed);
+                }
+                let content = mail
+                    .content_for_category(&account, &message)
+                    .await
+                    .map_err(|_| CategoryFailed)?
+                    .ok_or(CategoryFailed)?;
+                let catalogue = inbox.catalogue().map_err(|_| CategoryFailed)?;
+                let answer = match ask_model(&ai, (&engine, &model), &content, &catalogue, false).await {
+                    Ok(answer) => answer.map(|answer| answer.category),
+                    Err(DecideError::NothingToChoose) => None,
+                    Err(_) => return Err(CategoryFailed),
+                };
+                let cloud = models.iter().find(|held| held.id == model).is_none_or(|held| !here(held));
+                if cloud && !settings.current().mail_to_cloud_in(function.slot()) {
+                    return Err(CategoryFailed);
+                }
+                Ok(answer)
+            })
+        })
+    }
+
+    fn workflow_gate(&self, scope: &crate::workflows::Scope) -> bool {
+        let settings = self.settings.current();
+        if !settings.component_on(torro_core::settings::Component::Mail) {
+            return false;
+        }
+        let Some(id) = &scope.carrier else { return true };
+        let Some(client) = self.clients.list().into_iter().find(|client| &client.id == id) else { return false };
+        let own = [torro_ipc::api::ASSISTANT_CLIENT, torro_ipc::api::BOT_CLIENT].contains(&client.kind.as_str());
+        let kind = if own && scope.origin.engine.is_none() && scope.origin.behalf.is_none() {
+            torro_ipc::api::MCP_CLIENT
+        } else {
+            client.kind.as_str()
+        };
+        crate::clients::closed_door(kind, None, settings.allow_api_keys, settings.allow_mcp).is_none()
     }
 
     /// The contacts (issue #351): a round once the calendar service has read its accounts and every
@@ -4156,6 +4284,7 @@ impl Core {
         if question
             || trashes
             || from_mail
+            || matches!(request, Request::RunWorkflow { .. })
             || rights.needs_approval_of(operation)
             || removal.is_some_and(|delete| rights.needs_approval_of(delete))
             || invitation_deletes_waiting(&request, &rights)
@@ -4200,6 +4329,14 @@ impl Core {
             let by_person = via.web.as_ref().is_some_and(|web| web.by_person);
             return Ok(self.tools_request(request, reach, Maker::Client(&id), by_person).await);
         }
+        if request.operation().area() == Area::Workflows {
+            let scope = crate::workflows::Scope {
+                carrier: Some(id.clone()),
+                origin: via.origin.clone(),
+                ceiling: Some(rights.clone()),
+            };
+            return Ok(Box::pin(self.workflow_request(request, scope, None)).await);
+        }
         if let Request::OpenApp { app, target } = &request {
             return Ok(self.open_app_request(app, target.as_deref(), reach, Maker::Client(&id)).await);
         }
@@ -4207,6 +4344,44 @@ impl Core {
         // (the inbox's quiet asks the core for settings and events); on the stack both no longer
         // fit a test thread's in debug builds.
         Ok(Box::pin(self.handle_within_as(request, reach, Some(&id))).await)
+    }
+
+    async fn workflow_request(
+        &self,
+        request: Request,
+        scope: crate::workflows::Scope,
+        approved: Option<&str>,
+    ) -> Response {
+        if let Request::ProposeWorkflow { mail, save_target, instruction } = &request {
+            if let Some(expected) = approved {
+                match self.workflows.approval(&request, &scope, &self.clients, &self.mail).await {
+                    Ok((now, _)) if now == expected => {}
+                    Ok(_) => return crate::workflows::Error::Conflict.response(),
+                    Err(error) => return error.response(),
+                }
+            }
+            let settings = self.settings.current();
+            return match crate::workflows::proposal::propose(
+                self,
+                settings.ai_slots.chat.as_ref(),
+                &self.workflows,
+                &scope,
+                &self.clients,
+                &self.mail,
+                crate::workflows::proposal::Input { mail, save_target, instruction },
+            )
+            .await
+            {
+                Ok(spec) => {
+                    self.workflows.answer(Request::CreateWorkflowDraft { spec }, scope, &self.clients, &self.mail).await
+                }
+                Err(error) => error.response(),
+            };
+        }
+        match approved {
+            Some(_) => self.workflows.answer_approved(request, scope, &self.clients, &self.mail, approved).await,
+            None => self.workflows.answer(request, scope, &self.clients, &self.mail).await,
+        }
     }
 
     /// Whether `operation` from the client `id` would let the assistant drive itself or a bot start a
@@ -4497,6 +4672,22 @@ impl Core {
         // Lines the person sees besides the summary, for commands not pinned by a fingerprint.
         let mut shown = Vec::new();
         let (request, pin, summary) = match (&request, request.operation().area()) {
+            (_, Area::Workflows) => {
+                let scope = crate::workflows::Scope {
+                    carrier: Some(client.into()),
+                    origin: origin.clone(),
+                    ceiling: Some(rights.clone()),
+                };
+                let (pinned, workflow) =
+                    match self.workflows.approval(&request, &scope, &self.clients, &self.mail).await {
+                        Ok(ready) => ready,
+                        Err(error) => return Ok(error.response()),
+                    };
+                let facts = Facts { workflow: Some(Box::new(workflow)), ..Facts::default() };
+                fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
+                let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
             (Request::AskPermission { tool, details, project, title }, _) => {
                 if let Some(refused) = crate::approvals::question_refusal(tool, details) {
                     return Ok(refused);
@@ -5341,6 +5532,14 @@ impl Core {
                 }
                 Err(refused) => return *refused,
             }
+        }
+        if request.operation().area() == Area::Workflows {
+            let scope = crate::workflows::Scope {
+                carrier: Some(client.to_string()),
+                origin: origin.clone(),
+                ceiling: Some(rights.clone()),
+            };
+            return Box::pin(self.workflow_request(request, scope, Some(fingerprint.unwrap_or_default()))).await;
         }
         // Boxed: decisions come from `handle_within`, so this call is recursive. An approval
         // never holds `approvals.decide_approval` itself (`Approvals::open` refuses it).
@@ -6373,6 +6572,41 @@ impl Core {
             // Boxed: a call of a server tool approved by a person reaches it in the second pass through
             // this function (see `decide_approval`), with both frames on a test thread's stack.
             | Request::RemoveExtension { .. }) => Box::pin(self.extensions_request(request, reach)).await,
+            request @ (Request::ListWorkflowTemplates
+            | Request::GetWorkflowTemplate { .. }
+            | Request::InstantiateWorkflowTemplate { .. }
+            | Request::ListWorkflows
+            | Request::GetWorkflow { .. }
+            | Request::ProposeWorkflow { .. }
+            | Request::CreateWorkflowDraft { .. }
+            | Request::UpdateWorkflowDraft { .. }
+            | Request::SaveWorkflow { .. }
+            | Request::DuplicateWorkflow { .. }
+            | Request::SetWorkflowEnabled { .. }
+            | Request::RemoveWorkflow { .. }
+            | Request::PreviewWorkflowRun { .. }
+            | Request::RunWorkflow { .. }
+            | Request::ListWorkflowRuns { .. }
+            | Request::GetWorkflowRun { .. }
+            | Request::CancelWorkflowRun { .. }
+            | Request::GetWorkflowDocument { .. }
+            | Request::OpenWorkflowDocument { .. }
+            | Request::ShowWorkflowDocument { .. }
+            | Request::ListWorkflowRules
+            | Request::CreateWorkflowRule { .. }
+            | Request::UpdateWorkflowRule { .. }
+            | Request::DuplicateWorkflowRule { .. }
+            | Request::SetWorkflowRuleEnabled { .. }
+            | Request::RemoveWorkflowRule { .. }
+            | Request::PreviewWorkflowRule { .. }
+            | Request::AuthorizeWorkflow { .. }
+            | Request::RevokeWorkflowAuthorization { .. }) => {
+                // A client must arrive through the origin-preserving path above, never acquire suite authority.
+                match reach {
+                    Reach::Suite => Box::pin(self.workflow_request(request, crate::workflows::Scope::suite(), None)).await,
+                    Reach::Client(_) => crate::workflows::Error::Forbidden.response(),
+                }
+            },
         }
     }
 
@@ -6946,7 +7180,21 @@ impl Core {
             }
         };
         let held = torro_mail::MailCategory::by_person(category);
-        if let Err(err) = self.mail.set_category(&item.source.key(), &messages, Some(held)).await {
+        let changed = if let [message] = messages.as_slice() {
+            self.mail
+                .set_workflow_category(
+                    &item.source.key(),
+                    message,
+                    Some(held),
+                    crate::mail::store::WorkflowCategoryOrigin::Interactive,
+                    Utc::now(),
+                )
+                .await
+                .map(drop)
+        } else {
+            self.mail.set_category(&item.source.key(), &messages, Some(held)).await
+        };
+        if let Err(err) = changed {
             eprintln!("torroworkplace: inbox: cannot keep the category of {}: {err}", item.source.key());
         }
     }
@@ -7916,9 +8164,18 @@ impl Core {
                 let answer = self.inbox.handle_message(request, &stand_in, client, Utc::now());
                 if let Response::ItemCategory { .. } = &answer {
                     let account = stand_in.source.key();
-                    let one = [stand_in.id.clone()];
                     let held = torro_mail::MailCategory::by_person(category);
-                    if let Err(err) = self.mail.set_category(&account, &one, Some(held)).await {
+                    if let Err(err) = self
+                        .mail
+                        .set_workflow_category(
+                            &account,
+                            &stand_in.id,
+                            Some(held),
+                            crate::mail::store::WorkflowCategoryOrigin::Interactive,
+                            Utc::now(),
+                        )
+                        .await
+                    {
                         return Response::Error { code: "error".into(), message: err.to_string() };
                     }
                 }
@@ -15638,6 +15895,187 @@ mod tests {
     fn core_with_mail_data(dir: &std::path::Path) -> Core {
         let secrets = crate::account::github::tests::MemoryTokens::default();
         core(dir).with_mail(crate::mail::service::tests::service_in(dir, &secrets))
+    }
+
+    #[tokio::test]
+    async fn workflows_template_drafts_keep_carrier_scope_and_never_grant_or_execute() {
+        use crate::mail::service::tests::PASSWORD;
+        use crate::mail::store::{Body, NewMessage};
+        use crate::mail::sync::fake::FakeImap;
+        let dir = tempfile::tempdir().expect("temporary home");
+        let server = FakeImap::start(PASSWORD).await;
+        let (core, account, _, _) = two_mail_accounts(dir.path(), &server, None).await;
+        let store =
+            core.mail.stores(Reach::Suite).await.into_iter().find(|(id, _)| id == &account).expect("mail store").1;
+        let message = store
+            .run(|store| {
+                let folder = store.upsert_folder("INBOX", "Inbox", Some(torro_mail::Role::Inbox))?;
+                store.note_uidvalidity(&folder, 1)?;
+                let id = store.upsert_message(
+                    &folder,
+                    1,
+                    &NewMessage {
+                        id: None,
+                        uid: 1,
+                        rfc_message_id: Some("<synthetic-workflow@example.org>".into()),
+                        thread_id: "synthetic-workflow".into(),
+                        from: None,
+                        to: Vec::new(),
+                        cc: Vec::new(),
+                        reply_to: Vec::new(),
+                        subject: "Synthetic invoice".into(),
+                        date: Utc::now(),
+                        snippet: String::new(),
+                        flags: Vec::new(),
+                        has_attachments: false,
+                        traits: Default::default(),
+                        invitation: false,
+                    },
+                )?;
+                store.set_body(
+                    &id,
+                    &Body {
+                        text: "Synthetic invoice".into(),
+                        from_html: true,
+                        html: Some("<a href='https://documents.example.org/synthetic.pdf'>Invoice</a>".into()),
+                        attachments: Vec::new(),
+                        invite: None,
+                    },
+                )?;
+                Ok(id)
+            })
+            .await
+            .expect("local example mail");
+        let target_folder = dir.path().join("retrieved");
+        std::fs::create_dir(&target_folder).expect("existing allowed target");
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let target = core
+            .mail
+            .save_targets()
+            .create(torro_mail::SaveTargetSpec::new("Invoices", target_folder.to_string_lossy()), &[])
+            .expect("human target");
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Workflows, AreaRights { level: Level::Full, admin: true });
+        let (carrier, key) = client(&core, rights.clone()).await;
+        let (_, foreign) = client(&core, rights.clone()).await;
+        let template = crate::workflows::templates::get("direct_pdf").expect("built-in");
+        let instantiate = || Request::InstantiateWorkflowTemplate {
+            template_id: template.id.clone(),
+            revision: template.revision,
+            digest: template.digest.clone(),
+            mail: message.clone(),
+            save_target: target.id.clone(),
+        };
+        let Response::WorkflowDraft { workflow } = ask(&core, Some(&key), instantiate()).await else {
+            panic!("inactive draft expected")
+        };
+        assert!(!workflow.tested && !workflow.saved && !workflow.enabled && !workflow.authorized);
+        assert_eq!(workflow.spec.package.hosts, ["documents.example.org"]);
+        assert_eq!(
+            code(&ask(&core, Some(&foreign), Request::GetWorkflow { id: workflow.id.clone() }).await),
+            "not-found"
+        );
+        assert_eq!(code(&ask(&core, Some(&foreign), Request::GetWorkflow { id: "unknown".into() }).await), "not-found");
+        assert_eq!(
+            code(&ask(&core, Some(&key), Request::AuthorizeWorkflow { id: workflow.id.clone(), revision: 1 }).await),
+            "forbidden"
+        );
+        assert_eq!(
+            code(
+                &ask(&core, Some(&app_key), Request::AuthorizeWorkflow { id: workflow.id.clone(), revision: 1 }).await
+            ),
+            "conflict",
+            "a human cannot authorize an untested draft"
+        );
+        assert_eq!(
+            code(&ask(&core, Some(&key), Request::SaveWorkflow { id: workflow.id.clone(), revision: 1 }).await),
+            "conflict"
+        );
+        let Response::WorkflowPreview { preview } = ask(
+            &core,
+            Some(&key),
+            Request::PreviewWorkflowRun { id: workflow.id.clone(), revision: 1, mail: message.clone() },
+        )
+        .await
+        else {
+            panic!("local preview")
+        };
+        assert!(preview.authorization_required && preview.possible_writes);
+        assert!(preview.untrusted);
+        let record = core.workflows.workflow_for_test(&workflow.id).expect("carrier pin");
+        assert_eq!(record.0.as_deref(), Some(carrier.as_str()));
+        let mut spec = workflow.spec.clone();
+        spec.name = "Edited by a person".into();
+        let edited =
+            ask(&core, Some(&app_key), Request::UpdateWorkflowDraft { id: workflow.id.clone(), revision: 1, spec })
+                .await;
+        let Response::WorkflowDraft { workflow: edited } = edited else { panic!("updated inactive draft") };
+        assert_eq!(edited.revision, 2);
+        assert_eq!(
+            core.workflows.workflow_for_test(&edited.id).expect("carrier remains").0.as_deref(),
+            Some(carrier.as_str())
+        );
+        assert_eq!(
+            code(&ask(&core, Some(&key), Request::SaveWorkflow { id: edited.id.clone(), revision: 1 }).await),
+            "conflict"
+        );
+        let rule_spec = torro_ipc::workflows::RuleSpec {
+            workflow: edited.id.clone(),
+            account: account.clone(),
+            trigger: torro_ipc::workflows::Trigger::NewMail,
+            query: "invoice".into(),
+            category: None,
+        };
+        let Response::WorkflowRule { rule } =
+            ask(&core, Some(&app_key), Request::CreateWorkflowRule { spec: rule_spec.clone() }).await
+        else {
+            panic!("inactive rule")
+        };
+        assert!(!rule.enabled && rule.activated.is_none());
+        assert_eq!(
+            ask(&core, Some(&foreign), Request::ListWorkflowRules).await,
+            Response::WorkflowRules { rules: Vec::new() }
+        );
+        assert_eq!(
+            code(
+                &ask(
+                    &core,
+                    Some(&app_key),
+                    Request::SetWorkflowRuleEnabled { id: rule.id.clone(), revision: 1, enabled: true }
+                )
+                .await
+            ),
+            "forbidden",
+            "a rule cannot grant its workflow execution rights"
+        );
+        assert!(
+            matches!(
+                ask(
+                    &core,
+                    Some(&key),
+                    Request::UpdateWorkflowRule { id: rule.id.clone(), revision: 0, spec: rule_spec.clone() }
+                )
+                .await,
+                Response::Pending { .. }
+            ),
+            "admin edits always need a person"
+        );
+        let via = Via {
+            origin: crate::approvals::Origin { without: vec![Area::Mail], ..Default::default() },
+            ..Default::default()
+        };
+        let refused = Box::pin(core.handle_client(carrier.clone(), rights.clone(), instantiate(), &via))
+            .await
+            .unwrap_or_else(Refused::response);
+        assert_eq!(code(&refused), "forbidden", "origin narrowing applies even if the raw carrier has Mail");
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::NoAccess, admin: false });
+        core.clients.update(&carrier, rights).await.expect("revoke mail");
+        assert_eq!(code(&ask(&core, Some(&key), instantiate()).await), "forbidden");
+        assert!(std::fs::read_dir(target_folder).expect("target untouched").next().is_none());
+        assert!(
+            !server.lines().iter().any(|line| line.contains("LOGIN")),
+            "drafting/preview fetch no mail or document"
+        );
     }
 
     /// The save target an answer names.

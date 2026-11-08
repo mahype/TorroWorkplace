@@ -571,6 +571,39 @@ pub(crate) async fn cache_body(mailbox: &Mailbox, place: &super::store::MessageR
     Ok(mailbox.store()?.run(move |store| store.set_body(&id, &body)).await?)
 }
 
+/// Workflow preparation deliberately does not consult notifications, Seen or the logo switch.
+/// A successful read keeps a complete body and the independent DKIM result; absent/unreadable
+/// mail is not a ready workflow input. Transient IMAP errors leave the durable wait intact.
+pub(crate) async fn prepare_workflow_body(mailbox: &Mailbox, message: &str) -> Result<bool, MailError> {
+    let store = mailbox.store()?;
+    let lookup = message.to_string();
+    let Some(place) = store.run(move |store| store.resolve_message(&lookup)).await? else { return Ok(false) };
+    let Some(raw) = fetch_text(mailbox, &place).await? else { return Ok(false) };
+    let Ok(read) = mime::read(&raw) else { return Ok(false) };
+    let checked = mailbox.sender_check().verified_domain(&raw).await;
+    let invite = super::read::invite_of(&raw, &read);
+    let body = Body::of(read, invite);
+    let id = message.to_string();
+    Ok(store
+        .run(move |store| {
+            if !store.set_body(&id, &body)? {
+                return Ok(false);
+            }
+            match checked {
+                Checked::Domain(domain) => {
+                    store.set_sender_check(&id, Some(&domain))?;
+                }
+                Checked::None => {
+                    store.set_sender_check(&id, None)?;
+                }
+                Checked::Retry | Checked::Resting => {}
+            }
+            store.workflow_body_prepared(&id)?;
+            Ok(true)
+        })
+        .await?)
+}
+
 pub(crate) async fn prefetch_message_attachments(
     mailbox: &Mailbox,
     place: &super::store::MessageRef,
@@ -613,6 +646,8 @@ async fn prefetch_attachments(mailbox: &Mailbox, message: &str, raw: &[u8]) -> R
 /// What the store knew of a folder before this sync.
 struct Known {
     validity: UidValidity,
+    /// Unlike UIDVALIDITY itself, this stays false after a crashed partial inventory.
+    workflow_baseline_complete: bool,
     /// HIGHESTMODSEQ of the last complete sync under the same UIDVALIDITY.
     modseq: Option<u64>,
     /// UIDs and flags.
@@ -641,6 +676,7 @@ async fn sync_folder(
     mailbox.underway().lock().unwrap_or_else(PoisonError::into_inner).sync_started(&target.id);
     let known = know(store, &target.id, uidvalidity).await?;
     let unchanged = known.validity == UidValidity::Unchanged
+        && known.workflow_baseline_complete
         && condstore
         && selected.highest_modseq.is_some()
         && selected.highest_modseq == known.modseq
@@ -653,6 +689,8 @@ async fn sync_folder(
         });
     }
     let on_server: BTreeSet<u32> = lease.session().uid_search(&Search::All).await?.into_iter().collect();
+    let (folder, high_uid) = (target.id.clone(), on_server.last().copied().unwrap_or(0));
+    store.run(move |store| store.note_workflow_inventory(&folder, uidvalidity, high_uid)).await?;
     let states = match known.messages.is_empty() {
         true => Vec::new(),
         false => lease.session().fetch_flags(known.modseq.filter(|_| condstore)).await?,
@@ -703,7 +741,7 @@ async fn sync_folder(
         })
         .await?;
     removed.splice(0..0, known.dropped);
-    let initial = known.validity != UidValidity::Unchanged;
+    let initial = known.validity != UidValidity::Unchanged || !known.workflow_baseline_complete;
     let change = |new: Vec<String>, flags: Vec<String>, removed: Vec<String>| MailChange {
         account: mailbox.id().to_string(),
         folder: target.id.clone(),
@@ -720,6 +758,7 @@ async fn sync_folder(
     let policy = store.run(|store| store.cache_policy()).await?;
     let mode = policy.mode;
     let mut ahead: Vec<(String, FetchedHeader)> = Vec::new();
+    let mut headers_complete = true;
     progress.phase(MailSyncPhase::Headers, new.len());
     for batch in new.chunks(HEADER_BATCH) {
         let mut lease = conn.lease().await?;
@@ -730,6 +769,10 @@ async fn sync_folder(
         }
         let mut headers = lease.session().fetch_headers(batch).await?;
         lease.done();
+        // A server may omit a FETCH without failing the command. Do not publish a completed
+        // baseline from that partial inventory; an expunged UID disappears on the next search.
+        let returned: BTreeSet<u32> = headers.iter().map(|header| header.uid).collect();
+        headers_complete &= batch.iter().all(|uid| returned.contains(uid));
         headers.retain(|header| !header.deleted);
         headers.sort_by_key(|header| std::cmp::Reverse(header.uid));
         let folder = target.id.clone();
@@ -746,10 +789,13 @@ async fn sync_folder(
                         message.flags = flags;
                         kept = true;
                     }
-                    let id = store.upsert_message(&folder, uidvalidity, &message)?;
-                    if let Some(at) = header.internal_date {
-                        store.set_internal_date(&folder, header.uid, at)?;
-                    }
+                    let id = store.import_workflow_message_received(
+                        &folder,
+                        uidvalidity,
+                        &message,
+                        now,
+                        header.internal_date,
+                    )?;
                     store.set_size(&folder, header.uid, u64::from(header.size))?;
                     stored.push((id, message.date, header));
                 }
@@ -827,10 +873,15 @@ async fn sync_folder(
         let (folder, modseq) = (target.id.clone(), selected.highest_modseq);
         store.run(move |store| store.set_highest_modseq(&folder, modseq)).await?;
     }
-    Ok(match fill_sizes(conn, progress, store, target, uidvalidity).await? {
-        true => MailFolderSyncState::Synced,
-        false => MailFolderSyncState::Interrupted,
-    })
+    if !fill_sizes(conn, progress, store, target, uidvalidity).await? {
+        return Ok(MailFolderSyncState::Interrupted);
+    }
+    if !headers_complete {
+        return Ok(MailFolderSyncState::Interrupted);
+    }
+    let folder = target.id.clone();
+    store.run(move |store| store.complete_workflow_inventory(&folder, uidvalidity)).await?;
+    Ok(MailFolderSyncState::Synced)
 }
 
 /// The flags the store has for `uid` of `folder` while a change of them is on its way to the server
@@ -914,9 +965,10 @@ async fn know(store: &SharedStore, folder: &str, uidvalidity: u32) -> Result<Kno
                 }
             }
             let validity = store.note_uidvalidity(&folder, uidvalidity)?;
+            let workflow_baseline_complete = store.workflow_baseline_complete(&folder, uidvalidity)?;
             let modseq = before.highest_modseq.filter(|_| validity == UidValidity::Unchanged);
             let messages = store.folder_uids(&folder)?.into_iter().collect();
-            Ok(Known { validity, modseq, messages, dropped })
+            Ok(Known { validity, workflow_baseline_complete, modseq, messages, dropped })
         })
         .await?;
     Ok(known)
@@ -2212,6 +2264,83 @@ mod tests {
 
     fn fetches(server: &FakeImap, what: &str) -> Vec<String> {
         server.lines().into_iter().filter(|line| line.contains("UID FETCH") && line.contains(what)).collect()
+    }
+
+    #[tokio::test]
+    async fn workflow_outbox_excludes_first_reset_and_restarted_partial_inventory() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &fake::mail("First inventory", 0, None), &["\\Seen"]);
+        let mailbox = mailbox(dir.path(), &server).await;
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("first sync");
+        let store = mailbox.store().expect("store");
+        assert!(store.run(|store| store.workflow_events(None, 500)).await.expect("outbox").is_empty());
+        server.add("INBOX", &fake::mail("Seen arrival", 0, None), &["\\Seen"]);
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("arrival sync");
+        let events = store.run(|store| store.workflow_events(None, 500)).await.expect("outbox");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].cause, super::super::store::WorkflowMailCause::Arrival);
+        server.renumber("INBOX");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("reset sync");
+        assert_eq!(store.run(|store| store.workflow_events(None, 500)).await.expect("outbox").len(), 1);
+
+        // Simulate a crash immediately after committing a reset's epoch and one header batch.
+        server.renumber("INBOX");
+        let mut command = mailbox.command().await.expect("connection");
+        let validity = command.session().select("INBOX").await.expect("select").uid_validity;
+        command.release();
+        store
+            .run(move |store| {
+                let folder = store.folder_by_role(Role::Inbox)?.expect("inbox").id;
+                store.note_uidvalidity(&folder, validity)?;
+                store.note_workflow_inventory(&folder, validity, 2)?;
+                Ok(())
+            })
+            .await
+            .expect("persist partial reset");
+        drop(store);
+        drop(mailbox);
+        let mailbox = mailbox_in(dir.path(), mail_account("anna@example.org", &server.endpoint), PASSWORD).await;
+        let mut changes = mailbox_events(&mailbox);
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("restart finishes reset");
+        let store = mailbox.store().expect("store");
+        let events = store.run(|store| store.workflow_events(None, 500)).await.expect("outbox");
+        assert_eq!(events.len(), 1, "recovered inventory must never look like arrivals");
+        assert!(changes.try_recv().expect("reset batch").initial, "filters see recovery as initial too");
+        server.add("INBOX", &fake::mail("After recovered baseline", 0, None), &[]);
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("normal arrival");
+        assert_eq!(store.run(|store| store.workflow_events(None, 500)).await.expect("outbox").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn workflow_preparation_verifies_dkim_even_when_logos_are_off() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let mailbox = mailbox(dir.path(), &server).await;
+        mailbox.logos().set_switch(Arc::new(|| false));
+        mailbox.sender_check().know("torro._domainkey.example.com", &crate::mail::check::tests::key_record());
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("empty baseline");
+        let signed = crate::mail::check::tests::sign(
+            fake::mail("Signed workflow input", 0, None).as_bytes(),
+            "example.com",
+            false,
+        );
+        server.add("INBOX", &String::from_utf8(signed).expect("signed utf8 mail"), &["\\Seen"]);
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("arrival");
+        let store = mailbox.store().expect("store");
+        let event = store.run(|store| store.workflow_events(None, 1)).await.expect("arrival event").remove(0);
+        let id = event.message.clone();
+        assert!(
+            store.run(move |store| store.workflow_sender_domain(&id)).await.expect("not checked for logos").is_none()
+        );
+        assert!(prepare_workflow_body(&mailbox, &event.message).await.expect("workflow read and check"));
+        let id = event.message;
+        assert_eq!(
+            store.run(move |store| store.workflow_sender_domain(&id)).await.expect("verified without logos"),
+            Some("example.com".into())
+        );
+        assert!(!mailbox.logos().on());
+        assert!(server.lines().iter().all(|line| !line.contains(" UID STORE ")));
     }
 
     #[tokio::test]

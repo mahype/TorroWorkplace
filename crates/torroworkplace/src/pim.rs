@@ -1091,6 +1091,36 @@ impl PimService {
             return None;
         }
         let (role, collection, href) = match request {
+            // Mail workflows have their own carrier/account/target checks, never a PIM collection.
+            Request::ListWorkflowTemplates
+            | Request::GetWorkflowTemplate { .. }
+            | Request::InstantiateWorkflowTemplate { .. }
+            | Request::ListWorkflows
+            | Request::GetWorkflow { .. }
+            | Request::ProposeWorkflow { .. }
+            | Request::CreateWorkflowDraft { .. }
+            | Request::UpdateWorkflowDraft { .. }
+            | Request::SaveWorkflow { .. }
+            | Request::DuplicateWorkflow { .. }
+            | Request::SetWorkflowEnabled { .. }
+            | Request::RemoveWorkflow { .. }
+            | Request::PreviewWorkflowRun { .. }
+            | Request::RunWorkflow { .. }
+            | Request::ListWorkflowRuns { .. }
+            | Request::GetWorkflowRun { .. }
+            | Request::CancelWorkflowRun { .. }
+            | Request::GetWorkflowDocument { .. }
+            | Request::OpenWorkflowDocument { .. }
+            | Request::ShowWorkflowDocument { .. }
+            | Request::ListWorkflowRules
+            | Request::CreateWorkflowRule { .. }
+            | Request::UpdateWorkflowRule { .. }
+            | Request::DuplicateWorkflowRule { .. }
+            | Request::SetWorkflowRuleEnabled { .. }
+            | Request::RemoveWorkflowRule { .. }
+            | Request::PreviewWorkflowRule { .. }
+            | Request::AuthorizeWorkflow { .. }
+            | Request::RevokeWorkflowAuthorization { .. } => return None,
             // The categories of mail touch no calendar or task collection (task E12.4).
             Request::AiAssignments
             | Request::SetAiAssignment { .. }

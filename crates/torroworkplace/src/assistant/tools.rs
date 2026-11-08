@@ -210,7 +210,9 @@ pub fn allowed_for(kind: &str, rights: Option<&Rights>, without: &[Area], server
         let books = area != Area::Contacts
             || rights.address_books != Selection::Only(Vec::new())
             || !rights.hidden_address_books.is_empty();
-        area.grantable() && !without.contains(&area) && (granted || by_kind) && tool_reached && books
+        let workflow_mail = !torro_ipc::workflows::reads_mail(tool.command.name)
+            || (!without.contains(&Area::Mail) && rights.area(Area::Mail).allows(Access::Read));
+        area.grantable() && !without.contains(&area) && (granted || by_kind) && tool_reached && books && workflow_mail
     });
     let served = servers.iter().filter(|tool| {
         let operation = call_command().map(|command| Operation { command, access: tool.access });
@@ -427,6 +429,7 @@ pub fn untrusted(area: Area, value: &Value) -> bool {
     let result = value.get("result").and_then(Value::as_str);
     let error = result == Some("error");
     match area {
+        Area::Workflows => !matches!(result, Some("error" | "ok" | "workflow-template" | "workflow-templates")),
         Area::Mail | Area::Github => !error,
         // Contacts are text of other people (shared books, the system address book), every answer
         // (decision 4 in `docs/kontakte.md`).
@@ -461,6 +464,9 @@ pub fn may_have_read_untrusted(name: &str) -> bool {
 /// out in search words or an address; counting the web's results too would ask after every
 /// second search.
 pub fn may_have_read_outside(name: &str) -> bool {
+    if torro_ipc::workflows::reads_mail(name) {
+        return true;
+    }
     // A bot the assistant asked (task B.2) may have read any of it.
     if matches!(name, "tasks.list_todos" | "tasks.add_link" | "bots.ask_bot") {
         return true;

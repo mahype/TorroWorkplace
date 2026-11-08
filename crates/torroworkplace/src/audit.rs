@@ -412,6 +412,32 @@ pub fn ids(request: &Request) -> Vec<String> {
         // subject, a recipient, a file or a folder name. The account as for collections; message,
         // draft and folder ids only hashed, so lines can be matched but not with a mailbox.
         Request::ConnectMail { .. } | Request::ReconfigureMail { .. } => Vec::new(),
+        // Workflow packages, mail instructions, selectors and targets are never audit content.
+        Request::ListWorkflowTemplates
+        | Request::ListWorkflows
+        | Request::ListWorkflowRules
+        | Request::PreviewWorkflowRule { .. } => Vec::new(),
+        Request::GetWorkflowTemplate { id: template } => vec![format!("workflow_template:{}", hashed(template))],
+        Request::InstantiateWorkflowTemplate { template_id, mail, save_target, .. } => vec![
+            format!("workflow_template:{}", hashed(template_id)), format!("message:{}", hashed(mail)),
+            format!("save_target:{}", hashed(save_target)),
+        ],
+        Request::ProposeWorkflow { mail, save_target, .. } => vec![format!("message:{}", hashed(mail)), format!("save_target:{}", hashed(save_target))],
+        Request::CreateWorkflowDraft { spec } => vec![format!("message:{}", hashed(&spec.mail)), format!("save_target:{}", hashed(&spec.save_target))],
+        Request::GetWorkflow { id }
+        | Request::UpdateWorkflowDraft { id, .. }
+        | Request::SaveWorkflow { id, .. }
+        | Request::DuplicateWorkflow { id, .. }
+        | Request::SetWorkflowEnabled { id, .. }
+        | Request::RemoveWorkflow { id, .. }
+        | Request::AuthorizeWorkflow { id, .. }
+        | Request::RevokeWorkflowAuthorization { id } => vec![format!("workflow:{}", hashed(id))],
+        Request::PreviewWorkflowRun { id, mail, .. } | Request::RunWorkflow { id, mail, .. } => vec![format!("workflow:{}", hashed(id)), format!("message:{}", hashed(mail))],
+        Request::ListWorkflowRuns { workflow, mail } => workflow.iter().map(|id| format!("workflow:{}", hashed(id))).chain(mail.iter().map(|id| format!("message:{}", hashed(id)))).collect(),
+        Request::GetWorkflowRun { id } | Request::CancelWorkflowRun { id } => vec![format!("workflow_run:{}", hashed(id))],
+        Request::GetWorkflowDocument { id, .. } | Request::OpenWorkflowDocument { id } | Request::ShowWorkflowDocument { id } => vec![format!("workflow_document:{}", hashed(id))],
+        Request::CreateWorkflowRule { spec } => vec![format!("workflow:{}", hashed(&spec.workflow)), account(&spec.account)],
+        Request::UpdateWorkflowRule { id, .. } | Request::DuplicateWorkflowRule { id, .. } | Request::SetWorkflowRuleEnabled { id, .. } | Request::RemoveWorkflowRule { id, .. } => vec![format!("workflow_rule:{}", hashed(id))],
         // TorroMail's accounts (task M7.4): no address, and no id of another app's keychain.
         Request::TorroMailAccounts | Request::ImportTorroMailAccount { .. } => Vec::new(),
         // AI accounts (task KI.1a): never the address typed nor the key; finding names nothing.

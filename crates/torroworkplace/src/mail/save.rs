@@ -1082,6 +1082,197 @@ fn write_new(dir: &Path, name: &str, bytes: &[u8], rule: OnConflict) -> Result<W
     Err(Problem::Taken)
 }
 
+/// A workflow journals this exact relative destination before creating its file. It never stores an absolute
+/// path or silently renumbers the destination after a crash. Debug deliberately hides the mail-derived name.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WorkflowReservation {
+    pub relative_path: String,
+    pub skipped: bool,
+}
+
+impl std::fmt::Debug for WorkflowReservation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkflowReservation")
+            .field("relative_path", &"[private]")
+            .field("skipped", &self.skipped)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkflowSaveError {
+    Invalid,
+    Forbidden,
+    Unavailable,
+    Exists,
+    Changed,
+}
+
+impl From<Problem> for WorkflowSaveError {
+    fn from(problem: Problem) -> Self {
+        match problem {
+            Problem::Scheme => Self::Invalid,
+            Problem::Outside | Problem::Denied | Problem::NotReplaceable => Self::Forbidden,
+            Problem::Taken => Self::Exists,
+            Problem::Write => Self::Unavailable,
+        }
+    }
+}
+
+/// Called with the journal's active reservations for this target under its transaction. The caller checks
+/// current rights and target fingerprint before this write step, including creation of target subfolders.
+pub(crate) fn reserve_workflow(
+    target: &SaveTargetSpec,
+    facts: &FileFacts,
+    bytes: &[u8],
+    reserved: &std::collections::BTreeSet<String>,
+) -> Result<WorkflowReservation, WorkflowSaveError> {
+    if bytes.len() > ATTACHMENT_MAX_BYTES {
+        return Err(WorkflowSaveError::Invalid);
+    }
+    let resolved = resolve(target, facts).map_err(|_| WorkflowSaveError::Invalid)?;
+    let dir = target_dir(Path::new(&target.folder), &resolved.folders)?;
+    for copy in 1..=MAX_COPY {
+        let name = numbered(&resolved.file, copy);
+        let relative_path = resolved
+            .folders
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(name.as_str()))
+            .collect::<Vec<_>>()
+            .join("/");
+        if reserved.contains(&relative_path) {
+            continue;
+        }
+        let path = dir.join(&name);
+        if target.on_conflict == OnConflict::SkipIdentical && same_content(&path, bytes) {
+            return Ok(WorkflowReservation { relative_path, skipped: true });
+        }
+        match fs::symlink_metadata(&path) {
+            Ok(_) => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(WorkflowReservation { relative_path, skipped: false });
+            }
+            Err(error) => return Err(Problem::of(&error).into()),
+        }
+    }
+    Err(WorkflowSaveError::Exists)
+}
+
+fn workflow_path(target: &SaveTargetSpec, relative: &str) -> Result<PathBuf, WorkflowSaveError> {
+    if relative.len() > MAX_PATH_BYTES
+        || relative.contains('\\')
+        || relative.contains(':')
+        || relative.split('/').any(|part| matches!(part, "" | "." | ".."))
+    {
+        return Err(WorkflowSaveError::Invalid);
+    }
+    let parts: Vec<_> = relative.split('/').collect();
+    let (name, parents) = parts.split_last().ok_or(WorkflowSaveError::Invalid)?;
+    let parents = parents.iter().map(|part| (*part).to_string()).collect::<Vec<_>>();
+    // Document verification must be read-only: unlike reservation it never creates missing subfolders.
+    let base = Path::new(&target.folder);
+    if !base.is_absolute()
+        || !fs::symlink_metadata(base).is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+    {
+        return Err(WorkflowSaveError::Forbidden);
+    }
+    let base = base.canonicalize().map_err(|error| WorkflowSaveError::from(Problem::of(&error)))?;
+    let mut dir = base.clone();
+    for parent in parents {
+        let next = dir.join(parent);
+        let metadata = fs::symlink_metadata(&next).map_err(|error| WorkflowSaveError::from(Problem::of(&error)))?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(WorkflowSaveError::Forbidden);
+        }
+        dir = next.canonicalize().map_err(|error| WorkflowSaveError::from(Problem::of(&error)))?;
+        if !dir.starts_with(&base) {
+            return Err(WorkflowSaveError::Forbidden);
+        }
+    }
+    Ok(dir.join(name))
+}
+
+/// Commit only the path already journaled. A collision is an error, never a reason to choose another name.
+/// A failed/partial write stays for hash-based recovery; this path never removes a possibly replaced file.
+pub(crate) fn commit_workflow(
+    target: &SaveTargetSpec,
+    reservation: &WorkflowReservation,
+    bytes: &[u8],
+) -> Result<(), WorkflowSaveError> {
+    if bytes.len() > ATTACHMENT_MAX_BYTES {
+        return Err(WorkflowSaveError::Invalid);
+    }
+    let path = workflow_path(target, &reservation.relative_path)?;
+    if !reservation.skipped {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path).map_err(|error| {
+            if error.kind() == io::ErrorKind::AlreadyExists {
+                WorkflowSaveError::Exists
+            } else {
+                Problem::of(&error).into()
+            }
+        })?;
+        file.write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|error| WorkflowSaveError::from(Problem::of(&error)))?;
+        drop(file);
+    }
+    verify_file(&path, bytes).map_err(|_| WorkflowSaveError::Changed)
+}
+
+/// Recovery and document reads resolve the recorded target and path, then check every byte by a bounded hash.
+/// No network access, automatic re-download, renumbering or repair of a missing/changed file happens here.
+pub(crate) fn verify_workflow_document(
+    target: &SaveTargetSpec,
+    relative: &str,
+    sha256: &str,
+    bytes: u64,
+) -> Result<PathBuf, WorkflowSaveError> {
+    use sha2::{Digest, Sha256};
+    if bytes > ATTACHMENT_MAX_BYTES as u64 || sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(WorkflowSaveError::Invalid);
+    }
+    let path = workflow_path(target, relative)?;
+    let before = fs::symlink_metadata(&path).map_err(|error| WorkflowSaveError::from(Problem::of(&error)))?;
+    if !before.is_file() || before.len() != bytes {
+        return Err(WorkflowSaveError::Changed);
+    }
+    let mut file = fs::File::open(&path).map_err(|error| WorkflowSaveError::from(Problem::of(&error)))?;
+    let held = file.metadata().map_err(|_| WorkflowSaveError::Unavailable)?;
+    if !same_file_metadata(&before, &held) {
+        return Err(WorkflowSaveError::Changed);
+    }
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut left = bytes;
+    while left > 0 {
+        let count = left.min(buffer.len() as u64) as usize;
+        file.read_exact(&mut buffer[..count]).map_err(|_| WorkflowSaveError::Changed)?;
+        hash.update(&buffer[..count]);
+        left -= count as u64;
+    }
+    let after = fs::symlink_metadata(&path).map_err(|_| WorkflowSaveError::Changed)?;
+    let actual: String = hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
+    if file.read(&mut buffer[..1]).map_err(|_| WorkflowSaveError::Changed)? != 0
+        || after.len() != bytes
+        || !after.is_file()
+        || !same_file_metadata(&held, &after)
+        || actual != sha256
+    {
+        return Err(WorkflowSaveError::Changed);
+    }
+    Ok(path)
+}
+
 /// `name` as the `copy`th file of that name: itself for 1, else with ` (copy)` before its
 /// extension (`Invoice (2).pdf`, `README (2)`).
 fn numbered(name: &str, copy: u32) -> String {
@@ -1492,6 +1683,78 @@ pub(crate) mod tests {
         fs::write(&path, []).expect("empty");
         verify_file(&path, &[]).expect("zero-byte files are real files");
         assert!(verify_file(dir.path(), &[]).is_err(), "not a regular file");
+    }
+
+    #[test]
+    fn workflow_reservation_commits_only_the_journaled_name_and_never_renumbers_a_collision() {
+        let dir = tempfile::tempdir().expect("temporary target");
+        let target = SaveTargetSpec {
+            subfolders: String::new(),
+            file_name: "invoice.pdf".into(),
+            ..spec("Invoices", dir.path())
+        };
+        let facts = facts_of(&summary(), Some("invoice.pdf"), "application/pdf", "Synthetic", &month_names());
+        let bytes = b"synthetic verified invoice";
+        let first = reserve_workflow(&target, &facts, bytes, &Default::default()).expect("first reservation");
+        assert_eq!(first.relative_path, "invoice.pdf");
+        assert!(!dir.path().join(&first.relative_path).exists(), "reservation does not create the output file");
+        let excluded = [first.relative_path.clone()].into_iter().collect();
+        let second =
+            reserve_workflow(&target, &facts, bytes, &excluded).expect("another active reservation is excluded");
+        assert_eq!(second.relative_path, "invoice (2).pdf");
+        commit_workflow(&target, &first, bytes).expect("exact first destination");
+        std::fs::write(dir.path().join(&second.relative_path), b"another writer").expect("collision after journaling");
+        assert_eq!(commit_workflow(&target, &second, bytes), Err(WorkflowSaveError::Exists));
+        assert!(!dir.path().join("invoice (3).pdf").exists(), "a retry cannot choose an unjournaled destination");
+        assert_eq!(
+            std::fs::read(dir.path().join(&second.relative_path)).expect("other writer intact"),
+            b"another writer"
+        );
+        assert!(!format!("{first:?}").contains("invoice.pdf"), "diagnostics hide mail-derived paths");
+    }
+
+    #[test]
+    fn workflow_recovery_verifies_full_content_and_missing_directories_stay_missing() {
+        use sha2::{Digest, Sha256};
+        let dir = tempfile::tempdir().expect("temporary target");
+        let target = SaveTargetSpec {
+            subfolders: String::new(),
+            file_name: "invoice.pdf".into(),
+            on_conflict: OnConflict::SkipIdentical,
+            ..spec("Invoices", dir.path())
+        };
+        let facts = facts_of(&summary(), Some("invoice.pdf"), "application/pdf", "Synthetic", &month_names());
+        let bytes = vec![42u8; 150_000];
+        let hash: String = Sha256::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect();
+        let reserved = reserve_workflow(&target, &facts, &bytes, &Default::default()).expect("reserved");
+        commit_workflow(&target, &reserved, &bytes).expect("committed");
+        let path = verify_workflow_document(&target, &reserved.relative_path, &hash, bytes.len() as u64)
+            .expect("recover exact file");
+        let same = reserve_workflow(&target, &facts, &bytes, &Default::default()).expect("identical");
+        assert!(same.skipped);
+        let before = std::fs::metadata(&path).expect("metadata").modified().expect("modified");
+        commit_workflow(&target, &same, &bytes).expect("verified skip");
+        assert_eq!(std::fs::metadata(&path).expect("metadata").modified().expect("modified"), before);
+        let mut changed = bytes.clone();
+        changed[100_000] ^= 1;
+        std::fs::write(&path, &changed).expect("same-sized modification");
+        assert_eq!(
+            verify_workflow_document(&target, &reserved.relative_path, &hash, bytes.len() as u64),
+            Err(WorkflowSaveError::Changed)
+        );
+        assert_eq!(
+            commit_workflow(&target, &same, &bytes),
+            Err(WorkflowSaveError::Changed),
+            "skip is never an unchecked success"
+        );
+        assert!(verify_workflow_document(&target, "missing/subfolder/invoice.pdf", &hash, bytes.len() as u64).is_err());
+        assert!(!dir.path().join("missing").exists(), "reading a document creates no subfolders");
+        for path in ["../invoice.pdf", "/invoice.pdf", "a/../invoice.pdf", "a\\invoice.pdf", "./invoice.pdf"] {
+            assert_eq!(
+                verify_workflow_document(&target, path, &hash, bytes.len() as u64),
+                Err(WorkflowSaveError::Invalid)
+            );
+        }
     }
 
     #[cfg(unix)]

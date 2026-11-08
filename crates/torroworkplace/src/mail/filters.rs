@@ -787,6 +787,20 @@ async fn carry_out(
     messages: &[&MessageSummary],
     categories: &[Category],
 ) -> CarriedOut {
+    carry_out_with_origin(mail, account, actions, messages, categories, super::store::WorkflowCategoryOrigin::Bulk)
+        .await
+}
+
+/// The arrival path shares the actions, but must commit a category and its workflow event in
+/// the same store transaction. Explicit Apply remains the event-free bulk path above.
+async fn carry_out_with_origin(
+    mail: &MailService,
+    account: &str,
+    actions: &FilterActions,
+    messages: &[&MessageSummary],
+    categories: &[Category],
+    origin: super::store::WorkflowCategoryOrigin,
+) -> CarriedOut {
     let mut done = CarriedOut::default();
     if actions.mark_read {
         let unread = messages.iter().filter(|message| !message.flags.contains(&Flag::Seen));
@@ -802,7 +816,23 @@ async fn carry_out(
             .filter(|message| category_due(message, category, categories))
             .map(|message| message.id.clone())
             .collect();
-        match mail.set_category(account, &ids, Some(MailCategory::by_rule(category))).await {
+        let changed = match origin {
+            super::store::WorkflowCategoryOrigin::Arrival => {
+                let mut result = Ok(());
+                for id in &ids {
+                    if let Err(err) = mail
+                        .set_workflow_category(account, id, Some(MailCategory::by_rule(category)), origin, Utc::now())
+                        .await
+                    {
+                        result = Err(err);
+                        break;
+                    }
+                }
+                result
+            }
+            _ => mail.set_category(account, &ids, Some(MailCategory::by_rule(category))).await,
+        };
+        match changed {
             Ok(()) => done.categorised = ids,
             Err(err) => {
                 eprintln!("torroworkplace: mail: a filter cannot set a category: {}", err.code());
@@ -985,7 +1015,15 @@ pub async fn on_arrival(
     }
     let mut categorised = Vec::new();
     for (actions, messages) in &groups {
-        let done = carry_out(mail, account, actions, messages, categories).await;
+        let done = carry_out_with_origin(
+            mail,
+            account,
+            actions,
+            messages,
+            categories,
+            super::store::WorkflowCategoryOrigin::Arrival,
+        )
+        .await;
         if let Some(category) = actions.category {
             categorised.extend(done.categorised.into_iter().map(|id| (id, MailCategory::by_rule(category))));
         }

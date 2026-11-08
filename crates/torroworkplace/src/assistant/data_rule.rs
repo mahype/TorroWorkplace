@@ -60,6 +60,99 @@ use torro_ipc::api::Area;
 use torro_ipc::assistant::Note;
 use torro_ipc::{Request, Response};
 
+#[test]
+fn workflow_mail_content_obeys_cloud_history_untrusted_and_without_mail_rules() {
+    use super::tools;
+    use torro_ipc::api::{AreaRights, Level, Rights};
+    let request = Request::PreviewWorkflowRun { id: "wf1".into(), revision: 1, mail: "m:synthetic".into() };
+    let name = request.operation().name();
+    assert!(reads_mail(name));
+    assert!(kept_from(name, DataRule::default()));
+    assert!(!kept_from(name, DataRule { mail_to_cloud: true }));
+    assert!(tools::may_have_read_outside(name));
+    let response = Response::WorkflowPreview {
+        preview: torro_ipc::workflows::WorkflowPreview {
+            workflow: "wf1".into(),
+            revision: 1,
+            mail: "m:synthetic".into(),
+            hosts: vec!["documents.example.org".into()],
+            save_target: "target1".into(),
+            possible_writes: true,
+            authorization_required: true,
+            matches: Vec::new(),
+            untrusted: true,
+        },
+    };
+    assert!(for_model(&request, &response, Place::Remote).withheld);
+    assert!(!for_model(&request, &response, Place::Local).withheld);
+    assert!(tools::untrusted(Area::Workflows, &serde_json::to_value(&response).expect("wire")));
+    assert!(!reads_mail("workflows.list_templates"));
+    assert!(!tools::may_have_read_outside("workflows.get_template"));
+    let mut rights = Rights::none();
+    rights.areas.insert(Area::Workflows, AreaRights { level: Level::Full, admin: false });
+    rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+    let offered = tools::allowed(Some(&rights), &[Area::Mail]);
+    assert!(offered.iter().any(|tool| tool.command.name == "workflows.list_templates"));
+    assert!(offered.iter().all(|tool| !torro_ipc::workflows::reads_mail(tool.command.name)));
+}
+
+#[test]
+fn workflow_draft_answers_and_history_cannot_bypass_mail_cloud_or_disabled_mail() {
+    use super::tools;
+    use torro_ipc::api::{AreaRights, Level, Rights};
+
+    let proposed = Request::ProposeWorkflow {
+        mail: "m:synthetic".into(),
+        save_target: "target1".into(),
+        instruction: String::new(),
+    };
+    let answer = Response::WorkflowDraft {
+        workflow: torro_ipc::workflows::Workflow {
+            id: "wf1".into(),
+            revision: 1,
+            digest: "0".repeat(64),
+            account: "mail:allowed".into(),
+            spec: torro_ipc::workflows::DraftSpec {
+                name: "Private invoice".into(),
+                description: "Mail-derived supplier".into(),
+                mail: "m:synthetic".into(),
+                save_target: "target1".into(),
+                package: torro_ipc::workflows::Package::direct_pdf("documents.example.org"),
+            },
+            template_origin: None,
+            saved: false,
+            enabled: false,
+            tested: false,
+            authorized: false,
+            untrusted: true,
+        },
+    };
+    let remote = Reader { place: Place::Remote, rule: DataRule::default() };
+    let cloud_allowed = Reader { rule: DataRule { mail_to_cloud: true }, ..remote };
+    assert!(for_model(&proposed, &answer, remote).withheld);
+    assert!(!for_model(&proposed, &answer, cloud_allowed).withheld);
+    let value = serde_json::to_value(&answer).expect("wire answer");
+    assert!(tools::untrusted(Area::Workflows, &value));
+    let local_model = ("ai:local", Some("local"));
+    let cloud_model = ("ai:remote", Some("cloud"));
+    let mut rights = Rights::none();
+    rights.areas.insert(Area::Workflows, AreaRights { level: Level::Full, admin: true });
+    rights.areas.insert(Area::Mail, AreaRights { level: Level::Full, admin: true });
+    for command in torro_ipc::api::CATALOGUE.iter().filter(|command| torro_ipc::workflows::reads_mail(command.name)) {
+        assert!(reads_mail(command.name));
+        assert!(kept_from(command.name, remote.rule));
+        assert!(!kept_from(command.name, cloud_allowed.rule));
+        assert!(!history_allowed(&[command.name], local_model, cloud_model, remote));
+        assert!(history_allowed(&[command.name], local_model, cloud_model, cloud_allowed));
+        assert!(tools::may_have_read_outside(command.name));
+        assert!(tools::may_have_read_untrusted(command.name));
+    }
+    let without_mail = tools::allowed(Some(&rights), &[Area::Mail]);
+    assert!(without_mail.iter().all(|tool| !torro_ipc::workflows::reads_mail(tool.command.name)));
+    rights.areas.remove(&Area::Mail);
+    assert!(tools::allowed(Some(&rights), &[]).iter().all(|tool| !torro_ipc::workflows::reads_mail(tool.command.name)));
+}
+
 /// What a model reads in place of content its data rule keeps from it. English: it is for the
 /// model, not for people.
 pub const WITHHELD: &str = "withheld by your data rule";
@@ -126,6 +219,9 @@ pub fn for_model(request: &Request, response: &Response, reader: impl Into<Reade
         // A draft read back (issue #502) answers as a saved one does, but may hold the quoted
         // history and the attachments of mail it answers: it stays home like mail.
         Request::GetDraft { .. } => !mail && result != "error",
+        request if request.operation().area() == Area::Workflows => {
+            !mail && torro_ipc::workflows::reads_mail(request.operation().name()) && result != "error"
+        }
         request if request.operation().area() == Area::Mail => !mail && !MAIL_ANSWERS_ALLOWED.contains(&result),
         // A task made of a mail in a folder (task E8.7a) holds that mail only.
         Request::CreateTodoFromMail { .. } => !mail && result != "error",
@@ -210,6 +306,7 @@ pub fn without_mail(response: Response) -> Response {
 /// writes to). An answer after one in the same turn may retell a mail.
 pub fn reads_mail(name: &str) -> bool {
     name.starts_with("mail.")
+        || torro_ipc::workflows::reads_mail(name)
         || name.starts_with("inbox.")
         || name == "bots.ask_bot"
         || name == "contacts.suggest_recipients"
@@ -219,7 +316,7 @@ pub fn reads_mail(name: &str) -> bool {
 /// mail let out ([`DataRule::mail_to_cloud`]) only `inbox.*` and asking a bot, which may still have read
 /// entries of Nextcloud and Talk.
 pub fn kept_from(name: &str, rule: DataRule) -> bool {
-    reads_mail(name) && !(rule.mail_to_cloud && name.starts_with("mail."))
+    reads_mail(name) && !(rule.mail_to_cloud && (name.starts_with("mail.") || torro_ipc::workflows::reads_mail(name)))
 }
 
 /// An inbox entry from a mail account is mail content; one of Nextcloud or Talk (task E5.2) is held

@@ -93,6 +93,7 @@ use crate::bots::Bots;
 pub use data_rule::{DataRule, Place, held_back, place_of};
 pub use delegate::Asking;
 pub use engines::never_given;
+pub(crate) use model::workflow_choice;
 pub use model::{Actor, AskedIn, Delegation, Host, Limits, ModelAccess};
 use store::{Conversation, Line};
 

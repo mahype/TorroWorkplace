@@ -70,6 +70,7 @@ mod tools;
 mod tray;
 mod ui;
 // The template keys (issue #243): what they are, and binding them on Hyprland (task WS.3).
+mod workflows;
 mod workspace_keys;
 
 const APP: AppId = AppId::WORKPLACE;

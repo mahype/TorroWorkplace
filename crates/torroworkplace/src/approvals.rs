@@ -344,6 +344,20 @@ pub struct Facts {
     /// stores (`crate::mail::filters::to_approve`). The account, folder and count of what the request
     /// sets are in [`Facts::mail`]. Boxed: the facts are held across awaits, deep in the stack.
     pub filter: Option<Box<FilterFacts>>,
+    /// Exact workflow and target metadata looked up in the private service, not supplied display strings.
+    pub workflow: Option<Box<WorkflowFacts>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkflowFacts {
+    pub name: Option<String>,
+    pub target: Option<String>,
+    pub hosts: Vec<String>,
+    pub test: bool,
+    pub repeat: bool,
+    pub account: Option<String>,
+    pub rule_query: Option<String>,
+    pub rule_trigger: Option<torro_ipc::workflows::Trigger>,
 }
 
 /// What the core's store holds about the contact a `contacts.*` command names ([`Facts::contact`]).
@@ -1571,6 +1585,31 @@ fn follow_summary(function: torro_core::ai::AiFunction, facts: &Facts) -> String
 /// invisible format characters, no quotes that could end the quoted part, no placeholders, at
 /// most 60 characters. Front ends still show the summary as plain text only.
 pub fn summary(request: &Request, facts: &Facts) -> String {
+    if request.operation().area() == Area::Workflows {
+        let name = facts.workflow.as_ref().and_then(|workflow| workflow.name.as_deref()).map(quote);
+        let action = match request {
+            Request::RunWorkflow { test: true, .. } => "Test mail workflow “{name}”",
+            Request::RunWorkflow { .. } => "Run mail workflow “{name}”",
+            Request::RemoveWorkflow { .. } => "Remove mail workflow “{name}”",
+            Request::SetWorkflowEnabled { enabled: false, .. } => "Disable mail workflow “{name}”",
+            Request::SetWorkflowEnabled { enabled: true, .. } => "Enable mail workflow “{name}”",
+            Request::CreateWorkflowRule { .. } => "Create an inactive rule for mail workflow “{name}”",
+            Request::UpdateWorkflowRule { .. } => "Change an automatic rule for mail workflow “{name}”",
+            Request::DuplicateWorkflowRule { .. } => "Copy an inactive rule for mail workflow “{name}”",
+            Request::SetWorkflowRuleEnabled { enabled: true, .. } => {
+                "Enable automatic execution of mail workflow “{name}”"
+            }
+            Request::SetWorkflowRuleEnabled { enabled: false, .. } => {
+                "Disable automatic execution of mail workflow “{name}”"
+            }
+            Request::RemoveWorkflowRule { .. } => "Remove an automatic rule for mail workflow “{name}”",
+            _ => "Use mail workflow “{name}”",
+        };
+        return match name {
+            Some(name) => trf(action, &[("name", &name)]),
+            None => tr("Change mail workflow settings").into(),
+        };
+    }
     if super::mail::images::is_request(request) {
         let account =
             quote(facts.mail.as_ref().and_then(|mail| mail.account.as_deref()).unwrap_or(tr("Unknown account")));
@@ -3877,6 +3916,50 @@ pub const DETAIL_MAX: usize = 200;
 /// `name: value` (the value as compact JSON), whole ([`whole`]): the summary cuts them at
 /// [`ARGUMENTS_MAX`] characters, the person deciding sees all of them here.
 pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
+    if let Some(workflow) = &facts.workflow {
+        let mut lines = Vec::new();
+        if let Some(target) = &workflow.target {
+            lines.push(trf("Save target: {target}", &[("target", &quote(target))]));
+        }
+        for host in &workflow.hosts {
+            lines.push(trf("Allowed domain: {host}", &[("host", &quote(host))]));
+        }
+        if workflow.test {
+            lines.push(tr("This test downloads a real document and writes a file.").into());
+        }
+        if workflow.repeat {
+            lines.push(tr("This explicitly repeats a previous download as a new generation.").into());
+        }
+        if let Some(account) = &workflow.account {
+            lines.push(trf("Mail account: {account}", &[("account", &quote(account))]));
+        }
+        if let Some(query) = &workflow.rule_query {
+            lines.push(trf("Rule condition: {query}", &[("query", &quote(query))]));
+        }
+        if let Some(trigger) = workflow.rule_trigger {
+            lines.push(match trigger {
+                torro_ipc::workflows::Trigger::NewMail => {
+                    tr("Trigger: new mail after content and categorization are ready.").into()
+                }
+                torro_ipc::workflows::Trigger::CategoryAssigned => {
+                    tr("Trigger: a new category assignment, not bulk recategorization.").into()
+                }
+            });
+        }
+        if matches!(request, Request::SetWorkflowRuleEnabled { enabled: true, .. }) {
+            lines.push(tr("This enables automatic execution while Torro Workplace is running. No initial inventory is processed; catch-up is limited to seven days.").into());
+        } else if matches!(
+            request,
+            Request::CreateWorkflowRule { .. }
+                | Request::UpdateWorkflowRule { .. }
+                | Request::DuplicateWorkflowRule { .. }
+        ) {
+            lines.push(tr("This rule is saved inactive and processes no mail.").into());
+        } else {
+            lines.push(tr("This approval grants no lasting workflow authorization or automatic rule.").into());
+        }
+        return lines;
+    }
     if super::mail::images::is_request(request) {
         let mail = facts.mail.as_ref();
         let account = quote_up_to(mail.and_then(|m| m.account.as_deref()).unwrap_or(tr("Unknown account")), DETAIL_MAX);

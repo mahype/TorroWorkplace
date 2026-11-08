@@ -2537,6 +2537,7 @@ impl MailService {
     }
 
     /// Write an automatic answer only while the mail still has the category the job read.
+    /// This legacy/job path is intentionally event-free; arrivals use the additive workflow CAS.
     pub async fn set_category_if_unchanged(
         &self,
         account: &str,
@@ -2547,6 +2548,87 @@ impl MailService {
         let store = self.mailbox_of(account).await?.store()?;
         let id = message.to_string();
         Ok(store.run(move |store| store.set_category_if_unchanged(&id, expected, category)).await?)
+    }
+
+    /// Internal workflow feed: a bounded unacknowledged page, including durable waits/failures.
+    /// Callers must check current account rights before reading/accepting events for a carrier.
+    pub async fn workflow_events(
+        &self,
+        account: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<super::store::WorkflowMailEvent>, MailError> {
+        let store = self.store(account).await?;
+        let after = after.map(str::to_string);
+        Ok(store.read(move |store| store.workflow_events(after.as_deref(), limit)).await?)
+    }
+
+    /// Acknowledge only AFTER the runner durably accepted/deduplicated this stable event id.
+    /// Returns false for waiting inputs (preparation still owns them), unknown or already acked ids.
+    pub async fn acknowledge_workflow_event(&self, account: &str, event: &str) -> Result<bool, MailError> {
+        let store = self.store(account).await?;
+        let event = event.to_string();
+        Ok(store.run(move |store| store.acknowledge_workflow_event(&event)).await?)
+    }
+
+    /// Event-bearing single classification; bulk/recategorization/automation origins suppress
+    /// events. Existing setters and their bool/Result contracts are unchanged.
+    pub async fn set_workflow_category(
+        &self,
+        account: &str,
+        message: &str,
+        category: Option<torro_mail::MailCategory>,
+        origin: super::store::WorkflowCategoryOrigin,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MailError> {
+        let store = self.store(account).await?;
+        let message = message.to_string();
+        Ok(store.run(move |store| store.set_workflow_category(&message, category, origin, now)).await?)
+    }
+
+    pub async fn set_workflow_category_if_unchanged(
+        &self,
+        account: &str,
+        message: &str,
+        expected: Option<torro_mail::MailCategory>,
+        category: torro_mail::MailCategory,
+        origin: super::store::WorkflowCategoryOrigin,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MailError> {
+        let store = self.store(account).await?;
+        let message = message.to_string();
+        Ok(store
+            .run(move |store| store.set_workflow_category_if_unchanged(&message, expected, category, origin, now))
+            .await?)
+    }
+
+    /// Read a workflow input with BODY.PEEK and verify its sender independently of logo settings.
+    pub async fn prepare_workflow_body(&self, account: &str, message: &str) -> Result<bool, MailError> {
+        let mailbox = self.mailbox_of(account).await?;
+        sync::prepare_workflow_body(&mailbox, message).await
+    }
+
+    /// Security input for automatic execution, independent of `SenderLogos`/summary decoration.
+    /// `None` must require manual review, not be treated as a verified sender.
+    pub async fn workflow_sender_domain(&self, account: &str, message: &str) -> Result<Option<String>, MailError> {
+        let store = self.store(account).await?;
+        let message = message.to_string();
+        Ok(store.read(move |store| store.workflow_sender_domain(&message)).await?)
+    }
+
+    /// Bind an automatic job to DKIM verification of its exact raw bytes, not an older cached verdict.
+    pub(crate) async fn workflow_verified_sender(&self, raw: &[u8]) -> Option<String> {
+        match self.check.verified_domain(raw).await {
+            super::check::Checked::Domain(domain) => Some(domain),
+            _ => None,
+        }
+    }
+
+    /// Resume an unacknowledged failed input only after an explicit retry decision.
+    pub async fn retry_workflow_preparation(&self, account: &str, message: &str) -> Result<bool, MailError> {
+        let store = self.store(account).await?;
+        let message = message.to_string();
+        Ok(store.run(move |store| store.retry_workflow_preparation(&message)).await?)
     }
 
     /// Keeps `category` with every message of `messages` in the account `account` (task E12.4);
