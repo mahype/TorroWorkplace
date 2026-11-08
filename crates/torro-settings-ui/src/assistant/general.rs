@@ -126,7 +126,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 
 /// The open dropdown of "Account" or "Model", under its button.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
-    let key = state.menus.open()?;
+    let key = state.menus.open().filter(|_| shows_menus(data))?;
     let current = current_default(data);
     let items = match key {
         Choice::Engine => {
@@ -163,9 +163,14 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 /// can no longer show – "Model" after another window chose "The one used last" or the account went –
 /// closes, so it neither takes the next Escape nor opens again by itself later.
 pub fn loaded(state: &mut State, data: &Data) {
-    if state.menus.is_open(&Choice::Model) && current_default(data).is_none() {
+    if !shows_menus(data) || (state.menus.is_open(&Choice::Model) && current_default(data).is_none()) {
         state.menus.close();
     }
+}
+
+/// Whether the page draws the buttons of its dropdowns: the assistant is on and has an engine.
+fn shows_menus(data: &Data) -> bool {
+    super::is_on(data) && !data.engines.is_empty()
 }
 
 /// Escape closes the open dropdown first.
@@ -510,6 +515,11 @@ mod tests {
         assert_eq!((state.menus.open(), escape(&state)), (None, None));
         let _ = super::update(&mut state, Message::Menus(DropdownEvent::Toggle(Choice::Engine)), &last);
         loaded(&mut state, &last);
-        assert!(state.menus.is_open(&Choice::Engine), "Account can always show");
+        assert!(state.menus.is_open(&Choice::Engine), "Account shows while there is an engine");
+        // The assistant turned off elsewhere: General shows no dropdown, so none stays open.
+        let off = super::super::tests::turned_off(&last);
+        assert!(overlay(&state, &off).is_none());
+        loaded(&mut state, &off);
+        assert_eq!(state.menus.open(), None);
     }
 }

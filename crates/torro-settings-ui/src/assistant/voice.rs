@@ -217,7 +217,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 /// The open dropdown of the microphone, under its button: the system's default and every
 /// microphone the recording program lists, the chosen one marked.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
-    let key = state.menus.open()?;
+    let key = state.menus.open().filter(|_| super::is_on(data))?;
     let microphones = data.voice.as_ref().map(|voice| &voice.microphones).filter(|list| !list.is_empty())?;
     let chosen = data.settings.voice.microphone.as_deref();
     let default = MenuItem::plain(tr("System default"), Message::Microphone(None)).current(chosen.is_none());
@@ -234,7 +234,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 /// Fresh data came ([`super::received`]): with no microphone listed any more the dropdown closes, so
 /// it neither takes the next Escape nor opens again by itself later.
 pub fn loaded(state: &mut State, data: &Data) {
-    if data.voice.as_ref().is_none_or(|voice| voice.microphones.is_empty()) {
+    if !super::is_on(data) || data.voice.as_ref().is_none_or(|voice| voice.microphones.is_empty()) {
         state.menus.close();
     }
 }
