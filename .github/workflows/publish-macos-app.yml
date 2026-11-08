@@ -1,5 +1,4 @@
-# Builds signed and notarised macOS `.app` bundles for every app of the suite from the binaries that dist already put
-# into the GitHub Release, and attaches them to the same release as `<bin>-<arch>-apple-darwin.app.zip`.
+# Builds signed/notarised bundles and DMGs BEFORE host publishes. Archives remain for catalog consumers.
 # dist itself only ships bare binaries and no `.app` bundles. Background: docs/release.md.
 #
 # Names and layout must match what the suite looks for (torro_gui::source::bundle_program, issue #279):
@@ -10,10 +9,7 @@
 # bundle is the same in every app: bundle id io.github.mahype.torro-workplace-service, signed by the same team, so the
 # keychain trusts every copy; the suite starts the copy with the highest TorroVersion (its Info.plist, make-app.sh).
 #
-# Two ways to run it, both only when the repository variable MACOS_APP_ENABLED is 'true':
-#   * automatically after a release: dist calls it as a custom publish job
-#     (`publish-jobs = ["./publish-macos-app"]` in dist-workspace.toml);
-#   * by hand: Actions -> "Publish macOS app" -> Run workflow, with the tag (e.g. v0.1.0).
+# Called only as a global artifact job by the tag-triggered release workflow; never manually.
 #
 # Uses the same secrets and the same Developer ID as TorroMail:
 #   MACOS_CERTIFICATE_P12         "Developer ID Application" certificate with private key, .p12, base64
@@ -31,20 +27,27 @@ on:
         description: JSON plan produced by `dist plan` (passed by release.yml)
         required: true
         type: string
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Release tag to attach the apps to, e.g. v0.1.0
-        required: true
-        type: string
-
 permissions:
-  contents: write # upload the .app.zip to the release
+  contents: read
 
 jobs:
+  preflight:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Require macOS signing and notarisation (no unsigned fallback)
+        env:
+          ENABLED: ${{ vars.MACOS_APP_ENABLED }}
+          CERT: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          NOTARY: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          test "$ENABLED" = true
+          test -n "$CERT" && test -n "$PASSWORD" && test -n "$APPLE_ID" && test -n "$TEAM" && test -n "$NOTARY"
   macos-app:
     name: ${{ matrix.bin }} (${{ matrix.arch }})
-    if: ${{ vars.MACOS_APP_ENABLED == 'true' }}
+    needs: preflight
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -75,7 +78,7 @@ jobs:
           - { bin: torrocalendar, exe: torro-reminder, agent: "1", appid: torro-reminder, icon: torro-calendar, title: Torro Reminder, arch: x86_64, runner: macos-15-intel }
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ inputs.tag || fromJson(inputs.plan).announcement_tag }}
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
       TARGET: ${{ matrix.arch }}-apple-darwin
       APP: out/${{ matrix.title }}.app
       SERVICE: out/${{ matrix.title }}.app/Contents/Library/LoginItems/Torro Workplace Service.app
@@ -84,28 +87,37 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download the released binaries
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: input
+          merge-multiple: true
+      - name: Verify and extract build artifacts
+        env:
+          BIN: ${{ matrix.bin }}
         run: |
           set -euo pipefail
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "${{ matrix.bin }}-${TARGET}.tar.xz"
-          tar -xf "${{ matrix.bin }}-${TARGET}.tar.xz"
-          # The service bundle needs the core's binary; the control centre's own archive is that one already.
-          if [ "${{ matrix.service }}" = "1" ] && [ "${{ matrix.bin }}" != torroworkplace ]; then
-            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "torroworkplace-${TARGET}.tar.xz"
-            tar -xf "torroworkplace-${TARGET}.tar.xz"
-          fi
+          python3 - <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'packaging')
+          import installers
+          installers.source_plan(Path('input'), os.environ['TAG'])
+          for program in {os.environ['BIN'], 'torroworkplace'}:
+              installers.unpack_program(Path('input'), program, os.environ['TARGET'], Path('.'))
+          PY
 
       - name: Build the .app bundle
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          binary="${{ matrix.bin }}-${TARGET}/${{ matrix.bin }}"
+          binary="${{ matrix.bin }}"
           embed=""
           if [ "${{ matrix.service }}" = "1" ]; then
             # The core's service: an agent bundle without a Dock icon, embedded into this app's bundle. Always the
             # torroworkplace binary and the id torro-workplace-service, whichever app carries it.
             AGENT_APP=1 packaging/macos/make-app.sh torroworkplace torro-workplace-service "Torro Workplace Service" \
-              "$version" "torroworkplace-${TARGET}/torroworkplace" service packaging/macos/icons/torro-workplace.png
+              "$version" torroworkplace service packaging/macos/icons/torro-workplace.png
             embed="service/Torro Workplace Service.app"
           fi
           # The icon: a 1024x1024 PNG from packaging/macos/icons/ (task AP.7), made into an .icns by make-app.sh.
@@ -175,9 +187,102 @@ jobs:
           xcrun stapler validate "$APP"
           spctl --assess --type execute --verbose=4 "$APP"
 
-      - name: Upload to the release
+      - name: Archive the stapled bundle
         run: |
           asset="${{ matrix.exe || matrix.bin }}-${TARGET}.app.zip"
           ditto -c -k --keepParent "$APP" "$asset"
           shasum -a 256 "$asset" > "$asset.sha256"
-          gh release upload "$TAG" "$asset" "$asset.sha256" --repo "$GITHUB_REPOSITORY" --clobber
+      - uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-macos-bundle-${{ matrix.exe || matrix.bin }}-${{ matrix.arch }}
+          path: '*.app.zip*'
+          if-no-files-found: error
+      - name: Remove temporary keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
+  dmg:
+    needs: macos-app
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: aarch64, runner: macos-14 }
+          - { arch: x86_64, runner: macos-15-intel }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    env:
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+      TARGET: ${{ matrix.arch }}-apple-darwin
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-macos-bundle-*-${{ matrix.arch }}
+          path: input
+          merge-multiple: true
+      - name: Verify and unpack signed bundles
+        run: |
+          python3 - <<'PY'
+          import os, stat, sys, zipfile, subprocess
+          from pathlib import Path
+          sys.path.insert(0, 'packaging')
+          import installers
+          for archive in Path('input').glob('*.app.zip'):
+              installers.checked(archive)
+              with zipfile.ZipFile(archive) as zipped:
+                  for member in zipped.infolist():
+                      installers.safe_name(member.filename)
+                      if stat.S_ISLNK(member.external_attr >> 16):
+                          raise ValueError('unexpected link in app archive')
+              subprocess.run(['ditto', '-x', '-k', str(archive), 'bundles'], check=True)
+          PY
+      - name: Import Developer ID for images
+        env:
+          CERT_B64: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERT_PW: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          kpw="$(openssl rand -base64 24)"
+          security create-keychain -p "$kpw" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$kpw" "$keychain"
+          printf '%s' "$CERT_B64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PW" -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
+          existing="$(security list-keychains -d user | xargs)"
+          security list-keychains -d user -s "$keychain" $existing
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kpw" "$keychain"
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+          test -n "$identity"
+          echo "MACOS_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: Build seven signed, notarised and stapled images
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          python3 - <<'PY'
+          import os, sys, subprocess
+          from pathlib import Path
+          sys.path.insert(0, 'packaging')
+          import installers
+          for app in installers.apps():
+              required = [a for a in installers.apps() if a['program'] in app['requires']]
+              bundles = [Path('bundles') / (a['title'] + '.app') for a in [app, *required]]
+              if app['program'] == 'torrocalendar':
+                  bundles.append(Path('bundles/Torro Reminder.app'))
+              subprocess.run(['bash', 'packaging/macos/make-dmg.sh', app['program'], installers.version(os.environ['TAG']),
+                              os.environ['TARGET'], 'out', *map(str, bundles)], check=True)
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-macos-dmg-${{ matrix.arch }}
+          path: out/*.dmg*
+          if-no-files-found: error
+      - name: Remove temporary keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
