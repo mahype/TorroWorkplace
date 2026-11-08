@@ -10,7 +10,9 @@
 //! previews or saves), and further searches added.
 //!
 //! **Repository first.** The form starts with the repository, picked from those the account
-//! reaches (`tasks.list_github_repos`) in a list with a field to find one. A new list preselects
+//! reaches (`tasks.list_github_repos`) in a dropdown (`widgets::Dropdown`, issue #544) that floats
+//! over the form – from [`widgets::SEARCH_FROM`] repositories on with a field to find one; "Last
+//! used" and "Private" stand at the entries. A new list preselects
 //! the repository chosen last – for all accounts alike, kept by the app in `ui.json` – or, where
 //! the account does not reach it, the account's first. With several GitHub accounts a new list
 //! shows them as chips over the repository. Labels, milestones and people come from the repository
@@ -51,14 +53,16 @@ use std::time::Duration;
 
 use iced::time::Instant;
 use iced::widget::text::Wrapping;
-use iced::widget::{Column, Space, button, column, container, operation, row, rule, scrollable, text, text_input};
+use iced::widget::{
+    Column, Space, button, column, container, operation, row, rule, scrollable, stack, text, text_input,
+};
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Palette, palette, size, space};
-use torro_gui::widgets::{self, Mark, collection_color};
+use torro_gui::widgets::{self, Align, Mark, MenuItem, MenuSection, collection_color};
 use torro_gui::{style, typo};
 use torro_pim::model::GitHubLabel;
 use torro_pim::source::{FilterDefinition, FilterPreview, GitHubRepo, GitHubRepoDetails};
@@ -87,8 +91,6 @@ fn width() -> f32 {
 }
 /// The search of a new list until a template or the form changes it: open issues.
 const NEW_SEARCH: &str = "is:open is:issue";
-/// How many repositories the open list of the repository field shows; typing finds the others.
-const REPO_ROWS: usize = 8;
 /// Widths of the quiet chip-shaped placeholders while the labels of a repository load.
 fn placeholder_widths() -> [f32; 4] {
     [size::control() * 2.0, size::control_lg() * 2.0, size::control() * 3.0, size::control_lg() * 2.5]
@@ -98,8 +100,6 @@ fn placeholder_widths() -> [f32; 4] {
 pub const NAME_INPUT: &str = "filter-name";
 /// Id of the search field: focused when no search is there on save.
 const QUERY_INPUT: &str = "filter-query";
-/// Id of the field that finds a repository: focused when the list of repositories opens.
-const REPO_INPUT: &str = "filter-repo";
 /// Id of the scrolling form, for `--open filter-search`, which shows its end.
 pub const FORM_SCROLL: &str = "filter-form";
 
@@ -678,14 +678,10 @@ pub enum Message {
     RetryRepos,
     /// "Retry" where the labels of the repository failed to load.
     RetryDetails,
-    /// The repository field: open or close the list of repositories.
-    TogglePicker,
-    /// Typed into the field that finds a repository.
-    FindRepo(String),
-    /// A repository of the list (`owner/name`).
+    /// The dropdown of the repository field: open, close, or the words typed to find one.
+    RepoMenu(widgets::DropdownEvent<()>),
+    /// A repository of the dropdown (`owner/name`).
     PickRepo(String),
-    /// Enter in the field that finds a repository: the first one found.
-    PickFound,
     Template(Template),
     Kind(Kind),
     State(State),
@@ -717,7 +713,7 @@ pub enum Message {
     Saved(Result<String, ProviderError>),
     /// The back arrow in the head (only when opened from "New list…").
     Back,
-    /// Escape: closes the list of repositories when it is open, else the dialog.
+    /// Escape: closes the dropdown of repositories when it is open, else the dialog.
     Escape,
     /// Cancel and the close button.
     Cancel,
@@ -805,8 +801,8 @@ pub struct Editor {
     repos: Load<Vec<GitHubRepo>>,
     /// Labels, milestones and people by repository in lower case, as asked for.
     details: BTreeMap<String, Load<GitHubRepoDetails>>,
-    /// The list of repositories is open, with what was typed to find one.
-    picker: Option<String>,
+    /// The dropdown of the repository field: whether it is open, and what was typed to find one.
+    repo_menu: widgets::Dropdown<()>,
     /// The repository (lower case) just chosen: when its labels are known, labels and milestone it
     /// does not have leave the search.
     prune: Option<String>,
@@ -965,7 +961,7 @@ impl Editor {
             last_repo: None,
             repos: Load::Loading,
             details: BTreeMap::new(),
-            picker: None,
+            repo_menu: widgets::Dropdown::default(),
             prune: None,
             more: false,
             expert: false,
@@ -1087,6 +1083,10 @@ impl Editor {
             Message::Repos(account, result) => {
                 if account == self.account {
                     self.repos = Load::of(result);
+                    // Nothing to choose from: an open dropdown would stay empty, so it closes.
+                    if self.repos.ready().is_none_or(|repos| repos.is_empty()) {
+                        self.repo_menu.close();
+                    }
                     self.settle_repo();
                 }
                 Task::none()
@@ -1108,27 +1108,16 @@ impl Editor {
                 }
                 Task::none()
             }
-            Message::TogglePicker => {
-                self.picker = match self.picker {
-                    Some(_) => None,
-                    None => Some(String::new()),
-                };
-                if self.picker.is_some() { operation::focus(REPO_INPUT) } else { Task::none() }
-            }
-            Message::FindRepo(text) => {
-                self.picker = Some(text);
-                Task::none()
+            Message::RepoMenu(event) => {
+                if self.repo_menu.update(event) {
+                    operation::focus(widgets::DROPDOWN_SEARCH)
+                } else {
+                    Task::none()
+                }
             }
             Message::PickRepo(repo) => {
-                self.picker = None;
+                self.repo_menu.close();
                 self.choose_repo(&repo);
-                Task::none()
-            }
-            Message::PickFound => {
-                if let Some(repo) = self.found().first().map(|r| r.repo.clone()) {
-                    self.picker = None;
-                    self.choose_repo(&repo);
-                }
                 Task::none()
             }
             Message::Template(template) => {
@@ -1165,7 +1154,7 @@ impl Editor {
             }
             Message::Select(index) => {
                 self.current = index.min(self.searches.len() - 1);
-                self.picker = None;
+                self.repo_menu.close();
                 Task::none()
             }
             Message::AddSearch => {
@@ -1216,8 +1205,8 @@ impl Editor {
             }
             // Back while the list is being saved would lose the answer: the arrow is off then.
             Message::Back if self.back && !self.saving => return (Task::none(), Outcome::Back),
-            Message::Escape if self.picker.is_some() => {
-                self.picker = None;
+            Message::Escape if self.repo_menu.open().is_some() => {
+                self.repo_menu.close();
                 Task::none()
             }
             Message::Escape | Message::Cancel => return (Task::none(), Outcome::Close),
@@ -1236,7 +1225,7 @@ impl Editor {
         self.account = id;
         self.repos = Load::Loading;
         self.details.clear();
-        self.picker = None;
+        self.repo_menu.close();
         self.touch(Instant::now());
         self.repos_task(source)
     }
@@ -1292,14 +1281,6 @@ impl Editor {
             *self.query_mut() = query;
             self.touch(Instant::now());
         }
-    }
-
-    /// The repositories the list of the repository field shows: those whose name has what was
-    /// typed, in the order the core gave them (the most recently changed first).
-    fn found(&self) -> Vec<&GitHubRepo> {
-        let typed = self.picker.as_deref().unwrap_or_default().trim().to_lowercase();
-        let Some(repos) = self.repos.ready() else { return Vec::new() };
-        repos.iter().filter(|r| r.repo.to_lowercase().contains(&typed)).collect()
     }
 
     /// Rewrites the search being edited with `change` (a choice of the form); a preview follows
@@ -1371,7 +1352,7 @@ impl Editor {
             return Task::none();
         }
         self.saving = true;
-        self.picker = None;
+        self.repo_menu.close();
         if self.notice != Some(Notice::Reloaded) {
             self.notice = None;
         }
@@ -1440,7 +1421,7 @@ impl Editor {
         ];
         let card = container(card).width(Fill).height(dialog_height(window.height)).style(style::container::popover);
         let width = if beside { width() } else { size::form_max() };
-        widgets::modal(Space::new().width(Fill).height(Fill), card, width, Message::Backdrop)
+        self.with_repo_menu(widgets::modal(Space::new().width(Fill).height(Fill), card, width, Message::Backdrop))
     }
 
     /// In a narrow window: a view of its own over the whole window, with a header bar ("‹ New
@@ -1462,7 +1443,20 @@ impl Editor {
             rule::horizontal(LINE).style(style::rule),
             container(self.footer(true)).padding([space::m(), space::l()]),
         ];
-        container(view).width(Fill).height(Fill).style(style::container::panel_flush).into()
+        self.with_repo_menu(container(view).width(Fill).height(Fill).style(style::container::panel_flush).into())
+    }
+
+    /// `view` with the dropdown of repositories floating over it, while it is open and there is a
+    /// repository to choose; `view` is then deaf to the pointer, so a click beside the menu only
+    /// closes it (the pattern of the mail app's dialogs). While the repositories load, an open
+    /// dropdown waits and shows as soon as they are there.
+    fn with_repo_menu<'a>(&'a self, view: Element<'a, Message>) -> Element<'a, Message> {
+        let choices = self.repos.ready().is_some_and(|repos| !repos.is_empty());
+        if self.repo_menu.open().is_none() || !choices {
+            return view;
+        }
+        let menu = self.repo_menu.view(&(), self.repo_sections(), size::panel(), Align::Start, Message::RepoMenu);
+        stack![widgets::inert(view), menu].into()
     }
 
     /// The form, scrolling, with `inset` around it; the preview under it when `preview` gives the
@@ -1537,127 +1531,56 @@ impl Editor {
         Some(container(line).padding(space::m()).width(Fill).style(style::container::group).into())
     }
 
-    /// "Repository": the field that opens the list of repositories, what it is for, the list when
-    /// it is open, and why the repositories are missing, with "Retry".
+    /// "Repository": the field that opens the dropdown of repositories, under it what it is for, or
+    /// why the repositories are missing, with "Retry".
     fn repo_view(&self) -> Element<'_, Message> {
-        let (label, quiet, several) = self.repo_label();
-        let repo = self.single_repo();
-        let name = typo::text(if quiet { typo::body() } else { typo::body_strong() }, label).wrapping(Wrapping::None);
-        let name = if quiet { name.style(theme::text_3) } else { name };
-        let mut content = row![list::toned(Icon::Github, icon::SIZE_SM, Tone::Text3), name]
-            .spacing(space::s())
-            .align_y(Alignment::Center);
-        let last = repo.as_ref().zip(self.last_repo.as_ref()).is_some_and(|(a, b)| a.eq_ignore_ascii_case(b));
-        if last && !several {
-            content = content.push(widgets::icon_pill(Icon::Clock, tr("Last used")));
-        }
-        let chevron = if self.picker.is_some() { Icon::ChevronUp } else { Icon::ChevronDown };
-        content = content.push(Space::new().width(Fill)).push(list::toned(chevron, icon::SIZE_SM, Tone::Text3));
-        let field = button(container(content).center_y(Fill).clip(true))
-            .width(Fill)
-            .height(size::control())
-            .padding(style::ITEM_PADDING)
-            .style(style::button::secondary)
-            .on_press(Message::TogglePicker);
-        let mut parts: Vec<Element<'_, Message>> = vec![field.into()];
-        if self.picker.is_some() {
-            parts.push(self.picker_view());
-        } else if let Load::Failed(reason) = &self.repos {
-            parts.push(retry(reason.as_str(), Message::RetryRepos));
-        } else {
-            parts.push(
-                typo::text(
-                    typo::meta(),
-                    tr("Repositories your GitHub account can reach. Labels, milestones and people below come from here."),
-                )
-                .style(theme::text_2)
-                .into(),
-            );
-        }
-        labelled(tr("Repository"), column(parts).spacing(space::xs()), None).into()
+        let field = self.repo_menu.button_fill((), self.repo_label(), Message::RepoMenu);
+        let under: Element<'_, Message> = match &self.repos {
+            Load::Failed(reason) => retry(reason.as_str(), Message::RetryRepos),
+            _ => typo::text(
+                typo::meta(),
+                tr("Repositories your GitHub account can reach. Labels, milestones and people below come from here."),
+            )
+            .style(theme::text_2)
+            .into(),
+        };
+        labelled(tr("Repository"), column![field, under].spacing(space::xs()), None).into()
     }
 
-    /// What the repository field says, whether quietly (nothing chosen), and whether the list
-    /// searches in several repositories: "Several repositories" with several searches or several
+    /// What the repository field says: "Several repositories" with several searches or several
     /// repositories in the search, else the one repository; without one "Loading repositories…",
     /// "All repositories" for a list whose search names none (it searches all the account sees),
     /// else "Choose a repository".
-    fn repo_label(&self) -> (String, bool, bool) {
+    fn repo_label(&self) -> String {
         let several = self.searches.len() > 1 || repos_of(self.query()).len() > 1;
         match self.single_repo() {
-            _ if several => (tr("Several repositories").into(), false, true),
-            Some(repo) => (repo, false, false),
-            None if self.repos == Load::Loading => (tr("Loading repositories…").into(), true, false),
-            None if self.target != Target::New => (tr("All repositories").into(), true, false),
-            None => (tr("Choose a repository").into(), true, false),
+            _ if several => tr("Several repositories").into(),
+            Some(repo) => repo,
+            None if self.repos == Load::Loading => tr("Loading repositories…").into(),
+            None if self.target != Target::New => tr("All repositories").into(),
+            None => tr("Choose a repository").into(),
         }
     }
 
-    /// The open list of repositories: a field to find one (Enter takes the first found), then at
-    /// most [`REPO_ROWS`] of them, the chosen one with a check, the last chosen and private ones
-    /// with a word at the end.
-    fn picker_view(&self) -> Element<'_, Message> {
-        let typed = self.picker.as_deref().unwrap_or_default();
-        let find = field(tr("Find a repository…"), typed)
-            .id(REPO_INPUT)
-            .on_input(Message::FindRepo)
-            .on_submit(Message::PickFound);
-        let mut rows: Vec<Element<'_, Message>> = vec![find.into()];
-        match &self.repos {
-            Load::Loading => rows.push(container(quiet(tr("Loading repositories…"))).padding(space::s()).into()),
-            Load::Failed(reason) => {
-                rows.push(container(retry(reason.as_str(), Message::RetryRepos)).padding(space::s()).into())
+    /// The entries of the dropdown of repositories, in the order the core gave them (the most
+    /// recently changed first): the one repository of the search being edited as the current
+    /// choice, "Last used" and "Private" as words at the end of an entry.
+    fn repo_sections(&self) -> Vec<MenuSection<'_, Message>> {
+        let Some(repos) = self.repos.ready() else { return Vec::new() };
+        let chosen = self.single_repo();
+        let items = repos.iter().map(|repo| {
+            let same = |name: &String| name.eq_ignore_ascii_case(&repo.repo);
+            let mut item = MenuItem::plain(repo.repo.as_str(), Message::PickRepo(repo.repo.clone()))
+                .current(chosen.as_ref().is_some_and(same));
+            if self.last_repo.as_ref().is_some_and(same) {
+                item = item.tag(tr("Last used"), false);
             }
-            Load::Ready(_) => {
-                let found = self.found();
-                let chosen = self.single_repo().filter(|_| repos_of(self.query()).len() == 1);
-                for repo in found.iter().take(REPO_ROWS) {
-                    let on = chosen.as_ref().is_some_and(|c| c.eq_ignore_ascii_case(&repo.repo));
-                    rows.push(self.repo_row(repo, on));
-                }
-                if found.is_empty() {
-                    rows.push(container(quiet(tr("No repository matches."))).padding(space::s()).into());
-                } else if found.len() > REPO_ROWS {
-                    let more = trf("{n} more. Type to narrow the list.", &[("n", &(found.len() - REPO_ROWS))]);
-                    rows.push(
-                        container(typo::text(typo::meta(), more).style(theme::text_3)).padding(space::s()).into(),
-                    );
-                }
+            if repo.private {
+                item = item.tag(tr("Private"), false);
             }
-        }
-        container(column(rows).spacing(space::xs()))
-            .padding(style::MENU_INSET)
-            .width(Fill)
-            .style(style::container::menu)
-            .into()
-    }
-
-    /// One repository in the open list: check (when `on`), name, "Last used" / "Private".
-    fn repo_row<'a>(&'a self, repo: &'a GitHubRepo, on: bool) -> Element<'a, Message> {
-        let check: Element<'a, Message> = if on {
-            list::toned(Icon::Check, icon::SIZE_SM, Tone::Text3)
-        } else {
-            Space::new().width(icon::SIZE_SM).into()
-        };
-        let mut content = row![
-            check,
-            container(typo::text(typo::body(), repo.repo.as_str()).wrapping(Wrapping::None)).width(Fill).clip(true)
-        ]
-        .spacing(space::s())
-        .align_y(Alignment::Center);
-        if self.last_repo.as_deref().is_some_and(|last| last.eq_ignore_ascii_case(&repo.repo)) {
-            content = content.push(typo::text(typo::meta(), tr("Last used")).style(theme::text_3));
-        }
-        if repo.private {
-            content = content.push(typo::text(typo::meta(), tr("Private")).style(theme::text_3));
-        }
-        button(container(content).center_y(Fill))
-            .width(Fill)
-            .height(style::MENU_ITEM_HEIGHT)
-            .padding(style::ITEM_PADDING)
-            .style(style::button::menu_item(on))
-            .on_press(Message::PickRepo(repo.repo.clone()))
-            .into()
+            item
+        });
+        vec![MenuSection::new(items.collect())]
     }
 
     /// "Start from": the templates, the one the search came from chosen.
@@ -2334,6 +2257,7 @@ mod tests {
 
     use chrono::NaiveDate;
     use iced::futures::executor::block_on;
+    use torro_gui::widgets::DropdownEvent;
     use torro_pim::demo::{DemoSource, GITHUB_ACCOUNT, TORRO_BUGS};
     use torro_pim::model::GitHubFilter;
 
@@ -2677,13 +2601,45 @@ mod tests {
     }
 
     #[test]
-    fn back_leads_to_the_choice_and_escape_closes_the_list_of_repositories_first() {
+    fn the_dropdown_marks_the_chosen_repository_and_names_the_last_used_and_private_ones() {
+        let mut dialog = Dialog::new_list(start(Some(DESIGN))).expect("dialog");
+        repos_arrive(&mut dialog);
+        let sections = editor(&dialog).repo_sections();
+        let items: Vec<&MenuItem<'_, Message>> = sections.iter().flat_map(|section| section.items.iter()).collect();
+        let all = block_on(demo().list_github_repos(GITHUB_ACCOUNT.into())).expect("repos");
+        assert_eq!(items.len(), all.len(), "every repository, in the core's order");
+        for (item, repo) in items.iter().zip(&all) {
+            assert_eq!(item.label.as_ref(), repo.repo);
+            assert!(matches!(&item.on_press, Message::PickRepo(r) if r == &repo.repo));
+            assert_eq!(item.current, repo.repo == DESIGN, "{}: only the chosen one", repo.repo);
+            let tags: Vec<&str> = item.tags.iter().map(|tag| tag.label.as_ref()).collect();
+            let mut wanted = Vec::new();
+            if repo.repo == DESIGN {
+                wanted.push(tr("Last used"));
+            }
+            if repo.private {
+                wanted.push(tr("Private"));
+            }
+            assert_eq!(tags, wanted, "{}", repo.repo);
+        }
+        assert!(all.iter().any(|repo| repo.private), "the sample has a private repository");
+        // With several repositories in the search none is the current one.
+        let mut several = Dialog::new_list(start(None)).expect("dialog");
+        repos_arrive(&mut several);
+        let _ = several.update(Message::Query(format!("repo:{TORRO} repo:{DESIGN}")), &demo());
+        assert!(editor(&several).repo_sections().iter().flat_map(|s| s.items.iter()).all(|item| !item.current));
+        // Before the repositories arrive there is nothing to list.
+        assert!(editor(&new_dialog()).repo_sections().is_empty());
+    }
+
+    #[test]
+    fn back_leads_to_the_choice_and_escape_closes_the_dropdown_of_repositories_first() {
         let mut dialog = new_dialog();
         assert_eq!(dialog.update(Message::Back, &demo()).1, Outcome::Back);
-        let _ = dialog.update(Message::TogglePicker, &demo());
-        assert!(editor(&dialog).picker.is_some());
+        let _ = dialog.update(Message::RepoMenu(DropdownEvent::Toggle(())), &demo());
+        assert!(editor(&dialog).repo_menu.open().is_some());
         assert_eq!(dialog.update(Message::Escape, &demo()).1, Outcome::Stay);
-        assert!(editor(&dialog).picker.is_none(), "Escape closed the list");
+        assert!(editor(&dialog).repo_menu.open().is_none(), "Escape closed the dropdown");
         assert_eq!(dialog.update(Message::Escape, &demo()).1, Outcome::Close, "and then the dialog");
         let mut edit = Dialog::edit(&list(1, &["label:bug"]), GITHUB_ACCOUNT.into(), String::new()).expect("dialog");
         assert_eq!(edit.update(Message::Back, &demo()).1, Outcome::Stay, "editing has no choice to go back to");
@@ -2693,7 +2649,7 @@ mod tests {
     fn a_new_list_preselects_the_repository_chosen_last() {
         // Chosen last (in another case, for another account – it is the same for all).
         let mut dialog = Dialog::new_list(start(Some("MAHYPE/torro-design"))).expect("dialog");
-        assert_eq!(editor(&dialog).repo_label(), (tr("Loading repositories…").into(), true, false));
+        assert_eq!(editor(&dialog).repo_label(), tr("Loading repositories…"));
         repos_arrive(&mut dialog);
         let e = editor(&dialog);
         assert_eq!(e.query(), format!("{NEW_SEARCH} repo:{DESIGN}"));
@@ -2705,18 +2661,22 @@ mod tests {
             repos_arrive(&mut dialog);
             assert_eq!(dialog.repo_to_remember().as_deref(), Some(TORRO), "{last:?}");
         }
-        // The list of repositories stays open while they arrive; Enter takes the first one found.
+        // The dropdown stays open while the repositories arrive; a choice closes it.
         let mut dialog = new_dialog();
-        let _ = dialog.update(Message::TogglePicker, &demo());
+        let (task, _) = dialog.update(Message::RepoMenu(DropdownEvent::Toggle(())), &demo());
+        assert!(task.units() > 0, "opening focuses the search field");
         repos_arrive(&mut dialog);
-        assert!(editor(&dialog).picker.is_some() && dialog.repo_to_remember().is_some());
-        let _ = dialog.update(Message::FindRepo("NOTES".into()), &demo());
-        assert_eq!(editor(&dialog).found().len(), 1);
-        let _ = dialog.update(Message::PickFound, &demo());
+        assert!(editor(&dialog).repo_menu.open().is_some() && dialog.repo_to_remember().is_some());
+        let _ = dialog.update(Message::PickRepo("mahype/notes".into()), &demo());
         assert_eq!(
-            (dialog.repo_to_remember().as_deref(), editor(&dialog).picker.is_none()),
+            (dialog.repo_to_remember().as_deref(), editor(&dialog).repo_menu.open().is_none()),
             (Some("mahype/notes"), true)
         );
+        // An open dropdown closes when the repositories cannot be read: there is nothing to choose.
+        let mut dialog = new_dialog();
+        let _ = dialog.update(Message::RepoMenu(DropdownEvent::Toggle(())), &demo());
+        let _ = dialog.update(Message::Repos(GITHUB_ACCOUNT.into(), Err("offline".into())), &demo());
+        assert!(editor(&dialog).repo_menu.open().is_none());
         // Repositories that could not be read: Retry asks again.
         let mut dialog = new_dialog();
         let _ = dialog.update(Message::Repos(GITHUB_ACCOUNT.into(), Err("offline".into())), &demo());
@@ -2863,19 +2823,19 @@ mod tests {
                 .expect("dialog");
         let e = editor(&several);
         assert!(e.expert);
-        assert_eq!(e.repo_label(), (tr("Several repositories").into(), false, true));
+        assert_eq!(e.repo_label(), tr("Several repositories"));
         assert_eq!(several.repo_to_remember(), None, "no repository to remember");
         let two =
             Dialog::edit(&list(1, &["repo:a/b", "repo:c/d"]), GITHUB_ACCOUNT.into(), String::new()).expect("dialog");
-        assert_eq!(editor(&two).repo_label().0, tr("Several repositories"));
+        assert_eq!(editor(&two).repo_label(), tr("Several repositories"));
         let one = Dialog::edit(&list(1, &["is:issue repo:a/b label:bug"]), GITHUB_ACCOUNT.into(), String::new())
             .expect("dialog");
         assert!(!editor(&one).expert && !editor(&one).more);
-        assert_eq!(editor(&one).repo_label(), ("a/b".into(), false, false));
+        assert_eq!(editor(&one).repo_label(), "a/b");
         let mut none =
             Dialog::edit(&list(1, &["is:open assignee:@me"]), GITHUB_ACCOUNT.into(), String::new()).expect("dialog");
         repos_arrive(&mut none);
-        assert_eq!(editor(&none).repo_label(), (tr("All repositories").into(), true, false));
+        assert_eq!(editor(&none).repo_label(), tr("All repositories"));
         let more = Dialog::edit(&list(1, &["repo:a/b sort:created-asc"]), GITHUB_ACCOUNT.into(), String::new())
             .expect("dialog");
         assert!(editor(&more).more, "More filters is open when something of it is set");
@@ -2935,7 +2895,7 @@ mod tests {
         let mut new = new_on(TORRO);
         let _ = new.update(Message::ToggleMore, &demo());
         let _ = new.update(Message::ToggleSearch, &demo());
-        let _ = new.update(Message::TogglePicker, &demo());
+        let _ = new.update(Message::RepoMenu(DropdownEvent::Toggle(())), &demo());
         for size in [Size::new(1600.0, 1000.0), Size::new(800.0, 600.0), Size::new(480.0, 900.0)] {
             for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
                 let _ = new.view(class, size);

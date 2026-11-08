@@ -2637,9 +2637,10 @@ impl App {
         if let Some(open) = dialog {
             let opened = self.open_filter_dialog(open);
             return match self.launch.open {
-                Some(Open::FilterRepos) => {
-                    Task::batch([opened, self.update(Message::Filter(filter::Message::TogglePicker))])
-                }
+                Some(Open::FilterRepos) => Task::batch([
+                    opened,
+                    self.update(Message::Filter(filter::Message::RepoMenu(widgets::DropdownEvent::Toggle(())))),
+                ]),
                 Some(Open::FilterSearch) => Task::batch([opened, operation::snap_to_end(filter::FORM_SCROLL)]),
                 _ => opened,
             };
@@ -4924,7 +4925,7 @@ mod tests {
         let _ = app.update(repos());
         assert_eq!(app.filter_dialog.as_ref().and_then(filter::Dialog::repo_to_remember).as_deref(), Some(design));
         // Escape closes the list of repositories before the dialog.
-        let _ = app.update(Message::Filter(filter::Message::TogglePicker));
+        let _ = app.update(Message::Filter(filter::Message::RepoMenu(widgets::DropdownEvent::Toggle(()))));
         let _ = app.update(Message::Escape);
         assert!(app.filter_dialog.is_some());
         let _ = app.update(Message::Escape);
