@@ -3391,6 +3391,11 @@ fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, M
 pub fn head<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, room: f32) -> Element<'a, Message> {
     let mut head = column![].spacing(space::l()).width(Fill);
     let summary = reading.summary();
+    // The original mail keeps its existing widths. Only Torro's invitation details must stay
+    // clear of the floating action rail, including in a narrow panel or a resized wide reader.
+    let clearance =
+        if summary.is_some_and(|summary| summary.invite.is_some()) { widgets::floating_rail_room() } else { 0.0 };
+    let room = (room - clearance).max(0.0);
     if let Some(summary) = summary {
         let sender = sender_block(reading, summary, room);
         // Why a rule put the mail's entry in its lane (issue #128), quietly right under who sent it.
@@ -3429,7 +3434,11 @@ pub fn head<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, room: f32
     if let Some(task) = reading.task {
         head = head.push(task_card(task, reading.now));
     }
-    head.into()
+    if clearance > 0.0 {
+        container(head).width(Fill).padding(Padding::ZERO.right(clearance)).into()
+    } else {
+        head.into()
+    }
 }
 
 /// The warning signs of the loaded mail (issue #506, `mail.get_message`); none while it loads.
@@ -3534,6 +3543,49 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
     // Invitation names are Torro's detail text, not a compact list row. Give long names their
     // full column; ordinary mail keeps its two compact, ellipsized lines below.
     if summary.invite.is_some() {
+        let compact = room < size::props();
+        let date_text = || {
+            typo::text(typo::meta().tabular(), date.clone())
+                .style(theme::text_3)
+                .width(Fill)
+                .wrapping(Wrapping::WordOrGlyph)
+        };
+        if compact {
+            let mut words = column![
+                row(face).push(date_text()).spacing(space::m()).width(Fill).align_y(Alignment::Start),
+                typo::text(typo::body_strong(), name)
+                    .style(theme::text)
+                    .width(Fill)
+                    .align_x(Alignment::Start)
+                    .wrapping(Wrapping::WordOrGlyph),
+            ]
+            .width(Fill)
+            .spacing(space::xs());
+            if summary.flags.contains(&Flag::Flagged) {
+                words =
+                    words.push(widgets::with_tooltip(small_icon(Icon::Flag, Some(reading.attention)), tr("Flagged")));
+            }
+            if let Some(held) = summary.category {
+                let (mark, _) = category_mark(held, reading.categories);
+                let label = typo::text(typo::meta(), category_words(held, reading.categories))
+                    .style(theme::text_2)
+                    .width(Fill)
+                    .wrapping(Wrapping::WordOrGlyph);
+                words = words.push(row![mark, label].spacing(space::s()).width(Fill).align_y(Alignment::Start));
+            }
+            let mut to = list::one_line(address);
+            if !summary.to.is_empty() {
+                to = format!("{to} → {}", self::names(&summary.to));
+            }
+            if let Some(Ok(mail)) = reading.loaded
+                && !mail.cc.is_empty()
+            {
+                to = format!("{to} · {}", trf("cc {names}", &[("names", &self::names(&mail.cc))]));
+            }
+            return words
+                .push(typo::text(typo::meta(), to).style(theme::text_3).width(Fill).wrapping(Wrapping::WordOrGlyph))
+                .into();
+        }
         let mut names = column![
             typo::text(typo::body_strong(), name)
                 .style(theme::text)
@@ -7763,6 +7815,7 @@ mod tests {
                 })
                 .expect("full sender name, not an ellipsis");
             assert!(sender.height > typo::line_height(typo::body_strong()), "{sender:?}");
+            assert_eq!(sender.width, width - widgets::floating_rail_room(), "compact names keep their whole column");
             let explanation = ui
                 .find(|candidate: Candidate<'_>| match candidate {
                     Candidate::Text { content, bounds, .. } if content == why => Some(bounds),
@@ -7770,7 +7823,7 @@ mod tests {
                 })
                 .expect("Torro's explanation");
             assert_eq!(explanation.x, 0.0);
-            assert_eq!(explanation.width, width);
+            assert_eq!(explanation.width, width - widgets::floating_rail_room());
         });
     }
 

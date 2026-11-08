@@ -5717,6 +5717,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                                 tr("Calendar coordination for the distributed product team")
                             ));
                         }
+                        for item in self.items.iter_mut().chain(&mut self.for_me).chain(self.detail.iter_mut()) {
+                            if holds(item, &id) {
+                                item.reason = Some(torro_inbox::LaneReason::Automated);
+                            }
+                        }
                     }
                 }
                 let invite = result.as_ref().ok().and_then(|mail| mail.summary.invite.clone());
@@ -13771,11 +13776,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let rows = sections
             .into_iter()
             .flat_map(|s| s.items)
-            .map(|mut item| {
-                let label = item.label.to_string();
-                item.label = typo::ellipsize(&label, typo::body(), (width - inset - trail).max(0.0)).into();
-                widgets::with_tooltip(widgets::menu_item(item), label)
-            })
+            .map(|item| invitation_calendar_option(item, width, (width - inset - trail).max(0.0)))
             .collect::<Vec<_>>();
         let card = if searchable {
             widgets::escape_free(widgets::search_menu(
@@ -14619,6 +14620,29 @@ pub(crate) fn choice_section<'a, T: ToString + PartialEq>(
         })
         .collect();
     vec![MenuSection::new(items)]
+}
+
+/// Long, unbroken logins and URL segments must remain readable before selecting a calendar.
+fn invitation_calendar_tip(label: String, width: f32) -> Element<'static, Message> {
+    let text = typo::text(typo::caption(), label).style(theme::text_2).width(Fill).wrapping(Wrapping::WordOrGlyph);
+    container(text)
+        .width(width)
+        .padding([style::KBD_PADDING.top + style::KBD_PADDING.bottom, space::s()])
+        .style(style::container::menu)
+        .into()
+}
+
+fn invitation_calendar_option(item: MenuItem<'_, Message>, width: f32, text_room: f32) -> Element<'_, Message> {
+    let label = item.label.to_string();
+    let item = MenuItem { label: typo::ellipsize(&label, typo::body(), text_room).into(), ..item };
+    iced::widget::tooltip(
+        widgets::menu_item(item),
+        invitation_calendar_tip(label, width),
+        iced::widget::tooltip::Position::Bottom,
+    )
+    .gap(space::xs())
+    .delay(Duration::from_millis(500))
+    .into()
 }
 
 /// The floating `dialog` at `anchor`, with the open dropdown of one of its fields over it, if one is
@@ -23174,6 +23198,45 @@ mod tests {
             (hint.text.as_str(), hint.undo.is_none()),
             (tr("The answer may not have gone out. Check your sent mail."), true)
         );
+    }
+
+    /// Issue #569: a long, unbroken connection remains readable while hovering an option.
+    #[test]
+    fn invitation_calendar_hover_wraps_unbroken_identifiers() {
+        use iced_test::selector::Candidate;
+        let label = format!(
+            "Personal — CalDAV · https://dav.example/{} · {}@example.org",
+            "path".repeat(40),
+            "account".repeat(25)
+        );
+        let calendar = TaskList { id: "demo/calendar/personal".into(), name: label.clone() };
+        let item = MenuItem::plain(label.clone(), Message::InviteCalendar(calendar));
+        let width = 280.0;
+        let option = container(invitation_calendar_option(item, width, width - space::xxl())).width(width);
+        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), Size::new(320.0, 800.0), option);
+        let position = Point::new(space::m(), space::m());
+        ui.point_at(position);
+        ui.simulate([iced::Event::Mouse(iced::mouse::Event::CursorMoved { position })]);
+        let dir = tempfile::tempdir().expect("hover snapshots");
+        let before = dir.path().join("before");
+        assert!(ui.snapshot(&Theme::Dark).expect("initial hover").matches_hash(&before).expect("store hash"));
+        // Iced's tooltip overlay does not expose text to widget operations. Verify that the real
+        // delayed hover appears, then inspect the same tooltip content's layout separately.
+        std::thread::sleep(Duration::from_millis(510));
+        assert!(!ui.snapshot(&Theme::Dark).expect("tooltip open").matches_hash(&before).expect("compare hash"));
+        let mut ui = iced_test::Simulator::with_size(
+            iced::Settings::default(),
+            Size::new(320.0, 800.0),
+            invitation_calendar_tip(label.clone(), width),
+        );
+        let bounds = ui
+            .find(|candidate: Candidate<'_>| match candidate {
+                Candidate::Text { content, bounds, .. } if content == label => Some(bounds),
+                _ => None,
+            })
+            .expect("the tooltip content retains the complete label");
+        assert!(bounds.x >= 0.0 && bounds.x + bounds.width <= 320.0, "{bounds:?}");
+        assert!(bounds.height > typo::line_height(typo::caption()) * 3.0, "unbroken segments wrap: {bounds:?}");
     }
 
     /// Task E8.3c: reading an invitation asks for the events around it and – once – the calendars;
