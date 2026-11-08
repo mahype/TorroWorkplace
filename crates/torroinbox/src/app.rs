@@ -11369,7 +11369,17 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .settings(Message::OpenSettings)
             .settings_open(self.settings.is_some())
             .cover(self.cover())
-            .panel_width(self.panel_width(class))
+            .panel_width(self.covering_width(class))
+    }
+
+    /// How wide the panel over the medium window is, which the top row repeats: a mail's with the
+    /// room of its floating rail ([`App::panel_width`]), the overview's [`size::panel()`] alone – it
+    /// has no rail, and the row's panel stood wider than the panel below it (issue #545).
+    fn covering_width(&self, class: SizeClass) -> f32 {
+        match self.panel_open() {
+            true => self.panel_width(class),
+            false => size::panel(),
+        }
     }
 
     /// What lies over the top of the window, which the top row repeats: a dialog of the settings, the
@@ -22255,6 +22265,13 @@ mod tests {
         // Without anything open the button toggles the drawer as before.
         let _ = app.update(Message::ToggleSidebar);
         assert!(!app.drawer);
+        // The overview's panel has no rail: the row repeats its own width, a mail's grows by the rail.
+        let _ = app.update(Message::ShowMailOverview);
+        assert_eq!(app.covering_width(SizeClass::Medium), size::panel());
+        let _ = app.update(Message::CloseMailOverview);
+        let first = app.messages.first().expect("demo mail").id.clone();
+        let _ = app.update(Message::SelectMail(first));
+        assert_eq!(app.covering_width(SizeClass::Medium), app.panel_width(SizeClass::Medium));
     }
 
     /// Issue #409: the span and the account ask for the numbers anew; the old ones stay meanwhile and
