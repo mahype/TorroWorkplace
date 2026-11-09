@@ -12203,8 +12203,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .unwrap_or_else(|| typo::text(typo::body_strong(), tr("Overview")).wrapping(Wrapping::None).into())
     }
 
-    /// The row of the open mail (issue #457): subject, "n of m", previous and next mail – over the wide reader in the top row, in medium and narrow windows as the head of the
-    /// mail's panel. `None` while no mail with headers is open.
+    /// The row of the open mail (issue #457): subject, "n of m", previous and next mail – over the wide reader in the
+    /// top row, in medium and narrow windows as the head of the mail's panel. `None` while no mail with headers is open.
     fn mail_head_row<'a>(&'a self) -> Option<Element<'a, Message>> {
         let open = self.reading().filter(|_| self.panel_open()).and_then(|reading| {
             let summary = reading.summary()?;
