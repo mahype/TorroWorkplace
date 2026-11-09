@@ -3971,6 +3971,22 @@ pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
     {
         return lines;
     }
+    // The note and the place a client sends along with a task or event of a mail (issue #603): what
+    // will be written, whole – the summary shows only its start.
+    if let Request::CreateTodoFromMail { notes, .. } | Request::CreateEventFromMail { notes, .. } = request {
+        let mut lines = Vec::new();
+        if let Request::CreateEventFromMail { location: Some(place), .. } = request
+            && !place.trim().is_empty()
+        {
+            lines.push(tr("Place:").to_string());
+            lines.extend(whole(place));
+        }
+        if let Some(note) = notes.as_deref().filter(|note| !note.trim().is_empty()) {
+            lines.push(tr("Note:").to_string());
+            lines.extend(whole(note));
+        }
+        return lines;
+    }
     if let Request::CallExtensionTool { arguments, .. } = request {
         if arguments.is_empty() {
             return Vec::new();

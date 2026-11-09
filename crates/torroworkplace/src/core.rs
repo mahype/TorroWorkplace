@@ -4825,7 +4825,7 @@ impl Core {
                     ..crate::approvals::MailFacts::default()
                 };
                 let facts = Facts { name: self.list_name(collection).await, mail: Some(mail), ..Facts::default() };
-                fingerprint = Some((mail_fingerprint(&found), Vec::new()));
+                fingerprint = Some((mail_fingerprint(&found), crate::approvals::details(&request, &facts)));
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
@@ -4848,7 +4848,7 @@ impl Core {
                 };
                 let mail = suggestion_mail_facts(account, &found);
                 let facts = Facts { name: self.calendar_name(collection).await, mail: Some(mail), ..Facts::default() };
-                fingerprint = Some((mail_fingerprint(&found), Vec::new()));
+                fingerprint = Some((mail_fingerprint(&found), crate::approvals::details(&request, &facts)));
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
@@ -31951,6 +31951,7 @@ mod tests {
             let (_, asking) = client(core, careful).await;
             let asked = waits(ask(core, Some(&asking), make(Some("Bring the figures"))).await);
             assert_eq!(asked.command, "calendar.create_event_from_mail");
+            assert!(asked.details.iter().any(|line| line.contains("Bring the figures")), "whole: {:?}", asked.details);
             assert!(
                 asked.summary.contains("Bring the figures") && asked.summary.contains("Room 2"),
                 "{}",
