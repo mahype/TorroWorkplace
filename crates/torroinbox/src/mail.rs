@@ -3718,17 +3718,6 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
     row(face).push(words).spacing(space::m()).align_y(Alignment::Center).into()
 }
 
-/// The command that opens the mail `id` in a mail window of its own (issue #457, "Open in new window"):
-/// `torroinbox --view mail --message=<id>`, with `--demo` in the demo.
-pub fn window_command(id: &str, demo: bool) -> Command {
-    let mut command = Command::new(source::sibling(INBOX.binary));
-    command.args(["--view", "mail"]).arg(format!("--message={id}"));
-    if demo {
-        command.arg("--demo");
-    }
-    command
-}
-
 /// The edge of the sender's avatar in the reader's head in the list look `look`: [`size::pill()`],
 /// none (0) in a design whose mail rows have no avatar (`[list] avatar = 0`, issue #291), so rows and
 /// reader agree.
@@ -6594,9 +6583,6 @@ mod tests {
         // The head says who wrote to whom and nothing about files (issue #491).
         let source = include_str!("mail.rs");
         assert!(!function_source(source, "sender_block").contains("attachment"), "no attachments in the head");
-        let window = window_command("m:w1", true);
-        let words: Vec<String> = window.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
-        assert_eq!(words, ["--view", "mail", "--message=m:w1", "--demo"], "its own mail window");
     }
 
     /// Real layout, not a text-width estimate: long names must never squeeze the menu trigger (#572).
