@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Notes – mockup</title>
+<!-- Entwurf zu Issue #602: die Notizen-App torronotes in allen Größenklassen, ohne Netz.
+     Parameter: ?size=bar|mini|s|m|l (ohne: nach der Fenstergröße wie torro_gui::layout::of)
+                ?theme=light|dark (ohne: dunkel)
+                ?open=list|edit|preview|live|conflict|readonly|offline|empty|save (ohne: list)
+     Daten wie die DemoSource aus N1.1a: zwei Konten, Kategorien mit Unterkategorie, zwölf Notizen,
+     Favoriten, eine geteilte schreibgeschützte, eine mit Konflikt, eine offline geänderte, jede Inhaltsart
+     aus docs/notizen.md („Inhaltsarten“). Adressen in den Beispieldaten stehen ohne Schema: Der Entwurf
+     lädt nichts aus dem Netz. -->
+<link rel="stylesheet" href="../linear/torro.css">
+<link rel="stylesheet" href="notes.css">
+<script src="icons.js"></script>
+</head><body><div id="app"></div>
+<script>
+const P=new URLSearchParams(location.search);
+const theme=P.get("theme")==="light"?"light":"dark";
+document.documentElement.dataset.theme=theme;
+const STATES=["list","edit","preview","live","conflict","readonly","offline","empty","save"];
+const state=STATES.includes(P.get("open"))?P.get("open"):"list";
+
+/* Größenklasse wie torro_gui::layout::of (Skill torro-design, Abschnitt 6), in dieser Reihenfolge geprüft. */
+function sizeOf(w,h){if(h<280&&w>=600)return "bar";if(w<360||h<280)return "mini";if(w<600)return "s";if(w<1024)return "m";return "l"}
+const SIZES=["bar","mini","s","m","l"];
+const size=SIZES.includes(P.get("size"))?P.get("size"):sizeOf(innerWidth,innerHeight);
+document.documentElement.dataset.size=size;
+
+const I=(n,c)=>svgIcon(n,c);
+const esc=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+/* ---------- Beispieldaten ---------- */
+const ACC={a:"anna@cloud.example",b:"team.example.org"};
+const NOTES=[
+ {id:1,acc:"a",cat:"Work/Meetings",title:"Weekly planning",date:"10:42",day:"Today",fav:true,md:
+`## This week
+- [x] Send the offsite agenda #offsite
+- [ ] Review [PR #341 summary](../PR%20%23341%20summary.md)
+- [ ] Book the room for [Sprint review](torro:event:sprint-review-2026-11-12)
+
+## Follow-ups
+- Ask Max about the budget, see [Budget 2027](../Budget%202027.md)
+- Task: [Prepare quarterly report](torro:task:q4-report-7f3a)`},
+ {id:2,acc:"a",cat:"Work/Client A",title:"Client A – kickoff",date:"09:15",day:"Today",md:
+`Kickoff with Acme on Monday. Notes from the whiteboard:
+
+![Whiteboard](.attachments.4711/whiteboard.png)
+
+> We need the export before the end of November.
+
+Contract draft: [Acme contract v3.pdf](.attachments.4711/Acme%20contract%20v3.pdf)
+
+Original request: [Re: Kickoff next week](torro:mail:anna%40cloud.example:kickoff-8812%40acme.example)
+
+Their chart (not loaded): ![Usage chart](//images.acme.example/usage.png)`},
+ {id:3,acc:"a",cat:"Work",title:"Ideas for the offsite",date:"Yesterday",day:"Yesterday",md:
+`#offsite #ideas
+
+- Morning: walk instead of slides
+- Each team brings one thing that broke and one that worked
+- Dinner at the lake, see [Booking](lakehouse.example/booking)`},
+ {id:4,acc:"a",cat:"",title:"Quick note 14:02",date:"Yesterday",day:"Yesterday",md:`Call the plumber back before Friday.`},
+ {id:5,acc:"a",cat:"Work",title:"PR #341 summary",date:"Yesterday",day:"Yesterday",agent:"Assistant",md:
+`Summary written by the assistant from the pull request:
+
+- Moves the sync queue into SQLite
+- Adds a retry with \`If-Match\`
+- Open question: what happens on 423?`},
+ {id:6,acc:"a",cat:"Recipes",title:"Pasta al limone",date:"Mon",day:"This week",fav:true,md:
+`#recipe
+
+- [x] Spaghetti, 400 g
+- [x] Two lemons
+- [ ] Parmesan
+- [ ] Butter
+
+![Plate](.attachments.4720/plate.jpg)`},
+ {id:7,acc:"a",cat:"Personal",title:"Reading list",date:"Mon",day:"This week",md:
+`- [Iced text_editor](docs.iced.rs/iced/widget/text_editor)
+- [Writing for the web](nngroup.example/writing)
+- #books Piranesi, Klara and the Sun`},
+ {id:8,acc:"a",cat:"Personal",title:"Travel checklist",date:"Sun",day:"This week",offline:true,md:
+`- [x] Passport
+- [ ] Charger
+- [ ] Train tickets, see [Train to Hamburg](torro:event:train-hh-2026-11-20)`},
+ {id:9,acc:"a",cat:"Work",title:"Budget 2027",date:"Sun",day:"This week",conflict:true,md:
+`## Budget 2027
+- Travel: 12,000
+- Tools: 8,500
+- Offsite: 6,000`},
+ {id:10,acc:"b",cat:"Shared",title:"Team handbook",date:"Oct 28",day:"Earlier",ro:"Max Berger",fav:true,md:
+`## Working hours
+Core hours are 10:00 to 15:00.
+
+## Tools
+- Chat: Nextcloud Talk
+- Files: the team folder`},
+ {id:11,acc:"a",cat:"",title:"Saved from Inbox: Invoice March",date:"Oct 27",day:"Earlier",md:
+`> Please find attached the invoice for March.
+
+From [Invoice March – Acme GmbH](torro:mail:anna%40cloud.example:8790%40acme.example)`},
+ {id:12,acc:"b",cat:"Shared/Onboarding",title:"First week",date:"Oct 20",day:"Earlier",md:`- [ ] Laptop\n- [ ] Accounts`},
+];
+const CATS={a:[["",""],["Work","Work"],["Work/Client A","Client A"],["Work/Meetings","Meetings"],["Personal","Personal"],["Recipes","Recipes"]],b:[["Shared","Shared"],["Shared/Onboarding","Onboarding"]]};
+const count=(acc,c)=>NOTES.filter(n=>n.acc===acc&&(c===""?n.cat==="":(n.cat===c||n.cat.startsWith(c+"/")))).length;
+
+const pick={list:1,edit:1,preview:1,live:1,conflict:9,readonly:10,offline:8,empty:0,save:11}[state];
+const notes=state==="empty"?[]:NOTES;
+const cur=notes.find(n=>n.id===pick);
+
+/* ---------- Markdown: Vorschau, Quelltext, Live ---------- */
+const IMG={
+ whiteboard:`<svg viewBox="0 0 640 260"><rect width="640" height="260" fill="#F2F1EC"/><rect x="24" y="22" width="592" height="216" rx="6" fill="#FFFFFF" stroke="#D8D6CF"/><path d="M60 70h160M60 100h120M60 130h170" stroke="#3B6EF0" stroke-width="5" stroke-linecap="round"/><rect x="300" y="60" width="110" height="60" rx="6" fill="none" stroke="#1F9D68" stroke-width="4"/><rect x="460" y="60" width="110" height="60" rx="6" fill="none" stroke="#1F9D68" stroke-width="4"/><path d="M410 90h50" stroke="#1F9D68" stroke-width="4"/><path d="M455 84l8 6-8 6" fill="none" stroke="#1F9D68" stroke-width="4"/><path d="M300 170c40-30 90 20 140-10s90 10 130-12" fill="none" stroke="#D50C0C" stroke-width="4" stroke-linecap="round"/><path d="M60 190h90M60 210h60" stroke="#62666D" stroke-width="4" stroke-linecap="round"/></svg>`,
+ plate:`<svg viewBox="0 0 640 220"><rect width="640" height="220" fill="#E8E2D6"/><circle cx="320" cy="110" r="88" fill="#FFFFFF"/><circle cx="320" cy="110" r="64" fill="#F3E3B5"/><path d="M280 100c20-20 60 20 80 0M275 120c25-15 65 15 90 0M290 82c15-10 40 10 60 0" fill="none" stroke="#E2C77C" stroke-width="6" stroke-linecap="round"/><circle cx="440" cy="70" r="22" fill="#F2D74E"/><circle cx="470" cy="150" r="18" fill="#F2D74E"/></svg>`};
+/* Verweise wie die Ziele von apps.open_app (docs/notizen.md, „Inhaltsarten“): mail und task öffnen über den Kern,
+   event und note haben noch kein Ziel und bleiben Text, jedes andere Schema auch. */
+function refIcon(u){return u.startsWith("torro:mail:")?"mail":u.startsWith("torro:task:")?"list-todo":null}
+function inline(s,{live}={}){
+  s=esc(s);
+  s=s.replace(/`([^`]+)`/g,'<code>$1</code>');
+  s=s.replace(/\[([^\]]+)\]\(([^)]+)\)/g,(m,t,u)=>{
+    const r=refIcon(u);
+    if(r) return `<span class="ref" title="${u}">${I(r)}${t}</span>`;
+    if(u.startsWith("torro:")) return `<span title="Opens once Torro can show this kind of entry">${t}</span>`;
+    if(u.endsWith(".md")) return `<a title="${u}">${I("file-text","s14")} ${t}</a>`;
+    if(u.startsWith(".attachments")) return `<a>${t}</a>`;
+    return `<a title="${u}">${t}</a>`;});
+  s=s.replace(/(^|\s)(#[a-z][\w/-]*)/g,'$1<span class="tagw">$2</span>');
+  return s;
+}
+function image(alt,u){
+  if(u.startsWith("//")) return `<div class="blocked">${I("image","s14")}Image from the web not loaded <button class="btn ghost" style="margin-left:auto">Load once</button></div>`;
+  const k=u.includes("whiteboard")?"whiteboard":"plate";
+  return `<div class="img">${IMG[k]}<div class="cap">${I("paperclip","s12")}${esc(u.split("/").pop())}</div></div>`;
+}
+function preview(md){
+  let h="",list=null;
+  const close=()=>{if(list){h+="</ul>";list=null}};
+  for(const line of md.split("\n")){
+    let m;
+    if(m=line.match(/^- \[( |x)\] (.*)$/)){if(list!=="c"){close();h+='<ul class="check">';list="c"}
+      h+=`<li class="${m[1]==="x"?"done":""}"><span class="box ${m[1]==="x"?"on":""}">${m[1]==="x"?I("check"):""}</span><span>${inline(m[2])}</span></li>`;continue}
+    if(m=line.match(/^- (.*)$/)){if(list!=="u"){close();h+="<ul>";list="u"}h+=`<li>${inline(m[1])}</li>`;continue}
+    close();
+    if(!line.trim())continue;
+    if(m=line.match(/^## (.*)$/)){h+=`<h2>${inline(m[1])}</h2>`;continue}
+    if(m=line.match(/^> (.*)$/)){h+=`<blockquote>${inline(m[1])}</blockquote>`;continue}
+    if(m=line.match(/^(.*?)!\[([^\]]*)\]\(([^)]+)\)$/)){if(m[1].trim())h+=`<p>${inline(m[1])}</p>`;h+=image(m[2],m[3]);continue}
+    if(m=line.match(/^\[([^\]]+)\]\(([^)]+\.pdf)\)$/)){h+=`<div class="file"><span class="ft">${I("file-type","s14")}</span><b class="ell">${esc(m[1])}</b><span class="meta3 tab">1.2 MB</span></div>`;continue}
+    if(m=line.match(/^(.*?): \[([^\]]+)\]\(([^)]+\.pdf)\)$/)){h+=`<p>${inline(m[1])}:</p><div class="file"><span class="ft">${I("file-type","s14")}</span><b class="ell">${esc(m[2])}</b><span class="meta3 tab">1.2 MB</span></div>`;continue}
+    h+=`<p>${inline(line)}</p>`;
+  }
+  close();return `<div class="md">${h}</div>`;
+}
+function source(md,caretLine){
+  return `<div class="src">`+md.split("\n").map((l,i)=>{
+    let s=esc(l);
+    s=s.replace(/^(## )(.*)$/,'<span class="mk">$1</span><span class="h">$2</span>')
+       .replace(/^(- \[[ x]\] |- |&gt; )/,'<span class="mk">$1</span>')
+       .replace(/(!?\[)([^\]]*)(\]\([^)]*\))/g,'<span class="mk">$1</span>$2<span class="mk">$3</span>')
+       .replace(/(^|\s)(#[a-z][\w/-]*)/g,'$1<span class="tagw">$2</span>');
+    return s+(i===caretLine?'<span class="caret"></span>':"");}).join("\n")+`</div>`;
+}
+/* Live: Wirkung sofort sichtbar; die Zeichen erscheinen leise nur in der Zeile mit dem Cursor. */
+function live(md,caretLine){
+  return `<div class="md live">`+md.split("\n").map((l,i)=>{
+    if(i===caretLine) return `<div class="src">${source(l,0).replace(/^<div class="src">|<\/div>$/g,"")}</div>`;
+    let m;
+    if(!l.trim()) return `<div style="height:12px"></div>`;
+    if(m=l.match(/^## (.*)$/)) return `<div class="lh" style="margin:12px 0 4px">${inline(m[1])}</div>`;
+    if(m=l.match(/^- \[( |x)\] (.*)$/)) return `<div style="display:flex;gap:10px" class="${m[1]==="x"?"c-3":""}"><span class="box ${m[1]==="x"?"on":""}">${m[1]==="x"?I("check"):""}</span><span style="${m[1]==="x"?"text-decoration:line-through":""}">${inline(m[2])}</span></div>`;
+    if(m=l.match(/^- (.*)$/)) return `<div style="display:flex;gap:10px"><span class="c-3" style="width:16px;text-align:center">•</span><span>${inline(m[1])}</span></div>`;
+    return `<p style="margin:0 0 4px">${inline(l)}</p>`;}).join("")+`</div>`;
+}
+
+/* ---------- Bausteine ---------- */
+const catLabel=c=>c===""?"No category":c.split("/").join(" › ");
+function row(n){
+  const marks=[n.ro?I("lock","s14"):"",n.offline?I("cloud-off","s14"):"",n.conflict?`<span class="c-att">${I("triangle-alert","s14")}</span>`:"",n.agent?I("bot","s14"):"",n.fav?`<span class="star">${I("star","s14")}</span>`:""].join("");
+  const ex=n.md.replace(/- \[[ x]\] /g," ").replace(/(^|\n)- /g," ").replace(/[#>*`\[\]!]|\(.*?\)/g," ").replace(/\s+/g," ").trim();
+  return `<div class="row ${cur&&n.id===cur.id&&!(size==="s"&&state==="list")?"sel":""}"><div class="l1"><span class="t">${esc(n.title)}</span><span class="marks">${marks}</span><span class="d">${n.date}</span></div>
+  <div class="l2">${n.cat===""?"":`<span class="cat">${esc(n.cat.split("/").pop())} ·</span>`}<span class="x">${esc(ex)}</span></div></div>`;
+}
+function listCol(cls){
+  const days=[...new Set(notes.map(n=>n.day))];
+  const body=notes.length?days.map(d=>`<div class="day">${d}</div>`+notes.filter(n=>n.day===d).map(row).join("")).join(""):
+   `<div class="empty"><div><div class="ic">${I("notebook-pen","s20")}</div><h3>No notes yet.</h3><p>Write one here, from the mini tile or with “Save as note” in other apps.</p><button class="btn primary big">${I("plus","s14")}New note</button></div></div>`;
+  const back=size==="s"?`<button class="ib" title="Show sidebar">${I("panel-left")}</button>`:"";
+  const right=size==="s"?`<button class="ib" title="Search">${I("search")}</button><button class="btn primary sq" title="New note">${I("plus","s14")}</button><button class="ib set" title="Settings">${I("sliders-horizontal")}</button>`:
+    `<button class="ib" title="Sort">${I("list-filter","s14")}</button>`;
+  return `<div class="list ${cls}"><div class="lhead">${back}<b>All notes</b><span class="c-3 tab">${notes.length}</span><span class="grow"></span>${right}</div><div class="scroll">${body}</div></div>`;
+}
+function sidebar(){
+  const nav=(ic,t,n,on)=>`<div class="nav ${on?"on":""}">${I(ic)}<span class="grow">${t}</span>${n!==""?`<span class="n">${n}</span>`:""}</div>`;
+  const tree=acc=>CATS[acc].map(([p,l])=>{const child=p.includes("/");
+    const ic=p===""?"inbox":"folder";
+    return `<div class="nav ${child?"child":""}">${I(ic)}<span class="grow">${p===""?"No category":l}</span><span class="n">${count(acc,p)}</span></div>`}).join("");
+  const nn=notes.length;
+  return `<div class="side"><div class="top"><button class="ib" title="Collapse sidebar">${I("panel-left")}</button></div>
+  <div class="tools"><div class="search">${I("search","s14")}<span>Search</span><kbd>Ctrl K</kbd></div><button class="ib boxed" title="New note">${I("square-pen","s14")}</button></div>
+  ${nav("file-text","All notes",nn,true)}${nav("star","Favorites",nn?3:0)}
+  ${nn?`<div class="grp">${ACC.a}${I("chevron-down")}</div>${tree("a")}
+  <div class="grp">${ACC.b}${I("chevron-down")}</div>${tree("b")}
+  <div class="grp">Tags${I("chevron-down")}</div>${nav("hash","offsite",2)}${nav("hash","ideas",1)}${nav("hash","recipe",1)}${nav("hash","books",1)}`:""}
+  <div class="spacer"></div><div class="foot">${state==="offline"?I("cloud-off","s14")+"Offline · 1 change waiting":I("cloud","s14")+"Synced 2 min ago"}</div></div>`;
+}
+function rail(){
+  const b=(ic,t,on)=>`<button class="ib ${on?"on":""}" title="${t}">${I(ic)}</button>`;
+  return `<div class="rail"><div class="top">${b("panel-left","Expand sidebar")}</div>${b("search","Search")}${b("square-pen","New note")}<div class="sep"></div>
+  ${b("file-text","All notes",true)}${b("star","Favorites")}<div class="sep"></div>${b("inbox","No category")}${b("folder","Work")}${b("folder","Personal")}${b("folder","Recipes")}${b("folder","Shared")}<div class="spacer"></div>${state==="offline"?b("cloud-off","Offline"):b("cloud","Synced")}</div>`;
+}
+function noteCol(){
+  const narrow=size==="s";
+  if(!cur) return `<div class="note"><div class="nhead"><span class="grow"></span><button class="ib set" title="Settings">${I("sliders-horizontal")}</button></div><div class="empty"><div><p class="c-3" style="margin:0">Nothing selected.</p></div></div></div>`;
+  const n=cur;
+  const mode=state==="edit"?"edit":state==="live"?"live":"preview";
+  const toggle=state==="live"?`<button class="ib" title="Show Markdown source (Ctrl E)">${I("code","s14")}</button>`:
+    `<span class="seg" title="Ctrl E"${n.ro?' style="opacity:.4"':""}><span class="${mode==="edit"?"on":""}">Edit</span><span class="${mode==="preview"?"on":""}">Preview</span></span>`;
+  const back=narrow?`<button class="ib" title="All notes">${I("chevron-left")}</button>`:"";
+  const head=`<div class="nhead">${back}<span class="crumb ell">${narrow||size==="m"?"":`${I(n.ro?"lock":"folder","s14")}<span class="ell">${esc(catLabel(n.cat))}</span>${I("chevron-right","s12")}`}<b class="ell">${esc(n.title)}</b></span><span class="grow"></span>
+   ${state==="conflict"?"":toggle}<button class="ib" title="${n.fav?"Remove from favorites":"Add to favorites"}"><span class="${n.fav?"star":""}">${I("star","s14")}</span></button><button class="ib" title="More">${I("ellipsis")}</button><button class="ib set" title="Settings">${I("sliders-horizontal")}</button></div>`;
+  let band="";
+  if(state==="offline") band=`<div class="band">${I("cloud-off")}<span class="grow"><b>Saved on this device, not yet on the server.</b> <span class="c-2">Syncs when Nextcloud is reachable.</span></span><button class="btn">${I("refresh-cw","s14")}Try now</button></div>`;
+  if(state==="readonly") band=`<div class="band">${I("lock")}<span class="grow"><b>Shared read-only</b> <span class="c-2">by ${n.ro}. You can add it to your favorites.</span></span><button class="btn">${I("copy","s14")}Copy to my notes</button></div>`;
+  if(state==="conflict") band=`<div class="band"><span class="c-att">${I("triangle-alert")}</span><span class="grow"><b>Changed elsewhere.</b> <span class="c-2">Both versions changed “Tools” and “Offsite”. Nothing was overwritten.</span></span><span class="acts"><button class="btn">Keep mine</button><button class="btn">Keep theirs</button><button class="btn">Keep both</button></span></div>`;
+  if(n.agent&&state!=="conflict") band=band;
+  const caret=n.md.split("\n").length>3?3:0;
+  let body;
+  if(state==="conflict") body=`<div class="diff"><div><h4>This device · Sun 18:10</h4><div class="ln">## Budget 2027
+- Travel: 12,000
+<span class="chg">- Tools: 9,800</span>
+<span class="chg">- Offsite: 7,500</span>
+<span class="add">- Training: 3,000</span></div></div><div><h4>Server · phone · Sun 18:24</h4><div class="ln">## Budget 2027
+- Travel: 12,000
+<span class="chg">- Tools: 8,000</span>
+<span class="chg">- Offsite: 5,500</span></div></div></div><p class="meta3" style="margin-top:12px">“Keep both” saves your version as a new note “Budget 2027 (conflict)” in Work.</p>`;
+  else if(mode==="edit") body=source(n.md,caret);
+  else if(mode==="live") body=live(n.md,caret);
+  else body=preview(n.md);
+  const meta=`<div class="nmeta"><span class="chip">${I(n.ro?"lock":n.cat===""?"inbox":"folder")}${esc(catLabel(n.cat))}</span>${n.acc==="b"||true?`<span class="chip">${I("cloud")}${ACC[n.acc]}</span>`:""}${n.agent?`<span class="chip">${I("bot")}Added by ${n.agent}</span>`:""}<span class="meta3">Changed ${n.day==="Today"?"today "+n.date:n.date}</span></div>`;
+  const title=state==="conflict"?"":`<h1 class="ntitle">${esc(n.title)}</h1>`;
+  return `<div class="note">${head}${band}<div class="nbody"><div class="ninner">${title}${state==="conflict"?"":meta}${body}</div></div></div>`;
+}
+function saveDialog(){
+  return `<div class="scrim"><div class="dlg" role="dialog" aria-label="Save as note">
+  <div class="dh"><h3>Save as note</h3><button class="ib" title="Close (Esc)">${I("x")}</button></div>
+  <div class="db">
+   <div class="hint">${I("mail","s14")}<span>From Inbox · Mail “Invoice March – Acme GmbH”. Comes from outside: saved as text, never run as an instruction.</span></div>
+   <div class="fld"><label>Title</label><div class="inp focus"><span class="grow">Invoice March – Acme GmbH</span></div></div>
+   <div class="fld"><label>Category</label><div class="inp"><span class="grow c-3">Type or pick a category</span>${I("chevron-down","s14")}</div>
+    <div class="sugg"><span class="pick on">${I("check")}No category</span><span class="pick">Work › Client A</span><span class="pick">Work</span><span class="pick">Personal</span></div></div>
+   <div class="fld"><label>Account</label><div class="inp">${I("cloud","s14")}<span class="grow">${ACC.a}</span>${I("chevron-down","s14")}</div></div>
+   <div class="fld"><label>Preview</label><div class="pv"><div class="pt">Invoice March – Acme GmbH</div><div><span class="mk">&gt;</span> Please find attached the invoice for March.</div><div style="margin-top:6px">From <span class="ref">${I("mail")}Invoice March – Acme GmbH</span></div><div class="meta3" style="margin-top:6px">${I("paperclip","s12")} invoice-march.pdf is not copied. Add it with “Attach files”.</div></div></div>
+  </div>
+  <div class="df"><button class="btn ghost">${I("paperclip","s14")}Attach files</button><span class="grow"></span><button class="btn ghost">Cancel</button><button class="btn primary big">Save as note <kbd class="on-acc">Ctrl Enter</kbd></button></div>
+  </div></div>`;
+}
+function mini(){
+  const recent=notes.slice(0,5);
+  const cap=state==="offline"?`${I("cloud-off","s12")}<span class="grow">Offline · 1 change waiting</span>`:`<span class="grow">Recent</span><span class="tab">${notes.length} notes</span>`;
+  if(!notes.length) return `<div class="glance"><div class="qn">${I("square-pen","s14")}<span class="grow">Quick note</span><kbd>Enter</kbd></div><div class="cap">No notes yet. Type one above.</div></div>`;
+  return `<div class="glance"><div class="qn">${I("square-pen","s14")}<span class="grow">Quick note</span><kbd>Enter</kbd></div>
+  <div class="cap">${cap}</div>
+  <div>${recent.map(n=>`<div class="mrow">${n.fav?`<span class="star" style="color:var(--attention)">${I("star","s14")}</span>`:I("file-text","s14")}<span class="t">${esc(n.title)}</span><span class="d">${n.date}</span></div>`).join("")}</div></div>`;
+}
+function bar(){
+  return `<div class="bar"><div class="qn">${I("square-pen","s14")}<span class="grow">Quick note</span><kbd>Enter</kbd></div>
+  ${state==="offline"?`<span class="tt" style="border:0">${I("cloud-off","s14")}<span>Offline</span></span>`:""}
+  <div class="titles">${notes.length?"":`<span class="c-3">No notes yet.</span>`}${notes.slice(0,6).map(n=>`<span class="tt">${n.fav?`<span style="color:var(--attention);display:inline-flex">${I("star","s14")}</span>`:I("file-text","s14")}<span>${esc(n.title)}</span></span>`).join("")}</div></div>`;
+}
+
+/* ---------- Aufbau je Größe ---------- */
+let html;
+if(size==="mini") html=mini();
+else if(size==="bar") html=bar();
+else if(size==="s") html=`<div class="win narrow"><div class="main">${(state==="list"||state==="empty"||state==="save")?listCol("full"):noteCol()}</div></div>`;
+else if(size==="m") html=`<div class="win">${rail()}<div class="main"><div class="cols">${listCol("medium")}${noteCol()}</div></div></div>`;
+else html=`<div class="win">${sidebar()}<div class="main"><div class="cols">${listCol("wide")}${noteCol()}</div></div></div>`;
+if(state==="save"&&size!=="mini"&&size!=="bar") html+=saveDialog();
+document.getElementById("app").innerHTML=html;
+/* Leiste: nur so viele Titel, wie ganz passen – nie abgeschnitten (Skill torro-design, Abschnitt 6). */
+const ts=document.querySelector(".bar .titles");
+while(ts&&ts.lastElementChild&&ts.scrollWidth>ts.clientWidth) ts.lastElementChild.remove();
+</script>
+</body></html>

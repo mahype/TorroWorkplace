@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Notes – Entwürfe</title>
+<!-- Übersicht der Entwürfe zu Issue #602 (docs/notizen.md): je Größenklasse zwei Rahmen, hell und dunkel,
+     in der echten Größe des Fensters, verkleinert auf die Breite der Seite. Ohne Netz. -->
+<link rel="stylesheet" href="../linear/torro.css">
+<link rel="stylesheet" href="notes.css">
+<style>
+body{overflow:auto;height:auto}
+.wrap{max-width:1480px;margin:0 auto;padding:40px 24px 64px}
+h1{font-size:28px;line-height:36px;font-weight:600;margin:0 0 8px}
+h2{font-size:22px;line-height:28px;font-weight:600;margin:40px 0 4px}
+p{color:var(--text2);max-width:80ch;margin:0 0 12px}
+code{font:400 12px/18px ui-monospace,monospace;background:var(--raised);border:1px solid var(--line-strong);border-radius:3px;padding:0 4px}
+.links{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 0}
+.links a{height:28px;display:inline-flex;align-items:center;padding:0 10px;border:1px solid var(--line-strong);border-radius:4px;color:var(--text);text-decoration:none;font:500 12px/16px Inter,sans-serif;background:var(--raised)}
+.links a:hover{background:var(--hover)}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:12px}
+@media (max-width:900px){.pair{grid-template-columns:1fr}}
+.cap{font-size:12px;line-height:16px;font-weight:500;color:var(--text3);margin-bottom:4px}
+.frame{position:relative;overflow:hidden;border:1px solid var(--line-strong);border-radius:4px;background:var(--bg)}
+.frame iframe{position:absolute;left:0;top:0;border:0;transform-origin:0 0}
+.themes{display:flex;gap:6px;align-items:center;margin-top:8px}
+</style></head><body><div class="wrap">
+<h1>Torro Notes – Entwürfe</h1>
+<p>Die Notizen-App <code>torronotes</code> nach dem Konzept in <code>docs/notizen.md</code> (Issue #602), im Standard der Suite
+(Skill <code>torro-design</code>). Eine Gestaltungsrichtung; nur der Editor zeigt zwei Formen: den Umschalter
+<b>Edit / Preview</b> (Entscheidung 8) und die <b>Live-Vorschau</b>, die die Recherche empfiehlt (Vorschlag zu Entscheidung 8, siehe Entscheidung 11).
+Jeder Rahmen zeigt <code>app.html</code> in der echten Fenstergröße, verkleinert. Alles öffnet ohne Netz.</p>
+<p>Parameter von <code>app.html</code>: <code>size=bar|mini|s|m|l</code>, <code>theme=light|dark</code>,
+<code>open=list|edit|preview|live|conflict|readonly|offline|empty|save</code>.</p>
+
+<h2>Zustände (Breit, dunkel und hell)</h2>
+<div class="links" id="states"></div>
+
+<div id="sizes"></div>
+</div>
+<script>
+const SIZES=[
+ ["l","Breit",1400,820,"Seitenleiste 240 mit Konten, Kategorien und Tags, Liste 440, Notiz mit Lesespalte 640."],
+ ["m","Mittel",860,700,"Leiste 60 mit Symbolen, Liste 364 neben der Notiz; Kategorie und Konto als Chips unter dem Titel."],
+ ["s","Schmal",420,760,"Liste oder Notiz; „‹“ führt zurück, die Seitenleiste öffnet als Schublade."],
+ ["mini","Mini",320,360,"Feld „Quick note“ (Enter legt eine Notiz ohne Kategorie an) und die letzten fünf Notizen."],
+ ["bar","Leiste",900,200,"Feld und die letzten Titel auf einer Mittellinie; nur so viele Titel, wie ganz passen."]];
+const STATES=[["list","Liste"],["edit","Edit"],["preview","Preview"],["live","Live"],["conflict","Konflikt"],["readonly","Schreibgeschützt"],["offline","Offline"],["empty","Leer"],["save","Save as note"]];
+document.getElementById("states").innerHTML=STATES.map(([k,l])=>`<a href="app.html?size=l&open=${k}">${l}</a><a href="app.html?size=l&open=${k}&theme=light">hell</a>`).join("");
+const open=new URLSearchParams(location.search).get("open")||"list";
+document.getElementById("sizes").innerHTML=SIZES.map(([k,name,w,h,txt])=>`
+ <h2>${name} <span style="font-weight:400;color:var(--text3);font-size:14px">${w} × ${h}</span></h2><p>${txt}</p>
+ <div class="links">${STATES.map(([s,l])=>`<a href="?open=${s}#${k}" ${s===open?'style="background:var(--selected)"':""}>${l}</a>`).join("")}</div>
+ <div class="pair" id="${k}">${["dark","light"].map(t=>`<div><div class="cap">${t==="dark"?"Dunkel":"Hell"} · <a style="color:inherit" href="app.html?size=${k}&theme=${t}&open=${open}">einzeln öffnen</a></div>
+  <div class="frame" style="max-width:${w}px" data-w="${w}" data-h="${h}"><iframe title="${name} ${t}" src="app.html?size=${k}&theme=${t}&open=${open}" width="${w}" height="${h}"></iframe></div></div>`).join("")}</div>`).join("");
+function fit(){document.querySelectorAll(".frame").forEach(f=>{const w=+f.dataset.w,h=+f.dataset.h;const k=Math.min(1,f.clientWidth/w);
+ f.style.height=Math.round(h*k)+"px";f.querySelector("iframe").style.transform=`scale(${k})`})}
+addEventListener("resize",fit);fit();
+</script>
+</body></html>

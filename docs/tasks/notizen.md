@@ -17,6 +17,12 @@ einer Stufe kommen in ihre erste Kern-Aufgabe (N1.1, N2.1, N3.1, N4.1).
 Aufgaben, die den Katalog ändern (N1.1, N1.10, N2.1, N3.1, N4.1), laufen nie parallel zu anderen
 Katalog-Aufgaben.
 
+**Stand 2026-11-09 (Issue #602):** Maßstab für die Oberfläche sind die Mockups in
+[prototypes/notes/](../prototypes/notes/index.html). Nach Entscheidung 12 in [notizen.md](../notizen.md) spricht
+Torro mit Nextcloud über den Notizordner per WebDAV, die Notes-App ist ein Zusatz; N1.2 ist danach umgeschrieben,
+N4 wird der lokale Ordner. Die Folgen für Stufen und Befehle sind Vorschläge, bis der Mensch das Konzept im Issue
+abgestimmt hat.
+
 ```
 N1.1a ─┬─ N1.6 ── N1.7 ── N1.8          ← sofort möglich (nur neue Crates, Demo-Daten)
        ├─ N1.2 ────┐
@@ -26,10 +32,10 @@ N1.1a ─┬─ N1.6 ── N1.7 ── N1.8          ← sofort möglich (nur n
                                   └─ N1.12
 N2.1 (braucht N1.4) ── N2.2 (braucht N1.7)
 N3.1 (braucht N1.4) ── N3.2 (braucht N1.7)
-N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
+N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur noch lokaler Ordner
 ```
 
-## N1 Notizen mit Nextcloud Notes
+## N1 Notizen mit Nextcloud (Notizordner per WebDAV, Notes-App als Zusatz)
 
 ### N1.1a Modell-Crate `torro-notes`
 - [ ] erledigt
@@ -55,6 +61,10 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
 - **`provider.rs`:** Trait `NotesProvider` für den Kern, synchron wie `torro_pim::Provider`:
   - Methoden: `list(since, cursor)` mit Teilen und gelöschten Kennungen, `get`, `create`,
     `update(note, etag)`, `delete(id, etag)`, `settings`, `set_settings`.
+  - **Vorschlag (Entscheidung 12 in [notizen.md](../notizen.md)):** `list(since)` liefert geänderte und gelöschte
+    Kennungen ohne Teile (der Anbieter steigt über Ordner-ETags ab); dazu `rename(id, title, category, etag)` für
+    Titel und Kategorie (WebDAV `MOVE`) und `set_favorite(id, on)`. Gilt, sobald der Mensch das Konzept abgestimmt
+    hat; die Aufgabe legt den Trait dann so fest.
   - Fehler als eigenes Enum: `Auth`, `Offline`, `Conflict { server: Note }`, `ReadOnly`, `Locked`,
     `StorageFull`, `Unsupported`, `Other`.
 - **`source.rs`:** Trait `NotesSource` für die App, async wie `PimSource`:
@@ -86,10 +96,14 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
   Stellen, die `Rights { … }` bauen, und deren Tests), `docs/api.md` (Bereich `notes`),
   `docs/api-reference.md`
 - **Requests** (Bereich `notes`, Tabelle in [notizen.md](../notizen.md#befehle-bereich-notes), Stufe N1,
-  ohne `inbox.create_note_from_item`, das in N1.10 kommt), je mit Doc-Kommentar und Fehlercodes.
+  ohne `inbox.create_note_from_item`, das in N1.10 kommt), je mit Doc-Kommentar und Fehlercodes. Dazu, sobald der
+  Mensch das Konzept abgestimmt hat, `notes.list_tags` und der Filter `tag?` in `notes.list_notes` (Vorschlag).
+  Die Seitenleiste „Tags“ in N1.6 liest nur über sie.
   Handler antworten bis N1.4 mit `unsupported`.
-- **Kontozustand:** `AccountInfo` bekommt ein optionales Feld für den Notes-Dienst (verbunden, App
-  fehlt, App zu alt), gefüllt ab N1.3.
+- **Kontozustand:** `AccountInfo` bekommt ein optionales Feld für den Notizordner, gefüllt ab N1.3. Werte nach
+  dem Vorschlag in Entscheidung 12: Ordner gewählt, Ordner aus der Notes-App, kein Ordner. Bis der Mensch das
+  Konzept abgestimmt hat, galt „verbunden, App fehlt, App zu alt“; die Aufgabe fragt nach, falls noch nicht
+  abgestimmt ist.
 - **Zugriff aus `Request::operation()`:**
   - `update_note` mit `content` ist `Delete`, sonst `Write`.
   - `resolve_conflict` mit `keep: mine` oder `keep: theirs` ist `Delete`, mit `both` `Write`.
@@ -121,32 +135,46 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
     `resolve_conflict` mit `mine`/`theirs` warten auf eine Freigabe.
   - API-Referenz neu erzeugt; `torro-api-review` ohne Befund.
 
-### N1.2 Nextcloud: Notes-API im Anbieter
+### N1.2 Nextcloud: Notizordner per WebDAV im Anbieter
 - [ ] erledigt
 - **Modell:** Opus (Agent `nextcloud-expert`) · **Braucht:** N1.1a · **Dateien:**
   `crates/torro-nextcloud/src/{lib,capabilities}.rs`, neu `crates/torro-nextcloud/src/notes.rs`,
-  `crates/torro-nextcloud/Cargo.toml`, `crates/torro-nextcloud/tests/fixtures/notes/*` (neu)
-- **Capabilities:** `NotesCapability { api_versions, version }` aus `capabilities.notes`. Gebraucht
-  wird API ≥ 1.2; darunter oder ohne Eintrag ist die Funktion „nicht vorhanden“.
-- **`notes.rs`** setzt `torro_notes::NotesProvider` um. Basis `/index.php/apps/notes/api/v1/`, Header
-  `Accept: application/json`, Basic Auth wie die OCS-Aufrufe:
-  - **Liste in Teilen:** `chunkSize=50`, `chunkCursor`, `pruneBefore`, `If-None-Match`. Gelöscht ist,
-    was in der letzten Teilantwort fehlt.
-  - **Ändern:** `PUT` mit `If-Match`. Bei 412 wird die Serverfassung aus der Antwort zu
-    `Conflict { server }`.
-  - **Statuscodes:** 403 → `ReadOnly`, 423 → `Locked`, 507 → `StorageFull`. Unbekannte Codes wie ihre
-    Klasse.
-  - `X-Notes-API-Versions` lesen.
+  `crates/torro-nextcloud/Cargo.toml`, `crates/torro-nextcloud/tests/fixtures/notes/*` (neu), neu
+  `crates/torro-notes/src/folder.rs` und `crates/torro-notes/src/lib.rs` (Modul) (Abbildung Datei ↔ Notiz ohne Ein-/Ausgabe: Endungen, Titelregeln,
+  Kategorie aus dem Pfad; N4.1 nutzt sie mit)
+- **Grundlage:** Entscheidung 12 und Abschnitt „Basis“ in [notizen.md](../notizen.md): Lesen und Schreiben nur per
+  WebDAV im Notizordner, die Notes-App nur für Ordner und Endung.
+- **Capabilities:** `NotesCapability { api_versions, version, notes_path }` aus `capabilities.notes` (höchste 1.x
+  zählt, die Liste nennt nicht jede Minor-Version) und die verbotenen Namen aus `files.forbidden_*`.
+- **`notes.rs`** setzt `torro_notes::NotesProvider` um, Basis `remote.php/dav/files/<uid>/<notesPath>/`:
+  - **Ordner und Endung:** mit Notes-App aus `notes_path` und `GET /index.php/apps/notes/api/v1/settings`
+    (`fileSuffix`), `set_settings` über `PUT /settings`; ohne Notes-App aus den Einstellungen des Kerns.
+  - **Liste:** PROPFIND `Depth: 0` auf den Ordner; bei geändertem ETag `Depth: 1` in die geänderten Unterordner,
+    `Depth: infinity` nur beim ersten Laden. Eigenschaften `getetag`, `getlastmodified`, `oc:fileid`,
+    `oc:favorite`, `oc:permissions`. Notizen sind Dateien mit `txt`, `md`, `markdown`, `org`, `note` oder der
+    eigenen Endung; Ordner und Dateien mit Punkt am Anfang und `.attachments.<n>` nicht. Gelöscht oder verschoben
+    ist, was an `oc:fileid` fehlt bzw. woanders liegt.
+  - **Ändern:** `PUT` mit `If-Match`, neu mit `If-None-Match: *`; Titel und Kategorie per `MOVE` mit `If-Match` und
+    `Overwrite: F`; Favorit per `PROPPATCH oc:favorite`. Nur ein 412 auf `If-Match` holt die Serverfassung und wird
+    zu `Conflict { server }`. Ein 412 auf `If-None-Match: *` oder `Overwrite: F` heißt „Name belegt“: eigener
+    Fehler ohne Serverfassung (der Kern zählt den Titel hoch bzw. antwortet `conflict`).
+  - **Favoriten** je Abgleich zusätzlich per `REPORT oc:filter-files` auf `oc:favorite`, weil ein Stern das ETag
+    womöglich nicht ändert (nicht bestätigt).
+  - **Titel** nach den Regeln der Notes-App (`* | / \ : " < > ?`, führende Punkte, 100 Zeichen, „New note“,
+    „ (2)“), Unicode in NFC.
+  - **Statuscodes:** 403 oder `oc:permissions` ohne `W` → `ReadOnly`, 423 → `Locked`, 507 → `StorageFull`.
+    Unbekannte Codes wie ihre Klasse.
 - **Wie im übrigen `torro-nextcloud`:**
   - Kennungen werden geprüft, bevor sie in einer Adresse stehen.
   - Das App-Passwort geht nur an den eigenen Server; Weiterleitungen zu anderen Servern werden nicht
     verfolgt.
   - Kein Passwort in `Debug` oder in Fehlern.
-  - Der Doc-Kommentar der Crate sagt künftig „OCS und die Notes-API“.
+  - Der Doc-Kommentar der Crate sagt künftig „OCS, WebDAV-Notizen und die Einstellungen der Notes-App“.
 - **API/MCP:** keine (Anbieter).
 - **Abnahme:**
-  - Tests ohne Netz (`httpmock`, Fixtures nach der API-Doku, anonymisiert): Liste in drei Teilen mit
-    Löschung, `pruneBefore`, 412 mit Serverfassung, 403, 507, alte API-Version → nicht vorhanden.
+  - Tests ohne Netz (`httpmock`, PROPFIND-Fixtures, anonymisiert): Erstabgleich, geänderter Unterordner,
+    Löschung, Verschieben (gleiche `fileid`), 412 mit Serverfassung, 403, 507, mit und ohne Notes-App,
+    Titelbereinigung.
   - Eine Weiterleitung auf einen fremden Host wird nicht verfolgt.
 
 ### N1.3 Kern: Speicher und Abgleich
@@ -159,9 +187,11 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
   - Warteschlange offener Änderungen
   - dauerhafte Verweise von `local-<uuid>` auf die Serverkennung (auch für wartende Freigaben)
   - FTS5 über Titel und Inhalt
-- **`sync.rs`:** je Konto mit Notes-Funktion: beim Start, alle 5 Minuten, nach `accounts.sync` und
+  - Tags (`#tag`, `#a/b`) aus dem Inhalt als Index, für die Seitenleiste und `list_notes` (Abschnitt
+    „Inhaltsarten“ in [notizen.md](../notizen.md))
+- **`sync.rs`:** je Konto mit Notizordner: beim Start, alle 5 Minuten, nach `accounts.sync` und
   nach jedem Schreiben.
-  - Zuerst die Warteschlange abarbeiten (POST bzw. PUT mit `If-Match`), dann die Liste holen.
+  - Zuerst die Warteschlange abarbeiten (anlegen, ändern mit `If-Match`), dann die Liste holen.
   - Bei `Conflict` mit `torro_notes::merge` zusammenführen. Klappt es, wird das Ergebnis geschrieben;
     sonst bekommt die Notiz den Zustand `conflict` mit beiden Fassungen.
   - Vom Server geänderte Titel werden übernommen.
@@ -173,7 +203,7 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
   - Fällt eine Kategorie weg, entfernt der Kern sie aus den Auswahlen aller Clients.
 - **API/MCP:** keine neuen. Die Befehle kommen in N1.4.
 - **Abnahme:** Tests mit einem Fake-`NotesProvider`:
-  - Erstabgleich in Teilen, Löschung, offline anlegen → später POST mit Kennungswechsel.
+  - Erstabgleich, Löschung, offline anlegen → später angelegt mit Kennungswechsel.
   - Offline ändern bei gleichzeitiger Serveränderung: ohne Überschneidung zusammengeführt, mit
     Überschneidung `conflict`.
   - Neustart behält die Warteschlange; Konto entfernen leert die Notizen.
@@ -249,12 +279,14 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** N1.1a · **Dateien:** `crates/torronotes/` (neu), Wurzel-`Cargo.toml`
   (Mitglied), `crates/torro-core/src/app.rs` (`AppId::NOTES`), `scripts/{macos-dev-sign,design-check}.sh`
-- Iced-App mit `torro_gui::shell`, Fensterklasse `torro-notes`. Skill `torro-design` laden.
+- Iced-App mit `torro_gui::shell`, Fensterklasse `torro-notes`. Skill `torro-design` laden. **Maßstab sind die
+  Mockups** [prototypes/notes/](../prototypes/notes/index.html) (`app.html?open=list|empty|readonly|offline`).
 - **Seitenleiste:** **All notes**, **Favorites**, Kategorien als Baum mit Zahl, ab zwei Konten
-  je Konto gruppiert.
+  je Konto gruppiert, darunter **Tags**; unten der Stand des Abgleichs.
 - **Liste:** Titel, Auszug, Datum, Stern, Kennzeichen für schreibgeschützt, offline geändert und
   Konflikt. Suchfeld oben.
-- **Rechts vorerst:** die Notiz als Vorschau. Der Editor kommt in N1.7.
+- **Rechts vorerst:** die Notiz als Vorschau (Lesespalte, Kategorie und Konto als Chips, Verweise auf Mail und
+  Aufgabe als Chips; Verweise auf Termine und Notizen bleiben Text, bis `apps.open_app` ein Ziel dafür hat). Der Editor kommt in N1.7.
 - **Größen** Breit, Mittel, Schmal (Liste oder Notiz); Mini und Leiste folgen in N1.8.
 - **Datenquelle:** Arbeitet gegen `NotesSource`. `--demo` nimmt die `DemoSource`, `--demo --open <state>`
   dient der Sichtprüfung. Ohne `--demo` vorerst eine leere Quelle; den echten Client bindet N1.11 an.
@@ -265,6 +297,11 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
 ### N1.7 Editor: Bearbeiten, Vorschau, Konflikte
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** N1.6 · **Dateien:** `crates/torronotes/src/*`
+- **Maßstab** sind die Mockups (`app.html?open=edit|preview|live|conflict|readonly|offline`).
+- **Zuerst klären** (Entscheidung 11): Geht ein Live-Editor mit `text_editor` und eigenem Hervorheben (größere
+  Überschriften, leise Markdown-Zeichen außerhalb der Cursorzeile, klickbare Kästchen)? Wenn ja und der Mensch den
+  Vorschlag angenommen hat, ist Live der Standard und der Umschalter wird zum Schalter auf den Quelltext; sonst
+  gilt der Umschalter unten, mit Hervorheben im Quelltext. Ergebnis im Bericht.
 - **Oberfläche:**
   - **Editor:** Markdown mit `text_editor`, Umschalter „Edit / Preview“ (Tastatur `⌘E`/`Ctrl+E`).
     Titel- und Kategoriefeld oben, Kategorie mit Vorschlägen aus `list_categories`.
@@ -277,6 +314,9 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
   - **Schreibgeschützt:** gesperrter Editor mit „Shared read-only“.
   - **Offline:** Hinweis „Saved on this device, not yet on the server“.
   - **Vorschau:** lädt keine Bilder aus dem Netz; Links öffnen erst nach einem Klick.
+  - **Verweise** `torro:mail:…` und `torro:task:…` als Chip; ein Klick schickt `apps.open_app` mit dem Ziel, der
+    Kern prüft die Rechte des Lesers. `torro:event:…`, `torro:note:…` (noch kein Ziel), `file:`, `template:` und
+    jedes andere Schema bleiben Text, nie eine Aktion.
 - **API:** `notes.create_note`, `update_note`, `delete_note`, `rename_category`, `resolve_conflict`.
 - **MCP:** dieselben Tools aus N1.5.
 - **Abnahme:**
@@ -285,11 +325,16 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
 
 ### N1.8 Mini-Kachel und Leiste: Quick note
 - [ ] erledigt
-- **Modell:** Sonnet · **Braucht:** N1.7 · **Dateien:** `crates/torronotes/src/glance.rs` (neu), `crates/torronotes/src/app.rs`
+- **Modell:** Sonnet · **Braucht:** N1.7 · **Dateien:** `crates/torronotes/src/glance.rs` (neu), `crates/torronotes/src/app.rs`,
+  `.claude/skills/torro-design/SKILL.md` (Abschnitt 6)
+- **Maßstab** sind die Mockups (`app.html?size=mini`, `?size=bar`).
+- **Ausnahme** (Entscheidung 10 in [notizen.md](../notizen.md)): Mini und Leiste haben ein Eingabefeld, wie der
+  Assistent. Die Aufgabe trägt die Ausnahme in den Skill `torro-design`, Abschnitt 6, neben „Ausnahme Assistent“
+  ein: ein Feld, kein Formular, keine Menüs.
 - **Oberfläche:**
-  - **Mini:** Eingabefeld „Quick note“ (Enter legt die Notiz an), darunter die letzten fünf
-    Notizen.
-  - **Leiste:** nur die letzten Titel.
+  - **Mini:** Eingabefeld „Quick note“ (Enter legt eine Notiz ohne Kategorie an, Titel ist die erste Zeile),
+    darunter die letzten fünf Notizen.
+  - **Leiste:** dasselbe Feld und die letzten Titel auf einer Mittellinie; nur so viele Titel, wie ganz passen.
   - Vorbild ist `torroinbox/src/glance.rs`.
 - **API/MCP:** `notes.create_note`, `notes.list_notes`. Keine neuen Befehle.
 - **Abnahme:** `torro-design-review` für Mini und Leiste.
@@ -298,8 +343,9 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
 - [ ] erledigt
 - **Modell:** Sonnet · **Braucht:** N1.4 · **Dateien:** `crates/torroworkplace/src/ui/{accounts,agents,assistant}.rs`
 - **Oberfläche:**
-  - **Kontoseite:** Dienst „Notes“ mit Zustand (verbunden, „Notes app not installed“, „Notes app too
-    old“) und den Notes-Einstellungen (Ordner, Dateiendung).
+  - **Kontoseite:** Dienst „Notes“ mit dem Notizordner und der Dateiendung. Nach Entscheidung 12 ist eine
+    fehlende oder alte Notes-App kein Fehler: Mit ihr übernimmt Torro Ordner und Endung („from the Notes app“),
+    ohne sie wählt der Mensch den Ordner.
   - **Rechte eines Clients:** Zeile `notes` mit Stufe; darunter die Kategorien als Baum mit
     Häkchen. Ein Haken an einer Kategorie gilt sichtbar auch für die Unterkategorien.
   - **Vorauswahl:** Wird `notes` eingeschaltet, sind alle bestehenden Kategorien vorgewählt. Ein
@@ -319,9 +365,12 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
 - **Modell:** Sonnet · **Braucht:** N1.4 · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`,
   `crates/torroworkplace/src/{inbox,core,mcp,approvals,audit}.rs`, `crates/torroinbox/src/detail.rs`,
   `docs/api-reference.md`
-- **Oberfläche:** In `torroinbox` die Aktion „Save as note“ im Paneel. Sie fragt nach der Kategorie
-  (vorgewählt die zuletzt benutzte). Die Notiz bekommt den Titel des Eintrags, den Text als Zitat
-  und einen Link zurück.
+- **Oberfläche:** In `torroinbox` die Aktion „Save as note“ im Paneel. Sie öffnet das gemeinsame Blatt aus den
+  Mockups (`app.html?open=save`): Titel, Kategorie mit Vorschlägen (vorgewählt die zuletzt benutzte), Konto,
+  Vorschau und der Hinweis, dass der Text von außen kommt. Die Notiz bekommt den Titel des Eintrags, den Text als
+  Zitat und einen Verweis zurück (Abschnitt „Inhaltsarten“): bei Mail `torro:mail:<adresse>:<Message-ID>`, bei
+  GitHub ein Link ins Netz, bei anderen Quellen nur Quelle und Zeit im Text. Anhänge gehen nicht still mit. Das
+  Blatt ist so gebaut, dass es später im „Send to…“ aus #260 aufgehen kann (Notiz als Ziel von `send.route`).
 - **API:** `Request::CreateNoteFromItem { id, category }` · `inbox.create_note_from_item` · Write.
   Beide Felder sind Pflicht, `category` ist eine `CategoryId` mit Konto (Vorbild
   `create_task_from_item { id, collection }`). Der Dienst prüft zusätzlich Write in `notes` und das
@@ -345,8 +394,10 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
   `crates/torro-nextcloud/tests/fixtures/notes/*`, `docs/notizen.md` (Ergebnisse, Abschnitt „Offen“)
 - Lokal `docker run -d -p 8080:80 nextcloud` mit der Notes-App (aktuelle Version und eine 4.x).
   Anlegen, Ändern, Konflikt aus zwei Geräten, Umbenennen einer Kategorie, geteilte schreibgeschützte
-  Notiz, Remote Wipe. Echte Antworten als Fixtures ablegen (anonymisiert). Offene Punkte klären, ob die
-  Notiz-`id` die Datei-ID ist und ob Notes 6.1 Anhänge löschen kann.
+  Notiz, Remote Wipe; dazu dieselben Notizen in der Notes-App im Web und auf dem Handy. Echte Antworten als
+  Fixtures ablegen (anonymisiert). Offene Punkte klären: wann Nextcloud Text Anhänge ohne Verweis aufräumt
+  (`cleanupAttachments`), ob ETags auf externen Speichern und fremden Freigaben verzögert kommen, ob ein Stern
+  (`oc:favorite`) das ETag von Datei oder Ordner ändert und ob sich das Datei-ETag bei bloßen Metadaten ändert.
 - **API/MCP:** keine.
 
 ## N2 Bilder und Anhänge
@@ -357,14 +408,15 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
   `crates/torro-nextcloud/src/notes.rs`, `crates/torroworkplace/src/notes/{service,store,sync}.rs`,
   `crates/torroworkplace/src/{core,mcp,approvals,audit,account}.rs`, `crates/torro-ipc/src/{lib,api,notes}.rs`,
   `docs/api-reference.md`
-- **Anbieter:**
-  - **Ab API 1.4:** `GET` und `POST /attachment/{id}`.
-  - **Darunter:** WebDAV im Notizordner (`files/<uid>/<notesPath>/<kategorie>/…`). Den Pfad liefert
-    `GET /settings`.
+- **Anbieter** (nach Entscheidung 12 nur WebDAV):
+  - Anhänge in `.attachments.<fileid>/` neben der Notiz, wie Nextcloud Text und Notes 6.1; Verweis relativ und
+    URL-kodiert.
+  - Erst den Verweis in die Notiz schreiben, dann hochladen: Nextcloud Text löscht Anhänge ohne Verweis.
   - **Pfadprüfung** (Regeln in [notizen.md](../notizen.md#aufbau), „Anhänge“): nur Pfade, auf die
     der Inhalt der Notiz verweist oder die unter `.attachments.<id>/` liegen; der Pfad wird auf eine
     Kategorie abgebildet und mit `covers` geprüft. `..`, absolute Pfade und URLs → `error`.
-  - **Name beim Hochladen:** reiner Dateiname, nicht `.`/`..`, ohne `/` und `\`, nicht `.md`/`.txt`.
+  - **Name beim Hochladen:** reiner Dateiname, nicht `.`/`..`, ohne `/` und `\`, keine Endung, die als Notiz gilt
+    (`txt`, `md`, `markdown`, `org`, `note`, die eigene).
 - **Kern:**
   - Anhänge werden beim ersten Abruf gespeichert, höchstens 200 MB je Konto, älteste zuerst
     verdrängt. Dateien 0600; sie verschwinden mit dem Konto und bei einem Remote Wipe.
@@ -445,21 +497,21 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
 - **MCP:** dieselben Tools aus N3.1.
 - **Abnahme:** Sichtprüfung; Tests der Nachrichten.
 
-## N4 Ordner ohne Notes-App
+## N4 Lokaler Ordner
 
-### N4.1 Ordner-Anbieter: WebDAV und lokal
+### N4.1 Ordner-Anbieter: lokaler Ordner
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** N1.4 · **Dateien:** neu `crates/torro-notes/src/folder.rs` (Abbildung
-  Datei ↔ Notiz, ohne Ein-/Ausgabe), neu `crates/torroworkplace/src/notes/folder.rs` (lokal und
-  WebDAV), `crates/torro-nextcloud/src/files.rs`, `crates/torroworkplace/src/notes/{service,sync}.rs`,
+- **Modell:** Opus · **Braucht:** N1.4 · **Dateien:** `crates/torro-notes/src/folder.rs` (aus N1.2), neu
+  `crates/torroworkplace/src/notes/folder.rs` (lokal), `crates/torroworkplace/src/notes/{service,sync}.rs`,
   `crates/torroworkplace/src/{core,mcp,approvals,audit}.rs`, `crates/torro-ipc/src/{lib,api,notes}.rs`,
   `docs/api-reference.md`
 - **Abbildung wie die Notes-App:**
-  - Dateien `.md` und `.txt` sind Notizen, Unterordner sind Kategorien, der Dateiname ist der Titel.
-  - `etag`: bei WebDAV `getetag`, lokal Änderungszeit und Hash.
-  - **Favoriten:** bei Nextcloud `oc:favorite` per `PROPPATCH`, lokal in der Konfiguration des Kerns.
-- **Nextcloud ohne Notes-App:** Der Kern nimmt automatisch den Ordner `Notes` per WebDAV; der Pfad ist
-  änderbar.
+  - Dieselbe Abbildung wie N1.2 (`folder.rs`): Endungen `txt`, `md`, `markdown`, `org`, `note` und die eigene,
+    Unterordner sind Kategorien, der Dateiname ist der Titel.
+  - `etag`: Änderungszeit und Hash.
+  - **Favoriten:** in der Konfiguration des Kerns (bei Nextcloud kommen sie in N1.2 aus `oc:favorite`).
+- **Nach Entscheidung 12** ist der Nextcloud-Teil in N1.2 aufgegangen; diese Aufgabe baut nur noch den lokalen
+  Ordner. Die Abbildung Datei ↔ Notiz (`torro-notes/src/folder.rs`) kommt aus N1.2.
 - **Lokaler Ordner:**
   - Abgleich alle 30 s und beim Fokus der App.
   - Symlinks, die aus dem Ordner führen, werden ignoriert. Dateinamen werden in NFC verglichen
@@ -468,7 +520,7 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
     und Data-Verzeichnisse von Torro.
   - Größenlimit je Datei 5 MB.
 - **API:**
-  - `Request::ConnectNotesFolder { location }` (lokaler Pfad oder Konto + WebDAV-Pfad) ·
+  - `Request::ConnectNotesFolder { location }` (lokaler Pfad) ·
     `notes.connect_folder` · Admin. Die Freigabe zeigt den echten, aufgelösten Pfad aus
     `approvals::Facts`; im Protokoll steht er nur als Prüfsumme.
   - `Request::RemoveNotesFolder { id }` · `notes.remove_folder` · Admin (entfernt nur die Verbindung,
@@ -478,16 +530,14 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)
 - **Abnahme:**
   - Tests mit Temp-Ordner: anlegen, umbenennen, Unterordner als Kategorie, Konflikt bei gleichzeitiger
     Änderung, Symlink nach außen ignoriert, Home und Torro-Verzeichnisse abgelehnt.
-  - WebDAV mit Fixtures.
   - `torro-api-review` ohne Befund.
 
 ### N4.2 Steuerzentrale: Ordner verbinden
 - [ ] erledigt
 - **Modell:** Sonnet · **Braucht:** N4.1, N1.9 · **Dateien:** `crates/torroworkplace/src/ui/{accounts,wizard}.rs`
 - **Oberfläche:**
-  - Im Assistenten der Anbieter „Notes folder“: lokalen Ordner wählen (Dateiauswahl) oder einen Ordner
-    eines verbundenen Nextcloud-Kontos.
-  - Auf der Kontoseite eines Nextcloud-Kontos ohne Notes-App „Use the folder Notes instead“.
+  - Im Assistenten der Anbieter „Notes folder“: lokalen Ordner wählen (Dateiauswahl).
+  - Den Notizordner eines Nextcloud-Kontos wählt man nach Entscheidung 12 auf dessen Kontoseite (N1.9), nicht hier.
 - **API:** `notes.connect_folder`, `notes.remove_folder`.
 - **MCP:** dieselben Tools aus N4.1.
 - **Abnahme:** Sichtprüfung aller Schritte; Tests der Nachrichten.

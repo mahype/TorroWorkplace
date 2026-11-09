@@ -1,0 +1,199 @@
+/* Notizen (torronotes): Bausteine der Entwürfe zu Issue #602, auf ../linear/torro.css.
+   Werte nach dem Skill torro-design (Standard seit #291): Text 14/22, obere Zeile 40, Seitenleiste 240,
+   Leiste 60, Liste 440 bzw. 364, Zeilen der Seitenleiste 32, Knöpfe 36 (in Kopfzeilen 28), Radius 4,
+   bündiger Inhalt mit Haarlinie. Die Werte des Skills gehen vor torro.css. */
+
+:root{--ok:#3FB984;--attention:#E8A33D;--error:#EB5757;--scrim:rgba(0,0,0,.62);--r:4px}
+:root[data-theme="light"]{--ok:#1F9D68;--attention:#B06F12;--error:#CE2C31;--scrim:rgba(0,0,0,.30)}
+
+body{font:400 14px/22px Inter,system-ui,sans-serif}
+button{font:inherit;color:inherit;cursor:default}
+svg.i.s12{width:12px;height:12px} svg.i.s20{width:20px;height:20px}
+.c-ok{color:var(--ok)} .c-att{color:var(--attention)} .c-err{color:var(--error)} .c-2{color:var(--text2)} .c-3{color:var(--text3)}
+.tab{font-family:"Inter Tabular",Inter,sans-serif}
+.ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+
+/* ---------- Fenster ---------- */
+.win{display:flex;height:100vh;background:var(--bg);overflow:hidden}
+.side{width:240px;flex:none;display:flex;flex-direction:column;background:var(--bg);border-right:1px solid var(--line)}
+.rail{width:60px;flex:none;display:flex;flex-direction:column;align-items:center;gap:2px;background:var(--bg);border-right:1px solid var(--line);padding-bottom:8px}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--panel)}
+.cols{flex:1;display:flex;min-height:0}
+
+/* obere Zeile 40: Knopf panel-left, Titel, rechts die Einstellungen (Schieberegler) */
+.top{height:40px;flex:none;display:flex;align-items:center;gap:8px;padding:0 6px 0 8px;border-bottom:1px solid var(--line)}
+.side .top{padding:0 8px}
+.top .grow{flex:1;min-width:8px}
+.top b{font-weight:500}
+.ib{width:28px;height:28px;flex:none;display:grid;place-items:center;border-radius:var(--r);border:0;background:none;color:var(--text2);padding:0}
+.ib:hover{background:var(--hover);color:var(--text)}
+.ib.on{background:var(--selected);color:var(--text)}
+.ib.boxed{background:var(--raised);border:1px solid var(--line-strong);color:var(--text)}
+.ib.set{width:28px;height:28px}
+
+/* Seitenleiste */
+.tools{display:flex;align-items:center;gap:6px;padding:8px 8px 4px}
+.search{flex:1;height:32px;display:flex;align-items:center;gap:8px;padding:0 10px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--raised);color:var(--text3);min-width:0}
+.search span{flex:1}
+.nav{display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;margin:0 8px;border-radius:var(--r);color:var(--text2);cursor:default}
+.nav:hover{background:var(--hover);color:var(--text)}
+.nav.on{background:var(--selected);color:var(--text)}
+.nav .grow{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nav .n{font:400 13px/18px "Inter Tabular",Inter,sans-serif;color:var(--text3)}
+.nav.child{padding-left:32px}
+.nav.child svg{width:14px;height:14px}
+.grp{display:flex;align-items:center;gap:4px;height:28px;padding:0 16px;margin-top:12px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.grp svg{width:12px;height:12px}
+.side .spacer,.rail .spacer{flex:1}
+.side .foot{padding:8px 16px 12px;font-size:13px;line-height:18px;color:var(--text3);display:flex;align-items:center;gap:6px}
+.rail .ib{width:36px;height:36px}
+.rail .sep{width:24px;height:1px;background:var(--line);margin:6px 0}
+.rail .top{width:100%;justify-content:center;padding:0}
+
+/* Liste */
+.list{display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--line)}
+.list.wide{width:440px;flex:none} .list.medium{width:364px;flex:none} .list.full{flex:1;border-right:0}
+/* Schmal steht Liste bzw. Notiz direkt in der Spalte: ohne min-height:0 wüchse sie über das Fenster, statt zu rollen. */
+.list,.note{min-height:0}
+.lhead{height:40px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px 0 16px;border-bottom:1px solid var(--line)}
+.lhead b{font-weight:500} .lhead .grow{flex:1}
+.scroll{flex:1;overflow:auto;min-height:0}
+.day{height:32px;display:flex;align-items:center;padding:0 16px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3);background:var(--raised);border-bottom:1px solid var(--line)}
+.row{position:relative;display:flex;flex-direction:column;justify-content:center;gap:0;height:69px;padding:0 16px 0 24px;border-bottom:1px solid var(--line);cursor:default}
+.row:hover{background:var(--hover)}
+.row.sel{background:var(--selected)}
+.row.sel::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--accent)}
+.row .l1,.row .l2{display:flex;align-items:center;gap:8px;min-width:0}
+.row .t{flex:1;min-width:0;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .d{flex:none;font:400 13px/18px "Inter Tabular",Inter,sans-serif;color:var(--text3)}
+.row .x{flex:1;min-width:0;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .marks{flex:none;display:flex;gap:6px;color:var(--text3)}
+.row .star{color:var(--attention)}
+.cat{flex:none;display:inline-flex;align-items:center;gap:4px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+
+/* Notiz */
+.note{flex:1;min-width:0;display:flex;flex-direction:column}
+.nhead{height:40px;flex:none;display:flex;align-items:center;gap:6px;padding:0 6px 0 16px;border-bottom:1px solid var(--line);white-space:nowrap}
+.nhead .grow{flex:1;min-width:8px}
+.crumb{display:flex;align-items:center;gap:6px;color:var(--text3);min-width:0}
+.crumb b{color:var(--text);font-weight:500}
+.seg{display:inline-flex;height:28px;padding:2px;border-radius:var(--r);background:var(--bg);border:1px solid var(--line)}
+.seg span{display:grid;place-items:center;padding:0 10px;border-radius:var(--r);font-size:12px;font-weight:500;color:var(--text3)}
+.seg span.on{background:var(--selected);color:var(--text);box-shadow:0 0 0 1px var(--line-selected,rgba(255,255,255,.28))}
+:root[data-theme="light"] .seg span.on{box-shadow:0 0 0 1px rgba(0,0,0,.32)}
+.nbody{flex:1;overflow:auto;min-height:0;padding:32px 40px 48px}
+.ninner{max-width:640px;margin:0 auto}
+.ntitle{font-size:28px;line-height:36px;font-weight:600;margin:0 0 8px}
+.nmeta{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:24px}
+.chip{height:24px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--raised);font-size:12px;line-height:16px;font-weight:500;color:var(--text2);white-space:nowrap}
+.chip svg{width:14px;height:14px;color:var(--text3)}
+.meta3{font-size:13px;line-height:18px;color:var(--text3)}
+
+/* Vorschau (gerendertes Markdown) */
+.md{font-size:16px;line-height:26px;color:var(--text)}
+.md h2{font-size:18px;line-height:26px;font-weight:600;margin:24px 0 8px}
+.md p{margin:0 0 12px}
+.md ul{margin:0 0 12px;padding-left:22px}
+.md li{margin:2px 0}
+.md ul.check{list-style:none;padding-left:0}
+.md ul.check li{display:flex;gap:10px;align-items:flex-start}
+.box{width:16px;height:16px;margin-top:5px;flex:none;border-radius:4px;border:1.5px solid var(--text3);display:grid;place-items:center}
+.box.on{background:var(--text2);border-color:var(--text2);color:var(--panel)}
+.box.on svg{width:12px;height:12px;stroke-width:3}
+li.done{color:var(--text3);text-decoration:line-through}
+.md a{color:var(--text);text-decoration:underline;text-decoration-color:var(--text3);text-underline-offset:3px}
+.md blockquote{margin:0 0 12px;padding:0 0 0 14px;border-left:2px solid var(--line-strong);color:var(--text2)}
+.tagw{color:var(--text2);font-weight:500}
+.ref{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 8px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--raised);font-size:14px;line-height:22px;vertical-align:1px}
+.ref svg{width:14px;height:14px;color:var(--text3)}
+.ref.gone{background:none;border-style:dashed;color:var(--text3)}
+.img{margin:4px 0 16px;border-radius:var(--r);border:1px solid var(--line);overflow:hidden;max-width:100%}
+.img svg{display:block;width:100%;height:auto}
+.img .cap{font-size:13px;line-height:18px;color:var(--text3);padding:6px 10px;border-top:1px solid var(--line);display:flex;gap:6px;align-items:center}
+.blocked{display:flex;align-items:center;gap:8px;height:40px;padding:0 12px;margin:4px 0 16px;border-radius:var(--r);border:1px dashed var(--line-strong);color:var(--text3);font-size:13px}
+.file{display:flex;align-items:center;gap:10px;height:44px;padding:0 12px;margin:4px 0 16px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--raised);max-width:360px}
+.file .ft{width:28px;height:28px;border-radius:var(--r);background:var(--selected);display:grid;place-items:center;flex:none}
+.file b{font-weight:500;font-size:14px}
+.file .meta3{margin-left:auto}
+
+/* Bearbeiten: Markdown-Quelltext */
+.src{font-size:14px;line-height:22px;white-space:pre-wrap;color:var(--text);caret-color:var(--text)}
+.src .mk{color:var(--text3)}
+.src .h{font-weight:600}
+.caret{display:inline-block;width:1.5px;height:18px;background:var(--text);vertical-align:-3px;margin-left:1px}
+/* Live: dieselbe Datei, Zeichen leise, Wirkung sofort sichtbar */
+.live h2 .mk,.live .mk{color:var(--text3);font-weight:400}
+.live .src{font-size:16px;line-height:26px}
+.live .lh{font-size:18px;line-height:26px;font-weight:600}
+
+/* Hinweisband über der Notiz */
+.band{display:flex;align-items:center;gap:10px;min-height:44px;padding:8px 12px 8px 16px;border-bottom:1px solid var(--line);background:var(--raised);flex-wrap:wrap}
+.band .grow{flex:1;min-width:160px}
+/* Die drei Knöpfe eines Konflikts brechen nur gemeinsam um, nie einzeln. */
+.band .acts{display:flex;gap:8px;flex:none}
+.band b{font-weight:500}
+.btn{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 12px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--raised);color:var(--text);font:500 12px/1 Inter,sans-serif;white-space:nowrap}
+.btn:hover{background:var(--hover)}
+.btn.ghost{border-color:transparent;background:none;color:var(--text2)}
+.btn.primary{background:var(--accent);border-color:transparent;color:#fff}
+.btn.big{height:36px}
+.btn.sq{width:28px;padding:0;justify-content:center}
+
+/* Konflikt: beide Fassungen nebeneinander */
+.diff{display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.diff>div{padding:12px 16px;min-width:0}
+.diff>div+div{border-left:1px solid var(--line)}
+.diff h4{margin:0 0 8px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.diff .ln{font-size:14px;line-height:22px;white-space:pre-wrap}
+.diff .add{background:color-mix(in srgb,var(--ok) 16%,transparent);border-left:2px solid var(--ok);padding-left:6px;margin-left:-8px}
+.diff .chg{background:color-mix(in srgb,var(--attention) 16%,transparent);border-left:2px solid var(--attention);padding-left:6px;margin-left:-8px}
+.narrow .diff{grid-template-columns:1fr}
+.narrow .diff>div+div{border-left:0;border-top:1px solid var(--line)}
+
+/* Leerzustand */
+.empty{flex:1;display:grid;place-items:center;text-align:center;padding:48px 24px}
+.empty .ic{width:48px;height:48px;border-radius:8px;background:var(--raised);border:1px solid var(--line-strong);display:grid;place-items:center;margin:0 auto 16px;color:var(--text2)}
+.empty h3{margin:0 0 4px;font-size:16px;line-height:24px;font-weight:600}
+.empty p{margin:0 0 16px;color:var(--text2)}
+
+/* Dialog „Save as note“ */
+.scrim{position:fixed;inset:0;background:var(--scrim);display:grid;place-items:center;padding:16px;z-index:40}
+.dlg{width:100%;max-width:560px;max-height:100%;overflow:auto;background:var(--menu);border:1px solid var(--line-strong);border-radius:8px;box-shadow:var(--shadow);display:flex;flex-direction:column}
+.dlg .dh{display:flex;align-items:center;gap:10px;padding:16px 16px 0}
+.dlg .dh h3{margin:0;font-size:22px;line-height:28px;font-weight:600;flex:1}
+.dlg .db{padding:16px;display:flex;flex-direction:column;gap:16px}
+.fld label{display:block;font-size:12px;line-height:16px;font-weight:500;color:var(--text3);margin-bottom:4px}
+.inp{height:38px;display:flex;align-items:center;gap:8px;padding:0 12px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--panel)}
+.inp.focus{box-shadow:0 0 0 1px var(--panel),0 0 0 3px var(--focus)}
+.inp .grow{flex:1}
+.sugg{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.pick{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--raised);font-size:12px;font-weight:500;color:var(--text)}
+.pick.on{background:var(--selected)}
+.pick.on svg{width:14px;height:14px}
+.pv{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);padding:12px 14px;font-size:14px;line-height:22px}
+.pv .pt{font-weight:600;margin-bottom:4px}
+.pv .mk{color:var(--text3)}
+.hint{display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:18px;color:var(--text2)}
+.hint svg{margin-top:1px;color:var(--text3)}
+.df{display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--line)}
+.df .grow{flex:1}
+kbd.on-acc{color:#fff;border-color:rgba(255,255,255,.5)}
+
+/* Mini und Leiste: Anzeige mit einem Feld (Ausnahme wie der Assistent, Entscheidung 10 in notizen.md) */
+/* Oben bleibt der Streifen der Ampel frei (macOS, Skill torro-design Abschnitt 6, #554): Höhe der oberen Zeile. */
+.glance{height:100vh;padding:40px 12px 12px;display:flex;flex-direction:column;gap:12px;background:var(--panel)}
+.qn{height:40px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--raised);color:var(--text3)}
+.qn .grow{flex:1;min-width:0}
+.qn.focus{box-shadow:0 0 0 1px var(--panel),0 0 0 3px var(--focus);color:var(--text)}
+.glance .cap{font-size:12px;line-height:16px;font-weight:500;color:var(--text3);display:flex;align-items:center;gap:6px}
+.glance .cap .grow{flex:1}
+.mrow{display:flex;align-items:center;gap:8px;height:36px;border-bottom:1px solid var(--line);min-width:0}
+.mrow:last-child{border-bottom:0}
+.mrow .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mrow .d{font:400 13px/18px "Inter Tabular",Inter,sans-serif;color:var(--text3)}
+.bar{height:100vh;padding:8px 12px;display:flex;align-items:center;gap:16px;background:var(--panel)}
+.bar .qn{width:340px}
+.bar .titles{flex:1;min-width:0;display:flex;align-items:center;gap:8px;overflow:hidden;white-space:nowrap}
+.bar .tt{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:var(--r);border:1px solid var(--line);color:var(--text2);flex:none;max-width:220px}
+.bar .tt span{overflow:hidden;text-overflow:ellipsis}
+.toast{position:fixed;left:50%;bottom:12px;transform:translateX(-50%);height:36px;display:flex;align-items:center;gap:8px;padding:0 12px;background:var(--menu);border:1px solid var(--line-strong);border-radius:var(--r);box-shadow:var(--shadow);font-size:13px;white-space:nowrap}
