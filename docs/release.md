@@ -98,13 +98,25 @@ Danach `dist plan --tag v0.1.0` und die Offline-Vertragstests ausführen. Keine 
   erhöht gestartet, kein Systemdienst angelegt und keine persönlichen Daten gelöscht. SmartScreen kann
   wegen fehlender Signatur warnen (Entscheidung X.10). Die Unterstützung der Apps selbst wird durch
   einen Installer nicht erweitert; bekannte Plattformlücken bleiben bestehen.
-  Inno fängt Fehler in Dateieintrag-Callbacks ab: Die Schutzprüfungen setzen deshalb den nativen
-  Abbruch über `WizardForm.Close` und sperren nach einem Fehler weitere Payload-Einträge. Die
-  Sperrprüfung liegt an einem Verzeichniseintrag nach Restart Manager und vor den Dateikopien;
-  direkt danach verarbeitet Inno den Abbruch. `/NOCANCEL` und `/LOADINF` werden abgelehnt: Auch eine
-  INF-Datei könnte über `NoCancel=yes` den nativen Schutzabbruch abschalten. Stille Installationen
-  müssen sicher abbrechen können. Dieser Ablauf ist am gepinnten Inno-Quelltext statisch geprüft;
-  der echte Windows-VM-Nachweis steht weiter aus.
+  Inno fängt Fehler in Dateieintrag-Callbacks ab. Ein Abbruch über das versteckte Wizard-Fenster
+  funktionierte im nativen stillen Dienstkontext nicht: Setup meldete trotz Sperre Erfolg und schrieb
+  Deinstallationsdaten. Deshalb merken die Prüf-Callbacks Fehler nur vor. Verpflichtende
+  Code-Konstanten lösen außerhalb der abgefangenen Callbacks `Abort` aus: am Verzeichnis nach Restart
+  Manager und vor Deinstallationsdaten, vor jeder Payload-Zieldatei und an einer letzten externen
+  Quelldatei ohne Kopierinhalt. Die letzte Prüfung darf weder durch `Check` noch eine Auswahl entfallen;
+  `ExternalSize: 0` verhindert eine vorgezogene Größenabfrage. `/NOCANCEL` und `/LOADINF` bleiben
+  abgelehnt. Auch das unveränderte Produktions-Setup lieferte im gezielten nativen Sperrtest Exitcode 5,
+  vollständig unveränderte Payload-/Uninstaller-Hashes und unveränderte Deinstallationsdaten der Registry.
+  Auch injizierte Ausnahmen bei der Programmprüfung und beim letzten Marker lieferten nativ Exitcode 5,
+  ohne neue Uninstaller-Dateien oder Deinstallationsdaten der Registry zu veröffentlichen; bei der
+  fehlgeschlagenen Programmprüfung blieb die Versions-Begleitdatei RC. **Kein vollständiger Upgrade-
+  Rollback:** Das zuvor kopierte Programm blieb ersetzt; beim letzten Marker blieben fünf Payload-
+  Dateien verändert. Eine nach einem späten Fehler beschädigte Installation muss vor Neuinstallation
+  entfernt werden. Nach einem durch unerwarteten Windows-Neustart unterbrochenen Gesamtlauf wurde der
+  Teilzustand gesichert und über seine Uninstaller entfernt. Die Wiederholung aus leerem Verzeichnis
+  bestand vollständig mit Zwischenstandsprotokoll: sieben Apps, RC→Stable, Wiederholungen, gesperrtes
+  Upgrade, unsichere INF, Downgrade-Abweisung, beide Entfernungsreihenfolgen und Datenerhalt. Das ist
+  ein Nachweis als Gastagenten-SYSTEM, **nicht** für UAC, SmartScreen oder interaktive App-Funktionen.
 - macOS: Developer ID Application, Hardened Runtime, Zeitstempel, Notarisierung und Heften für Bündel
   und Image. Keine Universal-Binary; Intel-Runner endet voraussichtlich Herbst 2027. Gleiche
   Service-Bundle-ID und gleiches Team erhalten den Schlüsselbundzugriff; `TorroVersion` enthält RCs,
@@ -148,9 +160,11 @@ sie belegen die Installer-/Ladeprüfungen, nicht einen vollständigen Release-Ba
 | Echte Linux-Programme, Ubuntu 22.04 / glibc 2.35 | Stable und RC für arm64 und x64 gebaut; beide vollständigen Matrizen mit je 48 Paketen und finalen GUI-Abhängigkeiten gebaut |
 | Echte Linux-Installation/Versionsaufrufe | alle sieben Stable-Programme auf Ubuntu 22.04 arm64/x64, Fedora 43 arm64 und Arch x64 grün; abschließende RC→Stable/Wiederholung/Entfernung samt Datenerhalt mit finalen Abhängigkeiten auf Ubuntu 24.04 arm64, Ubuntu 22.04 x64, Fedora 43 arm64/x64 und Arch x64 grün |
 | Linux-X11-Startprüfung im isolierten Xvfb, unprivilegierter Benutzer | fand zusätzlich fehlende dynamische winit-Helfer; nach Ergänzung von Cursor/Input/XCB/xkbcommon-X11 öffneten alle sieben installierten echten arm64-Apps ihre Fenster unter Ubuntu 22.04; kein Nachweis der Begleitfunktionen oder Desktopintegration |
-| Echte Windows-x64-Programme und Setups | Stable und RC mit release-identischer statischer C-Laufzeit quergebaut; alle 14 Setups mit echtem Inno 7.1.1 nach `/LOADINF`-Korrektur erneut kompiliert; keine VCRUNTIME/MSVCP/api-ms-win-crt-Importe; Windows-Laufzeitprüfung noch offen |
-| Windows-VM / echte Apps | offizielles Enterprise-Evaluation-x64-Image mit Microsoft-Prüfsumme verifiziert und mittels DISM `/checkintegrity` erfolgreich auf die neue VM-Platte angewendet; UEFI-Bootdateien erstellt, Ersteinrichtung erreichte „Just a moment“; noch keine native Torro-Installationsprüfung, Wine ersetzt sie nicht |
-| Aktueller vollständiger lokaler CI-Lauf | nach den ausdrücklich freigegebenen Korrekturen grün: `scripts/ci-local.sh`, gesamte deutsche Workspace-Tests und 15 Python-Tests auch unter Python 3.10; zuvor `Protection(Busy)` durch geerbte Dateibeschreibung (Guard entsperrt jetzt explizit, Regression vorher rot), EML-`Changed` durch Hintergrund-Sync gegen Test-Expunge (Test jetzt ohne Hintergrundarbeiter); zusätzlich 60 EML- und 40 Client-Setup-Wiederholungsläufe grün |
+| Echte Windows-x64-Programme und Setups | Stable und RC mit release-identischer statischer C-Laufzeit quergebaut; alle 14 Produktions-Setups mit Code-Konstanten und echtem Inno 7.1.1 erneut gebaut; keine VCRUNTIME/MSVCP/api-ms-win-crt-Importe; zwei Diagnosekopien für späte Fehler getrennt gebaut, niemals Release-Artefakte |
+| Windows-VM / echte Apps | offizielles, per Microsoft-Prüfsumme verifiziertes Enterprise-Evaluation-x64-Image installiert; Desktop/Testkonto und reguläre Aktivierung mit knapp 90 Tagen Restlaufzeit; sieben echte Apps als RC und Stable installiert und passende Versionsaufrufe grün; vor Korrektur Sperrfehler nativ reproduziert, nach Korrektur Produktions-Setup im Sperrtest Exitcode 5, null geänderte Datei-Hashes und unveränderte Deinstallations-Registry |
+| Native späte Windows-Prüffehler | Ausnahmen in Programmprüfung und letztem Marker nativ injiziert: beide Exitcode 5, Uninstaller-Dateien und Deinstallations-Registry unverändert; Programmfehler schreibt Versions-Begleitdatei nicht fort; bereits ersetzte Payloads werden aber nicht auf RC zurückgesetzt (ein bzw. fünf veränderte Dateien). Diagnose-Installationen danach über ihre Uninstaller entfernt |
+| Vollständiger Windows-Lebenszyklus mit Produktions-Setups | **grün**, Exitcode 0: alle sieben Apps, RC→Stable und Wiederholung, `/DIR`/`NOCANCEL`/unsichere INF und gesperrtes Upgrade abgewiesen, Downgrade abgewiesen, beide Entfernungsreihenfolgen, gemeinsame Dateien bis zum letzten Besitzer und persönliche Testdatei erhalten; installierte Programme jeweils mit passender Version geladen. Wiederholung nach gesicherter Bereinigung eines durch unerwarteten OS-Neustart unterbrochenen Laufs; ausführliches lokales Protokoll `target/installer-tools/windows-progress-lifecycle-result.log`; Gastagenten-SYSTEM, keine UAC-/SmartScreen-/GUI-Aussage |
+| Lokale CI / Regressionen | neue 16 Python-Verträge für Code-Konstanten vorher rot, nach Korrektur auch unter Python 3.10 grün; vollständige deutsche Workspace-Tests und `scripts/ci-local.sh`-Wiederholung grün. Der erste CI-Lauf scheiterte an zwei Agentenfenster-Tests (`error` statt `unsupported`); beide einzeln sowie gesamte Core-Tests parallel/seriell grün, ohne Codeänderung dort, Ursache weiter ungeklärt. Zuvor ausdrücklich freigegebene Korrekturen für `Protection(Busy)` durch geerbte Dateibeschreibung und EML-`Changed` durch Hintergrund-Sync; danach 60 EML- und 40 Client-Setup-Wiederholungsläufe grün |
 | Unabhängiges Nachreview | zwei Runden über lokale Korrekturen und vollständigen Windows-Abbruchpfad; `/LOADINF`-Umgehung gefunden und behoben, zweite Runde ohne weitere Codefunde; kein Ersatz für native Windows-Tests |
 | Notarisierte macOS-Images, Gatekeeper | weiterhin offen: Developer-ID lokal verfügbar und verwendet, Notarisierungszugang bisher nur als GitHub-Secrets; kein lokales Profil und kein Release-Workflow gestartet |
 | Erstes veröffentlichtes Release | offen, kein Release gestartet |
@@ -167,8 +181,8 @@ eine andere C-Laufzeitabhängigkeit als die Release-Binaries.
 
 Vor Freigabe je Ziel/Architektur festhalten: Version/OS, Befehl, Resultat, Prüfer und Datum. Weiter von
 Hand zu prüfen: jede App starten, Partner-Apps/Verfassen/Erinnerung, Installieren/Entfernen und erhaltene
-Daten; macOS Drag-and-drop/Gatekeeper beider Architekturen; Windows UAC/SmartScreen/belegte Dateien
-einschließlich Abbruch; reale Downloadmatrix durch Maintainer. Ohne diese Nachweise bleibt #589 offen,
+Daten; macOS Drag-and-drop/Gatekeeper beider Architekturen; Windows UAC/SmartScreen und interaktive
+Ablehnung des Schließens laufender Apps; reale Downloadmatrix durch Maintainer. Ohne diese Nachweise bleibt #589 offen,
 PR nur **`Related to #589`**, kein `Closes`.
 
 Technische Referenzen: [dist 0.32.0](https://github.com/axodotdev/cargo-dist/tree/v0.32.0),

@@ -241,9 +241,9 @@ def build_windows(folder, out, tag):
                 # Marker uses an Inno {code:...} constant so Program Files is resolved by Windows,
                 # not guessed from the build runner's locale or drive.
                 lines.extend([
-                    f'Source: "{binaries[program]}"; DestDir: "{{app}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; Check: CanCopy; AfterInstall: VerifyProgram(\'{program}\', \'{digest(binaries[program])}\')',
-                    f'Source: "{scratch / (program + ".version")}"; DestDir: "{{app}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; Check: CanCopy; AfterInstall: VerifyVersion(\'{program}\')',
-                    f'Source: "{scratch / (program + ".exe.torro-package.json")}"; DestDir: "{{app}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; Check: CanCopy; AfterInstall: WriteMarker(\'{program}\')',
+                    f'Source: "{binaries[program]}"; DestDir: "{{code:CopyDirectory}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; AfterInstall: VerifyProgram(\'{program}\', \'{digest(binaries[program])}\')',
+                    f'Source: "{scratch / (program + ".version")}"; DestDir: "{{code:CopyDirectory}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; AfterInstall: VerifyVersion(\'{program}\')',
+                    f'Source: "{scratch / (program + ".exe.torro-package.json")}"; DestDir: "{{code:CopyDirectory}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; AfterInstall: WriteMarker(\'{program}\')',
                 ])
                 (scratch / (program + ".version")).write_text(ver + "\n")
                 # Inno writes a fixed, administrator-only install marker from an expanded template.
@@ -252,6 +252,9 @@ def build_windows(folder, out, tag):
                 checks.append(f"  if not CheckProgram('{program}') then begin Result := False; exit; end;")
                 for suffix in (".exe", ".version", ".exe.torro-package.json"):
                     locks.append(f"  CheckUnlocked('{program}{suffix}');")
+            # ExternalSize avoids eager source-size probing. This mandatory last entry must expand
+            # its source after every payload callback, outside Inno's swallowed Check/entry handlers.
+            lines.append('Source: "{code:FinalInstallCheck}"; DestDir: "{tmp}"; Flags: external skipifsourcedoesntexist; ExternalSize: 0')
             (scratch / "files.iss").write_text("\n".join(lines) + "\n")
             (scratch / "checks.iss").write_text("\n".join(checks) + "\n")
             (scratch / "locks.iss").write_text("\n".join(locks) + "\n")

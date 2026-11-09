@@ -31,9 +31,9 @@ AllowCancelDuringInstall=yes
 SetupLogging=yes
 
 [Dirs]
-; Inno processes directories AFTER Restart Manager and calls ProcessEvents immediately afterwards,
-; before uninstall information or payload files. Even an existing directory runs this callback.
-Name: "{app}"; BeforeInstall: CheckReadyToCopy
+; Directory-name expansion runs AFTER Restart Manager, BEFORE uninstall information or payloads.
+; Unlike Before/AfterInstall and Check callbacks, its exceptions abort the native installation.
+Name: "{code:CheckedInstallDirectory}"
 
 [Files]
 #include AddBackslash(Payload) + "files.iss"
@@ -55,37 +55,38 @@ begin
     if (Pos('/nocancel', Lowercase(ParamStr(Index))) = 1) or
       (Pos('/loadinf', Lowercase(ParamStr(Index))) = 1) then begin
       Result := False;
-      Log('/NOCANCEL and /LOADINF are not supported: installer safety requires native cancellation.');
+      Log('/NOCANCEL and /LOADINF are not supported by this installer.');
     end;
-end;
-
-procedure CancelButtonClick(CurPageID: Integer; var Cancel, Confirm: Boolean);
-begin
-  if FatalFailure then begin
-    Cancel := True;
-    Confirm := False;
-  end;
 end;
 
 procedure FailInstallation(Reason: String);
 begin
-  { Inno swallows exceptions in Before/AfterInstall. Set its native NeedToAbortInstall instead:
-    WizardForm.Close -> MainForm.Close -> CancelButtonClick -> native ProcessEvents -> fatal abort.
-    Show/enable the Cancel control also in /VERYSILENT so MainForm.Close's guards hold. }
+  { Inno swallows entry-callback exceptions. Record failure here; mandatory code constants below
+    propagate Abort outside those callbacks, even in a noninteractive /VERYSILENT session. }
   if FatalFailure then exit;
   FatalFailure := True;
   Log(Reason);
-  WizardForm.Show;
-  WizardForm.Enabled := True;
-  WizardForm.CancelButton.Visible := True;
-  WizardForm.CancelButton.Enabled := True;
-  WizardForm.Close;
 end;
 
-function CanCopy(): Boolean;
+procedure AbortIfFailed();
 begin
-  { Also blocks the next sidecar if a per-file verification failed after the preceding copy. }
-  Result := not FatalFailure;
+  if FatalFailure then Abort;
+end;
+
+function CopyDirectory(Param: String): String;
+begin
+  { Prevent a failed executable verification from advancing its version or ownership sidecar. }
+  AbortIfFailed();
+  Result := ExpandConstant('{app}');
+end;
+
+function FinalInstallCheck(Param: String): String;
+begin
+  { Always evaluated after the last payload callback, even if a preceding file was skipped.
+    External source expansion is outside the per-file retry/skip handler. The nonexistent source
+    makes this entry a no-op on success; it never installs a file or adds shared ownership. }
+  AbortIfFailed();
+  Result := ExpandConstant('{tmp}\torro-final-check-missing');
 end;
 
 function OpenForPreflight(FileName: String; Access, ShareMode: LongWord;
@@ -226,10 +227,17 @@ begin
   end;
 end;
 
+function CheckedInstallDirectory(Param: String): String;
+begin
+  CheckReadyToCopy();
+  AbortIfFailed();
+  Result := ExpandConstant('{app}');
+end;
+
 procedure VerifyProgram(ProgramName, ExpectedHash: String);
 begin
   { Never let Skip advance a sidecar beyond its executable. Hash/read failures must take the
-    native cancellation path too, not escape as a swallowed callback exception. }
+    mandatory constant-expansion abort path, not escape as a swallowed callback exception. }
   try
     if GetSHA256OfFile(ExpandConstant('{app}\') + ProgramName + '.exe') <> ExpectedHash then
       FailInstallation('An application file was not installed correctly. Setup was cancelled.');

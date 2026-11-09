@@ -250,7 +250,15 @@ class Installers(unittest.TestCase):
                 self.assertIn(f"VerifyProgram('{part}', '{pkg.digest(payload / (part + '.exe'))}')", files)
                 self.assertIn(f"VerifyVersion('{part}')", files)
                 self.assertIn(f"WriteMarker('{part}')", files)
-            self.assertEqual(files.count("Check: CanCopy"), 3 * len(pkg.windows_payload(app)))
+            self.assertEqual(files.count('DestDir: "{code:CopyDirectory}"'), 3 * len(pkg.windows_payload(app)))
+            self.assertNotIn("Check: CanCopy", files)
+            self.assertIn('Source: "{code:FinalInstallCheck}"', files)
+            self.assertIn("external skipifsourcedoesntexist", files)
+            final = files.strip().splitlines()[-1]
+            self.assertIn('Source: "{code:FinalInstallCheck}"', final)
+            self.assertIn("ExternalSize: 0", final)
+            for selector in ("Check:", "Components:", "Tasks:", "Languages:"):
+                self.assertNotIn(selector, final)
             self.assertEqual(files.count("sharedfile uninsnosharedfileprompt 64bit"), 3 * len(pkg.windows_payload(app)))
             name = next(str(a)[2:] for a in args if str(a).startswith("/F"))
             (out / (name + ".exe")).write_bytes(b"fixture setup")
@@ -279,11 +287,29 @@ class Installers(unittest.TestCase):
 
     def test_setup_rejects_inf_files_that_can_disable_native_cancellation(self):
         spec = (pkg.ROOT / "windows/setup.iss").read_text()
-        initialize = spec.split("function InitializeSetup(): Boolean;", 1)[1].split("procedure CancelButtonClick", 1)[0]
+        initialize = spec.split("function InitializeSetup(): Boolean;", 1)[1].split("procedure FailInstallation", 1)[0]
         self.assertIn("Pos('/nocancel', Lowercase(ParamStr(Index))) = 1", initialize)
         # Inno also reads NoCancel=yes from /LOADINF, before InitializeSetup runs.
         self.assertIn("Pos('/loadinf', Lowercase(ParamStr(Index))) = 1", initialize)
         self.assertIn("Result := False;", initialize)
+
+    def test_fatal_abort_uses_constant_expansion_outside_swallowed_callbacks(self):
+        spec = (pkg.ROOT / "windows/setup.iss").read_text()
+        # Neither swallowed entry callbacks nor a hidden Session-0 wizard can abort reliably.
+        self.assertIn('Name: "{code:CheckedInstallDirectory}"', spec)
+        self.assertNotIn("WizardForm.Close", spec)
+        self.assertNotIn("BeforeInstall: CheckReadyToCopy", spec)
+        for signature in ["function CopyDirectory(Param: String): String;",
+                          "function FinalInstallCheck(Param: String): String;",
+                          "function CheckedInstallDirectory(Param: String): String;"]:
+            body = spec.split(signature, 1)[1].split("\nend;", 1)[0]
+            self.assertIn("AbortIfFailed();", body)
+            self.assertLess(body.index("AbortIfFailed();"), body.index("Result :="))
+            if "CheckedInstallDirectory" in signature:
+                self.assertLess(body.index("CheckReadyToCopy();"), body.index("AbortIfFailed();"))
+        abort = spec.split("procedure AbortIfFailed();", 1)[1].split("\nend;", 1)[0]
+        self.assertIn("if FatalFailure then", abort)
+        self.assertIn("Abort;", abort)
 
     def test_setup_enforces_destination_and_refusal_before_copying(self):
         spec = (pkg.ROOT / "windows/setup.iss").read_text()
@@ -295,11 +321,9 @@ class Installers(unittest.TestCase):
         self.assertIn("OpenForPreflight(FileName, $40000000, 0, 0, 3, 0, 0)", spec)
         self.assertNotIn("ssPostInstall", spec)
         self.assertIn("GetSHA256OfFile", spec)
-        self.assertIn('Name: "{app}"; BeforeInstall: CheckReadyToCopy', spec)
-        self.assertIn("WizardForm.Close;", spec)
+        self.assertIn('Name: "{code:CheckedInstallDirectory}"', spec)
         self.assertIn("FatalFailure := True;", spec)
-        self.assertIn("Result := not FatalFailure;", spec)
-        self.assertIn("Confirm := False;", spec)
+        self.assertIn("Abort;", spec)
         self.assertIn("AllowCancelDuringInstall=yes", spec)
         self.assertIn("Pos('/nocancel'", spec)
         callbacks = spec[spec.index("procedure CheckUnlocked"):spec.index("procedure CurStepChanged")]

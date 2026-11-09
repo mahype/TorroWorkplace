@@ -8,8 +8,10 @@ $root = Join-Path $env:ProgramFiles 'TorroWorkplace'
 if (Test-Path $root) { throw 'Existing installation; refusing destructive tests' }
 $apps = (Get-Content (Join-Path $PSScriptRoot '../apps.json') -Raw | ConvertFrom-Json).apps
 function Run-Installer($File, $Extra = @()) {
+    Write-Output ('Starting: ' + (Split-Path $File -Leaf))
     $process = Start-Process $File -ArgumentList (@('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') + $Extra) -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "Installer failed: $File ($($process.ExitCode))" }
+    Write-Output ('Completed: ' + (Split-Path $File -Leaf))
 }
 function Setup-For($Folder, $Program) {
     $files = @(Get-ChildItem $Folder -Filter "$Program-*-x86_64-pc-windows-msvc-setup.exe")
@@ -48,6 +50,12 @@ function Check-Payload($Installed) {
         if ($expected.ContainsKey($program)) { Check-Version $program }
     }
 }
+function Uninstall-Metadata {
+    @(Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.mahype.*_is1' |
+        Sort-Object PSChildName |
+        Select-Object PSChildName,DisplayVersion,InstallLocation,UninstallString,QuietUninstallString |
+        ConvertTo-Json -Compress)
+}
 $data = Join-Path $env:LOCALAPPDATA 'torrotasks/installer-smoke-preserve.txt'
 New-Item (Split-Path $data) -ItemType Directory -Force | Out-Null
 Set-Content $data 'personal data'
@@ -58,9 +66,12 @@ $process = Start-Process (Setup-For $Newer 'torroworkplace') -ArgumentList @('/V
 if ($process.ExitCode -eq 0 -or (Test-Path $root)) { throw 'Disabling safety cancellation was accepted' }
 # Both dependency removal orders; every app is installed, reinstalled and upgraded in each pass.
 foreach ($reverse in @($false, $true)) {
+    Write-Output ("Removal order reverse=$reverse : installing RC baseline")
     foreach ($app in $apps) { Run-Installer (Setup-For $Older $app.program) }
     Check-Payload @($apps | ForEach-Object { $_.id })
+    Write-Output 'PASS: all seven RC apps installed and matching runtime versions verified'
     $beforeLocked = @(Get-ChildItem $root -Recurse -File | Get-FileHash | Sort-Object Path | ForEach-Object { "$($_.Path):$($_.Hash)" })
+    $beforeUninstall = Uninstall-Metadata
     $lock = [IO.File]::Open((Join-Path $root 'torroworkplace.exe'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
     $unsafeInf = Join-Path $env:TEMP ('torro-nocancel-' + [guid]::NewGuid() + '.inf')
     try {
@@ -75,15 +86,19 @@ foreach ($reverse in @($false, $true)) {
     }
     $afterLocked = @(Get-ChildItem $root -Recurse -File | Get-FileHash | Sort-Object Path | ForEach-Object { "$($_.Path):$($_.Hash)" })
     if (Compare-Object $beforeLocked $afterLocked) { throw 'Locked upgrade changed payload or uninstall metadata files' }
+    if (Compare-Object $beforeUninstall (Uninstall-Metadata)) { throw 'Locked upgrade changed uninstall registry metadata' }
+    Write-Output 'PASS: locked upgrade and unsafe INF rejected without payload/uninstall changes'
     foreach ($app in $apps) { Run-Installer (Setup-For $Newer $app.program) }
     foreach ($app in $apps) { Run-Installer (Setup-For $Newer $app.program) }
     $remaining = @($apps | ForEach-Object { $_.id })
     Check-Payload $remaining
+    Write-Output 'PASS: all seven Stable upgrades/repeats and matching runtime versions verified'
     # A stable shared service must reject an older RC before modifying any files.
     $before = (Get-FileHash (Join-Path $root 'torroworkplace.exe')).Hash
     $process = Start-Process (Setup-For $Older 'torroworkplace') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
     if ($process.ExitCode -eq 0) { throw 'Downgrade incorrectly accepted' }
     if ($before -ne (Get-FileHash (Join-Path $root 'torroworkplace.exe')).Hash) { throw 'Downgrade changed service' }
+    Write-Output 'PASS: downgrade rejected without changing service'
     $order = @($apps)
     if ($reverse) { [array]::Reverse($order) }
     foreach ($app in $order) {
@@ -92,6 +107,7 @@ foreach ($reverse in @($false, $true)) {
         $remaining = @($remaining | Where-Object { $_ -ne $app.id })
         Check-Payload $remaining
         if (-not (Test-Path $data)) { throw 'Personal data removed' }
+        Write-Output ('PASS: removed ' + $app.id + '; remaining owners: ' + ($remaining -join ', '))
     }
 }
 Write-Output 'PASS: fixed directory, unresolved-lock abort, unsafe INF rejection, all apps load with matching versions, repeat, upgrade, downgrade refusal, both removal orders and shared-file lifetime'

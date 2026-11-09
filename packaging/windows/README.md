@@ -68,11 +68,22 @@ payload program, version and marker before the first program is copied; unresolv
 Per-file hash/version checks also prevent Skip from advancing metadata beyond an old executable. Setup
 never starts an app elevated, installs a system service, or removes personal data.
 
-Inno swallows Before/AfterInstall exceptions. Safety failures therefore request native cancellation
-through `WizardForm.Close` and block all subsequent payload entries, rather than relying on a thrown
-exception. The lock gate runs from `[Dirs]`, after Restart Manager; Inno processes cancellation before
-copying any application files. `/NOCANCEL` is rejected so this works in silent mode too. This path is
-source-checked against pinned Inno 7.1.1 but still requires the actual Windows-VM smoke test.
+Inno swallows Before/AfterInstall and Check exceptions. Closing the wizard also failed in the native
+noninteractive silent test, despite reporting success and changing uninstall files. Callbacks now only
+record safety failures. Mandatory code constants propagate `Abort` outside those swallowed handlers:
+the `[Dirs]` name after Restart Manager and before uninstall metadata, each payload destination, and
+an unconditional final external source after the last callback. The final source is a nonexistent file
+with `skipifsourcedoesntexist` and `ExternalSize: 0`, so success copies nothing and avoids eager size
+probing. No Check/component/task may skip this final guard. `/NOCANCEL` and `/LOADINF` remain rejected.
+The unchanged production Calendar Setup returned failure with unchanged payload/uninstall hashes and
+uninstall registry metadata in the focused native lock test. Injected executable/final-marker exceptions
+also returned failure without publishing uninstall metadata; the executable failure did not advance its
+version sidecar. Existing payloads were not fully restored (one/five files changed respectively), so a
+damaged installation after a late failure must be removed before reinstalling. A full lifecycle rerun
+passed with the production RC/Stable Setups after preserving and uninstalling fixtures from an OS-reboot-
+interrupted run: all seven programs loaded with matching versions, repeat/upgrade, unsafe-INF/locked-upgrade
+and downgrade refusal, both removal orders, shared-file lifetimes and retained test data. This is native
+guest-agent SYSTEM evidence, not interactive UAC, SmartScreen or companion-function verification.
 
 Unsigned by decision: users may see SmartScreen. `tests/windows-smoke.ps1` (relative to `packaging/`)
 must be run only in a fresh disposable x64 Windows VM as administrator, with older RC and newer stable
