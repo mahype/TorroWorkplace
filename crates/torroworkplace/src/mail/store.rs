@@ -492,6 +492,8 @@ pub enum WorkflowMailState {
 /// Fixed, content-free reasons; model/provider error text must never enter the outbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkflowMailFailure {
+    /// Control flow only. Never persisted as a failure or consumed as a successful decision.
+    Paused,
     BodyUnavailable,
     MessageGone,
     CategoryFailed,
@@ -499,12 +501,13 @@ pub enum WorkflowMailFailure {
 }
 
 impl WorkflowMailFailure {
-    fn column(self) -> &'static str {
+    fn column(self) -> Option<&'static str> {
         match self {
-            Self::BodyUnavailable => "body_unavailable",
-            Self::MessageGone => "message_gone",
-            Self::CategoryFailed => "category_failed",
-            Self::CategoryTimeout => "category_timeout",
+            Self::Paused => None,
+            Self::BodyUnavailable => Some("body_unavailable"),
+            Self::MessageGone => Some("message_gone"),
+            Self::CategoryFailed => Some("category_failed"),
+            Self::CategoryTimeout => Some("category_timeout"),
         }
     }
 }
@@ -1871,6 +1874,23 @@ impl MailStore {
         Ok(statement.query_map([limit.min(100)], |row| row.get(0))?.collect::<Result<_, _>>()?)
     }
 
+    pub(super) fn workflow_delivery(&self, message: &str) -> Result<bool, MailStoreError> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_deliveries WHERE message_id = ?1)",
+            [message],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(super) fn workflow_preparation_waiting(&self, message: &str) -> Result<bool, MailStoreError> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_events WHERE message_id = ?1
+            AND acknowledged = 0 AND state IN ('waiting_body', 'waiting_category'))",
+            [message],
+            |row| row.get(0),
+        )?)
+    }
+
     pub fn workflow_needs_body(&self, message: &str) -> Result<bool, MailStoreError> {
         Ok(self.db.query_row(
             "SELECT EXISTS(SELECT 1 FROM workflow_events
@@ -1903,10 +1923,11 @@ impl MailStore {
     }
 
     pub fn fail_workflow_preparation(&self, message: &str, failure: WorkflowMailFailure) -> Result<(), MailStoreError> {
+        let Some(reason) = failure.column() else { return Ok(()) };
         self.db.execute(
             "UPDATE workflow_events SET state = 'failed', failure = ?2
              WHERE message_id = ?1 AND state IN ('waiting_body', 'waiting_category')",
-            params![message, failure.column()],
+            params![message, reason],
         )?;
         Ok(())
     }

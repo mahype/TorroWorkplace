@@ -574,18 +574,66 @@ pub(crate) async fn cache_body(mailbox: &Mailbox, place: &super::store::MessageR
 /// Workflow preparation deliberately does not consult notifications, Seen or the logo switch.
 /// A successful read keeps a complete body and the independent DKIM result; absent/unreadable
 /// mail is not a ready workflow input. Transient IMAP errors leave the durable wait intact.
+#[cfg(test)]
 pub(crate) async fn prepare_workflow_body(mailbox: &Mailbox, message: &str) -> Result<bool, MailError> {
+    prepare_workflow_body_gated(mailbox, message, std::sync::Arc::new(|| true)).await
+}
+
+pub(crate) async fn prepare_workflow_body_gated(
+    mailbox: &Mailbox,
+    message: &str,
+    on: super::service::BackgroundSwitch,
+) -> Result<bool, MailError> {
+    if !on() {
+        return Ok(false);
+    }
     let store = mailbox.store()?;
     let lookup = message.to_string();
     let Some(place) = store.run(move |store| store.resolve_message(&lookup)).await? else { return Ok(false) };
-    let Some(raw) = fetch_text(mailbox, &place).await? else { return Ok(false) };
+    if !on() {
+        return Ok(false);
+    }
+    let mut command = mailbox.command().await?;
+    if !on() {
+        return Ok(false);
+    }
+    if !super::read::valid_selection(command.session(), &place).await? {
+        return Ok(false);
+    }
+    if !on() {
+        return Ok(false);
+    }
+    // Preparation reads a bounded body, not the offline-depot's multi-request capture. The
+    // ordinary sync/indexer retains originals according to policy on its own guarded workers.
+    let size = command.session().fetch_sizes(&[place.uid]).await?;
+    if !on() {
+        return Ok(false);
+    }
+    if size.iter().any(|(uid, bytes)| *uid == place.uid && *bytes > LARGE_ORIGINAL) {
+        return Ok(false);
+    }
+    let raw = command.session().fetch_message(place.uid).await?;
+    command.release();
+    if !on() {
+        return Ok(false);
+    }
+    let Some(raw) = raw else { return Ok(false) };
     let Ok(read) = mime::read(&raw) else { return Ok(false) };
+    if !on() {
+        return Ok(false);
+    }
     let checked = mailbox.sender_check().verified_domain(&raw).await;
+    if !on() {
+        return Ok(false);
+    }
     let invite = super::read::invite_of(&raw, &read);
     let body = Body::of(read, invite);
     let id = message.to_string();
     Ok(store
         .run(move |store| {
+            if !on() {
+                return Ok(false);
+            }
             if !store.set_body(&id, &body)? {
                 return Ok(false);
             }
@@ -2341,6 +2389,45 @@ mod tests {
         );
         assert!(!mailbox.logos().on());
         assert!(server.lines().iter().all(|line| !line.contains(" UID STORE ")));
+    }
+
+    #[tokio::test]
+    async fn workflow_review_gate_is_rechecked_between_imap_dkim_and_durable_preparation_steps() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let mailbox = mailbox(dir.path(), &server).await;
+        let store = mailbox.store().expect("store");
+        store
+            .run(|store| {
+                let mut policy = store.cache_policy()?;
+                policy.mode = MailCacheMode::HeadersOnly;
+                store.set_cache_policy(&policy)
+            })
+            .await
+            .expect("no background body");
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("baseline");
+        server.add("INBOX", &fake::mail("Stage gated body", 0, None), &["\\Seen"]);
+        sync_account(&mailbox, MailSyncTrigger::Manual).await.expect("arrival headers");
+        let event = store.run(|store| store.workflow_events(None, 1)).await.expect("event").remove(0);
+        for admitted in [0, 2, 4, 6, 7, 8] {
+            let checks = Arc::new(AtomicUsize::new(0));
+            let checked = Arc::clone(&checks);
+            let on = Arc::new(move || checked.fetch_add(1, Ordering::SeqCst) < admitted);
+            let fetches_before = fetches(&server, "BODY.PEEK[]").len();
+            assert!(!prepare_workflow_body_gated(&mailbox, &event.message, on).await.expect("deferred stage"));
+            assert_eq!(checks.load(Ordering::SeqCst), admitted + 1, "no subsequent step after a closed gate");
+            if admitted <= 4 {
+                assert_eq!(fetches(&server, "BODY.PEEK[]").len(), fetches_before);
+            }
+            assert_eq!(
+                store.run(|store| store.workflow_events(None, 1)).await.expect("unchanged wait"),
+                vec![event.clone()]
+            );
+            assert!(text_of(&mailbox, &event.message).await.is_none());
+        }
+        assert!(prepare_workflow_body(&mailbox, &event.message).await.expect("resume"));
+        assert!(text_of(&mailbox, &event.message).await.is_some());
     }
 
     #[tokio::test]

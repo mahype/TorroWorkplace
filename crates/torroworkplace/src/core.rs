@@ -3402,6 +3402,10 @@ impl Core {
 
     /// Durable workflow recovery runs before either of the two bounded workers can claim a job.
     fn start_workflows(self: &Arc<Self>) {
+        let settings = self.settings.clone();
+        self.mail.set_workflow_switch(Arc::new(move || {
+            settings.current().component_on(torro_core::settings::Component::Mail)
+        }));
         let core = Arc::clone(self);
         tokio::spawn(async move {
             while !core.mail.loaded() {
@@ -3445,7 +3449,14 @@ impl Core {
             let (settings, ai, mail, inbox) =
                 (settings.clone(), Arc::clone(&ai), Arc::clone(&mail), Arc::clone(&inbox));
             Box::pin(async move {
-                use crate::mail::store::WorkflowMailFailure::CategoryFailed;
+                use crate::mail::store::WorkflowMailFailure::{CategoryFailed, Paused};
+                let active = || {
+                    settings.current().component_on(torro_core::settings::Component::Mail)
+                        && mail.workflow_preparation_on()
+                };
+                if !active() {
+                    return Err(Paused);
+                }
                 let current = settings.current();
                 let function = torro_core::ai::AiFunction::InboxCategorize;
                 let assignment = assignment_in_effect(&current, function);
@@ -3455,9 +3466,18 @@ impl Core {
                     return Ok(None);
                 };
                 let Some((provider, server)) = ai.server(&engine).await else { return Ok(None) };
+                if !active() {
+                    return Err(Paused);
+                }
                 // A provider/network failure is NOT the absence of a configured model.
                 let models = ai.models(&engine, true).await.map_err(|_| CategoryFailed)?;
+                if !active() {
+                    return Err(Paused);
+                }
                 let models = ai.mark_enabled(&engine, models).await;
+                if !active() {
+                    return Err(Paused);
+                }
                 let here = |model: &torro_core::ai::AiModel| {
                     crate::assistant::place_of(provider, &server, model) == Place::Local
                 };
@@ -3482,12 +3502,22 @@ impl Core {
                     .await
                     .map_err(|_| CategoryFailed)?
                     .ok_or(CategoryFailed)?;
+                if !active() {
+                    return Err(Paused);
+                }
                 let catalogue = inbox.catalogue().map_err(|_| CategoryFailed)?;
-                let answer = match ask_model(&ai, (&engine, &model), &content, &catalogue, false).await {
+                let contact = crate::mail::inbox_feed::workflow_contact_input(&mail, &account, &message).await?;
+                if !active() {
+                    return Err(Paused);
+                }
+                let answer = match ask_model(&ai, (&engine, &model), &content, &catalogue, contact).await {
                     Ok(answer) => answer.map(|answer| answer.category),
                     Err(DecideError::NothingToChoose) => None,
                     Err(_) => return Err(CategoryFailed),
                 };
+                if !active() {
+                    return Err(Paused);
+                }
                 let cloud = models.iter().find(|held| held.id == model).is_none_or(|held| !here(held));
                 if cloud && !settings.current().mail_to_cloud_in(function.slot()) {
                     return Err(CategoryFailed);
@@ -4354,7 +4384,7 @@ impl Core {
     ) -> Response {
         if let Request::ProposeWorkflow { mail, save_target, instruction } = &request {
             if let Some(expected) = approved {
-                match self.workflows.approval(&request, &scope, &self.clients, &self.mail).await {
+                match Box::pin(self.workflows.approval(&request, &scope, &self.clients, &self.mail)).await {
                     Ok((now, _)) if now == expected => {}
                     Ok(_) => return crate::workflows::Error::Conflict.response(),
                     Err(error) => return error.response(),
@@ -4679,7 +4709,7 @@ impl Core {
                     ceiling: Some(rights.clone()),
                 };
                 let (pinned, workflow) =
-                    match self.workflows.approval(&request, &scope, &self.clients, &self.mail).await {
+                    match Box::pin(self.workflows.approval(&request, &scope, &self.clients, &self.mail)).await {
                         Ok(ready) => ready,
                         Err(error) => return Ok(error.response()),
                     };
@@ -5532,6 +5562,10 @@ impl Core {
                 }
                 Err(refused) => return *refused,
             }
+            // Current rights and the approved mail fingerprint have passed above. Like EML/restore,
+            // invoke the same leaf directly: a second answer_within poll frame exhausts the default
+            // test/runtime stack before the deep IMAP read used by PDF/PNG export can start.
+            return self.save_request(request, reach).await;
         }
         if request.operation().area() == Area::Workflows {
             let scope = crate::workflows::Scope {
@@ -6795,16 +6829,41 @@ impl Core {
             let (settings, ai, mail, inbox) =
                 (settings.clone(), Arc::clone(&ai), Arc::clone(&mail), Arc::clone(&inbox));
             Box::pin(async move {
-                let (engine, model) = decider_of(&settings, &ai).await.ok()?;
-                match decide_mail_with(
-                    &ai,
-                    &mail,
-                    &inbox,
-                    (&engine, &model),
-                    (&account, &message),
-                    Occasion::Arrival { contact },
-                )
-                .await
+                if !settings.current().component_on(torro_core::settings::Component::Mail)
+                    || !mail.workflow_preparation_on()
+                {
+                    return None;
+                }
+                let _classification = mail.lock_arrival_classification().await;
+                if !settings.current().component_on(torro_core::settings::Component::Mail)
+                    || !mail.workflow_preparation_on()
+                {
+                    return None;
+                }
+                // Eligible deliveries belong to the durable, error-aware classifier. A legacy
+                // task queued before that worker started must not make a second model decision.
+                if mail.durable_classifier_on() && mail.is_workflow_delivery(&account, &message).await.ok()? {
+                    return None;
+                }
+                let (engine, model) = mail.while_workflow_on(&account, decider_of(&settings, &ai)).await?.ok()?;
+                if !settings.current().component_on(torro_core::settings::Component::Mail)
+                    || !mail.workflow_preparation_on()
+                {
+                    return None;
+                }
+                match mail
+                    .while_workflow_on(
+                        &account,
+                        decide_mail_with(
+                            &ai,
+                            &mail,
+                            &inbox,
+                            (&engine, &model),
+                            (&account, &message),
+                            Occasion::Arrival { contact },
+                        ),
+                    )
+                    .await?
                 {
                     Ok(category) => category,
                     // The person's choice, not a failure: nothing to log for every mail.

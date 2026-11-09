@@ -92,6 +92,8 @@ use crate::pim::{NoKeychain, PimService, Reach, SYNC_PROBLEM_AFTER};
 /// How many changes wait for a slow subscriber before it misses some ([`MailService::subscribe`]).
 const EVENTS: usize = 256;
 
+pub(super) type BackgroundSwitch = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// How often fetched attachments older than a day are deleted.
 const PURGE_EVERY: Duration = Duration::from_secs(60 * 60);
 
@@ -1244,7 +1246,13 @@ pub struct MailService {
     outbox: tokio::sync::OnceCell<Arc<Outbox>>,
     /// Mail is turned off (task W.2): the accounts and their stores stay readable, but no worker
     /// fetches or indexes in the background.
-    paused: AtomicBool,
+    paused: Arc<AtomicBool>,
+    /// Read the current component setting too: settings can change before set_paused's task runs.
+    workflow_switch: Arc<StdMutex<Option<BackgroundSwitch>>>,
+    pub(super) arrival_sorting: StdMutex<std::sync::Weak<super::inbox_feed::ArrivalSorting>>,
+    pub(super) workflow_preparer: StdMutex<std::sync::Weak<super::inbox_feed::WorkflowPreparation>>,
+    /// Both notification and durable feeds serialize classification, not the SQLite connection.
+    pub(super) arrival_classification: Mutex<()>,
     cache_workers: std::sync::Mutex<std::collections::HashSet<String>>,
     cache_jobs_lock: Mutex<()>,
     /// Where attachments are saved to (task M12.3, issue #290): `<data>/mail/save-targets.json`,
@@ -1345,7 +1353,11 @@ impl MailService {
             writing: Mutex::new(()),
             calendars: None,
             outbox: tokio::sync::OnceCell::new(),
-            paused: AtomicBool::new(false),
+            paused: Arc::new(AtomicBool::new(false)),
+            workflow_switch: Arc::new(StdMutex::new(None)),
+            arrival_sorting: StdMutex::default(),
+            workflow_preparer: StdMutex::default(),
+            arrival_classification: Mutex::new(()),
             cache_workers: std::sync::Mutex::new(std::collections::HashSet::new()),
             cache_jobs_lock: Mutex::new(()),
             save_targets,
@@ -1386,6 +1398,65 @@ impl MailService {
     /// start only while it is on.
     pub fn pause_from_start(&self, paused: bool) {
         self.paused.store(paused, Ordering::Release);
+    }
+
+    pub(crate) fn set_workflow_switch(&self, switch: BackgroundSwitch) {
+        *self.workflow_switch.lock().unwrap_or_else(PoisonError::into_inner) = Some(switch);
+    }
+
+    pub(crate) fn workflow_preparation_on(&self) -> bool {
+        !self.paused.load(Ordering::Acquire)
+            && self.workflow_switch.lock().unwrap_or_else(PoisonError::into_inner).as_ref().is_none_or(|on| on())
+    }
+
+    pub(super) fn workflow_preparation_gate(&self) -> BackgroundSwitch {
+        let (paused, switch) = (Arc::clone(&self.paused), Arc::clone(&self.workflow_switch));
+        Arc::new(move || {
+            !paused.load(Ordering::Acquire)
+                && switch.lock().unwrap_or_else(PoisonError::into_inner).as_ref().is_none_or(|on| on())
+        })
+    }
+
+    pub(super) async fn workflow_preparation_allowed(&self, account: &str) -> bool {
+        if !self.workflow_preparation_on() {
+            return false;
+        }
+        let on = self
+            .entries
+            .read()
+            .await
+            .iter()
+            .any(|entry| entry.mailbox.id() == account && entry.mailbox.settings.services.mail);
+        on && self.workflow_preparation_on()
+    }
+
+    /// Cancelling an in-flight model/preparation future leaves its durable wait untouched.
+    pub(crate) async fn while_workflow_on<T>(&self, account: &str, work: impl Future<Output = T>) -> Option<T> {
+        if !self.workflow_preparation_allowed(account).await {
+            return None;
+        }
+        tokio::pin!(work);
+        let mut check = tokio::time::interval(Duration::from_millis(20));
+        loop {
+            tokio::select! {
+                result = &mut work => return self.workflow_preparation_allowed(account).await.then_some(result),
+                _ = check.tick() => if !self.workflow_preparation_allowed(account).await { return None; },
+            }
+        }
+    }
+
+    pub(crate) async fn lock_arrival_classification(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.arrival_classification.lock().await
+    }
+
+    pub(crate) fn durable_classifier_on(&self) -> bool {
+        self.workflow_preparer.lock().unwrap_or_else(PoisonError::into_inner).upgrade().is_some()
+    }
+
+    pub(crate) async fn is_workflow_delivery(&self, account: &str, message: &str) -> Result<bool, MailError> {
+        let store = self.store(account).await?;
+        let id = message.to_string();
+        Ok(store.run(move |store| store.workflow_delivery(&id)).await?)
     }
 
     /// Mail was turned off or on (task W.2): the workers stop, or start again. Nothing happens when
@@ -2581,9 +2652,21 @@ impl MailService {
         origin: super::store::WorkflowCategoryOrigin,
         now: DateTime<Utc>,
     ) -> Result<bool, MailError> {
+        let automatic = origin == super::store::WorkflowCategoryOrigin::Arrival;
+        if automatic && !self.workflow_preparation_allowed(account).await {
+            return Ok(false);
+        }
         let store = self.store(account).await?;
         let message = message.to_string();
-        Ok(store.run(move |store| store.set_workflow_category(&message, category, origin, now)).await?)
+        let on = self.workflow_preparation_gate();
+        Ok(store
+            .run(move |store| {
+                if automatic && !on() {
+                    return Ok(false);
+                }
+                store.set_workflow_category(&message, category, origin, now)
+            })
+            .await?)
     }
 
     pub async fn set_workflow_category_if_unchanged(
@@ -2595,17 +2678,40 @@ impl MailService {
         origin: super::store::WorkflowCategoryOrigin,
         now: DateTime<Utc>,
     ) -> Result<bool, MailError> {
+        let automatic = origin == super::store::WorkflowCategoryOrigin::Arrival;
+        if automatic && !self.workflow_preparation_allowed(account).await {
+            return Ok(false);
+        }
         let store = self.store(account).await?;
         let message = message.to_string();
+        let on = self.workflow_preparation_gate();
         Ok(store
-            .run(move |store| store.set_workflow_category_if_unchanged(&message, expected, category, origin, now))
+            .run(move |store| {
+                if automatic && !on() {
+                    return Ok(false);
+                }
+                store.set_workflow_category_if_unchanged(&message, expected, category, origin, now)
+            })
             .await?)
     }
 
     /// Read a workflow input with BODY.PEEK and verify its sender independently of logo settings.
     pub async fn prepare_workflow_body(&self, account: &str, message: &str) -> Result<bool, MailError> {
+        if !self.workflow_preparation_allowed(account).await {
+            return Ok(false);
+        }
         let mailbox = self.mailbox_of(account).await?;
-        sync::prepare_workflow_body(&mailbox, message).await
+        if !self.workflow_preparation_allowed(account).await {
+            return Ok(false);
+        }
+        Ok(self
+            .while_workflow_on(
+                account,
+                sync::prepare_workflow_body_gated(&mailbox, message, self.workflow_preparation_gate()),
+            )
+            .await
+            .transpose()?
+            .unwrap_or(false))
     }
 
     /// Security input for automatic execution, independent of `SenderLogos`/summary decoration.
