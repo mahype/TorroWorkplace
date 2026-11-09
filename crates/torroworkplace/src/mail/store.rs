@@ -54,6 +54,7 @@ use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params, params_from_iter};
 use sha2::{Digest, Sha256};
+use torro_ipc::actions::{Suggestion, SuggestionState};
 use torro_ipc::inbox::{CategoryJobPreview, CategoryJobScope};
 use torro_ipc::mail::{MailAccountStats, MailFolderStats, MailMonthCount, MailQuota};
 use torro_ipc::mail::{MailCacheEstimate, MailCacheJob, MailCacheMode, MailCachePolicy};
@@ -76,7 +77,7 @@ const CORRESPONDENT_ROWS: u32 = 5_000;
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 
 /// Originals of mail that is no longer on the server (`originals.gone_at`) are deleted this many
 /// days after the sync noticed by [`MailStore::prune_gone_originals`]: long enough to still back up
@@ -140,6 +141,27 @@ const SCHEMA_V14: [(&str, &str); 4] = [
     ("reply_ref", "ALTER TABLE messages ADD COLUMN reply_ref INTEGER;"),
     ("caught", "ALTER TABLE messages ADD COLUMN caught INTEGER NOT NULL DEFAULT 0;"),
 ];
+
+/// Version 15 (issue #603, `docs/vorschlaege.md`): what Torro suggests to make of a message – an
+/// event, a task –, one row per message and kind of action. `state` is `reading` (found, fields not
+/// read out yet), `ready` (`fields` holds them as JSON), `unfilled`, or – never overwritten by a
+/// later sorting – `accepted` and `dismissed`. `reason` is the model's short word why; `engine` and
+/// `model` the AI that read the fields out. Goes with its message.
+const SCHEMA_V15_SUGGESTIONS: &str = "CREATE TABLE IF NOT EXISTS suggestions (
+    message INTEGER NOT NULL REFERENCES messages(seq) ON DELETE CASCADE,
+    kind    TEXT NOT NULL,
+    state   TEXT NOT NULL,
+    fields  TEXT,
+    reason  TEXT,
+    engine  TEXT,
+    model   TEXT,
+    updated INTEGER NOT NULL,
+    PRIMARY KEY (message, kind)
+);";
+
+/// The states of a suggestion that is still open: what lists show and clearing the categories
+/// takes back (issue #603).
+const OPEN_SUGGESTIONS: &str = "('reading', 'ready', 'unfilled')";
 
 /// Before version 11 nothing marked an original whose message went: every original without a live
 /// header row at its place (folder path, the folder's current UIDVALIDITY, UID) is such one. An
@@ -1681,13 +1703,128 @@ impl MailStore {
 
     /// Clear model answers left on messages whose category was already removed separately.
     /// This is bounded and repeatable after a restart.
+    ///
+    /// The open suggestions go with them (issue #603): the same model call found them. Accepted and
+    /// dismissed ones stay, so sorting again never brings a dismissed one back.
     pub fn clear_model_answers_batch(&self, limit: u32) -> Result<u64, MailStoreError> {
         let changed = self.db.execute(
             "UPDATE messages SET needs_reply = NULL, urgency = NULL WHERE seq IN (
              SELECT seq FROM messages WHERE needs_reply IS NOT NULL OR urgency IS NOT NULL LIMIT ?1)",
             [i64::from(limit)],
         )?;
-        Ok(changed as u64)
+        let suggestions = self.db.execute(
+            &format!(
+                "DELETE FROM suggestions WHERE rowid IN (
+                 SELECT rowid FROM suggestions WHERE state IN {OPEN_SUGGESTIONS} LIMIT ?1)"
+            ),
+            [i64::from(limit)],
+        )?;
+        Ok((changed + suggestions) as u64)
+    }
+
+    /// Keeps that the decision model found the kinds of action `kinds` in the message `id` (issue
+    /// #603): a row `reading` for each kind the message has none of yet – a suggestion read out,
+    /// accepted or dismissed before stays as it is. Returns the kinds that are new; empty also when
+    /// the store has no such message.
+    pub fn detect_suggestions(
+        &self,
+        id: &str,
+        kinds: &[String],
+        now: DateTime<Utc>,
+    ) -> Result<Vec<String>, MailStoreError> {
+        let Some(seq) = self.seq_of(id)? else { return Ok(Vec::new()) };
+        let mut new = Vec::new();
+        for kind in kinds {
+            let added = self.db.execute(
+                "INSERT OR IGNORE INTO suggestions (message, kind, state, updated) VALUES (?1, ?2, 'reading', ?3)",
+                params![seq, kind, now.timestamp()],
+            )?;
+            if added > 0 {
+                new.push(kind.clone());
+            }
+        }
+        Ok(new)
+    }
+
+    /// The open suggestions of the message `id` (issue #603), by kind; empty for a message the store
+    /// does not have. A row whose fields this version cannot read counts as `unfilled`.
+    pub fn suggestions(&self, id: &str) -> Result<Vec<Suggestion>, MailStoreError> {
+        let Some(seq) = self.seq_of(id)? else { return Ok(Vec::new()) };
+        let sql = format!(
+            "SELECT kind, state, fields, reason FROM suggestions WHERE message = ?1 AND state IN {OPEN_SUGGESTIONS}
+             ORDER BY kind"
+        );
+        let mut statement = self.db.prepare(&sql)?;
+        let rows = statement.query_map([seq], |row| {
+            let (kind, state): (String, String) = (row.get(0)?, row.get(1)?);
+            let (fields, reason): (Option<String>, Option<String>) = (row.get(2)?, row.get(3)?);
+            Ok(suggestion_of(kind, &state, fields.as_deref(), reason))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Keeps what was read out for the suggestion `suggestion.kind` of the message `id` (issue #603):
+    /// its state, fields and reason. With `only_reading` only a row still `reading` changes – the
+    /// reader in the background never writes over what the person did meanwhile; without it (a reading
+    /// asked for by hand) the row is written whatever it held, so a dismissed kind opens again.
+    /// `false` when nothing was written.
+    pub fn keep_suggestion(
+        &self,
+        id: &str,
+        suggestion: &Suggestion,
+        only_reading: bool,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MailStoreError> {
+        let Some(seq) = self.seq_of(id)? else { return Ok(false) };
+        let fields = SuggestionFields { task: suggestion.task.clone(), event: suggestion.event.clone() };
+        let (engine, model) = match (&suggestion.task, &suggestion.event) {
+            (Some(task), _) => (Some(task.engine.clone()), Some(task.model.clone())),
+            (None, Some(event)) => (Some(event.engine.clone()), Some(event.model.clone())),
+            (None, None) => (None, None),
+        };
+        let fields = match fields.task.is_none() && fields.event.is_none() {
+            true => None,
+            false => Some(serde_json::to_string(&fields).map_err(|err| MailStoreError::Corrupt(err.to_string()))?),
+        };
+        let state = state_key(suggestion.state);
+        let values = params![seq, suggestion.kind, state, fields, suggestion.reason, engine, model, now.timestamp()];
+        let written = match only_reading {
+            true => self.db.execute(
+                "UPDATE suggestions SET state = ?3, fields = ?4, reason = ?5, engine = ?6, model = ?7, updated = ?8
+                 WHERE message = ?1 AND kind = ?2 AND state = 'reading'",
+                values,
+            )?,
+            false => self.db.execute(
+                "INSERT INTO suggestions (message, kind, state, fields, reason, engine, model, updated)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT (message, kind) DO UPDATE SET state = ?3, fields = ?4, reason = ?5, engine = ?6,
+                 model = ?7, updated = ?8",
+                values,
+            )?,
+        };
+        Ok(written > 0)
+    }
+
+    /// Closes the open suggestion `kind` of the message `id` (issue #603): `accepted` or not
+    /// (dismissed). `false` when the message has no open suggestion of that kind.
+    pub fn close_suggestion(
+        &self,
+        id: &str,
+        kind: &str,
+        accepted: bool,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MailStoreError> {
+        let Some(seq) = self.seq_of(id)? else { return Ok(false) };
+        let state = if accepted { "accepted" } else { "dismissed" };
+        let sql = format!(
+            "UPDATE suggestions SET state = ?3, updated = ?4 WHERE message = ?1 AND kind = ?2 AND state IN {OPEN_SUGGESTIONS}"
+        );
+        Ok(self.db.execute(&sql, params![seq, kind, state, now.timestamp()])? > 0)
+    }
+
+    /// The row number of the message `id`; `None` when the store has no such message.
+    fn seq_of(&self, id: &str) -> Result<Option<i64>, MailStoreError> {
+        Ok(self.db.query_row("SELECT seq FROM messages WHERE id = ?1", [id], |row| row.get(0)).optional()?)
     }
 
     /// How much mail of any folder is of `category` (task E15.2): what removing the category
@@ -2918,6 +3055,9 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
             }
         }
     }
+    if version < 15 {
+        tx.execute_batch(SCHEMA_V15_SUGGESTIONS)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -2975,12 +3115,13 @@ const FOLDER_ORDER: &str =
 
 const SUMMARY_COLUMNS: &str = "m.id, m.folder_id, m.thread_id, m.from_json, m.to_json, m.subject, m.date, m.snippet,
     m.flags, m.has_attachments, m.invite_json, m.invite_answer, m.category, m.category_source, m.category_confidence,
-    m.sender_check, m.caught";
+    m.sender_check, m.caught,
+    (SELECT group_concat(s.kind, ',') FROM suggestions s WHERE s.message = m.seq AND s.state IN ('reading', 'ready', 'unfilled'))";
 
 /// How many columns [`SUMMARY_COLUMNS`] selects: where the columns a query adds after it begin.
 /// A query that appends its own must count from here, never from a number written out – task
 /// E12.2 added three columns in the middle and every hard-coded index moved.
-const SUMMARY_WIDTH: usize = 17;
+const SUMMARY_WIDTH: usize = 18;
 
 const INSERT_HEADERS: &str = "INSERT INTO messages (id, folder_id, uid, rfc_message_id, thread_id, from_json, to_json,
     cc_json, reply_to_json, subject, sender, recipients, date, snippet, flags, has_attachments, list_id,
@@ -3247,7 +3388,47 @@ fn summary_from_row(account: &str, row: &Row<'_>) -> rusqlite::Result<MessageSum
         pile_since: None,
         logo: checked.filter(|domain| !domain.is_empty()),
         caught: row.get::<_, Option<bool>>(16)?.unwrap_or(false),
+        // The kinds of the open suggestions (column 17, issue #603), in no particular order.
+        suggested: suggested_from(row.get::<_, Option<String>>(17)?),
     })
+}
+
+/// The fields read out for a suggestion (issue #603), as `suggestions.fields` keeps them.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct SuggestionFields {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task: Option<torro_ipc::TaskSuggestion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    event: Option<torro_ipc::EventSuggestion>,
+}
+
+/// How `suggestions.state` writes `state`.
+fn state_key(state: SuggestionState) -> &'static str {
+    match state {
+        SuggestionState::Reading => "reading",
+        SuggestionState::Ready => "ready",
+        SuggestionState::Unfilled => "unfilled",
+    }
+}
+
+/// A suggestion as a row keeps it (issue #603). Fields this version cannot read count as none: the
+/// suggestion is `unfilled`, a list never fails on one row.
+fn suggestion_of(kind: String, state: &str, fields: Option<&str>, reason: Option<String>) -> Suggestion {
+    let read = fields.map(serde_json::from_str::<SuggestionFields>);
+    let (state, fields) = match (state, read) {
+        ("reading", _) => (SuggestionState::Reading, SuggestionFields::default()),
+        ("ready", Some(Ok(fields))) => (SuggestionState::Ready, fields),
+        _ => (SuggestionState::Unfilled, SuggestionFields::default()),
+    };
+    Suggestion { kind, state, task: fields.task, event: fields.event, reason }
+}
+
+/// The kinds of a summary row's open suggestions (issue #603): `event,task` as a sorted list.
+fn suggested_from(joined: Option<String>) -> Vec<String> {
+    let mut kinds: Vec<String> =
+        joined.unwrap_or_default().split(',').filter(|kind| !kind.is_empty()).map(str::to_string).collect();
+    kinds.sort();
+    kinds
 }
 
 /// The category of a summary row (columns 12 to 14, task E12.2). A value this version cannot read

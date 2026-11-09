@@ -172,17 +172,18 @@ fn name_part(part: &str) -> bool {
 /// model (issue #390); `None` knows nobody.
 ///
 /// `guard` catches fraud and spam (issue #506): who the person knows and the narrow question to the
-/// model; `None` catches nothing.
+/// model; `None` catches nothing. `detect` looks for actions in mail sorted without a model (issue
+/// #603); `None` looks for none.
 pub fn start_with(
     inbox: Arc<Inbox>,
     mail: Arc<MailService>,
     accounts_file: Option<PathBuf>,
     decide: Option<Decider>,
     known: Option<KnownSender>,
-    guard: Option<Guard>,
+    (guard, detect): (Option<Guard>, Option<Detector>),
 ) {
     let changes = mail.subscribe();
-    tokio::spawn(Feed { inbox, mail, accounts_file, decide, known, guard }.run(changes));
+    tokio::spawn(Feed { inbox, mail, accounts_file, decide, known, guard, detect }.run(changes));
 }
 
 /// How long one mail may keep the decision model busy, and how long the run waits before the
@@ -343,6 +344,26 @@ impl Judging {
 pub type Decider = Arc<
     dyn Fn(String, String, bool) -> std::pin::Pin<Box<dyn Future<Output = Option<MailCategory>> + Send>> + Send + Sync,
 >;
+
+/// Asks the decision model only which kinds of action the mail `message` of `account` (second
+/// argument) asks for, and keeps what it finds as suggestions (issue #603, `docs/vorschlaege.md`):
+/// for new mail a filter, a rule or a header sorted without a model, which would otherwise never be
+/// asked – the mail of the boss filed by a rule for its sender among it. The core wires
+/// `Core::new_mail_detector` in here: it leaves out mail of the groups Info and Junk and asks nothing
+/// without a model for sorting or a kind looked for.
+pub type Detector = Arc<dyn Fn(String, String) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+/// Asks `detect` about `messages` of `account`, one at a time and each within [`DECIDE_TIMEOUT`],
+/// with [`DECIDE_PAUSE`] between them, as [`decide_later`] does (issue #603).
+pub(crate) async fn detect_later(detect: Detector, account: String, messages: Vec<String>) {
+    for message in messages {
+        if tokio::time::timeout(DECIDE_TIMEOUT, detect(account.clone(), message)).await.is_err() {
+            eprintln!("torroworkplace: inbox: the decision model took too long for a mail of {account}");
+            return;
+        }
+        tokio::time::sleep(DECIDE_PAUSE).await;
+    }
+}
 
 /// Whether a sender's address (in small letters, `torro_inbox::rules::sender_key`) belongs to a
 /// contact whose mail goes to Personal (issue #390). The core wires the address books and the
@@ -743,6 +764,8 @@ struct Feed {
     known: Option<KnownSender>,
     /// Catches fraud and spam (issue #506); `None` catches nothing.
     guard: Option<Guard>,
+    /// Looks for actions in mail sorted without a model (issue #603); `None` looks for none.
+    detect: Option<Detector>,
     inbox: Arc<Inbox>,
     mail: Arc<MailService>,
     accounts_file: Option<PathBuf>,
@@ -1218,6 +1241,18 @@ impl Feed {
                 tokio::spawn(decide_later(decide, inbox, owner, undecided));
             }
         }
+        // What a filter, a rule or a header sorted is asked only about actions (issue #603); the
+        // detector leaves out newsletters and the like by their group.
+        if let Some(detect) = &self.detect {
+            let ruled: Vec<String> = mails
+                .iter()
+                .filter(|mail| sorted.contains(&mail.message) && !held.contains(&mail.message))
+                .map(|mail| mail.message.clone())
+                .collect();
+            if !ruled.is_empty() {
+                tokio::spawn(detect_later(Arc::clone(detect), account.to_string(), ruled));
+            }
+        }
     }
 
     /// Those of `open` (new mail of `account` nothing sorted) whose sender nobody knows
@@ -1554,7 +1589,7 @@ pub(crate) mod tests {
     async fn fed(dir: &Path, secrets: &MemoryTokens) -> (Arc<Inbox>, Arc<MailService>) {
         let inbox = Arc::new(inbox_in(dir));
         let mail = Arc::new(service_in(dir, secrets));
-        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir)), None, None, None);
+        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir)), None, None, (None, None));
         mail.reload().await;
         (inbox, mail)
     }
@@ -1664,7 +1699,7 @@ pub(crate) mod tests {
         let review = crate::inbox::tests::remote(SourceRef::github("anna-berg"), "42", &["101"], Utc::now());
         let github_entry = crate::inbox::tests::filed_remote(&inbox, &review, Utc::now());
         let mail = Arc::new(service_in(dir.path(), &secrets));
-        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None, None, None);
+        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None, None, (None, None));
         mail.reload().await;
 
         eventually("filed", || async { entries(&inbox).len() == 2 }).await;
@@ -1864,6 +1899,7 @@ pub(crate) mod tests {
             initial: false,
         };
         let feed = Feed {
+            detect: None,
             inbox: Arc::clone(&inbox),
             mail: Arc::clone(&mail),
             accounts_file: None,
@@ -1936,6 +1972,7 @@ pub(crate) mod tests {
             initial: false,
         };
         let feed = Feed {
+            detect: None,
             inbox: Arc::clone(&inbox),
             mail: Arc::clone(&mail),
             accounts_file: None,
@@ -2001,6 +2038,7 @@ pub(crate) mod tests {
             .await
             .expect("changed");
         let feed = Feed {
+            detect: None,
             inbox: Arc::clone(&inbox),
             mail: Arc::clone(&mail),
             accounts_file: None,
@@ -2057,6 +2095,7 @@ pub(crate) mod tests {
         let request = Request::SnoozeItem { id: plan, until: Some(until), unless_reply: true, keep_open: false };
         assert!(matches!(inbox.handle(request, None, since), Response::Item { .. }));
         let feed = Feed {
+            detect: None,
             inbox: Arc::clone(&inbox),
             mail: Arc::clone(&mail),
             accounts_file: None,
@@ -2172,6 +2211,7 @@ pub(crate) mod tests {
         };
         let accounts_file = Some(accounts_file(dir.path()));
         let feed = Feed {
+            detect: None,
             inbox: Arc::clone(&inbox),
             mail: Arc::clone(&mail),
             accounts_file,
@@ -2236,6 +2276,7 @@ pub(crate) mod tests {
             initial: false,
         };
         let feed = Feed {
+            detect: None,
             inbox: Arc::clone(&inbox),
             mail: Arc::clone(&mail),
             accounts_file: None,
@@ -2298,6 +2339,7 @@ pub(crate) mod tests {
             };
         assert_eq!(entry("Offer", Utc::now()).state, State::New, "the reply opened it");
         let feed = Feed {
+            detect: None,
             inbox: Arc::clone(&inbox),
             mail: Arc::clone(&mail),
             accounts_file: None,
@@ -2389,6 +2431,7 @@ pub(crate) mod tests {
                 other => panic!("the entry, got {other:?}"),
             };
         let feed = Feed {
+            detect: None,
             inbox: Arc::clone(&inbox),
             mail: Arc::clone(&mail),
             accounts_file: None,
@@ -2487,6 +2530,7 @@ pub(crate) mod tests {
         );
 
         let feed = Feed {
+            detect: None,
             inbox: Arc::clone(&inbox),
             mail: Arc::clone(&mail),
             accounts_file: None,
@@ -2607,6 +2651,7 @@ pub(crate) mod tests {
         eventually("filed", || async { entries(&inbox).len() == 1 }).await;
         let file = Some(accounts_file(dir.path()));
         let feed = Feed {
+            detect: None,
             inbox: Arc::clone(&inbox),
             mail: Arc::clone(&mail),
             accounts_file: file,
@@ -2650,6 +2695,7 @@ pub(crate) mod tests {
         eventually("synced", || synced(&mail)).await;
         let file = Some(accounts_file(dir.path()));
         let feed = Feed {
+            detect: None,
             inbox: Arc::clone(&inbox),
             mail: Arc::clone(&mail),
             accounts_file: file,
@@ -2682,6 +2728,7 @@ pub(crate) mod tests {
         mail.sync_all(Reach::Suite).await.expect("synced");
         let file = Some(accounts_file(dir));
         let feed = Feed {
+            detect: None,
             inbox: Arc::clone(&inbox),
             mail: Arc::clone(&mail),
             accounts_file: file,
@@ -2905,7 +2952,7 @@ pub(crate) mod tests {
         server.add_folder("Trash", "\\HasNoChildren \\Trash", 15);
         let trash = |spec: &mut super::super::filters::FilterSpec| spec.file = Some(FilterFile::Trash);
         make_filter(&inbox, &mail, "from:bernd", None, trash);
-        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None, None, None);
+        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None, None, (None, None));
         mail.reload().await;
 
         eventually("the first sync filed", || async { entries(&inbox).len() == 1 }).await;

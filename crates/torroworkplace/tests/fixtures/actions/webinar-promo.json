@@ -1,0 +1,11 @@
+{
+  "expect": {
+    "event": false,
+    "task": false
+  },
+  "subject": "Webinar: KI im Mittelstand",
+  "from": "Events <events@verband.example>",
+  "list": null,
+  "bulk": true,
+  "text": "Melden Sie sich jetzt an zu unserem kostenlosen Webinar am 21.11. um 16 Uhr. Plätze begrenzt!\n\nSie erhalten diese Mail, weil Sie unseren Newsletter abonniert haben."
+}

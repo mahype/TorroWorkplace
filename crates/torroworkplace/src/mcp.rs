@@ -726,6 +726,13 @@ const STAYS_HERE: &[&str] = &[
     // A sender's logo comes from the core's own copy; it is fetched in the background, never for a call
     // (issue #453).
     "mail.get_sender_logo",
+    // The suggestions of mail and the kinds of action are kept by the core (issue #603);
+    // `mail.extract_action` asks an AI server and stays open.
+    "mail.list_suggestions",
+    "mail.accept_suggestion",
+    "mail.dismiss_suggestion",
+    "mail.list_action_kinds",
+    "mail.set_action_kind",
 ];
 
 /// The inbox commands that reach a server: a calendar server (a task or an event of an entry) or an
@@ -786,6 +793,10 @@ const IDEMPOTENT: &[&str] = &[
     // The same filter again, or one removed again, changes nothing more (issue #339).
     "mail.update_filter",
     "mail.remove_filter",
+    // Accepted or dismissed stays so; the same switch again changes nothing (issue #603).
+    "mail.accept_suggestion",
+    "mail.dismiss_suggestion",
+    "mail.set_action_kind",
 ];
 
 /// Why a tool call did not become a request.
@@ -3470,6 +3481,7 @@ mod tests {
             collection: "work".into(),
             title: Some("Answer".into()),
             due: None,
+            notes: None,
         };
         assert_eq!(request, Ok(wanted));
         let refused = request_for("tasks_create_todo_from_mail", args(json!({"id": "m:1", "collection": "w"})), &Utc);

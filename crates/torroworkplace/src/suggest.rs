@@ -30,6 +30,7 @@ use serde_json::Value;
 use torro_core::ai::{AiError, AiModel, ChatMessage, ChatRequest, Effort, Provider};
 use torro_core::i18n::tr;
 use torro_core::settings::AssistantDefault;
+use torro_ipc::actions::SUGGESTION_REASON_MAX;
 use torro_ipc::{
     EventSuggestion, Response, SUGGESTION_LISTS_MAX, SUGGESTION_LOCATION_MAX, SUGGESTION_NOTES_MAX,
     SUGGESTION_TITLE_MAX, TaskSuggestion,
@@ -232,7 +233,8 @@ const TASK_RULES: &str = "You turn one message into a task for the person who re
 do. Answer with exactly one JSON object and nothing else:\n\
 {\"title\": \"what to do, in the imperative, at most 80 characters\", \"notes\": \"one or two sentences with details \
 that help to do it, or null\", \"due\": \"YYYY-MM-DD, or YYYY-MM-DDTHH:MM when a time is named, or null\", \
-\"list\": \"the name of the task list it belongs in, or null\"}\n\
+\"list\": \"the name of the task list it belongs in, or null\", \"reason\": \"in at most 15 words, why \
+the message asks for it, or null\"}\n\
 `due` is the date the message names for it (a deadline, \"by Friday\", \"tomorrow\"), counted from the day it was \
 received; null when it names none – never guess a date. `list` is one of the person's task lists, written exactly as \
 listed, the one the task clearly belongs in; null when none is listed or none fits. Write title and notes in the \
@@ -243,7 +245,7 @@ const EVENT_RULES: &str = "You turn one message into a calendar event for the pe
 call or appointment it names. Answer with exactly one JSON object and nothing else:\n\
 {\"title\": \"what it is, at most 80 characters\", \"start\": \"YYYY-MM-DDTHH:MM, or YYYY-MM-DD for a whole day, or \
 null\", \"end\": \"the same form as start, or null\", \"location\": \"where, or null\", \"attendees\": [\"names or \
-addresses of who takes part\"]}\n\
+addresses of who takes part\"], \"reason\": \"in at most 15 words, why it may concern the person, or null\"}\n\
 Dates and times are the person's local time, counted from the day the message was received. For a whole-day event \
 `end` is its last day. Use null for what the message does not say. Write the title in the language of the message.";
 
@@ -390,6 +392,57 @@ pub fn read_event<Tz: TimeZone>(
     })
 }
 
+/// The short reason in the model's answer `reply` (issue #603): on one line, cut to
+/// [`SUGGESTION_REASON_MAX`] characters; `None` when it gave none or the answer holds no JSON object.
+pub fn read_reason(reply: &str) -> Option<String> {
+    let object = object_in(reply)?;
+    text_of(&object, "reason").map(|reason| cut(&one_line(&reason), SUGGESTION_REASON_MAX)).filter(|r| !r.is_empty())
+}
+
+/// What a model read out of a message (issue #603, `mail.extract_action`): the task or the event
+/// as [`suggest`] would answer it, and the reason it gave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Extracted {
+    pub task: Option<TaskSuggestion>,
+    pub event: Option<EventSuggestion>,
+    pub reason: Option<String>,
+}
+
+/// Asks `provider` (the account `chosen`) for the fields of `wanted` from `content`, as [`suggest`]
+/// does, and answers them with the reason (issue #603). Errors as for [`suggest`].
+pub async fn extract<Tz: TimeZone>(
+    provider: &dyn Provider,
+    chosen: &Chosen,
+    wanted: Wanted,
+    content: &Content,
+    now: DateTime<Utc>,
+    tz: &Tz,
+) -> Result<Extracted, SuggestError>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let Some(model) = chosen.model.clone() else { return Err(SuggestError::NoAi) };
+    let request = ChatRequest {
+        model: model.clone(),
+        messages: messages(wanted, content, now, tz),
+        tools: Vec::new(),
+        max_tokens: None,
+        effort: chosen.effort,
+    };
+    let reply = ask(provider, &request).await.map_err(SuggestError::Ai)?;
+    let reason = read_reason(&reply);
+    match wanted {
+        Wanted::Task => {
+            let task = read_task(&reply, content, tz, &chosen.engine, &model)?;
+            Ok(Extracted { task: Some(task), event: None, reason })
+        }
+        Wanted::Event => {
+            let event = read_event(&reply, content, tz, &chosen.engine, &model)?;
+            Ok(Extracted { task: None, event: Some(event), reason })
+        }
+    }
+}
+
 /// Asks `provider` (the account `chosen`) for a suggestion of `wanted` from `content`, seen at `now`
 /// in `tz`, and answers it as the core does ([`Response::TaskSuggestion`],
 /// [`Response::EventSuggestion`]) or the error ([`SuggestError::response`]).
@@ -408,25 +461,12 @@ pub async fn suggest<Tz: TimeZone>(
 where
     Tz::Offset: std::fmt::Display,
 {
-    let Some(model) = chosen.model.clone() else { return SuggestError::NoAi.response() };
-    let request = ChatRequest {
-        model: model.clone(),
-        messages: messages(wanted, content, now, tz),
-        tools: Vec::new(),
-        max_tokens: None,
-        effort: chosen.effort,
-    };
-    let reply = match ask(provider, &request).await {
-        Ok(reply) => reply,
-        Err(err) => return SuggestError::Ai(err).response(),
-    };
-    let read = match wanted {
-        Wanted::Task => read_task(&reply, content, tz, &chosen.engine, &model)
-            .map(|suggestion| Response::TaskSuggestion { suggestion }),
-        Wanted::Event => read_event(&reply, content, tz, &chosen.engine, &model)
-            .map(|suggestion| Response::EventSuggestion { suggestion }),
-    };
-    read.unwrap_or_else(|err| err.response())
+    match extract(provider, chosen, wanted, content, now, tz).await {
+        Ok(Extracted { task: Some(suggestion), .. }) => Response::TaskSuggestion { suggestion },
+        Ok(Extracted { event: Some(suggestion), .. }) => Response::EventSuggestion { suggestion },
+        Ok(_) => SuggestError::Unreadable.response(),
+        Err(err) => err.response(),
+    }
 }
 
 #[cfg(test)]
@@ -633,6 +673,21 @@ mod tests {
         assert!(!event[1].content.contains("task lists"), "an event has no list");
         let many: Vec<String> = (0..80).map(|n| format!("List {n}")).collect();
         assert_eq!(offered_lists(many).len(), SUGGESTION_LISTS_MAX);
+    }
+
+    /// Issue #603: the short reason of an answer, on one line and cut; none when it gave none.
+    #[test]
+    fn the_reason_is_read_on_one_line_and_cut() {
+        assert_eq!(
+            read_reason(r#"{"title": "x", "reason": " The boss\n asks for it "}"#).as_deref(),
+            Some("The boss asks for it")
+        );
+        assert_eq!(read_reason(r#"{"title": "x", "reason": null}"#), None);
+        assert_eq!(read_reason("no json"), None);
+        let long = format!(r#"{{"reason": "{}"}}"#, "a".repeat(400));
+        assert_eq!(read_reason(&long).map(|reason| reason.chars().count()), Some(SUGGESTION_REASON_MAX));
+        let asked = messages(Wanted::Event, &content("x"), utc("2026-10-14T08:30:00Z"), &berlin());
+        assert!(asked[0].content.contains("\"reason\""), "the model is asked for one");
     }
 
     #[test]

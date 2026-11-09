@@ -1031,6 +1031,8 @@ fn describe(request: &Request) -> String {
         Request::MoveTodo { .. } => "move todo".into(),
         // The list only: never the mail account, the mail's id or its Message-ID (task E8.7a).
         Request::CreateTodoFromMail { collection, .. } => format!("make a task in {collection} of a mail"),
+        // The calendar only (issue #603).
+        Request::CreateEventFromMail { collection, .. } => format!("make an event in {collection} of a mail"),
         // Ids only, never a search or a name (tasks G.2, G.7).
         Request::CreateTaskList { account, .. } => format!("create task list in {account}"),
         Request::CreateFilterList { account, .. } => format!("create filter list of {account}"),
@@ -1186,6 +1188,14 @@ fn describe(request: &Request) -> String {
         Request::RespondToInvitation { .. } => "answer an invitation".into(),
         // Never the account, the mail or the sender (issue #416).
         Request::Unsubscribe { .. } => "unsubscribe from a mailing list".into(),
+        // The kind only, never the mail (issue #603).
+        Request::ListSuggestions { .. } => "list the suggestions of a mail".into(),
+        Request::AcceptSuggestion { kind, .. } => format!("accept the suggestion {kind} of a mail"),
+        Request::DismissSuggestion { kind, .. } => format!("dismiss the suggestion {kind} of a mail"),
+        Request::ExtractAction { kind, .. } => format!("read {kind} out of a mail"),
+        Request::ListActionKinds => "list the kinds of action".into(),
+        Request::SetActionKind { kind, enabled: true } => format!("look for {kind} in new mail"),
+        Request::SetActionKind { kind, enabled: false } => format!("stop looking for {kind} in new mail"),
         // Ids only, never a message or a title (task C.1).
         Request::ListEngines => "assistant engines".into(),
         Request::ListConversations => "assistant conversations".into(),
@@ -1606,6 +1616,7 @@ mod tests {
             collection: "home".into(),
             title: Some("Answer Anna".into()),
             due: None,
+            notes: None,
         };
         assert_eq!(describe(&task), "make a task in home of a mail");
         let open = Request::OpenApp {

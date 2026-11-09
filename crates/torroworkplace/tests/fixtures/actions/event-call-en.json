@@ -1,0 +1,15 @@
+{
+  "expect": {
+    "event": true,
+    "task": false
+  },
+  "subject": "Quick call on Friday?",
+  "from": "Tom Reed <tom@partner.example>",
+  "list": null,
+  "bulk": false,
+  "text": "Hi,\n\ncan we have a short call this Friday at 3 pm your time about the contract? 30 minutes should do.\n\nBest, Tom",
+  "fields": {
+    "title": "Call about the contract",
+    "start": "Friday 15:00"
+  }
+}

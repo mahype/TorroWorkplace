@@ -1666,6 +1666,40 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                 ),
             }
         }
+        // Issue #603: as for a task, the calendar by the name the core knows and the mail by its subject.
+        Request::CreateEventFromMail { collection, title, start, .. } => {
+            let title = quote(title.as_deref().unwrap_or_default());
+            trf(
+                "Make an event \"{title}\" in \"{calendar}\" on {when} from the mail {subject}",
+                &[
+                    ("title", &title),
+                    ("calendar", &named(collection)),
+                    ("when", &when(start, today)),
+                    ("subject", &mail_subject(facts)),
+                ],
+            )
+        }
+        // The suggestions of a mail (issue #603): the kind by the core's own word, the mail by the
+        // subject and sender its store holds.
+        Request::AcceptSuggestion { kind, .. } => trf(
+            "Accept the suggestion \"{kind}\" of the mail {subject}",
+            &[("kind", &action_kind(kind)), ("subject", &mail_subject(facts))],
+        ),
+        Request::DismissSuggestion { kind, .. } => trf(
+            "Dismiss the suggestion \"{kind}\" of the mail {subject}",
+            &[("kind", &action_kind(kind)), ("subject", &mail_subject(facts))],
+        ),
+        Request::ExtractAction { kind, .. } => {
+            let sender = facts.mail.as_ref().and_then(|mail| mail.senders.first()).map(|sender| quote(sender));
+            trf(
+                "Let an AI read \"{kind}\" out of the mail {subject} from {sender}",
+                &[
+                    ("kind", &action_kind(kind)),
+                    ("subject", &mail_subject(facts)),
+                    ("sender", &sender.unwrap_or_else(|| tr("an unknown sender").to_string())),
+                ],
+            )
+        }
         Request::DeleteTemplate { id } => trf("Delete template \"{name}\"", &[("name", &named(id))]),
         Request::UpdateTemplate { id } => {
             trf("Overwrite template \"{name}\" with the active workspace", &[("name", &named(id))])
@@ -2423,6 +2457,24 @@ fn reminders_changed(value: &serde_json::Value, facts: &Facts) -> String {
 
 /// The summary of `mail.unsubscribe` (issue #416): the sender, the account and the way with its
 /// address, all as the core read them; "an unknown mailing list" without them.
+/// The mail of `facts` by the subject its store holds (issue #603): quoted, "(no subject)" for none,
+/// "an unknown mail" when the store does not hold it.
+fn mail_subject(facts: &Facts) -> String {
+    match facts.mail.as_ref().and_then(|mail| mail.subjects.first()).map(|subject| subject.trim()) {
+        Some("") => tr("(no subject)").to_string(),
+        Some(subject) => format!("\"{}\"", quote(subject)),
+        None => tr("an unknown mail").to_string(),
+    }
+}
+
+/// A kind of action by the core's own word for it (issue #603), translated; never the client's text.
+fn action_kind(kind: &str) -> String {
+    match crate::actions::kind(kind) {
+        Some(known) => tr(known.label).to_string(),
+        None => tr("an unknown kind").to_string(),
+    }
+}
+
 fn unsubscribed(account: &str, facts: &Facts) -> String {
     let Some(mail) = &facts.mail else { return tr("Unsubscribe from an unknown mailing list").to_string() };
     let Some(unsubscribe) = &mail.unsubscribe else {
@@ -5438,6 +5490,7 @@ pub(crate) mod tests {
             collection: "home".into(),
             title: Some("Answer the offer".into()),
             due,
+            notes: None,
         };
         let mail = MailFacts { subjects: vec!["Angebot Dachsanierung".into()], count: 1, ..MailFacts::default() };
         let facts = Facts { name: Some("Home".into()), mail: Some(mail), ..Facts::default() };

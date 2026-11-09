@@ -187,6 +187,8 @@ pub fn ids(request: &Request) -> Vec<String> {
     };
     let random = |kind: &str, value: &str| checked(kind, value, is_random_id);
     let account = |value: &str| checked("account", value, is_account_id);
+    // A kind of action as it is when the core knows it, else hashed (issue #603).
+    let action_kind = |value: &str| checked("kind", value, |kind| crate::actions::kind(kind).is_some());
     let item = |href: &Option<String>| href.as_deref().map(|href| format!("item:{}", hashed(href)));
     match request {
         Request::Ping
@@ -231,6 +233,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::GetStats { .. }
         // Never the event's title or times (task E8.5b).
         | Request::GetQuiet
+        // The kinds of action are the same for everybody (issue #603).
+        | Request::ListActionKinds
         // Nor those of a reminder; a pause only by its command (task ER1.2).
         | Request::ListReminders { .. }
         | Request::PauseReminders { .. } => Vec::new(),
@@ -258,6 +262,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         // The list only (task E8.7a): never the mail account, the mail's id or its Message-ID,
         // not even hashed – together they would tell which mail a person turned into a task.
         Request::CreateTodoFromMail { collection: list, .. } => vec![collection(list)],
+        // Nor for an event made of a mail (issue #603): the calendar only.
+        Request::CreateEventFromMail { collection: calendar, .. } => vec![collection(calendar)],
         // The account only, never the name of the new list (task G.7).
         Request::CreateTaskList { account: name, .. }
         | Request::CreateFilterList { account: name, .. }
@@ -406,6 +412,17 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::Unsubscribe { account: name, id: message } => {
             vec![account(name), format!("message:{}", hashed(message))]
         }
+        // The suggestions of a mail (issue #603): the account and the mail hashed, the kind (a word
+        // of the core's own list); never a field, a reason or a list.
+        Request::ListSuggestions { account: name, id: message } => {
+            vec![account(name), format!("message:{}", hashed(message))]
+        }
+        Request::AcceptSuggestion { account: name, id: message, kind }
+        | Request::DismissSuggestion { account: name, id: message, kind }
+        | Request::ExtractAction { account: name, id: message, kind, .. } => {
+            vec![account(name), format!("message:{}", hashed(message)), action_kind(kind)]
+        }
+        Request::SetActionKind { kind, .. } => vec![action_kind(kind)],
         Request::MuteSource { source, .. } => vec![id("source", &source.to_string())],
         Request::RemoveRule { id: rule } => vec![random("rule", rule)],
         // Mail (security rule 3 of task M2.1): never the address signed in with, nor a search, a
@@ -1151,6 +1168,7 @@ pub(crate) mod tests {
             collection: list.into(),
             title: Some("Answer the offer".into()),
             due: None,
+            notes: None,
         };
         let logged = super::ids(&task);
         assert_eq!(logged, vec![super::collection(list)]);

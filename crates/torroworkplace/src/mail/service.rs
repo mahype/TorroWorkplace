@@ -2607,6 +2607,58 @@ impl MailService {
         Ok(())
     }
 
+    /// Keeps that the decision model found `kinds` of action in the mail `message` (issue #603,
+    /// [`super::store::MailStore::detect_suggestions`]); answers the kinds that are new.
+    pub async fn detect_suggestions(
+        &self,
+        account: &str,
+        message: &str,
+        kinds: Vec<String>,
+    ) -> Result<Vec<String>, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        let message = message.to_string();
+        Ok(store.run(move |store| store.detect_suggestions(&message, &kinds, Utc::now())).await?)
+    }
+
+    /// The open suggestions of the mail `message` (issue #603).
+    pub async fn suggestions(
+        &self,
+        account: &str,
+        message: &str,
+    ) -> Result<Vec<torro_ipc::actions::Suggestion>, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        let message = message.to_string();
+        Ok(store.run(move |store| store.suggestions(&message)).await?)
+    }
+
+    /// Keeps what was read out for a suggestion of the mail `message` (issue #603,
+    /// [`super::store::MailStore::keep_suggestion`]); `false` when nothing was written.
+    pub async fn keep_suggestion(
+        &self,
+        account: &str,
+        message: &str,
+        suggestion: torro_ipc::actions::Suggestion,
+        only_reading: bool,
+    ) -> Result<bool, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        let message = message.to_string();
+        Ok(store.run(move |store| store.keep_suggestion(&message, &suggestion, only_reading, Utc::now())).await?)
+    }
+
+    /// Accepts or dismisses the open suggestion `kind` of the mail `message` (issue #603); `false`
+    /// when there is none.
+    pub async fn close_suggestion(
+        &self,
+        account: &str,
+        message: &str,
+        kind: &str,
+        accepted: bool,
+    ) -> Result<bool, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        let (message, kind) = (message.to_string(), kind.to_string());
+        Ok(store.run(move |store| store.close_suggestion(&message, &kind, accepted, Utc::now())).await?)
+    }
+
     /// What a decision model reads of the mail `message` (task E12.6): its headers and the start
     /// of its text, as far as the store holds them. `None` when the store has no such message.
     /// The text is not fetched from the server for this – a mail whose text is not kept yet is

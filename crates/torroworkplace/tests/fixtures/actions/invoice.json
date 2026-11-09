@@ -1,0 +1,11 @@
+{
+  "expect": {
+    "event": false,
+    "task": false
+  },
+  "subject": "Rechnung 2026-114",
+  "from": "Buchhaltung <billing@shop.example>",
+  "list": null,
+  "bulk": false,
+  "text": "Sehr geehrte Kundin,\n\nanbei erhalten Sie die Rechnung 2026-114 über 42,00 EUR. Der Betrag wird per Lastschrift eingezogen.\n\nMit freundlichen Grüßen"
+}

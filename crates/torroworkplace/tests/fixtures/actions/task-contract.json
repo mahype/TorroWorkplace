@@ -1,0 +1,15 @@
+{
+  "expect": {
+    "event": false,
+    "task": true
+  },
+  "subject": "Vertrag unterschreiben",
+  "from": "Kanzlei Weber <buero@kanzlei.example>",
+  "list": null,
+  "bulk": false,
+  "text": "Sehr geehrter Herr Wagener,\n\nanbei der Vertrag. Bitte unterschreiben Sie ihn und senden ihn bis zum 30.11. an uns zurück.\n\nMit freundlichen Grüßen",
+  "fields": {
+    "title": "Vertrag unterschreiben und zurücksenden",
+    "due": "2026-11-30"
+  }
+}
