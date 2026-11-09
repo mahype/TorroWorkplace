@@ -129,6 +129,8 @@ li.done{color:var(--text3);text-decoration:line-through}
 /* Hinweisband über der Notiz */
 .band{display:flex;align-items:center;gap:10px;min-height:44px;padding:8px 12px 8px 16px;border-bottom:1px solid var(--line);background:var(--raised);flex-wrap:wrap}
 .band .grow{flex:1;min-width:160px}
+/* Die drei Knöpfe eines Konflikts brechen nur gemeinsam um, nie einzeln. */
+.band .acts{display:flex;gap:8px;flex:none}
 .band b{font-weight:500}
 .btn{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 12px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--raised);color:var(--text);font:500 12px/1 Inter,sans-serif;white-space:nowrap}
 .btn:hover{background:var(--hover)}

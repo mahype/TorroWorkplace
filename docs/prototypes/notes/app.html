@@ -222,7 +222,7 @@ function noteCol(){
   let band="";
   if(state==="offline") band=`<div class="band">${I("cloud-off")}<span class="grow"><b>Saved on this device, not yet on the server.</b> <span class="c-2">Syncs when Nextcloud is reachable.</span></span><button class="btn">${I("refresh-cw","s14")}Try now</button></div>`;
   if(state==="readonly") band=`<div class="band">${I("lock")}<span class="grow"><b>Shared read-only</b> <span class="c-2">by ${n.ro}. You can add it to your favorites.</span></span><button class="btn">${I("copy","s14")}Copy to my notes</button></div>`;
-  if(state==="conflict") band=`<div class="band"><span class="c-att">${I("triangle-alert")}</span><span class="grow"><b>Changed elsewhere.</b> <span class="c-2">Both versions changed “Tools” and “Offsite”. Nothing was overwritten.</span></span><button class="btn">Keep mine</button><button class="btn">Keep theirs</button><button class="btn">Keep both</button></div>`;
+  if(state==="conflict") band=`<div class="band"><span class="c-att">${I("triangle-alert")}</span><span class="grow"><b>Changed elsewhere.</b> <span class="c-2">Both versions changed “Tools” and “Offsite”. Nothing was overwritten.</span></span><span class="acts"><button class="btn">Keep mine</button><button class="btn">Keep theirs</button><button class="btn">Keep both</button></span></div>`;
   if(n.agent&&state!=="conflict") band=band;
   const caret=n.md.split("\n").length>3?3:0;
   let body;
