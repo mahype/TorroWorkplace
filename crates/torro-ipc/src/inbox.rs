@@ -77,6 +77,7 @@ use torro_mail::{
 };
 use torro_pim::EventTime;
 
+use crate::actions::{ActionKind, Suggestion};
 use crate::assistant::EngineKind;
 use crate::mail::{
     AttachmentPlan, Delivery, ExportFormat, ExportPlan, FailedFile, MailHighlight, MailIndexProgress, MailOverview,
@@ -641,8 +642,14 @@ impl InboxClient {
         title: Option<String>,
         due: Option<NaiveDate>,
     ) -> Result<ItemTask, InboxError> {
-        let request =
-            Request::CreateTodoFromMail { account, id, collection: list.id, title, due: due.map(EventTime::Date) };
+        let request = Request::CreateTodoFromMail {
+            account,
+            id,
+            collection: list.id,
+            title,
+            due: due.map(EventTime::Date),
+            notes: None,
+        };
         match self.ask(request).await? {
             Response::Todo { todo } => Ok(ItemTask {
                 uid: todo.uid,
@@ -845,6 +852,100 @@ impl InboxClient {
     pub async fn suggest_event_from_item(&self, id: String) -> Result<EventSuggestion, InboxError> {
         match self.ask(Request::SuggestEventFromItem { id }).await? {
             Response::EventSuggestion { suggestion } => Ok(suggestion),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `tasks.create_todo_from_mail` with a note before the mail's text (issue #603: accepting a
+    /// suggestion of a mail without an entry); otherwise as [`InboxClient::create_todo_from_mail`].
+    pub async fn create_todo_from_mail_with(
+        &self,
+        account: String,
+        id: String,
+        list: String,
+        title: Option<String>,
+        due: Option<NaiveDate>,
+        notes: Option<String>,
+    ) -> Result<(), InboxError> {
+        let due = due.map(EventTime::Date);
+        match self.ask(Request::CreateTodoFromMail { account, id, collection: list, title, due, notes }).await? {
+            Response::Todo { .. } => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `calendar.create_event_from_mail` (issue #603): an event of the mail `id` of `account` in the
+    /// calendar `calendar`, for a mail without an inbox entry. The core answers with the new event,
+    /// which the app does not need. Errors as for [`InboxClient::create_event_with`].
+    pub async fn create_event_from_mail(
+        &self,
+        account: String,
+        id: String,
+        calendar: String,
+        fields: EventFields,
+    ) -> Result<(), InboxError> {
+        let EventFields { title, start, end, location, notes } = fields;
+        let (start, end) = (EventTime::DateTime(start), EventTime::DateTime(end));
+        let request =
+            Request::CreateEventFromMail { account, id, collection: calendar, title, start, end, location, notes };
+        match self.ask(request).await? {
+            Response::Event { .. } => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.list_suggestions` (issue #603): what Torro suggests to make of the mail `id` of
+    /// `account`. Errors as mapped above.
+    pub async fn list_suggestions(&self, account: String, id: String) -> Result<Vec<Suggestion>, InboxError> {
+        match self.ask(Request::ListSuggestions { account, id }).await? {
+            Response::Suggestions { suggestions } => Ok(suggestions),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.accept_suggestion` (issue #603), after the event or task was made. Errors as mapped above.
+    pub async fn accept_suggestion(&self, account: String, id: String, kind: String) -> Result<(), InboxError> {
+        match self.ask(Request::AcceptSuggestion { account, id, kind }).await? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.dismiss_suggestion` (issue #603). Errors as mapped above.
+    pub async fn dismiss_suggestion(&self, account: String, id: String, kind: String) -> Result<(), InboxError> {
+        match self.ask(Request::DismissSuggestion { account, id, kind }).await? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.extract_action` (issue #603): reads the action `kind` out of the mail now, with `lists`
+    /// to choose a task's list from. Errors as for [`InboxClient::suggest_task_from_item`].
+    pub async fn extract_action(
+        &self,
+        account: String,
+        id: String,
+        kind: String,
+        lists: Vec<String>,
+    ) -> Result<Suggestion, InboxError> {
+        match self.ask(Request::ExtractAction { account, id, kind, lists }).await? {
+            Response::Suggestion { suggestion } => Ok(suggestion),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.list_action_kinds` (issue #603): every kind of action, also those switched off.
+    pub async fn list_action_kinds(&self) -> Result<Vec<ActionKind>, InboxError> {
+        match self.ask(Request::ListActionKinds).await? {
+            Response::ActionKinds { kinds } => Ok(kinds),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.set_action_kind` (issue #603): looks for `kind` in new mail or not; answers every kind.
+    pub async fn set_action_kind(&self, kind: String, enabled: bool) -> Result<Vec<ActionKind>, InboxError> {
+        match self.ask(Request::SetActionKind { kind, enabled }).await? {
+            Response::ActionKinds { kinds } => Ok(kinds),
             other => Err(unexpected(other)),
         }
     }
@@ -1648,7 +1749,7 @@ mod tests {
                 Response::Error { code: "not-found".into(), message: "no task list \"gone\"".into() }
             }
             // A mail of the account with a Message-ID; `m:bare` has none.
-            Request::CreateTodoFromMail { account, id, collection, title, due } if id == "m:1" => Response::Todo {
+            Request::CreateTodoFromMail { account, id, collection, title, due, .. } if id == "m:1" => Response::Todo {
                 todo: torro_pim::Todo {
                     uid: "from-mail".into(),
                     collection,
@@ -2253,6 +2354,7 @@ mod tests {
             untrusted: true,
             pile_since: None,
             logo: None,
+            suggested: Vec::new(),
         }
     }
 

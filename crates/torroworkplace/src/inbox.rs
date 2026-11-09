@@ -10393,6 +10393,7 @@ pub(crate) mod tests {
             category: None,
             pile_since: None,
             logo: None,
+            suggested: Vec::new(),
         };
         let stand_in = rules::message_stand_in(&summary, None, true).expect("a mail account");
         assert_eq!(inbox.entry_of_message(ANNA, "m:9"), None, "never filed");
@@ -10476,6 +10477,7 @@ pub(crate) mod tests {
             category: None,
             pile_since: None,
             logo: None,
+            suggested: Vec::new(),
         };
         let stand_in = rules::message_stand_in(&summary, None, true).expect("a mail account");
         for scope in [MuteScope::Conversation, by(FacetKey::Sender)] {

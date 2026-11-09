@@ -1176,6 +1176,7 @@ pub(crate) mod tests {
             untrusted: true,
             pile_since: None,
             logo: None,
+            suggested: Vec::new(),
         };
         let inbox = [
             mail("m:1", "News@Golem.de", 0, Category::Newsletter),
