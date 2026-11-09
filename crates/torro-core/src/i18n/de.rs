@@ -1458,6 +1458,28 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Make a task \"{title}\" in \"{list}\" due {when} from the mail {subject}",
         "Aufgabe „{title}“ in „{list}“ fällig {when} aus der Mail {subject} anlegen",
     ),
+    // Suggestions of mail (#603): approvals and settings.
+    (
+        "Make an event \"{title}\" in \"{calendar}\" on {when} from the mail {subject}",
+        "Termin „{title}“ in „{calendar}“ am {when} aus der Mail {subject} anlegen",
+    ),
+    ("Accept the suggestion \"{kind}\" of the mail {subject}", "Vorschlag „{kind}“ der Mail {subject} annehmen"),
+    ("Dismiss the suggestion \"{kind}\" of the mail {subject}", "Vorschlag „{kind}“ der Mail {subject} verwerfen"),
+    (
+        "Let an AI read \"{kind}\" out of the mail {subject} from {sender}",
+        "Eine KI „{kind}“ aus der Mail {subject} von {sender} auslesen lassen",
+    ),
+    ("an unknown sender", "einem unbekannten Absender"),
+    ("Reading the mail…", "Mail wird gelesen…"),
+    ("List: {list}", "Liste: {list}"),
+    ("Suggestion: {kind}", "Vorschlag: {kind}"),
+    ("The mail names nothing to fill in.", "Die Mail nennt nichts zum Ausfüllen."),
+    ("Couldn't change the suggestion.", "Der Vorschlag konnte nicht geändert werden."),
+    ("an unknown kind", "eine unbekannte Art"),
+    (
+        "Torro looks for these in new mail and shows them above it. Nothing is created until you accept.",
+        "Torro sucht in neuen Mails danach und zeigt sie darüber an. Angelegt wird erst, wenn du annimmst.",
+    ),
     ("Open \"{title}\" in {app}", "„{title}“ in {app} öffnen"),
     ("Open a new mail with the PDF \"{title}\" attached", "Neue Mail mit der PDF „{title}“ im Anhang öffnen"),
     // Notifications window (E8.4)
