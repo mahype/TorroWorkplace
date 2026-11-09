@@ -642,30 +642,7 @@ impl InboxClient {
         title: Option<String>,
         due: Option<NaiveDate>,
     ) -> Result<ItemTask, InboxError> {
-        let request = Request::CreateTodoFromMail {
-            account,
-            id,
-            collection: list.id,
-            title,
-            due: due.map(EventTime::Date),
-            notes: None,
-        };
-        match self.ask(request).await? {
-            Response::Todo { todo } => Ok(ItemTask {
-                uid: todo.uid,
-                collection: todo.collection,
-                list: list.name,
-                title: todo.summary,
-                due: todo.due.map(|due| match due {
-                    EventTime::Date(day) => TaskDue::Date(day),
-                    EventTime::DateTime(at) => TaskDue::DateTime(at),
-                }),
-                completed: todo.completed,
-                link: todo.link.map(|link| link.id).unwrap_or_default(),
-                mail_entry: None,
-            }),
-            other => Err(unexpected(other)),
-        }
+        self.create_todo_from_mail_with(account, id, list, title, due, None).await
     }
 
     /// `inbox.get_stats` (task E8.8a): what the core counted over `range` up to the local day
@@ -862,14 +839,33 @@ impl InboxClient {
         &self,
         account: String,
         id: String,
-        list: String,
+        list: TaskList,
         title: Option<String>,
         due: Option<NaiveDate>,
         notes: Option<String>,
-    ) -> Result<(), InboxError> {
-        let due = due.map(EventTime::Date);
-        match self.ask(Request::CreateTodoFromMail { account, id, collection: list, title, due, notes }).await? {
-            Response::Todo { .. } => Ok(()),
+    ) -> Result<ItemTask, InboxError> {
+        let request = Request::CreateTodoFromMail {
+            account,
+            id,
+            collection: list.id,
+            title,
+            due: due.map(EventTime::Date),
+            notes,
+        };
+        match self.ask(request).await? {
+            Response::Todo { todo } => Ok(ItemTask {
+                uid: todo.uid,
+                collection: todo.collection,
+                list: list.name,
+                title: todo.summary,
+                due: todo.due.map(|due| match due {
+                    EventTime::Date(day) => TaskDue::Date(day),
+                    EventTime::DateTime(at) => TaskDue::DateTime(at),
+                }),
+                completed: todo.completed,
+                link: todo.link.map(|link| link.id).unwrap_or_default(),
+                mail_entry: None,
+            }),
             other => Err(unexpected(other)),
         }
     }

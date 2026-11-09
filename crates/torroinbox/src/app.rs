@@ -660,6 +660,24 @@ pub struct DialogMail {
     pub form: ActionForm,
     /// The dialog accepts the open suggestion of the kind once it saved.
     pub accepting: bool,
+    /// The mail was read out for the dialog (`mail.extract_action`), which leaves a suggestion of
+    /// the kind in the core: the dialog accepts it once saved, too (quietly, [`AcceptOnSave::quiet`]).
+    pub extracted: bool,
+}
+
+/// The suggestion a save accepts once it made its task or event (issue #603), carried by that save's
+/// own answer ([`Message::Saved`]) – never a slot another save could take.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptOnSave {
+    /// The mail account (`mail:<address>`).
+    pub account: String,
+    /// The message's id (`m:…`).
+    pub id: String,
+    /// The kind of action.
+    pub kind: String,
+    /// No card was accepted, only the mail read out for the dialog: a suggestion that is not there
+    /// (`not-found`) is no error then.
+    pub quiet: bool,
 }
 
 /// A change of one entry, one [`InboxSource`] call each (`inbox.set_item_done`,
@@ -3189,9 +3207,14 @@ pub struct App<S> {
     extracting: HashSet<(String, String)>,
     /// The mail the open dialog of "Make task" or "Make event" reads its fields from (issue #603).
     dialog_mail: Option<DialogMail>,
-    /// The suggestion to accept once the task or event of its dialog is made: account, message, kind
-    /// (issue #603). Taken as the dialog saves, sent when the core says it is made.
-    accept_after: Option<(String, String, String)>,
+    /// The cards of the mail held read out once already (`mail.extract_action`, issue #603), by message
+    /// and kind: each is asked at most once while the mail is open.
+    asked: HashSet<(String, String)>,
+    /// Of those, the ones whose reading failed: the tick does not ask for them again.
+    failed: HashSet<(String, String)>,
+    /// What the last save accepts once made, for the tests ([`Message::Saved`]).
+    #[cfg(test)]
+    accept_on_save: Option<AcceptOnSave>,
     /// The list a suggestion named while the dialog's lists were not in yet (issue #603).
     wanted_list: Option<String>,
     /// The mail of `--message` still to show ([`Launch::message`]); taken once the first entries are
@@ -3805,9 +3828,9 @@ pub enum Message {
     InviteEvents(String, Result<Vec<CalendarEvent>, String>),
     /// The answer to `tasks.create_todo_from_mail`: the task made of the message with this id.
     MailTaskCreated(String, Result<torro_inbox::item::ItemTask, String>),
-    /// The answer to `tasks.create_todo_from_mail` with a note (issue #603): the message, the task
-    /// made when the core's client says it, and the list's name for the hint.
-    MailTaskNoted(String, Result<Option<torro_inbox::item::ItemTask>, String>, String),
+    /// The answer of a save that accepts a suggestion once made (issue #603): what to accept, and the
+    /// save's own answer (`TaskCreated`, `EventCreated`, `MailTaskCreated`).
+    Saved(AcceptOnSave, Box<Message>),
     /// A kind of action in the rail's group "Torro" or its key (issue #603): the mail's entry, if it
     /// has one, the message and the kind. Opens the dialog of the kind's form, filled from the mail.
     AskAction(Option<String>, String, String),
@@ -3822,7 +3845,8 @@ pub enum Message {
     AcceptSuggestion(String, String, String),
     /// "Dismiss" on a suggestion's card: account, message and kind (`mail.dismiss_suggestion`).
     DismissSuggestion(String, String, String),
-    /// The core's answer to `mail.accept_suggestion` or `mail.dismiss_suggestion`.
+    /// The core's answer to `mail.accept_suggestion` or `mail.dismiss_suggestion`; a quiet accept that
+    /// found nothing answers `Ok`.
     SuggestionTaken(Result<(), String>),
     /// "Fill in with AI" in a dialog opened for a mail (issue #603): `mail.extract_action`.
     FillFromMail,
@@ -4642,7 +4666,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             suggestions: None,
             extracting: HashSet::new(),
             dialog_mail: None,
-            accept_after: None,
+            asked: HashSet::new(),
+            failed: HashSet::new(),
+            #[cfg(test)]
+            accept_on_save: None,
             wanted_list: None,
             start_mail: launch.message.clone(),
             pinned_mail: None,
@@ -5417,10 +5444,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::TaskConfirm => return self.create_task(),
             Message::TaskCreated(Ok(()), list) => {
                 self.note(trf("Task created in {list}", &[("list", &list)]));
-                return Task::batch([self.load(), self.accept_made()]);
+                return self.load();
             }
             Message::TaskCreated(Err(err), _) => {
-                self.accept_after = None;
                 self.error = Some(Failure::new(tr("Couldn't create the task."), err));
             }
             Message::AskEvent(id) => {
@@ -5445,10 +5471,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::EventConfirm => return self.create_event(),
             Message::EventCreated(Ok(()), calendar) => {
                 self.note(trf("Event created in {calendar}", &[("calendar", &calendar)]));
-                return Task::batch([self.load(), self.accept_made()]);
+                return self.load();
             }
             Message::EventCreated(Err(err), _) => {
-                self.accept_after = None;
                 self.error = Some(Failure::new(tr("Couldn't create the event."), err));
             }
             Message::SuggestTask(id) => return self.suggest_task(&id),
@@ -5493,10 +5518,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let sync = self.ask_mail_sync();
                 let settings = self.settings.as_mut().map(|pane| pane.host.reload().map(Message::SettingsHost));
                 // A card still reading is asked again until it is read out (issue #603).
-                let reading = self.suggestions.as_ref().is_some_and(|(_, suggestions)| {
-                    suggestions.iter().any(|suggestion| suggestion.state == SuggestionState::Reading)
-                });
-                let suggestions = if reading { self.ask_suggestions() } else { Task::none() };
+                let suggestions = if self.reads_on_tick() { self.ask_suggestions() } else { Task::none() };
                 return Task::batch([
                     self.fetch_appearance(),
                     self.fetch_look(),
@@ -6300,23 +6322,23 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.note(trf("Task created in {list}", &[("list", &task.list)]));
                 self.made.retain(|(message, _)| *message != id);
                 self.made.push((id, task));
-                return self.accept_made();
             }
             Message::MailTaskCreated(_, Err(err)) => {
-                self.accept_after = None;
                 self.error = Some(Failure::new(tr("Couldn't create the task."), err));
             }
-            Message::MailTaskNoted(id, Ok(task), list) => {
-                self.note(trf("Task created in {list}", &[("list", &list)]));
-                if let Some(task) = task {
-                    self.made.retain(|(message, _)| *message != id);
-                    self.made.push((id, task));
+            // Only a save that made its task or event accepts its suggestion.
+            Message::Saved(accept, answer) => {
+                let made = matches!(
+                    *answer,
+                    Message::TaskCreated(Ok(()), _)
+                        | Message::EventCreated(Ok(()), _)
+                        | Message::MailTaskCreated(_, Ok(_))
+                );
+                let handled = self.handle(*answer);
+                if !made {
+                    return handled;
                 }
-                return self.accept_made();
-            }
-            Message::MailTaskNoted(_, Err(err), _) => {
-                self.accept_after = None;
-                self.error = Some(Failure::new(tr("Couldn't create the task."), err));
+                return Task::batch([handled, self.accept_made(accept)]);
             }
             Message::AskAction(entry, id, kind) => {
                 self.menu_at = MenuAt::Panel;
@@ -6329,7 +6351,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 }
             }
             Message::Suggestions(id, result) => return self.take_suggestions(&id, result),
-            Message::ActionExtracted(id, kind, result) => self.take_extracted(&id, &kind, result),
+            Message::ActionExtracted(id, kind, result) => return self.take_extracted(&id, &kind, result),
             Message::AcceptSuggestion(account, id, kind) => {
                 self.menu_at = MenuAt::Panel;
                 return self.accept_suggestion(account, &id, &kind);
@@ -7494,6 +7516,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             return Task::none();
         }
         self.clear_save_feedback();
+        // Another mail: its cards are read out afresh (issue #603).
+        self.asked.clear();
+        self.failed.clear();
         let Some(id) = wanted else {
             self.letter = None;
             return Task::none();
@@ -10446,7 +10471,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let due = self.task.due.day(self.now);
         let notes = filled(&self.task.notes);
         self.last_list = Some(list.id.clone());
-        self.accept_after = self.accepting();
+        let accept = self.accepting();
         self.close_menus();
         #[cfg(test)]
         self.sent.push(Sent::Task {
@@ -10458,14 +10483,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         });
         let inbox = self.inbox.clone();
         let TaskList { id: list_id, name } = list;
-        Task::perform(
+        let save = Task::perform(
             async move {
                 SuggestSource::create_task(&*inbox, item.id, list_id, title, due, notes)
                     .await
                     .map_err(|err| err.to_string())
             },
             move |result| Message::TaskCreated(result, name.clone()),
-        )
+        );
+        self.after_save(save, accept)
     }
 
     /// Accept · Maybe · Decline on the invitation in the message `id` of `account` (task E8.3b):
@@ -10593,7 +10619,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let due = self.task.due.day(self.now);
         let notes = filled(&self.task.notes);
         self.last_list = Some(list.id.clone());
-        self.accept_after = self.accepting();
+        let accept = self.accepting();
         self.close_menus();
         self.task_mail = None;
         let MessageSummary { id, account, .. } = message;
@@ -10609,24 +10635,17 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let inbox = self.inbox.clone();
         let asked = id.clone();
         // A note (issue #603: what a suggestion read out, or what the person wrote) goes with it.
-        if let Some(notes) = notes {
-            let name = list.name.clone();
-            return Task::perform(
-                async move {
-                    inbox
-                        .create_todo_from_mail_with(account, asked, list, title, due, notes)
-                        .await
-                        .map_err(|err| err.to_string())
-                },
-                move |result| Message::MailTaskNoted(id.clone(), result, name.clone()),
-            );
-        }
-        Task::perform(
+        let save = Task::perform(
             async move {
-                inbox.create_todo_from_mail(account, asked, list, title, due).await.map_err(|err| err.to_string())
+                match notes {
+                    Some(notes) => inbox.create_todo_from_mail_with(account, asked, list, title, due, notes).await,
+                    None => inbox.create_todo_from_mail(account, asked, list, title, due).await,
+                }
+                .map_err(|err| err.to_string())
             },
             move |result| Message::MailTaskCreated(id.clone(), result),
-        )
+        );
+        self.after_save(save, accept)
     }
 
     /// Opens the dialog that makes an event of the entry with `id` (task E8.5b): its title to change,
@@ -10700,7 +10719,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let (start, end) = self.event.span();
         let (location, notes) = (filled(&self.event.location), filled(&self.event.notes));
         self.last_calendar = Some(calendar.id.clone());
-        self.accept_after = self.accepting();
+        let accept = self.accepting();
         self.close_menus();
         #[cfg(test)]
         self.sent.push(Sent::Event {
@@ -10715,12 +10734,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let inbox = self.inbox.clone();
         let TaskList { id: calendar_id, name } = calendar;
         let fields = EventFields { title, start, end, location, notes };
-        Task::perform(
+        let save = Task::perform(
             async move {
                 SuggestSource::create_event(&*inbox, item.id, calendar_id, fields).await.map_err(|err| err.to_string())
             },
             move |result| Message::EventCreated(result, name.clone()),
-        )
+        );
+        self.after_save(save, accept)
     }
 
     // ----- Suggestions and actions of mail (issue #603) ----------------------------------------
@@ -10787,6 +10807,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             kind: kind.to_owned(),
             form,
             accepting: suggestion.is_some(),
+            extracted: false,
         });
         match suggestion {
             Some(ready) if ready.state == SuggestionState::Ready => {
@@ -10794,7 +10815,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 opened
             }
             Some(unfilled) if unfilled.state == SuggestionState::Unfilled => opened,
-            _ => Task::batch([opened, self.extract_for_dialog()]),
+            // Without an AI the dialog opens as it always did (Erledigt 7: no error line); a card that
+            // is being read out fills it once its answer comes.
+            _ if self.ai_ready || self.extracting.contains(&(id.to_owned(), kind.to_owned())) => {
+                Task::batch([opened, self.extract_for_dialog()])
+            }
+            _ => opened,
         }
     }
 
@@ -10817,6 +10843,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             return Task::none();
         }
         self.ai_suggesting = Some(Suggesting::Asking(mail.id.clone()));
+        if let Some(open) = self.dialog_mail.as_mut() {
+            open.extracted = true;
+        }
         self.extract(mail.account, mail.id, mail.kind)
     }
 
@@ -10859,8 +10888,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// The answer to `mail.extract_action` (issue #603): the card of its suggestion read out, and the
     /// dialog that waits for it filled – or the line says why not. An answer for a dialog closed or
     /// opened anew meanwhile only changes the card.
-    fn take_extracted(&mut self, id: &str, kind: &str, result: Result<MailSuggestion, String>) {
+    fn take_extracted(&mut self, id: &str, kind: &str, result: Result<MailSuggestion, String>) -> Task<Message> {
         self.extracting.remove(&(id.to_owned(), kind.to_owned()));
+        // A reading that failed is not asked again; the core marks the card unfilled, read once more.
+        let reload = if result.is_err() && self.letter.as_ref().is_some_and(|letter| letter.id == id) {
+            self.failed.insert((id.to_owned(), kind.to_owned()));
+            self.ask_suggestions()
+        } else {
+            Task::none()
+        };
         if let (Ok(read), Some((held, suggestions))) = (&result, self.suggestions.as_mut())
             && held == id
             && let Some(card) = suggestions.iter_mut().find(|suggestion| suggestion.kind == kind)
@@ -10870,7 +10906,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let waits = self.dialog_mail.as_ref().is_some_and(|mail| mail.id == id && mail.kind == kind)
             && self.ai_suggesting == Some(Suggesting::Asking(id.to_owned()));
         if !waits {
-            return;
+            return reload;
         }
         match result {
             Ok(read) if read.state == SuggestionState::Ready && (read.task.is_some() || read.event.is_some()) => {
@@ -10879,6 +10915,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Ok(_) => self.ai_suggesting = Some(Suggesting::Failed(tr("The mail names nothing to fill in.").to_owned())),
             Err(err) => self.ai_suggesting = Some(Suggesting::Failed(err)),
         }
+        reload
+    }
+
+    /// Whether the tick asks for the mail's suggestions again (issue #603): while a card still reads –
+    /// not one whose reading failed or is still on its way.
+    fn reads_on_tick(&self) -> bool {
+        self.suggestions.as_ref().is_some_and(|(id, suggestions)| {
+            suggestions.iter().any(|suggestion| {
+                let key = (id.clone(), suggestion.kind.clone());
+                suggestion.state == SuggestionState::Reading
+                    && !self.failed.contains(&key)
+                    && !self.extracting.contains(&key)
+            })
+        })
     }
 
     /// Asks for the suggestions of the mail held (`mail.list_suggestions`), once its account is known.
@@ -10905,10 +10955,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         for message in self.messages.iter_mut().filter(|message| message.id == id) {
             message.suggested = kinds.clone();
         }
+        // Each card still reading is read out once while the mail is open (issue #603).
         let reading: Vec<String> = suggestions
             .iter()
             .filter(|suggestion| suggestion.state == SuggestionState::Reading)
             .map(|suggestion| suggestion.kind.clone())
+            .filter(|kind| self.asked.insert((id.to_owned(), kind.clone())))
             .collect();
         self.suggestions = Some((id.to_owned(), suggestions));
         let Some(account) = self.account_of(id, None) else { return Task::none() };
@@ -10953,22 +11005,47 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         )
     }
 
-    /// The suggestion the open dialog accepts once it saved: its account, message and kind.
-    fn accepting(&self) -> Option<(String, String, String)> {
-        let mail = self.dialog_mail.as_ref().filter(|mail| mail.accepting)?;
-        Some((mail.account.clone(), mail.id.clone(), mail.kind.clone()))
+    /// The suggestion the open dialog accepts once it saved: the card it was opened from, or the one
+    /// reading the mail out for it left in the core (quietly, issue #603). `None` for a dialog that
+    /// neither accepted a card nor read the mail out.
+    fn accepting(&self) -> Option<AcceptOnSave> {
+        let mail = self.dialog_mail.as_ref().filter(|mail| mail.accepting || mail.extracted)?;
+        Some(AcceptOnSave {
+            account: mail.account.clone(),
+            id: mail.id.clone(),
+            kind: mail.kind.clone(),
+            quiet: !mail.accepting,
+        })
     }
 
-    /// Once the task or event of an accepted suggestion is made (issue #603): its card goes and
-    /// `mail.accept_suggestion` takes it off in the core. Nothing for a dialog that accepted none.
-    fn accept_made(&mut self) -> Task<Message> {
-        let Some((account, id, kind)) = self.accept_after.take() else { return Task::none() };
+    /// `save` with what it accepts once it made its task or event ([`Message::Saved`]); as it is
+    /// without.
+    fn after_save(&mut self, save: Task<Message>, accept: Option<AcceptOnSave>) -> Task<Message> {
+        #[cfg(test)]
+        {
+            self.accept_on_save = accept.clone();
+        }
+        match accept {
+            Some(accept) => save.map(move |answer| Message::Saved(accept.clone(), Box::new(answer))),
+            None => save,
+        }
+    }
+
+    /// Once the task or event of a suggestion is made (issue #603): its card goes and
+    /// `mail.accept_suggestion` takes it off in the core. A quiet accept ignores `not-found`.
+    fn accept_made(&mut self, accept: AcceptOnSave) -> Task<Message> {
+        let AcceptOnSave { account, id, kind, quiet } = accept;
         self.forget_suggestion(&id, &kind);
         #[cfg(test)]
         self.sent.push(Sent::AcceptSuggestion(id.clone(), kind.clone()));
         let inbox = self.inbox.clone();
         Task::perform(
-            async move { inbox.accept_suggestion(account, id, kind).await.map_err(|err| err.to_string()) },
+            async move {
+                match inbox.accept_suggestion(account, id, kind).await {
+                    Err(InboxError::NotFound) if quiet => Ok(()),
+                    result => result.map_err(|err| err.to_string()),
+                }
+            },
             Message::SuggestionTaken,
         )
     }
@@ -10982,7 +11059,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let (start, end) = self.event.span();
         let (location, notes) = (filled(&self.event.location), filled(&self.event.notes));
         self.last_calendar = Some(calendar.id.clone());
-        self.accept_after = self.accepting();
+        let accept = self.accepting();
         self.close_menus();
         self.event_mail = None;
         let MessageSummary { id, account, .. } = message;
@@ -11000,12 +11077,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let inbox = self.inbox.clone();
         let TaskList { id: calendar_id, name } = calendar;
         let fields = EventFields { title, start, end, location, notes };
-        Task::perform(
+        let save = Task::perform(
             async move {
                 inbox.create_event_from_mail(account, id, calendar_id, fields).await.map_err(|err| err.to_string())
             },
             move |result| Message::EventCreated(result, name.clone()),
-        )
+        );
+        self.after_save(save, accept)
     }
 
     /// Asks whether an AI is set up (issue #120, [`SuggestSource::ai_ready`]), for "Fill in with AI".
@@ -25619,7 +25697,10 @@ mod tests {
             calendar.id.clone(),
             EventFields { title: None, start: app.now, end: app.now, location: None, notes: None },
         ));
-        let _ = app.update(Message::EventCreated(made.map_err(|err| err.to_string()), calendar.name));
+        let accept = app.accept_on_save.clone().expect("the save accepts its card");
+        assert!(!accept.quiet && accept.kind == "event");
+        let answer = Message::EventCreated(made.map_err(|err| err.to_string()), calendar.name);
+        let _ = app.update(Message::Saved(accept, Box::new(answer)));
         assert!(app.sent.contains(&Sent::AcceptSuggestion(id.clone(), "event".into())), "accepted after saving");
         assert_eq!(cards(&app).iter().map(|card| card.kind.clone()).collect::<Vec<_>>(), ["task"], "its card is gone");
         let _ = app.update(Message::DismissSuggestion(account, id.clone(), "task".into()));
@@ -25653,7 +25734,8 @@ mod tests {
         assert_eq!(due, Some(local_today(app.now) + Days::new(2)));
         let made = block_on(app.inbox.create_todo_from_mail(account.clone(), sent, list, title, due))
             .map_err(|err| err.to_string());
-        let _ = app.update(Message::MailTaskCreated(id.clone(), made));
+        let accept = app.accept_on_save.clone().expect("the save accepts its card");
+        let _ = app.update(Message::Saved(accept, Box::new(Message::MailTaskCreated(id.clone(), made))));
         assert_eq!(app.sent.last(), Some(&Sent::AcceptSuggestion(id.clone(), "task".into())));
         assert!(cards(&app).is_empty());
         // Failed: nothing accepted.
@@ -25663,7 +25745,9 @@ mod tests {
         deliver_lists(&mut app);
         let _ = app.update(Message::TaskConfirm);
         let before = app.sent.len();
-        let _ = app.update(Message::MailTaskCreated(id.clone(), Err("offline".into())));
+        let accept = app.accept_on_save.clone().expect("the save accepts its card");
+        let _ =
+            app.update(Message::Saved(accept, Box::new(Message::MailTaskCreated(id.clone(), Err("offline".into())))));
         assert_eq!(app.sent.len(), before, "no acceptance");
         assert_eq!(cards(&app).len(), 1, "the card stays");
     }
@@ -25712,7 +25796,87 @@ mod tests {
             "{:?}",
             app.sent.last()
         );
-        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::AcceptSuggestion(..))), "no suggestion to accept");
+        // Reading the mail out left an open suggestion in the core: the save accepts it, quietly.
+        let accept = app.accept_on_save.clone().expect("the save accepts what was read out");
+        assert!(accept.quiet && accept.kind == "event" && accept.id == id);
+        let _ = app.update(Message::Saved(accept, Box::new(Message::EventCreated(Ok(()), "Work".into()))));
+        assert!(app.sent.contains(&Sent::AcceptSuggestion(id.clone(), "event".into())));
+    }
+
+    /// Review of #603: each save carries what it accepts – two dialogs saved one after the other
+    /// accept their own suggestion or none, and a save that failed accepts nothing.
+    #[test]
+    fn every_save_accepts_only_its_own_suggestion() {
+        let (mut app, id) = archived_mail_open();
+        let account = app.account_of(&id, None).expect("its account");
+        let event = read_out(&app, &id, "event");
+        let _ = app.update(Message::Suggestions(id.clone(), Ok(vec![event])));
+        let _ = app.update(Message::AcceptSuggestion(account, id.clone(), "event".into()));
+        deliver_calendars(&mut app);
+        let _ = app.update(Message::EventConfirm);
+        let first = app.accept_on_save.clone().expect("the event's card");
+        // A task by hand without an AI: nothing read out, nothing to accept.
+        let _ = app.update(Message::AskAction(None, id.clone(), "task".into()));
+        deliver_lists(&mut app);
+        let _ = app.update(Message::TaskConfirm);
+        assert_eq!(app.accept_on_save, None, "the task's save accepts nothing");
+        let _ = app.update(Message::MailTaskCreated(id.clone(), Err("offline".into())));
+        let _ = app.update(Message::Saved(
+            first.clone(),
+            Box::new(Message::EventCreated(Err("offline".into()), "Work".into())),
+        ));
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::AcceptSuggestion(..))), "neither accepts");
+        assert_eq!(cards(&app).len(), 1, "the card stays");
+        let _ = app.update(Message::Saved(first, Box::new(Message::EventCreated(Ok(()), "Work".into()))));
+        assert_eq!(app.sent.last(), Some(&Sent::AcceptSuggestion(id.clone(), "event".into())));
+    }
+
+    /// Review of #603: a card whose reading failed is not asked again – neither on the tick nor when
+    /// the suggestions come in again while the mail is open; another opening asks once more.
+    #[test]
+    fn a_failed_reading_is_not_asked_again() {
+        let (mut app, id) = archived_mail_open();
+        let reading = MailSuggestion {
+            kind: "event".into(),
+            state: SuggestionState::Reading,
+            task: None,
+            event: None,
+            reason: None,
+        };
+        let _ = app.update(Message::Suggestions(id.clone(), Ok(vec![reading.clone()])));
+        let asks = |app: &App<DemoSource>| {
+            app.sent.iter().filter(|sent| **sent == Sent::ExtractAction(id.clone(), "event".into())).count()
+        };
+        assert_eq!(asks(&app), 1);
+        assert!(!app.reads_on_tick(), "on its way");
+        let _ = app.update(Message::ActionExtracted(id.clone(), "event".into(), Err("offline".into())));
+        assert!(!app.reads_on_tick(), "failed: the tick leaves it");
+        let _ = app.update(Message::Tick);
+        let _ = app.update(Message::Suggestions(id.clone(), Ok(vec![reading])));
+        assert_eq!(asks(&app), 1, "asked once while the mail is open");
+        assert_eq!(mail::suggestion_meta(&cards(&app)[0], None, app.now), tr("Reading the mail…"));
+    }
+
+    /// Erledigt 7: without an AI, Task and Event (rail and keys) open their dialog as before – no
+    /// reading out, no error line.
+    #[test]
+    fn without_an_ai_the_actions_open_plainly() {
+        let (mut app, id) = archived_mail_open();
+        app.ai_ready = false;
+        let subject = app.message_summary(&id).map(|m| mail::subject(&m)).unwrap_or_default();
+        let _ = app.update(Message::AskAction(None, id.clone(), "task".into()));
+        deliver_lists(&mut app);
+        assert_eq!((app.menu, app.ai_suggesting.clone()), (Some(Menu::Task), None));
+        assert_eq!(app.task.title, subject);
+        let _ = app.update(Message::CloseMenu);
+        let _ = press(&mut app, Key::C);
+        assert_eq!((app.menu, app.ai_suggesting.clone()), (Some(Menu::Event), None));
+        let _ = app.update(Message::CloseMenu);
+        let _ = press(&mut app, Key::T);
+        assert_eq!(app.menu, Some(Menu::Task));
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::ExtractAction(..))), "{:?}", app.sent);
+        let _ = app.update(Message::TaskConfirm);
+        assert_eq!(app.accept_on_save, None, "nothing to accept");
     }
 
     /// The demo state `suggestions` opens the mail with the most suggestions, whose cards show.

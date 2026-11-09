@@ -391,9 +391,8 @@ pub trait MailSource: Send + Sync {
     fn send_reply(&self, id: String, text: String) -> impl Future<Output = Result<(), InboxError>> + Send;
 
     /// `tasks.create_todo_from_mail` with `notes` before the mail's text (issue #603: the note a
-    /// suggestion or the person wrote in the dialog), otherwise as [`MailSource::create_todo_from_mail`].
-    /// Answers the task made when the core's answer says it ([`ItemTask`]); `None` when the task was
-    /// made but the window learns no more of it – the reader then shows no card for it.
+    /// suggestion or the person wrote in the dialog), otherwise as [`MailSource::create_todo_from_mail`],
+    /// also in what it answers: the task made, for its card in the reader.
     fn create_todo_from_mail_with(
         &self,
         account: String,
@@ -402,7 +401,7 @@ pub trait MailSource: Send + Sync {
         title: Option<String>,
         due: Option<NaiveDate>,
         notes: String,
-    ) -> impl Future<Output = Result<Option<ItemTask>, InboxError>> + Send;
+    ) -> impl Future<Output = Result<ItemTask, InboxError>> + Send;
 
     /// `calendar.create_event_from_mail` (issue #603): an event of the message `id` of `account` in
     /// the calendar `calendar`, for a mail without an entry ("Event" in the rail, an accepted
@@ -733,7 +732,6 @@ impl MailSource for InboxClient {
         InboxClient::list_events(self, start, end).await
     }
 
-    /// The core answers the task made, but its client keeps only that it was made: no card.
     async fn create_todo_from_mail_with(
         &self,
         account: String,
@@ -742,9 +740,8 @@ impl MailSource for InboxClient {
         title: Option<String>,
         due: Option<NaiveDate>,
         notes: String,
-    ) -> Result<Option<ItemTask>, InboxError> {
-        InboxClient::create_todo_from_mail_with(self, account, id, list.id, title, due, Some(notes)).await?;
-        Ok(None)
+    ) -> Result<ItemTask, InboxError> {
+        InboxClient::create_todo_from_mail_with(self, account, id, list, title, due, Some(notes)).await
     }
 
     async fn create_event_from_mail(
@@ -1094,8 +1091,8 @@ impl MailSource for DemoSource {
         title: Option<String>,
         due: Option<NaiveDate>,
         _notes: String,
-    ) -> Result<Option<ItemTask>, InboxError> {
-        MailSource::create_todo_from_mail(self, account, id, list, title, due).await.map(Some)
+    ) -> Result<ItemTask, InboxError> {
+        MailSource::create_todo_from_mail(self, account, id, list, title, due).await
     }
 
     /// The demo keeps no calendar: a mail it has and a calendar of its own are made an event.
@@ -1338,7 +1335,7 @@ impl MailSource for crate::empty::EmptySource {
         _title: Option<String>,
         _due: Option<NaiveDate>,
         _notes: String,
-    ) -> Result<Option<ItemTask>, InboxError> {
+    ) -> Result<ItemTask, InboxError> {
         Err(InboxError::NotFound)
     }
 
@@ -3436,10 +3433,8 @@ fn split_body<'a>(reading: &Reading<'a>, anchors: &detail::Anchors) -> Element<'
         body = body.push(panel::inset(card));
     }
     // What Torro suggests to make of the mail (issue #603), after its invitation.
-    if let Some(summary) = reading.summary() {
-        for suggestion in reading.suggestions {
-            body = body.push(panel::inset(suggestion_card(suggestion, summary, reading.kinds, reading.now, false)));
-        }
+    if let Some(cards) = reading.summary().and_then(|summary| suggestion_cards(reading, summary, size::panel())) {
+        body = body.push(panel::inset(cards));
     }
     if let Some(task) = reading.task {
         body = body.push(panel::inset(task_card(task, reading.now)));
@@ -3721,10 +3716,8 @@ fn head_in<'a>(
     }
     // What Torro suggests to make of the mail (issue #603), after its invitation and before the task
     // made of it.
-    if let Some(summary) = summary {
-        for suggestion in reading.suggestions {
-            head = head.push(suggestion_card(suggestion, summary, reading.kinds, reading.now, room < size::props()));
-        }
+    if let Some(cards) = summary.and_then(|summary| suggestion_cards(reading, summary, room)) {
+        head = head.push(cards);
     }
     if let Some(task) = reading.task {
         head = head.push(task_card(task, reading.now));
@@ -4961,12 +4954,18 @@ pub fn suggestion_meta(suggestion: &Suggestion, kind: Option<&ActionKind>, now: 
     }
 }
 
-/// A suggestion of the mail `summary` as a card over its text (issue #603), after the invitation's:
-/// the kind's tile, the title ([`suggestion_title`]), the sparkles in the accent – the model found it
-/// (`docs/ki.md`) – before the meta line ([`suggestion_meta`]), why the mail asks for it in `text_3`,
-/// then "Accept" (`secondary`), which opens the filled dialog of its form – nothing is made before the
-/// person saves there –, and "Dismiss" (`ghost`). A card still reading says so and stands still; it
-/// can be accepted already. `compact` stacks the tile over the words in a narrow head.
+/// A suggestion of the mail `summary` as a card over its text (issue #603), after the invitation's.
+/// Its head is built as [`widgets::card_head`] is – the kind's tile, the title ([`suggestion_title`])
+/// and the meta line ([`suggestion_meta`]) in `text_3`, each on one line with "…" and the whole as
+/// tooltip –, but with the sparkles in the accent before the meta line: the model found it
+/// (`docs/ki.md`), which `card_head`'s plain text line cannot hold.
+///
+/// Roomy (one suggestion, a head at least [`size::props`] wide) why the mail asks for it follows in
+/// `text_3`, then "Accept" (`secondary`), which opens the filled dialog of its form – nothing is made
+/// before the person saves there –, and "Dismiss" (`ghost`). `compact` (two or more, or a narrow head)
+/// keeps the card to its head: Accept and the ✕ of Dismiss as icon buttons with their words as
+/// tooltips at its end, no reason – so the mail's text stays in sight. A card still reading says so
+/// and stands still; it can be accepted already.
 pub fn suggestion_card<'a>(
     suggestion: &Suggestion,
     summary: &MessageSummary,
@@ -4979,48 +4978,61 @@ pub fn suggestion_card<'a>(
     let tile = widgets::source_tile(widgets::TileFace::Icon(face), widgets::TileSize::Large, None);
     let sparkles =
         icon::icon(Icon::Sparkles, icon::SIZE_SM).style(|t: &Theme, _| svg::Style { color: Some(palette(t).accent) });
-    let meta = typo::text(typo::meta().tabular(), suggestion_meta(suggestion, kind.as_ref(), now))
-        .style(theme::text_2)
-        .width(Fill)
-        .align_x(Alignment::Start)
-        .wrapping(Wrapping::WordOrGlyph);
-    let mut words = column![
-        typo::text(typo::body_strong(), suggestion_title(suggestion, summary))
-            .style(theme::text)
-            .width(Fill)
-            .align_x(Alignment::Start)
-            .wrapping(Wrapping::WordOrGlyph),
-        row![sparkles, meta].spacing(space::s()).width(Fill).align_y(Alignment::Center),
-    ]
-    .width(Fill)
-    .align_x(Alignment::Start);
-    // The model's words, as they came: foreign text like the mail's, shown, never followed.
-    if let Some(reason) = suggestion.reason.as_deref().map(list::one_line).filter(|reason| !reason.is_empty()) {
-        words = words.push(
-            typo::text(typo::meta(), reason)
-                .style(theme::text_3)
-                .width(Fill)
-                .align_x(Alignment::Start)
-                .wrapping(Wrapping::WordOrGlyph),
-        );
-    }
-    let head: Element<'a, Message> = if compact {
-        column![tile, words].spacing(space::s()).width(Fill).into()
-    } else {
-        row![tile, words].spacing(space::m()).width(Fill).align_y(Alignment::Start).into()
-    };
+    let meta =
+        widgets::ellipsized(typo::meta().tabular(), suggestion_meta(suggestion, kind.as_ref(), now), theme::text_3);
+    let words = column![
+        widgets::ellipsized(typo::body_strong(), suggestion_title(suggestion, summary), theme::text),
+        row![sparkles, meta].spacing(space::s()).align_y(Alignment::Center),
+    ];
     let ids = || (summary.account.clone(), summary.id.clone(), suggestion.kind.clone());
     let (account, id, kind_id) = ids();
     let accept = Message::AcceptSuggestion(account, id, kind_id);
     let (account, id, kind_id) = ids();
     let dismiss = Message::DismissSuggestion(account, id, kind_id);
+    let mut head = row![tile, container(words).width(Fill)].spacing(space::m()).align_y(Alignment::Center);
+    if compact {
+        head = head.push(widgets::icon_button(Icon::Check, tr("Accept"), Some(accept))).push(widgets::icon_button(
+            Icon::X,
+            tr("Dismiss"),
+            Some(dismiss),
+        ));
+        return widgets::card(vec![head.into()], false, None);
+    }
+    let mut parts: Vec<Element<'a, Message>> = vec![head.into()];
+    // The model's words, as they came: foreign text like the mail's, shown, never followed.
+    if let Some(reason) = suggestion.reason.as_deref().map(list::one_line).filter(|reason| !reason.is_empty()) {
+        parts.push(
+            typo::text(typo::meta(), reason)
+                .style(theme::text_3)
+                .width(Fill)
+                .align_x(Alignment::Start)
+                .wrapping(Wrapping::WordOrGlyph)
+                .into(),
+        );
+    }
     let buttons = row![
         widgets::text_button(Some(Icon::Check), tr("Accept"), style::button::secondary, Some(accept)),
         widgets::text_button(None, tr("Dismiss"), style::button::ghost, Some(dismiss)),
     ]
     .spacing(space::s())
     .align_y(Alignment::Center);
-    widgets::card(vec![head, buttons.into()], false, None)
+    parts.push(buttons.into());
+    widgets::card(parts, false, None)
+}
+
+/// The suggestions' cards of `reading` in their own column, [`size::card_gap`] apart (issue #603);
+/// compact ([`suggestion_card`]) when there are two or more or the head is narrower than
+/// [`size::props`]. `None` without any.
+fn suggestion_cards<'a>(reading: &Reading<'_>, summary: &MessageSummary, room: f32) -> Option<Element<'a, Message>> {
+    if reading.suggestions.is_empty() {
+        return None;
+    }
+    let compact = reading.suggestions.len() > 1 || room < size::props();
+    let cards = reading
+        .suggestions
+        .iter()
+        .map(|suggestion| suggestion_card(suggestion, summary, reading.kinds, reading.now, compact));
+    Some(column(cards).spacing(size::card_gap()).width(Fill).into())
 }
 
 /// The demo's suggestion of `kind` for `mail` (issue #603), read out at once: the design review an
