@@ -35,12 +35,12 @@ const NOTES=[
  {id:1,acc:"a",cat:"Work/Meetings",title:"Weekly planning",date:"10:42",day:"Today",fav:true,md:
 `## This week
 - [x] Send the offsite agenda #offsite
-- [ ] Review [PR #341 summary](../PR%20341%20summary.md)
-- [ ] Book the room for [Sprint review](torro:calendar/anna/work/sprint-review)
+- [ ] Review [PR #341 summary](../PR%20%23341%20summary.md)
+- [ ] Book the room for [Sprint review](torro:event:sprint-review-2026-11-12)
 
 ## Follow-ups
 - Ask Max about the budget, see [Budget 2027](../Budget%202027.md)
-- Task: [Prepare quarterly report](torro:tasks/anna/work/q4-report)`},
+- Task: [Prepare quarterly report](torro:task:q4-report-7f3a)`},
  {id:2,acc:"a",cat:"Work/Client A",title:"Client A – kickoff",date:"09:15",day:"Today",md:
 `Kickoff with Acme on Monday. Notes from the whiteboard:
 
@@ -50,7 +50,7 @@ const NOTES=[
 
 Contract draft: [Acme contract v3.pdf](.attachments.4711/Acme%20contract%20v3.pdf)
 
-Original request: [Re: Kickoff next week](torro:mail/anna/INBOX/8812)
+Original request: [Re: Kickoff next week](torro:mail:anna%40cloud.example:%3Ckickoff-8812%40acme.example%3E)
 
 Their chart (not loaded): ![Usage chart](//images.acme.example/usage.png)`},
  {id:3,acc:"a",cat:"Work",title:"Ideas for the offsite",date:"Yesterday",day:"Yesterday",md:
@@ -82,7 +82,7 @@ Their chart (not loaded): ![Usage chart](//images.acme.example/usage.png)`},
  {id:8,acc:"a",cat:"Personal",title:"Travel checklist",date:"Sun",day:"This week",offline:true,md:
 `- [x] Passport
 - [ ] Charger
-- [ ] Train tickets, see [Train to Hamburg](torro:calendar/anna/personal/train-hh)`},
+- [ ] Train tickets, see [Train to Hamburg](torro:event:train-hh-2026-11-20)`},
  {id:9,acc:"a",cat:"Work",title:"Budget 2027",date:"Sun",day:"This week",conflict:true,md:
 `## Budget 2027
 - Travel: 12,000
@@ -98,7 +98,7 @@ Core hours are 10:00 to 15:00.
  {id:11,acc:"a",cat:"",title:"Saved from Inbox: Invoice March",date:"Oct 27",day:"Earlier",md:
 `> Please find attached the invoice for March.
 
-From [Invoice March – Acme GmbH](torro:mail/anna/INBOX/8790)`},
+From [Invoice March – Acme GmbH](torro:mail:anna%40cloud.example:%3C8790%40acme.example%3E)`},
  {id:12,acc:"b",cat:"Shared/Onboarding",title:"First week",date:"Oct 20",day:"Earlier",md:`- [ ] Laptop\n- [ ] Accounts`},
 ];
 const CATS={a:[["",""],["Work","Work"],["Work/Client A","Client A"],["Work/Meetings","Meetings"],["Personal","Personal"],["Recipes","Recipes"]],b:[["Shared","Shared"],["Shared/Onboarding","Onboarding"]]};
@@ -112,13 +112,16 @@ const cur=notes.find(n=>n.id===pick);
 const IMG={
  whiteboard:`<svg viewBox="0 0 640 260"><rect width="640" height="260" fill="#F2F1EC"/><rect x="24" y="22" width="592" height="216" rx="6" fill="#FFFFFF" stroke="#D8D6CF"/><path d="M60 70h160M60 100h120M60 130h170" stroke="#3B6EF0" stroke-width="5" stroke-linecap="round"/><rect x="300" y="60" width="110" height="60" rx="6" fill="none" stroke="#1F9D68" stroke-width="4"/><rect x="460" y="60" width="110" height="60" rx="6" fill="none" stroke="#1F9D68" stroke-width="4"/><path d="M410 90h50" stroke="#1F9D68" stroke-width="4"/><path d="M455 84l8 6-8 6" fill="none" stroke="#1F9D68" stroke-width="4"/><path d="M300 170c40-30 90 20 140-10s90 10 130-12" fill="none" stroke="#D50C0C" stroke-width="4" stroke-linecap="round"/><path d="M60 190h90M60 210h60" stroke="#62666D" stroke-width="4" stroke-linecap="round"/></svg>`,
  plate:`<svg viewBox="0 0 640 220"><rect width="640" height="220" fill="#E8E2D6"/><circle cx="320" cy="110" r="88" fill="#FFFFFF"/><circle cx="320" cy="110" r="64" fill="#F3E3B5"/><path d="M280 100c20-20 60 20 80 0M275 120c25-15 65 15 90 0M290 82c15-10 40 10 60 0" fill="none" stroke="#E2C77C" stroke-width="6" stroke-linecap="round"/><circle cx="440" cy="70" r="22" fill="#F2D74E"/><circle cx="470" cy="150" r="18" fill="#F2D74E"/></svg>`};
-function refIcon(u){return u.startsWith("torro:mail")?"mail":u.startsWith("torro:calendar")?"calendar":u.startsWith("torro:tasks")?"list-todo":null}
+/* Verweise wie die Ziele von apps.open_app (docs/notizen.md, „Inhaltsarten“): mail und task öffnen über den Kern,
+   event und note haben noch kein Ziel und bleiben Text, jedes andere Schema auch. */
+function refIcon(u){return u.startsWith("torro:mail:")?"mail":u.startsWith("torro:task:")?"list-todo":null}
 function inline(s,{live}={}){
   s=esc(s);
   s=s.replace(/`([^`]+)`/g,'<code>$1</code>');
   s=s.replace(/\[([^\]]+)\]\(([^)]+)\)/g,(m,t,u)=>{
     const r=refIcon(u);
     if(r) return `<span class="ref" title="${u}">${I(r)}${t}</span>`;
+    if(u.startsWith("torro:")) return `<span title="Opens once Torro can show this kind of entry">${t}</span>`;
     if(u.endsWith(".md")) return `<a title="${u}">${I("file-text","s14")} ${t}</a>`;
     if(u.startsWith(".attachments")) return `<a>${t}</a>`;
     return `<a title="${u}">${t}</a>`;});
@@ -253,14 +256,17 @@ function saveDialog(){
   </div></div>`;
 }
 function mini(){
-  const recent=NOTES.slice(0,5);
+  const recent=notes.slice(0,5);
+  const cap=state==="offline"?`${I("cloud-off","s12")}<span class="grow">Offline · 1 change waiting</span>`:`<span class="grow">Recent</span><span class="tab">${notes.length} notes</span>`;
+  if(!notes.length) return `<div class="glance"><div class="qn">${I("square-pen","s14")}<span class="grow">Quick note</span><kbd>Enter</kbd></div><div class="cap">No notes yet. Type one above.</div></div>`;
   return `<div class="glance"><div class="qn">${I("square-pen","s14")}<span class="grow">Quick note</span><kbd>Enter</kbd></div>
-  <div class="cap"><span class="grow">Recent</span><span class="tab">${NOTES.length} notes</span></div>
+  <div class="cap">${cap}</div>
   <div>${recent.map(n=>`<div class="mrow">${n.fav?`<span class="star" style="color:var(--attention)">${I("star","s14")}</span>`:I("file-text","s14")}<span class="t">${esc(n.title)}</span><span class="d">${n.date}</span></div>`).join("")}</div></div>`;
 }
 function bar(){
   return `<div class="bar"><div class="qn">${I("square-pen","s14")}<span class="grow">Quick note</span><kbd>Enter</kbd></div>
-  <div class="titles">${NOTES.slice(0,6).map(n=>`<span class="tt">${n.fav?`<span style="color:var(--attention);display:inline-flex">${I("star","s14")}</span>`:I("file-text","s14")}<span>${esc(n.title)}</span></span>`).join("")}</div></div>`;
+  ${state==="offline"?`<span class="tt" style="border:0">${I("cloud-off","s14")}<span>Offline</span></span>`:""}
+  <div class="titles">${notes.length?"":`<span class="c-3">No notes yet.</span>`}${notes.slice(0,6).map(n=>`<span class="tt">${n.fav?`<span style="color:var(--attention);display:inline-flex">${I("star","s14")}</span>`:I("file-text","s14")}<span>${esc(n.title)}</span></span>`).join("")}</div></div>`;
 }
 
 /* ---------- Aufbau je Größe ---------- */

@@ -53,6 +53,8 @@ svg.i.s12{width:12px;height:12px} svg.i.s20{width:20px;height:20px}
 /* Liste */
 .list{display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--line)}
 .list.wide{width:440px;flex:none} .list.medium{width:364px;flex:none} .list.full{flex:1;border-right:0}
+/* Schmal steht Liste bzw. Notiz direkt in der Spalte: ohne min-height:0 wüchse sie über das Fenster, statt zu rollen. */
+.list,.note{min-height:0}
 .lhead{height:40px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px 0 16px;border-bottom:1px solid var(--line)}
 .lhead b{font-weight:500} .lhead .grow{flex:1}
 .scroll{flex:1;overflow:auto;min-height:0}
@@ -176,7 +178,8 @@ li.done{color:var(--text3);text-decoration:line-through}
 kbd.on-acc{color:#fff;border-color:rgba(255,255,255,.5)}
 
 /* Mini und Leiste: Anzeige mit einem Feld (Ausnahme wie der Assistent, Entscheidung 10 in notizen.md) */
-.glance{height:100vh;padding:12px;display:flex;flex-direction:column;gap:12px;background:var(--panel)}
+/* Oben bleibt der Streifen der Ampel frei (macOS, Skill torro-design Abschnitt 6, #554): Höhe der oberen Zeile. */
+.glance{height:100vh;padding:40px 12px 12px;display:flex;flex-direction:column;gap:12px;background:var(--panel)}
 .qn{height:40px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--raised);color:var(--text3)}
 .qn .grow{flex:1;min-width:0}
 .qn.focus{box-shadow:0 0 0 1px var(--panel),0 0 0 3px var(--focus);color:var(--text)}
