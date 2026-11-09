@@ -48,6 +48,11 @@
 //! as the core does ([`DemoSource::send_draft`]). Anna's sent "Re: Sunday brunch" ([`FOLLOW_UP_MAIL`])
 //! is followed up "only if no reply" ([`FOLLOW_UP_ENTRY`]); `inbox.snooze_item` follows up any
 //! message by its `m:` id, as the core does.
+//!
+//! Suggestions (issue #603): two mails carry what Torro found in them ([`SUGGESTED_MAIL`]) – the
+//! budget mail a task, the design review an event and a task –, kept on their summaries
+//! ([`MessageSummary::suggested`]); [`DemoSource::take_suggestion`] takes one off, as accepting or
+//! dismissing does in the core. What the suggestions say is the app's to make up from the mail.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -227,6 +232,15 @@ fn demo_lists() -> Vec<TaskList> {
         TaskList { id: personal.into(), name: tr("Personal").into() },
         TaskList { id: work.into(), name: tr("Work").into() },
     ]
+}
+
+/// The mails of the sample with suggestions from the start (issue #603), with their kinds of action:
+/// the budget mail asks for a task, the design review for an event and a task.
+pub const SUGGESTED_MAIL: [(&str, &[&str]); 2] = [("m:w1", &["task"]), ("m:w2", &["event", "task"])];
+
+/// The kinds of action suggested for the sample's mail `id` ([`SUGGESTED_MAIL`]); none for any other.
+fn demo_suggested(id: &str) -> &'static [&'static str] {
+    SUGGESTED_MAIL.iter().find(|(mail, _)| *mail == id).map_or(&[], |(_, kinds)| kinds)
 }
 
 /// See the module docs.
@@ -797,6 +811,7 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
                 .into_iter()
                 .find(|domain| letter.from.1.ends_with(&format!("@{domain}")))
                 .map(str::to_owned),
+            suggested: demo_suggested(letter.id).iter().map(|kind| (*kind).to_owned()).collect(),
         },
         cc: Vec::new(),
         reply_to: Vec::new(),
@@ -1658,6 +1673,17 @@ impl DemoSource {
         Ok(())
     }
 
+    /// Takes the suggestion `kind` off the mail `id` (issue #603), as `mail.accept_suggestion` and
+    /// `mail.dismiss_suggestion` do in the core. [`InboxError::NotFound`] for an unknown mail or a
+    /// kind it does not carry.
+    pub fn take_suggestion(&self, id: &str, kind: &str) -> Result<(), InboxError> {
+        let mut data = self.lock();
+        let message = data.mail.iter_mut().find(|m| m.summary.id == id).ok_or(InboxError::NotFound)?;
+        let before = message.summary.suggested.len();
+        message.summary.suggested.retain(|held| held != kind);
+        if message.summary.suggested.len() == before { Err(InboxError::NotFound) } else { Ok(()) }
+    }
+
     /// `mail.get_message` with its text and its HTML, as asked with `include_html` (the inbox's
     /// panel asks so, task M9.3); reading does not mark it read. [`InboxError::NotFound`] for an
     /// unknown id.
@@ -2143,6 +2169,20 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("valid time")
+    }
+
+    /// Issue #603: the sample's suggestions stand on their mails' summaries until one is taken off.
+    #[test]
+    fn suggestions_stand_on_their_mail_until_taken_off() {
+        let demo = DemoSource::new(now());
+        let kinds = |id: &str| demo.get_mail(id).expect("a demo mail").summary.suggested;
+        assert_eq!(kinds("m:w2"), ["event", "task"]);
+        assert_eq!(kinds("m:w1"), ["task"]);
+        assert!(kinds("m:w3").is_empty(), "most mail carries none");
+        assert_eq!(demo.take_suggestion("m:w2", "event"), Ok(()));
+        assert_eq!(kinds("m:w2"), ["task"]);
+        assert_eq!(demo.take_suggestion("m:w2", "event"), Err(InboxError::NotFound), "once only");
+        assert_eq!(demo.take_suggestion("m:nope", "task"), Err(InboxError::NotFound));
     }
 
     /// Several tests (and the tests of other checkouts) place the same demo picture at once: a
