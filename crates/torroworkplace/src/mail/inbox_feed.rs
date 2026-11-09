@@ -2776,11 +2776,20 @@ pub(crate) mod tests {
         let switched = Arc::clone(&on);
         mail.set_workflow_switch(Arc::new(move || switched.load(Ordering::SeqCst)));
         let before = mail.workflow_events(ANNA, None, 500).await.expect("events");
-        let lines = server.lines();
+        // The workflow switch does not stop normal IMAP sync from entering IDLE. Only the
+        // preparation's content reads must stay unchanged, not unrelated protocol traffic.
+        let content_reads = || {
+            server
+                .lines()
+                .into_iter()
+                .filter(|line| line.contains("BODY.PEEK[") || line.contains("BODY["))
+                .collect::<Vec<_>>()
+        };
+        let reads = content_reads();
         assert_eq!(prepare_workflow_events(&mail, ANNA, None, 25).await.expect("live switch off"), 0);
         assert!(!mail.prepare_workflow_body(ANNA, &before[0].message).await.expect("direct preparation gate"));
         assert_eq!(mail.workflow_events(ANNA, None, 500).await.expect("untouched"), before);
-        assert_eq!(server.lines(), lines);
+        assert_eq!(content_reads(), reads, "a disabled workflow must not fetch mail content");
         on.store(true, Ordering::SeqCst);
         let entered = Arc::new(tokio::sync::Notify::new());
         let started = Arc::clone(&entered);
