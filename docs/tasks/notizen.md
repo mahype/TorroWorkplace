@@ -35,7 +35,7 @@ N3.1 (braucht N1.4) ── N3.2 (braucht N1.7)
 N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur noch lokaler Ordner
 ```
 
-## N1 Notizen mit Nextcloud Notes
+## N1 Notizen mit Nextcloud (Notizordner per WebDAV, Notes-App als Zusatz)
 
 ### N1.1a Modell-Crate `torro-notes`
 - [ ] erledigt
@@ -509,7 +509,7 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur n
   - Dieselbe Abbildung wie N1.2 (`folder.rs`): Endungen `txt`, `md`, `markdown`, `org`, `note` und die eigene,
     Unterordner sind Kategorien, der Dateiname ist der Titel.
   - `etag`: Änderungszeit und Hash.
-  - **Favoriten:** bei Nextcloud `oc:favorite` per `PROPPATCH`, lokal in der Konfiguration des Kerns.
+  - **Favoriten:** in der Konfiguration des Kerns (bei Nextcloud kommen sie in N1.2 aus `oc:favorite`).
 - **Nach Entscheidung 12** ist der Nextcloud-Teil in N1.2 aufgegangen; diese Aufgabe baut nur noch den lokalen
   Ordner. Die Abbildung Datei ↔ Notiz (`torro-notes/src/folder.rs`) kommt aus N1.2.
 - **Lokaler Ordner:**
