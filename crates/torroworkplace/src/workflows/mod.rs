@@ -558,6 +558,17 @@ impl Service {
             }
             let mut updated = record.clone();
             updated.state_revision = updated.state_revision.checked_add(1).ok_or(Error::Conflict)?;
+            if old.workflow.revision != updated.workflow.revision {
+                // The person's activation belongs to the reviewed revision. Reset all references in
+                // this transaction so testing/saving/authorizing the edit cannot revive old automation.
+                let rules: Vec<RuleRecord> = store::list(tx, "rule", |_, _| true)?;
+                for mut rule in rules.into_iter().filter(|rule| rule.rule.spec.workflow == record.workflow.id) {
+                    rule.rule.enabled = false;
+                    rule.rule.activated = None;
+                    rule.state_revision = rule.state_revision.checked_add(1).ok_or(Error::Conflict)?;
+                    store::put(tx, "rule", &rule.rule.id, rule.scope.owner(), &rule.rule.spec.account, "", &rule)?;
+                }
+            }
             store::put(
                 tx,
                 "workflow",

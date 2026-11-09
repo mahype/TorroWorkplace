@@ -923,7 +923,7 @@ impl Service {
             content_type: "application/pdf".into(),
             sender_name: summary.from.as_ref().and_then(|from| from.name.clone()),
             sender_address: summary.from.as_ref().map(|from| from.address.clone()).unwrap_or_default(),
-            account: job.run.account.clone(),
+            account: save::account_name(mail, &job.run.account).await,
             subject: summary.subject,
             month_names: save::month_names(),
         };
@@ -940,6 +940,7 @@ impl Service {
                 let excluded: BTreeSet<String> = jobs
                     .into_iter()
                     .filter(|other| other.run.save_target == job.run.save_target)
+                    .filter(blocks_reservation)
                     .filter_map(|other| other.reservation.map(|r| r.relative_path))
                     .collect();
                 let reservation = save::reserve_workflow(&target.spec, &facts, &output.bytes, &excluded)
@@ -1024,6 +1025,12 @@ impl Service {
 
 fn put_run(tx: &rusqlite::Transaction<'_>, record: &RunRecord, state: &str) -> Result<(), Error> {
     store::put(tx, "run", &record.run.id, record.scope.owner(), &record.run.account, state, record)
+}
+
+fn blocks_reservation(record: &RunRecord) -> bool {
+    // Only outstanding/uncertain writes own their path. Finished documents must reach the normal
+    // conflict policy again (including SkipIdentical); historical deduplication remains untouched.
+    record.reservation.is_some() && record.run.state != RunState::Succeeded
 }
 
 /// Recheck concurrently editable service state under the same transaction that publishes completion.
@@ -1749,7 +1756,7 @@ mod tests {
             .answer(
                 Request::RunWorkflow {
                     id: env.workflow.id.clone(),
-                    revision: 1,
+                    revision: env.workflow.revision,
                     mail: env.workflow.spec.mail.clone(),
                     test: true,
                     repeat: false,
@@ -2406,5 +2413,131 @@ mod tests {
             runs.iter().all(|run| run.state == RunState::Paused && run.reason == Some(RunReason::SenderUnverified))
         );
         download.assert_calls_async(1).await;
+    }
+
+    #[tokio::test]
+    async fn editing_a_workflow_atomically_invalidates_all_rule_activations() {
+        let env = environment().await;
+        let first = automatic_rule(&env).await;
+        let second = automatic_rule(&env).await;
+        let request = Request::SetWorkflowRuleEnabled { id: first.id.clone(), revision: first.revision, enabled: true };
+        let (old_pin, _) =
+            env.service.approval(&request, &Scope::suite(), &env.clients, &env.mail).await.expect("old activation pin");
+        let mut spec = env.workflow.spec.clone();
+        spec.name = "Edited invoice".into();
+        let response = env
+            .service
+            .answer(
+                Request::UpdateWorkflowDraft { id: env.workflow.id.clone(), revision: 1, spec },
+                Scope::suite(),
+                &env.clients,
+                &env.mail,
+            )
+            .await;
+        assert!(
+            matches!(response, Response::WorkflowDraft { workflow } if workflow.revision == 2 && !workflow.tested && !workflow.authorized)
+        );
+        for id in [&first.id, &second.id] {
+            let rule = env.service.rule(&Scope::suite(), None, id).expect("referencing rule");
+            assert!(!rule.rule.enabled);
+            assert_eq!(rule.rule.activated, None);
+            assert_eq!(rule.state_revision, 2, "old in-flight rule bindings no longer match");
+        }
+        let stale = env.service.answer_approved(request, Scope::suite(), &env.clients, &env.mail, Some(&old_pin)).await;
+        assert!(matches!(stale, Response::Error { code, .. } if code == "conflict"));
+        env.service
+            .store
+            .transaction(|tx| {
+                let mut workflow: WorkflowRecord = store::get(tx, "workflow", &env.workflow.id, |_, _| true)?;
+                workflow.workflow.tested = true;
+                store::put(
+                    tx,
+                    "workflow",
+                    &workflow.workflow.id,
+                    workflow.scope.owner(),
+                    &workflow.workflow.account,
+                    "",
+                    &workflow,
+                )
+            })
+            .expect("successful second revision test fixture");
+        for request in [
+            Request::SaveWorkflow { id: env.workflow.id.clone(), revision: 2 },
+            Request::AuthorizeWorkflow { id: env.workflow.id.clone(), revision: 2 },
+        ] {
+            assert!(matches!(
+                env.service.answer(request, Scope::suite(), &env.clients, &env.mail).await,
+                Response::Workflow { .. }
+            ));
+        }
+        assert!(
+            !env.service.rule(&Scope::suite(), None, &first.id).expect("still off after reauthorization").rule.enabled
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_reservations_reuse_skip_identical_and_existing_account_folder_semantics() {
+        let mut env = environment().await;
+        let target = env.mail.save_targets().get(&env.workflow.spec.save_target).expect("target").expect("target");
+        let mut spec = target.spec.clone();
+        spec.subfolders = "{account}".into();
+        spec.on_conflict = torro_mail::save_target::OnConflict::SkipIdentical;
+        env.mail.save_targets().update(&target.id, spec, &[]).expect("target scheme");
+        let Response::WorkflowDraft { workflow } = env
+            .service
+            .answer(
+                Request::CreateWorkflowDraft { spec: env.workflow.spec.clone() },
+                Scope::suite(),
+                &env.clients,
+                &env.mail,
+            )
+            .await
+        else {
+            panic!("fresh pinned draft");
+        };
+        env.workflow = workflow;
+        let first = queue(&env).await;
+        let server = httpmock::MockServer::start_async().await;
+        let pdf = supplier_pdf();
+        let file = server
+            .mock_async(|when, then| {
+                when.path("/documents.example.org/invoice.pdf");
+                then.status(200).header("content-type", "application/pdf").body(pdf);
+            })
+            .await;
+        let downloader = download::Downloader::for_test(&server.base_url());
+        assert!(env.service.work_using(&env.clients, &env.mail, &|_| true, &downloader).await.expect("first write"));
+        let mail = arrival(&env, 2, 0, true).await;
+        let Response::WorkflowRun { run: second } = env
+            .service
+            .answer(
+                Request::RunWorkflow { id: env.workflow.id.clone(), revision: 1, mail, test: true, repeat: false },
+                Scope::suite(),
+                &env.clients,
+                &env.mail,
+            )
+            .await
+        else {
+            panic!("distinct raw mail");
+        };
+        assert!(
+            env.service.work_using(&env.clients, &env.mail, &|_| true, &downloader).await.expect("identical write")
+        );
+        let first = env.service.run_record(&Scope::suite(), None, &first.id).expect("first result");
+        let second = env.service.run_record(&Scope::suite(), None, &second.id).expect("second result");
+        assert_eq!(first.run.state, RunState::Succeeded);
+        assert_eq!(second.run.state, RunState::Succeeded);
+        assert!(second.reservation.as_ref().expect("reservation").skipped);
+        let path = &first.run.document.as_ref().expect("first document").relative_path;
+        assert_eq!(path, &second.run.document.as_ref().expect("second document").relative_path);
+        let expected_account = save::account_name(&env.mail, &env.workflow.account).await;
+        assert!(!expected_account.starts_with(torro_mail::ACCOUNT_PREFIX));
+        assert_eq!(std::path::Path::new(path).parent(), Some(std::path::Path::new(&expected_account)));
+        let mut uncertain = first.clone();
+        uncertain.run.state = RunState::Paused;
+        uncertain.run.reason = Some(RunReason::RecoveryUncertain);
+        assert!(blocks_reservation(&uncertain), "uncertain paths stay reserved");
+        assert!(!blocks_reservation(&first), "complete documents go through the target's content policy");
+        file.assert_calls_async(2).await;
     }
 }

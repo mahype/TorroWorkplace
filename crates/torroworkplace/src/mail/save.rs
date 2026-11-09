@@ -565,7 +565,7 @@ async fn list(
 }
 
 /// The account's name for `{account}`: its display name, else its address.
-async fn account_name(mail: &MailService, account: &str) -> String {
+pub(crate) async fn account_name(mail: &MailService, account: &str) -> String {
     match mail.account_name(account).await {
         Some(name) => name,
         None => account.strip_prefix(torro_mail::ACCOUNT_PREFIX).unwrap_or(account).to_string(),
