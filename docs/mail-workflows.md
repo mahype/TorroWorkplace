@@ -151,6 +151,17 @@ dauerhaft nachvollziehbar. Ohne eingerichtetes Sortiermodell geht eine Mail ohne
 sichtbare Pause behandelt. Die gewöhnlichen Mail-Filter und Hub-Benachrichtigungen behalten ihre
 eigenen Regeln; ein ausgeschaltetes „Show new mail“ schaltet keine Workflow-Regel aus.
 
+Die normale Benachrichtigung wird nach Pflichtfiltern und Sicherheitsguard abgelegt, ohne auf das
+optionale Sortiermodell zu warten. Zwei Pflichtpipeline- und zwei Modell-Worker koordinieren sich
+mit Claims pro Mail statt einer globalen Batchsperre. Ein terminal fehlender oder zu großer Body
+darf die Benachrichtigung nicht verlieren; das Workflow-Ereignis bleibt dabei fehlgeschlagen.
+Ein separater persistenter Zustellbeleg überlebt Neustarts und die Bestätigung durch den Runner.
+Lese-/Papierkorbfilter gelten auch dann, wenn die Person schon eine Kategorie gesetzt hat;
+automatische Kategorieentscheidungen dürfen diese Personenauswahl nicht überschreiben.
+
+Hierfür wird der Mail-Cache additiv auf **Schema 16** migriert. Ältere Binärdateien können diesen
+Store nicht öffnen; sie dürfen ihn nicht still zurücksetzen oder als neuen leeren Bestand behandeln.
+
 ## Dauerhafte Läufe, Deduplizierung und Dateien
 
 Das private SQLite-Journal hält Queue, Läufe, Autorisierungen und Deduplizierung über Neustarts

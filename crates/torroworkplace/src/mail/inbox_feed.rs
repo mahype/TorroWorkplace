@@ -437,6 +437,13 @@ async fn file_classified_mail(
     }
     let context = mail.arrival_sorting.lock().unwrap_or_else(std::sync::PoisonError::into_inner).upgrade();
     let Some(context) = context else { return Ok(()) };
+    let id = message.to_string();
+    if !store
+        .run(move |store| store.workflow_notification_pending(&id, Utc::now() - TimeDelta::days(FIRST_SYNC_DAYS)))
+        .await?
+    {
+        return finish_workflow_notification(mail, store, message).await;
+    }
     let (owner, id) = (account.to_string(), message.to_string());
     let new = store
         .run(move |store| {
@@ -455,8 +462,10 @@ async fn file_classified_mail(
             }))
         })
         .await?;
-    let Some(new) = new else { return Ok(()) };
-    let Some(file) = context.accounts_file.clone() else { return Ok(()) };
+    let Some(new) = new else { return finish_workflow_notification(mail, store, message).await };
+    let Some(file) = context.accounts_file.clone() else {
+        return finish_workflow_notification(mail, store, message).await;
+    };
     let owner = account.to_string();
     let notify = tokio::task::spawn_blocking(move || {
         torro_core::account::load_from(&file)
@@ -467,10 +476,19 @@ async fn file_classified_mail(
     })
     .await
     .unwrap_or(Notify::Off);
-    if mail.workflow_preparation_allowed(account).await && context.inbox.file_mail(&new, notify, Utc::now()).is_err() {
-        eprintln!("torroworkplace: cannot file classified mail");
+    if mail.workflow_preparation_allowed(account).await {
+        context
+            .inbox
+            .file_mail(&new, notify, Utc::now())
+            .map_err(|_| MailError::Store(MailStoreError::Corrupt("cannot file classified mail".into())))?;
+        finish_workflow_notification(mail, store, message).await?;
     }
     Ok(())
+}
+
+async fn finish_workflow_notification(mail: &MailService, store: &SharedStore, message: &str) -> Result<(), MailError> {
+    let (on, id) = (mail.workflow_preparation_gate(), message.to_string());
+    Ok(store.run(move |store| if on() { store.workflow_notification_done(&id) } else { Ok(()) }).await?)
 }
 
 fn from_contact(inbox: &Inbox, known: Option<&KnownSender>, mail: &NewMail) -> bool {
@@ -511,33 +529,22 @@ pub(crate) async fn workflow_contact_input(
         .map_err(|_| CategoryFailed)
 }
 
+/// `true` means mandatory steps completed but the optional model is still pending. Only
+/// `false` permits advancing workflow readiness; errors/pauses never do. Filing precedes models.
 async fn classify_workflow_message(
     mail: &MailService,
     store: &SharedStore,
     account: &str,
     message: &str,
     categorizer: Option<&WorkflowCategorizer>,
-) -> Result<(), super::store::WorkflowMailFailure> {
+    run_optional_model: bool,
+) -> Result<bool, super::store::WorkflowMailFailure> {
     use super::store::{WorkflowCategoryOrigin::Arrival, WorkflowMailFailure as Failure};
     let active = || mail.workflow_preparation_on();
     if !active() {
         return Err(Failure::Paused);
     }
-    let id = message.to_string();
-    let mut current = store
-        .run(move |store| store.summary(&id))
-        .await
-        .map_err(|_| Failure::CategoryFailed)?
-        .ok_or(Failure::MessageGone)?
-        .category;
-    if !active() {
-        return Err(Failure::Paused);
-    }
-    // A decision from a person or another completed classifier stands. Rules/contacts may have
-    // run before a crash, however, and contact fallback must still get its constrained model pass.
-    if current.is_some_and(|held| held.source != torro_mail::CategorySource::Rule) {
-        return Ok(());
-    }
+    let mut current;
     let context = mail
         .arrival_sorting
         .lock()
@@ -560,11 +567,35 @@ async fn classify_workflow_message(
         if !active() {
             return Err(Failure::Paused);
         }
-        let filtered =
+        let id = message.to_string();
+        let notification_pending = store
+            .run(move |store| store.workflow_notification_unfinished(&id))
+            .await
+            .map_err(|_| Failure::CategoryFailed)?;
+        let filtered = if notification_pending {
             super::filters::on_arrival_checked(mail, store, account, &[message.to_string()], &categories, &sorting)
-                .await?;
+                .await?
+        } else {
+            Vec::new()
+        };
         if !active() {
             return Err(Failure::Paused);
+        }
+        // Filter effects (Seen/trash) are independent of who chose the category. Only AFTER
+        // those effects may a person's or completed model's category bypass automatic sorting.
+        let id = message.to_string();
+        current = store
+            .run(move |store| store.summary(&id))
+            .await
+            .map_err(|_| Failure::CategoryFailed)?
+            .ok_or(Failure::MessageGone)?
+            .category;
+        if !active() {
+            return Err(Failure::Paused);
+        }
+        if current.is_some_and(|held| held.source != torro_mail::CategorySource::Rule) {
+            file_classified_mail(mail, store, account, message).await.map_err(|_| Failure::CategoryFailed)?;
+            return Ok(false);
         }
         let (owner, id) = (account.to_string(), message.to_string());
         let mut new = store
@@ -618,6 +649,7 @@ async fn classify_workflow_message(
         let mut needs_model = (current.is_none() && fixed.is_none())
             || (contact && current == Some(MailCategory::by_rule(torro_mail::Category::Personal)));
         if needs_model
+            && notification_pending
             && !contact
             && current.is_none()
             && let Some(guard) = &context.guard
@@ -706,7 +738,16 @@ async fn classify_workflow_message(
     if !active() {
         return Err(Failure::Paused);
     }
+    // Filing waits for mandatory filters and the security guard, never for the optional sorter.
+    // Its own durable receipt is independent of workflow readiness/failure and runner ownership.
+    file_classified_mail(mail, store, account, message).await.map_err(|_| Failure::CategoryFailed)?;
+    if !active() {
+        return Err(Failure::Paused);
+    }
     if ask && let Some(categorizer) = categorizer {
+        if !run_optional_model {
+            return Ok(true);
+        }
         let answer = mail
             .while_workflow_on(
                 account,
@@ -727,12 +768,13 @@ async fn classify_workflow_message(
     if !active() {
         return Err(Failure::Paused);
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Prepare at most 100 pending messages of an account, independently of Seen and `notify`.
-/// This is a separate durable feed, not a replay of notification entries. A single worker
-/// should call it serially; interrupted waits are recovered on its next call/restart.
+/// This is a separate durable feed, not a replay of notification entries. Claims are per mail;
+/// interrupted waits and notifications are recovered on the next call/restart.
+#[allow(dead_code, reason = "retained bounded one-shot API; the production scheduler uses separate stage queues")]
 pub async fn prepare_workflow_events(
     mail: &MailService,
     account: &str,
@@ -743,31 +785,57 @@ pub async fn prepare_workflow_events(
         return Ok(0);
     }
     let store = mail.store(account).await?;
-    let messages = store.run(move |store| store.workflow_preparation_pending(limit)).await?;
-    prepare_workflow_messages(mail, account, categorizer, messages).await
+    let messages = store
+        .run(move |store| store.workflow_pending_work(Utc::now() - TimeDelta::days(FIRST_SYNC_DAYS), limit))
+        .await?;
+    prepare_workflow_messages_limited(mail, account, categorizer, messages, usize::MAX, true).await
 }
 
-async fn prepare_workflow_messages(
+async fn prepare_workflow_messages_limited(
     mail: &MailService,
     account: &str,
     categorizer: Option<&WorkflowCategorizer>,
     messages: Vec<String>,
+    maximum: usize,
+    run_optional_model: bool,
 ) -> Result<usize, MailError> {
     use super::store::WorkflowMailFailure;
-    let Some(_classification) = mail.while_workflow_on(account, mail.arrival_classification.lock()).await else {
-        return Ok(0);
-    };
     if !mail.workflow_preparation_allowed(account).await {
         return Ok(0);
     }
     let store = mail.store(account).await?;
     let mut handled = 0;
     for message in &messages {
+        if handled >= maximum {
+            break;
+        }
         if !mail.workflow_preparation_allowed(account).await {
             break;
         }
+        let Some(_claim) = mail.claim_workflow_message(account, message) else { continue };
         let id = message.clone();
-        if !store.run(move |store| store.workflow_preparation_waiting(&id)).await? {
+        let waiting = store.run(move |store| store.workflow_preparation_waiting(&id)).await?;
+        if !waiting {
+            let id = message.clone();
+            if !store
+                .run(move |store| {
+                    store.workflow_notification_pending(&id, Utc::now() - TimeDelta::days(FIRST_SYNC_DAYS))
+                })
+                .await?
+            {
+                continue;
+            }
+            // Notification-only recovery must never revive a failed/accepted workflow or call
+            // the optional model. Mandatory filters and security checks still apply.
+            match classify_workflow_message(mail, &store, account, message, None, false).await {
+                Ok(_) => handled += 1,
+                Err(WorkflowMailFailure::Paused) => break,
+                Err(WorkflowMailFailure::CategoryTimeout) => {
+                    file_classified_mail(mail, &store, account, message).await?;
+                    handled += 1;
+                }
+                Err(_) => {}
+            }
             continue;
         }
         if !mail.workflow_preparation_allowed(account).await {
@@ -813,6 +881,16 @@ async fn prepare_workflow_messages(
                     }
                 })
                 .await?;
+            handled += 1;
+            // An unread message larger than the workflow/parser budget is still ordinary mail.
+            // Classify safe header/facts, run filters/guard, and file it WITHOUT changing Failed.
+            match classify_workflow_message(mail, &store, account, message, None, false).await {
+                Err(WorkflowMailFailure::Paused) => break,
+                Err(WorkflowMailFailure::CategoryTimeout) => {
+                    file_classified_mail(mail, &store, account, message).await?
+                }
+                _ => {}
+            }
             continue;
         }
         if !mail.workflow_preparation_allowed(account).await {
@@ -821,16 +899,27 @@ async fn prepare_workflow_messages(
         let id = message.clone();
         let on = mail.workflow_preparation_gate();
         store.run(move |store| if on() { store.workflow_body_prepared(&id).map(drop) } else { Ok(()) }).await?;
-        if let Err(failure) = classify_workflow_message(mail, &store, account, message, categorizer).await {
-            if failure == WorkflowMailFailure::Paused || !mail.workflow_preparation_allowed(account).await {
-                break;
+        match classify_workflow_message(mail, &store, account, message, categorizer, run_optional_model).await {
+            Ok(true) => {
+                handled += 1;
+                continue;
+            } // Optional model is durably pending, notification is not.
+            Ok(false) => {}
+            Err(failure) => {
+                if failure == WorkflowMailFailure::Paused || !mail.workflow_preparation_allowed(account).await {
+                    break;
+                }
+                let id = message.clone();
+                let on = mail.workflow_preparation_gate();
+                store
+                    .run(move |store| if on() { store.fail_workflow_preparation(&id, failure) } else { Ok(()) })
+                    .await?;
+                handled += 1;
+                if failure == WorkflowMailFailure::CategoryTimeout {
+                    file_classified_mail(mail, &store, account, message).await?;
+                }
+                continue;
             }
-            let id = message.clone();
-            let on = mail.workflow_preparation_gate();
-            store.run(move |store| if on() { store.fail_workflow_preparation(&id, failure) } else { Ok(()) }).await?;
-            handled += 1;
-            file_classified_mail(mail, &store, account, message).await?;
-            continue;
         }
         if !mail.workflow_preparation_allowed(account).await {
             break;
@@ -863,20 +952,89 @@ pub fn start_workflow_preparation(
 ) -> tokio::task::JoinHandle<()> {
     let preparation = register_workflow_preparation(&mail, categorizer);
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(2));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tick.tick().await;
-            if !mail.workflow_preparation_on() {
-                continue;
+        // Two mandatory workers plus two optional-model workers. Even two stalled models
+        // cannot occupy notification capacity. SQLite owns both crash-safe queues; there is
+        // no task per MailChange. Aborting this parent aborts all four loops.
+        let mut workers = tokio::task::JoinSet::new();
+        for notifications in [true, false] {
+            for offset in 0..2 {
+                workers.spawn(Box::pin(workflow_preparation_loop(
+                    Arc::clone(&mail),
+                    Arc::clone(&preparation),
+                    offset,
+                    notifications,
+                )));
             }
-            for account in mail.accounts_in(Reach::Suite).await {
-                if let Err(err) = prepare_workflow_events(&mail, &account, preparation.categorizer.as_ref(), 25).await {
-                    eprintln!("torroworkplace: workflow mail preparation failed: {}", err.code());
-                }
+        }
+        while let Some(result) = workers.join_next().await {
+            if result.is_err() {
+                eprintln!("torroworkplace: workflow mail preparation worker stopped");
             }
         }
     })
+}
+
+async fn workflow_preparation_loop(
+    mail: Arc<MailService>,
+    preparation: Arc<WorkflowPreparation>,
+    mut cursor: usize,
+    notifications: bool,
+) {
+    let mut tick = tokio::time::interval(Duration::from_secs(2));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let mut progress = 0;
+        if mail.workflow_preparation_on() {
+            let mut accounts = mail.accounts_in(Reach::Suite).await;
+            if !accounts.is_empty() {
+                let first = cursor % accounts.len();
+                accounts.rotate_left(first);
+                cursor = (first + 1) % accounts.len();
+            }
+            for account in accounts {
+                let result = async {
+                    if !mail.workflow_preparation_allowed(&account).await {
+                        return Ok(0);
+                    }
+                    let store = mail.store(&account).await?;
+                    let messages = store
+                        .run(move |store| {
+                            store.workflow_work_for_stage(
+                                Utc::now() - TimeDelta::days(FIRST_SYNC_DAYS),
+                                25,
+                                notifications,
+                            )
+                        })
+                        .await?;
+                    // One unclaimed mail per account and round, never a 25-model batch before
+                    // visiting the next account. Busy claims are skipped without waiting.
+                    prepare_workflow_messages_limited(
+                        &mail,
+                        &account,
+                        preparation.categorizer.as_ref(),
+                        messages,
+                        1,
+                        !notifications,
+                    )
+                    .await
+                }
+                .await;
+                match result {
+                    Ok(done) => progress += done,
+                    Err(error) => eprintln!("torroworkplace: workflow mail preparation failed: {}", error.code()),
+                }
+            }
+        }
+        if progress > 0 {
+            mail.workflow_wake.notify_waiters();
+        }
+        if progress == 0 {
+            tokio::select! {
+                _ = tick.tick() => {},
+                _ = mail.workflow_wake.notified() => {},
+            }
+        }
+    }
 }
 
 /// Whether a sender's address (in small letters, `torro_inbox::rules::sender_key`) belongs to a
@@ -1344,7 +1502,7 @@ impl Feed {
         if role == Some(Role::Inbox) && !new.is_empty() {
             let preparation =
                 self.mail.workflow_preparer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).upgrade();
-            if let Some(preparation) = preparation {
+            if preparation.is_some() {
                 let ids = new.clone();
                 let managed = store
                     .run(move |store| {
@@ -1361,16 +1519,9 @@ impl Feed {
                     && !managed.is_empty()
                 {
                     new.retain(|id| !managed.contains(id));
-                    let (mail, owner) = (Arc::clone(&self.mail), account.clone());
-                    let categorizer = preparation.categorizer.clone();
-                    // Notifications wait for the SAME durable classifier. No second rule/header/
-                    // contact/model path can race a workflow decision or clear a durable failure.
-                    tokio::spawn(async move {
-                        if let Err(err) = prepare_workflow_messages(&mail, &owner, categorizer.as_ref(), managed).await
-                        {
-                            eprintln!("torroworkplace: mail classification waiting: {}", err.code());
-                        }
-                    });
+                    // The durable queue is also the notification queue. Wake fixed workers;
+                    // never create another model/preparation task for each incoming batch.
+                    self.mail.workflow_wake.notify_waiters();
                 }
             }
             // The filters first (issue #339), whatever `notify` says: mail they read or move gets no
@@ -1664,7 +1815,7 @@ impl Feed {
         }
         let preparation =
             self.mail.workflow_preparer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).upgrade();
-        if let Some(preparation) = preparation {
+        if preparation.is_some() {
             let lookup = ids.clone();
             let managed = store
                 .run(move |store| {
@@ -1680,14 +1831,8 @@ impl Feed {
                 .await;
             let Ok(managed) = managed else { return };
             ids.retain(|id| !managed.contains(id));
-            if prepare_workflow_messages(&self.mail, account, preparation.categorizer.as_ref(), managed.clone())
-                .await
-                .is_err()
-            {
-                return;
-            }
-            for id in managed {
-                let _ = file_classified_mail(&self.mail, store, account, &id).await;
+            if !managed.is_empty() {
+                self.mail.workflow_wake.notify_waiters();
             }
         }
         let owner = account.to_string();
@@ -2237,6 +2382,226 @@ pub(crate) mod tests {
         assert_eq!(mail.workflow_events(ANNA, None, 500).await.expect("unchanged events"), before);
         assert_eq!(server.lines(), lines, "not even a new IMAP session while off");
         worker.abort();
+    }
+
+    #[tokio::test]
+    async fn workflow_prepush_large_unread_mail_is_notified_without_making_workflow_ready() {
+        use super::super::store::{WorkflowMailFailure, WorkflowMailState};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let mail = Arc::new(service_in(dir.path(), &secrets));
+        mail.reload().await;
+        eventually("baseline", || synced(&mail)).await;
+        let uid = server.add("INBOX", &bernd("Large unread input", 0), &[]);
+        server.misreport_size("INBOX", uid, super::super::sync::LARGE_ORIGINAL as usize + 1);
+        mail.sync_all(Reach::Suite).await.expect("headers only arrival");
+        let inbox = Arc::new(inbox_in(dir.path()));
+        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None, None, None);
+        let _preparer = register_workflow_preparation(&mail, None);
+        prepare_workflow_events(&mail, ANNA, None, 25).await.expect("terminal body failure");
+        let events = mail.workflow_events(ANNA, None, 500).await.expect("outbox");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].state, WorkflowMailState::Failed);
+        assert_eq!(events[0].failure, Some(WorkflowMailFailure::BodyUnavailable));
+        assert!(
+            entries(&inbox).iter().any(|item| item.title == "Large unread input"),
+            "a workflow size limit must not swallow ordinary notification"
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_prepush_optional_model_does_not_delay_notification_or_another_account() {
+        use super::super::store::WorkflowMailState;
+        const BOB: &str = "mail:bob@example.org";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server_a = FakeImap::start(PASSWORD).await;
+        let server_b = FakeImap::start(PASSWORD).await;
+        let secrets = MemoryTokens::default();
+        let mut a = mail_account("anna@example.org", &server_a.endpoint);
+        let mut b = mail_account("bob@example.org", &server_b.endpoint);
+        for account in [&mut a, &mut b] {
+            account.mail_settings = Some(MailSettings { notify: Notify::All, ..Default::default() });
+        }
+        store_accounts(dir.path(), &secrets, &[(&a, PASSWORD), (&b, PASSWORD)]);
+        let mail = Arc::new(service_in(dir.path(), &secrets));
+        mail.reload().await;
+        eventually("both baselines", || synced(&mail)).await;
+        server_a.add("INBOX", &bernd("Slow model A", 0), &[]);
+        server_b.add("INBOX", &bernd("Fast model B", 0), &[]);
+        mail.sync_all(Reach::Suite).await.expect("arrivals");
+        let inbox = Arc::new(inbox_in(dir.path()));
+        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None, None, None);
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (started, resume) = (Arc::clone(&entered), Arc::clone(&release));
+        let model: WorkflowCategorizer = Arc::new(move |account, _| {
+            let (started, resume) = (Arc::clone(&started), Arc::clone(&resume));
+            Box::pin(async move {
+                if account == ANNA {
+                    started.notify_one();
+                    resume.notified().await;
+                }
+                Ok(Some(MailCategory::by_model(torro_mail::Category::Invoice, 0.9)))
+            })
+        });
+        let _preparer = register_workflow_preparation(&mail, Some(Arc::clone(&model)));
+        let (working, categorize) = (Arc::clone(&mail), Arc::clone(&model));
+        let slow = tokio::spawn(async move { prepare_workflow_events(&working, ANNA, Some(&categorize), 25).await });
+        entered.notified().await;
+        let notified_a = entries(&inbox).iter().any(|item| item.title == "Slow model A");
+        let fast =
+            tokio::time::timeout(Duration::from_secs(1), prepare_workflow_events(&mail, BOB, Some(&model), 25)).await;
+        let fast_completed = matches!(fast, Ok(Ok(1)));
+        let notified_b = entries(&inbox).iter().any(|item| item.title == "Fast model B");
+        let waiting_a = mail.workflow_events(ANNA, None, 500).await.expect("A still pending");
+        assert!(waiting_a.iter().all(|event| event.state == WorkflowMailState::WaitingCategory));
+        release.notify_one();
+        slow.await.expect("slow task").expect("completed after release");
+        assert!(notified_a, "notify A before the optional model finishes");
+        assert!(fast_completed && notified_b, "the unrelated account must not wait for A's model");
+    }
+
+    #[tokio::test]
+    async fn workflow_prepush_person_category_does_not_skip_filter_read_or_trash() {
+        use super::super::store::WorkflowCategoryOrigin;
+        use torro_mail::Category;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add_folder("Trash", "\\HasNoChildren \\Trash", 15);
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let mail = Arc::new(service_in(dir.path(), &secrets));
+        mail.reload().await;
+        eventually("baseline", || synced(&mail)).await;
+        let store = mail.store(ANNA).await.expect("store");
+        store
+            .run(|store| {
+                let mut policy = store.cache_policy()?;
+                policy.mode = torro_ipc::mail::MailCacheMode::HeadersOnly;
+                store.set_cache_policy(&policy)
+            })
+            .await
+            .expect("body wait");
+        let read = server.add("INBOX", &bernd("Read chosen", 0), &[]);
+        server.add("INBOX", &bernd("Trash chosen", 0), &[]);
+        mail.sync_all(Reach::Suite).await.expect("header arrivals");
+        let before = by_subject(&mail).await;
+        let person = MailCategory::by_person(Category::Personal);
+        for subject in ["Read chosen", "Trash chosen"] {
+            mail.set_workflow_category(
+                ANNA,
+                &before[subject].id,
+                Some(person),
+                WorkflowCategoryOrigin::Interactive,
+                Utc::now(),
+            )
+            .await
+            .expect("person chooses during body wait");
+        }
+        let inbox = Arc::new(inbox_in(dir.path()));
+        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None, None, None);
+        make_filter(&inbox, &mail, "subject:Read", None, |spec| {
+            spec.mark_read = true;
+            spec.category = Some(Category::Invoice);
+        });
+        make_filter(&inbox, &mail, "subject:Trash", None, |spec| {
+            spec.file = Some(torro_mail::FilterFile::Trash);
+            spec.category = Some(Category::Invoice);
+        });
+        let _preparer = register_workflow_preparation(&mail, None);
+        prepare_workflow_events(&mail, ANNA, None, 25).await.expect("filter all arrivals");
+        let kept = by_subject(&mail).await;
+        assert!(server.flags("INBOX", read).contains(&"\\Seen".to_string()), "read action survives person's category");
+        let trash = store.run(|store| store.folder_by_role(Role::Trash)).await.expect("trash folder").expect("listed");
+        assert_eq!(kept["Trash chosen"].folder, trash.id, "trash action survives person's category");
+        for subject in ["Read chosen", "Trash chosen"] {
+            assert_eq!(kept[subject].category, Some(person));
+        }
+        assert!(entries(&inbox).is_empty(), "read/trashed inputs should not notify");
+    }
+
+    #[tokio::test]
+    async fn workflow_prepush_bounded_model_workers_never_occupy_notification_workers_and_abort_together() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Active(Arc<AtomicUsize>);
+        impl Drop for Active {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let (inbox, mail) = fed(dir.path(), &secrets).await;
+        eventually("baseline", || synced(&mail)).await;
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let (counted, high) = (Arc::clone(&active), Arc::clone(&peak));
+        let model: WorkflowCategorizer = Arc::new(move |_, _| {
+            let (counted, high) = (Arc::clone(&counted), Arc::clone(&high));
+            Box::pin(async move {
+                let now = counted.fetch_add(1, Ordering::SeqCst) + 1;
+                high.fetch_max(now, Ordering::SeqCst);
+                let _active = Active(counted);
+                std::future::pending().await
+            })
+        });
+        let worker = start_workflow_preparation(Arc::clone(&mail), Some(model));
+        for n in 0..8 {
+            server.add("INBOX", &bernd(&format!("Queued mail {n}"), 0), &[]);
+        }
+        mail.sync_all(Reach::Suite).await.expect("arrivals");
+        eventually("all notifications despite stalled models", || async { entries(&inbox).len() == 8 }).await;
+        eventually("two bounded model calls", || async { active.load(Ordering::SeqCst) == 2 }).await;
+        for _ in 0..50 {
+            mail.workflow_wake.notify_waiters();
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(peak.load(Ordering::SeqCst), 2, "no task/model per incoming batch");
+        assert!(
+            mail.workflow_events(ANNA, None, 500)
+                .await
+                .expect("not ready")
+                .iter()
+                .all(|event| event.state == super::super::store::WorkflowMailState::WaitingCategory)
+        );
+        worker.abort();
+        assert!(worker.await.expect_err("aborted parent").is_cancelled());
+        eventually("no detached model tasks", || async { active.load(Ordering::SeqCst) == 0 }).await;
+    }
+
+    #[tokio::test]
+    async fn workflow_prepush_large_body_fallback_respects_filters_and_security_guard() {
+        use super::super::store::{WorkflowMailFailure, WorkflowMailState};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let mail = Arc::new(service_in(dir.path(), &secrets));
+        mail.reload().await;
+        eventually("baseline", || synced(&mail)).await;
+        let read = server.add("INBOX", &bernd("Read large", 0), &[]);
+        let fraud = server.add("INBOX", &fraud_fixture("fraud-bank-dmarc.eml"), &[]);
+        for uid in [read, fraud] {
+            server.misreport_size("INBOX", uid, super::super::sync::LARGE_ORIGINAL as usize + 1);
+        }
+        mail.sync_all(Reach::Suite).await.expect("large headers");
+        let inbox = Arc::new(inbox_in(dir.path()));
+        let (guard, judged) = guard(&[], Some(Verdict { fraud: 0.99, spam: 0.0 }));
+        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None, None, Some(guard));
+        make_filter(&inbox, &mail, "subject:Read", None, |spec| spec.mark_read = true);
+        let _preparer = register_workflow_preparation(&mail, None);
+        prepare_workflow_events(&mail, ANNA, None, 25).await.expect("safe fallback");
+        assert!(server.flags("INBOX", read).contains(&"\\Seen".into()));
+        assert_eq!(
+            judged.lock().expect("judge calls").len(),
+            1,
+            "missing body must not bypass header-based security checks"
+        );
+        assert!(entries(&inbox).is_empty(), "read/caught mail never creates an entry");
+        let events = mail.workflow_events(ANNA, None, 500).await.expect("workflow errors retained");
+        assert!(events.iter().all(|event| event.state == WorkflowMailState::Failed
+            && event.failure == Some(WorkflowMailFailure::BodyUnavailable)));
+        assert!(by_subject(&mail).await.values().any(|summary| summary.caught));
     }
 
     #[tokio::test]

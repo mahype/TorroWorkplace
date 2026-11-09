@@ -93,6 +93,7 @@ use crate::pim::{NoKeychain, PimService, Reach, SYNC_PROBLEM_AFTER};
 const EVENTS: usize = 256;
 
 pub(super) type BackgroundSwitch = Arc<dyn Fn() -> bool + Send + Sync>;
+type WorkflowMessageLocks = HashMap<(String, String), std::sync::Weak<Mutex<()>>>;
 
 /// How often fetched attachments older than a day are deleted.
 const PURGE_EVERY: Duration = Duration::from_secs(60 * 60);
@@ -1251,8 +1252,11 @@ pub struct MailService {
     workflow_switch: Arc<StdMutex<Option<BackgroundSwitch>>>,
     pub(super) arrival_sorting: StdMutex<std::sync::Weak<super::inbox_feed::ArrivalSorting>>,
     pub(super) workflow_preparer: StdMutex<std::sync::Weak<super::inbox_feed::WorkflowPreparation>>,
-    /// Both notification and durable feeds serialize classification, not the SQLite connection.
+    /// Legacy notification deciders share this lock. Durable work uses per-message claims below,
+    /// never a global lock across a batch, IMAP, guard or optional model call.
     pub(super) arrival_classification: Mutex<()>,
+    workflow_message_locks: StdMutex<WorkflowMessageLocks>,
+    pub(super) workflow_wake: Notify,
     cache_workers: std::sync::Mutex<std::collections::HashSet<String>>,
     cache_jobs_lock: Mutex<()>,
     /// Where attachments are saved to (task M12.3, issue #290): `<data>/mail/save-targets.json`,
@@ -1358,6 +1362,8 @@ impl MailService {
             arrival_sorting: StdMutex::default(),
             workflow_preparer: StdMutex::default(),
             arrival_classification: Mutex::new(()),
+            workflow_message_locks: StdMutex::default(),
+            workflow_wake: Notify::new(),
             cache_workers: std::sync::Mutex::new(std::collections::HashSet::new()),
             cache_jobs_lock: Mutex::new(()),
             save_targets,
@@ -1447,6 +1453,29 @@ impl MailService {
 
     pub(crate) async fn lock_arrival_classification(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.arrival_classification.lock().await
+    }
+
+    /// A busy message is skipped rather than queueing an unbounded number of waiting tasks.
+    /// Weak entries disappear with the last in-flight claim; other accounts/messages never wait.
+    pub(super) fn claim_workflow_message(
+        &self,
+        account: &str,
+        message: &str,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let lock = {
+            let mut locks = self.workflow_message_locks.lock().unwrap_or_else(PoisonError::into_inner);
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            let entry = locks.entry((account.to_string(), message.to_string())).or_default();
+            match entry.upgrade() {
+                Some(lock) => lock,
+                None => {
+                    let lock = Arc::new(Mutex::new(()));
+                    *entry = Arc::downgrade(&lock);
+                    lock
+                }
+            }
+        };
+        lock.try_lock_owned().ok()
     }
 
     pub(crate) fn durable_classifier_on(&self) -> bool {

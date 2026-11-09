@@ -76,7 +76,7 @@ const CORRESPONDENT_ROWS: u32 = 5_000;
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 16;
 
 /// Workflow delivery provenance is separate from the disposable body cache. An incomplete
 /// baseline survives restarts; an outbox row survives removal of its source message until ack.
@@ -1866,6 +1866,10 @@ impl MailStore {
 
     /// Pending preparation messages, not notification entries; read mail is included. Distinct
     /// messages prevent category-change events from starting duplicate model calls.
+    #[allow(
+        dead_code,
+        reason = "retained classification-only selector; production also selects independent notifications"
+    )]
     pub fn workflow_preparation_pending(&self, limit: u32) -> Result<Vec<String>, MailStoreError> {
         let mut statement = self.db.prepare(
             "SELECT message_id FROM workflow_events WHERE acknowledged = 0 AND state IN ('waiting_body', 'waiting_category')
@@ -1889,6 +1893,83 @@ impl MailStore {
             [message],
             |row| row.get(0),
         )?)
+    }
+
+    /// Notification delivery is independent of terminal workflow failures and runner ack. A
+    /// restart must still file a large/unavailable body, but must never revive its workflow.
+    pub(super) fn workflow_pending_work(
+        &self,
+        since: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<String>, MailStoreError> {
+        let mut statement = self.db.prepare(
+            "SELECT message_id FROM (
+                SELECT message_id, min(occurred_at) AS queued_at FROM workflow_events
+                WHERE acknowledged = 0 AND state IN ('waiting_body', 'waiting_category') GROUP BY message_id
+                UNION ALL
+                SELECT message_id, arrived_at AS queued_at FROM workflow_deliveries
+                WHERE notification_done = 0 AND arrived_at >= ?1
+             ) GROUP BY message_id ORDER BY min(queued_at), message_id LIMIT ?2",
+        )?;
+        Ok(statement
+            .query_map(params![since.timestamp(), limit.min(100)], |row| row.get(0))?
+            .collect::<Result<_, _>>()?)
+    }
+
+    /// Separate bounded queues keep optional model calls from occupying notification workers.
+    pub(super) fn workflow_work_for_stage(
+        &self,
+        since: DateTime<Utc>,
+        limit: u32,
+        notifications: bool,
+    ) -> Result<Vec<String>, MailStoreError> {
+        let mut statement = self.db.prepare(
+            "SELECT message_id FROM (
+                SELECT message_id, min(occurred_at) AS queued_at FROM workflow_events e
+                WHERE ?3 = 0 AND acknowledged = 0 AND state IN ('waiting_body', 'waiting_category')
+                    AND NOT EXISTS(SELECT 1 FROM workflow_deliveries d
+                        WHERE d.message_id = e.message_id AND d.notification_done = 0)
+                GROUP BY message_id
+                UNION ALL
+                SELECT message_id, arrived_at AS queued_at FROM workflow_deliveries d
+                WHERE ?3 = 1 AND notification_done = 0 AND (arrived_at >= ?1
+                    OR EXISTS(SELECT 1 FROM workflow_events e WHERE e.message_id = d.message_id
+                        AND acknowledged = 0 AND state IN ('waiting_body', 'waiting_category')))
+            ) GROUP BY message_id ORDER BY min(queued_at), message_id LIMIT ?2",
+        )?;
+        Ok(statement
+            .query_map(params![since.timestamp(), limit.min(100), notifications], |row| row.get(0))?
+            .collect::<Result<_, _>>()?)
+    }
+
+    pub(super) fn workflow_notification_pending(
+        &self,
+        message: &str,
+        since: DateTime<Utc>,
+    ) -> Result<bool, MailStoreError> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_deliveries
+             WHERE message_id = ?1 AND notification_done = 0 AND arrived_at >= ?2)",
+            params![message, since.timestamp()],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(super) fn workflow_notification_unfinished(&self, message: &str) -> Result<bool, MailStoreError> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_deliveries
+            WHERE message_id = ?1 AND notification_done = 0)",
+            [message],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(super) fn workflow_notification_done(&self, message: &str) -> Result<(), MailStoreError> {
+        self.db.execute(
+            "UPDATE workflow_deliveries SET notification_done = 1 WHERE message_id = ?1 AND notification_done = 0",
+            [message],
+        )?;
+        Ok(())
     }
 
     pub fn workflow_needs_body(&self, message: &str) -> Result<bool, MailStoreError> {
@@ -3413,6 +3494,26 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
     if version < 15 {
         tx.execute_batch(SCHEMA_V15)?;
     }
+    if version < 16 {
+        if !has_column(&tx, "workflow_deliveries", "notification_done")? {
+            tx.execute_batch(
+                "ALTER TABLE workflow_deliveries ADD COLUMN notification_done INTEGER NOT NULL DEFAULT 0;",
+            )?;
+            // Completed v15 inputs already traversed filing. Only interrupted preparation and
+            // the known body-failure gap need recovery; do not reapply new filters to history.
+            tx.execute_batch(
+                "UPDATE workflow_deliveries SET notification_done = 1 WHERE NOT EXISTS (
+                SELECT 1 FROM workflow_events e WHERE e.message_id = workflow_deliveries.message_id
+                AND (e.state IN ('waiting_body', 'waiting_category')
+                     OR (e.state = 'failed' AND e.failure = 'body_unavailable'))
+            );",
+            )?;
+        }
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS workflow_notifications_pending
+            ON workflow_deliveries(arrived_at) WHERE notification_done = 0;",
+        )?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -4076,6 +4177,58 @@ mod tests {
         baseline(&store, &inbox, 2);
         assert!(store.workflow_events(None, 500).expect("no replay").is_empty());
         assert!(store.workflow_sender_domain("m:unknown").expect("unknown sender").is_none());
+    }
+
+    #[test]
+    fn workflow_prepush_notification_recovery_survives_failure_ack_crash_and_v15_upgrade() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        baseline(&store, &inbox, 0);
+        let ready = store.import_workflow_message(&inbox, 7, &message(1, "Already filed"), day(20)).expect("arrival");
+        store
+            .set_body(
+                &ready,
+                &Body { text: "Body".into(), from_html: false, html: None, attachments: vec![], invite: None },
+            )
+            .expect("body");
+        store.workflow_body_prepared(&ready).expect("body ready");
+        store.workflow_category_prepared(&ready).expect("classified");
+        let failed =
+            store.import_workflow_message(&inbox, 7, &message(2, "Needs notification"), day(20)).expect("arrival");
+        store.fail_workflow_preparation(&failed, WorkflowMailFailure::BodyUnavailable).expect("terminal body failure");
+        let event = store
+            .workflow_events(None, 500)
+            .expect("events")
+            .into_iter()
+            .find(|event| event.message == failed)
+            .expect("failed event");
+        store.acknowledge_workflow_event(&event.id).expect("runner already owns failure");
+        store
+            .db
+            .execute_batch(
+                "DROP INDEX workflow_notifications_pending;
+            ALTER TABLE workflow_deliveries DROP COLUMN notification_done; PRAGMA user_version = 15;",
+            )
+            .expect("v15 snapshot");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("upgrade/restart after failure before filing");
+        assert!(
+            !store.workflow_notification_pending(&ready, day(1)).expect("do not reapply filters to completed history")
+        );
+        assert_eq!(store.workflow_work_for_stage(day(1), 25, true).expect("notification queue"), vec![failed.clone()]);
+        assert!(store.workflow_work_for_stage(day(1), 25, false).expect("no workflow revival").is_empty());
+        let state: (String, bool) = store
+            .db
+            .query_row("SELECT state, acknowledged FROM workflow_events WHERE id = ?1", [&event.id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .expect("original state");
+        assert_eq!(state, ("failed".into(), true));
+        store.workflow_notification_done(&failed).expect("receipt after inbox persisted");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("second restart");
+        assert!(store.workflow_pending_work(day(1), 100).expect("both independent queues complete").is_empty());
+        assert_eq!(store.workflow_events(None, 500).expect("only original ready event remains").len(), 1);
     }
 
     /// Issue #460: the people of the mail are those written to from Sent, counted by age, and the
