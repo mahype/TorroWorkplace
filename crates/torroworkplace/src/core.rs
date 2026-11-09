@@ -3510,6 +3510,13 @@ impl Core {
                 if !active() {
                     return Err(Paused);
                 }
+                // Content/contact reads awaited after model selection. A cloud permission revoked
+                // meanwhile must stop the request BEFORE mail leaves the service, not only discard
+                // the model's later answer.
+                let cloud = models.iter().find(|held| held.id == model).is_none_or(|held| !here(held));
+                if cloud && !settings.current().mail_to_cloud_in(function.slot()) {
+                    return Err(CategoryFailed);
+                }
                 let answer = match ask_model(&ai, (&engine, &model), &content, &catalogue, contact).await {
                     Ok(answer) => answer.map(|answer| answer.category),
                     Err(DecideError::NothingToChoose) => None,
@@ -3518,7 +3525,6 @@ impl Core {
                 if !active() {
                     return Err(Paused);
                 }
-                let cloud = models.iter().find(|held| held.id == model).is_none_or(|held| !here(held));
                 if cloud && !settings.current().mail_to_cloud_in(function.slot()) {
                     return Err(CategoryFailed);
                 }
@@ -4365,7 +4371,7 @@ impl Core {
                 origin: via.origin.clone(),
                 ceiling: Some(rights.clone()),
             };
-            return Ok(Box::pin(self.workflow_request(request, scope, None)).await);
+            return Ok(self.workflow_request(request, scope, None).await);
         }
         if let Request::OpenApp { app, target } = &request {
             return Ok(self.open_app_request(app, target.as_deref(), reach, Maker::Client(&id)).await);
@@ -4376,42 +4382,48 @@ impl Core {
         Ok(Box::pin(self.handle_within_as(request, reach, Some(&id))).await)
     }
 
-    async fn workflow_request(
-        &self,
+    /// Construct the large proposal/runner future outside every dispatcher's poll frame. Boxing
+    /// only at its call site still reserves construction temporaries in recursive approved calls.
+    fn workflow_request<'a>(
+        &'a self,
         request: Request,
         scope: crate::workflows::Scope,
-        approved: Option<&str>,
-    ) -> Response {
-        if let Request::ProposeWorkflow { mail, save_target, instruction } = &request {
-            if let Some(expected) = approved {
-                match Box::pin(self.workflows.approval(&request, &scope, &self.clients, &self.mail)).await {
-                    Ok((now, _)) if now == expected => {}
-                    Ok(_) => return crate::workflows::Error::Conflict.response(),
-                    Err(error) => return error.response(),
+        approved: Option<&'a str>,
+    ) -> torro_core::ai::BoxFuture<'a, Response> {
+        Box::pin(async move {
+            if let Request::ProposeWorkflow { mail, save_target, instruction } = &request {
+                if let Some(expected) = approved {
+                    match Box::pin(self.workflows.approval(&request, &scope, &self.clients, &self.mail)).await {
+                        Ok((now, _)) if now == expected => {}
+                        Ok(_) => return crate::workflows::Error::Conflict.response(),
+                        Err(error) => return error.response(),
+                    }
                 }
+                let settings = self.settings.current();
+                return match crate::workflows::proposal::propose(
+                    self,
+                    settings.ai_slots.chat.as_ref(),
+                    &self.workflows,
+                    &scope,
+                    &self.clients,
+                    &self.mail,
+                    crate::workflows::proposal::Input { mail, save_target, instruction },
+                )
+                .await
+                {
+                    Ok(spec) => {
+                        self.workflows
+                            .answer(Request::CreateWorkflowDraft { spec }, scope, &self.clients, &self.mail)
+                            .await
+                    }
+                    Err(error) => error.response(),
+                };
             }
-            let settings = self.settings.current();
-            return match crate::workflows::proposal::propose(
-                self,
-                settings.ai_slots.chat.as_ref(),
-                &self.workflows,
-                &scope,
-                &self.clients,
-                &self.mail,
-                crate::workflows::proposal::Input { mail, save_target, instruction },
-            )
-            .await
-            {
-                Ok(spec) => {
-                    self.workflows.answer(Request::CreateWorkflowDraft { spec }, scope, &self.clients, &self.mail).await
-                }
-                Err(error) => error.response(),
-            };
-        }
-        match approved {
-            Some(_) => self.workflows.answer_approved(request, scope, &self.clients, &self.mail, approved).await,
-            None => self.workflows.answer(request, scope, &self.clients, &self.mail).await,
-        }
+            match approved {
+                Some(_) => self.workflows.answer_approved(request, scope, &self.clients, &self.mail, approved).await,
+                None => self.workflows.answer(request, scope, &self.clients, &self.mail).await,
+            }
+        })
     }
 
     /// Whether `operation` from the client `id` would let the assistant drive itself or a bot start a
@@ -5573,7 +5585,7 @@ impl Core {
                 origin: origin.clone(),
                 ceiling: Some(rights.clone()),
             };
-            return Box::pin(self.workflow_request(request, scope, Some(fingerprint.unwrap_or_default()))).await;
+            return self.workflow_request(request, scope, Some(fingerprint.unwrap_or_default())).await;
         }
         // Boxed: decisions come from `handle_within`, so this call is recursive. An approval
         // never holds `approvals.decide_approval` itself (`Approvals::open` refuses it).
@@ -6637,7 +6649,7 @@ impl Core {
             | Request::RevokeWorkflowAuthorization { .. }) => {
                 // A client must arrive through the origin-preserving path above, never acquire suite authority.
                 match reach {
-                    Reach::Suite => Box::pin(self.workflow_request(request, crate::workflows::Scope::suite(), None)).await,
+                    Reach::Suite => self.workflow_request(request, crate::workflows::Scope::suite(), None).await,
                     Reach::Client(_) => crate::workflows::Error::Forbidden.response(),
                 }
             },
@@ -28193,6 +28205,42 @@ mod tests {
         let out = Request::SetSetting { key: SettingKey::DecideMailToCloud, value: serde_json::json!(true) };
         assert_eq!(core.handle(out).await, Response::Ok);
         (core, imap)
+    }
+
+    #[tokio::test]
+    async fn workflow_categorizer_rechecks_cloud_permission_before_sending_after_content_wait() {
+        let dir = tempfile::tempdir().expect("isolated home");
+        let server = httpmock::MockServer::start_async().await;
+        let (decides, _) = crate::account::ai::tests::mock_jev(&server).await;
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &server, &["Synthetic invoice".into()]).await;
+        let message = crate::mail::save::tests::message_id(&core.mail, "Synthetic invoice").await;
+        let (account, store) = core.mail.stores(Reach::Suite).await.into_iter().next().expect("local account");
+        let (entered, blocked) = tokio::sync::oneshot::channel();
+        let (release, held) = std::sync::mpsc::channel();
+        let holding = tokio::spawn(async move {
+            store
+                .run(move |_| {
+                    let _ = entered.send(());
+                    held.recv().expect("release local content read");
+                    Ok(())
+                })
+                .await
+        });
+        blocked.await.expect("content store is held");
+        let before = decides.calls_async().await;
+        let categorizer = core.workflow_categorizer();
+        let mut decision = categorizer(account, message);
+        assert!(
+            futures_util::poll!(decision.as_mut()).is_pending(),
+            "local content read must wait after model selection"
+        );
+        core.settings
+            .set(SettingKey::DecideMailToCloud, &serde_json::json!(false))
+            .expect("revoke cloud while waiting");
+        release.send(()).expect("release content");
+        holding.await.expect("store task").expect("store access");
+        assert_eq!(decision.await, Err(crate::mail::store::WorkflowMailFailure::CategoryFailed));
+        assert_eq!(decides.calls_async().await, before, "revocation must stop the send, not merely discard an answer");
     }
 
     /// Jev on `server` answering every decision after `delay` (issue #420), as
