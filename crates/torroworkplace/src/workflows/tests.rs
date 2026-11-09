@@ -63,6 +63,24 @@ async fn local_paddle_acceptance() {
     }
 }
 
+/// The chosen safe-abort boundary for the current private provider pages; this is NOT a positive acceptance.
+#[tokio::test]
+#[ignore = "requires explicit local access to the person's private Paddle examples"]
+async fn local_paddle_unproven_resources_are_rejected() {
+    let dir = std::env::var_os("TORRO_WORKFLOW_PADDLE_ACCEPTANCE").expect("explicit private temporary directory");
+    let dir = std::path::PathBuf::from(dir);
+    for name in ["august", "october"] {
+        let bytes = std::fs::read(dir.join(format!("{name}.html"))).expect("local source");
+        assert!(
+            matches!(
+                invoice::convert(bytes, Some("text/html; charset=utf-8".into()), None).await,
+                Err(invoice::Error::Unsupported)
+            ),
+            "unproven provider resources must not produce a success PDF"
+        );
+    }
+}
+
 #[test]
 fn invoice_profile_rejects_unsafe_or_ambiguous_content_instead_of_dropping_it() {
     for inserted in [
@@ -95,4 +113,27 @@ fn invoice_profile_rejects_unsafe_or_ambiguous_content_instead_of_dropping_it() 
     assert!(invoice::extract(long_comment.as_bytes(), Some("text/html; charset=utf-8")).is_err());
     let attrs = format!("<div {}>x</div>", (0..65).map(|n| format!("a{n}='x' ")).collect::<String>());
     assert!(invoice::extract(attrs.as_bytes(), Some("text/html; charset=utf-8")).is_err());
+}
+
+#[test]
+fn invoice_head_and_ancestors_cannot_hide_unchecked_presentation_influences() {
+    for inserted in [
+        "<style>.receipt-table-total-right::after { content: 'Additional VAT: EUR 9.00'; }</style>",
+        "<style>@import url(https://static.paddle.com/unversioned.css);</style>",
+        "<link rel='stylesheet' href='https://static.paddle.com/assets/css/customer/invoice.css'>",
+        "<script src='https://static.paddle.com/assets/js/customer/invoice.js'></script>",
+        "<script>document.body.append('Additional VAT: EUR 9.00')</script>",
+        "<meta http-equiv='refresh' content='0;url=https://example.org/'>",
+        "<input value='Additional VAT: EUR 9.00'>",
+    ] {
+        let html = AUGUST.replace("</head>", &format!("{inserted}</head>"));
+        assert!(
+            invoice::extract(html.as_bytes(), Some("text/html; charset=utf-8")).is_err(),
+            "unproven head influence must fail closed"
+        );
+    }
+    for replacement in ["<body hidden>", "<body style='display:none'>", "<body onload='changeInvoice()'>"] {
+        let html = AUGUST.replace("<body>", replacement);
+        assert!(invoice::extract(html.as_bytes(), Some("text/html; charset=utf-8")).is_err());
+    }
 }

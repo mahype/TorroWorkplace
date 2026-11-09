@@ -67,7 +67,14 @@ Automatismus. Dieselbe Einrichtung ist unter Workflows über „New from templat
 |---|---|---|
 | `direct_pdf` | Rechnungs-PDF eines direkten Links | Genau ein eindeutiger PDF-Link; dessen exakter Host wird lokal an den Entwurf gebunden. Der Beispielhost im öffentlichen Paket ist kein Abrufziel. |
 | `stripe_invoice` | Originale Rechnungs-PDF | Nur der begrenzte Stripe-JSON-Resolver und sein gelieferter PDF-Link; keine Beleg-, Zahlungs-, Dashboard- oder Browserwege. |
-| `paddle_setapp_invoice_copy` | Lokal erzeugte Rechnungskopie | Nur das bestätigte Paddle-Profil. Der Inhalt muss vollständig erhalten bleiben; ein Anbieterlayout wird nicht nachgebaut. |
+| `paddle_setapp_invoice_copy` | Lokal erzeugte Rechnungskopie | Nur das eingeschränkte, ressourcenfreie Profil. Stylesheets und Skripte werden abgewiesen. Die echten Paddle-/Setapp-Beispiele sind noch nicht unterstützt; siehe #598. |
+
+**Bewusst zurückgestellt:** Die beiden echten Paddle-/Setapp-Beispiele referenzieren veränderliche externe
+CSS-/JavaScript-Dateien. Deren Darstellungseinfluss ist nicht nachgewiesen; bekannte URLs allein reichen
+nicht aus. Nach menschlicher Entscheidung in #556 werden diese Seiten daher sicher als `unsupported`
+abgewiesen, ohne Nachladen und ohne Erfolgs-PDF. Die vollständige reale Abnahme und ein sicherer
+Folgeansatz werden in [#598](https://github.com/mahype/TorroWorkplace/issues/598) nachgeholt. Synthetische
+ressourcenfreie Profiltests sind kein Nachweis für diese echten Anbieterfälle.
 
 Jede Kopie behält `template_origin` mit Kennung, Revision und Prüfsumme. Spätere Änderungen an der
 mitgelieferten Vorlage verändern keine bestehenden Abläufe. Bearbeiten oder Duplizieren übernimmt
@@ -220,6 +227,9 @@ Relevante Formwerte, Bilder, unbekannte Klassen oder Darstellungsweisen, verstec
 nicht belegte Zeichen werden nicht stillschweigend entfernt. Stattdessen endet die Konvertierung
 mit `unsupported`. Weder HTML noch CSS, Bilder, SVG, Fonts, Skripte oder Linkziele des Anbieters
 werden ausgeführt oder nachgeladen.
+Das gilt auch für den Dokumentkopf und die Vorfahren des Rechnungsblocks: Stylesheets, Style-/Script-
+Elemente, Ereignishandler und ungeprüfte Darstellungseinflüsse werden nicht als harmlose Metadaten
+übersprungen. Die derzeitigen echten Paddle-Seiten fallen unter diese Sperre (Folge-Issue #598).
 
 Die Kopie wird mit den eingebetteten Standardfonts auf A4, mit 15 mm Rand und 11 pt gesetzt. Der
 Satz misst Umbrüche, Tabellenzellen und Seitengrenzen. Auf jeder Seite steht ausdrücklich, dass es
@@ -249,15 +259,17 @@ lokalen Abnahmetest. Er liest nur ein ausdrücklich gesetztes privates temporär
 `august.html` und `october.html`; in Ausgabe und Repository gelangen keine Rechnungsinhalte oder
 privaten Links. Die dort erzeugten PDFs brauchen zusätzlich einen unabhängigen vollständigen
 Inhaltsvergleich sowie eine Prüfung jeder Seite. Ein erfolgreicher HTML-Abruf allein ist keine
-Konvertierungsabnahme.
+Konvertierungsabnahme. Für die aktuelle sichere Ablehnung gibt es außerdem den lokalen Negativtest
+`local_paddle_unproven_resources_are_rejected`; dessen Erfolg ist ausdrücklich keine positive
+Paddle-Abnahme. Die positive Abnahme bleibt bis #598 offen.
 
 ## Aktueller Implementierungsstand
 
-Im Arbeitsstand sind Verträge, Vorlagen, Entwürfe, Vorschau, Trägerfilterung, KI-Vorschläge,
-Abruf-/Konverterbausteine sowie Einrichtungs- und Verwaltungsoberflächen angelegt. Runner und
-Mail-Outbox werden parallel integriert. Die obigen Regeln bleiben dafür verbindlich; eine
-angelegte Implementierung ist weder Auslieferungsnachweis noch Nachweis einer erfolgreichen
-Gesamtprüfung. Nicht sicher integrierte Ausführungspfade müssen gesperrt bleiben.
+Verträge, Vorlagen, Entwürfe, Vorschau, Trägerfilterung, KI-Vorschläge, Runner und Mail-Outbox sind
+mit der Einrichtungs- und Verwaltungsoberfläche verbunden. Die Implementierung ist weder ein
+Auslieferungsnachweis noch der Nachweis einer erfolgreichen Gesamtprüfung. Nicht nachgewiesene
+Anbietervarianten bleiben gesperrt; die reale Paddle-Unterstützung wird gemäß menschlicher
+Scope-Entscheidung aus #556 in #598 nachgeholt.
 
 Die browserfreien Stripe-Voruntersuchungen aus der Ergänzung ersetzen keine Abnahme des fertigen
 Produktpfads mit zwei geeigneten Rechnungen einschließlich Rechnung statt Zahlungsbeleg und klarer

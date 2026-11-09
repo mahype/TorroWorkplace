@@ -18,7 +18,7 @@ pub(super) fn labels(id: &str) -> Result<(&'static str, &'static str), Error> {
         )),
         "paddle_setapp_invoice_copy" => Ok((
             "Paddle / Setapp invoice copy",
-            "Creates a clearly marked local PDF copy of the complete supported Paddle invoice HTML. No supplier-layout imitation, resource loading or login; unproven variants are refused.",
+            "Creates a marked PDF copy only of supported Paddle HTML without stylesheets or scripts. Current provider pages using external resources are unsupported; no resource loading or login.",
         )),
         _ => Err(Error::NotFound),
     }
@@ -91,7 +91,8 @@ pub fn instantiate(
     if id == "direct_pdf" {
         let host = direct_host.filter(|host| torro_ipc::workflows::valid_host(host)).ok_or(Error::Invalid)?;
         package.hosts = vec![host.into()];
-        package.steps[0] = Step::MailLink { host: host.into(), label: None };
+        let first = package.steps.first_mut().ok_or(Error::Blocked)?;
+        *first = Step::MailLink { host: host.into(), label: None };
     }
     package.validate().map_err(|_| Error::Unsupported)?;
     Ok((package, TemplateOrigin { id: template.id, revision, digest: template.digest }))

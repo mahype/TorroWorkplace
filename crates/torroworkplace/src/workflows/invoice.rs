@@ -99,7 +99,7 @@ pub fn binding() -> String {
             // Rehashing them before every download chunk would stall otherwise bounded retrievals.
             let fonts = crate::tools::pdf::PdfFonts::standard();
             let mut hash = Sha256::new();
-            hash.update(b"paddle_setapp/1;html5ever/0.39.0;bounded-token-profile/1;typesetter/1;A4/15mm/11pt");
+            hash.update(b"paddle_setapp/1;html5ever/0.39.0;bounded-token-profile/2;no-external-presentation;typesetter/1;A4/15mm/11pt");
             hash.update(&fonts.text);
             hash.update(&fonts.strong);
             hash.update(&fonts.heading);
@@ -448,6 +448,7 @@ fn extract_with(bytes: &[u8], kind: Option<&str>, budget: &Budget) -> Result<Inv
     let roots: Vec<_> =
         tree.nodes.iter().enumerate().filter(|(_, node)| node.class("c-sheet")).map(|(index, _)| index).collect();
     let [root] = roots.as_slice() else { return Err(Error::Unsupported) };
+    presentation(&tree, *root)?;
     let mut invoice = Invoice { blocks: Vec::new() };
     collect(&tree, *root, &mut invoice.blocks, budget)?;
     let headings = tree
@@ -492,7 +493,7 @@ fn beneath(tree: &Tree, mut node: usize, root: usize) -> bool {
 fn known_outside(tree: &Tree, mut node: usize) -> bool {
     for _ in 0..=MAX_DEPTH {
         let Some(held) = tree.nodes.get(node) else { return false };
-        if matches!(held.tag.as_str(), "head" | "script" | "style")
+        if held.tag == "head"
             || held.attr("id") == Some("customer-information-modal")
             || (held.tag == "header" && held.class("c-header") && held.class("no-print"))
         {
@@ -502,6 +503,72 @@ fn known_outside(tree: &Tree, mut node: usize) -> bool {
         node = parent;
     }
     false
+}
+
+/// No external or executable presentation influences are proven by profile 1. A mutable stylesheet
+/// URL is not a version pin: even a familiar provider URL can add generated invoice facts tomorrow.
+/// Refuse rather than compare a PDF against an extraction that has already lost those facts.
+fn presentation(tree: &Tree, root: usize) -> Result<(), Error> {
+    let heads: Vec<_> =
+        tree.nodes.iter().enumerate().filter(|(_, node)| node.tag == "head").map(|(index, _)| index).collect();
+    if heads.len() > 1 {
+        return Err(Error::Unsupported);
+    }
+    for (index, node) in tree.nodes.iter().enumerate() {
+        if matches!(node.tag.as_str(), "script" | "style" | "link" | "base" | "iframe" | "object" | "embed")
+            || node.attrs.iter().any(|(key, _)| key.starts_with("on"))
+        {
+            return Err(Error::Unsupported);
+        }
+        if node.tag == "meta"
+            && !(node.attrs.len() == 1 && node.attr("charset").is_some_and(|value| same_encoding(value, "utf-8")))
+        {
+            return Err(Error::Unsupported);
+        }
+        if matches!(node.tag.as_str(), "head" | "title") && !node.attrs.is_empty() {
+            return Err(Error::Unsupported);
+        }
+        // The invoice's ancestors can affect it too; no hidden, inline-style, custom element or
+        // unsupported layout wrapper may bypass safe_node merely by sitting outside c-sheet.
+        if index != 0
+            && beneath(tree, root, index)
+            && index != root
+            && (!matches!(node.tag.as_str(), "html" | "body" | "main" | "div")
+                || node.attrs.iter().any(|(key, value)| match key.as_str() {
+                    "lang" => node.tag != "html" || !matches!(value.as_str(), "en" | "en-US" | "en-GB"),
+                    "class" => value.split_ascii_whitespace().any(|class| !matches!(class, "c-main" | "c-container")),
+                    _ => true,
+                }))
+        {
+            return Err(Error::Unsupported);
+        }
+        // The head is metadata only, not a blanket exception for arbitrary DOM or form values.
+        if heads.first().is_some_and(|head| beneath(tree, index, *head))
+            && !matches!(node.tag.as_str(), "head" | "title" | "meta" | "")
+        {
+            return Err(Error::Unsupported);
+        }
+        if !beneath(tree, index, root)
+            && !known_outside(tree, index)
+            && matches!(
+                node.tag.as_str(),
+                "img"
+                    | "svg"
+                    | "canvas"
+                    | "video"
+                    | "audio"
+                    | "form"
+                    | "input"
+                    | "select"
+                    | "textarea"
+                    | "template"
+                    | "noscript"
+            )
+        {
+            return Err(Error::Unsupported);
+        }
+    }
+    Ok(())
 }
 
 fn normalize(text: &str) -> String {
