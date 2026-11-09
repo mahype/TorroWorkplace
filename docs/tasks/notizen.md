@@ -96,11 +96,14 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur n
   Stellen, die `Rights { … }` bauen, und deren Tests), `docs/api.md` (Bereich `notes`),
   `docs/api-reference.md`
 - **Requests** (Bereich `notes`, Tabelle in [notizen.md](../notizen.md#befehle-bereich-notes), Stufe N1,
-  ohne `inbox.create_note_from_item`, das in N1.10 kommt), je mit Doc-Kommentar und Fehlercodes.
+  ohne `inbox.create_note_from_item`, das in N1.10 kommt), je mit Doc-Kommentar und Fehlercodes. Dazu, sobald der
+  Mensch das Konzept abgestimmt hat, `notes.list_tags` und der Filter `tag?` in `notes.list_notes` (Vorschlag).
+  Die Seitenleiste „Tags“ in N1.6 liest nur über sie.
   Handler antworten bis N1.4 mit `unsupported`.
-- **Kontozustand** (nach Entscheidung 12 als Zustand des Notizordners: gewählt, aus der Notes-App, keiner):
-  `AccountInfo` bekommt ein optionales Feld für den Notes-Dienst (verbunden, App
-  fehlt, App zu alt), gefüllt ab N1.3.
+- **Kontozustand:** `AccountInfo` bekommt ein optionales Feld für den Notizordner, gefüllt ab N1.3. Werte nach
+  dem Vorschlag in Entscheidung 12: Ordner gewählt, Ordner aus der Notes-App, kein Ordner. Bis der Mensch das
+  Konzept abgestimmt hat, galt „verbunden, App fehlt, App zu alt“; die Aufgabe fragt nach, falls noch nicht
+  abgestimmt ist.
 - **Zugriff aus `Request::operation()`:**
   - `update_note` mit `content` ist `Delete`, sonst `Write`.
   - `resolve_conflict` mit `keep: mine` oder `keep: theirs` ist `Delete`, mit `both` `Write`.
@@ -137,7 +140,7 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur n
 - **Modell:** Opus (Agent `nextcloud-expert`) · **Braucht:** N1.1a · **Dateien:**
   `crates/torro-nextcloud/src/{lib,capabilities}.rs`, neu `crates/torro-nextcloud/src/notes.rs`,
   `crates/torro-nextcloud/Cargo.toml`, `crates/torro-nextcloud/tests/fixtures/notes/*` (neu), neu
-  `crates/torro-notes/src/folder.rs` (Abbildung Datei ↔ Notiz ohne Ein-/Ausgabe: Endungen, Titelregeln,
+  `crates/torro-notes/src/folder.rs` und `crates/torro-notes/src/lib.rs` (Modul) (Abbildung Datei ↔ Notiz ohne Ein-/Ausgabe: Endungen, Titelregeln,
   Kategorie aus dem Pfad; N4.1 nutzt sie mit)
 - **Grundlage:** Entscheidung 12 und Abschnitt „Basis“ in [notizen.md](../notizen.md): Lesen und Schreiben nur per
   WebDAV im Notizordner, die Notes-App nur für Ordner und Endung.
@@ -152,8 +155,11 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur n
     eigenen Endung; Ordner und Dateien mit Punkt am Anfang und `.attachments.<n>` nicht. Gelöscht oder verschoben
     ist, was an `oc:fileid` fehlt bzw. woanders liegt.
   - **Ändern:** `PUT` mit `If-Match`, neu mit `If-None-Match: *`; Titel und Kategorie per `MOVE` mit `If-Match` und
-    `Overwrite: F`; Favorit per `PROPPATCH oc:favorite`. Bei 412 die Serverfassung holen und zu
-    `Conflict { server }` machen.
+    `Overwrite: F`; Favorit per `PROPPATCH oc:favorite`. Nur ein 412 auf `If-Match` holt die Serverfassung und wird
+    zu `Conflict { server }`. Ein 412 auf `If-None-Match: *` oder `Overwrite: F` heißt „Name belegt“: eigener
+    Fehler ohne Serverfassung (der Kern zählt den Titel hoch bzw. antwortet `conflict`).
+  - **Favoriten** je Abgleich zusätzlich per `REPORT oc:filter-files` auf `oc:favorite`, weil ein Stern das ETag
+    womöglich nicht ändert (nicht bestätigt).
   - **Titel** nach den Regeln der Notes-App (`* | / \ : " < > ?`, führende Punkte, 100 Zeichen, „New note“,
     „ (2)“), Unicode in NFC.
   - **Statuscodes:** 403 oder `oc:permissions` ohne `W` → `ReadOnly`, 423 → `Locked`, 507 → `StorageFull`.
@@ -279,8 +285,8 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur n
   je Konto gruppiert, darunter **Tags**; unten der Stand des Abgleichs.
 - **Liste:** Titel, Auszug, Datum, Stern, Kennzeichen für schreibgeschützt, offline geändert und
   Konflikt. Suchfeld oben.
-- **Rechts vorerst:** die Notiz als Vorschau (Lesespalte, Kategorie und Konto als Chips, Verweise auf Mail,
-  Termin und Aufgabe als Chips). Der Editor kommt in N1.7.
+- **Rechts vorerst:** die Notiz als Vorschau (Lesespalte, Kategorie und Konto als Chips, Verweise auf Mail und
+  Aufgabe als Chips; Verweise auf Termine und Notizen bleiben Text, bis `apps.open_app` ein Ziel dafür hat). Der Editor kommt in N1.7.
 - **Größen** Breit, Mittel, Schmal (Liste oder Notiz); Mini und Leiste folgen in N1.8.
 - **Datenquelle:** Arbeitet gegen `NotesSource`. `--demo` nimmt die `DemoSource`, `--demo --open <state>`
   dient der Sichtprüfung. Ohne `--demo` vorerst eine leere Quelle; den echten Client bindet N1.11 an.
@@ -390,7 +396,8 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur n
   Anlegen, Ändern, Konflikt aus zwei Geräten, Umbenennen einer Kategorie, geteilte schreibgeschützte
   Notiz, Remote Wipe; dazu dieselben Notizen in der Notes-App im Web und auf dem Handy. Echte Antworten als
   Fixtures ablegen (anonymisiert). Offene Punkte klären: wann Nextcloud Text Anhänge ohne Verweis aufräumt
-  (`cleanupAttachments`), und ob ETags auf externen Speichern und fremden Freigaben verzögert kommen.
+  (`cleanupAttachments`), ob ETags auf externen Speichern und fremden Freigaben verzögert kommen, ob ein Stern
+  (`oc:favorite`) das ETag von Datei oder Ordner ändert und ob sich das Datei-ETag bei bloßen Metadaten ändert.
 - **API/MCP:** keine.
 
 ## N2 Bilder und Anhänge
@@ -408,7 +415,8 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur n
   - **Pfadprüfung** (Regeln in [notizen.md](../notizen.md#aufbau), „Anhänge“): nur Pfade, auf die
     der Inhalt der Notiz verweist oder die unter `.attachments.<id>/` liegen; der Pfad wird auf eine
     Kategorie abgebildet und mit `covers` geprüft. `..`, absolute Pfade und URLs → `error`.
-  - **Name beim Hochladen:** reiner Dateiname, nicht `.`/`..`, ohne `/` und `\`, nicht `.md`/`.txt`.
+  - **Name beim Hochladen:** reiner Dateiname, nicht `.`/`..`, ohne `/` und `\`, keine Endung, die als Notiz gilt
+    (`txt`, `md`, `markdown`, `org`, `note`, die eigene).
 - **Kern:**
   - Anhänge werden beim ersten Abruf gespeichert, höchstens 200 MB je Konto, älteste zuerst
     verdrängt. Dateien 0600; sie verschwinden mit dem Konto und bei einem Remote Wipe.

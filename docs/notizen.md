@@ -180,11 +180,17 @@ ein Zusatz, wenn sie installiert ist.** Die Recherche trägt das:
 - **Titel bereinigen** nach den Regeln der Notes-App, sonst sähe das Handy eine andere Notiz.
 - **Lesen** aller Endungen, die die Notes-App als Notiz zählt; Ordner und Dateien mit Punkt am Anfang sind keine
   Notizen.
-- **412 prüfen:** Das Datei-ETag ändert sich auch bei bloßen Metadaten. Bei 412 vergleicht der Kern erst den Inhalt,
-  bevor er zusammenführt.
+- **412 unterscheiden:** Nur ein 412 auf `If-Match` heißt „woanders geändert“. Dann vergleicht der Kern erst den
+  Inhalt (ob sich das Datei-ETag auch bei bloßen Metadaten ändert, ist nicht bestätigt), bevor er zusammenführt.
+  Ein 412 auf `If-None-Match: *` (neu anlegen) oder auf `MOVE` mit `Overwrite: F` (umbenennen, verschieben) heißt
+  „Name belegt“: Beim Anlegen zählt der Kern den Titel hoch wie die Notes-App („Meeting (2)“), beim Umbenennen
+  antwortet er mit `conflict` ohne Serverfassung. Nie wird eine fremde Notiz als Serverfassung zusammengeführt.
+- **Favoriten anderer Clients:** Ein Stern ist ein Tag in Files; ob er ETag von Datei oder Ordner ändert, ist nicht
+  bestätigt. Darum holt jeder Abgleich die Favoriten zusätzlich mit einem `REPORT oc:filter-files` auf
+  `oc:favorite` (eine Antwort mit allen Favoriten) und gleicht sie ab. N1.12 prüft das am Server.
 
 **Risiken:** viele Dateien (darum der Abstieg über Ordner-ETags), ETags externer Speicher oder fremder Freigaben,
-die verzögert kommen (nicht bestätigt), und das Aufräumen von Anhängen durch Text (oben). Ohne Notes-App laufen die
+die verzögert kommen (nicht bestätigt), Favoriten ohne ETag-Änderung (nicht bestätigt, oben), und das Aufräumen von Anhängen durch Text (oben). Ohne Notes-App laufen die
 mobilen Notes-Apps nicht; das ist eine Grenze der Handy-Apps, nicht von Torro.
 
 ## Vergleich mit bekannten Apps (2026-11-09)
@@ -261,8 +267,9 @@ Bilder, Chips), ist Darstellung, nie ein eigenes Format.
 **Verweise (Vorschlag).** Die Suite hat schon Ziele für Verweise: `apps.open_app` öffnet mit `target`
 `mail:<adresse>:<Message-ID>` und `task:<uid>`, und `inbox.create_task_from_item` legt dieselbe Form als `link.id`
 ab. Vorschlag: ein gewöhnlicher Markdown-Link mit lesbarem Text, dessen Ziel `torro:` plus genau dieses Ziel ist,
-die Teile URL-kodiert (`@` als `%40`, `<>` als `%3C`/`%3E`, `#` als `%23`), damit der Link in jedem Markdown gültig
-bleibt. Beispiel: `[Invoice March – Acme GmbH](torro:mail:anna%40cloud.example:%3C8790%40acme.example%3E)`.
+die Teile URL-kodiert (`@` als `%40`, `#` als `%23`), damit der Link in jedem Markdown gültig
+bleibt. Die Message-ID steht ohne spitze Klammern, wie `Link::mail` sie ablegt. Beispiel:
+`[Invoice March – Acme GmbH](torro:mail:anna%40cloud.example:8790%40acme.example)`.
 - **Kein zweites Format:** Die Message-ID bleibt gleich, wenn die Mail verschoben wird; Ordner und UID würden
   brechen.
 - **Lesbar überall:** Der Text trägt die Bedeutung; in Nextcloud bleibt er ein Link, der nichts öffnet.
@@ -477,7 +484,8 @@ zeigt die Kontoseite „Notes app not installed“, und in N4 übernimmt der Ord
 (`Depth: 0`); nur wenn es sich geändert hat, `Depth: 1` und weiter nur in Unterordner mit geändertem ETag.
 `Depth: infinity` nur beim ersten Laden. Gelöschte und verschobene Notizen erkennt der Kern an `oc:fileid`.
 Geschrieben wird mit `If-Match` (Datei-ETag), neue Dateien mit `If-None-Match: *`, Umbenennen und Verschieben per
-`MOVE` mit `Overwrite: F`. `notify_push` (`notify_file_id`) löst später einen Abgleich der gemeldeten Dateien aus.
+`MOVE` mit `Overwrite: F`; ein 412 darauf heißt „Name belegt“, nicht Konflikt (Abschnitt „Basis“). Favoriten
+kommen mit einem eigenen `REPORT` je Abgleich. `notify_push` (`notify_file_id`) löst später einen Abgleich der gemeldeten Dateien aus.
 Die Notes-App erkennt der Kern weiter über die Capabilities, aber nur für Ordner und Endung; ohne sie zeigt die
 Kontoseite „Notes folder: <ordner>“ statt eines Fehlers.
 
@@ -515,7 +523,8 @@ in Nextcloud.“
     unter `.attachments.<id>/`. Ein Pfad muss außerdem in einer Kategorie liegen, die der Client
     sieht. `..`, absolute Pfade und URLs werden abgelehnt.
   - **Name beim Hochladen:** ein reiner Dateiname, ohne `/` und `\`, nicht `.` oder `..`, nicht auf
-    `.md` oder `.txt` endend. Sonst entstünde nebenbei eine Notiz.
+    `.md` oder `.txt` endend. Sonst entstünde nebenbei eine Notiz. Nach dem Nachprüfen vom 2026-11-09 gilt das für
+    alle Endungen, die die Notes-App als Notiz zählt (`txt`, `md`, `markdown`, `org`, `note` und die eigene).
 - **Ordner und Notizpfad:** `notes.update_settings` und `notes.connect_folder` lehnen das
   Home-Verzeichnis selbst, die Wurzel der Cloud (leerer Notizpfad) und die Verzeichnisse von Torro
   ab. Nach einer Pfadänderung verwirft der Kern die Kategorie-Auswahlen dieses Kontos.
@@ -524,8 +533,9 @@ in Nextcloud.“
 
 | Stufe | Befehl | Zugriff | MCP |
 |---|---|---|---|
-| N1 | `notes.list_notes { account?, category?, favorites?, query?, limit? }` (ohne Inhalt, mit Auszug) | Read | `notes_list_notes` |
+| N1 | `notes.list_notes { account?, category?, favorites?, tag?, query?, limit? }` (ohne Inhalt, mit Auszug; `tag?` Vorschlag) | Read | `notes_list_notes` |
 | N1 | `notes.get_note { id }` | Read | `notes_get_note` |
+| N1 | `notes.list_tags { account? }` (mit Zahlen; Vorschlag, Abschnitt „Inhaltsarten“) | Read | `notes_list_tags` |
 | N1 | `notes.list_categories { account? }` (mit Zahlen) | Read | `notes_list_categories` |
 | N1 | `notes.create_note { account?, title?, content, category?, favorite? }` | Write | `notes_create_note` |
 | N1 | `notes.update_note { id, etag, title?, content?, category?, favorite? }` | Write, mit `content` **Delete** | `notes_update_note` |
@@ -555,6 +565,9 @@ Erläuterungen zur Tabelle:
   niemand gesehen hat.
 - **Zustand des Notes-Dienstes** (verbunden, App fehlt, App zu alt) steht als neues optionales Feld
   in der Antwort von `accounts.list_accounts`; dafür gibt es keinen eigenen Befehl.
+- **Tags (Vorschlag):** `notes.list_tags` liefert die Tags aus dem Index des Kerns samt Zahl, nur aus Notizen,
+  die der Client sieht; `notes.list_notes` bekommt dazu den Filter `tag?` (ein Tag deckt seine Unterstufen,
+  `#a` auch `#a/b`). Tags sind Inhalt, also `untrusted: true`.
 - **Vorschlag (Entscheidung 12) zum Zustand:** Das Feld heißt dann Zustand des Notizordners: „Ordner gewählt“,
   „Ordner aus der Notes-App“, „kein Ordner“ (`not-connected`). Eine fehlende oder alte Notes-App ist kein Fehler.
 - **`connect_folder`:** Die Freigabe zeigt den echten Pfad. Sonst könnte ein Agent beliebige
@@ -587,7 +600,8 @@ sind der Maßstab für N1.6–N1.8 und N1.10.
   Entscheidung 8 bzw. dem Vorschlag in Entscheidung 11 (Live, Schalter auf den Quelltext). Hinweisband oben bei
   Offline-Änderungen, Konflikt (beide Fassungen nebeneinander, „Keep mine / Keep theirs / Keep both“) und
   schreibgeschützten Notizen („Copy to my notes“).
-- **Größen:** Breit Seitenleiste 240, Liste 440, Notiz · Mittel Leiste 60, Liste 364, Notiz · Schmal Liste oder
+- **Größen:** Breit Seitenleiste 240, Liste 440, Notiz · Mittel Leiste 60, Liste 364, Notiz (Kopf nur mit dem
+  Titel, die Kategorie steht als Chip darunter) · Schmal Liste oder
   Notiz · **Mini** Feld „Quick note“ und die letzten fünf · **Leiste** Feld und die letzten Titel auf einer
   Mittellinie (Entscheidung 10).
 - **„Save as note“:** ein gemeinsames Blatt für alle Apps (Titel, Kategorie mit Vorschlägen, Konto, Vorschau; der
