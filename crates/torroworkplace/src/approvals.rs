@@ -1636,7 +1636,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             if workflow.rule_trigger.is_some() {
                 shown = trf(
                     "{action}; category: {category}",
-                    &[("action", &shown), ("category", &workflow_category(workflow, 60))],
+                    &[("action", &shown), ("category", &workflow_category(workflow, QUOTE_MAX))],
                 );
             }
         }
@@ -3940,6 +3940,12 @@ fn workflow_category(workflow: &WorkflowFacts, maximum: usize) -> String {
     }
 }
 
+/// Detail values may wrap or split into quoted pieces, but never hide executable scope.
+/// The summary stays short; the hub removes inline decisions if the full details exceed its cap.
+fn workflow_detail(value: &str) -> String {
+    whole(value).join("\n")
+}
+
 /// What the summary of `request` leaves out, one line each, in the core's language (task M3.5,
 /// [`ApprovalInfo::details`]); empty for every command but `mail.send_draft` and the changes of the
 /// assistant's profile and memory ([`profile_details`], task C.10), and for a draft the core does not
@@ -3965,18 +3971,18 @@ pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
             lines.push(trf("Workflow revision: {revision}", &[("revision", &revision)]));
         }
         if let Some(mail) = &workflow.mail {
-            lines.push(trf("Selected mail: {id}", &[("id", &quote_up_to(&mail.id, DETAIL_MAX))]));
+            lines.push(trf("Selected mail: {id}", &[("id", &workflow_detail(&mail.id))]));
             let subject = if mail.subject.is_empty() { tr("No subject") } else { &mail.subject };
-            lines.push(trf("Message: {subject}", &[("subject", &quote_up_to(subject, DETAIL_MAX))]));
+            lines.push(trf("Message: {subject}", &[("subject", &workflow_detail(subject))]));
             let sender = if mail.sender.is_empty() { tr("Unknown sender") } else { &mail.sender };
-            lines.push(trf("Sender: {sender}", &[("sender", &quote_up_to(sender, DETAIL_MAX))]));
-            lines.push(trf("Mail date: {date}", &[("date", &quote_up_to(&mail.date, DETAIL_MAX))]));
+            lines.push(trf("Sender: {sender}", &[("sender", &workflow_detail(sender))]));
+            lines.push(trf("Mail date: {date}", &[("date", &workflow_detail(&mail.date))]));
         }
         if let Some(target) = &workflow.target {
-            lines.push(trf("Save target: {target}", &[("target", &quote(target))]));
+            lines.push(trf("Save target: {target}", &[("target", &workflow_detail(target))]));
         }
         for host in &workflow.hosts {
-            lines.push(trf("Allowed domain: {host}", &[("host", &quote(host))]));
+            lines.push(trf("Allowed domain: {host}", &[("host", &workflow_detail(host))]));
         }
         if workflow.test {
             lines.push(tr("This test downloads a real document and writes a file.").into());
@@ -3985,13 +3991,13 @@ pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
             lines.push(tr("This explicitly repeats a previous download as a new generation.").into());
         }
         if let Some(account) = &workflow.account {
-            lines.push(trf("Mail account: {account}", &[("account", &quote(account))]));
+            lines.push(trf("Mail account: {account}", &[("account", &workflow_detail(account))]));
         }
         if let Some(query) = &workflow.rule_query {
-            lines.push(trf("Rule condition: {query}", &[("query", &quote(query))]));
+            lines.push(trf("Rule condition: {query}", &[("query", &workflow_detail(query))]));
         }
         if let Some(trigger) = workflow.rule_trigger {
-            let category = workflow_category(workflow, DETAIL_MAX);
+            let category = workflow_category(workflow, usize::MAX);
             lines.push(trf("Rule category: {category}", &[("category", &category)]));
             lines.push(match trigger {
                 torro_ipc::workflows::Trigger::NewMail => {
@@ -4421,6 +4427,68 @@ pub(crate) mod tests {
         let unrestricted = shown(workflow);
         assert!(unrestricted.contains(&trf("Rule category: {category}", &[("category", &tr("Any category"))])));
         assert_ne!(named, unrestricted);
+    }
+
+    #[test]
+    fn workflow_approval_details_keep_long_domains_and_conditions_distinguishable() {
+        let request = Request::SetWorkflowRuleEnabled { id: "rule".into(), revision: 1, enabled: true };
+        let prefix = format!("{}.{}.{}.", "a".repeat(63), "b".repeat(63), "c".repeat(63));
+        let first_host = format!("{prefix}billing.example.org");
+        let second_host = format!("{prefix}billing.example.net");
+        let query = format!("subject:{}", "q".repeat(250));
+        let first_query = format!("{query} from:alice@example.org");
+        let second_query = format!("{query} from:bob@example.org");
+        let facts = |host: &str, query: &str| Facts {
+            workflow: Some(Box::new(WorkflowFacts {
+                name: Some("Invoice workflow".into()),
+                hosts: vec![host.into()],
+                rule_query: Some(query.into()),
+                rule_trigger: Some(torro_ipc::workflows::Trigger::NewMail),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let first = details(&request, &facts(&first_host, &first_query));
+        let host_changed = details(&request, &facts(&second_host, &first_query));
+        let query_changed = details(&request, &facts(&first_host, &second_query));
+        assert_ne!(first, host_changed, "domain ends must not disappear behind a common prefix");
+        assert_ne!(first, query_changed, "complete conditions are required even beyond DETAIL_MAX");
+        let shown = first.join("\n");
+        for piece in whole(&first_host).into_iter().chain(whole(&first_query)) {
+            assert!(shown.contains(&piece), "missing piece of executable scope");
+        }
+        assert!(!shown.contains('…'), "details must not silently truncate executable scope");
+    }
+
+    #[test]
+    fn workflow_approval_details_keep_complete_source_and_target_identifiers() {
+        let request = Request::RunWorkflow {
+            id: "workflow".into(),
+            revision: 1,
+            mail: "m:chosen".into(),
+            test: true,
+            repeat: false,
+        };
+        let value = format!("{}end\n\u{202e}{{untrusted}}", "x".repeat(260));
+        let facts = Facts {
+            workflow: Some(Box::new(WorkflowFacts {
+                mail: Some(Box::new(WorkflowMailFacts {
+                    id: "m:chosen".into(),
+                    subject: value.clone(),
+                    sender: value.clone(),
+                    date: "2026-11-09T12:00:00Z".into(),
+                })),
+                target: Some(value.clone()),
+                account: Some(value.clone()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let shown = details(&request, &facts).join("\n");
+        for piece in whole(&value) {
+            assert_eq!(shown.matches(&piece).count(), 4, "each source/target field must retain its end");
+        }
+        assert!(!shown.contains(['\u{202e}', '{', '}', '…']));
     }
 
     /// Approvals in `dir/state/approvals.json` that show no notification.

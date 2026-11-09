@@ -110,6 +110,9 @@ Ablauffassung und Regelkategorie mit ihrem stabilen Schlüssel; ohne Einschränk
 „Any category“/„Beliebige Kategorie“. Auch im Notification Hub bleiben Zusammenfassung und Details im
 Eintrag zugänglich. Überschreiten sie dessen Textgrenze, gibt es dort keine direkten Allow-/Deny-
 Aktionen; entschieden wird in der Steuerzentrale mit vollständigen Angaben.
+Nur die Zusammenfassung wird gekürzt. Die aufgeklappten Ablaufdetails behalten Domains,
+Regelbedingungen und Mail-/Zielmerkmale vollständig, bereinigt und bei langen Werten in zitierte
+Abschnitte aufgeteilt; insbesondere bleiben Domainenden und der Schluss einer Bedingung sichtbar.
 Der Job bewahrt zusätzlich einen Hash der freigegebenen Mailmerkmale. Diese werden vor dem Abruf
 und nach dem Download anhand genau des für die Ablage verwendeten Headerstands geprüft. Änderungen
 bei unveränderter Rohmail pausieren den Lauf, statt unbestätigte Pfadbestandteile zu verwenden.
