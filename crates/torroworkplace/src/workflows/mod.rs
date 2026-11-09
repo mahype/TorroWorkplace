@@ -35,6 +35,7 @@ pub enum Error {
     Blocked,
     Offline,
     SenderUnverified,
+    TargetUnavailable,
 }
 
 impl Error {
@@ -49,6 +50,7 @@ impl Error {
             Self::Blocked => ("error", tr("The workflow journal cannot be used safely.")),
             Self::Offline => ("offline", tr("The workflow source is currently unavailable.")),
             Self::SenderUnverified => ("forbidden", tr("Sender unverified — manual review required.")),
+            Self::TargetUnavailable => ("offline", tr("Save target unavailable.")),
         };
         Response::Error { code: code.into(), message: message.into() }
     }
@@ -617,13 +619,18 @@ impl Service {
 fn target_fingerprint(mail: &MailService, target: &str) -> Result<String, Error> {
     let target = mail.save_targets().get(target).map_err(|_| Error::Blocked)?.ok_or(Error::NotFound)?;
     let folder = std::path::Path::new(&target.spec.folder);
-    if !folder.is_absolute()
-        || !folder.symlink_metadata().is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
-    {
+    if !folder.is_absolute() {
         return Err(Error::Forbidden);
     }
-    let canonical = folder.canonicalize().map_err(|_| Error::Forbidden)?;
-    let metadata = folder.symlink_metadata().map_err(|_| Error::Forbidden)?;
+    let metadata = folder.symlink_metadata().map_err(|_| Error::TargetUnavailable)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(Error::Forbidden);
+    }
+    let canonical = folder.canonicalize().map_err(|_| Error::TargetUnavailable)?;
+    let metadata = folder.symlink_metadata().map_err(|_| Error::TargetUnavailable)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(Error::Forbidden);
+    }
     #[cfg(unix)]
     let directory_identity = {
         use std::os::unix::fs::MetadataExt;

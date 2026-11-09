@@ -813,7 +813,9 @@ impl Service {
         {
             return Err(Error::Conflict);
         }
-        if target_fingerprint(mail, &job.run.save_target)? != job.target_fingerprint {
+        let fingerprint = target_fingerprint(mail, &job.run.save_target)
+            .map_err(|error| if error == Error::NotFound { Error::TargetUnavailable } else { error })?;
+        if fingerprint != job.target_fingerprint {
             return Err(Error::Conflict);
         }
         if !job.run.test
@@ -1056,14 +1058,11 @@ impl Service {
             Ok(jobs.into_iter().filter(|job| job.run.state == RunState::Running).collect::<Vec<_>>())
         })?;
         for mut job in interrupted {
-            let allowed = self.allowed(&job, clients, mail, gate).is_ok();
+            let denied = self.allowed(&job, clients, mail, gate).err().map(|error| failed_permission(error).reason);
+            let allowed = denied.is_none();
             let complete = allowed && job.run.document.as_ref().is_some_and(|doc| verified_path(mail, doc).is_ok());
             job.run.state = if complete { RunState::Succeeded } else { RunState::Paused };
-            job.run.reason = if !allowed {
-                Some(RunReason::PermissionRevoked)
-            } else {
-                (!complete).then_some(RunReason::RecoveryUncertain)
-            };
+            job.run.reason = denied.or_else(|| (!complete).then_some(RunReason::RecoveryUncertain));
             self.store.transaction(|tx| {
                 let current: RunRecord = store::get(tx, "run", &job.run.id, |_, _| true)?;
                 if current.run.state != RunState::Running {
@@ -1168,6 +1167,7 @@ fn failed_permission(error: Error) -> download::Failure {
         Error::Conflict => RunReason::Changed,
         Error::Offline => RunReason::Offline,
         Error::SenderUnverified => RunReason::SenderUnverified,
+        Error::TargetUnavailable => RunReason::TargetUnavailable,
         _ => RunReason::PermissionRevoked,
     })
 }
@@ -2758,6 +2758,98 @@ mod tests {
             panic!("run");
         };
         assert_eq!((run.state, run.reason), (RunState::Paused, Some(RunReason::Changed)));
+        assert!(run.document.is_none());
+    }
+
+    #[tokio::test]
+    async fn queued_jobs_distinguish_unavailable_targets_from_changed_bindings_and_revocation() {
+        for mode in ["removed", "renamed", "replaced", "revoked"] {
+            let env = environment().await;
+            let queued = queue(&env).await;
+            let folder = env.dir.path().join("invoices");
+            let expected = match mode {
+                "removed" => {
+                    std::fs::remove_dir(&folder).expect("empty synthetic target");
+                    RunReason::TargetUnavailable
+                }
+                "renamed" => {
+                    std::fs::rename(&folder, env.dir.path().join("moved-invoices")).expect("move target");
+                    RunReason::TargetUnavailable
+                }
+                "replaced" => {
+                    std::fs::rename(&folder, env.dir.path().join("old-invoices"))
+                        .expect("retain original directory identity");
+                    std::fs::create_dir(&folder).expect("different directory at old path");
+                    RunReason::Changed
+                }
+                _ => RunReason::PermissionRevoked,
+            };
+            let server = httpmock::MockServer::start_async().await;
+            let file = server
+                .mock_async(|when, then| {
+                    when.method(httpmock::Method::GET);
+                    then.status(200).header("content-type", "application/pdf").body(supplier_pdf());
+                })
+                .await;
+            let downloader = download::Downloader::for_test(&server.base_url());
+            assert!(
+                env.service
+                    .work_using(&env.clients, &env.mail, &|_| mode != "revoked", &downloader)
+                    .await
+                    .expect("worker")
+            );
+            let Response::WorkflowRun { run } =
+                env.service.get_run(&Scope::suite(), None, &queued.id, &env.mail).expect("run")
+            else {
+                panic!("run");
+            };
+            assert_eq!(run.reason, Some(expected), "{mode}");
+            assert!(run.document.is_none(), "no file from an unusable or unauthorized target");
+            file.assert_calls_async(0).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn replacing_a_queued_target_with_a_symlink_remains_forbidden() {
+        let env = environment().await;
+        let queued = queue(&env).await;
+        let folder = env.dir.path().join("invoices");
+        let moved = env.dir.path().join("moved-invoices");
+        std::fs::rename(&folder, &moved).expect("move target");
+        std::os::unix::fs::symlink(&moved, &folder).expect("substitute unsafe link");
+        let downloader = download::Downloader::for_test("http://127.0.0.1:9");
+        assert!(env.service.work_using(&env.clients, &env.mail, &|_| true, &downloader).await.expect("worker"));
+        let Response::WorkflowRun { run } =
+            env.service.get_run(&Scope::suite(), None, &queued.id, &env.mail).expect("run")
+        else {
+            panic!("run");
+        };
+        assert_eq!(run.reason, Some(RunReason::PermissionRevoked));
+        assert!(run.document.is_none());
+    }
+
+    #[tokio::test]
+    async fn recovery_preserves_unavailable_target_reason_without_claiming_permission_revocation() {
+        let env = environment().await;
+        let queued = queue(&env).await;
+        env.service
+            .store
+            .transaction(|tx| {
+                let mut job: RunRecord = store::get(tx, "run", &queued.id, |_, _| true)?;
+                job.run.state = RunState::Running;
+                put_run(tx, &job, "running")
+            })
+            .expect("interrupted job");
+        std::fs::remove_dir(env.dir.path().join("invoices")).expect("empty synthetic target removed");
+        let restarted = Service::at(env.dir.path().join("workflow-journal/journal.sqlite"));
+        restarted.recover(&env.clients, &env.mail, &|_| true).expect("recover without any download");
+        let Response::WorkflowRun { run } =
+            restarted.get_run(&Scope::suite(), None, &queued.id, &env.mail).expect("run")
+        else {
+            panic!("run");
+        };
+        assert_eq!((run.state, run.reason), (RunState::Paused, Some(RunReason::TargetUnavailable)));
         assert!(run.document.is_none());
     }
 

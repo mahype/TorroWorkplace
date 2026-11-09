@@ -101,6 +101,9 @@ noch eine Erlaubnis für beliebige spätere Fassungen. Eine normale Client-Freig
 den konkreten Auftrag, nicht diese dauerhaften Rechte. Vor jedem Außen- und Schreibschritt werden
 aktuelle Rechte, Freigaben und Bindungen erneut geprüft. Entzug, Deaktivierung, Entfernen oder eine
 Zieländerung stoppen die folgenden Schritte; bereits abgelegte Dokumente bleiben erhalten.
+Ein verschwundener oder nicht erreichbarer Zielordner wird als „Save target unavailable.“ gemeldet,
+nicht als Entzug unveränderter Torro-Rechte. Andere Verzeichnisidentitäten und unsichere Pfade
+bleiben gesperrt; diese Unterscheidung gilt auch für die Wiederaufnahme unterbrochener Läufe.
 Deaktivierung und Widerruf erhöhen die Ausführungsepoche: Sie stoppen auch bereits laufende
 manuelle Einmalaufträge, nicht nur künftige automatische Jobs. Ein bestehender Einmalgrant darf
 diese Grenze nicht überleben.
