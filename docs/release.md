@@ -1,6 +1,6 @@
 # Release-Pipeline
 
-Stand: 2026-11-08, #589. **Noch kein veröffentlichter Installer-Nachweis.** Der Code bereitet die
+Stand: 2026-11-09, #589. **Noch kein veröffentlichter Installer-Nachweis.** Der Code bereitet die
 Downloads vor; erst ein Maintainer-Release mit Plattformprüfungen belegt die vollständige Auslieferung.
 Anleitung für Nutzer: [install.md](install.md). Maintainer-Ablauf: [release-0.1.0.md](release-0.1.0.md).
 
@@ -81,7 +81,9 @@ Danach `dist plan --tag v0.1.0` und die Offline-Vertragstests ausführen. Keine 
 
 ## Plattformspezifische Grenzen
 
-- Linux: Distributionen brauchen glibc >=2.35, libgcc, xkbcommon, Wayland, EGL, Vulkan-Loader und X11.
+- Linux: Distributionen brauchen glibc >=2.35, libgcc, Fontconfig, xkbcommon einschließlich X11-Helfer,
+  Wayland, EGL, Vulkan-Loader sowie X11 mit Cursor-, Input- und XCB-Helfern. Die von winit dynamisch
+  geladenen Bibliotheken gehören ausdrücklich zu den Abhängigkeiten, auch wenn `ldd` sie nicht zeigt.
   DEB/RPM/Arch erhalten passende Abhängigkeitsnamen. Kein Snap, keine neue Paketquelle. Arch-ARM ist
   **Arch Linux ARM**, nicht Omarchy. AUR bleibt mit seinen bestehenden PKGBUILD-Vorlagen erhalten.
   RCs sortieren vor Stable: DEB/RPM `0.1.0~rc.1-1`, pacman `0.1.0rc.1-1`.
@@ -99,7 +101,8 @@ Danach `dist plan --tag v0.1.0` und die Offline-Vertragstests ausführen. Keine 
   Inno fängt Fehler in Dateieintrag-Callbacks ab: Die Schutzprüfungen setzen deshalb den nativen
   Abbruch über `WizardForm.Close` und sperren nach einem Fehler weitere Payload-Einträge. Die
   Sperrprüfung liegt an einem Verzeichniseintrag nach Restart Manager und vor den Dateikopien;
-  direkt danach verarbeitet Inno den Abbruch. `/NOCANCEL` wird abgelehnt, auch stille Installationen
+  direkt danach verarbeitet Inno den Abbruch. `/NOCANCEL` und `/LOADINF` werden abgelehnt: Auch eine
+  INF-Datei könnte über `NoCancel=yes` den nativen Schutzabbruch abschalten. Stille Installationen
   müssen sicher abbrechen können. Dieser Ablauf ist am gepinnten Inno-Quelltext statisch geprüft;
   der echte Windows-VM-Nachweis steht weiter aus.
 - macOS: Developer ID Application, Hardened Runtime, Zeitstempel, Notarisierung und Heften für Bündel
@@ -127,7 +130,10 @@ Offline: `python3 -m unittest discover -s packaging/tests`, `dist plan --tag v0.
 Begleitpakete, Marker, Versionstransformation, SHA-256, unsichere Archive und Fehlerausgänge ohne Netz.
 Ein nFPM-Bau mit kleinen Testprogrammen prüft echte Paketmetadaten, **nicht** den Start echter Apps.
 
-Lokales Protokoll 2026-11-08 (OpenCode-Umsetzung, nFPM 2.48.0, Testprogramme statt Release-Binaries):
+Lokales Protokoll 2026-11-08/09 (OpenCode-Umsetzung, nFPM 2.48.0; erste Paketläufe mit Testprogrammen,
+echte Programmprüfungen unten ausdrücklich gekennzeichnet):
+Die realen Programmpayloads wurden vor der zusätzlich freigegebenen Client-Sperrkorrektur gebaut;
+sie belegen die Installer-/Ladeprüfungen, nicht einen vollständigen Release-Bau des späteren Quellstands.
 
 | Prüfung | Ergebnis / Grenze |
 |---|---|
@@ -135,15 +141,29 @@ Lokales Protokoll 2026-11-08 (OpenCode-Umsetzung, nFPM 2.48.0, Testprogramme sta
 | Ubuntu 24.04 arm64, DEB-Smoke | Metadaten, Installieren/Wiederholung, RC→Stable, Entfernen, Daten-/Dienst-Erhalt grün |
 | Fedora 43 arm64, RPM-Smoke | dieselben Paketprüfungen grün |
 | Arch-Container x86_64, pacman-Smoke | dieselben Paketprüfungen grün; Download-Sandbox nur im wegwerfbaren Docker wegen dessen seccomp-Grenze deaktiviert |
-| Windows-VM / echte Apps | noch nicht ausgeführt; Wine ersetzt diesen Nachweis nicht |
-| Signierte/notarisierte macOS-Images, Gatekeeper | ohne Maintainer-Signierung nicht ausgeführt |
+| Inno 7.1.1 unter lokalem CrossOver/Rosetta | alle sieben Setup-Skripte mit Platzhalter-Payload kompiliert; keine Windows-Installationsprüfung. Die echte Versionsabfrage ist `ISCC --version`, nicht die Hilfeausgabe; Regressionstest ergänzt |
+| Echte macOS-arm64-Programme, Profil `dist` | alle sieben gebaut; sieben App-Bündel, Reminder und eingebetteter Dienst mit lokaler Developer-ID, Hardened Runtime und Zeitstempel signiert; `codesign --verify --deep --strict` sowie sieben `--version`-Aufrufe grün; nur Systembibliotheken/-Frameworks verlinkt |
+| Echte macOS-Intel-Programme, Profil `dist` | alle sieben auf dem M4 quergebaut; Bündel, Reminder und eingebetteter Dienst mit Developer-ID signiert und streng geprüft; sieben `--version`-Aufrufe unter Rosetta grün; kein Nachweis auf Intel-Hardware |
+| Echte macOS-Demo-Fenster aus signierten Bündeln | alle sieben arm64- und alle sieben Intel/Rosetta-Bündel starteten mit getrennten Testdaten und öffneten eigene Fenster; Screenshots geprüft; kein Nachweis von Notarisierung, Drag-and-drop-Installation, Begleitfunktionen oder Intel-Hardware |
+| Echte Linux-Programme, Ubuntu 22.04 / glibc 2.35 | Stable und RC für arm64 und x64 gebaut; beide vollständigen Matrizen mit je 48 Paketen und finalen GUI-Abhängigkeiten gebaut |
+| Echte Linux-Installation/Versionsaufrufe | alle sieben Stable-Programme auf Ubuntu 22.04 arm64/x64, Fedora 43 arm64 und Arch x64 grün; abschließende RC→Stable/Wiederholung/Entfernung samt Datenerhalt mit finalen Abhängigkeiten auf Ubuntu 24.04 arm64, Ubuntu 22.04 x64, Fedora 43 arm64/x64 und Arch x64 grün |
+| Linux-X11-Startprüfung im isolierten Xvfb, unprivilegierter Benutzer | fand zusätzlich fehlende dynamische winit-Helfer; nach Ergänzung von Cursor/Input/XCB/xkbcommon-X11 öffneten alle sieben installierten echten arm64-Apps ihre Fenster unter Ubuntu 22.04; kein Nachweis der Begleitfunktionen oder Desktopintegration |
+| Echte Windows-x64-Programme und Setups | Stable und RC mit release-identischer statischer C-Laufzeit quergebaut; alle 14 Setups mit echtem Inno 7.1.1 nach `/LOADINF`-Korrektur erneut kompiliert; keine VCRUNTIME/MSVCP/api-ms-win-crt-Importe; Windows-Laufzeitprüfung noch offen |
+| Windows-VM / echte Apps | offizielles Enterprise-Evaluation-x64-Image mit Microsoft-Prüfsumme verifiziert und mittels DISM `/checkintegrity` erfolgreich auf die neue VM-Platte angewendet; UEFI-Bootdateien erstellt, Ersteinrichtung erreichte „Just a moment“; noch keine native Torro-Installationsprüfung, Wine ersetzt sie nicht |
+| Aktueller vollständiger lokaler CI-Lauf | nach den ausdrücklich freigegebenen Korrekturen grün: `scripts/ci-local.sh`, gesamte deutsche Workspace-Tests und 15 Python-Tests auch unter Python 3.10; zuvor `Protection(Busy)` durch geerbte Dateibeschreibung (Guard entsperrt jetzt explizit, Regression vorher rot), EML-`Changed` durch Hintergrund-Sync gegen Test-Expunge (Test jetzt ohne Hintergrundarbeiter); zusätzlich 60 EML- und 40 Client-Setup-Wiederholungsläufe grün |
+| Unabhängiges Nachreview | zwei Runden über lokale Korrekturen und vollständigen Windows-Abbruchpfad; `/LOADINF`-Umgehung gefunden und behoben, zweite Runde ohne weitere Codefunde; kein Ersatz für native Windows-Tests |
+| Notarisierte macOS-Images, Gatekeeper | weiterhin offen: Developer-ID lokal verfügbar und verwendet, Notarisierungszugang bisher nur als GitHub-Secrets; kein lokales Profil und kein Release-Workflow gestartet |
 | Erstes veröffentlichtes Release | offen, kein Release gestartet |
 
 `packaging/tests/linux-smoke.sh` prüft in einem **wegwerfbaren Container** Metadaten, Installieren,
 Wiederholung, Upgrade RC→Stable und Entfernen mit verbleibendem Dienst und erhaltenen Daten.
 `windows-smoke.ps1` läuft nur in einer **frischen Windows-x64-VM** mit Administratorrechten und
 `TORRO_INSTALLER_SMOKE=1`: alle sieben Apps, Wiederholung, Upgrade, Downgrade-Abweisung, beide
-Entfernungsreihenfolgen, gemeinsame Dateien bis zum letzten Besitzer. Nie am Arbeitsrechner ausführen.
+Entfernungsreihenfolgen, gemeinsame Dateien bis zum letzten Besitzer; installierte echte Programme müssen
+mit `--version` laden und exakt zur Versions-Begleitdatei passen (30-Sekunden-Grenze). Nie am
+Arbeitsrechner ausführen. Der lokale Windows-Testbau muss wie dist 0.32.0 mit
+`-C target-feature=+crt-static` erfolgen (`msvc-crt-static` ist dort standardmäßig `true`), sonst prüft er
+eine andere C-Laufzeitabhängigkeit als die Release-Binaries.
 
 Vor Freigabe je Ziel/Architektur festhalten: Version/OS, Befehl, Resultat, Prüfer und Datum. Weiter von
 Hand zu prüfen: jede App starten, Partner-Apps/Verfassen/Erinnerung, Installieren/Entfernen und erhaltene

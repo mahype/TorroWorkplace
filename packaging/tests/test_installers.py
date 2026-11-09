@@ -129,6 +129,22 @@ class Installers(unittest.TestCase):
             with self.assertRaises(ValueError):
                 pkg.version(tag)
 
+    def test_linux_packages_declare_linked_and_dynamically_loaded_gui_libraries(self):
+        binaries = {a["program"]: self.root / a["program"] for a in pkg.apps()}
+        expected = {
+            "deb": ["libfontconfig1", "libxcursor1", "libxi6", "libx11-xcb1", "libxkbcommon-x11-0"],
+            "rpm": ["fontconfig", "libXcursor", "libXi", "libX11-xcb", "libxkbcommon-x11"],
+            "archlinux": ["fontconfig", "libxcursor", "libxi", "libxkbcommon-x11"],
+        }
+        for target in pkg.LINUX:
+            for fmt, dependencies in expected.items():
+                for app in [None, *pkg.apps()]:
+                    package = "torroworkplace-bin" if app is None else "torro-workplace" if app["program"] == "torroworkplace" else app["program"] + "-bin"
+                    with self.subTest(target=target, format=fmt, package=package):
+                        config, _ = pkg.linux_config(app, package, target, fmt, "0.1.0", binaries, self.root)
+                        for dependency in dependencies:
+                            self.assertIn(dependency, config["depends"])
+
     def test_checked_sources_plan_and_archive_paths(self):
         source_plan(self.root)
         pkg.source_plan(self.root, "v0.1.0")
@@ -240,10 +256,34 @@ class Installers(unittest.TestCase):
             (out / (name + ".exe")).write_bytes(b"fixture setup")
             compiled.append(defines["/DAppIdentity"])
 
-        with patch.object(pkg.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "7.1.1", "")), patch.object(pkg, "run", side_effect=compiler):
+        def compiler_version(args, **kwargs):
+            # Inno 7's actual /? output only says "Inno Setup 7"; --version emits 7.1.1.
+            self.assertEqual(args[1:], ["--version"])
+            return subprocess.CompletedProcess(args, 0, "7.1.1\r\n", "")
+
+        with patch.object(pkg.subprocess, "run", side_effect=compiler_version), patch.object(pkg, "run", side_effect=compiler):
             pkg.build_windows(self.root, out, "v0.1.0")
         self.assertEqual(len(set(compiled)), 7)
         self.assertEqual(len(list(out.glob("*-setup.exe"))), 7)
+
+    def test_windows_builder_rejects_wrong_or_failed_compiler_version(self):
+        source_plan(self.root)
+        out = self.root / "out"
+        out.mkdir()
+        for result in [subprocess.CompletedProcess([], 0, "7.1.10", ""),
+                       subprocess.CompletedProcess([], 1, "7.1.1", "compiler failed")]:
+            with self.subTest(result=result), patch.object(pkg.subprocess, "run", return_value=result):
+                with self.assertRaises(ValueError):
+                    pkg.build_windows(self.root, out, "v0.1.0")
+            self.assertEqual(list(out.iterdir()), [])
+
+    def test_setup_rejects_inf_files_that_can_disable_native_cancellation(self):
+        spec = (pkg.ROOT / "windows/setup.iss").read_text()
+        initialize = spec.split("function InitializeSetup(): Boolean;", 1)[1].split("procedure CancelButtonClick", 1)[0]
+        self.assertIn("Pos('/nocancel', Lowercase(ParamStr(Index))) = 1", initialize)
+        # Inno also reads NoCancel=yes from /LOADINF, before InitializeSetup runs.
+        self.assertIn("Pos('/loadinf', Lowercase(ParamStr(Index))) = 1", initialize)
+        self.assertIn("Result := False;", initialize)
 
     def test_setup_enforces_destination_and_refusal_before_copying(self):
         spec = (pkg.ROOT / "windows/setup.iss").read_text()

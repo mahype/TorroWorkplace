@@ -51,9 +51,11 @@ var
 begin
   Result := True;
   for Index := 1 to ParamCount do
-    if Pos('/nocancel', Lowercase(ParamStr(Index))) = 1 then begin
+    { Inno also reads NoCancel=yes from a loaded INF; checking /NOCANCEL alone is insufficient. }
+    if (Pos('/nocancel', Lowercase(ParamStr(Index))) = 1) or
+      (Pos('/loadinf', Lowercase(ParamStr(Index))) = 1) then begin
       Result := False;
-      Log('/NOCANCEL is not supported: installer safety requires native cancellation.');
+      Log('/NOCANCEL and /LOADINF are not supported: installer safety requires native cancellation.');
     end;
 end;
 

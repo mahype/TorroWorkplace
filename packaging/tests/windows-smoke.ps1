@@ -16,6 +16,25 @@ function Setup-For($Folder, $Program) {
     if ($files.Count -ne 1) { throw "Expected exactly one Setup for $Program in $Folder" }
     return $files[0].FullName
 }
+function Check-Version($Program) {
+    $prefix = Join-Path $env:TEMP ('torro-version-' + [guid]::NewGuid())
+    $stdout = "$prefix.out"
+    $stderr = "$prefix.err"
+    try {
+        $process = Start-Process (Join-Path $root "$Program.exe") -ArgumentList @('--version') -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        $null = $process.Handle
+        if (-not $process.WaitForExit(30000)) {
+            $process.Kill()
+            throw "Version check timed out: $Program (possible loader dialog or unintended GUI startup)"
+        }
+        $process.Refresh()
+        if ($process.ExitCode -ne 0) { throw "Installed program failed to load: $Program ($($process.ExitCode))" }
+        $version = (Get-Content (Join-Path $root "$Program.version") -Raw).Trim()
+        if ((Get-Content $stdout -Raw).Trim() -ne "$Program $version") { throw "Installed binary and version sidecar disagree: $Program" }
+    } finally {
+        Remove-Item -LiteralPath @($stdout, $stderr) -Force -ErrorAction SilentlyContinue
+    }
+}
 function Check-Payload($Installed) {
     $expected = @{}
     foreach ($app in $apps | Where-Object { $Installed -contains $_.id }) {
@@ -26,6 +45,7 @@ function Check-Payload($Installed) {
         foreach ($file in @("$program.exe", "$program.version", "$program.exe.torro-package.json")) {
             if ((Test-Path (Join-Path $root $file)) -ne $expected.ContainsKey($program)) { throw "Wrong shared-file lifetime: $file" }
         }
+        if ($expected.ContainsKey($program)) { Check-Version $program }
     }
 }
 $data = Join-Path $env:LOCALAPPDATA 'torrotasks/installer-smoke-preserve.txt'
@@ -39,14 +59,22 @@ if ($process.ExitCode -eq 0 -or (Test-Path $root)) { throw 'Disabling safety can
 # Both dependency removal orders; every app is installed, reinstalled and upgraded in each pass.
 foreach ($reverse in @($false, $true)) {
     foreach ($app in $apps) { Run-Installer (Setup-For $Older $app.program) }
-    $beforeLocked = @(Get-ChildItem $root -File | Get-FileHash | Sort-Object Path | ForEach-Object { "$($_.Path):$($_.Hash)" })
+    Check-Payload @($apps | ForEach-Object { $_.id })
+    $beforeLocked = @(Get-ChildItem $root -Recurse -File | Get-FileHash | Sort-Object Path | ForEach-Object { "$($_.Path):$($_.Hash)" })
     $lock = [IO.File]::Open((Join-Path $root 'torroworkplace.exe'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    $unsafeInf = Join-Path $env:TEMP ('torro-nocancel-' + [guid]::NewGuid() + '.inf')
     try {
         $process = Start-Process (Setup-For $Newer 'torrocalendar') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCLOSEAPPLICATIONS') -Wait -PassThru
         if ($process.ExitCode -eq 0) { throw 'Upgrade with unresolved shared-service lock was accepted' }
-    } finally { $lock.Dispose() }
-    $afterLocked = @(Get-ChildItem $root -File | Get-FileHash | Sort-Object Path | ForEach-Object { "$($_.Path):$($_.Hash)" })
-    if (Compare-Object $beforeLocked $afterLocked) { throw 'Locked upgrade changed program, version or marker files' }
+        Set-Content -LiteralPath $unsafeInf -Value @('[Setup]', 'NoCancel=yes') -Encoding ASCII
+        $process = Start-Process (Setup-For $Newer 'torrocalendar') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCLOSEAPPLICATIONS', "/LOADINF=`"$unsafeInf`"") -Wait -PassThru
+        if ($process.ExitCode -eq 0) { throw 'INF disabled native safety cancellation during a locked upgrade' }
+    } finally {
+        $lock.Dispose()
+        Remove-Item -LiteralPath $unsafeInf -Force -ErrorAction SilentlyContinue
+    }
+    $afterLocked = @(Get-ChildItem $root -Recurse -File | Get-FileHash | Sort-Object Path | ForEach-Object { "$($_.Path):$($_.Hash)" })
+    if (Compare-Object $beforeLocked $afterLocked) { throw 'Locked upgrade changed payload or uninstall metadata files' }
     foreach ($app in $apps) { Run-Installer (Setup-For $Newer $app.program) }
     foreach ($app in $apps) { Run-Installer (Setup-For $Newer $app.program) }
     $remaining = @($apps | ForEach-Object { $_.id })
@@ -66,4 +94,4 @@ foreach ($reverse in @($false, $true)) {
         if (-not (Test-Path $data)) { throw 'Personal data removed' }
     }
 }
-Write-Output 'PASS: fixed directory, unresolved-lock abort, all apps, repeat, upgrade, downgrade refusal, both removal orders and shared-file lifetime'
+Write-Output 'PASS: fixed directory, unresolved-lock abort, unsafe INF rejection, all apps load with matching versions, repeat, upgrade, downgrade refusal, both removal orders and shared-file lifetime'

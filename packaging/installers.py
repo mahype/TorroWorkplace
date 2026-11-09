@@ -148,10 +148,14 @@ def linux_config(app, package, target, fmt, ver, binaries, scratch):
     v = native_version(ver, fmt)
     required = ([] if core else ["torroworkplace-bin"]) + ([] if core or main else [p + "-bin" for p in app["requires"]])
     deps = [f"{p} (>= {v}-1)" if fmt == "deb" else f"{p}>={v}-1" if fmt == "archlinux" else f"{p} >= {v}-1" for p in required]
+    # winit loads the X11 helpers at runtime; ELF dependency scanning alone cannot find them.
     runtime = {
-        "deb": ["libc6 (>= 2.35)", "libgcc-s1", "libxkbcommon0", "libwayland-client0", "libegl1", "libvulkan1", "libx11-6"],
-        "rpm": ["glibc >= 2.35", "libgcc", "libxkbcommon", "libwayland-client", "libglvnd-egl", "vulkan-loader", "libX11"],
-        "archlinux": ["glibc>=2.35", "gcc-libs", "libxkbcommon", "wayland", "libglvnd", "vulkan-icd-loader", "libx11"],
+        "deb": ["libc6 (>= 2.35)", "libgcc-s1", "libfontconfig1", "libxkbcommon0", "libxkbcommon-x11-0",
+                "libwayland-client0", "libegl1", "libvulkan1", "libx11-6", "libxcursor1", "libxi6", "libx11-xcb1"],
+        "rpm": ["glibc >= 2.35", "libgcc", "fontconfig", "libxkbcommon", "libxkbcommon-x11", "libwayland-client",
+                "libglvnd-egl", "vulkan-loader", "libX11", "libXcursor", "libXi", "libX11-xcb"],
+        "archlinux": ["glibc>=2.35", "gcc-libs", "fontconfig", "libxkbcommon", "libxkbcommon-x11", "wayland",
+                      "libglvnd", "vulkan-icd-loader", "libx11", "libxcursor", "libxi"],
     }
     contents = []
 
@@ -218,8 +222,9 @@ def windows_payload(app):
 def build_windows(folder, out, tag):
     source_plan(folder, tag)
     tool = os.environ.get("ISCC", "ISCC.exe")
-    reported = subprocess.run([tool, "/?"], capture_output=True, text=True, check=False)
-    if "7.1.1" not in reported.stdout + reported.stderr:
+    # Inno 7's help identifies only the major version; query the engine explicitly.
+    reported = subprocess.run([tool, "--version"], capture_output=True, text=True, check=False)
+    if reported.returncode != 0 or reported.stdout.strip() != "7.1.1":
         raise ValueError("Inno Setup 7.1.1 is required")
     ver = version(tag)
     base, _, rc = ver.partition("-rc.")
