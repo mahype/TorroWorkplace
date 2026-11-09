@@ -114,17 +114,26 @@ impl Readings {
     /// The next mail to read out, waiting until there is one; marked as being read out until
     /// [`Readings::finish`]. Taken from the queue and marked under the queue's lock, so
     /// [`Readings::claim`] always sees it in one of the two.
+    ///
+    /// A mail read out by hand right now ([`Readings::claim`]) stays in the queue until that ends.
     pub async fn next(&self) -> (String, String) {
         loop {
             let arrived = self.inner.arrived.notified();
+            let finished = self.inner.finished.notified();
             {
                 let mut queue = self.inner.queue.lock().unwrap_or_else(PoisonError::into_inner);
-                if let Some(key) = queue.pop_front() {
-                    self.inner.running.lock().unwrap_or_else(PoisonError::into_inner).insert(key.clone());
+                let mut running = self.inner.running.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(at) = queue.iter().position(|key| !running.contains(key))
+                    && let Some(key) = queue.remove(at)
+                {
+                    running.insert(key.clone());
                     return key;
                 }
             }
-            arrived.await;
+            tokio::select! {
+                () = arrived => {}
+                () = finished => {}
+            }
         }
     }
 
@@ -336,5 +345,13 @@ mod tests {
         assert_eq!(readings.next().await.1, "m:2", "the same mail never twice");
         readings.finish(&claimed);
         readings.wait_for("mail:a@x", "m:9").await;
+        // Read by hand: queued again meanwhile, the reader leaves it until the reading ends.
+        let by_hand = readings.claim("mail:a@x", "m:4").await;
+        readings.enqueue("mail:a@x", "m:4");
+        readings.enqueue("mail:a@x", "m:5");
+        assert_eq!(readings.next().await.1, "m:5", "not the mail read by hand");
+        readings.finish(&("mail:a@x".to_string(), "m:5".to_string()));
+        readings.finish(&by_hand);
+        assert_eq!(readings.next().await.1, "m:4", "once the reading by hand ended");
     }
 }

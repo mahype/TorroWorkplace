@@ -10960,10 +10960,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .iter()
             .filter(|suggestion| suggestion.state == SuggestionState::Reading)
             .map(|suggestion| suggestion.kind.clone())
-            .filter(|kind| self.asked.insert((id.to_owned(), kind.clone())))
             .collect();
         self.suggestions = Some((id.to_owned(), suggestions));
         let Some(account) = self.account_of(id, None) else { return Task::none() };
+        // Counted as asked only once it goes out (review of #603).
+        let reading: Vec<String> =
+            reading.into_iter().filter(|kind| self.asked.insert((id.to_owned(), kind.clone()))).collect();
         let asks: Vec<Task<Message>> =
             reading.into_iter().map(|kind| self.extract(account.clone(), id.to_owned(), kind)).collect();
         Task::batch(asks)

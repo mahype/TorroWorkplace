@@ -1476,6 +1476,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The mail names nothing to fill in.", "Die Mail nennt nichts zum Ausfüllen."),
     ("Couldn't change the suggestion.", "Der Vorschlag konnte nicht geändert werden."),
     ("an unknown kind", "eine unbekannte Art"),
+    (
+        "The AI took too long to read the mail. Try again.",
+        "Die KI hat zu lange zum Lesen der Mail gebraucht. Versuche es noch einmal.",
+    ),
     ("Look for \"{kind}\" in new mail", "In neuen Mails nach „{kind}“ suchen"),
     ("Stop looking for \"{kind}\" in new mail", "In neuen Mails nicht mehr nach „{kind}“ suchen"),
     (

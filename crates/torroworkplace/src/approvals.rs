@@ -1665,7 +1665,8 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                     &[("title", &title), ("list", &list), ("subject", &subject)],
                 ),
             };
-            // The note a client sends along is what will be written (issue #603): shown whole.
+            // The note a client sends along is what will be written (issue #603): its start is shown, as
+            // for an entry's task.
             with_extras(made, None, notes.as_deref())
         }
         // Issue #603: as for a task, the calendar by the name the core knows and the mail by its subject.

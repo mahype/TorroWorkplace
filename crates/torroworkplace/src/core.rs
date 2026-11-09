@@ -7057,17 +7057,17 @@ impl Core {
         let Some(def) = crate::actions::kind(kind) else {
             return refusal("not-found", format!("no kind of action {kind:?}"));
         };
-        let claimed = self.readings.claim(account, id).await;
-        // What the person does while the model reads stands: the row is written only while it still
-        // has the state it had now.
+        // What the person does meanwhile stands – while this waits for a reading under way and while
+        // the model reads: the row is written only while it still has the state it had when asked.
         let before = match self.mail.suggestion_state(account, id, kind).await {
             Ok(before) => before,
-            Err(err) => {
-                self.readings.finish(&claimed);
-                return err.response();
-            }
+            Err(err) => return err.response(),
         };
-        let read = self.read_action(account, id, def, lists).await;
+        let claimed = self.readings.claim(account, id).await;
+        let read = match tokio::time::timeout(READING_TIMEOUT, self.read_action(account, id, def, lists)).await {
+            Ok(read) => read,
+            Err(_) => Err(refusal("busy", tr("The AI took too long to read the mail. Try again.").to_string())),
+        };
         self.readings.finish(&claimed);
         let mut read = match read {
             Ok(read) => read,

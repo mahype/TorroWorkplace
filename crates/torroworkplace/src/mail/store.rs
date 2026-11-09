@@ -1825,7 +1825,16 @@ impl MailStore {
         let sql = format!(
             "UPDATE suggestions SET state = ?3, updated = ?4 WHERE message = ?1 AND kind = ?2 AND state IN {OPEN_SUGGESTIONS}"
         );
-        Ok(self.db.execute(&sql, params![seq, kind, state, now.timestamp()])? > 0)
+        if self.db.execute(&sql, params![seq, kind, state, now.timestamp()])? > 0 {
+            return Ok(true);
+        }
+        // None open: nothing to close – but a reading still under way that began without a row must
+        // not open one afterwards, so the closing is kept where there is no row at all.
+        self.db.execute(
+            "INSERT OR IGNORE INTO suggestions (message, kind, state, updated) VALUES (?1, ?2, ?3, ?4)",
+            params![seq, kind, state, now.timestamp()],
+        )?;
+        Ok(false)
     }
 
     /// The row number of the message `id`; `None` when the store has no such message.
