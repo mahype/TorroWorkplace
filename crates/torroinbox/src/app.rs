@@ -823,6 +823,23 @@ pub enum Undo {
     /// the rule `rule` – only one the call made –, opens the entries `reopen` again and moves the
     /// entries `moved` back to "For me" (`inbox.set_item_lane` without `remember`).
     Muted { rule: Option<String>, reopen: Vec<String>, moved: Vec<String> },
+    /// Takes "Dismiss" on a suggestion's card back (issue #603): the card comes back. The dismissal
+    /// goes to the core only once its undo is over ([`App::send_dismissals`]), so nothing is undone
+    /// there.
+    Suggestion { id: String, kind: String },
+}
+
+/// A suggestion dismissed on its card and not sent yet (issue #603, [`Undo::Suggestion`]): sent with
+/// `mail.dismiss_suggestion` once [`UNDO_FOR`] is over; until then "Undo" brings the card back.
+#[derive(Debug, Clone)]
+struct Dismissing {
+    account: String,
+    id: String,
+    kind: String,
+    /// When "Dismiss" was pressed.
+    at: Instant,
+    /// The card as it was, to bring back.
+    held: Option<torro_ipc::actions::Suggestion>,
 }
 
 impl Undo {
@@ -3215,6 +3232,8 @@ pub struct App<S> {
     /// What the last save accepts once made, for the tests ([`Message::Saved`]).
     #[cfg(test)]
     accept_on_save: Option<AcceptOnSave>,
+    /// Suggestions dismissed on their cards whose undo is not over yet (issue #603).
+    dismissing: Vec<Dismissing>,
     /// The list a suggestion named while the dialog's lists were not in yet (issue #603).
     wanted_list: Option<String>,
     /// The mail of `--message` still to show ([`Launch::message`]); taken once the first entries are
@@ -4670,6 +4689,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             failed: HashSet::new(),
             #[cfg(test)]
             accept_on_save: None,
+            dismissing: Vec::new(),
             wanted_list: None,
             start_mail: launch.message.clone(),
             pinned_mail: None,
@@ -4849,7 +4869,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 subscriptions.push(widgets::undo_key().map(|()| Message::Undo));
             }
         }
-        if self.hint.is_some() {
+        if self.hint.is_some() || !self.dismissing.is_empty() {
             subscriptions.push(iced::time::every(HINT_TICK).map(Message::HintTick));
         }
         if self.holds_round() {
@@ -5228,6 +5248,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 {
                     self.hint = None;
                 }
+                return self.send_dismissals(now);
             }
             // While a dropdown is open its menu has the keys (issue #554): Enter must not create the
             // task of the dialog under it.
@@ -10997,14 +11018,59 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// "Dismiss" on a suggestion's card (issue #603): the card goes at once, `mail.dismiss_suggestion`
     /// takes it off in the core; nothing is made.
     fn dismiss_suggestion(&mut self, account: String, id: String, kind: String) -> Task<Message> {
+        let held = self
+            .suggestions
+            .as_ref()
+            .filter(|(held, _)| *held == id)
+            .and_then(|(_, suggestions)| suggestions.iter().find(|suggestion| suggestion.kind == kind).cloned());
         self.forget_suggestion(&id, &kind);
-        #[cfg(test)]
-        self.sent.push(Sent::DismissSuggestion(id.clone(), kind.clone()));
-        let inbox = self.inbox.clone();
-        Task::perform(
-            async move { inbox.dismiss_suggestion(account, id, kind).await.map_err(|err| err.to_string()) },
-            Message::SuggestionTaken,
-        )
+        // Sent once its undo is over ([`App::send_dismissals`]); a dismissal of the same card waiting
+        // already is the same one.
+        self.dismissing.retain(|waiting| !(waiting.id == id && waiting.kind == kind));
+        self.dismissing.push(Dismissing { account, id: id.clone(), kind: kind.clone(), at: Instant::now(), held });
+        self.hint = Some(Hint {
+            text: tr("Suggestion dismissed").to_owned(),
+            undo: Some(Undo::Suggestion { id, kind }),
+            shown: Instant::now(),
+            folder: None,
+        });
+        Task::none()
+    }
+
+    /// Sends the dismissals whose undo is over at `now` (issue #603): `mail.dismiss_suggestion` for each.
+    fn send_dismissals(&mut self, now: Instant) -> Task<Message> {
+        let (due, waiting): (Vec<Dismissing>, Vec<Dismissing>) = std::mem::take(&mut self.dismissing)
+            .into_iter()
+            .partition(|held| now.saturating_duration_since(held.at) >= UNDO_FOR);
+        self.dismissing = waiting;
+        let sends = due.into_iter().map(|Dismissing { account, id, kind, .. }| {
+            #[cfg(test)]
+            self.sent.push(Sent::DismissSuggestion(id.clone(), kind.clone()));
+            let inbox = self.inbox.clone();
+            Task::perform(
+                async move { inbox.dismiss_suggestion(account, id, kind).await.map_err(|err| err.to_string()) },
+                Message::SuggestionTaken,
+            )
+        });
+        Task::batch(sends.collect::<Vec<_>>())
+    }
+
+    /// "Undo" of a dismissed card (issue #603): nothing went to the core yet; the card comes back.
+    fn bring_back_suggestion(&mut self, id: &str, kind: &str) {
+        let Some(at) = self.dismissing.iter().position(|held| held.id == id && held.kind == kind) else { return };
+        let held = self.dismissing.remove(at);
+        if let (Some(card), Some((open, suggestions))) = (held.held, self.suggestions.as_mut())
+            && open == id
+            && !suggestions.iter().any(|suggestion| suggestion.kind == kind)
+        {
+            suggestions.push(card);
+        }
+        for message in self.messages.iter_mut().filter(|message| message.id == id) {
+            if !message.suggested.iter().any(|held| held == kind) {
+                message.suggested.push(kind.to_string());
+                message.suggested.sort();
+            }
+        }
     }
 
     /// The suggestion the open dialog accepts once it saved: the card it was opened from, or the one
@@ -11549,6 +11615,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     focus.put_back(id.clone(), place, &text, since);
                 }
                 Task::batch([self.set_mail_pile(vec![id], Some(MailPile::ReplyLater), since, None), focus_top()])
+            }
+            Undo::Suggestion { id, kind } => {
+                self.bring_back_suggestion(&id, &kind);
+                Task::none()
             }
             Undo::Muted { rule, reopen, moved } => {
                 #[cfg(test)]
@@ -25705,8 +25775,14 @@ mod tests {
         let _ = app.update(Message::Saved(accept, Box::new(answer)));
         assert!(app.sent.contains(&Sent::AcceptSuggestion(id.clone(), "event".into())), "accepted after saving");
         assert_eq!(cards(&app).iter().map(|card| card.kind.clone()).collect::<Vec<_>>(), ["task"], "its card is gone");
+        let _ = app.update(Message::DismissSuggestion(account.clone(), id.clone(), "task".into()));
+        assert!(cards(&app).is_empty(), "gone at once");
+        assert!(!app.sent.contains(&Sent::DismissSuggestion(id.clone(), "task".into())), "not sent during its undo");
+        let _ = app.update(Message::Undo);
+        assert_eq!(cards(&app).iter().map(|card| card.kind.clone()).collect::<Vec<_>>(), ["task"], "back");
         let _ = app.update(Message::DismissSuggestion(account, id.clone(), "task".into()));
-        assert_eq!(app.sent.last(), Some(&Sent::DismissSuggestion(id.clone(), "task".into())));
+        let _ = app.update(Message::HintTick(Instant::now() + UNDO_FOR));
+        assert_eq!(app.sent.last(), Some(&Sent::DismissSuggestion(id.clone(), "task".into())), "sent after the undo");
         assert!(cards(&app).is_empty());
         let _ = app.view();
     }

@@ -98,6 +98,10 @@ Regeln der Abläufe (#556).
 `mail.accept_suggestion` legt nichts an, es markiert nur: Erst den Termin oder die Aufgabe anlegen,
 dann annehmen.
 
+„Dismiss“ auf der Karte lässt sie sofort verschwinden; ein Hinweis bietet „Undo“ an. Erst wenn der
+Hinweis abgelaufen ist, geht `mail.dismiss_suggestion` an den Kern – so braucht das Rückgängigmachen
+keinen eigenen Befehl. Wird das Fenster vorher geschlossen, bleibt der Vorschlag stehen.
+
 ## Vorschläge und Abläufe
 
 Vorschläge und die Abläufe aus #556 bleiben vorerst getrennt. Ein eigenes Issue „Aktionen in
