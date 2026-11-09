@@ -899,7 +899,7 @@ fn stream_png(image: &image::DynamicImage, output: &mut impl std::io::Write) -> 
         for row in image.as_bytes().chunks_exact(row_bytes) {
             let row = if sixteen {
                 endian.clear();
-                for sample in row.chunks_exact(2) {
+                for sample in row.as_chunks::<2>().0 {
                     endian.extend_from_slice(&u16::from_ne_bytes([sample[0], sample[1]]).to_be_bytes());
                 }
                 endian.as_slice()
@@ -1097,7 +1097,7 @@ mod tests {
         let exif = b"II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
         writer.write_chunk(png::chunk::ChunkType(*b"eXIf"), exif).expect("orientation");
         let samples: Vec<_> =
-            source.as_bytes().chunks_exact(2).flat_map(|s| u16::from_ne_bytes([s[0], s[1]]).to_be_bytes()).collect();
+            source.as_bytes().as_chunks::<2>().0.iter().flat_map(|s| u16::from_ne_bytes(*s).to_be_bytes()).collect();
         writer.write_image_data(&samples).expect("pixels");
         writer.finish().expect("PNG");
         let frame = 17 * 1801 * 8;

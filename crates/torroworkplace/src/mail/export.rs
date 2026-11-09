@@ -348,7 +348,7 @@ impl Sheet {
                 let wanted = (end - start) as usize * row_bytes;
                 let before = rgb.len();
                 if painted.width == self.width {
-                    rgb.extend(painted.rgba.chunks_exact(4).flat_map(|pixel| [pixel[0], pixel[1], pixel[2]]));
+                    rgb.extend(painted.rgba.as_chunks::<4>().0.iter().flat_map(|pixel| [pixel[0], pixel[1], pixel[2]]));
                 }
                 rgb.resize(before + wanted, 255);
             }
@@ -402,7 +402,7 @@ fn cut(rgb: &[u8], width: u32, rows: u32) -> u32 {
     let lowest = rows - ((rows as f32 * CUT_ROOM) as u32).min(rows - 1);
     for row in (lowest..rows).rev() {
         let line = &rgb[row as usize * row_bytes..(row as usize + 1) * row_bytes];
-        if line.chunks_exact(3).all(|pixel| pixel == &line[..3]) {
+        if line.as_chunks::<3>().0.iter().all(|pixel| pixel[..] == line[..3]) {
             return row + 1;
         }
     }
