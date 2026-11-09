@@ -16,9 +16,17 @@ pub struct Registry {
     dir: PathBuf,
 }
 
-/// An owned OS lock, also safe to keep across asynchronous work. Closing releases the lock.
+/// An owned OS lock, also safe to keep across asynchronous work. Dropping explicitly unlocks it.
 pub struct Guard {
-    _file: File,
+    file: File,
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        // A concurrent fork may retain this file description until exec. Closing only our copy
+        // would leave a transient lock behind after the protected operation has already finished.
+        let _ = self.file.unlock();
+    }
 }
 
 #[derive(Debug)]
@@ -74,7 +82,7 @@ impl Registry {
             std::fs::TryLockError::WouldBlock => Error::Busy,
             _ => Error::Unreadable,
         })?;
-        Ok(Guard { _file: file })
+        Ok(Guard { file })
     }
 
     /// Fresh reservations. Caller holds a guard when acting on the result.
@@ -151,6 +159,23 @@ mod tests {
         assert!(registry.read().expect("fresh").1.contains(&dir.path().join("secret")));
         fs::write(registry.dir.join("protected_paths.json"), "broken").expect("write");
         assert!(matches!(registry.read(), Err(Error::Unreadable)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_a_guard_unlocks_even_while_a_spawn_inherits_its_file_description() {
+        let dir = tempfile::tempdir().expect("temp");
+        let registry = Registry::new(dir.path().join("config"));
+        for exclusive in [false, true] {
+            let guard = registry.lock(exclusive).expect("locked");
+            // A fork temporarily shares this open file description until exec closes it.
+            // Retaining a duplicate makes that window deterministic without unsafe fork calls.
+            let inherited = guard.file.try_clone().expect("inherited file description");
+            drop(guard);
+            let next = registry.lock(true).expect("released guard must not leave a transient busy lock");
+            drop(next);
+            drop(inherited);
+        }
     }
 
     #[test]
