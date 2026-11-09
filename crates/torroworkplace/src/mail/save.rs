@@ -2452,7 +2452,15 @@ pub(crate) mod tests {
         );
         let bodies = [text.as_str(), mixed.as_str(), related];
         let uids: Vec<_> = bodies.iter().map(|raw| server.add("INBOX", raw, &[])).collect();
-        let service = synced(dir.path(), &server).await;
+        let secrets = MemoryTokens::default();
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&account, PASSWORD)]);
+        let service = service_in(dir.path(), &secrets);
+        // This test deliberately expunges the server copy but retains its local mapping.
+        // An IDLE worker would correctly remove that mapping and race the offline-export assertion.
+        service.pause_from_start(true);
+        service.reload().await;
+        service.sync_all(Reach::Suite).await.expect("synced without background workers");
         let store = service.stores(Reach::Suite).await.remove(0).1;
         let downloads = dir.path().join("exports");
         fs::create_dir(&downloads).expect("folder");
