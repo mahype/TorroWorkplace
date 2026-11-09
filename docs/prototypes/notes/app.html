@@ -50,7 +50,7 @@ const NOTES=[
 
 Contract draft: [Acme contract v3.pdf](.attachments.4711/Acme%20contract%20v3.pdf)
 
-Original request: [Re: Kickoff next week](torro:mail:anna%40cloud.example:%3Ckickoff-8812%40acme.example%3E)
+Original request: [Re: Kickoff next week](torro:mail:anna%40cloud.example:kickoff-8812%40acme.example)
 
 Their chart (not loaded): ![Usage chart](//images.acme.example/usage.png)`},
  {id:3,acc:"a",cat:"Work",title:"Ideas for the offsite",date:"Yesterday",day:"Yesterday",md:
@@ -98,7 +98,7 @@ Core hours are 10:00 to 15:00.
  {id:11,acc:"a",cat:"",title:"Saved from Inbox: Invoice March",date:"Oct 27",day:"Earlier",md:
 `> Please find attached the invoice for March.
 
-From [Invoice March – Acme GmbH](torro:mail:anna%40cloud.example:%3C8790%40acme.example%3E)`},
+From [Invoice March – Acme GmbH](torro:mail:anna%40cloud.example:8790%40acme.example)`},
  {id:12,acc:"b",cat:"Shared/Onboarding",title:"First week",date:"Oct 20",day:"Earlier",md:`- [ ] Laptop\n- [ ] Accounts`},
 ];
 const CATS={a:[["",""],["Work","Work"],["Work/Client A","Client A"],["Work/Meetings","Meetings"],["Personal","Personal"],["Recipes","Recipes"]],b:[["Shared","Shared"],["Shared/Onboarding","Onboarding"]]};
@@ -193,7 +193,7 @@ function listCol(cls){
 function sidebar(){
   const nav=(ic,t,n,on)=>`<div class="nav ${on?"on":""}">${I(ic)}<span class="grow">${t}</span>${n!==""?`<span class="n">${n}</span>`:""}</div>`;
   const tree=acc=>CATS[acc].map(([p,l])=>{const child=p.includes("/");
-    const ic=p===""?"inbox":acc==="b"?"lock":"folder";
+    const ic=p===""?"inbox":"folder";
     return `<div class="nav ${child?"child":""}">${I(ic)}<span class="grow">${p===""?"No category":l}</span><span class="n">${count(acc,p)}</span></div>`}).join("");
   const nn=notes.length;
   return `<div class="side"><div class="top"><button class="ib" title="Collapse sidebar">${I("panel-left")}</button></div>
@@ -201,13 +201,13 @@ function sidebar(){
   ${nav("file-text","All notes",nn,true)}${nav("star","Favorites",nn?3:0)}
   ${nn?`<div class="grp">${ACC.a}${I("chevron-down")}</div>${tree("a")}
   <div class="grp">${ACC.b}${I("chevron-down")}</div>${tree("b")}
-  <div class="grp">Tags${I("chevron-down")}</div>${nav("hash","offsite",2)}${nav("hash","ideas",1)}${nav("hash","recipe",1)}`:""}
+  <div class="grp">Tags${I("chevron-down")}</div>${nav("hash","offsite",2)}${nav("hash","ideas",1)}${nav("hash","recipe",1)}${nav("hash","books",1)}`:""}
   <div class="spacer"></div><div class="foot">${state==="offline"?I("cloud-off","s14")+"Offline · 1 change waiting":I("cloud","s14")+"Synced 2 min ago"}</div></div>`;
 }
 function rail(){
   const b=(ic,t,on)=>`<button class="ib ${on?"on":""}" title="${t}">${I(ic)}</button>`;
   return `<div class="rail"><div class="top">${b("panel-left","Expand sidebar")}</div>${b("search","Search")}${b("square-pen","New note")}<div class="sep"></div>
-  ${b("file-text","All notes",true)}${b("star","Favorites")}<div class="sep"></div>${b("inbox","No category")}${b("folder","Work")}${b("folder","Personal")}${b("folder","Recipes")}${b("lock","Shared")}<div class="spacer"></div>${state==="offline"?b("cloud-off","Offline"):b("cloud","Synced")}</div>`;
+  ${b("file-text","All notes",true)}${b("star","Favorites")}<div class="sep"></div>${b("inbox","No category")}${b("folder","Work")}${b("folder","Personal")}${b("folder","Recipes")}${b("folder","Shared")}<div class="spacer"></div>${state==="offline"?b("cloud-off","Offline"):b("cloud","Synced")}</div>`;
 }
 function noteCol(){
   const narrow=size==="s";
@@ -217,7 +217,7 @@ function noteCol(){
   const toggle=state==="live"?`<button class="ib" title="Show Markdown source (Ctrl E)">${I("code","s14")}</button>`:
     `<span class="seg" title="Ctrl E"${n.ro?' style="opacity:.4"':""}><span class="${mode==="edit"?"on":""}">Edit</span><span class="${mode==="preview"?"on":""}">Preview</span></span>`;
   const back=narrow?`<button class="ib" title="All notes">${I("chevron-left")}</button>`:"";
-  const head=`<div class="nhead">${back}<span class="crumb ell">${narrow?"":`${I(n.ro?"lock":"folder","s14")}<span class="ell">${esc(catLabel(n.cat))}</span>${I("chevron-right","s12")}`}<b class="ell">${esc(n.title)}</b></span><span class="grow"></span>
+  const head=`<div class="nhead">${back}<span class="crumb ell">${narrow||size==="m"?"":`${I(n.ro?"lock":"folder","s14")}<span class="ell">${esc(catLabel(n.cat))}</span>${I("chevron-right","s12")}`}<b class="ell">${esc(n.title)}</b></span><span class="grow"></span>
    ${state==="conflict"?"":toggle}<button class="ib" title="${n.fav?"Remove from favorites":"Add to favorites"}"><span class="${n.fav?"star":""}">${I("star","s14")}</span></button><button class="ib" title="More">${I("ellipsis")}</button><button class="ib set" title="Settings">${I("sliders-horizontal")}</button></div>`;
   let band="";
   if(state==="offline") band=`<div class="band">${I("cloud-off")}<span class="grow"><b>Saved on this device, not yet on the server.</b> <span class="c-2">Syncs when Nextcloud is reachable.</span></span><button class="btn">${I("refresh-cw","s14")}Try now</button></div>`;
