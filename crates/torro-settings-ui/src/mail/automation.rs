@@ -1777,7 +1777,7 @@ fn template_description(t: &torro_ipc::workflows::WorkflowTemplate) -> String {
     match t.id.as_str() {
         "direct_pdf" => tr("Uses one unambiguous direct PDF link. The exact domain is taken from the example mail, without downloading.").into(),
         "stripe_invoice" => tr("Retrieves the original Stripe invoice PDF, not a receipt. No payment, login or browser actions.").into(),
-        "paddle_setapp_invoice_copy" => tr("Creates a marked PDF copy of supported Paddle invoice HTML. No supplier-layout imitation, external resources or login.").into(),
+        "paddle_setapp_invoice_copy" => tr("Creates a marked PDF copy only of supported Paddle HTML without stylesheets or scripts. Current provider pages using external resources are unsupported; no resource loading or login.").into(),
         _ => t.description.clone(),
     }
 }
@@ -2121,7 +2121,9 @@ pub fn stage(state: &mut State, name: &str, data: &Data) {
             state.template_mode = name == "template";
             loaded(state, data);
             if name == "template" {
-                state.menus.update(DropdownEvent::Toggle(Menu::Template));
+                // Keep the currently restricted provider visible in the screenshot contract, not
+                // only the happy-path direct-PDF default. This changes demo staging, not setup defaults.
+                state.template = Some("paddle_setapp_invoice_copy".into());
             }
         }
         "test" => {
@@ -2610,6 +2612,25 @@ mod tests {
         assert!(!w.saved && !w.tested && !w.authorized && !w.enabled);
         assert!(backend.rules.is_empty());
         assert_eq!(backend.runs.len(), 1, "only the pre-existing demo run; copying ran nothing");
+    }
+
+    #[test]
+    fn paddle_template_discloses_the_actual_provider_resource_restriction() {
+        let data = Data { workflow_templates: demo_templates(), ..Data::default() };
+        let paddle = data
+            .workflow_templates
+            .iter()
+            .find(|template| template.id == "paddle_setapp_invoice_copy")
+            .expect("Paddle template");
+        assert_eq!(
+            template_description(paddle),
+            tr(
+                "Creates a marked PDF copy only of supported Paddle HTML without stylesheets or scripts. Current provider pages using external resources are unsupported; no resource loading or login."
+            )
+        );
+        let mut state = State::default();
+        stage(&mut state, "template", &data);
+        assert_eq!(state.template.as_deref(), Some("paddle_setapp_invoice_copy"));
     }
 
     #[test]
