@@ -105,6 +105,16 @@ Deaktivierung und Widerruf erhöhen die Ausführungsepoche: Sie stoppen auch ber
 manuelle Einmalaufträge, nicht nur künftige automatische Jobs. Ein bestehender Einmalgrant darf
 diese Grenze nicht überleben.
 
+Freigaben zeigen die dienstseitig ermittelte Mail (Kennung, Betreff, Absender und Datum),
+Ablauffassung und Regelkategorie mit ihrem stabilen Schlüssel; ohne Einschränkung steht ausdrücklich
+„Any category“/„Beliebige Kategorie“. Auch im Notification Hub bleiben Zusammenfassung und Details im
+Eintrag zugänglich. Überschreiten sie dessen Textgrenze, gibt es dort keine direkten Allow-/Deny-
+Aktionen; entschieden wird in der Steuerzentrale mit vollständigen Angaben.
+Der Job bewahrt zusätzlich einen Hash der freigegebenen Mailmerkmale. Diese werden vor dem Abruf
+und nach dem Download anhand genau des für die Ablage verwendeten Headerstands geprüft. Änderungen
+bei unveränderter Rohmail pausieren den Lauf, statt unbestätigte Pfadbestandteile zu verwenden.
+Ältere wartende Jobs ohne diese Bindung pausieren ebenfalls und benötigen eine neue Bestätigung.
+
 Entwürfe, Bedingungen und Ergebnisse sind nicht vertrauenswürdige, aus Mail abgeleitete Daten. Die
 Mail-Datenregel des Assistenten gilt auch für Antworten und Gesprächsverlauf von `workflows.*`;
 ausgenommen sind nur die beiden öffentlichen Vorlagenabfragen. Ein im Gespräch ausgeschalteter

@@ -42,6 +42,9 @@ struct RunRecord {
     one_time: bool,
     #[serde(default)]
     verified_sender: Option<String>,
+    /// Exact source metadata approved at enqueue. Older queued records fail closed.
+    #[serde(default)]
+    mail_header_hash: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -72,6 +75,13 @@ fn raw_hash(raw: &[u8]) -> String {
         }
     }
     hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn mail_header_hash(summary: &torro_mail::MessageSummary) -> Result<String, Error> {
+    // Keep name and address separate: their presentation can be identical while path inputs differ.
+    let bytes = serde_json::to_vec(&(&summary.id, &summary.subject, &summary.from, summary.date))
+        .map_err(|_| Error::Blocked)?;
+    Ok(digest(&bytes))
 }
 
 impl Service {
@@ -157,6 +167,9 @@ impl Service {
         let mut binding = serde_json::to_vec(&(request, scope, &rule)).map_err(|_| Error::Invalid)?;
         if let Some(record) = record {
             pinned(&record, record.workflow.revision)?;
+            if let Request::RunWorkflow { revision, .. } = request {
+                pinned(&record, *revision)?;
+            }
             let message = match request {
                 Request::RunWorkflow { mail, .. } => mail.as_str(),
                 _ => record.workflow.spec.mail.as_str(),
@@ -172,6 +185,7 @@ impl Service {
                 .map_err(|_| Error::Blocked)?
                 .ok_or(Error::NotFound)?;
             facts.name = Some(record.workflow.spec.name.clone());
+            facts.revision = Some(record.workflow.revision);
             facts.account = Some(record.workflow.account.clone());
             facts.target = Some(target.spec.name);
             facts.hosts = record.workflow.spec.package.hosts.clone();
@@ -182,6 +196,9 @@ impl Service {
                 let raw = self.original(mail, scope, clients, message).await?;
                 let hash = raw_hash(&raw);
                 binding.extend(hash.as_bytes());
+                let (shown, source_hash) = self.approval_mail(mail, scope, clients, message).await?;
+                binding.extend(serde_json::to_vec(&(&shown, &source_hash)).map_err(|_| Error::Blocked)?);
+                facts.mail = Some(Box::new(shown));
                 let key = dedup_key(&account, &hash, &record.workflow.id, &record.workflow.spec.save_target)?;
                 let prior = self.store.view(|tx| prior_dedup(tx, &key))?;
                 binding.extend(serde_json::to_vec(&(&key, prior)).map_err(|_| Error::Blocked)?);
@@ -194,8 +211,53 @@ impl Service {
         if let Some(spec) = rule_spec {
             facts.rule_query = Some(spec.query.clone());
             facts.rule_trigger = Some(spec.trigger);
+            facts.rule_category = spec.category;
         }
         Ok((digest(&binding), facts))
+    }
+
+    async fn approval_mail(
+        &self,
+        mail: &MailService,
+        scope: &Scope,
+        clients: &Clients,
+        message: &str,
+    ) -> Result<(crate::approvals::WorkflowMailFacts, String), Error> {
+        let rights = scope.current(clients)?;
+        let stores = mail.stores(rights.as_ref().map_or(Reach::Suite, Reach::Client)).await;
+        let located = read::locate(&stores, message).await.map_err(|_| Error::NotFound)?;
+        if !security::reads(rights.as_ref(), &located.account) {
+            return Err(Error::NotFound);
+        }
+        let id = message.to_string();
+        let summary = located
+            .store
+            .run(move |store| store.summary(&id))
+            .await
+            .map_err(|_| Error::Blocked)?
+            .ok_or(Error::NotFound)?;
+        let current = scope.current(clients)?;
+        if !security::reads(current.as_ref(), &located.account) {
+            return Err(Error::Forbidden);
+        }
+        let sender = summary
+            .from
+            .as_ref()
+            .map(|sender| match &sender.name {
+                Some(name) => format!("{name} <{}>", sender.address),
+                None => sender.address.clone(),
+            })
+            .unwrap_or_default();
+        let source_hash = mail_header_hash(&summary)?;
+        Ok((
+            crate::approvals::WorkflowMailFacts {
+                id: summary.id,
+                subject: summary.subject,
+                sender,
+                date: summary.date.to_rfc3339(),
+            },
+            source_hash,
+        ))
     }
 
     pub(crate) async fn answer_approved(
@@ -293,6 +355,8 @@ impl Service {
             serde_json::to_vec(&(&request, scope, Option::<&super::RuleRecord>::None)).map_err(|_| Error::Blocked)?;
         approval_base.extend(serde_json::to_vec(&(&workflow, &fingerprint)).map_err(|_| Error::Blocked)?);
         approval_base.extend(hash.as_bytes());
+        let (shown, source_hash) = self.approval_mail(mail, scope, clients, message).await?;
+        approval_base.extend(serde_json::to_vec(&(&shown, &source_hash)).map_err(|_| Error::Blocked)?);
         let now = scope.current(clients)?;
         if now.as_ref().is_some_and(|rights| {
             !rights.allows_request(&request)
@@ -331,7 +395,7 @@ impl Service {
                 target_fingerprint: fingerprint, raw_hash: hash, dedup: dedup.clone(), due: Utc::now(), reservation: None,
                 execution_epoch: workflow.execution_epoch,
                 rule_binding: event.map(|(_, rule)| (rule.rule.id.clone(), rule.rule.revision, rule.state_revision)),
-                event: event.map(|(id, _)| id.to_string()), one_time, verified_sender };
+                event: event.map(|(id, _)| id.to_string()), one_time, verified_sender, mail_header_hash: Some(source_hash) };
             put_run(tx, &record, "queued")?;
             store::put(tx, "dedup", &dedup, record.scope.owner(), &account, "", &Dedup { run: run.id.clone(), generation })?;
             Ok(run)
@@ -592,6 +656,7 @@ impl Service {
                         event: Some(event.id.clone()),
                         one_time: false,
                         verified_sender: None,
+                        mail_header_hash: None,
                     };
                     let too_old =
                         event.received_at.is_some_and(|received| received < Utc::now() - chrono::Duration::days(7));
@@ -900,6 +965,11 @@ impl Service {
         if raw_hash(&raw) != job.raw_hash {
             return Err(failure(RunReason::Changed));
         }
+        let (_, source_hash) =
+            self.approval_mail(mail, &job.scope, clients, &job.run.mail).await.map_err(failed_permission)?;
+        if job.mail_header_hash.as_ref() != Some(&source_hash) {
+            return Err(failure(RunReason::Changed));
+        }
         if job.rule_binding.is_some() && job.verified_sender.is_none() {
             return Err(failure(RunReason::SenderUnverified));
         }
@@ -912,6 +982,11 @@ impl Service {
         let stores = mail.stores(rights.as_ref().map_or(Reach::Suite, Reach::Client)).await;
         let located = read::locate(&stores, &job.run.mail).await.map_err(|_| failure(RunReason::NotFound))?;
         let summary = read::stored_message(&located).await.map_err(|_| failure(RunReason::NotFound))?.summary;
+        // Compare the exact snapshot used below, after the awaited download. A later sync cannot
+        // change these local path inputs; no unapproved headers enter the file reservation.
+        if job.mail_header_hash.as_ref() != Some(&mail_header_hash(&summary).map_err(failed_permission)?) {
+            return Err(failure(RunReason::Changed));
+        }
         let target = mail
             .save_targets()
             .get(&job.run.save_target)
@@ -2539,5 +2614,300 @@ mod tests {
         assert!(blocks_reservation(&uncertain), "uncertain paths stay reserved");
         assert!(!blocks_reservation(&first), "complete documents go through the target's content policy");
         file.assert_calls_async(2).await;
+    }
+
+    #[tokio::test]
+    async fn approvals_show_the_selected_mail_current_revision_and_exact_rule_category() {
+        use torro_core::i18n::trf;
+        let env = environment().await;
+        let request = |mail: &str, revision| Request::RunWorkflow {
+            id: env.workflow.id.clone(),
+            revision,
+            mail: mail.into(),
+            test: true,
+            repeat: false,
+        };
+        let (first_pin, first) = env
+            .service
+            .approval(&request(&env.workflow.spec.mail, 1), &Scope::suite(), &env.clients, &env.mail)
+            .await
+            .expect("first stored input");
+        let second_mail = arrival(&env, 2, 0, true).await;
+        let (second_pin, second) = env
+            .service
+            .approval(&request(&second_mail, 1), &Scope::suite(), &env.clients, &env.mail)
+            .await
+            .expect("second stored input");
+        assert_ne!(first_pin, second_pin);
+        assert_eq!(first.revision, Some(1));
+        assert_eq!(first.mail.as_ref().expect("selected mail").id, env.workflow.spec.mail);
+        assert_eq!(first.mail.as_ref().expect("source header").subject, "Synthetic invoice");
+        assert_eq!(second.mail.as_ref().expect("selected mail").id, second_mail);
+        assert_eq!(second.mail.as_ref().expect("source header").subject, "New synthetic invoice");
+        assert!(!second.mail.as_ref().expect("source date").date.is_empty());
+        let lines = |workflow| {
+            crate::approvals::details(
+                &request(&second_mail, 1),
+                &crate::approvals::Facts { workflow: Some(Box::new(workflow)), ..Default::default() },
+            )
+        };
+        assert_ne!(lines(first), lines(second));
+        let rule = |category| Request::CreateWorkflowRule {
+            spec: wire::RuleSpec {
+                workflow: env.workflow.id.clone(),
+                account: env.workflow.account.clone(),
+                trigger: wire::Trigger::CategoryAssigned,
+                query: "invoice".into(),
+                category: Some(category),
+            },
+        };
+        let (_, invoices) = env
+            .service
+            .approval(&rule(torro_mail::Category::Invoice), &Scope::suite(), &env.clients, &env.mail)
+            .await
+            .expect("invoice condition");
+        let (_, shipping) = env
+            .service
+            .approval(&rule(torro_mail::Category::Shipping), &Scope::suite(), &env.clients, &env.mail)
+            .await
+            .expect("shipping condition");
+        assert_eq!(invoices.rule_category, Some(torro_mail::Category::Invoice));
+        assert_eq!(shipping.rule_category, Some(torro_mail::Category::Shipping));
+        assert_ne!(lines(invoices), lines(shipping));
+        let Response::WorkflowDraft { .. } = env
+            .service
+            .answer(
+                Request::UpdateWorkflowDraft {
+                    id: env.workflow.id.clone(),
+                    revision: 1,
+                    spec: env.workflow.spec.clone(),
+                },
+                Scope::suite(),
+                &env.clients,
+                &env.mail,
+            )
+            .await
+        else {
+            panic!("new revision");
+        };
+        assert_eq!(
+            env.service.approval(&request(&second_mail, 1), &Scope::suite(), &env.clients, &env.mail).await.err(),
+            Some(Error::Conflict)
+        );
+        let (_, current) = env
+            .service
+            .approval(&request(&second_mail, 2), &Scope::suite(), &env.clients, &env.mail)
+            .await
+            .expect("current revision");
+        assert!(lines(current).contains(&trf("Workflow revision: {revision}", &[("revision", &2)])));
+    }
+
+    async fn change_stored_headers(env: &Environment) {
+        let store = env.mail.store(&env.workflow.account).await.expect("store");
+        let id = env.workflow.spec.mail.clone();
+        store
+            .run(move |store| {
+                let summary = store.summary(&id)?.expect("stored source");
+                let place = store.resolve_message(&id)?.expect("stored source");
+                store.upsert_message(
+                    &place.folder,
+                    place.uidvalidity,
+                    &crate::mail::store::NewMessage {
+                        id: None,
+                        uid: place.uid,
+                        rfc_message_id: place.rfc_message_id,
+                        thread_id: summary.thread_id,
+                        from: Some(torro_mail::MailAddress {
+                            name: Some("Changed sender".into()),
+                            address: "changed@example.org".into(),
+                        }),
+                        to: summary.to,
+                        cc: Vec::new(),
+                        reply_to: Vec::new(),
+                        subject: "Changed after approval".into(),
+                        date: summary.date + chrono::Duration::days(1),
+                        snippet: summary.snippet,
+                        flags: summary.flags,
+                        has_attachments: summary.has_attachments,
+                        traits: Default::default(),
+                        invitation: false,
+                    },
+                )
+            })
+            .await
+            .expect("metadata changed, original kept");
+    }
+
+    #[tokio::test]
+    async fn legacy_queued_runs_without_source_metadata_binding_pause_before_any_download() {
+        let env = environment().await;
+        let queued = queue(&env).await;
+        env.service
+            .store
+            .transaction(|tx| {
+                let mut job: RunRecord = store::get(tx, "run", &queued.id, |_, _| true)?;
+                job.mail_header_hash = None;
+                put_run(tx, &job, "queued")
+            })
+            .expect("legacy queued record");
+        let downloader = download::Downloader::for_test("http://127.0.0.1:9");
+        assert!(env.service.work_using(&env.clients, &env.mail, &|_| true, &downloader).await.expect("worker"));
+        let Response::WorkflowRun { run } =
+            env.service.get_run(&Scope::suite(), None, &queued.id, &env.mail).expect("run")
+        else {
+            panic!("run");
+        };
+        assert_eq!((run.state, run.reason), (RunState::Paused, Some(RunReason::Changed)));
+        assert!(run.document.is_none());
+    }
+
+    #[tokio::test]
+    async fn queued_approval_keeps_header_binding_after_restart_and_during_download() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // A metadata-only sync must not redirect an approved write, even if it races a GET.
+        for during_download in [false, true] {
+            let env = environment().await;
+            let request = Request::RunWorkflow {
+                id: env.workflow.id.clone(),
+                revision: 1,
+                mail: env.workflow.spec.mail.clone(),
+                test: true,
+                repeat: false,
+            };
+            let (pin, _) =
+                env.service.approval(&request, &Scope::suite(), &env.clients, &env.mail).await.expect("scope");
+            let Response::WorkflowRun { run } =
+                env.service.answer_approved(request, Scope::suite(), &env.clients, &env.mail, Some(&pin)).await
+            else {
+                panic!("approved queue");
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("local server");
+            let downloader =
+                download::Downloader::for_test(&format!("http://{}", listener.local_addr().expect("address")));
+            let (arrived, received) = tokio::sync::oneshot::channel();
+            let (release, released) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.expect("GET");
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(socket.read_u8().await.expect("HTTP request"));
+                    assert!(request.len() < 4096, "bounded request");
+                }
+                arrived.send(()).expect("observer");
+                released.await.expect("headers changed before response");
+                let pdf = supplier_pdf();
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    pdf.len()
+                );
+                socket.write_all(head.as_bytes()).await.expect("response head");
+                socket.write_all(&pdf).await.expect("response PDF");
+            });
+            let restarted = Service::at(env.dir.path().join("workflow-journal/journal.sqlite"));
+            if during_download {
+                // Hold the response until the sync mutation has committed: no timing-based sleep.
+                let gate = |_: &Scope| true;
+                let worker = restarted.work_using(&env.clients, &env.mail, &gate, &downloader);
+                let mutation = async {
+                    tokio::time::timeout(std::time::Duration::from_secs(5), received)
+                        .await
+                        .expect("GET arrived")
+                        .expect("server");
+                    change_stored_headers(&env).await;
+                    release.send(()).expect("release response");
+                };
+                let (worked, ()) = tokio::join!(worker, mutation);
+                assert!(worked.expect("worker"));
+            } else {
+                change_stored_headers(&env).await;
+                release.send(()).expect("unused response may complete if a GET is wrongly sent");
+                assert!(restarted.work_using(&env.clients, &env.mail, &|_| true, &downloader).await.expect("worker"));
+            }
+            let Response::WorkflowRun { run } =
+                restarted.get_run(&Scope::suite(), None, &run.id, &env.mail).expect("run")
+            else {
+                panic!("run");
+            };
+            assert_eq!((run.state, run.reason), (RunState::Paused, Some(RunReason::Changed)));
+            assert!(run.document.is_none());
+            assert_eq!(std::fs::read_dir(env.dir.path().join("invoices")).expect("target").count(), 0);
+            if during_download {
+                server.await.expect("server finished");
+            } else {
+                assert!(!server.is_finished(), "no GET for changed queued headers");
+                server.abort();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn changed_visible_mail_headers_invalidate_approval_even_when_the_raw_original_is_unchanged() {
+        let env = environment().await;
+        let request = Request::RunWorkflow {
+            id: env.workflow.id.clone(),
+            revision: 1,
+            mail: env.workflow.spec.mail.clone(),
+            test: true,
+            repeat: false,
+        };
+        let (pin, _) =
+            env.service.approval(&request, &Scope::suite(), &env.clients, &env.mail).await.expect("shown source");
+        let store = env.mail.store(&env.workflow.account).await.expect("store");
+        let id = env.workflow.spec.mail.clone();
+        store
+            .run(move |store| {
+                let summary = store.summary(&id)?.expect("stored source");
+                let place = store.resolve_message(&id)?.expect("stored source");
+                store.upsert_message(
+                    &place.folder,
+                    place.uidvalidity,
+                    &crate::mail::store::NewMessage {
+                        id: None,
+                        uid: place.uid,
+                        rfc_message_id: place.rfc_message_id,
+                        thread_id: summary.thread_id,
+                        from: Some(torro_mail::MailAddress {
+                            name: Some("Stored sender".into()),
+                            address: "billing@example.org".into(),
+                        }),
+                        to: summary.to,
+                        cc: Vec::new(),
+                        reply_to: Vec::new(),
+                        subject: "Changed stored header".into(),
+                        date: summary.date,
+                        snippet: summary.snippet,
+                        flags: summary.flags,
+                        has_attachments: summary.has_attachments,
+                        traits: Default::default(),
+                        invitation: false,
+                    },
+                )
+            })
+            .await
+            .expect("metadata changed, raw original kept");
+        let (_, facts) =
+            env.service.approval(&request, &Scope::suite(), &env.clients, &env.mail).await.expect("resolved headers");
+        assert_eq!(facts.mail.as_ref().expect("stored sender").sender, "Stored sender <billing@example.org>");
+        assert!(
+            matches!(env.service.answer_approved(request, Scope::suite(), &env.clients, &env.mail, Some(&pin)).await, Response::Error { code, .. } if code == "conflict")
+        );
+        assert_eq!(
+            env.service
+                .enqueue(
+                    &Scope::suite(),
+                    &env.clients,
+                    &env.mail,
+                    &env.workflow.id,
+                    1,
+                    &env.workflow.spec.mail,
+                    true,
+                    false,
+                    Some(&pin)
+                )
+                .await
+                .err(),
+            Some(Error::Conflict),
+            "enqueue's atomic pin must include the same visible source"
+        );
     }
 }

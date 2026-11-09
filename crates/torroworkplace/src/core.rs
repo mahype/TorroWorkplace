@@ -4720,11 +4720,21 @@ impl Core {
                     origin: origin.clone(),
                     ceiling: Some(rights.clone()),
                 };
-                let (pinned, workflow) =
+                let (pinned, mut workflow) =
                     match Box::pin(self.workflows.approval(&request, &scope, &self.clients, &self.mail)).await {
                         Ok(ready) => ready,
                         Err(error) => return Ok(error.response()),
                     };
+                if let Some(category) = workflow.rule_category {
+                    let categories = match self.inbox.catalogue() {
+                        Ok(categories) => categories,
+                        Err(_) => return Ok(crate::workflows::Error::Blocked.response()),
+                    };
+                    workflow.rule_category_name = Some(match categories.iter().find(|def| def.category == category) {
+                        Some(def) => torro_core::category::name_of(def),
+                        None => torro_core::category::fallback_name(category),
+                    });
+                }
                 let facts = Facts { workflow: Some(Box::new(workflow)), ..Facts::default() };
                 fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
                 let summary = crate::approvals::summary(&request, &facts);
