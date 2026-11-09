@@ -26,7 +26,7 @@
 //!
 //! Everything is a request; the core checks all of it again.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use iced::widget::text::Wrapping;
 use iced::widget::{checkbox, column, container, mouse_area, row, space as blank, svg};
@@ -97,8 +97,9 @@ pub struct State {
     /// What went wrong with the kinds (issue #603): the list could not be read (`None` kinds then), or
     /// a switch could not be stored and went back. Said under the group.
     kinds_error: Option<String>,
-    /// A switch flipped at once and waiting for the core: the kind and how it stood before.
-    kind_change: Option<(String, bool)>,
+    /// The switches flipped at once and not stored yet, by kind: shown so until the send comes back;
+    /// then the stored settings (`mail_actions_off`) say how each stands.
+    kinds_flipped: BTreeMap<String, bool>,
 }
 
 /// What the dialog "Sort existing mail" holds while it is open.
@@ -243,15 +244,12 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             }
         }
         Message::RetryKinds => ask_kinds(state),
-        // Flipped at once; set back when the core refuses (`answered`).
+        // Flipped at once; the stored settings decide once the send came back (`sent`). A send, not an
+        // ask: its answer comes back to this page alone, never mixed up with a preview's.
         Message::ActionKind(kind, enabled) => {
-            if let Some(held) = state.kinds.as_mut().and_then(|kinds| kinds.iter_mut().find(|held| held.id == kind)) {
-                state.kind_change = Some((kind.clone(), held.enabled));
-                held.enabled = enabled;
-            }
+            state.kinds_flipped.insert(kind.clone(), enabled);
             state.kinds_error = None;
-            state.kinds_waiting += 1;
-            Action::Ask(Request::SetActionKind { kind, enabled })
+            Action::Send(vec![Request::SetActionKind { kind, enabled }])
         }
         Message::ManageModels => Action::Open(crate::assistant::AI_SECTION),
         Message::CancelDrag => {
@@ -449,22 +447,12 @@ pub fn answered(state: &mut State, answer: &Result<Response, String>) {
         Ok(Response::ActionKinds { kinds }) => {
             state.kinds_waiting = state.kinds_waiting.saturating_sub(1);
             state.kinds = Some(kinds.clone());
-            state.kind_change = None;
             state.kinds_error = None;
         }
-        // A refusal names nothing: it counts for the kinds only while no preview waits.
+        // A refusal names nothing: it counts for the list of kinds only while no preview waits.
         Err(problem) if state.kinds_waiting > 0 && state.previews_waiting == 0 => {
             state.kinds_waiting -= 1;
-            match state.kind_change.take() {
-                Some((kind, before)) => {
-                    let held = state.kinds.as_mut().and_then(|kinds| kinds.iter_mut().find(|held| held.id == kind));
-                    if let Some(held) = held {
-                        held.enabled = before;
-                    }
-                    state.kinds_error = Some(trf("Couldn't change the suggestion: {why}", &[("why", problem)]));
-                }
-                None => state.kinds_error = Some(problem.clone()),
-            }
+            state.kinds_error = Some(problem.clone());
         }
         Ok(Response::CategoryJobPreview { preview }) => {
             state.previews_waiting = state.previews_waiting.saturating_sub(1);
@@ -490,6 +478,14 @@ pub fn answered(state: &mut State, answer: &Result<Response, String>) {
 /// the filter is stored ([`filters::sent`]), and a group's form of the editor likewise. A filter
 /// stored with "Also apply…" comes back as the message that runs it, for the window to send.
 pub fn sent(state: &mut State, result: &Result<Data, String>) -> Option<Message> {
+    // The switches of suggestions (issue #603): what is stored stands from now on; a failed send of
+    // one flipped says so.
+    if !state.kinds_flipped.is_empty() {
+        state.kinds_flipped.clear();
+        if let Err(why) = result {
+            state.kinds_error = Some(trf("Couldn't change the suggestion: {why}", &[("why", why)]));
+        }
+    }
     editor::sent(&mut state.editor, result);
     filters::sent(&mut state.filters, result).map(|id| Message::Filters(filters::Message::ApplyNow(id)))
 }
@@ -944,7 +940,7 @@ fn ai_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         ),
         Some(Message::Tab(0)),
     );
-    column![sorting, widgets::group(tr("Model"), vec![may], None), suggestions_group(state)]
+    column![sorting, widgets::group(tr("Model"), vec![may], None), suggestions_group(state, data)]
         .spacing(layout::section_gap())
         .into()
 }
@@ -959,13 +955,18 @@ fn ask_kinds<A>(state: &mut State) -> Action<A> {
 /// "Suggestions" (issue #603, `docs/vorschlaege.md`): a switch for each kind of action Torro looks
 /// for in new mail, by the core's list – while it loads a quiet "Loading …", when it could not be
 /// read why with "Retry"; a switch that could not be stored goes back, and a line says so.
-fn suggestions_group<'a>(state: &'a State) -> Element<'a, Message> {
+fn suggestions_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let mut rows: Vec<Element<'a, Message>> = match (&state.kinds, &state.kinds_error) {
         (Some(kinds), _) => kinds
             .iter()
             .map(|kind| {
                 let id = kind.id.clone();
-                let toggle = switch(kind.enabled, move |on| Message::ActionKind(id.clone(), on));
+                let on = state
+                    .kinds_flipped
+                    .get(&kind.id)
+                    .copied()
+                    .unwrap_or_else(|| !data.settings.mail_actions_off.contains(&kind.id));
+                let toggle = switch(on, move |on| Message::ActionKind(id.clone(), on));
                 setting_row(Some(kind_icon(&kind.icon)), kind_label(&kind.label), None, toggle)
             })
             .collect(),
@@ -1523,10 +1524,16 @@ mod tests {
         };
         answered(&mut state, &Ok(Response::ActionKinds { kinds: vec![kind] }));
         let flip: Action<()> = update(&mut state, Message::ActionKind("task".into(), false), &data);
-        assert!(matches!(flip, Action::Ask(Request::SetActionKind { enabled: false, .. })));
-        assert!(!state.kinds.as_ref().expect("kinds")[0].enabled, "at once");
+        assert!(
+            matches!(flip, Action::Send(ref sent) if matches!(sent[..], [Request::SetActionKind { enabled: false, .. }]))
+        );
+        assert_eq!(state.kinds_flipped.get("task"), Some(&false), "at once");
+        // A preview's refusal meanwhile is the preview's, never the switch's.
+        state.previews_waiting = 1;
         answered(&mut state, &Err("busy".into()));
-        assert!(state.kinds.as_ref().expect("kinds")[0].enabled, "back");
+        assert!(state.kinds_error.is_none() && state.kinds_flipped.contains_key("task"));
+        let _ = super::sent(&mut state, &Err("offline".into()));
+        assert!(state.kinds_flipped.is_empty(), "back to what is stored");
         assert!(state.kinds_error.is_some());
         let _ = page(&state, &data);
     }
