@@ -221,7 +221,7 @@ pub enum Icon {
     /// "Display" of the mail's action rail (issue #456): HTML or text, the mail's colours; the paper
     /// of the compose window, light or dark (issue #460).
     Contrast,
-    /// "Open in new window" over the mail (issue #457).
+    /// "Release notes" in the control center.
     ExternalLink,
     /// A category's mark (issue #458): promotion.
     Megaphone,

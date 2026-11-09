@@ -83,6 +83,9 @@ aus einem Guss wirkt:
   kein Token) – die Mitte der oberen Zeile. Eingeklappt rückt der Inhalt nach links, nichts überlagert. Zeilen einmal
   bauen, mit dem Modus als Parameter: `widgets::sidebar_item_in`, `sidebar_group_in`, `shell::sidebar_tools`,
   `Shell::rail`.
+- **Kein „In neuem Fenster öffnen“** (#600): Der Kopf einer Ansicht hat keinen Knopf, der dieselbe Ansicht noch einmal
+  in einem eigenen Fenster öffnet. Ein Menüeintrag, der ein Fenster anderer Art öffnet (das Chat-Fenster des Assistenten),
+  fällt nicht darunter.
 - **Kopfzeile** in der oberen Zeile: links Titel (`typo::body_strong()`) mit leiser Ergänzung in `TEXT_3`, dann
   Navigation; rechts Ansicht, Filter, genau ein Primärknopf. Schmale Fenster haben neben Ampel und Knopf wenig Platz:
   dort entfällt zuerst die leise Ergänzung. Andere Knöpfe als die Einstellungen zeigen keine Schieberegler
@@ -105,7 +108,7 @@ aus einem Guss wirkt:
   öffnet er Schublade bzw. Einstellungen. Der Rest der Zeile bleibt gedimmt bzw. abgedeckt. Andere Apps behalten die
   ganz abgedeckte Zeile (der Termin-Editor des Kalenders).
 - **Mail-Fenster** (#451): über der Liste Suchfeld, Sortieren, Aktualisieren; über dem Leser Betreff, „6 von 9“, ⌃ ⌄
-  und „In neuem Fenster“. Die **Aktionsleiste schwebt** als Karte (Menü-Stil, Radius `lg`) senkrecht mittig am rechten
+  (kein Knopf „In neuem Fenster“, #600). Die **Aktionsleiste schwebt** als Karte (Menü-Stil, Radius `lg`) senkrecht mittig am rechten
   Rand über der Mail (`widgets::floating_rail`); Text und Kopf halten `widgets::floating_rail_room()` Abstand (#545:
   die Leiste verdeckte sonst die Zeit am Ende des Kopfes). Die **Mail-Zeile** hat zwei Zeilen (Absender · Büroklammer · Zeit, Betreff · Markierungen), Tagesköpfe
   und vorn den Kreis des Absenders (`widgets::sender_circle`, Farbe aus `Palette::sender` über die Adresse). Die **Anhänge**

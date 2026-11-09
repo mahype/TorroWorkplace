@@ -1092,8 +1092,6 @@ pub enum Sent {
     Edit(Edit, Option<After>),
     /// `settings.set_setting` with the key and the value (issue #456: "Display" stores its choice).
     Setting(torro_ipc::SettingKey, String),
-    /// A mail window of its own started for this mail (issue #457).
-    Window(String),
     /// The source, muted or not, and whether the hint with its undo follows (not after an undo).
     Mute(SourceRef, bool, bool),
     Link(String),
@@ -3530,9 +3528,6 @@ pub enum Message {
     ToggleMailDisplay,
     /// ⌃ / ⌄ over the reader (issue #457): the previous (`false`) or next mail of the list, as `k`/`j`.
     StepMail(bool),
-    /// "Open in new window" over the reader (issue #457): the mail with this id in a mail window of its
-    /// own.
-    OpenMailWindow(String),
     /// The answer to storing the display chosen there (`settings.set_setting`); an error is said.
     DisplaySaved(Result<(), String>),
     /// Close the open menu and the drawer (click beside them).
@@ -5552,12 +5547,6 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 // (issue #507): the selection goes as with a plain click.
                 self.selected_mail.clear();
                 return self.step(forward);
-            }
-            Message::OpenMailWindow(id) => {
-                #[cfg(test)]
-                self.sent.push(Sent::Window(id.clone()));
-                let command = mail::window_command(&id, self.launch.demo);
-                return Task::perform(async move { mail::start(command) }, Message::AppOpened);
             }
             Message::DisplaySaved(Ok(())) => {}
             Message::DisplaySaved(Err(_)) => self.note(tr("Couldn't save the display.").to_owned()),
@@ -12359,16 +12348,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// The head over the reader of the wide mail window (issue #457), in the top row beside the list's:
     /// the subject (cut with "…", whole in its tooltip), where the mail stands in the list ("6 of 9",
     /// "6 of 50+" while more pages wait; left out for a mail the list does not hold, as in a window of
-    /// its own), the previous and the next mail (`k`, `j`; off at the ends) and "Open in new window".
+    /// its own) and the previous and the next mail (`k`, `j`; off at the ends).
     /// While no mail is open the reader's column holds the overview, and the head says so.
     fn reader_head<'a>(&'a self) -> Element<'a, Message> {
         self.mail_head_row()
             .unwrap_or_else(|| typo::text(typo::body_strong(), tr("Overview")).wrapping(Wrapping::None).into())
     }
 
-    /// The row of the open mail (issue #457): subject, "n of m", previous and next mail, "Open in new
-    /// window" – over the wide reader in the top row, in medium and narrow windows as the head of the
-    /// mail's panel. `None` while no mail with headers is open.
+    /// The row of the open mail (issue #457): subject, "n of m", previous and next mail – over the wide reader in the
+    /// top row, in medium and narrow windows as the head of the mail's panel. `None` while no mail with headers is open.
     fn mail_head_row<'a>(&'a self) -> Option<Element<'a, Message>> {
         let open = self.reading().filter(|_| self.panel_open()).and_then(|reading| {
             let summary = reading.summary()?;
@@ -12394,12 +12382,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let row = head
             .push(Space::new().width(space::s()))
             .push(widgets::icon_button(Icon::ChevronUp, tr("Previous mail"), back))
-            .push(widgets::icon_button(Icon::ChevronDown, tr("Next mail"), next))
-            .push(widgets::icon_button(
-                Icon::ExternalLink,
-                tr("Open in new window"),
-                Some(Message::OpenMailWindow(id)),
-            ));
+            .push(widgets::icon_button(Icon::ChevronDown, tr("Next mail"), next));
         Some(row.into())
     }
 
@@ -23233,10 +23216,10 @@ mod tests {
     }
 
     /// Issue #457: over the reader the top row says where the mail stands in the list ("1 of 8", with
-    /// "+" while more pages wait), steps to the previous and next mail as `k` and `j` do, opens it in a
-    /// mail window of its own, and its attachments' menu opens from the head.
+    /// "+" while more pages wait), steps to the previous and next mail as `k` and `j` do, and its
+    /// attachments' menu opens from the head.
     #[test]
-    fn the_reader_head_counts_steps_and_opens_its_own_window() {
+    fn the_reader_head_counts_and_steps() {
         let mut app = mail_window(Density::Compact, &[]);
         let _ = app.update(Message::Resized(WIDE));
         let id = app.messages.first().expect("demo mail").id.clone();
@@ -23257,8 +23240,6 @@ mod tests {
         assert_eq!(app.cursor.as_deref(), app.messages.get(at + 1).map(|message| message.id.as_str()), "the next mail");
         let _ = app.update(Message::StepMail(false));
         assert_eq!(app.cursor.as_deref(), Some(id.as_str()), "and back");
-        let _ = app.update(Message::OpenMailWindow(id.clone()));
-        assert_eq!(app.sent.last(), Some(&Sent::Window(id.clone())));
         let _ = app.view();
         // Without a mail open the reader's column holds the overview, and its head says so.
         let bare = mail_window(Density::Compact, &[]);
