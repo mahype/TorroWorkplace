@@ -61,6 +61,10 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur n
 - **`provider.rs`:** Trait `NotesProvider` für den Kern, synchron wie `torro_pim::Provider`:
   - Methoden: `list(since, cursor)` mit Teilen und gelöschten Kennungen, `get`, `create`,
     `update(note, etag)`, `delete(id, etag)`, `settings`, `set_settings`.
+  - **Vorschlag (Entscheidung 12 in [notizen.md](../notizen.md)):** `list(since)` liefert geänderte und gelöschte
+    Kennungen ohne Teile (der Anbieter steigt über Ordner-ETags ab); dazu `rename(id, title, category, etag)` für
+    Titel und Kategorie (WebDAV `MOVE`) und `set_favorite(id, on)`. Gilt, sobald der Mensch das Konzept abgestimmt
+    hat; die Aufgabe legt den Trait dann so fest.
   - Fehler als eigenes Enum: `Auth`, `Offline`, `Conflict { server: Note }`, `ReadOnly`, `Locked`,
     `StorageFull`, `Unsupported`, `Other`.
 - **`source.rs`:** Trait `NotesSource` für die App, async wie `PimSource`:
@@ -94,7 +98,8 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur n
 - **Requests** (Bereich `notes`, Tabelle in [notizen.md](../notizen.md#befehle-bereich-notes), Stufe N1,
   ohne `inbox.create_note_from_item`, das in N1.10 kommt), je mit Doc-Kommentar und Fehlercodes.
   Handler antworten bis N1.4 mit `unsupported`.
-- **Kontozustand:** `AccountInfo` bekommt ein optionales Feld für den Notes-Dienst (verbunden, App
+- **Kontozustand** (nach Entscheidung 12 als Zustand des Notizordners: gewählt, aus der Notes-App, keiner):
+  `AccountInfo` bekommt ein optionales Feld für den Notes-Dienst (verbunden, App
   fehlt, App zu alt), gefüllt ab N1.3.
 - **Zugriff aus `Request::operation()`:**
   - `update_note` mit `content` ist `Delete`, sonst `Write`.
@@ -131,7 +136,9 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur n
 - [ ] erledigt
 - **Modell:** Opus (Agent `nextcloud-expert`) · **Braucht:** N1.1a · **Dateien:**
   `crates/torro-nextcloud/src/{lib,capabilities}.rs`, neu `crates/torro-nextcloud/src/notes.rs`,
-  `crates/torro-nextcloud/Cargo.toml`, `crates/torro-nextcloud/tests/fixtures/notes/*` (neu)
+  `crates/torro-nextcloud/Cargo.toml`, `crates/torro-nextcloud/tests/fixtures/notes/*` (neu), neu
+  `crates/torro-notes/src/folder.rs` (Abbildung Datei ↔ Notiz ohne Ein-/Ausgabe: Endungen, Titelregeln,
+  Kategorie aus dem Pfad; N4.1 nutzt sie mit)
 - **Grundlage:** Entscheidung 12 und Abschnitt „Basis“ in [notizen.md](../notizen.md): Lesen und Schreiben nur per
   WebDAV im Notizordner, die Notes-App nur für Ordner und Endung.
 - **Capabilities:** `NotesCapability { api_versions, version, notes_path }` aus `capabilities.notes` (höchste 1.x
@@ -178,7 +185,7 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur n
     „Inhaltsarten“ in [notizen.md](../notizen.md))
 - **`sync.rs`:** je Konto mit Notizordner: beim Start, alle 5 Minuten, nach `accounts.sync` und
   nach jedem Schreiben.
-  - Zuerst die Warteschlange abarbeiten (POST bzw. PUT mit `If-Match`), dann die Liste holen.
+  - Zuerst die Warteschlange abarbeiten (anlegen, ändern mit `If-Match`), dann die Liste holen.
   - Bei `Conflict` mit `torro_notes::merge` zusammenführen. Klappt es, wird das Ergebnis geschrieben;
     sonst bekommt die Notiz den Zustand `conflict` mit beiden Fassungen.
   - Vom Server geänderte Titel werden übernommen.
@@ -190,7 +197,7 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur n
   - Fällt eine Kategorie weg, entfernt der Kern sie aus den Auswahlen aller Clients.
 - **API/MCP:** keine neuen. Die Befehle kommen in N1.4.
 - **Abnahme:** Tests mit einem Fake-`NotesProvider`:
-  - Erstabgleich in Teilen, Löschung, offline anlegen → später POST mit Kennungswechsel.
+  - Erstabgleich, Löschung, offline anlegen → später angelegt mit Kennungswechsel.
   - Offline ändern bei gleichzeitiger Serveränderung: ohne Überschneidung zusammengeführt, mit
     Überschneidung `conflict`.
   - Neustart behält die Warteschlange; Konto entfernen leert die Notizen.
@@ -301,8 +308,9 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur n
   - **Schreibgeschützt:** gesperrter Editor mit „Shared read-only“.
   - **Offline:** Hinweis „Saved on this device, not yet on the server“.
   - **Vorschau:** lädt keine Bilder aus dem Netz; Links öffnen erst nach einem Klick.
-  - **Verweise** `torro:mail|calendar|tasks|notes` als Chip; ein Klick öffnet über den Kern (`apps.open_app`) mit
-    den Rechten des Lesers, sonst bleibt es Text. Jedes andere Schema bleibt Text, nie eine Aktion.
+  - **Verweise** `torro:mail:…` und `torro:task:…` als Chip; ein Klick schickt `apps.open_app` mit dem Ziel, der
+    Kern prüft die Rechte des Lesers. `torro:event:…`, `torro:note:…` (noch kein Ziel), `file:`, `template:` und
+    jedes andere Schema bleiben Text, nie eine Aktion.
 - **API:** `notes.create_note`, `update_note`, `delete_note`, `rename_category`, `resolve_conflict`.
 - **MCP:** dieselben Tools aus N1.5.
 - **Abnahme:**
@@ -354,7 +362,8 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur n
 - **Oberfläche:** In `torroinbox` die Aktion „Save as note“ im Paneel. Sie öffnet das gemeinsame Blatt aus den
   Mockups (`app.html?open=save`): Titel, Kategorie mit Vorschlägen (vorgewählt die zuletzt benutzte), Konto,
   Vorschau und der Hinweis, dass der Text von außen kommt. Die Notiz bekommt den Titel des Eintrags, den Text als
-  Zitat und einen Verweis zurück (`torro:mail/…`, Abschnitt „Inhaltsarten“). Anhänge gehen nicht still mit. Das
+  Zitat und einen Verweis zurück (Abschnitt „Inhaltsarten“): bei Mail `torro:mail:<adresse>:<Message-ID>`, bei
+  GitHub ein Link ins Netz, bei anderen Quellen nur Quelle und Zeit im Text. Anhänge gehen nicht still mit. Das
   Blatt ist so gebaut, dass es später im „Send to…“ aus #260 aufgehen kann (Notiz als Ziel von `send.route`).
 - **API:** `Request::CreateNoteFromItem { id, category }` · `inbox.create_note_from_item` · Write.
   Beide Felder sind Pflicht, `category` ist eine `CategoryId` mit Konto (Vorbild
@@ -484,18 +493,17 @@ N4.1 (braucht N1.4) ── N4.2 (braucht N1.9)    ← nach Entscheidung 12 nur n
 
 ### N4.1 Ordner-Anbieter: lokaler Ordner
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** N1.4 · **Dateien:** neu `crates/torro-notes/src/folder.rs` (Abbildung
-  Datei ↔ Notiz, ohne Ein-/Ausgabe), neu `crates/torroworkplace/src/notes/folder.rs` (lokal und
-  WebDAV), `crates/torro-nextcloud/src/files.rs`, `crates/torroworkplace/src/notes/{service,sync}.rs`,
+- **Modell:** Opus · **Braucht:** N1.4 · **Dateien:** `crates/torro-notes/src/folder.rs` (aus N1.2), neu
+  `crates/torroworkplace/src/notes/folder.rs` (lokal), `crates/torroworkplace/src/notes/{service,sync}.rs`,
   `crates/torroworkplace/src/{core,mcp,approvals,audit}.rs`, `crates/torro-ipc/src/{lib,api,notes}.rs`,
   `docs/api-reference.md`
 - **Abbildung wie die Notes-App:**
-  - Dateien `.md` und `.txt` sind Notizen, Unterordner sind Kategorien, der Dateiname ist der Titel.
-  - `etag`: bei WebDAV `getetag`, lokal Änderungszeit und Hash.
+  - Dieselbe Abbildung wie N1.2 (`folder.rs`): Endungen `txt`, `md`, `markdown`, `org`, `note` und die eigene,
+    Unterordner sind Kategorien, der Dateiname ist der Titel.
+  - `etag`: Änderungszeit und Hash.
   - **Favoriten:** bei Nextcloud `oc:favorite` per `PROPPATCH`, lokal in der Konfiguration des Kerns.
 - **Nach Entscheidung 12** ist der Nextcloud-Teil in N1.2 aufgegangen; diese Aufgabe baut nur noch den lokalen
-  Ordner. Die Abbildung Datei ↔ Notiz (`torro-notes/src/folder.rs`) teilt sie mit N1.2. `torro-nextcloud` und
-  der WebDAV-Weg fallen aus den Dateien, sobald das Konzept abgestimmt ist.
+  Ordner. Die Abbildung Datei ↔ Notiz (`torro-notes/src/folder.rs`) kommt aus N1.2.
 - **Lokaler Ordner:**
   - Abgleich alle 30 s und beim Fokus der App.
   - Symlinks, die aus dem Ordner führen, werden ignoriert. Dateinamen werden in NFC verglichen

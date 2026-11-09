@@ -168,7 +168,8 @@ ein Zusatz, wenn sie installiert ist.** Die Recherche trägt das:
 | Einstellungen | – | Ordner (Capability `notes.notes_path`) und Endung (`GET /settings`) – **das ist der Zusatz** |
 
 **Was das bringt:**
-- Läuft auf jeder Nextcloud und auf anderen WebDAV-Servern; die bisherige Stufe N4 geht in N1 auf.
+- Läuft auf jeder Nextcloud, mit und ohne Notes-App; die bisherige Stufe N4 geht in N1 auf. Andere WebDAV-Server
+  sind kein Ziel: Kennung, Favorit und Schreibschutz hängen an `oc:fileid`, `oc:favorite` und `oc:permissions`.
 - Ein ETag-Modell, ein Anbieter statt zweier, eine Kennung für Notiz, Versionen, Teilen und `notify_push`.
 - Unabhängig von Änderungen der Notes-API.
 
@@ -255,20 +256,29 @@ Bilder, Chips), ist Darstellung, nie ein eigenes Format.
 | **Link auf eine Notiz** | `[Titel](../Kategorie/Titel.md)` relativ | die Datei | N1 | Link auf die Datei (nicht bestätigt, ob die Notes-App ihn öffnet) |
 | **Bild** | `![Name](.attachments.<id>/bild.png)` | Datei im versteckten Ordner `.attachments.<id>/` neben der Notiz (wie Text und Notes 6.1), per WebDAV | N2 | Bild in Text und Notes-App |
 | **Datei** | `[Vertrag.pdf](.attachments.<id>/Vertrag.pdf)` | wie Bild | N2 | Link auf die Datei |
-| **Verweis auf Mail, Termin, Aufgabe** | `[Lesbarer Titel](torro:mail/<konto>/<ordner>/<uid>)`, ebenso `torro:calendar/…`, `torro:tasks/…` (Vorschlag) | die Datei | N1 (Mail mit N1.10), Termin und Aufgabe später | lesbarer Text als Link, der woanders nichts tut |
+| **Verweis auf Mail, Aufgabe, Termin, Notiz** | `[Lesbarer Titel](torro:mail:<adresse>:<Message-ID>)`, `torro:task:<uid>`; später `torro:event:<uid>`, `torro:note:<id>` (Vorschlag, Teile URL-kodiert) | die Datei | Mail und Aufgabe N1 (N1.7, N1.10), Termin und Notiz mit ihrem Ziel in `apps.open_app` | lesbarer Text als Link, der woanders nichts tut |
 
-**Verweise (Vorschlag).** Für Verweise auf Mails, Termine und Aufgaben gibt es in der Suite noch kein Format.
-Vorschlag: ein gewöhnlicher Markdown-Link mit lesbarem Text und dem Schema `torro:`.
-- **Lesbar überall:** Der Text („Invoice March – Acme GmbH“) trägt die Bedeutung; in Nextcloud bleibt er ein Link,
-  der nichts öffnet.
-- **Torro öffnet nur über den Kern:** Die App zeigt den Verweis als Chip mit Symbol (Mail, Kalender, Aufgabe). Ein
-  Klick fragt den Kern mit den Rechten des Lesers (`apps.open_app` mit Ziel). Darf der Leser den Eintrag nicht
-  sehen oder gibt es ihn nicht mehr, bleibt es Text (gestrichelter Chip, „Not available“).
+**Verweise (Vorschlag).** Die Suite hat schon Ziele für Verweise: `apps.open_app` öffnet mit `target`
+`mail:<adresse>:<Message-ID>` und `task:<uid>`, und `inbox.create_task_from_item` legt dieselbe Form als `link.id`
+ab. Vorschlag: ein gewöhnlicher Markdown-Link mit lesbarem Text, dessen Ziel `torro:` plus genau dieses Ziel ist,
+die Teile URL-kodiert (`@` als `%40`, `<>` als `%3C`/`%3E`, `#` als `%23`), damit der Link in jedem Markdown gültig
+bleibt. Beispiel: `[Invoice March – Acme GmbH](torro:mail:anna%40cloud.example:%3C8790%40acme.example%3E)`.
+- **Kein zweites Format:** Die Message-ID bleibt gleich, wenn die Mail verschoben wird; Ordner und UID würden
+  brechen.
+- **Lesbar überall:** Der Text trägt die Bedeutung; in Nextcloud bleibt er ein Link, der nichts öffnet.
+- **Torro öffnet nur über den Kern:** Die App zeigt den Verweis als Chip mit Symbol (Mail, Aufgabe, später Kalender
+  und Notiz). Ein Klick schickt `apps.open_app` mit dem Ziel; der Kern prüft die Rechte des Lesers. Darf er den
+  Eintrag nicht sehen oder gibt es ihn nicht mehr, bleibt es Text (gestrichelter Chip, „Not available“).
+- **Termine und Notizen** haben noch kein Ziel in `apps.open_app`. Vorschlag: `event:<uid>` und `note:<id>` kommen
+  als eigene Aufgabe (Request, Katalog, MCP-Beschreibung von `apps_open_app`); bis dahin zeigt Torro solche
+  Verweise als Text. Notizen verlinken sich bis dahin mit dem relativen Dateilink (oben).
 - **Nie eine Aktion:** Ein Verweis öffnet nur, er sendet, löscht oder ändert nichts. Notizinhalte sind fremder Text
-  (Entscheidung 3); ein eingeschleuster Link darf nichts auslösen. Erlaubt sind nur `torro:mail`, `torro:calendar`,
-  `torro:tasks` und `torro:notes`; jedes andere unbekannte Schema bleibt Text. Links ins Netz öffnen wie bisher
-  erst nach einem Klick im Browser (wie `web_link` im Assistenten).
-- **Kennungen:** die Kennungen des Kerns (Konto plus Eintrag), nie Pfade oder Adressen auf dem Rechner.
+  (Entscheidung 3); ein eingeschleuster Link darf nichts auslösen. Erlaubt sind nur die Ziele, die
+  `apps.open_app` kennt und die nur anzeigen (`mail`, `task`, später `event`, `note`); `file:` und `template:`
+  öffnen ein Schreibfenster bzw. einen Dialog und sind in Notizen **nicht** erlaubt. Jedes andere Schema bleibt
+  Text. Links ins Netz öffnen wie bisher erst nach einem Klick im Browser (wie `web_link` im Assistenten).
+- **Andere Einträge des Eingangs** (GitHub, Nextcloud, Talk, ntfy) bekommen keinen `torro:`-Verweis: GitHub als
+  gewöhnlicher Link ins Netz auf Issue oder PR, die übrigen nur mit Quelle und Zeit im Text.
 
 **Bilder aus dem Netz** (`![](https://…)`) lädt die Vorschau nicht (Abschnitt „Sicherheit“); sie zeigt einen
 Platzhalter mit „Load once“.
@@ -284,7 +294,7 @@ als Vorschlag; sie kommen mit dem Plan ihrer Quelle.
 | **Notizen selbst** | Text | „New note“, Feld „Quick note“ in Mini und Leiste | `notes.create_note` | `notes_create_note` | Write | N1 |
 | **Eingang und Mail** | Titel, Text als Zitat, Verweis zurück | „Save as note“ (Blatt, Entscheidung 10) | `inbox.create_note_from_item` | `inbox_create_note_from_item` | Write (`inbox`) + Write in `notes` | N1.10 |
 | **„Send to…“** ([#260](https://github.com/mahype/TorroWorkplace/issues/260)) | Text, Mail, Datei, Eintrag | gemeinsames Blatt; „Save as note“ geht dort als Ziel auf | `send.route` mit Ziel Notiz (Vorschlag, mit #260) | über `send.route` | Write in `notes`, Dateien wie N2 | mit #260 |
-| **Assistent und Agenten** | Text, Zusammenfassungen, Mitschrift | – (Chat) | `notes.create_note`, `notes.append_to_note` | `notes_create_note`, `notes_append_to_note` | Write ohne Freigabe; Ändern und Löschen mit Freigabe (Entscheidung 5) | N1.5 |
+| **Assistent und Agenten** | Text, Zusammenfassungen, Mitschrift | – (Chat) | `notes.create_note`, `notes.append_to_note` | `notes_create_note`, `notes_append_to_note` | Anlegen und Anhängen ohne Freigabe; Inhalt ändern und Löschen mit Freigabe, Titel, Favorit und Kategorie ohne (Entscheidung 5) | N1.5 |
 | **Kalender** | Besprechungsnotiz mit Verweis auf den Termin | „New meeting note“ im Termin (Vorschlag) | `notes.create_note` mit Verweis | `notes_create_note` | Write | später |
 | **Aufgaben** | Notiz zur Aufgabe mit Verweis | „New note“ in der Aufgabe (Vorschlag) | `notes.create_note` mit Verweis | `notes_create_note` | Write | später |
 | **Zwischenablage** | Text, Bild | Einfügen im Editor; „New note from clipboard“ (Vorschlag) | `notes.create_note`, `notes.add_attachment` | dieselben | Write | N1 Text, N2 Bild |
@@ -307,13 +317,14 @@ Kommentaren des Issues) hat wie die Notizen ein Feld „Quick note“. Die beide
 | Frage | Was hängt gerade neben meiner Arbeit? | Wo lege ich etwas ab, damit ich es wiederfinde? |
 | Lebensdauer | kurz, mit Ablauf je Zettel (P3) | dauerhaft |
 | Ort | lokal im Kern, kein Konto | Nextcloud, auf allen Geräten |
-| Form | Text ohne Markdown, Checkliste, Link, Datei; frei angeordnet, Farbe als Kategorie | Markdown-Datei, Kategorien als Ordner, Tags |
+| Form | Text ohne Markdown, Checkliste, Bild und Screenshot, Link, Datei; frei angeordnet, Farbe als Kategorie | Markdown-Datei, Kategorien als Ordner, Tags |
 
 - **„Quick note“ in Notizen** legt eine Notiz **ohne Kategorie** an; der Titel ist die erste Zeile. Das Feld
   steht in Mini und Leiste von `torronotes`.
 - **„Quick note…“ am Brett** pinnt einen Zettel an das gewählte Brett. Es legt nie eine Notiz an.
 - **Übergang Brett → Notiz:** „Save as note“ am Zettel (`pinboard.save_pin_as_note`, P3) hebt ihn als Notiz ohne
-  Kategorie auf, oder in einer Kategorie, die der Mensch wählt. Das Brett ist das Vorzimmer der Notizen. Der Weg
+  Kategorie auf, oder in einer Kategorie, die der Mensch wählt. Bilder eines Zettels gehen als Anhang mit, also erst
+  ab N2; vorher nur Text, Checkliste und Link. Das Brett ist das Vorzimmer der Notizen. Der Weg
   zurück (Notiz anpinnen) ist nicht geplant.
 - **Wer was bekommt:** Was bleiben soll oder auf andere Geräte muss, geht in Notizen; was nur heute zählt, ans Brett.
 
@@ -544,6 +555,8 @@ Erläuterungen zur Tabelle:
   niemand gesehen hat.
 - **Zustand des Notes-Dienstes** (verbunden, App fehlt, App zu alt) steht als neues optionales Feld
   in der Antwort von `accounts.list_accounts`; dafür gibt es keinen eigenen Befehl.
+- **Vorschlag (Entscheidung 12) zum Zustand:** Das Feld heißt dann Zustand des Notizordners: „Ordner gewählt“,
+  „Ordner aus der Notes-App“, „kein Ordner“ (`not-connected`). Eine fehlende oder alte Notes-App ist kein Fehler.
 - **`connect_folder`:** Die Freigabe zeigt den echten Pfad. Sonst könnte ein Agent beliebige
   Ordner wie `~/.ssh` als Notizen einbinden.
 - **`restore_note`** stellt eine Notiz aus dem Papierkorb wieder her. Wer sie dort endgültig
