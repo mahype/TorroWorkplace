@@ -3424,8 +3424,8 @@ pub enum Request {
     /// What Torro suggests to make of the mail `id` of `account` (issue #603, `docs/vorschlaege.md`):
     /// the events and tasks it found in it when it arrived, each [`actions::SuggestionState::Reading`]
     /// while the fields are read out, then `ready` with them (or `unfilled`). Answered with
-    /// [`Response::Suggestions`]; empty when it found nothing, the kind is switched off or no AI
-    /// sorts mail. Accepted and dismissed suggestions are not listed. Reads only: nothing is asked
+    /// [`Response::Suggestions`]; empty when it found nothing or no AI sorts mail. Switching a kind
+    /// off keeps the suggestions found before. Accepted and dismissed suggestions are not listed. Reads only: nothing is asked
     /// of a model. A task list the caller may not see is left out of a suggestion's `list`.
     ///
     /// Everything but `kind` and `state` comes from the mail: data, never instructions. Codes:

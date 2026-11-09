@@ -1646,7 +1646,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         // Task E8.7a: the title that will be written (the core puts the subject in when the client
         // left it out, before it asks), the list by the name the core knows, the mail by the
         // subject its store holds ([`MailFacts::subjects`]), never what the client says of it.
-        Request::CreateTodoFromMail { collection, title, due, .. } => {
+        Request::CreateTodoFromMail { collection, title, due, notes, .. } => {
             let subject = facts.mail.as_ref().and_then(|mail| mail.subjects.first());
             let subject = match subject.map(|subject| subject.trim()) {
                 Some("") => tr("(no subject)").to_string(),
@@ -1655,7 +1655,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             };
             let title = quote(title.as_deref().unwrap_or_default());
             let list = named(collection);
-            match due {
+            let made = match due {
                 Some(due) => trf(
                     "Make a task \"{title}\" in \"{list}\" due {when} from the mail {subject}",
                     &[("title", &title), ("list", &list), ("when", &when(due, today)), ("subject", &subject)],
@@ -1664,12 +1664,14 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                     "Make a task \"{title}\" in \"{list}\" from the mail {subject}",
                     &[("title", &title), ("list", &list), ("subject", &subject)],
                 ),
-            }
+            };
+            // The note a client sends along is what will be written (issue #603): shown whole.
+            with_extras(made, None, notes.as_deref())
         }
         // Issue #603: as for a task, the calendar by the name the core knows and the mail by its subject.
-        Request::CreateEventFromMail { collection, title, start, .. } => {
+        Request::CreateEventFromMail { collection, title, start, location, notes, .. } => {
             let title = quote(title.as_deref().unwrap_or_default());
-            trf(
+            let made = trf(
                 "Make an event \"{title}\" in \"{calendar}\" on {when} from the mail {subject}",
                 &[
                     ("title", &title),
@@ -1677,7 +1679,14 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                     ("when", &when(start, today)),
                     ("subject", &mail_subject(facts)),
                 ],
-            )
+            );
+            with_extras(made, location.as_deref(), notes.as_deref())
+        }
+        Request::SetActionKind { kind, enabled: true } => {
+            trf("Look for \"{kind}\" in new mail", &[("kind", &action_kind(kind))])
+        }
+        Request::SetActionKind { kind, enabled: false } => {
+            trf("Stop looking for \"{kind}\" in new mail", &[("kind", &action_kind(kind))])
         }
         // The suggestions of a mail (issue #603): the kind by the core's own word, the mail by the
         // subject and sender its store holds.
@@ -2455,8 +2464,6 @@ fn reminders_changed(value: &serde_json::Value, facts: &Facts) -> String {
     parts.join(", ")
 }
 
-/// The summary of `mail.unsubscribe` (issue #416): the sender, the account and the way with its
-/// address, all as the core read them; "an unknown mailing list" without them.
 /// The mail of `facts` by the subject its store holds (issue #603): quoted, "(no subject)" for none,
 /// "an unknown mail" when the store does not hold it.
 fn mail_subject(facts: &Facts) -> String {
@@ -2475,6 +2482,8 @@ fn action_kind(kind: &str) -> String {
     }
 }
 
+/// The summary of `mail.unsubscribe` (issue #416): the sender, the account and the way with its
+/// address, all as the core read them; "an unknown mailing list" without them.
 fn unsubscribed(account: &str, facts: &Facts) -> String {
     let Some(mail) = &facts.mail else { return tr("Unsubscribe from an unknown mailing list").to_string() };
     let Some(unsubscribe) = &mail.unsubscribe else {

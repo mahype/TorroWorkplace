@@ -112,16 +112,41 @@ impl Readings {
     }
 
     /// The next mail to read out, waiting until there is one; marked as being read out until
-    /// [`Readings::finish`].
+    /// [`Readings::finish`]. Taken from the queue and marked under the queue's lock, so
+    /// [`Readings::claim`] always sees it in one of the two.
     pub async fn next(&self) -> (String, String) {
         loop {
             let arrived = self.inner.arrived.notified();
-            let next = self.inner.queue.lock().unwrap_or_else(PoisonError::into_inner).pop_front();
-            if let Some(key) = next {
-                self.inner.running.lock().unwrap_or_else(PoisonError::into_inner).insert(key.clone());
-                return key;
+            {
+                let mut queue = self.inner.queue.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(key) = queue.pop_front() {
+                    self.inner.running.lock().unwrap_or_else(PoisonError::into_inner).insert(key.clone());
+                    return key;
+                }
             }
             arrived.await;
+        }
+    }
+
+    /// Takes the mail `message` of `account` for a reading asked for by hand (`mail.extract_action`):
+    /// out of the queue, and – once a reading under way has ended – marked as being read out until
+    /// [`Readings::finish`], so the reader in the background never asks a second model about it at
+    /// the same time.
+    pub async fn claim(&self, account: &str, message: &str) -> (String, String) {
+        let key = (account.to_string(), message.to_string());
+        loop {
+            let finished = self.inner.finished.notified();
+            tokio::pin!(finished);
+            finished.as_mut().enable();
+            {
+                let mut queue = self.inner.queue.lock().unwrap_or_else(PoisonError::into_inner);
+                queue.retain(|held| *held != key);
+                let mut running = self.inner.running.lock().unwrap_or_else(PoisonError::into_inner);
+                if running.insert(key.clone()) {
+                    return key;
+                }
+            }
+            finished.await;
         }
     }
 
@@ -131,8 +156,8 @@ impl Readings {
         self.inner.finished.notify_waiters();
     }
 
-    /// Waits while the mail `message` of `account` is being read out, so `mail.extract_action` does
-    /// not ask a second model about the same mail at once.
+    /// Waits while the mail `message` of `account` is being read out.
+    #[cfg(test)]
     pub async fn wait_for(&self, account: &str, message: &str) {
         let key = (account.to_string(), message.to_string());
         loop {
@@ -305,7 +330,11 @@ mod tests {
         assert!(!waiting.is_finished(), "waits while it is read out");
         readings.finish(&first);
         waiting.await.expect("done waiting");
+        // Claimed by hand while it waits: out of the queue, and the reader gets the next one.
+        readings.enqueue("mail:a@x", "m:3");
+        let claimed = readings.claim("mail:a@x", "m:3").await;
         assert_eq!(readings.next().await.1, "m:2", "the same mail never twice");
+        readings.finish(&claimed);
         readings.wait_for("mail:a@x", "m:9").await;
     }
 }

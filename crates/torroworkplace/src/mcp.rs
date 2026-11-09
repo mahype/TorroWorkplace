@@ -793,9 +793,7 @@ const IDEMPOTENT: &[&str] = &[
     // The same filter again, or one removed again, changes nothing more (issue #339).
     "mail.update_filter",
     "mail.remove_filter",
-    // Accepted or dismissed stays so; the same switch again changes nothing (issue #603).
-    "mail.accept_suggestion",
-    "mail.dismiss_suggestion",
+    // The same switch again changes nothing (issue #603).
     "mail.set_action_kind",
 ];
 

@@ -1763,16 +1763,25 @@ impl MailStore {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// The state of the suggestion `kind` of the message `id` as its row writes it (`reading`, …,
+    /// `dismissed`), also a closed one; `None` without such a row (issue #603).
+    pub fn suggestion_state(&self, id: &str, kind: &str) -> Result<Option<String>, MailStoreError> {
+        let Some(seq) = self.seq_of(id)? else { return Ok(None) };
+        let sql = "SELECT state FROM suggestions WHERE message = ?1 AND kind = ?2";
+        Ok(self.db.query_row(sql, params![seq, kind], |row| row.get(0)).optional()?)
+    }
+
     /// Keeps what was read out for the suggestion `suggestion.kind` of the message `id` (issue #603):
-    /// its state, fields and reason. With `only_reading` only a row still `reading` changes – the
-    /// reader in the background never writes over what the person did meanwhile; without it (a reading
-    /// asked for by hand) the row is written whatever it held, so a dismissed kind opens again.
-    /// `false` when nothing was written.
+    /// its state, fields and reason – only while the row still has the state `before` (`None`: there
+    /// is no row yet), so nothing done meanwhile is written over: the reader in the background passes
+    /// `reading`, a reading asked for by hand the state it found when it began, which opens a
+    /// dismissed kind again unless the person accepted or dismissed it while the model read. `false`
+    /// when nothing was written.
     pub fn keep_suggestion(
         &self,
         id: &str,
         suggestion: &Suggestion,
-        only_reading: bool,
+        before: Option<&str>,
         now: DateTime<Utc>,
     ) -> Result<bool, MailStoreError> {
         let Some(seq) = self.seq_of(id)? else { return Ok(false) };
@@ -1787,19 +1796,16 @@ impl MailStore {
             false => Some(serde_json::to_string(&fields).map_err(|err| MailStoreError::Corrupt(err.to_string()))?),
         };
         let state = state_key(suggestion.state);
-        let values = params![seq, suggestion.kind, state, fields, suggestion.reason, engine, model, now.timestamp()];
-        let written = match only_reading {
-            true => self.db.execute(
+        let written = match before {
+            Some(before) => self.db.execute(
                 "UPDATE suggestions SET state = ?3, fields = ?4, reason = ?5, engine = ?6, model = ?7, updated = ?8
-                 WHERE message = ?1 AND kind = ?2 AND state = 'reading'",
-                values,
+                 WHERE message = ?1 AND kind = ?2 AND state = ?9",
+                params![seq, suggestion.kind, state, fields, suggestion.reason, engine, model, now.timestamp(), before],
             )?,
-            false => self.db.execute(
-                "INSERT INTO suggestions (message, kind, state, fields, reason, engine, model, updated)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT (message, kind) DO UPDATE SET state = ?3, fields = ?4, reason = ?5, engine = ?6,
-                 model = ?7, updated = ?8",
-                values,
+            None => self.db.execute(
+                "INSERT OR IGNORE INTO suggestions (message, kind, state, fields, reason, engine, model, updated)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![seq, suggestion.kind, state, fields, suggestion.reason, engine, model, now.timestamp()],
             )?,
         };
         Ok(written > 0)

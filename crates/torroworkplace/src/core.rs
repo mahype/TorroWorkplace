@@ -874,6 +874,10 @@ const MAIL_ID_MAX: usize = 300;
 /// does: a local model leaves the computer usable.
 const READING_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// How long one reading in the background may take (issue #603): a model that hangs leaves the
+/// suggestion unfilled, and the queue goes on.
+const READING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// The fields of `mail.respond_to_invitation` ([`Request::RespondToInvitation`], task E8.3b).
 struct InvitationReply {
     account: String,
@@ -4183,6 +4187,11 @@ impl Core {
         {
             return Ok(no_mail());
         }
+        // Nor is what would fail when it ran (issue #603): times, place and note as the handlers check
+        // them, and a suggestion of a mail or a kind there is none of.
+        if let Some(refused) = self.suggestion_refusal(&request, reach).await {
+            return Ok(refused);
+        }
         // Answering an invitation reads the mail and writes the calendar too (task E8.3b): the
         // account, the calendar rights, the invitation and the calendar before anyone is asked.
         if let Request::RespondToInvitation { account, id, answer, collection } = &request {
@@ -6857,13 +6866,13 @@ impl Core {
         let lists = self.list_names(Reach::Suite).await;
         for held in waiting {
             let Some(kind) = crate::actions::kind(&held.kind) else { continue };
-            let read = match self.read_action(account, message, kind, lists.clone()).await {
-                Ok(read) => read,
-                Err(_) => {
-                    torro_ipc::actions::Suggestion { state: torro_ipc::actions::SuggestionState::Unfilled, ..held }
-                }
+            // A model that hangs must not hold up the mail after it.
+            let reading = self.read_action(account, message, kind, lists.clone());
+            let read = match tokio::time::timeout(READING_TIMEOUT, reading).await {
+                Ok(Ok(read)) => read,
+                _ => torro_ipc::actions::Suggestion { state: torro_ipc::actions::SuggestionState::Unfilled, ..held },
             };
-            if let Err(err) = self.mail.keep_suggestion(account, message, read, true).await {
+            if let Err(err) = self.mail.keep_suggestion(account, message, read, Some("reading".into())).await {
                 eprintln!("torroworkplace: inbox: cannot keep a suggestion of a mail of {account}: {err}");
             }
         }
@@ -6959,6 +6968,33 @@ impl Core {
         }
     }
 
+    /// What a command of issue #603 waiting for approval would be refused with when it ran: the
+    /// times, the place and the note of a task or event made of a mail, the mail of a suggestion
+    /// command as `reach` may read it ([`Core::suggestion_mail`]) and its kind. `None` for every
+    /// other request.
+    async fn suggestion_refusal(&self, request: &Request, reach: Reach<'_>) -> Option<Response> {
+        match request {
+            Request::CreateTodoFromMail { notes, .. } => extras_refusal(None, notes.as_deref()),
+            Request::CreateEventFromMail { start, end, location, notes, .. } => {
+                extras_refusal(location.as_deref(), notes.as_deref()).or_else(|| span_refusal(*start, *end))
+            }
+            Request::AcceptSuggestion { account, id, kind }
+            | Request::DismissSuggestion { account, id, kind }
+            | Request::ExtractAction { account, id, kind, .. } => {
+                if let Err(refused) = self.suggestion_mail(account, id, reach).await {
+                    return Some(refused);
+                }
+                crate::actions::kind(kind)
+                    .is_none()
+                    .then(|| refusal("not-found", format!("no kind of action {kind:?}")))
+            }
+            Request::SetActionKind { kind, .. } => crate::actions::kind(kind)
+                .is_none()
+                .then(|| refusal("not-found", format!("no kind of action {kind:?}"))),
+            _ => None,
+        }
+    }
+
     /// `mail.list_suggestions` (issue #603): the open suggestions of the mail, a task's list left out
     /// where `reach` does not see a list of that name.
     async fn list_suggestions(&self, account: &str, id: &str, reach: Reach<'_>) -> Response {
@@ -7021,12 +7057,36 @@ impl Core {
         let Some(def) = crate::actions::kind(kind) else {
             return refusal("not-found", format!("no kind of action {kind:?}"));
         };
-        self.readings.wait_for(account, id).await;
-        let mut read = match self.read_action(account, id, def, lists).await {
-            Ok(read) => read,
-            Err(refused) => return refused,
+        let claimed = self.readings.claim(account, id).await;
+        // What the person does while the model reads stands: the row is written only while it still
+        // has the state it had now.
+        let before = match self.mail.suggestion_state(account, id, kind).await {
+            Ok(before) => before,
+            Err(err) => {
+                self.readings.finish(&claimed);
+                return err.response();
+            }
         };
-        if let Err(err) = self.mail.keep_suggestion(account, id, read.clone(), false).await {
+        let read = self.read_action(account, id, def, lists).await;
+        self.readings.finish(&claimed);
+        let mut read = match read {
+            Ok(read) => read,
+            Err(refused) => {
+                // A suggestion still reading becomes unfilled, so no app asks again and again.
+                if before.as_deref() == Some("reading") {
+                    let unfilled = torro_ipc::actions::Suggestion {
+                        kind: kind.to_string(),
+                        state: torro_ipc::actions::SuggestionState::Unfilled,
+                        task: None,
+                        event: None,
+                        reason: None,
+                    };
+                    let _ = self.mail.keep_suggestion(account, id, unfilled, before).await;
+                }
+                return refused;
+            }
+        };
+        if let Err(err) = self.mail.keep_suggestion(account, id, read.clone(), before).await {
             eprintln!("torroworkplace: inbox: cannot keep a suggestion of a mail of {account}: {err}");
         }
         self.seen_lists_only(std::slice::from_mut(&mut read), reach).await;
@@ -31843,6 +31903,63 @@ mod tests {
 
         fn deleted_on(fake: &crate::pim::tests::FakeCalDav) -> usize {
             fake.lines().iter().filter(|line| line.starts_with("DELETE ")).count()
+        }
+
+        /// Issue #603: an event made of a mail without an entry lands in the calendar named; a client
+        /// that does not reach the mail's account gets `not-found` for it and for the suggestion
+        /// commands, before anyone is asked; and the approval shows the note the client sends along,
+        /// the mail by the subject its store holds.
+        #[tokio::test]
+        async fn an_event_of_a_mail_and_its_suggestions_keep_to_the_client_s_reach() {
+            let room = invited().await;
+            let (core, key) = (&room.core, Some(&room.app_key));
+            let at = |hour| torro_pim::EventTime::DateTime(Utc::now() + chrono::TimeDelta::hours(hour));
+            let make = |notes: Option<&str>| Request::CreateEventFromMail {
+                account: ANNA.into(),
+                id: room.id.clone(),
+                collection: room.fake.work.clone(),
+                title: Some("Planning".into()),
+                start: at(3),
+                end: at(4),
+                location: Some("Room 2".into()),
+                notes: notes.map(str::to_string),
+            };
+            let Response::Event { event, .. } = ask(core, key, make(None)).await else { panic!("an event") };
+            assert_eq!((event.summary.as_str(), event.location.as_deref()), ("Planning", Some("Room 2")));
+            assert!(
+                event.description.as_deref().is_some_and(|text| text.contains("Invitation: Planning")),
+                "the mail named: {:?}",
+                event.description
+            );
+
+            let mut elsewhere = RightsTemplate::FullAccess.rights();
+            elsewhere.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+            let (_, stranger) = client(core, elsewhere).await;
+            assert_eq!(code(&ask(core, Some(&stranger), make(None)).await), "not-found");
+            let list = Request::ListSuggestions { account: ANNA.into(), id: room.id.clone() };
+            assert_eq!(code(&ask(core, Some(&stranger), list.clone()).await), "not-found");
+            let extract = Request::ExtractAction {
+                account: ANNA.into(),
+                id: room.id.clone(),
+                kind: "task".into(),
+                lists: vec![],
+            };
+            assert_eq!(code(&ask(core, Some(&stranger), extract).await), "not-found");
+            assert_eq!(ask(core, key, list).await, Response::Suggestions { suggestions: Vec::new() });
+
+            let careful = Rights { confirm: Confirm::OnEveryChange, ..sender(Outbound::Free, Confirm::Never) };
+            let (_, asking) = client(core, careful).await;
+            let asked = waits(ask(core, Some(&asking), make(Some("Bring the figures"))).await);
+            assert_eq!(asked.command, "calendar.create_event_from_mail");
+            assert!(
+                asked.summary.contains("Bring the figures") && asked.summary.contains("Room 2"),
+                "{}",
+                asked.summary
+            );
+            assert!(asked.summary.contains("Invitation: Planning"), "the subject the store holds: {}", asked.summary);
+            let unknown =
+                Request::DismissSuggestion { account: ANNA.into(), id: room.id.clone(), kind: "github".into() };
+            assert_eq!(code(&ask(core, Some(&asking), unknown).await), "not-found", "refused before it is asked");
         }
 
         /// The answer kept with the mail, as lists show it.
