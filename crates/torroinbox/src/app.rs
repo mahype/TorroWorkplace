@@ -1765,6 +1765,8 @@ pub enum Open {
     WorkflowResult,
     WorkflowError,
     WorkflowRule,
+    WorkflowRulePreview,
+    WorkflowDocuments,
     Automation,
 }
 
@@ -1777,6 +1779,7 @@ impl Open {
             Self::WorkflowResult => Some("result"),
             Self::WorkflowError => Some("error"),
             Self::WorkflowRule => Some("rule"),
+            Self::WorkflowRulePreview => Some("rule-preview"),
             Self::Automation => Some("automation"),
             _ => None,
         }
@@ -1793,13 +1796,15 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 122] = [
+    const ALL: [(&'static str, Open); 124] = [
         ("workflow-setup", Open::WorkflowSetup),
         ("workflow-template", Open::WorkflowTemplate),
         ("workflow-test", Open::WorkflowTest),
         ("workflow-result", Open::WorkflowResult),
         ("workflow-error", Open::WorkflowError),
         ("workflow-rule", Open::WorkflowRule),
+        ("workflow-rule-preview", Open::WorkflowRulePreview),
+        ("workflow-documents", Open::WorkflowDocuments),
         ("automation", Open::Automation),
         ("detail", Open::Detail),
         ("approval", Open::Approval),
@@ -4469,6 +4474,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 // "All" holds the demo's invoice and invitations (issue #337).
                 Some(
                     Open::AttachmentMenu
+                    | Open::WorkflowDocuments
                     | Open::SaveAllMenu
                     | Open::SaveMailMenu
                     | Open::SaveEmlMenu
@@ -4735,7 +4741,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             // and the fields of a section keep every key for themselves – ⌘ + Z of the signature
             // included.
             let on_entries = self.settings.is_none();
-            if on_entries {
+            if on_entries && !self.workflow_documents.menu_open() {
                 subscriptions.push(iced::event::listen_with(keys::listen));
                 subscriptions.push(iced::event::listen_with(keys::modifiers));
                 if self.has_mail_list() {
@@ -4747,6 +4753,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 if !self.folders.is_empty() {
                     subscriptions.push(iced::event::listen_with(keys::shortcut));
                 }
+            }
+            if self.workflow_mail().is_some() {
+                subscriptions.push(crate::workflows::subscription().map(Message::WorkflowDocument));
             }
             // Escape closes an open menu, drawer, the toast, the settings or the panel; nothing
             // listens while none is open.
@@ -4851,6 +4860,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let more = self.focus_more();
         // Whatever changed, the panel's mail follows the cursor and the entry in the panel.
         let letter = self.follow_letter();
+        let current = self.workflow_mail();
+        self.workflow_documents.follow_mail(current.as_deref());
         self.follow_text();
         self.follow_html();
         // The overview of the mail window asks for its numbers once it shows (issue #409).
@@ -5162,7 +5173,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             // While a dropdown is open its menu has the keys (issue #554): Enter must not create the
             // task of the dialog under it.
-            Message::Key(_) if self.dropdown_open() => {}
+            Message::Key(_) if self.dropdown_open() || self.workflow_documents.menu_open() => {}
             Message::Key(key) => {
                 if let Some(command) = keys::command(self.focus(), key) {
                     // Keys inside an open menu (its digits, the bell's arrows) leave it where it is.
@@ -5578,7 +5589,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::CloseMenu => self.close_menus(),
             Message::Escape => {
-                if self.dropdown_open() {
+                if self.workflow_documents.menu_open() {
+                    self.workflow_documents.close_menu();
+                } else if self.dropdown_open() {
                     // An open dropdown lies over everything, the dialog it belongs to included
                     // (issue #554): Escape closes it first and leaves the dialog open.
                     self.close_dropdowns();
@@ -5658,8 +5671,30 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     )))),
                 ]);
             }
-            Message::WorkflowDocument(message) => return self.ask_workflow(message.request()),
-            Message::WorkflowAnswered(request, answer) => self.workflow_documents.answered(&request, &answer),
+            Message::WorkflowDocument(message) => {
+                if matches!(message, crate::workflows::Message::Close) {
+                    self.workflow_documents.close_menu();
+                } else if let Some(mail) = self.workflow_mail() {
+                    if let Some(request) = self.workflow_documents.update(&mail, message) {
+                        return self.ask_workflow(request);
+                    }
+                    if self.workflow_documents.menu_open() {
+                        self.rail_open = None;
+                        self.rail_pending = None;
+                        return self.workflow_documents.reveal_selection();
+                    }
+                }
+            }
+            Message::WorkflowAnswered(request, answer) => {
+                self.workflow_documents.answered(&request, &answer);
+                if self.launch.demo
+                    && self.launch.open == Some(Open::WorkflowDocuments)
+                    && matches!(&*request, torro_ipc::Request::ListWorkflowRuns { .. })
+                    && let Some(mail) = self.workflow_mail()
+                {
+                    self.workflow_documents.update(&mail, crate::workflows::Message::Toggle(mail.clone()));
+                }
+            }
             Message::SettingsHost(message) => {
                 let Some(pane) = self.settings.as_mut() else { return Task::none() };
                 // A change or a load came back: the sections let go of what was on its way.
@@ -11975,7 +12010,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         };
         // The open group of the collapsed rail, over the whole window like a menu (task E14.3); it
         // never shows with one (`App::update` closes it when a menu opens).
-        let layer = layer.or_else(|| self.rail_layer(class, &anchors));
+        let layer = layer
+            .or_else(|| {
+                self.workflow_mail().and_then(|mail| self.workflow_documents.overlay(&mail, &anchors.rail.save))
+            })
+            .or_else(|| self.rail_layer(class, &anchors));
         // The dropdowns of an invitation's card and of the overview (issue #554), with no menu open.
         let layer = layer.or_else(|| self.field_menu()).or_else(|| self.overview_account_menu());
         // "Focus & reply" (task E19.5) in place of list and reader, laid out alike in every size; no
@@ -12485,6 +12524,21 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             return hub::Sections::of(&self.items, None).order(self.sorting).is_empty();
         }
         if self.view.is_mail() { self.messages.is_empty() } else { self.items.is_empty() }
+    }
+
+    /// Document actions belong only to the reader visible now, never to a cached or covered mail.
+    fn workflow_mail(&self) -> Option<String> {
+        if self.settings.is_some()
+            || self.menu.is_some()
+            || self.drawer
+            || self.is_glance()
+            || self.holds_round()
+            || self.dropdown_open()
+        {
+            return None;
+        }
+        let id = self.wanted_letter()?;
+        self.letter.as_ref().filter(|letter| letter.id == id).map(|_| id)
     }
 
     /// The panel's view of the mail held ([`App::letter`]): headers from the list while the whole
@@ -14097,6 +14151,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     }
 
     fn close_menus(&mut self) {
+        self.workflow_documents.close_menu();
         self.clear_save_feedback();
         self.menu = None;
         self.close_dropdowns();
@@ -14263,6 +14318,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             // The demo's invoice in "All" (task M12.6): two PDFs and a guessed category.
             Some(
                 open @ (Open::AttachmentMenu
+                | Open::WorkflowDocuments
                 | Open::SaveAllMenu
                 | Open::SaveMailMenu
                 | Open::SaveEmlMenu
@@ -19892,6 +19948,39 @@ mod tests {
         let mut app = overview_at(&words);
         app.density = density;
         app
+    }
+
+    #[test]
+    fn reader_document_menu_owns_keys_and_escape_and_closes_on_another_mail() {
+        use crate::workflows::Message as Document;
+        use iced::keyboard::key::Named;
+        let mut app = mail_window(Density::Compact, &["--open", "attachment-menu"]);
+        let _ = app.update(Message::CloseMenu);
+        let mail = app.workflow_mail().expect("visible mail");
+        let request = torro_ipc::Request::ListWorkflowRuns { workflow: None, mail: Some(mail.clone()) };
+        let Some(torro_ipc::Response::WorkflowRuns { mut runs }) = settings_mail::automation::DemoState::default()
+            .answer(&torro_ipc::Request::ListWorkflowRuns { workflow: None, mail: None })
+        else {
+            panic!("demo runs")
+        };
+        runs[0].mail = mail.clone();
+        app.workflow_documents.answered(&request, &Ok(torro_ipc::Response::WorkflowRuns { runs }));
+        let cursor = app.cursor.clone();
+        let _ = app.update(Message::WorkflowDocument(Document::Key(Named::F6)));
+        assert!(app.workflow_documents.menu_open());
+        let _ = app.update(Message::Key(Key::Down));
+        assert_eq!(app.cursor, cursor, "the underlying list must not move");
+        let _ = app.view();
+        let _ = app.update(Message::Escape);
+        assert!(!app.workflow_documents.menu_open());
+        assert_eq!(app.workflow_mail().as_deref(), Some(mail.as_str()), "Escape closes the menu, not the mail");
+        let _ = app.update(Message::WorkflowDocument(Document::Key(Named::F6)));
+        let other = app.messages.iter().find(|m| m.id != mail).expect("another mail").id.clone();
+        let _ = app.update(Message::SelectMail(other));
+        assert!(!app.workflow_documents.menu_open());
+        let _ = app.update(Message::OpenSettings);
+        let _ = app.update(Message::WorkflowDocument(Document::Toggle(mail)));
+        assert!(!app.workflow_documents.menu_open(), "hidden readers cannot receive document actions");
     }
 
     /// The mail window in `density` on its overview of entries with its first mail entry in the

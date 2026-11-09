@@ -19,6 +19,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Konto verbunden. Derzeit sind keine Modellvorschläge verfügbar.",
     ),
     // Mail workflows (#556).
+    (
+        "Creates a marked PDF copy only of supported Paddle HTML without stylesheets or scripts. Current provider pages using external resources are unsupported; no resource loading or login.",
+        "Erstellt eine gekennzeichnete PDF-Kopie nur aus unterstütztem Paddle-HTML ohne Stylesheets oder Skripte. Aktuelle Anbieterseiten mit externen Ressourcen werden nicht unterstützt; keine Nachladung oder Anmeldung.",
+    ),
+    ("Mail summary unavailable", "Mail-Zusammenfassung nicht verfügbar"),
+    ("No subject", "Kein Betreff"),
+    ("Select mail", "Mail auswählen"),
+    ("Repeat test with real download…", "Test mit echtem Download wiederholen…"),
+    (
+        "Repeat this test using the current workflow revision? This downloads a new generation and writes a real document; existing files remain.",
+        "Diesen Test mit der aktuellen Ablaufrevision wiederholen? Dabei wird eine neue Generation heruntergeladen und ein echtes Dokument gespeichert; vorhandene Dateien bleiben erhalten.",
+    ),
     ("AI settings", "KI-Einstellungen"),
     ("Activate rule…", "Regel aktivieren…"),
     ("Additional instructions", "Ergänzende Anweisungen"),

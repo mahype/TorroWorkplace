@@ -4,7 +4,7 @@ use crate::parts::{chevron, field, notice, pressable, setting_row};
 use crate::{Action, Data, Page};
 use iced::widget::{column, row};
 use iced::{Element, Fill};
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use torro_core::i18n::{tr, trf};
 use torro_gui::theme::{self, size, space};
 use torro_gui::widgets::{Align, Dropdown, DropdownEvent, MenuItem, MenuSection};
@@ -27,6 +27,8 @@ pub struct State {
     instruction: String,
     search: String,
     examples: Vec<torro_mail::MessageSummary>,
+    summaries: HashMap<String, torro_mail::MessageSummary>,
+    known_runs: HashSet<(String, String)>,
     workflow: Option<Workflow>,
     edit: Option<DraftSpec>,
     rule: Option<WorkflowRule>,
@@ -41,6 +43,8 @@ pub struct State {
     queued: VecDeque<Request>,
     confirm: Option<Request>,
     discard: bool,
+    after_discard: Option<Box<Message>>,
+    repeat_after_load: Option<WorkflowRun>,
     status: Option<String>,
     problem: Option<String>,
     menus: Dropdown<Menu>,
@@ -90,6 +94,7 @@ pub enum Message {
     StoreDraft,
     Preview,
     Test,
+    RepeatTest,
     Save,
     Run,
     Repeat,
@@ -168,6 +173,8 @@ pub fn keep(mut state: State) -> State {
     state.queued.clear();
     state.confirm = None;
     state.discard = false;
+    state.after_discard = None;
+    state.repeat_after_load = None;
     state.menus.close();
     state
 }
@@ -193,6 +200,80 @@ fn runs<'a>(state: &'a State, data: &'a Data) -> &'a [WorkflowRun] {
     state.runs.as_deref().unwrap_or(&data.workflow_runs)
 }
 
+fn dirty(state: &State) -> bool {
+    state.edit.as_ref().is_some_and(|edit| state.workflow.as_ref().is_none_or(|w| w.spec != *edit))
+        || state.rule_form.as_ref().is_some_and(|spec| state.rule.as_ref().is_none_or(|r| r.spec != *spec))
+        || state.setup && !state.instruction.is_empty()
+}
+
+fn leave_details(state: &mut State) {
+    state.setup = false;
+    state.workflow = None;
+    state.edit = None;
+    state.rule = None;
+    state.rule_form = None;
+    state.run = None;
+    state.preview = None;
+    state.confirm = None;
+    state.selected.clear();
+    state.instruction.clear();
+    state.examples.clear();
+    state.queued.clear();
+    state.repeat_after_load = None;
+    state.status = None;
+    state.problem = None;
+    state.search.clear();
+    state.cursor = 0;
+    state.keyboard_list = false;
+    state.discard = false;
+    state.menus.close();
+}
+
+fn summary<'a>(state: &'a State, id: &str) -> Option<&'a torro_mail::MessageSummary> {
+    state.summaries.get(id).or_else(|| state.examples.iter().find(|m| m.id == id))
+}
+
+fn mail_label(state: &State, id: &str) -> String {
+    summary(state, id).map_or_else(|| tr("Mail summary unavailable").into(), summary_label)
+}
+
+fn summary_label(m: &torro_mail::MessageSummary) -> String {
+    let sender = m.from.as_ref().map_or_else(
+        || tr("Unknown sender").to_string(),
+        |a| match &a.name {
+            Some(name) if !name.is_empty() => format!("{name} <{}>", a.address),
+            _ => a.address.clone(),
+        },
+    );
+    format!(
+        "{sender} · {} · {}",
+        if m.subject.is_empty() { tr("No subject") } else { &m.subject },
+        m.date.format("%Y-%m-%d %H:%M")
+    )
+}
+
+fn load_summaries(state: &mut State, ids: impl IntoIterator<Item = String>) {
+    for id in ids {
+        if id.is_empty() {
+            continue;
+        }
+        let request = Request::GetMail { id: id.clone(), include_body: false, include_html: false };
+        if summary(state, &id).is_none() && state.pending.as_ref() != Some(&request) && !state.queued.contains(&request)
+        {
+            state.queued.push_back(request);
+        }
+    }
+}
+
+fn selectable(state: &State, id: &str) -> bool {
+    state.preview.as_ref().is_some_and(|p| p.matches.iter().any(|m| m == id)) && summary(state, id).is_some()
+}
+
+fn previous_run(state: &State, data: &Data, workflow: &Workflow) -> bool {
+    state.known_runs.contains(&(workflow.id.clone(), state.mail.clone()))
+        || state.run.iter().chain(runs(state, data)).any(|r| r.workflow == workflow.id && r.mail == state.mail)
+}
+
 pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
     if let Message::Key(key, modifiers) = message {
         return keyboard(state, key, modifiers, data);
@@ -214,71 +295,61 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
     if state.pending.is_some() {
         return Action::None;
     }
+    if matches!(message, Message::New { .. } | Message::ChooseRun { .. } | Message::Back) && dirty(state) {
+        state.after_discard = Some(Box::new(message));
+        state.discard = true;
+        return Action::None;
+    }
     match message {
         Message::OpenAi => return Action::Open("ai"),
         Message::OpenTargets => return Action::Open(super::ATTACHMENTS_SECTION),
         Message::RepeatRun => {
-            if let Some(run) = &state.run {
-                return confirm(
-                    state,
-                    Request::RunWorkflow {
-                        id: run.workflow.clone(),
-                        revision: run.revision,
-                        mail: run.mail.clone(),
-                        test: run.test,
-                        repeat: true,
-                    },
-                );
+            if let Some(run) = state.run.clone() {
+                if !repeatable(run.state) {
+                    return Action::None;
+                }
+                state.repeat_after_load = Some(run.clone());
+                state.known_runs.insert((run.workflow.clone(), run.mail.clone()));
+                return ask(state, Request::GetWorkflow { id: run.workflow });
             }
         }
         Message::Back => {
-            let dirty = state.edit.as_ref().is_some_and(|edit| state.workflow.as_ref().is_none_or(|w| w.spec != *edit))
-                || state
-                    .rule_form
-                    .as_ref()
-                    .is_some_and(|spec| state.rule.as_ref().map_or(!spec.query.is_empty(), |r| r.spec != *spec))
-                || state.setup && !state.instruction.is_empty();
-            if dirty {
-                state.discard = true;
-                return Action::None;
-            }
-            state.setup = false;
-            state.workflow = None;
-            state.edit = None;
-            state.rule = None;
-            state.rule_form = None;
-            state.run = None;
-            state.preview = None;
-            state.confirm = None;
-            state.selected.clear();
+            leave_details(state);
         }
         Message::Discard => {
-            state.discard = false;
-            state.edit = None;
-            state.rule_form = None;
-            state.instruction.clear();
-            state.setup = false;
-            return update(state, Message::Back, data);
+            let next = state.after_discard.take().map_or(Message::Back, |m| *m);
+            leave_details(state);
+            return update(state, next, data);
         }
         Message::Tab(tab) => {
             state.tab = tab.min(2);
             state.mail.clear();
             state.cursor = 0;
             state.keyboard_list = false;
+            if state.tab == 2 {
+                let ids: Vec<_> = runs(state, data).iter().map(|r| r.mail.clone()).collect();
+                load_summaries(state, ids);
+                if let Some(request) = next_request(state) {
+                    return Action::Ask(request);
+                }
+            }
         }
         Message::Refresh => {
             state.queued.extend([Request::ListWorkflowRules, Request::ListWorkflowRuns { workflow: None, mail: None }]);
             return ask(state, Request::ListWorkflows);
         }
         Message::Poll => {
-            if let Some(run) = &state.run
-                && active(run.state)
-            {
-                return ask(state, Request::GetWorkflowRun { id: run.id.clone() });
+            if let Some(run) = &state.run {
+                return if polling(run.state) {
+                    ask(state, Request::GetWorkflowRun { id: run.id.clone() })
+                } else {
+                    Action::None
+                };
             }
             return update(state, Message::Refresh, data);
         }
         Message::New { mail, account, template } => {
+            leave_details(state);
             state.setup = true;
             state.workflow = None;
             state.edit = None;
@@ -293,6 +364,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             return ask(state, search_request(String::new()));
         }
         Message::ChooseRun { mail, account } => {
+            leave_details(state);
             state.mail = mail;
             state.account = account;
             state.tab = 0;
@@ -416,9 +488,12 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
                 );
             }
         }
-        Message::Test | Message::Run | Message::Repeat => {
+        Message::Test | Message::RepeatTest | Message::Run | Message::Repeat => {
             if let Some(w) = &state.workflow {
-                let test = matches!(message, Message::Test);
+                let test = matches!(message, Message::Test | Message::RepeatTest);
+                if matches!(message, Message::Test) && previous_run(state, data, w) {
+                    return Action::None;
+                }
                 if test && !preview_matches(state, w) {
                     return Action::None;
                 }
@@ -429,7 +504,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
                         revision: w.revision,
                         mail: state.mail.clone(),
                         test,
-                        repeat: matches!(message, Message::Repeat),
+                        repeat: matches!(message, Message::Repeat | Message::RepeatTest),
                     },
                 );
             }
@@ -569,7 +644,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             }
         }
         Message::SelectMail(id) => {
-            if state.preview.as_ref().is_some_and(|p| p.matches.contains(&id)) {
+            if selectable(state, &id) {
                 if state.selected.contains(&id) {
                     state.selected.retain(|held| *held != id);
                 } else {
@@ -578,6 +653,9 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             }
         }
         Message::RunSelected if !state.selected.is_empty() => {
+            if !state.selected.iter().all(|id| selectable(state, id)) {
+                return Action::None;
+            }
             if let Some(p) = &state.preview {
                 state.confirm = Some(Request::RunWorkflow {
                     id: p.workflow.clone(),
@@ -593,13 +671,19 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             return ask(state, Request::GetWorkflowRun { id });
         }
         Message::CancelRun => {
-            if let Some(run) = &state.run {
+            if let Some(run) = &state.run
+                && cancellable(run.state)
+            {
                 return ask(state, Request::CancelWorkflowRun { id: run.id.clone() });
             }
         }
         Message::OpenDocument(id) => return ask(state, Request::OpenWorkflowDocument { id }),
         Message::ShowDocument(id) => return ask(state, Request::ShowWorkflowDocument { id }),
         Message::Confirm => {
+            if !state.selected.iter().all(|id| selectable(state, id)) {
+                state.confirm = None;
+                return Action::None;
+            }
             if let Some(request) = state.confirm.take() {
                 if matches!(&request, Request::RunWorkflow { test: false, .. }) && !state.selected.is_empty() {
                     if let Some(p) = &state.preview {
@@ -621,6 +705,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
         Message::Cancel => {
             state.confirm = None;
             state.discard = false;
+            state.after_discard = None;
         }
         _ => {}
     }
@@ -734,7 +819,10 @@ fn list_actions(state: &State, data: &Data) -> Vec<(String, Message)> {
             entries.into_iter().map(|w| (w.spec.name.clone(), Message::Open(w.id.clone()))).collect()
         }
         1 => rules(state, data).iter().map(|r| (r.spec.query.clone(), Message::OpenRule(r.id.clone()))).collect(),
-        _ => runs(state, data).iter().map(|r| (run_status(r), Message::OpenRun(r.id.clone()))).collect(),
+        _ => runs(state, data)
+            .iter()
+            .map(|r| (format!("{} · {}", run_status(r), mail_label(state, &r.mail)), Message::OpenRun(r.id.clone())))
+            .collect(),
     }
 }
 
@@ -775,9 +863,10 @@ fn actions(state: &State, data: &Data) -> Vec<(String, Message)> {
         }
     } else if let Some(run) = &state.run {
         add("Open workflow", Message::Open(run.workflow.clone()));
-        if active(run.state) {
+        if cancellable(run.state) {
             add("Cancel run", Message::CancelRun);
-        } else {
+        }
+        if repeatable(run.state) {
             add("Repeat download…", Message::RepeatRun);
         }
         if let Some(d) = &run.document
@@ -797,7 +886,11 @@ fn actions(state: &State, data: &Data) -> Vec<(String, Message)> {
             if w.spec.package.validate().is_ok() && data.save_targets.iter().any(|t| t.id == w.spec.save_target) {
                 add("Preview without download", Message::Preview);
                 if preview_matches(state, w) {
-                    add("Test with real download…", Message::Test);
+                    if previous_run(state, data, w) {
+                        add("Repeat test with real download…", Message::RepeatTest);
+                    } else {
+                        add("Test with real download…", Message::Test);
+                    }
                 }
                 if w.saved && w.enabled {
                     add("Run workflow…", Message::Run);
@@ -847,7 +940,7 @@ fn actions(state: &State, data: &Data) -> Vec<(String, Message)> {
             state
                 .examples
                 .iter()
-                .map(|m| (format!("{} · {}", tr("Example mail"), m.subject), Message::Mail(m.id.clone()))),
+                .map(|m| (format!("{} · {}", tr("Example mail"), summary_label(m)), Message::Mail(m.id.clone()))),
         );
     }
     if state.rule_form.is_some() {
@@ -865,7 +958,13 @@ fn actions(state: &State, data: &Data) -> Vec<(String, Message)> {
         );
         result.extend(data.categories.iter().map(|c| (c.label.clone(), Message::Category(Some(c.category)))));
         if let Some(preview) = &state.preview {
-            result.extend(preview.matches.iter().map(|id| (id.clone(), Message::SelectMail(id.clone()))));
+            result.extend(
+                preview
+                    .matches
+                    .iter()
+                    .filter(|id| selectable(state, id))
+                    .map(|id| (mail_label(state, id), Message::SelectMail(id.clone()))),
+            );
         }
     }
     result
@@ -876,13 +975,27 @@ pub fn answered(state: &mut State, answer: &Result<Response, String>) {
         return;
     };
     state.status = None;
+    // Missing summaries disable only their own choices. Continue loading other exact matches.
+    if let Request::GetMail { id, .. } = &request {
+        match answer {
+            Ok(Response::MailMessage { message }) if message.summary.id == *id => {
+                state.summaries.insert(id.clone(), message.summary.clone());
+            }
+            _ => {
+                state.problem = Some(tr("Mail summary unavailable").into());
+            }
+        }
+        return;
+    }
     let answer = match answer {
         Ok(Response::Error { code, message }) => {
+            state.repeat_after_load = None;
             state.problem = Some(format!("{code}: {message}"));
             state.queued.clear();
             return;
         }
         Err(problem) => {
+            state.repeat_after_load = None;
             state.problem = Some(problem.clone());
             state.queued.clear();
             return;
@@ -891,10 +1004,30 @@ pub fn answered(state: &mut State, answer: &Result<Response, String>) {
     };
     match answer {
         Response::WorkflowDraft { workflow } | Response::Workflow { workflow } => {
+            if state.mail.is_empty() {
+                state.mail = workflow.spec.mail.clone();
+            }
             state.workflow = Some(workflow.clone());
             state.setup = false;
             state.edit = None;
             state.preview = None;
+            load_summaries(state, [state.mail.clone()]);
+            if let Some(run) = state.repeat_after_load.take()
+                && run.workflow == workflow.id
+                && matches!(&request, Request::GetWorkflow { id } if id == &workflow.id)
+            {
+                state.mail = run.mail.clone();
+                state.run = None;
+                state.rule_form = None;
+                state.confirm = Some(Request::RunWorkflow {
+                    id: workflow.id.clone(),
+                    revision: workflow.revision,
+                    mail: run.mail.clone(),
+                    test: run.test,
+                    repeat: true,
+                });
+                load_summaries(state, [run.mail]);
+            }
         }
         Response::Workflows { workflows } => {
             if state.edit.is_none()
@@ -922,19 +1055,29 @@ pub fn answered(state: &mut State, answer: &Result<Response, String>) {
                 state.run = runs.iter().find(|r| r.id == run.id).cloned();
             }
             state.runs = Some(runs.clone());
+            load_summaries(state, runs.iter().map(|r| r.mail.clone()));
         }
         Response::WorkflowRun { run } => {
+            state.known_runs.insert((run.workflow.clone(), run.mail.clone()));
             state.run = Some(run.clone());
             state.tab = 2;
             if run.test && run.state == RunState::Succeeded {
                 state.queued.push_back(Request::GetWorkflow { id: run.workflow.clone() });
             }
+            load_summaries(state, [run.mail.clone()]);
         }
         Response::WorkflowPreview { preview } => {
             state.preview = Some(preview.clone());
             state.selected.clear();
+            if matches!(request, Request::PreviewWorkflowRule { .. }) {
+                load_summaries(state, preview.matches.clone());
+            }
         }
-        Response::MailMessages { messages, .. } => state.examples = messages.clone(),
+        Response::MailMessages { messages, .. } => {
+            state.examples = messages.clone();
+            state.summaries.extend(messages.iter().map(|m| (m.id.clone(), m.clone())));
+            load_summaries(state, [state.mail.clone()].into_iter().filter(|id| !id.is_empty()));
+        }
         Response::Pending { approval } => {
             state.status = Some(trf("Waiting for approval · {id}", &[("id", &approval.id)]));
             // Pending is not success. Never advance a batch before its actual approval.
@@ -985,7 +1128,10 @@ fn button(label: &'static str, message: Message, enabled: bool) -> Element<'stat
     widgets::text_button(None, tr(label), style::button::secondary, enabled.then_some(message))
 }
 fn note(words: impl Into<String>) -> Element<'static, Message> {
-    typo::text(typo::body(), words.into()).style(theme::text_2).width(Fill).into()
+    iced::widget::container(typo::text(typo::body(), words.into()).style(theme::text_2).width(Fill))
+        .width(Fill)
+        .max_width(size::content_max())
+        .into()
 }
 fn form_field<'a>(label: &'static str, value: &str, input: fn(String) -> Message) -> Element<'a, Message> {
     column![typo::text(typo::caption(), tr(label)).style(theme::text_3), field("", value).on_input(input)]
@@ -1015,7 +1161,7 @@ pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
             [(tr("Workflows"), Message::Tab(0)), (tr("Rules"), Message::Tab(1)), (tr("Runs"), Message::Tab(2))],
             state.tab,
         );
-        let mut list = column![tabs].spacing(space::l());
+        let mut list = column![tabs].spacing(space::l()).width(Fill);
         if state.keyboard_list
             && let Some((name, _)) = list_actions(state, data).get(state.cursor)
         {
@@ -1065,7 +1211,12 @@ pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
             _ => {
                 for run in runs(state, data) {
                     list = list.push(pressable(
-                        setting_row(None, run_status(run), Some(format!("{} · {}", run.mail, run.created)), chevron()),
+                        setting_row(
+                            None,
+                            run_status(run),
+                            Some(format!("{} · {}", mail_label(state, &run.mail), run.created)),
+                            chevron(),
+                        ),
                         idle.then(|| Message::OpenRun(run.id.clone())),
                     ));
                 }
@@ -1076,12 +1227,12 @@ pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
         }
         (list.into(), None)
     };
-    content = content.push(body);
-    let page = Page::new(content).max_width(size::content_max()).actions(vec![state.menus.button(
-        Menu::Actions,
-        tr("Actions · F6"),
-        Message::Menus,
-    )]);
+    content = content.push(if title.is_some() {
+        iced::widget::container(body).width(Fill).max_width(size::form_max()).into()
+    } else {
+        body
+    });
+    let page = Page::new(content).actions(vec![state.menus.button(Menu::Actions, tr("Actions · F6"), Message::Menus)]);
     match title {
         Some(title) => page.sub_page(title, Message::Back),
         None => page,
@@ -1128,10 +1279,9 @@ fn setup<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 }
 
 fn mail_field(state: &State) -> Element<'_, Message> {
-    let label =
-        state.examples.iter().find(|m| m.id == state.mail).map(|m| m.subject.clone()).unwrap_or_else(|| {
-            if state.mail.is_empty() { tr("Choose example mail").into() } else { state.mail.clone() }
-        });
+    let label = summary(state, &state.mail).map(|m| m.subject.clone()).unwrap_or_else(|| {
+        if state.mail.is_empty() { tr("Choose example mail").into() } else { tr("Mail summary unavailable").into() }
+    });
     column![
         typo::text(typo::caption(), tr("Example mail")).style(theme::text_3),
         row![
@@ -1141,6 +1291,7 @@ fn mail_field(state: &State) -> Element<'_, Message> {
         .spacing(space::s()),
         state.menus.button_fill(Menu::Mail, label, Message::Menus)
     ]
+    .push((!state.mail.is_empty()).then(|| note(mail_label(state, &state.mail))))
     .spacing(space::xs())
     .into()
 }
@@ -1213,8 +1364,12 @@ fn workflow_page<'a>(state: &'a State, data: &'a Data, w: &'a Workflow) -> Eleme
         row![
             button("Preview without download", Message::Preview, idle && target.is_some() && supported),
             button(
-                "Test with real download…",
-                Message::Test,
+                if previous_run(state, data, w) {
+                    "Repeat test with real download…"
+                } else {
+                    "Test with real download…"
+                },
+                if previous_run(state, data, w) { Message::RepeatTest } else { Message::Test },
                 idle && target.is_some() && supported && preview_matches(state, w)
             ),
             button("Save workflow", Message::Save, idle && w.tested && !w.saved)
@@ -1314,12 +1469,18 @@ fn rule_page<'a>(state: &'a State, data: &'a Data, spec: &'a RuleSpec) -> Elemen
     if let Some(preview) = &state.preview {
         page = page.push(preview_view(preview));
         for id in &preview.matches {
-            page = page.push(widgets::choice_chip(
-                id.clone(),
-                None,
-                state.selected.contains(id),
-                Some(Message::SelectMail(id.clone())),
-            ));
+            page = page.push(
+                column![
+                    note(mail_label(state, id)),
+                    widgets::choice_chip(
+                        tr("Select mail"),
+                        None,
+                        state.selected.contains(id),
+                        (idle && selectable(state, id)).then(|| Message::SelectMail(id.clone())),
+                    )
+                ]
+                .spacing(space::xs()),
+            );
         }
         if preview.matches.is_empty() {
             page = page.push(note(tr("No matching existing mail.")));
@@ -1348,17 +1509,20 @@ fn rule_page<'a>(state: &'a State, data: &'a Data, spec: &'a RuleSpec) -> Elemen
 }
 
 fn run_page<'a>(state: &'a State, run: &'a WorkflowRun) -> Element<'a, Message> {
-    let mut page =
-        column![note(run_status(run)), note(run.mail.clone()), note(trf("Attempt {n}", &[("n", &run.attempts)]))]
-            .spacing(space::l());
+    let mut page = column![
+        note(run_status(run)),
+        note(mail_label(state, &run.mail)),
+        note(trf("Attempt {n}", &[("n", &run.attempts)]))
+    ]
+    .spacing(space::l());
     if let Some(document) = &run.document {
         page = page.push(document_view(document));
     }
-    if active(run.state) {
+    if cancellable(run.state) {
         page = page.push(button("Cancel run", Message::CancelRun, state.pending.is_none()));
     }
     page = page.push(button("Open workflow", Message::Open(run.workflow.clone()), state.pending.is_none()));
-    if !active(run.state) {
+    if repeatable(run.state) {
         page = page.push(button("Repeat download…", Message::RepeatRun, state.pending.is_none()));
     }
     page.into()
@@ -1392,11 +1556,14 @@ pub fn provenance(value: Provenance) -> &'static str {
         Provenance::HtmlCopy => tr("PDF copy generated from HTML"),
     }
 }
-pub fn active(state: RunState) -> bool {
-    matches!(
-        state,
-        RunState::Queued | RunState::Running | RunState::WaitingBody | RunState::WaitingCategory | RunState::Paused
-    )
+fn polling(state: RunState) -> bool {
+    matches!(state, RunState::Queued | RunState::Running | RunState::WaitingBody | RunState::WaitingCategory)
+}
+fn cancellable(state: RunState) -> bool {
+    polling(state)
+}
+fn repeatable(state: RunState) -> bool {
+    !polling(state)
 }
 pub fn run_status(run: &WorkflowRun) -> String {
     let status = match run.state {
@@ -1454,6 +1621,9 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
     }
     if let Some(request) = &state.confirm {
         let consequence = match request {
+            Request::RunWorkflow { test: true, repeat: true, .. } => tr(
+                "Repeat this test using the current workflow revision? This downloads a new generation and writes a real document; existing files remain.",
+            ),
             Request::RunWorkflow { test: true, .. } => {
                 tr("This test downloads a real document and writes it to the displayed save target. Continue?")
             }
@@ -1499,11 +1669,12 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
                 .push(note(trf("Save target · {target}", &[("target", &target)])));
         }
         if let Request::RunWorkflow { mail, .. } = request {
-            let label =
-                state.examples.iter().find(|m| m.id == *mail).map_or_else(|| mail.clone(), |m| m.subject.clone());
-            facts = facts.push(note(label));
+            facts = facts.push(note(mail_label(state, mail)));
             if !state.selected.is_empty() {
                 facts = facts.push(note(trf("Selected mail: {n}", &[("n", &state.selected.len())])));
+                for id in state.selected.iter().filter(|id| *id != mail) {
+                    facts = facts.push(note(mail_label(state, id)));
+                }
             }
         }
         let facts =
@@ -1568,10 +1739,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
         Menu::Mail => state
             .examples
             .iter()
-            .map(|m| {
-                MenuItem::plain(format!("{} · {}", m.subject, m.date), Message::Mail(m.id.clone()))
-                    .current(m.id == state.mail)
-            })
+            .map(|m| MenuItem::plain(summary_label(m), Message::Mail(m.id.clone())).current(m.id == state.mail))
             .collect(),
         Menu::Account => data
             .accounts
@@ -1751,6 +1919,19 @@ impl DemoState {
             },
             Request::GetWorkflow { id } => {
                 Response::Workflow { workflow: self.workflows.iter().find(|w| w.id == *id)?.clone() }
+            }
+            Request::GetMail { id, include_body: false, include_html: false } => {
+                let now = chrono::DateTime::from_timestamp(1_793_620_800, 0).unwrap_or_default();
+                match torro_inbox::demo::mail_sample(now).into_iter().find(|m| m.summary.id == *id) {
+                    Some(mut message) => {
+                        message.text = None;
+                        message.html = None;
+                        Response::MailMessage { message }
+                    }
+                    None => {
+                        Response::Error { code: "not-found".into(), message: tr("Mail summary unavailable").into() }
+                    }
+                }
             }
             Request::SearchMail { query, .. } => {
                 let now = chrono::DateTime::from_timestamp(1_793_620_800, 0).unwrap_or_default();
@@ -1976,7 +2157,20 @@ pub fn stage(state: &mut State, name: &str, data: &Data) {
             }
             state.run = Some(run);
         }
-        "rule" => {
+        "rule" | "rule-preview" => {
+            if name == "rule-preview" {
+                state.preview = Some(WorkflowPreview {
+                    workflow: w.id.clone(),
+                    revision: w.revision,
+                    mail: w.spec.mail.clone(),
+                    hosts: w.spec.package.hosts.clone(),
+                    save_target: w.spec.save_target.clone(),
+                    possible_writes: true,
+                    authorization_required: !w.authorized,
+                    matches: state.examples.iter().take(2).map(|m| m.id.clone()).collect(),
+                    untrusted: true,
+                });
+            }
             state.rule_form = Some(RuleSpec {
                 workflow: w.id,
                 account: w.account,
@@ -2013,6 +2207,291 @@ mod tests {
             authorized: false,
             untrusted: true,
         }
+    }
+    #[test]
+    fn mail_entry_leaves_competing_details_and_defers_until_edits_are_discarded() {
+        let data = Data::default();
+        for setup in [false, true] {
+            let mut state = State {
+                run: DemoState::default().runs.pop(),
+                rule_form: Some(RuleSpec {
+                    workflow: "w1".into(),
+                    account: "a".into(),
+                    trigger: Trigger::NewMail,
+                    query: String::new(),
+                    category: None,
+                }),
+                selected: vec!["m:old".into()],
+                ..State::default()
+            };
+            let entry = if setup {
+                Message::New { mail: "m:new".into(), account: None, template: false }
+            } else {
+                Message::ChooseRun { mail: "m:new".into(), account: None }
+            };
+            state.rule = state.rule_form.clone().map(|spec| WorkflowRule {
+                id: "rule".into(),
+                revision: 1,
+                spec,
+                enabled: false,
+                activated: None,
+            });
+            let _: Action<()> = update(&mut state, entry.clone(), &data);
+            assert!(state.run.is_none() && state.rule_form.is_none() && state.selected.is_empty());
+            assert_eq!(state.mail, "m:new");
+            state.pending = None;
+            state.setup = false;
+            state.workflow = Some(workflow());
+            let mut edit = workflow().spec;
+            edit.name = "Unsaved".into();
+            state.edit = Some(edit.clone());
+            let _: Action<()> = update(&mut state, entry.clone(), &data);
+            assert!(state.discard && state.edit.as_ref() == Some(&edit));
+            let _: Action<()> = update(&mut state, Message::Cancel, &data);
+            assert_eq!(state.edit.as_ref(), Some(&edit));
+            let _: Action<()> = update(&mut state, entry, &data);
+            let _: Action<()> = update(&mut state, Message::Discard, &data);
+            assert!(state.edit.is_none() && state.run.is_none() && state.rule_form.is_none());
+            assert_eq!(state.setup, setup);
+            assert_eq!(state.mail, "m:new");
+        }
+    }
+
+    #[test]
+    fn preview_mail_without_a_loaded_summary_cannot_be_selected_or_run() {
+        let mut state = State {
+            pending: Some(Request::PreviewWorkflowRule {
+                spec: RuleSpec {
+                    workflow: "w1".into(),
+                    account: "a".into(),
+                    trigger: Trigger::NewMail,
+                    query: String::new(),
+                    category: None,
+                },
+            }),
+            ..State::default()
+        };
+        answered(
+            &mut state,
+            &Ok(Response::WorkflowPreview {
+                preview: WorkflowPreview {
+                    workflow: "w1".into(),
+                    revision: 1,
+                    mail: "m:unknown".into(),
+                    hosts: vec![],
+                    save_target: "target".into(),
+                    possible_writes: true,
+                    authorization_required: false,
+                    matches: vec!["m:unknown".into()],
+                    untrusted: true,
+                },
+            }),
+        );
+        let _: Action<()> = update(&mut state, Message::SelectMail("m:unknown".into()), &Data::default());
+        assert!(state.selected.is_empty(), "opaque IDs are not choices");
+        state.selected.push("m:unknown".into());
+        let _: Action<()> = update(&mut state, Message::RunSelected, &Data::default());
+        assert!(state.confirm.is_none(), "also reject stale or injected selections");
+    }
+
+    #[test]
+    fn returning_from_mail_preserves_unsaved_rule_and_ai_instructions_until_discard() {
+        for setup in [false, true] {
+            let mut state = State::default();
+            if setup {
+                state.setup = true;
+                state.instruction = "Keep my instructions".into();
+            } else {
+                state.rule_form = Some(RuleSpec {
+                    workflow: "w1".into(),
+                    account: "a".into(),
+                    trigger: Trigger::NewMail,
+                    query: "from:billing@example.org".into(),
+                    category: None,
+                });
+            }
+            let entry = Message::ChooseRun { mail: "m:new".into(), account: None };
+            let _: Action<()> = update(&mut state, entry.clone(), &Data::default());
+            assert!(state.discard && state.mail.is_empty());
+            let _: Action<()> = update(&mut state, Message::Cancel, &Data::default());
+            assert!(state.setup || state.rule_form.is_some());
+            if setup {
+                assert_eq!(state.instruction, "Keep my instructions");
+            }
+            let _: Action<()> = update(&mut state, entry, &Data::default());
+            let _: Action<()> = update(&mut state, Message::Discard, &Data::default());
+            assert_eq!(state.mail, "m:new");
+            assert!(state.rule_form.is_none() && !state.setup && state.instruction.is_empty());
+        }
+    }
+
+    #[test]
+    fn demo_header_requests_return_exact_summaries_without_bodies() {
+        let mut demo = DemoState::default();
+        let id = demo.workflows.first().expect("workflow").spec.mail.clone();
+        let Some(Response::MailMessage { message }) =
+            demo.answer(&Request::GetMail { id: id.clone(), include_body: false, include_html: false })
+        else {
+            panic!("headers")
+        };
+        assert_eq!(message.summary.id, id);
+        assert!(message.text.is_none() && message.html.is_none());
+    }
+
+    #[test]
+    fn management_pages_and_rows_fill_the_available_width() {
+        let data = Data::default();
+        for tab in 0..3 {
+            let state = State { tab, ..State::default() };
+            let page = page(&state, &data);
+            assert!(page.max_width.is_none(), "tab {tab} must not cap the page");
+            assert_eq!(page.body.as_widget().size().width, Fill);
+        }
+    }
+    #[test]
+    fn preview_loads_only_exact_matches_and_summary_failures_do_not_block_other_mail() {
+        let data = Data::default();
+        let mut mail =
+            torro_inbox::demo::mail_sample(chrono::DateTime::from_timestamp(1_793_620_800, 0).expect("date")).remove(0);
+        mail.summary.id = "m:known".into();
+        let mut state = State {
+            pending: Some(Request::PreviewWorkflowRule {
+                spec: RuleSpec {
+                    workflow: "w1".into(),
+                    account: "a".into(),
+                    trigger: Trigger::NewMail,
+                    query: "invoice".into(),
+                    category: None,
+                },
+            }),
+            ..State::default()
+        };
+        let preview = WorkflowPreview {
+            workflow: "w1".into(),
+            revision: 1,
+            mail: "m:known".into(),
+            hosts: vec![],
+            save_target: "target".into(),
+            possible_writes: true,
+            authorization_required: false,
+            matches: vec!["m:missing".into(), "m:known".into()],
+            untrusted: true,
+        };
+        if let Some(Request::PreviewWorkflowRule { spec }) = &state.pending {
+            state.rule_form = Some(spec.clone());
+        }
+        answered(&mut state, &Ok(Response::WorkflowPreview { preview }));
+        assert_eq!(
+            next_request(&mut state),
+            Some(Request::GetMail { id: "m:missing".into(), include_body: false, include_html: false })
+        );
+        answered(&mut state, &Err("not found".into()));
+        assert_eq!(
+            next_request(&mut state),
+            Some(Request::GetMail { id: "m:known".into(), include_body: false, include_html: false })
+        );
+        answered(&mut state, &Ok(Response::MailMessage { message: mail.clone() }));
+        assert!(next_request(&mut state).is_none(), "summary reads never trigger workflow mutations or reloads");
+        let label = mail_label(&state, "m:known");
+        assert!(
+            label.contains(&mail.summary.subject) && label.contains(&mail.summary.date.format("%Y-%m-%d").to_string())
+        );
+        assert!(label.contains(&mail.summary.from.as_ref().expect("sender").address));
+        assert!(!label.contains("m:known"));
+        let _: Action<()> = update(&mut state, Message::SelectMail("m:known".into()), &data);
+        assert_eq!(state.selected, ["m:known"]);
+        let mut foreign = mail.summary;
+        foreign.id = "m:outside".into();
+        state.examples.push(foreign);
+        let _: Action<()> = update(&mut state, Message::SelectMail("m:outside".into()), &data);
+        assert_eq!(state.selected, ["m:known"], "search results never widen preview scope");
+        assert!(
+            actions(&state, &data).iter().any(
+                |(choice, action)| matches!(action, Message::SelectMail(id) if id == "m:known") && choice == &label
+            )
+        );
+        assert!(
+            actions(&state, &data).iter().all(
+                |(_, action)| !matches!(action, Message::SelectMail(id) if id == "m:missing" || id == "m:outside")
+            )
+        );
+        let _: Action<()> = update(&mut state, Message::RunSelected, &data);
+        assert!(matches!(state.confirm, Some(Request::RunWorkflow { ref mail, .. }) if mail == "m:known"));
+        state.preview.as_mut().expect("preview").matches.clear();
+        let _: Action<()> = update(&mut state, Message::Confirm, &data);
+        assert!(state.pending.is_none() && state.confirm.is_none(), "confirmation revalidates scope");
+    }
+
+    #[test]
+    fn edited_revision_has_an_explicit_repeat_test_and_old_run_reloads_current_revision() {
+        let mut w = workflow();
+        w.revision = 2;
+        let mut run = DemoState::default().runs.remove(0);
+        run.workflow = w.id.clone();
+        run.mail = w.spec.mail.clone();
+        run.revision = 1;
+        run.test = true;
+        let mut data = Data { workflow_runs: vec![run.clone()], ..Data::default() };
+        let targets = iced::futures::executor::block_on(
+            crate::demo::Demo::new().call(Request::ListSaveTargets { id: None, export_only: false }),
+        )
+        .expect("targets");
+        data.take(targets);
+        w.spec.save_target = data.save_targets.first().expect("target").id.clone();
+        let preview = WorkflowPreview {
+            workflow: w.id.clone(),
+            revision: 2,
+            mail: w.spec.mail.clone(),
+            hosts: w.spec.package.hosts.clone(),
+            save_target: w.spec.save_target.clone(),
+            possible_writes: true,
+            authorization_required: true,
+            matches: vec![],
+            untrusted: true,
+        };
+        let mut state =
+            State { workflow: Some(w.clone()), mail: w.spec.mail.clone(), preview: Some(preview), ..State::default() };
+        let _: Action<()> = update(&mut state, Message::Test, &data);
+        assert!(state.confirm.is_none(), "ordinary test cannot silently reuse old success");
+        assert!(actions(&state, &data).iter().any(|(_, action)| matches!(action, Message::RepeatTest)));
+        let _: Action<()> = update(&mut state, Message::RepeatTest, &data);
+        let expected =
+            Request::RunWorkflow { id: w.id.clone(), revision: 2, mail: run.mail.clone(), test: true, repeat: true };
+        assert_eq!(state.confirm.as_ref(), Some(&expected));
+        assert!(state.pending.is_none(), "show consequences before any download");
+        let _: Action<()> = update(&mut state, Message::Cancel, &data);
+        assert!(state.pending.is_none());
+        let _: Action<()> = update(&mut state, Message::RepeatTest, &data);
+        assert!(
+            matches!(update::<()>(&mut state, Message::Confirm, &data), Action::Ask(request) if request == expected)
+        );
+
+        let mut state = State { run: Some(run), ..State::default() };
+        assert!(
+            matches!(update::<()>(&mut state, Message::RepeatRun, &data), Action::Ask(Request::GetWorkflow { id }) if id == w.id)
+        );
+        assert!(state.confirm.is_none());
+        answered(&mut state, &Ok(Response::Workflow { workflow: w }));
+        assert_eq!(state.confirm.as_ref(), Some(&expected));
+        assert!(state.queued.iter().all(|r| !matches!(r, Request::RunWorkflow { .. })));
+    }
+
+    #[test]
+    fn paused_runs_do_not_poll_or_cancel_but_offer_a_confirmed_repeat() {
+        let mut run = DemoState::default().runs.remove(0);
+        run.state = RunState::Paused;
+        let mut state = State { run: Some(run.clone()), ..State::default() };
+        assert!(!polling(run.state) && !cancellable(run.state) && repeatable(run.state));
+        assert!(matches!(update::<()>(&mut state, Message::Poll, &Data::default()), Action::None));
+        assert!(matches!(update::<()>(&mut state, Message::CancelRun, &Data::default()), Action::None));
+        assert!(actions(&state, &Data::default()).iter().any(|(_, a)| matches!(a, Message::RepeatRun)));
+        assert!(!actions(&state, &Data::default()).iter().any(|(_, a)| matches!(a, Message::CancelRun)));
+        assert!(matches!(
+            update::<()>(&mut state, Message::RepeatRun, &Data::default()),
+            Action::Ask(Request::GetWorkflow { .. })
+        ));
+        assert!(state.confirm.is_none());
+        assert!(polling(RunState::Running) && cancellable(RunState::Running) && !repeatable(RunState::Running));
     }
     #[test]
     fn preview_test_save_and_authorization_are_separate() {
