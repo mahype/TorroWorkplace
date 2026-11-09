@@ -38,6 +38,7 @@ use torro_gui::theme::{palette, size, space};
 use torro_gui::units::{format_count, format_duration};
 use torro_gui::widgets::{Align, Anchor, MenuItem, MenuSection, Placement};
 use torro_gui::{layout, style, theme, typo, widgets};
+use torro_ipc::actions::ActionKind;
 use torro_ipc::inbox::{CategoryInfo, CategoryJobControl, CategoryJobPreview, CategoryJobScope, CategoryJobState};
 use torro_ipc::{Request, Response};
 use torro_mail::{Category, CategoryGroup};
@@ -88,6 +89,11 @@ pub struct State {
     pending_scope: Option<CategoryJobScope>,
     /// Previews on their way: a refusal counts only for the last one (PR review of #463).
     previews_waiting: u32,
+    /// The kinds of action Torro looks for in new mail (issue #603, `mail.list_action_kinds`), asked
+    /// for when the tab AI opens; `None` until the answer is in.
+    kinds: Option<Vec<ActionKind>>,
+    /// Asks for the kinds on their way: a refusal while one waits is theirs, not a preview's.
+    kinds_waiting: u32,
 }
 
 /// What the dialog "Sort existing mail" holds while it is open.
@@ -214,6 +220,8 @@ pub enum Message {
     StartJob,
     /// Pause, Resume or Cancel of the run.
     ControlJob(String, CategoryJobControl),
+    /// The switch of a kind of action in "Suggestions" (issue #603): look for it in new mail or not.
+    ActionKind(String, bool),
 }
 
 pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
@@ -221,7 +229,18 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
         Message::Tab(index) => {
             state.tab = Tab::ALL.get(index).copied().unwrap_or_default();
             close_menus(state);
-            Action::None
+            // The kinds of action are the core's (issue #603): asked for once the tab AI shows.
+            match state.tab == Tab::Ai && state.kinds.is_none() {
+                true => {
+                    state.kinds_waiting += 1;
+                    Action::Ask(Request::ListActionKinds)
+                }
+                false => Action::None,
+            }
+        }
+        Message::ActionKind(kind, enabled) => {
+            state.kinds_waiting += 1;
+            Action::Ask(Request::SetActionKind { kind, enabled })
         }
         Message::ManageModels => Action::Open(crate::assistant::AI_SECTION),
         Message::CancelDrag => {
@@ -415,6 +434,12 @@ pub fn answered(state: &mut State, answer: &Result<Response, String>) {
         return;
     }
     match answer {
+        // The kinds of action, listed or switched (issue #603).
+        Ok(Response::ActionKinds { kinds }) => {
+            state.kinds_waiting = state.kinds_waiting.saturating_sub(1);
+            state.kinds = Some(kinds.clone());
+        }
+        Err(_) if state.kinds_waiting > 0 => state.kinds_waiting -= 1,
         Ok(Response::CategoryJobPreview { preview }) => {
             state.previews_waiting = state.previews_waiting.saturating_sub(1);
             if preview.request_scope == state.pending_scope {
@@ -694,7 +719,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     }
     let tab = match state.tab {
         Tab::Categories => categories_tab(state, data),
-        Tab::Ai => ai_tab(data),
+        Tab::Ai => ai_tab(state, data),
     };
     let about = typo::text(typo::body(), tr("Fixed rules and the AI sort every new mail as it arrives."))
         .style(theme::text_2)
@@ -820,7 +845,7 @@ fn state_word(state: CategoryJobState) -> String {
 /// "Sort with model" with the model that sorts and the line about it, the model's special cases, and
 /// "Categories the model may choose". The model is chosen in Settings › AI only (issue #545): the row
 /// leads there, as "Appearance ↗" in the sidebar does.
-fn ai_tab<'a>(data: &'a Data) -> Element<'a, Message> {
+fn ai_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let current = chosen(data);
     let label = match &current {
         Chosen::Off => tr("Off").to_string(),
@@ -893,7 +918,48 @@ fn ai_tab<'a>(data: &'a Data) -> Element<'a, Message> {
         ),
         Some(Message::Tab(0)),
     );
-    column![sorting, widgets::group(tr("Model"), vec![may], None)].spacing(layout::section_gap()).into()
+    let mut groups = column![sorting, widgets::group(tr("Model"), vec![may], None)].spacing(layout::section_gap());
+    if let Some(suggestions) = suggestions_group(state) {
+        groups = groups.push(suggestions);
+    }
+    groups.into()
+}
+
+/// "Suggestions" (issue #603, `docs/vorschlaege.md`): a switch for each kind of action Torro looks
+/// for in new mail, by the core's list. `None` until the list is in: no switch shows a guess.
+fn suggestions_group<'a>(state: &'a State) -> Option<Element<'a, Message>> {
+    let kinds = state.kinds.as_ref().filter(|kinds| !kinds.is_empty())?;
+    let rows = kinds
+        .iter()
+        .map(|kind| {
+            let id = kind.id.clone();
+            let toggle = switch(kind.enabled, move |on| Message::ActionKind(id.clone(), on));
+            setting_row(Some(kind_icon(&kind.icon)), kind_label(&kind.label), None, toggle)
+        })
+        .collect();
+    let hint = tr("Torro looks for these in new mail and shows them above it. Nothing is created until you accept.");
+    Some(widgets::group(tr("Suggestions"), rows, Some(hint.to_string())))
+}
+
+/// The word of a kind of action (issue #603): the core sends it in English, the known ones are
+/// translated here; another one stays as it came.
+fn kind_label(label: &str) -> String {
+    match label {
+        "Event" => tr("Event").to_string(),
+        "Task" => tr("Task").to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// The icon of a kind of action by its Lucide name (issue #603); one the suite does not draw gets
+/// the sparkles.
+fn kind_icon<'a>(name: &str) -> Element<'a, Message> {
+    let which = match name {
+        "calendar-plus" => Icon::CalendarPlus,
+        "list-todo" => Icon::ListTodo,
+        _ => Icon::Sparkles,
+    };
+    icon::icon(which, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) }).into()
 }
 
 // ----- tab Categories -----
