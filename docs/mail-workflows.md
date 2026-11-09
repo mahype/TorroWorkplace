@@ -222,6 +222,12 @@ enthaltenen Hosted-Invoice-Links aufgelöst. Das JSON muss genau ein nichtleeres
 Ziel auf dem ausdrücklich zugelassenen Datei-Host wird verwendet. Fehlende oder fremde Varianten
 werden nicht durch erratene Pfade, Receipt-Links oder Browserbedienung ersetzt. Ein Ablauf wird nur
 mit einem tatsächlichen Ablaufbeleg als `expired` bezeichnet.
+Beim geschlossenen Resolver darf auch HTTP 400 einen ausdrücklichen Ablaufhinweis tragen:
+höchstens 16 KiB JSON-/Klartextfehler, unter denselben Zeit-, GET- und aktuellen Rechteprüfungen.
+Nur unterstützte explizite Ablaufcodes oder eindeutige Ablaufsätze werden erkannt; der Status allein,
+beliebige Vorkommen von „expired“, HTML und unbekannte oder mehrdeutige Antworten reichen nicht.
+Es folgt kein weiterer Abruf oder automatischer Retry, und keine Antwortinhalte werden ausgegeben.
+Die Testfehler sind synthetisch, keine aufgezeichnete private Stripe-Payload oder reale Produktabnahme.
 
 Die exakten Stripe-Hosts sind `invoice.stripe.com`, `invoicedata.stripe.com` und
 `stripe-upload-api.s3.us-west-1.amazonaws.com`, ohne Wildcards. Der geschlossene Resolver kodiert

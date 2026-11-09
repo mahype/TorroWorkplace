@@ -19,6 +19,7 @@ const STRIPE_DATA: &str = "invoicedata.stripe.com";
 const STRIPE_FILE: &str = "stripe-upload-api.s3.us-west-1.amazonaws.com";
 const MAX_HTML: usize = 2 * 1024 * 1024;
 const MAX_PDF: usize = 50 * 1024 * 1024;
+const MAX_STRIPE_ERROR: usize = 16 * 1024;
 const DEADLINE: Duration = Duration::from_secs(60);
 
 /// Intentionally neither Debug nor Serialize. Only the live job holds a link or signed download target.
@@ -52,6 +53,10 @@ impl std::error::Error for Failure {}
 
 fn unsupported() -> Failure {
     Failure::fixed(RunReason::Unsupported)
+}
+
+fn after_http_400(received: bool, error: Failure) -> Failure {
+    if received && error.retryable { unsupported() } else { error }
 }
 
 fn decoded(segment: &str) -> Result<String, Failure> {
@@ -131,6 +136,73 @@ pub struct Downloader {
     test_endpoint: Option<Url>,
 }
 
+async fn bounded_bytes(
+    response: &mut reqwest::Response,
+    limit: usize,
+    allow: &(dyn Fn() -> Result<(), Failure> + Sync),
+) -> Result<Vec<u8>, Failure> {
+    if response.content_length().is_some_and(|length| length > limit as u64) {
+        return Err(unsupported());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) =
+        response.chunk().await.map_err(|_| Failure { reason: RunReason::Offline, retryable: true })?
+    {
+        allow()?;
+        if chunk.len() > limit.saturating_sub(bytes.len()) {
+            return Err(unsupported());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+/// Recognize explicit error semantics only, never arbitrary occurrences of "expired" in a page.
+/// These supported forms are synthetic contracts, not a claim about a private pilot response.
+fn stripe_expired(bytes: &[u8], mime: &str) -> bool {
+    #[derive(Deserialize)]
+    struct ErrorBody {
+        error: ErrorDetail,
+    }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ErrorDetail {
+        Text(String),
+        Fields { code: Option<String>, message: Option<String> },
+    }
+    let message = |value: &str| {
+        matches!(
+            value.trim().trim_end_matches(['.', '!']).to_ascii_lowercase().as_str(),
+            "this invoice link has expired"
+                | "the invoice link has expired"
+                | "invoice link has expired"
+                | "invoice link expired"
+                | "this invoice has expired"
+                | "invoice has expired"
+        )
+    };
+    match mime {
+        "text/plain" => std::str::from_utf8(bytes).is_ok_and(message),
+        "application/json" => {
+            // Struct deserializers also accept positional JSON arrays. Reject those at both
+            // levels; the typed second pass still rejects duplicate recognized fields.
+            let Ok(serde_json::Value::Object(fields)) = serde_json::from_slice(bytes) else { return false };
+            if !matches!(fields.get("error"), Some(serde_json::Value::String(_) | serde_json::Value::Object(_))) {
+                return false;
+            }
+            match serde_json::from_slice::<ErrorBody>(bytes) {
+                Ok(ErrorBody { error: ErrorDetail::Text(value) }) => message(&value),
+                Ok(ErrorBody { error: ErrorDetail::Fields { code: Some(code), .. } }) => {
+                    matches!(code.as_str(), "invoice_link_expired" | "invoice_expired" | "link_expired")
+                }
+                Ok(ErrorBody { error: ErrorDetail::Fields { code: None, message: Some(value) } }) => message(&value),
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 impl Downloader {
     pub fn system() -> Result<Self, Failure> {
         Self::new(Arc::new(SystemResolver::new()))
@@ -206,6 +278,7 @@ impl Downloader {
             }
             allow()?;
             budget.gets += 1;
+            let mut received_http_400 = false;
             let read = async {
                 let mut response = self
                     .http
@@ -215,6 +288,7 @@ impl Downloader {
                     .await
                     .map_err(|_| Failure { reason: RunReason::Offline, retryable: true })?;
                 let status = response.status().as_u16();
+                received_http_400 = status == 400;
                 if matches!(status, 301 | 302 | 303 | 307 | 308) {
                     if budget.redirects >= 5 {
                         return Err(unsupported());
@@ -228,6 +302,28 @@ impl Downloader {
                     let next = checked(next.as_str(), hosts)?;
                     budget.redirects += 1;
                     return Ok(Err(next));
+                }
+                if status == 400
+                    && json
+                    && link.host() == STRIPE_DATA
+                    && link.0.path().starts_with("/invoice_pdf_file_url/")
+                {
+                    // A permanent HTTP400 alone proves no expiry. Inspect only a bounded explicit
+                    // error on the closed resolver, within this request's existing time/GET budget.
+                    allow()?;
+                    let mime = response
+                        .headers()
+                        .get(CONTENT_TYPE)
+                        .and_then(|value| value.to_str().ok())
+                        .filter(|value| value.len() <= 256)
+                        .map(|value| value.split(';').next().unwrap_or("").trim().to_ascii_lowercase())
+                        .ok_or_else(unsupported)?;
+                    let bytes = bounded_bytes(&mut response, MAX_STRIPE_ERROR, allow).await?;
+                    return Err(if stripe_expired(&bytes, &mime) {
+                        Failure::fixed(RunReason::Expired)
+                    } else {
+                        unsupported()
+                    });
                 }
                 match status {
                     200 => {}
@@ -252,25 +348,13 @@ impl Downloader {
                     (false, "text/html") => MAX_HTML,
                     _ => return Err(Failure::fixed(RunReason::UnexpectedType)),
                 };
-                if response.content_length().is_some_and(|length| length > limit as u64) {
-                    return Err(unsupported());
-                }
-                let mut bytes = Vec::new();
-                while let Some(chunk) =
-                    response.chunk().await.map_err(|_| Failure { reason: RunReason::Offline, retryable: true })?
-                {
-                    allow()?;
-                    if chunk.len() > limit.saturating_sub(bytes.len()) {
-                        return Err(unsupported());
-                    }
-                    bytes.extend_from_slice(&chunk);
-                }
+                let bytes = bounded_bytes(&mut response, limit, allow).await?;
                 Ok(Ok(Body { bytes, content_type, source_host: link.host().into() }))
             };
-            match tokio::time::timeout(remaining, read)
+            let result = tokio::time::timeout(remaining, read)
                 .await
-                .map_err(|_| Failure { reason: RunReason::Offline, retryable: true })??
-            {
+                .unwrap_or(Err(Failure { reason: RunReason::Offline, retryable: true }));
+            match result.map_err(|error| after_http_400(received_http_400, error))? {
                 Ok(body) => return Ok(body),
                 Err(next) => link = next,
             }
@@ -570,6 +654,184 @@ mod tests {
         foreign.assert_calls_async(1).await;
         expired.assert_calls_async(1).await;
         html.assert_calls_async(1).await;
+    }
+
+    #[tokio::test]
+    async fn stripe_http_400_requires_an_explicit_bounded_expiry_indicator() {
+        // Synthetic error variants, not a recording or claimed acceptance of a private invoice.
+        let cases = [
+            ("application/json", r#"{"error":"This invoice link has expired"}"#.to_string(), RunReason::Expired),
+            ("application/json", r#"{"error":{"code":"invoice_link_expired"}}"#.into(), RunReason::Expired),
+            ("application/json", r#"{"error":{"message":"This invoice link has expired"}}"#.into(), RunReason::Expired),
+            ("text/plain; charset=utf-8", "This invoice link has expired.\n".into(), RunReason::Expired),
+            ("application/json", r#"{"error":"Invalid invoice token"}"#.into(), RunReason::Unsupported),
+            ("application/json", r#"{"error":"This invoice link has not expired"}"#.into(), RunReason::Unsupported),
+            ("application/json", r#"{"other":"This invoice link has expired"}"#.into(), RunReason::Unsupported),
+            ("application/json", r#"["This invoice link has expired"]"#.into(), RunReason::Unsupported),
+            ("application/json", r#"{"error":["invoice_link_expired"]}"#.into(), RunReason::Unsupported),
+            (
+                "application/json",
+                r#"{"error":{"code":"invalid_request","message":"This invoice link has expired"}}"#.into(),
+                RunReason::Unsupported,
+            ),
+            (
+                "application/json",
+                r#"{"error":{"code":"invalid_request","code":"invoice_link_expired"}}"#.into(),
+                RunReason::Unsupported,
+            ),
+            ("text/plain", "expired".into(), RunReason::Unsupported),
+            (
+                "application/json",
+                r#"{"error":"This invoice link has expired","error":"Other failure"}"#.into(),
+                RunReason::Unsupported,
+            ),
+            ("application/json", "{invalid}".into(), RunReason::Unsupported),
+            ("application/json", "x".repeat(16 * 1024 + 1), RunReason::Unsupported),
+            ("text/html", "<script>This invoice link has expired</script>".into(), RunReason::Unsupported),
+        ];
+        let hosts = vec![STRIPE_PAGE.into(), STRIPE_DATA.into(), STRIPE_FILE.into()];
+        let server = httpmock::MockServer::start_async().await;
+        let downloader = Downloader::for_test(&server.base_url());
+        for (index, (mime, body, reason)) in cases.into_iter().enumerate() {
+            let path = format!("/{STRIPE_DATA}/invoice_pdf_file_url/synthetic/case_{index}");
+            let mock = server
+                .mock_async(|when, then| {
+                    when.method(httpmock::Method::GET).path(path);
+                    then.status(400).header("content-type", mime).body(body);
+                })
+                .await;
+            let link =
+                checked(&format!("https://{STRIPE_PAGE}/i/synthetic/case_{index}"), &hosts).expect("synthetic link");
+            let mut budget = Budget::new();
+            let error = downloader
+                .resolve_stripe_invoice_pdf(link, &hosts, &mut budget, &|| Ok(()))
+                .await
+                .err()
+                .expect("no file from HTTP400");
+            assert_eq!(error, Failure { reason, retryable: false }, "synthetic case {index}");
+            assert_eq!(budget.gets, 1, "never follow an error payload to a PDF or retry a permanent error");
+            mock.assert_calls_async(1).await;
+        }
+        let foreign = server
+            .mock_async(|when, then| {
+                when.path("/files.example.org/invoice.pdf");
+                then.status(400)
+                    .header("content-type", "application/json")
+                    .body(r#"{"error":"This invoice link has expired"}"#);
+            })
+            .await;
+        let direct_hosts = vec!["files.example.org".into()];
+        let link = checked("https://files.example.org/invoice.pdf", &direct_hosts).expect("direct link");
+        assert_eq!(
+            downloader
+                .fetch(link, &direct_hosts, &mut Budget::new(), &|| Ok(()))
+                .await
+                .err()
+                .expect("generic400")
+                .reason,
+            RunReason::Unsupported
+        );
+        foreign.assert_calls_async(1).await;
+        let revoked = std::sync::atomic::AtomicBool::new(false);
+        let allow = || {
+            if revoked.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                Err(Failure::fixed(RunReason::PermissionRevoked))
+            } else {
+                Ok(())
+            }
+        };
+        let link = checked(&format!("https://{STRIPE_PAGE}/i/synthetic/case_0"), &hosts).expect("synthetic link");
+        assert_eq!(
+            downloader
+                .resolve_stripe_invoice_pdf(link, &hosts, &mut Budget::new(), &allow)
+                .await
+                .err()
+                .expect("revoked while response awaited")
+                .reason,
+            RunReason::PermissionRevoked
+        );
+    }
+
+    #[tokio::test]
+    async fn stripe_error_without_content_length_cannot_bypass_the_error_byte_limit() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("local server");
+        let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("GET");
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(socket.read_u8().await.expect("bounded request"));
+                assert!(request.len() < 4096);
+            }
+            let body = serde_json::to_vec(
+                &serde_json::json!({"error":"This invoice link has expired", "padding":"x".repeat(MAX_STRIPE_ERROR)}),
+            )
+            .expect("synthetic JSON");
+            let head = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n",
+                body.len()
+            );
+            socket.write_all(head.as_bytes()).await.expect("head");
+            socket.write_all(&body).await.expect("body");
+            // The reader may close as soon as it sees the bound exceeded.
+            let _ = socket.write_all(b"\r\n0\r\n\r\n").await;
+        });
+        let downloader = Downloader::for_test(&endpoint);
+        let hosts = vec![STRIPE_PAGE.into(), STRIPE_DATA.into(), STRIPE_FILE.into()];
+        let link = checked(&format!("https://{STRIPE_PAGE}/i/synthetic/chunked"), &hosts).expect("synthetic link");
+        let error = downloader
+            .resolve_stripe_invoice_pdf(link, &hosts, &mut Budget::new(), &|| Ok(()))
+            .await
+            .err()
+            .expect("bounded error");
+        assert_eq!(error, Failure::fixed(RunReason::Unsupported));
+        server.await.expect("server finished");
+    }
+
+    #[tokio::test]
+    async fn received_stripe_http_400_is_permanent_even_when_its_body_is_interrupted() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("local server");
+        let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("GET");
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(socket.read_u8().await.expect("request"));
+                assert!(request.len() < 4096);
+            }
+            socket.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n{\"error\":").await.expect("interrupted error body");
+        });
+        let downloader = Downloader::for_test(&endpoint);
+        let hosts = vec![STRIPE_PAGE.into(), STRIPE_DATA.into(), STRIPE_FILE.into()];
+        let link = checked(&format!("https://{STRIPE_PAGE}/i/synthetic/interrupted"), &hosts).expect("synthetic link");
+        let error = downloader
+            .resolve_stripe_invoice_pdf(link, &hosts, &mut Budget::new(), &|| Ok(()))
+            .await
+            .err()
+            .expect("incomplete error");
+        assert_eq!(
+            error,
+            Failure::fixed(RunReason::Unsupported),
+            "an observed HTTP400 must not trigger network retries"
+        );
+        server.await.expect("server finished");
+    }
+
+    #[tokio::test]
+    async fn a_timeout_after_http_400_is_permanent_but_permission_failures_are_preserved() {
+        let timed_out = tokio::time::timeout(std::time::Duration::ZERO, std::future::pending::<()>()).await;
+        assert!(timed_out.is_err());
+        let timeout_error = Failure { reason: RunReason::Offline, retryable: true };
+        assert_eq!(after_http_400(true, timeout_error), Failure::fixed(RunReason::Unsupported));
+        assert_eq!(
+            after_http_400(false, timeout_error),
+            timeout_error,
+            "no HTTP response still permits bounded network retries"
+        );
+        let revoked = Failure::fixed(RunReason::PermissionRevoked);
+        assert_eq!(after_http_400(true, revoked), revoked);
     }
 
     #[tokio::test]
