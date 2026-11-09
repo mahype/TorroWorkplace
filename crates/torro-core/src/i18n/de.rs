@@ -1476,10 +1476,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The mail names nothing to fill in.", "Die Mail nennt nichts zum Ausfüllen."),
     ("Couldn't change the suggestion.", "Der Vorschlag konnte nicht geändert werden."),
     ("an unknown kind", "eine unbekannte Art"),
+    ("Look for \"{kind}\" in new mail", "In neuen Mails nach „{kind}“ suchen"),
+    ("Stop looking for \"{kind}\" in new mail", "In neuen Mails nicht mehr nach „{kind}“ suchen"),
     (
-        "Torro looks for these in new mail and shows them above it. Nothing is created until you accept.",
-        "Torro sucht in neuen Mails danach und zeigt sie darüber an. Angelegt wird erst, wenn du annimmst.",
+        "Torro looks for these in new mail and shows them above the mail. Nothing is created until you accept.",
+        "Torro sucht in neuen Mails danach und zeigt sie über der Mail an. Angelegt wird erst, wenn du annimmst.",
     ),
+    ("Couldn't change the suggestion: {why}", "Der Vorschlag konnte nicht geändert werden: {why}"),
+    ("Couldn't load the suggestions: {why}", "Die Vorschläge konnten nicht geladen werden: {why}"),
     ("Open \"{title}\" in {app}", "„{title}“ in {app} öffnen"),
     ("Open a new mail with the PDF \"{title}\" attached", "Neue Mail mit der PDF „{title}“ im Anhang öffnen"),
     // Notifications window (E8.4)
