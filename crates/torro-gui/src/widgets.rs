@@ -78,7 +78,7 @@ mod volume_chart;
 pub use volume_chart::volume_chart;
 
 use torro_core::design::{ListLook, ListSelection};
-use torro_core::i18n::tr;
+use torro_core::i18n::{tr, trf};
 use torro_core::shortcuts::{Held, System};
 use torro_ipc::api::{Confirm, Level};
 
@@ -5008,17 +5008,20 @@ pub fn label_chip<'a, M: 'a>(hex: &str, name: impl IntoFragment<'a>) -> Element<
 }
 
 /// What a mail is, as a pill in the list, the reader and the panel (task E12.7,
-/// `docs/kategorien.md`): the category's monochrome icon and words, tinted by its group's colour.
+/// `docs/kategorien.md`): the category's monochrome icon and words in white, on its group's colour
+/// (issue #613).
 ///
 /// `group` is the index of `torro_mail::CategoryGroup` (0 waiting for me, 3 unwanted, 4 unsorted)
 /// and picks the colour out of [`theme::Palette::category`]; a larger index falls back to the last. The colour
-/// belongs to the group; the icon and words belong to the category.
+/// belongs to the group; the icon and words belong to the category. The fill is that colour, darkened
+/// only as far as the white words need ([`theme::category_fill`]).
 ///
-/// `suggested` marks a category a model chose (`docs/ki.md`, principle 5): the sparkles the suite
-/// puts on every AI result go in front. A category from a header or from the person has none.
+/// `suggested` marks a category a model chose (`docs/ki.md`, principle 5): the pill then says so in
+/// its tooltip ("Shipping · suggested"). The pill itself looks the same, so it stays readable; a
+/// category from a header or from the person has no tooltip.
 ///
 /// Not a button: the click belongs to the row around it. Changing the category goes through the
-/// row's menu.
+/// row's menu. [`category_pill_width`] is its width.
 pub fn category_pill<'a, M: 'a>(
     icon: Icon,
     group: usize,
@@ -5026,23 +5029,28 @@ pub fn category_pill<'a, M: 'a>(
     suggested: bool,
 ) -> Element<'a, M> {
     let at = category_index(group);
-    let mut content = row![].spacing(ICON_GAP).align_y(Alignment::Center);
-    if suggested {
-        content = content.push(sparkle(pill_icon()));
-    }
-    content = content.push(category_icon(icon, at)).push(typo::text(typo::caption(), label).wrapping(Wrapping::None));
-    container(content)
+    let label = label.into_fragment();
+    let tip = suggested.then(|| trf("{category} · suggested", &[("category", &label)]));
+    let mark = self::icon(icon, pill_icon()).style(|_, _| svg::Style { color: Some(Color::WHITE) });
+    let words = typo::text(typo::caption(), label).wrapping(Wrapping::None).color(Color::WHITE);
+    let pill = container(row![mark, words].spacing(ICON_GAP).align_y(Alignment::Center))
         .center_y(PILL_HEIGHT)
         .padding(Padding::new(0.0).left(ICON_GAP).right(ICON_GAP))
-        .style(move |t| {
-            let p = palette(t);
-            container::Style {
-                text_color: Some(p.text_2),
-                border: border::rounded(radius::xs()).color(p.category[at]).width(LINE),
-                ..container::Style::default()
-            }
-        })
-        .into()
+        .style(move |t| container::Style {
+            text_color: Some(Color::WHITE),
+            background: Some(theme::category_fill(palette(t).category[at]).into()),
+            border: border::rounded(radius::xs()),
+            ..container::Style::default()
+        });
+    match tip {
+        Some(tip) => with_tooltip(pill, tip),
+        None => pill.into(),
+    }
+}
+
+/// The width of a [`category_pill`] with the words `label`: its padding, icon, gap and words.
+pub fn category_pill_width(label: &str) -> f32 {
+    2.0 * ICON_GAP + pill_icon() + ICON_GAP + typo::text_width(label, typo::caption())
 }
 
 /// The small mark of a mail's category for a row of the list (task E12.8): its icon in the group's
@@ -5061,16 +5069,6 @@ fn category_index(group: usize) -> usize {
 
 /// How many group colours [`theme::Palette::category`] holds, one per `torro_mail::CategoryGroup`.
 const CATEGORY_COLOURS: usize = 5;
-
-/// The icon of a category in its group's colour ([`category_pill`]).
-fn category_icon<'a, M: 'a>(which: Icon, group: usize) -> Element<'a, M> {
-    icon(which, pill_icon()).style(move |t, _| svg::Style { color: Some(palette(t).category[group]) }).into()
-}
-
-/// The sparkles the suite marks every AI result with, in the accent colour.
-fn sparkle<'a, M: 'a>(edge: f32) -> Element<'a, M> {
-    icon(Icon::Sparkles, edge).style(move |t, _| svg::Style { color: Some(palette(t).accent) }).into()
-}
 
 /// [`label_chip`]s side by side with 4 between them, wrapping onto more lines when they do not
 /// fit (the value of a "Labels" [`prop_line`]).
@@ -7431,6 +7429,17 @@ mod tests {
             assert_eq!(off.text_color, Some(p.on_accent.scale_alpha(DISABLED_ALPHA)));
             assert_eq!(off.border.color, p.on_accent.scale_alpha(0.5 * DISABLED_ALPHA));
         }
+    }
+
+    /// Issue #613: the filled category pill builds with and without the tooltip of a suggestion,
+    /// and its width grows with its words.
+    #[test]
+    fn the_category_pill_is_as_wide_as_its_words() {
+        use super::{Element, Icon, category_pill, category_pill_width};
+        let _: Element<'_, ()> = category_pill(Icon::Archive, 1, "Shipping", false);
+        let _: Element<'_, ()> = category_pill(Icon::Archive, 9, "Shipping", true);
+        assert!(category_pill_width("Security") > category_pill_width("Bills"));
+        assert!(category_pill_width("") > 0.0, "the padding and the icon stay");
     }
 
     /// Issue #422: the arrows turn once per 1.2 s and start over; a clock before the start is the
