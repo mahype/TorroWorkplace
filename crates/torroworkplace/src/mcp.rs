@@ -1602,6 +1602,7 @@ fn save_todo<Tz: TimeZone>(input: TodoInput, zone: &Tz) -> Result<Request, ToolE
                 categories: Vec::new(),
                 sort_order: None,
                 link: None,
+                focus: Default::default(),
             },
         }),
     }
@@ -3161,6 +3162,7 @@ mod tests {
             categories: Vec::new(),
             sort_order: None,
             link: None,
+            focus: Default::default(),
         };
         assert_eq!(request, Ok(Request::SaveTodo { todo: wanted.clone() }));
 

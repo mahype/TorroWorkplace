@@ -705,6 +705,7 @@ impl Detail {
             categories: Vec::new(),
             sort_order: None,
             link: None,
+            focus: Default::default(),
         })
     }
 
@@ -2082,6 +2083,7 @@ mod tests {
             categories: Vec::new(),
             sort_order: None,
             link: None,
+            focus: Default::default(),
         }
     }
 

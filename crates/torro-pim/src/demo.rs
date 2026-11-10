@@ -509,6 +509,7 @@ fn todo(collection: &str, uid: &str, summary: &str, due: Option<EventTime>) -> T
         categories: Vec::new(),
         sort_order: None,
         link: None,
+        focus: Default::default(),
     }
 }
 

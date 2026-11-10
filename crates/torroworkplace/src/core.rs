@@ -602,6 +602,7 @@ fn task_from_entry(
                 github_link(entry).unwrap_or_else(|| torro_pim::model::Link::new(format!("{INBOX_LINK}{}", entry.id)))
             }
         }),
+        focus: Default::default(),
     }
 }
 
@@ -838,6 +839,7 @@ fn task_from_mail(
         categories: Vec::new(),
         sort_order: None,
         link: Some(origin.link),
+        focus: Default::default(),
     }
 }
 
@@ -22224,6 +22226,7 @@ mod tests {
             categories: Vec::new(),
             sort_order: Some(5),
             link: Some(torro_pim::model::Link::github(repo, number)),
+            focus: Default::default(),
         }
     }
 
@@ -26770,6 +26773,7 @@ mod tests {
                 categories: Vec::new(),
                 sort_order: None,
                 link: Some(Link::mail(ANNA, OFFER_ID)),
+                focus: Default::default(),
             };
             let suite = || async {
                 let request = Request::ListItems {

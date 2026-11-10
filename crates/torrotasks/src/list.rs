@@ -1368,6 +1368,7 @@ mod tests {
             categories: Vec::new(),
             sort_order: None,
             link: None,
+            focus: Default::default(),
         }
     }
 

@@ -85,6 +85,7 @@ impl Item {
                 }),
                 mail: None,
             }),
+            focus: Default::default(),
         }
     }
 }

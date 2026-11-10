@@ -27,7 +27,7 @@
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, Offset, TimeZone, Utc};
 use chrono_tz::Tz;
 use torro_pim::model::{Attendee, AttendeeRole, EventStatus, Geo, Link, PartStat, Repeat, RepeatEnd, RepeatFreq};
-use torro_pim::{Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Event, EventTime, Todo, Transparency};
+use torro_pim::{Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Event, EventTime, Focus, Todo, Transparency};
 
 /// One content line: `NAME;PARAM=VALUE:value`.
 pub(crate) struct Property<'a> {
@@ -269,7 +269,17 @@ pub(crate) fn to_todo(props: &[Property<'_>], collection: &str) -> Option<Todo> 
             .map(|p| unescape(p.value).trim().to_string())
             .filter(|id| !id.is_empty())
             .map(Link::new),
+        focus: get("X-TORRO-FOCUS").map(|p| focus(p.value)).unwrap_or_default(),
     })
+}
+
+/// The focus level `X-TORRO-FOCUS` names: `1` focus, `2` strong focus, anything else normal.
+fn focus(value: &str) -> Focus {
+    match value.trim() {
+        "1" => Focus::Focus,
+        "2" => Focus::Strong,
+        _ => Focus::Normal,
+    }
 }
 
 /// The tags of all `CATEGORIES` properties, in order: each holds a comma-separated list, and
@@ -750,6 +760,18 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
 END:VTODO\r\nEND:VCALENDAR\r\n";
         let odd = parse_todos(odd, "/tasks/").remove(0);
         assert_eq!((odd.url, odd.sort_order, odd.link), (None, None, None), "empty or unreadable values are none");
+    }
+
+    #[test]
+    fn reads_the_focus_level() {
+        let ics =
+            |value: &str| format!("BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:x\r\n{value}END:VTODO\r\nEND:VCALENDAR\r\n");
+        let focus = |value: &str| parse_todos(&ics(value), "/tasks/").remove(0).focus;
+        assert_eq!(focus(""), Focus::Normal);
+        assert_eq!(focus("X-TORRO-FOCUS:1\r\n"), Focus::Focus);
+        assert_eq!(focus("X-TORRO-FOCUS: 2 \r\n"), Focus::Strong);
+        assert_eq!(focus("X-TORRO-FOCUS:0\r\n"), Focus::Normal);
+        assert_eq!(focus("X-TORRO-FOCUS:much\r\n"), Focus::Normal, "unreadable values are normal");
     }
 
     #[test]

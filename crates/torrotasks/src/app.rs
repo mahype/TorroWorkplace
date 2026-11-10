@@ -1319,6 +1319,7 @@ impl App {
                     categories: Vec::new(),
                     sort_order: None,
                     link: None,
+                    focus: Default::default(),
                 };
                 return self.save(todo);
             }
@@ -4243,6 +4244,7 @@ mod tests {
             categories: Vec::new(),
             sort_order: None,
             link: None,
+            focus: Default::default(),
         }
     }
 

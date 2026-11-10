@@ -3742,6 +3742,7 @@ impl PimService {
             categories: Vec::new(),
             sort_order: None,
             link: Some(Link::github(item.repo(), item.id.number)),
+            focus: Default::default(),
         };
         match self.save_todo(todo).await {
             Ok(saved) => Response::Todo { todo: reach.with_details(saved, &self.state.read().await.links) },
@@ -4652,6 +4653,7 @@ pub(crate) mod tests {
             categories: Vec::new(),
             sort_order: None,
             link: None,
+            focus: Default::default(),
         }
     }
 
