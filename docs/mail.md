@@ -430,6 +430,10 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Standard-Absender neuer Mails (#343) | Mail-Einstellungen › Reading & writing | `settings.set_setting` mit `mail_sender` · Admin; ein Client sieht und setzt nur Konten seiner Auswahl | `settings_set_setting` |
 | Zugangsdaten prüfen und speichern (#343) | Mail-Einstellungen › Accounts, im Konto › Settings: „Test credentials“, „Save connection“ | `accounts.reconfigure_mail` · Admin, nur App-Schlüssel | **Never** (Liste Punkt 5: ein Passwort geht hinein) |
 | Ordner auflisten | Mail-Seitenleiste | `mail.list_folders` · Read | `mail_list_folders` |
+| Vorschläge einer Mail (#603, [vorschlaege.md](vorschlaege.md)) | Karte über der Mail: Accept · Dismiss; Glühbirne in der Liste | `mail.list_suggestions` · Read; `mail.accept_suggestion`, `mail.dismiss_suggestion` · Write | `mail_list_suggestions`, `mail_accept_suggestion`, `mail_dismiss_suggestion` |
+| Termin oder Aufgabe aus einer Mail auslesen (#603) | Aktionsleiste › Torro › Task/Event, „Fill in with AI“ | `mail.extract_action` · Write | `mail_extract_action` |
+| Termin aus einer Mail ohne Eintrag (#603) | Aktionsleiste › Torro › Event | `calendar.create_event_from_mail` · Write | `calendar_create_event_from_mail` |
+| Arten von Vorschlägen an und aus (#603) | Mail-Einstellungen › Categorization › AI › Suggestions | `mail.list_action_kinds` · Read; `mail.set_action_kind` · Admin | `mail_list_action_kinds`, `mail_set_action_kind` |
 | Suchen / Liste | Mail-Liste, Suche, Filter-Icon im Suchfeld (#336), dort die Gruppe „Archive“ ohne, mit oder nur Archiv (#476: `-in:archive`, `in:inbox OR in:archive`, `in:archive`) | `mail.search_messages` · Read | `mail_search_messages` |
 | Stand des Suchindex (#136) | Suchfeld: Hinweis „12 400 von 18 000 indiziert“ (Schritt 5 von #136) | `mail.index_status` · Read | `mail_index_status` |
 | Bestand und lokaler Cache (#263) | Mail-Einstellungen › Accounts, im Konto › Storage & search (#343) | `mail.account_stats`, `mail.get_cache_policy`, `mail.preview_cache` · Read; `mail.set_cache_policy` · Admin | entsprechende `mail_*`-Tools |

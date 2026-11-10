@@ -1413,6 +1413,7 @@ mod tests {
             untrusted: true,
             pile_since: None,
             logo: None,
+            suggested: Vec::new(),
         }
     }
 

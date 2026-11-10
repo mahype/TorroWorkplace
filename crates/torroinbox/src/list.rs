@@ -253,8 +253,9 @@ pub(crate) fn tile() -> f32 {
 }
 
 /// How many marks the marks column of a line holds (`style = "line"`): what the mail is, an invitation,
-/// an attachment and a flag – every mark a mail can carry, so the column is as wide in every row.
-const LINE_MARKS: usize = 4;
+/// an attachment, a flag and a suggestion (issue #603) – every mark a mail can carry, so the column is
+/// as wide in every row.
+const LINE_MARKS: usize = 5;
 
 /// The share of a line's free room the sender's column takes; the subject gets the rest. Fixed for
 /// the whole list, so the columns stand one under the other.

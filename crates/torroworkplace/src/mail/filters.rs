@@ -579,17 +579,21 @@ pub async fn answer_apply(
 
 /// The stored filter `id` that `reach` sees, run once ([`apply`]); a category needs admin access to
 /// `inbox` ([`sets_category`]).
-async fn run_apply(
-    mail: &MailService,
-    reach: Reach<'_>,
-    categories: &[Category],
-    id: &str,
-) -> Result<Applied, FilterError> {
-    let filter = visible_filter(mail, reach, id)?;
-    if filter.category.is_some() && !sets_category(reach) {
-        return Err(no_category());
-    }
-    apply(mail, reach, &filter, categories).await
+fn run_apply<'a>(
+    mail: &'a MailService,
+    reach: Reach<'a>,
+    categories: &'a [Category],
+    id: &'a str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Applied, FilterError>> + Send + 'a>> {
+    // Keep the deep IMAP apply future out of every filter request's dispatcher frame, including
+    // the second frame reached through an approval. Construct the box here, not at the call site.
+    Box::pin(async move {
+        let filter = visible_filter(mail, reach, id)?;
+        if filter.category.is_some() && !sets_category(reach) {
+            return Err(no_category());
+        }
+        apply(mail, reach, &filter, categories).await
+    })
 }
 
 /// The filters of `all` that `reach` sees, in their order.

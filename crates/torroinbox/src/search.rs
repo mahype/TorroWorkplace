@@ -1232,6 +1232,7 @@ mod tests {
             category: None,
             pile_since: None,
             logo: None,
+            suggested: Vec::new(),
         };
         let jonas = who("Jonas", "jonas@example.org");
         let messages = [

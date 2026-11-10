@@ -188,6 +188,12 @@ sie ohnehin, und sie später nachzurüsten hieße, das Modell über den ganzen A
 laufen zu lassen. Sie liegen in zwei eigenen Spalten neben der Kategorie und erscheinen in keiner
 Antwort der API, solange sie niemand liest.
 
+**Fragen nach Aktionen (#603).** Derselbe Aufruf trägt je eingeschalteter Art eines Vorschlags
+eine Ja/Nein-Frage mehr (`action:event`, `action:task`, ≥ 0,5 heißt ja). Was angeschlagen hat,
+liest ein Chat-Modell danach aus. Mail, die eine Regel ohne Modell einsortiert, bekommt nur diese
+Fragen; Mail der Gruppen „Zur Info“ und „Unerwünscht“ gar keine. Einzelheiten:
+[vorschlaege.md](vorschlaege.md).
+
 ### Konfidenzschwelle
 
 **0,6, fest im Code, keine Einstellung** (Entscheidungen statt Optionen). Unter der Schwelle steht

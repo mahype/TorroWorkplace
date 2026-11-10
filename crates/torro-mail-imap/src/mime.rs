@@ -323,6 +323,7 @@ impl ReadMessage {
                 untrusted: true,
                 pile_since: None,
                 logo: None,
+                suggested: Vec::new(),
             },
             cc: self.cc,
             reply_to: self.reply_to,

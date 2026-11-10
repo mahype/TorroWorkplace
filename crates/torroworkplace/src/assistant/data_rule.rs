@@ -225,6 +225,8 @@ pub fn for_model(request: &Request, response: &Response, reader: impl Into<Reade
         request if request.operation().area() == Area::Mail => !mail && !MAIL_ANSWERS_ALLOWED.contains(&result),
         // A task made of a mail in a folder (task E8.7a) holds that mail only.
         Request::CreateTodoFromMail { .. } => !mail && result != "error",
+        // So does an event made of a mail (issue #603).
+        Request::CreateEventFromMail { .. } => !mail && result != "error",
         // Muting by trait and the statistics name senders, domains and lists of mail (tasks E8.6a,
         // E8.8a); a task made of an entry takes its title (task E8.7a), and so does an event made of
         // one, with the line naming the mail in its description (task E8.5b); an AI's suggestion of a task or

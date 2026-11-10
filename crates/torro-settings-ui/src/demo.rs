@@ -1149,6 +1149,7 @@ impl Demo {
             pile_since: None,
             logo: None,
             untrusted: true,
+            suggested: Vec::new(),
         };
         Response::MailFilterPreview {
             count: 12,
@@ -1269,6 +1270,23 @@ impl Backend for Demo {
                 }
                 self.note(request);
                 Response::Categorization { categorization: self.categorization() }
+            }
+            // The kinds of action of the core (issue #603), "Task" switched off to show both states.
+            Request::ListActionKinds | Request::SetActionKind { .. } => {
+                let kind = |id: &str, label: &str, icon: &str, form, enabled| torro_ipc::actions::ActionKind {
+                    id: id.into(),
+                    label: label.into(),
+                    icon: icon.into(),
+                    form,
+                    enabled,
+                };
+                use torro_ipc::actions::ActionForm;
+                Response::ActionKinds {
+                    kinds: vec![
+                        kind("event", "Event", "calendar-plus", ActionForm::Event, true),
+                        kind("task", "Task", "list-todo", ActionForm::Task, false),
+                    ],
+                }
             }
             Request::PreviewCategoryJob { scope } => {
                 Response::CategoryJobPreview { preview: self.category_job_preview(scope) }

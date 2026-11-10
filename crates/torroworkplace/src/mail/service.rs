@@ -2044,7 +2044,16 @@ impl MailService {
     /// [`MailError::NoPassword`], [`MailError::Offline`], [`MailError::NotPublic`],
     /// [`MailError::Untrusted`] when no connection could be made.
     pub async fn command(&self, account: &str) -> Result<Command, MailError> {
-        self.mailbox_of(account).await?.command().await
+        self.command_boxed(account).await
+    }
+
+    fn command_boxed<'a>(
+        &'a self,
+        account: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Command, MailError>> + Send + 'a>> {
+        // TLS/IMAP setup is large in debug builds. Construct it in a separate boxed frame so
+        // nested approved commands do not reserve another copy on their runtime thread stack.
+        Box::pin(async move { self.mailbox_of(account).await?.command().await })
     }
 
     /// A new signed-in session of `account` of its own, outside the command connection: for work
@@ -2823,6 +2832,88 @@ impl MailService {
         let message = message.to_string();
         store.run(move |store| store.set_model_answers(&message, needs_reply, urgency).map(|_| ())).await?;
         Ok(())
+    }
+
+    /// Keeps that the decision model found `kinds` of action in the mail `message` (issue #603,
+    /// [`super::store::MailStore::detect_suggestions`]); answers the kinds that are new.
+    #[allow(dead_code, reason = "compatible unconditional entry point; arrival detection now rechecks live switches")]
+    pub async fn detect_suggestions(
+        &self,
+        account: &str,
+        message: &str,
+        kinds: Vec<String>,
+    ) -> Result<Vec<String>, MailError> {
+        self.detect_suggestions_checked(account, message, kinds, Arc::new(|_| true)).await
+    }
+
+    /// Recheck live switches inside the writing store task, after every queued store wait.
+    pub(crate) async fn detect_suggestions_checked(
+        &self,
+        account: &str,
+        message: &str,
+        kinds: Vec<String>,
+        allowed: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    ) -> Result<Vec<String>, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        let message = message.to_string();
+        Ok(store
+            .run(move |store| {
+                let kinds = kinds.into_iter().filter(|kind| allowed(kind)).collect::<Vec<_>>();
+                store.detect_suggestions(&message, &kinds, Utc::now())
+            })
+            .await?)
+    }
+
+    /// The open suggestions of the mail `message` (issue #603).
+    pub async fn suggestions(
+        &self,
+        account: &str,
+        message: &str,
+    ) -> Result<Vec<torro_ipc::actions::Suggestion>, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        let message = message.to_string();
+        Ok(store.run(move |store| store.suggestions(&message)).await?)
+    }
+
+    /// Keeps what was read out for a suggestion of the mail `message` while its row still has the
+    /// state `before` (issue #603, [`super::store::MailStore::keep_suggestion`]); `false` when nothing
+    /// was written.
+    pub async fn keep_suggestion(
+        &self,
+        account: &str,
+        message: &str,
+        suggestion: torro_ipc::actions::Suggestion,
+        before: Option<String>,
+    ) -> Result<bool, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        let message = message.to_string();
+        Ok(store.run(move |store| store.keep_suggestion(&message, &suggestion, before.as_deref(), Utc::now())).await?)
+    }
+
+    /// The state of the suggestion `kind` of the mail `message`, also a closed one (issue #603).
+    pub async fn suggestion_state(
+        &self,
+        account: &str,
+        message: &str,
+        kind: &str,
+    ) -> Result<Option<String>, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        let (message, kind) = (message.to_string(), kind.to_string());
+        Ok(store.run(move |store| store.suggestion_state(&message, &kind)).await?)
+    }
+
+    /// Accepts or dismisses the open suggestion `kind` of the mail `message` (issue #603); `false`
+    /// when there is none.
+    pub async fn close_suggestion(
+        &self,
+        account: &str,
+        message: &str,
+        kind: &str,
+        accepted: bool,
+    ) -> Result<bool, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        let (message, kind) = (message.to_string(), kind.to_string());
+        Ok(store.run(move |store| store.close_suggestion(&message, &kind, accepted, Utc::now())).await?)
     }
 
     /// What a decision model reads of the mail `message` (task E12.6): its headers and the start

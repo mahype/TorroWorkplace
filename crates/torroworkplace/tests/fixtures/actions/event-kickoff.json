@@ -1,0 +1,16 @@
+{
+  "expect": {
+    "event": true,
+    "task": false
+  },
+  "subject": "Kick-off Projekt Nord",
+  "from": "Anna Berg <anna@firma.example>",
+  "list": null,
+  "bulk": false,
+  "text": "Hallo Sven,\n\nich lade dich zum Kick-off für Projekt Nord ein: Donnerstag, 14.11., 10:00 bis 11:00 Uhr in Raum 2.\nBitte sag kurz Bescheid, ob du kannst.\n\nViele Grüße\nAnna",
+  "fields": {
+    "title": "Kick-off Projekt Nord",
+    "start": "Thursday 10:00",
+    "location": "Raum 2"
+  }
+}

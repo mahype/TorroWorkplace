@@ -54,6 +54,7 @@ use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params, params_from_iter};
 use sha2::{Digest, Sha256};
+use torro_ipc::actions::{Suggestion, SuggestionState};
 use torro_ipc::inbox::{CategoryJobPreview, CategoryJobScope};
 use torro_ipc::mail::{MailAccountStats, MailFolderStats, MailMonthCount, MailQuota};
 use torro_ipc::mail::{MailCacheEstimate, MailCacheJob, MailCacheMode, MailCachePolicy};
@@ -76,7 +77,7 @@ const CORRESPONDENT_ROWS: u32 = 5_000;
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 16;
+const SCHEMA_VERSION: i64 = 17;
 
 /// Workflow delivery provenance is separate from the disposable body cache. An incomplete
 /// baseline survives restarts; an outbox row survives removal of its source message until ack.
@@ -179,6 +180,27 @@ const SCHEMA_V14: [(&str, &str); 4] = [
     ("reply_ref", "ALTER TABLE messages ADD COLUMN reply_ref INTEGER;"),
     ("caught", "ALTER TABLE messages ADD COLUMN caught INTEGER NOT NULL DEFAULT 0;"),
 ];
+
+/// Version 15 (issue #603, `docs/vorschlaege.md`): what Torro suggests to make of a message – an
+/// event, a task –, one row per message and kind of action. `state` is `reading` (found, fields not
+/// read out yet), `ready` (`fields` holds them as JSON), `unfilled`, or – never overwritten by a
+/// later sorting – `accepted` and `dismissed`. `reason` is the model's short word why; `engine` and
+/// `model` the AI that read the fields out. Goes with its message.
+const SCHEMA_V15_SUGGESTIONS: &str = "CREATE TABLE IF NOT EXISTS suggestions (
+    message INTEGER NOT NULL REFERENCES messages(seq) ON DELETE CASCADE,
+    kind    TEXT NOT NULL,
+    state   TEXT NOT NULL,
+    fields  TEXT,
+    reason  TEXT,
+    engine  TEXT,
+    model   TEXT,
+    updated INTEGER NOT NULL,
+    PRIMARY KEY (message, kind)
+);";
+
+/// The states of a suggestion that is still open: what lists show and clearing the categories
+/// takes back (issue #603).
+const OPEN_SUGGESTIONS: &str = "('reading', 'ready', 'unfilled')";
 
 /// Before version 11 nothing marked an original whose message went: every original without a live
 /// header row at its place (folder path, the folder's current UIDVALIDITY, UID) is such one. An
@@ -1535,7 +1557,7 @@ impl MailStore {
                 )? > 0
             {
                 tx.execute(
-                    "INSERT INTO workflow_deliveries (message_id, arrived_at) VALUES (?1, ?2)",
+                    "INSERT INTO workflow_deliveries (message_id, arrived_at, actions_done) VALUES (?1, ?2, 0)",
                     params![id, now.timestamp()],
                 )?;
                 insert_workflow_event(&tx, &id, "arrival", now, None)?;
@@ -1935,6 +1957,11 @@ impl MailStore {
                 WHERE ?3 = 1 AND notification_done = 0 AND (arrived_at >= ?1
                     OR EXISTS(SELECT 1 FROM workflow_events e WHERE e.message_id = d.message_id
                         AND acknowledged = 0 AND state IN ('waiting_body', 'waiting_category')))
+                UNION ALL
+                SELECT message_id, arrived_at AS queued_at FROM workflow_deliveries d
+                WHERE ?3 = 0 AND actions_done = 0 AND notification_done = 1 AND arrived_at >= ?1
+                    AND EXISTS(SELECT 1 FROM workflow_events e WHERE e.message_id = d.message_id
+                        AND e.cause = 'arrival' AND e.state = 'ready')
             ) GROUP BY message_id ORDER BY min(queued_at), message_id LIMIT ?2",
         )?;
         Ok(statement
@@ -1969,6 +1996,22 @@ impl MailStore {
             "UPDATE workflow_deliveries SET notification_done = 1 WHERE message_id = ?1 AND notification_done = 0",
             [message],
         )?;
+        Ok(())
+    }
+
+    pub(super) fn workflow_actions_pending(&self, message: &str, since: DateTime<Utc>) -> Result<bool, MailStoreError> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_deliveries d WHERE message_id = ?1
+            AND actions_done = 0 AND notification_done = 1 AND arrived_at >= ?2
+            AND EXISTS(SELECT 1 FROM workflow_events e WHERE e.message_id = d.message_id
+                AND e.cause = 'arrival' AND e.state = 'ready'))",
+            params![message, since.timestamp()],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(super) fn workflow_actions_done(&self, message: &str) -> Result<(), MailStoreError> {
+        self.db.execute("UPDATE workflow_deliveries SET actions_done = 1 WHERE message_id = ?1", [message])?;
         Ok(())
     }
 
@@ -2207,13 +2250,143 @@ impl MailStore {
 
     /// Clear model answers left on messages whose category was already removed separately.
     /// This is bounded and repeatable after a restart.
+    ///
+    /// The open suggestions go with them (issue #603): the same model call found them. Accepted and
+    /// dismissed ones stay, so sorting again never brings a dismissed one back.
     pub fn clear_model_answers_batch(&self, limit: u32) -> Result<u64, MailStoreError> {
         let changed = self.db.execute(
             "UPDATE messages SET needs_reply = NULL, urgency = NULL WHERE seq IN (
              SELECT seq FROM messages WHERE needs_reply IS NOT NULL OR urgency IS NOT NULL LIMIT ?1)",
             [i64::from(limit)],
         )?;
-        Ok(changed as u64)
+        let suggestions = self.db.execute(
+            &format!(
+                "DELETE FROM suggestions WHERE rowid IN (
+                 SELECT rowid FROM suggestions WHERE state IN {OPEN_SUGGESTIONS} LIMIT ?1)"
+            ),
+            [i64::from(limit)],
+        )?;
+        Ok((changed + suggestions) as u64)
+    }
+
+    /// Keeps that the decision model found the kinds of action `kinds` in the message `id` (issue
+    /// #603): a row `reading` for each kind the message has none of yet – a suggestion read out,
+    /// accepted or dismissed before stays as it is. Returns the kinds that are new; empty also when
+    /// the store has no such message.
+    pub fn detect_suggestions(
+        &self,
+        id: &str,
+        kinds: &[String],
+        now: DateTime<Utc>,
+    ) -> Result<Vec<String>, MailStoreError> {
+        let Some(seq) = self.seq_of(id)? else { return Ok(Vec::new()) };
+        let mut new = Vec::new();
+        for kind in kinds {
+            let added = self.db.execute(
+                "INSERT OR IGNORE INTO suggestions (message, kind, state, updated) VALUES (?1, ?2, 'reading', ?3)",
+                params![seq, kind, now.timestamp()],
+            )?;
+            if added > 0 {
+                new.push(kind.clone());
+            }
+        }
+        Ok(new)
+    }
+
+    /// The open suggestions of the message `id` (issue #603), by kind; empty for a message the store
+    /// does not have. A row whose fields this version cannot read counts as `unfilled`.
+    pub fn suggestions(&self, id: &str) -> Result<Vec<Suggestion>, MailStoreError> {
+        let Some(seq) = self.seq_of(id)? else { return Ok(Vec::new()) };
+        let sql = format!(
+            "SELECT kind, state, fields, reason FROM suggestions WHERE message = ?1 AND state IN {OPEN_SUGGESTIONS}
+             ORDER BY kind"
+        );
+        let mut statement = self.db.prepare(&sql)?;
+        let rows = statement.query_map([seq], |row| {
+            let (kind, state): (String, String) = (row.get(0)?, row.get(1)?);
+            let (fields, reason): (Option<String>, Option<String>) = (row.get(2)?, row.get(3)?);
+            Ok(suggestion_of(kind, &state, fields.as_deref(), reason))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The state of the suggestion `kind` of the message `id` as its row writes it (`reading`, …,
+    /// `dismissed`), also a closed one; `None` without such a row (issue #603).
+    pub fn suggestion_state(&self, id: &str, kind: &str) -> Result<Option<String>, MailStoreError> {
+        let Some(seq) = self.seq_of(id)? else { return Ok(None) };
+        let sql = "SELECT state FROM suggestions WHERE message = ?1 AND kind = ?2";
+        Ok(self.db.query_row(sql, params![seq, kind], |row| row.get(0)).optional()?)
+    }
+
+    /// Keeps what was read out for the suggestion `suggestion.kind` of the message `id` (issue #603):
+    /// its state, fields and reason – only while the row still has the state `before` (`None`: there
+    /// is no row yet), so nothing done meanwhile is written over: the reader in the background passes
+    /// `reading`, a reading asked for by hand the state it found when it began, which opens a
+    /// dismissed kind again unless the person accepted or dismissed it while the model read. `false`
+    /// when nothing was written.
+    pub fn keep_suggestion(
+        &self,
+        id: &str,
+        suggestion: &Suggestion,
+        before: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MailStoreError> {
+        let Some(seq) = self.seq_of(id)? else { return Ok(false) };
+        let fields = SuggestionFields { task: suggestion.task.clone(), event: suggestion.event.clone() };
+        let (engine, model) = match (&suggestion.task, &suggestion.event) {
+            (Some(task), _) => (Some(task.engine.clone()), Some(task.model.clone())),
+            (None, Some(event)) => (Some(event.engine.clone()), Some(event.model.clone())),
+            (None, None) => (None, None),
+        };
+        let fields = match fields.task.is_none() && fields.event.is_none() {
+            true => None,
+            false => Some(serde_json::to_string(&fields).map_err(|err| MailStoreError::Corrupt(err.to_string()))?),
+        };
+        let state = state_key(suggestion.state);
+        let written = match before {
+            Some(before) => self.db.execute(
+                "UPDATE suggestions SET state = ?3, fields = ?4, reason = ?5, engine = ?6, model = ?7, updated = ?8
+                 WHERE message = ?1 AND kind = ?2 AND state = ?9",
+                params![seq, suggestion.kind, state, fields, suggestion.reason, engine, model, now.timestamp(), before],
+            )?,
+            None => self.db.execute(
+                "INSERT OR IGNORE INTO suggestions (message, kind, state, fields, reason, engine, model, updated)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![seq, suggestion.kind, state, fields, suggestion.reason, engine, model, now.timestamp()],
+            )?,
+        };
+        Ok(written > 0)
+    }
+
+    /// Closes the open suggestion `kind` of the message `id` (issue #603): `accepted` or not
+    /// (dismissed). `false` when the message has no open suggestion of that kind.
+    pub fn close_suggestion(
+        &self,
+        id: &str,
+        kind: &str,
+        accepted: bool,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MailStoreError> {
+        let Some(seq) = self.seq_of(id)? else { return Ok(false) };
+        let state = if accepted { "accepted" } else { "dismissed" };
+        let sql = format!(
+            "UPDATE suggestions SET state = ?3, updated = ?4 WHERE message = ?1 AND kind = ?2 AND state IN {OPEN_SUGGESTIONS}"
+        );
+        if self.db.execute(&sql, params![seq, kind, state, now.timestamp()])? > 0 {
+            return Ok(true);
+        }
+        // None open: nothing to close – but a reading still under way that began without a row must
+        // not open one afterwards, so the closing is kept where there is no row at all.
+        self.db.execute(
+            "INSERT OR IGNORE INTO suggestions (message, kind, state, updated) VALUES (?1, ?2, ?3, ?4)",
+            params![seq, kind, state, now.timestamp()],
+        )?;
+        Ok(false)
+    }
+
+    /// The row number of the message `id`; `None` when the store has no such message.
+    fn seq_of(&self, id: &str) -> Result<Option<i64>, MailStoreError> {
+        Ok(self.db.query_row("SELECT seq FROM messages WHERE id = ?1", [id], |row| row.get(0)).optional()?)
     }
 
     /// How much mail of any folder is of `category` (task E15.2): what removing the category
@@ -3491,10 +3664,16 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
             }
         }
     }
-    if version < 15 {
+    // Main's v15 suggestions and this branch's v15/v16 workflow stores both exist. Ensure both
+    // additive layouts when upgrading either history, without losing closed suggestions or receipts.
+    if version < 17 {
+        tx.execute_batch(SCHEMA_V15_SUGGESTIONS)?;
         tx.execute_batch(SCHEMA_V15)?;
-    }
-    if version < 16 {
+        if !has_column(&tx, "workflow_deliveries", "actions_done")? {
+            // No retrospective action detection for pre-upgrade arrivals. New deliveries opt in
+            // explicitly, independently of notification receipts and workflow runner ack.
+            tx.execute_batch("ALTER TABLE workflow_deliveries ADD COLUMN actions_done INTEGER NOT NULL DEFAULT 1;")?;
+        }
         if !has_column(&tx, "workflow_deliveries", "notification_done")? {
             tx.execute_batch(
                 "ALTER TABLE workflow_deliveries ADD COLUMN notification_done INTEGER NOT NULL DEFAULT 0;",
@@ -3571,12 +3750,13 @@ const FOLDER_ORDER: &str =
 
 const SUMMARY_COLUMNS: &str = "m.id, m.folder_id, m.thread_id, m.from_json, m.to_json, m.subject, m.date, m.snippet,
     m.flags, m.has_attachments, m.invite_json, m.invite_answer, m.category, m.category_source, m.category_confidence,
-    m.sender_check, m.caught";
+    m.sender_check, m.caught,
+    (SELECT group_concat(s.kind, ',') FROM suggestions s WHERE s.message = m.seq AND s.state IN ('reading', 'ready', 'unfilled'))";
 
 /// How many columns [`SUMMARY_COLUMNS`] selects: where the columns a query adds after it begin.
 /// A query that appends its own must count from here, never from a number written out – task
 /// E12.2 added three columns in the middle and every hard-coded index moved.
-const SUMMARY_WIDTH: usize = 17;
+const SUMMARY_WIDTH: usize = 18;
 
 const INSERT_HEADERS: &str = "INSERT INTO messages (id, folder_id, uid, rfc_message_id, thread_id, from_json, to_json,
     cc_json, reply_to_json, subject, sender, recipients, date, snippet, flags, has_attachments, list_id,
@@ -3843,7 +4023,47 @@ fn summary_from_row(account: &str, row: &Row<'_>) -> rusqlite::Result<MessageSum
         pile_since: None,
         logo: checked.filter(|domain| !domain.is_empty()),
         caught: row.get::<_, Option<bool>>(16)?.unwrap_or(false),
+        // The kinds of the open suggestions (column 17, issue #603), in no particular order.
+        suggested: suggested_from(row.get::<_, Option<String>>(17)?),
     })
+}
+
+/// The fields read out for a suggestion (issue #603), as `suggestions.fields` keeps them.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct SuggestionFields {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task: Option<torro_ipc::TaskSuggestion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    event: Option<torro_ipc::EventSuggestion>,
+}
+
+/// How `suggestions.state` writes `state`.
+fn state_key(state: SuggestionState) -> &'static str {
+    match state {
+        SuggestionState::Reading => "reading",
+        SuggestionState::Ready => "ready",
+        SuggestionState::Unfilled => "unfilled",
+    }
+}
+
+/// A suggestion as a row keeps it (issue #603). Fields this version cannot read count as none: the
+/// suggestion is `unfilled`, a list never fails on one row.
+fn suggestion_of(kind: String, state: &str, fields: Option<&str>, reason: Option<String>) -> Suggestion {
+    let read = fields.map(serde_json::from_str::<SuggestionFields>);
+    let (state, fields) = match (state, read) {
+        ("reading", _) => (SuggestionState::Reading, SuggestionFields::default()),
+        ("ready", Some(Ok(fields))) => (SuggestionState::Ready, fields),
+        _ => (SuggestionState::Unfilled, SuggestionFields::default()),
+    };
+    Suggestion { kind, state, task: fields.task, event: fields.event, reason }
+}
+
+/// The kinds of a summary row's open suggestions (issue #603): `event,task` as a sorted list.
+fn suggested_from(joined: Option<String>) -> Vec<String> {
+    let mut kinds: Vec<String> =
+        joined.unwrap_or_default().split(',').filter(|kind| !kind.is_empty()).map(str::to_string).collect();
+    kinds.sort();
+    kinds
 }
 
 /// The category of a summary row (columns 12 to 14, task E12.2). A value this version cannot read
@@ -4180,6 +4400,121 @@ mod tests {
     }
 
     #[test]
+    fn workflow_merge_main_v15_keeps_closed_suggestions_and_requires_a_fresh_baseline() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let id = add(&store, &inbox, &message(1, "Existing suggestion"));
+        store.detect_suggestions(&id, &["task".into(), "event".into()], day(20)).expect("found");
+        store.close_suggestion(&id, "task", true, day(20)).expect("accepted");
+        store.close_suggestion(&id, "event", false, day(20)).expect("dismissed");
+        store
+            .db
+            .execute_batch(
+                "DROP TABLE workflow_events; DROP TABLE workflow_deliveries;
+            DROP TABLE workflow_arrivals; DROP TABLE workflow_baselines; PRAGMA user_version = 15;",
+            )
+            .expect("released main v15 layout");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("coexistence upgrade");
+        assert_eq!(store.suggestion_state(&id, "task").expect("task"), Some("accepted".into()));
+        assert_eq!(store.suggestion_state(&id, "event").expect("event"), Some("dismissed".into()));
+        assert!(
+            store.detect_suggestions(&id, &["task".into(), "event".into()], day(21)).expect("no revival").is_empty()
+        );
+        assert!(!store.workflow_baseline_complete(&inbox, 7).expect("fresh inventory required"));
+        store.import_workflow_message(&inbox, 7, &message(2, "Inventory only"), day(21)).expect("inventory");
+        baseline(&store, &inbox, 2);
+        assert!(store.workflow_events(None, 500).expect("no retrospective arrival").is_empty());
+        assert_eq!(store.db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).expect("version"), 17);
+    }
+
+    #[test]
+    fn workflow_merge_branch_v15_and_v16_preserve_receipts_events_and_baselines() {
+        for version in [15, 16] {
+            let (_tmp, dirs, store) = open();
+            let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+            baseline(&store, &inbox, 0);
+            let id =
+                store.import_workflow_message(&inbox, 7, &message(1, "Completed arrival"), day(20)).expect("arrival");
+            store
+                .set_body(
+                    &id,
+                    &Body { text: "Body".into(), from_html: false, html: None, attachments: vec![], invite: None },
+                )
+                .expect("body");
+            store.workflow_body_prepared(&id).expect("body ready");
+            store.workflow_category_prepared(&id).expect("category ready");
+            let event = store.workflow_events(None, 500).expect("events").remove(0);
+            store.acknowledge_workflow_event(&event.id).expect("runner ack");
+            store.workflow_notification_done(&id).expect("already notified");
+            store
+                .db
+                .execute_batch("DROP TABLE suggestions; ALTER TABLE workflow_deliveries DROP COLUMN actions_done;")
+                .expect("branch layout without suggestions");
+            if version == 15 {
+                store
+                    .db
+                    .execute_batch(
+                        "DROP INDEX workflow_notifications_pending;
+                    ALTER TABLE workflow_deliveries DROP COLUMN notification_done;",
+                    )
+                    .expect("v15");
+            }
+            store.db.execute_batch(&format!("PRAGMA user_version = {version};")).expect("old version");
+            drop(store);
+            let store = MailStore::open(&dirs, ACCOUNT).expect("branch history upgrade");
+            assert!(store.workflow_baseline_complete(&inbox, 7).expect("baseline preserved"));
+            assert!(store.workflow_events(None, 500).expect("ack preserved").is_empty());
+            let row: (String, bool, bool, bool) = store
+                .db
+                .query_row(
+                    "SELECT e.state, e.acknowledged, d.notification_done, d.actions_done FROM workflow_events e
+                    JOIN workflow_deliveries d ON d.message_id = e.message_id WHERE e.id = ?1",
+                    [&event.id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .expect("preserved event/receipts");
+            assert_eq!(row, ("ready".into(), true, true, true));
+            assert!(store.workflow_work_for_stage(day(1), 100, false).expect("no historical model replay").is_empty());
+            assert_eq!(store.detect_suggestions(&id, &["task".into()], day(21)).expect("new table usable"), ["task"]);
+        }
+    }
+
+    #[test]
+    fn workflow_merge_optional_action_receipt_survives_runner_ack_and_restart() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        baseline(&store, &inbox, 0);
+        let id = store
+            .import_workflow_message(&inbox, 7, &message(1, "New fixed-category arrival"), day(20))
+            .expect("arrival");
+        store
+            .set_body(
+                &id,
+                &Body { text: "Body".into(), from_html: false, html: None, attachments: vec![], invite: None },
+            )
+            .expect("body");
+        store.workflow_body_prepared(&id).expect("body ready");
+        store.workflow_category_prepared(&id).expect("category ready");
+        assert!(store.workflow_work_for_stage(day(1), 100, false).expect("notification first").is_empty());
+        store.workflow_notification_done(&id).expect("notification receipt");
+        let event = store.workflow_events(None, 500).expect("arrival").remove(0);
+        store.acknowledge_workflow_event(&event.id).expect("runner owns arrival");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("restart before suggestions");
+        assert_eq!(
+            store.workflow_work_for_stage(day(1), 100, false).expect("optional work independent of ack"),
+            std::slice::from_ref(&id)
+        );
+        assert!(!store.workflow_actions_pending(&id, day(21)).expect("age bound"));
+        assert!(store.workflow_work_for_stage(day(1), 100, true).expect("no repeat notification").is_empty());
+        store.workflow_actions_done(&id).expect("action receipt");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("restart after suggestions");
+        assert!(store.workflow_work_for_stage(day(1), 100, false).expect("no repeat detection").is_empty());
+    }
+
+    #[test]
     fn workflow_prepush_notification_recovery_survives_failure_ack_crash_and_v15_upgrade() {
         let (_tmp, dirs, store) = open();
         let inbox = folder(&store, "INBOX", Some(Role::Inbox));
@@ -4207,6 +4542,7 @@ mod tests {
             .db
             .execute_batch(
                 "DROP INDEX workflow_notifications_pending;
+            ALTER TABLE workflow_deliveries DROP COLUMN actions_done;
             ALTER TABLE workflow_deliveries DROP COLUMN notification_done; PRAGMA user_version = 15;",
             )
             .expect("v15 snapshot");

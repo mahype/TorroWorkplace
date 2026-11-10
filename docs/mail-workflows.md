@@ -175,7 +175,21 @@ Ein separater persistenter Zustellbeleg überlebt Neustarts und die Bestätigung
 Lese-/Papierkorbfilter gelten auch dann, wenn die Person schon eine Kategorie gesetzt hat;
 automatische Kategorieentscheidungen dürfen diese Personenauswahl nicht überschreiben.
 
-Hierfür wird der Mail-Cache additiv auf **Schema 16** migriert. Ältere Binärdateien können diesen
+Die optionalen Mail-Vorschläge aus #603 bleiben erhalten: Muss ein Modell die Kategorie bestimmen,
+kommen Aktionshinweise aus **demselben** Modellaufruf. Deren lokale Speicherung folgt erst auf eine
+erfolgreiche Kategorie-CAS; eine inzwischen gesetzte Personenkategorie verdrängt die veraltete Antwort.
+Bei festen Kategorien läuft die kurze Vorschlagserkennung in den vorhandenen zwei optionalen Workern,
+nach der Benachrichtigungsverarbeitung. Sie verzögert weder `ready` noch Hub-Zustellung. Eine eigene
+persistente `actions_done`-Quittung bleibt vom Runner-Ack und dem Benachrichtigungsbeleg unabhängig.
+Abgeschaltete Arten, Mail-Komponente und Cloud-Erlaubnis werden vor dem Senden erneut geprüft;
+bei mehrstufigen Modellentscheidungen vor **jedem** Teilabruf. Die Speicherung prüft diese Schalter
+direkt im Store-Schreibauftrag nach wartenden Lesezugriffen. Der Dienst registriert die dauerhafte
+Pipeline vor Mail-Feed und Sync, damit die alte Vorschlagserkennung nicht parallel starten kann.
+
+Hierfür wird der Mail-Cache additiv auf **Schema 17** migriert. Beide bisherigen Schema-15-Historien
+(Vorschläge auf `main`, Workflow-Outbox auf dem Featurebranch) sowie Workflow-Schema 16 werden
+verlustfrei zusammengeführt. Geschlossene Vorschläge, Baselines, Ereignisse und Zustellbelege bleiben;
+vorhandene Zustellungen lösen keine rückwirkende Vorschlagserkennung aus. Ältere Binärdateien können diesen
 Store nicht öffnen; sie dürfen ihn nicht still zurücksetzen oder als neuen leeren Bestand behandeln.
 
 ## Dauerhafte Läufe, Deduplizierung und Dateien

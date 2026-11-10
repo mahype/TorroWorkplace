@@ -1,0 +1,11 @@
+{
+  "expect": {
+    "event": false,
+    "task": false
+  },
+  "subject": "Ihr Paket kommt morgen",
+  "from": "Versand <noreply@paket.example>",
+  "list": null,
+  "bulk": true,
+  "text": "Ihr Paket wird voraussichtlich morgen zwischen 10 und 14 Uhr zugestellt. Sendungsnummer 0034 5567 8899."
+}

@@ -86,6 +86,8 @@ pub enum Icon {
     Cloud,
     Layers,
     Sparkles,
+    /// A suggestion Torro found in a mail (issue #603): the mark in the mail's row.
+    Lightbulb,
     // Added for the tasks redesign (R.1): GitHub items, properties and list hints.
     /// Previous item in a detail header (next is [`Icon::ChevronDown`]).
     ChevronUp,
@@ -303,6 +305,7 @@ impl Icon {
         Icon::Cloud,
         Icon::Layers,
         Icon::Sparkles,
+        Icon::Lightbulb,
         Icon::ChevronUp,
         Icon::CircleDot,
         Icon::CircleDotDashed,
@@ -450,6 +453,7 @@ impl Icon {
             Icon::Cloud => include_bytes!("../assets/icons/cloud.svg"),
             Icon::Layers => include_bytes!("../assets/icons/layers.svg"),
             Icon::Sparkles => include_bytes!("../assets/icons/sparkles.svg"),
+            Icon::Lightbulb => include_bytes!("../assets/icons/lightbulb.svg"),
             Icon::ChevronUp => include_bytes!("../assets/icons/chevron-up.svg"),
             Icon::CircleDot => include_bytes!("../assets/icons/circle-dot.svg"),
             Icon::CircleDotDashed => include_bytes!("../assets/icons/circle-dot-dashed.svg"),

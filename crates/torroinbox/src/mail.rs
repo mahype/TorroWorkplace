@@ -94,9 +94,11 @@ use torro_inbox::demo::DemoSource;
 use torro_inbox::item::{ItemTask, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{Item, Lane, Link, State};
+use torro_ipc::actions::{ActionForm, ActionKind, Suggestion, SuggestionState};
 use torro_ipc::inbox::CategoryInfo;
 use torro_ipc::inbox::{
-    CalendarEvent, InboxClient, MailByRole, MailFind, MailFound, MailInPile, SaveTargets, SavedAttachments, SavedMail,
+    CalendarEvent, EventFields, InboxClient, MailByRole, MailFind, MailFound, MailInPile, SaveTargets,
+    SavedAttachments, SavedMail,
 };
 #[cfg(test)]
 use torro_ipc::mail::MailSort;
@@ -104,7 +106,7 @@ use torro_ipc::mail::{
     AttachmentPlan, Delivery, ExportFormat, ExportPlan, MailHighlight, MailIndexProgress, MailOverview, MoveRole,
     MoveTarget, PileFilter, PlannedPlace, SaveTo, SavedFile, UnsubscribeVia,
 };
-use torro_ipc::{Request, Response, StatsRange};
+use torro_ipc::{EventSuggestion, Request, Response, StatsRange, TaskSuggestion};
 use torro_mail::{
     AttachmentInfo, CategoryGroup, Draft, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailCategory, MailPile,
     Message as Mail, MessageSummary, Order, Role,
@@ -387,6 +389,71 @@ pub trait MailSource: Send + Sync {
     /// no account to write from, no one to answer, or the server refused (the saved draft stays in
     /// the drafts folder then).
     fn send_reply(&self, id: String, text: String) -> impl Future<Output = Result<(), InboxError>> + Send;
+
+    /// `tasks.create_todo_from_mail` with `notes` before the mail's text (issue #603: the note a
+    /// suggestion or the person wrote in the dialog), otherwise as [`MailSource::create_todo_from_mail`],
+    /// also in what it answers: the task made, for its card in the reader.
+    fn create_todo_from_mail_with(
+        &self,
+        account: String,
+        id: String,
+        list: TaskList,
+        title: Option<String>,
+        due: Option<NaiveDate>,
+        notes: String,
+    ) -> impl Future<Output = Result<ItemTask, InboxError>> + Send;
+
+    /// `calendar.create_event_from_mail` (issue #603): an event of the message `id` of `account` in
+    /// the calendar `calendar`, for a mail without an entry ("Event" in the rail, an accepted
+    /// suggestion). The mail itself is not changed. Errors as for
+    /// [`MailSource::create_todo_from_mail`].
+    fn create_event_from_mail(
+        &self,
+        account: String,
+        id: String,
+        calendar: String,
+        fields: EventFields,
+    ) -> impl Future<Output = Result<(), InboxError>> + Send;
+
+    /// `mail.list_suggestions` (issue #603): what Torro suggests to make of the message `id` of
+    /// `account`, open ones only. Their text is the mail's: data to show, never instructions.
+    fn list_suggestions(
+        &self,
+        account: String,
+        id: String,
+    ) -> impl Future<Output = Result<Vec<Suggestion>, InboxError>> + Send;
+
+    /// `mail.accept_suggestion` (issue #603), sent only after the event or task was made in its
+    /// dialog: the suggestion of `kind` is taken off the mail.
+    fn accept_suggestion(
+        &self,
+        account: String,
+        id: String,
+        kind: String,
+    ) -> impl Future<Output = Result<(), InboxError>> + Send;
+
+    /// `mail.dismiss_suggestion` (issue #603): the suggestion of `kind` is taken off the mail,
+    /// nothing is made.
+    fn dismiss_suggestion(
+        &self,
+        account: String,
+        id: String,
+        kind: String,
+    ) -> impl Future<Output = Result<(), InboxError>> + Send;
+
+    /// `mail.extract_action` (issue #603): reads the action `kind` out of the mail now – a task's
+    /// list one of `lists` (their names) –, for a card still reading and for the dialog of an action.
+    fn extract_action(
+        &self,
+        account: String,
+        id: String,
+        kind: String,
+        lists: Vec<String>,
+    ) -> impl Future<Output = Result<Suggestion, InboxError>> + Send;
+
+    /// `mail.list_action_kinds` (issue #603): every kind of action, also those switched off – the
+    /// rail offers each by hand.
+    fn list_action_kinds(&self) -> impl Future<Output = Result<Vec<ActionKind>, InboxError>> + Send;
 }
 
 /// What "Focus & reply" sends for the message `id` (task E19.3, [`MailSource::send_reply`]): the
@@ -663,6 +730,54 @@ impl MailSource for InboxClient {
 
     async fn list_events(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> Result<Vec<CalendarEvent>, InboxError> {
         InboxClient::list_events(self, start, end).await
+    }
+
+    async fn create_todo_from_mail_with(
+        &self,
+        account: String,
+        id: String,
+        list: TaskList,
+        title: Option<String>,
+        due: Option<NaiveDate>,
+        notes: String,
+    ) -> Result<ItemTask, InboxError> {
+        InboxClient::create_todo_from_mail_with(self, account, id, list, title, due, Some(notes)).await
+    }
+
+    async fn create_event_from_mail(
+        &self,
+        account: String,
+        id: String,
+        calendar: String,
+        fields: EventFields,
+    ) -> Result<(), InboxError> {
+        InboxClient::create_event_from_mail(self, account, id, calendar, fields).await
+    }
+
+    async fn list_suggestions(&self, account: String, id: String) -> Result<Vec<Suggestion>, InboxError> {
+        InboxClient::list_suggestions(self, account, id).await
+    }
+
+    async fn accept_suggestion(&self, account: String, id: String, kind: String) -> Result<(), InboxError> {
+        InboxClient::accept_suggestion(self, account, id, kind).await
+    }
+
+    async fn dismiss_suggestion(&self, account: String, id: String, kind: String) -> Result<(), InboxError> {
+        InboxClient::dismiss_suggestion(self, account, id, kind).await
+    }
+
+    async fn extract_action(
+        &self,
+        account: String,
+        id: String,
+        kind: String,
+        lists: Vec<String>,
+    ) -> Result<Suggestion, InboxError> {
+        InboxClient::extract_action(self, account, id, kind, lists).await
+    }
+
+    async fn list_action_kinds(&self) -> Result<Vec<ActionKind>, InboxError> {
+        InboxClient::list_action_kinds(self).await
     }
 }
 
@@ -966,6 +1081,68 @@ impl MailSource for DemoSource {
         let lunch = DemoSource::get_mail(self, "m:w4").ok().and_then(|mail| demo_invite("m:w4", mail.summary.date));
         Ok(demo_events(lunch.as_ref()).into_iter().filter(|event| event.start < end && start < event.end).collect())
     }
+
+    /// As [`MailSource::create_todo_from_mail`] of the demo; the note is kept nowhere.
+    async fn create_todo_from_mail_with(
+        &self,
+        account: String,
+        id: String,
+        list: TaskList,
+        title: Option<String>,
+        due: Option<NaiveDate>,
+        _notes: String,
+    ) -> Result<ItemTask, InboxError> {
+        MailSource::create_todo_from_mail(self, account, id, list, title, due).await
+    }
+
+    /// The demo keeps no calendar: a mail it has and a calendar of its own are made an event.
+    async fn create_event_from_mail(
+        &self,
+        _account: String,
+        id: String,
+        calendar: String,
+        _fields: EventFields,
+    ) -> Result<(), InboxError> {
+        DemoSource::get_mail(self, &id)?;
+        let calendars = crate::hub::HubSource::list_calendars(self).await?;
+        if calendars.iter().any(|known| known.id == calendar) { Ok(()) } else { Err(InboxError::NotFound) }
+    }
+
+    /// The kinds the sample mail carries ([`torro_inbox::demo::SUGGESTED_MAIL`]), read out at once
+    /// ([`demo_suggestion`]).
+    async fn list_suggestions(&self, _account: String, id: String) -> Result<Vec<Suggestion>, InboxError> {
+        let mail = DemoSource::get_mail(self, &id)?;
+        Ok(mail.summary.suggested.iter().map(|kind| demo_suggestion(&mail, kind)).collect())
+    }
+
+    async fn accept_suggestion(&self, _account: String, id: String, kind: String) -> Result<(), InboxError> {
+        DemoSource::take_suggestion(self, &id, &kind)
+    }
+
+    async fn dismiss_suggestion(&self, _account: String, id: String, kind: String) -> Result<(), InboxError> {
+        DemoSource::take_suggestion(self, &id, &kind)
+    }
+
+    /// Any kind of the two forms reads out of any mail ([`demo_suggestion`]); a task's list is the
+    /// last one offered, as the demo's AI picks it.
+    async fn extract_action(
+        &self,
+        _account: String,
+        id: String,
+        kind: String,
+        lists: Vec<String>,
+    ) -> Result<Suggestion, InboxError> {
+        let mail = DemoSource::get_mail(self, &id)?;
+        let mut suggestion = demo_suggestion(&mail, &kind);
+        if let Some(task) = suggestion.task.as_mut().filter(|task| task.list.is_none()) {
+            task.list = lists.last().cloned();
+        }
+        Ok(suggestion)
+    }
+
+    async fn list_action_kinds(&self) -> Result<Vec<ActionKind>, InboxError> {
+        Ok(fallback_kinds())
+    }
 }
 
 /// The empty inbox of the tests has no mail account: no folders, every message unknown.
@@ -1148,6 +1325,54 @@ impl MailSource for crate::empty::EmptySource {
     /// There is no mail to answer.
     async fn send_reply(&self, _id: String, _text: String) -> Result<(), InboxError> {
         Err(InboxError::NotFound)
+    }
+
+    async fn create_todo_from_mail_with(
+        &self,
+        _account: String,
+        _id: String,
+        _list: TaskList,
+        _title: Option<String>,
+        _due: Option<NaiveDate>,
+        _notes: String,
+    ) -> Result<ItemTask, InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn create_event_from_mail(
+        &self,
+        _account: String,
+        _id: String,
+        _calendar: String,
+        _fields: EventFields,
+    ) -> Result<(), InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn list_suggestions(&self, _account: String, _id: String) -> Result<Vec<Suggestion>, InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn accept_suggestion(&self, _account: String, _id: String, _kind: String) -> Result<(), InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn dismiss_suggestion(&self, _account: String, _id: String, _kind: String) -> Result<(), InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn extract_action(
+        &self,
+        _account: String,
+        _id: String,
+        _kind: String,
+        _lists: Vec<String>,
+    ) -> Result<Suggestion, InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn list_action_kinds(&self) -> Result<Vec<ActionKind>, InboxError> {
+        Ok(Vec::new())
     }
 }
 
@@ -1953,6 +2178,8 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     if archived(data, message) {
         marks.push(archive_mark());
     }
+    // What Torro suggests to make of it (issue #603).
+    marks.extend(suggestion_mark(message));
     let (name, domain, face) = row_names(data.view, message);
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
     let snippet = Some(list::one_line(&message.snippet)).filter(|snippet| !snippet.is_empty());
@@ -2188,6 +2415,8 @@ fn slim_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) ->
     if archived(data, message) {
         marks.push(archive_mark());
     }
+    // What Torro suggests to make of it (issue #603).
+    marks.extend(suggestion_mark(message));
     let lines = list::SlimLines {
         name,
         time: list::stamp(message.date, data.now),
@@ -2247,6 +2476,9 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     }
     if archived(data, message) {
         chips.push(widgets::state_pill(Icon::Archive, tr("Archived")));
+    }
+    if !message.suggested.is_empty() {
+        chips.push(widgets::state_pill(Icon::Lightbulb, suggestion_words(&message.suggested)));
     }
     let (name, domain, face) = row_names(data.view, message);
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
@@ -2317,7 +2549,10 @@ pub fn message_buttons<'a>(
 /// The height of the card of `message`, `width` wide ([`message_card`]): its preview takes the lines
 /// it needs at that width (task E8.11, `list::preview_lines`).
 pub fn message_card_height(message: &MessageSummary, width: f32) -> f32 {
-    let chips = message.has_attachments || message.flags.contains(&Flag::Flagged) || message.invite.is_some();
+    let chips = message.has_attachments
+        || message.flags.contains(&Flag::Flagged)
+        || message.invite.is_some()
+        || !message.suggested.is_empty();
     let snippet = Some(list::one_line(&message.snippet)).filter(|snippet| !snippet.is_empty());
     list::mail_card_height(list::preview_lines(snippet.as_deref(), width), chips)
 }
@@ -2331,6 +2566,7 @@ fn no_marks(data: &MailList<'_>) -> bool {
                 || message.invite.is_some()
                 || message.has_attachments
                 || message.flags.contains(&Flag::Flagged)
+                || !message.suggested.is_empty()
         })
 }
 
@@ -2927,6 +3163,12 @@ pub struct Reading<'a> {
     pub logos: &'a Logos,
     /// The mail is read in "Sent": its circle is one's own, never a logo (issue #453).
     pub sent: bool,
+    /// What Torro suggests to make of the mail (issue #603, `mail.list_suggestions`): a card each
+    /// over its text ([`suggestion_card`]); empty while they load and for mail without any.
+    pub suggestions: &'a [Suggestion],
+    /// The kinds of action the rail's group "Torro" offers (`mail.list_action_kinds`); `None` while
+    /// they are not in – Task and Event then ([`fallback_kinds`]).
+    pub kinds: Option<&'a [ActionKind]>,
 }
 
 /// How the mail's HTML shows in the panel or the reader (task M9.7): as HTML or its text, in light
@@ -3194,6 +3436,10 @@ fn split_body<'a>(reading: &Reading<'a>, anchors: &detail::Anchors) -> Element<'
     {
         let card = invite_card(invite, summary, reading.now, reading.answering, reading.invite, reading.attention);
         body = body.push(panel::inset(card));
+    }
+    // What Torro suggests to make of the mail (issue #603), after its invitation.
+    if let Some(cards) = reading.summary().and_then(|summary| suggestion_cards(reading, summary, size::panel())) {
+        body = body.push(panel::inset(cards));
     }
     if let Some(task) = reading.task {
         body = body.push(panel::inset(task_card(task, reading.now)));
@@ -3474,6 +3720,11 @@ fn head_in<'a>(
             reading.attention,
             room < size::props(),
         ));
+    }
+    // What Torro suggests to make of the mail (issue #603), after its invitation and before the task
+    // made of it.
+    if let Some(cards) = summary.and_then(|summary| suggestion_cards(reading, summary, room)) {
+        head = head.push(cards);
     }
     if let Some(task) = reading.task {
         head = head.push(task_card(task, reading.now));
@@ -3963,29 +4214,23 @@ fn pile_items<'a>(reading: &Reading<'_>) -> [RailItem<'a, Message>; 2] {
 }
 
 /// The items of the rail's group "Torro" ([`action_groups`]): what Torro adds to the mail, as the
-/// reader's pills had it (task E11.3).
+/// reader's pills had it (task E11.3). First the kinds of action (issue #603, [`action_items`]), then
+/// "Category…" and – for an entry with a decision model – "Re-categorize".
 fn torro_items<'a>(
     reading: &Reading<'_>,
     entry: Option<ReaderEntry<'_>>,
     anchors: &detail::Anchors,
 ) -> Vec<RailItem<'a, Message>> {
+    let mut items = action_items(reading, entry.map(|entry| entry.item.id.as_str()), anchors);
     let Some(ReaderEntry { item, .. }) = entry else {
         // Mail without an entry (a folder's, the archive's, older mail) is filed by hand too (issue
         // #500); "Re-categorize" needs an entry, as the model decides for one.
-        let task = Some(Message::AskMailTask(reading.id.to_owned()));
         let category = Some(Message::AskMailCategory(reading.id.to_owned()));
-        let mut items = vec![
-            RailItem::new(Icon::ListTodo, tr("Task"), "T", task).at(&anchors.task),
-            RailItem::new(Icon::Tag, tr("Category…"), "", category).at(&anchors.category),
-        ];
+        items.push(RailItem::new(Icon::Tag, tr("Category…"), "", category).at(&anchors.category));
         items.extend(workflow_items(reading));
         return items;
     };
     let id = || item.id.clone();
-    let mut items = vec![
-        RailItem::new(Icon::ListTodo, tr("Task"), "T", Some(Message::AskTask(id()))).at(&anchors.task),
-        RailItem::new(Icon::CalendarPlus, tr("Event"), "C", Some(Message::AskEvent(id()))).at(&anchors.event),
-    ];
     // What the mail is (task E12.8): only mail has a category. "Re-categorize" only with a decision
     // model set up – without an AI the function is simply not there (`docs/ki.md`, principle 1).
     if item.source.kind == torro_inbox::SourceKind::Mail {
@@ -4013,6 +4258,37 @@ fn workflow_items<'a>(reading: &Reading<'_>) -> Vec<RailItem<'a, Message>> {
         RailItem::new(Icon::ListChecks, tr("Run workflow"), "", Some(Message::ChooseWorkflow(reading.id.to_owned())))
             .opens_menu(),
     ]
+}
+
+/// The kinds of action of the rail's group "Torro" (issue #603): each kind the core lists
+/// ([`Reading::kinds`], else [`fallback_kinds`]) – also one switched off, which only finds nothing by
+/// itself any more –, the tasks' first so a click on the group's icon still makes a task. A click
+/// opens the dialog of its form, filled from the mail ([`Message::AskAction`]), for the mail's entry
+/// `entry` when it has one. The first of each form keeps its key (`T`, `C`) and its dialog's anchor.
+fn action_items<'a>(
+    reading: &Reading<'_>,
+    entry: Option<&str>,
+    anchors: &detail::Anchors,
+) -> Vec<RailItem<'a, Message>> {
+    let mut kinds = kinds_or_fallback(reading.kinds);
+    kinds.sort_by_key(|kind| kind.form != ActionForm::Task);
+    let (mut task, mut event) = (true, true);
+    kinds
+        .iter()
+        .map(|kind| {
+            let first = match kind.form {
+                ActionForm::Task => std::mem::take(&mut task),
+                ActionForm::Event => std::mem::take(&mut event),
+            };
+            let (key, anchor) = match kind.form {
+                ActionForm::Task => ("T", &anchors.task),
+                ActionForm::Event => ("C", &anchors.event),
+            };
+            let ask = Message::AskAction(entry.map(str::to_owned), reading.id.to_owned(), kind.id.clone());
+            let item = RailItem::new(kind_icon(&kind.icon), kind_label(kind), if first { key } else { "" }, Some(ask));
+            if first { item.at(anchor) } else { item }
+        })
+        .collect()
 }
 
 /// The items of the rail's group "Mark" ([`action_groups`]): Flag or Unflag, Mark read or Mark
@@ -4556,6 +4832,288 @@ fn task_ring<'a>() -> Element<'a, Message> {
             ..container::Style::default()
         })
         .into()
+}
+
+// ----- Suggestions (issue #603) ----------------------------------------------------------------
+
+/// The kinds of action the rail offers while the core's list (`mail.list_action_kinds`) is not in
+/// or could not be read: Task and Event, as the rail had them before.
+pub fn fallback_kinds() -> Vec<ActionKind> {
+    let kind = |id: &str, label: &str, icon: &str, form| ActionKind {
+        id: id.to_owned(),
+        label: label.to_owned(),
+        icon: icon.to_owned(),
+        form,
+        enabled: true,
+    };
+    vec![
+        kind("task", "Task", "list-todo", ActionForm::Task),
+        kind("event", "Event", "calendar-plus", ActionForm::Event),
+    ]
+}
+
+/// The kinds `kinds` names, else the fallback ([`fallback_kinds`]); a list that came empty counts as
+/// not in, so the rail never loses Task and Event.
+pub fn kinds_or_fallback(kinds: Option<&[ActionKind]>) -> Vec<ActionKind> {
+    match kinds {
+        Some(kinds) if !kinds.is_empty() => kinds.to_vec(),
+        _ => fallback_kinds(),
+    }
+}
+
+/// The kind of action `id` among `kinds` ([`kinds_or_fallback`]).
+pub fn find_kind(kinds: Option<&[ActionKind]>, id: &str) -> Option<ActionKind> {
+    kinds_or_fallback(kinds).into_iter().find(|kind| kind.id == id)
+}
+
+/// The icon of a kind of action by its Lucide name: the two the suite knows, else the sparkles.
+pub fn kind_icon(name: &str) -> Icon {
+    match name {
+        "calendar-plus" => Icon::CalendarPlus,
+        "list-todo" => Icon::ListTodo,
+        _ => Icon::Sparkles,
+    }
+}
+
+/// What a person reads for `kind`: the core sends its label in English, the two known ones are
+/// translated here; another kind (an extension's) shows as it came, on one line.
+pub fn kind_label(kind: &ActionKind) -> String {
+    label_word(&kind.label)
+}
+
+/// [`kind_label`] for a label alone.
+fn label_word(label: &str) -> String {
+    match label {
+        "Event" => tr("Event").to_owned(),
+        "Task" => tr("Task").to_owned(),
+        other => list::one_line(other),
+    }
+}
+
+/// The word of the kind `id` a mail's row names in its mark ([`suggestion_mark`]): the row holds only
+/// the ids ([`MessageSummary::suggested`]), so the two known ones are named, another by its id.
+fn suggested_word(id: &str) -> String {
+    match id {
+        "event" => tr("Event").to_owned(),
+        "task" => tr("Task").to_owned(),
+        other => list::one_line(other),
+    }
+}
+
+/// The tooltip of a row's mark: "Suggestion: Event, Task".
+fn suggestion_words(kinds: &[String]) -> String {
+    let words: Vec<String> = kinds.iter().map(|kind| suggested_word(kind)).collect();
+    trf("Suggestion: {kind}", &[("kind", &words.join(", "))])
+}
+
+/// The mark of a mail with open suggestions in its row (issue #603): the light bulb (14) in `text_3`,
+/// which kinds as its tooltip ([`suggestion_words`]); `None` without any.
+fn suggestion_mark<'a>(message: &MessageSummary) -> Option<(Element<'a, Message>, f32)> {
+    (!message.suggested.is_empty()).then(|| {
+        (widgets::with_tooltip(small_icon(Icon::Lightbulb, None), suggestion_words(&message.suggested)), icon::SIZE_SM)
+    })
+}
+
+/// The title of a suggestion's card: what the model read out, else the mail's subject – the dialog
+/// starts with it too while the suggestion reads or when it could not be read out.
+pub fn suggestion_title(suggestion: &Suggestion, summary: &MessageSummary) -> String {
+    let read = match (&suggestion.task, &suggestion.event) {
+        (Some(task), _) => list::one_line(&task.title),
+        (None, Some(event)) => list::one_line(&event.title),
+        (None, None) => String::new(),
+    };
+    if read.is_empty() || suggestion.state != SuggestionState::Ready { subject(summary) } else { read }
+}
+
+/// When a suggested event is, as an invitation's card says it ([`invite_when`]), with its place:
+/// "Thu 14 Nov · 14:00–15:00 · Room 2". `None` without a start.
+fn event_when(event: &EventSuggestion, now: DateTime<Utc>) -> Option<String> {
+    use torro_pim::EventTime;
+    let today = now.with_timezone(&Local).date_naive();
+    let when = match (event.start?, event.end) {
+        (EventTime::Date(day), _) => datetime::format_short_date(day, today),
+        (EventTime::DateTime(start), end) => {
+            let start = datetime::to_local(start);
+            let day = datetime::format_short_date(start.date(), today);
+            match end {
+                Some(EventTime::DateTime(end)) if datetime::to_local(end).date() == start.date() => format!(
+                    "{day} · {}–{}",
+                    datetime::format_time(start.time()),
+                    datetime::format_time(datetime::to_local(end).time())
+                ),
+                _ => format!("{day} · {}", datetime::format_time(start.time())),
+            }
+        }
+    };
+    let place = event.location.as_deref().map(list::one_line).filter(|place| !place.is_empty());
+    Some(place.map_or_else(|| when.clone(), |place| format!("{when} · {place}")))
+}
+
+/// What a suggested task says besides its title: "List: Work · due Fri 15 Nov"; `None` without both.
+fn task_when(task: &TaskSuggestion, now: DateTime<Utc>) -> Option<String> {
+    let today = now.with_timezone(&Local).date_naive();
+    let mut parts = Vec::new();
+    if let Some(list) = task.list.as_deref().map(list::one_line).filter(|list| !list.is_empty()) {
+        parts.push(trf("List: {list}", &[("list", &list)]));
+    }
+    if let Some(day) = crate::suggest::due_of(task.due) {
+        parts.push(trf("due {day}", &[("day", &datetime::format_short_date(day, today))]));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// The meta line of a suggestion's card: while it reads "Reading the mail…", once read out when and
+/// where the event is or the task's list and due day ([`event_when`], [`task_when`]), else the
+/// kind's word.
+pub fn suggestion_meta(suggestion: &Suggestion, kind: Option<&ActionKind>, now: DateTime<Utc>) -> String {
+    let word = || kind.map_or_else(|| suggested_word(&suggestion.kind), kind_label);
+    match suggestion.state {
+        SuggestionState::Reading => tr("Reading the mail…").to_owned(),
+        SuggestionState::Unfilled => word(),
+        SuggestionState::Ready => {
+            let event = suggestion.event.as_ref().and_then(|event| event_when(event, now));
+            let task = suggestion.task.as_ref().and_then(|task| task_when(task, now));
+            event.or(task).unwrap_or_else(word)
+        }
+    }
+}
+
+/// A suggestion of the mail `summary` as a card over its text (issue #603), after the invitation's.
+/// Its head is built as [`widgets::card_head`] is – the kind's tile, the title ([`suggestion_title`])
+/// and the meta line ([`suggestion_meta`]) in `text_3`, each on one line with "…" and the whole as
+/// tooltip –, but with the sparkles in the accent before the meta line: the model found it
+/// (`docs/ki.md`), which `card_head`'s plain text line cannot hold.
+///
+/// Roomy (one suggestion, a head at least [`size::props`] wide) why the mail asks for it follows in
+/// `text_3`, then "Accept" (`secondary`), which opens the filled dialog of its form – nothing is made
+/// before the person saves there –, and "Dismiss" (`ghost`). `compact` (two or more, or a narrow head)
+/// keeps the card to its head: Accept and the ✕ of Dismiss as icon buttons with their words as
+/// tooltips at its end, no reason – so the mail's text stays in sight. A card still reading says so
+/// and stands still; it can be accepted already.
+pub fn suggestion_card<'a>(
+    suggestion: &Suggestion,
+    summary: &MessageSummary,
+    kinds: Option<&[ActionKind]>,
+    now: DateTime<Utc>,
+    compact: bool,
+) -> Element<'a, Message> {
+    let kind = find_kind(kinds, &suggestion.kind);
+    let face = kind.as_ref().map_or(Icon::Sparkles, |kind| kind_icon(&kind.icon));
+    let tile = widgets::source_tile(widgets::TileFace::Icon(face), widgets::TileSize::Large, None);
+    let sparkles =
+        icon::icon(Icon::Sparkles, icon::SIZE_SM).style(|t: &Theme, _| svg::Style { color: Some(palette(t).accent) });
+    let meta =
+        widgets::ellipsized(typo::meta().tabular(), suggestion_meta(suggestion, kind.as_ref(), now), theme::text_3);
+    let words = column![
+        widgets::ellipsized(typo::body_strong(), suggestion_title(suggestion, summary), theme::text),
+        row![sparkles, meta].spacing(space::s()).align_y(Alignment::Center),
+    ];
+    let ids = || (summary.account.clone(), summary.id.clone(), suggestion.kind.clone());
+    let (account, id, kind_id) = ids();
+    let accept = Message::AcceptSuggestion(account, id, kind_id);
+    let (account, id, kind_id) = ids();
+    let dismiss = Message::DismissSuggestion(account, id, kind_id);
+    let mut head = row![tile, container(words).width(Fill)].spacing(space::m()).align_y(Alignment::Center);
+    if compact {
+        head = head.push(widgets::icon_button(Icon::Check, tr("Accept"), Some(accept))).push(widgets::icon_button(
+            Icon::X,
+            tr("Dismiss"),
+            Some(dismiss),
+        ));
+        return widgets::card(vec![head.into()], false, None);
+    }
+    let mut parts: Vec<Element<'a, Message>> = vec![head.into()];
+    // The model's words, as they came: foreign text like the mail's, shown, never followed.
+    if let Some(reason) = suggestion.reason.as_deref().map(list::one_line).filter(|reason| !reason.is_empty()) {
+        parts.push(
+            typo::text(typo::meta(), reason)
+                .style(theme::text_3)
+                .width(Fill)
+                .align_x(Alignment::Start)
+                .wrapping(Wrapping::WordOrGlyph)
+                .into(),
+        );
+    }
+    let buttons = row![
+        widgets::text_button(Some(Icon::Check), tr("Accept"), style::button::secondary, Some(accept)),
+        widgets::text_button(None, tr("Dismiss"), style::button::ghost, Some(dismiss)),
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
+    parts.push(buttons.into());
+    widgets::card(parts, false, None)
+}
+
+/// The suggestions' cards of `reading` in their own column, [`size::card_gap`] apart (issue #603);
+/// compact ([`suggestion_card`]) when there are two or more or the head is narrower than
+/// [`size::props`]. `None` without any.
+fn suggestion_cards<'a>(reading: &Reading<'_>, summary: &MessageSummary, room: f32) -> Option<Element<'a, Message>> {
+    if reading.suggestions.is_empty() {
+        return None;
+    }
+    let compact = reading.suggestions.len() > 1 || room < size::props();
+    let cards = reading
+        .suggestions
+        .iter()
+        .map(|suggestion| suggestion_card(suggestion, summary, reading.kinds, reading.now, compact));
+    Some(column(cards).spacing(size::card_gap()).width(Fill).into())
+}
+
+/// The demo's suggestion of `kind` for `mail` (issue #603), read out at once: the design review an
+/// event on the Thursday after it at 14:00 for an hour and a task to look at the drafts, the budget
+/// mail a task due that Thursday – both in "Work" –, any other mail its subject the next day at 10:00
+/// or as a task without a day. Made-up model text, like the demo's mail, so it stays untranslated
+/// but the list's name, which must match the demo's lists.
+pub fn demo_suggestion(mail: &Mail, kind: &str) -> Suggestion {
+    use chrono::{Datelike, Days, NaiveTime, Weekday};
+    use torro_pim::EventTime;
+    let day = datetime::to_local(mail.summary.date).date();
+    let ahead = (Weekday::Thu.num_days_from_monday() + 7 - day.weekday().num_days_from_monday()) % 7;
+    let thursday = day + Days::new(if ahead == 0 { 7 } else { u64::from(ahead) });
+    let at = |day: NaiveDate, hour: u32| {
+        NaiveTime::from_hms_opt(hour, 0, 0).map(|time| EventTime::DateTime(datetime::to_utc(day.and_time(time))))
+    };
+    let (engine, model) = ("ai:ollama@localhost:11434".to_owned(), "qwen3:8b".to_owned());
+    let form = find_kind(None, kind).map_or(ActionForm::Task, |known| known.form);
+    let id = mail.summary.id.as_str();
+    let (task, event, reason) = match form {
+        ActionForm::Event => {
+            let (title, start, reason) = match id {
+                "m:w2" => ("Design review", thursday, Some("Lena confirms Thursday at 14:00.")),
+                _ => ("", day + Days::new(1), None),
+            };
+            let title = if title.is_empty() { subject(&mail.summary) } else { title.to_owned() };
+            let hour = if id == "m:w2" { 14 } else { 10 };
+            let event = EventSuggestion {
+                title,
+                start: at(start, hour),
+                end: at(start, hour + 1),
+                location: (id == "m:w2").then(|| "Room 2".to_owned()),
+                attendees: Vec::new(),
+                engine,
+                model,
+            };
+            (None, Some(event), reason)
+        }
+        ActionForm::Task => {
+            let (title, reason) = match id {
+                "m:w1" => ("Look at the travel budget", Some("Jonas asks for it before Thursday.")),
+                "m:w2" => ("Give feedback on the sidebar drafts", Some("Lena brings the drafts on Thursday.")),
+                _ => ("", None),
+            };
+            let known = !title.is_empty();
+            let task = TaskSuggestion {
+                title: if known { title.to_owned() } else { subject(&mail.summary) },
+                notes: None,
+                due: known.then_some(EventTime::Date(thursday)),
+                list: known.then(|| tr("Work").to_owned()),
+                engine,
+                model,
+            };
+            (Some(task), None, reason)
+        }
+    };
+    Suggestion { kind: kind.to_owned(), state: SuggestionState::Ready, task, event, reason: reason.map(str::to_owned) }
 }
 
 // ----- Saving attachments (task M12.6, issue #290) --------------------------------------------
@@ -6034,6 +6592,8 @@ mod tests {
             click: &OPEN,
             file_menu: None,
             unsubscribed: &unsubscribed,
+            suggestions: &[],
+            kinds: None,
         };
         check(&reading)
     }
@@ -6239,8 +6799,10 @@ mod tests {
             );
             assert!(mail(sends(&groups, file, trc("action", "Archive")), MailAction::Archive));
             assert!(mail(sends(&groups, file, tr("Delete")), MailAction::Delete));
-            assert!(matches!(sends(&groups, torro, tr("Task")), Some(Message::AskTask(_))));
-            assert!(matches!(sends(&groups, torro, tr("Event")), Some(Message::AskEvent(_))));
+            // Issue #603: the kinds of action, for the entry and its mail.
+            let action = |sent: Option<Message>, wanted: &str| matches!(sent, Some(Message::AskAction(Some(entry), mail, kind)) if entry == item.id && mail == "m:w1" && kind == wanted);
+            assert!(action(sends(&groups, torro, tr("Task")), "task"));
+            assert!(action(sends(&groups, torro, tr("Event")), "event"));
             // Issue #339: a filter for the sender, in Settings › Categorization (issue #454).
             let sender = &reading.summary().and_then(|summary| summary.from.as_ref()).expect("a sender").address;
             assert!(matches!(
@@ -6248,9 +6810,7 @@ mod tests {
                 Some(Message::CreateFilter { query, account: None }) if query == format!("from:{sender}")
             ));
             assert!(matches!(sends(&groups, torro, tr("Category…")), Some(Message::AskCategory(_))));
-            for word in [tr("Task"), tr("Event"), tr("Category…")] {
-                assert!(entry(sends(&groups, torro, word)), "{word}");
-            }
+            assert!(entry(sends(&groups, torro, tr("Category…"))));
             assert!(matches!(sends(&groups, tr("Mute"), tr("Mute…")), Some(Message::AskHide(id)) if id == item.id));
             assert!(matches!(sends(&groups, tr("More"), tr("Copy text")), Some(Message::CopyText)));
             assert!(matches!(sends(&groups, tr("More"), tr("Close")), Some(Message::CloseDetail)));
@@ -6373,7 +6933,10 @@ mod tests {
             for groups in [&groups, &context] {
                 let items = &group(groups, tr("Torro")).items;
                 assert!(
-                    matches!(items.first().and_then(|i| i.press()), Some(Message::AskMailTask(id)) if id == reading.id)
+                    matches!(items.first().and_then(|i| i.press()), Some(Message::AskAction(None, id, kind)) if id == reading.id && kind == "task")
+                );
+                assert!(
+                    matches!(items.get(1).and_then(|i| i.press()), Some(Message::AskAction(None, id, kind)) if id == reading.id && kind == "event")
                 );
                 assert!(
                     matches!(sends(groups, tr("Torro"), tr("Create workflow with AI…")), Some(Message::WorkflowSetup(id)) if id == reading.id)
@@ -6385,7 +6948,7 @@ mod tests {
         });
     }
 
-    /// Task E14.3: a folder's message has no Done, "Move to …", Event or Category – Task makes a task
+    /// Task E14.3: a folder's message has no Done or "Move to …" – Task makes a task
     /// of the message, the bell mutes its own traits, `e` archives it; in the trash it has no Delete, in
     /// an account without an archive folder no Archive. Task E19.4: it goes on the piles and is followed
     /// up by its own id.
@@ -6431,9 +6994,11 @@ mod tests {
             assert_eq!(group(&groups, tr("File")).icon, Icon::Check, "the group's fixed icon");
             assert!(group(&groups, tr("File")).first_press().is_some(), "a click archives");
             let torro = &group(&groups, tr("Torro")).items;
-            assert_eq!(torro.len(), 4, "Task and Category stay first; workflow setup and reuse follow");
-            assert!(matches!(torro[0].press(), Some(Message::AskMailTask(id)) if id == "m:w1"));
-            assert!(matches!(torro[1].press(), Some(Message::AskMailCategory(id)) if id == "m:w1"));
+            assert_eq!(torro.len(), 5, "Task, Event and Category stay first; workflow setup and reuse follow");
+            let action = |item: &RailItem<'_, Message>, wanted: &str| matches!(item.press(), Some(Message::AskAction(None, id, kind)) if id == "m:w1" && kind == wanted);
+            assert!(action(&torro[0], "task") && action(&torro[1], "event"));
+            assert_eq!((torro[0].key, torro[1].key), ("T", "C"));
+            assert!(matches!(torro[2].press(), Some(Message::AskMailCategory(id)) if id == "m:w1"));
             let mute = sends(&groups, tr("Mute"), tr("Mute…"));
             assert!(matches!(mute, Some(Message::AskMuteMail(id)) if id == "m:w1"), "the message's own traits");
             // An account without an archive folder: no Archive.
@@ -7348,6 +7913,8 @@ mod tests {
                         click: &OPEN,
                         file_menu: Some(0),
                         unsubscribed: &none_left,
+                        suggestions: &[],
+                        kinds: None,
                     };
                     let anchors = detail::Anchors::default();
                     let _ = panel(&reading, Some(&folder), &anchors, Bars::Split, None);
@@ -7938,6 +8505,8 @@ mod tests {
         let mut message = demo::mail_sample(now()).remove(0).summary;
         message.has_attachments = false;
         message.flags.clear();
+        // Issue #603: the sample's first mail carries a suggestion, whose chip would take the row.
+        message.suggested.clear();
         message.snippet = "Short".into();
         let plain = message_card_height(&message, 480.0);
         message.has_attachments = true;
@@ -7998,5 +8567,114 @@ mod tests {
             MailLook::default(),
             MailLook { format: MailFormat::Html, colors: MailAppearance::App, ..MailLook::default() }
         );
+    }
+
+    // ----- Suggestions (issue #603) ------------------------------------------------------------
+
+    /// A card read out says what was found and why; one still reading says so instead of a time, and
+    /// keeps the subject as its title. Every card draws, narrow and wide.
+    #[test]
+    fn a_suggestion_card_shows_what_was_read_out() {
+        let demo = DemoSource::new(now());
+        let mail = DemoSource::get_mail(&demo, "m:w2").expect("the design review");
+        let suggestions: Vec<Suggestion> = iced::futures::executor::block_on(MailSource::list_suggestions(
+            &demo,
+            mail.summary.account.clone(),
+            "m:w2".into(),
+        ))
+        .expect("the demo suggests");
+        assert_eq!(suggestions.iter().map(|s| s.kind.as_str()).collect::<Vec<_>>(), ["event", "task"]);
+        let event = &suggestions[0];
+        assert_eq!(suggestion_title(event, &mail.summary), "Design review");
+        let meta = suggestion_meta(event, None, now());
+        assert!(meta.contains("14:00") && meta.ends_with("Room 2"), "{meta}");
+        assert_eq!(event.reason.as_deref(), Some("Lena confirms Thursday at 14:00."));
+        let task = &suggestions[1];
+        let meta = suggestion_meta(task, None, now());
+        assert!(meta.starts_with(&trf("List: {list}", &[("list", &tr("Work"))])), "{meta}");
+        let reading = Suggestion { state: SuggestionState::Reading, ..event.clone() };
+        assert_eq!(suggestion_meta(&reading, None, now()), tr("Reading the mail…"));
+        assert_eq!(suggestion_title(&reading, &mail.summary), subject(&mail.summary), "the subject while it reads");
+        let unfilled = Suggestion { state: SuggestionState::Unfilled, task: None, event: None, ..event.clone() };
+        assert_eq!(suggestion_meta(&unfilled, None, now()), tr("Event"), "the kind's word");
+        for suggestion in [event, task, &reading, &unfilled] {
+            for compact in [false, true] {
+                let _ = suggestion_card(suggestion, &mail.summary, None, now(), compact);
+            }
+        }
+        // Over the mail in the reader and the panel, after the invitation's card.
+        reading_of("m:w2", MailFormat::Text, true, |reading| {
+            let reading = Reading { suggestions: &suggestions, ..*reading };
+            let _ = head(&reading, None, 600.0);
+            let _ = body(&reading, Bars::Split, &detail::Anchors::default());
+            let _ = body(&reading, Bars::Command { entry: None, width: size::panel() }, &detail::Anchors::default());
+        });
+    }
+
+    /// Erledigt-Punkt 5: a kind the core lists stands in the rail's group "Torro" with its icon and
+    /// label – one it does not know with the sparkles –, a click asks for it; the first of each form
+    /// keeps its key. Without the core's list, Task and Event.
+    #[test]
+    fn every_kind_of_action_stands_in_the_rail() {
+        let kind = |id: &str, label: &str, icon: &str, form| ActionKind {
+            id: id.into(),
+            label: label.into(),
+            icon: icon.into(),
+            form,
+            enabled: id != "probe",
+        };
+        let kinds = vec![
+            kind("event", "Event", "calendar-plus", ActionForm::Event),
+            kind("task", "Task", "list-todo", ActionForm::Task),
+            kind("probe", "Probe", "sparkles", ActionForm::Task),
+        ];
+        let folders = folders();
+        reading_of("m:w1", MailFormat::Text, true, |reading| {
+            let with = Reading { kinds: Some(&kinds), ..*reading };
+            let groups = action_groups(&with, None, &folders, true, &detail::Anchors::default());
+            let torro = &group(&groups, tr("Torro")).items;
+            let words: Vec<String> = torro.iter().map(|item| item.label.to_string()).collect();
+            assert_eq!(
+                words,
+                strings(&[
+                    tr("Task"),
+                    "Probe",
+                    tr("Event"),
+                    tr("Category…"),
+                    tr("Create workflow with AI…"),
+                    tr("Run workflow")
+                ]),
+                "the tasks' first, workflows appended"
+            );
+            assert_eq!(torro[1].icon, Icon::Sparkles);
+            assert_eq!((torro[0].key, torro[1].key, torro[2].key), ("T", "", "C"));
+            assert!(
+                matches!(torro[1].press(), Some(Message::AskAction(None, id, kind)) if id == "m:w1" && kind == "probe")
+            );
+            // Not in yet, or empty: Task and Event as before.
+            for kinds in [None, Some(&[][..])] {
+                let without = Reading { kinds, ..*reading };
+                let groups = action_groups(&without, None, &folders, true, &detail::Anchors::default());
+                let icons: Vec<Icon> = group(&groups, tr("Torro")).items.iter().map(|item| item.icon).collect();
+                assert_eq!(icons, [Icon::ListTodo, Icon::CalendarPlus, Icon::Tag, Icon::Sparkles, Icon::ListChecks]);
+            }
+        });
+        assert_eq!(kind_icon("calendar-plus"), Icon::CalendarPlus);
+        assert_eq!(kind_icon("rocket"), Icon::Sparkles);
+        assert_eq!(kind_label(&kinds[0]), tr("Event"));
+    }
+
+    /// A mail with open suggestions carries the light bulb in its row, which kinds as its tooltip;
+    /// one without none.
+    #[test]
+    fn a_suggested_mail_has_its_mark() {
+        let demo = DemoSource::new(now());
+        let mail = DemoSource::get_mail(&demo, "m:w2").expect("the design review");
+        assert!(suggestion_mark(&mail.summary).is_some());
+        let words = suggestion_words(&mail.summary.suggested);
+        assert_eq!(words, trf("Suggestion: {kind}", &[("kind", &format!("{}, {}", tr("Event"), tr("Task")))]));
+        let plain = DemoSource::get_mail(&demo, "m:w3").expect("a mail without");
+        assert!(suggestion_mark(&plain.summary).is_none());
+        assert!(message_card_height(&mail.summary, 400.0) >= message_card_height(&plain.summary, 400.0));
     }
 }

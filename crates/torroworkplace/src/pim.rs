@@ -1188,6 +1188,8 @@ impl PimService {
             }
             // The list as `tasks.save_todo` checks it; the mail by account in the core (task E8.7a).
             Request::CreateTodoFromMail { collection, .. } => (Role::TaskList, collection, None),
+            // The calendar as `calendar.save_event` checks it, before the mail is read (issue #603).
+            Request::CreateEventFromMail { collection, .. } => (Role::Calendar, collection, None),
             Request::SaveTodo { todo } | Request::DeleteTodo { todo } => {
                 (Role::TaskList, &todo.collection, todo.href.as_deref())
             }
@@ -1367,7 +1369,14 @@ impl PimService {
             | Request::ReleaseMailImages { .. }
             | Request::SendDraft { .. }
             | Request::GetDraft { .. }
-            | Request::Unsubscribe { .. } => return None,
+            | Request::Unsubscribe { .. }
+            // The suggestions of mail touch no calendar or task list (issue #603).
+            | Request::ListSuggestions { .. }
+            | Request::AcceptSuggestion { .. }
+            | Request::DismissSuggestion { .. }
+            | Request::ExtractAction { .. }
+            | Request::ListActionKinds
+            | Request::SetActionKind { .. } => return None,
             Request::GetMailCachePolicy { .. }
             | Request::SetMailCachePolicy { .. }
             | Request::PreviewMailCache { .. }

@@ -1,0 +1,11 @@
+{
+  "expect": {
+    "event": false,
+    "task": false
+  },
+  "subject": "Danke!",
+  "from": "Max Bauer <max@freunde.example>",
+  "list": null,
+  "bulk": false,
+  "text": "Hey Sven,\n\ndanke nochmal für gestern, war ein schöner Abend!\n\nMax"
+}

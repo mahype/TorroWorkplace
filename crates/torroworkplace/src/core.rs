@@ -729,6 +729,39 @@ fn event_from_entry(entry: &torro_inbox::Item, made: EntryEvent, origin: Option<
     }
 }
 
+/// The event `calendar.create_event_from_mail` makes of the mail `found` (issue #603), as
+/// [`event_from_entry`] makes one of an entry: the title (blank: the subject, "(no subject)" for
+/// none), the times as they came, busy time, the place, and as description the note, the start of
+/// the mail and the line naming it. New: no `uid`, `href` or `etag`.
+fn event_from_mail(found: &crate::mail::inbox_feed::MailForTask, made: EntryEvent) -> torro_pim::Event {
+    let EntryEvent { collection, title, start, end, location, notes } = made;
+    let location = location.map(|location| location.trim().to_string()).filter(|location| !location.is_empty());
+    let line = crate::mail::inbox_feed::from_mail_line(&found.summary);
+    torro_pim::Event {
+        uid: String::new(),
+        collection,
+        href: None,
+        etag: None,
+        summary: mail_task_title(title.as_deref(), &found.summary.subject),
+        start,
+        end: Some(end),
+        location,
+        description: with_note(notes, with_line(Some(found.summary.snippet.clone()), Some(line))),
+        recurring: false,
+        transparency: torro_pim::Transparency::Opaque,
+        alarms: Vec::new(),
+        recurrence_id: None,
+        repeat: None,
+        time_zone: None,
+        url: None,
+        status: None,
+        geo: None,
+        organizer: None,
+        attendees: Vec::new(),
+        exceptions: Vec::new(),
+    }
+}
+
 /// `error` unless `start` and `end` are both days or both instants and `end` comes after `start`
 /// (task E8.5b): an event of an entry takes time, and a calendar would refuse the rest.
 fn span_refusal(start: torro_pim::EventTime, end: torro_pim::EventTime) -> Option<Response> {
@@ -749,6 +782,8 @@ struct MailTask {
     collection: String,
     title: Option<String>,
     due: Option<torro_pim::EventTime>,
+    /// A note before the mail's text (issue #603, [`with_note`]).
+    notes: Option<String>,
 }
 
 /// The mail a task is made of (task E8.7a): its link `mail:<address>:<Message-ID>` and the line
@@ -834,6 +869,14 @@ fn mail_fingerprint(found: &crate::mail::inbox_feed::MailForTask) -> String {
 
 /// The longest account or mail id `tasks.create_todo_from_mail` takes, as the mail commands do.
 const MAIL_ID_MAX: usize = 300;
+
+/// How long the reader of suggestions waits after each mail (issue #603), as the sorting of new mail
+/// does: a local model leaves the computer usable.
+const READING_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// How long one reading in the background may take (issue #603): a model that hangs leaves the
+/// suggestion unfilled, and the queue goes on.
+const READING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// The fields of `mail.respond_to_invitation` ([`Request::RespondToInvitation`], task E8.3b).
 struct InvitationReply {
@@ -986,6 +1029,18 @@ fn unsubscribe_facts(plan: &crate::mail::unsubscribe::Plan, account: &str) -> Fa
         ..crate::approvals::MailFacts::default()
     };
     Facts { mail: Some(mail), ..Facts::default() }
+}
+
+/// What the approval of a command on a mail's suggestion or an event made of a mail shows (issue
+/// #603): the account's address, the subject and the sender as the mail store holds them.
+fn suggestion_mail_facts(account: &str, found: &crate::mail::inbox_feed::MailForTask) -> crate::approvals::MailFacts {
+    crate::approvals::MailFacts {
+        account: account.strip_prefix(torro_mail::ACCOUNT_PREFIX).map(str::to_string),
+        count: 1,
+        subjects: vec![found.summary.subject.clone()],
+        senders: found.summary.from.iter().map(|from| from.address.to_lowercase()).collect(),
+        ..crate::approvals::MailFacts::default()
+    }
 }
 
 /// The `error` for a mail that carries no invitation to answer.
@@ -1257,6 +1312,7 @@ fn sorted_with((engine, model): &(String, String)) -> String {
 ///
 /// `occasion`: what asked ([`Occasion`]). A mail that arrives keeps a category that changed while
 /// the model thought (issue #406): the late answer is dropped, `Ok(None)` with no other answers kept.
+#[allow(clippy::too_many_arguments, reason = "the pieces a free function takes in place of the core")]
 async fn decide_mail_with(
     ai: &AiAccounts,
     mail: &MailService,
@@ -1264,12 +1320,14 @@ async fn decide_mail_with(
     decider: (&str, &str),
     (account, message): (&str, &str),
     occasion: Occasion,
+    kinds: &[&crate::actions::KindDef],
+    readings: &crate::actions::Readings,
 ) -> Result<Option<torro_mail::MailCategory>, DecideError> {
     let contact = matches!(occasion, Occasion::Arrival { contact: true });
     let held = mail.content_for_category(account, message).await.map_err(|err| DecideError::Mail(err.to_string()))?;
     let Some(content) = held else { return Ok(None) };
     let catalogue = inbox.catalogue().map_err(DecideError::Mail)?;
-    let Some(decided) = ask_model(ai, decider, &content, &catalogue, contact).await? else { return Ok(None) };
+    let Some(decided) = ask_model(ai, decider, &content, &catalogue, contact, kinds).await? else { return Ok(None) };
     if inbox.category_clear_blocked().map_err(DecideError::Mail)? {
         return Ok(None);
     }
@@ -1303,7 +1361,94 @@ async fn decide_mail_with(
     mail.set_model_answers(account, message, decided.needs_reply, decided.urgency)
         .await
         .map_err(|err| DecideError::Mail(err.to_string()))?;
+    // Only new mail is read out at once (issue #603, decision 3); the rest when it is opened.
+    let reading = matches!(occasion, Occasion::Arrival { .. }).then_some(readings);
+    keep_found(mail, &catalogue, (account, message), &decided.actions, reading).await;
     Ok(Some(decided.category))
+}
+
+/// Keeps the kinds of action the decision model found in the mail `message` of `account` as
+/// suggestions `reading` (issue #603, `docs/vorschlaege.md`) and, with `readings`, puts the mail in
+/// the queue to read them out. Leaves out what decision 2 leaves out: everything for mail of the
+/// groups Info and Junk, an event for an invitation, which has its own card, and a kind not looked
+/// for (switched off, or unknown). Nothing fails: a store that cannot be written is logged with the
+/// account alone.
+async fn keep_found(
+    mail: &MailService,
+    catalogue: &[torro_mail::CategoryDef],
+    (account, message): (&str, &str),
+    found: &[String],
+    readings: Option<&crate::actions::Readings>,
+) {
+    keep_found_checked(mail, catalogue, (account, message), found, readings, Arc::new(|_| true)).await;
+}
+
+async fn keep_found_checked(
+    mail: &MailService,
+    catalogue: &[torro_mail::CategoryDef],
+    (account, message): (&str, &str),
+    found: &[String],
+    readings: Option<&crate::actions::Readings>,
+    allowed: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+) {
+    if found.is_empty() {
+        return;
+    }
+    let facts = match mail.sorting_facts(account, message).await {
+        Ok(Some(facts)) => facts,
+        Ok(None) => return,
+        Err(err) => {
+            eprintln!("torroworkplace: inbox: cannot read a mail of {account} for its suggestions: {err}");
+            return;
+        }
+    };
+    let kinds = suggestable(catalogue, &facts, found);
+    if kinds.is_empty() {
+        return;
+    }
+    match mail.detect_suggestions_checked(account, message, kinds, allowed).await {
+        Ok(new) if !new.is_empty() => {
+            if let Some(readings) = readings {
+                readings.enqueue(account, message);
+            }
+        }
+        Ok(_) => {}
+        Err(err) => eprintln!("torroworkplace: inbox: cannot keep the suggestions of a mail of {account}: {err}"),
+    }
+}
+
+/// Which of the kinds `found` in a mail of `facts` become suggestions (issue #603, decision 2):
+/// none for mail of the groups Info and Junk (newsletters, offers, spam) or kept as fraud, no event
+/// for an invitation, and only kinds there are.
+fn suggestable(
+    catalogue: &[torro_mail::CategoryDef],
+    facts: &crate::mail::service::SortingFacts,
+    found: &[String],
+) -> Vec<String> {
+    let group =
+        facts.category.and_then(|held| catalogue.iter().find(|def| def.category == held.category)).map(|def| def.group);
+    if facts.junk || matches!(group, Some(torro_mail::CategoryGroup::Info | torro_mail::CategoryGroup::Junk)) {
+        return Vec::new();
+    }
+    found
+        .iter()
+        .filter_map(|id| crate::actions::kind(id))
+        .filter(|kind| !(facts.invite && kind.form == torro_ipc::actions::ActionForm::Event))
+        .map(|kind| kind.id.to_string())
+        .collect()
+}
+
+fn detection_on(
+    settings: &SettingsStore,
+    mail: &MailService,
+    cloud: bool,
+    wanted: &[&crate::actions::KindDef],
+) -> bool {
+    let current = settings.current();
+    current.component_on(torro_core::settings::Component::Mail)
+        && mail.workflow_preparation_on()
+        && (!cloud || current.mail_to_cloud_in(torro_core::ai::AiSlot::Decide))
+        && wanted.iter().all(|kind| crate::actions::looked_for(&current).iter().any(|on| on.id == kind.id))
 }
 
 /// One question to the model about `content`, with the `catalogue` as the inbox keeps it (task
@@ -1321,6 +1466,21 @@ async fn ask_model(
     content: &categorize::Content,
     catalogue: &[torro_mail::CategoryDef],
     contact: bool,
+    kinds: &[&crate::actions::KindDef],
+) -> Result<Option<categorize::Decided>, DecideError> {
+    ask_model_checked(ai, (engine, model), content, catalogue, contact, kinds, &|| true, None).await
+}
+
+#[allow(clippy::too_many_arguments, reason = "compatible model helper plus a live per-send permission check")]
+async fn ask_model_checked(
+    ai: &AiAccounts,
+    (engine, model): (&str, &str),
+    content: &categorize::Content,
+    catalogue: &[torro_mail::CategoryDef],
+    contact: bool,
+    kinds: &[&crate::actions::KindDef],
+    allowed: &(dyn Fn() -> bool + Sync),
+    kind_allowed: Option<&(dyn Fn(&str) -> bool + Sync)>,
 ) -> Result<Option<categorize::Decided>, DecideError> {
     let catalogue: std::borrow::Cow<'_, [torro_mail::CategoryDef]> = match contact {
         true => categorize::for_contact(catalogue).into(),
@@ -1330,9 +1490,11 @@ async fn ask_model(
     if categorize::plan(&catalogue) == categorize::Plan::Nothing {
         return Err(DecideError::NothingToChoose);
     }
-    let decided = categorize::decide(model, content, &catalogue, |request| ask_decider(ai, engine, request))
-        .await
-        .map_err(DecideError::Ai)?;
+    let decided = categorize::decide(model, content, &catalogue, kinds, |request| {
+        ask_decider_current(ai, engine, request, allowed, kind_allowed)
+    })
+    .await
+    .map_err(DecideError::Ai)?;
     Ok(match contact {
         true => decided.map(|decided| categorize::for_contact_kept(decided, &catalogue)),
         false => decided,
@@ -1394,11 +1556,38 @@ async fn ask_decider(
     engine: &str,
     request: torro_core::ai::systemone::DecisionRequest,
 ) -> Result<torro_core::ai::systemone::DecisionReply, torro_core::ai::AiError> {
+    ask_decider_checked(ai, engine, request, &|| true).await
+}
+
+async fn ask_decider_checked(
+    ai: &AiAccounts,
+    engine: &str,
+    request: torro_core::ai::systemone::DecisionRequest,
+    allowed: &(dyn Fn() -> bool + Sync),
+) -> Result<torro_core::ai::systemone::DecisionReply, torro_core::ai::AiError> {
+    ask_decider_current(ai, engine, request, allowed, None).await
+}
+
+async fn ask_decider_current(
+    ai: &AiAccounts,
+    engine: &str,
+    mut request: torro_core::ai::systemone::DecisionRequest,
+    allowed: &(dyn Fn() -> bool + Sync),
+    kind_allowed: Option<&(dyn Fn(&str) -> bool + Sync)>,
+) -> Result<torro_core::ai::systemone::DecisionReply, torro_core::ai::AiError> {
     let listed = ai.known_models(engine, Some(&request.model)).await?;
     let model = listed
         .into_iter()
         .find(|known| known.id == request.model)
         .unwrap_or_else(|| torro_core::ai::AiModel::named(&request.model));
+    if !allowed() {
+        return Err(torro_core::ai::AiError::Invalid(tr("Workflow access is not allowed.").to_string()));
+    }
+    if let Some(kind_allowed) = kind_allowed {
+        // Metadata lookup awaited after question construction. Drop newly disabled optional
+        // action questions, while keeping the category decision independent of that switch.
+        request.questions.retain(|name, _| name.strip_prefix("action:").is_none_or(kind_allowed));
+    }
     if model.decision == Some(true) {
         return ai.decide(engine, &request).await;
     }
@@ -1560,14 +1749,14 @@ enum Asked {
 async fn ask_to_sort(
     ai: &AiAccounts,
     decider: (&str, &str),
-    (content, catalogue): (&categorize::Content, &[torro_mail::CategoryDef]),
+    (content, catalogue, kinds): (&categorize::Content, &[torro_mail::CategoryDef], &[&crate::actions::KindDef]),
     contact: bool,
     may_ask: impl Fn() -> bool,
 ) -> Asked {
     use torro_core::ai::AiError;
     let mut waits = CATEGORY_BUSY_WAITS.into_iter();
     loop {
-        let asking = ask_model(ai, decider, content, catalogue, contact);
+        let asking = ask_model(ai, decider, content, catalogue, contact, kinds);
         let err = match tokio::time::timeout(CATEGORY_TIMEOUT, asking).await {
             Err(_) => return Asked::TimedOut,
             Ok(Ok(answer)) => return Asked::Answer(answer),
@@ -1756,7 +1945,8 @@ async fn catch_up_mail(
         (Some(category), _) => (Some((category, None)), false),
         (None, Some((engine, model))) => {
             let may_ask = || !run.state.stopped(run.generation);
-            match ask_to_sort(&run.ai, (engine, model), (&facts.content, catalogue), contact, may_ask).await {
+            // The backlog run looks for no actions (issue #603): only new mail gets suggestions.
+            match ask_to_sort(&run.ai, (engine, model), (&facts.content, catalogue, &[]), contact, may_ask).await {
                 Asked::Answer(decided) => (decided.map(|decided| (decided.category, Some(decided))).or(personal), true),
                 Asked::Halted => return CatchUpMail::Skip,
                 // The model may choose nothing: the rules alone sort, as without a model.
@@ -1927,7 +2117,9 @@ impl JobRun<'_> {
                             || self.settings.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide))
                         && !left_behind(&self.settings.current(), &job.scope, held)
                 };
-                match ask_to_sort(self.ai, (engine, model), (&facts.content, catalogue), contact, may_ask).await {
+                let kinds = crate::actions::looked_for(&self.settings.current());
+                let asked = (&facts.content, catalogue, kinds.as_slice());
+                match ask_to_sort(self.ai, (engine, model), asked, contact, may_ask).await {
                     Asked::Answer(answer) => (answer.map(|answer| (answer.category, Some(answer))).or(personal), true),
                     // The batch ends; the next looks at the job and the permission again and stops it
                     // with its reason.
@@ -2097,6 +2289,9 @@ async fn category_job_run(
                                             answers.urgency,
                                         )
                                         .await;
+                                    // Kept, not read out: a job's mail is old (issue #603, decision 3).
+                                    let found = (&account.account[..], &message[..]);
+                                    keep_found(&mail, &catalogue, found, &answers.actions, None).await;
                                 }
                                 if let Some(entry) = inbox.entry_of_message(&account.account, &message) {
                                     let _ = inbox.set_category_if_automatic(&entry, category);
@@ -2707,6 +2902,9 @@ pub struct Core {
     /// Which of the suite's announcements the person hid (issue #485): the user's list
     /// ([`crate::announcements::Announcements::system`]); tests keep it in memory.
     announcements: crate::announcements::Announcements,
+    /// The mails whose suggestions wait to be read out (issue #603, [`Core::read_suggestions`]):
+    /// filled by the sorting of new mail, worked through one at a time.
+    readings: crate::actions::Readings,
 }
 
 /// How long a measurement without shared memory counts ([`Core::hardware`]): long enough that the
@@ -2809,6 +3007,7 @@ impl Core {
             contacts,
             catalog: if cfg!(test) { crate::catalog::Catalog::none() } else { crate::catalog::Catalog::system() },
             announcements: crate::announcements::Announcements::system(),
+            readings: crate::actions::Readings::default(),
         };
         let allowed = core.allowed_folders();
         Core {
@@ -3344,7 +3543,15 @@ impl Core {
         tokio::spawn(async move { core.keep_used_models_on().await });
         self.ntfy.start();
         self.start_contacts();
+        let mail_off = !self.settings.current().component_on(torro_core::settings::Component::Mail);
+        self.mail.pause_from_start(mail_off);
+        // Register the durable classifier synchronously, before the feed or sync can dispatch
+        // legacy detection. A model call cannot race the initial handover between both paths.
+        self.start_workflows();
         self.start_mail_feed(torro_core::account::accounts_file().ok());
+        // The suggestions of new mail are read out one mail at a time (issue #603).
+        let core = Arc::clone(self);
+        tokio::spawn(async move { core.read_suggestions().await });
         // A removal of a category cut short (task E15.2) needs the mail stores: once they are read.
         let core = Arc::clone(self);
         tokio::spawn(async move {
@@ -3360,10 +3567,7 @@ impl Core {
                 eprintln!("torroworkplace: inbox: the mail accounts were not read in time; removing categories waits");
             }
         });
-        let mail_off = !self.settings.current().component_on(torro_core::settings::Component::Mail);
-        self.mail.pause_from_start(mail_off);
         self.mail.start();
-        self.start_workflows();
         // GitHub, Nextcloud, Talk and ntfy in the inbox (task E5.2).
         crate::sources::start(self.sources());
         // The assistant's retention (task C.1): read anew each time, so a changed setting applies
@@ -3406,8 +3610,13 @@ impl Core {
         self.mail.set_workflow_switch(Arc::new(move || {
             settings.current().component_on(torro_core::settings::Component::Mail)
         }));
+        let preparation = crate::mail::inbox_feed::start_workflow_classifier(
+            Arc::clone(&self.mail),
+            Some(self.workflow_classifier()),
+        );
         let core = Arc::clone(self);
         tokio::spawn(async move {
+            let _preparation = preparation;
             while !core.mail.loaded() {
                 tokio::time::sleep(ACCOUNTS_STEP).await;
             }
@@ -3428,10 +3637,6 @@ impl Core {
                     }
                 });
             }
-            let _preparation = crate::mail::inbox_feed::start_workflow_preparation(
-                Arc::clone(&core.mail),
-                Some(core.workflow_categorizer()),
-            );
             loop {
                 if core.workflows.ingest(&core.clients, &core.mail, &|scope| core.workflow_gate(scope)).await.is_err() {
                     eprintln!("torroworkplace: workflow event handoff paused; source events retained");
@@ -3441,13 +3646,25 @@ impl Core {
         });
     }
 
-    /// Unlike the notification decider, errors remain errors and persistence belongs to the mail outbox CAS.
+    #[cfg(test)]
     fn workflow_categorizer(&self) -> crate::mail::inbox_feed::WorkflowCategorizer {
+        let classify = self.workflow_classifier();
+        Arc::new(move |account, message| {
+            let classify = Arc::clone(&classify);
+            Box::pin(async move { classify(account, message).await.map(|reply| reply.category) })
+        })
+    }
+
+    /// Unlike the notification decider, category persistence belongs to the outbox CAS. The same
+    /// model answer carries #603's findings, applied locally only after that CAS succeeds.
+    fn workflow_classifier(&self) -> crate::mail::inbox_feed::WorkflowClassifier {
         let (settings, ai, mail, inbox) =
             (self.settings.clone(), Arc::clone(&self.ai), Arc::clone(&self.mail), Arc::clone(&self.inbox));
+        let readings = self.readings.clone();
         Arc::new(move |account, message| {
             let (settings, ai, mail, inbox) =
                 (settings.clone(), Arc::clone(&ai), Arc::clone(&mail), Arc::clone(&inbox));
+            let readings = readings.clone();
             Box::pin(async move {
                 use crate::mail::store::WorkflowMailFailure::{CategoryFailed, Paused};
                 let active = || {
@@ -3463,9 +3680,11 @@ impl Core {
                 let Some(engine) =
                     assignment.as_ref().filter(|held| held.is_ready()).and_then(|held| held.engine.clone())
                 else {
-                    return Ok(None);
+                    return Ok(crate::mail::inbox_feed::WorkflowClassification::default());
                 };
-                let Some((provider, server)) = ai.server(&engine).await else { return Ok(None) };
+                let Some((provider, server)) = ai.server(&engine).await else {
+                    return Ok(crate::mail::inbox_feed::WorkflowClassification::default());
+                };
                 if !active() {
                     return Err(Paused);
                 }
@@ -3491,7 +3710,9 @@ impl Core {
                 );
                 let (engine, model) = match chosen {
                     Ok(chosen) => chosen,
-                    Err(categorize::Refusal::NoModel) => return Ok(None),
+                    Err(categorize::Refusal::NoModel) => {
+                        return Ok(crate::mail::inbox_feed::WorkflowClassification::default());
+                    }
                     Err(_) => return Err(CategoryFailed),
                 };
                 if inbox.category_clear_blocked().map_err(|_| CategoryFailed)? {
@@ -3517,8 +3738,23 @@ impl Core {
                 if cloud && !settings.current().mail_to_cloud_in(function.slot()) {
                     return Err(CategoryFailed);
                 }
-                let answer = match ask_model(&ai, (&engine, &model), &content, &catalogue, contact).await {
-                    Ok(answer) => answer.map(|answer| answer.category),
+                let kinds = crate::actions::looked_for(&settings.current());
+                let allowed = || active() && (!cloud || settings.current().mail_to_cloud_in(function.slot()));
+                let kind_allowed =
+                    |kind: &str| crate::actions::looked_for(&settings.current()).iter().any(|on| on.id == kind);
+                let answer = match ask_model_checked(
+                    &ai,
+                    (&engine, &model),
+                    &content,
+                    &catalogue,
+                    contact,
+                    &kinds,
+                    &allowed,
+                    Some(&kind_allowed),
+                )
+                .await
+                {
+                    Ok(answer) => answer,
                     Err(DecideError::NothingToChoose) => None,
                     Err(_) => return Err(CategoryFailed),
                 };
@@ -3528,7 +3764,41 @@ impl Core {
                 if cloud && !settings.current().mail_to_cloud_in(function.slot()) {
                     return Err(CategoryFailed);
                 }
-                Ok(answer)
+                let category = answer.as_ref().map(|answer| answer.category);
+                let after_applied = answer.map(|mut answer| {
+                    Box::pin(async move {
+                        if !settings.current().component_on(torro_core::settings::Component::Mail)
+                            || !mail.workflow_preparation_on()
+                            || cloud && !settings.current().mail_to_cloud_in(function.slot())
+                        {
+                            return;
+                        }
+                        if mail.set_model_answers(&account, &message, answer.needs_reply, answer.urgency).await.is_err()
+                        {
+                            return;
+                        }
+                        let enabled = crate::actions::looked_for(&settings.current());
+                        answer.actions.retain(|id| enabled.iter().any(|kind| kind.id == id));
+                        let (current, live_mail) = (settings.clone(), Arc::clone(&mail));
+                        let allowed = Arc::new(move |kind: &str| {
+                            let settings = current.current();
+                            settings.component_on(torro_core::settings::Component::Mail)
+                                && live_mail.workflow_preparation_on()
+                                && (!cloud || settings.mail_to_cloud_in(function.slot()))
+                                && crate::actions::looked_for(&settings).iter().any(|enabled| enabled.id == kind)
+                        });
+                        keep_found_checked(
+                            &mail,
+                            &catalogue,
+                            (&account, &message),
+                            &answer.actions,
+                            Some(&readings),
+                            allowed,
+                        )
+                        .await;
+                    }) as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                });
+                Ok(crate::mail::inbox_feed::WorkflowClassification { category, after_applied })
             })
         })
     }
@@ -3640,7 +3910,7 @@ impl Core {
             accounts_file,
             Some(self.new_mail_decider()),
             Some(self.known_sender()),
-            Some(self.fraud_guard()),
+            (Some(self.fraud_guard()), Some(self.new_mail_detector())),
         );
     }
 
@@ -4211,10 +4481,15 @@ impl Core {
         }
         // A task made of a mail reads the mail, and opening one shows a mail or a task (task
         // E8.7a): what the client may not read is `not-found` before anyone is asked.
-        if let Request::CreateTodoFromMail { account, .. } = &request
+        if let Request::CreateTodoFromMail { account, .. } | Request::CreateEventFromMail { account, .. } = &request
             && !reads_mail(reach, account)
         {
             return Ok(no_mail());
+        }
+        // Nor is what would fail when it ran (issue #603): times, place and note as the handlers check
+        // them, and a suggestion of a mail or a kind there is none of.
+        if let Some(refused) = self.suggestion_refusal(&request, reach).await {
+            return Ok(refused);
         }
         // Answering an invitation reads the mail and writes the calendar too (task E8.3b): the
         // account, the calendar rights, the invitation and the calendar before anyone is asked.
@@ -4907,7 +5182,7 @@ impl Core {
             }
             // A task made of a mail (task E8.7a): the mail as the store holds it, the title fixed
             // now (the subject when the client left it out), the approval pinned to the mail.
-            (Request::CreateTodoFromMail { account, id, collection, title, due }, _) => {
+            (Request::CreateTodoFromMail { account, id, collection, title, due, notes }, _) => {
                 let Some(info) = &info else { return Err(Refused::Forbidden { command }) };
                 let found = match self.mail_to_approve(account, id, &info.rights).await {
                     Ok(found) => found,
@@ -4919,6 +5194,7 @@ impl Core {
                     collection: collection.clone(),
                     title: Some(mail_task_title(title.as_deref(), &found.summary.subject)),
                     due: *due,
+                    notes: notes.clone(),
                 };
                 let mail = crate::approvals::MailFacts {
                     account: account.strip_prefix(torro_mail::ACCOUNT_PREFIX).map(str::to_string),
@@ -4927,7 +5203,30 @@ impl Core {
                     ..crate::approvals::MailFacts::default()
                 };
                 let facts = Facts { name: self.list_name(collection).await, mail: Some(mail), ..Facts::default() };
-                fingerprint = Some((mail_fingerprint(&found), Vec::new()));
+                fingerprint = Some((mail_fingerprint(&found), crate::approvals::details(&request, &facts)));
+                let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
+            // An event made of a mail (issue #603): as a task, the calendar by the name the core knows.
+            (Request::CreateEventFromMail { account, id, collection, title, start, end, location, notes }, _) => {
+                let Some(info) = &info else { return Err(Refused::Forbidden { command }) };
+                let found = match self.mail_to_approve(account, id, &info.rights).await {
+                    Ok(found) => found,
+                    Err(refused) => return Ok(*refused),
+                };
+                let request = Request::CreateEventFromMail {
+                    account: account.clone(),
+                    id: id.clone(),
+                    collection: collection.clone(),
+                    title: Some(mail_task_title(title.as_deref(), &found.summary.subject)),
+                    start: *start,
+                    end: *end,
+                    location: location.clone(),
+                    notes: notes.clone(),
+                };
+                let mail = suggestion_mail_facts(account, &found);
+                let facts = Facts { name: self.calendar_name(collection).await, mail: Some(mail), ..Facts::default() };
+                fingerprint = Some((mail_fingerprint(&found), crate::approvals::details(&request, &facts)));
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
@@ -5233,6 +5532,14 @@ impl Core {
                     ..Facts::default()
                 }
             }
+            // The mail a suggestion belongs to (issue #603): its account, subject and sender as the store
+            // holds them, never the client's words. The kind is named from the core's own list.
+            Request::AcceptSuggestion { account, id, .. }
+            | Request::DismissSuggestion { account, id, .. }
+            | Request::ExtractAction { account, id, .. } => {
+                let found = crate::mail::inbox_feed::mail_for_task(&self.mail, account, id).await.ok();
+                Facts { mail: found.map(|found| suggestion_mail_facts(account, &found)), ..Facts::default() }
+            }
             // The account of the mail kept on this device by its address (issue #281), never the
             // id's or the client's words; its reach was checked before.
             Request::SetMailCachePolicy { .. } | Request::StartMailCacheJob { .. } => {
@@ -5493,9 +5800,16 @@ impl Core {
         }
         // A task made of a mail runs only on the mail the person was shown (task E8.7a); an
         // approval without a fingerprint matches no mail.
-        if let Request::CreateTodoFromMail { account, id, collection, title, due } = request {
+        if let Request::CreateTodoFromMail { account, id, collection, title, due, notes } = request {
             let approved = Some(fingerprint.unwrap_or_default());
-            return self.create_todo_from_mail(MailTask { account, id, collection, title, due }, reach, approved).await;
+            let task = MailTask { account, id, collection, title, due, notes };
+            return self.create_todo_from_mail(task, reach, approved).await;
+        }
+        // So does an event made of a mail (issue #603).
+        if let Request::CreateEventFromMail { account, id, collection, title, start, end, location, notes } = request {
+            let approved = fingerprint.unwrap_or_default();
+            let made = EntryEvent { collection, title, start, end, location, notes };
+            return Box::pin(self.create_event_from_mail((&account, &id), made, reach, Some(approved))).await;
         }
         // An answer to an invitation runs only on the mail and the event the person was shown
         // (task E8.3b); an approval without a fingerprint matches nothing.
@@ -6071,9 +6385,28 @@ impl Core {
             }
             // Mail links come with what the mail store holds, for whom may read it (task E8.7a).
             Request::Todos => self.todos_with_mail(reach).await,
-            Request::CreateTodoFromMail { account, id, collection, title, due } => {
-                self.create_todo_from_mail(MailTask { account, id, collection, title, due }, reach, None).await
+            Request::CreateTodoFromMail { account, id, collection, title, due, notes } => {
+                self.create_todo_from_mail(MailTask { account, id, collection, title, due, notes }, reach, None).await
             }
+            // An event of a mail without an entry, and the suggestions of mail (issue #603).
+            Request::CreateEventFromMail { account, id, collection, title, start, end, location, notes } => {
+                let made = EntryEvent { collection, title, start, end, location, notes };
+                Box::pin(self.create_event_from_mail((&account, &id), made, reach, None)).await
+            }
+            Request::ListSuggestions { account, id } => self.list_suggestions(&account, &id, reach).await,
+            Request::AcceptSuggestion { account, id, kind } => {
+                self.close_suggestion(&account, &id, &kind, true, reach).await
+            }
+            Request::DismissSuggestion { account, id, kind } => {
+                self.close_suggestion(&account, &id, &kind, false, reach).await
+            }
+            Request::ExtractAction { account, id, kind, lists } => {
+                Box::pin(self.extract_action((&account, &id, &kind), lists, reach)).await
+            }
+            Request::ListActionKinds => {
+                Response::ActionKinds { kinds: crate::actions::kinds(&self.settings.current()) }
+            }
+            Request::SetActionKind { kind, enabled } => self.set_action_kind(&kind, enabled),
             // The place search and the map of the event editor (tasks TE.1, TE.5); boxed, as their
             // answer waits for other services.
             request @ (Request::SearchPlaces { .. } | Request::MapPreview { .. }) => {
@@ -6846,10 +7179,10 @@ impl Core {
     /// so switching the model off stops it at the next mail.
     fn new_mail_decider(&self) -> crate::mail::inbox_feed::Decider {
         let (settings, ai, mail) = (self.settings.clone(), Arc::clone(&self.ai), Arc::clone(&self.mail));
-        let inbox = Arc::clone(&self.inbox);
+        let (inbox, readings) = (Arc::clone(&self.inbox), self.readings.clone());
         Arc::new(move |account: String, message: String, contact: bool| {
-            let (settings, ai, mail, inbox) =
-                (settings.clone(), Arc::clone(&ai), Arc::clone(&mail), Arc::clone(&inbox));
+            let (settings, ai, mail, inbox, readings) =
+                (settings.clone(), Arc::clone(&ai), Arc::clone(&mail), Arc::clone(&inbox), readings.clone());
             Box::pin(async move {
                 if !settings.current().component_on(torro_core::settings::Component::Mail)
                     || !mail.workflow_preparation_on()
@@ -6873,6 +7206,7 @@ impl Core {
                 {
                     return None;
                 }
+                let kinds = crate::actions::looked_for(&settings.current());
                 match mail
                     .while_workflow_on(
                         &account,
@@ -6883,6 +7217,8 @@ impl Core {
                             (&engine, &model),
                             (&account, &message),
                             Occasion::Arrival { contact },
+                            &kinds,
+                            &readings,
                         ),
                     )
                     .await?
@@ -6897,6 +7233,361 @@ impl Core {
                 }
             })
         })
+    }
+
+    /// What the mail feed uses for new mail a filter, a rule or a header sorted without a model (issue
+    /// #603, decision 2): only the questions about the kinds of action looked for
+    /// ([`categorize::detect_request`]) to the model that sorts mail, under its assignment, switches
+    /// and data rule ([`decider_of`]), and what it finds kept and read out as for mail the model
+    /// sorted ([`keep_found`]). Mail of the groups Info and Junk is not asked about. Nothing is asked
+    /// without a model for sorting or a kind looked for; the log names the account and the error only.
+    fn new_mail_detector(&self) -> crate::mail::inbox_feed::Detector {
+        let (settings, ai, mail) = (self.settings.clone(), Arc::clone(&self.ai), Arc::clone(&self.mail));
+        let (inbox, readings) = (Arc::clone(&self.inbox), self.readings.clone());
+        Arc::new(move |account: String, message: String| {
+            let (settings, ai, mail, inbox, readings) =
+                (settings.clone(), Arc::clone(&ai), Arc::clone(&mail), Arc::clone(&inbox), readings.clone());
+            Box::pin(async move {
+                let kinds = crate::actions::looked_for(&settings.current());
+                if kinds.is_empty() {
+                    return;
+                }
+                let active = || {
+                    settings.current().component_on(torro_core::settings::Component::Mail)
+                        && mail.workflow_preparation_on()
+                };
+                if !active() {
+                    return;
+                }
+                let Ok((engine, model)) = decider_of(&settings, &ai).await else { return };
+                let Some((provider, server)) = ai.server(&engine).await else { return };
+                let Ok(models) = ai.known_models(&engine, Some(&model)).await else { return };
+                let cloud = models
+                    .iter()
+                    .find(|held| held.id == model)
+                    .is_none_or(|held| crate::assistant::place_of(provider, &server, held) != Place::Local);
+                let Ok(catalogue) = inbox.catalogue() else { return };
+                let facts = match mail.sorting_facts(&account, &message).await {
+                    Ok(Some(facts)) => facts,
+                    Ok(None) => return,
+                    Err(err) => {
+                        eprintln!("torroworkplace: inbox: cannot read a mail of {account} for its suggestions: {err}");
+                        return;
+                    }
+                };
+                // Asked only about what could become a suggestion of this mail.
+                let ids: Vec<String> = kinds.iter().map(|kind| kind.id.to_string()).collect();
+                let wanted: Vec<&crate::actions::KindDef> = suggestable(&catalogue, &facts, &ids)
+                    .iter()
+                    .filter_map(|id| crate::actions::kind(id))
+                    .filter(|kind| {
+                        crate::actions::looked_for(&settings.current()).iter().any(|enabled| enabled.id == kind.id)
+                    })
+                    .collect();
+                if wanted.is_empty() {
+                    return;
+                }
+                if !active() || cloud && !settings.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide) {
+                    return;
+                }
+                let request = categorize::detect_request(&model, &facts.content, &wanted);
+                let allowed = || detection_on(&settings, &mail, cloud, &wanted);
+                match ask_decider_checked(&ai, &engine, request, &allowed).await {
+                    Ok(reply) => {
+                        if !active() || cloud && !settings.current().mail_to_cloud_in(torro_core::ai::AiSlot::Decide) {
+                            return;
+                        }
+                        let mut found = categorize::detected(&reply);
+                        let enabled = crate::actions::looked_for(&settings.current());
+                        found.retain(|id| enabled.iter().any(|kind| kind.id == id));
+                        let (current, live_mail) = (settings.clone(), Arc::clone(&mail));
+                        let allowed = Arc::new(move |kind: &str| {
+                            let settings = current.current();
+                            settings.component_on(torro_core::settings::Component::Mail)
+                                && live_mail.workflow_preparation_on()
+                                && (!cloud || settings.mail_to_cloud_in(torro_core::ai::AiSlot::Decide))
+                                && crate::actions::looked_for(&settings).iter().any(|enabled| enabled.id == kind)
+                        });
+                        keep_found_checked(&mail, &catalogue, (&account, &message), &found, Some(&readings), allowed)
+                            .await;
+                    }
+                    Err(err) => {
+                        eprintln!("torroworkplace: inbox: cannot look for actions in a mail of {account}: {err}")
+                    }
+                }
+            })
+        })
+    }
+
+    /// Reads out the suggestions of new mail, one mail at a time, for as long as the core runs (issue
+    /// #603, decision 3): the queue [`crate::actions::Readings`] is filled by the sorting of new mail.
+    /// Waits [`READING_PAUSE`] after each mail, so a local model leaves the computer usable.
+    async fn read_suggestions(self: Arc<Self>) {
+        loop {
+            let next = self.readings.next().await;
+            self.fill_suggestions(&next.0, &next.1).await;
+            self.readings.finish(&next);
+            tokio::time::sleep(READING_PAUSE).await;
+        }
+    }
+
+    /// Reads out every suggestion of the mail `message` of `account` that is still `reading` (issue
+    /// #603): the fields of its form, with the task lists shown and writable to choose from. Without a
+    /// model that may read the mail, or an answer that is none, it becomes `unfilled` – quietly: a
+    /// suggestion is no error. Never writes over what the person did meanwhile.
+    async fn fill_suggestions(&self, account: &str, message: &str) {
+        let open = match self.mail.suggestions(account, message).await {
+            Ok(open) => open,
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot read the suggestions of a mail of {account}: {err}");
+                return;
+            }
+        };
+        let waiting: Vec<torro_ipc::actions::Suggestion> =
+            open.into_iter().filter(|held| held.state == torro_ipc::actions::SuggestionState::Reading).collect();
+        if waiting.is_empty() {
+            return;
+        }
+        let lists = self.list_names(Reach::Suite).await;
+        for held in waiting {
+            let Some(kind) = crate::actions::kind(&held.kind) else { continue };
+            // A model that hangs must not hold up the mail after it.
+            let reading = self.read_action(account, message, kind, lists.clone());
+            let read = match tokio::time::timeout(READING_TIMEOUT, reading).await {
+                Ok(Ok(read)) => read,
+                _ => torro_ipc::actions::Suggestion { state: torro_ipc::actions::SuggestionState::Unfilled, ..held },
+            };
+            if let Err(err) = self.mail.keep_suggestion(account, message, read, Some("reading".into())).await {
+                eprintln!("torroworkplace: inbox: cannot keep a suggestion of a mail of {account}: {err}");
+            }
+        }
+    }
+
+    /// The names of the task lists `reach` sees that are shown and take tasks (issue #603): what the
+    /// model may choose a task's list from.
+    async fn list_names(&self, reach: Reach<'_>) -> Vec<String> {
+        let hidden = self.settings.current().hidden_collections;
+        match self.pim.handle_within(Request::TaskCollections, reach).await {
+            Response::Collections { collections } => collections
+                .into_iter()
+                .filter(|list| list.writable && !hidden.contains(&list.id))
+                .map(|list| list.name)
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The AI that reads actions out of mail (issue #603, decision 4): the model that sorts mail when
+    /// the permission of sorting lets mail go elsewhere (`decide_mail_to_cloud`) and that model can
+    /// write – the permission was given for it, never for another model elsewhere –; else one on the
+    /// person's computers ([`Core::suggestion_ai`] with `local_only`). `Err` with the core's answer
+    /// (`not-connected`) when there is none.
+    async fn action_reader(&self) -> Result<crate::suggest::Chosen, Response> {
+        if self.settings.current().decide_mail_to_cloud == Some(true)
+            && let Ok((engine, model)) = decider_of(&self.settings, &self.ai).await
+        {
+            let listed = self.ai.known_models(&engine, Some(&model)).await.unwrap_or_default();
+            let writes = listed
+                .iter()
+                .find(|known| known.id == model)
+                .is_some_and(|known| known.decision != Some(true) && known.tools != Some(false));
+            if writes {
+                return Ok(crate::suggest::Chosen { engine, model: Some(model), effort: None });
+            }
+        }
+        self.suggestion_ai(true).await
+    }
+
+    /// Reads the action `kind` out of the mail `message` of `account` (issue #603) with the AI of
+    /// [`Core::action_reader`]: the fields of its form and the reason, `ready`. `lists` are the names
+    /// of the task lists a task may go to. `Err` with the core's answer: `not-found` for a mail the
+    /// store does not hold, `not-connected` without an AI, the AI's own errors.
+    async fn read_action(
+        &self,
+        account: &str,
+        message: &str,
+        kind: &crate::actions::KindDef,
+        lists: Vec<String>,
+    ) -> Result<torro_ipc::actions::Suggestion, Response> {
+        let held = self.mail.content_for_category(account, message).await.map_err(|err| err.response())?;
+        let Some(held) = held else { return Err(no_mail()) };
+        let content = crate::suggest::Content {
+            title: held.subject,
+            from: held.from,
+            received: held.date.unwrap_or_else(Utc::now),
+            text: held.text,
+            lists: crate::suggest::offered_lists(lists),
+        };
+        let chosen = self.action_reader().await?;
+        let provider =
+            self.ai.provider(&chosen.engine).await.map_err(|err| crate::suggest::SuggestError::Ai(err).response())?;
+        let wanted = match kind.form {
+            torro_ipc::actions::ActionForm::Task => Wanted::Task,
+            torro_ipc::actions::ActionForm::Event => Wanted::Event,
+        };
+        let read = crate::suggest::extract(provider.as_ref(), &chosen, wanted, &content, Utc::now(), &chrono::Local)
+            .await
+            .map_err(|err| err.response())?;
+        Ok(torro_ipc::actions::Suggestion {
+            kind: kind.id.to_string(),
+            state: torro_ipc::actions::SuggestionState::Ready,
+            task: read.task,
+            event: read.event,
+            reason: read.reason,
+        })
+    }
+
+    /// The mail `id` of `account` as `reach` may read it (issue #603): `Err` with `error` for ids too
+    /// long, `not-found` for an account or a mail it may not see or the store does not hold.
+    async fn suggestion_mail(&self, account: &str, id: &str, reach: Reach<'_>) -> Result<(), Response> {
+        if account.len() > MAIL_ID_MAX || id.len() > MAIL_ID_MAX {
+            return Err(refusal("error", format!("account and id may hold at most {MAIL_ID_MAX} bytes")));
+        }
+        if !reads_mail(reach, account) {
+            return Err(no_mail());
+        }
+        match crate::mail::inbox_feed::mail_for_task(&self.mail, account, id).await {
+            Ok(_) => Ok(()),
+            Err(crate::mail::service::MailError::NotFound) => Err(no_mail()),
+            Err(err) => Err(err.response()),
+        }
+    }
+
+    /// What a command of issue #603 waiting for approval would be refused with when it ran: the
+    /// times, the place and the note of a task or event made of a mail, the mail of a suggestion
+    /// command as `reach` may read it ([`Core::suggestion_mail`]) and its kind. `None` for every
+    /// other request.
+    async fn suggestion_refusal(&self, request: &Request, reach: Reach<'_>) -> Option<Response> {
+        match request {
+            Request::CreateTodoFromMail { notes, .. } => extras_refusal(None, notes.as_deref()),
+            Request::CreateEventFromMail { start, end, location, notes, .. } => {
+                extras_refusal(location.as_deref(), notes.as_deref()).or_else(|| span_refusal(*start, *end))
+            }
+            Request::AcceptSuggestion { account, id, kind }
+            | Request::DismissSuggestion { account, id, kind }
+            | Request::ExtractAction { account, id, kind, .. } => {
+                if let Err(refused) = self.suggestion_mail(account, id, reach).await {
+                    return Some(refused);
+                }
+                crate::actions::kind(kind)
+                    .is_none()
+                    .then(|| refusal("not-found", format!("no kind of action {kind:?}")))
+            }
+            Request::SetActionKind { kind, .. } => crate::actions::kind(kind)
+                .is_none()
+                .then(|| refusal("not-found", format!("no kind of action {kind:?}"))),
+            _ => None,
+        }
+    }
+
+    /// `mail.list_suggestions` (issue #603): the open suggestions of the mail, a task's list left out
+    /// where `reach` does not see a list of that name.
+    async fn list_suggestions(&self, account: &str, id: &str, reach: Reach<'_>) -> Response {
+        if let Err(refused) = self.suggestion_mail(account, id, reach).await {
+            return refused;
+        }
+        let mut suggestions = match self.mail.suggestions(account, id).await {
+            Ok(suggestions) => suggestions,
+            Err(err) => return err.response(),
+        };
+        self.seen_lists_only(&mut suggestions, reach).await;
+        Response::Suggestions { suggestions }
+    }
+
+    /// Takes the list out of every task of `suggestions` that names one `reach` does not see (issue
+    /// #603): the background reading chose among all lists.
+    async fn seen_lists_only(&self, suggestions: &mut [torro_ipc::actions::Suggestion], reach: Reach<'_>) {
+        if !suggestions.iter().any(|held| held.task.as_ref().is_some_and(|task| task.list.is_some())) {
+            return;
+        }
+        let seen = self.list_names(reach).await;
+        for task in suggestions.iter_mut().filter_map(|held| held.task.as_mut()) {
+            if task.list.as_ref().is_some_and(|list| !seen.contains(list)) {
+                task.list = None;
+            }
+        }
+    }
+
+    /// `mail.accept_suggestion` and `mail.dismiss_suggestion` (issue #603): closes the open suggestion
+    /// `kind` of the mail; `not-found` when it has none.
+    async fn close_suggestion(
+        &self,
+        account: &str,
+        id: &str,
+        kind: &str,
+        accepted: bool,
+        reach: Reach<'_>,
+    ) -> Response {
+        if let Err(refused) = self.suggestion_mail(account, id, reach).await {
+            return refused;
+        }
+        match self.mail.close_suggestion(account, id, kind, accepted).await {
+            Ok(true) => Response::Ok,
+            Ok(false) => refusal("not-found", format!("the mail has no open suggestion {kind:?}")),
+            Err(err) => err.response(),
+        }
+    }
+
+    /// `mail.extract_action` (issue #603): reads the action `kind` out of the mail now, after a reading
+    /// of the same mail under way, and keeps it `ready` – also over a dismissed one, which opens again.
+    async fn extract_action(
+        &self,
+        (account, id, kind): (&str, &str, &str),
+        lists: Vec<String>,
+        reach: Reach<'_>,
+    ) -> Response {
+        if let Err(refused) = self.suggestion_mail(account, id, reach).await {
+            return refused;
+        }
+        let Some(def) = crate::actions::kind(kind) else {
+            return refusal("not-found", format!("no kind of action {kind:?}"));
+        };
+        // What the person does meanwhile stands – while this waits for a reading under way and while
+        // the model reads: the row is written only while it still has the state it had when asked.
+        let before = match self.mail.suggestion_state(account, id, kind).await {
+            Ok(before) => before,
+            Err(err) => return err.response(),
+        };
+        let claimed = self.readings.claim(account, id).await;
+        let read = match tokio::time::timeout(READING_TIMEOUT, self.read_action(account, id, def, lists)).await {
+            Ok(read) => read,
+            Err(_) => Err(refusal("busy", tr("The AI took too long to read the mail. Try again.").to_string())),
+        };
+        self.readings.finish(&claimed);
+        let mut read = match read {
+            Ok(read) => read,
+            Err(refused) => {
+                // A suggestion still reading becomes unfilled, so no app asks again and again.
+                if before.as_deref() == Some("reading") {
+                    let unfilled = torro_ipc::actions::Suggestion {
+                        kind: kind.to_string(),
+                        state: torro_ipc::actions::SuggestionState::Unfilled,
+                        task: None,
+                        event: None,
+                        reason: None,
+                    };
+                    let _ = self.mail.keep_suggestion(account, id, unfilled, before).await;
+                }
+                return refused;
+            }
+        };
+        if let Err(err) = self.mail.keep_suggestion(account, id, read.clone(), before).await {
+            eprintln!("torroworkplace: inbox: cannot keep a suggestion of a mail of {account}: {err}");
+        }
+        self.seen_lists_only(std::slice::from_mut(&mut read), reach).await;
+        Response::Suggestion { suggestion: read }
+    }
+
+    /// `mail.set_action_kind` (issue #603): looks for the kind in new mail or not, and answers every
+    /// kind as `mail.list_action_kinds` does.
+    fn set_action_kind(&self, kind: &str, enabled: bool) -> Response {
+        if crate::actions::kind(kind).is_none() {
+            return refusal("not-found", format!("no kind of action {kind:?}"));
+        }
+        match self.settings.set_action_kind(kind, enabled) {
+            Ok(()) => Response::ActionKinds { kinds: crate::actions::kinds(&self.settings.current()) },
+            Err(err) => refusal("error", err),
+        }
     }
 
     /// The warning signs of `message` as the person sees them in the reader (issue #506): none for
@@ -7596,6 +8287,8 @@ impl Core {
             (&engine, &model),
             (&account, &newest),
             Occasion::Button,
+            &crate::actions::looked_for(&self.settings.current()),
+            &self.readings,
         )
         .await
         {
@@ -7632,6 +8325,8 @@ impl Core {
             (&engine, &model),
             (&account, &stand_in.id),
             Occasion::Button,
+            &crate::actions::looked_for(&self.settings.current()),
+            &self.readings,
         )
         .await
         {
@@ -8592,6 +9287,24 @@ impl Core {
             text: self.text_for_ai(&entry, reach).await,
             lists: crate::suggest::offered_lists(lists),
         };
+        let local_only = crate::assistant::held_back(&entry);
+        let chosen = match self.suggestion_ai(local_only).await {
+            Ok(chosen) => chosen,
+            Err(refused) => return refused,
+        };
+        let provider = match self.ai.provider(&chosen.engine).await {
+            Ok(provider) => provider,
+            Err(err) => return crate::suggest::SuggestError::Ai(err).response(),
+        };
+        crate::suggest::suggest(provider.as_ref(), &chosen, wanted, &content, now, &chrono::Local).await
+    }
+
+    /// The AI and model an AI's suggestion asks (issue #120; split off for the suggestions of mail,
+    /// issue #603): the person's default of the assistant, else the first AI account
+    /// ([`crate::suggest::choose`]), each judged by the model it would answer with
+    /// ([`Core::suggestion_model`]); with `local_only` only one on the person's computers. Only
+    /// models that are on are asked. `Err` with the core's answer when there is none.
+    async fn suggestion_ai(&self, local_only: bool) -> Result<crate::suggest::Chosen, Response> {
         let mut default = self.settings.current().ai_slots.chat;
         if let Some(held) = default.as_mut()
             && let Some(model) = held.model.as_deref()
@@ -8601,7 +9314,6 @@ impl Core {
                 held.model = None;
             }
         }
-        let local_only = crate::assistant::held_back(&entry);
         let mut candidates = Vec::new();
         let mut models = HashMap::new();
         for account in self.ai.infos().await {
@@ -8627,22 +9339,14 @@ impl Core {
             };
             candidates.push(crate::suggest::Candidate { id: account.id, place, problem });
         }
-        let chosen = match crate::suggest::choose(&candidates, default.as_ref(), local_only) {
-            Ok(chosen) => chosen,
-            Err(refused) => return refused.response(),
-        };
+        let chosen = crate::suggest::choose(&candidates, default.as_ref(), local_only).map_err(|err| err.response())?;
         // The model its place was judged by is the one asked (task S.23), and only that one.
-        let chosen = match models.remove(&chosen.engine) {
-            Some(Ok(model)) => crate::suggest::Chosen { model: Some(model), ..chosen },
-            Some(Err(err)) => return crate::suggest::SuggestError::Ai(err).response(),
+        match models.remove(&chosen.engine) {
+            Some(Ok(model)) => Ok(crate::suggest::Chosen { model: Some(model), ..chosen }),
+            Some(Err(err)) => Err(crate::suggest::SuggestError::Ai(err).response()),
             // `choose` takes only accounts without a problem, and each of those has its entry.
-            None => return crate::suggest::SuggestError::NoAi.response(),
-        };
-        let provider = match self.ai.provider(&chosen.engine).await {
-            Ok(provider) => provider,
-            Err(err) => return crate::suggest::SuggestError::Ai(err).response(),
-        };
-        crate::suggest::suggest(provider.as_ref(), &chosen, wanted, &content, now, &chrono::Local).await
+            None => Err(crate::suggest::SuggestError::NoAi.response()),
+        }
     }
 
     /// The model the AI account `id` would suggest with and where it runs (task S.23: a cloud model of
@@ -8760,9 +9464,12 @@ impl Core {
     /// write access to tasks and the list were checked before ([`Core::handle_client`],
     /// [`Core::run_approved`]: `Rights::allows`, [`PimService::out_of_reach`]).
     async fn create_todo_from_mail(&self, mail: MailTask, reach: Reach<'_>, fingerprint: Option<&str>) -> Response {
-        let MailTask { account, id, collection, title, due } = mail;
+        let MailTask { account, id, collection, title, due, notes } = mail;
         if account.len() > MAIL_ID_MAX || id.len() > MAIL_ID_MAX {
             return refusal("error", format!("account and id may hold at most {MAIL_ID_MAX} bytes"));
+        }
+        if let Some(refused) = extras_refusal(None, notes.as_deref()) {
+            return refused;
         }
         if !reads_mail(reach, &account) {
             return no_mail();
@@ -8781,8 +9488,48 @@ impl Core {
         let Some(origin) = MailOrigin::of(&account, &found) else {
             return refusal("unsupported", "the mail has no Message-ID, so no task can link to it".into());
         };
-        let todo = task_from_mail(&found, origin, collection, title, due);
+        let mut todo = task_from_mail(&found, origin, collection, title, due);
+        todo.description = with_note(notes, todo.description);
         self.pim.handle_within(Request::SaveTodo { todo }, reach).await
+    }
+
+    /// `calendar.create_event_from_mail` (issue #603): makes an event of the mail `id` of `account`
+    /// as `made` says, for `reach`, as [`Core::create_todo_from_mail`] makes a task: the ids, the
+    /// note, the place and the times first, then the mail as `reach` may read it, the `fingerprint` of
+    /// an approved command, and the event written through the calendar service as
+    /// `calendar.save_event` writes it ([`event_from_mail`]), which checks the calendar.
+    async fn create_event_from_mail(
+        &self,
+        (account, id): (&str, &str),
+        made: EntryEvent,
+        reach: Reach<'_>,
+        fingerprint: Option<&str>,
+    ) -> Response {
+        if account.len() > MAIL_ID_MAX || id.len() > MAIL_ID_MAX {
+            return refusal("error", format!("account and id may hold at most {MAIL_ID_MAX} bytes"));
+        }
+        if let Some(refused) = extras_refusal(made.location.as_deref(), made.notes.as_deref()) {
+            return refused;
+        }
+        if let Some(refused) = span_refusal(made.start, made.end) {
+            return refused;
+        }
+        if !reads_mail(reach, account) {
+            return no_mail();
+        }
+        let found = match crate::mail::inbox_feed::mail_for_task(&self.mail, account, id).await {
+            Ok(found) => found,
+            Err(crate::mail::service::MailError::NotFound) => return no_mail(),
+            Err(err) => return err.response(),
+        };
+        if fingerprint.is_some_and(|pinned| pinned != mail_fingerprint(&found)) {
+            return Response::Error {
+                code: "conflict".into(),
+                message: "the mail changed after the approval was asked for; nothing ran, ask again".into(),
+            };
+        }
+        let event = event_from_mail(&found, made);
+        self.pim.handle_within(Request::SaveEvent { event, scope: None }, reach).await
     }
 
     /// `request` as it runs for `reach` when it names a mail message (issue #123:
@@ -12345,8 +13092,15 @@ fn sees_local_notes(reach: Reach<'_>) -> bool {
 fn mail_out_of_reach(rights: &torro_ipc::api::Rights, request: &Request) -> Option<Response> {
     let named = match request {
         Request::UpdateMailAccount { id, .. } => Some(id.as_str()),
-        // A task made of a mail reads the mail (task E8.7a).
-        Request::CreateTodoFromMail { account, .. } => Some(account.as_str()),
+        // A task made of a mail reads the mail (task E8.7a), as does an event (issue #603).
+        Request::CreateTodoFromMail { account, .. } | Request::CreateEventFromMail { account, .. } => {
+            Some(account.as_str())
+        }
+        // The suggestions of a mail (issue #603).
+        Request::ListSuggestions { account, .. }
+        | Request::AcceptSuggestion { account, .. }
+        | Request::DismissSuggestion { account, .. }
+        | Request::ExtractAction { account, .. } => Some(account.as_str()),
         // Answering an invitation reads the mail and sends from its account (task E8.3b).
         Request::RespondToInvitation { account, .. } => Some(account.as_str()),
         // Unsubscribing reads the mail and may send from its account (issue #416).
@@ -25800,6 +26554,7 @@ mod tests {
                 collection: collection.into(),
                 title: title.map(str::to_string),
                 due: None,
+                notes: None,
             }
         }
 
@@ -25918,7 +26673,14 @@ mod tests {
             assert_eq!(todo.summary, "Offer", "the title fixed when asking");
 
             // Run on another mail than the one shown: `conflict`, nothing written.
-            let found = MailTask { account: ANNA.into(), id, collection: fake.work.clone(), title: None, due: None };
+            let found = MailTask {
+                account: ANNA.into(),
+                id,
+                collection: fake.work.clone(),
+                title: None,
+                due: None,
+                notes: None,
+            };
             let stale = core.create_todo_from_mail(found, Reach::Suite, Some("another mail")).await;
             assert_eq!(code(&stale), "conflict");
             assert_eq!(created_on(&fake), 1);
@@ -28624,10 +29386,10 @@ mod tests {
         let content = categorize::Content { subject: "Hello".into(), text: "See you.".into(), ..Default::default() };
         let decider = (engine.as_str(), torro_core::ai::JEV_MODEL);
 
-        let asked = ask_to_sort(&core.ai, decider, (&content, &catalogue), false, || false).await;
+        let asked = ask_to_sort(&core.ai, decider, (&content, &catalogue, &[]), false, || false).await;
         assert!(matches!(asked, super::Asked::Halted), "not asked again");
         assert_eq!(busy.calls_async().await, 1);
-        let asked = ask_to_sort(&core.ai, decider, (&content, &catalogue), false, || true).await;
+        let asked = ask_to_sort(&core.ai, decider, (&content, &catalogue, &[]), false, || true).await;
         assert!(matches!(asked, super::Asked::Stop(DecideError::Ai(torro_core::ai::AiError::Busy(_)))));
         assert_eq!(busy.calls_async().await, 1 + CATEGORY_BUSY_WAITS.len() + 1, "asked again after each wait");
     }
@@ -31868,6 +32630,64 @@ mod tests {
             fake.lines().iter().filter(|line| line.starts_with("DELETE ")).count()
         }
 
+        /// Issue #603: an event made of a mail without an entry lands in the calendar named; a client
+        /// that does not reach the mail's account gets `not-found` for it and for the suggestion
+        /// commands, before anyone is asked; and the approval shows the note the client sends along,
+        /// the mail by the subject its store holds.
+        #[tokio::test]
+        async fn an_event_of_a_mail_and_its_suggestions_keep_to_the_client_s_reach() {
+            let room = invited().await;
+            let (core, key) = (&room.core, Some(&room.app_key));
+            let at = |hour| torro_pim::EventTime::DateTime(Utc::now() + chrono::TimeDelta::hours(hour));
+            let make = |notes: Option<&str>| Request::CreateEventFromMail {
+                account: ANNA.into(),
+                id: room.id.clone(),
+                collection: room.fake.work.clone(),
+                title: Some("Planning".into()),
+                start: at(3),
+                end: at(4),
+                location: Some("Room 2".into()),
+                notes: notes.map(str::to_string),
+            };
+            let Response::Event { event, .. } = ask(core, key, make(None)).await else { panic!("an event") };
+            assert_eq!((event.summary.as_str(), event.location.as_deref()), ("Planning", Some("Room 2")));
+            assert!(
+                event.description.as_deref().is_some_and(|text| text.contains("Invitation: Planning")),
+                "the mail named: {:?}",
+                event.description
+            );
+
+            let mut elsewhere = RightsTemplate::FullAccess.rights();
+            elsewhere.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+            let (_, stranger) = client(core, elsewhere).await;
+            assert_eq!(code(&ask(core, Some(&stranger), make(None)).await), "not-found");
+            let list = Request::ListSuggestions { account: ANNA.into(), id: room.id.clone() };
+            assert_eq!(code(&ask(core, Some(&stranger), list.clone()).await), "not-found");
+            let extract = Request::ExtractAction {
+                account: ANNA.into(),
+                id: room.id.clone(),
+                kind: "task".into(),
+                lists: vec![],
+            };
+            assert_eq!(code(&ask(core, Some(&stranger), extract).await), "not-found");
+            assert_eq!(ask(core, key, list).await, Response::Suggestions { suggestions: Vec::new() });
+
+            let careful = Rights { confirm: Confirm::OnEveryChange, ..sender(Outbound::Free, Confirm::Never) };
+            let (_, asking) = client(core, careful).await;
+            let asked = waits(ask(core, Some(&asking), make(Some("Bring the figures"))).await);
+            assert_eq!(asked.command, "calendar.create_event_from_mail");
+            assert!(asked.details.iter().any(|line| line.contains("Bring the figures")), "whole: {:?}", asked.details);
+            assert!(
+                asked.summary.contains("Bring the figures") && asked.summary.contains("Room 2"),
+                "{}",
+                asked.summary
+            );
+            assert!(asked.summary.contains("Invitation: Planning"), "the subject the store holds: {}", asked.summary);
+            let unknown =
+                Request::DismissSuggestion { account: ANNA.into(), id: room.id.clone(), kind: "github".into() };
+            assert_eq!(code(&ask(core, Some(&asking), unknown).await), "not-found", "refused before it is asked");
+        }
+
         /// The answer kept with the mail, as lists show it.
         async fn kept_answer(core: &Core, id: &str) -> Option<InvitationAnswer> {
             let found = crate::mail::inbox_feed::mail_for_task(&core.mail, ANNA, id).await.expect("the mail");
@@ -32894,5 +33714,487 @@ mod tests {
             assert!(!log.contains(secret_word), "{secret_word} in the log: {log}");
         }
         assert!(audit_lines(dir.path()).iter().any(|line| line.command == "contacts.get_contact"));
+    }
+
+    // ----- Suggestions of mail (issue #603) ---------------------------------------------------
+
+    /// Jev on `server` answering every decision with the category `invoice` and the kinds of action
+    /// `found` said yes (0.9), every other kind no.
+    async fn mock_jev_finding<'a>(server: &'a httpmock::MockServer, found: &[&str]) -> httpmock::Mock<'a> {
+        let mut answers = serde_json::json!({
+            "category": {"type": "choice", "choice": "invoice",
+                         "probabilities": {"invoice": 0.88, "other": 0.12}, "confidence": 0.88},
+            "needs_reply": {"type": "noul", "noul": 0.1},
+            "urgency": {"type": "score", "score": 0.4, "confidence": 0.7}
+        });
+        for kind in crate::actions::KINDS {
+            let yes = if found.contains(&kind.id) { 0.9 } else { 0.1 };
+            answers[format!("action:{}", kind.id)] = serde_json::json!({"type": "noul", "noul": yes});
+        }
+        server
+            .mock_async(move |when, then| {
+                when.method("POST").path("/v1/systemone");
+                then.status(200).json_body(serde_json::json!({"model": "jev-latest", "answers": answers}));
+            })
+            .await
+    }
+
+    #[tokio::test]
+    async fn workflow_merge_production_classifier_keeps_suggestions_from_the_same_model_call() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let decides = mock_jev_finding(&jev, &["event"]).await;
+        let (core, imap) = core_sorting_with_jev(dir.path(), &jev, &["Baseline only".into()]).await;
+        let before = decides.calls_async().await;
+        crate::mail::inbox_feed::start_with(
+            Arc::clone(&core.inbox),
+            Arc::clone(&core.mail),
+            Some(crate::account::github::tests::accounts_file(dir.path())),
+            Some(core.new_mail_decider()),
+            None,
+            (None, Some(core.new_mail_detector())),
+        );
+        let worker = crate::mail::inbox_feed::start_workflow_classifier(
+            Arc::clone(&core.mail),
+            Some(core.workflow_classifier()),
+        );
+        imap.add("INBOX", "From: Bernd <bernd@example.org>\r\nTo: anna@example.org\r\nSubject: New combined arrival\r\nMessage-ID: <combined@example.org>\r\nContent-Type: text/plain\r\n\r\nSee you on Monday.\r\n", &[]);
+        core.mail.sync_all(Reach::Suite).await.expect("arrival");
+        let message = crate::mail::save::tests::message_id(&core.mail, "New combined arrival").await;
+        let account = "mail:anna@example.org";
+        crate::mail::service::tests::eventually("combined suggestion retained", || async {
+            core.mail.suggestions(account, &message).await.expect("suggestions").iter().any(|held| held.kind == "event")
+        })
+        .await;
+        crate::mail::service::tests::eventually("workflow ready independently", || async {
+            core.mail
+                .workflow_events(account, None, 500)
+                .await
+                .expect("events")
+                .iter()
+                .any(|event| event.message == message && event.state == crate::mail::store::WorkflowMailState::Ready)
+        })
+        .await;
+        worker.abort();
+        let _ = worker.await;
+        assert_eq!(decides.calls_async().await - before, 1, "no competing legacy or fixed-category detector call");
+        let store = core.mail.store(account).await.expect("store");
+        let id = message.clone();
+        let summary = store.run(move |store| store.summary(&id)).await.expect("summary").expect("mail");
+        assert_eq!(summary.category.map(|held| held.category), Some(torro_mail::Category::Invoice));
+        assert_eq!(summary.suggested, ["event"]);
+        let next =
+            tokio::time::timeout(std::time::Duration::from_secs(1), core.readings.next()).await.expect("queued once");
+        assert_eq!(next, (account.to_string(), message));
+        core.readings.finish(&next);
+    }
+
+    #[tokio::test]
+    async fn workflow_merge_kinds_disabled_after_model_answer_are_not_retained() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let decides = mock_jev_finding(&jev, &["event", "task"]).await;
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Disabled before applying".into()]).await;
+        let before = decides.calls_async().await;
+        let (account, message, _) = the_one_mail(&core).await;
+        let answer = core.workflow_classifier()(account.clone(), message.clone()).await.expect("combined answer");
+        assert!(core.mail.suggestions(&account, &message).await.expect("no premature effects").is_empty());
+        for kind in ["event", "task"] {
+            assert!(matches!(
+                core.handle(Request::SetActionKind { kind: kind.into(), enabled: false }).await,
+                Response::ActionKinds { .. }
+            ));
+        }
+        let effects = answer.after_applied.expect("deferred findings");
+        effects.await;
+        assert!(core.mail.suggestions(&account, &message).await.expect("disabled").is_empty());
+        assert_eq!(decides.calls_async().await - before, 1);
+    }
+
+    #[tokio::test]
+    async fn workflow_merge_suggestion_write_rechecks_kind_after_queued_store_wait() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        mock_jev_finding(&jev, &[]).await;
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Waiting writer".into()]).await;
+        let (account, message, _) = the_one_mail(&core).await;
+        let store = core.mail.store(&account).await.expect("store");
+        let (entered, blocked) = tokio::sync::oneshot::channel();
+        let (release, held) = std::sync::mpsc::channel();
+        let holding = tokio::spawn(async move {
+            store
+                .run(move |_| {
+                    let _ = entered.send(());
+                    held.recv().expect("release writer");
+                    Ok(())
+                })
+                .await
+        });
+        blocked.await.expect("store held");
+        let current = core.settings.clone();
+        let allowed =
+            Arc::new(move |kind: &str| crate::actions::looked_for(&current.current()).iter().any(|on| on.id == kind));
+        let mut writing =
+            Box::pin(core.mail.detect_suggestions_checked(&account, &message, vec!["event".into()], allowed));
+        assert!(futures_util::poll!(writing.as_mut()).is_pending(), "writer is queued behind the store wait");
+        assert!(matches!(
+            core.handle(Request::SetActionKind { kind: "event".into(), enabled: false }).await,
+            Response::ActionKinds { .. }
+        ));
+        release.send(()).expect("release");
+        holding.await.expect("holding task").expect("store");
+        assert!(writing.await.expect("checked write").is_empty());
+        assert!(core.mail.suggestions(&account, &message).await.expect("no suggestion").is_empty());
+    }
+
+    #[tokio::test]
+    async fn workflow_merge_each_round_of_a_two_stage_decision_rechecks_the_send_gate() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let group = torro_mail::CategoryGroup::WaitingForMe.key();
+        let decisions = jev
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/systemone");
+                then.status(200).json_body(serde_json::json!({"model":"jev-latest", "answers": {
+                    "group": {"type":"choice", "choice":group, "probabilities":{group.as_ref():0.99}, "confidence":0.99}
+                }}));
+            })
+            .await;
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Two rounds".into()]).await;
+        let (account, message, _) = the_one_mail(&core).await;
+        let content = core.mail.content_for_category(&account, &message).await.expect("content").expect("mail");
+        let (engine, model) = decider_of(&core.settings, &core.ai).await.expect("selected model");
+        let mut catalogue = torro_mail::CategoryDef::defaults();
+        for definition in &mut catalogue {
+            definition.model = true;
+        }
+        assert!(matches!(categorize::plan(&catalogue), categorize::Plan::ByGroup(_)));
+        let before = decisions.calls_async().await;
+        let sends = AtomicUsize::new(0);
+        let allowed = || sends.fetch_add(1, Ordering::SeqCst) == 0;
+        assert!(
+            ask_model_checked(&core.ai, (&engine, &model), &content, &catalogue, false, &[], &allowed, None)
+                .await
+                .is_err()
+        );
+        assert_eq!(sends.load(Ordering::SeqCst), 2, "each round checks current authorization");
+        assert_eq!(decisions.calls_async().await - before, 1, "no second mail send after revocation");
+    }
+
+    #[tokio::test]
+    async fn workflow_merge_start_registers_durable_ownership_before_waiting_for_mail_accounts() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = Arc::new(audited(dir.path()));
+        assert!(!core.mail.durable_classifier_on());
+        core.start_workflows();
+        assert!(
+            core.mail.durable_classifier_on(),
+            "legacy detection must be disabled synchronously before feed/sync startup"
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_merge_detector_send_rechecks_the_kinds_already_encoded_in_its_request() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let decides = mock_jev_finding(&jev, &["event"]).await;
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Already built request".into()]).await;
+        let (account, message, _) = the_one_mail(&core).await;
+        let content = core.mail.content_for_category(&account, &message).await.expect("content").expect("mail");
+        let (engine, model) = decider_of(&core.settings, &core.ai).await.expect("model");
+        let wanted = vec![crate::actions::kind("event").expect("kind")];
+        let request = categorize::detect_request(&model, &content, &wanted);
+        let before = decides.calls_async().await;
+        assert!(detection_on(&core.settings, &core.mail, true, &wanted));
+        assert!(matches!(
+            core.handle(Request::SetActionKind { kind: "event".into(), enabled: false }).await,
+            Response::ActionKinds { .. }
+        ));
+        let allowed = || detection_on(&core.settings, &core.mail, true, &wanted);
+        assert!(ask_decider_checked(&core.ai, &engine, request, &allowed).await.is_err());
+        assert_eq!(
+            decides.calls_async().await,
+            before,
+            "a kind disabled after request construction must not send mail"
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_merge_combined_send_drops_disabled_action_questions_but_keeps_categorizing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let initial = mock_jev_finding(&jev, &[]).await;
+        let (core, _imap) =
+            core_sorting_with_jev(dir.path(), &jev, &["Category without disabled actions".into()]).await;
+        initial.delete_async().await;
+        let category_only = jev
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/systemone").body_includes("category").body_excludes("action:event");
+                then.status(200).json_body(serde_json::json!({"model":"jev-latest", "answers": {
+                    "category":{"type":"choice", "choice":"invoice", "probabilities":{"invoice":0.9}, "confidence":0.9}
+                }}));
+            })
+            .await;
+        let (account, message, _) = the_one_mail(&core).await;
+        let content = core.mail.content_for_category(&account, &message).await.expect("content").expect("mail");
+        let (engine, model) = decider_of(&core.settings, &core.ai).await.expect("model");
+        let catalogue = core.inbox.catalogue().expect("catalogue");
+        let kinds = vec![crate::actions::kind("event").expect("kind")];
+        // Reached after the final metadata await, with questions already constructed: simulate
+        // the switch changing there, before the per-question live filter.
+        let allowed = || {
+            assert!(matches!(core.set_action_kind("event", false), Response::ActionKinds { .. }));
+            true
+        };
+        let kind_allowed =
+            |kind: &str| crate::actions::looked_for(&core.settings.current()).iter().any(|on| on.id == kind);
+        let answer = ask_model_checked(
+            &core.ai,
+            (&engine, &model),
+            &content,
+            &catalogue,
+            false,
+            &kinds,
+            &allowed,
+            Some(&kind_allowed),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("category still succeeds"))
+        .expect("decision");
+        assert_eq!(answer.category.category, torro_mail::Category::Invoice);
+        category_only.assert_calls_async(1).await;
+    }
+
+    #[tokio::test]
+    async fn workflow_merge_fixed_detector_rechecks_mail_and_cloud_permissions_after_waiting_for_content() {
+        for mail_off in [false, true] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let jev = httpmock::MockServer::start_async().await;
+            let decides = mock_jev_finding(&jev, &["event"]).await;
+            let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Fixed detector gate".into()]).await;
+            let before = decides.calls_async().await;
+            let (account, message, _) = the_one_mail(&core).await;
+            let store = core.mail.store(&account).await.expect("store");
+            let (entered, blocked) = tokio::sync::oneshot::channel();
+            let (release, held) = std::sync::mpsc::channel();
+            let holding = tokio::spawn(async move {
+                store
+                    .run(move |_| {
+                        let _ = entered.send(());
+                        held.recv().expect("release content");
+                        Ok(())
+                    })
+                    .await
+            });
+            blocked.await.expect("store held");
+            let mut detecting = core.new_mail_detector()(account.clone(), message.clone());
+            assert!(futures_util::poll!(detecting.as_mut()).is_pending());
+            if mail_off {
+                core.mail.set_workflow_switch(Arc::new(|| false));
+            } else {
+                core.settings.set(SettingKey::DecideMailToCloud, &serde_json::json!(false)).expect("cloud revoked");
+            }
+            release.send(()).expect("release");
+            holding.await.expect("holding task").expect("store access");
+            detecting.await;
+            assert_eq!(decides.calls_async().await, before, "revocation stops send, not just later storage");
+            assert!(core.mail.suggestions(&account, &message).await.expect("no stale findings").is_empty());
+        }
+    }
+
+    /// Acceptance of issue #603 (Erledigt 2, 3, 7): the sorting of new mail finds an event, keeps it
+    /// `reading` and puts the mail in the queue; the reader fills it in with the local AI – never the
+    /// chat account elsewhere, which sorting has no permission for – and `mail.list_suggestions`
+    /// lists it `ready` with its fields. Accepting closes it; a dismissed kind stays closed when the
+    /// mail is sorted again.
+    #[tokio::test]
+    async fn new_mail_gets_a_suggestion_read_out_by_the_local_ai_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        let decides = mock_jev_finding(&jev, &["event"]).await;
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Kick-off".into()]).await;
+        let (account, message, _) = the_one_mail(&core).await;
+
+        // Without a model that may read the mail the suggestion stays, unfilled, quietly.
+        let decide = core.new_mail_decider();
+        assert!(decide(account.clone(), message.clone(), false).await.is_some(), "sorted");
+        assert!(decides.calls_async().await >= 1);
+        let held = core.mail.suggestions(&account, &message).await.expect("read");
+        assert_eq!(
+            held.iter().map(|held| (held.kind.as_str(), held.state)).collect::<Vec<_>>(),
+            [("event", torro_ipc::actions::SuggestionState::Reading)]
+        );
+        let summary = the_one_mail_summary(&core).await;
+        assert_eq!(summary.suggested, ["event"], "lists mark it");
+        let next = core.readings.next().await;
+        assert_eq!(next, (account.clone(), message.clone()), "queued for reading");
+        core.fill_suggestions(&account, &message).await;
+        core.readings.finish(&next);
+        let held = core.mail.suggestions(&account, &message).await.expect("read");
+        assert_eq!(held[0].state, torro_ipc::actions::SuggestionState::Unfilled, "no AI: no error, no fields");
+
+        // A local AI and a chat account elsewhere: sorting may send mail out, but Jev cannot write,
+        // so the reading stays here.
+        let (ollama, openrouter) = (fake_ollama().await, fake_openrouter().await);
+        let local = answers_chat(
+            &ollama,
+            "/v1/chat/completions",
+            r#"{"title": "Kick-off", "start": "2026-11-14T10:00", "end": "2026-11-14T11:00", "location": "Room 2",
+                "reason": "Anna invites you"}"#,
+        )
+        .await;
+        let remote = answers_chat(&openrouter, "/api/v1/chat/completions", r#"{"title": "Elsewhere"}"#).await;
+        for (provider, server, key) in [
+            (AiProvider::Ollama, ollama.url("/v1"), torro_ipc::Secret::default()),
+            (AiProvider::OpenRouter, openrouter.url("/api/v1"), torro_ipc::Secret::new(AI_KEY)),
+        ] {
+            let connect = Request::ConnectAi { provider, server: Some(server), key };
+            assert!(matches!(core.handle(connect).await, Response::Account { .. }));
+        }
+        let engine = format!("ai:openrouter@127.0.0.1:{}", openrouter.port());
+        assert_eq!(core.handle(turn_on(&engine, "qwen/qwen3-14b")).await, Response::Ok);
+        let default = serde_json::json!({"engine": engine, "model": "qwen/qwen3-14b"});
+        let set = Request::SetSetting { key: SettingKey::AssistantDefault, value: default };
+        assert_eq!(core.handle(set).await, Response::Ok);
+
+        let extract = Request::ExtractAction {
+            account: account.clone(),
+            id: message.clone(),
+            kind: "event".into(),
+            lists: Vec::new(),
+        };
+        let Response::Suggestion { suggestion } = core.handle(extract).await else { panic!("read out") };
+        assert_eq!(suggestion.state, torro_ipc::actions::SuggestionState::Ready);
+        let event = suggestion.event.expect("an event");
+        assert_eq!((event.title.as_str(), event.location.as_deref()), ("Kick-off", Some("Room 2")));
+        assert_eq!(suggestion.reason.as_deref(), Some("Anna invites you"));
+        assert_eq!((local.calls_async().await, remote.calls_async().await), (1, 0), "only the AI here");
+        let list = Request::ListSuggestions { account: account.clone(), id: message.clone() };
+        let Response::Suggestions { suggestions } = core.handle(list.clone()).await else { panic!("listed") };
+        assert_eq!(suggestions[0].event.as_ref().map(|event| event.title.as_str()), Some("Kick-off"));
+
+        // Dismissed, it stays so when the mail is sorted again; accepting it then finds none open.
+        let dismiss =
+            Request::DismissSuggestion { account: account.clone(), id: message.clone(), kind: "event".into() };
+        assert_eq!(core.handle(dismiss).await, Response::Ok);
+        // Sorted again by the button: the model finds the event once more, the dismissed one stays.
+        let (engine, model) = decider_of(&core.settings, &core.ai).await.expect("a decider");
+        let kinds = crate::actions::looked_for(&core.settings.current());
+        let again = decide_mail_with(
+            &core.ai,
+            &core.mail,
+            &core.inbox,
+            (&engine, &model),
+            (&account, &message),
+            Occasion::Button,
+            &kinds,
+            &core.readings,
+        )
+        .await;
+        assert!(matches!(again, Ok(Some(_))), "sorted again");
+        assert_eq!(core.handle(list.clone()).await, Response::Suggestions { suggestions: Vec::new() });
+        let accept = Request::AcceptSuggestion { account: account.clone(), id: message.clone(), kind: "event".into() };
+        assert_eq!(code(&core.handle(accept).await), "not-found");
+    }
+
+    /// The summary of the one mail of [`core_sorting_with_jev`] as the lists get it.
+    async fn the_one_mail_summary(core: &Core) -> torro_mail::MessageSummary {
+        let search: Request =
+            serde_json::from_value(serde_json::json!({"method": "mail.search_messages", "limit": 10})).expect("search");
+        let Response::MailMessages { messages, .. } = core.handle(search).await else { panic!("mail") };
+        messages.into_iter().next().expect("the mail")
+    }
+
+    /// Issue #603, decision 2 and Erledigt 7: mail of the group Info gets no suggestion; a kind switched
+    /// off is no longer asked about, and nothing fails; without a model for sorting nothing is asked.
+    #[tokio::test]
+    async fn info_mail_and_a_kind_switched_off_get_no_suggestion() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        jev.mock_async(|when, then| {
+            when.method("POST").path("/v1/systemone");
+            then.status(200).json_body(serde_json::json!({"model": "jev-latest", "answers": {
+                "category": {"type": "choice", "choice": "newsletter",
+                             "probabilities": {"newsletter": 0.9}, "confidence": 0.9},
+                "action:event": {"type": "noul", "noul": 0.95},
+                "action:task": {"type": "noul", "noul": 0.95}
+            }}));
+        })
+        .await;
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Weekly news".into()]).await;
+        let (account, message, _) = the_one_mail(&core).await;
+        let decide = core.new_mail_decider();
+        assert!(decide(account.clone(), message.clone(), false).await.is_some());
+        assert!(core.mail.suggestions(&account, &message).await.expect("read").is_empty(), "info: nothing");
+
+        // Both kinds off: the call asks no question about them.
+        for kind in ["event", "task"] {
+            let off = Request::SetActionKind { kind: kind.into(), enabled: false };
+            let Response::ActionKinds { kinds } = core.handle(off).await else { panic!("kinds") };
+            assert!(kinds.iter().any(|listed| listed.id == kind && !listed.enabled), "listed, off");
+        }
+        assert!(crate::actions::looked_for(&core.settings.current()).is_empty());
+        let unknown = Request::SetActionKind { kind: "github".into(), enabled: false };
+        assert_eq!(code(&core.handle(unknown).await), "not-found");
+        let Response::ActionKinds { kinds } = core.handle(Request::ListActionKinds).await else { panic!("kinds") };
+        assert_eq!(kinds.len(), crate::actions::KINDS.len(), "a kind off stays in the list");
+    }
+
+    /// Issue #603: the commands of suggestions check the mail before anything else – an unknown kind,
+    /// a mail no store holds and ids too long are refused; a client without mail sees none; an event
+    /// of a mail is refused for an end before its start. Nothing of it reaches the log but ids.
+    #[tokio::test]
+    async fn the_commands_of_suggestions_refuse_what_they_must() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jev = httpmock::MockServer::start_async().await;
+        mock_jev_finding(&jev, &[]).await;
+        let (core, _imap) = core_sorting_with_jev(dir.path(), &jev, &["Kick-off".into()]).await;
+        let (account, message, _) = the_one_mail(&core).await;
+        let extract = |kind: &str, id: &str| Request::ExtractAction {
+            account: account.clone(),
+            id: id.into(),
+            kind: kind.into(),
+            lists: Vec::new(),
+        };
+        assert_eq!(code(&core.handle(extract("github", &message)).await), "not-found", "no such kind");
+        assert_eq!(code(&core.handle(extract("task", "m:gone")).await), "not-found", "no such mail");
+        assert_eq!(code(&core.handle(extract("task", &"m".repeat(400))).await), "error");
+        assert_eq!(code(&core.handle(extract("task", &message)).await), "not-connected", "no AI here");
+        let dismiss = Request::DismissSuggestion { account: account.clone(), id: message.clone(), kind: "task".into() };
+        assert_eq!(code(&core.handle(dismiss).await), "not-found", "nothing open");
+
+        let at = |hour| torro_pim::EventTime::DateTime(Utc::now() + chrono::Duration::hours(hour));
+        let backwards = Request::CreateEventFromMail {
+            account: account.clone(),
+            id: message.clone(),
+            collection: "nextcloud:anna@cloud.example.org/work".into(),
+            title: None,
+            start: at(2),
+            end: at(1),
+            location: None,
+            notes: None,
+        };
+        assert_eq!(code(&core.handle(backwards).await), "error");
+
+        // A task's list a client does not see is left out of what it is shown.
+        let rights = torro_ipc::api::Rights::none();
+        let task = torro_ipc::TaskSuggestion {
+            title: "Send the draft".into(),
+            notes: None,
+            due: None,
+            list: Some("Private".into()),
+            engine: "ai:ollama".into(),
+            model: "qwen3:8b".into(),
+        };
+        let mut shown = [torro_ipc::actions::Suggestion {
+            kind: "task".into(),
+            state: torro_ipc::actions::SuggestionState::Ready,
+            task: Some(task),
+            event: None,
+            reason: None,
+        }];
+        core.seen_lists_only(&mut shown, Reach::Client(&rights)).await;
+        assert_eq!(shown[0].task.as_ref().and_then(|task| task.list.clone()), None);
     }
 }

@@ -1,0 +1,15 @@
+{
+  "expect": {
+    "event": true,
+    "task": true
+  },
+  "subject": "Workshop am Montag",
+  "from": "Jana Ost <jana@firma.example>",
+  "list": null,
+  "bulk": false,
+  "text": "Hallo zusammen,\n\nam Montag um 9 Uhr ist der Workshop zur Planung. Bitte bereitet bis dahin jeweils drei Ideen vor und schickt sie mir vorab.\n\nJana",
+  "fields": {
+    "title": "Planungsworkshop",
+    "start": "Monday 09:00"
+  }
+}

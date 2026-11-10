@@ -168,6 +168,11 @@ pub struct Settings {
     /// not know is dropped when the file is read.
     #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "known_categories")]
     pub hidden_categories: Vec<torro_mail::Category>,
+    /// The kinds of action Torro no longer looks for in new mail (issue #603, `docs/vorschlaege.md`,
+    /// `mail.set_action_kind`), by their id (`event`, `task`). Only those switched off are stored, so
+    /// a kind added later starts on. An id no kind has any more is kept and ignored.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub mail_actions_off: BTreeSet<String>,
     /// The data rule for mail (task C.17, `docs/ki.md` principle 4): `false` (the default) keeps
     /// mail with models on the person's own computers; `true` lets it go to models elsewhere
     /// (OpenRouter, a provider's server) as well. Only a person switches it on
@@ -835,6 +840,7 @@ impl Default for Settings {
             maps: Maps::default(),
             ai_assignments: BTreeMap::new(),
             hidden_categories: Vec::new(),
+            mail_actions_off: BTreeSet::new(),
             allow_api_keys: on(),
             allow_mcp: on(),
             tools: Tools::default(),
@@ -2779,6 +2785,7 @@ mod tests {
             maps: Maps::default(),
             ai_assignments: BTreeMap::new(),
             hidden_categories: Vec::new(),
+            mail_actions_off: BTreeSet::new(),
             allow_api_keys: true,
             allow_mcp: true,
             tools: Tools::default(),
@@ -3073,6 +3080,7 @@ mod tests {
             maps: Maps { enabled: true, open_with: MapsApp::Geo, ..Maps::default() },
             ai_assignments: BTreeMap::new(),
             hidden_categories: Vec::new(),
+            mail_actions_off: BTreeSet::new(),
             allow_api_keys: false,
             allow_mcp: false,
             tools: Tools {

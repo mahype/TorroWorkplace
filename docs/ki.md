@@ -313,6 +313,10 @@ Einstellungen zeigt beim Ersatzweg „Answers in a fixed format, slower“.
   Zeile „No decision model“ mit dem Weg zu Einstellungen › AI, wo „Use suggestion“ eines zum Laden anbietet. Die API
   braucht dafür nichts Neues: `ai.list_models` sagt mit `decision`, welches Modell direkt entscheidet.
 
+- **Vorschläge aus Mails** (#603, [vorschlaege.md](vorschlaege.md)): Die Fragen nach Terminen und Aufgaben fahren
+  im Sortieraufruf mit, auch auf dem Ersatzweg. Das Auslesen der Felder nimmt das Modell, das sortiert, nur wenn
+  `decide_mail_to_cloud` die Mail nach außen lässt und es schreiben kann; sonst ein Modell auf diesem Rechner.
+
 ## API und MCP
 
 | Funktion | Oberfläche | API · Zugriff | MCP |

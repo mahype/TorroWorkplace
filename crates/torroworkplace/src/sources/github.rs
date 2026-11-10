@@ -1000,7 +1000,7 @@ mod tests {
             Some(accounts),
             None,
             None,
-            None,
+            (None, None),
         );
         mail.reload().await;
         eventually("synced", || synced(&mail)).await;

@@ -208,7 +208,7 @@ impl ImageReservation {
     /// Call under the image-store lock after checking the store and shared payload budget.
     pub fn new(bytes: usize) -> Option<Self> {
         HELD_IMAGE_BYTES
-            .fetch_update(std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire, |used| {
+            .try_update(std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire, |used| {
                 used.checked_add(bytes).filter(|sum| *sum <= 100 * 1024 * 1024)
             })
             .ok()
@@ -243,7 +243,7 @@ impl ImageData {
         }
         let bytes = self.len();
         let reserved = HELD_IMAGE_BYTES
-            .fetch_update(std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire, |used| {
+            .try_update(std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire, |used| {
                 used.checked_add(bytes).filter(|sum| *sum <= 100 * 1024 * 1024)
             })
             .is_ok();
