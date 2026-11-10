@@ -6248,10 +6248,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                         self.highlights.extend(page.highlights);
                         self.more = page.next;
                     }
-                    Err(err) => {
-                        self.more_failed = true;
-                        self.error = Some(Failure::new(tr("Couldn't load more messages."), err));
-                    }
+                    // Said once, at the end of the list where it is missed ([`mail::MailList::more_failed`]),
+                    // with "Retry" – not again in the error line over the list, which would stay after
+                    // the retry worked (review of #617).
+                    Err(_) => self.more_failed = true,
                 }
             }
             Message::MoreLoadedAccounts(view, order, cursor, accounts, result) => {
@@ -19811,7 +19811,7 @@ mod tests {
         let _ = app.update(at_end());
         assert_eq!(asked(&app), 1, "the same page only once");
         let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, "4".into(), Err("offline".into())));
-        assert_eq!(app.error.as_ref().map(|failure| failure.what), Some(tr("Couldn't load more messages.")));
+        assert!(app.more_failed && app.error.is_none(), "said at the end of the list only");
         let _ = app.update(at_end());
         assert_eq!(asked(&app), 2, "asked again after it failed");
         assert!(!shows_entries(&at_end()) && !closes_rail(&at_end()), "scrolling closes nothing");
