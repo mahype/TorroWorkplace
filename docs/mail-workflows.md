@@ -293,13 +293,18 @@ führenden Schrägstrich werden abgewiesen.
 gelesen (`cssparser`, höchstens 512 KiB und 20.000 Regeln, im Zeitbudget des Konverters). Eine
 Prüfsumme würde schon bei jeder Farbänderung abbrechen. Abgewiesen wird:
 
-- erzeugter Text: `content` mit einem anderen Wert als `none`, `normal` oder `""`,
+- erzeugter Text: `content` mit einem anderen Wert als `none`, `normal` oder `""`, Listenzeichen
+  (`display: list-item`, Text in `list-style`) und eingebettete `data:`-Adressen, die Text zeichnen
+  könnten,
 - `@import` und alle nicht belegten At-Regeln (erlaubt sind `@charset`, `@media`, `@supports`,
   `@layer`, `@container`, `@font-face`, `@page` und Keyframes),
-- Ausblenden: `display: none`, `visibility: hidden|collapse`, `opacity: 0`, `font-size: 0`,
-  `color: transparent` (auch mit Alpha 0), `clip`/`clip-path`, stark negatives `text-indent`,
-  `position: absolute|fixed` mit negativem Versatz und `unicode-bidi: bidi-override`; ebenso
-  `var()`, `calc()` und andere erst im Browser aufgelöste Werte bei diesen Eigenschaften,
+- Ausblenden: `display: none`, `visibility`/`content-visibility: hidden`, Deckkraft bis 5 % (auch
+  `filter: opacity()`), Schriftgröße unter 2 px (auch im `font`-Kurzschrieb), transparente Farbe
+  (`transparent`, Alpha 0 in Funktions- und Hex-Schreibweise), `-webkit-text-security`,
+  `clip`/`clip-path`, `transform`/`scale` gegen 0, Höhe oder Breite 0 mit `overflow: hidden`,
+  Verschieben um mehr als 999 px nach links oben (Versatz, Rand, Einzug, `translate`, in jeder
+  Längeneinheit, unabhängig von `position`) und `unicode-bidi: bidi-override`; ebenso `var()`,
+  `calc()` und andere erst im Browser aufgelöste Werte bei diesen Eigenschaften,
 - verschachtelte Regeln in Deklarationsblöcken.
 
 Ausblenden ist nur für die Selektoren `.no-print` und `.c-header` erlaubt (auch in `@media print`):
@@ -322,7 +327,11 @@ Seiteninhalte frei, und Läufe laufen gleich ab. Verstößt das Stylesheet gegen
 Lauf mit `unsupported`.
 
 **Grenzen.** Die Regeln erkennen belegte Wege, Inhalte zu erzeugen oder auszublenden, sie
-interpretieren kein CSS. Fonts, Bilder und andere im Stylesheet genannte Adressen werden nicht
+interpretieren kein CSS und ordnen Selektoren keinen Elementen zu. Nicht erkannt werden: eigene Fonts
+(`@font-face`), die Zeichen im Browser anders darstellen, externe Hintergrundbilder mit Text,
+Kombinationen über mehrere Regeln für dasselbe Element und eine Überdeckung durch die erlaubte
+Kopfzeile auf dem Bildschirm. Die Kopie selbst hängt davon nicht ab: Sie setzt den Text der Seite mit
+den eingebetteten Fonts. Fonts, Bilder und andere im Stylesheet genannte Adressen werden nicht
 geladen. Ändert Paddle das Skript, scheitern auch automatische Läufe, bis der Mensch die Reparatur
 durchführt; das ist gewollt.
 

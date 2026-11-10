@@ -167,6 +167,25 @@ async fn generated_or_hidden_invoice_content_in_the_stylesheet_is_refused() {
         "@keyframes gone { to { opacity: 0; } }",
         "@namespace svg url(http://www.w3.org/2000/svg);",
         ".receipt-table { .receipt-table-total { display: none; } }",
+        ".receipt-table-total { left: -99999px; }",
+        ".receipt-table-total { position: relative; left: -99999px; }",
+        ".receipt-table-total { margin-left: -99999px; }",
+        ".receipt-table-total { text-indent: -9999pt; }",
+        ".receipt-table-total { text-indent: -100vw; }",
+        ".receipt-table-total { font: 700 0px a; }",
+        ".receipt-table-total { font-size: 0.01px; }",
+        ".receipt-table-total { color: #0000; }",
+        ".receipt-table-total { color: #ffffff00; }",
+        ".receipt-table-total { transform: scale(0); }",
+        ".receipt-table-total { transform: translateX(-99999px); }",
+        ".receipt-table-total { content-visibility: hidden; }",
+        ".receipt-table-total { filter: opacity(0); }",
+        ".receipt-table-total { height: 0; overflow: hidden; }",
+        ".receipt-table-total { -webkit-text-security: disc; }",
+        ".receipt-table-tax { display: list-item; }",
+        ".receipt-table-tax { list-style: 'VAT 19 % ' inside; }",
+        ".receipt-table-tax { background-image: url(\"data:image/svg+xml,<svg><text>VAT</text></svg>\"); }",
+        ".receipt-table-tax { background: url(data:image/png;base64,AAAA); }",
     ] {
         let css = format!("{CSS}\n{rule}\n");
         assert!(invoice::check_stylesheet(css.as_bytes()).is_err(), "{rule}");
@@ -182,6 +201,10 @@ async fn generated_or_hidden_invoice_content_in_the_stylesheet_is_refused() {
         ".receipt-table-total { color: #123456; font-weight: 700; }",
         ".receipt-table-total::after { content: none; }",
         ".c-header { position: fixed; top: -64px; }",
+        ".receipt-table-total { margin: 0 auto -8px; font: 700 14px/1.4 sans-serif; color: #11663aff; }",
+        "hr { height: 0; overflow: visible; }",
+        "ul { list-style: none; }",
+        ".receipt-table-total { transform: translateY(-2px) scale(1.02); }",
     ] {
         let css = format!("{CSS}\n{rule}\n");
         assert!(invoice::check_stylesheet(css.as_bytes()).is_ok(), "{rule}");

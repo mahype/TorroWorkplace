@@ -954,6 +954,8 @@ enum Value {
     Number(f32),
     Length(f32, String),
     Function(String, Vec<Value>),
+    Hex(String),
+    Url(String),
     Other,
 }
 
@@ -1060,8 +1062,8 @@ fn declarations<'i>(
     may_hide: bool,
 ) -> Result<(), CssFail<'i>> {
     use cssparser::Token;
-    let mut positioned = false;
-    let mut negative_offset = false;
+    let mut tiny_box = false;
+    let mut overflow_hidden = false;
     let mut hides = false;
     loop {
         walk.tick()?;
@@ -1075,34 +1077,22 @@ fn declarations<'i>(
         parser.expect_colon().map_err(|_| refuse())?;
         let values = parser.parse_until_after(cssparser::Delimiter::Semicolon, |value| values(value, walk, 0))?;
         let values: Vec<_> = values.into_iter().filter(|value| *value != Value::Word("important".into())).collect();
+        // Inline images can draw text; they are refused wherever they appear, fonts included.
+        if inline_data(&values) {
+            return Err(refuse());
+        }
         let word = |wanted: &[&str]| {
             values.iter().any(|value| matches!(value, Value::Word(word) if wanted.contains(&word.as_str())))
         };
-        let zero = values.iter().any(|value| matches!(value, Value::Number(n) | Value::Length(n, _) if *n == 0.0));
+        let pixels: Vec<f32> = values.iter().filter_map(px).collect();
+        let far_negative = pixels.iter().any(|n| *n < -999.0);
         // `var()`, `calc()` and friends are resolved only by a browser; on a hiding property they count as hiding.
+        // Colour and transform functions are checked by their own rules below.
         let dynamic = values.iter().any(|value| {
-            matches!(value, Value::Function(name, _) if !matches!(name.as_str(), "rgb" | "rgba" | "hsl" | "hsla"))
+            matches!(value, Value::Function(name, _) if !(matches!(name.as_str(), "rgb" | "rgba" | "hsl" | "hsla" | "opacity")
+                || ["scale", "translate", "rotate", "skew", "matrix", "perspective"].iter().any(|known| name.starts_with(known))))
         });
-        if dynamic
-            && matches!(
-                name.as_str(),
-                "display"
-                    | "visibility"
-                    | "opacity"
-                    | "font-size"
-                    | "font"
-                    | "color"
-                    | "-webkit-text-fill-color"
-                    | "text-indent"
-                    | "position"
-                    | "top"
-                    | "left"
-                    | "right"
-                    | "bottom"
-                    | "inset"
-                    | "unicode-bidi"
-            )
-        {
+        if dynamic && sensitive(&name) {
             hides = true;
         }
         match name.as_str() {
@@ -1113,49 +1103,168 @@ fn declarations<'i>(
                     return Err(refuse());
                 }
             }
-            "display" => hides |= word(&["none"]),
-            "visibility" => hides |= word(&["hidden", "collapse"]),
-            "opacity" => {
-                hides |= values.iter().any(|value| matches!(value, Value::Number(n) if *n <= 0.05))
-                    || values.iter().any(|value| matches!(value, Value::Length(n, unit) if unit == "%" && *n <= 5.0));
+            // List markers are generated text as well, whether numbered or given as a string.
+            "display" if word(&["list-item"]) => return Err(refuse()),
+            "list-style" | "list-style-type" if values.iter().any(|value| matches!(value, Value::Text(_))) => {
+                return Err(refuse());
             }
-            "font-size" => hides |= zero,
+            "display" => hides |= word(&["none"]),
+            "visibility" | "content-visibility" => hides |= word(&["hidden", "collapse"]),
+            "opacity" => hides |= faint(&values),
+            "filter" | "-webkit-filter" => {
+                hides |= values.iter().any(|value| match value {
+                    Value::Function(name, arguments) if name == "opacity" => faint(arguments),
+                    _ => false,
+                })
+            }
+            "font-size" => {
+                hides |= values.iter().any(|value| matches!(value, Value::Number(n) if *n == 0.0))
+                    || pixels.iter().any(|n| *n < 2.0)
+            }
+            // Unitless numbers in the shorthand are weights or line heights; a size always has a unit, except 0.
             "font" => {
-                hides |= values.iter().find_map(|value| match value {
-                    Value::Number(n) | Value::Length(n, _) => Some(*n == 0.0),
-                    _ => None,
-                }) == Some(true)
+                hides |= values.iter().any(|value| matches!(value, Value::Number(n) if *n == 0.0))
+                    || values
+                        .iter()
+                        .any(|value| matches!(value, Value::Length(..)) && px(value).is_some_and(|n| n < 2.0))
             }
             "color" | "-webkit-text-fill-color" => hides |= word(&["transparent"]) || transparent(&values),
+            "-webkit-text-security" => hides |= !word(&["none"]),
             "clip" => hides |= !matches!(values.as_slice(), [Value::Word(word)] if word == "auto"),
             "clip-path" | "-webkit-clip-path" => {
                 hides |= !matches!(values.as_slice(), [Value::Word(word)] if word == "none")
             }
-            "text-indent" => {
+            // A far negative offset, margin or indent moves content off the page, whatever its position.
+            "text-indent"
+            | "top"
+            | "left"
+            | "right"
+            | "bottom"
+            | "inset"
+            | "inset-inline"
+            | "inset-block"
+            | "inset-inline-start"
+            | "inset-inline-end"
+            | "inset-block-start"
+            | "inset-block-end"
+            | "margin"
+            | "margin-top"
+            | "margin-left"
+            | "margin-right"
+            | "margin-bottom"
+            | "margin-inline"
+            | "margin-block"
+            | "margin-inline-start"
+            | "margin-inline-end"
+            | "margin-block-start"
+            | "margin-block-end"
+            | "translate" => hides |= far_negative,
+            "transform" => {
                 hides |= values.iter().any(|value| match value {
-                    Value::Length(n, unit) if unit == "px" => *n < -999.0,
-                    Value::Length(n, unit) if matches!(unit.as_str(), "em" | "rem") => *n < -60.0,
+                    Value::Function(name, arguments) if name.starts_with("scale") => {
+                        arguments.iter().any(|value| matches!(value, Value::Number(n) if n.abs() <= 0.05))
+                            || arguments
+                                .iter()
+                                .any(|value| matches!(value, Value::Length(n, unit) if unit == "%" && n.abs() <= 5.0))
+                    }
+                    Value::Function(name, arguments) if name.starts_with("translate") => {
+                        arguments.iter().filter_map(px).any(|n| n < -999.0)
+                    }
                     _ => false,
                 })
             }
-            "position" => positioned |= word(&["absolute", "fixed"]),
-            "top" | "left" | "right" | "bottom" | "inset" | "inset-inline" | "inset-block" | "inset-inline-start"
-            | "inset-inline-end" | "inset-block-start" | "inset-block-end" => {
-                negative_offset |=
-                    values.iter().any(|value| matches!(value, Value::Number(n) | Value::Length(n, _) if *n < 0.0))
+            "scale" => hides |= values.iter().any(|value| matches!(value, Value::Number(n) if n.abs() <= 0.05)),
+            "height" | "max-height" | "width" | "max-width" => {
+                tiny_box |= values.iter().any(|value| matches!(value, Value::Number(n) if *n == 0.0))
+                    || pixels.iter().any(|n| *n < 2.0)
             }
+            "overflow" | "overflow-x" | "overflow-y" => overflow_hidden |= word(&["hidden", "clip"]),
             // Visual reordering of characters would let the page show other digits than its text.
             "unicode-bidi" => hides |= word(&["bidi-override", "isolate-override"]),
             _ => {}
         }
     }
-    if (hides || (positioned && negative_offset)) && !may_hide {
+    if (hides || (tiny_box && overflow_hidden)) && !may_hide {
         return Err(refuse());
     }
     Ok(())
 }
 
-/// `rgba(…, 0)`, `hsla(…, 0)` and the slash forms with a zero alpha.
+/// Properties whose browser-resolved values (`var()`, `calc()`) could hide content.
+fn sensitive(name: &str) -> bool {
+    matches!(
+        name,
+        "display"
+            | "visibility"
+            | "content-visibility"
+            | "opacity"
+            | "filter"
+            | "-webkit-filter"
+            | "font-size"
+            | "font"
+            | "color"
+            | "-webkit-text-fill-color"
+            | "text-indent"
+            | "top"
+            | "left"
+            | "right"
+            | "bottom"
+            | "inset"
+            | "margin"
+            | "margin-top"
+            | "margin-left"
+            | "margin-right"
+            | "margin-bottom"
+            | "transform"
+            | "translate"
+            | "scale"
+            | "height"
+            | "max-height"
+            | "unicode-bidi"
+    )
+}
+
+/// An approximate length in CSS pixels, with font-relative units at 16px and viewport units at 1000px.
+fn px(value: &Value) -> Option<f32> {
+    let Value::Length(n, unit) = value else { return None };
+    let factor = match unit.as_str() {
+        "px" => 1.0,
+        "pt" => 4.0 / 3.0,
+        "pc" => 16.0,
+        "in" => 96.0,
+        "cm" => 37.8,
+        "mm" => 3.78,
+        "q" => 0.945,
+        "em" | "rem" | "ch" | "ex" | "lh" | "rlh" | "cap" | "ic" => 16.0,
+        "%" | "vw" | "vh" | "vmin" | "vmax" | "svw" | "svh" | "lvw" | "lvh" | "dvw" | "dvh" | "vi" | "vb" => 10.0,
+        _ => return None,
+    };
+    Some(n * factor)
+}
+
+/// An opacity of at most 5 %, as number or percentage.
+fn faint(values: &[Value]) -> bool {
+    values.iter().any(|value| match value {
+        Value::Number(n) => *n <= 0.05,
+        Value::Length(n, unit) => unit == "%" && *n <= 5.0,
+        _ => false,
+    })
+}
+
+/// `url(data:…)` in any spelling, also nested in functions such as `image-set()`.
+fn inline_data(values: &[Value]) -> bool {
+    values.iter().any(|value| match value {
+        Value::Url(url) => url.trim_start().to_ascii_lowercase().starts_with("data:"),
+        Value::Function(name, arguments) => (name == "url" || name == "src")
+            && arguments.iter().any(
+                |value| matches!(value, Value::Text(url) if url.trim_start().to_ascii_lowercase().starts_with("data:")),
+            )
+            || inline_data(arguments),
+        _ => false,
+    })
+}
+
+/// `rgba(…, 0)`, `hsla(…, 0)`, the slash forms and `#rgba`/`#rrggbbaa` with a zero alpha.
 fn transparent(values: &[Value]) -> bool {
     values.iter().any(|value| match value {
         Value::Function(name, arguments) if matches!(name.as_str(), "rgb" | "rgba" | "hsl" | "hsla") => {
@@ -1166,8 +1275,13 @@ fn transparent(values: &[Value]) -> bool {
                     _ => None,
                 })
                 .collect();
-            numbers.len() == 4 && numbers.last().is_some_and(|alpha| *alpha == 0.0)
+            numbers.len() == 4 && numbers.last().is_some_and(|alpha| *alpha <= 0.05)
         }
+        Value::Hex(hex) => match hex.len() {
+            4 => hex.ends_with('0'),
+            8 => hex.ends_with("00") || hex.ends_with("01") || hex.ends_with("02") || hex.ends_with("03"),
+            _ => false,
+        },
         _ => false,
     })
 }
@@ -1194,6 +1308,8 @@ fn values<'i>(
             Token::Number { value, .. } => Value::Number(value),
             Token::Percentage { unit_value, .. } => Value::Length(unit_value * 100.0, "%".into()),
             Token::Dimension { value, unit, .. } => Value::Length(value, unit.to_ascii_lowercase()),
+            Token::Hash(hex) | Token::IDHash(hex) => Value::Hex(hex.to_ascii_lowercase()),
+            Token::UnquotedUrl(url) => Value::Url(url.to_string()),
             Token::Function(name) => {
                 let name = name.to_ascii_lowercase();
                 let arguments = parser.parse_nested_block(|nested| values(nested, walk, depth + 1))?;
