@@ -849,6 +849,13 @@ impl App {
         }
     }
 
+    /// The width inside the content's border, what the settings' section list measures against:
+    /// flush (inset 0) the panel has only the line beside the sidebar, inset its border on both sides.
+    pub(crate) fn panes(&self) -> f32 {
+        let lines = if layout::inset() <= 0.0 { 1.0 } else { 2.0 };
+        (self.content_room() - lines * torro_gui::theme::size::HAIRLINE).max(0.0)
+    }
+
     /// The layout class of the window.
     pub(crate) fn class(&self) -> SizeClass {
         layout::of(self.size)

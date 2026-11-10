@@ -284,8 +284,9 @@ pub fn start(data: &ViewData<'_>, offset: i64, night: Night) -> NaiveDateTime {
 /// in two columns as beside the dial; each opens its day where the radar would with `night`. Load
 /// the events through the page's last day.
 pub fn list(data: &ViewData<'_>, coming: NaiveDate, night: Night, column: f32) -> Element<'static, Message> {
-    // The column (`column` wide, as dragged, issue #604) pads its content by 8 on each side.
-    let width = column - size::HAIRLINE - 2.0 * space::s();
+    // The column (`column` wide, as dragged, issue #604; the divider's line lies beside it) pads its
+    // content by 8 on each side.
+    let width = column - 2.0 * space::s();
     mini::Coming::new(data, coming, night).view(width, mini::columns(ListAt::Props, width))
 }
 

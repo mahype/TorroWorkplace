@@ -12484,25 +12484,16 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.panel_split.width(self.panel_limits())
     }
 
-    /// The room the mail window's panel adds beside its title and body for the floating rail
-    /// (`Panel::floating`); none in the other windows.
-    fn panel_extra(&self) -> f32 {
-        match self.launch.kind == Kind::Mail {
-            true => widgets::floating_rail_room(),
-            false => 0.0,
-        }
-    }
-
-    /// What the divider before the panel beside the content moves in: the content keeps its least
-    /// beside the panel and the room of its rail.
+    /// What the divider before the panel beside the content moves in. The wide mail window shows
+    /// its mail in the reader, so a panel beside the content never has the floating rail there.
     fn panel_limits(&self) -> Limits {
-        panel::beside_limits(self.panes() - self.panel_extra())
+        panel::beside_limits(self.panes())
     }
 
     /// What the panel beside the content takes of its width, with its divider: what the board and the
     /// hub lay out without.
     fn panel_beside(&self) -> f32 {
-        self.panel_room() + self.panel_extra() + split::divider_width()
+        self.panel_room() + split::divider_width()
     }
 
     /// The width of the hub's column "Coming back" now: dragged or [`size::props()`].

@@ -69,7 +69,7 @@ pub fn min_pane() -> f32 {
 pub struct Limits {
     /// The width without a choice of the person (`size::list()` for a list beside its detail).
     pub default: f32,
-    /// The width of the whole split: both panes and the handle.
+    /// The width of the whole split: both panes and the divider's line ([`divider_width()`]).
     pub total: f32,
     /// The least the first pane keeps: [`min_pane()`] unless [`Limits::bounded`] says otherwise.
     pub least: f32,

@@ -211,7 +211,7 @@ impl App {
     fn settings_frame<'a>(&'a self, pane: &'a crate::app::SettingsPane, class: SizeClass) -> Frame<'a, Message> {
         let page = settings::page(&pane.sections, pane.host.data(), pane.host.current().id, class);
         let page = page.map(Message::SettingsPage);
-        pane.host.view_in(class, self.content_room(), page, Message::SettingsHost)
+        pane.host.view_in(class, self.panes(), page, Message::SettingsHost)
     }
 
     /// The notice at the bottom centre; empty without one.
