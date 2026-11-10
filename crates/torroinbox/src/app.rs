@@ -866,11 +866,10 @@ pub struct Hint {
 }
 
 /// How the list held was asked for ([`App::held`], issue #612): a load keeps the mail scrolled to
-/// only for the same search, order and accounts.
+/// only for the same view (its search, its categories), order and accounts.
 #[derive(Debug, Clone, PartialEq)]
 struct Held {
-    /// The search whose results the list holds; `None` for every other view.
-    search: Option<SearchView>,
+    view: View,
     order: Order,
     /// The accounts chosen for the views of every account; `None`: all.
     accounts: Option<Vec<String>>,
@@ -3752,6 +3751,9 @@ pub enum Message {
     /// The mail list scrolled (or its content changed size): its offset, its visible height and the
     /// height of its content. Near the end it loads the next page (issue #612).
     MailScrolled(f32, f32, f32),
+    /// The end of the mail list came into view – also when the list does not fill the window and
+    /// nothing scrolls (issue #612): the next page.
+    MailEndShown,
     /// The next page of the folder's view it was asked for.
     MoreLoaded(View, Order, Result<MailPage, String>),
     MoreLoadedAccounts(View, Order, Option<Vec<String>>, Result<MailPage, String>),
@@ -5216,13 +5218,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     }
 
     /// Whether `messages` are the view's own list, asked as a load of it would ask now (issue #612):
-    /// the same listing, the same search (another one replaces the results), order and accounts. A
-    /// load then refreshes its top and keeps the mail further down ([`App::take`]).
+    /// the same view (another search or another choice of categories replaces the list), order and
+    /// accounts. A load then refreshes its top and keeps the mail further down ([`App::take`]).
     fn holds_view(&self) -> bool {
         let Some(held) = &self.held else { return false };
         self.view.listing().is_some()
             && self.listed == self.view.listing()
-            && held.search.as_ref() == self.view.search()
+            && held.view == self.view
             && held.order == self.order
             && held.accounts == self.mail_accounts
     }
@@ -5747,6 +5749,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 if let Some(stored) = stored.filter(|stored| !self.order_chosen && *stored != self.order) {
                     self.order = stored;
                     self.more = None;
+                    // A list asked anew, from the top: nothing of the old one is kept (issue #612).
+                    self.held = None;
                     return self.load();
                 }
             }
@@ -6197,6 +6201,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.error = Some(Failure::new(tr("Couldn't change the mail."), err));
                 return self.load();
             }
+            Message::MailEndShown => return self.more_mail(),
             Message::MailScrolled(offset, height, content) => {
                 self.scroll = Some((offset, height));
                 // A window's height ahead: the next page is in before the end comes into sight.
@@ -6209,8 +6214,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 if view != self.view || order != self.order {
                     return Task::none();
                 }
-                // The page asked for is in, or failed: the next scroll may ask (again).
-                self.more_asked = None;
+                // The page asked for is in, or failed: the next scroll may ask (again). A page no
+                // longer waited for – the list was asked anew meanwhile – would leave a gap.
+                if self.more_asked.take().is_none() {
+                    return Task::none();
+                }
                 match result {
                     Ok(mut page) => {
                         search::with_passages(&mut page.messages, &page.highlights);
@@ -6400,6 +6408,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.mail_accounts = None;
                 self.accounts_chosen = true;
                 self.more = None;
+                // A list asked anew, from the top: nothing of the old one is kept (issue #612).
+                self.held = None;
                 if self.launch.demo {
                     return self.load();
                 }
@@ -6411,6 +6421,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.mail_accounts = (all != 1).then(|| vec![account]);
                 self.accounts_chosen = true;
                 self.more = None;
+                // A list asked anew, from the top: nothing of the old one is kept (issue #612).
+                self.held = None;
                 if self.launch.demo {
                     return self.load();
                 }
@@ -6435,6 +6447,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.mail_accounts = (chosen.len() != all.len()).then_some(chosen);
                 self.accounts_chosen = true;
                 self.more = None;
+                // A list asked anew, from the top: nothing of the old one is kept (issue #612).
+                self.held = None;
                 if self.launch.demo {
                     return self.load();
                 }
@@ -6446,6 +6460,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 if !self.accounts_chosen && self.mail_accounts != accounts {
                     self.mail_accounts = accounts;
                     self.more = None;
+                    // A list asked anew, from the top: nothing of the old one is kept (issue #612).
+                    self.held = None;
                     return self.load();
                 }
             }
@@ -7640,6 +7656,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.order = Order::OldestFirst;
         self.order_back = (back != Order::OldestFirst).then_some(back);
         self.more = None;
+        // A list asked anew, from the top: nothing of the old one is kept (issue #612).
+        self.held = None;
         // `show_view` asked in the order before; asked again, its answer is dropped as stale.
         if again || back != Order::OldestFirst { Task::batch([show, self.load()]) } else { show }
     }
@@ -9690,7 +9708,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         // A load of the list shown asks for at most one request's mail ([`App::page_limit`]): the
         // mail scrolled to further down stays, so a click (which marks read and loads) or the timer
         // keeps the list, its place and its cursor (issue #612).
-        let rest = if self.holds_view() && page.next.is_some() { self.rest_after(&page) } else { None };
+        let holds = self.holds_view();
+        let rest = if holds && page.next.is_some() { self.rest_after(&page) } else { None };
         let next = match rest {
             Some((messages, highlights)) => {
                 page.messages.extend(messages);
@@ -9698,7 +9717,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.more.clone()
             }
             None => {
-                self.more_asked = None;
+                // The page on its way still follows when the load ends where it starts; any other
+                // belongs to a list that is gone ([`Message::MoreLoaded`] drops it).
+                if !holds || page.next != self.more_asked {
+                    self.more_asked = None;
+                }
                 page.next
             }
         };
@@ -9715,8 +9738,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.highlights = page.highlights;
         self.found = loaded.found.map(|found| *found).unwrap_or_default();
         self.more = next;
-        self.held =
-            Some(Held { search: self.view.search().cloned(), order: self.order, accounts: self.mail_accounts.clone() });
+        self.held = Some(Held { view: self.view.clone(), order: self.order, accounts: self.mail_accounts.clone() });
         self.keep_out_leaving();
         // The mail in the reader lies where its row now says (a pile changed meanwhile, review of #315).
         if let Some(Letter { loaded: Some(Ok(mail)), .. }) = self.letter.as_mut() {
@@ -12052,6 +12074,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.order_back = None;
         self.order_chosen = true;
         self.more = None;
+        // A list asked anew, from the top: nothing of the old one is kept (issue #612).
+        self.held = None;
         let load = self.load();
         if self.launch.demo {
             return load;
@@ -15208,7 +15232,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// already when the same view is loaded again ([`App::holds_view`]), at most what one request
     /// may ask; [`App::take`] keeps the mail beyond that (issue #612).
     fn page_limit(&self) -> u32 {
-        let shown = if self.holds_view() { u32::try_from(self.messages.len()).unwrap_or(u32::MAX) } else { 0 };
+        // What [`App::recall_listing`] put back stands in for the view's list: as many again.
+        let recalled = self.held.is_none() && self.view.search().is_none() && self.listed == self.view.listing();
+        let same = self.holds_view() || recalled;
+        let shown = if same { u32::try_from(self.messages.len()).unwrap_or(u32::MAX) } else { 0 };
         shown.clamp(mail::PAGE, torro_ipc::mail::MAX_LIMIT)
     }
 }
@@ -16371,7 +16398,7 @@ mod tests {
         app
     }
 
-    /// Task E8.15: "Oldest first" turns the folder and its "Load more", and the entry lists with
+    /// Task E8.15: "Oldest first" turns the folder and its next pages, and the entry lists with
     /// the waiting ones on top; a page asked in the order before is dropped.
     #[test]
     fn the_order_turns_folders_and_entry_lists() {
@@ -16394,7 +16421,7 @@ mod tests {
         let first: Vec<String> = all.messages.iter().take(oldest.len()).map(|message| message.id.clone()).collect();
         assert_eq!(oldest, first, "the oldest page first");
         assert_ne!(oldest.first(), newest.first());
-        // A page of "Load more" asked newest first does not belong any more.
+        // A next page asked newest first does not belong any more.
         let late = Ok(MailPage::of(all.messages.clone(), None));
         let _ = app.update(Message::MoreLoaded(app.view.clone(), Order::NewestFirst, late));
         assert_eq!(app.messages.len(), oldest.len(), "dropped");
@@ -19449,7 +19476,7 @@ mod tests {
         let mut archived = message_ids(&app);
         archived.sort_unstable();
         assert_eq!(archived, ["m:p6", "m:w9"], "the archive of both accounts");
-        // A page at a time, as the archive's view was: "Load more" goes on from the cursor, in the
+        // A page at a time, as the archive's view was: the end of the list goes on from the cursor, in the
         // search of the archive.
         assert_eq!(app.view.search().map(|shown| shown.query.as_str()), Some("in:archive"));
         let shown = app.messages.clone();
@@ -19792,7 +19819,7 @@ mod tests {
             assert_eq!(message_ids(&app), listed, "{view:?}: the list stays");
             assert_eq!(app.cursor, last, "{view:?}: the cursor stays");
             assert_eq!(app.more.as_deref(), Some("deep"), "{view:?}: the next page goes on where it was");
-            assert!(app.page_limit() >= mail::PAGE, "{view:?}");
+            assert!(app.holds_view(), "{view:?}: the list stays the view's");
         }
     }
 
@@ -19810,6 +19837,8 @@ mod tests {
             .find(|message| !message.flags.contains(&Flag::Seen))
             .map(|message| message.id.clone())
             .expect("an unread demo mail");
+        let at = listed.iter().position(|id| *id == unread).expect("listed");
+        assert!(at >= 2, "the mail clicked lies behind the page the load answers: {at}");
         let _ = app.update(Message::SelectMail(unread.clone()));
         let Some(Sent::Mail(edit, hint)) = app.sent.pop() else { panic!("the click marks the mail read") };
         let ids = edit.ids().to_vec();
@@ -19837,6 +19866,7 @@ mod tests {
         assert!(app.messages.len() > 1);
         app.more = Some("deep".into());
         let _ = app.update(Message::Show(View::Search(SearchView::new("budget", Scope::All, Sort::Relevance))));
+        assert!(!app.holds_view(), "the results of another search are not this one's");
         reload_top(&mut app, 1, Some("1"));
         assert_eq!(app.messages.len(), 1, "another search's results only");
         assert_eq!(app.more.as_deref(), Some("1"));
@@ -19849,12 +19879,53 @@ mod tests {
         assert_eq!(app.messages.len(), 1, "the core's whole list");
         assert_eq!(app.more, None);
 
-        // Another order lists anew, from the top.
+        // Another order, the accounts chosen again, another choice of categories: listed anew, from
+        // the top, and the next page goes on from there.
         load(&mut app);
-        app.more = Some("deep".into());
+        assert!(app.holds_view());
+        let _ = app.update(Message::ToggleOrder);
+        assert!(!app.holds_view(), "another order");
         let _ = app.update(Message::ToggleOrder);
         reload_top(&mut app, 1, Some("1"));
-        assert_eq!(app.messages.len(), 1, "the other order's first page");
+        assert_eq!((app.messages.len(), app.more.as_deref()), (1, Some("1")), "turned back before the answer");
+        load(&mut app);
+        app.more = Some("deep".into());
+        let _ = app.update(Message::SelectAllMailAccounts);
+        assert!(!app.holds_view(), "the accounts chosen again");
+        reload_top(&mut app, 1, Some("1"));
+        assert_eq!(app.more.as_deref(), Some("1"), "the next page goes on");
+        let group = View::Category(mail::CategoryView::of_group(CategoryGroup::WaitingForMe, &app.categories));
+        let _ = app.update(Message::Show(group.clone()));
+        load(&mut app);
+        assert!(app.holds_view());
+        let View::Category(mut fewer) = group else { unreachable!() };
+        fewer.categories.truncate(1);
+        app.view = View::Category(fewer);
+        assert_eq!(app.listed, app.view.listing(), "the same listing");
+        assert!(!app.holds_view(), "but other categories");
+    }
+
+    /// Issue #612: a page asked for stays asked while a load keeps the list where it ends, and a page
+    /// of a list asked anew meanwhile is dropped – it would leave a gap.
+    #[test]
+    fn a_load_keeps_the_page_on_its_way_or_drops_it() {
+        let mut app = in_folder("f:work-inbox");
+        let listed = app.messages.len();
+        app.more = Some("4".into());
+        let _ = app.update(at_end());
+        reload_top(&mut app, listed, Some("4"));
+        let _ = app.update(at_end());
+        assert_eq!(app.sent.iter().filter(|sent| **sent == Sent::More("4".into())).count(), 1, "asked once");
+        // The list asked anew: the late page of the old one goes.
+        let _ = app.update(Message::ToggleOrder);
+        let _ = app.update(Message::ToggleOrder);
+        reload_top(&mut app, 2, Some("2"));
+        let late = Ok(MailPage::of(app.messages.clone(), None));
+        let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, late));
+        assert_eq!((app.messages.len(), app.more.as_deref()), (2, Some("2")), "dropped, the cursor stays");
+        // The end in view – a list that does not fill the window, which never scrolls – asks too.
+        let _ = app.update(Message::MailEndShown);
+        assert_eq!(app.sent.last(), Some(&Sent::More("2".into())));
     }
 
     #[test]

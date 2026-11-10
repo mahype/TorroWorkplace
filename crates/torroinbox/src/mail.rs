@@ -74,7 +74,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use iced::keyboard;
 use iced::widget::text::Wrapping;
-use iced::widget::{center, column, container, responsive, row, rule, scrollable, svg, text_editor};
+use iced::widget::{center, column, container, responsive, row, rule, scrollable, sensor, svg, text_editor};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trc, trf};
@@ -2145,12 +2145,12 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
     }
     if data.more {
         // No button (issue #612): scrolling near the end asks for the next page, this line only says
-        // that it comes.
-        let more = widgets::refresh_note(tr("Loading more …"));
-        rows = rows.push(container(more).width(Fill).center_x(Fill).padding(space::s()));
+        // that it comes. The scrollable reports nothing while its content fits the window, so the
+        // line asks itself once it is in view – again for every page, which is its key.
+        let more =
+            container(widgets::refresh_note(tr("Loading more …"))).width(Fill).center_x(Fill).padding(space::s());
+        rows = rows.push(sensor(more).key(data.messages.len()).on_show(|_| Message::MailEndShown));
     }
-    // The scrollable also reports when its content grows without scrolling, so a first page that does
-    // not fill the window loads the next one by itself.
     scrollable(rows)
         .id(list::SCROLL)
         .on_scroll(|viewport| {
