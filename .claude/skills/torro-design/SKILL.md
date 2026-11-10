@@ -559,13 +559,24 @@ ist kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   `widgets::sidebar_item_detail_in`: Icon, Name und Zahl auf der ersten Zeile, die Unterzeile `typo::meta()` in `TEXT_3`
   darunter, eingerückt bis zum Namen (#476), beide Zeilen mit „…“ gekürzt, damit die
   Seitenleiste nicht breiter wird; die Zeile ist um eine Metazeile höher; in der Leiste steht die Unterzeile im Tooltip.
-- **Aufgabenzeile:** `size::row()` hoch (48), Kreis 16 (abgehakt gefüllt in Listenfarbe mit Häkchen), Priorität als
-  drei Balken (dringend: oranges Quadrat mit „!“), Titel einzeilig, rechts Listen-Etikett (Pille mit
-  Punkt; GitHub-Einträge `widgets::icon_pill(Icon::Github, repo)`) und Fälligkeit `typo::meta()` tabellarisch
-  (überfällig Attention-Orange). Gruppenköpfe `size::row_group()` (40) auf `RAISED` mit Icon, Name, Zahl und „+“.
-- **Priorität** überall aus einer Abbildung (`torrotasks::list::Prio`): iCalendar 1 = Urgent
-  (Quadrat), 2–4 High, 5 Medium, 6–9 Low, sonst keine; gespeichert werden 1 / 3 / 5 / 9. Zeile,
-  Gruppenkopf, Chip, Eigenschaft und Menü zeigen dasselbe Wort und dasselbe Zeichen.
+- **Aufgabenzeile:** `size::row()` hoch (48), Kreis 16 (abgehakt gefüllt in Listenfarbe mit Häkchen), dahinter das
+  **Symbol für Priorität und Fokus** (#596, `widgets::focus_mark`, Zelle 28, alle Mittelpunkte auf einer Achse), Titel
+  einzeilig, rechts Listen-Etikett (Pille mit Punkt; GitHub-Einträge `widgets::icon_pill(Icon::Github, repo)`) und
+  Fälligkeit `typo::meta()` tabellarisch (überfällig Attention-Orange). Gruppenköpfe `size::row_group()` (40) auf `RAISED`
+  mit Icon, Name, Zahl und „+“. **Fokus** gewichtet die Zeile: mit offenen Teilaufgaben eine zweite Zeile
+  „Next: … · 2/5“ (`typo::meta()`, `TEXT_2`/`TEXT_3`, unter dem Titel eingerückt); starker Fokus ist eine Karte in der
+  Zeile (`RAISED`, Rand `LINE`, `radius::sm()`, Innenrand `space::m()`, ihr Kreis auf der Achse der anderen), mit „Next“,
+  bis drei Teilaufgaben (schmal zwei, „+n more“) und `widgets::progress_bar`; die Teilaufgaben stehen dann nur in der
+  Karte (in „Manual“ bleiben sie Zeilen). Der Kopf „Today“ zeigt die belegten Fokus-Plätze (`widgets::slot_dots`) und
+  „To tomorrow“ (ghost). In der Ansicht nach Fälligkeit tragen offene Hauptaufgaben schreibbarer Listen den Griff; die
+  Marke steht nur am eigenen Tag oder auf den Köpfen „Tomorrow“ und „Later“.
+- **Priorität und Fokus** (#596, Entwurf `docs/prototypes/tasks/fokus.html`): **Farbe = Priorität** aus `Palette::priority`
+  (keine grau, niedrig hellgelb, mittel gelb, hoch orange, dringend rot; hell nachgedunkelt auf ≥ 3:1 gegen `PANEL` und
+  `RAISED`, nur Marke, nie Text), **Form = Fokus**: Punkt Ø 9 (normal), Ring Ø 18 Strich 4 (Fokus), Ring Ø 28 Strich 5,5
+  (starker Fokus). Der Tooltip sagt beides in Worten („High · Focus“), Farbe allein trägt nichts. Gruppenkopf, Chip,
+  Eigenschaft und Menü zeigen die Priorität als Punkt (`widgets::priority_dot`) mit Wort. Die Abbildung bleibt eine
+  (`torrotasks::list::Prio`): iCalendar 1 = Urgent, 2–4 High, 5 Medium, 6–9 Low, sonst keine; gespeichert werden
+  1 / 3 / 5 / 9. In der gefüllten Auswahlzeile (`fill`) sind Symbol und Punkt `on_accent`.
 - **Werte, die nicht passen,** (Eigenschaften, Chips, Titel) werden mit „…“ gekürzt
   (`typo::ellipsize`, in `prop_value` eingebaut) und zeigen den ganzen Wert als Tooltip – nie
   stumm abgeschnitten.
