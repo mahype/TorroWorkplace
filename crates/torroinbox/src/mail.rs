@@ -1923,6 +1923,16 @@ pub fn moved_text(delete: bool) -> &'static str {
     if delete { tr("Moved to Trash") } else { tr("Archived") }
 }
 
+/// The hint after archiving with `App::archive_mails` (issue #615): in the view of a pile the mail
+/// left that pile as well (`pile`), elsewhere only archived.
+pub fn filed_text(pile: Option<MailPile>) -> &'static str {
+    match pile {
+        None => tr("Archived"),
+        Some(MailPile::SetAside) => tr("Archived and removed from Set aside."),
+        Some(MailPile::ReplyLater) => tr("Archived and removed from Reply later."),
+    }
+}
+
 /// `flags` after `edit` (only [`MailEdit::Flags`] changes them), sorted as the core keeps them.
 pub fn flags_after(flags: &[Flag], edit: &MailEdit) -> Vec<Flag> {
     let mut flags = flags.to_vec();
