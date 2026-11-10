@@ -239,6 +239,50 @@ impl PimSource for PimClient {
         }
     }
 
+    /// `Request::SetFocus` with the `href` and `etag` of `todo` and of `release`.
+    async fn set_focus(
+        &self,
+        todo: Todo,
+        focus: torro_pim::Focus,
+        release: Option<Todo>,
+    ) -> Result<Vec<Todo>, ProviderError> {
+        let Some(href) = todo.href else {
+            return Err(ProviderError::Other("the task is not saved yet".into()));
+        };
+        let release = release.and_then(|r| Some(crate::TodoRef { href: r.href?, etag: r.etag.unwrap_or_default() }));
+        let request = Request::SetFocus { href, etag: todo.etag.unwrap_or_default(), focus, release };
+        match self.ask(request).await.map_err(|err| with_uid(err, &todo.uid))? {
+            Response::Todos { todos } => Ok(todos),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `Request::PlanTodo` with the `href` and `etag` of `todo` and the `href` of `before`.
+    async fn plan_todo(
+        &self,
+        todo: Todo,
+        day: chrono::NaiveDate,
+        before: Option<Todo>,
+    ) -> Result<Vec<Todo>, ProviderError> {
+        let Some(href) = todo.href else {
+            return Err(ProviderError::Other("the task is not saved yet".into()));
+        };
+        let request =
+            Request::PlanTodo { href, etag: todo.etag.unwrap_or_default(), day, before: before.and_then(|b| b.href) };
+        match self.ask(request).await.map_err(|err| with_uid(err, &todo.uid))? {
+            Response::Todos { todos } => Ok(todos),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `Request::PostponeFocusPlan`.
+    async fn postpone_focus_plan(&self) -> Result<Vec<Todo>, ProviderError> {
+        match self.ask(Request::PostponeFocusPlan).await? {
+            Response::Todos { todos } => Ok(todos),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// `Request::UnpinIssue` with the list's id and the item's link id as `url`.
     async fn unpin_issue(&self, collection: String, item: String) -> Result<(), ProviderError> {
         expect_ok(self.ask(Request::UnpinIssue { collection, url: item }).await?)
