@@ -52,6 +52,8 @@ struct Data {
     next_id: u64,
     /// The day the sample is built around: "today" of the focus slots.
     today: NaiveDate,
+    /// Focus slots other than [`DEMO_FOCUS_SLOTS`], for tests.
+    focus_slots: Option<usize>,
 }
 
 /// Focus slots of the demo data: the most one can choose. The demo has no settings of its own; the
@@ -100,7 +102,7 @@ impl Data {
         }
         let writable = |t: &&Todo| !self.read_only(&t.collection);
         let taken = self.todos.iter().filter(writable).filter(|t| takes(t) && t.href.as_deref() != freed).count();
-        if taken >= DEMO_FOCUS_SLOTS {
+        if taken >= self.focus_slots.unwrap_or(DEMO_FOCUS_SLOTS) {
             return Err(ProviderError::Conflict { uid: after.uid.clone() });
         }
         Ok(())
@@ -368,7 +370,7 @@ impl DemoSource {
     /// Sample calendars, events and tasks around `today`.
     pub fn new(today: chrono::NaiveDate) -> DemoSource {
         let (collections, events, todos) = sample(today);
-        DemoSource { data: Mutex::new(Data { collections, events, todos, next_id: 0, today }) }
+        DemoSource { data: Mutex::new(Data { collections, events, todos, next_id: 0, today, focus_slots: None }) }
     }
 
     fn lock(&self) -> MutexGuard<'_, Data> {
@@ -2018,6 +2020,7 @@ mod tests {
         use crate::Focus;
         let today = sunday();
         let source = DemoSource::new(today);
+        source.lock().focus_slots = Some(3);
         let todos = source.todos().await.expect("tasks");
         let find = |todos: &[Todo], uid: &str| todos.iter().find(|t| t.uid == uid).cloned().expect(uid);
         // The sample has one focus task due until today (the overdue tax documents): two slots left.
