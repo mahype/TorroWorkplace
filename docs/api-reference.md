@@ -54,7 +54,7 @@ als Beschreibung der MCP-Tools lesen.
 | [`system`](#system) | [`system.ping`](#systemping), [`system.status`](#systemstatus), [`system.quit`](#systemquit) |
 | [`workspaces`](#workspaces) | [`workspaces.list_templates`](#workspaceslist_templates), [`workspaces.save_template`](#workspacessave_template), [`workspaces.update_template`](#workspacesupdate_template), [`workspaces.delete_template`](#workspacesdelete_template), [`workspaces.load_template`](#workspacesload_template), [`workspaces.rename_template`](#workspacesrename_template), [`workspaces.set_template_shortcut`](#workspacesset_template_shortcut), [`workspaces.set_template_startup`](#workspacesset_template_startup), [`workspaces.list_screens`](#workspaceslist_screens) |
 | [`calendar`](#calendar) | [`calendar.list_calendars`](#calendarlist_calendars), [`calendar.list_events`](#calendarlist_events), [`calendar.save_event`](#calendarsave_event), [`calendar.delete_event`](#calendardelete_event), [`calendar.create_event_from_mail`](#calendarcreate_event_from_mail), [`calendar.search_places`](#calendarsearch_places), [`calendar.map_preview`](#calendarmap_preview), [`calendar.list_reminders`](#calendarlist_reminders), [`calendar.snooze_reminder`](#calendarsnooze_reminder), [`calendar.dismiss_reminder`](#calendardismiss_reminder), [`calendar.pause_reminders`](#calendarpause_reminders), [`calendar.preview_reminder`](#calendarpreview_reminder) |
-| [`tasks`](#tasks) | [`tasks.list_lists`](#taskslist_lists), [`tasks.list_todos`](#taskslist_todos), [`tasks.save_todo`](#taskssave_todo), [`tasks.delete_todo`](#tasksdelete_todo), [`tasks.move_todo`](#tasksmove_todo), [`tasks.create_todo_from_mail`](#taskscreate_todo_from_mail), [`tasks.create_list`](#taskscreate_list), [`tasks.add_link`](#tasksadd_link) |
+| [`tasks`](#tasks) | [`tasks.list_lists`](#taskslist_lists), [`tasks.list_todos`](#taskslist_todos), [`tasks.save_todo`](#taskssave_todo), [`tasks.delete_todo`](#tasksdelete_todo), [`tasks.move_todo`](#tasksmove_todo), [`tasks.set_focus`](#tasksset_focus), [`tasks.plan_todo`](#tasksplan_todo), [`tasks.postpone_focus_plan`](#taskspostpone_focus_plan), [`tasks.create_todo_from_mail`](#taskscreate_todo_from_mail), [`tasks.create_list`](#taskscreate_list), [`tasks.add_link`](#tasksadd_link) |
 | [`contacts`](#contacts) | [`contacts.list_address_books`](#contactslist_address_books), [`contacts.list_contacts`](#contactslist_contacts), [`contacts.get_contact`](#contactsget_contact), [`contacts.get_photo`](#contactsget_photo), [`contacts.list_groups`](#contactslist_groups), [`contacts.suggest_recipients`](#contactssuggest_recipients), [`contacts.upcoming_birthdays`](#contactsupcoming_birthdays), [`contacts.create_contact`](#contactscreate_contact), [`contacts.add_to_contact`](#contactsadd_to_contact), [`contacts.update_contact`](#contactsupdate_contact), [`contacts.set_favorite`](#contactsset_favorite), [`contacts.add_to_group`](#contactsadd_to_group), [`contacts.remove_from_group`](#contactsremove_from_group), [`contacts.mark_used`](#contactsmark_used), [`contacts.set_photo`](#contactsset_photo), [`contacts.move_contact`](#contactsmove_contact), [`contacts.delete_contact`](#contactsdelete_contact), [`contacts.resolve_conflict`](#contactsresolve_conflict) |
 | [`github`](#github) | [`tasks.create_filter_list`](#taskscreate_filter_list), [`tasks.update_filter_list`](#tasksupdate_filter_list), [`tasks.delete_filter_list`](#tasksdelete_filter_list), [`tasks.preview_filter`](#taskspreview_filter), [`tasks.list_github_repos`](#taskslist_github_repos), [`tasks.describe_github_repo`](#tasksdescribe_github_repo), [`tasks.unpin_issue`](#tasksunpin_issue) |
 | [`inbox`](#inbox) | [`inbox.list_items`](#inboxlist_items), [`inbox.get_item`](#inboxget_item), [`inbox.open_item`](#inboxopen_item), [`inbox.create_task_from_item`](#inboxcreate_task_from_item), [`inbox.create_event_from_item`](#inboxcreate_event_from_item), [`inbox.suggest_task_from_item`](#inboxsuggest_task_from_item), [`inbox.suggest_event_from_item`](#inboxsuggest_event_from_item), [`inbox.list_sources`](#inboxlist_sources), [`inbox.post_item`](#inboxpost_item), [`inbox.resolve_items`](#inboxresolve_items), [`inbox.set_item_done`](#inboxset_item_done), [`inbox.snooze_item`](#inboxsnooze_item), [`inbox.set_item_lane`](#inboxset_item_lane), [`inbox.mute_source`](#inboxmute_source), [`inbox.list_categories`](#inboxlist_categories), [`inbox.create_category_group`](#inboxcreate_category_group), [`inbox.update_category_group`](#inboxupdate_category_group), [`inbox.set_item_category`](#inboxset_item_category), [`inbox.classify_item`](#inboxclassify_item), [`inbox.get_categorization`](#inboxget_categorization), [`inbox.catch_up_categories`](#inboxcatch_up_categories), [`inbox.preview_category_job`](#inboxpreview_category_job), [`inbox.start_category_job`](#inboxstart_category_job), [`inbox.get_category_job`](#inboxget_category_job), [`inbox.control_category_job`](#inboxcontrol_category_job), [`inbox.preview_clear_categories`](#inboxpreview_clear_categories), [`inbox.clear_categories`](#inboxclear_categories), [`inbox.control_clear_categories`](#inboxcontrol_clear_categories), [`inbox.create_category`](#inboxcreate_category), [`inbox.update_category`](#inboxupdate_category), [`inbox.move_category`](#inboxmove_category), [`inbox.remove_category`](#inboxremove_category), [`inbox.list_sort_rules`](#inboxlist_sort_rules), [`inbox.create_sort_rule`](#inboxcreate_sort_rule), [`inbox.update_sort_rule`](#inboxupdate_sort_rule), [`inbox.remove_sort_rule`](#inboxremove_sort_rule), [`inbox.list_mute_options`](#inboxlist_mute_options), [`inbox.mute_item`](#inboxmute_item), [`inbox.set_mail_pile`](#inboxset_mail_pile), [`inbox.release_mail`](#inboxrelease_mail), [`inbox.list_rules`](#inboxlist_rules), [`inbox.remove_rule`](#inboxremove_rule), [`inbox.get_stats`](#inboxget_stats), [`inbox.get_quiet`](#inboxget_quiet) |
@@ -500,6 +500,42 @@ Puts a task (`href` and `etag` from list_todos) right before another task of the
 | `before` | string | nein | `href` of the task in the same list it goes right before; leave out to move it to the end. |
 | `etag` | string | ja | `etag` of the task to move, as `tasks.list_todos` returned it. |
 | `href` | string | ja | `href` of the task to move, as `tasks.list_todos` returned it. |
+
+### `tasks.set_focus`
+
+Zugriff `write` · MCP-Tool `tasks_set_focus`
+
+Sets how much focus a task (`href` and `etag` from list_todos) asks for: "normal", "focus" or "strong" (stored as X-TORRO-FOCUS, kept when other apps edit the task). Open tasks with a focus that are due today or overdue take one of the focus slots (settings `focus_slots`, 3 unless changed); when all are taken a further one is refused with conflict. Pass `release` (another task's `href` and `etag`) to take that task's focus away first.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `etag` | string | ja | `etag` of the task, as `tasks.list_todos` returned it. |
+| `focus` | `"normal"` \| `"focus"` \| `"strong"` | ja | The new level. |
+| `href` | string | ja | `href` of the task, as `tasks.list_todos` returned it. |
+| `release` | object | nein | A task whose focus is taken away first (it becomes `"normal"`); leave out when a slot is free. |
+| `release.etag` | string | ja | `etag` of the task. |
+| `release.href` | string | ja | `href` of the task. |
+
+### `tasks.plan_todo`
+
+Zugriff `write` · MCP-Tool `tasks_plan_todo`
+
+Makes a task (`href` and `etag` from list_todos) due on `day` (YYYY-MM-DD; a due time stays) and puts it right before the task `before` due that day, or last without it. The order of a day spans all lists you may write; it is stored in `sort_order`, which also orders the task's list in manual order and in Nextcloud Tasks. Only open tasks without parent; a task with a focus moved onto today takes a focus slot.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `before` | string | nein | `href` of the task due on `day` it goes right before; leave out for the end of the day. |
+| `day` | string (date) | ja | The day it becomes due on, e.g. `2026-11-11`. |
+| `etag` | string | ja | `etag` of the task to move, as `tasks.list_todos` returned it. |
+| `href` | string | ja | `href` of the task to move, as `tasks.list_todos` returned it. |
+
+### `tasks.postpone_focus_plan`
+
+Zugriff `write` · MCP-Tool `tasks_postpone_focus_plan`
+
+Moves every open task with a focus that is due today or overdue to tomorrow, in its order and in front of the tasks due tomorrow (due times stay). Returns the tasks written; empty when there is nothing to move. Changes their `sort_order` like plan_todo.
+
+Keine Felder.
 
 ### `tasks.create_todo_from_mail`
 
