@@ -6883,7 +6883,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             None => 0.0,
         };
         let panel = if class == SizeClass::Wide && self.panel_open() { self.panel_beside() } else { 0.0 };
-        let side = if self.hub_side() { self.props_room() + split::handle_width() } else { 0.0 };
+        let side = if self.hub_side() { self.props_room() + split::divider_width() } else { 0.0 };
         let layout = hub::layout(0.0, class, self.density(), self.sorting);
         let width = self.size.width - chrome - panel - side - hub::sides(layout.narrow);
         // Quiet as a line where the column at the right does not say it (task E8.5b).
@@ -12461,7 +12461,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// them and the mail's collapsed action rail with its gap (`mail::reader`), so the widest sidebar
     /// still leaves the wide mail window usable.
     fn sidebar_limits(&self) -> Limits {
-        let rest = 2.0 * split::min_pane() + split::handle_width();
+        let rest = 2.0 * split::min_pane() + split::divider_width();
         shell::sidebar_limits(self.size.width, rest)
     }
 
@@ -12502,7 +12502,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// What the panel beside the content takes of its width, with its divider: what the board and the
     /// hub lay out without.
     fn panel_beside(&self) -> f32 {
-        self.panel_room() + self.panel_extra() + split::handle_width()
+        self.panel_room() + self.panel_extra() + split::divider_width()
     }
 
     /// The width of the hub's column "Coming back" now: dragged or [`size::props()`].
@@ -13476,7 +13476,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         // Over the split of the wide window: the list's part ends at the split's line.
         let inset = shell::head_inset(class, self.sidebar, self.zoom.factor());
-        let width = self.split.width(self.split_limits()) + split::handle_width() / 2.0 - space::l() - inset;
+        let width = self.split.width(self.split_limits()) + split::divider_width() / 2.0 - space::l() - inset;
         row![
             container(list.padding(Padding::new(0.0).right(space::s()))).width(width.max(0.0)),
             rule::vertical(size::HAIRLINE).style(style::rule),
@@ -17092,7 +17092,7 @@ mod tests {
                             _ => None,
                         })
                         .expect("body's list pane");
-                    let head_width = width + split::handle_width() / 2.0
+                    let head_width = width + split::divider_width() / 2.0
                         - space::l()
                         - shell::head_inset(SizeClass::Wide, mode, app.zoom.factor());
                     let head = ui
@@ -17106,7 +17106,7 @@ mod tests {
                         })
                         .expect("header's list part");
                     assert!(
-                        (head.x + head.width - (body.x + body.width + split::handle_width() / 2.0)).abs() < 0.01,
+                        (head.x + head.width - (body.x + body.width + split::divider_width() / 2.0)).abs() < 0.01,
                         "{side}, {list}, {mode:?}: head {head:?}, body {body:?}"
                     );
                 }
@@ -24252,7 +24252,7 @@ mod tests {
         // A narrower wide window clamps the width chosen, so list and reader keep their least.
         let _ = app.update(Message::Resized(Size::new(1024.0, 900.0)));
         assert_eq!(app.class(), SizeClass::Wide);
-        let least = 2.0 * split::min_pane() + split::handle_width();
+        let least = 2.0 * split::min_pane() + split::divider_width();
         assert!(app.content_width() >= least, "{} leaves list and reader {least}", app.content_width());
         assert!(app.sidebar_room() < 2.0 * size::sidebar(), "the window clamps the sidebar");
         let _ = app.view();

@@ -1723,7 +1723,7 @@ impl App {
     /// [`size::props()`], and list and detail keep their least beside it. The properties are clamped
     /// first, the list then gets what is left ([`App::list_limits`]).
     fn props_limits(&self) -> Limits {
-        let rest = 0.75 * size::list() + split::handle_width() + split::min_pane();
+        let rest = 0.75 * size::list() + split::divider_width() + split::min_pane();
         split::limits_around(size::props(), self.panes(), rest)
     }
 
@@ -1738,7 +1738,7 @@ impl App {
     fn list_limits(&self, columns: Columns) -> Limits {
         match columns {
             Columns::ListDetailProps => {
-                let total = self.panes() - self.props_room() - split::handle_width();
+                let total = self.panes() - self.props_room() - split::divider_width();
                 split::limits_around(size::list(), total, split::min_pane())
             }
             _ => split::limits_around(size::list_medium(), self.panes(), split::min_pane()),
@@ -2049,19 +2049,14 @@ impl App {
         // The header bar pads 16 at the left; the list head keeps 12 at its right before the line. In
         // the top row the head starts after the lights, the logo and the panel button (issue #459).
         let inset = shell::head_inset(class, self.sidebar, self.zoom.factor());
-        // Beside the detail the line stands in the middle of the divider's handle below (issue #604).
-        let handle = match columns {
-            Columns::ListDetail | Columns::ListDetailProps => (split::handle_width() - LINE) / 2.0,
-            Columns::List | Columns::Detail => 0.0,
-        };
         let mut split = row![
             container(list_head).width((list_width - space::l() - space::m() - inset).max(0.0)),
-            Space::new().width(space::m() + handle),
+            Space::new().width(space::m()),
             rule::vertical(LINE).style(style::rule),
         ]
         .align_y(Alignment::Center);
         if self.detail.is_some() {
-            split = split.push(Space::new().width(space::l() + handle)).push(self.detail_head(columns, property));
+            split = split.push(Space::new().width(space::l())).push(self.detail_head(columns, property));
         }
         split.into()
     }
@@ -2249,15 +2244,15 @@ impl App {
                 if !matches!(class, SizeClass::Wide | SizeClass::Medium) || width >= self.content_room() - 2.0 * LINE {
                     return self.list();
                 }
-                // The widgets of `split::split` (a mouse area around list, line and rest), without a
-                // handle: opening a task keeps the list's scroll position.
+                // The widgets of `split::split` (a mouse area around a stack with list, line and rest),
+                // without a handle: opening a task keeps the list's scroll position.
                 let line = mouse_area(container(rule::vertical(LINE).style(style::rule)).width(LINE).height(Fill));
                 let panes = row![
                     container(self.list()).width(width).height(Fill),
                     line,
                     container(Space::new()).width(Fill).height(Fill)
                 ];
-                mouse_area(panes).into()
+                mouse_area(stack![panes]).into()
             }
             Columns::ListDetail => split::split(
                 self.list(),
@@ -2268,7 +2263,7 @@ impl App {
             ),
             Columns::ListDetailProps => {
                 // The divider before the properties measures from the right edge of what the list leaves.
-                let total = self.panes() - width - split::handle_width();
+                let total = self.panes() - width - split::divider_width();
                 let detail = split::split_end(
                     self.detail_column(columns, anchor),
                     self.properties_column(anchor),
@@ -4617,8 +4612,8 @@ mod tests {
         let _ = app.view();
         let _ = app.update(Message::PropsWidth(SplitEvent::Release));
         assert_eq!(app.props_room(), 2.0 * size::props(), "at most twice the default");
-        let rest = app.panes() - app.props_room() - split::handle_width();
-        assert!(app.list_width() + split::handle_width() + split::min_pane() <= rest, "the detail keeps its least");
+        let rest = app.panes() - app.props_room() - split::divider_width();
+        assert!(app.list_width() + split::divider_width() + split::min_pane() <= rest, "the detail keeps its least");
 
         let _ = app.update(Message::ListWidth(SplitEvent::Grab));
         let _ = app.update(Message::ListWidth(SplitEvent::Drag(10.0)));

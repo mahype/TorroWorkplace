@@ -2356,7 +2356,7 @@ impl Ui {
     /// What the edge of the expanded sidebar moves in: the page keeps room for the providers' column
     /// and a column beside it.
     fn sidebar_limits(&self) -> Limits {
-        shell::sidebar_limits(self.size.width, size::sidebar() + split::handle_width() + split::min_pane())
+        shell::sidebar_limits(self.size.width, size::sidebar() + split::divider_width() + split::min_pane())
     }
 
     /// The width of the expanded sidebar now: dragged or `size::sidebar()`.

@@ -819,7 +819,7 @@ impl App {
     /// What the edge of the expanded sidebar moves in (issue #604): the conversation keeps room for
     /// two columns' least.
     pub(crate) fn sidebar_limits(&self) -> Limits {
-        shell::sidebar_limits(self.size.width, 2.0 * split::min_pane() + split::handle_width())
+        shell::sidebar_limits(self.size.width, 2.0 * split::min_pane() + split::divider_width())
     }
 
     /// The width of the expanded sidebar beside the conversation: dragged or `size::sidebar()`.

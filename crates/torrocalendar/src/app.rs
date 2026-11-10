@@ -1718,7 +1718,7 @@ impl App {
     /// What the edge of the expanded sidebar moves in: the content keeps room for the view and a
     /// column beside it.
     fn sidebar_limits(&self) -> Limits {
-        shell::sidebar_limits(self.size.width, 2.0 * split::min_pane() + split::handle_width())
+        shell::sidebar_limits(self.size.width, 2.0 * split::min_pane() + split::divider_width())
     }
 
     /// The width of the expanded sidebar now: dragged or `size::sidebar()`.

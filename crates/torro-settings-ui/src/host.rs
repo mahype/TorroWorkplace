@@ -1832,7 +1832,7 @@ mod tests {
         assert!(matches!(host.update::<()>(Message::Sections(SplitEvent::Release)), Outcome::Work(_)), "saved");
         assert_eq!(host.sections_width.chosen, Some(2.0 * size::sidebar()), "at most twice the default");
         let tight = Host::sections_limits(700.0);
-        assert_eq!(host.sections_width.width(tight), 700.0 - split::handle_width() - split::min_pane());
+        assert_eq!(host.sections_width.width(tight), 700.0 - split::divider_width() - split::min_pane());
         assert!(matches!(host.update::<()>(Message::Sections(SplitEvent::Reset)), Outcome::Work(_)));
         assert_eq!(host.sections_width.chosen, None);
     }
