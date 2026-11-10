@@ -859,9 +859,10 @@ pub fn nearest_day_place(places: &[(f32, DayDrop)], y: f32) -> Option<usize> {
 
 /// Where Alt+↑ (`up`) or Alt+↓ takes `todos[index]` in the view by due date (issue #596): one step
 /// among the open top-level tasks of its day; at the first (↑) or last (↓) of the day into the
-/// neighbouring day of Today ↔ Tomorrow ↔ Later (to its end going up, to its front going down).
-/// `None` at the edges (above today, below later), for a task that cannot be planned, and for one
-/// without a due date or overdue at its first place.
+/// neighbouring day – today, tomorrow, then each later day the view shows tasks on (the day after
+/// tomorrow while none is shown) – to its end going up, to its front going down. `None` at the
+/// edges (above today, below the last later day), for a task that cannot be planned, and for one
+/// without a due date or overdue.
 pub fn day_step(data: &ListData<'_>, index: usize, up: bool) -> Option<DayDrop> {
     if !plannable_row(data, index) {
         return None;
@@ -876,15 +877,25 @@ pub fn day_step(data: &ListData<'_>, index: usize, up: bool) -> Option<DayDrop> 
     };
     let today = data.today;
     let (tomorrow, later) = (today.succ_opt()?, today.succ_opt()?.succ_opt()?);
-    // The day a step over the edge goes to: the neighbouring group's day.
+    // The days a step over the edge may go to: today, tomorrow and every later day the view shows
+    // tasks on – the day after tomorrow too while none is shown (PR #625: "Later" steps day by day).
+    let mut days: Vec<NaiveDate> = rows
+        .iter()
+        .filter(|&&(i, depth)| depth == 0 && plannable_row(data, i))
+        .filter_map(|&(i, _)| due_day(&data.todos[i]))
+        .filter(|d| *d > tomorrow)
+        .collect();
+    if days.is_empty() {
+        days.push(later);
+    }
+    days.extend([today, tomorrow]);
+    days.sort();
+    days.dedup();
     let neighbour = |up: bool| -> Option<NaiveDate> {
-        match (up, day) {
-            (true, d) if d == tomorrow => Some(today),
-            (true, d) if d > tomorrow => Some(tomorrow),
-            (false, d) if d == today => Some(tomorrow),
-            (false, d) if d == tomorrow => Some(later),
-            _ => None,
+        if day < today {
+            return None;
         }
+        if up { days.iter().rev().find(|d| **d < day).copied() } else { days.iter().find(|d| **d > day).copied() }
     };
     let own = of_day(day);
     let at = own.iter().position(|&i| i == index)?;
@@ -2153,6 +2164,23 @@ mod tests {
     }
 
     #[test]
+    fn alt_arrows_step_day_by_day_through_later() {
+        let todos = vec![
+            Todo { due: due(12), ..todo("t", "tomorrow") },
+            Todo { due: due(15), ..todo("a", "fifteenth") },
+            Todo { due: due(17), ..todo("b", "seventeenth") },
+        ];
+        let filter = Filter::All;
+        let d = data(&todos, &filter, false);
+        let day = |d: u32| NaiveDate::from_ymd_opt(2026, 10, d).expect("a day");
+        assert_eq!(day_step(&d, 2, true), Some(DayDrop { day: day(15), before: None }), "the later day above");
+        assert_eq!(day_step(&d, 1, false), Some(DayDrop { day: day(17), before: Some(2) }), "the later day below");
+        assert_eq!(day_step(&d, 0, false), Some(DayDrop { day: day(15), before: Some(1) }), "tomorrow down");
+        assert_eq!(day_step(&d, 1, true), Some(DayDrop { day: day(12), before: None }));
+        assert_eq!(day_step(&d, 2, false), None);
+    }
+
+    #[test]
     fn a_task_is_planned_within_its_day_and_onto_tomorrow_and_later() {
         let todos = vec![
             Todo { due: due(11), sort_order: Some(10), ..todo("a", "a") },
@@ -2190,6 +2218,8 @@ mod tests {
         assert_eq!(day_step(&d, 1, false), Some(DayDrop { day: day(12), before: at("t") }), "last of today: tomorrow");
         assert_eq!(day_step(&d, 2, true), Some(DayDrop { day: day(11), before: None }), "first of tomorrow: today");
         assert_eq!(day_step(&d, 0, true), None, "the top of today");
+        assert_eq!(day_step(&d, 3, true), Some(DayDrop { day: day(12), before: None }), "later up: tomorrow");
+        assert_eq!(day_step(&d, 3, false), None, "the last later day");
         assert_eq!(day_step(&d, 4, true), None, "overdue stays");
         let manual = ListData { manual: true, ..data(&todos, &filter, false) };
         assert!(!plans_days(&manual) && day_places(&manual, 1).is_empty());
