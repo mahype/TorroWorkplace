@@ -283,9 +283,9 @@ pub fn start(data: &ViewData<'_>, offset: i64, night: Night) -> NaiveDateTime {
 /// The mini radars of the page starting on `coming` for the properties column of the wide layout,
 /// in two columns as beside the dial; each opens its day where the radar would with `night`. Load
 /// the events through the page's last day.
-pub fn list(data: &ViewData<'_>, coming: NaiveDate, night: Night) -> Element<'static, Message> {
-    // The column pads its content by 8 on each side and has a line on the left.
-    let width = size::props() - size::HAIRLINE - 2.0 * space::s();
+pub fn list(data: &ViewData<'_>, coming: NaiveDate, night: Night, column: f32) -> Element<'static, Message> {
+    // The column (`column` wide, as dragged, issue #604) pads its content by 8 on each side.
+    let width = column - size::HAIRLINE - 2.0 * space::s();
     mini::Coming::new(data, coming, night).view(width, mini::columns(ListAt::Props, width))
 }
 
@@ -1784,7 +1784,7 @@ mod tests {
                 &Anchor::new(),
             );
         }
-        let _ = list(&data(&events), at(14, 0, 0).date(), Night::DEFAULT);
+        let _ = list(&data(&events), at(14, 0, 0).date(), Night::DEFAULT, size::props());
         let _ = narrow(
             Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT),
             &mini::Coming::new(&data(&events), at(14, 0, 0).date(), Night::DEFAULT),

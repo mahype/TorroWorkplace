@@ -2016,8 +2016,8 @@ impl App {
             return None;
         }
         match self.shown() {
-            CalView::Day => Some(views::week::day_props(&self.view_data())),
-            CalView::Radar => Some(views::radar::list(&self.view_data(), self.coming, self.night)),
+            CalView::Day => Some(views::week::day_props(&self.view_data(), self.props_room())),
+            CalView::Radar => Some(views::radar::list(&self.view_data(), self.coming, self.night, self.props_room())),
             _ => None,
         }
     }
