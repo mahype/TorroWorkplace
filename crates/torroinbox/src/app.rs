@@ -1832,9 +1832,31 @@ pub enum Open {
     /// The Notification Hub's and the App Feed's settings at Sources on the tab Mail (issue #546);
     /// the mail window has no such page and opens as it would without it.
     SourcesMail,
+    WorkflowSetup,
+    WorkflowTemplate,
+    WorkflowTest,
+    WorkflowResult,
+    WorkflowError,
+    WorkflowRule,
+    WorkflowRulePreview,
+    WorkflowDocuments,
+    Automation,
 }
 
 impl Open {
+    fn workflow_scene(self) -> Option<&'static str> {
+        match self {
+            Self::WorkflowSetup => Some("setup"),
+            Self::WorkflowTemplate => Some("template"),
+            Self::WorkflowTest => Some("test"),
+            Self::WorkflowResult => Some("result"),
+            Self::WorkflowError => Some("error"),
+            Self::WorkflowRule => Some("rule"),
+            Self::WorkflowRulePreview => Some("rule-preview"),
+            Self::Automation => Some("automation"),
+            _ => None,
+        }
+    }
     fn save_demo(self) -> bool {
         matches!(
             self,
@@ -1847,7 +1869,16 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 116] = [
+    const ALL: [(&'static str, Open); 125] = [
+        ("workflow-setup", Open::WorkflowSetup),
+        ("workflow-template", Open::WorkflowTemplate),
+        ("workflow-test", Open::WorkflowTest),
+        ("workflow-result", Open::WorkflowResult),
+        ("workflow-error", Open::WorkflowError),
+        ("workflow-rule", Open::WorkflowRule),
+        ("workflow-rule-preview", Open::WorkflowRulePreview),
+        ("workflow-documents", Open::WorkflowDocuments),
+        ("automation", Open::Automation),
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -2785,6 +2816,7 @@ fn settings_escape(pane: &SettingsPane) -> Option<SettingsMessage> {
     let SettingsState::Mail(state) = &pane.sections else { return None };
     // Only where the editor shows: a page left open behind another section must not take Escape.
     match pane.host.current().id {
+        settings_mail::AUTOMATION_SECTION => settings_mail::automation_escape(state).map(SettingsMessage::Mail),
         CATEGORIZATION_SECTION => settings_mail::escape(state).map(SettingsMessage::Mail),
         ATTACHMENTS_SECTION => settings_mail::attachments_escape(state).map(SettingsMessage::Mail),
         settings_mail::ACCOUNTS_SECTION => settings_mail::accounts_escape(state).map(SettingsMessage::Mail),
@@ -2966,12 +2998,14 @@ pub struct App<S> {
     /// What the mail window keeps of its settings while they are closed: each account's backup page
     /// and the backup requests on their way ([`settings_mail::kept`]).
     saved_mail_settings: Option<Box<settings_mail::State>>,
+    workflow_documents: crate::workflows::State,
     /// What the settings showed when they last closed, for the next time they open (issue #394):
     /// they are there at once with it and update in place.
     settings_memory: torro_settings_ui::Memory,
     /// The demo page of `--open backup…`, put on the first mail account once the settings have
     /// loaded the accounts.
     staged_backup: Option<settings_mail::BackupScene>,
+    staged_automation: Option<&'static str>,
     /// The tab of `--open account…` (task DS.6), opened on the first mail account like a backup
     /// state.
     staged_account: Option<AccountScene>,
@@ -3338,6 +3372,10 @@ pub struct UnsubscribeAsk {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    WorkflowSetup(String),
+    ChooseWorkflow(String),
+    WorkflowDocument(crate::workflows::Message),
+    WorkflowAnswered(Box<torro_ipc::Request>, Box<Result<torro_ipc::Response, String>>),
     /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
     DragWindow,
     /// Another start of this kind of window asked for it (issue #279, [`torro_gui::instance`]):
@@ -4494,6 +4532,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             suite,
             settings: None,
             saved_mail_settings: None,
+            workflow_documents: crate::workflows::State::default(),
+            staged_automation: open.and_then(Open::workflow_scene),
             settings_memory: torro_settings_ui::Memory::default(),
             staged_backup: open.and_then(Open::backup_scene),
             staged_account: open.and_then(Open::account_scene),
@@ -4551,6 +4591,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 // "All" holds the demo's invoice and invitations (issue #337).
                 Some(
                     Open::AttachmentMenu
+                    | Open::WorkflowDocuments
                     | Open::SaveAllMenu
                     | Open::SaveMailMenu
                     | Open::SaveEmlMenu
@@ -4780,6 +4821,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .settings
             .clone()
             .or_else(|| staged.then(|| settings_mail::ACCOUNTS_SECTION.to_string()))
+            .or_else(|| app.staged_automation.map(|_| settings_mail::AUTOMATION_SECTION.to_string()))
             .or_else(|| app.staged_categorization.is_some().then(|| CATEGORIZATION_SECTION.to_string()))
             .or_else(|| open.and_then(Open::statistics_tab).map(|_| STATISTICS_SECTION.to_string()))
             .or_else(|| app.sources_mail().then(|| SOURCES_SECTION.to_string()));
@@ -4829,7 +4871,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             // and the fields of a section keep every key for themselves – ⌘ + Z of the signature
             // included.
             let on_entries = self.settings.is_none();
-            if on_entries {
+            if on_entries && !self.workflow_documents.menu_open() {
                 subscriptions.push(iced::event::listen_with(keys::listen));
                 subscriptions.push(iced::event::listen_with(keys::modifiers));
                 if self.has_mail_list() {
@@ -4841,6 +4883,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 if !self.folders.is_empty() {
                     subscriptions.push(iced::event::listen_with(keys::shortcut));
                 }
+            }
+            if self.workflow_mail().is_some() {
+                subscriptions.push(crate::workflows::subscription().map(Message::WorkflowDocument));
             }
             // Escape closes an open menu, drawer, the toast, the settings or the panel; nothing
             // listens while none is open.
@@ -4908,6 +4953,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         // A download under Settings › AI asks how far it is (issue #410).
         if let Some(pane) = &self.settings {
             subscriptions.push(pane.host.subscription().map(Message::SettingsHost));
+            if pane.host.current().id == settings_mail::AUTOMATION_SECTION {
+                subscriptions.push(settings_mail::automation::subscription().map(|message| {
+                    Message::SettingsPage(SettingsMessage::Mail(settings_mail::Message::Automation(message)))
+                }));
+            }
         }
         Subscription::batch(subscriptions)
     }
@@ -4940,6 +4990,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let more = self.focus_more();
         // Whatever changed, the panel's mail follows the cursor and the entry in the panel.
         let letter = self.follow_letter();
+        let current = self.workflow_mail();
+        self.workflow_documents.follow_mail(current.as_deref());
         self.follow_text();
         self.follow_html();
         // The overview of the mail window asks for its numbers once it shows (issue #409).
@@ -5252,7 +5304,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             // While a dropdown is open its menu has the keys (issue #554): Enter must not create the
             // task of the dialog under it.
-            Message::Key(_) if self.dropdown_open() => {}
+            Message::Key(_) if self.dropdown_open() || self.workflow_documents.menu_open() => {}
             Message::Key(key) => {
                 if let Some(command) = keys::command(self.focus(), key) {
                     // Keys inside an open menu (its digits, the bell's arrows) leave it where it is.
@@ -5537,6 +5589,21 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     settings_mail::sync_tick(state);
                 }
                 let sync = self.ask_mail_sync();
+                let workflow_poll = if self
+                    .settings
+                    .as_ref()
+                    .is_some_and(|pane| pane.host.current().id == settings_mail::AUTOMATION_SECTION)
+                {
+                    self.update(Message::SettingsPage(SettingsMessage::Mail(settings_mail::Message::Automation(
+                        settings_mail::automation::Message::Poll,
+                    ))))
+                } else {
+                    Task::none()
+                };
+                let document_poll =
+                    self.letter.as_ref().map(|letter| letter.id.clone()).map_or_else(Task::none, |id| {
+                        self.ask_workflow(torro_ipc::Request::ListWorkflowRuns { workflow: None, mail: Some(id) })
+                    });
                 let settings = self.settings.as_mut().map(|pane| pane.host.reload().map(Message::SettingsHost));
                 // A card still reading is asked again until it is read out (issue #603).
                 let suggestions = if self.reads_on_tick() { self.ask_suggestions() } else { Task::none() };
@@ -5550,6 +5617,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     self.load(),
                     backup_poll,
                     sync,
+                    workflow_poll,
+                    document_poll,
                     settings.unwrap_or_else(Task::none),
                 ]);
             }
@@ -5649,7 +5718,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::CloseMenu => self.close_menus(),
             Message::Escape => {
-                if self.dropdown_open() {
+                if self.workflow_documents.menu_open() {
+                    self.workflow_documents.close_menu();
+                } else if self.dropdown_open() {
                     // An open dropdown lies over everything, the dialog it belongs to included
                     // (issue #554): Escape closes it first and leaves the dialog open.
                     self.close_dropdowns();
@@ -5701,6 +5772,58 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.error = Some(Failure::new(tr("Couldn't open the app."), err));
             }
             Message::OpenSettings => return self.toggle_settings(),
+            Message::WorkflowSetup(ref id) | Message::ChooseWorkflow(ref id) => {
+                let setup = matches!(message, Message::WorkflowSetup(_));
+                let id = id.clone();
+                self.close_menus();
+                if self.launch.kind != Kind::Mail || self.holds_round() {
+                    return Task::none();
+                }
+                let account = self.messages.iter().find(|m| m.id == id).map(|m| m.account.clone()).or_else(|| {
+                    self.letter
+                        .as_ref()
+                        .and_then(|l| l.loaded.as_ref())
+                        .and_then(|m| m.as_ref().ok())
+                        .filter(|m| m.summary.id == id)
+                        .map(|m| m.summary.account.clone())
+                });
+                let open = self.open_settings(Some(settings_mail::AUTOMATION_SECTION));
+                let message = if setup {
+                    settings_mail::automation::Message::New { mail: id, account, template: false }
+                } else {
+                    settings_mail::automation::Message::ChooseRun { mail: id, account }
+                };
+                return Task::batch([
+                    open,
+                    self.update(Message::SettingsPage(SettingsMessage::Mail(settings_mail::Message::Automation(
+                        message,
+                    )))),
+                ]);
+            }
+            Message::WorkflowDocument(message) => {
+                if matches!(message, crate::workflows::Message::Close) {
+                    self.workflow_documents.close_menu();
+                } else if let Some(mail) = self.workflow_mail() {
+                    if let Some(request) = self.workflow_documents.update(&mail, message) {
+                        return self.ask_workflow(request);
+                    }
+                    if self.workflow_documents.menu_open() {
+                        self.rail_open = None;
+                        self.rail_pending = None;
+                        return self.workflow_documents.reveal_selection();
+                    }
+                }
+            }
+            Message::WorkflowAnswered(request, answer) => {
+                self.workflow_documents.answered(&request, &answer);
+                if self.launch.demo
+                    && self.launch.open == Some(Open::WorkflowDocuments)
+                    && matches!(&*request, torro_ipc::Request::ListWorkflowRuns { .. })
+                    && let Some(mail) = self.workflow_mail()
+                {
+                    self.workflow_documents.update(&mail, crate::workflows::Message::Toggle(mail.clone()));
+                }
+            }
             Message::SettingsHost(message) => {
                 let Some(pane) = self.settings.as_mut() else { return Task::none() };
                 // A change or a load came back: the sections let go of what was on its way.
@@ -5723,6 +5846,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 }
                 if loaded {
                     self.show_staged_backup();
+                    if let Some(scene) = self.staged_automation.take()
+                        && let Some(pane) = self.settings.as_mut()
+                        && let SettingsState::Mail(state) = &mut pane.sections
+                    {
+                        settings_mail::automation::stage(&mut state.automation, scene, pane.host.data());
+                    }
                 }
                 // A load can open an account's page (`--open account…`): its sync is asked then.
                 let outcome = self.settings_outcome(outcome);
@@ -5735,6 +5864,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 return Task::batch(tasks);
             }
             Message::SettingsPage(message) => {
+                if let SettingsMessage::Mail(settings_mail::Message::Automation(
+                    settings_mail::automation::Message::TabFocus(backwards),
+                )) = &message
+                {
+                    return if *backwards { operation::focus_previous() } else { operation::focus_next() };
+                }
                 // A row of the section menu that the page drew itself (another account, the way up,
                 // issue #473) ends the menu, as the host's own rows do; ticks and typing leave it.
                 if let SettingsMessage::Mail(mail) = &message
@@ -5925,9 +6060,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     } else {
                         Task::none()
                     };
+                    let documents =
+                        self.ask_workflow(torro_ipc::Request::ListWorkflowRuns { workflow: None, mail: Some(id) });
                     // What Torro suggests to make of it (issue #603), once its account is known.
                     let suggestions = self.ask_suggestions();
-                    return Task::batch([side, read, saving, exports, suggestions]);
+                    return Task::batch([side, read, saving, exports, documents, suggestions]);
                 }
             }
             Message::Mail(action, id) => return self.mail_action(action, id),
@@ -9175,6 +9312,17 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Source::Demo(_) => Arc::new(torro_settings_ui::demo::Demo::new()),
         }
+    }
+
+    fn ask_workflow(&mut self, request: torro_ipc::Request) -> Task<Message> {
+        if !self.workflow_documents.begin(&request) {
+            return Task::none();
+        }
+        let backend = self.settings_backend();
+        let sent = request.clone();
+        Task::perform(async move { backend.ask(sent).await }, move |answer| {
+            Message::WorkflowAnswered(Box::new(request.clone()), Box::new(answer))
+        })
     }
 
     /// Sends a backup request of a mail account's page and brings its answer back to that account.
@@ -12515,7 +12663,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         };
         // The open group of the collapsed rail, over the whole window like a menu (task E14.3); it
         // never shows with one (`App::update` closes it when a menu opens).
-        let layer = layer.or_else(|| self.rail_layer(class, &anchors));
+        let layer = layer
+            .or_else(|| {
+                self.workflow_mail().and_then(|mail| self.workflow_documents.overlay(&mail, &anchors.rail.save))
+            })
+            .or_else(|| self.rail_layer(class, &anchors));
         // The dropdowns of an invitation's card and of the overview (issue #554), with no menu open.
         let layer = layer.or_else(|| self.field_menu()).or_else(|| self.overview_account_menu());
         // "Focus & reply" (task E19.5) in place of list and reader, laid out alike in every size; no
@@ -13021,6 +13173,21 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.view.is_mail() { self.messages.is_empty() } else { self.items.is_empty() }
     }
 
+    /// Document actions belong only to the reader visible now, never to a cached or covered mail.
+    fn workflow_mail(&self) -> Option<String> {
+        if self.settings.is_some()
+            || self.menu.is_some()
+            || self.drawer
+            || self.is_glance()
+            || self.holds_round()
+            || self.dropdown_open()
+        {
+            return None;
+        }
+        let id = self.wanted_letter()?;
+        self.letter.as_ref().filter(|letter| letter.id == id).map(|_| id)
+    }
+
     /// The panel's view of the mail held ([`App::letter`]): headers from the list while the whole
     /// of it loads, links in the text colour, the flag in the attention colour.
     fn reading(&self) -> Option<Reading<'_>> {
@@ -13028,6 +13195,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let colours = palette(&self.theme());
         let summary = self.messages.iter().find(|message| message.id == letter.id);
         Some(Reading {
+            workflows: Some(&self.workflow_documents),
             id: &letter.id,
             categories: &self.categories,
             summary,
@@ -14635,6 +14803,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     }
 
     fn close_menus(&mut self) {
+        self.workflow_documents.close_menu();
         self.clear_save_feedback();
         self.menu = None;
         self.close_dropdowns();
@@ -14809,6 +14978,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             // The demo's invoice in "All" (task M12.6): two PDFs and a guessed category.
             Some(
                 open @ (Open::AttachmentMenu
+                | Open::WorkflowDocuments
                 | Open::SaveAllMenu
                 | Open::SaveMailMenu
                 | Open::SaveEmlMenu
@@ -15083,6 +15253,8 @@ fn closes_rail(message: &Message) -> bool {
     matches!(
         message,
         Message::Mail(..)
+            | Message::WorkflowSetup(_)
+            | Message::ChooseWorkflow(_)
             | Message::Pile(..)
             | Message::Release(..)
             | Message::SetDone(..)
@@ -20439,6 +20611,39 @@ mod tests {
         app
     }
 
+    #[test]
+    fn reader_document_menu_owns_keys_and_escape_and_closes_on_another_mail() {
+        use crate::workflows::Message as Document;
+        use iced::keyboard::key::Named;
+        let mut app = mail_window(Density::Compact, &["--open", "attachment-menu"]);
+        let _ = app.update(Message::CloseMenu);
+        let mail = app.workflow_mail().expect("visible mail");
+        let request = torro_ipc::Request::ListWorkflowRuns { workflow: None, mail: Some(mail.clone()) };
+        let Some(torro_ipc::Response::WorkflowRuns { mut runs }) = settings_mail::automation::DemoState::default()
+            .answer(&torro_ipc::Request::ListWorkflowRuns { workflow: None, mail: None })
+        else {
+            panic!("demo runs")
+        };
+        runs[0].mail = mail.clone();
+        app.workflow_documents.answered(&request, &Ok(torro_ipc::Response::WorkflowRuns { runs }));
+        let cursor = app.cursor.clone();
+        let _ = app.update(Message::WorkflowDocument(Document::Key(Named::F6)));
+        assert!(app.workflow_documents.menu_open());
+        let _ = app.update(Message::Key(Key::Down));
+        assert_eq!(app.cursor, cursor, "the underlying list must not move");
+        let _ = app.view();
+        let _ = app.update(Message::Escape);
+        assert!(!app.workflow_documents.menu_open());
+        assert_eq!(app.workflow_mail().as_deref(), Some(mail.as_str()), "Escape closes the menu, not the mail");
+        let _ = app.update(Message::WorkflowDocument(Document::Key(Named::F6)));
+        let other = app.messages.iter().find(|m| m.id != mail).expect("another mail").id.clone();
+        let _ = app.update(Message::SelectMail(other));
+        assert!(!app.workflow_documents.menu_open());
+        let _ = app.update(Message::OpenSettings);
+        let _ = app.update(Message::WorkflowDocument(Document::Toggle(mail)));
+        assert!(!app.workflow_documents.menu_open(), "hidden readers cannot receive document actions");
+    }
+
     /// The mail window in `density` on its overview of entries with its first mail entry in the
     /// reader (or the panel), as `--open mail-entry` showed it until task E18.4.
     fn mail_entry_open(density: Density) -> App<DemoSource> {
@@ -23585,8 +23790,11 @@ mod tests {
         let groups = app.rail_groups(SizeClass::Wide, &detail::Anchors::default()).expect("the mail's actions");
         let torro = groups.iter().find(|group| group.label == tr("Torro")).expect("the group Torro");
         let labels: Vec<String> = torro.items.iter().map(|item| item.label.to_string()).collect();
-        // Issue #603: Event too, made through `calendar.create_event_from_mail`.
-        assert_eq!(labels, [tr("Task"), tr("Event"), tr("Category…")], "no Re-categorize without an entry");
+        assert_eq!(
+            labels,
+            [tr("Task"), tr("Event"), tr("Category…"), tr("Create workflow with AI…"), tr("Run workflow")],
+            "existing actions stay first; no Re-categorize without an entry"
+        );
         let ask = torro.items[2].on_press.clone();
         assert!(matches!(&ask, Some(Message::AskMailCategory(asked)) if *asked == id), "{ask:?}");
         drop(groups);
@@ -24636,7 +24844,10 @@ mod tests {
             // Mail settings include attachments (task M12.7), categorization and filters; storage
             // controls live inside each account.
             // Statistics since issue #485.
-            (vec!["--view", "mail"], vec!["accounts", "reading", "attachments", "categorization", "statistics"]),
+            (
+                vec!["--view", "mail"],
+                vec!["accounts", "reading", "attachments", "categorization", "automation", "statistics"],
+            ),
         ] {
             let launch = Launch::parse(&args(&words)).expect("valid parameters");
             let found: Vec<&str> = launch.kind.settings_sections().iter().map(|section| section.id).collect();

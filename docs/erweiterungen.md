@@ -43,6 +43,23 @@ verträglich?
    Schlüssel, Rechte und Katalogeinträge mit.
 8. **Open First.** Format und Protokolle offen dokumentiert; keine Pflicht zu einem Marktplatz.
 
+## Mail-Abläufe sind kein Plugin-Executor (#556)
+
+Die [Mail-Abläufe](mail-workflows.md) erweitern diesen allgemeinen Rahmen (#79) nicht. Ihre
+mitgelieferten Vorlagen `direct_pdf`, `stripe_invoice` und `paddle_setapp_invoice_copy` sind
+versionierte Datenpakete für geschlossene, im Dienst implementierte Bausteine, keine fremden
+Programme, MCP-Server oder frei installierbaren Adapter. Eine Kopie braucht keine KI und bleibt
+inaktiv, ungetestet und ohne Grants oder Regeln. Spätere Vorlagenupdates verändern bestehende
+Abläufe nicht; eine andere ausführbare Bindung erfordert einen neuen Test und für Automatik einen
+neuen menschlichen Dauergrant. Manuelle Läufe bleiben konkret bestätigte Einmalaufträge.
+
+Der Dienst führt nur den begrenzten browserfreien Dokumentweg aus. Anmeldungen bei Portalen,
+Browserbedienung, Skripte, beliebige HTTP-Proxys und Zahlungsaktionen sind nicht unterstützt;
+fehlende Fähigkeiten werden nicht über Erweiterungswerkzeuge nachgerüstet. Der vorbereitete
+Mail-Auftrag ist nur ein Anschluss für #260, keine allgemeine Übergabe-Implementierung. Dauerhafte
+Autorisierung und ihr Entzug bleiben Menschen mit App-Schlüssel vorbehalten, nicht Plugins oder
+Agenten. Dies beschreibt den verbindlichen Umfang, nicht eine abgeschlossene Gesamtintegration.
+
 ## Was Nextcloud bietet
 
 Recherche vom 2026-10-15 (Agent `nextcloud-expert`, Quellcode `nextcloud/server` Zweig `stable35`
@@ -115,7 +132,7 @@ Dienst mit ETag; eine Erweiterung erreicht nur ihren eigenen Unterordner.
 |---|---|---|
 | Schlüssel, Rechte, Freigaben, Protokoll ([api.md](api.md)) | gibt es | trägt: eine Erweiterung ist ein Client |
 | `inbox.post_item`, `tasks.save_todo`, `create_task_from_item`, `calendar.save_event` | gibt es | Aufgaben, Termine und Meldungen übergeben geht schon |
-| `torro_ipc::api::Area` (17 feste Bereiche, seit #302 mit `extensions`), `Request::operation()` (vollständiges `match`) | geschlossen | keine eigenen Befehle je Erweiterung; die Werkzeuge eines MCP-Servers laufen über `extensions.call_tool` mit Stufe je Server, nicht als Katalogbefehle |
+| `torro_ipc::api::Area` (feste Bereiche, seit #302 mit `extensions`, mit #556 zusätzlich `workflows`), `Request::operation()` (vollständiges `match`) | geschlossen | keine eigenen Befehle je Erweiterung; die Werkzeuge eines MCP-Servers laufen über `extensions.call_tool` mit Stufe je Server, nicht als Katalogbefehle |
 | `torro_core::app::AppId::ALL` | fest im Code | Erweiterungs-Apps fehlen im Tray-Menü, in Vorlagen und in `apps.list_apps` |
 | Änderungsmeldungen (`subscribe`) | nur geplant ([api.md](api.md#transport)) | jede Erweiterung müsste selbst abfragen |
 | Design | `torro-gui` nur für Rust/Iced; die API nennt nur die Pakete (`settings.list_designs`) | Erweiterungen in anderen Sprachen bekommen Farben und Schriften nicht |

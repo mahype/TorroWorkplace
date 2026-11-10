@@ -4498,14 +4498,22 @@ impl Matter {
 
 /// The entry of an open approval: its summary as title, who asks as body.
 fn approval_matter(approval: &ApprovalInfo) -> Matter {
+    let body = approval_body(approval);
+    // A workflow's scope must be readable before deciding. Oversized details remain available
+    // in the control centre; never offer an inline decision on a truncated scope.
+    let truncated_workflow = approval.command.starts_with("workflows.") && body.chars().count() > BODY_MAX;
     Matter {
         thread_key: format!("{APPROVAL_THREADS}{}", approval.id),
         kind: Kind::Approval,
         // Built by the core and made harmless (`approvals::summary`), but it quotes the client.
         title: approval.summary.clone(),
-        body: Some(approval_body(approval)),
-        link: None,
-        actions: vec![Action::Allow { approval: approval.id.clone() }, Action::Deny { approval: approval.id.clone() }],
+        body: Some(body),
+        link: truncated_workflow.then(|| Link::App { app: AppId::WORKPLACE.binary.to_string() }),
+        actions: if truncated_workflow {
+            Vec::new()
+        } else {
+            vec![Action::Allow { approval: approval.id.clone() }, Action::Deny { approval: approval.id.clone() }]
+        },
         untrusted: true,
         since: approval.created,
     }
@@ -4516,6 +4524,13 @@ fn approval_matter(approval: &ApprovalInfo) -> Matter {
 /// of the command before allowing it (the title is cut with "…" at [`TITLE_MAX`]).
 fn approval_body(approval: &ApprovalInfo) -> String {
     let client = [("client", &approval.client_name as &dyn fmt::Display)];
+    if approval.command.starts_with("workflows.") {
+        return std::iter::once(trf("{client} asks for approval", &client))
+            .chain(std::iter::once(approval.summary.clone()))
+            .chain(approval.details.iter().cloned())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+    }
     match crate::approvals::is_question(approval) {
         true if approval.summary.chars().count() > TITLE_MAX => approval.summary.clone(),
         true => trf("{client} asks for permission", &client),
@@ -7558,6 +7573,40 @@ pub(crate) mod tests {
         assert!(long.title.ends_with('…'), "{}", long.title);
         assert_eq!(long.body.as_deref(), Some(question.summary.as_str()), "the whole question");
         assert!(long.urgent && long.untrusted);
+    }
+
+    #[test]
+    fn workflow_approval_entries_keep_the_whole_scope_before_allowing() {
+        let now = Utc::now();
+        let approval = |id: &str, category: &str| ApprovalInfo {
+            id: id.into(),
+            client: "c1".into(),
+            client_name: "Agent".into(),
+            command: "workflows.set_rule_enabled".into(),
+            summary: format!("{}; category: {category}", "w".repeat(TITLE_MAX)),
+            details: vec!["Workflow revision: 7".into(), format!("Rule category: {category}")],
+            created: now,
+            expires: now + TimeDelta::minutes(10),
+            decided: None,
+            state: torro_ipc::ApprovalState::Pending,
+        };
+        let first = approval("approval-first", "Invoice [invoice]");
+        let second = approval("approval-second", "Shipping [shipping]");
+        let a = approval_matter(&first).into_item("a".into(), now);
+        let b = approval_matter(&second).into_item("b".into(), now);
+        assert_eq!(a.title, b.title, "the title alone cannot identify the scope");
+        for (entry, original) in [(&a, &first), (&b, &second)] {
+            let body = entry.body.as_deref().expect("full approval scope");
+            assert!(body.contains(&original.summary));
+            assert!(original.details.iter().all(|line| body.contains(line)));
+            assert!(entry.actions.iter().any(|action| matches!(action, Action::Allow { .. })));
+        }
+        assert_ne!(a.body, b.body);
+        let mut oversized = first;
+        oversized.details = vec!["x".repeat(BODY_MAX + 1)];
+        let truncated = approval_matter(&oversized).into_item("c".into(), now);
+        assert!(truncated.actions.is_empty(), "a truncated scope must be decided in the control centre");
+        assert_eq!(truncated.link, Some(Link::App { app: AppId::WORKPLACE.binary.to_string() }));
     }
 
     // ----- mail (task E4.1) -----

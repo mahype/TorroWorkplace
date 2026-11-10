@@ -948,6 +948,36 @@ fn tells_on_desktop(request: &Request) -> bool {
 /// A short name for a request, for messages.
 fn describe(request: &Request) -> String {
     match request {
+        // No workflow package, mail reference, selector, URL or path reaches service diagnostics.
+        Request::ListWorkflowTemplates
+        | Request::GetWorkflowTemplate { .. }
+        | Request::InstantiateWorkflowTemplate { .. }
+        | Request::ListWorkflows
+        | Request::GetWorkflow { .. }
+        | Request::ProposeWorkflow { .. }
+        | Request::CreateWorkflowDraft { .. }
+        | Request::UpdateWorkflowDraft { .. }
+        | Request::SaveWorkflow { .. }
+        | Request::DuplicateWorkflow { .. }
+        | Request::SetWorkflowEnabled { .. }
+        | Request::RemoveWorkflow { .. }
+        | Request::PreviewWorkflowRun { .. }
+        | Request::RunWorkflow { .. }
+        | Request::ListWorkflowRuns { .. }
+        | Request::GetWorkflowRun { .. }
+        | Request::CancelWorkflowRun { .. }
+        | Request::GetWorkflowDocument { .. }
+        | Request::OpenWorkflowDocument { .. }
+        | Request::ShowWorkflowDocument { .. }
+        | Request::ListWorkflowRules
+        | Request::CreateWorkflowRule { .. }
+        | Request::UpdateWorkflowRule { .. }
+        | Request::DuplicateWorkflowRule { .. }
+        | Request::SetWorkflowRuleEnabled { .. }
+        | Request::RemoveWorkflowRule { .. }
+        | Request::PreviewWorkflowRule { .. }
+        | Request::AuthorizeWorkflow { .. }
+        | Request::RevokeWorkflowAuthorization { .. } => request.operation().name().into(),
         Request::Ping => "ping".into(),
         Request::Status => "status".into(),
         Request::Quit => "quit".into(),

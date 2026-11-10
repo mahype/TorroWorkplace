@@ -579,17 +579,21 @@ pub async fn answer_apply(
 
 /// The stored filter `id` that `reach` sees, run once ([`apply`]); a category needs admin access to
 /// `inbox` ([`sets_category`]).
-async fn run_apply(
-    mail: &MailService,
-    reach: Reach<'_>,
-    categories: &[Category],
-    id: &str,
-) -> Result<Applied, FilterError> {
-    let filter = visible_filter(mail, reach, id)?;
-    if filter.category.is_some() && !sets_category(reach) {
-        return Err(no_category());
-    }
-    apply(mail, reach, &filter, categories).await
+fn run_apply<'a>(
+    mail: &'a MailService,
+    reach: Reach<'a>,
+    categories: &'a [Category],
+    id: &'a str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Applied, FilterError>> + Send + 'a>> {
+    // Keep the deep IMAP apply future out of every filter request's dispatcher frame, including
+    // the second frame reached through an approval. Construct the box here, not at the call site.
+    Box::pin(async move {
+        let filter = visible_filter(mail, reach, id)?;
+        if filter.category.is_some() && !sets_category(reach) {
+            return Err(no_category());
+        }
+        apply(mail, reach, &filter, categories).await
+    })
 }
 
 /// The filters of `all` that `reach` sees, in their order.
@@ -787,11 +791,28 @@ async fn carry_out(
     messages: &[&MessageSummary],
     categories: &[Category],
 ) -> CarriedOut {
+    carry_out_with_origin(mail, account, actions, messages, categories, super::store::WorkflowCategoryOrigin::Bulk)
+        .await
+}
+
+/// The arrival path shares the actions, but must commit a category and its workflow event in
+/// the same store transaction. Explicit Apply remains the event-free bulk path above.
+async fn carry_out_with_origin(
+    mail: &MailService,
+    account: &str,
+    actions: &FilterActions,
+    messages: &[&MessageSummary],
+    categories: &[Category],
+    origin: super::store::WorkflowCategoryOrigin,
+) -> CarriedOut {
     let mut done = CarriedOut::default();
     if actions.mark_read {
         let unread = messages.iter().filter(|message| !message.flags.contains(&Flag::Seen));
         let ids: Vec<String> = unread.map(|message| message.id.clone()).collect();
         for piece in ids.chunks(MAX_IDS) {
+            if origin == super::store::WorkflowCategoryOrigin::Arrival && !mail.workflow_preparation_on() {
+                return done;
+            }
             let answer = super::write::set_flags(mail, Reach::Suite, piece, &[Flag::Seen], &[]).await;
             note_failed(&mut done.failed, piece, &answer);
         }
@@ -802,8 +823,44 @@ async fn carry_out(
             .filter(|message| category_due(message, category, categories))
             .map(|message| message.id.clone())
             .collect();
-        match mail.set_category(account, &ids, Some(MailCategory::by_rule(category))).await {
-            Ok(()) => done.categorised = ids,
+        let changed = match origin {
+            super::store::WorkflowCategoryOrigin::Arrival => {
+                let mut result = Ok(Vec::new());
+                for id in &ids {
+                    if !mail.workflow_preparation_on() {
+                        return done;
+                    }
+                    let expected =
+                        messages.iter().find(|message| message.id == *id).and_then(|message| message.category);
+                    match mail
+                        .set_workflow_category_if_unchanged(
+                            account,
+                            id,
+                            expected,
+                            MailCategory::by_rule(category),
+                            origin,
+                            Utc::now(),
+                        )
+                        .await
+                    {
+                        Ok(true) => {
+                            if let Ok(kept) = &mut result {
+                                kept.push(id.clone());
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(err) => {
+                            result = Err(err);
+                            break;
+                        }
+                    }
+                }
+                result
+            }
+            _ => mail.set_category(account, &ids, Some(MailCategory::by_rule(category))).await.map(|()| ids.clone()),
+        };
+        match changed {
+            Ok(kept) => done.categorised = kept,
             Err(err) => {
                 eprintln!("torroworkplace: mail: a filter cannot set a category: {}", err.code());
                 done.failed.extend(ids);
@@ -813,6 +870,9 @@ async fn carry_out(
     if let Some(FilterFile::Trash) = &actions.file {
         let ids: Vec<String> = messages.iter().map(|message| message.id.clone()).collect();
         for piece in ids.chunks(MAX_IDS) {
+            if origin == super::store::WorkflowCategoryOrigin::Arrival && !mail.workflow_preparation_on() {
+                return done;
+            }
             let answer = super::write::delete_messages(mail, Reach::Suite, piece, false).await;
             note_failed(&mut done.failed, piece, &answer);
         }
@@ -921,35 +981,57 @@ pub async fn on_arrival(
     categories: &[Category],
     sorting: &Sorting,
 ) -> Vec<(String, MailCategory)> {
+    on_arrival_checked(mail, store, account, new, categories, sorting).await.unwrap_or_default()
+}
+
+/// The durable classifier cannot mistake a failed filter/rule read for 'no category'.
+pub(super) async fn on_arrival_checked(
+    mail: &MailService,
+    store: &SharedStore,
+    account: &str,
+    new: &[String],
+    categories: &[Category],
+    sorting: &Sorting,
+) -> Result<Vec<(String, MailCategory)>, super::store::WorkflowMailFailure> {
+    use super::store::WorkflowMailFailure::{CategoryFailed, Paused};
+    if !mail.workflow_preparation_allowed(account).await {
+        return Err(Paused);
+    }
     let filters = match mail.filters().running_in(account) {
         Ok(filters) => filters,
         Err(_) => {
-            eprintln!("torroworkplace: mail: the mail filters cannot be read; new mail of {account} is not filtered");
-            return Vec::new();
+            eprintln!("torroworkplace: mail arrival filters unavailable");
+            return Err(CategoryFailed);
         }
     };
     if filters.is_empty() || new.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
+    }
+    for filter in &filters {
+        filter_query(&filter.query).map_err(|_| CategoryFailed)?;
     }
     let ids = new.to_vec();
     let arrived = match store.run(move |store| delivered(store, &ids)).await {
         Ok(arrived) => arrived,
-        Err(err) => {
-            eprintln!("torroworkplace: mail: cannot read the new mail of {account} to filter it: {err}");
-            return Vec::new();
+        Err(_) => {
+            eprintln!("torroworkplace: mail arrival filter input unavailable");
+            return Err(CategoryFailed);
         }
     };
     let arrived_ids: Vec<String> = arrived.iter().map(|message| message.id.clone()).collect();
     let found = match hits(store, &filters, &arrived_ids).await {
         Ok(found) => found,
-        Err(err) => {
-            eprintln!("torroworkplace: mail: cannot run the mail filters on new mail of {account}: {err}");
-            return Vec::new();
+        Err(_) => {
+            eprintln!("torroworkplace: mail arrival filter search failed");
+            return Err(CategoryFailed);
         }
     };
     // Mails that get the same actions go together, so each action runs once per kind.
     let mut groups: Vec<(FilterActions, Vec<&MessageSummary>)> = Vec::new();
     for (id, by) in found {
+        if !mail.workflow_preparation_allowed(account).await {
+            return Err(Paused);
+        }
         let mut actions = FilterActions::of(&by);
         actions.category = match mail.sorting_facts(account, &id).await {
             Ok(Some(facts)) => {
@@ -963,15 +1045,7 @@ pub async fn on_arrival(
                 };
                 sorting.category(&input, &category_hits(&by, categories))
             }
-            // Without what the rules look at, the filters decide alone, still by the order of the
-            // categories (issue #481).
-            _ => torro_inbox::rules::ranked_category(
-                &sorting.rank,
-                &[],
-                &[],
-                &torro_inbox::rules::SortInput::default(),
-                &category_hits(&by, categories),
-            ),
+            _ => return Err(CategoryFailed),
         };
         actions.category = actions.category.filter(|category| categories.contains(category));
         let Some(message) = arrived.iter().find(|message| message.id == id) else { continue };
@@ -985,12 +1059,34 @@ pub async fn on_arrival(
     }
     let mut categorised = Vec::new();
     for (actions, messages) in &groups {
-        let done = carry_out(mail, account, actions, messages, categories).await;
+        if !mail.workflow_preparation_allowed(account).await {
+            return Err(Paused);
+        }
+        let done = mail
+            .while_workflow_on(
+                account,
+                carry_out_with_origin(
+                    mail,
+                    account,
+                    actions,
+                    messages,
+                    categories,
+                    super::store::WorkflowCategoryOrigin::Arrival,
+                ),
+            )
+            .await
+            .ok_or(Paused)?;
+        if !mail.workflow_preparation_allowed(account).await {
+            return Err(Paused);
+        }
+        if !done.failed.is_empty() {
+            return Err(CategoryFailed);
+        }
         if let Some(category) = actions.category {
             categorised.extend(done.categorised.into_iter().map(|id| (id, MailCategory::by_rule(category))));
         }
     }
-    categorised
+    Ok(categorised)
 }
 
 /// Those of `ids` the store holds that were delivered rather than moved: no other folder of the

@@ -374,6 +374,7 @@ pub fn area_name(area: Area) -> &'static str {
         Area::Ai => tr("AI"),
         Area::Assistant => tr("Assistant"),
         Area::Bots => tr("Bots"),
+        Area::Workflows => tr("Workflows"),
         Area::Tools => tr("Tools"),
         Area::Extensions => tr("MCP servers"),
         Area::Settings => tr("Settings"),

@@ -25,6 +25,15 @@ Senden bleibt, was es heute ist: nach außen und mit Freigabe.
 
 ## Begriffe
 
+**Abgrenzung Mail-Abläufe (#556):** Der dort vorbereitete Mail-Auftrag ist lediglich ein Anschluss
+für #260, keine mitgelieferte allgemeine Übergabe- oder neue Teilen-Funktion. Ein Ablauf verwendet
+eine Mailreferenz und ein bereits eingerichtetes Ablageziel; er exportiert dadurch weder eine
+ShareCard noch erteilt er Ordner-/Ausführungsrechte. KI-freie Vorlagen erzeugen inaktive Entwürfe,
+Vorschau bleibt lokal, ein bestätigter Test lädt und schreibt wirklich. Speichern, menschlicher
+Dauergrant und Regelaktivierung sind getrennt. Kein Portal-Login, Browser, Skript oder Ausbau von
+#79 wird als Teilen-Umweg benutzt. Umfang und laufender Integrationsstand:
+[mail-workflows.md](mail-workflows.md).
+
 - **Inhalt (`ShareItem`):** was geteilt wird, als Art und Kennung, zum Beispiel
   `{ kind: "contact", id: "nextcloud:anna@cloud.example/contacts/<uid>" }`. Mehrere Inhalte gleicher
   Art gehen zusammen (drei Kontakte in einer Mail).

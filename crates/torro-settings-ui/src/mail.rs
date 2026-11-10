@@ -20,13 +20,14 @@ use torro_gui::icon::Icon;
 use crate::{Action, Data, Page, Section};
 
 pub mod attachments;
+pub mod automation;
 mod backup;
 pub mod categorization;
 mod editor;
 pub mod filters;
 
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <id>` takes.
-pub const SECTIONS: [Section; 5] = [
+pub const SECTIONS: [Section; 6] = [
     // Accounts is first: the gear lands on who the mail comes from.
     Section { id: ACCOUNTS_SECTION, icon: Icon::Mail, label: "Accounts" },
     Section { id: READING_SECTION, icon: Icon::MailOpen, label: "Reading & writing" },
@@ -37,6 +38,7 @@ pub const SECTIONS: [Section; 5] = [
     // issue #454: "Create filter…" at a mail and at the search field open a new one here
     // ([`new_filter`]).
     Section { id: CATEGORIZATION_SECTION, icon: Icon::Tag, label: "Categorization" },
+    Section { id: AUTOMATION_SECTION, icon: Icon::ListChecks, label: "Automation" },
     // The numbers the mail window's overview leaves out (issue #485): who sends the most, what lies
     // in the inbox, how each category develops. Its page is the window's ([`STATISTICS_SECTION`]).
     Section { id: STATISTICS_SECTION, icon: Icon::ChartColumn, label: "Statistics" },
@@ -57,6 +59,13 @@ pub const ATTACHMENTS_SECTION: &str = "attachments";
 /// The id of the section "Categorization": what `--settings categorization` takes and where "Create
 /// filter…" leads (issue #454: the filters are part of it).
 pub const CATEGORIZATION_SECTION: &str = "categorization";
+
+/// Request-only workflow setup, rules and run history (#556).
+pub const AUTOMATION_SECTION: &str = "automation";
+
+pub fn automation_escape(state: &State) -> Option<Message> {
+    automation::escape(&state.automation).map(Message::Automation)
+}
 
 /// The message that opens a new filter's dialog in "Categorization" with
 /// `query` and `account` filled in (`None`: every account) and asks what it finds – what torroinbox
@@ -135,6 +144,10 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
         torro_ipc::Request::ListMailFilters,
         // The senders trusted with "Not fraud" (issue #506), on the pages of Spam and Phishing.
         torro_ipc::Request::ListRules,
+        torro_ipc::Request::ListWorkflowTemplates,
+        torro_ipc::Request::ListWorkflows,
+        torro_ipc::Request::ListWorkflowRules,
+        torro_ipc::Request::ListWorkflowRuns { workflow: None, mail: None },
     ]
 }
 
@@ -150,6 +163,7 @@ pub struct State {
     pub storage: storage::State,
     /// Attachments: the editor of a save target while it is open (task M12.7).
     pub attachments: attachments::State,
+    pub automation: automation::State,
     /// The section whose ask is on its way (issue #397). An answer names no request, and a refusal
     /// is a bare `error`, so one ask goes out at a time and its answer reaches only the section that
     /// asked; the others wait in [`State::queued`] until it is back ([`next_ask`]).
@@ -161,6 +175,7 @@ pub struct State {
 /// among them: the window sends theirs on its own way, with the account ([`backup_answered`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Asker {
+    Automation,
     Accounts,
     Categorization,
     Storage,
@@ -169,6 +184,7 @@ enum Asker {
 /// What the sections report; the app wraps it in its own message.
 #[derive(Debug, Clone)]
 pub enum Message {
+    Automation(automation::Message),
     Accounts(accounts::Message),
     Reading(reading::Message),
     Categorization(categorization::Message),
@@ -180,6 +196,7 @@ pub enum Message {
 /// is on its way waits for it ([`State::asking`]).
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action<AppAction> {
     let asker = match &message {
+        Message::Automation(_) => Some(Asker::Automation),
         Message::Accounts(accounts::Message::Storage(_)) | Message::Storage(_) => Some(Asker::Storage),
         Message::Accounts(_) => Some(Asker::Accounts),
         Message::Categorization(_) => Some(Asker::Categorization),
@@ -205,7 +222,10 @@ pub fn next_ask(state: &mut State) -> Option<torro_ipc::Request> {
     if state.asking.is_some() {
         return None;
     }
-    let (asker, request) = state.queued.pop_front()?;
+    let (asker, request) = state
+        .queued
+        .pop_front()
+        .or_else(|| automation::next_request(&mut state.automation).map(|request| (Asker::Automation, request)))?;
     state.asking = Some(asker);
     Some(request)
 }
@@ -225,6 +245,7 @@ fn is_backup_request(request: &torro_ipc::Request) -> bool {
 
 fn section_update(state: &mut State, message: Message, data: &Data) -> Action<AppAction> {
     match message {
+        Message::Automation(message) => automation::update(&mut state.automation, message, data),
         Message::Accounts(accounts::Message::Storage(message)) => {
             let Some(account) = accounts::current_account(&state.accounts) else { return Action::None };
             storage::select_account(&mut state.storage, account);
@@ -253,6 +274,7 @@ fn section_update(state: &mut State, message: Message, data: &Data) -> Action<Ap
 /// Accounts, the section the gear lands on; the host only ever asks for one of [`SECTIONS`].
 pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Message> {
     match section {
+        AUTOMATION_SECTION => wrap(automation::page(&state.automation, data), Message::Automation),
         READING_SECTION => wrap(Page::new(reading::view(&state.reading, data)), Message::Reading),
         CATEGORIZATION_SECTION => wrap(categorization::page(&state.categorization, data), Message::Categorization),
         ATTACHMENTS_SECTION => wrap(Page::new(attachments::view(&state.attachments, data)), Message::Attachments),
@@ -274,6 +296,7 @@ pub fn overlay<'a>(
     class: torro_gui::layout::SizeClass,
 ) -> Option<Element<'a, Message>> {
     match section {
+        AUTOMATION_SECTION => automation::overlay(&state.automation, data).map(|menu| menu.map(Message::Automation)),
         ATTACHMENTS_SECTION => {
             attachments::overlay(&state.attachments, data, class).map(|dialog| dialog.map(Message::Attachments))
         }
@@ -300,6 +323,7 @@ pub fn overlay<'a>(
 /// as every menu does.
 pub fn menu_only(state: &State, data: &Data, section: &str) -> bool {
     match section {
+        AUTOMATION_SECTION => automation::menu_only(&state.automation),
         READING_SECTION => reading::overlay(&state.reading, data).is_some(),
         ACCOUNTS_SECTION => {
             accounts::overlay(&state.accounts, data).is_none() && storage::overlay(&state.storage, data).is_some()
@@ -325,6 +349,7 @@ pub fn sent(state: &mut State) {
 /// already being typed stays in place while unrelated settings refresh.
 pub fn loaded(state: &mut State, data: &Data) {
     reading::loaded(&mut state.reading, data);
+    automation::loaded(&mut state.automation, data);
 }
 
 /// A send of the host came back with `result` – the data loaded after it, or why it failed –: a
@@ -363,6 +388,7 @@ pub fn escape(state: &State) -> Option<Message> {
 pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
     // Only the section that asked: another one's refusal reads the same (issue #397).
     match state.asking.take() {
+        Some(Asker::Automation) => automation::answered(&mut state.automation, answer),
         Some(Asker::Accounts) => accounts::answered(&mut state.accounts, answer),
         Some(Asker::Categorization) => categorization::answered(&mut state.categorization, answer),
         Some(Asker::Storage) => storage::answered(&mut state.storage, answer),
@@ -431,14 +457,14 @@ pub fn stage_backup(state: &mut State, account: &str, scene: BackupScene) {
     accounts::stage_backup(&mut state.accounts, account, backup::State::scene(scene, account));
 }
 
-/// What the window keeps of these sections while the settings are closed: only Accounts, with each
-/// account's backup page and the requests on their way, whose answers still arrive. The other
-/// sections start afresh, so a preview that was on its way never stays "Calculating…".
+/// Keep Accounts (including backup requests) and the typed workflow forms when settings close.
+/// Workflow requests belong to the old host and are not replayed; the other sections start afresh,
+/// so a preview that was on its way never stays "Calculating…".
 pub fn kept(state: State) -> State {
     // An ask on its way is answered into the closed settings and lost: nothing waits for it.
     let mut accounts = state.accounts;
     accounts::forget_pending(&mut accounts);
-    State { accounts, ..State::default() }
+    State { accounts, automation: automation::keep(state.automation), ..State::default() }
 }
 
 /// Whether `message` leaves the page open below a section for another one or for the section's own
@@ -447,7 +473,12 @@ pub fn kept(state: State) -> State {
 pub fn leaves_page(message: &Message) -> bool {
     matches!(
         message,
-        Message::Accounts(accounts::Message::Open(_) | accounts::Message::Back)
+        Message::Automation(
+            automation::Message::Back
+                | automation::Message::Open(_)
+                | automation::Message::OpenRule(_)
+                | automation::Message::OpenRun(_)
+        ) | Message::Accounts(accounts::Message::Open(_) | accounts::Message::Back)
             | Message::Categorization(categorization::Message::Editor(editor::Message::Back))
     )
 }
@@ -4468,13 +4499,14 @@ mod tests {
         let ids: Vec<&str> = SECTIONS.iter().map(|section| section.id).collect();
         assert_eq!(
             ids,
-            ["accounts", "reading", "attachments", "categorization", "statistics"],
+            ["accounts", "reading", "attachments", "categorization", "automation", "statistics"],
             "no Filters since issue #454"
         );
         assert_eq!(SECTIONS[0].name(), tr("Accounts"));
         assert_eq!(SECTIONS[2].name(), tr("Attachments"), "task M12.7");
         assert_eq!(SECTIONS[3].name(), tr("Categorization"), "task E12.10");
-        assert_eq!((SECTIONS[4].id, SECTIONS[4].name()), (STATISTICS_SECTION, tr("Statistics")), "issue #485");
+        assert_eq!((SECTIONS[4].id, SECTIONS[4].name()), (AUTOMATION_SECTION, tr("Automation")), "issue #556");
+        assert_eq!((SECTIONS[5].id, SECTIONS[5].name()), (STATISTICS_SECTION, tr("Statistics")), "issue #485");
         let (mut host, _) = Host::new(Arc::new(Demo::new()), SECTIONS.to_vec(), wanted());
         for id in ids {
             assert!(host.open(id), "{id}");
@@ -4502,6 +4534,10 @@ mod tests {
                 torro_ipc::Request::ListMailFilters,
                 // The senders trusted with "Not fraud" (issue #506).
                 torro_ipc::Request::ListRules,
+                torro_ipc::Request::ListWorkflowTemplates,
+                torro_ipc::Request::ListWorkflows,
+                torro_ipc::Request::ListWorkflowRules,
+                torro_ipc::Request::ListWorkflowRuns { workflow: None, mail: None },
             ]
         );
     }

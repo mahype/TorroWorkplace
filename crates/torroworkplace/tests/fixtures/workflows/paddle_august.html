@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Invoice</title></head>
+<body>
+<header class="c-header no-print">Account navigation</header>
+<main class="c-main"><div class="c-container"><div class="c-sheet">
+<div class="g-container"><div class="vendor-logo"><h1>Example Suite</h1></div>
+<h3><span>Invoice SYNTH-AUG-001</span> · 10 August 2026</h3></div>
+<div><h1>Invoice <span class="c-badge c-badge--success">Paid</span></h1></div>
+<div class="g-container"><div class="g-row">
+<div class="g-col-6"><h4>Invoice to</h4><h5>Example Buyer Ltd</h5>
+<p>42 Fiction Lane<br>Example Town<br>DE 12345</p><p>VAT ID: DE000000000</p>
+<p id="add-edit-address-container" class="no-print"><a id="add-edit-address">Edit details</a></p></div>
+<div class="g-col-6"><h4>Invoice from</h4><h5>Example Seller Ltd</h5>
+<p>17 Imaginary Road<br>Example City<br>United Kingdom</p><p>VAT ID: GB000000000</p></div>
+</div></div>
+<h4>Payment details</h4><p>Paid on <strong>10 August 2026</strong><br>Card ending <strong>4242</strong></p>
+<p>Service period: 10 August–9 September 2026</p>
+<section class="receipt-table receipt-no-plan-name">
+<div class="receipt-table-head"><div class="receipt-table-head-product">Product</div><div class="receipt-table-head-quantity">Quantity</div><div class="receipt-table-head-price">Price</div></div>
+<div class="receipt-table-row"><div class="receipt-table-row-product"><span>Example Subscription</span></div><div class="receipt-table-row-quantity">2</div><div class="receipt-table-row-price">€20.00</div></div>
+<div class="receipt-table-tax-total"><div class="receipt-table-tax"><div class="receipt-table-tax-left">VAT (19%)</div><div class="receipt-table-tax-right">€7.60</div></div>
+<div class="receipt-table-total"><div class="receipt-table-total-left">Total</div><div class="receipt-table-total-right">€47.60<p>Includes applicable tax.</p></div></div></div>
+</section>
+<section><p id="statement-message">Your statement shows EXAMPLE *SUITE.<br>Thank you for your purchase.</p><p>Support: Example Support</p></section>
+</div></div>
+<div id="customer-information-modal"><form id="update-address-form"><input name="csrf" value="synthetic-nonsecret"><label>Edit receipt information</label><input id="invoice_fullname" value="Example Buyer Ltd"><button>Save</button></form></div>
+</main></body></html>

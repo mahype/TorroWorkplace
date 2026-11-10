@@ -145,6 +145,40 @@ soweit freigegeben).
   neue Notiz eine Freigabe, damit kein Text von außen unbemerkt in den Prompt gelangt; Notizen, die ein lokales
   Modell nach dem Lesen von Mail anlegt, bleiben „Nur auf diesem Computer“ (C.10, C.11).
 
+## Begrenzte Mail-Abläufe (#556)
+
+Mail-Abläufe sind eigene Dienstbefehle `workflows.*`, keine freie Agenten- oder Browseraufgabe.
+Verbindlicher Umfang und Integrations-/Abnahmegrenzen: [mail-workflows.md](mail-workflows.md).
+Der Bereich `workflows` startet auch in „Full access“ ausgeschaltet. Mailabhängige Befehle brauchen
+zusätzlich Mail-Leserecht und das erlaubte Konto unter derselben effektiven Reichweite. Ursprünglicher
+Träger, `Origin`, `Narrowing`, Rechte-Schnittmenge und `without Mail` gelten über Entwurf, Freigabe
+und spätere Läufe weiter; ein Klick in der App macht daraus keinen Auftrag mit höheren App-Rechten.
+
+„Create workflow with AI…“ verwendet ausschließlich das konfigurierte Chat-Modell über den bestehenden
+Modellzugang. Fehlt es, folgt `not-connected`, kein anderer Anbieter, Browser oder Webabruf. Die
+Mail-Datenregel gilt vor und nach dem Modellaufruf, ebenso für Workflow-Antworten und deren späteren
+Gesprächsverlauf. Mailabgeleitete Beschreibungen, Bedingungen, Ergebnisse und Modellantworten sind
+`untrusted`, niemals Anweisungen oder eine Erlaubnis für weitere Zugriffe. Private Token-URLs werden
+nicht in persistente Pakete übernommen. Nur `list_templates` und `get_template` sind öffentliche,
+mailfreie Metadatenabfragen.
+
+Der gleichwertige Vorlagenweg (`instantiate_template`) braucht **kein Modell** und erzeugt nur einen
+inaktiven Entwurf, ohne Test, Abruf, Ausführungsgrant oder Regel. Auch ein KI-Vorschlag autorisiert
+nichts. `preview_run`/`preview_rule` bleiben lokal; `run` mit `test: true` dagegen lädt und schreibt
+wirklich und braucht eine ausdrückliche menschliche Bestätigung. Speichern setzt einen erfolgreichen
+Test der exakten Fassung voraus; beim ersten Speichern wird der Ablauf für bewusste manuelle Nutzung
+eingeschaltet, ohne Dauergrant oder aktive Regel. Alle clientseitigen `workflows.run` benötigen eine
+konkrete menschliche Freigabe mit jobgebundenem Einmalgrant, auch normale manuelle Läufe. Manuelle
+App-Klicks sind einmalige Aufträge, keine dauerhafte Delegation.
+
+Der Assistent darf über API/MCP weder Dauergrants erteilen noch widerrufen:
+`authorize_workflow` und `revoke_workflow_authorization` sind App-only und `Never`. Eine gewöhnliche
+Client-Freigabe ersetzt keinen Dauergrant. Ein Mensch autorisiert die getestete Fassung mit Träger,
+Konto, Hosts, Wirkungen und Zielbindung für Automatik; Regelaktivierung bleibt gesondert. Deaktivierung
+und Widerruf stoppen über die Ausführungsepoche auch bereits laufende manuelle Einmalaufträge.
+Automatische Ausführung benutzt anschließend den begrenzten Runner, **keinen** laufenden Chat-Agenten, kein Portal-Login,
+keinen Browser, kein Skript und keinen Ausbau der allgemeinen Übergabe #260 oder Erweiterungen #79.
+
 ## Bots (Stufe 2)
 
 Nach dem Vorbild der Bots bei Grok und der GPTs bei OpenAI, bei uns einfach **Bots**: weitere

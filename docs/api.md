@@ -155,6 +155,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `contacts` ²⁸ | `list_address_books`, `list_contacts`, `get_contact`, `get_photo`, `list_groups`, `upcoming_birthdays` | `create_contact`, `add_to_contact`, `set_favorite`, `add_to_group`, `mark_used`, `move_contact`, `resolve_conflict` mit `both` | `update_contact`, `remove_from_group`, `set_photo`, `delete_contact`, `resolve_conflict` mit `mine`/`theirs` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ², `move_category` ²⁹ |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `get_draft`, `prepare_paste`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `prepare_image`, `upload_image`, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages`, `release_images` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
+| `workflows` (#556) | Vorlagen, Abläufe, Regeln, Läufe, Dokumentstücke und lokale Vorschau (siehe unten) | Entwürfe, getestete Abläufe, Start/Abbruch, Öffnen/Zeigen | Ablauf/Regel entfernen | Regeln verwalten; Dauergrant erteilen/widerrufen **nur App-Schlüssel** |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
 | `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |
@@ -1028,6 +1029,57 @@ Oberfläche.
 
 Neue Bereiche kommen mit ihren Funktionen dazu (`github`, `mail`, später `slack`, `contacts` …).
 
+### Begrenzte Mail-Abläufe (#556)
+
+Oberfläche: Torro-/Kontextmenü an einer Mail sowie Mail › Settings › Automation. API `workflows.*`,
+MCP jeweils Punkt durch Unterstrich, etwa `workflows_preview_run`. Die verbindlichen Dienstregeln,
+Grenzen und der laufende Integrations-/Abnahmestand stehen in [mail-workflows.md](mail-workflows.md).
+Die folgende Vertragsübersicht ist kein Auslieferungs- oder Gesamtprüfungsnachweis.
+
+| Zugriff | Befehle in `workflows` | Zweck |
+|---|---|---|
+| Read | `list_templates`, `get_template` | Öffentliche Vorlagenmetadaten/Pakete ohne Maillesen |
+| Write | `instantiate_template` | Revision und Digest für Mail-ID + bestehende Ziel-ID kopieren; inaktiver Entwurf ohne KI, Abruf, Test, Grant oder Regel |
+| Read | `list_workflows`, `get_workflow`, `list_rules`, `list_runs`, `get_run` | Nur erreichbare gespeicherte Objekte |
+| Read | `preview_run`, `preview_rule` | Rein lokale Vorschau; keine DNS-/GET-/Konvertierungs-/Ergebnisdateiwirkung |
+| Read | `get_document` | Geprüfte Dokument-ID, Offset und höchstens 256 KiB je Stück; kein freier Pfad |
+| Write | `propose_workflow`, `create_draft`, `update_draft`, `save_workflow`, `duplicate_workflow`, `set_workflow_enabled` | Begrenzter Entwurf; erstes Speichern schaltet die getestete Fassung für bewusste manuelle Nutzung ein, ohne Dauergrant/Regel |
+| Write | `run`, `cancel_run`, `open_document`, `show_document` | Dauerhafter Job beziehungsweise geprüfte Dokumentaktion |
+| Admin | `create_rule`, `update_rule`, `duplicate_rule`, `set_rule_enabled` | Menschliche Client-Freigabe; Regeln zunächst aus, Aktivierung getrennt |
+| Delete | `remove_workflow`, `remove_rule` | Definition entfernen, Dateien/Läufe/Deduplizierung behalten |
+| Admin, App-only, Never | `authorize_workflow`, `revoke_workflow_authorization` | Getrennte dauerhafte Ausführungsrechte, kein MCP-Tool (Punkt 12 unten) |
+
+`workflows` ist in **allen** Rechtevorlagen aus. Außer den beiden öffentlichen Vorlagenabfragen sind
+die Befehle mailabhängig: Mail/Read, Kontoauswahl, ursprünglicher Träger und effektive
+Origin-/Narrowing-Schnittmenge gelten vor dem Lesen und nach Pending erneut. Ein Zielbezeichner gibt
+keinen Ordner frei; die bestehenden Ablagerechte bleiben nötig. App-Bearbeitung erweitert nie einen
+Client-Auftrag. Ergebnisse und Gesprächsverlauf unterliegen der Mail-Datenregel und `without Mail`;
+mailabgeleitete Daten bleiben `untrusted`.
+
+`run` mit `test: true` ist ein **echter bestätigter Download samt Ablage**, kein Preview; der
+einmalige Testgrant bindet Mail, Revision, Hosts und Ziel. **Alle clientseitigen `workflows.run`**
+brauchen eine konkrete menschliche Freigabe, auch normale manuelle Läufe. Der Einmalgrant ist an den
+Job gebunden; manuelle App-Klicks sind ebenfalls einmalige Aufträge. `save_workflow` setzt beim ersten
+Speichern `enabled=true` für bewusste manuelle Wiederverwendung, aber keinen Dauergrant und keine
+Regel; erneutes Speichern reaktiviert einen deaktivierten Ablauf nicht. Automatik braucht separat
+Dauergrant und aktivierte Regel. Aktuelle Rechte/Grants werden vor jedem Außen-/Schreibschritt
+geprüft; Disable/Revoke stoppen über die Ausführungsepoche auch laufende manuelle Einmalaufträge.
+`run` liefert einen Lauf mit Job-ID oder zunächst `pending`.
+Revision/Digest/Zieländerung während einer Freigabe führt nicht zur Ausführung eines anderen Stands.
+
+Fremde/unbekannte Objekte: `not-found`; veraltete Revision/Digest/Bindung: `conflict`; fehlende Rechte:
+`forbidden`; ungültige Eingabe: `error`; fehlende Fähigkeit: `unsupported`; volle Queue: `busy`.
+Leere Listen sind normal. Höchstens zwei Worker und 100 offene Jobs. Persistenter Dedup gilt auch für
+Tests und über Regeln/Versionen hinweg; nur bestätigtes `repeat: true` erzeugt eine neue Generation.
+Neue-Mail-/Kategorie-Ereignisse kommen dauerhaft aus der Mail-Outbox; Baseline/Reset, sieben Tage
+Nachholen und `notify`/`\Seen`-Unabhängigkeit sind Dienstregeln, keine Optionen zur Rechteumgehung.
+
+Dokumentaktionen prüfen aktuelle Rechte, Ziel, Pfad und Hash. Fehlend/geändert wird angezeigt,
+nicht heimlich nachgeladen. Der begrenzte PDF-Containerparser unterstützt klassische Xref-Tabellen,
+keine komprimierten Xref-/ObjStm-Varianten, und dekomprimiert keine Streams, Fonts oder Bilder.
+Portallogins, Browser, Skripte, Zahlungsaktionen und ein Ausbau von #260/#79 bleiben ausgeschlossen.
+Private URLs, Tokens und Rechnungsinhalte gelangen nicht in Audit oder Diagnose.
+
 ### Form der Befehle
 
 - **Kleine, gezielte Befehle** statt „alles ersetzen“: `UpdateSettings { settings }` ersetzt heute
@@ -1260,6 +1312,14 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    (`apps.uninstall_app`, Admin, also immer mit Freigabe). Ein Auftrag meldet nur feste Codes, Größen, Pfade und
    Versionen, nie die Ausgaben von `codesign`, `tar`, `pacman` oder `powershell`.
 
+12. **Dauerhafte Ausführungsrechte für Mail-Abläufe erteilen oder widerrufen** (Issue #556):
+    `workflows.authorize_workflow` und `workflows.revoke_workflow_authorization` nur mit dem
+    App-Schlüssel (`Mcp::Never`). Ein Agent darf weder sich selbst noch seinem Ablauf einen
+    Ausführungsgrant geben. Autorisierung erfordert einen erfolgreichen Test der exakten Fassung
+    und des unveränderten Ablageziels; ein Entwurf, eine Vorlage, eine Regel oder eine normale
+    Client-Freigabe ersetzt sie nicht. Der Bereich `workflows` bleibt in allen Rechtevorlagen
+    zunächst aus. Vertrags- und Entwicklungsstand: [mail-workflows.md](mail-workflows.md).
+
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.
 
@@ -1275,7 +1335,7 @@ dort wird je Client festgelegt, worauf er zugreifen darf (wie in TorroMail).
 
 Seit #531 zeigt außerdem **jede App** unter Zahnrad › **API and MCP** die Rechte der Schlüssel und MCP-Clients in
 ihrem eigenen Bereich (Kalender `calendar`, Aufgaben `tasks` und `github`, Notification Hub und App Feed `inbox`,
-Mail `mail`, Assistent `assistant` und `bots`) und ändert sie dort. Es sind dieselben Rechte desselben Clients,
+Mail `mail` und mit #556 `workflows`, Assistent `assistant` und `bots`) und ändert sie dort. Es sind dieselben Rechte desselben Clients,
 einmal im Dienst gespeichert; die Steuerzentrale zeigt sie gesammelt. Die App sendet nur `clients.update_client`
 (App-Schlüssel, `Mcp::Never`), nur für die Arten `script` und die MCP-Arten, nie für Assistent, Bots oder Hooks.
 Schlüssel anlegen und Clients verbinden bleibt in der Steuerzentrale (in einer einzelnen App: #538). Es gibt kein
@@ -1323,7 +1383,9 @@ Freigabe nötig? → ausführen → protokollieren. Rechte werden bei der
 Ausführung einer Freigabe **noch einmal** geprüft.
 
 - Rechte gelten je Anfrage: Eine Änderung wirkt ab der nächsten Anfrage, eine laufende läuft mit
-  dem Stand zu Ende, mit dem sie angenommen wurde.
+  dem Stand zu Ende, mit dem sie angenommen wurde. **Ausnahme Mail-Abläufe (#556):** Ihre dauerhaften
+  Jobs prüfen Rechte und Grants erneut vor jedem Außen-/Schreibschritt; Deaktivierung/Widerruf
+  stoppen über die Ausführungsepoche auch schon laufende manuelle Einmalaufträge.
 - Ein Termin oder eine Aufgabe ist nur erreichbar, wenn das aufgelöste `href` ein **direktes Kind**
   einer erlaubten Sammlung ist (gleicher Server, kein `..`).
 - **Verschieben** (`save_event`/`save_todo` mit anderer `collection`) braucht nur `Write`, obwohl

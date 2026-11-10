@@ -22,8 +22,8 @@ Assistent und Bots stehen seit #231 in deren Fenster (siehe [Accounts, API und M
 **Rechte für API und MCP je App (#531):** Jede App ist einzeln herunterladbar und bringt ihre Rechte mit. Unter
 Zahnrad › **API and MCP** zeigt sie jeden API-Schlüssel und MCP-Client mit dem, was er in **ihrem** Bereich darf,
 und ändert es dort: Kalender `calendar`, Aufgaben `tasks` und `github`, Notification Hub und App Feed `inbox`, Mail
-`mail`, der Assistent `assistant` und `bots`. Kontakte und alles andere, was mehrere Apps teilen, bleibt in der
-Steuerzentrale. Gespeichert wird einmal im Dienst (`clients.update_client`); die Steuerzentrale zeigt dieselben
+`mail` und mit #556 `workflows`, der Assistent `assistant` und `bots`. Kontakte und alles andere, was
+mehrere Apps teilen, bleibt in der Steuerzentrale. Gespeichert wird einmal im Dienst (`clients.update_client`); die Steuerzentrale zeigt dieselben
 Rechte gesammelt. Schlüssel anlegen und Clients verbinden bleibt in der Steuerzentrale; ohne Hauptanwendung steht
 dort nur ein Satz, wo Clients angelegt werden (das Anlegen in einer einzelnen App klärt #538). Was die Suite teilt
 (etwa freigegebene KI-Modelle), zeigt eine App nur ohne Hauptanwendung, wie Aussehen und Sprache.
@@ -175,8 +175,9 @@ Konto zählen nicht (#543).
   Wirkung. Die Steuerzentrale öffnet eine App mit `apps.open_app` (holt ein laufendes Fenster nach vorn);
   dort die Einstellungen gleich aufzuschlagen bräuchte einen neuen Weg vom Kern zur App und ist nicht geplant. Hinweise in der App, die
   bisher die Steuerzentrale öffneten, öffnen den passenden Abschnitt im selben Fenster („All rules“ →
-  Rules); das Mail-Fenster hat keine Rules, dort holt „All rules“ das Fenster des Notification Hub nach
-  vorn, wo die Regeln stehen. „Change access“ unter einer abgelehnten Antwort und „Access…“ eines Bots öffnen
+  Rules); „All rules“ für Regeln des Notification Hub holt aus dem Mail-Fenster dessen Fenster nach
+  vorn. Die getrennten Dokument-Ablaufregeln (#556) stehen dagegen unter Mail › Automation › Rules.
+  „Change access“ unter einer abgelehnten Antwort und „Access…“ eines Bots öffnen
   seit #231 den Abschnitt Access im selben Fenster; Konten einrichten öffnet weiter Accounts in der Steuerzentrale.
   Für die Backup-Seite eines Mail-Kontos (#267) gibt es im Mail-Fenster die Demo-Zustände
   `torroinbox --demo --view mail --open backup|backup-plan|backup-error|backup-done`: Einstellungen
@@ -191,7 +192,7 @@ Konto zählen nicht (#543).
 | **Calendar** | Calendars (welche die Suite zeigt, je Konto gruppiert; Art der Erinnerung je Kalender) · Reminders (an/aus, Vorlauf, alle Bildschirme, Ton, welche Termine) · Night (die Karte am Mond in der Zeitleiste bleibt als schneller Weg) · API and MCP (#531) | Kontodetail „Calendars and lists“; General › Calendar, › Reminders, › Which events, › Calendars |
 | **Tasks** | Lists (welche die Suite zeigt, je Konto gruppiert) · API and MCP (#531, Aufgaben und GitHub) | Kontodetail „Calendars and lists“ |
 | **Notification Hub** (Fensterarten Notification Hub und App Feed) | Notifications (still bei Terminen) · Sources (je Konto: Nextcloud-Benachrichtigungen und Talk, GitHub, je ntfy-Server stumm oder an, je Mail-Konto „Show new mail“; ab vier Gruppen Reiter je Anbieter Nextcloud · GitHub · Mail · ntfy, #546) · Rules (Liste mit „Remove“; vertraute Absender stehen nur unter Mail › Categorization › Spam und Phishing, #546) · API and MCP (#531) | Seite Notification Hub; Abschnitte „Notification Hub“ der Kontoseiten |
-| **Mail** (Fensterart Mail) | Accounts (je Mail-Konto Absendername, Signatur, „Write new mail as“, offene Ordnerfragen, Backup und Restore) · Reading („Show mail as“, „Mail colors“) · Attachments („Click on an attachment“, Downloads-Ordner, Ablageziele mit Editor; M12.7, #290) · Categorization (Tabs Categories, dann AI, seit #481; das Modell wählt man unter AI, #545; Kopf mit „Sort existing mail…“ und Fortschritt; Regeln und Filter einer Kategorie stehen auf ihrer Seite, Filter ohne Kategorie unter „Other filters“, eine eigene Seite „Filters“ gibt es nicht mehr; [kategorien.md](kategorien.md), [mail.md](mail.md#filter)) · Statistics (#485: Reiter Overview, Senders, Inbox, Categories; Zeitraum und Konto wie die Übersicht; „Details ›“ der Übersicht führt hin; [mail.md](mail.md)) · Keyboard shortcuts (E10.3) · API and MCP (#531) | Kontodetail Mail; Appearance › Mail; Mail-Backup #267 |
+| **Mail** (Fensterart Mail) | Accounts (je Mail-Konto Absendername, Signatur, „Write new mail as“, offene Ordnerfragen, Backup und Restore) · Reading („Show mail as“, „Mail colors“) · Attachments („Click on an attachment“, Downloads-Ordner, Ablageziele mit Editor; M12.7, #290) · Categorization (Tabs Categories, dann AI, seit #481; das Modell wählt man unter AI, #545; Kopf mit „Sort existing mail…“ und Fortschritt; Regeln und Filter einer Kategorie stehen auf ihrer Seite, Filter ohne Kategorie unter „Other filters“, eine eigene Seite „Filters“ gibt es nicht mehr; [kategorien.md](kategorien.md), [mail.md](mail.md#filter)) · Automation (#556: Workflows, Rules, Runs; siehe unten) · Statistics (#485: Reiter Overview, Senders, Inbox, Categories; Zeitraum und Konto wie die Übersicht; „Details ›“ der Übersicht führt hin; [mail.md](mail.md)) · Keyboard shortcuts (E10.3) · API and MCP (#531, mit #556 auch `workflows`) | Kontodetail Mail; Appearance › Mail; Mail-Backup #267 |
 
 Keine App zeigt „Appearance“ als eigene Seite (nur den Verweis). **Ausnahme seit #408:** Fehlt die
 Hauptanwendung, zeigt jede App statt der beiden Verweise die Abschnitte Appearance und General (Language,
@@ -215,6 +216,46 @@ Assistant › Access; der Bot-Editor verweist dorthin. Die Nacht bleibt an zwei 
 
 Was im Fenster gewählt wird, gilt für die ganze Suite (wie heute in der Steuerzentrale). Die
 spätere Auswahl **pro Fenster** (unten) kommt als eigener Schalter dazu, nicht als Umbau.
+
+### Mail › Automation (#556)
+
+Zusätzlich zu Categorization und Attachments gehört **Automation** in die Mail-Einstellungen:
+**Workflows**, **Rules**, **Runs**, mit Listen und nachfolgenden Detailseiten. Das ist keine zweite
+Verwaltung der Hub-Regeln oder der Mail-Filter. Der verbindliche Umfang und der noch laufende
+Integrations-/Abnahmestand stehen in [mail-workflows.md](mail-workflows.md).
+
+- **Workflows:** Erstellen, Bearbeiten, Testen, Duplizieren, Ausschalten und Entfernen. „New from
+  template…“ öffnet dieselbe Einrichtung wie das Torro-/Kontextmenü einer Mail: Beispielmail,
+  Dokumentdownload, vorhandenes Ablageziel, KI-Entwurf oder gebündelte Vorlage. Vorlagen zeigen
+  Beschreibung, Version, exakte Domains, Zugriffe und Grenzen; ihre Kopie braucht keine KI und
+  bleibt ohne Abruf, erfolgreichen Test, Grant oder Regel inaktiv.
+- **Vorschau und Test unterscheiden:** Preview bleibt lokal ohne DNS, GET, Konvertierung oder
+  Ergebnisdatei. Der bestätigte Test lädt und schreibt wirklich ins angezeigte Ziel. Erst nach
+  erfolgreichem Test lässt sich die exakte Fassung speichern. Fehlendes Ziel oder Modell wird
+  erklärt; Vorlagen sind auch ohne Modell möglich.
+- **Autorisierung:** „Authorize this revision…“ beziehungsweise „Revoke authorization…“ sind
+  ausdrückliche Entscheidungen des Menschen mit dem App-Schlüssel, keine Rechte eines Agenten.
+  Das erste Speichern schaltet die getestete Fassung für bewusste manuelle Nutzung ein, ohne
+  Dauergrant oder aktive Regel; erneutes Speichern reaktiviert einen ausgeschalteten Ablauf nicht.
+  Manuelle App-Klicks sind Einmalaufträge, alle clientseitigen `workflows.run` brauchen konkrete
+  menschliche Freigabe mit jobgebundenem Einmalgrant. Dauergrant und „Set up automatic execution…“
+  bleiben davon getrennt. Deaktivierung/Widerruf stoppen über die Ausführungsepoche auch laufende
+  manuelle Einmalaufträge.
+  Neue, bearbeitete oder duplizierte Regeln sind aus; andere Fassungen übernehmen keine Tests/Grants.
+- **Rules:** Konto, neue Mail oder Kategoriezuweisung, Suchbedingung und optional beziehungsweise beim
+  Kategorieauslöser verpflichtend Kategorie. Vorschau vorhandener Mail führt nichts aus; Altbestand
+  wird nur einzeln ausdrücklich gewählt. Aktivierung verarbeitet keinen Erst-/Resetbestand, holt
+  höchstens sieben Tage nach und braucht geprüfte Absender und bestätigte Domains. `notify`,
+  `\Seen` und Absenderlogos sind keine Workflow-Schalter.
+- **Runs:** Fortschritt, Warten/Pause/Fehler, Abbruch, Teilergebnis, bestätigtes Repeat und Dokumente
+  mit „Open“/„Show in folder“. Anbieter-PDF und gekennzeichnete HTML-Kopie bleiben unterscheidbar.
+  Fehlende/geänderte Dateien werden sichtbar; Entfernen behält Dateien und Deduplizierung.
+
+Schmal öffnen Liste und Detail nacheinander, mit erreichbarem Zurück und Tastaturfokus. Die eigene
+Automationsseite ist eine weitere Ausnahme vom gewöhnlichen Autosave: Einrichten, Testen, Speichern,
+Autorisieren und Aktivieren sind bewusste, getrennte Schritte. Mail › API and MCP zeigt auch den
+zunächst geschlossenen Bereich `workflows`; dessen Öffnen ersetzt weder Mail-/Kontorechte noch
+Ordner- oder Ausführungsgrants.
 
 ### Technik
 

@@ -1,0 +1,26 @@
+Example Apps
+Invoice SYNTH-OCT-002 · 10 October 2026
+Invoice Paid
+Invoice to
+Fictional Customer
+8 Sample Street
+Exampleville
+France
+Invoice from
+Fictional Merchant Ltd
+5 Sample Square
+Example City
+Ireland
+VAT: IE000000000
+Payment details
+Paid on 10 October 2026
+Card ending 1111
+Service period: October 2026
+Product	Quantity	Price
+Example desktop subscription	1	$30.00
+Example add-on	3	$5.00
+Tax	$9.00
+Total USD	$54.00
+Your statement shows FICTIONAL MERCHANT.
+All amounts are in USD.
+Questions? Contact Example Support.

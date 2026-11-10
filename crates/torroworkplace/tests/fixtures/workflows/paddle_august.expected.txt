@@ -1,0 +1,26 @@
+Example Suite
+Invoice SYNTH-AUG-001 · 10 August 2026
+Invoice Paid
+Invoice to
+Example Buyer Ltd
+42 Fiction Lane
+Example Town
+DE 12345
+VAT ID: DE000000000
+Invoice from
+Example Seller Ltd
+17 Imaginary Road
+Example City
+United Kingdom
+VAT ID: GB000000000
+Payment details
+Paid on 10 August 2026
+Card ending 4242
+Service period: 10 August–9 September 2026
+Product	Quantity	Price
+Example Subscription	2	€20.00
+VAT (19%)	€7.60
+Total	€47.60 Includes applicable tax.
+Your statement shows EXAMPLE *SUITE.
+Thank you for your purchase.
+Support: Example Support

@@ -1950,21 +1950,49 @@ pub(crate) mod tests {
         let (now, _) = sync_of(answer(&service, Reach::Suite, sync_status(None, None)).await);
         assert_ne!(now, all, "Bernd's sync did change meanwhile");
 
-        // The answer comes with the removal, not at the end of the wait (2 s in the tests). Measured
+        // Force the race: another account changes after the version was captured. Its legitimate
+        // answer must be consumed before removing Anna, rather than mistaken for the removal.
+        bernd.add("INBOX", &mail_with("Bernd's third", 0, "Five"), &[]);
+        crate::mail::service::tests::eventually("another visible sync change", || async {
+            service.sync_states(Reach::Suite, None).await.0 != now
+        })
+        .await;
+        let (first_answer, received_first) = tokio::sync::oneshot::channel();
+
+        // Follow every version until the removal is observed, as a subscriber must: a status
+        // answer can represent any visible change (or a timeout), not one requested event.
+        // The removal must end the current wait, not run it out (2 s in the tests). Measured
         // against when the removal was done: on a machine busy with the whole test suite the removal
         // itself may take most of the wait (#472), and a wait it ended still ends before the deadline.
         let begun = std::time::Instant::now();
         let deadline = begun + std::time::Duration::from_millis(2000);
         let waiting = async {
-            let answered = answer(&service, Reach::Suite, sync_status(None, Some(now))).await;
-            (answered, std::time::Instant::now())
+            let mut after = now;
+            let mut first_answer = Some(first_answer);
+            loop {
+                let answered = answer(&service, Reach::Suite, sync_status(None, Some(after))).await;
+                let Response::MailSyncStatus { version, ref accounts } = answered else {
+                    panic!("sync status");
+                };
+                if let Some(first_answer) = first_answer.take() {
+                    assert!(accounts.iter().any(|state| state.account == ANNA), "the first answer precedes removal");
+                    first_answer.send(()).expect("removal waits for the first status answer");
+                }
+                if accounts.iter().all(|state| state.account != ANNA) {
+                    break (answered, std::time::Instant::now());
+                }
+                after = version;
+            }
         };
         let removing = async {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            received_first.await.expect("first status answer");
             service.remove(ANNA).await.expect("removed");
             std::time::Instant::now()
         };
-        let ((answered, at), removed) = tokio::join!(waiting, removing);
+        let ((answered, at), removed) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), async { tokio::join!(waiting, removing) })
+                .await
+                .expect("the subscription must observe removal, not loop forever on stale status");
         let (_, states) = sync_of(answered);
         assert_eq!(states.iter().map(|state| state.account.clone()).collect::<Vec<_>>(), [bernds]);
         if removed + std::time::Duration::from_millis(500) < deadline {

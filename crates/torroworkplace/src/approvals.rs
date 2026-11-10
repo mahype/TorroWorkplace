@@ -344,6 +344,33 @@ pub struct Facts {
     /// stores (`crate::mail::filters::to_approve`). The account, folder and count of what the request
     /// sets are in [`Facts::mail`]. Boxed: the facts are held across awaits, deep in the stack.
     pub filter: Option<Box<FilterFacts>>,
+    /// Exact workflow and target metadata looked up in the private service, not supplied display strings.
+    pub workflow: Option<Box<WorkflowFacts>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkflowFacts {
+    pub name: Option<String>,
+    pub target: Option<String>,
+    pub hosts: Vec<String>,
+    pub test: bool,
+    pub repeat: bool,
+    pub account: Option<String>,
+    pub rule_query: Option<String>,
+    pub rule_trigger: Option<torro_ipc::workflows::Trigger>,
+    pub revision: Option<u32>,
+    pub mail: Option<Box<WorkflowMailFacts>>,
+    pub rule_category: Option<torro_mail::Category>,
+    /// Resolved from the inbox catalogue by the core, never supplied by a client.
+    pub rule_category_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorkflowMailFacts {
+    pub id: String,
+    pub subject: String,
+    pub sender: String,
+    pub date: String,
 }
 
 /// What the core's store holds about the contact a `contacts.*` command names ([`Facts::contact`]).
@@ -1571,6 +1598,50 @@ fn follow_summary(function: torro_core::ai::AiFunction, facts: &Facts) -> String
 /// invisible format characters, no quotes that could end the quoted part, no placeholders, at
 /// most 60 characters. Front ends still show the summary as plain text only.
 pub fn summary(request: &Request, facts: &Facts) -> String {
+    if request.operation().area() == Area::Workflows {
+        let name = facts.workflow.as_ref().and_then(|workflow| workflow.name.as_deref()).map(quote);
+        let action = match request {
+            Request::RunWorkflow { test: true, .. } => "Test mail workflow “{name}”",
+            Request::RunWorkflow { .. } => "Run mail workflow “{name}”",
+            Request::RemoveWorkflow { .. } => "Remove mail workflow “{name}”",
+            Request::SetWorkflowEnabled { enabled: false, .. } => "Disable mail workflow “{name}”",
+            Request::SetWorkflowEnabled { enabled: true, .. } => "Enable mail workflow “{name}”",
+            Request::CreateWorkflowRule { .. } => "Create an inactive rule for mail workflow “{name}”",
+            Request::UpdateWorkflowRule { .. } => "Change an automatic rule for mail workflow “{name}”",
+            Request::DuplicateWorkflowRule { .. } => "Copy an inactive rule for mail workflow “{name}”",
+            Request::SetWorkflowRuleEnabled { enabled: true, .. } => {
+                "Enable automatic execution of mail workflow “{name}”"
+            }
+            Request::SetWorkflowRuleEnabled { enabled: false, .. } => {
+                "Disable automatic execution of mail workflow “{name}”"
+            }
+            Request::RemoveWorkflowRule { .. } => "Remove an automatic rule for mail workflow “{name}”",
+            _ => "Use mail workflow “{name}”",
+        };
+        let mut shown = match name {
+            Some(name) => trf(action, &[("name", &name)]),
+            None => tr("Change mail workflow settings").into(),
+        };
+        if let Some(workflow) = &facts.workflow {
+            if let Some(revision) = workflow.revision {
+                shown = trf("{action}; revision {revision}", &[("action", &shown), ("revision", &revision)]);
+            }
+            if let Some(mail) = &workflow.mail {
+                let subject = if mail.subject.is_empty() { tr("No subject") } else { &mail.subject };
+                shown = trf(
+                    "{action}; mail “{subject}” [{id}]",
+                    &[("action", &shown), ("subject", &quote(subject)), ("id", &quote(&mail.id))],
+                );
+            }
+            if workflow.rule_trigger.is_some() {
+                shown = trf(
+                    "{action}; category: {category}",
+                    &[("action", &shown), ("category", &workflow_category(workflow, QUOTE_MAX))],
+                );
+            }
+        }
+        return shown;
+    }
     if super::mail::images::is_request(request) {
         let account =
             quote(facts.mail.as_ref().and_then(|mail| mail.account.as_deref()).unwrap_or(tr("Unknown account")));
@@ -3920,6 +3991,23 @@ fn draft_sent(draft: &DraftFacts, account: &str) -> String {
 /// room for a long subject, an address and the start of the text (`mime` keeps 200 of it).
 pub const DETAIL_MAX: usize = 200;
 
+fn workflow_category(workflow: &WorkflowFacts, maximum: usize) -> String {
+    match workflow.rule_category {
+        Some(category) => {
+            let name =
+                workflow.rule_category_name.clone().unwrap_or_else(|| torro_core::category::fallback_name(category));
+            format!("{} [{}]", quote_up_to(&name, maximum), category.key())
+        }
+        None => tr("Any category").into(),
+    }
+}
+
+/// Detail values may wrap or split into quoted pieces, but never hide executable scope.
+/// The summary stays short; the hub removes inline decisions if the full details exceed its cap.
+fn workflow_detail(value: &str) -> String {
+    whole(value).join("\n")
+}
+
 /// What the summary of `request` leaves out, one line each, in the core's language (task M3.5,
 /// [`ApprovalInfo::details`]); empty for every command but `mail.send_draft` and the changes of the
 /// assistant's profile and memory ([`profile_details`], task C.10), and for a draft the core does not
@@ -3939,6 +4027,63 @@ pub const DETAIL_MAX: usize = 200;
 /// `name: value` (the value as compact JSON), whole ([`whole`]): the summary cuts them at
 /// [`ARGUMENTS_MAX`] characters, the person deciding sees all of them here.
 pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
+    if let Some(workflow) = &facts.workflow {
+        let mut lines = Vec::new();
+        if let Some(revision) = workflow.revision {
+            lines.push(trf("Workflow revision: {revision}", &[("revision", &revision)]));
+        }
+        if let Some(mail) = &workflow.mail {
+            lines.push(trf("Selected mail: {id}", &[("id", &workflow_detail(&mail.id))]));
+            let subject = if mail.subject.is_empty() { tr("No subject") } else { &mail.subject };
+            lines.push(trf("Message: {subject}", &[("subject", &workflow_detail(subject))]));
+            let sender = if mail.sender.is_empty() { tr("Unknown sender") } else { &mail.sender };
+            lines.push(trf("Sender: {sender}", &[("sender", &workflow_detail(sender))]));
+            lines.push(trf("Mail date: {date}", &[("date", &workflow_detail(&mail.date))]));
+        }
+        if let Some(target) = &workflow.target {
+            lines.push(trf("Save target: {target}", &[("target", &workflow_detail(target))]));
+        }
+        for host in &workflow.hosts {
+            lines.push(trf("Allowed domain: {host}", &[("host", &workflow_detail(host))]));
+        }
+        if workflow.test {
+            lines.push(tr("This test downloads a real document and writes a file.").into());
+        }
+        if workflow.repeat {
+            lines.push(tr("This explicitly repeats a previous download as a new generation.").into());
+        }
+        if let Some(account) = &workflow.account {
+            lines.push(trf("Mail account: {account}", &[("account", &workflow_detail(account))]));
+        }
+        if let Some(query) = &workflow.rule_query {
+            lines.push(trf("Rule condition: {query}", &[("query", &workflow_detail(query))]));
+        }
+        if let Some(trigger) = workflow.rule_trigger {
+            let category = workflow_category(workflow, usize::MAX);
+            lines.push(trf("Rule category: {category}", &[("category", &category)]));
+            lines.push(match trigger {
+                torro_ipc::workflows::Trigger::NewMail => {
+                    tr("Trigger: new mail after content and categorization are ready.").into()
+                }
+                torro_ipc::workflows::Trigger::CategoryAssigned => {
+                    tr("Trigger: a new category assignment, not bulk recategorization.").into()
+                }
+            });
+        }
+        if matches!(request, Request::SetWorkflowRuleEnabled { enabled: true, .. }) {
+            lines.push(tr("This enables automatic execution while Torro Workplace is running. No initial inventory is processed; catch-up is limited to seven days.").into());
+        } else if matches!(
+            request,
+            Request::CreateWorkflowRule { .. }
+                | Request::UpdateWorkflowRule { .. }
+                | Request::DuplicateWorkflowRule { .. }
+        ) {
+            lines.push(tr("This rule is saved inactive and processes no mail.").into());
+        } else {
+            lines.push(tr("This approval grants no lasting workflow authorization or automatic rule.").into());
+        }
+        return lines;
+    }
     if super::mail::images::is_request(request) {
         let mail = facts.mail.as_ref();
         let account = quote_up_to(mail.and_then(|m| m.account.as_deref()).unwrap_or(tr("Unknown account")), DETAIL_MAX);
@@ -4277,6 +4422,152 @@ pub(crate) mod tests {
     use chrono::TimeZone;
 
     use super::*;
+
+    #[test]
+    fn workflow_approval_summaries_distinguish_mail_revision_and_category_without_expanding_details() {
+        let run = Request::RunWorkflow {
+            id: "workflow".into(),
+            revision: 7,
+            mail: "m:first".into(),
+            test: true,
+            repeat: false,
+        };
+        let mut workflow = WorkflowFacts {
+            name: Some("Invoice documents".into()),
+            revision: Some(7),
+            mail: Some(Box::new(WorkflowMailFacts {
+                id: "m:first".into(),
+                subject: "Stored invoice\n\u{202e}{name}".into(),
+                sender: "billing@example.org".into(),
+                date: "2026-11-09T12:00:00Z".into(),
+            })),
+            ..Default::default()
+        };
+        let shown =
+            |request, workflow| summary(request, &Facts { workflow: Some(Box::new(workflow)), ..Default::default() });
+        let first = shown(&run, workflow.clone());
+        for required in ["Invoice documents", "7", "Stored invoice", "m:first"] {
+            assert!(first.contains(required), "missing visible scope: {required}");
+        }
+        assert!(!first.contains(['\n', '\u{202e}', '{', '}']));
+        workflow.mail.as_mut().expect("source").id = "m:second".into();
+        assert_ne!(first, shown(&run, workflow.clone()), "same-subject sources remain distinguishable");
+        workflow.mail.as_mut().expect("source").id = "m:first".into();
+        workflow.revision = Some(8);
+        assert_ne!(first, shown(&run, workflow.clone()));
+        workflow.mail = None;
+        workflow.rule_trigger = Some(torro_ipc::workflows::Trigger::CategoryAssigned);
+        workflow.rule_category = Some(torro_mail::Category::Invoice);
+        workflow.rule_category_name = Some("My invoices".into());
+        let rule = Request::SetWorkflowRuleEnabled { id: "rule".into(), revision: 1, enabled: true };
+        let invoices = shown(&rule, workflow.clone());
+        assert!(invoices.contains("My invoices") && invoices.contains(torro_mail::Category::Invoice.key().as_ref()));
+        workflow.rule_category = Some(torro_mail::Category::Shipping);
+        workflow.rule_category_name = Some("My parcels".into());
+        assert_ne!(invoices, shown(&rule, workflow.clone()));
+        workflow.rule_category = None;
+        workflow.rule_category_name = None;
+        assert!(shown(&rule, workflow).contains(tr("Any category")));
+    }
+
+    #[test]
+    fn workflow_approval_details_identify_sources_revisions_and_named_category_conditions() {
+        let request = Request::SetWorkflowRuleEnabled { id: "rule".into(), revision: 1, enabled: true };
+        let category = torro_mail::Category::Custom(torro_mail::CustomCategory::new(42).expect("custom category"));
+        let mut workflow = WorkflowFacts {
+            revision: Some(7),
+            mail: Some(Box::new(WorkflowMailFacts {
+                id: "m:chosen".into(),
+                subject: "Stored invoice".into(),
+                sender: "Billing <billing@example.org>".into(),
+                date: "2026-11-09T12:00:00Z".into(),
+            })),
+            rule_trigger: Some(torro_ipc::workflows::Trigger::CategoryAssigned),
+            rule_category: Some(category),
+            rule_category_name: Some("Quarterly invoices".into()),
+            ..Default::default()
+        };
+        let shown = |workflow| details(&request, &Facts { workflow: Some(Box::new(workflow)), ..Default::default() });
+        let named = shown(workflow.clone());
+        assert!(named.contains(&trf("Workflow revision: {revision}", &[("revision", &7)])));
+        for required in [
+            "m:chosen",
+            "Stored invoice",
+            "billing@example.org",
+            "2026-11-09T12:00:00Z",
+            "Quarterly invoices",
+            &category.key(),
+        ] {
+            assert!(named.iter().any(|line| line.contains(required)), "missing visible workflow scope: {required}");
+        }
+        workflow.rule_category = None;
+        workflow.rule_category_name = None;
+        let unrestricted = shown(workflow);
+        assert!(unrestricted.contains(&trf("Rule category: {category}", &[("category", &tr("Any category"))])));
+        assert_ne!(named, unrestricted);
+    }
+
+    #[test]
+    fn workflow_approval_details_keep_long_domains_and_conditions_distinguishable() {
+        let request = Request::SetWorkflowRuleEnabled { id: "rule".into(), revision: 1, enabled: true };
+        let prefix = format!("{}.{}.{}.", "a".repeat(63), "b".repeat(63), "c".repeat(63));
+        let first_host = format!("{prefix}billing.example.org");
+        let second_host = format!("{prefix}billing.example.net");
+        let query = format!("subject:{}", "q".repeat(250));
+        let first_query = format!("{query} from:alice@example.org");
+        let second_query = format!("{query} from:bob@example.org");
+        let facts = |host: &str, query: &str| Facts {
+            workflow: Some(Box::new(WorkflowFacts {
+                name: Some("Invoice workflow".into()),
+                hosts: vec![host.into()],
+                rule_query: Some(query.into()),
+                rule_trigger: Some(torro_ipc::workflows::Trigger::NewMail),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let first = details(&request, &facts(&first_host, &first_query));
+        let host_changed = details(&request, &facts(&second_host, &first_query));
+        let query_changed = details(&request, &facts(&first_host, &second_query));
+        assert_ne!(first, host_changed, "domain ends must not disappear behind a common prefix");
+        assert_ne!(first, query_changed, "complete conditions are required even beyond DETAIL_MAX");
+        let shown = first.join("\n");
+        for piece in whole(&first_host).into_iter().chain(whole(&first_query)) {
+            assert!(shown.contains(&piece), "missing piece of executable scope");
+        }
+        assert!(!shown.contains('…'), "details must not silently truncate executable scope");
+    }
+
+    #[test]
+    fn workflow_approval_details_keep_complete_source_and_target_identifiers() {
+        let request = Request::RunWorkflow {
+            id: "workflow".into(),
+            revision: 1,
+            mail: "m:chosen".into(),
+            test: true,
+            repeat: false,
+        };
+        let value = format!("{}end\n\u{202e}{{untrusted}}", "x".repeat(260));
+        let facts = Facts {
+            workflow: Some(Box::new(WorkflowFacts {
+                mail: Some(Box::new(WorkflowMailFacts {
+                    id: "m:chosen".into(),
+                    subject: value.clone(),
+                    sender: value.clone(),
+                    date: "2026-11-09T12:00:00Z".into(),
+                })),
+                target: Some(value.clone()),
+                account: Some(value.clone()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let shown = details(&request, &facts).join("\n");
+        for piece in whole(&value) {
+            assert_eq!(shown.matches(&piece).count(), 4, "each source/target field must retain its end");
+        }
+        assert!(!shown.contains(['\u{202e}', '{', '}', '…']));
+    }
 
     /// Approvals in `dir/state/approvals.json` that show no notification.
     pub(crate) fn quiet_in(dir: &Path) -> Approvals {
