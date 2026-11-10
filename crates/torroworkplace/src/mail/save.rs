@@ -1585,6 +1585,7 @@ pub(crate) mod tests {
             untrusted: true,
             pile_since: None,
             logo: None,
+            suggested: Vec::new(),
         }
     }
 
@@ -2155,8 +2156,12 @@ pub(crate) mod tests {
         let mut reader = decoder.read_info().expect("a PNG");
         let mut pixels = vec![0; reader.output_buffer_size().expect("a size")];
         let frame = reader.next_frame(&mut pixels).expect("pixels");
-        let red =
-            pixels[..frame.buffer_size()].chunks_exact(3).filter(|p| p[0] > 180 && p[1] < 60 && p[2] < 60).count();
+        let red = pixels[..frame.buffer_size()]
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .filter(|p| p[0] > 180 && p[1] < 60 && p[2] < 60)
+            .count();
         assert!(red > 1000, "the picture of the mail is drawn: {red} red pixels");
     }
 

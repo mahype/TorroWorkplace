@@ -290,6 +290,19 @@ impl SettingsStore {
         self.change(|settings| change.limited_for_clients(settings).apply(settings))
     }
 
+    /// Looks for the kind of action `kind` in new mail or not (issue #603, `mail.set_action_kind`):
+    /// only the kinds switched off are stored. Whether `kind` exists is the caller's check.
+    pub fn set_action_kind(&self, kind: &str, enabled: bool) -> Result<(), String> {
+        self.change(|settings| match enabled {
+            true => {
+                settings.mail_actions_off.remove(kind);
+            }
+            false => {
+                settings.mail_actions_off.insert(kind.to_string());
+            }
+        })
+    }
+
     /// Shows or hides one collection in all apps (`Request::SetCollectionShown`). Whether the id
     /// belongs to an account is the caller's check.
     pub fn set_collection_shown(&self, collection: &str, shown: bool) -> Result<(), String> {
@@ -1833,6 +1846,7 @@ mod tests {
                 maps: Maps { open_with: torro_core::settings::MapsApp::Apple, ..Maps::default() },
                 ai_assignments: std::collections::BTreeMap::new(),
                 hidden_categories: Vec::new(),
+                mail_actions_off: BTreeSet::new(),
                 allow_api_keys: true,
                 allow_mcp: true,
                 tools: Default::default(),

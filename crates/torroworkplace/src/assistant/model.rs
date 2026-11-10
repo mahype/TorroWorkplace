@@ -828,6 +828,8 @@ impl Answering {
             "inbox.create_task_from_item" => vec![tool.command.area, Area::Tasks],
             "inbox.create_event_from_item" => vec![tool.command.area, Area::Calendar],
             "tasks.create_todo_from_mail" => vec![tool.command.area, Area::Mail],
+            // An event made of a mail reads the mail as well (issue #603).
+            "calendar.create_event_from_mail" => vec![tool.command.area, Area::Mail],
             "mail.respond_to_invitation" => vec![Area::Mail, Area::Calendar],
             // A topic decides what reaches the inbox (task E5.12, approval 16).
             "accounts.set_ntfy_topic" => vec![Area::Accounts, Area::Inbox],

@@ -1646,7 +1646,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         // Task E8.7a: the title that will be written (the core puts the subject in when the client
         // left it out, before it asks), the list by the name the core knows, the mail by the
         // subject its store holds ([`MailFacts::subjects`]), never what the client says of it.
-        Request::CreateTodoFromMail { collection, title, due, .. } => {
+        Request::CreateTodoFromMail { collection, title, due, notes, .. } => {
             let subject = facts.mail.as_ref().and_then(|mail| mail.subjects.first());
             let subject = match subject.map(|subject| subject.trim()) {
                 Some("") => tr("(no subject)").to_string(),
@@ -1655,7 +1655,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             };
             let title = quote(title.as_deref().unwrap_or_default());
             let list = named(collection);
-            match due {
+            let made = match due {
                 Some(due) => trf(
                     "Make a task \"{title}\" in \"{list}\" due {when} from the mail {subject}",
                     &[("title", &title), ("list", &list), ("when", &when(due, today)), ("subject", &subject)],
@@ -1664,7 +1664,51 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                     "Make a task \"{title}\" in \"{list}\" from the mail {subject}",
                     &[("title", &title), ("list", &list), ("subject", &subject)],
                 ),
-            }
+            };
+            // The note a client sends along is what will be written (issue #603): its start is shown, as
+            // for an entry's task.
+            with_extras(made, None, notes.as_deref())
+        }
+        // Issue #603: as for a task, the calendar by the name the core knows and the mail by its subject.
+        Request::CreateEventFromMail { collection, title, start, location, notes, .. } => {
+            let title = quote(title.as_deref().unwrap_or_default());
+            let made = trf(
+                "Make an event \"{title}\" in \"{calendar}\" on {when} from the mail {subject}",
+                &[
+                    ("title", &title),
+                    ("calendar", &named(collection)),
+                    ("when", &when(start, today)),
+                    ("subject", &mail_subject(facts)),
+                ],
+            );
+            with_extras(made, location.as_deref(), notes.as_deref())
+        }
+        Request::SetActionKind { kind, enabled: true } => {
+            trf("Look for \"{kind}\" in new mail", &[("kind", &action_kind(kind))])
+        }
+        Request::SetActionKind { kind, enabled: false } => {
+            trf("Stop looking for \"{kind}\" in new mail", &[("kind", &action_kind(kind))])
+        }
+        // The suggestions of a mail (issue #603): the kind by the core's own word, the mail by the
+        // subject and sender its store holds.
+        Request::AcceptSuggestion { kind, .. } => trf(
+            "Accept the suggestion \"{kind}\" of the mail {subject}",
+            &[("kind", &action_kind(kind)), ("subject", &mail_subject(facts))],
+        ),
+        Request::DismissSuggestion { kind, .. } => trf(
+            "Dismiss the suggestion \"{kind}\" of the mail {subject}",
+            &[("kind", &action_kind(kind)), ("subject", &mail_subject(facts))],
+        ),
+        Request::ExtractAction { kind, .. } => {
+            let sender = facts.mail.as_ref().and_then(|mail| mail.senders.first()).map(|sender| quote(sender));
+            trf(
+                "Let an AI read \"{kind}\" out of the mail {subject} from {sender}",
+                &[
+                    ("kind", &action_kind(kind)),
+                    ("subject", &mail_subject(facts)),
+                    ("sender", &sender.unwrap_or_else(|| tr("an unknown sender").to_string())),
+                ],
+            )
         }
         Request::DeleteTemplate { id } => trf("Delete template \"{name}\"", &[("name", &named(id))]),
         Request::UpdateTemplate { id } => {
@@ -2419,6 +2463,24 @@ fn reminders_changed(value: &serde_json::Value, facts: &Facts) -> String {
         }
     }
     parts.join(", ")
+}
+
+/// The mail of `facts` by the subject its store holds (issue #603): quoted, "(no subject)" for none,
+/// "an unknown mail" when the store does not hold it.
+fn mail_subject(facts: &Facts) -> String {
+    match facts.mail.as_ref().and_then(|mail| mail.subjects.first()).map(|subject| subject.trim()) {
+        Some("") => tr("(no subject)").to_string(),
+        Some(subject) => format!("\"{}\"", quote(subject)),
+        None => tr("an unknown mail").to_string(),
+    }
+}
+
+/// A kind of action by the core's own word for it (issue #603), translated; never the client's text.
+fn action_kind(kind: &str) -> String {
+    match crate::actions::kind(kind) {
+        Some(known) => tr(known.label).to_string(),
+        None => tr("an unknown kind").to_string(),
+    }
 }
 
 /// The summary of `mail.unsubscribe` (issue #416): the sender, the account and the way with its
@@ -3907,6 +3969,22 @@ pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
     if let Some(lines) =
         profile_details(request, facts).or_else(|| bot_details(request)).or_else(|| files_details(request, facts))
     {
+        return lines;
+    }
+    // The note and the place a client sends along with a task or event of a mail (issue #603): what
+    // will be written, whole – the summary shows only its start.
+    if let Request::CreateTodoFromMail { notes, .. } | Request::CreateEventFromMail { notes, .. } = request {
+        let mut lines = Vec::new();
+        if let Request::CreateEventFromMail { location: Some(place), .. } = request
+            && !place.trim().is_empty()
+        {
+            lines.push(tr("Place:").to_string());
+            lines.extend(whole(place));
+        }
+        if let Some(note) = notes.as_deref().filter(|note| !note.trim().is_empty()) {
+            lines.push(tr("Note:").to_string());
+            lines.extend(whole(note));
+        }
         return lines;
     }
     if let Request::CallExtensionTool { arguments, .. } = request {
@@ -5438,6 +5516,7 @@ pub(crate) mod tests {
             collection: "home".into(),
             title: Some("Answer the offer".into()),
             due,
+            notes: None,
         };
         let mail = MailFacts { subjects: vec!["Angebot Dachsanierung".into()], count: 1, ..MailFacts::default() };
         let facts = Facts { name: Some("Home".into()), mail: Some(mail), ..Facts::default() };

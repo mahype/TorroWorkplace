@@ -26,7 +26,7 @@
 //!
 //! Everything is a request; the core checks all of it again.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use iced::widget::text::Wrapping;
 use iced::widget::{checkbox, column, container, mouse_area, row, space as blank, svg};
@@ -38,6 +38,7 @@ use torro_gui::theme::{palette, size, space};
 use torro_gui::units::{format_count, format_duration};
 use torro_gui::widgets::{Align, Anchor, MenuItem, MenuSection, Placement};
 use torro_gui::{layout, style, theme, typo, widgets};
+use torro_ipc::actions::ActionKind;
 use torro_ipc::inbox::{CategoryInfo, CategoryJobControl, CategoryJobPreview, CategoryJobScope, CategoryJobState};
 use torro_ipc::{Request, Response};
 use torro_mail::{Category, CategoryGroup};
@@ -88,6 +89,17 @@ pub struct State {
     pending_scope: Option<CategoryJobScope>,
     /// Previews on their way: a refusal counts only for the last one (PR review of #463).
     previews_waiting: u32,
+    /// The kinds of action Torro looks for in new mail (issue #603, `mail.list_action_kinds`), asked
+    /// for when the tab AI opens; `None` until the answer is in.
+    kinds: Option<Vec<ActionKind>>,
+    /// Asks for the kinds on their way: a refusal while one waits is theirs, not a preview's.
+    kinds_waiting: u32,
+    /// What went wrong with the kinds (issue #603): the list could not be read (`None` kinds then), or
+    /// a switch could not be stored and went back. Said under the group.
+    kinds_error: Option<String>,
+    /// The switches flipped at once and not stored yet, by kind: shown so until the send comes back;
+    /// then the stored settings (`mail_actions_off`) say how each stands.
+    kinds_flipped: BTreeMap<String, bool>,
 }
 
 /// What the dialog "Sort existing mail" holds while it is open.
@@ -214,6 +226,10 @@ pub enum Message {
     StartJob,
     /// Pause, Resume or Cancel of the run.
     ControlJob(String, CategoryJobControl),
+    /// The switch of a kind of action in "Suggestions" (issue #603): look for it in new mail or not.
+    ActionKind(String, bool),
+    /// "Retry" after the kinds could not be read.
+    RetryKinds,
 }
 
 pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
@@ -221,7 +237,19 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
         Message::Tab(index) => {
             state.tab = Tab::ALL.get(index).copied().unwrap_or_default();
             close_menus(state);
-            Action::None
+            // The kinds of action are the core's (issue #603): asked for once the tab AI shows.
+            match state.tab == Tab::Ai && state.kinds.is_none() {
+                true => ask_kinds(state),
+                false => Action::None,
+            }
+        }
+        Message::RetryKinds => ask_kinds(state),
+        // Flipped at once; the stored settings decide once the send came back (`sent`). A send, not an
+        // ask: its answer comes back to this page alone, never mixed up with a preview's.
+        Message::ActionKind(kind, enabled) => {
+            state.kinds_flipped.insert(kind.clone(), enabled);
+            state.kinds_error = None;
+            Action::Send(vec![Request::SetActionKind { kind, enabled }])
         }
         Message::ManageModels => Action::Open(crate::assistant::AI_SECTION),
         Message::CancelDrag => {
@@ -415,6 +443,17 @@ pub fn answered(state: &mut State, answer: &Result<Response, String>) {
         return;
     }
     match answer {
+        // The kinds of action, listed or switched (issue #603).
+        Ok(Response::ActionKinds { kinds }) => {
+            state.kinds_waiting = state.kinds_waiting.saturating_sub(1);
+            state.kinds = Some(kinds.clone());
+            state.kinds_error = None;
+        }
+        // A refusal names nothing: it counts for the list of kinds only while no preview waits.
+        Err(problem) if state.kinds_waiting > 0 && state.previews_waiting == 0 => {
+            state.kinds_waiting -= 1;
+            state.kinds_error = Some(problem.clone());
+        }
         Ok(Response::CategoryJobPreview { preview }) => {
             state.previews_waiting = state.previews_waiting.saturating_sub(1);
             if preview.request_scope == state.pending_scope {
@@ -439,6 +478,14 @@ pub fn answered(state: &mut State, answer: &Result<Response, String>) {
 /// the filter is stored ([`filters::sent`]), and a group's form of the editor likewise. A filter
 /// stored with "Also apply…" comes back as the message that runs it, for the window to send.
 pub fn sent(state: &mut State, result: &Result<Data, String>) -> Option<Message> {
+    // The switches of suggestions (issue #603): what is stored stands from now on; a failed send of
+    // one flipped says so.
+    if !state.kinds_flipped.is_empty() {
+        state.kinds_flipped.clear();
+        if let Err(why) = result {
+            state.kinds_error = Some(trf("Couldn't change the suggestion: {why}", &[("why", why)]));
+        }
+    }
     editor::sent(&mut state.editor, result);
     filters::sent(&mut state.filters, result).map(|id| Message::Filters(filters::Message::ApplyNow(id)))
 }
@@ -694,7 +741,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     }
     let tab = match state.tab {
         Tab::Categories => categories_tab(state, data),
-        Tab::Ai => ai_tab(data),
+        Tab::Ai => ai_tab(state, data),
     };
     let about = typo::text(typo::body(), tr("Fixed rules and the AI sort every new mail as it arrives."))
         .style(theme::text_2)
@@ -820,7 +867,7 @@ fn state_word(state: CategoryJobState) -> String {
 /// "Sort with model" with the model that sorts and the line about it, the model's special cases, and
 /// "Categories the model may choose". The model is chosen in Settings › AI only (issue #545): the row
 /// leads there, as "Appearance ↗" in the sidebar does.
-fn ai_tab<'a>(data: &'a Data) -> Element<'a, Message> {
+fn ai_tab<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let current = chosen(data);
     let label = match &current {
         Chosen::Off => tr("Off").to_string(),
@@ -893,7 +940,72 @@ fn ai_tab<'a>(data: &'a Data) -> Element<'a, Message> {
         ),
         Some(Message::Tab(0)),
     );
-    column![sorting, widgets::group(tr("Model"), vec![may], None)].spacing(layout::section_gap()).into()
+    column![sorting, widgets::group(tr("Model"), vec![may], None), suggestions_group(state, data)]
+        .spacing(layout::section_gap())
+        .into()
+}
+
+/// Asks the core for the kinds of action (issue #603).
+fn ask_kinds<A>(state: &mut State) -> Action<A> {
+    state.kinds_error = None;
+    state.kinds_waiting += 1;
+    Action::Ask(Request::ListActionKinds)
+}
+
+/// "Suggestions" (issue #603, `docs/vorschlaege.md`): a switch for each kind of action Torro looks
+/// for in new mail, by the core's list – while it loads a quiet "Loading …", when it could not be
+/// read why with "Retry"; a switch that could not be stored goes back, and a line says so.
+fn suggestions_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let mut rows: Vec<Element<'a, Message>> = match (&state.kinds, &state.kinds_error) {
+        (Some(kinds), _) => kinds
+            .iter()
+            .map(|kind| {
+                let id = kind.id.clone();
+                let on = state
+                    .kinds_flipped
+                    .get(&kind.id)
+                    .copied()
+                    .unwrap_or_else(|| !data.settings.mail_actions_off.contains(&kind.id));
+                let toggle = switch(on, move |on| Message::ActionKind(id.clone(), on));
+                setting_row(Some(kind_icon(&kind.icon)), kind_label(&kind.label), None, toggle)
+            })
+            .collect(),
+        (None, Some(why)) => vec![widgets::error_state(
+            trf("Couldn't load the suggestions: {why}", &[("why", why)]),
+            Message::RetryKinds,
+        )],
+        (None, None) => vec![row_frame(widgets::loading(), false)],
+    };
+    if let (Some(_), Some(why)) = (&state.kinds, &state.kinds_error) {
+        let alert = icon::icon(Icon::CircleX, icon::SIZE_SM)
+            .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
+        let words = typo::text(typo::meta(), why.clone()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
+        rows.push(row_frame(row![alert, words].spacing(space::s()).align_y(Alignment::Center), false));
+    }
+    let hint =
+        tr("Torro looks for these in new mail and shows them above the mail. Nothing is created until you accept.");
+    widgets::group(tr("Suggestions"), rows, Some(hint.to_string()))
+}
+
+/// The word of a kind of action (issue #603): the core sends it in English, the known ones are
+/// translated here; another one stays as it came.
+fn kind_label(label: &str) -> String {
+    match label {
+        "Event" => tr("Event").to_string(),
+        "Task" => tr("Task").to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// The icon of a kind of action by its Lucide name (issue #603); one the suite does not draw gets
+/// the sparkles.
+fn kind_icon<'a>(name: &str) -> Element<'a, Message> {
+    let which = match name {
+        "calendar-plus" => Icon::CalendarPlus,
+        "list-todo" => Icon::ListTodo,
+        _ => Icon::Sparkles,
+    };
+    icon::icon(which, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) }).into()
 }
 
 // ----- tab Categories -----
@@ -1388,6 +1500,43 @@ mod tests {
     use torro_mail::CategoryDef;
 
     use super::*;
+
+    /// Issue #603: the kinds are asked for when the tab AI opens; a switch flips at once and goes back,
+    /// with a line why, when the core refuses it; a list that cannot be read says so with "Retry".
+    #[tokio::test]
+    async fn the_switches_of_suggestions_flip_at_once_and_go_back_on_a_refusal() {
+        use torro_ipc::actions::{ActionForm, ActionKind};
+        let data = demo().await;
+        let mut state = State::default();
+        let asked: Action<()> = update(&mut state, Message::Tab(1), &data);
+        assert!(matches!(asked, Action::Ask(Request::ListActionKinds)));
+        answered(&mut state, &Err("offline".into()));
+        assert!(state.kinds.is_none() && state.kinds_error.is_some(), "why, with Retry");
+        let _ = page(&state, &data);
+        let again: Action<()> = update(&mut state, Message::RetryKinds, &data);
+        assert!(matches!(again, Action::Ask(Request::ListActionKinds)));
+        let kind = ActionKind {
+            id: "task".into(),
+            label: "Task".into(),
+            icon: "list-todo".into(),
+            form: ActionForm::Task,
+            enabled: true,
+        };
+        answered(&mut state, &Ok(Response::ActionKinds { kinds: vec![kind] }));
+        let flip: Action<()> = update(&mut state, Message::ActionKind("task".into(), false), &data);
+        assert!(
+            matches!(flip, Action::Send(ref sent) if matches!(sent[..], [Request::SetActionKind { enabled: false, .. }]))
+        );
+        assert_eq!(state.kinds_flipped.get("task"), Some(&false), "at once");
+        // A preview's refusal meanwhile is the preview's, never the switch's.
+        state.previews_waiting = 1;
+        answered(&mut state, &Err("busy".into()));
+        assert!(state.kinds_error.is_none() && state.kinds_flipped.contains_key("task"));
+        let _ = super::sent(&mut state, &Err("offline".into()));
+        assert!(state.kinds_flipped.is_empty(), "back to what is stored");
+        assert!(state.kinds_error.is_some());
+        let _ = page(&state, &data);
+    }
 
     /// The demo's data, as the mail window loads it.
     async fn demo() -> Data {

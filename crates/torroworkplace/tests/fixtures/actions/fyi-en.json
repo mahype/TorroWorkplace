@@ -1,0 +1,11 @@
+{
+  "expect": {
+    "event": false,
+    "task": false
+  },
+  "subject": "FYI: new office hours",
+  "from": "HR <hr@firma.example>",
+  "list": null,
+  "bulk": false,
+  "text": "Hello all,\n\njust so you know: from December the office opens at 7:30. Nothing to do on your side.\n\nHR"
+}

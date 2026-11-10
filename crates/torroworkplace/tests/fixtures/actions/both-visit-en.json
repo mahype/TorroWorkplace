@@ -1,0 +1,15 @@
+{
+  "expect": {
+    "event": true,
+    "task": true
+  },
+  "subject": "Customer visit next Tuesday",
+  "from": "Lisa Grant <lisa@firma.example>",
+  "list": null,
+  "bulk": false,
+  "text": "Hi Sven,\n\nthe customer visits us next Tuesday at 2 pm. Please prepare the demo and book the meeting room.\n\nLisa",
+  "fields": {
+    "title": "Customer visit",
+    "start": "Tuesday 14:00"
+  }
+}

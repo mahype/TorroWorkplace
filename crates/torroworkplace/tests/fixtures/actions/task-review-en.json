@@ -1,0 +1,15 @@
+{
+  "expect": {
+    "event": false,
+    "task": true
+  },
+  "subject": "Please review the slides",
+  "from": "Mark Hill <mark@firma.example>",
+  "list": null,
+  "bulk": false,
+  "text": "Hi Sven,\n\ncould you review the slides for the board meeting and send me your comments by Wednesday?\n\nThanks, Mark",
+  "fields": {
+    "title": "Review the board slides",
+    "due": "Wednesday"
+  }
+}

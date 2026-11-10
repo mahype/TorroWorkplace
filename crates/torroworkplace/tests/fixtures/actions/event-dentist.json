@@ -1,0 +1,15 @@
+{
+  "expect": {
+    "event": true,
+    "task": false
+  },
+  "subject": "Terminbestätigung",
+  "from": "Praxis Dr. Klein <termine@praxis.example>",
+  "list": null,
+  "bulk": false,
+  "text": "Guten Tag,\n\nhiermit bestätigen wir Ihren Termin am Dienstag, 19.11.2026 um 08:30 Uhr.\nBitte bringen Sie Ihre Versichertenkarte mit.\n\nIhr Praxisteam",
+  "fields": {
+    "title": "Zahnarzt",
+    "start": "2026-11-19 08:30"
+  }
+}

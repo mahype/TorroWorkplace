@@ -1,0 +1,15 @@
+{
+  "expect": {
+    "event": false,
+    "task": true
+  },
+  "subject": "Budgetentwurf",
+  "from": "Petra Lang <petra.lang@firma.example>",
+  "list": null,
+  "bulk": false,
+  "text": "Hallo Sven,\n\nbitte schick mir bis Freitag den Entwurf für das Budget 2027. Die Zahlen aus Q3 findest du im Ordner Finanzen.\n\nDanke!\nPetra",
+  "fields": {
+    "title": "Budgetentwurf an Petra schicken",
+    "due": "Friday"
+  }
+}

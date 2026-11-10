@@ -1,0 +1,11 @@
+{
+  "expect": {
+    "event": false,
+    "task": false
+  },
+  "subject": "Nur bis Sonntag: 20 % auf alles",
+  "from": "Shop <news@shop.example>",
+  "list": null,
+  "bulk": true,
+  "text": "Hallo,\n\nunser Herbst-Sale läuft nur bis Sonntag, 17.11. Jetzt sparen!\n\nAbmelden: hier klicken"
+}
