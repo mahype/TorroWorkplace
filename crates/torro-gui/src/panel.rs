@@ -254,7 +254,8 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
     /// [`size::panel()`], with the divider of [`split::split_end`] on the panel's left edge in place of
     /// its line (issue #604): `total` is the width of content, divider and panel – the body [`place`]
     /// gets –, as in the [`beside_limits`] the app clamps its [`split::Split`] to. A [`Panel::side`] or
-    /// [`Panel::floating`] still adds its room, which the dragged width leaves out. Over the content
+    /// [`Panel::floating`] still adds its room, which the dragged width leaves out; the app clamps to
+    /// [`beside_limits`] of `total` less that room, and `place` keeps to it as well. Over the content
     /// the panel keeps its width.
     pub fn resizable(mut self, width: f32, total: f32, dragging: bool, on: fn(SplitEvent) -> M) -> Self {
         self.resize = Some(Resize { width, total, dragging, on });
@@ -438,6 +439,8 @@ pub fn place<'a, M: Clone + 'a>(
     match (mode_for(class), resize) {
         (PanelMode::Beside, Some(Resize { width, total, dragging, on })) => {
             let extra = panel.extra();
+            // The rail's room comes on top of the chosen width: the content still keeps its least.
+            let width = beside_limits(total - extra).clamp(width);
             let side = container(panel.view_lined(false)).width(Fill).height(Fill).style(style::container::panel_flush);
             let body = split::split_end_with(content, side, width, extra, total, dragging, on);
             Placed { body, overlay: layer }

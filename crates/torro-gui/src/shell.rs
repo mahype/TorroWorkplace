@@ -382,7 +382,7 @@ impl<'a, M: Clone + 'a> From<Shell<'a, M>> for Element<'a, M> {
     fn from(shell: Shell<'a, M>) -> Self {
         let Shell { class, sidebar, header, body, props, rail, drawer: on_dismiss, overlay, side, props_side, top } =
             shell;
-        let props = props.map(|props| Props { column: props, side: props_side });
+        let props = Props { column: props, side: props_side };
         // With the top row the header lies in it, and the content starts with the body.
         let (header, top) = match top {
             Some(top) => (None, Some((top, header))),
@@ -1128,12 +1128,15 @@ fn inset_window<'a, M: Clone + 'a>(
     width: f32,
     header: Option<Element<'a, M>>,
     body: Element<'a, M>,
-    props: Option<Props<'a, M>>,
+    props: Props<'a, M>,
     dragged: bool,
 ) -> Element<'a, M> {
     let body = container(body).width(Fill).height(Fill);
     let main: Element<'a, M> = match props {
-        Some(Props { column: props, side }) => {
+        // The body in the widgets of the divider without a column (a mouse area around a row), so it
+        // keeps its state while the column comes and goes (the hub's "Coming back").
+        Props { column: None, side: Some(_) } => mouse_area(row![container(body).width(Fill).height(Fill)]).into(),
+        Props { column: Some(props), side } => {
             let column = scrollable(container(props).width(Fill).padding(Padding {
                 top: space::l(),
                 right: space::s(),
@@ -1155,7 +1158,7 @@ fn inset_window<'a, M: Clone + 'a>(
                 }
             }
         }
-        None => row![body].height(Fill).into(),
+        Props { column: None, side: None } => row![body].height(Fill).into(),
     };
     let content = column(header).push(main);
     // Only the top and bottom edge: the sidebar sets its side edges itself ([`sidebar`]).
@@ -1180,9 +1183,10 @@ fn inset_window<'a, M: Clone + 'a>(
     container(window).width(Fill).height(Fill).style(style::container::sidebar).into()
 }
 
-/// The properties column for [`inset_window`] and, when the app drags it, its width.
+/// The properties column for [`inset_window`] (`None` while the view has none) and, when the app
+/// drags it, its width.
 struct Props<'a, M> {
-    column: Element<'a, M>,
+    column: Option<Element<'a, M>>,
     side: Option<PropsWidth<M>>,
 }
 
@@ -1977,9 +1981,9 @@ mod tests {
         assert!(is_flush(0.0) && !is_flush(8.0));
         assert_eq!(layout::inset(), 0.0, "the standard is flush");
         let part = || -> Element<'static, Msg> { blank().into() };
-        let props = || Some(Props { column: part(), side: None });
-        let _ = inset_window(part(), size::sidebar(), Some(part()), part(), props(), false);
-        let _ = inset_window(part(), rail(), None, part(), None, true);
+        let props = |column: Option<Element<'static, Msg>>| Props { column, side: None };
+        let _ = inset_window(part(), size::sidebar(), Some(part()), part(), props(Some(part())), false);
+        let _ = inset_window(part(), rail(), None, part(), props(None), true);
     }
 
     /// Issue #604: the properties column moves between three quarters and twice its default, the
