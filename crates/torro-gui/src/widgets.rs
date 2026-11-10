@@ -165,6 +165,9 @@ pub const FOCUS_CELL: f32 = 28.0;
 const FOCUS_DOT: f32 = 9.0;
 const FOCUS_RING: (f32, f32) = (18.0, 4.0);
 const FOCUS_RING_STRONG: (f32, f32) = (28.0, 5.5);
+/// The [`focus_mark_small`]: a cell as wide as an icon, a dot 8, a ring 14 with a stroke of 2.5, a
+/// ring 16 with a stroke of 3.5 – the three forms at the size of the icons beside them.
+const FOCUS_SMALL: (f32, (f32, f32), (f32, f32)) = (8.0, (14.0, 2.5), (16.0, 3.5));
 /// A dot of [`slot_dots`], as small as the dots of a pager.
 const SLOT_DOT: f32 = 6.0;
 
@@ -5276,6 +5279,32 @@ pub fn focus_mark<'a, M: Clone + 'a>(prio: usize, focus: torro_pim::Focus, on_pr
         None => cell.into(),
     };
     with_tooltip(content, label)
+}
+
+/// The [`focus_mark`] at the size of an icon (issue #596): in the icon column of a property line, a
+/// chip or a menu entry, where a word beside it names the focus. No tooltip, no button.
+pub fn focus_mark_small<'a, M: 'a>(prio: usize, focus: torro_pim::Focus) -> Element<'a, M> {
+    let prio = prio.min(4);
+    let (dot, ring, strong) = FOCUS_SMALL;
+    let colour = move |t: &Theme| {
+        let p = palette(t);
+        if theme::on_accent_theme(t) == *t { p.on_accent } else { p.priority[prio] }
+    };
+    let mark = match focus {
+        torro_pim::Focus::Normal => container(blank().width(dot).height(dot)).style(move |t| container::Style {
+            background: Some(Background::Color(colour(t))),
+            border: border::rounded(dot / 2.0),
+            ..container::Style::default()
+        }),
+        torro_pim::Focus::Focus | torro_pim::Focus::Strong => {
+            let (edge, stroke) = if focus == torro_pim::Focus::Strong { strong } else { ring };
+            container(blank().width(edge).height(edge)).style(move |t| container::Style {
+                border: border::rounded(edge / 2.0).color(colour(t)).width(stroke),
+                ..container::Style::default()
+            })
+        }
+    };
+    container(mark).center(icon::SIZE).into()
 }
 
 /// The priority as a dot of the [`focus_mark`] alone, 9 across in [`Palette::priority`], without
