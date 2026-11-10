@@ -710,6 +710,158 @@ Update entfernt die Migration auf Schema 17 von `inbox.sqlite` diese Regeln und 
 ausgeblendete Mail steht wieder in den Listen (unter „All“). Nichts wird automatisch zu einem Filter. Ein
 stummgeschaltetes Konto (`inbox.mute_source`), gemerkte Spuren und die Regeln anderer Quellen bleiben.
 
+## Rückgängig (#614)
+
+Bestandsaufnahme, Stand `0f4b7842` (der Stand von main bei der Erstellung; spätere Commits können Zeilen,
+Namen und Verhalten ändern, dann stimmt der Abschnitt nicht mehr), nur aus dem Code gelesen (`torroinbox/src/app.rs`, `keys.rs`,
+`mail.rs`, `compose.rs`, `torro-gui/src/widgets.rs`, `torro-settings-ui`). Sie gilt für das
+Mail-Fenster, das Schreibfenster und die Einstellungen hinter dem Zahnrad. „Notification Hub“ und
+„App Feed“ sind nicht Teil davon; ihre Regeln stehen in [eingang.md](eingang.md).
+
+**Kurz: Versehentlich gelöschte Mail.** Strg+Z (⌘+Z) holt sie zurück, aber nur den **letzten**
+Schritt und nur in den **5 Sekunden**, in denen der Hinweis „Moved to Trash“ unten im Fenster steht.
+Danach liegt die Mail im Papierkorb des Kontos und lässt sich dort von Hand in einen Ordner
+verschieben; einen Verlauf mit mehreren Schritten gibt es nicht.
+
+### Die Mechanik
+
+- **Ein Hinweis, ein Schritt.** Nach einer Aktion zeigt das Fenster unten einen Hinweis (`Hint`) mit
+  „Undo“. Es gibt nur diesen einen Hinweis; er hält höchstens ein Rückgängig (`Undo`).
+- **Frist 5 Sekunden** (`UNDO_FOR` = `widgets::TOAST_FOR`). Ein Takt von 1 s (`HINT_TICK`) nimmt den
+  Hinweis danach weg; real leben Hinweis und Rückgängig 5 bis 6 s.
+- **Die Frist beginnt mit der Antwort des Kerns,** nicht mit dem Tastendruck. Archivieren, Löschen,
+  Spam und Verschieben setzen den neuen Hinweis erst nach `Message::MailEdited(Ok)`. Bis dahin steht der
+  alte Hinweis mit seinem Rückgängig noch da und ist nutzbar, für die neue Aktion gibt es noch keins.
+  Scheitert das Verschieben, kommt der neue Hinweis nie.
+- **Wege:** Klick auf „Undo“ im Hinweis; `u` in der Liste, im Lesebereich und in „Focus & reply“;
+  Strg+Z, auf macOS ⌘+Z oder Strg+Z, im ganzen Fenster (`widgets::undo_key`, nicht belegbar). Strg+Z
+  hört nur zu, solange der Hinweis ein Rückgängig anbietet, die Einstellungen zu sind und kein Dialog
+  offen ist (Aufgabe, Termin, Zeitwahl, „Delete permanently?“, „Unsubscribe“).
+- **Esc** nimmt den Hinweis samt Rückgängig weg, aber erst, wenn nichts davor zu schließen ist (Dropdown, Menü, Schublade kommen zuerst), und nicht, solange eine Antwort gesendet wird.
+- **Kein Wiederherstellen.** Rückgängig hat selbst kein Rückgängig und zeigt keinen neuen Hinweis.
+- **Ein neuer Hinweis ersetzt den alten.** Das gilt auch für Hinweise **ohne** Rückgängig (`App::note`):
+  „This message is in the trash already.“, „This account has no archive folder.“, „Task created in …“,
+  „Event created in …“, Hinweise zum Speichern von Anhang und EML. Wer nach dem Löschen `#` auf eine Mail
+  im Papierkorb drückt, verliert das Rückgängig des Löschens, auch wenn die 5 Sekunden nicht um sind. Ausnahmen: Ein Hinweis mit Rückgängig bleibt stehen, wenn ihn
+  ein Sendehinweis überschriebe (`say_sent`) oder der Hinweis „Couldn't change the mail.“ eines
+  Verschiebefehlers (`Message::MailEdited`, nur bei `!can_undo`).
+
+### Mail: Liste, Lesebereich, Tastenkürzel
+
+| Aktion | Rückgängig | Weg | Dauer | Schritte |
+|---|---|---|---|---|
+| Archivieren ohne Archivordner, in Drafts; Löschen im Papierkorb | nichts passiert; der Hinweis ohne Rückgängig ersetzt ein stehendes | – | – | – |
+| Archivieren (`e` im Ordner, `a` im Lesebereich, Knopf „Archive“, auch vom Eintrag aus) | ja, „Archived“ | Hinweis, `u`, Strg+Z | 5 s | 1 |
+| Löschen in den Papierkorb (`#`, Knopf „Delete“) | ja, „Moved to Trash“ | wie oben; danach Papierkorb | 5 s; im Papierkorb bleibt sie, bis das Konto ihn leert (ungeklärt) | 1 |
+| Als Spam verschieben (Kürzel „junk“) | ja, „Moved to junk“ | wie oben | 5 s | 1 |
+| In Ordner verschieben („Move to folder“) | ja, „Moved to {folder}“ | wie oben | 5 s | 1 |
+| Mehrere markierte Mails löschen | ja, ein Rückgängig für alle, **nur wenn alle aus demselben Ordner kamen**; sonst keins | wie oben | 5 s | 1 |
+| Flagge setzen/lösen, gelesen/ungelesen | kein Hinweis, kein Rückgängig; dieselbe Aktion kehrt um (Umschalter) | `Command::Flag`, `Command::ToggleRead` | unbegrenzt | – |
+| Mail beim Öffnen als gelesen markieren | automatisch, kein Hinweis | als ungelesen markieren | unbegrenzt | – |
+| „Reply later“ (`w`), „Set aside“ (`b`), „Remove from …“ | ja, `Undo::Pile` mit der Zeit, die die Mail schon auf dem Stapel lag | Hinweis, `u`, Strg+Z | 5 s | 1 |
+| Nachfassen („Follow up…“, `s`), „Cancel follow-up“ | ja, mit Zeit und Bedingung („Only if no reply“) | wie oben | 5 s | 1 |
+| Erledigt (`e` am Eintrag), In andere Spur („Move to …“, `l`), Dismiss | ja (`Edit::undo`) | wie oben | 5 s | 1 |
+| Spur „Always for {source}“ | **nein**: eine Regel im Kern, die nur `inbox.remove_rule` löst | Regel in den Einstellungen löschen | – | – |
+| Stumm/Verbergen („Mute“, `m`) und Quelle stumm/laut | ja, `Undo::Muted` bzw. `Undo::Mute`: entfernt die neue Regel, öffnet geschlossene Einträge, holt verschobene zurück; kein Rückgängig, wenn nichts geändert wurde | wie oben | 5 s | 1 |
+| Kategorie setzen („Category…“, auch „Always for {sender}“) | **nein**, kein Hinweis | Kategorie neu setzen; „Always“ ist eine Regel unter Settings › Categorization | – | – |
+| Neu einordnen („Re-categorize“) | **nein** | – | – | – |
+| „Make task“, „Make event“ | **nein**: Hinweis „Task created in …“ / „Event created in …“; Zurücknehmen wäre Löschen in der Aufgaben- bzw. Kalender-App | dort löschen | – | – |
+| Vorschlag auf der Karte verwerfen („Dismiss“) | ja, „Suggestion dismissed“; die Karte geht erst nach Ablauf der Frist an den Kern (`send_dismissals`) | wie oben | 5 s | 1 |
+| „Delete permanently“ | **nein**, stattdessen Rückfrage „Delete permanently?“ | – | – | – |
+| „Unsubscribe“ | **nein**, stattdessen Rückfrage; die Mail an den Absender ist raus | – | – | – |
+| „Not fraud“ im Band einer Mail | **nein**; der Absender gilt ab jetzt als vertrauenswürdig | Absender in den Einstellungen („Phishing“) entfernen | – | – |
+| Anhang speichern, Mail als EML speichern | **nein** (Hinweis mit „Show in folder“ statt „Undo“); Speichern ändert nichts an der Mail | Datei löschen | – | – |
+
+### Fokus & Antworten
+
+- **Antwort verwerfen:** Wer in „Focus & reply“ etwas getippt hat und die Runde verlässt, bekommt
+  „Reply discarded.“ mit Rückgängig (`Undo::Focus`): die Runde kommt an ihre Stelle zurück, mit allen
+  Antworten. Das gilt nicht, wenn inzwischen eine neue Runde läuft; eine neue Runde macht das alte
+  Rückgängig ungültig.
+- **Aus „Reply later“ entfernen** in der Runde: ja, `Undo::Removed` – die Mail kommt auf den Stapel
+  und, solange die Runde läuft, mit ihrem Text an ihren Platz.
+- **Während eine Antwort gesendet wird**, ist Rückgängig gesperrt (`holds_round`): `u`, Strg+Z, Klick
+  und Esc tun nichts. Der Hinweis bleibt stehen und bekommt nach einem erfolgreichen Senden seine volle Frist neu. Scheitert das Senden oder gibt die Runde nach `SEND_TIMEOUT` auf, ist die Frist nicht erneuert: war sie schon um, geht der Hinweis mit dem nächsten Takt. Ein Strg+Z/`u` bei laufender Runde und gesperrtem Hinweis tut nichts. Nach einem Sendefehler mit geschlossener Runde bietet der Hinweis dasselbe Rückgängig (`Undo::Focus`) an, die Runde dieser Mail mit Text. Läuft schon eine Runde, verbraucht ein Rückgängig `Undo::Focus` wortlos.
+- **Senden selbst** lässt sich nicht zurücknehmen; es gibt keine Frist „Senden rückgängig“.
+
+### Schreibfenster
+
+- **Strg+Z im Text:** gibt es nicht. Der Text-Editor von Iced 0.14 hat keinen eigenen Verlauf, und
+  das Schreibfenster belegt Strg+Z nicht (`editor_binding`). Dasselbe gilt für die Felder An, Cc,
+  Bcc und Betreff.
+- **Absichern statt rückgängig:** Das Fenster speichert nach wenigen Sekunden einen Entwurf
+  (`AUTOSAVE`) und fragt beim Schließen mit ungespeicherten Änderungen: „Discard changes“, „Save
+  draft“ oder weiterschreiben. Das ist keine Schritt-für-Schritt-Historie.
+- **Empfänger-Chip entfernen (✕), Anhang entfernen (✕):** sofort, ohne Rückfrage und **ohne**
+  Rückgängig; neu hinzufügen ist der Weg zurück.
+- **Bild entfernen:** mit Rückfrage „Remove this image?“, danach nicht rückgängig.
+- **Entwurf verwerfen** im Mail-Fenster ist „Löschen“ (Papierkorb, 5 s Rückgängig, siehe oben).
+- **Zu großer Text:** Jede Bearbeitung, die den Text über `MAX_BODY_BYTES` triebe (Tippen wie Einfügen), wird zurückgenommen: das Feld springt auf den alten Inhalt, die Meldung „The message is too large to paste more text.“ erscheint.
+
+### Einstellungen (Zahnrad des Mail-Fensters)
+
+Die Einstellungen kennen kein Rückgängig-Muster. Sie arbeiten mit Rückfrage vor dem Löschen und mit
+Knöpfen „Save“/„Cancel“/„Discard“. Die Felder und alle Schaltflächen behalten ihre Tasten für sich
+(Strg+Z des Mail-Fensters ist hier aus, `on_entries`).
+
+| Bereich | Verhalten |
+|---|---|
+| Konto entfernen | Rückfrage „Remove this account?“, danach nicht rückgängig (Zugangsdaten und lokale Kopie weg) |
+| Verbindung, Signatur, Lesen, Anhänge (Klickverhalten, Ordner) | gespeichert mit „Save …“ (Verbindung, Signatur); nicht Gespeichertes wirft „Discard“/„Cancel“ weg; ein gespeicherter Wert hat kein Rückgängig |
+| Speicherziel löschen | Rückfrage „Delete this save target?“ |
+| Kategorie entfernen | „Remove…“ fragt, wohin die Mails gehen; „Remove category“ ist erst mit gewählter Ersatzkategorie aktiv; danach nicht rückgängig |
+| Regel löschen / Filter löschen | Rückfrage „Delete this rule?“ / „Delete this filter?“ („Mail it filed keeps its category.“) |
+| „Remove categories from all mail“ | Rückfrage; läuft als Auftrag mit „Cancel“; bereits entfernte Kategorien kommen nicht zurück |
+| „Sort existing mail“ | Auftrag mit „Pause“ und „Cancel“; was schon einsortiert ist, bleibt |
+| Backup / Wiederherstellen | eigene Schritte mit Bestätigung („Restore mail“); „Cancel backup“ bricht ab |
+| Abläufe, Rechte, Regeln der Dokument-Abläufe | nur Anfragen an den Kern, kein Rückgängig |
+| Seite der Kategorie/Regel verlassen mit Änderungen | Rückfrage „Discard changes?“ |
+
+### Sonderfälle
+
+- **Mehrere Mails auf einmal:** Mails im Papierkorb fallen still aus der Auswahl; bleibt keine, gibt es
+  nur einen Hinweis. Nur „Löschen“ ist als Mail-Sammelaktion da (`delete_selected_mail`; im Notification Hub
+  hat „Dismiss all“ ein Rückgängig für alle, `Undo::Dismissed`). Es
+  gibt **ein** Rückgängig für alle; es fehlt, sobald die Mails aus verschiedenen Ordnern kommen oder
+  ein Ordner unbekannt ist; der Hinweis „Moved to Trash“ erscheint dann ohne „Undo“. Archivieren, Spam, Flagge und gelesen gibt es nur für eine Mail.
+- **Aktion während einer laufenden Antwort:** Solange gesendet wird (`holds_round`), sind Rückgängig,
+  Ansichtswechsel, neue Runde, Seitenleiste, Menüs, Tasten, Suche und Einstellungen gesperrt. Davor,
+  beim Tippen, löst jede andere Aktion den Hinweis ab (siehe „Die Mechanik“).
+- **Wechsel der Ansicht oder des Ordners:** Der Hinweis bleibt stehen, auch Strg+Z wirkt weiter.
+  Er endet nur nach 5 Sekunden, mit Esc, durch eine neue Aktion – und der Hinweis „Reply discarded.“
+  durch eine neue Runde. Rückgängig holt die Mail in ihren alten Ordner, nicht in die Ansicht, in der
+  man gerade ist.
+- **Hinweis überschrieben:** siehe „Die Mechanik“; archiviert man zwei Mails nacheinander, holt `u` nur
+  die zweite zurück.
+- **Archivieren am Eintrag:** Der Hinweis öffnet die Einträge der Mail wieder und setzt ihr
+  Nachfassen zurück (`Undo::Mail` mit `reopen` und `follow`).
+- **Fehler beim Verschieben:** Die Mail kommt mit dem nächsten Laden zurück; der Hinweis „Couldn't
+  change the mail.“ ersetzt ein stehendes Rückgängig nicht.
+- **Strg+Z in Textfeldern des Mail-Fensters:** Das Suchfeld und das Antwortfeld von „Focus & reply“
+  haben in Iced kein eigenes Rückgängig. Strg+Z hört aber auf **jeden** Tastendruck des Fensters
+  (`undo_key`, „also those a text field took“). Steht ein Hinweis mit Rückgängig, nimmt Strg+Z also die
+  letzte Mail-Aktion zurück statt etwas im Feld, auch im Antwortfeld von „Focus & reply“ (dort sperrt nur
+  das Senden); ohne Hinweis passiert nichts. Vorschlag: Lücken 3 und 4.
+- **Strg+Z im Schreibfenster:** tut nichts (eigenes Fenster, kein `undo_key`).
+
+### Lücken und Vorschläge
+
+| Nr. | Aktion | Heute | Vorschlag |
+|---|---|---|---|
+| 1 | Alle Aktionen | genau ein Schritt, nur 5 s | **Verlauf** der letzten Aktionen (z. B. 20), Strg+Z geht rückwärts, mit Wiederherstellen (Strg+Umschalt+Z); eigenes Issue |
+| 2 | Hinweis überschrieben | das ältere Rückgängig ist weg, auch durch Hinweise ohne Rückgängig | Im Verlauf bleibt es; bis dahin Hinweise ohne Rückgängig das Rückgängig nicht ersetzen lassen |
+| 3 | Strg+Z im Suchfeld/Antwortfeld | nimmt bei stehendem Hinweis die Mail-Aktion zurück | `undo_key` nur auslösen, wenn kein Textfeld den Fokus hat; sonst Feld-Rückgängig (siehe 4) |
+| 4 | Text-Editor und Felder (Schreibfenster, Suche, Antwort) | kein Strg+Z | Eigener Rückgängig-Verlauf für `text_editor::Content`; mindestens für das Schreibfenster |
+| 5 | Flagge, gelesen/ungelesen | kein Hinweis | Hinweis mit Rückgängig; erst nach 1/2 sinnvoll, sonst kostet jede Flagge das Rückgängig einer Löschung; wichtig bei Sammelaktionen (siehe 7) |
+| 6 | Kategorie setzen | kein Hinweis, kein Rückgängig | Hinweis „Moved to {category}“ mit Rückgängig (alter Wert ist bekannt) |
+| 7 | Mehrfachauswahl | nur Löschen; Rückgängig nur bei gleichem Ordner | Archivieren, Spam, Flagge, gelesen für die Auswahl; Rückgängig je Mail mit eigenem Ursprungsordner |
+| 8 | „Always for {source}“ und „Always for {sender}“ | kein Rückgängig | Hinweis mit „Undo“, das die Regel entfernt (`inbox.remove_rule`, wie bei Mute) |
+| 9 | „Delete permanently“, „Unsubscribe“, „Not fraud“ | nicht rückgängig | „Delete permanently“ lieber ganz in den Papierkorb legen; bei „Not fraud“ den Absender wieder entfernen können |
+| 10 | Empfänger/Anhang entfernen (Schreibfenster) | sofort weg | Hinweis „Removed“ mit Rückgängig oder Strg+Z für die letzte Änderung (siehe 1) |
+| 11 | Frist | 5 s für alle gleich, ab Antwort des Kerns (nicht ab Tastendruck) | Länger bei Löschen/Archivieren (z. B. 10–30 s) oder einstellbar; nach dem Zeitablauf bleibt „In Papierkorb“ als Weg |
+| 12 | Papierkorb | wie lange der Papierkorb Mail behält, regelt das Konto; die App zeigt es nicht | Ungeklärt: Aufbewahrungsdauer im Papierkorb nennen oder einstellen |
+| 13 | Entwurf | Autosave, kein Verlauf der Fassungen | Ältere Fassungen des Entwurfs; erst nach 1 und 4 sinnvoll |
+
 ## Verhältnis zu TorroMail
 
 | Weg | Folge |
