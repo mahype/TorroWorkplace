@@ -1591,6 +1591,9 @@ pub fn run_status(run: &WorkflowRun) -> String {
         RunReason::TooOld => tr("Older than the seven-day catch-up limit."),
         RunReason::SenderUnverified => tr("Sender unverified — manual review required."),
         RunReason::RecoveryUncertain => tr("Recovery is uncertain. Partial results are preserved."),
+        RunReason::ProviderChanged => {
+            tr("The provider changed its invoice page. Run “Create workflow with AI…” at this mail and test it again.")
+        }
     });
     match reason {
         Some(reason) => format!("{status} · {reason}"),

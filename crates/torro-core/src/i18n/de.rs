@@ -175,6 +175,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Sheets and tables", "Tabellen"),
     ("Fill in and combine PDFs", "PDFs ausfüllen und zusammenfügen"),
     ("Preview · Mail", "Vorschau · Mail"),
+    // Paddle invoice copies (#598).
+    (
+        "The provider changed its invoice page. Run “Create workflow with AI…” at this mail and test it again.",
+        "Der Anbieter hat seine Rechnungsseite geändert. Führe an dieser Mail „Ablauf mit KI erstellen…“ aus und teste den Ablauf erneut.",
+    ),
     // Direct Ollama Cloud (#587).
     ("Enter an API key to connect Ollama Cloud.", "Gib einen API-Schlüssel ein, um Ollama Cloud zu verbinden."),
     ("Enter the API key again to retry.", "Gib den API-Schlüssel zum erneuten Verbinden noch einmal ein."),
