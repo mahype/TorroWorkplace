@@ -388,7 +388,15 @@ pub fn readable_mark(colour: Color, surfaces: &[Color]) -> Color {
     let light_ground = surfaces.iter().all(|s| opaque(*s).luminance() > 0.5);
     let towards = if light_ground { Color::BLACK } else { Color::WHITE };
     let enough = |c: &Color| surfaces.iter().all(|s| opaque(*c).contrast(opaque(*s)) >= 3.0);
-    (0..=STEPS).map(|step| mix(colour, towards, f32::from(step) / f32::from(STEPS))).find(enough).unwrap_or(towards)
+    // On the 8-bit grid, as every other colour of a scheme, so a palette compares and prints as hex.
+    let grid = |c: Color| {
+        let channel = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        Color::from_rgb8(channel(c.r), channel(c.g), channel(c.b))
+    };
+    (0..=STEPS)
+        .map(|step| grid(mix(colour, towards, f32::from(step) / f32::from(STEPS))))
+        .find(enough)
+        .unwrap_or(towards)
 }
 
 /// The fill of a category pill (issue #613) in a group's `colour`: the colour itself, or darkened
