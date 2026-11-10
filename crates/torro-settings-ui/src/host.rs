@@ -98,7 +98,9 @@ use torro_core::AppId;
 use torro_core::i18n::tr;
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
+use torro_gui::split::{self, Split, SplitEvent};
 use torro_gui::theme::{palette, size, space};
+use torro_gui::ui_state;
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::{shell, style};
 use torro_ipc::{Request, Response};
@@ -118,6 +120,9 @@ static GENERATIONS: AtomicU64 = AtomicU64::new(1);
 
 /// The one-pixel lines of the design.
 const LINE: f32 = 1.0;
+
+/// The key in the app's `ui.json` of the width of the settings' section list (issue #604).
+pub const SECTIONS_KEY: &str = "settings";
 
 /// The two links at the foot of the section list, as the control centre has them: its own section
 /// word (`--section`), its icon there and its name, so the same thing looks the same in both
@@ -370,6 +375,8 @@ pub enum Message {
     /// The page API and MCP's own save came back ([`outside::send`]); then the data is asked for anew
     /// as after [`Message::Done`].
     OutsideDone(Result<(), String>),
+    /// The divider beside the section list of the wide form (issue #604, [`Host::with_widths`]).
+    Sections(SplitEvent),
     /// The tick of Accounts and AI while they are on screen ([`Host::subscription`]): load again.
     Tick,
     /// Time to look whether the core has said what is installed ([`Host::suite_arrived`], issue #419).
@@ -478,6 +485,11 @@ pub struct Host {
     /// the host put it; `None` else.
     outside: Option<outside::State>,
     outside_at: Option<usize>,
+    /// The app whose `ui.json` keeps the width of the section list ([`Host::with_widths`]); `None`
+    /// keeps the list at [`size::sidebar()`] without a divider to drag.
+    widths: Option<AppId>,
+    /// The width the person dragged the section list to.
+    sections_width: Split,
 }
 
 impl Host {
@@ -556,6 +568,8 @@ impl Host {
             ai_at: None,
             outside: None,
             outside_at: None,
+            widths: None,
+            sections_width: Split::default(),
         };
         let load = host.reload();
         (host, load)
@@ -599,6 +613,24 @@ impl Host {
         self
     }
 
+    /// The same host with a section list the person drags in the wide form (issue #604), its width
+    /// kept in the `ui.json` of `app` under [`SECTIONS_KEY`]: read here, once, so the list opens at
+    /// it; a file that is missing or cannot be read gives [`size::sidebar()`]. The demo does not call
+    /// it and keeps the list fixed, as without it.
+    pub fn with_widths(mut self, app: AppId) -> Self {
+        let stored = ui_state::file(app).map(|path| ui_state::splits_from(&path)).unwrap_or_default();
+        self.sections_width = Split::with(stored.get(SECTIONS_KEY).copied());
+        self.widths = Some(app);
+        self
+    }
+
+    /// What the divider beside the section list moves in, inside content `content` wide: three
+    /// quarters to twice [`size::sidebar()`], and the page keeps a column's least. Where the window
+    /// does not say how wide its content is ([`Host::view`]), only the first.
+    fn sections_limits(content: f32) -> split::Limits {
+        split::limits_around(size::sidebar(), content, split::min_pane())
+    }
+
     /// The same host with the page API and MCP of the app `app` (issue #531): what keys and MCP clients
     /// may do in the app's own areas ([`outside::areas`]); none leaves it out. It follows Accounts and
     /// AI – call it after [`Host::with_accounts`] – before the suite's pages, and loads the clients and
@@ -640,6 +672,13 @@ impl Host {
         let apps = match self.suite_pending {
             true => iced::time::every(APPS_TICK).map(|_| Message::Apps),
             false => iced::Subscription::none(),
+        };
+        // A drag of the section list ends wherever the button is released (issue #604).
+        let apps = match self.sections_width.dragging {
+            true => {
+                iced::Subscription::batch([apps, split::release().map(|()| Message::Sections(SplitEvent::Release))])
+            }
+            false => apps,
         };
         // The editor of API and MCP while a draft waits, on screen or not: it still goes out.
         let apps = match &self.outside {
@@ -1056,6 +1095,14 @@ impl Host {
                 self.menu = !self.menu;
                 Outcome::None
             }
+            // The update does not know the content's width: the drag keeps to three quarters and twice
+            // the default, the view keeps the page its least ([`Host::view_in`]).
+            Message::Sections(event) => match self.widths {
+                Some(app) if self.sections_width.update(event, Host::sections_limits(f32::INFINITY)) => {
+                    Outcome::Work(ui_state::save_split_task(app, SECTIONS_KEY.to_owned(), self.sections_width.chosen))
+                }
+                _ => Outcome::None,
+            },
             Message::Close => {
                 self.menu = false;
                 Outcome::None
@@ -1264,6 +1311,19 @@ impl Host {
         page: Page<'a, M>,
         wrap: fn(Message) -> M,
     ) -> Frame<'a, M> {
+        self.view_in(class, f32::INFINITY, page, wrap)
+    }
+
+    /// [`Host::view`] in content `content` wide (beside the app's sidebar, issue #604): the section
+    /// list of the wide form, as wide as it was dragged ([`Host::with_widths`]), leaves the page a
+    /// column's least.
+    pub fn view_in<'a, M: Clone + 'a>(
+        &'a self,
+        class: SizeClass,
+        content: f32,
+        page: Page<'a, M>,
+        wrap: fn(Message) -> M,
+    ) -> Frame<'a, M> {
         let form = form(class);
         // The menu button registers where it is, the layer floats there: both in this one frame.
         let anchor = Anchor::new();
@@ -1304,11 +1364,19 @@ impl Host {
             (Form::Steps | Form::Menu, _) => self.page_area(class, body, save_bar, max_width),
             (Form::List, _) => {
                 let list = container(self.list_rows(true, &children, up.clone(), wrap))
-                    .width(size::sidebar())
+                    .width(Fill)
                     .height(Fill)
                     .padding(Padding::new(space::s()));
-                row![list, rule::vertical(LINE).style(style::rule), self.page_area(class, body, save_bar, max_width)]
-                    .into()
+                let page = self.page_area(class, body, save_bar, max_width);
+                match self.widths {
+                    Some(_) => {
+                        let width = self.sections_width.width(Host::sections_limits(content));
+                        let on = move |event| wrap(Message::Sections(event));
+                        split::split(list, page, width, self.sections_width.dragging, on)
+                    }
+                    None => row![container(list).width(size::sidebar()), rule::vertical(LINE).style(style::rule), page]
+                        .into(),
+                }
             }
         };
         let overlay = (menu_form && self.menu).then(|| {
@@ -1743,6 +1811,30 @@ mod tests {
             style::button::secondary,
             Some(Message::Back),
         )])
+    }
+
+    /// Issue #604: without [`Host::with_widths`] the section list stays fixed and nothing is saved;
+    /// with it the list is dragged between three quarters and twice its default, a change is saved,
+    /// and the wide form builds in content of any width, dragging or not.
+    #[test]
+    fn the_section_list_is_dragged_only_with_widths() {
+        let mut host = host();
+        assert!(matches!(host.update::<()>(Message::Sections(SplitEvent::Grab)), Outcome::None));
+        assert!(!host.sections_width.dragging, "no divider without widths");
+        // As `with_widths` sets it, without reading the person's `ui.json`.
+        host.widths = Some(AppId::TASKS);
+        host.sections_width = Split::with(Some(300.0));
+        assert!(matches!(host.update::<()>(Message::Sections(SplitEvent::Grab)), Outcome::None));
+        assert!(matches!(host.update::<()>(Message::Sections(SplitEvent::Drag(9999.0))), Outcome::None));
+        for content in [f32::INFINITY, 1200.0, 500.0] {
+            let _: Frame<'_, Message> = host.view_in(SizeClass::Wide, content, page(), |m| m);
+        }
+        assert!(matches!(host.update::<()>(Message::Sections(SplitEvent::Release)), Outcome::Work(_)), "saved");
+        assert_eq!(host.sections_width.chosen, Some(2.0 * size::sidebar()), "at most twice the default");
+        let tight = Host::sections_limits(700.0);
+        assert_eq!(host.sections_width.width(tight), 700.0 - split::handle_width() - split::min_pane());
+        assert!(matches!(host.update::<()>(Message::Sections(SplitEvent::Reset)), Outcome::Work(_)));
+        assert_eq!(host.sections_width.chosen, None);
     }
 
     /// DS.5: with a page open below the section, the list shows it as the section's child and the
