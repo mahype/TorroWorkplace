@@ -191,7 +191,7 @@
 //! with two limits of its own: an approval has no "done" (it closes once decided), and the suite
 //! as a source is neither muted nor given a remembered lane – that would silence approvals.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -272,6 +272,11 @@ pub const INBOX: AppId = AppId::INBOX;
 /// widths (issue #376, `ui_state::split_from`): one width for every window of the app, as the
 /// sidebar is the same navigation in each.
 const SIDEBAR_SPLIT: &str = "sidebar";
+/// The key of the width of the panel beside the content in the wide layout (issue #604), one for
+/// every window of the app.
+const PANEL_SPLIT: &str = "panel";
+/// The key of the width of the hub's column "Coming back" (issue #604).
+const PROPS_SPLIT: &str = "props";
 
 /// The name `ui.json` keeps for the sidebar's "Sources" while it is unfolded (issue #121).
 const SOURCES_KEY: &str = "sidebar.sources";
@@ -3374,6 +3379,10 @@ pub struct App<S> {
     /// The right edge of the expanded sidebar beside the content (issue #376): the width the person
     /// dragged it to, remembered in `ui.json` for every window of the app ([`SIDEBAR_SPLIT`]).
     side: Split,
+    /// The panel beside the content in the wide layout (issue #604, [`PANEL_SPLIT`]).
+    panel_split: Split,
+    /// The hub's column "Coming back" at the right (issue #604, [`PROPS_SPLIT`]).
+    props_split: Split,
     /// The group of the collapsed rail whose card is open beside its icon (hover, an index into
     /// [`App::rail_groups`]); closed by every item clicked, a menu opening, another mail and Escape.
     rail_open: Option<usize>,
@@ -3650,6 +3659,12 @@ pub enum Message {
     SidebarWidth(SplitEvent),
     /// The sidebar's width remembered in `ui.json`, loaded at start (none: the default).
     StoredSidebarWidth(Option<f32>),
+    /// The divider before the panel beside the content (issue #604).
+    PanelWidth(SplitEvent),
+    /// The divider before the hub's column "Coming back" (issue #604).
+    PropsWidth(SplitEvent),
+    /// The widths of panel and column remembered in `ui.json`, loaded at start.
+    StoredWidths(HashMap<String, f32>),
     /// The pointer on the icons of the collapsed rail and its open card, or a click on an icon
     /// without a click of its own (task E14.3, `widgets::RailEvent`; indices into
     /// [`App::rail_groups`]): a group opens after [`RAIL_DELAY`], closes as the pointer leaves.
@@ -4845,6 +4860,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             order_chosen: false,
             split: Split::default(),
             side: Split::default(),
+            panel_split: Split::default(),
+            props_split: Split::default(),
             rail_open: None,
             rail_pending: None,
             rail_left: None,
@@ -4871,6 +4888,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             split,
             // Every window has the sidebar (issue #376).
             ui_state::load_split_task(INBOX, SIDEBAR_SPLIT.to_owned()).map(Message::StoredSidebarWidth),
+            // The panel and the hub's column (issue #604).
+            ui_state::load_splits_task(INBOX).map(Message::StoredWidths),
             // The first load waits for a core that is still starting (issue #206).
             {
                 let suite = app.suite.clone();
@@ -5013,6 +5032,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         // The same for the sidebar's edge (issue #376).
         if self.side.dragging {
             subscriptions.push(split::release().map(|()| Message::SidebarWidth(SplitEvent::Release)));
+        }
+        if self.panel_split.dragging {
+            subscriptions.push(split::release().map(|()| Message::PanelWidth(SplitEvent::Release)));
+        }
+        if self.props_split.dragging {
+            subscriptions.push(split::release().map(|()| Message::PropsWidth(SplitEvent::Release)));
         }
         // A drag of Settings › Categorization ends wherever the button is let go (issue #454).
         if let Some(SettingsPane { sections: SettingsState::Mail(state), .. }) = &self.settings {
@@ -5793,6 +5818,21 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 if self.side.update(event, self.sidebar_limits()) && !self.launch.demo {
                     return ui_state::save_split_task(INBOX, SIDEBAR_SPLIT.to_owned(), self.side.chosen);
                 }
+            }
+            Message::PanelWidth(event) => {
+                // The demo stores nothing.
+                if self.panel_split.update(event, panel::beside_limits(self.panes())) && !self.launch.demo {
+                    return ui_state::save_split_task(INBOX, PANEL_SPLIT.to_owned(), self.panel_split.chosen);
+                }
+            }
+            Message::PropsWidth(event) => {
+                if self.props_split.update(event, shell::props_limits(self.panes())) && !self.launch.demo {
+                    return ui_state::save_split_task(INBOX, PROPS_SPLIT.to_owned(), self.props_split.chosen);
+                }
+            }
+            Message::StoredWidths(stored) => {
+                self.panel_split.restore(stored.get(PANEL_SPLIT).copied());
+                self.props_split.restore(stored.get(PROPS_SPLIT).copied());
             }
             Message::StoredSidebarWidth(stored) => {
                 // A width dragged before the file answered wins.
@@ -6842,8 +6882,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Some(SidebarMode::Rail) => shell::rail() + layout::inset(),
             None => 0.0,
         };
-        let panel = if class == SizeClass::Wide && self.panel_open() { size::panel() } else { 0.0 };
-        let side = if self.hub_side() { size::props() } else { 0.0 };
+        let panel = if class == SizeClass::Wide && self.panel_open() { self.panel_beside() } else { 0.0 };
+        let side = if self.hub_side() { self.props_room() + split::handle_width() } else { 0.0 };
         let layout = hub::layout(0.0, class, self.density(), self.sorting);
         let width = self.size.width - chrome - panel - side - hub::sides(layout.narrow);
         // Quiet as a line where the column at the right does not say it (task E8.5b).
@@ -6874,7 +6914,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Some(SidebarMode::Rail) => shell::rail() + layout::inset(),
             None => 0.0,
         };
-        let panel = if class == SizeClass::Wide && self.panel_open() { size::panel() } else { 0.0 };
+        let panel = if class == SizeClass::Wide && self.panel_open() { self.panel_beside() } else { 0.0 };
         (self.size.width - chrome - panel - list::cards_side()).max(0.0)
     }
 
@@ -12431,6 +12471,32 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.side.width(self.sidebar_limits())
     }
 
+    /// The width of the columns inside the content's border: what the dividers before the panel and
+    /// the hub's column measure against (issue #604).
+    fn panes(&self) -> f32 {
+        (self.content_width() - 2.0 * size::HAIRLINE).max(0.0)
+    }
+
+    /// The width of the panel's title and body beside the content now: dragged or [`size::panel()`].
+    fn panel_room(&self) -> f32 {
+        self.panel_split.width(panel::beside_limits(self.panes()))
+    }
+
+    /// What the panel beside the content takes of its width, with its divider: what the board and the
+    /// hub lay out without. The mail window's panel adds the room of its floating rail.
+    fn panel_beside(&self) -> f32 {
+        let rail = match self.panel_open() && self.launch.kind == Kind::Mail {
+            true => widgets::floating_rail_room(),
+            false => 0.0,
+        };
+        self.panel_room() + rail + split::handle_width()
+    }
+
+    /// The width of the hub's column "Coming back" now: dragged or [`size::props()`].
+    fn props_room(&self) -> f32 {
+        self.props_split.width(shell::props_limits(self.panes()))
+    }
+
     /// What the divider between the wide mail window's list and reader moves in (issue #130): the
     /// list [`size::list()`] wide by default, in the content's width ([`App::content_width`]); the
     /// split keeps both at least `split::min_pane()`. The mail's action rail floats over the reader
@@ -12604,7 +12670,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// `Panel::side`), the whole window in a narrow one.
     fn panel_width(&self, class: SizeClass) -> f32 {
         match class {
-            SizeClass::Wide | SizeClass::Medium => size::panel() + widgets::floating_rail_room(),
+            // Beside the content as wide as it was dragged (issue #604).
+            SizeClass::Wide => self.panel_room() + widgets::floating_rail_room(),
+            SizeClass::Medium => size::panel() + widgets::floating_rail_room(),
             SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => self.size.width,
         }
     }
@@ -13141,6 +13209,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         } else {
             self.body(class, &rows, &filters)
         };
+        // Beside the content the panel is a column the person drags (issue #604).
+        let detail = detail.map(|detail| {
+            detail.resizable(self.panel_room(), self.panes(), self.panel_split.dragging, Message::PanelWidth)
+        });
         let placed = panel::place(class, content, detail, layer);
         // "Coming back" beside the hub's "Act now" in the wide layout (task E8.5), in the shell's
         // column at the right.
@@ -13151,6 +13223,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         shell::shell(class, sidebar, header, placed.body, side)
             .rail(rail)
             .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
+            .props_width(self.props_room(), self.panes(), self.props_split.dragging, Message::PropsWidth)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(placed.overlay)
             .top_row(self.top_row(class))
@@ -18435,6 +18508,38 @@ mod tests {
                 let _ = app.view();
             }
         }
+    }
+
+    /// Issue #604: the hub's column "Coming back" and the panel beside the content are dragged
+    /// inside their limits, come back from `ui.json`, and the hub lays out in the room they leave.
+    #[test]
+    fn the_hubs_column_and_the_panel_are_dragged() {
+        let mut hub = overview_at(&["--view", "hub"]);
+        let _ = hub.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        assert!(hub.hub_side());
+        let before = hub.hub_layout();
+        let stored = HashMap::from([(PROPS_SPLIT.to_string(), 400.0), (PANEL_SPLIT.to_string(), 480.0)]);
+        let _ = hub.update(Message::StoredWidths(stored));
+        assert_eq!((hub.props_room(), hub.panel_room()), (400.0, 480.0));
+        assert_ne!(hub.hub_layout(), before, "the hub lays out in the room the column leaves");
+        let _ = hub.update(Message::PropsWidth(SplitEvent::Grab));
+        let _ = hub.update(Message::PropsWidth(SplitEvent::Drag(9999.0)));
+        let _ = hub.view();
+        let _ = hub.update(Message::PropsWidth(SplitEvent::Release));
+        assert_eq!(hub.props_room(), 2.0 * size::props(), "at most twice the default");
+
+        let mut app = loaded(&[]);
+        let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        let _ = app.update(Message::Select("demo-2".into()));
+        let _ = app.update(Message::PanelWidth(SplitEvent::Grab));
+        let _ = app.update(Message::PanelWidth(SplitEvent::Drag(10.0)));
+        let _ = app.view();
+        let _ = app.update(Message::PanelWidth(SplitEvent::Release));
+        assert_eq!(app.panel_room(), 0.75 * size::panel(), "at least three quarters");
+        assert_eq!(app.panel_width(SizeClass::Wide), app.panel_room() + widgets::floating_rail_room());
+        assert_eq!(app.panel_width(SizeClass::Medium), size::panel() + widgets::floating_rail_room(), "over: fixed");
+        let _ = app.update(Message::PanelWidth(SplitEvent::Reset));
+        assert_eq!(app.panel_room(), size::panel());
     }
 
     /// Task E8.5b: the hub knows whether it is quiet; the line shows where no column at the right
