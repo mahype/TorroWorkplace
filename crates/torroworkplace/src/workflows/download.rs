@@ -400,7 +400,10 @@ impl Downloader {
                     .get(CONTENT_TYPE)
                     .and_then(|value| value.to_str().ok())
                     .filter(|kind| kind.len() <= 256)
-                    .ok_or_else(|| Failure::fixed(RunReason::UnexpectedType))?
+                    .ok_or_else(|| match want {
+                        Want::Resource(_) => unsupported(),
+                        _ => Failure::fixed(RunReason::UnexpectedType),
+                    })?
                     .to_owned();
                 let mime = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
                 let limit = match (want, mime.as_str()) {

@@ -1250,6 +1250,11 @@ async fn load_resources(
             }
         }
     }
+    // Check the witnessed pins before any file is written: a pin the package cannot hold would otherwise fail the
+    // test's closing transaction after the document is already committed.
+    let mut probe = package.clone();
+    probe.binding.resources = observed.clone();
+    probe.validate().map_err(|_| failure(RunReason::Unsupported))?;
     Ok((loaded, observed))
 }
 
@@ -2228,6 +2233,33 @@ mod tests {
             .expect("a draft test witnesses the new script");
         assert_eq!(witnessed.observed.len(), 1);
         assert_ne!(witnessed.observed, vec![witnessed_script()]);
+
+        // A witnessed script the package could not hold stops before any file is written.
+        let odd = httpmock::MockServer::start_async().await;
+        let page =
+            super::super::tests::with_resources(include_str!("../../tests/fixtures/workflows/paddle_august.html"))
+                .replace("invoice.js", "invoice.js?origin=www.example.org");
+        odd.mock_async(|when, then| {
+            when.path("/my.paddle.com/invoice/synthetic");
+            then.status(200).header("content-type", "text/html; charset=utf-8").body(page);
+        })
+        .await;
+        odd.mock_async(|when, then| {
+            when.path("/static.paddle.com/assets/css/customer/invoice.css");
+            then.status(200).header("content-type", "text/css").body("");
+        })
+        .await;
+        odd.mock_async(|when, then| {
+            when.path("/static.paddle.com/assets/js/customer/invoice.js");
+            then.status(200).header("content-type", "text/javascript").body(PADDLE_JS);
+        })
+        .await;
+        let downloader = download::Downloader::for_test(&odd.base_url());
+        let unpinnable = retrieve(&pinned, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), true)
+            .await
+            .err()
+            .expect("an unpinnable script is refused during the run");
+        assert_eq!(unpinnable.reason, RunReason::Unsupported);
 
         let server = paddle_server(PADDLE_JS).await;
         let downloader = download::Downloader::for_test(&server.base_url());
