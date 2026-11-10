@@ -187,7 +187,7 @@ pub fn split<'a, M: Clone + 'a>(
     let grip = row![blank().width(grip_start(width)), handle(on.clone())].height(Fill);
     let area = mouse_area(stack![panes, grip]);
     if dragging {
-        area.on_move(move |point| on(SplitEvent::Drag(point.x - divider_width() / 2.0)))
+        area.on_move(move |point| on(SplitEvent::Drag(point.x - grip_middle())))
             .interaction(mouse::Interaction::ResizingHorizontally)
             .into()
     } else {
@@ -229,7 +229,7 @@ pub(crate) fn split_end_with<'a, M: Clone + 'a>(
         container(second).width(width + extra).height(Fill)
     ];
     // Measured from the right edge: the handle's middle over the line, as in [`split`].
-    let after = grip_start(width + extra);
+    let after = (width + extra + divider_width() + GRIP_INSIDE - handle_width()).max(0.0);
     let grip = row![blank().width(Fill), handle(on), blank().width(after)].height(Fill);
     let area = mouse_area(stack![panes, grip]);
     if dragging {
@@ -244,12 +244,22 @@ pub(crate) fn split_end_with<'a, M: Clone + 'a>(
 /// The width of the pane at the right of a split `total` wide ([`split_end_with`]) that puts the
 /// handle's middle under the pointer at `x` from the split's left edge, less the `extra` it adds.
 fn end_width(total: f32, x: f32, extra: f32) -> f32 {
-    total - x - divider_width() / 2.0 - extra
+    total - (x - grip_middle()) - divider_width() - extra
 }
 
-/// Where the handle starts in a split whose first pane is `width` wide: its middle over the line.
+/// How far the handle reaches over the pane left of the line, as the sidebar's (`shell::resizable`):
+/// the margin of the scrollbar, so the left pane's scroller, which floats in its right edge, stays
+/// free to grab; the rest of the handle lies over the line and the pane to its right.
+const GRIP_INSIDE: f32 = 2.0;
+
+/// Where the handle starts in a split whose first pane is `width` wide: [`GRIP_INSIDE`] before the line.
 fn grip_start(width: f32) -> f32 {
-    (width + divider_width() / 2.0 - handle_width() / 2.0).max(0.0)
+    (width - GRIP_INSIDE).max(0.0)
+}
+
+/// How far right of the line's left edge the handle's middle lies: a drag puts that under the pointer.
+fn grip_middle() -> f32 {
+    handle_width() / 2.0 - GRIP_INSIDE
 }
 
 /// The line between two panes, in `line_selected` while `dragging`.
@@ -365,7 +375,7 @@ mod tests {
     /// Issue #604: a pane at the right is measured from the right edge, its fixed extra left out.
     #[test]
     fn the_pane_at_the_right_is_measured_from_the_right_edge() {
-        let x = 1200.0 - 300.0 - divider_width() / 2.0;
+        let x = 1200.0 - 300.0 - divider_width() + grip_middle();
         assert_eq!(end_width(1200.0, x, 0.0), 300.0, "the handle's middle under the pointer");
         assert_eq!(end_width(1200.0, x - 48.0, 48.0), 300.0, "the extra column is not chosen");
     }
