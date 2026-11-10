@@ -66,7 +66,7 @@ use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::{datetime, markdown, style, typo};
 use torro_pim::model::{ChecksState, GitHubDetails, GitHubKind, GitHubState, Link, ReviewState};
-use torro_pim::{Collection, EventTime, Todo};
+use torro_pim::{Collection, EventTime, Focus, Todo};
 
 use crate::list::{self, Prio};
 
@@ -167,6 +167,8 @@ pub struct Detail {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Editor {
     Priority,
+    /// The focus level (issue #596).
+    Focus,
     Due,
     List,
     Parent,
@@ -197,6 +199,8 @@ pub enum Message {
     /// Close the open editor (click beside it).
     CloseEditor,
     PrioritySelected(Prio),
+    /// A focus level from the "Focus" menu (issue #596).
+    FocusSelected(Focus),
     /// A [`Collection::id`].
     ListSelected(String),
     /// The parent's uid, `None` for none.
@@ -265,6 +269,9 @@ pub enum Action {
     Close,
     /// Tick or untick the task with this uid (a subtask), as the list does.
     ToggleDone(String),
+    /// Give the task this focus level (issue #596): the app sets it as the list does, asking which
+    /// task gives its slot up when today's are taken.
+    SetFocus(Focus),
     /// Show the task with this uid in the detail instead.
     Show(String),
     /// Give the keyboard focus to the widget with this id.
@@ -321,6 +328,8 @@ struct Draft {
 enum Prop {
     Status,
     Priority,
+    /// The focus level (issue #596).
+    Focus,
     Due,
     List,
     Parent,
@@ -470,6 +479,10 @@ impl Detail {
                 self.close_editor();
                 self.draft.priority = priority;
                 return self.request_save(true);
+            }
+            Message::FocusSelected(focus) => {
+                self.close_editor();
+                return Action::SetFocus(focus);
             }
             Message::ListSelected(id) => {
                 self.close_editor();
@@ -748,6 +761,11 @@ impl Detail {
     }
 
     /// The task can be changed: its list is writable.
+    /// The focus can be set: an open task of a list that takes changes (issue #596).
+    fn focusable(&self) -> bool {
+        self.editable() && !self.original.completed
+    }
+
     fn editable(&self) -> bool {
         self.list().is_some()
     }
@@ -850,6 +868,9 @@ impl Detail {
         if editable || self.draft.priority != Prio::None {
             first.push(Prop::Priority);
         }
+        if self.focusable() || self.original.focus != Focus::Normal {
+            first.push(Prop::Focus);
+        }
         if editable || self.draft.due.is_some() {
             first.push(Prop::Due);
         }
@@ -895,6 +916,9 @@ impl Detail {
         }
         if editable || self.draft.priority != Prio::None {
             chips.push(Prop::Priority);
+        }
+        if self.focusable() || self.original.focus != Focus::Normal {
+            chips.push(Prop::Focus);
         }
         if editable || self.draft.due.is_some() {
             chips.push(Prop::Due);
@@ -1020,6 +1044,7 @@ impl Detail {
     pub fn layer<'a>(&'a self, anchor: &Anchor) -> Option<Element<'a, Message>> {
         let (card, align) = match self.open? {
             Editor::Priority => (self.priority_menu(), Align::Start),
+            Editor::Focus => (self.focus_menu(), Align::Start),
             Editor::List => (self.list_menu(), Align::Start),
             Editor::Parent => (self.parent_menu(), Align::Start),
             Editor::Due => (self.due_card(), Align::Start),
@@ -1235,6 +1260,13 @@ impl Detail {
                 };
                 return self.trigger(Editor::Priority, anchor, chip);
             }
+            Prop::Focus => {
+                let focus = self.original.focus;
+                let mark = widgets::focus_mark(self.draft.priority.index(), focus, None::<Message>);
+                let on_press = self.focusable().then_some(Message::Open(Editor::Focus));
+                let chip = widgets::chip_led(mark, widgets::focus_word(focus), on_press);
+                return self.trigger(Editor::Focus, anchor, chip);
+            }
             Prop::Due => {
                 let mark = match colours {
                     Some(p) if self.overdue() => Mark::Tinted(Icon::Calendar, p.attention_text),
@@ -1287,6 +1319,17 @@ impl Detail {
                     }
                 };
                 self.trigger(Editor::Priority, anchor, line)
+            }
+            Prop::Focus => {
+                let focus = self.original.focus;
+                let value = row![
+                    widgets::focus_mark(self.draft.priority.index(), focus, None::<Message>),
+                    widgets::prop_value(widgets::focus_word(focus))
+                ]
+                .spacing(space::s())
+                .align_y(Alignment::Center);
+                let on_press = self.focusable().then_some(Message::Open(Editor::Focus));
+                self.trigger(Editor::Focus, anchor, widgets::prop_line(tr("Focus"), None, value, on_press))
             }
             Prop::Due => {
                 let value: Element<'a, Message> = match self.due_label() {
@@ -1632,6 +1675,25 @@ impl Detail {
             })
             .collect();
         widgets::menu(vec![MenuSection::titled(tr("Priority"), items)])
+    }
+
+    /// The "Focus" menu (issue #596): normal, focus, strong focus, each with its mark in the task's
+    /// priority colour; F in the list does the same one step at a time.
+    fn focus_menu(&self) -> Element<'_, Message> {
+        let items = [Focus::Normal, Focus::Focus, Focus::Strong]
+            .into_iter()
+            .map(|choice| MenuItem {
+                mark: None,
+                label: widgets::focus_word(choice).into(),
+                trail: Trail::None,
+                current: choice == self.original.focus,
+                detail: None,
+                tags: Vec::new(),
+                nested: false,
+                on_press: Message::FocusSelected(choice),
+            })
+            .collect();
+        widgets::menu(vec![MenuSection::titled(tr("Focus"), items)])
     }
 
     /// The writable lists a filter list's item can be added to, each with its ring.
@@ -2645,6 +2707,7 @@ mod tests {
             [
                 (None, Prop::Status),
                 (None, Prop::Priority),
+                (None, Prop::Focus),
                 (None, Prop::Due),
                 (organisation, Prop::List),
                 (organisation, Prop::Parent),
@@ -2712,7 +2775,7 @@ mod tests {
         assert!(props.contains(&Prop::Priority) && props.contains(&Prop::Parent));
         assert!(detail.overdue());
         assert_eq!(detail.place_name(), "Work");
-        assert_eq!(detail.chip_props(), [Prop::Priority, Prop::Due, Prop::List]);
+        assert_eq!(detail.chip_props(), [Prop::Priority, Prop::Focus, Prop::Due, Prop::List]);
     }
 
     #[test]
