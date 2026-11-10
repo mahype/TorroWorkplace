@@ -7927,9 +7927,16 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// first that fails stops the rest. Without an archive folder in an account nothing moves and the
     /// hint says so (decision 6 of E18).
     fn archive_mails(&mut self, ids: Vec<String>, close: Vec<String>) -> Task<Message> {
+        let view_pile = self.view.pile();
+        let on_view_pile = |app: &Self, id: &str| view_pile.is_some() && app.mail_pile(id) == view_pile;
         let archived = ids.iter().any(|id| self.in_role(id, Role::Archive));
-        let ids: Vec<String> =
-            ids.into_iter().filter(|id| !self.in_role(id, Role::Drafts) && !self.in_role(id, Role::Archive)).collect();
+        // Mail in the archive already is not moved again; on the pile of the view it still leaves the
+        // pile (review of #615): archived from the inbox earlier, `e` in "Set aside" takes it off.
+        let ids: Vec<String> = ids
+            .into_iter()
+            .filter(|id| !self.in_role(id, Role::Drafts))
+            .filter(|id| !self.in_role(id, Role::Archive) || on_view_pile(self, id))
+            .collect();
         if ids.is_empty() {
             // Not without a word (design review of #615): marked mail in the archive has nowhere to go.
             if archived {
@@ -7937,15 +7944,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             return Task::none();
         }
-        if ids.iter().any(|id| !self.can_archive(id)) {
+        let moving: Vec<String> = ids.iter().filter(|id| !self.in_role(id, Role::Archive)).cloned().collect();
+        if moving.iter().any(|id| !self.can_archive(id)) {
             self.note(tr("This account has no archive folder.").to_owned());
             return Task::none();
         }
-        let view_pile = self.view.pile();
         let piled: Vec<(String, MailPile, Option<DateTime<Utc>>)> = ids
             .iter()
             .filter_map(|id| {
-                let pile = view_pile.filter(|pile| self.mail_pile(id) == Some(*pile))?;
+                let pile = view_pile.filter(|_| on_view_pile(self, id))?;
                 Some((id.clone(), pile, self.mail_pile_since(id)))
             })
             .collect();
@@ -7955,7 +7962,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         // One move per account there, one per account and folder back.
         let mut accounts: Vec<(Option<String>, Vec<String>)> = Vec::new();
         let mut homes: Vec<(Option<String>, MoveTarget, Vec<String>)> = Vec::new();
-        for id in &ids {
+        for id in &moving {
             let account = self.mail_account_of(id);
             match accounts.iter_mut().find(|(held, _)| *held == account) {
                 Some((_, held)) => held.push(id.clone()),
@@ -7994,8 +8001,6 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             self.leaving.push(Leaving { id: id.clone(), from, answered: None });
             self.take_out(id);
         }
-        self.selected_mail.clear();
-        self.mail_anchor = None;
         let off: Vec<String> = piled.into_iter().map(|(id, _, _)| id).collect();
         #[cfg(test)]
         {
@@ -8003,7 +8008,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.sent.push(Sent::Mail(edit.clone(), Some(hint.clone())));
             }
             if !off.is_empty() {
-                self.sent.push(Sent::Pile(off.clone(), None, None, None));
+                self.sent.push(Sent::Pile(off.clone(), None, None, Some(hint.clone())));
             }
             self.sent.push(Sent::MailDone(close.clone()));
         }
@@ -8036,6 +8041,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.close_menus();
         let ids: Vec<String> =
             self.selectable_mail().into_iter().filter(|id| self.selected_mail.contains(id)).collect();
+        self.selected_mail.clear();
+        self.mail_anchor = None;
         let mut close: Vec<String> = Vec::new();
         if !self.view.is_mail() {
             for id in &ids {
@@ -10120,7 +10127,17 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.detail.is_some() {
             self.detail = Some(item);
         }
+        self.drop_marking_for(command);
         self.run(command)
+    }
+
+    /// A button acts on its own entry or mail, not on the marked mail (review of #615): before its
+    /// "Archive" or "Done" runs, the marking goes, which `e` would archive instead.
+    fn drop_marking_for(&mut self, command: Command) {
+        if matches!(command, Command::Done | Command::Archive) {
+            self.selected_mail.clear();
+            self.mail_anchor = None;
+        }
     }
 
     /// A button of a message's card for the message's entry `id` in "For me" (task E8.11: "Later" and
@@ -10132,6 +10149,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.messages.iter().any(|message| message.id == id) {
             self.close_menus();
             self.cursor = Some(id.to_owned());
+            self.drop_marking_for(command);
             return self.run(command);
         }
         let Some(Link::Mail { message }) = self.for_me.iter().find(|item| item.id == id).and_then(|i| i.link.clone())
@@ -12081,7 +12099,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                         self.sent.push(Sent::Pile(vec![id.clone()], Some(*pile), *since, None));
                     }
                 }
-                let ids: Vec<String> = back.iter().flat_map(|edit| edit.ids().to_vec()).collect();
+                let mut ids: Vec<String> = back.iter().flat_map(|edit| edit.ids().to_vec()).collect();
+                ids.extend(
+                    piled.iter().map(|(id, _, _)| id.clone()).filter(|id| !ids.contains(id)).collect::<Vec<_>>(),
+                );
                 self.leaving.retain(|leaving| !ids.contains(&leaving.id));
                 for (_, pile, _) in &piled {
                     self.count_pile(Some(*pile), true);
@@ -21990,7 +22011,8 @@ mod tests {
                         result = block_on(edit.apply(app.inbox.clone())).map(|()| None);
                     }
                 }
-                Sent::Pile(off, None, None, None) if matches!(result, Ok(None)) => {
+                Sent::Pile(off, None, None, held) if matches!(result, Ok(None)) => {
+                    hint = hint.or(held);
                     result = Ok(block_on(MailSource::set_mail_pile(&*app.inbox, off, None, None))
                         .err()
                         .map(|e| e.to_string()));
@@ -22014,7 +22036,8 @@ mod tests {
             panic!("no undo of archiving to deliver")
         };
         let _ = app.update(Message::Undo);
-        let ids: Vec<String> = back.iter().flat_map(|edit| edit.ids().to_vec()).collect();
+        let mut ids: Vec<String> = back.iter().flat_map(|edit| edit.ids().to_vec()).collect();
+        ids.extend(piled.iter().map(|(id, _, _)| id.clone()).filter(|id| !ids.contains(id)).collect::<Vec<_>>());
         let result = block_on(undo_filed(app.inbox.clone(), back, piled, reopen, follow));
         let _ = app.update(Message::MailEdited(result, ids, None));
         load(app);
@@ -22049,7 +22072,7 @@ mod tests {
         assert_eq!(hint.undo, Some(Undo::Filed { back: vec![back], reopen: Vec::new(), follow: Vec::new(), piled }));
         assert_eq!(
             app.sent.get(before + 1),
-            Some(&Sent::Pile(vec!["m:w5".into()], None, None, None)),
+            Some(&Sent::Pile(vec!["m:w5".into()], None, None, Some(hint.clone()))),
             "after the move"
         );
         assert!(message_ids(&app).is_empty(), "out of the list at once");
@@ -22070,6 +22093,53 @@ mod tests {
         assert_eq!(message_ids(&app), ["m:w5"], "back in Set aside");
         let back = demo_mail(&app, "m:w5");
         assert_eq!((back.folder, back.pile, back.pile_since), (home, Some(MailPile::SetAside), since));
+    }
+
+    /// Review of #615: a mail archived earlier but still on "Set aside" – archived from the inbox, or
+    /// before this issue – leaves the pile with `e` there, without a move; "Undo" lays it back.
+    #[test]
+    fn e_in_set_aside_takes_archived_mail_off_the_pile_without_a_move() {
+        let mut app = mail_window(Density::Compact, &["--open", "set-aside"]);
+        let since = app.messages[0].pile_since;
+        let to = MoveTarget::Role(MoveRole::Archive);
+        block_on(MailSource::move_mail(app.inbox.as_ref(), vec!["m:w5".into()], to)).expect("archived in the demo");
+        load(&mut app);
+        assert_eq!(message_ids(&app), ["m:w5"], "still on the pile");
+        assert!(app.in_role("m:w5", Role::Archive), "in the archive");
+        let _ = app.update(Message::SelectMail("m:w5".into()));
+        let before = app.sent.len();
+        let _ = app.update(Message::Key(Key::E));
+        assert!(!app.sent[before..].iter().any(|sent| matches!(sent, Sent::Mail(..))), "no move");
+        let off = |sent: &Sent| matches!(sent, Sent::Pile(ids, None, None, Some(_)) if *ids == ["m:w5"]);
+        assert!(app.sent[before..].iter().any(off), "off the pile");
+        assert!(message_ids(&app).is_empty());
+        deliver_archived(&mut app, before);
+        assert_eq!(demo_mail(&app, "m:w5").pile, None);
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Archived and removed from Set aside.")));
+        deliver_undo_filed(&mut app);
+        assert_eq!(message_ids(&app), ["m:w5"], "back on the pile");
+        let back = demo_mail(&app, "m:w5");
+        assert_eq!((back.pile, back.pile_since), (Some(MailPile::SetAside), since));
+    }
+
+    /// Review of #615: a button's "Archive" acts on its own mail even while other mail is marked; the
+    /// marking goes, so `e` afterwards does not archive it.
+    #[test]
+    fn a_buttons_archive_acts_on_its_own_mail_while_mail_is_marked() {
+        use iced::keyboard::Modifiers;
+
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::SelectMail("m:w1".into()));
+        let _ = app.update(Message::ModifiersChanged(Modifiers::CTRL));
+        let _ = app.update(Message::SelectMail("m:w2".into()));
+        let _ = app.update(Message::ModifiersChanged(Modifiers::empty()));
+        assert_eq!(app.selected_mail, ["m:w1", "m:w2"]);
+        let before = app.sent.len();
+        let _ = app.update(Message::Act("m:w4".into(), Command::Done));
+        let archive = MailEdit::Move { ids: vec!["m:w4".into()], to: MoveTarget::Role(MoveRole::Archive) };
+        assert!(matches!(app.sent.get(before), Some(Sent::Mail(edit, Some(_))) if *edit == archive), "only its mail");
+        assert!(app.selected_mail.is_empty(), "the marking went");
+        assert!(message_ids(&app).contains(&"m:w1") && message_ids(&app).contains(&"m:w2"), "the marked stay");
     }
 
     /// Issue #615 (decision 1 of its plan): archived from a folder, a mail set aside stays on its pile –
@@ -22129,7 +22199,7 @@ mod tests {
         ));
         let off: Vec<&Sent> = app.sent[before..].iter().filter(|sent| matches!(sent, Sent::Pile(..))).collect();
         assert_eq!(off.len(), 1, "one call takes both off");
-        assert!(matches!(off[0], Sent::Pile(ids, None, None, None) if ids.len() == 2));
+        assert!(matches!(off[0], Sent::Pile(ids, None, None, Some(_)) if ids.len() == 2));
         assert!(app.messages.is_empty() && app.selected_mail.is_empty());
         assert_eq!(app.reply_later, Some(count - 2));
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), None, "the hint follows the answer");
