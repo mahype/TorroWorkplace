@@ -158,6 +158,13 @@ const STATE_PILL_HEIGHT: f32 = 22.0;
 /// bar fits beside its words.
 pub const PROGRESS_WIDTH: f32 = 64.0;
 const PROGRESS_HEIGHT: f32 = 4.0;
+/// The cell of a [`focus_mark`] and its three forms (issue #596, `docs/prototypes/tasks/fokus.html`):
+/// a dot 9 across, a ring 18 across with a stroke of 4, a ring 28 across with a stroke of 5.5. The
+/// cell is as big as the largest ring, so every mark of a list sits on one axis.
+pub const FOCUS_CELL: f32 = 28.0;
+const FOCUS_DOT: f32 = 9.0;
+const FOCUS_RING: (f32, f32) = (18.0, 4.0);
+const FOCUS_RING_STRONG: (f32, f32) = (28.0, 5.5);
 
 // ---------------------------------------------------------------------------------------------
 // Marks and trailing details, shared by sidebar rows, menu items, chips and property rows.
@@ -5164,6 +5171,67 @@ pub fn progress_bar<'a, M: 'a>(done: usize, total: usize) -> Element<'a, M> {
             ..container::Style::default()
         })
         .into()
+}
+
+/// The word of priority class `prio` of a [`focus_mark`] (0 none … 4 urgent), the same words the
+/// tasks app shows in its menu and properties.
+pub fn priority_word(prio: usize) -> &'static str {
+    match prio {
+        1 => tr("Low"),
+        2 => tr("Medium"),
+        3 => tr("High"),
+        4 => tr("Urgent"),
+        _ => tr("No priority"),
+    }
+}
+
+/// The word of a focus level (issue #596): "Normal", "Focus", "Strong focus".
+pub fn focus_word(focus: torro_pim::Focus) -> &'static str {
+    match focus {
+        torro_pim::Focus::Normal => tr("Normal"),
+        torro_pim::Focus::Focus => tr("Focus"),
+        torro_pim::Focus::Strong => tr("Strong focus"),
+    }
+}
+
+/// The mark in front of a task (issue #596): its **colour** is the priority, `prio` 0 (none, grey)
+/// to 4 (urgent, red) from [`Palette::priority`]; its **form** is the focus – a dot, a ring, a big
+/// ring ([`FOCUS_CELL`]). The tooltip says both in words ("High · Focus"), so neither rests on
+/// colour alone. With `on_press` it is a button (the tasks app cycles the focus with it), 28 × 28.
+/// In a row drawn in the accent colour the mark is `on_accent`, as every coloured mark there.
+///
+/// ```ignore
+/// widgets::focus_mark(3, torro_pim::Focus::Strong, Some(Message::CycleFocus(href)))
+/// ```
+pub fn focus_mark<'a, M: Clone + 'a>(prio: usize, focus: torro_pim::Focus, on_press: Option<M>) -> Element<'a, M> {
+    let prio = prio.min(4);
+    let colour = move |t: &Theme| {
+        let p = palette(t);
+        if theme::on_accent_theme(t) == *t { p.on_accent } else { p.priority[prio] }
+    };
+    let mark = match focus {
+        torro_pim::Focus::Normal => {
+            container(blank().width(FOCUS_DOT).height(FOCUS_DOT)).style(move |t| container::Style {
+                background: Some(Background::Color(colour(t))),
+                border: border::rounded(FOCUS_DOT / 2.0),
+                ..container::Style::default()
+            })
+        }
+        torro_pim::Focus::Focus | torro_pim::Focus::Strong => {
+            let (edge, stroke) = if focus == torro_pim::Focus::Strong { FOCUS_RING_STRONG } else { FOCUS_RING };
+            container(blank().width(edge).height(edge)).style(move |t| container::Style {
+                border: border::rounded(edge / 2.0).color(colour(t)).width(stroke),
+                ..container::Style::default()
+            })
+        }
+    };
+    let cell = container(mark).center(FOCUS_CELL);
+    let label = format!("{} · {}", priority_word(prio), focus_word(focus));
+    let content: Element<'a, M> = match on_press {
+        Some(message) => button(cell).padding(0).style(style::button::icon).on_press(message).into(),
+        None => cell.into(),
+    };
+    with_tooltip(content, label)
 }
 
 /// A progress line across the whole width (issue #454): the track of [`progress_bar`] – 4 high,

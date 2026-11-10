@@ -193,6 +193,11 @@ pub struct Palette {
     /// The colours of the senders of mail (issue #458, `torro_core::design::Palette::sender`): the
     /// circle of a mail ([`crate::widgets::sender_circle`]) takes the one its address picks.
     pub sender: [Color; 10],
+    /// The colours of a task's priority (issue #596), in the order none, low, medium, high,
+    /// critical: grey, pale yellow, yellow, orange, red, as the drafts (`docs/prototypes/tasks/fokus.html`)
+    /// give them. Only the mark of [`crate::widgets::focus_mark`], never text; each reaches 3:1 on
+    /// `panel` and `raised` ([`readable_mark`]).
+    pub priority: [Color; 5],
     /// The shadow under menus, floating cards and dialogs.
     pub shadow: Shadow,
     /// Dims the window behind a modal dialog.
@@ -288,6 +293,7 @@ impl Palette {
             chart: c.chart.map(rgba),
             category: c.category.map(rgba),
             sender: c.sender.map(rgba),
+            priority: priority_colours(mode, rgba(c.panel), rgba(c.raised)),
             chart_other: rgba(c.chart_other),
             shadow: Shadow { color: rgba(c.shadow), offset: Vector::new(0.0, 12.0), blur_radius: 32.0 },
             scrim: rgba(c.scrim),
@@ -356,6 +362,33 @@ impl ChartColor {
 /// `mix(p.panel, p.bg, 0.5)`.
 pub const fn mix(a: Color, b: Color, t: f32) -> Color {
     Color::from_rgb(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t)
+}
+
+/// The priority colours of the drafts for `mode` (issue #596), each moved just as far as it needs
+/// to reach 3:1 on `panel` and `raised` ([`readable_mark`]): in light mode the yellows get darker,
+/// in dark mode the colours stay as drawn.
+fn priority_colours(mode: DesignMode, panel: Color, raised: Color) -> [Color; 5] {
+    let drawn = match mode {
+        DesignMode::Dark => {
+            [(0x6B, 0x70, 0x79), (0xFF, 0xE0, 0x8A), (0xFB, 0xBF, 0x24), (0xF9, 0x73, 0x16), (0xE5, 0x34, 0x2B)]
+        }
+        DesignMode::Light => {
+            [(0x9A, 0xA0, 0xA8), (0xE2, 0xB9, 0x3B), (0xF2, 0xA5, 0x16), (0xEA, 0x6A, 0x0A), (0xD4, 0x2A, 0x2A)]
+        }
+    };
+    drawn.map(|(r, g, b)| readable_mark(Color::from_rgb8(r, g, b), &[panel, raised]))
+}
+
+/// `colour` moved towards black on light surfaces, towards white on dark ones, just as far as a
+/// graphic mark needs for 3:1 against every one of `surfaces` (WCAG 1.4.11). Unchanged when it is
+/// enough already; the darkest or lightest step when no step reaches it.
+pub fn readable_mark(colour: Color, surfaces: &[Color]) -> Color {
+    const STEPS: u16 = 50;
+    let opaque = |c: Color| Rgba { r: c.r, g: c.g, b: c.b, a: 1.0 };
+    let light_ground = surfaces.iter().all(|s| opaque(*s).luminance() > 0.5);
+    let towards = if light_ground { Color::BLACK } else { Color::WHITE };
+    let enough = |c: &Color| surfaces.iter().all(|s| opaque(*c).contrast(opaque(*s)) >= 3.0);
+    (0..=STEPS).map(|step| mix(colour, towards, f32::from(step) / f32::from(STEPS))).find(enough).unwrap_or(towards)
 }
 
 /// The fill of a category pill (issue #613) in a group's `colour`: the colour itself, or darkened
@@ -1020,6 +1053,26 @@ mod tests {
         assert_eq!([size::command(), size::pill(), size::control_xl(), size::row_message()], [46.0, 40.0, 48.0, 100.0]);
         // Issue #291: the rails and the reading column.
         assert_eq!([size::rail(), size::rail_wide(), size::reading_max()], [60.0, 248.0, 600.0]);
+    }
+
+    #[test]
+    fn priority_marks_reach_three_to_one_on_panel_and_raised() {
+        for p in [Palette::dark(), Palette::light()] {
+            for (i, colour) in p.priority.iter().enumerate() {
+                for surface in [p.panel, p.raised] {
+                    let c = |c: Color| Rgba { r: c.r, g: c.g, b: c.b, a: 1.0 };
+                    let ratio = c(*colour).contrast(c(surface));
+                    assert!(ratio >= 3.0, "priority {i}: {ratio} on {surface:?}");
+                }
+            }
+        }
+        let dark = Palette::dark();
+        assert_eq!(dark.priority[4], Color::from_rgb8(0xE5, 0x34, 0x2B), "red is bright enough in the dark already");
+        assert_ne!(
+            Palette::light().priority[1],
+            Color::from_rgb8(0xE2, 0xB9, 0x3B),
+            "pale yellow gets darker on white"
+        );
     }
 
     #[test]
