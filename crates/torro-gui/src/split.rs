@@ -119,6 +119,14 @@ impl Split {
         Split { chosen, ..Split::default() }
     }
 
+    /// Takes the width `stored` in `ui.json` (`ui_state::splits_from`), unless the person dragged or
+    /// reset this split before the file answered: then theirs wins.
+    pub fn restore(&mut self, stored: Option<f32>) {
+        if *self == Split::default() {
+            *self = Split::with(stored);
+        }
+    }
+
     /// The first pane's width now: the one chosen, else the default, kept inside `limits`.
     pub fn width(&self, limits: Limits) -> f32 {
         limits.clamp(self.chosen.unwrap_or(limits.default))
@@ -316,6 +324,11 @@ mod tests {
         assert!(split.update(SplitEvent::Reset, limits), "the double click goes back: save");
         assert_eq!((split.chosen, split.width(limits)), (None, 460.0));
         assert!(!split.update(SplitEvent::Reset, limits), "already the default");
+        let mut stored = Split::default();
+        stored.restore(Some(500.0));
+        assert_eq!(stored.chosen, Some(500.0), "the stored width comes back");
+        stored.restore(Some(300.0));
+        assert_eq!(stored.chosen, Some(500.0), "a width already there wins");
     }
 
     /// Issue #604: a pane is kept between three quarters and twice its default, the other keeps its rest.

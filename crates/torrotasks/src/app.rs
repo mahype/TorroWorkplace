@@ -604,9 +604,7 @@ impl Widths {
             (LIST_MEDIUM_KEY, &mut self.list_medium),
             (PROPS_KEY, &mut self.props),
         ] {
-            if *split == Split::default() {
-                *split = Split::with(stored.get(key).copied());
-            }
+            split.restore(stored.get(key).copied());
         }
     }
 }
