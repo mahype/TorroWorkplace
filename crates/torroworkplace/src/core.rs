@@ -6424,8 +6424,8 @@ impl Core {
             Request::DismissSuggestion { account, id, kind } => {
                 self.close_suggestion(&account, &id, &kind, false, reach).await
             }
-            Request::ExtractAction { account, id, kind, lists, focus: _ } => {
-                Box::pin(self.extract_action((&account, &id, &kind), lists, reach)).await
+            Request::ExtractAction { account, id, kind, lists, focus } => {
+                Box::pin(self.extract_action((&account, &id, &kind), lists, focus, reach)).await
             }
             Request::ListActionKinds => {
                 Response::ActionKinds { kinds: crate::actions::kinds(&self.settings.current()) }
@@ -7382,7 +7382,7 @@ impl Core {
         for held in waiting {
             let Some(kind) = crate::actions::kind(&held.kind) else { continue };
             // A model that hangs must not hold up the mail after it.
-            let reading = self.read_action(account, message, kind, lists.clone());
+            let reading = self.read_action(account, message, kind, lists.clone(), None);
             let read = match tokio::time::timeout(READING_TIMEOUT, reading).await {
                 Ok(Ok(read)) => read,
                 _ => torro_ipc::actions::Suggestion { state: torro_ipc::actions::SuggestionState::Unfilled, ..held },
@@ -7430,14 +7430,16 @@ impl Core {
 
     /// Reads the action `kind` out of the mail `message` of `account` (issue #603) with the AI of
     /// [`Core::action_reader`]: the fields of its form and the reason, `ready`. `lists` are the names
-    /// of the task lists a task may go to. `Err` with the core's answer: `not-found` for a mail the
-    /// store does not hold, `not-connected` without an AI, the AI's own errors.
+    /// of the task lists a task may go to, `focus` the person's words that say which of several they
+    /// mean (issue #605). `Err` with the core's answer: `not-found` for a mail the store does not hold,
+    /// `not-connected` without an AI, the AI's own errors.
     async fn read_action(
         &self,
         account: &str,
         message: &str,
         kind: &crate::actions::KindDef,
         lists: Vec<String>,
+        focus: Option<String>,
     ) -> Result<torro_ipc::actions::Suggestion, Response> {
         let held = self.mail.content_for_category(account, message).await.map_err(|err| err.response())?;
         let Some(held) = held else { return Err(no_mail()) };
@@ -7447,6 +7449,7 @@ impl Core {
             received: held.date.unwrap_or_else(Utc::now),
             text: held.text,
             lists: crate::suggest::offered_lists(lists),
+            focus,
         };
         let chosen = self.action_reader().await?;
         let provider =
@@ -7560,10 +7563,13 @@ impl Core {
 
     /// `mail.extract_action` (issue #603): reads the action `kind` out of the mail now, after a reading
     /// of the same mail under way, and keeps it `ready` – also over a dismissed one, which opens again.
+    /// `focus`, the person's words (issue #605), goes to the model as data next to the mail
+    /// ([`crate::suggest::Content::focus`]).
     async fn extract_action(
         &self,
         (account, id, kind): (&str, &str, &str),
         lists: Vec<String>,
+        focus: Option<String>,
         reach: Reach<'_>,
     ) -> Response {
         if let Err(refused) = self.suggestion_mail(account, id, reach).await {
@@ -7579,7 +7585,8 @@ impl Core {
             Err(err) => return err.response(),
         };
         let claimed = self.readings.claim(account, id).await;
-        let read = match tokio::time::timeout(READING_TIMEOUT, self.read_action(account, id, def, lists)).await {
+        let reading = self.read_action(account, id, def, lists, focus);
+        let read = match tokio::time::timeout(READING_TIMEOUT, reading).await {
             Ok(read) => read,
             Err(_) => Err(refusal("busy", tr("The AI took too long to read the mail. Try again.").to_string())),
         };
@@ -9316,6 +9323,7 @@ impl Core {
             received: entry.received,
             text: self.text_for_ai(&entry, reach).await,
             lists: crate::suggest::offered_lists(lists),
+            focus: None,
         };
         let local_only = crate::assistant::held_back(&entry);
         let chosen = match self.suggestion_ai(local_only).await {
