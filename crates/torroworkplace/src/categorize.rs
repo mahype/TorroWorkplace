@@ -750,7 +750,6 @@ mod tests {
         decide_body_for(&asked).expect("the call fits the protocol");
     }
 
-    /// Security rule 5: the mail cannot end its own fence or smuggle instructions out of it.
     /// Issue #603: each kind of action looked for rides along as a yes/no question, never more than
     /// one call holds; a yes counts from 0.5 on, and only for the questions asked.
     #[test]
@@ -788,6 +787,7 @@ mod tests {
         assert!(detected(&reply(r#"{"answers": {"needs_reply": {"type": "noul", "noul": 0.9}}}"#)).is_empty());
     }
 
+    /// Security rule 5: the mail cannot end its own fence or smuggle instructions out of it.
     #[test]
     fn the_mail_stays_inside_its_fence() {
         let sneaky = Content {
