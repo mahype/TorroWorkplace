@@ -2046,6 +2046,10 @@ pub struct MailList<'a> {
     /// More messages wait on the server: the list loads them as its end comes near, a line
     /// "Loading more …" ends it until they are in (issue #612).
     pub more: bool,
+    /// Counts the lists and pages the line "Loading more …" stood under, and the retries after a
+    /// failed one (issue #612): with the number of mails, it asks again once either changed while it
+    /// is in view.
+    pub more_round: u64,
     /// The attention colour of the theme, for the flag.
     pub attention: Color,
     /// Rows or cards (task E8.3).
@@ -2146,10 +2150,10 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
     if data.more {
         // No button (issue #612): scrolling near the end asks for the next page, this line only says
         // that it comes. The scrollable reports nothing while its content fits the window, so the
-        // line asks itself once it is in view – again for every page, which is its key.
+        // line asks itself once it is in view – again for every list, page and retry, its key.
         let more =
             container(widgets::refresh_note(tr("Loading more …"))).width(Fill).center_x(Fill).padding(space::s());
-        rows = rows.push(sensor(more).key(data.messages.len()).on_show(|_| Message::MailEndShown));
+        rows = rows.push(sensor(more).key((data.messages.len(), data.more_round)).on_show(|_| Message::MailEndShown));
     }
     scrollable(rows)
         .id(list::SCROLL)
@@ -7865,6 +7869,7 @@ mod tests {
                         anchors: detail::Anchors::default(),
                         accounts: accounts.clone(),
                         more: true,
+                        more_round: 0,
                         attention: Color::BLACK,
                         look,
                         entries: &all,
@@ -8012,6 +8017,7 @@ mod tests {
             anchors: detail::Anchors::default(),
             accounts: Vec::new(),
             more: false,
+            more_round: 0,
             attention: Color::BLACK,
             look: Look::Rows,
             entries: &[],

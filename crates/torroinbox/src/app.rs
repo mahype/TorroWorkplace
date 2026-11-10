@@ -3202,6 +3202,12 @@ pub struct App<S> {
     /// How `messages` were asked for (issue #612): a load of the same view keeps the mail further
     /// down only while it is still the same search, order and accounts ([`App::holds_view`]).
     held: Option<Held>,
+    /// Counts the lists and pages taken, and the retries of a next page that failed (issue #612):
+    /// the line "Loading more …" asks again whenever it changes ([`mail::MailList::more_round`]),
+    /// for a list too short to scroll.
+    more_round: u64,
+    /// The next page failed: the timer lets the line ask once more ([`Message::Tick`]).
+    more_failed: bool,
     /// The panel shows the message under the cursor (a folder's view): the counterpart of `detail`
     /// for messages, which have no entry to keep.
     reading: bool,
@@ -3755,8 +3761,9 @@ pub enum Message {
     /// nothing scrolls (issue #612): the next page.
     MailEndShown,
     /// The next page of the folder's view it was asked for.
-    MoreLoaded(View, Order, Result<MailPage, String>),
-    MoreLoadedAccounts(View, Order, Option<Vec<String>>, Result<MailPage, String>),
+    /// The next page of the folder's view it was asked for, from the cursor it was asked from.
+    MoreLoaded(View, Order, String, Result<MailPage, String>),
+    MoreLoadedAccounts(View, Order, String, Option<Vec<String>>, Result<MailPage, String>),
     /// What is typed into the search field: it is searched for [`search::DEBOUNCE`] later.
     SearchInput(String),
     /// `Enter` in the search field: search now and remember the search.
@@ -4705,6 +4712,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             more: None,
             more_asked: None,
             held: None,
+            more_round: 0,
+            more_failed: false,
             reading: false,
             letter: None,
             text: Selectable::default(),
@@ -5611,6 +5620,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::Tick => {
                 self.now = Utc::now() + self.offset;
+                // A next page that failed is asked again by the line in view, not before the timer.
+                if std::mem::take(&mut self.more_failed) {
+                    self.more_round += 1;
+                }
                 // The demo has no backup jobs to ask about: a staged one stays as it is shown.
                 let demo = matches!(self.suite, Source::Demo(_));
                 let backup_poll = self.settings.as_mut().filter(|_| !demo).and_then(|pane| {
@@ -6209,16 +6222,18 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     return self.more_mail();
                 }
             }
-            Message::MoreLoaded(view, order, result) => {
+            Message::MoreLoaded(view, order, cursor, result) => {
                 // A page of a view left since, or asked before the order turned, does not belong.
                 if view != self.view || order != self.order {
                     return Task::none();
                 }
                 // The page asked for is in, or failed: the next scroll may ask (again). A page no
                 // longer waited for – the list was asked anew meanwhile – would leave a gap.
-                if self.more_asked.take().is_none() {
+                if self.more_asked.as_ref() != Some(&cursor) {
                     return Task::none();
                 }
+                self.more_asked = None;
+                self.more_round += 1;
                 match result {
                     Ok(mut page) => {
                         search::with_passages(&mut page.messages, &page.highlights);
@@ -6231,14 +6246,17 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                         self.highlights.extend(page.highlights);
                         self.more = page.next;
                     }
-                    Err(err) => self.error = Some(Failure::new(tr("Couldn't load more messages."), err)),
+                    Err(err) => {
+                        self.more_failed = true;
+                        self.error = Some(Failure::new(tr("Couldn't load more messages."), err));
+                    }
                 }
             }
-            Message::MoreLoadedAccounts(view, order, accounts, result) => {
+            Message::MoreLoadedAccounts(view, order, cursor, accounts, result) => {
                 if view != self.view || order != self.order || accounts != self.mail_accounts {
                     return Task::none();
                 }
-                return self.handle(Message::MoreLoaded(view, order, result));
+                return self.handle(Message::MoreLoaded(view, order, cursor, result));
             }
             Message::SearchInput(text) => return self.type_search(text),
             Message::Search => {
@@ -9281,9 +9299,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             _ => return Task::none(),
         };
         self.more_asked = Some(cursor.clone());
+        let asked = cursor.clone();
         #[cfg(test)]
         self.sent.push(Sent::More(cursor));
-        Task::perform(next, move |result| Message::MoreLoadedAccounts(view.clone(), order, accounts, result))
+        Task::perform(next, move |result| {
+            Message::MoreLoadedAccounts(view.clone(), order, asked.clone(), accounts, result)
+        })
     }
 
     /// Opens the entry `id` if it is the one in the panel: a message can outlive the entry it came
@@ -9721,6 +9742,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 // belongs to a list that is gone ([`Message::MoreLoaded`] drops it).
                 if !holds || page.next != self.more_asked {
                     self.more_asked = None;
+                }
+                if !holds {
+                    self.more_round += 1;
                 }
                 page.next
             }
@@ -13461,6 +13485,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                         .map(|group| mail::address(group.account))
                         .collect(),
                     more: self.more.is_some(),
+                    more_round: self.more_round,
                     attention,
                     look: self.look(),
                     // An invitation's card offers its entry's Later and bell (task E8.11).
@@ -16423,7 +16448,7 @@ mod tests {
         assert_ne!(oldest.first(), newest.first());
         // A next page asked newest first does not belong any more.
         let late = Ok(MailPage::of(all.messages.clone(), None));
-        let _ = app.update(Message::MoreLoaded(app.view.clone(), Order::NewestFirst, late));
+        let _ = app.update(Message::MoreLoaded(app.view.clone(), Order::NewestFirst, "0".into(), late));
         assert_eq!(app.messages.len(), oldest.len(), "dropped");
 
         let mut app = loaded(&["--view", "notifications"]);
@@ -19733,7 +19758,7 @@ mod tests {
         let more =
             MailSource::search_mail(app.inbox.as_ref(), "f:work-inbox".into(), None, 50, Some("4".into()), app.order);
         let page = block_on(more).map_err(|err| err.to_string());
-        let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, page));
+        let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, "4".into(), page));
         assert_eq!(app.messages.len(), 9, "nothing twice");
         assert_eq!(app.more, None);
         assert_eq!(app.page_limit(), mail::PAGE, "a load asks for a page at least");
@@ -19779,7 +19804,7 @@ mod tests {
         let _ = app.update(at_end());
         let _ = app.update(at_end());
         assert_eq!(asked(&app), 1, "the same page only once");
-        let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, Err("offline".into())));
+        let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, "4".into(), Err("offline".into())));
         assert_eq!(app.error.as_ref().map(|failure| failure.what), Some(tr("Couldn't load more messages.")));
         let _ = app.update(at_end());
         assert_eq!(asked(&app), 2, "asked again after it failed");
@@ -19920,12 +19945,26 @@ mod tests {
         let _ = app.update(Message::ToggleOrder);
         let _ = app.update(Message::ToggleOrder);
         reload_top(&mut app, 2, Some("2"));
-        let late = Ok(MailPage::of(app.messages.clone(), None));
-        let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, late));
-        assert_eq!((app.messages.len(), app.more.as_deref()), (2, Some("2")), "dropped, the cursor stays");
+        let round = app.more_round;
         // The end in view – a list that does not fill the window, which never scrolls – asks too.
         let _ = app.update(Message::MailEndShown);
         assert_eq!(app.sent.last(), Some(&Sent::More("2".into())));
+        let late = Ok(MailPage::of(app.messages.clone(), None));
+        let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, "4".into(), late));
+        assert_eq!((app.messages.len(), app.more.as_deref()), (2, Some("2")), "dropped, the cursor stays");
+        assert_eq!(app.more_asked.as_deref(), Some("2"), "the page asked for is still awaited");
+        // A page that brought nothing new lets the line ask again, as a failed one does with the timer.
+        let none_new = Ok(MailPage::of(app.messages.clone(), Some("3".into())));
+        let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, "2".into(), none_new));
+        assert_eq!((app.messages.len(), app.more.as_deref()), (2, Some("3")));
+        assert!(app.more_round > round, "the line asks again though the list kept its length");
+        let _ = app.update(Message::MailEndShown);
+        let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, "3".into(), Err("offline".into())));
+        let failed = app.more_round;
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.more_round, failed + 1, "the timer lets it ask once more");
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.more_round, failed + 1, "once");
     }
 
     #[test]
@@ -21472,9 +21511,16 @@ mod tests {
         app.more = Some(cursor.clone());
         let _ = app.update(at_end());
         assert_eq!(app.sent.last(), Some(&Sent::More(cursor.clone())));
-        let rest = block_on(role_selected(&*app.inbox, &View::All, mail::PAGE, Some(cursor), Order::NewestFirst, None));
+        let rest = block_on(role_selected(
+            &*app.inbox,
+            &View::All,
+            mail::PAGE,
+            Some(cursor.clone()),
+            Order::NewestFirst,
+            None,
+        ));
         let accounts = app.mail_accounts.clone();
-        let _ = app.update(Message::MoreLoadedAccounts(View::All, app.order, accounts, rest));
+        let _ = app.update(Message::MoreLoadedAccounts(View::All, app.order, cursor, accounts, rest));
         assert_eq!(message_ids(&app), all, "the rest of All after the first two");
 
         // Two accounts chosen walk the core's pages and keep both; one asks for that account.
@@ -21583,10 +21629,16 @@ mod tests {
         app.more = Some(cursor.clone());
         let _ = app.update(at_end());
         assert_eq!(app.sent.last(), Some(&Sent::More(cursor.clone())));
-        let rest =
-            block_on(pile_selected(&*app.inbox, &View::ReplyLater, mail::PAGE, Some(cursor), Order::NewestFirst, None));
+        let rest = block_on(pile_selected(
+            &*app.inbox,
+            &View::ReplyLater,
+            mail::PAGE,
+            Some(cursor.clone()),
+            Order::NewestFirst,
+            None,
+        ));
         let accounts = app.mail_accounts.clone();
-        let _ = app.update(Message::MoreLoadedAccounts(View::ReplyLater, app.order, accounts, rest));
+        let _ = app.update(Message::MoreLoadedAccounts(View::ReplyLater, app.order, cursor, accounts, rest));
         assert_eq!(app.messages.len(), 2, "the rest of the pile");
     }
 
