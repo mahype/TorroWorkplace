@@ -1703,7 +1703,9 @@ impl App {
 
     /// The width of the columns inside the content's border.
     fn panes(&self) -> f32 {
-        (self.content_room() - 2.0 * LINE).max(0.0)
+        // Flush (inset 0) the panel has only the line beside the sidebar, inset its border on both sides.
+        let lines = if layout::inset() <= 0.0 { 1.0 } else { 2.0 };
+        (self.content_room() - lines * size::HAIRLINE).max(0.0)
     }
 
     /// What the edge of the expanded sidebar moves in (issue #604): the content keeps room for the

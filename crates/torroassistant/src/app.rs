@@ -816,7 +816,6 @@ impl App {
         self.zoom.factor()
     }
 
-    /// The layout class of the window.
     /// What the edge of the expanded sidebar moves in (issue #604): the conversation keeps room for
     /// two columns' least.
     pub(crate) fn sidebar_limits(&self) -> Limits {
@@ -850,6 +849,7 @@ impl App {
         }
     }
 
+    /// The layout class of the window.
     pub(crate) fn class(&self) -> SizeClass {
         layout::of(self.size)
     }
