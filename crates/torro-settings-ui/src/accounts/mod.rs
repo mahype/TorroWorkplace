@@ -142,6 +142,7 @@ use torro_gui::dialog::frame as dialog_frame;
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, SidebarMode};
+use torro_gui::split::{self, Split, SplitEvent};
 use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Status, Trail};
 use torro_gui::{style, typo};
@@ -298,6 +299,9 @@ pub struct State {
     /// and the kinds of account none of them holds – the control centre's overview; an app names
     /// the ones it uses ([`State::with_providers`]).
     providers: Option<Vec<Group>>,
+    /// The width the person dragged the providers' column to where it shows names (issue #604);
+    /// the window keeps it in `ui.json` under [`PROVIDERS_KEY`] and drags it ([`drag_providers`]).
+    pub providers_width: Split,
     /// The window the page stands in (issue #410), by its window class: the groups that open a
     /// window leave it out, since the person is in it ([`moved_group`]). `None` in the control centre.
     window: Option<&'static str>,
@@ -661,6 +665,9 @@ impl State {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
+    /// The divider beside the providers' column (issue #604). The window handles it with
+    /// [`drag_providers`], which knows the content's width; [`update`] leaves it alone.
+    Providers(SplitEvent),
     /// The "Add" of a group (task S.30): the add-account dialog at that provider's first step.
     Add(wizard::Provider),
     /// "Import from TorroMail…" of the group Mail (task S.30): the dialog at TorroMail's accounts.
@@ -871,6 +878,8 @@ pub fn leave(state: &mut State) {
 
 pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
     match message {
+        // The window drags the column: only it knows the content's width ([`drag_providers`]).
+        Message::Providers(_) => Action::None,
         // The AI providers ask for the servers on this computer as they open.
         // The list then shows that provider, so the new account appears where it was added.
         Message::Add(provider) => {
@@ -2164,7 +2173,10 @@ pub fn provider_column<'a>(
         return None;
     }
     let mode = column_mode(class, content)?;
-    let width = column_width(mode);
+    let width = match mode {
+        SidebarMode::Expanded => state.providers_width.width(provider_limits(content)),
+        SidebarMode::Rail => column_width(mode),
+    };
     let entries = entries(data);
     let groups = account_providers(state, &entries);
     let shown = chosen(state.provider.as_deref(), &groups, &entries);
@@ -2184,6 +2196,32 @@ pub fn provider_column<'a>(
     let items =
         scrollable(items).direction(scrollable::Direction::Vertical(style::scrollbar())).style(style::scrollable);
     Some(container(items).width(width).height(Fill).into())
+}
+
+/// The key in `ui.json` of the providers' column's width (issue #604).
+pub const PROVIDERS_KEY: &str = "providers";
+
+/// What the divider beside the providers' column moves in, for content `content` wide (issue
+/// #604): [`size::sidebar()`] by default, three quarters to twice that, the page keeps a column's least.
+pub fn provider_limits(content: f32) -> split::Limits {
+    split::limits_around(size::sidebar(), content, split::min_pane())
+}
+
+/// Where the providers' column has a divider the person drags (issue #604): its width and whether a
+/// drag runs, when it shows with names beside content `content` wide in `class`. `None` where there is
+/// no column, on a detail page, and for the rail of icons, which keeps its width: the window then sets
+/// the column beside the page with a plain line.
+pub fn provider_divider(state: &State, data: &dyn Seen, class: SizeClass, content: f32) -> Option<(f32, bool)> {
+    if selected(state, data).is_some() || column_mode(class, content)? != SidebarMode::Expanded {
+        return None;
+    }
+    Some((state.providers_width.width(provider_limits(content)), state.providers_width.dragging))
+}
+
+/// Applies `event` to the providers' column beside content `content` wide; `true` when its width
+/// changed for good and the window saves [`State::providers_width`] under [`PROVIDERS_KEY`].
+pub fn drag_providers(state: &mut State, event: SplitEvent, content: f32) -> bool {
+    state.providers_width.update(event, provider_limits(content))
 }
 
 /// How the providers' column is drawn beside a content `content` wide in `class`: with names from

@@ -452,10 +452,10 @@ fn header(days: &[NaiveDate], today: NaiveDate, axis: f32) -> Element<'static, M
     header.into()
 }
 
-/// What a property row in [`day_props`] has room for: the column less its padding and the row's,
-/// the dot and the gaps around the title.
-fn props_room() -> f32 {
-    size::props() - 4.0 * space::s() - icon::SIZE - 2.0 * space::s()
+/// What a property row in [`day_props`] has room for in a column `width` wide (as dragged, issue
+/// #604): the column less its padding and the row's, the dot and the gaps around the title.
+fn props_room(width: f32) -> f32 {
+    width - 4.0 * space::s() - icon::SIZE - 2.0 * space::s()
 }
 
 /// One entry of "Up next": an event of the shown day as the properties column lists it.
@@ -504,8 +504,9 @@ fn up_next(data: &ViewData<'_>) -> Vec<Next> {
 
 /// The properties column of the day view in the wide layout: "Up next" on today (the short date
 /// on other days), a row per event with its colour dot, title and when; a click opens it. With
-/// nothing (left) to show, a quiet line says so.
-pub fn day_props(data: &ViewData<'_>) -> Element<'static, Message> {
+/// nothing (left) to show, a quiet line says so. `width` is the column's (`size::props()` unless
+/// dragged, issue #604); titles are cut to it.
+pub fn day_props(data: &ViewData<'_>, width: f32) -> Element<'static, Message> {
     let today = data.start == data.now.date();
     let heading = if today { tr("Up next").to_string() } else { short_date(data.start) };
     let entries = up_next(data);
@@ -513,16 +514,16 @@ pub fn day_props(data: &ViewData<'_>) -> Element<'static, Message> {
         let calm = if today { tr("Nothing else today") } else { tr("No events") };
         vec![widgets::prop_row(None, typo::text(typo::body(), calm).style(theme::text_3), None)]
     } else {
-        entries.into_iter().map(next_row).collect()
+        entries.into_iter().map(|next| next_row(next, width)).collect()
     };
     widgets::prop_section(heading, rows)
 }
 
 /// A row of [`day_props`]: dot, title cut to the room left beside the time, the time at the right.
 /// A cancelled event's title is struck through in `text_3`.
-fn next_row(next: Next) -> Element<'static, Message> {
+fn next_row(next: Next, width: f32) -> Element<'static, Message> {
     let when_width = text_width(&next.when, typo::meta());
-    let title = ellipsize(&next.title, typo::body(), props_room() - when_width - space::s());
+    let title = ellipsize(&next.title, typo::body(), props_room(width) - when_width - space::s());
     let struck = next.struck;
     let value = row![
         title_text(typo::body(), title, struck, move |t| if struck { palette(t).text_3 } else { palette(t).text }),
@@ -1050,7 +1051,7 @@ mod tests {
         data.now = at(6, 18, 0);
         assert_eq!(listed(&data).len(), 4, "seen from the day before, the whole day comes");
         assert_eq!(listed(&data)[1], ("Standup".into(), "09:30".to_string()));
-        let _: Element<'_, Message> = day_props(&data);
+        let _: Element<'_, Message> = day_props(&data, size::props());
     }
 
     #[test]

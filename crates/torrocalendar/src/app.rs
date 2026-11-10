@@ -62,6 +62,7 @@ use torro_gui::links;
 use torro_gui::panel::{self, PanelMode};
 use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons, TopRow};
 use torro_gui::source::Source;
+use torro_gui::split::{self, Limits, Split, SplitEvent};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{
@@ -613,6 +614,8 @@ pub struct App {
     drawer: bool,
     /// The sidebar the user chose for the wide layout, kept in `ui.json`.
     sidebar: SidebarMode,
+    /// The widths the person dragged (issue #604), kept in `ui.json` for the whole app.
+    widths: Widths,
     /// The first of the month the small month in the sidebar shows. Follows the anchor, but its
     /// own arrows browse it without moving the main view.
     mini_month: NaiveDate,
@@ -654,6 +657,21 @@ pub struct App {
     /// The suite's maps settings for the editor (task TE.8); `None` until read. The demo has no core
     /// and shows maps on, with its own places and map ([`App::search_places`], [`App::editor_map`]).
     maps: Option<Maps>,
+}
+
+/// The key in `ui.json` of the expanded sidebar's width (issue #604).
+const SIDE_KEY: &str = "sidebar";
+/// The key of the properties column's width.
+const PROPS_KEY: &str = "props";
+/// The key of the width of the event's panel beside the view.
+const PANEL_KEY: &str = "panel";
+
+/// The widths the person dragged (issue #604), one [`Split`] for each divider, for the whole app.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Widths {
+    side: Split,
+    props: Split,
+    panel: Split,
 }
 
 #[derive(Debug, Clone)]
@@ -703,6 +721,14 @@ pub enum Message {
     ToggleSidebar,
     /// The view state stored in `ui.json`, loaded at start.
     UiState(UiState),
+    /// The handle at the edge of the expanded sidebar (issue #604).
+    SidebarWidth(SplitEvent),
+    /// The divider before the properties column (the day, the radar).
+    PropsWidth(SplitEvent),
+    /// The divider before the event's panel beside the view.
+    PanelWidth(SplitEvent),
+    /// The widths stored in `ui.json`, loaded at start.
+    StoredWidths(HashMap<String, f32>),
     /// From the small month: show `date` in the current view.
     GoTo(NaiveDate),
     /// The small month's arrows: browse it by this many months.
@@ -867,6 +893,7 @@ impl App {
             },
             drawer: matches!(open, Some(Open::Drawer)),
             sidebar: SidebarMode::default(),
+            widths: Widths::default(),
             mini_month: mini_month::shift(now.date(), 0),
             size: torro_gui::window(AppId::CALENDAR).size,
             editor: None,
@@ -897,8 +924,15 @@ impl App {
             iced::window::latest().and_then(iced::window::size).map(Message::Resized),
             torro_gui::place_traffic_lights(),
         ]);
+        // The demo stores nothing and reads no widths of the user's: its pictures stay the same.
+        let widths = if app.source.is_demo() {
+            Task::none()
+        } else {
+            ui_state::load_splits_task(AppId::CALENDAR).map(Message::StoredWidths)
+        };
         let mut tasks = vec![
             ui_state::load_task(AppId::CALENDAR).map(Message::UiState),
+            widths,
             // The first load waits for a core that is still starting (issue #206).
             {
                 let source = app.source.clone();
@@ -966,6 +1000,16 @@ impl App {
         // A download under Settings › Accounts asks how far it is (issue #410).
         if let Some(pane) = &self.settings {
             all.push(pane.host.subscription().map(Message::SettingsHost));
+        }
+        // A drag ends wherever the button is released (`split::release`); only while one runs.
+        if self.widths.side.dragging {
+            all.push(split::release().map(|()| Message::SidebarWidth(SplitEvent::Release)));
+        }
+        if self.widths.props.dragging {
+            all.push(split::release().map(|()| Message::PropsWidth(SplitEvent::Release)));
+        }
+        if self.widths.panel.dragging {
+            all.push(split::release().map(|()| Message::PanelWidth(SplitEvent::Release)));
         }
         Subscription::batch(all)
     }
@@ -1161,6 +1205,23 @@ impl App {
                 }
             }
             Message::UiState(state) => self.sidebar = state.sidebar,
+            Message::SidebarWidth(event) => {
+                let limits = self.sidebar_limits();
+                return self.drag(SIDE_KEY, |widths| &mut widths.side, event, limits);
+            }
+            Message::PropsWidth(event) => {
+                let limits = shell::props_limits(self.panes());
+                return self.drag(PROPS_KEY, |widths| &mut widths.props, event, limits);
+            }
+            Message::PanelWidth(event) => {
+                let limits = panel::beside_limits(self.panes());
+                return self.drag(PANEL_KEY, |widths| &mut widths.panel, event, limits);
+            }
+            Message::StoredWidths(stored) => {
+                self.widths.side.restore(stored.get(SIDE_KEY).copied());
+                self.widths.props.restore(stored.get(PROPS_KEY).copied());
+                self.widths.panel.restore(stored.get(PANEL_KEY).copied());
+            }
             Message::ToggleSettings => return self.toggle_settings(),
             Message::SettingsHost(message) => {
                 let Some(pane) = self.settings.as_mut() else { return Task::none() };
@@ -1608,7 +1669,14 @@ impl App {
                 let layer = menu
                     .or(night)
                     .or_else(|| self.editor.as_ref().and_then(|editor| editor.layer(&field, Message::Editor)));
-                let detail = self.editor.as_ref().map(|editor| editor.panel(&field, Message::Editor));
+                let detail = self.editor.as_ref().map(|editor| {
+                    editor.panel(&field, Message::Editor).resizable(
+                        self.panel_room(),
+                        self.panes(),
+                        self.widths.panel.dragging,
+                        Message::PanelWidth,
+                    )
+                });
                 // Beside the view the panel takes the place of the properties column ("Up next").
                 let props = if self.panel_beside(class) { None } else { self.props(class) };
                 let placed = panel::place(class, self.body(&night_view), detail, layer);
@@ -1619,11 +1687,68 @@ impl App {
             .then(|| self.sidebar(SidebarMode::Rail, class));
         let sidebar = self.sidebar(SidebarMode::Expanded, class);
         shell::shell(class, sidebar, header, body, props)
+            .sidebar_width(self.sidebar_room(), self.widths.side.dragging, Message::SidebarWidth)
+            .props_width(self.props_room(), self.panes(), self.widths.props.dragging, Message::PropsWidth)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(overlay)
             .top_row(self.top_row(class))
             .into()
+    }
+
+    /// The width of the content beside the sidebar or rail ([`shell::content_width`]), less the
+    /// sidebar as wide as it was dragged (issue #604).
+    fn content_room(&self) -> f32 {
+        let class = self.class();
+        let content = shell::content_width(class, self.sidebar, self.size.width);
+        match shell::sidebar_mode(class, self.sidebar) {
+            Some(SidebarMode::Expanded) => (content + size::sidebar() - self.sidebar_room()).max(0.0),
+            _ => content,
+        }
+    }
+
+    /// The width of the view and the column or panel beside it, inside the content's border: what the
+    /// dividers before the properties and the panel measure against.
+    fn panes(&self) -> f32 {
+        // Flush (inset 0) the panel has only the line beside the sidebar, inset its border on both sides.
+        let lines = if layout::inset() <= 0.0 { 1.0 } else { 2.0 };
+        (self.content_room() - lines * size::HAIRLINE).max(0.0)
+    }
+
+    /// What the edge of the expanded sidebar moves in: the content keeps room for the view and a
+    /// column beside it.
+    fn sidebar_limits(&self) -> Limits {
+        shell::sidebar_limits(self.size.width, 2.0 * split::min_pane() + split::divider_width())
+    }
+
+    /// The width of the expanded sidebar now: dragged or `size::sidebar()`.
+    fn sidebar_room(&self) -> f32 {
+        self.widths.side.width(self.sidebar_limits())
+    }
+
+    /// The width of the properties column now (the day, the radar): dragged or `size::props()`.
+    fn props_room(&self) -> f32 {
+        self.widths.props.width(shell::props_limits(self.panes()))
+    }
+
+    /// The width of the event's panel beside the view now: dragged or `size::panel()`.
+    fn panel_room(&self) -> f32 {
+        self.widths.panel.width(panel::beside_limits(self.panes()))
+    }
+
+    /// Applies `event` to the divider `split` of `widths` and saves its width under `key` when it
+    /// changed for good (not in the demo, which stores nothing).
+    fn drag(
+        &mut self,
+        key: &str,
+        split: fn(&mut Widths) -> &mut Split,
+        event: SplitEvent,
+        limits: Limits,
+    ) -> Task<Message> {
+        if split(&mut self.widths).update(event, limits) && !self.source.is_demo() {
+            return ui_state::save_split_task(AppId::CALENDAR, key.to_owned(), split(&mut self.widths).chosen);
+        }
+        Task::none()
     }
 
     /// The side panel is open and stands beside the view (the wide layout).
@@ -1893,8 +2018,8 @@ impl App {
             return None;
         }
         match self.shown() {
-            CalView::Day => Some(views::week::day_props(&self.view_data())),
-            CalView::Radar => Some(views::radar::list(&self.view_data(), self.coming, self.night)),
+            CalView::Day => Some(views::week::day_props(&self.view_data(), self.props_room())),
+            CalView::Radar => Some(views::radar::list(&self.view_data(), self.coming, self.night, self.props_room())),
             _ => None,
         }
     }
@@ -2293,6 +2418,10 @@ impl App {
         let mut host = host.with_accounts(AppId::CALENDAR, &ACCOUNT_PROVIDERS, false);
         // What keys and MCP clients may do in the calendar (issue #531).
         host = host.with_outside(AppId::CALENDAR);
+        // The section list as wide as it was dragged (issue #604); the demo keeps it fixed.
+        if !self.source.is_demo() {
+            host = host.with_widths(AppId::CALENDAR);
+        }
         if let Some(id) = section {
             host.open(id);
         }
@@ -2354,7 +2483,7 @@ impl App {
     fn settings_frame<'a>(&'a self, pane: &'a SettingsPane, class: SizeClass) -> torro_settings_ui::Frame<'a, Message> {
         let page = settings_page(&pane.sections, pane.host.data(), pane.host.current().id);
         let page = page.map(Message::SettingsPage);
-        pane.host.view(class, page, Message::SettingsHost)
+        pane.host.view_in(class, self.panes(), page, Message::SettingsHost)
     }
 
     /// Day and week open at 07:00 instead of midnight; the timeline with now (or the time of now
@@ -2571,6 +2700,37 @@ mod tests {
             assert!(!app.drawer, "{size:?}: and closes it");
             assert_eq!(app.sidebar, SidebarMode::Expanded, "{size:?}: the wide choice stays");
         }
+    }
+
+    /// Issue #604: sidebar, properties column and the event's panel are dragged inside their limits,
+    /// come back from `ui.json` and go back to the default on a double click; the window builds with
+    /// every divider and while one is dragged.
+    #[test]
+    fn the_sidebar_properties_and_panel_are_dragged() {
+        let mut app = demo_app();
+        let _ = app.update(Message::Resized(Size::new(1600.0, 900.0)));
+        let stored = HashMap::from([(SIDE_KEY.to_string(), 300.0), (PROPS_KEY.to_string(), 360.0)]);
+        let _ = app.update(Message::StoredWidths(stored));
+        assert_eq!((app.sidebar_room(), app.props_room(), app.panel_room()), (300.0, 360.0, size::panel()));
+        assert_eq!(app.content_room(), 1600.0 - 300.0 - layout::inset(), "the content follows the sidebar");
+        let _ = app.update(Message::PropsWidth(SplitEvent::Grab));
+        let _ = app.update(Message::PropsWidth(SplitEvent::Drag(9999.0)));
+        let _ = app.view();
+        let _ = app.update(Message::PropsWidth(SplitEvent::Release));
+        assert_eq!(app.props_room(), 2.0 * size::props(), "at most twice the default");
+        let _ = app.update(Message::PanelWidth(SplitEvent::Grab));
+        let _ = app.update(Message::PanelWidth(SplitEvent::Drag(10.0)));
+        let _ = app.update(Message::PanelWidth(SplitEvent::Release));
+        assert_eq!(app.panel_room(), 0.75 * size::panel(), "at least three quarters");
+        let _ = app.update(Message::NewEventHere);
+        assert!(app.panel_beside(app.class()), "the panel stands beside the view");
+        let _ = app.view();
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Reset));
+        let _ = app.update(Message::PanelWidth(SplitEvent::Reset));
+        assert_eq!((app.sidebar_room(), app.panel_room()), (size::sidebar(), size::panel()));
+        // Over the view the panel keeps its width; the window still builds.
+        let _ = app.update(Message::Resized(Size::new(800.0, 600.0)));
+        let _ = app.view();
     }
 
     /// The message of pressing `key` with `modifiers` while nothing has taken it.

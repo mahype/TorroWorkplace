@@ -1,8 +1,9 @@
 //! A divider between two panes side by side that the pointer drags (issue #130): first the mail
 //! window's list and reader, later any list beside its detail (inbox, tasks).
 //!
-//! The divider is the 1-px line between the panes in a handle [`handle_width()`] wide with the
-//! resize cursor. Pressing it starts a drag; while it runs the whole split reports where the pointer
+//! The divider is the 1-px line between the panes ([`divider_width()`]: the only room it takes, so
+//! rows reach the line, issue #604); a handle [`handle_width()`] wide with the resize cursor lies over
+//! it, reaching over both panes' edges. Pressing it starts a drag; while it runs the whole split reports where the pointer
 //! is, so a fast pointer that leaves the thin handle still drags; releasing the button anywhere in
 //! the window ends it ([`release`]). A double click goes back to the default width. Both panes keep
 //! at least [`min_pane()`].
@@ -23,8 +24,13 @@
 //! // subscription: only while dragging
 //! if self.split.dragging { subs.push(split::release().map(|()| Message::Split(SplitEvent::Release))) }
 //! ```
+//!
+//! [`split_end`] is the same divider for a pane at the right whose width is chosen (the properties
+//! column, a side panel beside the content, issue #604): the first pane takes the rest. Every
+//! sidebar and column next to another uses [`limits_around`] for its bounds.
 
-use iced::widget::{container, mouse_area, row, rule};
+use iced::widget::space as blank;
+use iced::widget::{container, mouse_area, row, rule, stack};
 use iced::{Element, Fill, Subscription, mouse};
 
 use crate::style;
@@ -48,6 +54,11 @@ pub fn handle_width() -> f32 {
     space::s()
 }
 
+/// The room the divider takes between the panes: its 1-px line. The handle lies over it.
+pub fn divider_width() -> f32 {
+    size::HAIRLINE
+}
+
 /// The least either pane keeps: [`size::props()`], a column of its own.
 pub fn min_pane() -> f32 {
     size::props()
@@ -58,7 +69,7 @@ pub fn min_pane() -> f32 {
 pub struct Limits {
     /// The width without a choice of the person (`size::list()` for a list beside its detail).
     pub default: f32,
-    /// The width of the whole split: both panes and the handle.
+    /// The width of the whole split: both panes and the divider's line ([`divider_width()`]).
     pub total: f32,
     /// The least the first pane keeps: [`min_pane()`] unless [`Limits::bounded`] says otherwise.
     pub least: f32,
@@ -86,9 +97,16 @@ impl Limits {
     /// `width` kept between [`Limits::least`] and what leaves the second pane [`Limits::rest`], never
     /// over [`Limits::most`]; in a split too narrow for both, [`Limits::least`].
     pub fn clamp(&self, width: f32) -> f32 {
-        let max = (self.total - handle_width() - self.rest).min(self.most).max(self.least);
+        let max = (self.total - divider_width() - self.rest).min(self.most).max(self.least);
         width.clamp(self.least, max)
     }
+}
+
+/// The bounds of a pane `default` wide by default in a split `total` wide (issue #604): between three
+/// quarters and twice its default, and never so wide that the pane beside it keeps less than `rest`.
+/// A stored width is clamped to them when shown, never overwritten, so it comes back in a wider window.
+pub fn limits_around(default: f32, total: f32, rest: f32) -> Limits {
+    Limits::new(default, total).bounded(0.75 * default, 2.0 * default, rest)
 }
 
 /// The state of one split, kept by the app.
@@ -106,6 +124,14 @@ impl Split {
     /// A split with the width `chosen` (as stored), not dragging.
     pub fn with(chosen: Option<f32>) -> Split {
         Split { chosen, ..Split::default() }
+    }
+
+    /// Takes the width `stored` in `ui.json` (`ui_state::splits_from`), unless the person dragged or
+    /// reset this split before the file answered: then theirs wins.
+    pub fn restore(&mut self, stored: Option<f32>) {
+        if *self == Split::default() {
+            *self = Split::with(stored);
+        }
     }
 
     /// The first pane's width now: the one chosen, else the default, kept inside `limits`.
@@ -147,14 +173,97 @@ impl Split {
 /// [`SplitEvent::Grab`] and, double-clicked, [`SplitEvent::Reset`]; while `dragging`, the line
 /// shows in `line_selected` and every move over the split sends [`SplitEvent::Drag`] with the width
 /// that puts the handle's middle under the pointer. The same widgets with and without a drag, so
-/// starting one keeps the panes' state (scroll positions, focus).
+/// starting one keeps the panes' state (scroll positions, focus). `on` may be any function, so a
+/// library's view can wrap its own message in the app's (issue #604: the settings' sections).
 pub fn split<'a, M: Clone + 'a>(
     first: impl Into<Element<'a, M>>,
     second: impl Into<Element<'a, M>>,
     width: f32,
     dragging: bool,
+    on: impl Fn(SplitEvent) -> M + Clone + 'a,
+) -> Element<'a, M> {
+    let panes =
+        row![container(first).width(width).height(Fill), line(dragging), container(second).width(Fill).height(Fill)];
+    let grip = row![blank().width(grip_start(width)), handle(on.clone())].height(Fill);
+    let area = mouse_area(stack![panes, grip]);
+    if dragging {
+        area.on_move(move |point| on(SplitEvent::Drag(point.x - grip_middle())))
+            .interaction(mouse::Interaction::ResizingHorizontally)
+            .into()
+    } else {
+        area.into()
+    }
+}
+
+/// `first` in the rest, the handle, then `second` `width` wide at the right (issue #604): the divider
+/// of [`split`] for a pane whose width is measured from the right edge – the properties column, a
+/// panel beside the content. `total` is the width of the whole split, as in the [`Limits`] the app
+/// clamps `width` to; while `dragging`, [`SplitEvent::Drag`] reports the width that puts the
+/// handle's middle under the pointer, measured for `second`.
+pub fn split_end<'a, M: Clone + 'a>(
+    first: impl Into<Element<'a, M>>,
+    second: impl Into<Element<'a, M>>,
+    width: f32,
+    total: f32,
+    dragging: bool,
     on: fn(SplitEvent) -> M,
 ) -> Element<'a, M> {
+    split_end_with(first, second, width, 0.0, total, dragging, on)
+}
+
+/// [`split_end`] with `second` `extra` wider than the chosen `width` – a panel's fixed action rail
+/// beside its body ([`crate::panel::Panel::resizable`]) –, which the reported width leaves out, so the
+/// app keeps choosing the width of the part that is dragged.
+pub(crate) fn split_end_with<'a, M: Clone + 'a>(
+    first: impl Into<Element<'a, M>>,
+    second: impl Into<Element<'a, M>>,
+    width: f32,
+    extra: f32,
+    total: f32,
+    dragging: bool,
+    on: fn(SplitEvent) -> M,
+) -> Element<'a, M> {
+    let panes = row![
+        container(first).width(Fill).height(Fill),
+        line(dragging),
+        container(second).width(width + extra).height(Fill)
+    ];
+    // Measured from the right edge: the handle's middle over the line, as in [`split`].
+    let after = (width + extra + divider_width() + GRIP_INSIDE - handle_width()).max(0.0);
+    let grip = row![blank().width(Fill), handle(on), blank().width(after)].height(Fill);
+    let area = mouse_area(stack![panes, grip]);
+    if dragging {
+        area.on_move(move |point| on(SplitEvent::Drag(end_width(total, point.x, extra))))
+            .interaction(mouse::Interaction::ResizingHorizontally)
+            .into()
+    } else {
+        area.into()
+    }
+}
+
+/// The width of the pane at the right of a split `total` wide ([`split_end_with`]) that puts the
+/// handle's middle under the pointer at `x` from the split's left edge, less the `extra` it adds.
+fn end_width(total: f32, x: f32, extra: f32) -> f32 {
+    total - (x - grip_middle()) - divider_width() - extra
+}
+
+/// How far the handle reaches over the pane left of the line, as the sidebar's (`shell::resizable`):
+/// the margin of the scrollbar, so the left pane's scroller, which floats in its right edge, stays
+/// free to grab; the rest of the handle lies over the line and the pane to its right.
+const GRIP_INSIDE: f32 = 2.0;
+
+/// Where the handle starts in a split whose first pane is `width` wide: [`GRIP_INSIDE`] before the line.
+fn grip_start(width: f32) -> f32 {
+    (width - GRIP_INSIDE).max(0.0)
+}
+
+/// How far right of the line's left edge the handle's middle lies: a drag puts that under the pointer.
+fn grip_middle() -> f32 {
+    handle_width() / 2.0 - GRIP_INSIDE
+}
+
+/// The line between two panes, in `line_selected` while `dragging`.
+fn line<'a, M: 'a>(dragging: bool) -> Element<'a, M> {
     let line = rule::vertical(size::HAIRLINE).style(move |t| {
         let mut look = style::rule(t);
         if dragging {
@@ -162,19 +271,18 @@ pub fn split<'a, M: Clone + 'a>(
         }
         look
     });
-    let handle = mouse_area(container(line).center_x(handle_width()).height(Fill))
+    container(line).width(divider_width()).height(Fill).into()
+}
+
+/// The handle over the line: an empty area [`handle_width()`] wide with the resize cursor, sending
+/// [`SplitEvent::Grab`] and, double-clicked, [`SplitEvent::Reset`]. The rest of its layer is empty,
+/// so the panes below get every other press.
+fn handle<'a, M: Clone + 'a>(on: impl Fn(SplitEvent) -> M) -> Element<'a, M> {
+    mouse_area(container(blank()).width(handle_width()).height(Fill))
         .on_press(on(SplitEvent::Grab))
         .on_double_click(on(SplitEvent::Reset))
-        .interaction(mouse::Interaction::ResizingHorizontally);
-    let panes = row![container(first).width(width).height(Fill), handle, container(second).width(Fill).height(Fill)];
-    let area = mouse_area(panes);
-    if dragging {
-        area.on_move(move |point| on(SplitEvent::Drag(point.x - handle_width() / 2.0)))
-            .interaction(mouse::Interaction::ResizingHorizontally)
-            .into()
-    } else {
-        area.into()
-    }
+        .interaction(mouse::Interaction::ResizingHorizontally)
+        .into()
 }
 
 /// The left button released anywhere in the window: subscribe while [`Split::dragging`] and send
@@ -203,7 +311,7 @@ mod tests {
     fn the_width_stays_between_both_panes_least() {
         let limits = limits();
         assert_eq!(limits.clamp(100.0), min_pane(), "the list keeps its least");
-        assert_eq!(limits.clamp(5000.0), 1200.0 - handle_width() - min_pane(), "the reader keeps its least");
+        assert_eq!(limits.clamp(5000.0), 1200.0 - divider_width() - min_pane(), "the reader keeps its least");
         assert_eq!(limits.clamp(600.0), 600.0);
         let tight = Limits::new(460.0, 500.0);
         assert_eq!(tight.clamp(460.0), min_pane(), "too narrow for both: the first keeps its least");
@@ -219,7 +327,7 @@ mod tests {
         assert_eq!(bounded.clamp(5000.0), 480.0, "never over the most");
         assert_eq!(bounded.clamp(300.0), 300.0);
         let tight = Limits::new(240.0, 900.0).bounded(180.0, 480.0, 600.0);
-        assert_eq!(tight.clamp(480.0), 900.0 - handle_width() - 600.0, "the second keeps its rest");
+        assert_eq!(tight.clamp(480.0), 900.0 - divider_width() - 600.0, "the second keeps its rest");
         let tiny = Limits::new(240.0, 500.0).bounded(180.0, 480.0, 600.0);
         assert_eq!(tiny.clamp(300.0), 180.0, "too narrow for both: the first keeps its least");
         assert_eq!(limits().bounded(min_pane(), f32::INFINITY, min_pane()), limits(), "new: the panes' least");
@@ -245,12 +353,39 @@ mod tests {
         assert!(split.update(SplitEvent::Reset, limits), "the double click goes back: save");
         assert_eq!((split.chosen, split.width(limits)), (None, 460.0));
         assert!(!split.update(SplitEvent::Reset, limits), "already the default");
+        let mut stored = Split::default();
+        stored.restore(Some(500.0));
+        assert_eq!(stored.chosen, Some(500.0), "the stored width comes back");
+        stored.restore(Some(300.0));
+        assert_eq!(stored.chosen, Some(500.0), "a width already there wins");
+    }
+
+    /// Issue #604: a pane is kept between three quarters and twice its default, the other keeps its rest.
+    #[test]
+    fn limits_around_keep_a_pane_near_its_default() {
+        let limits = limits_around(300.0, 1200.0, min_pane());
+        assert_eq!(limits.clamp(100.0), 225.0, "three quarters of the default");
+        assert_eq!(limits.clamp(5000.0), 600.0, "twice the default");
+        let tight = limits_around(300.0, 700.0, min_pane());
+        assert_eq!(tight.clamp(600.0), 700.0 - divider_width() - min_pane(), "the other pane keeps its rest");
+        assert_eq!(Split::with(Some(900.0)).width(limits), 600.0, "a stored width is clamped, not lost");
+        assert_eq!(Split::with(Some(900.0)).chosen, Some(900.0));
+    }
+
+    /// Issue #604: a pane at the right is measured from the right edge, its fixed extra left out.
+    #[test]
+    fn the_pane_at_the_right_is_measured_from_the_right_edge() {
+        let x = 1200.0 - 300.0 - divider_width() + grip_middle();
+        assert_eq!(end_width(1200.0, x, 0.0), 300.0, "the handle's middle under the pointer");
+        assert_eq!(end_width(1200.0, x - 48.0, 48.0), 300.0, "the extra column is not chosen");
     }
 
     #[test]
     fn the_split_builds_with_and_without_a_drag() {
         for dragging in [false, true] {
             let _: Element<'_, Msg> = split("list", "reader", 460.0, dragging, Msg::Split);
+            let _: Element<'_, Msg> = split_end("detail", "properties", 300.0, 1200.0, dragging, Msg::Split);
+            let _: Element<'_, Msg> = split_end_with("content", "panel", 400.0, 48.0, 1200.0, dragging, Msg::Split);
         }
         let _ = release().map(|()| Msg::Split(SplitEvent::Release));
         let Msg::Split(event) = Msg::Split(SplitEvent::Reset);

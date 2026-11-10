@@ -76,6 +76,7 @@ mod setup;
 mod template_form;
 mod workspaces;
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use iced::theme::Mode;
@@ -92,6 +93,7 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons, TopRow};
 use torro_gui::shots::{RunError, Shots};
+use torro_gui::split::{self, Limits, Split, SplitEvent};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
@@ -425,6 +427,8 @@ pub struct Ui {
     drawer: bool,
     /// The sidebar the user chose for the wide layout, kept in `ui.json`.
     sidebar: SidebarMode,
+    /// The width the person dragged the expanded sidebar to (issue #604), kept in `ui.json`.
+    side: Split,
     /// The window size, for the size class in `update` (the panel button and `[` act on the stored
     /// choice only in the wide layout). `view` lays out with the size `responsive` hands over.
     size: Size,
@@ -498,6 +502,10 @@ pub enum Message {
     ToggleSidebar,
     /// The view state stored in `ui.json`, loaded at start.
     UiState(UiState),
+    /// The handle at the edge of the expanded sidebar (issue #604).
+    SidebarWidth(SplitEvent),
+    /// The widths stored in `ui.json`, loaded at start: the sidebar's and the providers' column's.
+    StoredWidths(HashMap<String, f32>),
     /// The window has this size (at start and after every resize).
     Resized(Size),
     /// The tools at the top of the sidebar: search and "New".
@@ -635,6 +643,7 @@ impl Ui {
             menu: None,
             drawer: false,
             sidebar: SidebarMode::default(),
+            side: Split::default(),
             size: torro_gui::window(AppId::WORKPLACE).size,
             loaded: false,
             // The demo and a start without home directory load at once, nothing to wait for.
@@ -720,6 +729,12 @@ impl Ui {
             ui.zoom.fetch().map(Message::Zoom),
             iced::system::theme().map(Message::SystemMode),
             ui_state::load_task(AppId::WORKPLACE).map(Message::UiState),
+            // The demo reads no widths of the user's: its pictures stay the same.
+            if ui.launch.demo {
+                Task::none()
+            } else {
+                ui_state::load_splits_task(AppId::WORKPLACE).map(Message::StoredWidths)
+            },
             size,
             designs,
             import,
@@ -1347,6 +1362,13 @@ impl Ui {
         if !self.launch.demo && !self.waiting {
             all.push(iced::time::every(every).map(|_| Message::Tick));
         }
+        // A drag ends wherever the button is released (`split::release`); only while one runs.
+        if self.side.dragging {
+            all.push(split::release().map(|()| Message::SidebarWidth(SplitEvent::Release)));
+        }
+        if self.accounts.providers_width.dragging {
+            all.push(split::release().map(|()| Message::Accounts(accounts::Message::Providers(SplitEvent::Release))));
+        }
         Subscription::batch(all)
     }
 
@@ -1420,6 +1442,18 @@ impl Ui {
             }
             Message::UiState(state) => {
                 self.sidebar = state.sidebar;
+                Action::None
+            }
+            Message::SidebarWidth(event) => {
+                // The demo stores nothing.
+                if self.side.update(event, self.sidebar_limits()) && !self.launch.demo {
+                    return ui_state::save_split_task(AppId::WORKPLACE, SIDE_KEY.to_owned(), self.side.chosen);
+                }
+                Action::None
+            }
+            Message::StoredWidths(stored) => {
+                self.side.restore(stored.get(SIDE_KEY).copied());
+                self.accounts.providers_width.restore(stored.get(accounts::PROVIDERS_KEY).copied());
                 Action::None
             }
             Message::Resized(size) => {
@@ -1708,6 +1742,14 @@ impl Ui {
                 if ai { Action::Select(Section::Ai) } else { Action::Select(Section::Accounts) }
             }
             Message::Overview(m) => overview::update(&mut self.overview, m, &self.data),
+            Message::Accounts(accounts::Message::Providers(event)) => {
+                let content = self.content_room();
+                if accounts::drag_providers(&mut self.accounts, event, content) && !self.launch.demo {
+                    let width = self.accounts.providers_width.chosen;
+                    return ui_state::save_split_task(AppId::WORKPLACE, accounts::PROVIDERS_KEY.to_owned(), width);
+                }
+                Action::None
+            }
             Message::Accounts(m) => {
                 // Another account from the sidebar or the menu, or the way up (issue #475): the menus close.
                 if matches!(m, accounts::Message::Open(_) | accounts::Message::Back) {
@@ -2079,6 +2121,7 @@ impl Ui {
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
             .then(|| self.sidebar(SidebarMode::Rail));
         shell::shell(class, self.sidebar(SidebarMode::Expanded), self.header(class, &nav), self.body(class), None)
+            .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(layer)
@@ -2299,6 +2342,28 @@ impl Ui {
         shell::header_bar(leading, title, actions)
     }
 
+    /// The width of the content beside the sidebar or rail ([`shell::content_width`]), less the
+    /// sidebar as wide as it was dragged (issue #604): what the pages measure against.
+    fn content_room(&self) -> f32 {
+        let class = layout::of(self.size);
+        let content = shell::content_width(class, self.sidebar, self.size.width);
+        match shell::sidebar_mode(class, self.sidebar) {
+            Some(SidebarMode::Expanded) => (content + size::sidebar() - self.sidebar_room()).max(0.0),
+            _ => content,
+        }
+    }
+
+    /// What the edge of the expanded sidebar moves in: the page keeps room for the providers' column
+    /// and a column beside it.
+    fn sidebar_limits(&self) -> Limits {
+        shell::sidebar_limits(self.size.width, size::sidebar() + split::divider_width() + split::min_pane())
+    }
+
+    /// The width of the expanded sidebar now: dragged or `size::sidebar()`.
+    fn sidebar_room(&self) -> f32 {
+        self.side.width(self.sidebar_limits())
+    }
+
     /// The page: loading until the core answered, the error state when it does not answer (the
     /// overview shows that itself), else the section's view under the notices – as wide as the
     /// content area (issue #464), scrolling inside the margin of the size class. Accounts' list has its
@@ -2321,7 +2386,7 @@ impl Ui {
             Section::Apps => {
                 // The cards' grid takes the room inside the page's margin (issue #411).
                 let margin = page_margin(class);
-                let room = shell::content_width(class, self.sidebar, self.size.width) - margin.left - margin.right;
+                let room = self.content_room() - margin.left - margin.right;
                 apps::view(&self.apps, &self.data, class, room).map(Message::Apps)
             }
             Section::Accounts => accounts::view(&self.accounts, &self.data, class, &palette).map(Message::Accounts),
@@ -2336,11 +2401,9 @@ impl Ui {
         };
         let notices = [&self.notice, &self.data.error].into_iter().flatten().map(|problem| notice(problem.clone()));
         let page = column(notices).push(page).spacing(space::l());
+        let content = self.content_room();
         let providers = match self.section {
-            Section::Accounts => {
-                let content = shell::content_width(class, self.sidebar, self.size.width);
-                accounts::provider_column(&self.accounts, &self.data, class, content, &palette)
-            }
+            Section::Accounts => accounts::provider_column(&self.accounts, &self.data, class, content, &palette),
             _ => None,
         };
         // Flush with the sidebar (or the providers' column) and as wide as the content (issue #464):
@@ -2351,14 +2414,23 @@ impl Ui {
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)
             .height(Fill);
-        match providers {
-            Some(providers) => {
+        // With names the column has a divider the person drags (issue #604); the rail of icons keeps its line.
+        match (providers, accounts::provider_divider(&self.accounts, &self.data, class, content)) {
+            (Some(providers), Some((width, dragging))) => {
+                split::split(providers.map(Message::Accounts), page, width, dragging, |event| {
+                    Message::Accounts(accounts::Message::Providers(event))
+                })
+            }
+            (Some(providers), None) => {
                 row![providers.map(Message::Accounts), rule::vertical(size::HAIRLINE).style(style::rule), page].into()
             }
-            None => page.into(),
+            (None, _) => page.into(),
         }
     }
 }
+
+/// The key in `ui.json` of the expanded sidebar's width (issue #604).
+const SIDE_KEY: &str = "sidebar";
 
 /// The margin around a page: the design's page padding (24 in the standard), in a narrow window 16,
 /// in a tile 12 (design skill, section 6).
@@ -2922,6 +2994,33 @@ mod tests {
         let _ = sorting.update(Message::Resized(Size::new(1600.0, 1000.0)));
         assert!(sorting.page_overlay().is_some(), "the menu is open");
         assert_eq!(sorting.cover(), Cover::Nothing, "and leaves the window undimmed");
+    }
+
+    /// Issue #604: the sidebar and the providers' column of Accounts are dragged inside their limits,
+    /// come back from `ui.json`, and the page measures with the dragged sidebar.
+    #[test]
+    fn the_sidebar_and_the_providers_column_are_dragged() {
+        let mut ui = started(&["--demo"]);
+        let _ = ui.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        let stored = HashMap::from([(SIDE_KEY.to_string(), 300.0), (accounts::PROVIDERS_KEY.to_string(), 320.0)]);
+        let _ = ui.update(Message::StoredWidths(stored));
+        assert_eq!(ui.sidebar_room(), 300.0);
+        assert_eq!(ui.content_room(), 1600.0 - 300.0 - layout::inset());
+        let _ = ui.update(Message::SidebarWidth(SplitEvent::Grab));
+        let _ = ui.update(Message::SidebarWidth(SplitEvent::Drag(9999.0)));
+        let _ = ui.view();
+        let _ = ui.update(Message::SidebarWidth(SplitEvent::Release));
+        assert_eq!(ui.sidebar_room(), 2.0 * size::sidebar(), "at most twice the default");
+        let _ = ui.update(Message::Select(Section::Accounts));
+        let content = ui.content_room();
+        let divider = accounts::provider_divider(&ui.accounts, &ui.data, SizeClass::Wide, content);
+        assert_eq!(divider, Some((320.0, false)), "the stored width of the providers' column");
+        let providers = |event| Message::Accounts(accounts::Message::Providers(event));
+        let _ = ui.update(providers(SplitEvent::Grab));
+        let _ = ui.update(providers(SplitEvent::Drag(10.0)));
+        let _ = ui.view();
+        let _ = ui.update(providers(SplitEvent::Release));
+        assert_eq!(ui.accounts.providers_width.width(accounts::provider_limits(content)), 0.75 * size::sidebar());
     }
 
     #[test]

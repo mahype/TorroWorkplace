@@ -99,6 +99,7 @@ use torro_gui::design::{self, Follow};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, SidebarMode, Switcher};
 use torro_gui::source::Source;
+use torro_gui::split::{self, Limits, Split, SplitEvent};
 use torro_gui::theme::{self, Appearance};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets;
@@ -123,6 +124,8 @@ use crate::stream::{self, Smoother};
 /// The main window's identity: window class `torro-assistant`, binary `torroassistant`, state in
 /// `torroassistant/`.
 pub const MAIN: AppId = AppId::ASSISTANT;
+/// The key in `ui.json` of the expanded sidebar's width (issue #604).
+const SIDE_KEY: &str = "sidebar";
 
 /// A single chat window's identity: its own window class `torro-assistant-chat` (rules of a tiling
 /// manager match on it), the binary and state directory of the assistant.
@@ -442,6 +445,10 @@ pub enum Message {
     /// The panel button, `[`.
     ToggleSidebar,
     UiState(UiState),
+    /// The handle at the edge of the expanded sidebar (issue #604).
+    SidebarWidth(SplitEvent),
+    /// The widths stored in `ui.json`, loaded at start.
+    StoredWidths(HashMap<String, f32>),
     Escape,
     NoticeTick(Instant),
     Appearance(Result<Appearance, String>),
@@ -563,6 +570,8 @@ pub struct App {
     pub(crate) drawer: bool,
     /// The sidebar the user chose for the wide layout, kept in `ui.json`.
     pub(crate) sidebar: SidebarMode,
+    /// The width the person dragged the expanded sidebar to (issue #604), kept in `ui.json`.
+    pub(crate) side: Split,
     pub(crate) notice: Option<Notice>,
     /// The settings in the content area, while they are open (task S.18).
     pub(crate) settings: Option<SettingsPane>,
@@ -660,6 +669,7 @@ impl App {
             // Without a sidebar the bot's menu hangs in the drawer.
             drawer: matches!(open, Some(Open::Drawer | Open::BotMenu)),
             sidebar: SidebarMode::default(),
+            side: Split::default(),
             notice: None,
             settings: None,
             settings_memory: torro_settings_ui::Memory::default(),
@@ -690,6 +700,10 @@ impl App {
         ];
         if !app.chat_only {
             tasks.push(ui_state::load_task(MAIN).map(Message::UiState));
+            // The demo reads no widths of the user's: its pictures stay the same.
+            if !app.launch.demo {
+                tasks.push(ui_state::load_splits_task(MAIN).map(Message::StoredWidths));
+            }
         }
         if app.current.is_none() {
             tasks.push(operation::focus(EDITOR));
@@ -784,6 +798,10 @@ impl App {
         if let Some(pane) = &self.settings {
             subscriptions.push(pane.host.subscription().map(Message::SettingsHost));
         }
+        // A drag of the sidebar's edge ends wherever the button is released.
+        if self.side.dragging {
+            subscriptions.push(split::release().map(|()| Message::SidebarWidth(SplitEvent::Release)));
+        }
         Subscription::batch(subscriptions)
     }
 
@@ -796,6 +814,46 @@ impl App {
     /// The factor the whole window draws at: the suite-wide zoom.
     pub fn scale_factor(&self) -> f32 {
         self.zoom.factor()
+    }
+
+    /// What the edge of the expanded sidebar moves in (issue #604): the conversation keeps room for
+    /// two columns' least.
+    pub(crate) fn sidebar_limits(&self) -> Limits {
+        shell::sidebar_limits(self.size.width, 2.0 * split::min_pane() + split::divider_width())
+    }
+
+    /// The width of the expanded sidebar beside the conversation: dragged or `size::sidebar()`.
+    pub(crate) fn sidebar_room(&self) -> f32 {
+        self.side.width(self.sidebar_limits())
+    }
+
+    /// The width of the expanded sidebar as it shows now: dragged beside the conversation (wide),
+    /// `size::sidebar()` as the drawer, which keeps its width.
+    pub(crate) fn sidebar_shown(&self) -> f32 {
+        match shell::sidebar_mode(self.class(), self.sidebar) {
+            Some(SidebarMode::Expanded) => self.sidebar_room(),
+            _ => torro_gui::theme::size::sidebar(),
+        }
+    }
+
+    /// The width of the content beside the sidebar or rail ([`shell::content_width`]), less the
+    /// sidebar as wide as it was dragged: what the settings' section list measures against.
+    pub(crate) fn content_room(&self) -> f32 {
+        let class = self.class();
+        let content = shell::content_width(class, self.sidebar, self.size.width);
+        match shell::sidebar_mode(class, self.sidebar) {
+            Some(SidebarMode::Expanded) if !self.chat_only => {
+                (content + torro_gui::theme::size::sidebar() - self.sidebar_room()).max(0.0)
+            }
+            _ => content,
+        }
+    }
+
+    /// The width inside the content's border, what the settings' section list measures against:
+    /// flush (inset 0) the panel has only the line beside the sidebar, inset its border on both sides.
+    pub(crate) fn panes(&self) -> f32 {
+        let lines = if layout::inset() <= 0.0 { 1.0 } else { 2.0 };
+        (self.content_room() - lines * torro_gui::theme::size::HAIRLINE).max(0.0)
     }
 
     /// The layout class of the window.
@@ -1096,6 +1154,13 @@ impl App {
             }
             Message::ToggleSidebar => return self.toggle_sidebar(),
             Message::UiState(state) => self.sidebar = state.sidebar,
+            Message::SidebarWidth(event) => {
+                // The demo stores nothing.
+                if self.side.update(event, self.sidebar_limits()) && !self.launch.demo {
+                    return ui_state::save_split_task(MAIN, SIDE_KEY.to_owned(), self.side.chosen);
+                }
+            }
+            Message::StoredWidths(stored) => self.side.restore(stored.get(SIDE_KEY).copied()),
             Message::Escape => {
                 // Innermost first: a dialog of the window, then what the open settings section
                 // has open (its question, a note being written, task S.17), then a menu or the
@@ -1858,6 +1923,10 @@ impl App {
         let mut host = host.with_accounts(AppId::ASSISTANT, &[], true);
         // What keys and MCP clients may do with the assistant and its bots (issue #531).
         host = host.with_outside(AppId::ASSISTANT);
+        // The section list as wide as it was dragged (issue #604); the demo keeps it fixed.
+        if !self.launch.demo {
+            host = host.with_widths(MAIN);
+        }
         if let Some(id) = section {
             host.open(id);
         }

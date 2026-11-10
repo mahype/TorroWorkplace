@@ -112,6 +112,9 @@
 //! [`crate::split`], and [`sidebar_limits`] bounds the width. The rail, the drawer and
 //! [`Cover::Drawer`] keep [`size::sidebar()`].
 //!
+//! The properties column is dragged the same way (issue #604): [`Shell::props_width`] puts the
+//! divider of [`split::split_end`] between the body and it, bounded by [`props_limits`].
+//!
 //! While something is dragged over the sidebar, the rows that may take it are wrapped in
 //! [`drop_target`]: they report the pointer and show a ring while it is on them.
 
@@ -207,8 +210,7 @@ pub fn content_width(class: SizeClass, choice: SidebarMode, width: f32) -> f32 {
 /// default, at least three quarters and at most twice that, and never so wide that the content gets
 /// less than `rest`.
 pub fn sidebar_limits(window: f32, rest: f32) -> split::Limits {
-    let default = size::sidebar();
-    split::Limits::new(default, window - layout::inset()).bounded(0.75 * default, 2.0 * default, rest)
+    split::limits_around(size::sidebar(), window - layout::inset(), rest)
 }
 
 /// Whether a key press is the sidebar shortcut `[` (as in Linear): the app then flips its choice
@@ -228,6 +230,13 @@ pub fn is_sidebar_key(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> bo
 /// before an app drops keys with modifiers, and only for keys no widget captured.
 pub fn is_actions_key(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> bool {
     !modifiers.logo() && matches!(key.as_ref(), keyboard::Key::Character("]"))
+}
+
+/// What the divider before the properties column ([`Shell::props_width`], issue #604) moves in, for
+/// content `total` wide (body, divider and column): [`size::props()`] by default, three quarters to
+/// twice that ([`split::limits_around`]), and the body keeps at least [`split::min_pane()`].
+pub fn props_limits(total: f32) -> split::Limits {
+    split::limits_around(size::props(), total, split::min_pane())
 }
 
 /// Whether `class` shows the sidebar beside the content (only the wide layout). Otherwise the
@@ -253,7 +262,16 @@ pub struct Shell<'a, M> {
     drawer: Option<M>,
     overlay: Option<Element<'a, M>>,
     side: Option<SideWidth<M>>,
+    props_side: Option<PropsWidth<M>>,
     top: Option<TopRow<M>>,
+}
+
+/// The width of the properties column the person drags ([`Shell::props_width`]).
+struct PropsWidth<M> {
+    width: f32,
+    total: f32,
+    dragging: bool,
+    on: fn(SplitEvent) -> M,
 }
 
 /// The width of the expanded sidebar the person drags ([`Shell::sidebar_width`]).
@@ -294,6 +312,7 @@ pub fn shell<'a, M: 'a>(
         drawer: None,
         overlay: None,
         side: None,
+        props_side: None,
         top: None,
     }
 }
@@ -340,6 +359,16 @@ impl<'a, M: Clone + 'a> Shell<'a, M> {
         self
     }
 
+    /// Draws the properties column `width` wide instead of [`size::props()`], with the divider of
+    /// [`split::split_end`] between the body and it (issue #604): `total` is the width of body, divider
+    /// and column together – the content beside the sidebar –, as in the [`props_limits`] the app
+    /// clamps its [`split::Split`] to. Only where the properties show (the wide layout); without it the
+    /// column is fixed as before.
+    pub fn props_width(mut self, width: f32, total: f32, dragging: bool, on: fn(SplitEvent) -> M) -> Self {
+        self.props_side = Some(PropsWidth { width, total, dragging, on });
+        self
+    }
+
     /// Draws the window's top row (issue #459, [`TopRow`]) instead of the header bar and the band of
     /// [`titlebar`]: `header` moves up into it, beside the panel button, with the settings at its right
     /// end. The app then shows the window without [`titlebar`] around it.
@@ -351,7 +380,9 @@ impl<'a, M: Clone + 'a> Shell<'a, M> {
 
 impl<'a, M: Clone + 'a> From<Shell<'a, M>> for Element<'a, M> {
     fn from(shell: Shell<'a, M>) -> Self {
-        let Shell { class, sidebar, header, body, props, rail, drawer: on_dismiss, overlay, side, top } = shell;
+        let Shell { class, sidebar, header, body, props, rail, drawer: on_dismiss, overlay, side, props_side, top } =
+            shell;
+        let props = Props { column: props, side: props_side };
         // With the top row the header lies in it, and the content starts with the body.
         let (header, top) = match top {
             Some(top) => (None, Some((top, header))),
@@ -1092,29 +1123,46 @@ fn header_box<'a, M: 'a>(class: SizeClass, header: Element<'a, M>) -> Element<'a
 /// the window background, and the content beside it: flush with a line between them when the design's
 /// [`layout::inset()`] is 0, else as an inset panel with that margin. While the sidebar's edge is
 /// `dragged` ([`Shell::sidebar_width`]) the line shows in `line_selected`, as the divider of a split.
-fn inset_window<'a, M: 'a>(
+fn inset_window<'a, M: Clone + 'a>(
     sidebar: Element<'a, M>,
     width: f32,
     header: Option<Element<'a, M>>,
     body: Element<'a, M>,
-    props: Option<Element<'a, M>>,
+    props: Props<'a, M>,
     dragged: bool,
 ) -> Element<'a, M> {
-    let mut main = row![container(body).width(Fill).height(Fill)];
-    if let Some(props) = props {
-        let column = scrollable(container(props).width(Fill).padding(Padding {
-            top: space::l(),
-            right: space::s(),
-            bottom: space::xl(),
-            left: space::s(),
-        }))
-        .direction(scrollable::Direction::Vertical(style::scrollbar()))
-        .style(style::scrollable)
-        .width(size::props() - LINE)
-        .height(Fill);
-        main = main.push(rule::vertical(LINE).style(style::rule)).push(column);
-    }
-    let content = column(header).push(main.height(Fill));
+    let body = container(body).width(Fill).height(Fill);
+    let main: Element<'a, M> = match props {
+        // The body in the widgets of the divider without a column (a mouse area, a stack, a row), so it
+        // keeps its state while the column comes and goes (the hub's "Coming back").
+        Props { column: None, side: Some(_) } => {
+            mouse_area(stack![row![container(body).width(Fill).height(Fill)]]).into()
+        }
+        Props { column: Some(props), side } => {
+            let column = scrollable(container(props).width(Fill).padding(Padding {
+                top: space::l(),
+                right: space::s(),
+                bottom: space::xl(),
+                left: space::s(),
+            }))
+            .direction(scrollable::Direction::Vertical(style::scrollbar()))
+            .style(style::scrollable)
+            .width(Fill)
+            .height(Fill);
+            match side {
+                Some(PropsWidth { width, total, dragging, on }) => {
+                    split::split_end(body, column, width, total, dragging, on)
+                }
+                None => {
+                    row![body, rule::vertical(LINE).style(style::rule), container(column).width(size::props() - LINE)]
+                        .height(Fill)
+                        .into()
+                }
+            }
+        }
+        Props { column: None, side: None } => row![body].height(Fill).into(),
+    };
+    let content = column(header).push(main);
     // Only the top and bottom edge: the sidebar sets its side edges itself ([`sidebar`]).
     let side = in_sidebar(container(sidebar).width(width).height(Fill).padding(Padding::new(0.0).vertical(space::s())));
     let inset = layout::inset();
@@ -1135,6 +1183,13 @@ fn inset_window<'a, M: 'a>(
         row![side, container(panel).padding(Padding { left: 0.0, ..Padding::new(inset) })]
     };
     container(window).width(Fill).height(Fill).style(style::container::sidebar).into()
+}
+
+/// The properties column for [`inset_window`] (`None` while the view has none) and, when the app
+/// drags it, its width.
+struct Props<'a, M> {
+    column: Option<Element<'a, M>>,
+    side: Option<PropsWidth<M>>,
 }
 
 /// How far the handle of the expanded sidebar reaches over the sidebar ([`resizable`]): the margin
@@ -1928,8 +1983,26 @@ mod tests {
         assert!(is_flush(0.0) && !is_flush(8.0));
         assert_eq!(layout::inset(), 0.0, "the standard is flush");
         let part = || -> Element<'static, Msg> { blank().into() };
-        let _ = inset_window(part(), size::sidebar(), Some(part()), part(), Some(part()), false);
-        let _ = inset_window(part(), rail(), None, part(), None, true);
+        let props = |column: Option<Element<'static, Msg>>| Props { column, side: None };
+        let _ = inset_window(part(), size::sidebar(), Some(part()), part(), props(Some(part())), false);
+        let _ = inset_window(part(), rail(), None, part(), props(None), true);
+    }
+
+    /// Issue #604: the properties column moves between three quarters and twice its default, the
+    /// body keeps a column's least; the shell builds with the dragged column, dragging or not.
+    #[test]
+    fn the_properties_column_stays_inside_its_limits_and_builds() {
+        let limits = props_limits(1200.0);
+        assert_eq!(limits.default, size::props());
+        assert_eq!(limits.clamp(10.0), 0.75 * size::props());
+        assert_eq!(limits.clamp(5000.0), 2.0 * size::props());
+        let tight = props_limits(800.0);
+        assert_eq!(tight.clamp(5000.0), 800.0 - split::divider_width() - split::min_pane(), "the body keeps its least");
+        for dragging in [false, true] {
+            let props = Some(Element::from(blank()));
+            let shell = shell(SizeClass::Wide, blank(), blank(), blank(), props);
+            let _: Element<'_, Msg> = shell.props_width(320.0, 1200.0, dragging, |_| Msg::Close).into();
+        }
     }
 
     /// Issue #376: the expanded sidebar moves between three quarters and twice its default, and leaves
@@ -1944,7 +2017,7 @@ mod tests {
         let tight = sidebar_limits(1024.0, rest);
         assert_eq!(
             tight.clamp(5000.0),
-            1024.0 - layout::inset() - split::handle_width() - rest,
+            1024.0 - layout::inset() - split::divider_width() - rest,
             "the content keeps its rest"
         );
         for id in torro_core::design::BUILT_IN_IDS {

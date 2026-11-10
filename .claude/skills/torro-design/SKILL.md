@@ -74,11 +74,23 @@ aus einem Guss wirkt:
   Breit wählt der Nutzer ausgeklappt oder Leiste – Knopf `panel-left` („Collapse sidebar“/„Expand
   sidebar“) und Taste `[` wie Linear; jede App merkt sich die Wahl in `ui.json` im State-Verzeichnis
   (`torro_gui::ui_state`). Mittel zeigt immer die Leiste, der Knopf öffnet die ausgeklappte
-  Seitenleiste als Schublade; Schmal nur Schublade. Eine App kann die ausgeklappte Seitenleiste am rechten Rand
-  ziehbar machen (#376, zuerst der Eingang): `Shell::sidebar_width` legt einen Griff wie den Trenner von
-  `torro_gui::split` darüber (Doppelpfeil, Doppelklick = Standard, beim Ziehen die Linie in `LINE_SELECTED`),
-  `shell::sidebar_limits` hält die Breite zwischen ¾ und 2 × `size::sidebar()` und lässt dem Inhalt seinen Rest.
-  Leiste, Schublade und Titelband behalten `size::sidebar()` bzw. `shell::rail()`.
+  Seitenleiste als Schublade; Schmal nur Schublade.
+- **Spalten sind ziehbar** (Pflicht, #604; zuerst #130 und #376): Jede ausgeklappte Seitenleiste, jede Grenze
+  zwischen zwei Spalten und jedes Paneel neben dem Inhalt bekommt einen Griff, damit abgeschnittene Einträge
+  lesbar werden: Doppelpfeil, Doppelklick = Standardbreite, beim Ziehen die Linie in `LINE_SELECTED`. Apps
+  bauen den Griff nie selbst, sondern nehmen die Bausteine aus `torro-gui`: `Shell::sidebar_width` (Seitenleiste),
+  `split::split` (linke Spalte, z. B. Liste|Detail), `split::split_end` bzw. `Shell::props_width` (rechte
+  Spalte, Eigenschaften) und `Panel::resizable` (Paneel neben dem Inhalt). Grenzen: `split::limits_around`
+  – jede Spalte ¾ bis 2 × ihren Standard, der Nachbar behält seinen Rest (`split::min_pane()`, bei der
+  Seitenleiste was der Inhalt braucht); `shell::sidebar_limits`, `shell::props_limits`, `panel::beside_limits`
+  sind die fertigen Grenzen. Eine gespeicherte Breite wird beim Anzeigen geklemmt, nicht überschrieben. Jede App
+  merkt sich die Breiten in `ui.json` (`ui_state::save_split_task`, beim Start `ui_state::load_splits_task`),
+  **je App und Grenze**, nicht je Liste oder Filter, damit beim Wechsel nichts springt; die Demo speichert
+  nichts. Gezogen wird, wo zwei Spalten nebeneinander stehen, auch im mittleren Fenster (Aufgaben: Liste|Detail
+  mit eigener Breite); wann eine Spalte wegfällt, entscheiden weiter die festen Schwellen, nicht die gezogene
+  Breite einer Spalte. Gemessen wird dabei am Inhalt neben der Seitenleiste, wie breit sie gezogen ist: Eine breite
+  Seitenleiste kann so die Eigenschaften-Spalte ausblenden, statt drei Spalten in zu wenig Platz zu drängen. Wo die App ihren Inhalt misst, zählt die gezogene Breite. **Fest bleiben** Leiste, Schublade,
+  Titelband (`size::sidebar()` bzw. `shell::rail()`), Paneele über dem Inhalt (mittel, schmal) und Kacheln.
 - **Ampel** (macOS, U.11): verschoben mit `torro_gui::place_traffic_lights()` beim Start, Mitte bei y = 20 (fest,
   kein Token) – die Mitte der oberen Zeile. Eingeklappt rückt der Inhalt nach links, nichts überlagert. Zeilen einmal
   bauen, mit dem Modus als Parameter: `widgets::sidebar_item_in`, `sidebar_group_in`, `shell::sidebar_tools`,
@@ -114,7 +126,7 @@ aus einem Guss wirkt:
   und vorn den Kreis des Absenders (`widgets::sender_circle`, Farbe aus `Palette::sender` über die Adresse). Die **Anhänge**
   stehen unter der Mail, nicht im Kopf (#491): breit als Kacheln (`widgets::split_file_chip`) in einem Block unten im
   Leser, mit Abstand zur schwebenden Leiste, mittel und schmal als Zeilen im festen Fuß des Paneels.
-- **Eigenschaften-Spalte** 300 breit rechts (Linear „Properties“): Gruppen mit `typo::caption()`-Titel in
+- **Eigenschaften-Spalte** 300 breit (Standard, ziehbar) rechts (Linear „Properties“): Gruppen mit `typo::caption()`-Titel in
   `TEXT_3`, Zeilen 32 mit Icon und Wert.
 - **Kleiner werden** in dieser Reihenfolge, nie etwas Funktion verlieren: (1) Seitenleiste ins Menü
   oben links („Today ▾“, „Week ▾“), (2) Eigenschaften als schwebende Karte bzw. als Chips unter dem
@@ -229,8 +241,8 @@ aus einem Guss wirkt:
 | `size::row_sidebar()` | 32 | Seitenleisten- und Menüzeile (Menü 30) |
 | `size::row_group()` | 40 | Gruppenkopf in Listen („Overdue 2“), mit Platz für seinen „+“-Knopf |
 | `size::header()` | 64 | Kopfleiste |
-| `size::sidebar()` | 240 | Seitenleiste |
-| `size::props()` | 300 | Eigenschaften-Spalte |
+| `size::sidebar()` | 240 | Seitenleiste (Standard, ziehbar) |
+| `size::props()` | 300 | Eigenschaften-Spalte (Standard, ziehbar) |
 | `size::panel()` | 400 | Seitenpaneel für Details (`torro_gui::panel`): Breit daneben, in Schmal darüber in voller Höhe (die Aufgaben-App zeigt ihr Detail auch in Mittel daneben, Abschnitt 6) |
 | `shell::rail()` = `size::rail()` | 60 | Eingeklappte Seitenleiste (Leiste, nur Icons) und eingeklappte Aktionsleiste der Mail; mindestens `control_lg()` |
 | `size::rail_wide()` | 248 | Ausgeklappte Aktionsleiste (`RailMode::Expanded`); das Mail-Fenster nutzt seit #456 die schwebende Leiste |
