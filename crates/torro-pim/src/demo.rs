@@ -54,8 +54,9 @@ struct Data {
     today: NaiveDate,
 }
 
-/// Focus slots of the demo data: the core's default, as the demo has no settings of its own.
-const DEMO_FOCUS_SLOTS: usize = 3;
+/// Focus slots of the demo data: the most one can choose. The demo has no settings of its own; the
+/// app counts with the number chosen in its Display menu and asks before it sends.
+const DEMO_FOCUS_SLOTS: usize = 5;
 
 impl Data {
     /// Stores the tasks of `plan` in order, each with a new etag, and returns them as stored.
@@ -97,7 +98,8 @@ impl Data {
         if takes(before) || !takes(after) {
             return Ok(());
         }
-        let taken = self.todos.iter().filter(|t| takes(t) && t.href.as_deref() != freed).count();
+        let writable = |t: &&Todo| !self.read_only(&t.collection);
+        let taken = self.todos.iter().filter(writable).filter(|t| takes(t) && t.href.as_deref() != freed).count();
         if taken >= DEMO_FOCUS_SLOTS {
             return Err(ProviderError::Conflict { uid: after.uid.clone() });
         }
@@ -1392,9 +1394,9 @@ impl PimSource for DemoSource {
         };
         let plan = day_move_plan(&todos, &current, day, before.as_ref(), &Local)
             .ok_or_else(|| ProviderError::Other("That task is not due on this day".into()))?;
-        if let Some(moved) = plan.last() {
-            data.check_slots(&current, moved, None)?;
-        }
+        let moved = plan.iter().find(|t| t.href == current.href).cloned();
+        let moved = moved.unwrap_or_else(|| crate::source::due_on(&current, day, &Local));
+        data.check_slots(&current, &moved, None)?;
         Ok(data.store(plan))
     }
 

@@ -80,7 +80,7 @@ use torro_gui::theme::{self, Palette, palette, radius, size, space};
 use torro_gui::typo::{self, ellipsize, text_width};
 use torro_gui::{datetime, layout, style, widgets};
 use torro_pim::model::{ChecksState, GitHubDetails, GitHubKind, GitHubState, Link, ReviewState};
-use torro_pim::source::{day_order, focus_taken, manual_order, plannable, same_level};
+use torro_pim::source::{day_order, focus_taken, manual_order, plannable, postpone_plan, same_level};
 use torro_pim::{EventTime, Focus, Todo};
 
 use crate::app::{Filter, Message};
@@ -832,12 +832,11 @@ pub fn day_places(data: &ListData<'_>, index: usize) -> Vec<(f32, DayDrop)> {
         }
         places.extend(end.map(|end| (end, DayDrop { day, before: None })));
     }
+    // The first task of a day, shown or not (its group may be folded).
     let first_on = |day: NaiveDate| {
-        rows.iter()
-            .find(|row| {
-                row.depth == 0 && plannable_row(data, row.index) && due_day(&data.todos[row.index]) == Some(day)
-            })
-            .map(|row| row.index)
+        (0..data.todos.len())
+            .filter(|&i| plannable_row(data, i) && due_day(&data.todos[i]) == Some(day))
+            .min_by(|&a, &b| day_order(&data.todos[a], &data.todos[b]))
     };
     for (group, _, bottom) in heads {
         let day = match group {
@@ -1119,7 +1118,10 @@ fn group_head<'a>(group: &Group, data: &ListData<'a>, count: usize, folded: bool
     ]
     .align_y(Alignment::Center);
     // Today's focus slots and the button that moves today's focus plan to tomorrow (issue #596).
-    let taken = focus_taken(data.todos, data.today, &chrono::Local);
+    // Counted as the core counts: the lists that take changes.
+    let writable: Vec<Todo> = data.todos.iter().filter(|t| data.writable.contains(&t.collection)).cloned().collect();
+    let taken = focus_taken(&writable, data.today, &chrono::Local);
+    let movable = !postpone_plan(&writable, data.today, &chrono::Local).is_empty();
     if *group == Group::Today && plans_days(data) && (taken > 0 || data.focus_slots > 0) {
         line = line
             .push(Space::new().width(space::s()))
@@ -1128,7 +1130,7 @@ fn group_head<'a>(group: &Group, data: &ListData<'a>, count: usize, folded: bool
             .push(widgets::slot_dots(taken, data.focus_slots));
     }
     line = line.push(Space::new().width(Fill));
-    if *group == Group::Today && plans_days(data) && taken > 0 {
+    if *group == Group::Today && plans_days(data) && movable {
         let button =
             widgets::text_button(None, tr("To tomorrow"), style::button::ghost, Some(Message::PostponeFocusPlan));
         line = line.push(widgets::with_tooltip(button, tr("Move today's focus tasks to tomorrow (Shift+T)")));

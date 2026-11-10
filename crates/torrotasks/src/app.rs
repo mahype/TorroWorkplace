@@ -1015,8 +1015,8 @@ fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::wind
         Name::Character("n") => Shortcut::New,
         Name::Character("r") => Shortcut::Sync,
         Name::Character("f") => Shortcut::Focus,
-        Name::Character("t") if !modifiers.shift() => Shortcut::Tomorrow,
-        Name::Character("t" | "T") => Shortcut::PostponePlan,
+        Name::Character("t" | "T") if modifiers.shift() => Shortcut::PostponePlan,
+        Name::Character("t" | "T") => Shortcut::Tomorrow,
         Name::Character("0") => Shortcut::Priority(list::Prio::None),
         Name::Character("1") => Shortcut::Priority(list::Prio::Low),
         Name::Character("2") => Shortcut::Priority(list::Prio::Medium),
@@ -3587,7 +3587,9 @@ impl App {
         let before = drop.before.and_then(|i| self.todos.get(i)).cloned();
         let todos = self.plannable_todos();
         let Some(plan) = day_move_plan(&todos, &todo, drop.day, before.as_ref(), &Local) else { return Task::none() };
-        let Some(moved) = plan.last().cloned() else { return Task::none() };
+        // The moved task by its place: it is not in the plan when only others are renumbered.
+        let moved = plan.iter().find(|t| t.href == todo.href).cloned();
+        let moved = moved.unwrap_or_else(|| torro_pim::source::due_on(&todo, drop.day, &Local));
         let takes = |t: &Todo| takes_slot(t, self.today, &Local);
         if !takes(&todo) && takes(&moved) && focus_taken(&todos, self.today, &Local) >= self.focus_slots {
             self.error = Some(tr("All focus slots of today are taken. Release one first.").to_string());

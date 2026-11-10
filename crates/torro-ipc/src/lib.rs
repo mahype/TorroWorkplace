@@ -1273,7 +1273,8 @@ pub enum Request {
     /// The released task is written first: when the second write fails, it has lost its focus
     /// already. Codes: `not-found` when `href` or `release.href` is no listed task (also an item of a
     /// GitHub filter list for a client); `conflict` when an etag is not the task's current version or
-    /// the slots are full (`message` says which); `unsupported` for a GitHub filter list.
+    /// the slots are full (`message` says which); `unsupported` for a GitHub filter list; `error` for a
+    /// focus on a done task.
     #[serde(rename = "tasks.set_focus")]
     SetFocus {
         /// `href` of the task, as `tasks.list_todos` returned it.

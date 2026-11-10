@@ -2809,6 +2809,9 @@ impl PimService {
             Some((href, etag)) => Some(self.planned_task(&todos, href, etag).await?),
             None => None,
         };
+        if todo.completed && focus.is_focus() {
+            return Err(refused("error", "a done task takes no focus".into()));
+        }
         let after = Todo { focus, ..todo.clone() };
         let freed = released.as_ref().and_then(|r| r.href.as_deref());
         PimService::check_slots(&todos, (&todo, &after), freed, slots, today)?;
@@ -2853,9 +2856,10 @@ impl PimService {
         };
         let plan = day_move_plan(&todos, &todo, day, before.as_ref(), &Local)
             .ok_or_else(|| refused("error", format!("`before` is no open top-level task due on {day}")))?;
-        if let Some(moved) = plan.last() {
-            PimService::check_slots(&todos, (&todo, moved), None, slots, today)?;
-        }
+        // The moved task by its place: it is not in the plan when only others are renumbered.
+        let moved = plan.iter().find(|t| t.href == todo.href).cloned();
+        let moved = moved.unwrap_or_else(|| torro_pim::source::due_on(&todo, day, &Local));
+        PimService::check_slots(&todos, (&todo, &moved), None, slots, today)?;
         let mut written = Vec::with_capacity(plan.len());
         for todo in plan {
             written.push(self.save_todo(todo).await?);
@@ -6934,6 +6938,31 @@ pub(crate) mod tests {
         assert_eq!(todos.iter().map(|t| t.uid.as_str()).collect::<Vec<_>>(), ["h1"]);
         assert_eq!(todos[0].due, Some(EventTime::Date(tomorrow)));
         assert!(puts(&record).iter().all(|line| !line.contains("w1.ics")), "{:?}", puts(&record));
+    }
+
+    #[tokio::test]
+    async fn renumbering_others_with_full_slots_is_no_false_alarm() {
+        use torro_pim::Focus;
+        let (base, record) = fake_server(server_holding(TASK)).await;
+        let x = Todo { sort_order: Some(1024), ..day_task(&base, WORK, "x", today(), Focus::Normal) };
+        let a = day_task(&base, WORK, "a", today(), Focus::Focus);
+        let service = service_with_tasks(&base, vec![x.clone(), a.clone()]).await;
+        // X behind A: only A gets a number, X keeps its own; the one slot is A's already.
+        let request = Request::PlanTodo {
+            href: x.href.clone().expect("href"),
+            etag: x.etag.clone().expect("etag"),
+            day: today(),
+            before: None,
+        };
+        let response = service.plan_request(request, Reach::Suite, 1, today()).await;
+        let Response::Todos { todos } = response else { panic!("the written tasks, got {response:?}") };
+        assert_eq!(todos.iter().map(|t| (t.uid.as_str(), t.sort_order)).collect::<Vec<_>>(), [("a", Some(0))]);
+        assert_eq!(puts(&record).len(), 1);
+        // A done task takes no focus.
+        let done = Todo { completed: true, ..day_task(&base, HOME, "d", today(), Focus::Normal) };
+        let service = service_with_tasks(&base, vec![done.clone()]).await;
+        let response = service.plan_request(set_focus(&done, Focus::Focus, None), Reach::Suite, 3, today()).await;
+        assert_eq!(code_of(&response), "error", "{response:?}");
     }
 
     #[tokio::test]
