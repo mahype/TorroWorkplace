@@ -6233,9 +6233,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     return Task::none();
                 }
                 self.more_asked = None;
-                self.more_round += 1;
                 match result {
                     Ok(mut page) => {
+                        // The line in view asks again, even when the page brought nothing new. Not
+                        // after a failure: that waits for the timer, or it would ask on and on.
+                        self.more_round += 1;
                         search::with_passages(&mut page.messages, &page.highlights);
                         let known: Vec<String> = self.messages.iter().map(|message| message.id.clone()).collect();
                         let leaving = &self.leaving;
@@ -19959,8 +19961,10 @@ mod tests {
         assert_eq!((app.messages.len(), app.more.as_deref()), (2, Some("3")));
         assert!(app.more_round > round, "the line asks again though the list kept its length");
         let _ = app.update(Message::MailEndShown);
+        let before = app.more_round;
         let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, "3".into(), Err("offline".into())));
         let failed = app.more_round;
+        assert_eq!(failed, before, "a failure does not ask again at once");
         let _ = app.update(Message::Tick);
         assert_eq!(app.more_round, failed + 1, "the timer lets it ask once more");
         let _ = app.update(Message::Tick);
