@@ -278,8 +278,8 @@ pub struct Data {
     /// The core's built-in catalog of MCP servers (`extensions.list_catalog`), with what each needs
     /// that is missing on this computer, or why it could not be listed.
     pub catalog: connections::Listing<torro_ipc::extensions::CatalogEntry>,
-    /// The web search providers (`tools.list_search_providers`, task WEB.7) for the setup's step "Web search", in
-    /// the order the core asks them; only loaded while the setup is open, since listing them asks the system
+    /// The web search providers (`tools.list_search_providers`, task WEB.7) for MCP servers' built-in tools, in
+    /// the order the core asks them; only loaded while that section is open, since listing them asks the system
     /// keychain whether their keys are stored.
     pub search_providers: Vec<torro_ipc::web::SearchProviderInfo>,
     /// The app catalog (`apps.list_catalog`, issue #411) and the job that runs, loaded apart from
@@ -303,7 +303,7 @@ pub enum Action {
     /// `Response::Error` with its code, so the template dialog can tell `busy` from `not-found`
     /// ([`template_form::refusal`]). Then reload, as for [`Action::Send`].
     Ask(workspaces::Asked, Request),
-    /// Send this request for the setup's step "Web search" or MCP servers' search providers and hand the answer
+    /// Send this request for MCP servers' search providers and hand the answer
     /// to the one that asked only ([`connections::checked`]): the check of a new SearXNG
     /// address (task WEB.7), so the refusal of another request that runs beside it is never shown as the check's
     /// reason. Then reload, as for [`Action::Send`].
@@ -1294,7 +1294,7 @@ impl Ui {
             (false, _) if self.on_documents() => Task::batch([load(true, None), load_catalog()]),
             // MCP servers shows the web search providers among the built-in tools (task MA.7 with WEB.6).
             (false, Section::Connections) => Task::batch([load(true, ai_cache), load_catalog()]),
-            (false, _) => load(self.setup.is_some(), ai_cache),
+            (false, _) => load(false, ai_cache),
         };
         Task::batch([rest, self.reload_app_catalog()])
     }
@@ -1484,7 +1484,7 @@ impl Ui {
                     let step = self.launch.setup.unwrap_or(setup::Step::Welcome);
                     if self.data.settings.setup.state != SetupState::Done {
                         self.setup = Some(setup::State::new(step, &self.data.settings));
-                        // Loaded without the setup's search providers (task WEB.7): once more with them.
+                        // Loaded without the models of the AI accounts, which the setup's point AI offers.
                         providers = self.reload();
                     }
                 }
@@ -1608,6 +1608,10 @@ impl Ui {
                     && let Some(setup) = self.setup.as_mut()
                     && accounts::ai_setup::owns(&setup.ai_setup, owner)
                 {
+                    // A model turned on or put into a slot: the setup's lists of models load afresh.
+                    if asked.changes() {
+                        self.data.ai_models_from.clear();
+                    }
                     let action = accounts::ai_setup::answered(&mut setup.ai_setup, owner, run, &result);
                     return Task::batch([self.perform(accounts::act(action)), reload]);
                 }
@@ -1673,6 +1677,12 @@ impl Ui {
                     return Task::none();
                 }
                 if let Some(setup) = &self.setup {
+                    // The dropdowns of the point Appearance are Settings › Appearance's.
+                    if setup.step() == setup::Step::Appearance
+                        && let Some(close) = suite::escape(&self.general.suite)
+                    {
+                        return self.update(Message::General(general::Message::Suite(close)));
+                    }
                     return match setup::escape(setup) {
                         Some(message) => self.update(Message::Setup(message)),
                         None => Task::none(),
@@ -1711,7 +1721,12 @@ impl Ui {
                 {
                     return self.update(Message::WizardNavigate(agent_wizard::Navigation::Activate));
                 }
-                match self.setup.as_ref().is_some_and(|setup| !setup.dialog_open()) && self.menu.is_none() {
+                let looks_open = self.setup.as_ref().is_some_and(|setup| setup.step() == setup::Step::Appearance)
+                    && suite::escape(&self.general.suite).is_some();
+                match self.setup.as_ref().is_some_and(|setup| !setup.dialog_open())
+                    && self.menu.is_none()
+                    && !looks_open
+                {
                     true => return self.update(Message::Setup(setup::Message::Next)),
                     false => Action::None,
                 }
@@ -1725,6 +1740,10 @@ impl Ui {
                 let before = state.step();
                 let outcome = setup::update(state, m, &self.data);
                 let after = state.step();
+                // Leaving the point Appearance closes its dropdowns, which belong to Settings › Appearance too.
+                if before == setup::Step::Appearance && after != before {
+                    suite::leave(&mut self.general.suite);
+                }
                 // Entering the point Appearance lists the designs, fonts and colour schemes, as opening
                 // Settings › Appearance does.
                 let looks =
@@ -1747,14 +1766,12 @@ impl Ui {
                         action
                     }
                     // Finished on the way into a section ("Open Settings", "Connect an agent…").
+                    // The section opens as a click on it does (Appearance lists its parts, MCP servers reads the
+                    // hooks' notes).
                     setup::Outcome::CloseTo(action, section) => {
                         self.setup = None;
-                        self.select(section);
-                        let list = match section == Section::Appearance && suite::unlisted(&self.general.suite) {
-                            true => self.perform(Action::ListLooks),
-                            false => Task::none(),
-                        };
-                        return Task::batch([self.perform(action), list, looks]);
+                        let sent = self.perform(action);
+                        return Task::batch([sent, self.update(Message::Select(section)), looks]);
                     }
                 };
                 return Task::batch([self.perform(action), looks]);
@@ -2573,7 +2590,7 @@ fn keys(event: iced::Event, status: iced::event::Status, _window: iced::window::
 /// The account ids behind a cached list of models suitable for mail categorization.
 type MailDeciderCache = (Vec<String>, Vec<(String, torro_core::ai::AiModel)>);
 
-/// Loads everything the pages show; the search providers only `with_providers` (the setup is open).
+/// Loads everything the pages show; the search providers only `with_providers` (MCP servers is open).
 fn load(with_providers: bool, ai_cache: Option<MailDeciderCache>) -> Task<Message> {
     // How long the core took to answer, with `TORRO_TIMING` (issue #206).
     let started = Instant::now();
@@ -2648,7 +2665,10 @@ fn load(with_providers: bool, ai_cache: Option<MailDeciderCache>) -> Task<Messag
                             data.ai_models.extend(
                                 models
                                     .into_iter()
-                                    .filter(|model| model.enabled && model.decision == Some(true))
+                                    // Decision models for Sorting, models with tools for Chat (issue #326).
+                                    .filter(|model| {
+                                        model.enabled && (model.decision == Some(true) || model.tools == Some(true))
+                                    })
                                     .map(|model| (account.clone(), model)),
                             );
                         }
@@ -2662,7 +2682,7 @@ fn load(with_providers: bool, ai_cache: Option<MailDeciderCache>) -> Task<Messag
                 other => Err(other),
             });
             data.extensions = connections::Listing::from_result(servers.await);
-            // The setup's step "Web search" (task WEB.7).
+            // MCP servers' built-in tools (task WEB.6).
             if with_providers
                 && let Ok(Response::SearchProviders { providers }) =
                     client::call(&socket, &Request::ListSearchProviders).await

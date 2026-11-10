@@ -149,8 +149,8 @@ pub struct State {
     step: Step,
     /// The page of the point AI.
     ai_page: AiPage,
-    /// The furthest step reached; the points before it count as passed.
-    reached: Step,
+    /// The steps shown in this setup; a point left forward counts as passed unless it was skipped.
+    visited: BTreeSet<Step>,
     /// Steps left with their way to skip; going on from one of them with the primary button takes it out.
     skipped: BTreeSet<Step>,
     /// The language chosen here, shown at once. The settings are only reloaded after the request, and the
@@ -208,7 +208,7 @@ impl State {
             ai_setup: ai,
             step,
             ai_page: AiPage::Connect,
-            reached: step,
+            visited: BTreeSet::from([step]),
             skipped: BTreeSet::new(),
             language: settings.language,
             touched: false,
@@ -234,7 +234,7 @@ impl State {
     pub fn on_ai_page(mut self, page: AiPage) -> State {
         self.step = Step::Ai;
         self.ai_page = page;
-        self.reached = self.reached.max(Step::Ai);
+        self.visited.insert(Step::Ai);
         self
     }
 
@@ -251,7 +251,7 @@ impl State {
         self.nextcloud.running()
             || self.mail.busy()
             || self.dialog.as_ref().is_some_and(wizard::State::busy)
-            || ai_setup::preparing(&self.ai_setup)
+            || ai_working(self)
     }
 
     /// The dialog lies over the setup; keys and the footer belong to it.
@@ -267,7 +267,7 @@ impl State {
     /// Whether the shared AI page must keep running: its point is shown, or a model it prepares is still on
     /// its way (after "Use suggestion" the setup goes on while the download runs).
     pub fn ai_running(&self) -> bool {
-        self.step == Step::Ai || ai_setup::preparing(&self.ai_setup)
+        self.step == Step::Ai || ai_working(self)
     }
 
     /// The step after (`forward`) or before the current one, if any.
@@ -279,21 +279,21 @@ impl State {
         }
     }
 
-    /// Whether the point `step` is passed: reached beyond it and not skipped.
+    /// Whether the point `step` is passed: shown in this setup, not skipped, and not the one shown now.
     fn passed(&self, step: Step) -> bool {
-        step < self.reached && !self.skipped.contains(&step) && step != self.step
+        self.visited.contains(&step) && !self.skipped.contains(&step) && step != self.step
     }
 
     fn go(&mut self, step: Step) {
         // A model on its way keeps the AI page's work running ([`State::ai_running`]).
-        if self.step == Step::Ai && step != Step::Ai && !ai_setup::preparing(&self.ai_setup) {
+        if self.step == Step::Ai && step != Step::Ai && !ai_working(self) {
             ai_setup::leave(&mut self.ai_setup);
         }
         if step != Step::Ai {
             self.ai_page = AiPage::Connect;
         }
         self.step = step;
-        self.reached = self.reached.max(step);
+        self.visited.insert(step);
         self.error = None;
         self.menus.close();
     }
@@ -415,6 +415,12 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Outcome {
     }
 }
 
+/// A model is on its way after "Use suggestion": downloaded, turned on or put into its slot. A question
+/// about mail that waits is not work; it stays on the page AI.
+pub(super) fn ai_working(state: &State) -> bool {
+    ai_setup::preparing(&state.ai_setup) && !ai_setup::awaiting_consent(&state.ai_setup)
+}
+
 /// Whether Enter on the page Connect belongs to the shared AI page: its connection form is open or a
 /// connection runs. A question about mail or a model on its way does not take it.
 fn ai_form_open(state: &State) -> bool {
@@ -428,7 +434,15 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
     // A finished sign-in is noticed before the message counts.
     observe(state, data);
     match message {
-        Message::AiSetup(message) => stay(act(ai_setup::update(&mut state.ai_setup, message, data))),
+        Message::AiSetup(message) => {
+            let confirm = message == ai_setup::Message::Confirm;
+            let action = act(ai_setup::update(&mut state.ai_setup, message, data));
+            // "Use" in the question after "Use suggestion": on to Appearance as without the question.
+            if confirm && state.step == Step::Ai && state.ai_page == AiPage::Connect && ai_working(state) {
+                state.forward();
+            }
+            stay(action)
+        }
         Message::Go(step) => {
             state.go(step);
             stay(Action::None)
@@ -454,8 +468,14 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
                 Step::Ai if ai_form_open(state) => {
                     return stay(act(ai_setup::update(&mut state.ai_setup, ai_setup::Message::Back, data)));
                 }
-                Step::Ai if state.ai_page == AiPage::Sort => state.ai_page = AiPage::Chat,
-                Step::Ai if state.ai_page == AiPage::Chat => state.ai_page = AiPage::Connect,
+                Step::Ai if state.ai_page == AiPage::Sort => {
+                    state.menus.close();
+                    state.ai_page = AiPage::Chat;
+                }
+                Step::Ai if state.ai_page == AiPage::Chat => {
+                    state.menus.close();
+                    state.ai_page = AiPage::Connect;
+                }
                 _ => {
                     if let Some(before) = state.neighbour(false) {
                         state.go(before);
@@ -464,6 +484,8 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             }
             stay(Action::None)
         }
+        // Closing the setup would end a model's preparation before it is in its slot: it waits.
+        Message::Later | Message::OpenSection(_) if ai_working(state) => stay(Action::None),
         Message::Later => Outcome::Close(set_setup(SetupState::Skipped)),
         Message::Language(language) => {
             state.touched = true;
@@ -521,6 +543,7 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             stay(act(ai_setup::use_suggestion(&mut state.ai_setup, data, replace, Some(slot))))
         }
         Message::ChooseMyself => {
+            state.menus.close();
             state.ai_page = AiPage::Chat;
             stay(Action::None)
         }
@@ -639,17 +662,19 @@ fn next(state: &mut State, data: &Data) -> Outcome {
         Step::Ai => match state.ai_page {
             AiPage::Connect if ai_setup::awaiting_consent(&state.ai_setup) => stay(Action::None),
             // A slot chosen ("Keep") or a model already on its way: on without changing anything.
-            AiPage::Connect if keeps(data) || ai_setup::preparing(&state.ai_setup) => {
+            AiPage::Connect if keeps(data) || ai_working(state) => {
                 state.forward();
                 stay(Action::None)
             }
             AiPage::Connect => use_suggestion(state, data, false),
             AiPage::Chat => {
+                state.menus.close();
                 state.ai_page = AiPage::Sort;
                 stay(Action::None)
             }
             AiPage::Sort => sort_and_go_on(state, data),
         },
+        Step::Done if ai_working(state) => stay(Action::None),
         Step::Done => finish(data, None),
         _ => {
             state.forward();
@@ -725,15 +750,29 @@ fn finish(data: &Data, section: Option<Section>) -> Outcome {
 /// hidden; run again, an app is only shown, never hidden – it may have been hidden on purpose. Only what
 /// changes is sent.
 fn components(data: &Data) -> Vec<ComponentSwitch> {
-    let first = data.settings.setup.version == 0;
+    let first = first_run(&data.settings.setup);
     let listed = || data.accounts.iter().filter(|account| !account.id.is_empty());
     let collections = || listed().flat_map(|account| account.collections.iter());
+    // A server that brings calendars or task lists counts before its first sync has listed them: a Nextcloud
+    // whose services are not read yet or that has them, and every CalDAV account.
+    let brings = |service: torro_ipc::ServerService| {
+        listed().any(|account| match account.kind.as_str() {
+            "caldav" => true,
+            "nextcloud" => account.services.as_ref().is_none_or(|services| services.contains(&service)),
+            _ => false,
+        })
+    };
     [
         (Component::Mail, listed().any(|account| account.kind == "mail")),
-        (Component::Calendar, collections().any(|collection| collection.kind.has_events())),
+        (
+            Component::Calendar,
+            collections().any(|collection| collection.kind.has_events()) || brings(torro_ipc::ServerService::Calendars),
+        ),
         (
             Component::Tasks,
-            collections().any(|collection| collection.kind.has_todos()) || listed().any(|a| a.kind == "github"),
+            collections().any(|collection| collection.kind.has_todos())
+                || brings(torro_ipc::ServerService::Tasks)
+                || listed().any(|a| a.kind == "github"),
         ),
         (Component::Assistant, listed().any(|account| account.kind == "ai")),
     ]
@@ -747,6 +786,17 @@ fn components(data: &Data) -> Vec<ComponentSwitch> {
         }
     })
     .collect()
+}
+
+/// Whether this is the first run of the setup: it was never finished. Finishing records the version and the
+/// state `done`; "Run setup again" keeps the version with the state `pending`. A setup put off ("Set up later",
+/// state `skipped`) before it was ever finished still counts as the first run.
+fn first_run(setup: &torro_core::settings::Setup) -> bool {
+    match setup.state {
+        SetupState::Done => false,
+        SetupState::Skipped => true,
+        SetupState::Pending => setup.version == 0,
+    }
 }
 
 /// Follows a Nextcloud sign-in through a reload of `data` (the shell calls it on every reload while the
@@ -777,17 +827,17 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
     if let Some(dialog) = state.dialog.as_mut() {
         return wizard::answered(dialog, result);
     }
-    if state.step == Step::Mail && state.mail_running() {
-        return wizard::answered(&mut state.mail, result);
-    }
+    // The one that asked takes the answer, whichever point is shown: a Nextcloud sign-in that starts, else
+    // the mail path under way.
     match state.nextcloud.answered(result) {
         Some(Err(message)) => {
             state.error = Some(message);
-            true
+            return true;
         }
-        Some(Ok(())) => true,
-        None => false,
+        Some(Ok(())) => return true,
+        None => {}
     }
+    state.mail_running() && wizard::answered(&mut state.mail, result)
 }
 
 /// The request that changes one setting.
@@ -1075,6 +1125,10 @@ pub fn escape(state: &State) -> Option<Message> {
     if state.step == Step::Cloud && (state.nextcloud.running() || state.adding) {
         return Some(Message::Cancel);
     }
+    // The mail path under way at its first step is given up, as its "Cancel" does.
+    if state.step == Step::Mail && state.mail_running() && !wizard::mail_back(&state.mail) {
+        return Some(Message::AddAnotherMail);
+    }
     let walks_back = (state.step == Step::Mail && wizard::mail_back(&state.mail))
         || (state.step == Step::Ai && state.ai_page != AiPage::Connect);
     (walks_back || state.neighbour(false).is_some()).then_some(Message::Back)
@@ -1087,7 +1141,7 @@ pub fn escape(state: &State) -> Option<Message> {
 pub fn header(state: &State, class: SizeClass) -> Element<'_, Message> {
     // On the summary "Finish" is the way out; putting it off there would only confuse.
     let later_word = if class == SizeClass::Narrow { tr("Later") } else { tr("Set up later") };
-    let later = (state.step != Step::Done)
+    let later = (state.step != Step::Done && !ai_working(state))
         .then(|| widgets::text_button(None, later_word, style::button::ghost, Some(Message::Later)));
     if class == SizeClass::Narrow {
         let back =
@@ -1524,7 +1578,8 @@ mod tests {
         data.settings.components_off = BTreeSet::from([Component::Calendar]);
         data.settings.setup.version = 0;
         let switches = components(&data);
-        let has_events = data.accounts.iter().flat_map(|a| &a.collections).any(|c| c.kind.has_events());
+        let has_events = data.accounts.iter().flat_map(|a| &a.collections).any(|c| c.kind.has_events())
+            || data.accounts.iter().any(|a| matches!(a.kind.as_str(), "nextcloud" | "caldav"));
         assert!(switches.contains(&ComponentSwitch { component: Component::Mail, enabled: false }), "{switches:?}");
         assert!(switches.contains(&ComponentSwitch { component: Component::Assistant, enabled: false }));
         assert_eq!(
@@ -1533,10 +1588,55 @@ mod tests {
             "a calendar shows the app Calendar"
         );
         assert!(switches.iter().all(|switch| !matches!(switch.component, Component::Inbox | Component::Workspaces)));
-        data.settings.setup.version = torro_core::settings::Setup::VERSION;
+        data.settings.setup = torro_core::settings::Setup { state: SetupState::Pending, version: 3 };
         assert!(components(&data).iter().all(|switch| switch.enabled), "run again: only shown");
+        // Put off before it was ever finished, it is still the first run.
+        data.settings.setup = torro_core::settings::Setup { state: SetupState::Skipped, version: 4 };
+        assert!(components(&data).contains(&ComponentSwitch { component: Component::Mail, enabled: false }));
+        // A Nextcloud whose services are not read yet brings its calendars and lists already.
+        let mut fresh = data.clone();
+        fresh.accounts.retain(|account| account.kind != "nextcloud");
+        if let Some(mut cloud) = super::super::launch::demo_data().accounts.into_iter().find(|a| a.kind == "nextcloud")
+        {
+            cloud.collections.clear();
+            cloud.services = None;
+            fresh.accounts.push(cloud);
+            let switches = components(&fresh);
+            assert!(!switches.contains(&ComponentSwitch { component: Component::Calendar, enabled: false }));
+            assert!(!switches.contains(&ComponentSwitch { component: Component::Tasks, enabled: false }));
+        }
         let finished = finish(&data, Some(Section::Mcp));
         assert!(matches!(finished, Outcome::CloseTo(_, Section::Mcp)), "Connect an agent… finishes too");
+    }
+
+    /// While a model is on its way after "Use suggestion", the setup waits before it closes: finishing would end
+    /// the preparation before the model is in its slot. A question about mail is no work: nothing waits for it.
+    #[test]
+    fn finishing_waits_while_a_model_is_prepared() {
+        let data = unchosen();
+        let mut setup = state(Step::Ai);
+        ai_setup::demo(&mut setup.ai_setup, "suggestion", &data);
+        update(&mut setup, Message::Next, &data);
+        assert!(ai_working(&setup));
+        update(&mut setup, Message::Go(Step::Done), &data);
+        assert_eq!(pages::primary(&setup, &data), (tr("Preparing model…"), false, true));
+        assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
+        assert!(matches!(update(&mut setup, Message::Later, &data), Outcome::Stay(Action::None)));
+        let mut asking = state(Step::Ai);
+        ai_setup::demo(&mut asking.ai_setup, "cloud-consent", &data);
+        assert!(!ai_working(&asking), "a question is no work");
+    }
+
+    /// The mail path takes the answer to its own request also while another point is shown.
+    #[test]
+    fn the_mail_path_takes_its_answer_on_another_point() {
+        let data = data();
+        let mut setup = state(Step::Mail);
+        update(&mut setup, Message::Mail(wizard::Message::AddressChanged("anna@mailbox.org".into())), &data);
+        update(&mut setup, Message::Next, &data);
+        update(&mut setup, Message::Go(Step::Cloud), &data);
+        let refused: Result<Response, String> = Err("offline".into());
+        assert!(answered(&mut setup, &refused), "the mail path shows its refusal itself");
     }
 
     /// Issue #554: the setup's choices are dropdowns: opening one asks for the search field's focus and shows

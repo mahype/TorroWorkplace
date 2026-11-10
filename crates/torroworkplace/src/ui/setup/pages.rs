@@ -73,7 +73,7 @@ pub fn primary(state: &State, data: &Data) -> (&'static str, bool, bool) {
             None => (tr("Connect"), false, false),
         },
         Step::Ai => match state.ai_page {
-            AiPage::Connect if ai_setup::preparing(&state.ai_setup) => (tr("Continue"), true, false),
+            AiPage::Connect if super::ai_working(state) => (tr("Continue"), true, false),
             AiPage::Connect if super::keeps(data) => (tr("Keep my choice"), true, false),
             AiPage::Connect => {
                 (tr("Use suggestion"), ai_setup::can_use_suggestion(&state.ai_setup, data, false, None), false)
@@ -81,6 +81,8 @@ pub fn primary(state: &State, data: &Data) -> (&'static str, bool, bool) {
             AiPage::Chat => (tr("Continue"), true, false),
             AiPage::Sort => (tr("Continue"), !super::ai_models_wait(data), false),
         },
+        // Finishing would end a model's preparation before it is in its slot.
+        Step::Done if super::ai_working(state) => (tr("Preparing model…"), false, true),
         Step::Done => (tr("Finish"), true, false),
         _ => (tr("Continue"), true, false),
     }
@@ -114,7 +116,7 @@ pub fn second(state: &State, data: &Data) -> Vec<(&'static str, Option<Message>)
         }
         Step::Ai if state.ai_page == AiPage::Connect && !super::ai_form_open(state) => {
             let mut ways = vec![(tr("Choose myself"), Some(Message::ChooseMyself))];
-            if super::keeps(data) && !ai_setup::preparing(&state.ai_setup) && ai_setup::differs(&state.ai_setup, data) {
+            if super::keeps(data) && !super::ai_working(state) && ai_setup::differs(&state.ai_setup, data) {
                 let can = ai_setup::can_use_suggestion(&state.ai_setup, data, true, None);
                 ways.push((tr("Use suggestion"), can.then_some(Message::UseSuggestion)));
             }
@@ -815,7 +817,7 @@ fn done<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         None => line(false, Step::Cloud, tr("Not set up").to_string(), set_up(Step::Cloud)),
     };
     let slots = &data.settings.ai_slots;
-    let ai_row = match (slots.chat.is_some() || slots.decide.is_some(), ai_setup::preparing(&state.ai_setup)) {
+    let ai_row = match (slots.chat.is_some() || slots.decide.is_some(), super::ai_working(state)) {
         (_, true) => {
             line(true, Step::Ai, tr("Preparing model…").to_string(), open(tr("Open Assistant"), AppId::ASSISTANT))
         }
