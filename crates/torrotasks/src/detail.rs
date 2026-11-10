@@ -1262,7 +1262,7 @@ impl Detail {
             }
             Prop::Focus => {
                 let focus = self.original.focus;
-                let mark = widgets::focus_mark(self.draft.priority.index(), focus, None::<Message>);
+                let mark = widgets::focus_mark_small(self.draft.priority.index(), focus);
                 let on_press = self.focusable().then_some(Message::Open(Editor::Focus));
                 let chip = widgets::chip_led(mark, widgets::focus_word(focus), on_press);
                 return self.trigger(Editor::Focus, anchor, chip);
@@ -1323,7 +1323,7 @@ impl Detail {
             Prop::Focus => {
                 let focus = self.original.focus;
                 let value = row![
-                    widgets::focus_mark(self.draft.priority.index(), focus, None::<Message>),
+                    widgets::focus_mark_small(self.draft.priority.index(), focus),
                     widgets::prop_value(widgets::focus_word(focus))
                 ]
                 .spacing(space::s())
@@ -1677,8 +1677,8 @@ impl Detail {
         widgets::menu(vec![MenuSection::titled(tr("Priority"), items)])
     }
 
-    /// The "Focus" menu (issue #596): normal, focus, strong focus, each with its mark in the task's
-    /// priority colour; F in the list does the same one step at a time.
+    /// The "Focus" menu (issue #596): normal, focus, strong focus by their words, the level set marked
+    /// as current; F in the list does the same one step at a time.
     fn focus_menu(&self) -> Element<'_, Message> {
         let items = [Focus::Normal, Focus::Focus, Focus::Strong]
             .into_iter()

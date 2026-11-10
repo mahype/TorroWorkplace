@@ -2302,13 +2302,12 @@ impl App {
         if self.shown_filter_list().is_some() {
             return widgets::menu(sections);
         }
-        // Five choices side by side (issue #596): how many tasks may ask for focus today.
-        let chips = row((1..=5u8).map(|n| {
-            let on = self.focus_slots == usize::from(n);
-            widgets::choice_chip(n.to_string(), None, on, Some(Message::SetFocusSlots(n)))
-        }))
-        .spacing(space::xs());
-        widgets::menu_with(sections, tr("Focus slots"), chips)
+        // Five values of one scale, equally wide (issue #596): how many tasks may ask for focus a day.
+        let options = (1..=5u8).map(|n| (n.to_string(), Message::SetFocusSlots(n)));
+        let active = self.focus_slots.clamp(1, 5) - 1;
+        let slots =
+            widgets::with_tooltip(widgets::segmented(options, active), tr("How many tasks may have focus a day"));
+        widgets::menu_with(sections, tr("Focus slots"), slots)
     }
 
     /// The "…" menu of the filter list shown: "Edit filter…" and "Delete list…".

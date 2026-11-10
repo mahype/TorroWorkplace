@@ -1235,6 +1235,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Strong focus", "Starker Fokus"),
     ("{taken} of {total} focus slots taken", "{taken} von {total} Fokus-Plätzen belegt"),
     ("Focus slots", "Fokus-Plätze"),
+    ("How many tasks may have focus a day", "Wie viele Aufgaben am Tag Fokus haben dürfen"),
     ("Drag to plan", "Ziehen zum Planen"),
     ("To tomorrow", "Auf morgen"),
     ("Move today's focus tasks to tomorrow (Shift+T)", "Heutige Fokus-Aufgaben auf morgen schieben (Umschalt+T)"),

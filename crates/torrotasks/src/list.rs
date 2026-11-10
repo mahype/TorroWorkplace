@@ -1125,7 +1125,7 @@ fn group_head<'a>(group: &Group, data: &ListData<'a>, count: usize, folded: bool
     if *group == Group::Today && plans_days(data) && (taken > 0 || data.focus_slots > 0) {
         line = line
             .push(Space::new().width(space::s()))
-            .push(typo::text(typo::meta(), tr("Focus")).style(theme::text_3).wrapping(text::Wrapping::None))
+            .push(typo::text(typo::caption(), tr("Focus")).style(theme::text_3).wrapping(text::Wrapping::None))
             .push(Space::new().width(space::s()))
             .push(widgets::slot_dots(taken, data.focus_slots));
     }
@@ -1331,13 +1331,14 @@ fn row_view<'a>(
     match weight_of(data, index) {
         Weight::Plain => widgets::list_row(vec![line.into()], selected, Some(Message::Select(index))),
         Weight::Next { next, done, total } => {
-            let content = column![line, row![Space::new().width(indent), next_step(next, done, total)]];
+            let content = column![line, row![Space::new().width(indent), next_step(next, Some((done, total)))]];
             widgets::list_row_sized(content, height, 0.0, selected, Some(Message::Select(index)))
         }
         Weight::Card { next, shown, more, done, total } => {
             let mut lines = column![line].spacing(space::xs());
+            // The count stands at the progress bar below, not again by the next step.
             if let Some(next) = next {
-                lines = lines.push(row![Space::new().width(indent), next_step(next, done, total)]);
+                lines = lines.push(row![Space::new().width(indent), next_step(next, None)]);
             }
             for sub in shown {
                 let subtask = &data.todos[sub];
@@ -1381,10 +1382,11 @@ fn row_view<'a>(
 }
 
 /// "Next: <step> · 2/5" under the title of a focus task (issue #596), in `META`: the step in
-/// `text_2`, the count in `text_3`, cut with "…" to its room.
-fn next_step<'a>(next: String, done: usize, total: usize) -> Element<'a, Message> {
+/// `text_2`, the count (`done` of `total`, left out in a card, which shows it at its progress bar)
+/// in `text_3`, cut with "…" to its room.
+fn next_step<'a>(next: String, count: Option<(usize, usize)>) -> Element<'a, Message> {
     let words = trf("Next: {step}", &[("step", &next)]);
-    let count = format!(" · {done}/{total}");
+    let count = count.map(|(done, total)| format!(" · {done}/{total}")).unwrap_or_default();
     responsive(move |room| {
         let count_width = text_width(&count, typo::meta().tabular());
         let room = (room.width - count_width).max(0.0);
