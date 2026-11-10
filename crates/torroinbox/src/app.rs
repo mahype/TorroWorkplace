@@ -3203,7 +3203,7 @@ pub struct App<S> {
     /// down only while it is still the same search, order and accounts ([`App::holds_view`]).
     held: Option<Held>,
     /// Counts the lists and pages taken, and the retries of a next page that failed (issue #612):
-    /// the line "Loading more …" asks again whenever it changes ([`mail::MailList::more_round`]),
+    /// the line "Loading more…" asks again whenever it changes ([`mail::MailList::more_round`]),
     /// for a list too short to scroll.
     more_round: u64,
     /// The next page failed: the timer lets the line ask once more ([`Message::Tick`]).
@@ -9301,6 +9301,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             _ => return Task::none(),
         };
         self.more_asked = Some(cursor.clone());
+        // Asked again ("Retry", or the line back after the timer): no failure to show meanwhile.
+        self.more_failed = false;
         let asked = cursor.clone();
         #[cfg(test)]
         self.sent.push(Sent::More(cursor));
@@ -9747,6 +9749,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 }
                 if !holds {
                     self.more_round += 1;
+                    self.more_failed = false;
                 }
                 page.next
             }
@@ -13487,6 +13490,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                         .map(|group| mail::address(group.account))
                         .collect(),
                     more: self.more.is_some(),
+                    more_failed: self.more_failed,
                     more_round: self.more_round,
                     attention,
                     look: self.look(),
@@ -19965,10 +19969,21 @@ mod tests {
         let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, "3".into(), Err("offline".into())));
         let failed = app.more_round;
         assert_eq!(failed, before, "a failure does not ask again at once");
+        assert!(app.more_failed, "the end of the list says it failed, not loading");
         let _ = app.update(Message::Tick);
         assert_eq!(app.more_round, failed + 1, "the timer lets it ask once more");
+        assert!(!app.more_failed, "the line is back and asks");
         let _ = app.update(Message::Tick);
         assert_eq!(app.more_round, failed + 1, "once");
+        // "Retry" at the end of the list asks at once.
+        let _ = app.update(Message::MailEndShown);
+        let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, "3".into(), Err("offline".into())));
+        assert!(app.more_failed);
+        draw_everywhere(&mut app);
+        let asked = app.sent.iter().filter(|sent| **sent == Sent::More("3".into())).count();
+        let _ = app.update(Message::MailEndShown);
+        assert_eq!(app.sent.iter().filter(|sent| **sent == Sent::More("3".into())).count(), asked + 1);
+        assert!(!app.more_failed, "asked again: nothing failed meanwhile");
     }
 
     #[test]
