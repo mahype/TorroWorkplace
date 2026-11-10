@@ -2043,7 +2043,8 @@ pub struct MailList<'a> {
     /// The addresses of the mail accounts in the sidebar's order: the avatars take the colour of
     /// the folder's account, as in the overview (`list::account_index`).
     pub accounts: Vec<&'a str>,
-    /// More messages wait on the server: "Load more" ends the list.
+    /// More messages wait on the server: the list loads them as its end comes near, a line
+    /// "Loading more …" ends it until they are in (issue #612).
     pub more: bool,
     /// The attention colour of the theme, for the flag.
     pub attention: Color,
@@ -2087,8 +2088,8 @@ pub fn entry_of<'a>(entries: &'a [Item], id: &str) -> Option<&'a Item> {
         .find(|item| matches!(&item.link, Some(Link::Mail { message }) if message == id) && item.state.is_open())
 }
 
-/// A folder's messages, scrolling, with "Load more" at the end when there are more; the empty
-/// state of the folder or the search when there are none.
+/// A folder's messages, scrolling, ending in "Loading more …" while there are more – the next page
+/// loads as the end comes near (issue #612); the empty state of the folder or the search when there are none.
 pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
     if data.messages.is_empty() {
         let (which, title, hint) = match data.view {
@@ -2143,12 +2144,22 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
         rows = rows.extend(data.messages.iter().map(|message| message_row(data, message, width)));
     }
     if data.more {
-        let more = widgets::text_button(None, tr("Load more"), style::button::ghost, Some(Message::MoreMail));
+        // No button (issue #612): scrolling near the end asks for the next page, this line only says
+        // that it comes.
+        let more = widgets::refresh_note(tr("Loading more …"));
         rows = rows.push(container(more).width(Fill).center_x(Fill).padding(space::s()));
     }
+    // The scrollable also reports when its content grows without scrolling, so a first page that does
+    // not fill the window loads the next one by itself.
     scrollable(rows)
         .id(list::SCROLL)
-        .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y, viewport.bounds().height))
+        .on_scroll(|viewport| {
+            Message::MailScrolled(
+                viewport.absolute_offset().y,
+                viewport.bounds().height,
+                viewport.content_bounds().height,
+            )
+        })
         .direction(scrollable::Direction::Vertical(style::scrollbar()))
         .style(style::scrollable)
         .width(Fill)

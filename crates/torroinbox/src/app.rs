@@ -163,7 +163,7 @@
 //! Mail (task E4.2, `mail.rs`): the sidebar lists the folders of the mail accounts with their
 //! unread numbers – under "Mail" with one account, under each account's address with two or more
 //! (foldable, as the calendars group by account). A folder is a view of its own
-//! ([`View::Folder`]): its messages in the same list, a page at a time ("Load more"), with a search
+//! ([`View::Folder`]): its messages in the same list, a page at a time as it scrolls, with a search
 //! field above them. The panel shows the whole mail (`mail.get_message`), for a folder's message
 //! and for a mail entry of "For me" or "Info" alike, with Reply, Reply all, Forward, Archive,
 //! Delete, Flag and Mark unread. Opening a message marks it read in both the list reader and a
@@ -863,6 +863,17 @@ pub struct Hint {
     /// opened in the file manager as `mail::open_attachment` opens the folder of a program. A hint
     /// has it or "Undo", never both – saving is not undone.
     pub folder: Option<std::path::PathBuf>,
+}
+
+/// How the list held was asked for ([`App::held`], issue #612): a load keeps the mail scrolled to
+/// only for the same search, order and accounts.
+#[derive(Debug, Clone, PartialEq)]
+struct Held {
+    /// The search whose results the list holds; `None` for every other view.
+    search: Option<SearchView>,
+    order: Order,
+    /// The accounts chosen for the views of every account; `None`: all.
+    accounts: Option<Vec<String>>,
 }
 
 /// A message archived or deleted in this window (issue #205), kept out of what loads.
@@ -2977,7 +2988,6 @@ fn shows_entries(message: &Message) -> bool {
             | Message::ClearSearchFilters
             | Message::SearchScope(_)
             | Message::SearchSort(_)
-            | Message::MoreMail
             | Message::OpenFolders
             | Message::DismissAll
             | Message::Switcher(_)
@@ -3187,6 +3197,12 @@ pub struct App<S> {
     seen_mail: std::collections::BTreeSet<String>,
     /// The cursor of the folder's next page; `None` on its last page.
     more: Option<String>,
+    /// The cursor of the next page asked for and not yet in (issue #612): scrolling on asks for the
+    /// same page only once.
+    more_asked: Option<String>,
+    /// How `messages` were asked for (issue #612): a load of the same view keeps the mail further
+    /// down only while it is still the same search, order and accounts ([`App::holds_view`]).
+    held: Option<Held>,
     /// The panel shows the message under the cursor (a folder's view): the counterpart of `detail`
     /// for messages, which have no entry to keep.
     reading: bool,
@@ -3733,8 +3749,9 @@ pub enum Message {
     /// The source's answer to a [`MailEdit`] of these messages, with the hint to show (`None`:
     /// none, or an undo).
     MailEdited(Result<(), String>, Vec<String>, Option<Hint>),
-    /// "Load more" at the end of a folder's messages.
-    MoreMail,
+    /// The mail list scrolled (or its content changed size): its offset, its visible height and the
+    /// height of its content. Near the end it loads the next page (issue #612).
+    MailScrolled(f32, f32, f32),
     /// The next page of the folder's view it was asked for.
     MoreLoaded(View, Order, Result<MailPage, String>),
     MoreLoadedAccounts(View, Order, Option<Vec<String>>, Result<MailPage, String>),
@@ -4228,7 +4245,7 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
 }
 
 /// Walk global category pages until the requested number of messages from the selected accounts
-/// is filled. The returned cursor remains the core's global cursor, so "Load more" cannot skip
+/// is filled. The returned cursor remains the core's global cursor, so the next page cannot skip
 /// matches from a selected account when other accounts have newer mail.
 async fn category_selected<S: MailSource>(
     inbox: &S,
@@ -4267,7 +4284,7 @@ async fn category_selected<S: MailSource>(
 /// The page of "All", "Sent" or "Trash" (`view`, task E18.4, issues #445, #455) from `cursor` on: one
 /// `MailSource::mail_by_role` for every account (`accounts` `None`) or the one chosen; with several
 /// chosen, the core's pages walked as [`category_selected`] does, keeping the chosen accounts' mail,
-/// so the cursor stays the core's and "Load more" skips nothing. Empty for any other view and for no
+/// so the cursor stays the core's and the next page skips nothing. Empty for any other view and for no
 /// account chosen.
 async fn role_selected<S: MailSource>(
     inbox: &S,
@@ -4311,7 +4328,7 @@ async fn pile_selected<S: MailSource>(
 /// One page of `limit` mails from `cursor` on, asked with `ask(account, limit, cursor)`: once for every
 /// account (`accounts` `None`) or the one chosen; with several chosen, the core's pages walked as
 /// [`category_selected`] does, keeping the chosen accounts' mail, so the cursor stays the core's and
-/// "Load more" skips nothing. Empty for no account chosen.
+/// the next page skips nothing. Empty for no account chosen.
 async fn walk_selected<F, Fut>(
     ask: F,
     limit: u32,
@@ -4684,6 +4701,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             folders: Vec::new(),
             messages: Vec::new(),
             more: None,
+            more_asked: None,
+            held: None,
             reading: false,
             letter: None,
             text: Selectable::default(),
@@ -5156,6 +5175,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         if view != self.view {
             self.view = view;
+            self.more_asked = None;
             // The error line was the last list's; the new one says its own (issue #396).
             self.error = None;
             self.recall_listing();
@@ -5174,8 +5194,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     }
 
     /// Shows what the view listed when it was last open (issue #396), while its fresh messages
-    /// load; without "Load more", whose cursor belonged to that load. A view never open keeps its
-    /// loading state.
+    /// load; without the next page, whose cursor belonged to that load, and not held for the load
+    /// to come ([`App::holds_view`]): it only stands in. A view never open keeps its loading state.
     fn recall_listing(&mut self) {
         let Some(listing) = self.view.listing() else { return };
         let Some((_, messages)) = self.folder_cache.iter().find(|(held, _)| *held == listing) else { return };
@@ -5191,6 +5211,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.keep_out_leaving();
         self.listed = Some(listing);
         self.more = None;
+        self.more_asked = None;
+        self.held = None;
+    }
+
+    /// Whether `messages` are the view's own list, asked as a load of it would ask now (issue #612):
+    /// the same listing, the same search (another one replaces the results), order and accounts. A
+    /// load then refreshes its top and keeps the mail further down ([`App::take`]).
+    fn holds_view(&self) -> bool {
+        let Some(held) = &self.held else { return false };
+        self.view.listing().is_some()
+            && self.listed == self.view.listing()
+            && held.search.as_ref() == self.view.search()
+            && held.order == self.order
+            && held.accounts == self.mail_accounts
     }
 
     /// Asks the core for the mail settings (task M9.7), on every tick like the appearance.
@@ -6163,12 +6197,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.error = Some(Failure::new(tr("Couldn't change the mail."), err));
                 return self.load();
             }
-            Message::MoreMail => return self.more_mail(),
+            Message::MailScrolled(offset, height, content) => {
+                self.scroll = Some((offset, height));
+                // A window's height ahead: the next page is in before the end comes into sight.
+                if content - offset - height <= height {
+                    return self.more_mail();
+                }
+            }
             Message::MoreLoaded(view, order, result) => {
                 // A page of a view left since, or asked before the order turned, does not belong.
                 if view != self.view || order != self.order {
                     return Task::none();
                 }
+                // The page asked for is in, or failed: the next scroll may ask (again).
+                self.more_asked = None;
                 match result {
                     Ok(mut page) => {
                         search::with_passages(&mut page.messages, &page.highlights);
@@ -9165,9 +9207,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
     }
 
-    /// "Load more": the next page of the folder or the search.
+    /// The next page of the folder or the search, as the list's end comes near (issue #612); once
+    /// for each page: while it is on its way, scrolling on asks nothing.
     fn more_mail(&mut self) -> Task<Message> {
         let Some(cursor) = self.more.clone() else { return Task::none() };
+        if self.more_asked.as_ref() == Some(&cursor) {
+            return Task::none();
+        }
         let (inbox, view, order) = (self.inbox.clone(), self.view.clone(), self.order);
         let accounts = self.mail_accounts.clone();
         let next: std::pin::Pin<Box<dyn std::future::Future<Output = Result<MailPage, String>> + Send>> = match &view {
@@ -9216,6 +9262,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             _ => return Task::none(),
         };
+        self.more_asked = Some(cursor.clone());
         #[cfg(test)]
         self.sent.push(Sent::More(cursor));
         Task::perform(next, move |result| Message::MoreLoadedAccounts(view.clone(), order, accounts, result))
@@ -9639,7 +9686,22 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.folders = loaded.folders;
         self.categories = loaded.categories;
         self.model_ready = loaded.model_ready;
-        let page = loaded.mail.unwrap_or(MailPage::of(Vec::new(), None));
+        let mut page = loaded.mail.unwrap_or(MailPage::of(Vec::new(), None));
+        // A load of the list shown asks for at most one request's mail ([`App::page_limit`]): the
+        // mail scrolled to further down stays, so a click (which marks read and loads) or the timer
+        // keeps the list, its place and its cursor (issue #612).
+        let rest = if self.holds_view() && page.next.is_some() { self.rest_after(&page) } else { None };
+        let next = match rest {
+            Some((messages, highlights)) => {
+                page.messages.extend(messages);
+                page.highlights.extend(highlights);
+                self.more.clone()
+            }
+            None => {
+                self.more_asked = None;
+                page.next
+            }
+        };
         self.messages = page.messages;
         for message in &mut self.messages {
             keep_answer(&self.answers, message);
@@ -9652,7 +9714,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         search::with_passages(&mut self.messages, &page.highlights);
         self.highlights = page.highlights;
         self.found = loaded.found.map(|found| *found).unwrap_or_default();
-        self.more = page.next;
+        self.more = next;
+        self.held =
+            Some(Held { search: self.view.search().cloned(), order: self.order, accounts: self.mail_accounts.clone() });
         self.keep_out_leaving();
         // The mail in the reader lies where its row now says (a pile changed meanwhile, review of #315).
         if let Some(Letter { loaded: Some(Ok(mail)), .. }) = self.letter.as_mut() {
@@ -9703,6 +9767,28 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.apply_seen_entries(&read, true);
         let start = self.open_start_mail();
         Task::batch([start, self.open_launched()])
+    }
+
+    /// The mail of the list held beyond the fresh first `page` (issue #612), with its highlights:
+    /// what lies behind the last of the page's mail in the list, without the page's own and those
+    /// on their way out. `None` when nothing lies behind it, or none of the page's mail was listed
+    /// (the list moved on too far to tell where the page ends).
+    fn rest_after(&self, page: &MailPage) -> Option<(Vec<MessageSummary>, Vec<MailHighlight>)> {
+        let fresh: HashSet<&str> = page.messages.iter().map(|message| message.id.as_str()).collect();
+        let last = self.messages.iter().rposition(|message| fresh.contains(message.id.as_str()))?;
+        let rest: Vec<MessageSummary> = self.messages[last + 1..]
+            .iter()
+            .filter(|message| !fresh.contains(message.id.as_str()))
+            .filter(|message| !self.leaving.iter().any(|leaving| leaving.hides(message)))
+            .cloned()
+            .collect();
+        if rest.is_empty() {
+            return None;
+        }
+        let kept: HashSet<&str> = rest.iter().map(|message| message.id.as_str()).collect();
+        let highlights =
+            self.highlights.iter().filter(|highlight| kept.contains(highlight.id.as_str())).cloned().collect();
+        Some((rest, highlights))
     }
 
     /// From the glance: the entry `id` of "For me" under the cursor and in the panel, with "For me"
@@ -15118,13 +15204,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.is_insights() { Task::batch([entries, self.load_stats()]) } else { entries }
     }
 
-    /// How many messages a load of the view asks for: a page, or as many as "Load more" brought
-    /// in already when the same folder – or "All", "Sent", "Trash" – is loaded again (at most
-    /// what one request may ask).
+    /// How many messages a load of the view asks for: a page, or as many as scrolling brought in
+    /// already when the same view is loaded again ([`App::holds_view`]), at most what one request
+    /// may ask; [`App::take`] keeps the mail beyond that (issue #612).
     fn page_limit(&self) -> u32 {
-        let folder = self.view.folder().is_some_and(|folder| self.listed.as_ref() == Some(&folder.id));
-        let same = folder || (self.view.by_role().is_some() && self.listed == self.view.listing());
-        let shown = if same { u32::try_from(self.messages.len()).unwrap_or(u32::MAX) } else { 0 };
+        let shown = if self.holds_view() { u32::try_from(self.messages.len()).unwrap_or(u32::MAX) } else { 0 };
         shown.clamp(mail::PAGE, torro_ipc::mail::MAX_LIMIT)
     }
 }
@@ -19371,7 +19455,7 @@ mod tests {
         let shown = app.messages.clone();
         app.messages.truncate(1);
         app.more = Some("1".to_owned());
-        let _ = app.update(Message::MoreMail);
+        let _ = app.update(at_end());
         assert_eq!(app.sent.last(), Some(&Sent::More("1".to_owned())));
         app.messages = shown;
         draw_everywhere(&mut app);
@@ -19617,7 +19701,7 @@ mod tests {
     fn load_more_asks_for_the_next_page_and_adds_it() {
         let mut app = in_folder("f:work-inbox");
         app.more = Some("4".into());
-        let _ = app.update(Message::MoreMail);
+        let _ = app.update(at_end());
         assert_eq!(app.sent.last(), Some(&Sent::More("4".into())));
         let more =
             MailSource::search_mail(app.inbox.as_ref(), "f:work-inbox".into(), None, 50, Some("4".into()), app.order);
@@ -19626,6 +19710,151 @@ mod tests {
         assert_eq!(app.messages.len(), 9, "nothing twice");
         assert_eq!(app.more, None);
         assert_eq!(app.page_limit(), mail::PAGE, "a load asks for a page at least");
+    }
+
+    /// The mail list scrolled to its end: less than a window's height below what it shows.
+    fn at_end() -> Message {
+        Message::MailScrolled(1600.0, 400.0, 2000.0)
+    }
+
+    /// A load of the view as the timer or a mail change asks for it, of which the core answers only
+    /// the first `top` mails – as when the list holds more than one request may ask (issue #612) –,
+    /// with `next` the cursor after them.
+    fn reload_top(app: &mut App<DemoSource>, top: usize, next: Option<&str>) {
+        let window = (app.launch.kind, app.shown.clone());
+        let asked = (app.page_limit(), app.order);
+        let accounts = app.mail_accounts.clone();
+        let demo = app.launch.demo.then_some(app.now);
+        let fetch =
+            fetch_with_accounts(app.inbox.clone(), app.view.clone(), false, asked, window, demo, accounts.clone());
+        let mut result = block_on(fetch);
+        if let Ok(loaded) = result.as_mut()
+            && let Some(page) = loaded.mail.as_mut()
+        {
+            page.messages.truncate(top);
+            page.next = next.map(str::to_owned);
+        }
+        let _ = app.update(Message::LoadedAccounts(app.view.clone(), accounts, result));
+    }
+
+    /// Issue #612: scrolling near the end asks for the next page, far from it nothing; the same page
+    /// only once while it is on its way, again after it failed.
+    #[test]
+    fn scrolling_near_the_end_asks_for_the_next_page_once() {
+        let mut app = in_folder("f:work-inbox");
+        app.more = Some("4".into());
+        let asked = |app: &App<DemoSource>| app.sent.iter().filter(|sent| **sent == Sent::More("4".into())).count();
+        let _ = app.update(Message::MailScrolled(0.0, 400.0, 2000.0));
+        assert_eq!(asked(&app), 0, "far from the end");
+        assert_eq!(app.scroll, Some((0.0, 400.0)), "the place is kept as with any scroll");
+        let _ = app.update(Message::MailScrolled(1200.0, 400.0, 2000.0));
+        assert_eq!(asked(&app), 1, "a window's height before the end");
+        let _ = app.update(at_end());
+        let _ = app.update(at_end());
+        assert_eq!(asked(&app), 1, "the same page only once");
+        let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, Err("offline".into())));
+        assert_eq!(app.error.as_ref().map(|failure| failure.what), Some(tr("Couldn't load more messages.")));
+        let _ = app.update(at_end());
+        assert_eq!(asked(&app), 2, "asked again after it failed");
+        assert!(!shows_entries(&at_end()) && !closes_rail(&at_end()), "scrolling closes nothing");
+    }
+
+    /// The views of issue #612, each loaded in the mail window: a folder, a category, "All", a pile
+    /// and a search, each with two mails at least.
+    fn scrolled_views(app: &App<DemoSource>) -> Vec<View> {
+        // The demo's group "Waiting for me" holds mail of several categories.
+        let category = View::Category(mail::CategoryView::of_group(CategoryGroup::WaitingForMe, &app.categories));
+        vec![
+            folder_view(app, "f:work-inbox"),
+            category,
+            View::All,
+            View::ReplyLater,
+            View::Search(SearchView::new("example", Scope::All, Sort::Relevance)),
+        ]
+    }
+
+    /// Issue #612: a load of the view – the timer's, a click's that marks the mail read – keeps the
+    /// mail scrolled to further down, where it is, with the cursor on it and the next page's cursor,
+    /// in every view, even when the core answers only the first page.
+    #[test]
+    fn a_load_keeps_the_mail_scrolled_to_in_every_view() {
+        let mut app = mail_window(Density::Compact, &[]);
+        for view in scrolled_views(&app) {
+            let _ = app.update(Message::Show(view.clone()));
+            load(&mut app);
+            let listed: Vec<String> = message_ids(&app).into_iter().map(str::to_owned).collect();
+            assert!(listed.len() > 1, "{view:?} lists {listed:?}");
+            // Scrolled down: the list holds more than the first page, with more on the server.
+            app.more = Some("deep".into());
+            let last = listed.last().cloned();
+            app.cursor = last.clone();
+            reload_top(&mut app, 1, Some("1"));
+            assert_eq!(message_ids(&app), listed, "{view:?}: the list stays");
+            assert_eq!(app.cursor, last, "{view:?}: the cursor stays");
+            assert_eq!(app.more.as_deref(), Some("deep"), "{view:?}: the next page goes on where it was");
+            assert!(app.page_limit() >= mail::PAGE, "{view:?}");
+        }
+    }
+
+    /// Issue #612: a click on a mail far down marks it read, which loads the folder again – the list,
+    /// the cursor and the reader stay; so does the timer's load.
+    #[test]
+    fn a_click_far_down_and_the_timer_keep_the_list() {
+        let mut app = in_folder("f:work-inbox");
+        let listed: Vec<String> = message_ids(&app).into_iter().map(str::to_owned).collect();
+        app.more = Some("deep".into());
+        let unread = app
+            .messages
+            .iter()
+            .rev()
+            .find(|message| !message.flags.contains(&Flag::Seen))
+            .map(|message| message.id.clone())
+            .expect("an unread demo mail");
+        let _ = app.update(Message::SelectMail(unread.clone()));
+        let Some(Sent::Mail(edit, hint)) = app.sent.pop() else { panic!("the click marks the mail read") };
+        let ids = edit.ids().to_vec();
+        let result = block_on(edit.apply(app.inbox.clone()));
+        let _ = app.update(Message::MailEdited(result, ids, hint));
+        reload_top(&mut app, 2, Some("2"));
+        assert_eq!(message_ids(&app), listed, "the list stays");
+        assert_eq!(app.cursor.as_deref(), Some(unread.as_str()), "the mail clicked stays under the cursor");
+        let read = app.messages.iter().find(|message| message.id == unread).expect("listed");
+        assert!(read.flags.contains(&Flag::Seen), "and is read");
+        assert_eq!(app.more.as_deref(), Some("deep"));
+        let _ = app.update(Message::Tick);
+        reload_top(&mut app, 2, Some("2"));
+        assert_eq!(message_ids(&app), listed, "the timer keeps it too");
+        assert_eq!(app.cursor.as_deref(), Some(unread.as_str()));
+    }
+
+    /// Issue #612: what a load keeps is the same list's – another search replaces the results, and a
+    /// load that reached the end (no next page) is the whole list.
+    #[test]
+    fn another_search_and_the_last_page_keep_nothing_behind() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::Show(View::Search(SearchView::new("example", Scope::All, Sort::Relevance))));
+        load(&mut app);
+        assert!(app.messages.len() > 1);
+        app.more = Some("deep".into());
+        let _ = app.update(Message::Show(View::Search(SearchView::new("budget", Scope::All, Sort::Relevance))));
+        reload_top(&mut app, 1, Some("1"));
+        assert_eq!(app.messages.len(), 1, "another search's results only");
+        assert_eq!(app.more.as_deref(), Some("1"));
+
+        let _ = app.update(Message::Show(View::All));
+        load(&mut app);
+        assert!(app.messages.len() > 1);
+        app.more = Some("deep".into());
+        reload_top(&mut app, 1, None);
+        assert_eq!(app.messages.len(), 1, "the core's whole list");
+        assert_eq!(app.more, None);
+
+        // Another order lists anew, from the top.
+        load(&mut app);
+        app.more = Some("deep".into());
+        let _ = app.update(Message::ToggleOrder);
+        reload_top(&mut app, 1, Some("1"));
+        assert_eq!(app.messages.len(), 1, "the other order's first page");
     }
 
     #[test]
@@ -21141,7 +21370,7 @@ mod tests {
     }
 
     /// Task E18.4: "All" asks for the mail of its role with the fields of decision 1 and 3 of E18 –
-    /// it leaves out snoozed mail – and "Load more" goes on from the cursor with the same fields; the
+    /// it leaves out snoozed mail – and scrolling to the end goes on from the cursor with the same fields; the
     /// archive of every account is the search's "Only archive" since issue #476. Issue #339: nothing is
     /// hidden, the work account's newsletter stands in All too.
     #[test]
@@ -21161,7 +21390,7 @@ mod tests {
         archived.sort_unstable();
         assert_eq!(archived, ["m:p6", "m:w9"], "the archive of both accounts");
 
-        // "Load more": the next page from the cursor, of the same role.
+        // Scrolled to the end: the next page from the cursor, of the same role.
         let first =
             block_on(role_selected(&*app.inbox, &View::All, 2, None, Order::NewestFirst, None)).expect("a page");
         assert_eq!(first.messages.len(), 2);
@@ -21170,7 +21399,7 @@ mod tests {
         load(&mut app);
         app.messages.truncate(2);
         app.more = Some(cursor.clone());
-        let _ = app.update(Message::MoreMail);
+        let _ = app.update(at_end());
         assert_eq!(app.sent.last(), Some(&Sent::More(cursor.clone())));
         let rest = block_on(role_selected(&*app.inbox, &View::All, mail::PAGE, Some(cursor), Order::NewestFirst, None));
         let accounts = app.mail_accounts.clone();
@@ -21273,7 +21502,7 @@ mod tests {
         load(&mut app);
         assert!(app.messages.iter().all(|message| message.pile.is_none()), "Unfiltered leaves the piles out");
 
-        // "Load more": the next page of the same pile, from the cursor.
+        // Scrolled to the end: the next page of the same pile, from the cursor.
         let first =
             block_on(pile_selected(&*app.inbox, &View::ReplyLater, 1, None, Order::NewestFirst, None)).expect("a page");
         let cursor = first.next.clone().expect("two on Reply later");
@@ -21281,7 +21510,7 @@ mod tests {
         load(&mut app);
         app.messages.truncate(1);
         app.more = Some(cursor.clone());
-        let _ = app.update(Message::MoreMail);
+        let _ = app.update(at_end());
         assert_eq!(app.sent.last(), Some(&Sent::More(cursor.clone())));
         let rest =
             block_on(pile_selected(&*app.inbox, &View::ReplyLater, mail::PAGE, Some(cursor), Order::NewestFirst, None));
