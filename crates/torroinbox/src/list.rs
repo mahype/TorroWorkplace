@@ -1534,13 +1534,16 @@ pub(crate) fn slim_mail_content<'a>(lines: SlimLines<'a>, width: f32, selected: 
     let strong = |new: bool| if new { typo::body_strong() } else { typo::body() };
     let clip = if attachment { icon::SIZE_SM + space::xs() } else { 0.0 };
     let free = (room - end_width(&time, typo::meta()) - clip).max(0.0);
-    let category = category.map(|category| {
-        if category_fits(free, typo::text_width(&name, strong(true)), category.pill_width) {
-            (category.pill, category.pill_width)
-        } else {
-            (category.field, category.field_width)
-        }
-    });
+    // Where not even the field fits, the category stays out, so the time is never pushed off.
+    let category = category
+        .map(|category| {
+            if category_fits(free, typo::text_width(&name, strong(true)), category.pill_width) {
+                (category.pill, category.pill_width)
+            } else {
+                (category.field, category.field_width)
+            }
+        })
+        .filter(|(_, width)| width + cell_gap() <= free);
     let name_room = (free - category.as_ref().map_or(0.0, |(_, width)| width + cell_gap())).max(0.0);
     let name = typo::ellipsize(&name, strong(true), name_room);
     let mut who = row![marked(name, strong(new), theme::text, &words, hit_colour)]
