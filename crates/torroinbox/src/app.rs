@@ -3953,9 +3953,10 @@ pub enum Message {
     /// [`App::archive_task_mail`]): its mail archived, then its mail entry and the question closed.
     ArchiveMail(String),
     /// The answer to archiving a mail and closing entries with it (task E18.5, [`App::file_mail`]):
-    /// `Err` when the move failed, else why closing an entry failed, if it did; then the messages
-    /// moved and the hint, as for [`Message::MailEdited`].
-    MailDone(Result<Option<String>, String>, Vec<String>, Option<Hint>),
+    /// `Err` when the move failed, else what failed after it, if anything – closing an entry, or taking
+    /// the mail off its pile ([`App::archive_mails`], review of #615); then the messages moved and the
+    /// hint, as for [`Message::MailEdited`].
+    MailDone(Result<Option<Failure>, String>, Vec<String>, Option<Hint>),
     /// The mail of `--message` that has no entry, loaded to find its folder (task E8.7b).
     StartMail(String, Result<Box<Mail>, String>),
     /// "Insights" in the hub's sidebar (task E8.8b): the page of what the inbox counted.
@@ -6651,8 +6652,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     Err(err) => (Err(err), None),
                 };
                 let load = self.handle(Message::MailEdited(moved, ids, hint));
-                if let Some(err) = failed {
-                    self.error = Some(Failure::new(tr("Couldn't change the entry."), err));
+                if let Some(failure) = failed {
+                    self.error = Some(failure);
                 }
                 return load;
             }
@@ -7905,7 +7906,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             edit.apply(inbox.clone()).await?;
             for entry in close {
                 if let Err(err) = inbox.set_item_done(entry, true).await {
-                    return Ok(Some(err.to_string()));
+                    return Ok(Some(Failure::new(tr("Couldn't change the entry."), err.to_string())));
                 }
             }
             Ok(None)
@@ -8022,11 +8023,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             if !off.is_empty()
                 && let Err(err) = inbox.set_mail_pile(off, None, None).await
             {
-                return Ok(Some(err.to_string()));
+                return Ok(Some(Failure::new(tr("Couldn't change the pile."), err.to_string())));
             }
             for entry in close {
                 if let Err(err) = inbox.set_item_done(entry, true).await {
-                    return Ok(Some(err.to_string()));
+                    return Ok(Some(Failure::new(tr("Couldn't change the entry."), err.to_string())));
                 }
             }
             Ok(None)
@@ -22001,7 +22002,7 @@ mod tests {
         let sent: Vec<Sent> = app.sent.drain(from..).collect();
         let mut ids: Vec<String> = Vec::new();
         let mut hint = None;
-        let mut result: Result<Option<String>, String> = Ok(None);
+        let mut result: Result<Option<Failure>, String> = Ok(None);
         for sent in sent {
             match sent {
                 Sent::Mail(edit, held) => {
@@ -22013,14 +22014,14 @@ mod tests {
                 }
                 Sent::Pile(off, None, None, held) if matches!(result, Ok(None)) => {
                     hint = hint.or(held);
-                    result = Ok(block_on(MailSource::set_mail_pile(&*app.inbox, off, None, None))
-                        .err()
-                        .map(|e| e.to_string()));
+                    let off = block_on(MailSource::set_mail_pile(&*app.inbox, off, None, None));
+                    result = Ok(off.err().map(|e| Failure::new(tr("Couldn't change the pile."), e.to_string())));
                 }
                 Sent::MailDone(close) if matches!(result, Ok(None)) => {
                     result = Ok(close
                         .into_iter()
-                        .find_map(|id| block_on(app.inbox.set_item_done(id, true)).err().map(|e| e.to_string())));
+                        .find_map(|id| block_on(app.inbox.set_item_done(id, true)).err())
+                        .map(|e| Failure::new(tr("Couldn't change the entry."), e.to_string())));
                 }
                 _ => {}
             }
@@ -22093,6 +22094,29 @@ mod tests {
         assert_eq!(message_ids(&app), ["m:w5"], "back in Set aside");
         let back = demo_mail(&app, "m:w5");
         assert_eq!((back.folder, back.pile, back.pile_since), (home, Some(MailPile::SetAside), since));
+    }
+
+    /// Review of PR #620: the rail's and the context menu's "Archive" (`Message::Mail`) in "Set aside"
+    /// take the mail off the pile as `e` does; a failure taking it off says so of the pile.
+    #[test]
+    fn the_rails_archive_in_set_aside_takes_the_mail_off_the_pile_too() {
+        let mut app = mail_window(Density::Compact, &["--open", "set-aside"]);
+        let count = app.set_aside.expect("a number on Set aside");
+        let before = app.sent.len();
+        let _ = app.update(Message::Mail(MailAction::Archive, "m:w5".into()));
+        let archive = MailEdit::Move { ids: vec!["m:w5".into()], to: MoveTarget::Role(MoveRole::Archive) };
+        assert!(matches!(app.sent.get(before), Some(Sent::Mail(edit, Some(_))) if *edit == archive), "the move");
+        let off = |sent: &Sent| matches!(sent, Sent::Pile(ids, None, None, Some(_)) if *ids == ["m:w5"]);
+        assert!(app.sent[before..].iter().any(off), "then off the pile");
+        assert!(message_ids(&app).is_empty() && app.set_aside == Some(count - 1));
+        deliver_archived(&mut app, before);
+        assert_eq!(demo_mail(&app, "m:w5").pile, None);
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Archived and removed from Set aside.")));
+
+        // Moved but not taken off: the error names the pile, not an entry.
+        let failed = Failure::new(tr("Couldn't change the pile."), "offline");
+        let _ = app.update(Message::MailDone(Ok(Some(failed.clone())), vec!["m:w5".into()], None));
+        assert_eq!(app.error, Some(failed));
     }
 
     /// Review of #615: a mail archived earlier but still on "Set aside" – archived from the inbox, or
@@ -26373,7 +26397,10 @@ mod tests {
         let Some(Sent::Mail(edit, hint)) = app.sent.pop() else { panic!("no move before closing") };
         let ids = edit.ids().to_vec();
         let result = block_on(edit.apply(app.inbox.clone())).map(|()| {
-            close.into_iter().find_map(|id| block_on(app.inbox.set_item_done(id, true)).err().map(|e| e.to_string()))
+            close
+                .into_iter()
+                .find_map(|id| block_on(app.inbox.set_item_done(id, true)).err())
+                .map(|e| Failure::new(tr("Couldn't change the entry."), e.to_string()))
         });
         let _ = app.update(Message::MailDone(result, ids, hint));
         load(app);
