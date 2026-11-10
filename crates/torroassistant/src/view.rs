@@ -113,10 +113,10 @@ fn input_view<'a>(input: &serde_json::Value) -> Element<'a, Message> {
     column(lines).spacing(space::xs()).into()
 }
 
-/// The width a conversation's title has in a sidebar row: the sidebar less its edges and the
-/// row's own padding.
-fn row_title_room() -> f32 {
-    size::sidebar() - 2.0 * space::s() - style::ITEM_PADDING.left - style::ITEM_PADDING.right
+/// The width a conversation's title has in a sidebar row: the sidebar `width` wide (as dragged,
+/// issue #604) less its edges and the row's own padding.
+fn row_title_room(width: f32) -> f32 {
+    width - 2.0 * space::s() - style::ITEM_PADDING.left - style::ITEM_PADDING.right
 }
 
 /// How far what belongs to a tool line (its input, result and hints) is indented: under its words,
@@ -243,6 +243,7 @@ impl App {
             let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
                 .then(|| self.sidebar(SidebarMode::Rail, &anchors));
             shell::shell(class, self.sidebar(SidebarMode::Expanded, &anchors), header, body, None)
+                .sidebar_width(self.sidebar_room(), self.side.dragging, Message::SidebarWidth)
                 .rail(rail)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(layer)
@@ -380,7 +381,7 @@ impl App {
         let hovered = self.hover.as_ref() == Some(&id);
         // The title fits the row or ends in "…", with the whole title as tooltip.
         let mark = if conversation.running { icon::SIZE_SM + space::s() } else { 0.0 };
-        let room = row_title_room() - mark;
+        let room = row_title_room(self.sidebar_shown()) - mark;
         let shown = typo::ellipsize(&conversation.title, typo::body(), room);
         let cut = shown != conversation.title;
         let title = container(typo::text(typo::body(), shown).wrapping(Wrapping::None)).width(Fill).clip(true);
@@ -1457,6 +1458,29 @@ mod tests {
         let mut app = App::new(backend, Source::from_args(vec!["--demo".to_string()]), launch).0;
         let _ = app.update(Message::CoreReady);
         app
+    }
+
+    /// Issue #604: the expanded sidebar is dragged inside its limits, its rows cut their titles at the
+    /// width dragged, the drawer keeps `size::sidebar()`, and the window builds while a drag runs.
+    #[test]
+    fn the_sidebar_is_dragged_and_its_rows_follow() {
+        use torro_gui::split::SplitEvent;
+        let mut app = launched(&[]);
+        let _ = app.update(Message::Resized(Size::new(1400.0, 900.0)));
+        let _ = app.update(Message::StoredWidths(std::collections::HashMap::from([("sidebar".to_string(), 320.0)])));
+        assert_eq!((app.sidebar_room(), app.sidebar_shown()), (320.0, 320.0));
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Grab));
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Drag(9999.0)));
+        let _ = app.view();
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Release));
+        assert_eq!(app.sidebar_room(), 2.0 * size::sidebar(), "at most twice the default");
+        assert!(row_title_room(app.sidebar_shown()) > row_title_room(size::sidebar()), "titles get the room");
+        let _ = app.update(Message::Resized(Size::new(800.0, 700.0)));
+        assert_eq!(app.sidebar_shown(), size::sidebar(), "the drawer keeps its width");
+        let _ = app.view();
+        let _ = app.update(Message::Resized(Size::new(1400.0, 900.0)));
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Reset));
+        assert_eq!(app.sidebar_room(), size::sidebar());
     }
 
     /// Issue #547: "Send" builds in every class, ready or not, and the strip lifts the answer's last

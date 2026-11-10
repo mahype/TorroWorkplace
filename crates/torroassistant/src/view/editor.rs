@@ -189,7 +189,7 @@ impl App {
         let editing = self.bot_draft.as_ref().map(|draft| draft.id.as_deref() == Some(id.as_str()));
         let active = editing.unwrap_or(self.current.is_none() && self.chat_bot() == Some(id.as_str()));
         let hovered = self.hover.as_deref() == Some(id.as_str());
-        let room = row_title_room() - header_avatar() - space::s();
+        let room = row_title_room(self.sidebar_shown()) - header_avatar() - space::s();
         let shown = typo::ellipsize(&bot.name, typo::body(), room);
         let name = container(typo::text(typo::body(), shown).wrapping(Wrapping::None)).width(Fill).clip(true);
         let content =
