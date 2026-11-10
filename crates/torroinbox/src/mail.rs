@@ -74,7 +74,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use iced::keyboard;
 use iced::widget::text::Wrapping;
-use iced::widget::{center, column, container, responsive, row, rule, scrollable, svg, text_editor};
+use iced::widget::{center, column, container, responsive, row, rule, scrollable, sensor, svg, text_editor};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trc, trf};
@@ -2043,8 +2043,16 @@ pub struct MailList<'a> {
     /// The addresses of the mail accounts in the sidebar's order: the avatars take the colour of
     /// the folder's account, as in the overview (`list::account_index`).
     pub accounts: Vec<&'a str>,
-    /// More messages wait on the server: "Load more" ends the list.
+    /// More messages wait on the server: the list loads them as its end comes near, a line
+    /// "Loading more…" ends it until they are in (issue #612).
     pub more: bool,
+    /// The next page failed: the end of the list says so with "Retry" in place of "Loading more…",
+    /// until the timer asks again.
+    pub more_failed: bool,
+    /// Counts the lists and pages the line "Loading more…" stood under, and the retries after a
+    /// failed one (issue #612): with the number of mails, it asks again once either changed while it
+    /// is in view.
+    pub more_round: u64,
     /// The attention colour of the theme, for the flag.
     pub attention: Color,
     /// Rows or cards (task E8.3).
@@ -2087,8 +2095,8 @@ pub fn entry_of<'a>(entries: &'a [Item], id: &str) -> Option<&'a Item> {
         .find(|item| matches!(&item.link, Some(Link::Mail { message }) if message == id) && item.state.is_open())
 }
 
-/// A folder's messages, scrolling, with "Load more" at the end when there are more; the empty
-/// state of the folder or the search when there are none.
+/// A folder's messages, scrolling, ending in "Loading more…" while there are more – the next page
+/// loads as the end comes near (issue #612); the empty state of the folder or the search when there are none.
 pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
     if data.messages.is_empty() {
         let (which, title, hint) = match data.view {
@@ -2143,17 +2151,45 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
         rows = rows.extend(data.messages.iter().map(|message| message_row(data, message, width)));
     }
     if data.more {
-        let more = widgets::text_button(None, tr("Load more"), style::button::ghost, Some(Message::MoreMail));
-        rows = rows.push(container(more).width(Fill).center_x(Fill).padding(space::s()));
+        // No button (issue #612): scrolling near the end asks for the next page, this line only says
+        // that it comes. The scrollable reports nothing while its content fits the window, so the
+        // line asks itself once it is in view – again for every list, page and retry, its key.
+        // In the rows' rhythm: as much air above and below as a row has.
+        let end = |content: Element<'a, Message>| {
+            container(content).width(Fill).center_x(Fill).padding(Padding::from([space::m(), space::s()]))
+        };
+        rows = rows.push(if data.more_failed {
+            // Not "loading" while nothing loads (issue #560): what failed, and the way to ask again.
+            Element::from(end(more_failed()))
+        } else {
+            let note = end(widgets::refresh_note(tr("Loading more…")));
+            sensor(note).key((data.messages.len(), data.more_round)).on_show(|_| Message::MailEndShown).into()
+        });
     }
     scrollable(rows)
         .id(list::SCROLL)
-        .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y, viewport.bounds().height))
+        .on_scroll(|viewport| {
+            Message::MailScrolled(
+                viewport.absolute_offset().y,
+                viewport.bounds().height,
+                viewport.content_bounds().height,
+            )
+        })
         .direction(scrollable::Direction::Vertical(style::scrollbar()))
         .style(style::scrollable)
         .width(Fill)
         .height(Fill)
         .into()
+}
+
+/// The end of the list when its next page failed (issue #612): the alert in the error colour, what
+/// happened and "Retry", which asks for the page again.
+fn more_failed<'a>() -> Element<'a, Message> {
+    let alert = icon::icon(Icon::CircleAlert, icon::SIZE_SM)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
+    let what = typo::text(typo::meta(), tr("Couldn't load more messages.")).style(theme::text_2);
+    let retry = widgets::text_button(None, tr("Retry"), style::button::ghost, Some(Message::MailEndShown));
+    row![alert, what, retry].spacing(space::s()).align_y(Alignment::Center).into()
 }
 
 /// One message in a row `width` wide: the mail row of the overview (task E3.11,
@@ -7854,6 +7890,8 @@ mod tests {
                         anchors: detail::Anchors::default(),
                         accounts: accounts.clone(),
                         more: true,
+                        more_failed: false,
+                        more_round: 0,
                         attention: Color::BLACK,
                         look,
                         entries: &all,
@@ -8001,6 +8039,8 @@ mod tests {
             anchors: detail::Anchors::default(),
             accounts: Vec::new(),
             more: false,
+            more_failed: false,
+            more_round: 0,
             attention: Color::BLACK,
             look: Look::Rows,
             entries: &[],

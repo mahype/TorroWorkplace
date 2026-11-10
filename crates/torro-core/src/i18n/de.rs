@@ -3346,7 +3346,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Flagged", "Markiert"),
     ("Forward", "Weiterleiten"),
     ("Has attachments", "Mit Anhängen"),
-    ("Load more", "Mehr laden"),
+    ("Loading more…", "Lade weitere …"),
     ("Loading the message…", "Nachricht wird geladen …"),
     ("Mail in this folder shows up here.", "Mails in diesem Ordner erscheinen hier."),
     ("Mark read", "Als gelesen markieren"),
