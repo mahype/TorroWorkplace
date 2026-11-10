@@ -784,6 +784,9 @@ pub struct App {
     /// "Focus is full": a task that should get `focus` while every slot of today is taken, until the
     /// person picks the task that gives its slot up or cancels (issue #596).
     focus_full: Option<(Key, Focus)>,
+    /// With "Focus is full" for a plan (PR #625): the day the waiting task goes to and the task it
+    /// goes in front of; after the choice the slot is freed, then the task is planned.
+    focus_plan: Option<(NaiveDate, Option<Key>)>,
     /// Changes of the focus slots on their way to the core; settings fetched meanwhile are older.
     slots_saving: usize,
     /// The settings in the content area, while they are open (task S.19).
@@ -1101,6 +1104,7 @@ impl App {
             drag: None,
             focus_slots: usize::from(torro_core::settings::FocusSlots::DEFAULT.get()),
             focus_full: None,
+            focus_plan: None,
             slots_saving: 0,
             settings: None,
             settings_memory: torro_settings_ui::Memory::default(),
@@ -1544,7 +1548,7 @@ impl App {
             }
             // Escape drops the dragged row where it was.
             Message::Escape if self.drag.is_some() => self.drag = None,
-            Message::Escape if self.focus_full.is_some() => self.focus_full = None,
+            Message::Escape if self.focus_full.is_some() => self.close_focus_full(),
             Message::Escape => {
                 // Innermost first: a menu or the drawer, then the settings (task S.19: its one
                 // section has no dialog or question of its own, so the host closes it directly),
@@ -1613,7 +1617,7 @@ impl App {
             }
             Message::PostponeFocusPlan => return self.postpone_focus_plan(),
             Message::ReleaseFocus(release) => return self.release_focus(release),
-            Message::CloseFocusFull => self.focus_full = None,
+            Message::CloseFocusFull => self.close_focus_full(),
             Message::Planned(result) => return self.planned(result),
             Message::FocusSlotsRead(Ok(slots)) if self.slots_saving == 0 => self.focus_slots = usize::from(slots),
             Message::FocusSlotsRead(_) => {}
@@ -3540,14 +3544,39 @@ impl App {
         Task::perform(async move { source.set_focus(todo, focus, release).await }, Message::Planned)
     }
 
-    /// "Focus is full": `release` gives its slot up, the waiting task takes it.
+    /// "Focus is full" closed: nothing waits any more.
+    fn close_focus_full(&mut self) {
+        self.focus_full = None;
+        self.focus_plan = None;
+    }
+
+    /// "Focus is full": `release` gives its slot up, the waiting task takes it – its new focus, or
+    /// for a plan onto today (PR #625) its place there.
     fn release_focus(&mut self, release: Key) -> Task<Message> {
         let Some((key, focus)) = self.focus_full.take() else { return Task::none() };
+        let plan = self.focus_plan.take();
         let find = |key: &Key| self.todos.iter().find(|t| key.is(t)).cloned();
-        match (find(&key), find(&release)) {
-            (Some(todo), Some(release)) => self.send_focus(todo, focus, Some(release)),
-            _ => Task::none(),
+        let (Some(todo), Some(release)) = (find(&key), find(&release)) else { return Task::none() };
+        let Some((day, before)) = plan else { return self.send_focus(todo, focus, Some(release)) };
+        let before = before.and_then(|key| find(&key));
+        // Shown at once: the released task without focus, the waiting one in its place.
+        for shown in &mut self.todos {
+            if shown.href.is_some() && shown.href == release.href {
+                shown.focus = Focus::Normal;
+            }
         }
+        if let Some(plan) = day_move_plan(&self.plannable_todos(), &todo, day, before.as_ref(), &Local) {
+            self.show_plan(plan);
+        }
+        let source = self.source.clone();
+        let freed = Todo { focus: release.focus, ..release };
+        Task::perform(
+            async move {
+                source.set_focus(freed, Focus::Normal, None).await?;
+                source.plan_todo(todo, day, before).await
+            },
+            Message::Planned,
+        )
     }
 
     /// The tasks taking today's focus slots, for "Focus is full".
@@ -3590,8 +3619,11 @@ impl App {
         let moved = plan.iter().find(|t| t.href == todo.href).cloned();
         let moved = moved.unwrap_or_else(|| torro_pim::source::due_on(&todo, drop.day, &Local));
         let takes = |t: &Todo| takes_slot(t, self.today, &Local);
+        // Today's slots are taken: "Focus is full" asks which task gives its slot up, then plans.
         if !takes(&todo) && takes(&moved) && focus_taken(&todos, self.today, &Local) >= self.focus_slots {
-            self.error = Some(tr("All focus slots of today are taken. Release one first.").to_string());
+            self.close_menus();
+            self.focus_full = Some((Key::of(&todo), todo.focus));
+            self.focus_plan = Some((drop.day, before.as_ref().map(Key::of)));
             return Task::none();
         }
         self.show_plan(plan);
@@ -5182,6 +5214,24 @@ mod tests {
         put_cursor(&mut app, "invoices@torro-demo");
         assert!(press(&mut app, Shortcut::Focus).units() > 0);
         assert_eq!(app.todos[invoices].focus, Focus::Strong);
+    }
+
+    #[test]
+    fn planning_a_focus_task_onto_a_full_today_asks_which_gives_its_slot_up() {
+        let mut app = focus_app();
+        app.filter = Filter::All;
+        app.focus_slots = 1;
+        // "Prepare vacation" (focus, due tomorrow) goes to the end of today, whose slot the tax
+        // documents hold.
+        let vacation = index_of_uid(&app, "prepare-vacation@torro-demo");
+        let drop = list::DayDrop { day: app.today, before: None };
+        assert_eq!(app.plan(vacation, drop).units(), 0, "nothing is sent yet");
+        assert!(app.focus_full.is_some() && app.focus_plan.is_some(), "Focus is full");
+        let holder = Key::of(&app.todos[index_of_uid(&app, "tax-documents@torro-demo")]);
+        assert!(app.update(Message::ReleaseFocus(holder)).units() > 0, "freed, then planned");
+        assert_eq!(list::due_day(&app.todos[vacation]), Some(app.today));
+        assert_eq!(app.todos[index_of_uid(&app, "tax-documents@torro-demo")].focus, Focus::Normal);
+        assert!(app.focus_full.is_none() && app.focus_plan.is_none());
     }
 
     #[test]

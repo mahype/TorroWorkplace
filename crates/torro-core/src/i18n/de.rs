@@ -1247,10 +1247,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Alle {n} Fokus-Plätze für heute sind belegt. Welche Aufgabe soll ihren Platz für „{title}“ freigeben?",
     ),
     (
-        "All focus slots of today are taken. Release one first.",
-        "Alle Fokus-Plätze für heute sind belegt. Gib zuerst einen frei.",
-    ),
-    (
         "The task changed elsewhere, or today's focus slots are taken. The list was reloaded.",
         "Die Aufgabe wurde anderswo geändert, oder die Fokus-Plätze für heute sind belegt. Die Liste wurde neu geladen.",
     ),
