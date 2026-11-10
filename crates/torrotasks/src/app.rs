@@ -102,7 +102,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Utc};
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset};
-use iced::widget::{Space, column, container, row, rule, stack, svg, text, text_input};
+use iced::widget::{Space, column, container, mouse_area, row, rule, stack, svg, text, text_input};
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
@@ -114,6 +114,7 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons, TopRow};
 use torro_gui::source::Source;
+use torro_gui::split::{self, Limits, Split, SplitEvent};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color};
@@ -575,6 +576,41 @@ pub enum Columns {
     ListDetailProps,
 }
 
+/// The key in `ui.json` of the expanded sidebar's width (issue #604).
+const SIDE_KEY: &str = "sidebar";
+/// The key of the list's width beside the detail and the properties column.
+const LIST_KEY: &str = "list";
+/// The key of the list's width beside the detail alone (wide windows below [`THREE_COLUMNS_FROM`], medium).
+const LIST_MEDIUM_KEY: &str = "list-medium";
+/// The key of the properties column's width.
+const PROPS_KEY: &str = "props";
+
+/// The widths the person dragged (issue #604), one [`Split`] for each divider. They hold for the
+/// whole app, not one filter list, so nothing jumps when the list changes.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Widths {
+    side: Split,
+    list: Split,
+    list_medium: Split,
+    props: Split,
+}
+
+impl Widths {
+    /// The widths stored in `ui.json`; one dragged before the file answered wins.
+    fn stored(&mut self, stored: &HashMap<String, f32>) {
+        for (key, split) in [
+            (SIDE_KEY, &mut self.side),
+            (LIST_KEY, &mut self.list),
+            (LIST_MEDIUM_KEY, &mut self.list_medium),
+            (PROPS_KEY, &mut self.props),
+        ] {
+            if *split == Split::default() {
+                *split = Split::with(stored.get(key).copied());
+            }
+        }
+    }
+}
+
 /// The columns for a window of `class` whose content (the panel beside sidebar or rail; the whole
 /// window in narrow ones) is `content` wide, with a task open in the detail or not. Mini and strip
 /// show a glance and no columns; they count as narrow here. A medium window too small for list
@@ -712,6 +748,10 @@ pub struct App {
     drawer: bool,
     /// The sidebar the user chose for the wide layout, kept in `ui.json`.
     sidebar: SidebarMode,
+    /// The widths the person dragged (issue #604), kept in `ui.json` for the whole app: the expanded
+    /// sidebar ([`SIDE_KEY`]), the list beside the detail in three columns ([`LIST_KEY`]) and in two
+    /// ([`LIST_MEDIUM_KEY`]), the properties column ([`PROPS_KEY`]).
+    widths: Widths,
     /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
     zoom: Zoom,
     /// Follows the design pack the suite settings name (task L.3).
@@ -815,6 +855,16 @@ pub enum Message {
     ToggleSidebar,
     /// The view state stored in `ui.json`, loaded at start.
     UiState(UiState),
+    /// The handle at the edge of the expanded sidebar (issue #604).
+    SidebarWidth(SplitEvent),
+    /// The divider between the list and the detail in three columns.
+    ListWidth(SplitEvent),
+    /// The divider between the list and the detail in two columns.
+    ListMediumWidth(SplitEvent),
+    /// The divider before the properties column.
+    PropsWidth(SplitEvent),
+    /// The widths stored in `ui.json`, loaded at start.
+    StoredWidths(HashMap<String, f32>),
     /// The repository chosen last for a filter list, read from `ui.json` at start.
     LastRepo(Option<String>),
     /// Close the open menu and the drawer (click beside them).
@@ -992,6 +1042,7 @@ impl App {
             },
             drawer: matches!(open, Some(Open::Drawer)),
             sidebar: SidebarMode::default(),
+            widths: Widths::default(),
             zoom,
             design,
             launch,
@@ -1020,9 +1071,15 @@ impl App {
         } else {
             ui_state::load_last_repo_task(AppId::TASKS).map(Message::LastRepo)
         };
+        let widths = if app.source.is_demo() {
+            Task::none()
+        } else {
+            ui_state::load_splits_task(AppId::TASKS).map(Message::StoredWidths)
+        };
         let mut tasks = vec![
             ui_state::load_task(AppId::TASKS).map(Message::UiState),
             last_repo,
+            widths,
             // The first load waits for a core that is still starting (issue #206).
             {
                 let source = app.source.clone();
@@ -1104,6 +1161,19 @@ impl App {
         }
         if !self.waiting {
             subscriptions.push(iced::time::every(every).map(|_| Message::Tick));
+        }
+        // A drag ends wherever the button is released (`split::release`); only while one runs.
+        if self.widths.side.dragging {
+            subscriptions.push(split::release().map(|()| Message::SidebarWidth(SplitEvent::Release)));
+        }
+        if self.widths.list.dragging {
+            subscriptions.push(split::release().map(|()| Message::ListWidth(SplitEvent::Release)));
+        }
+        if self.widths.list_medium.dragging {
+            subscriptions.push(split::release().map(|()| Message::ListMediumWidth(SplitEvent::Release)));
+        }
+        if self.widths.props.dragging {
+            subscriptions.push(split::release().map(|()| Message::PropsWidth(SplitEvent::Release)));
         }
         Subscription::batch(subscriptions)
     }
@@ -1394,6 +1464,23 @@ impl App {
             Message::ToggleDisplay => self.toggle_menu(Menu::Display),
             Message::ToggleSidebar => return self.toggle_sidebar(),
             Message::UiState(state) => self.sidebar = state.sidebar,
+            Message::SidebarWidth(event) => {
+                let limits = self.sidebar_limits();
+                return self.drag(SIDE_KEY, |widths| &mut widths.side, event, limits);
+            }
+            Message::ListWidth(event) => {
+                let limits = self.list_limits(Columns::ListDetailProps);
+                return self.drag(LIST_KEY, |widths| &mut widths.list, event, limits);
+            }
+            Message::ListMediumWidth(event) => {
+                let limits = self.list_limits(Columns::ListDetail);
+                return self.drag(LIST_MEDIUM_KEY, |widths| &mut widths.list_medium, event, limits);
+            }
+            Message::PropsWidth(event) => {
+                let limits = self.props_limits();
+                return self.drag(PROPS_KEY, |widths| &mut widths.props, event, limits);
+            }
+            Message::StoredWidths(stored) => self.widths.stored(&stored),
             Message::LastRepo(repo) => self.last_repo = repo,
             Message::CloseMenu => self.close_menus(),
             // The dialogs come before the detail, but behind the settings: those cover the header
@@ -1600,16 +1687,87 @@ impl App {
         self.collections.iter().map(|c| (c.id.clone(), collection_color(c.color.as_deref()))).collect()
     }
 
-    /// The columns the window shows now.
+    /// The columns the window shows now: by the fixed thresholds, against the content beside the
+    /// sidebar as wide as it was dragged (issue #604, decision 4).
     fn columns(&self) -> Columns {
-        let class = self.class();
-        columns(class, content_width(class, self.sidebar, self.size.width), self.detail.is_some())
+        columns(self.class(), self.content_room(), self.detail.is_some())
     }
 
-    /// The width of the list column now.
-    fn list_width(&self) -> f32 {
+    /// The width of the content now ([`content_width`]), less the sidebar as wide as it was dragged.
+    fn content_room(&self) -> f32 {
         let class = self.class();
-        list_width(class, self.columns(), content_width(class, self.sidebar, self.size.width))
+        let content = content_width(class, self.sidebar, self.size.width);
+        match shell::sidebar_mode(class, self.sidebar) {
+            Some(SidebarMode::Expanded) => (content + size::sidebar() - self.sidebar_room()).max(0.0),
+            _ => content,
+        }
+    }
+
+    /// The width of the columns inside the content's border.
+    fn panes(&self) -> f32 {
+        (self.content_room() - 2.0 * LINE).max(0.0)
+    }
+
+    /// What the edge of the expanded sidebar moves in (issue #604): the content keeps room for the
+    /// list beside the detail ([`list_detail_from()`]).
+    fn sidebar_limits(&self) -> Limits {
+        shell::sidebar_limits(self.size.width, list_detail_from())
+    }
+
+    /// The width of the expanded sidebar now: dragged or `size::sidebar()`.
+    fn sidebar_room(&self) -> f32 {
+        self.widths.side.width(self.sidebar_limits())
+    }
+
+    /// What the divider before the properties column moves in: the column three quarters to twice
+    /// [`size::props()`], and list and detail keep their least beside it. The properties are clamped
+    /// first, the list then gets what is left ([`App::list_limits`]).
+    fn props_limits(&self) -> Limits {
+        let rest = 0.75 * size::list() + split::handle_width() + split::min_pane();
+        split::limits_around(size::props(), self.panes(), rest)
+    }
+
+    /// The width of the properties column now.
+    fn props_room(&self) -> f32 {
+        self.widths.props.width(self.props_limits())
+    }
+
+    /// What the divider between list and detail moves in for `columns`: the list three quarters to
+    /// twice its default ([`size::list()`] beside detail and properties, [`size::list_medium()`]
+    /// beside the detail alone), and the detail keeps `split::min_pane()`.
+    fn list_limits(&self, columns: Columns) -> Limits {
+        match columns {
+            Columns::ListDetailProps => {
+                let total = self.panes() - self.props_room() - split::handle_width();
+                split::limits_around(size::list(), total, split::min_pane())
+            }
+            _ => split::limits_around(size::list_medium(), self.panes(), split::min_pane()),
+        }
+    }
+
+    /// The width of the list column now: dragged beside the detail, else [`list_width`].
+    fn list_width(&self) -> f32 {
+        let columns = self.columns();
+        match columns {
+            Columns::ListDetailProps => self.widths.list.width(self.list_limits(columns)),
+            Columns::ListDetail => self.widths.list_medium.width(self.list_limits(columns)),
+            Columns::List | Columns::Detail => list_width(self.class(), columns, self.content_room()),
+        }
+    }
+
+    /// Applies `event` to the divider `split` of `widths` and saves its width under `key` when it
+    /// changed for good (not in the demo, which stores nothing).
+    fn drag(
+        &mut self,
+        key: &str,
+        split: fn(&mut Widths) -> &mut Split,
+        event: SplitEvent,
+        limits: Limits,
+    ) -> Task<Message> {
+        if split(&mut self.widths).update(event, limits) && !self.source.is_demo() {
+            return ui_state::save_split_task(AppId::TASKS, key.to_owned(), split(&mut self.widths).chosen);
+        }
+        Task::none()
     }
 
     /// What the list shows. Rows name their list (pill or dot) unless the filter is one list.
@@ -1823,6 +1981,7 @@ impl App {
             let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
                 .then(|| self.sidebar(SidebarMode::Rail));
             let window = shell::shell(class, sidebar, frame.header, frame.body, None)
+                .sidebar_width(self.sidebar_room(), self.widths.side.dragging, Message::SidebarWidth)
                 .rail(rail)
                 .drawer(self.drawer, Message::CloseMenu)
                 .overlay(frame.overlay)
@@ -1862,6 +2021,7 @@ impl App {
         // The properties column is part of the body ([`App::body`]), not the shell's: the detail
         // brings its own, scrolling on its own.
         let window = shell::shell(class, sidebar, header, self.body(class, columns, &property), None)
+            .sidebar_width(self.sidebar_room(), self.widths.side.dragging, Message::SidebarWidth)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(dialog.or(menu).or_else(editor))
@@ -1881,7 +2041,7 @@ impl App {
             return self.detail_head(columns, property);
         }
         let list_head = self.list_head(class, list_width, [nav, display, list_menu]);
-        let content = content_width(class, self.sidebar, self.size.width);
+        let content = self.content_room();
         // A list that fills the panel needs no line at its edge: the panel's border is there.
         if !matches!(class, SizeClass::Wide | SizeClass::Medium) || list_width >= content - 2.0 * LINE {
             return list_head;
@@ -1889,14 +2049,19 @@ impl App {
         // The header bar pads 16 at the left; the list head keeps 12 at its right before the line. In
         // the top row the head starts after the lights, the logo and the panel button (issue #459).
         let inset = shell::head_inset(class, self.sidebar, self.zoom.factor());
+        // Beside the detail the line stands in the middle of the divider's handle below (issue #604).
+        let handle = match columns {
+            Columns::ListDetail | Columns::ListDetailProps => (split::handle_width() - LINE) / 2.0,
+            Columns::List | Columns::Detail => 0.0,
+        };
         let mut split = row![
             container(list_head).width((list_width - space::l() - space::m() - inset).max(0.0)),
-            Space::new().width(space::m()),
+            Space::new().width(space::m() + handle),
             rule::vertical(LINE).style(style::rule),
         ]
         .align_y(Alignment::Center);
         if self.detail.is_some() {
-            split = split.push(Space::new().width(space::l())).push(self.detail_head(columns, property));
+            split = split.push(Space::new().width(space::l() + handle)).push(self.detail_head(columns, property));
         }
         split.into()
     }
@@ -2078,27 +2243,42 @@ impl App {
     /// side with a line between them, and the properties column after another line.
     fn body(&self, class: SizeClass, columns: Columns, anchor: &Anchor) -> Element<'_, Message> {
         let width = self.list_width();
-        let line = || rule::vertical(LINE).style(style::rule);
         match columns {
             Columns::Detail => self.detail_column(columns, anchor),
             Columns::List => {
-                let content = content_width(class, self.sidebar, self.size.width);
-                if !matches!(class, SizeClass::Wide | SizeClass::Medium) || width >= content - 2.0 * LINE {
+                if !matches!(class, SizeClass::Wide | SizeClass::Medium) || width >= self.content_room() - 2.0 * LINE {
                     return self.list();
                 }
-                row![container(self.list()).width(width), line(), Space::new().width(Fill)].into()
+                // The widgets of `split::split` (a mouse area around list, line and rest), without a
+                // handle: opening a task keeps the list's scroll position.
+                let line = mouse_area(container(rule::vertical(LINE).style(style::rule)).width(LINE).height(Fill));
+                let panes = row![
+                    container(self.list()).width(width).height(Fill),
+                    line,
+                    container(Space::new()).width(Fill).height(Fill)
+                ];
+                mouse_area(panes).into()
             }
-            Columns::ListDetail => {
-                row![container(self.list()).width(width), line(), self.detail_column(columns, anchor)].into()
-            }
-            Columns::ListDetailProps => row![
-                container(self.list()).width(width),
-                line(),
+            Columns::ListDetail => split::split(
+                self.list(),
                 self.detail_column(columns, anchor),
-                line(),
-                self.properties_column(anchor),
-            ]
-            .into(),
+                width,
+                self.widths.list_medium.dragging,
+                Message::ListMediumWidth,
+            ),
+            Columns::ListDetailProps => {
+                // The divider before the properties measures from the right edge of what the list leaves.
+                let total = self.panes() - width - split::handle_width();
+                let detail = split::split_end(
+                    self.detail_column(columns, anchor),
+                    self.properties_column(anchor),
+                    self.props_room(),
+                    total,
+                    self.widths.props.dragging,
+                    Message::PropsWidth,
+                );
+                split::split(self.list(), detail, width, self.widths.list.dragging, Message::ListWidth)
+            }
         }
     }
 
@@ -4408,6 +4588,61 @@ mod tests {
             let _ = app.view();
         }
         assert!(app.detail.is_some(), "a resize does not close the detail");
+    }
+
+    /// Issue #604: the stored widths come back, every divider is dragged inside its limits, a double
+    /// click goes back to the default, and the window builds while a drag runs.
+    #[test]
+    fn sidebar_list_and_properties_are_dragged_and_come_back() {
+        let mut app = app_with_rows();
+        connected(&mut app);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = press(&mut app, Shortcut::Down);
+        let _ = press(&mut app, Shortcut::Open);
+        let stored = [(SIDE_KEY, 260.0), (LIST_KEY, 600.0), (PROPS_KEY, 400.0), (LIST_MEDIUM_KEY, 420.0)];
+        let _ =
+            app.update(Message::StoredWidths(stored.iter().map(|(key, width)| (key.to_string(), *width)).collect()));
+        assert_eq!(app.columns(), Columns::ListDetailProps, "1600 less a sidebar of 260 still holds three columns");
+        assert_eq!((app.sidebar_room(), app.list_width(), app.props_room()), (260.0, 600.0, 400.0));
+        // A stored width does not overwrite one dragged before the file answered.
+        let _ = app.update(Message::StoredWidths(HashMap::from([(PROPS_KEY.to_string(), 250.0)])));
+        assert_eq!(app.props_room(), 400.0);
+
+        let _ = app.update(Message::PropsWidth(SplitEvent::Grab));
+        let _ = app.update(Message::PropsWidth(SplitEvent::Drag(5000.0)));
+        let _ = app.view();
+        let _ = app.update(Message::PropsWidth(SplitEvent::Release));
+        assert_eq!(app.props_room(), 2.0 * size::props(), "at most twice the default");
+        let rest = app.panes() - app.props_room() - split::handle_width();
+        assert!(app.list_width() + split::handle_width() + split::min_pane() <= rest, "the detail keeps its least");
+
+        let _ = app.update(Message::ListWidth(SplitEvent::Grab));
+        let _ = app.update(Message::ListWidth(SplitEvent::Drag(10.0)));
+        let _ = app.update(Message::ListWidth(SplitEvent::Release));
+        assert_eq!(app.list_width(), 0.75 * size::list(), "at least three quarters");
+        let _ = app.update(Message::ListWidth(SplitEvent::Reset));
+        let _ = app.update(Message::PropsWidth(SplitEvent::Reset));
+        assert_eq!((app.list_width(), app.props_room()), (size::list(), size::props()));
+
+        // The sidebar drags only beside the content, and a wider one takes the properties away.
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Grab));
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Drag(400.0)));
+        let _ = app.update(Message::SidebarWidth(SplitEvent::Release));
+        assert_eq!((app.sidebar_room(), app.columns()), (400.0, Columns::ListDetail));
+        assert_eq!(app.list_width(), 420.0, "the two-column list has a width of its own");
+        let _ = app.view();
+
+        // Medium: the rail is fixed, list and detail still drag.
+        let _ = app.update(Message::Resized(MEDIUM));
+        assert_eq!(
+            (app.content_room(), app.columns()),
+            (content_width(SizeClass::Medium, app.sidebar, 900.0), Columns::ListDetail)
+        );
+        let _ = app.update(Message::ListMediumWidth(SplitEvent::Grab));
+        let _ = app.update(Message::ListMediumWidth(SplitEvent::Drag(330.0)));
+        let _ = app.update(Message::ListMediumWidth(SplitEvent::Release));
+        assert_eq!(app.list_width(), 330.0);
+        let _ = app.view();
     }
 
     #[test]

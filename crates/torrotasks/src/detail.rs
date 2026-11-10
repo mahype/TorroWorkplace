@@ -977,7 +977,7 @@ impl Detail {
     /// `account` is the name of the account the task's list belongs to (the sidebar's group
     /// title, `torro_pim::account::account_of`); `None` leaves the row out. A click on Status,
     /// Priority, Due, List or Parent edits it; the editors float in [`Detail::layer`] next to
-    /// `anchor`.
+    /// `anchor`. The column fills the width the caller gives it (the dragged width, issue #604).
     pub fn properties_column<'a>(&'a self, account: Option<String>, anchor: &Anchor) -> Element<'a, Message> {
         let mut blocks = column![];
         for (i, (title, props)) in self.property_blocks(account.is_some()).into_iter().enumerate() {
@@ -1000,7 +1000,7 @@ impl Detail {
         container(
             scrollable(content).direction(scrollable::Direction::Vertical(style::scrollbar())).style(style::scrollable),
         )
-        .width(size::props())
+        .width(Fill)
         .height(Fill)
         .into()
     }
