@@ -121,14 +121,16 @@ Die Einrichtung bekommt **keinen** eigenen Befehl: Sie ist eine Oberfläche übe
 |---|---|---|---|
 | Stand der Einrichtung | Start, Overview | `settings.get_settings` (`setup`) · Read | `settings_get_settings` |
 | Abschließen, verschieben, neu starten | „Finish“, „Set up later“, „Run setup again“ | `settings.set_setting` (`setup`) · Admin | `settings_set_setting` |
-| Apps aus den Verbindungen | „Finish“ | `settings.set_setting` (`component`) · Admin | `settings_set_setting` |
+| Apps aus den Verbindungen | „Finish“ | `settings.set_setting` (`component`, ein und aus) · Admin | `settings_set_setting` |
 | Sprache | Willkommen | `settings.set_setting` (`language`) · Admin | `settings_set_setting` |
-| Mail verbinden | Punkt 1 | `accounts.discover_services`, vorhandene `connect_*` · Admin, mit Geheimnis nur App-Schlüssel | **Never** (Geheimnisse nur über die Oberfläche) |
-| Nextcloud verbinden | Punkt 2 | `ConnectNextcloud` · Admin | `accounts_connect_nextcloud` (Anmeldung im Browser macht der Mensch) |
-| KI verbinden | Punkt 3 | vorhandene `connect_*` (lokal ohne, Cloud mit Schlüssel) | mit Schlüssel **Never** |
-| Vorschlag und Modelle | Punkt 3 | `ai.recommend`, `ai.find_local_servers`, `ai.list_models`, `ai.pull_model`, `ai.set_slot`, `ai.set_assignment` | wie heute (`ai_recommend`, `ai_set_slot` …) |
-| Aussehen | Punkt 4 | `settings.set_setting` (`appearance`, `design`, `color_scheme`, `font`) · Admin | `settings_set_setting` |
-| ArtCraft vorstellen | Punkt 5 | `extensions.list_catalog` · Read; speichert nichts | `extensions_list_catalog` |
+| Mail-Anbieter finden | Punkt 1 | `accounts.discover_services` · Read | `accounts_discover_services` |
+| Mail verbinden, aus TorroMail übernehmen | Punkt 1, Dialog | `accounts.connect_mail`, `accounts.import_torromail_account` · Admin, nur App-Schlüssel; `accounts.list_torromail_accounts` · Read | **Never** (Passwort nur in der Oberfläche) |
+| Nextcloud verbinden | Punkt 2 | `accounts.connect_nextcloud` · Admin | `accounts_connect_nextcloud` (Anmeldung im Browser macht der Mensch) |
+| KI verbinden | Punkt 3 (Jev auf 3.3) | `accounts.connect_ai`, `accounts.connect_local_ai` · Admin, nur App-Schlüssel | **Never** (Datenziel und Schlüssel nur durch einen Menschen, auch lokal) |
+| Vorschlag, Modelle, Plätze | Punkt 3 | `ai.recommend`, `ai.find_local_servers`, `ai.list_models`, `ai.list_pulls`, `ai.list_assignments` · Read; `ai.pull_model`, `ai.cancel_pull` · Write; `ai.set_model_enabled`, `ai.set_slot`, `ai.set_assignment` · Admin | gleichnamig (`ai_recommend`, `ai_set_slot` …) |
+| Aussehen | Punkt 4 | `settings.list_designs`, `settings.list_fonts`, `settings.list_color_schemes` · Read; `settings.set_setting` (`appearance`, `design`, `color_scheme`, `font`) · Admin | `settings_list_designs` …, `settings_set_setting` |
+| ArtCraft vorstellen | Punkt 5, Fertig | `extensions.list_catalog`, `extensions.list_extensions` · Read; speichert nichts | `extensions_list_catalog`, `extensions_list_extensions` |
+| Apps öffnen | Fertig („Open …“) | `apps.open_app` · Write | `apps_open_app` |
 
 ## Entscheidungen
 
