@@ -712,7 +712,8 @@ stummgeschaltetes Konto (`inbox.mute_source`), gemerkte Spuren und die Regeln an
 
 ## Rückgängig (#614)
 
-Bestandsaufnahme, Stand `0f4b7842`, nur aus dem Code gelesen (`torroinbox/src/app.rs`, `keys.rs`,
+Bestandsaufnahme, Stand `0f4b7842` (der Stand von main bei der Erstellung; spätere Commits können Zeilen,
+Namen und Verhalten ändern, dann stimmt der Abschnitt nicht mehr), nur aus dem Code gelesen (`torroinbox/src/app.rs`, `keys.rs`,
 `mail.rs`, `compose.rs`, `torro-gui/src/widgets.rs`, `torro-settings-ui`). Sie gilt für das
 Mail-Fenster, das Schreibfenster und die Einstellungen hinter dem Zahnrad. „Notification Hub“ und
 „App Feed“ sind nicht Teil davon; ihre Regeln stehen in [eingang.md](eingang.md).
@@ -830,17 +831,17 @@ Knöpfen „Save“/„Cancel“/„Discard“. Die Felder und alle Schaltfläch
   Er endet nur nach 5 Sekunden, mit Esc, durch eine neue Aktion – und der Hinweis „Reply discarded.“
   durch eine neue Runde. Rückgängig holt die Mail in ihren alten Ordner, nicht in die Ansicht, in der
   man gerade ist.
-- **Hinweis überschrieben:** Das alte Rückgängig ist unwiderruflich weg. Archiviert man zwei Mails
-  nacheinander, holt `u` nur die zweite zurück.
+- **Hinweis überschrieben:** siehe „Die Mechanik“; archiviert man zwei Mails nacheinander, holt `u` nur
+  die zweite zurück.
 - **Archivieren am Eintrag:** Der Hinweis öffnet die Einträge der Mail wieder und setzt ihr
   Nachfassen zurück (`Undo::Mail` mit `reopen` und `follow`).
 - **Fehler beim Verschieben:** Die Mail kommt mit dem nächsten Laden zurück; der Hinweis „Couldn't
   change the mail.“ ersetzt ein stehendes Rückgängig nicht.
 - **Strg+Z in Textfeldern des Mail-Fensters:** Das Suchfeld und das Antwortfeld von „Focus & reply“
   haben in Iced kein eigenes Rückgängig. Strg+Z hört aber auf **jeden** Tastendruck des Fensters
-  (`undo_key`, „also those a text field took“). Steht gerade ein Hinweis mit Rückgängig, nimmt Strg+Z
-  im Suchfeld also die letzte Mail-Aktion zurück statt etwas im Feld. Ohne Hinweis passiert nichts.
-  Im Antwortfeld von „Focus & reply“ gilt dasselbe (dort sperrt nur das Senden).
+  (`undo_key`, „also those a text field took“). Steht ein Hinweis mit Rückgängig, nimmt Strg+Z also die
+  letzte Mail-Aktion zurück statt etwas im Feld, auch im Antwortfeld von „Focus & reply“ (dort sperrt nur
+  das Senden); ohne Hinweis passiert nichts. Vorschlag: Lücken 3 und 4.
 - **Strg+Z im Schreibfenster:** tut nichts (eigenes Fenster, kein `undo_key`).
 
 ### Lücken und Vorschläge
