@@ -166,17 +166,18 @@ impl Split {
 /// [`SplitEvent::Grab`] and, double-clicked, [`SplitEvent::Reset`]; while `dragging`, the line
 /// shows in `line_selected` and every move over the split sends [`SplitEvent::Drag`] with the width
 /// that puts the handle's middle under the pointer. The same widgets with and without a drag, so
-/// starting one keeps the panes' state (scroll positions, focus).
+/// starting one keeps the panes' state (scroll positions, focus). `on` may be any function, so a
+/// library's view can wrap its own message in the app's (issue #604: the settings' sections).
 pub fn split<'a, M: Clone + 'a>(
     first: impl Into<Element<'a, M>>,
     second: impl Into<Element<'a, M>>,
     width: f32,
     dragging: bool,
-    on: fn(SplitEvent) -> M,
+    on: impl Fn(SplitEvent) -> M + Clone + 'a,
 ) -> Element<'a, M> {
     let panes = row![
         container(first).width(width).height(Fill),
-        handle(dragging, on),
+        handle(dragging, on.clone()),
         container(second).width(Fill).height(Fill)
     ];
     let area = mouse_area(panes);
@@ -241,7 +242,7 @@ fn end_width(total: f32, x: f32, extra: f32) -> f32 {
 /// The handle between two panes: the 1-px line (in `line_selected` while `dragging`) in a
 /// [`handle_width()`] wide area with the resize cursor, sending [`SplitEvent::Grab`] and, double-clicked,
 /// [`SplitEvent::Reset`].
-fn handle<'a, M: Clone + 'a>(dragging: bool, on: fn(SplitEvent) -> M) -> Element<'a, M> {
+fn handle<'a, M: Clone + 'a>(dragging: bool, on: impl Fn(SplitEvent) -> M) -> Element<'a, M> {
     let line = rule::vertical(size::HAIRLINE).style(move |t| {
         let mut look = style::rule(t);
         if dragging {
