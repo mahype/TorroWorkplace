@@ -20,6 +20,7 @@ const STRIPE_FILE: &str = "stripe-upload-api.s3.us-west-1.amazonaws.com";
 const MAX_HTML: usize = 2 * 1024 * 1024;
 const MAX_PDF: usize = 50 * 1024 * 1024;
 const MAX_STRIPE_ERROR: usize = 16 * 1024;
+const MAX_RESOURCE: usize = 512 * 1024;
 const DEADLINE: Duration = Duration::from_secs(60);
 
 /// Intentionally neither Debug nor Serialize. Only the live job holds a link or signed download target.
@@ -103,6 +104,44 @@ fn checked(input: &str, hosts: &[String]) -> Result<Link, Failure> {
         return Err(unsupported());
     }
     Ok(Link(url))
+}
+
+/// Provider presentation resources a rendering profile may load as data. Nothing loaded here is ever executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceKind {
+    Stylesheet,
+    Script,
+}
+
+/// What a single guarded GET may return.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Want {
+    Document,
+    Json,
+    Resource(ResourceKind),
+}
+
+/// Resolves a head reference of an already fetched page. Only absolute, scheme-relative and root-relative
+/// references are accepted; document-relative paths would need the page's private path and are refused.
+pub fn resource_link(page_host: &str, href: &str, hosts: &[String]) -> Result<Link, Failure> {
+    let absolute = if href.starts_with("//") {
+        format!("https:{href}")
+    } else if href.starts_with('/') {
+        format!("https://{page_host}{href}")
+    } else {
+        href.to_owned()
+    };
+    checked(&absolute, hosts)
+}
+
+impl Link {
+    /// The pinned form of a resource: path and query, never scheme, host or fragment.
+    pub fn path_and_query(&self) -> String {
+        match self.0.query() {
+            Some(query) => format!("{}?{query}", self.0.path()),
+            None => self.0.path().to_owned(),
+        }
+    }
 }
 
 /// One job's network budget, retained across redirects and resolver/download stages.
@@ -259,7 +298,20 @@ impl Downloader {
         budget: &mut Budget,
         allow: &(dyn Fn() -> Result<(), Failure> + Sync),
     ) -> Result<Body, Failure> {
-        self.fetch_bounded(link, hosts, budget, allow, false).await
+        self.fetch_bounded(link, hosts, budget, allow, Want::Document).await
+    }
+
+    /// Loads one stylesheet or script as bounded data for a rendering profile, under the same host, redirect,
+    /// permission and GET budget as the page itself.
+    pub async fn fetch_resource(
+        &self,
+        link: Link,
+        hosts: &[String],
+        budget: &mut Budget,
+        allow: &(dyn Fn() -> Result<(), Failure> + Sync),
+        kind: ResourceKind,
+    ) -> Result<Body, Failure> {
+        self.fetch_bounded(link, hosts, budget, allow, Want::Resource(kind)).await
     }
 
     async fn fetch_bounded(
@@ -268,8 +320,9 @@ impl Downloader {
         hosts: &[String],
         budget: &mut Budget,
         allow: &(dyn Fn() -> Result<(), Failure> + Sync),
-        json: bool,
+        want: Want,
     ) -> Result<Body, Failure> {
+        let json = want == Want::Json;
         loop {
             link = checked(link.0.as_str(), hosts)?;
             let remaining = budget.remaining()?;
@@ -283,7 +336,15 @@ impl Downloader {
                 let mut response = self
                     .http
                     .get(self.request_url(&link))
-                    .header(ACCEPT, if json { "application/json" } else { "application/pdf, text/html;q=0.9" })
+                    .header(
+                        ACCEPT,
+                        match want {
+                            Want::Json => "application/json",
+                            Want::Document => "application/pdf, text/html;q=0.9",
+                            Want::Resource(ResourceKind::Stylesheet) => "text/css",
+                            Want::Resource(ResourceKind::Script) => "application/javascript, text/javascript",
+                        },
+                    )
                     .send()
                     .await
                     .map_err(|_| Failure { reason: RunReason::Offline, retryable: true })?;
@@ -342,10 +403,15 @@ impl Downloader {
                     .ok_or_else(|| Failure::fixed(RunReason::UnexpectedType))?
                     .to_owned();
                 let mime = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
-                let limit = match (json, mime.as_str()) {
-                    (true, "application/json") => 256 * 1024,
-                    (false, "application/pdf") => MAX_PDF,
-                    (false, "text/html") => MAX_HTML,
+                let limit = match (want, mime.as_str()) {
+                    (Want::Json, "application/json") => 256 * 1024,
+                    (Want::Document, "application/pdf") => MAX_PDF,
+                    (Want::Document, "text/html") => MAX_HTML,
+                    (Want::Resource(ResourceKind::Stylesheet), "text/css")
+                    | (Want::Resource(ResourceKind::Script), "application/javascript" | "text/javascript") => {
+                        MAX_RESOURCE
+                    }
+                    (Want::Resource(_), _) => return Err(unsupported()),
                     _ => return Err(Failure::fixed(RunReason::UnexpectedType)),
                 };
                 let bytes = bounded_bytes(&mut response, limit, allow).await?;
@@ -372,10 +438,10 @@ impl Downloader {
             return Err(unsupported());
         }
         let endpoint = stripe_endpoint(&mail_link)?;
-        let json = self.fetch_bounded(endpoint, &[STRIPE_DATA.into()], budget, allow, true).await?;
+        let json = self.fetch_bounded(endpoint, &[STRIPE_DATA.into()], budget, allow, Want::Json).await?;
         let FileUrl(url) = serde_json::from_slice::<FileUrl>(&json.bytes).map_err(|_| unsupported())?;
         let target = checked(&url, &[STRIPE_FILE.into()])?;
-        let body = self.fetch_bounded(target, &[STRIPE_FILE.into()], budget, allow, false).await?;
+        let body = self.fetch_bounded(target, &[STRIPE_FILE.into()], budget, allow, Want::Document).await?;
         if !body.content_type.split(';').next().is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/pdf"))
         {
             return Err(Failure::fixed(RunReason::UnexpectedType));
@@ -654,6 +720,94 @@ mod tests {
         foreign.assert_calls_async(1).await;
         expired.assert_calls_async(1).await;
         html.assert_calls_async(1).await;
+    }
+
+    #[tokio::test]
+    async fn presentation_resources_are_bounded_typed_data_from_the_package_hosts_only() {
+        let hosts: Vec<String> = vec!["my.paddle.com".into(), "static.paddle.com".into()];
+        for href in ["https://static.paddle.com/a.css", "//static.paddle.com/a.css", "/assets/a.css?v=1"] {
+            assert!(resource_link("my.paddle.com", href, &hosts).is_ok(), "{href}");
+        }
+        for href in ["a.css", "../a.css", "http://static.paddle.com/a.css", "https://cdn.example.org/a.css", "/a.css#x"]
+        {
+            assert!(resource_link("my.paddle.com", href, &hosts).is_err(), "{href}");
+        }
+        let pinned = resource_link("my.paddle.com", "/assets/a.js?v=2", &hosts).expect("root-relative");
+        assert_eq!((pinned.host(), pinned.path_and_query().as_str()), ("my.paddle.com", "/assets/a.js?v=2"));
+
+        let server = httpmock::MockServer::start_async().await;
+        let css = server
+            .mock_async(|when, then| {
+                when.path("/static.paddle.com/ok.css");
+                then.status(200).header("content-type", "text/css; charset=utf-8").body(".a{color:red}");
+            })
+            .await;
+        let js = server
+            .mock_async(|when, then| {
+                when.path("/static.paddle.com/ok.js");
+                then.status(200).header("content-type", "text/javascript").body("void 0;");
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.path("/static.paddle.com/html.css");
+                then.status(200).header("content-type", "text/html").body("<p>no</p>");
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.path("/static.paddle.com/big.css");
+                then.status(200).header("content-type", "text/css").body("a".repeat(MAX_RESOURCE + 1));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.path("/static.paddle.com/away.css");
+                then.status(302).header("location", "https://cdn.example.org/a.css");
+            })
+            .await;
+        let downloader = Downloader::for_test(&server.base_url());
+        let link = |path: &str| resource_link("my.paddle.com", &format!("https://static.paddle.com/{path}"), &hosts);
+        let mut budget = Budget::new();
+        let body = downloader
+            .fetch_resource(link("ok.css").expect("css"), &hosts, &mut budget, &|| Ok(()), ResourceKind::Stylesheet)
+            .await
+            .expect("stylesheet as data");
+        assert_eq!(body.bytes, b".a{color:red}");
+        assert!(
+            downloader
+                .fetch_resource(link("ok.js").expect("js"), &hosts, &mut budget, &|| Ok(()), ResourceKind::Script)
+                .await
+                .is_ok()
+        );
+        assert_eq!(budget.gets, 2, "resources share the page's GET budget");
+        for (path, kind) in [
+            ("ok.css", ResourceKind::Script),
+            ("html.css", ResourceKind::Stylesheet),
+            ("big.css", ResourceKind::Stylesheet),
+            ("away.css", ResourceKind::Stylesheet),
+        ] {
+            let failure = downloader
+                .fetch_resource(link(path).expect("link"), &hosts, &mut Budget::new(), &|| Ok(()), kind)
+                .await
+                .err()
+                .expect("refused");
+            assert_eq!(failure.reason, RunReason::Unsupported, "{path}");
+        }
+        let revoked = downloader
+            .fetch_resource(
+                link("ok.css").expect("css"),
+                &hosts,
+                &mut Budget::new(),
+                &|| Err(Failure::fixed(RunReason::PermissionRevoked)),
+                ResourceKind::Stylesheet,
+            )
+            .await
+            .err()
+            .expect("rechecked before the GET");
+        assert_eq!(revoked.reason, RunReason::PermissionRevoked);
+        css.assert_calls_async(2).await;
+        js.assert_calls_async(1).await;
     }
 
     #[tokio::test]
