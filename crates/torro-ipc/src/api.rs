@@ -3420,6 +3420,8 @@ static SET_SETTING: Command = Command {
                   day, week, timeline and radar; the same time twice means no working hours) or \
                   `list_order` ({\"list\": \"<the id from tasks.list_lists>\", \"order\": \"manual\"} to order a \
                   task list by hand with tasks.move_todo, or \"due_date\" to group it by due date again) or \
+                  `focus_slots` (1 to 5, 3 unless changed: how many open tasks due today or overdue may ask for \
+                  focus; tasks.set_focus refuses a further one with conflict) or \
                   `quiet_when_busy` (true, false; while on, only urgent inbox entries pop up during a busy event) \
                   or `design` (the spacing level from list_designs: \"torro\" for Standard, \"comfort\" or \
                   \"dense\"; it changes only spacing and the heights of rows and controls, never the font, the \
@@ -7760,6 +7762,7 @@ mod tests {
                 "night",
                 "working_hours",
                 "list_order",
+                "focus_slots",
                 "quiet_when_busy",
                 "contacts.show_hidden_books",
                 "design",

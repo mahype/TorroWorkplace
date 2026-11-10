@@ -4356,6 +4356,11 @@ pub enum SettingKey {
     /// comes from `tasks.list_lists`; one the core does not know is `not-found`
     /// (`torro_core::settings::ListOrderEntry`).
     ListOrder,
+    /// How many open tasks due today or overdue may ask for focus at once (issue #596): a whole
+    /// number from 1 to 5, 3 unless changed. `tasks.set_focus`, `tasks.save_todo` and
+    /// `tasks.plan_todo` refuse a further focus task with `conflict` while the slots are full. Open
+    /// task windows follow.
+    FocusSlots,
     /// "Quiet during busy events": `true` (the default) or `false`. While on, inbox entries pop
     /// up during a busy event of a shown calendar only when they are urgent; the others are
     /// told in one message when the event ends.

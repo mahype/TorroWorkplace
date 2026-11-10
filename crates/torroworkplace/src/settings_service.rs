@@ -29,9 +29,9 @@ use std::sync::{Mutex, PoisonError};
 
 use torro_core::design::{self, DesignError, Part};
 use torro_core::settings::{
-    self, AssistantDefault, AttachmentClick, ComponentSwitch, ComposePaper, FolderChange, Language, ListOrderEntry,
-    MailAppearance, MailAttachments, MailFormat, Maps, Night, PdfSettings, PdfTemplate, PdfTemplateId, Reminders,
-    Retention, SearchProviderSwitch, Settings, SetupState, ToolSwitch, Voice, WebSearch, WorkingHours, Zoom,
+    self, AssistantDefault, AttachmentClick, ComponentSwitch, ComposePaper, FocusSlots, FolderChange, Language,
+    ListOrderEntry, MailAppearance, MailAttachments, MailFormat, Maps, Night, PdfSettings, PdfTemplate, PdfTemplateId,
+    Reminders, Retention, SearchProviderSwitch, Settings, SetupState, ToolSwitch, Voice, WebSearch, WorkingHours, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -557,6 +557,8 @@ enum Change {
     WorkingHours(WorkingHours),
     /// Whether the list is known is the caller's check (`Core`), like for hidden collections.
     ListOrder(ListOrderEntry),
+    /// How many tasks may ask for focus today (issue #596).
+    FocusSlots(FocusSlots),
     QuietWhenBusy(bool),
     /// Show the hidden address books in the contacts app.
     ContactsShowHiddenBooks(bool),
@@ -663,6 +665,8 @@ impl Change {
             SettingKey::Night => Change::Night(Night::from_value(value)?),
             SettingKey::WorkingHours => Change::WorkingHours(WorkingHours::from_value(value)?),
             SettingKey::ListOrder => Change::ListOrder(serde_json::from_value(value.clone()).map_err(invalid)?),
+            // Strict: only the file's reading falls back to the default.
+            SettingKey::FocusSlots => Change::FocusSlots(FocusSlots::from_value(value)?),
             SettingKey::QuietWhenBusy => Change::QuietWhenBusy(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::ContactsShowHiddenBooks => {
                 Change::ContactsShowHiddenBooks(serde_json::from_value(value.clone()).map_err(invalid)?)
@@ -777,6 +781,7 @@ impl Change {
             Change::Night(night) => settings.night = night,
             Change::WorkingHours(hours) => settings.working_hours = hours,
             Change::ListOrder(entry) => settings.set_list_order(&entry.list, entry.order),
+            Change::FocusSlots(slots) => settings.focus_slots = slots,
             Change::QuietWhenBusy(quiet) => settings.quiet_when_busy = quiet,
             Change::ContactsShowHiddenBooks(show) => settings.contacts_show_hidden_books = show,
             Change::Design(id) => settings.design = id,
@@ -1792,6 +1797,8 @@ mod tests {
         let working = json!({"from": "07:30", "to": "16:00"});
         Change::parse(SettingKey::WorkingHours, &working).expect("valid working hours").apply(&mut settings);
         Change::parse(SettingKey::QuietWhenBusy, &json!(false)).expect("valid flag").apply(&mut settings);
+        Change::parse(SettingKey::FocusSlots, &json!(5)).expect("valid slots").apply(&mut settings);
+        assert!(Change::parse(SettingKey::FocusSlots, &json!(0)).is_err(), "one to five");
         Change::parse(SettingKey::Design, &json!("compact")).expect("an id").apply(&mut settings);
         Change::parse(SettingKey::Font, &json!("channelr")).expect("an id").apply(&mut settings);
         Change::parse(SettingKey::ColorScheme, &json!("nord")).expect("an id").apply(&mut settings);
@@ -1819,6 +1826,7 @@ mod tests {
                 night: Night::from_value(&night).expect("valid night"),
                 working_hours: WorkingHours::from_value(&working).expect("valid working hours"),
                 list_orders: Default::default(),
+                focus_slots: FocusSlots::new(5).expect("in range"),
                 quiet_when_busy: false,
                 contacts_show_hidden_books: false,
                 design: "dense".into(),
