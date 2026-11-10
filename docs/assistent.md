@@ -179,6 +179,31 @@ und Widerruf stoppen über die Ausführungsepoche auch bereits laufende manuelle
 Automatische Ausführung benutzt anschließend den begrenzten Runner, **keinen** laufenden Chat-Agenten, kein Portal-Login,
 keinen Browser, kein Skript und keinen Ausbau der allgemeinen Übergabe #260 oder Erweiterungen #79.
 
+## Chat zu einer Mail (#605)
+
+Im Mail-Programm öffnet „Ask AI…“ in der Gruppe Torro der Aktionsleiste ein Chat-Paneel zur offenen
+Mail, im Leser wie im eigenen Mail-Fenster. Breit steht es rechts neben der Mail, mittel und schmal
+deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf: `docs/prototypes/mail-mini-chat/`.
+
+- **Eine Unterhaltung des Assistenten mit Bezug.** `assistant.send_message` nimmt `about`
+  (`mail:<adresse>`, `m:…`). Die Unterhaltung behält den Bezug; eine Fortsetzung ohne `about` erbt
+  ihn, ein anderer ist ein Fehler (`error`). Sie erscheint auch in der Assistent-App, mit Mail-Symbol.
+- **Verlauf je Mail.** „Ask AI…“ setzt die neueste Unterhaltung zur selben Mail fort, „+“ beginnt neu.
+- **Nur lesen und vorschlagen.** Auch wenn der Assistent sonst mehr darf, stehen in einer solchen
+  Unterhaltung nur Werkzeuge mit Zugriff Read und `mail.extract_action` bereit, ohne Werkzeuge der
+  MCP-Server und ohne Bots; der Kern lehnt andere Aufrufe auch beim Ausführen ab. Entwürfe schreibt
+  der Chat nicht.
+- **Die Mail liest der Kern vorab.** Vor der ersten Antwort ruft er `mail.get_message` wie ein Werkzeug
+  auf (Rechte, Datenregel, Werkzeugzeile). Frühere Mails holt das Modell nur auf Abruf über
+  `mail.get_thread` und `mail.search_messages`; das hält den Kontext lokaler Modelle klein.
+- **Vorschläge als Karte.** Was das Modell über `mail.extract_action` ausliest (die Worte der Person als
+  `focus`), wird ein Vorschlag der Mail wie in [vorschlaege.md](vorschlaege.md) und erscheint als Karte
+  im Chat. „Accept“ öffnet den vorausgefüllten Dialog; erst „Create“ legt an.
+- **Rechte.** Der Assistent braucht Mail-Leserecht und das Konto in seiner Reichweite, sonst
+  `forbidden` und das Paneel zeigt einen Hinweis mit „Open assistant“. Hält die Datenregel Mail vom
+  gewählten Modell fern: `not-connected`. Mit Bot oder fremdem Antrieb: `unsupported`. Ein Client, der
+  das Konto selbst nicht sieht, bekommt `not-found` und sieht `about` in Listen nicht.
+
 ## Bots (Stufe 2)
 
 Nach dem Vorbild der Bots bei Grok und der GPTs bei OpenAI, bei uns einfach **Bots**: weitere
@@ -636,6 +661,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Unterhaltungen auflisten | Seitenleiste | `assistant.list_conversations` · Read | `assistant_list_conversations` |
 | Unterhaltung lesen (ab Stelle) | Verlauf | `assistant.get_conversation` · Read | `assistant_get_conversation` |
 | Nachricht schicken (neue oder bestehende Unterhaltung) | Eingabefeld | `assistant.send_message` · Write (startet einen Modelllauf) | `assistant_send_message` |
+| Fragen zu einer Mail | Mail › „Ask AI…“ (Paneel) | `assistant.send_message` mit `about` · Write | `assistant_send_message` mit `about` |
 | Antwort abbrechen | „Stop“ | `assistant.cancel` · Write | `assistant_cancel` |
 | Unterhaltung umbenennen | Kontextmenü | `assistant.rename_conversation` · Write | `assistant_rename_conversation` |
 | Unterhaltung als eigenes Fenster öffnen | „Open in new window“, „Ask about this“ | `assistant.open_window { conversation \| new \| bot }` · Write (startet `torroassistant --chat …`) | `assistant_open_window` |

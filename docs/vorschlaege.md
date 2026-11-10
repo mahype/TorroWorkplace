@@ -91,9 +91,15 @@ Regeln der Abläufe (#556).
 |---|---|---|---|
 | Vorschläge einer Mail | Karte in Leser, Mail-Fenster und Paneel | `mail.list_suggestions` (Read) | `mail_list_suggestions` |
 | Annehmen / Verwerfen | Accept · Dismiss auf der Karte | `mail.accept_suggestion`, `mail.dismiss_suggestion` (Write) | gleichnamig mit `_` |
-| Auslesen von Hand | Task/Event in der Aktionsleiste, „Fill in with AI“ | `mail.extract_action` (Write) | `mail_extract_action` |
+| Auslesen von Hand | Task/Event in der Aktionsleiste, „Fill in with AI“; Mini-Chat „Ask AI…“ (#605) | `mail.extract_action` (Write), optional `focus` | `mail_extract_action` |
 | Termin aus Mail ohne Eintrag | Event in der Aktionsleiste | `calendar.create_event_from_mail` (Write) | `calendar_create_event_from_mail` |
 | Arten und Schalter | Einstellungen › Categorization › AI | `mail.list_action_kinds` (Read), `mail.set_action_kind` (Admin) | gleichnamig mit `_` |
+
+Aus dem Mini-Chat zu einer Mail ([assistent.md](assistent.md), „Chat zu einer Mail“) ruft der
+Assistent `mail.extract_action` mit `focus` auf: den Worten der Person („mach aus dem Termin am
+Donnerstag einen Eintrag“). `focus` lenkt nur das Auslesen und gilt wie der Mail-Text als Daten, nie
+als Anweisung; höchstens 200 Zeichen. Das Ergebnis ist ein gewöhnlicher Vorschlag: Er erscheint als
+Karte im Chat und oben in der Mail, bis man ihn annimmt oder verwirft.
 
 `mail.accept_suggestion` legt nichts an, es markiert nur: Erst den Termin oder die Aufgabe anlegen,
 dann annehmen.
