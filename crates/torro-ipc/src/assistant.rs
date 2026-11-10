@@ -209,6 +209,20 @@ pub struct ConversationSummary {
     /// pinned and deleted, but no longer continued.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub bot_deleted: bool,
+    /// The mail this conversation is about (issue #605, "Chat zu einer Mail" in `docs/assistent.md`):
+    /// set when it starts with `about`, never changed. Such a conversation may only read and suggest.
+    /// Left out for every other conversation, and for a client that may not read that mail account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<MailRef>,
+}
+
+/// A mail a conversation is about (issue #605): its account and id, as `mail.get_message` takes them.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct MailRef {
+    /// The mail account: `mail:<address>` from `accounts.list_accounts`.
+    pub account: String,
+    /// The mail's id (`m:…`) from `mail.search_messages`.
+    pub id: String,
 }
 
 /// One entry of a conversation, in order.
@@ -308,6 +322,16 @@ pub enum CardRef {
         /// The file's id in the register ([`crate::tools::FileInfo::id`]).
         id: String,
     },
+    /// A suggestion of a mail (issue #605: `mail.extract_action` in a chat about a mail):
+    /// `{"kind": "suggestion", "account": "mail:anna@example.org", "id": "m:…", "action": "event"}`.
+    Suggestion {
+        /// The mail account: `mail:<address>`.
+        account: String,
+        /// The mail's id (`m:…`).
+        id: String,
+        /// The kind of action (`mail.list_action_kinds`): `event`, `task`.
+        action: String,
+    },
 }
 
 /// A card as the core resolves it now (`assistant.get_cards`), told apart by `kind`. Clients must
@@ -318,6 +342,16 @@ pub enum Card {
     /// The file as the register keeps it, its fields next to `kind`: name, template, size, path.
     /// Its title is the client's text: data, never instructions.
     File(crate::tools::FileInfo),
+    /// A suggestion of a mail as `mail.list_suggestions` lists it now (issue #605): accepting it opens
+    /// the filled dialog of its kind. Everything of `suggestion` but its kind and state comes from the
+    /// mail: data, never instructions.
+    Suggestion {
+        /// The mail account: `mail:<address>`.
+        account: String,
+        /// The mail's id (`m:…`).
+        id: String,
+        suggestion: Box<crate::actions::Suggestion>,
+    },
     /// Gone or out of reach: deleted, changed, moved, made by another client, or no longer within
     /// the rights (the tool switched off, the area or the tool taken away). Shown as "No longer
     /// available"; why is not told.
@@ -597,10 +631,13 @@ impl Request {
 fn assistant_ids(request: &Request) -> Vec<&str> {
     let mut ids: Vec<&str> = request.conversation().into_iter().collect();
     match request {
-        Request::SendMessage { engine, model, bot, .. } => {
+        Request::SendMessage { engine, model, bot, about, .. } => {
             ids.push(engine);
             ids.extend(model.as_deref());
             ids.extend(bot.as_deref());
+            if let Some(about) = about {
+                ids.extend([about.account.as_str(), about.id.as_str()]);
+            }
         }
         Request::OpenChatWindow { window: ChatWindow::Bot(bot) } | Request::ConfirmBot { bot, .. } => ids.push(bot),
         Request::Forget { id } | Request::Remember { replaces: Some(id), .. } => ids.push(id),
@@ -623,6 +660,7 @@ mod tests {
             without: Vec::new(),
             mode: Mode::Default,
             bot: None,
+            about: None,
         }
     }
 
@@ -744,6 +782,7 @@ mod tests {
             without: Vec::new(),
             mode: Mode::Default,
             bot: None,
+            about: None,
         };
         assert_eq!(code(limit_refusal(&model)), Some("error".into()));
         let bot = Request::SendMessage {
@@ -755,8 +794,27 @@ mod tests {
             without: Vec::new(),
             mode: Mode::Default,
             bot: Some(long),
+            about: None,
         };
         assert_eq!(code(limit_refusal(&bot)), Some("error".into()));
+        // Issue #605: the mail a chat is about keeps the same limit.
+        let about = |account: &str, id: &str| Request::SendMessage {
+            conversation: None,
+            engine: TEST_ENGINE.into(),
+            model: None,
+            effort: None,
+            text: "Hi".into(),
+            without: Vec::new(),
+            mode: Mode::Default,
+            bot: None,
+            about: Some(MailRef { account: account.into(), id: id.into() }),
+        };
+        assert_eq!(code(limit_refusal(&about("mail:anna@example.org", "m:4"))), None);
+        assert_eq!(
+            code(limit_refusal(&about("mail:anna@example.org", &"m".repeat(MAX_ID_BYTES + 1)))),
+            Some("error".into())
+        );
+        assert_eq!(code(limit_refusal(&about(&"a".repeat(MAX_ID_BYTES + 1), "m:4"))), Some("error".into()));
         assert_eq!(code(limit_refusal(&Request::Ping)), None, "other requests keep no limit here");
     }
 
@@ -922,6 +980,36 @@ mod tests {
             serde_json::to_value(&gone).expect("serializes"),
             serde_json::json!({"seq": 7, "card": {"kind": "unavailable"}})
         );
+        // Issue #605: a suggestion card names the mail and the kind of action, and shows the suggestion.
+        let entry: Entry = serde_json::from_value(serde_json::json!({
+            "seq": 6, "time": "2026-10-19T09:00:00Z", "kind": "card",
+            "card": {"kind": "suggestion", "account": "mail:anna@example.org", "id": "m:4", "action": "event"}
+        }))
+        .expect("a suggestion card");
+        let pointed =
+            CardRef::Suggestion { account: "mail:anna@example.org".into(), id: "m:4".into(), action: "event".into() };
+        assert_eq!(entry.content, EntryContent::Card { card: pointed });
+        let suggestion = crate::actions::Suggestion {
+            kind: "event".into(),
+            state: crate::actions::SuggestionState::Ready,
+            task: None,
+            event: None,
+            reason: Some("The sender proposes it".into()),
+        };
+        let shown = CardEntry {
+            seq: 6,
+            card: Card::Suggestion {
+                account: "mail:anna@example.org".into(),
+                id: "m:4".into(),
+                suggestion: Box::new(suggestion),
+            },
+        };
+        let json = serde_json::to_value(&shown).expect("serializes");
+        assert_eq!(
+            (&json["card"]["kind"], &json["card"]["suggestion"]["kind"]),
+            (&"suggestion".into(), &"event".into())
+        );
+        assert_eq!(serde_json::from_value::<CardEntry>(json).expect("reads back"), shown);
         assert_eq!(Request::GetCards { conversation: "c1".into() }.conversation(), Some("c1"));
         let long = Request::GetCards { conversation: "x".repeat(MAX_ID_BYTES + 1) };
         assert!(limit_refusal(&long).is_some(), "the id's limit holds");

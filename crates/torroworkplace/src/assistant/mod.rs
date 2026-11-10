@@ -1069,7 +1069,7 @@ pub async fn answer_from(
         Request::ListEngines => Response::Engines { engines: assistant.engines(ai).await },
         Request::ListConversations => assistant.list().await,
         Request::GetConversation { id, after } => assistant.get(&id, after).await,
-        Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot } => {
+        Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot, about: _ } => {
             let bot = match bot {
                 Some(id) => match assistant.bots.get(&id).await {
                     Some(bot) => Some(bot),
@@ -1187,6 +1187,7 @@ pub(crate) mod tests {
             without: vec![Area::Mail],
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         }
     }
 
@@ -1301,6 +1302,7 @@ pub(crate) mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         assert_eq!(code(&answer(&assistant, &ai, other).await), "not-found", "no such engine");
         assert_eq!(code(&answer(&assistant, &ai, send(None, " ")).await), "error", "limits first");
@@ -1362,6 +1364,7 @@ pub(crate) mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         assert_eq!(code(&answer(&assistant, &ai, to_ollama).await), "unsupported");
         assert_eq!(

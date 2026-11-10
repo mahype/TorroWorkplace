@@ -530,6 +530,7 @@ mod tests {
             last: 1,
             bot: bot.map(str::to_owned),
             bot_deleted: false,
+            about: None,
         }
     }
 

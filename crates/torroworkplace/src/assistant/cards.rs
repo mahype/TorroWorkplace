@@ -67,7 +67,7 @@ fn shown(card: &CardRef, register: &Register, client: Option<&str>) -> Card {
         (CardRef::File { id }, Some(client)) => {
             register.get(id, Maker::Client(client)).map_or(Card::Unavailable, |entry| Card::File(entry.info()))
         }
-        (CardRef::File { .. }, None) => Card::Unavailable,
+        (CardRef::File { .. }, None) | (CardRef::Suggestion { .. }, _) => Card::Unavailable,
     }
 }
 

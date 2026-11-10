@@ -3646,6 +3646,12 @@ pub enum Request {
         /// one that fits; as for `inbox.suggest_task_from_item`. Ignored for other forms.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         lists: Vec<String>,
+        /// What the person asked for, in their words (issue #605: "the meeting on Thursday"), at
+        /// most 200 characters: it only steers what is read out of the mail when it holds several,
+        /// and goes to the model as data, never as instructions. Left out, the model picks.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(length(max = 200))]
+        focus: Option<String>,
     },
     /// The kinds of action Torro can find in mail (issue #603), each with its form and whether it
     /// looks for it in new mail ([`Response::ActionKinds`]). Every kind is listed, also one switched
@@ -3757,6 +3763,16 @@ pub enum Request {
         /// needs write access to `bots`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bot: Option<String>,
+        /// The mail this conversation is about (issue #605, "Chat zu einer Mail" in
+        /// `docs/assistent.md`): `{"account": "mail:<address>", "id": "m:…"}`. Only for a new
+        /// conversation with the assistant (`unsupported` with `bot`); a conversation continued
+        /// without it keeps its own, one with another is `error`. Its answers may only read and
+        /// suggest (`mail.extract_action`), whatever the assistant's rights allow beyond that, and the
+        /// assistant reads the mail first. Needs the assistant's read access to that mail account
+        /// (`forbidden` otherwise, nothing stored), a caller that sees the account (`not-found`), and a
+        /// model the data rule lets read mail (`not-connected`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        about: Option<assistant::MailRef>,
     },
     /// Stops the answer that runs in `conversation`; what it did until then stays, and a
     /// `stopped` entry is added. [`Response::Ok`] also when nothing runs; `not-found` for an
@@ -5960,7 +5976,7 @@ pub const SUGGESTION_LISTS_MAX: usize = 50;
 
 /// The task an AI suggests for an inbox entry (`inbox.suggest_task_from_item`, issue #120). Made of
 /// text from outside the suite: data to show and check, never instructions. Nothing is saved yet.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskSuggestion {
     /// What to do, one line of at most [`SUGGESTION_TITLE_MAX`] characters, never blank.
     pub title: String,
@@ -5984,7 +6000,7 @@ pub struct TaskSuggestion {
 /// The event an AI suggests for an inbox entry (`inbox.suggest_event_from_item`, issue #120). Made
 /// of text from outside the suite: data to show and check, never instructions. Nothing is saved
 /// yet.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct EventSuggestion {
     /// What it is, one line of at most [`SUGGESTION_TITLE_MAX`] characters, never blank.
     pub title: String,

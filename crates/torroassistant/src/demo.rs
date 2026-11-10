@@ -165,7 +165,7 @@ impl Demo {
             Request::Accounts => Response::Accounts { accounts: accounts() },
             Request::ListConversations => Response::Conversations { conversations: state.summaries() },
             Request::GetConversation { id, after } => state.get(&id, after.unwrap_or(0)),
-            Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot } => {
+            Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot, about: _ } => {
                 state.send(conversation, (engine, model, effort), text, (without, mode), bot)
             }
             // No default for new chats in the demo: the one used last (issue #131).
@@ -326,6 +326,7 @@ impl State {
                     last: 0,
                     bot: bot.clone(),
                     bot_deleted: false,
+                    about: None,
                 };
                 self.conversations.push(Conversation { summary, entries: Vec::new(), growing: None });
                 id
@@ -529,6 +530,7 @@ fn sample(id: &str, title: &str, now: DateTime<Utc>, ago: Duration, entries: Vec
         last: entries.len() as u64,
         bot: None,
         bot_deleted: false,
+        about: None,
     };
     Conversation { summary, entries, growing: None }
 }
@@ -1012,6 +1014,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         let (summary, entries) = conversation(demo.answer(send));
         assert_eq!((summary.last, summary.running, entries.len()), (1, true, 1));

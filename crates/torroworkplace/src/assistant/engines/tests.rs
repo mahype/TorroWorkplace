@@ -303,6 +303,7 @@ fn send_to_claude() -> Request {
         without: Vec::new(),
         mode: torro_ipc::assistant::Mode::Default,
         bot: None,
+        about: None,
     }
 }
 

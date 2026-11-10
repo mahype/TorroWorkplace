@@ -137,6 +137,7 @@ impl Conversation {
             last: self.last(),
             bot: self.bot.clone(),
             bot_deleted: false,
+            about: None,
         }
     }
 

@@ -343,6 +343,7 @@ pub fn send_request(
         without: without.to_vec(),
         mode,
         bot: bot.map(str::to_owned),
+        about: None,
     })
 }
 
@@ -658,6 +659,7 @@ mod tests {
             last,
             bot: None,
             bot_deleted: false,
+            about: None,
         }
     }
 
@@ -840,6 +842,7 @@ mod tests {
                 without: vec![Area::Mail],
                 mode: Mode::Ask,
                 bot: None,
+                about: None,
             })
         );
         let none: (&[Area], Mode) = (&[], Mode::Default);

@@ -35,7 +35,7 @@ impl App {
     pub(super) fn card(&self, seq: u64) -> Option<Element<'_, Message>> {
         Some(match self.cards.get(&seq)? {
             Card::File(file) => file_card(file),
-            Card::Unavailable => gone_card(),
+            Card::Unavailable | Card::Suggestion { .. } => gone_card(),
         })
     }
 
@@ -48,7 +48,7 @@ impl App {
                 widgets::ellipsized(typo::body(), file.name.as_str(), theme::text),
                 Some(chat::size_text(file.size)),
             ),
-            Card::Unavailable => (
+            Card::Unavailable | Card::Suggestion { .. } => (
                 gone_tile(TileSize::Small),
                 widgets::ellipsized(typo::body(), tr("No longer available"), theme::text_3),
                 None,

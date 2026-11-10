@@ -3894,6 +3894,32 @@ mod tests {
         );
     }
 
+    /// Issue #605: `focus` reaches `mail.extract_action` as given, and stays out when left out.
+    #[test]
+    fn extract_action_takes_the_persons_focus() {
+        let focused = args(json!({
+            "account": "mail:anna@example.org",
+            "id": "m:4",
+            "kind": "event",
+            "focus": "the meeting on Thursday"
+        }));
+        assert_eq!(
+            request_for("mail_extract_action", focused, &Utc),
+            Ok(Request::ExtractAction {
+                account: "mail:anna@example.org".into(),
+                id: "m:4".into(),
+                kind: "event".into(),
+                lists: Vec::new(),
+                focus: Some("the meeting on Thursday".into()),
+            })
+        );
+        let plain = args(json!({"account": "mail:anna@example.org", "id": "m:4", "kind": "task"}));
+        assert!(matches!(
+            request_for("mail_extract_action", plain, &Utc),
+            Ok(Request::ExtractAction { focus: None, .. })
+        ));
+    }
+
     #[test]
     fn send_message_builds_its_request() {
         let arguments = args(json!({
@@ -3913,6 +3939,7 @@ mod tests {
                 without: vec![Area::Mail],
                 mode: torro_ipc::assistant::Mode::Default,
                 bot: None,
+                about: None,
             })
         );
         // Issue #132: the permission mode comes through as given.
@@ -3928,6 +3955,17 @@ mod tests {
             request_for("assistant_send_message", thinking, &Utc),
             Ok(Request::SendMessage { effort: Some(torro_core::ai::Effort::High), model: Some(ref model), .. })
                 if model == "opus"
+        ));
+        // Issue #605: a chat about a mail names it as `about`.
+        let about = args(json!({
+            "engine": "test",
+            "text": "Is there a meeting in it?",
+            "about": {"account": "mail:anna@example.org", "id": "m:4"}
+        }));
+        assert!(matches!(
+            request_for("assistant_send_message", about, &Utc),
+            Ok(Request::SendMessage { about: Some(ref about), .. })
+                if about.account == "mail:anna@example.org" && about.id == "m:4"
         ));
         let read = request_for("assistant_get_conversation", args(json!({"id": "0123456789abcdef", "after": 4})), &Utc);
         assert_eq!(read, Ok(Request::GetConversation { id: "0123456789abcdef".into(), after: Some(4) }));

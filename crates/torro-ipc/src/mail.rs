@@ -1110,12 +1110,16 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 /// cursor): enough for `mail:` and the longest address, and far more than the core's own ids.
 pub const MAX_ID_BYTES: usize = 300;
 
+/// At most this many characters in the person's words that steer `mail.extract_action` (`focus`,
+/// issue #605).
+pub const MAX_FOCUS_CHARS: usize = 200;
+
 /// The `error` answer for a mail request that breaks a limit, before anything is looked at: `ids`
 /// empty or over [`MAX_IDS`], more than [`MAX_ATTACHMENTS`] `parts` to save, a search `limit` of 0
 /// or over [`MAX_LIMIT`], a `query` over [`MAX_QUERY_CHARS`] characters (a mail filter's over
 /// [`torro_mail::FILTER_QUERY_MAX`], issue #339), a draft with more than
 /// [`MAX_RECIPIENTS`] recipients, more than [`MAX_ATTACHMENTS`] attachments or a text over
-/// [`MAX_BODY_BYTES`], and any id, folder, cursor or attachment part over [`MAX_ID_BYTES`]. `None`
+/// [`MAX_BODY_BYTES`], a `focus` of `mail.extract_action` over [`MAX_FOCUS_CHARS`], and any id, folder, cursor or attachment part over [`MAX_ID_BYTES`]. `None`
 /// for every request within them and for every other request. The core calls it before rights,
 /// approvals and handlers, so nobody is asked to approve what would be refused anyway.
 pub fn limit_refusal(request: &Request) -> Option<Response> {
@@ -1168,6 +1172,9 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
             if query.chars().count() > torro_mail::FILTER_QUERY_MAX =>
         {
             refuse(format!("the search of a filter may hold at most {} characters", torro_mail::FILTER_QUERY_MAX))
+        }
+        Request::ExtractAction { focus: Some(focus), .. } if focus.chars().count() > MAX_FOCUS_CHARS => {
+            refuse(format!("the focus may hold at most {MAX_FOCUS_CHARS} characters"))
         }
         Request::SaveMailAttachments { parts, .. } if parts.len() > MAX_ATTACHMENTS => {
             refuse(format!("at most {MAX_ATTACHMENTS} attachments per call, or none for all"))
@@ -1727,6 +1734,24 @@ mod tests {
             (json["archive_path"].as_str(), json["target_display"].as_str()),
             (Some("Entw&APw-rfe"), Some("Entwürfe"))
         );
+    }
+
+    /// Issue #605: the person's words that steer `mail.extract_action` keep their limit.
+    #[test]
+    fn the_focus_of_an_extraction_keeps_its_limit() {
+        let extract = |focus: Option<String>| Request::ExtractAction {
+            account: "mail:anna@example.org".into(),
+            id: "m:4".into(),
+            kind: "event".into(),
+            lists: Vec::new(),
+            focus,
+        };
+        assert!(limit_refusal(&extract(None)).is_none());
+        assert!(limit_refusal(&extract(Some("ä".repeat(MAX_FOCUS_CHARS)))).is_none(), "characters, not bytes");
+        assert!(matches!(
+            limit_refusal(&extract(Some("a".repeat(MAX_FOCUS_CHARS + 1)))),
+            Some(Response::Error { code, .. }) if code == "error"
+        ));
     }
 
     #[test]

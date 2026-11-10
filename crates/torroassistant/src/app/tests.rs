@@ -476,6 +476,7 @@ fn sending_starts_a_conversation_and_the_growing_answer_replaces_itself() {
             without: vec![Area::Mail],
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         }]
     );
     let result = block_on(app.backend.ask(requests[0].clone()));

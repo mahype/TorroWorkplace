@@ -6424,7 +6424,7 @@ impl Core {
             Request::DismissSuggestion { account, id, kind } => {
                 self.close_suggestion(&account, &id, &kind, false, reach).await
             }
-            Request::ExtractAction { account, id, kind, lists } => {
+            Request::ExtractAction { account, id, kind, lists, focus: _ } => {
                 Box::pin(self.extract_action((&account, &id, &kind), lists, reach)).await
             }
             Request::ListActionKinds => {
@@ -26925,6 +26925,7 @@ mod tests {
                 without: Vec::new(),
                 mode: torro_ipc::assistant::Mode::Default,
                 bot: None,
+                about: None,
             },
             Request::CancelAnswer { conversation: id.into() },
             Request::RenameConversation { id: id.into(), title: "Renamed".into() },
@@ -27106,6 +27107,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         let Response::Conversation { conversation, entries } = ask(&core, Some(&app_key), send).await else {
             panic!("the person starts a conversation")
@@ -27174,6 +27176,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         let Response::Conversation { conversation, entries } = ask(&core, Some(&key), send).await else {
             panic!("the agent starts a conversation")
@@ -27199,6 +27202,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         assert_eq!(code(&ask(&core, Some(&key), nowhere).await), "not-found", "no such engine");
         let bot = Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::Bot("travel".into()) };
@@ -27276,6 +27280,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot.into()),
+            about: None,
         }
     }
 
@@ -30477,6 +30482,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         match core.handle(send).await {
             Response::Conversation { conversation, .. } => conversation.id,
@@ -30667,6 +30673,7 @@ mod tests {
                     without: Vec::new(),
                     mode: torro_ipc::assistant::Mode::Default,
                     bot: None,
+                    about: None,
                 };
                 let Response::Conversation { conversation, .. } = core.handle(send).await else {
                     panic!("a conversation")
@@ -30859,6 +30866,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot.id.clone()),
+            about: None,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         conversation_until(&core, &conversation.id, |running, _| !running).await;
@@ -30942,6 +30950,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         assert!(matches!(core.handle(send).await, Response::Conversation { .. }), "sent");
     }
@@ -31176,6 +31185,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot.id.clone()),
+            about: None,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         let asked = waiting_approval(&core).await;
@@ -31314,6 +31324,7 @@ mod tests {
             without: vec![Area::Calendar],
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         let entries = conversation_until(&core, &conversation.id, |running, _| !running).await;
@@ -31656,6 +31667,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         conversation_until(core, &conversation.id, |running, _| !running).await;
@@ -31735,6 +31747,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         assert!(matches!(core.handle(named).await, Response::Conversation { .. }));
         let entries = conversation_until(&core, &first, |running, _| !running).await;
@@ -31940,6 +31953,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         assert!(matches!(ask(&core, Some(&agent_key), by_agent).await, Response::Conversation { .. }));
         conversation_until(&core, &named, |running, _| !running).await;
@@ -32343,6 +32357,7 @@ mod tests {
             without: Vec::new(),
             mode: torro_ipc::assistant::Mode::Default,
             bot: None,
+            about: None,
         };
         let label = core.ai.label_of(&account.id).await.expect("a label");
         let off = trf("Turn on a model of {provider} in Settings › AI.", &[("provider", &label)]);
@@ -32700,6 +32715,7 @@ mod tests {
                 id: room.id.clone(),
                 kind: "task".into(),
                 lists: vec![],
+                focus: None,
             };
             assert_eq!(code(&ask(core, Some(&stranger), extract).await), "not-found");
             assert_eq!(ask(core, key, list).await, Response::Suggestions { suggestions: Vec::new() });
@@ -34095,6 +34111,7 @@ mod tests {
             id: message.clone(),
             kind: "event".into(),
             lists: Vec::new(),
+            focus: None,
         };
         let Response::Suggestion { suggestion } = core.handle(extract).await else { panic!("read out") };
         assert_eq!(suggestion.state, torro_ipc::actions::SuggestionState::Ready);
@@ -34188,6 +34205,7 @@ mod tests {
             id: id.into(),
             kind: kind.into(),
             lists: Vec::new(),
+            focus: None,
         };
         assert_eq!(code(&core.handle(extract("github", &message)).await), "not-found", "no such kind");
         assert_eq!(code(&core.handle(extract("task", "m:gone")).await), "not-found", "no such mail");
