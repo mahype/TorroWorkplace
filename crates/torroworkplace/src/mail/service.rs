@@ -92,6 +92,9 @@ use crate::pim::{NoKeychain, PimService, Reach, SYNC_PROBLEM_AFTER};
 /// How many changes wait for a slow subscriber before it misses some ([`MailService::subscribe`]).
 const EVENTS: usize = 256;
 
+pub(super) type BackgroundSwitch = Arc<dyn Fn() -> bool + Send + Sync>;
+type WorkflowMessageLocks = HashMap<(String, String), std::sync::Weak<Mutex<()>>>;
+
 /// How often fetched attachments older than a day are deleted.
 const PURGE_EVERY: Duration = Duration::from_secs(60 * 60);
 
@@ -1244,7 +1247,16 @@ pub struct MailService {
     outbox: tokio::sync::OnceCell<Arc<Outbox>>,
     /// Mail is turned off (task W.2): the accounts and their stores stay readable, but no worker
     /// fetches or indexes in the background.
-    paused: AtomicBool,
+    paused: Arc<AtomicBool>,
+    /// Read the current component setting too: settings can change before set_paused's task runs.
+    workflow_switch: Arc<StdMutex<Option<BackgroundSwitch>>>,
+    pub(super) arrival_sorting: StdMutex<std::sync::Weak<super::inbox_feed::ArrivalSorting>>,
+    pub(super) workflow_preparer: StdMutex<std::sync::Weak<super::inbox_feed::WorkflowPreparation>>,
+    /// Legacy notification deciders share this lock. Durable work uses per-message claims below,
+    /// never a global lock across a batch, IMAP, guard or optional model call.
+    pub(super) arrival_classification: Mutex<()>,
+    workflow_message_locks: StdMutex<WorkflowMessageLocks>,
+    pub(super) workflow_wake: Notify,
     cache_workers: std::sync::Mutex<std::collections::HashSet<String>>,
     cache_jobs_lock: Mutex<()>,
     /// Where attachments are saved to (task M12.3, issue #290): `<data>/mail/save-targets.json`,
@@ -1345,7 +1357,13 @@ impl MailService {
             writing: Mutex::new(()),
             calendars: None,
             outbox: tokio::sync::OnceCell::new(),
-            paused: AtomicBool::new(false),
+            paused: Arc::new(AtomicBool::new(false)),
+            workflow_switch: Arc::new(StdMutex::new(None)),
+            arrival_sorting: StdMutex::default(),
+            workflow_preparer: StdMutex::default(),
+            arrival_classification: Mutex::new(()),
+            workflow_message_locks: StdMutex::default(),
+            workflow_wake: Notify::new(),
             cache_workers: std::sync::Mutex::new(std::collections::HashSet::new()),
             cache_jobs_lock: Mutex::new(()),
             save_targets,
@@ -1386,6 +1404,88 @@ impl MailService {
     /// start only while it is on.
     pub fn pause_from_start(&self, paused: bool) {
         self.paused.store(paused, Ordering::Release);
+    }
+
+    pub(crate) fn set_workflow_switch(&self, switch: BackgroundSwitch) {
+        *self.workflow_switch.lock().unwrap_or_else(PoisonError::into_inner) = Some(switch);
+    }
+
+    pub(crate) fn workflow_preparation_on(&self) -> bool {
+        !self.paused.load(Ordering::Acquire)
+            && self.workflow_switch.lock().unwrap_or_else(PoisonError::into_inner).as_ref().is_none_or(|on| on())
+    }
+
+    pub(super) fn workflow_preparation_gate(&self) -> BackgroundSwitch {
+        let (paused, switch) = (Arc::clone(&self.paused), Arc::clone(&self.workflow_switch));
+        Arc::new(move || {
+            !paused.load(Ordering::Acquire)
+                && switch.lock().unwrap_or_else(PoisonError::into_inner).as_ref().is_none_or(|on| on())
+        })
+    }
+
+    pub(super) async fn workflow_preparation_allowed(&self, account: &str) -> bool {
+        if !self.workflow_preparation_on() {
+            return false;
+        }
+        let on = self
+            .entries
+            .read()
+            .await
+            .iter()
+            .any(|entry| entry.mailbox.id() == account && entry.mailbox.settings.services.mail);
+        on && self.workflow_preparation_on()
+    }
+
+    /// Cancelling an in-flight model/preparation future leaves its durable wait untouched.
+    pub(crate) async fn while_workflow_on<T>(&self, account: &str, work: impl Future<Output = T>) -> Option<T> {
+        if !self.workflow_preparation_allowed(account).await {
+            return None;
+        }
+        tokio::pin!(work);
+        let mut check = tokio::time::interval(Duration::from_millis(20));
+        loop {
+            tokio::select! {
+                result = &mut work => return self.workflow_preparation_allowed(account).await.then_some(result),
+                _ = check.tick() => if !self.workflow_preparation_allowed(account).await { return None; },
+            }
+        }
+    }
+
+    pub(crate) async fn lock_arrival_classification(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.arrival_classification.lock().await
+    }
+
+    /// A busy message is skipped rather than queueing an unbounded number of waiting tasks.
+    /// Weak entries disappear with the last in-flight claim; other accounts/messages never wait.
+    pub(super) fn claim_workflow_message(
+        &self,
+        account: &str,
+        message: &str,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let lock = {
+            let mut locks = self.workflow_message_locks.lock().unwrap_or_else(PoisonError::into_inner);
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            let entry = locks.entry((account.to_string(), message.to_string())).or_default();
+            match entry.upgrade() {
+                Some(lock) => lock,
+                None => {
+                    let lock = Arc::new(Mutex::new(()));
+                    *entry = Arc::downgrade(&lock);
+                    lock
+                }
+            }
+        };
+        lock.try_lock_owned().ok()
+    }
+
+    pub(crate) fn durable_classifier_on(&self) -> bool {
+        self.workflow_preparer.lock().unwrap_or_else(PoisonError::into_inner).upgrade().is_some()
+    }
+
+    pub(crate) async fn is_workflow_delivery(&self, account: &str, message: &str) -> Result<bool, MailError> {
+        let store = self.store(account).await?;
+        let id = message.to_string();
+        Ok(store.run(move |store| store.workflow_delivery(&id)).await?)
     }
 
     /// Mail was turned off or on (task W.2): the workers stop, or start again. Nothing happens when
@@ -1944,7 +2044,16 @@ impl MailService {
     /// [`MailError::NoPassword`], [`MailError::Offline`], [`MailError::NotPublic`],
     /// [`MailError::Untrusted`] when no connection could be made.
     pub async fn command(&self, account: &str) -> Result<Command, MailError> {
-        self.mailbox_of(account).await?.command().await
+        self.command_boxed(account).await
+    }
+
+    fn command_boxed<'a>(
+        &'a self,
+        account: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Command, MailError>> + Send + 'a>> {
+        // TLS/IMAP setup is large in debug builds. Construct it in a separate boxed frame so
+        // nested approved commands do not reserve another copy on their runtime thread stack.
+        Box::pin(async move { self.mailbox_of(account).await?.command().await })
     }
 
     /// A new signed-in session of `account` of its own, outside the command connection: for work
@@ -2537,6 +2646,7 @@ impl MailService {
     }
 
     /// Write an automatic answer only while the mail still has the category the job read.
+    /// This legacy/job path is intentionally event-free; arrivals use the additive workflow CAS.
     pub async fn set_category_if_unchanged(
         &self,
         account: &str,
@@ -2547,6 +2657,123 @@ impl MailService {
         let store = self.mailbox_of(account).await?.store()?;
         let id = message.to_string();
         Ok(store.run(move |store| store.set_category_if_unchanged(&id, expected, category)).await?)
+    }
+
+    /// Internal workflow feed: a bounded unacknowledged page, including durable waits/failures.
+    /// Callers must check current account rights before reading/accepting events for a carrier.
+    pub async fn workflow_events(
+        &self,
+        account: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<super::store::WorkflowMailEvent>, MailError> {
+        let store = self.store(account).await?;
+        let after = after.map(str::to_string);
+        Ok(store.read(move |store| store.workflow_events(after.as_deref(), limit)).await?)
+    }
+
+    /// Acknowledge only AFTER the runner durably accepted/deduplicated this stable event id.
+    /// Returns false for waiting inputs (preparation still owns them), unknown or already acked ids.
+    pub async fn acknowledge_workflow_event(&self, account: &str, event: &str) -> Result<bool, MailError> {
+        let store = self.store(account).await?;
+        let event = event.to_string();
+        Ok(store.run(move |store| store.acknowledge_workflow_event(&event)).await?)
+    }
+
+    /// Event-bearing single classification; bulk/recategorization/automation origins suppress
+    /// events. Existing setters and their bool/Result contracts are unchanged.
+    pub async fn set_workflow_category(
+        &self,
+        account: &str,
+        message: &str,
+        category: Option<torro_mail::MailCategory>,
+        origin: super::store::WorkflowCategoryOrigin,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MailError> {
+        let automatic = origin == super::store::WorkflowCategoryOrigin::Arrival;
+        if automatic && !self.workflow_preparation_allowed(account).await {
+            return Ok(false);
+        }
+        let store = self.store(account).await?;
+        let message = message.to_string();
+        let on = self.workflow_preparation_gate();
+        Ok(store
+            .run(move |store| {
+                if automatic && !on() {
+                    return Ok(false);
+                }
+                store.set_workflow_category(&message, category, origin, now)
+            })
+            .await?)
+    }
+
+    pub async fn set_workflow_category_if_unchanged(
+        &self,
+        account: &str,
+        message: &str,
+        expected: Option<torro_mail::MailCategory>,
+        category: torro_mail::MailCategory,
+        origin: super::store::WorkflowCategoryOrigin,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MailError> {
+        let automatic = origin == super::store::WorkflowCategoryOrigin::Arrival;
+        if automatic && !self.workflow_preparation_allowed(account).await {
+            return Ok(false);
+        }
+        let store = self.store(account).await?;
+        let message = message.to_string();
+        let on = self.workflow_preparation_gate();
+        Ok(store
+            .run(move |store| {
+                if automatic && !on() {
+                    return Ok(false);
+                }
+                store.set_workflow_category_if_unchanged(&message, expected, category, origin, now)
+            })
+            .await?)
+    }
+
+    /// Read a workflow input with BODY.PEEK and verify its sender independently of logo settings.
+    pub async fn prepare_workflow_body(&self, account: &str, message: &str) -> Result<bool, MailError> {
+        if !self.workflow_preparation_allowed(account).await {
+            return Ok(false);
+        }
+        let mailbox = self.mailbox_of(account).await?;
+        if !self.workflow_preparation_allowed(account).await {
+            return Ok(false);
+        }
+        Ok(self
+            .while_workflow_on(
+                account,
+                sync::prepare_workflow_body_gated(&mailbox, message, self.workflow_preparation_gate()),
+            )
+            .await
+            .transpose()?
+            .unwrap_or(false))
+    }
+
+    /// Security input for automatic execution, independent of `SenderLogos`/summary decoration.
+    /// `None` must require manual review, not be treated as a verified sender.
+    pub async fn workflow_sender_domain(&self, account: &str, message: &str) -> Result<Option<String>, MailError> {
+        let store = self.store(account).await?;
+        let message = message.to_string();
+        Ok(store.read(move |store| store.workflow_sender_domain(&message)).await?)
+    }
+
+    /// Bind an automatic job to DKIM verification of its exact raw bytes, not an older cached verdict.
+    pub(crate) async fn workflow_verified_sender(&self, raw: &[u8]) -> Option<String> {
+        match self.check.verified_domain(raw).await {
+            super::check::Checked::Domain(domain) => Some(domain),
+            _ => None,
+        }
+    }
+
+    /// Test support for explicit source retries. Product retries are deliberate `RunWorkflow` jobs.
+    #[cfg(test)]
+    pub async fn retry_workflow_preparation(&self, account: &str, message: &str) -> Result<bool, MailError> {
+        let store = self.store(account).await?;
+        let message = message.to_string();
+        Ok(store.run(move |store| store.retry_workflow_preparation(&message)).await?)
     }
 
     /// Keeps `category` with every message of `messages` in the account `account` (task E12.4);
@@ -2609,15 +2836,32 @@ impl MailService {
 
     /// Keeps that the decision model found `kinds` of action in the mail `message` (issue #603,
     /// [`super::store::MailStore::detect_suggestions`]); answers the kinds that are new.
+    #[allow(dead_code, reason = "compatible unconditional entry point; arrival detection now rechecks live switches")]
     pub async fn detect_suggestions(
         &self,
         account: &str,
         message: &str,
         kinds: Vec<String>,
     ) -> Result<Vec<String>, MailError> {
+        self.detect_suggestions_checked(account, message, kinds, Arc::new(|_| true)).await
+    }
+
+    /// Recheck live switches inside the writing store task, after every queued store wait.
+    pub(crate) async fn detect_suggestions_checked(
+        &self,
+        account: &str,
+        message: &str,
+        kinds: Vec<String>,
+        allowed: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    ) -> Result<Vec<String>, MailError> {
         let store = self.mailbox_of(account).await?.store()?;
         let message = message.to_string();
-        Ok(store.run(move |store| store.detect_suggestions(&message, &kinds, Utc::now())).await?)
+        Ok(store
+            .run(move |store| {
+                let kinds = kinds.into_iter().filter(|kind| allowed(kind)).collect::<Vec<_>>();
+                store.detect_suggestions(&message, &kinds, Utc::now())
+            })
+            .await?)
     }
 
     /// The open suggestions of the mail `message` (issue #603).

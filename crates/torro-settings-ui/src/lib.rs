@@ -210,6 +210,11 @@ pub struct Data {
     /// "Categorization" shows those that set a category on that category's page (issue #481), the
     /// others under "Other filters".
     pub mail_filters: Vec<torro_mail::MailFilter>,
+    /// Workflow metadata only; the service owns execution, grants and all document access.
+    pub workflow_templates: Vec<torro_ipc::workflows::WorkflowTemplate>,
+    pub workflows: Vec<torro_ipc::workflows::Workflow>,
+    pub workflow_rules: Vec<torro_ipc::workflows::WorkflowRule>,
+    pub workflow_runs: Vec<torro_ipc::workflows::WorkflowRun>,
     /// Why the load failed, if it did (daemon not running …); the host shows it over the page.
     pub error: Option<String>,
     /// The requests whose first answer is still on its way since the settings opened (issue
@@ -345,6 +350,10 @@ impl Data {
                 self.rule_hits = hits;
             }
             Response::MailFilters { filters } => self.mail_filters = filters,
+            Response::WorkflowTemplates { templates } => self.workflow_templates = templates,
+            Response::Workflows { workflows } => self.workflows = workflows,
+            Response::WorkflowRules { rules } => self.workflow_rules = rules,
+            Response::WorkflowRuns { runs } => self.workflow_runs = runs,
             _ => {}
         }
     }

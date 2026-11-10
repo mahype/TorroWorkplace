@@ -77,7 +77,46 @@ const CORRESPONDENT_ROWS: u32 = 5_000;
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 17;
+
+/// Workflow delivery provenance is separate from the disposable body cache. An incomplete
+/// baseline survives restarts; an outbox row survives removal of its source message until ack.
+const SCHEMA_V15: &str = "
+CREATE TABLE IF NOT EXISTS workflow_baselines (
+    folder_id TEXT PRIMARY KEY REFERENCES folders(id) ON DELETE CASCADE,
+    uidvalidity INTEGER NOT NULL,
+    high_uid INTEGER,
+    complete INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO workflow_baselines (folder_id, uidvalidity)
+    SELECT id, uidvalidity FROM folders WHERE uidvalidity IS NOT NULL;
+CREATE TABLE IF NOT EXISTS workflow_deliveries (
+    message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+    arrived_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workflow_arrivals (
+    folder_id TEXT NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    uidvalidity INTEGER NOT NULL,
+    uid INTEGER NOT NULL,
+    PRIMARY KEY (folder_id, uidvalidity, uid)
+);
+CREATE TABLE IF NOT EXISTS workflow_events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    message_id TEXT NOT NULL,
+    cause TEXT NOT NULL CHECK(cause IN ('arrival', 'category_changed')),
+    occurred_at INTEGER NOT NULL,
+    received_at INTEGER,
+    state TEXT NOT NULL CHECK(state IN ('waiting_body', 'waiting_category', 'ready', 'failed')),
+    failure TEXT,
+    category TEXT,
+    acknowledged INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS workflow_events_message ON workflow_events(message_id);
+CREATE INDEX IF NOT EXISTS workflow_events_unacknowledged ON workflow_events(seq) WHERE acknowledged = 0;
+CREATE INDEX IF NOT EXISTS workflow_events_pending ON workflow_events(message_id, seq)
+    WHERE acknowledged = 0 AND state IN ('waiting_body', 'waiting_category');
+";
 
 /// Originals of mail that is no longer on the server (`originals.gone_at`) are deleted this many
 /// days after the sync noticed by [`MailStore::prune_gone_originals`]: long enough to still back up
@@ -454,6 +493,76 @@ pub enum UidValidity {
     First,
     /// The server renumbered the folder: all its messages were dropped, sync it from scratch.
     Reset,
+}
+
+/// Why a workflow may inspect a mail. Never inferred from notification settings or Seen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowMailCause {
+    Arrival,
+    CategoryChanged,
+}
+
+/// Preparation is durable and independent of both notification delivery and runner ownership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowMailState {
+    WaitingBody,
+    WaitingCategory,
+    Ready,
+    Failed,
+}
+
+/// Fixed, content-free reasons; model/provider error text must never enter the outbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowMailFailure {
+    /// Control flow only. Never persisted as a failure or consumed as a successful decision.
+    Paused,
+    BodyUnavailable,
+    MessageGone,
+    CategoryFailed,
+    CategoryTimeout,
+}
+
+impl WorkflowMailFailure {
+    fn column(self) -> Option<&'static str> {
+        match self {
+            Self::Paused => None,
+            Self::BodyUnavailable => Some("body_unavailable"),
+            Self::MessageGone => Some("message_gone"),
+            Self::CategoryFailed => Some("category_failed"),
+            Self::CategoryTimeout => Some("category_timeout"),
+        }
+    }
+}
+
+/// One unacknowledged event, with a stable id across reads, crashes and preparation changes.
+/// The runner must durably deduplicate/accept `id` before acknowledging it in this store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowMailEvent {
+    pub id: String,
+    pub account: String,
+    pub message: String,
+    pub cause: WorkflowMailCause,
+    pub occurred_at: DateTime<Utc>,
+    /// Trusted IMAP INTERNALDATE snapshot, never the sender-controlled Date header. Automatic
+    /// catch-up must use this for its age limit; unknown means manual review, not 'just arrived'.
+    pub received_at: Option<DateTime<Utc>>,
+    pub state: WorkflowMailState,
+    pub failure: Option<WorkflowMailFailure>,
+    /// The category at the change, not a later value read from the mail.
+    pub category: Option<Category>,
+}
+
+/// Only an arrival's first classification or a genuine interactive classification may emit.
+/// Existing bool setters remain the event-free path for jobs and automation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowCategoryOrigin {
+    Arrival,
+    Interactive,
+    Bulk,
+    #[allow(dead_code, reason = "explicit event-suppressing origin for callers; legacy setters also remain event-free")]
+    Recategorization,
+    #[allow(dead_code, reason = "explicit event-suppressing origin for automation callers")]
+    Automation,
 }
 
 /// The headers of a message as the sync reads them, to be stored by [`MailStore::upsert_message`].
@@ -1277,7 +1386,10 @@ impl MailStore {
         match current.uidvalidity {
             Some(seen) if seen == uidvalidity => Ok(UidValidity::Unchanged),
             None => {
-                self.db.execute("UPDATE folders SET uidvalidity = ?2 WHERE id = ?1", params![folder, uidvalidity])?;
+                let tx = self.db.unchecked_transaction()?;
+                tx.execute("UPDATE folders SET uidvalidity = ?2 WHERE id = ?1", params![folder, uidvalidity])?;
+                reset_workflow_baseline(&tx, folder, uidvalidity)?;
+                tx.commit()?;
                 Ok(UidValidity::First)
             }
             Some(_) => {
@@ -1293,6 +1405,7 @@ impl MailStore {
                     "UPDATE folders SET uidvalidity = ?2, highest_modseq = NULL WHERE id = ?1",
                     params![folder, uidvalidity],
                 )?;
+                reset_workflow_baseline(&tx, folder, uidvalidity)?;
                 tx.commit()?;
                 Ok(UidValidity::Reset)
             }
@@ -1309,12 +1422,86 @@ impl MailStore {
 
     // ----- messages: writing -----
 
+    /// Whether the first complete inventory of this UIDVALIDITY has been committed. Missing
+    /// metadata fails closed (including a store upgraded from before workflow support).
+    pub fn workflow_baseline_complete(&self, folder: &str, uidvalidity: u32) -> Result<bool, MailStoreError> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_baselines
+             WHERE folder_id = ?1 AND uidvalidity = ?2 AND complete = 1)",
+            params![folder, uidvalidity],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Persist the inventory boundary BEFORE importing a header batch. While incomplete every
+    /// retry extends the boundary, never narrows it. No event is emitted until completion.
+    pub fn note_workflow_inventory(&self, folder: &str, uidvalidity: u32, high_uid: u32) -> Result<(), MailStoreError> {
+        self.check_uidvalidity(folder, uidvalidity)?;
+        self.db.execute(
+            "INSERT INTO workflow_baselines (folder_id, uidvalidity, high_uid) VALUES (?1, ?2, ?3)
+             ON CONFLICT(folder_id) DO UPDATE SET high_uid = max(coalesce(high_uid, 0), excluded.high_uid)
+             WHERE workflow_baselines.uidvalidity = excluded.uidvalidity AND complete = 0",
+            params![folder, uidvalidity, high_uid],
+        )?;
+        Ok(())
+    }
+
+    /// Called only after the whole folder sync succeeded. A crash before this leaves the
+    /// baseline closed, even though UIDVALIDITY and some headers were already committed.
+    pub fn complete_workflow_inventory(&self, folder: &str, uidvalidity: u32) -> Result<(), MailStoreError> {
+        self.check_uidvalidity(folder, uidvalidity)?;
+        self.db.execute(
+            "UPDATE workflow_baselines SET complete = 1
+             WHERE folder_id = ?1 AND uidvalidity = ?2 AND high_uid IS NOT NULL",
+            params![folder, uidvalidity],
+        )?;
+        Ok(())
+    }
+
     /// Stores the headers of a message of `folder`, which the caller read under `uidvalidity`.
     /// Updates the row of the same UID (id, text and thread stay unless the headers say
     /// otherwise), else adds one. Returns the message's id. [`MailStoreError::StaleUidValidity`] if
     /// the folder's UIDVALIDITY is not `uidvalidity` (call [`note_uidvalidity`](Self::note_uidvalidity)
     /// first): the UID would mean another message.
     pub fn upsert_message(&self, folder: &str, uidvalidity: u32, new: &NewMessage) -> Result<String, MailStoreError> {
+        self.upsert_message_with_workflow(folder, uidvalidity, new, None, None)
+    }
+
+    /// The sync's import path. Only a newly inserted inbox header above a completed baseline
+    /// creates an arrival; ordinary updates, copies from another non-archive folder and draft
+    /// imports do not. Header, provenance and outbox commit together or not at all.
+    #[cfg(test)]
+    pub fn import_workflow_message(
+        &self,
+        folder: &str,
+        uidvalidity: u32,
+        new: &NewMessage,
+        now: DateTime<Utc>,
+    ) -> Result<String, MailStoreError> {
+        self.upsert_message_with_workflow(folder, uidvalidity, new, Some(now), None)
+    }
+
+    /// Sync import including the server's receipt time. Unlike a later metadata write, this
+    /// commits INTERNALDATE and the immutable event snapshot in the header transaction.
+    pub fn import_workflow_message_received(
+        &self,
+        folder: &str,
+        uidvalidity: u32,
+        new: &NewMessage,
+        now: DateTime<Utc>,
+        received_at: Option<DateTime<Utc>>,
+    ) -> Result<String, MailStoreError> {
+        self.upsert_message_with_workflow(folder, uidvalidity, new, Some(now), received_at)
+    }
+
+    fn upsert_message_with_workflow(
+        &self,
+        folder: &str,
+        uidvalidity: u32,
+        new: &NewMessage,
+        arrival: Option<DateTime<Utc>>,
+        received_at: Option<DateTime<Utc>>,
+    ) -> Result<String, MailStoreError> {
         self.check_uidvalidity(folder, uidvalidity)?;
         let tx = self.db.unchecked_transaction()?;
         let existing: Option<(i64, String)> = tx
@@ -1324,6 +1511,7 @@ impl MailStore {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
+        let inserted = existing.is_none();
         let values = header_values(new)?;
         let (seq, id) = match existing {
             Some((seq, id)) => {
@@ -1343,10 +1531,37 @@ impl MailStore {
                 (tx.last_insert_rowid(), id)
             }
         };
+        if let Some(received_at) = received_at {
+            self.set_internal_date(folder, new.uid, received_at)?;
+        }
         refresh_index(&tx, seq, None)?;
         // The server lists the message at this place: an original kept for it is not gone.
         if let Some((path, _)) = original_place(&tx, folder)? {
             set_original_gone(&tx, &path, uidvalidity, new.uid, None)?;
+        }
+        if let Some(now) = arrival.filter(|_| inserted && new.id.is_none()) {
+            let eligible: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM folders f JOIN workflow_baselines b ON b.folder_id = f.id
+                 WHERE f.id = ?1 AND f.role = 'inbox' AND b.uidvalidity = ?2 AND b.complete = 1
+                 AND b.high_uid IS NOT NULL AND ?3 > b.high_uid)
+                 AND NOT EXISTS(SELECT 1 FROM messages m JOIN folders f ON f.id = m.folder_id
+                 WHERE m.id <> ?4 AND m.rfc_message_id = ?5 AND f.id <> ?1
+                 AND coalesce(f.role, '') NOT IN ('archive', 'sent'))",
+                params![folder, uidvalidity, new.uid, id, new.rfc_message_id],
+                |row| row.get(0),
+            )?;
+            if eligible
+                && tx.execute(
+                    "INSERT OR IGNORE INTO workflow_arrivals (folder_id, uidvalidity, uid) VALUES (?1, ?2, ?3)",
+                    params![folder, uidvalidity, new.uid],
+                )? > 0
+            {
+                tx.execute(
+                    "INSERT INTO workflow_deliveries (message_id, arrived_at, actions_done) VALUES (?1, ?2, 0)",
+                    params![id, now.timestamp()],
+                )?;
+                insert_workflow_event(&tx, &id, "arrival", now, None)?;
+            }
         }
         tx.commit()?;
         Ok(id)
@@ -1426,6 +1641,17 @@ impl MailStore {
     pub fn set_sender_check(&self, id: &str, domain: Option<&str>) -> Result<bool, MailStoreError> {
         let value = domain.unwrap_or_default();
         Ok(self.db.execute("UPDATE messages SET sender_check = ?2 WHERE id = ?1", params![id, value])? > 0)
+    }
+
+    /// The core's verified DKIM sender domain, never a logo/display preference or an untrusted
+    /// Authentication-Results header. No pass (including not checked) means manual review.
+    pub fn workflow_sender_domain(&self, id: &str) -> Result<Option<String>, MailStoreError> {
+        let domain: Option<String> = self
+            .db
+            .query_row("SELECT sender_check FROM messages WHERE id = ?1", [id], |row| row.get(0))
+            .optional()?
+            .flatten();
+        Ok(domain.filter(|domain| !domain.is_empty()))
     }
 
     /// Up to `limit` messages dated `since` or later whose sender was never checked (issue #453),
@@ -1518,6 +1744,327 @@ impl MailStore {
         let confidence = category.and_then(|held| held.confidence).map(i64::from);
         let sql = "UPDATE messages SET category = ?2, category_source = ?3, category_confidence = ?4 WHERE id = ?1";
         Ok(self.db.execute(sql, params![id, key, source, confidence])? > 0)
+    }
+
+    /// Additive event-bearing category setter. A change of source/confidence alone is not a
+    /// new classification. Baseline mail, removed categories, bulk jobs, reclassification and
+    /// automation never trigger. The legacy setter intentionally remains event-free.
+    pub fn set_workflow_category(
+        &self,
+        id: &str,
+        category: Option<MailCategory>,
+        origin: WorkflowCategoryOrigin,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MailStoreError> {
+        let tx = self.db.unchecked_transaction()?;
+        let before = self.summary(id)?.and_then(|summary| summary.category).map(|held| held.category);
+        let exists = self.set_category(id, category)?;
+        self.note_workflow_category_change(&tx, id, before, category, origin, now)?;
+        tx.commit()?;
+        Ok(exists)
+    }
+
+    fn note_workflow_category_change(
+        &self,
+        tx: &Connection,
+        id: &str,
+        before: Option<Category>,
+        category: Option<MailCategory>,
+        origin: WorkflowCategoryOrigin,
+        now: DateTime<Utc>,
+    ) -> Result<(), MailStoreError> {
+        let Some(category) = category else { return Ok(()) };
+        if before == Some(category.category)
+            || !matches!(origin, WorkflowCategoryOrigin::Arrival | WorkflowCategoryOrigin::Interactive)
+        {
+            return Ok(());
+        }
+        let eligible: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_deliveries d JOIN messages m ON m.id = d.message_id
+             JOIN folders f ON f.id = m.folder_id WHERE d.message_id = ?1 AND f.role = 'inbox')",
+            [id],
+            |row| row.get(0),
+        )?;
+        if eligible {
+            insert_workflow_event(tx, id, "category_changed", now, Some(category.category))?;
+        }
+        Ok(())
+    }
+
+    /// CAS variant for an arrival's first model decision. Preserves the old bool/CAS contract
+    /// and commits a genuine category transition and its event atomically.
+    pub fn set_workflow_category_if_unchanged(
+        &self,
+        id: &str,
+        expected: Option<MailCategory>,
+        category: MailCategory,
+        origin: WorkflowCategoryOrigin,
+        now: DateTime<Utc>,
+    ) -> Result<bool, MailStoreError> {
+        let tx = self.db.unchecked_transaction()?;
+        let changed = self.set_category_if_unchanged(id, expected, category)?;
+        if changed {
+            self.note_workflow_category_change(
+                &tx,
+                id,
+                expected.map(|held| held.category),
+                Some(category),
+                origin,
+                now,
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    /// Bounded, oldest-first unacknowledged events. Includes waiting/failed rows so they remain
+    /// visible rather than masquerading as ready. `after` is an event id from this same account;
+    /// an unknown cursor returns no rows. Runner ownership is never implied by reading.
+    pub fn workflow_events(&self, after: Option<&str>, limit: u32) -> Result<Vec<WorkflowMailEvent>, MailStoreError> {
+        let mut statement = self.db.prepare(
+            "SELECT id, message_id, cause, occurred_at, state, failure, category, received_at FROM workflow_events
+             WHERE acknowledged = 0 AND seq > CASE WHEN ?1 IS NULL THEN 0 ELSE
+                 coalesce((SELECT seq FROM workflow_events WHERE id = ?1), 9223372036854775807) END
+             ORDER BY seq LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![after, limit.min(500)], |row| {
+            let cause: String = row.get(2)?;
+            let state: String = row.get(4)?;
+            let failure: Option<String> = row.get(5)?;
+            let category: Option<String> = row.get(6)?;
+            Ok(WorkflowMailEvent {
+                id: row.get(0)?,
+                account: self.account.clone(),
+                message: row.get(1)?,
+                cause: match cause.as_str() {
+                    "arrival" => WorkflowMailCause::Arrival,
+                    "category_changed" => WorkflowMailCause::CategoryChanged,
+                    _ => return Err(conversion_failure(2, "unknown workflow mail cause")),
+                },
+                occurred_at: DateTime::from_timestamp(row.get(3)?, 0)
+                    .ok_or_else(|| conversion_failure(3, "workflow date out of range"))?,
+                received_at: row
+                    .get::<_, Option<i64>>(7)?
+                    .map(|at| {
+                        DateTime::from_timestamp(at, 0)
+                            .ok_or_else(|| conversion_failure(7, "workflow receipt date out of range"))
+                    })
+                    .transpose()?,
+                state: match state.as_str() {
+                    "waiting_body" => WorkflowMailState::WaitingBody,
+                    "waiting_category" => WorkflowMailState::WaitingCategory,
+                    "ready" => WorkflowMailState::Ready,
+                    "failed" => WorkflowMailState::Failed,
+                    _ => return Err(conversion_failure(4, "unknown workflow preparation state")),
+                },
+                failure: match failure.as_deref() {
+                    None => None,
+                    Some("body_unavailable") => Some(WorkflowMailFailure::BodyUnavailable),
+                    Some("message_gone") => Some(WorkflowMailFailure::MessageGone),
+                    Some("category_failed") => Some(WorkflowMailFailure::CategoryFailed),
+                    Some("category_timeout") => Some(WorkflowMailFailure::CategoryTimeout),
+                    _ => return Err(conversion_failure(5, "unknown workflow preparation failure")),
+                },
+                category: category
+                    .map(|key| {
+                        Category::from_key(&key).ok_or_else(|| conversion_failure(6, "unknown workflow category"))
+                    })
+                    .transpose()?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Idempotent ack, ONLY after the runner committed its own event-id dedup/ownership record.
+    /// This does not acknowledge other events of the same mail. Waiting inputs cannot be acked:
+    /// their preparation must remain discoverable until ready or visibly failed.
+    pub fn acknowledge_workflow_event(&self, id: &str) -> Result<bool, MailStoreError> {
+        Ok(self.db.execute(
+            "UPDATE workflow_events SET acknowledged = 1 WHERE id = ?1 AND acknowledged = 0
+             AND state IN ('ready', 'failed')",
+            [id],
+        )? > 0)
+    }
+
+    /// Pending preparation messages, not notification entries; read mail is included. Distinct
+    /// messages prevent category-change events from starting duplicate model calls.
+    #[allow(
+        dead_code,
+        reason = "retained classification-only selector; production also selects independent notifications"
+    )]
+    pub fn workflow_preparation_pending(&self, limit: u32) -> Result<Vec<String>, MailStoreError> {
+        let mut statement = self.db.prepare(
+            "SELECT message_id FROM workflow_events WHERE acknowledged = 0 AND state IN ('waiting_body', 'waiting_category')
+             GROUP BY message_id ORDER BY min(seq) LIMIT ?1",
+        )?;
+        Ok(statement.query_map([limit.min(100)], |row| row.get(0))?.collect::<Result<_, _>>()?)
+    }
+
+    pub(super) fn workflow_delivery(&self, message: &str) -> Result<bool, MailStoreError> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_deliveries WHERE message_id = ?1)",
+            [message],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(super) fn workflow_preparation_waiting(&self, message: &str) -> Result<bool, MailStoreError> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_events WHERE message_id = ?1
+            AND acknowledged = 0 AND state IN ('waiting_body', 'waiting_category'))",
+            [message],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Notification delivery is independent of terminal workflow failures and runner ack. A
+    /// restart must still file a large/unavailable body, but must never revive its workflow.
+    pub(super) fn workflow_pending_work(
+        &self,
+        since: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<String>, MailStoreError> {
+        let mut statement = self.db.prepare(
+            "SELECT message_id FROM (
+                SELECT message_id, min(occurred_at) AS queued_at FROM workflow_events
+                WHERE acknowledged = 0 AND state IN ('waiting_body', 'waiting_category') GROUP BY message_id
+                UNION ALL
+                SELECT message_id, arrived_at AS queued_at FROM workflow_deliveries
+                WHERE notification_done = 0 AND arrived_at >= ?1
+             ) GROUP BY message_id ORDER BY min(queued_at), message_id LIMIT ?2",
+        )?;
+        Ok(statement
+            .query_map(params![since.timestamp(), limit.min(100)], |row| row.get(0))?
+            .collect::<Result<_, _>>()?)
+    }
+
+    /// Separate bounded queues keep optional model calls from occupying notification workers.
+    pub(super) fn workflow_work_for_stage(
+        &self,
+        since: DateTime<Utc>,
+        limit: u32,
+        notifications: bool,
+    ) -> Result<Vec<String>, MailStoreError> {
+        let mut statement = self.db.prepare(
+            "SELECT message_id FROM (
+                SELECT message_id, min(occurred_at) AS queued_at FROM workflow_events e
+                WHERE ?3 = 0 AND acknowledged = 0 AND state IN ('waiting_body', 'waiting_category')
+                    AND NOT EXISTS(SELECT 1 FROM workflow_deliveries d
+                        WHERE d.message_id = e.message_id AND d.notification_done = 0)
+                GROUP BY message_id
+                UNION ALL
+                SELECT message_id, arrived_at AS queued_at FROM workflow_deliveries d
+                WHERE ?3 = 1 AND notification_done = 0 AND (arrived_at >= ?1
+                    OR EXISTS(SELECT 1 FROM workflow_events e WHERE e.message_id = d.message_id
+                        AND acknowledged = 0 AND state IN ('waiting_body', 'waiting_category')))
+                UNION ALL
+                SELECT message_id, arrived_at AS queued_at FROM workflow_deliveries d
+                WHERE ?3 = 0 AND actions_done = 0 AND notification_done = 1 AND arrived_at >= ?1
+                    AND EXISTS(SELECT 1 FROM workflow_events e WHERE e.message_id = d.message_id
+                        AND e.cause = 'arrival' AND e.state = 'ready')
+            ) GROUP BY message_id ORDER BY min(queued_at), message_id LIMIT ?2",
+        )?;
+        Ok(statement
+            .query_map(params![since.timestamp(), limit.min(100), notifications], |row| row.get(0))?
+            .collect::<Result<_, _>>()?)
+    }
+
+    pub(super) fn workflow_notification_pending(
+        &self,
+        message: &str,
+        since: DateTime<Utc>,
+    ) -> Result<bool, MailStoreError> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_deliveries
+             WHERE message_id = ?1 AND notification_done = 0 AND arrived_at >= ?2)",
+            params![message, since.timestamp()],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(super) fn workflow_notification_unfinished(&self, message: &str) -> Result<bool, MailStoreError> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_deliveries
+            WHERE message_id = ?1 AND notification_done = 0)",
+            [message],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(super) fn workflow_notification_done(&self, message: &str) -> Result<(), MailStoreError> {
+        self.db.execute(
+            "UPDATE workflow_deliveries SET notification_done = 1 WHERE message_id = ?1 AND notification_done = 0",
+            [message],
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn workflow_actions_pending(&self, message: &str, since: DateTime<Utc>) -> Result<bool, MailStoreError> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_deliveries d WHERE message_id = ?1
+            AND actions_done = 0 AND notification_done = 1 AND arrived_at >= ?2
+            AND EXISTS(SELECT 1 FROM workflow_events e WHERE e.message_id = d.message_id
+                AND e.cause = 'arrival' AND e.state = 'ready'))",
+            params![message, since.timestamp()],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(super) fn workflow_actions_done(&self, message: &str) -> Result<(), MailStoreError> {
+        self.db.execute("UPDATE workflow_deliveries SET actions_done = 1 WHERE message_id = ?1", [message])?;
+        Ok(())
+    }
+
+    pub fn workflow_needs_body(&self, message: &str) -> Result<bool, MailStoreError> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_events
+             WHERE message_id = ?1 AND acknowledged = 0 AND state = 'waiting_body')",
+            [message],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Advance only after a real body is cached. A failed category decision is never overwritten
+    /// here; retrying a failed event is an explicit runner/person decision.
+    pub fn workflow_body_prepared(&self, message: &str) -> Result<bool, MailStoreError> {
+        Ok(self.db.execute(
+            "UPDATE workflow_events SET state = 'waiting_category' WHERE message_id = ?1 AND state = 'waiting_body'
+             AND EXISTS(SELECT 1 FROM messages m JOIN bodies b ON b.seq = m.seq WHERE m.id = ?1)",
+            [message],
+        )? > 0)
+    }
+
+    /// The categorizer's successful completion, including an explicit 'no model' result. A
+    /// missing body or a previous failure cannot become ready accidentally.
+    pub fn workflow_category_prepared(&self, message: &str) -> Result<(), MailStoreError> {
+        self.db.execute(
+            "UPDATE workflow_events SET state = 'ready', failure = NULL WHERE message_id = ?1
+             AND state = 'waiting_category'
+             AND EXISTS(SELECT 1 FROM messages m JOIN bodies b ON b.seq = m.seq WHERE m.id = ?1)",
+            [message],
+        )?;
+        Ok(())
+    }
+
+    pub fn fail_workflow_preparation(&self, message: &str, failure: WorkflowMailFailure) -> Result<(), MailStoreError> {
+        let Some(reason) = failure.column() else { return Ok(()) };
+        self.db.execute(
+            "UPDATE workflow_events SET state = 'failed', failure = ?2
+             WHERE message_id = ?1 AND state IN ('waiting_body', 'waiting_category')",
+            params![message, reason],
+        )?;
+        Ok(())
+    }
+
+    /// Explicit retry only; polling must never turn a failed category call into 'no model'.
+    /// Already accepted failures belong to the runner and are not resurrected here.
+    #[cfg(test)]
+    pub fn retry_workflow_preparation(&self, message: &str) -> Result<bool, MailStoreError> {
+        Ok(self.db.execute(
+            "UPDATE workflow_events SET state = 'waiting_body', failure = NULL
+             WHERE message_id = ?1 AND acknowledged = 0 AND state = 'failed'",
+            [message],
+        )? > 0)
     }
 
     /// Marks the mail `id` caught as fraud or spam (issue #506) or no longer. `false` when the store
@@ -2990,6 +3537,53 @@ fn side_file(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+fn reset_workflow_baseline(db: &Connection, folder: &str, uidvalidity: u32) -> Result<(), MailStoreError> {
+    db.execute(
+        "INSERT INTO workflow_baselines (folder_id, uidvalidity) VALUES (?1, ?2)
+         ON CONFLICT(folder_id) DO UPDATE SET uidvalidity = excluded.uidvalidity, high_uid = NULL, complete = 0",
+        params![folder, uidvalidity],
+    )?;
+    Ok(())
+}
+
+fn insert_workflow_event(
+    db: &Connection,
+    message: &str,
+    cause: &str,
+    now: DateTime<Utc>,
+    category: Option<Category>,
+) -> Result<(), MailStoreError> {
+    // A new classification of already prepared mail needs no second model call. A failure
+    // stays a failure; a category written concurrently must not silently clear that pause.
+    let (mut state, failure): (String, Option<String>) = db
+        .query_row(
+            "SELECT state, failure FROM workflow_events WHERE message_id = ?1 ORDER BY seq DESC LIMIT 1",
+            [message],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .unwrap_or_else(|| ("waiting_body".into(), None));
+    let has_body: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM messages m JOIN bodies b ON b.seq = m.seq WHERE m.id = ?1)",
+        [message],
+        |row| row.get(0),
+    )?;
+    if state == "ready" && !has_body {
+        state = "waiting_body".into();
+    }
+    let id = format!("we:{}", random_hex(16)?);
+    let received_at: Option<i64> = db
+        .query_row("SELECT internal_date FROM messages WHERE id = ?1", [message], |row| row.get(0))
+        .optional()?
+        .flatten();
+    db.execute(
+        "INSERT INTO workflow_events (id, message_id, cause, occurred_at, state, failure, category, received_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![id, message, cause, now.timestamp(), state, failure, category.map(Category::key), received_at],
+    )?;
+    Ok(())
+}
+
 fn migrate(db: &Connection) -> Result<(), MailStoreError> {
     let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version > SCHEMA_VERSION {
@@ -3070,8 +3664,34 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
             }
         }
     }
-    if version < 15 {
+    // Main's v15 suggestions and this branch's v15/v16 workflow stores both exist. Ensure both
+    // additive layouts when upgrading either history, without losing closed suggestions or receipts.
+    if version < 17 {
         tx.execute_batch(SCHEMA_V15_SUGGESTIONS)?;
+        tx.execute_batch(SCHEMA_V15)?;
+        if !has_column(&tx, "workflow_deliveries", "actions_done")? {
+            // No retrospective action detection for pre-upgrade arrivals. New deliveries opt in
+            // explicitly, independently of notification receipts and workflow runner ack.
+            tx.execute_batch("ALTER TABLE workflow_deliveries ADD COLUMN actions_done INTEGER NOT NULL DEFAULT 1;")?;
+        }
+        if !has_column(&tx, "workflow_deliveries", "notification_done")? {
+            tx.execute_batch(
+                "ALTER TABLE workflow_deliveries ADD COLUMN notification_done INTEGER NOT NULL DEFAULT 0;",
+            )?;
+            // Completed v15 inputs already traversed filing. Only interrupted preparation and
+            // the known body-failure gap need recovery; do not reapply new filters to history.
+            tx.execute_batch(
+                "UPDATE workflow_deliveries SET notification_done = 1 WHERE NOT EXISTS (
+                SELECT 1 FROM workflow_events e WHERE e.message_id = workflow_deliveries.message_id
+                AND (e.state IN ('waiting_body', 'waiting_category')
+                     OR (e.state = 'failed' AND e.failure = 'body_unavailable'))
+            );",
+            )?;
+        }
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS workflow_notifications_pending
+            ON workflow_deliveries(arrived_at) WHERE notification_done = 0;",
+        )?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -3581,6 +4201,370 @@ mod tests {
     fn search_ids(store: &MailStore, text: &str) -> Vec<String> {
         let query = SearchQuery { query: parse(text).expect("a query"), ..SearchQuery::default() };
         store.search(&query, 50, 0).expect("search").into_iter().map(|summary| summary.id).collect()
+    }
+
+    fn baseline(store: &MailStore, folder: &str, high: u32) {
+        store.note_workflow_inventory(folder, 7, high).expect("inventory boundary");
+        store.complete_workflow_inventory(folder, 7).expect("complete inventory");
+    }
+
+    #[test]
+    fn workflow_baselines_survive_partial_imports_and_reset_crashes() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        store.note_workflow_inventory(&inbox, 7, 8).expect("first search");
+        store.import_workflow_message(&inbox, 7, &message(8, "Newest first"), day(20)).expect("header");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("crash restart");
+        assert_eq!(store.note_uidvalidity(&inbox, 7).expect("same validity"), UidValidity::Unchanged);
+        assert!(!store.workflow_baseline_complete(&inbox, 7).expect("still incomplete"));
+        store.note_workflow_inventory(&inbox, 7, 9).expect("retry extends boundary");
+        for uid in [1, 9] {
+            store.import_workflow_message(&inbox, 7, &message(uid, "Recovery inventory"), day(20)).expect("header");
+        }
+        baseline(&store, &inbox, 9);
+        store.import_workflow_message(&inbox, 7, &message(2, "Previously omitted header"), day(20)).expect("header");
+        assert!(store.workflow_events(None, 500).expect("outbox").is_empty());
+        let mut seen = message(10, "Arrives read");
+        seen.flags = vec![Flag::Seen];
+        let id = store.import_workflow_message(&inbox, 7, &seen, day(20)).expect("arrival");
+        store.import_workflow_message(&inbox, 7, &seen, day(21)).expect("replayed header");
+        let events = store.workflow_events(None, 500).expect("outbox");
+        assert_eq!(events.len(), 1);
+        assert_eq!((events[0].account.as_str(), events[0].message.as_str()), (ACCOUNT, id.as_str()));
+        assert_eq!(events[0].occurred_at, day(20));
+        assert_eq!(events[0].state, WorkflowMailState::WaitingBody);
+        store.note_uidvalidity(&inbox, 8).expect("reset");
+        store.note_workflow_inventory(&inbox, 8, 8).expect("reset boundary");
+        store.import_workflow_message(&inbox, 8, &message(8, "Reset header"), day(21)).expect("header");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("restart during reset");
+        assert!(!store.workflow_baseline_complete(&inbox, 8).expect("reset still closed"));
+        store.import_workflow_message(&inbox, 8, &message(1, "Reset remainder"), day(21)).expect("header");
+        store.complete_workflow_inventory(&inbox, 8).expect("complete reset");
+        assert_eq!(store.workflow_events(None, 500).expect("only original event survives").len(), 1);
+    }
+
+    #[test]
+    fn workflow_outbox_and_header_or_category_are_one_transaction() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        baseline(&store, &inbox, 0);
+        store
+            .db
+            .execute_batch(
+                "CREATE TRIGGER reject_event BEFORE INSERT ON workflow_events
+            BEGIN SELECT RAISE(ABORT, 'injected outbox failure'); END;",
+            )
+            .expect("failure injection");
+        assert!(store.import_workflow_message(&inbox, 7, &message(1, "Atomic import"), day(20)).is_err());
+        assert!(store.message_id_for_uid(&inbox, 1).expect("lookup").is_none());
+        let provenance: i64 =
+            store.db.query_row("SELECT count(*) FROM workflow_arrivals", [], |row| row.get(0)).expect("count");
+        assert_eq!(provenance, 0, "failed event rolled back provenance too");
+        store.db.execute_batch("DROP TRIGGER reject_event;").expect("remove failure");
+        let id = store.import_workflow_message(&inbox, 7, &message(1, "Atomic import"), day(20)).expect("retry");
+        store
+            .db
+            .execute_batch(
+                "CREATE TRIGGER reject_event BEFORE INSERT ON workflow_events
+            BEGIN SELECT RAISE(ABORT, 'injected outbox failure'); END;",
+            )
+            .expect("failure injection");
+        let category = MailCategory::by_rule(Category::Personal);
+        assert!(store.set_workflow_category(&id, Some(category), WorkflowCategoryOrigin::Arrival, day(20)).is_err());
+        assert!(store.summary(&id).expect("summary").expect("mail").category.is_none());
+        assert!(
+            store
+                .set_workflow_category_if_unchanged(&id, None, category, WorkflowCategoryOrigin::Arrival, day(20))
+                .is_err()
+        );
+        assert!(store.summary(&id).expect("summary").expect("mail").category.is_none());
+    }
+
+    #[test]
+    fn workflow_events_only_for_real_non_bulk_classification_transitions() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let old = store.import_workflow_message(&inbox, 7, &message(1, "Initial inventory"), day(20)).expect("initial");
+        baseline(&store, &inbox, 1);
+        let category = MailCategory::by_rule(Category::Personal);
+        store
+            .set_workflow_category(&old, Some(category), WorkflowCategoryOrigin::Arrival, day(20))
+            .expect("baseline category");
+        assert!(store.workflow_events(None, 500).expect("none").is_empty());
+        let id = store.import_workflow_message(&inbox, 7, &message(2, "New delivery"), day(20)).expect("arrival");
+        store
+            .set_workflow_category(&id, Some(category), WorkflowCategoryOrigin::Arrival, day(20))
+            .expect("first category");
+        store
+            .set_workflow_category(&id, Some(category), WorkflowCategoryOrigin::Interactive, day(21))
+            .expect("no-op category");
+        store
+            .set_workflow_category(
+                &id,
+                Some(MailCategory::by_model(Category::Personal, 0.99)),
+                WorkflowCategoryOrigin::Arrival,
+                day(21),
+            )
+            .expect("source only");
+        for origin in
+            [WorkflowCategoryOrigin::Bulk, WorkflowCategoryOrigin::Recategorization, WorkflowCategoryOrigin::Automation]
+        {
+            store.set_workflow_category(&id, None, origin, day(21)).expect("clear");
+            store.set_workflow_category(&id, Some(category), origin, day(21)).expect("suppressed origin");
+        }
+        store.set_category(&id, None).expect("legacy clear");
+        store.set_category_if_unchanged(&id, None, category).expect("legacy CAS");
+        let events = store.workflow_events(None, 500).expect("events");
+        assert_eq!(events.len(), 2, "one arrival and only one real category change");
+        assert_eq!(events[1].cause, WorkflowMailCause::CategoryChanged);
+        assert_eq!(events[1].category, Some(Category::Personal));
+        assert!(
+            !store
+                .set_workflow_category_if_unchanged(&id, None, category, WorkflowCategoryOrigin::Arrival, day(21))
+                .expect("CAS conflict")
+        );
+        assert_eq!(store.workflow_events(None, 500).expect("no conflict event").len(), 2);
+    }
+
+    #[test]
+    fn workflow_wait_failure_ack_and_cursor_are_durable_and_bounded() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        baseline(&store, &inbox, 0);
+        let id = store.import_workflow_message(&inbox, 7, &message(1, "Waiting input"), day(20)).expect("arrival");
+        store.workflow_category_prepared(&id).expect("cannot skip missing body");
+        assert_eq!(store.workflow_events(None, 1).expect("event")[0].state, WorkflowMailState::WaitingBody);
+        store
+            .set_body(
+                &id,
+                &Body { text: "Invoice".into(), from_html: false, html: None, attachments: vec![], invite: None },
+            )
+            .expect("body");
+        assert!(store.workflow_body_prepared(&id).expect("advance"));
+        store.fail_workflow_preparation(&id, WorkflowMailFailure::CategoryFailed).expect("category failure");
+        store.workflow_category_prepared(&id).expect("failure must stand");
+        let id2 = store.import_workflow_message(&inbox, 7, &message(2, "Next"), day(20)).expect("second");
+        let first = store.workflow_events(None, 1).expect("bounded").remove(0);
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("restart");
+        assert_eq!(store.workflow_events(None, 1).expect("stable event"), vec![first.clone()]);
+        assert_eq!(first.state, WorkflowMailState::Failed);
+        assert_eq!(first.failure, Some(WorkflowMailFailure::CategoryFailed));
+        assert_eq!(store.workflow_preparation_pending(100).expect("failed not retried"), vec![id2.clone()]);
+        assert!(store.workflow_events(None, 0).expect("zero page").is_empty());
+        assert!(store.acknowledge_workflow_event(&first.id).expect("ack"));
+        assert!(!store.acknowledge_workflow_event(&first.id).expect("idempotent ack"));
+        assert_eq!(store.workflow_events(Some(&first.id), 500).expect("cursor survives ack")[0].message, id2);
+        assert!(store.workflow_events(Some("foreign-event"), 500).expect("unknown cursor").is_empty());
+    }
+
+    #[test]
+    fn workflow_arrival_is_not_recreated_after_deletion_or_for_non_inbox_imports() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let other = folder(&store, "Projects", None);
+        baseline(&store, &inbox, 0);
+        baseline(&store, &other, 0);
+        store.import_workflow_message(&other, 7, &message(1, "Existing elsewhere"), day(20)).expect("other folder");
+        store.import_workflow_message(&inbox, 7, &message(1, "Copied into inbox"), day(20)).expect("copy");
+        assert!(store.workflow_events(None, 500).expect("not delivered").is_empty());
+        store.import_workflow_message(&inbox, 7, &message(2, "Delivered"), day(20)).expect("delivery");
+        store.delete_uids(&inbox, &[2]).expect("vanished");
+        store.import_workflow_message(&inbox, 7, &message(2, "Reappeared same UID"), day(21)).expect("replay");
+        assert_eq!(store.workflow_events(None, 500).expect("one event").len(), 1);
+    }
+
+    #[test]
+    fn workflow_upgrade_requires_a_fresh_complete_inventory_without_replaying_existing_mail() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        add(&store, &inbox, &message(1, "Before workflow support"));
+        store
+            .db
+            .execute_batch(
+                "DROP TABLE workflow_events; DROP TABLE workflow_deliveries; DROP TABLE workflow_arrivals;
+             DROP TABLE workflow_baselines; PRAGMA user_version = 14;",
+            )
+            .expect("old schema");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("migrate");
+        assert!(!store.workflow_baseline_complete(&inbox, 7).expect("migration fails closed"));
+        store
+            .import_workflow_message(&inbox, 7, &message(2, "Previously unseen inventory"), day(20))
+            .expect("inventory");
+        baseline(&store, &inbox, 2);
+        assert!(store.workflow_events(None, 500).expect("no replay").is_empty());
+        assert!(store.workflow_sender_domain("m:unknown").expect("unknown sender").is_none());
+    }
+
+    #[test]
+    fn workflow_merge_main_v15_keeps_closed_suggestions_and_requires_a_fresh_baseline() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let id = add(&store, &inbox, &message(1, "Existing suggestion"));
+        store.detect_suggestions(&id, &["task".into(), "event".into()], day(20)).expect("found");
+        store.close_suggestion(&id, "task", true, day(20)).expect("accepted");
+        store.close_suggestion(&id, "event", false, day(20)).expect("dismissed");
+        store
+            .db
+            .execute_batch(
+                "DROP TABLE workflow_events; DROP TABLE workflow_deliveries;
+            DROP TABLE workflow_arrivals; DROP TABLE workflow_baselines; PRAGMA user_version = 15;",
+            )
+            .expect("released main v15 layout");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("coexistence upgrade");
+        assert_eq!(store.suggestion_state(&id, "task").expect("task"), Some("accepted".into()));
+        assert_eq!(store.suggestion_state(&id, "event").expect("event"), Some("dismissed".into()));
+        assert!(
+            store.detect_suggestions(&id, &["task".into(), "event".into()], day(21)).expect("no revival").is_empty()
+        );
+        assert!(!store.workflow_baseline_complete(&inbox, 7).expect("fresh inventory required"));
+        store.import_workflow_message(&inbox, 7, &message(2, "Inventory only"), day(21)).expect("inventory");
+        baseline(&store, &inbox, 2);
+        assert!(store.workflow_events(None, 500).expect("no retrospective arrival").is_empty());
+        assert_eq!(store.db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).expect("version"), 17);
+    }
+
+    #[test]
+    fn workflow_merge_branch_v15_and_v16_preserve_receipts_events_and_baselines() {
+        for version in [15, 16] {
+            let (_tmp, dirs, store) = open();
+            let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+            baseline(&store, &inbox, 0);
+            let id =
+                store.import_workflow_message(&inbox, 7, &message(1, "Completed arrival"), day(20)).expect("arrival");
+            store
+                .set_body(
+                    &id,
+                    &Body { text: "Body".into(), from_html: false, html: None, attachments: vec![], invite: None },
+                )
+                .expect("body");
+            store.workflow_body_prepared(&id).expect("body ready");
+            store.workflow_category_prepared(&id).expect("category ready");
+            let event = store.workflow_events(None, 500).expect("events").remove(0);
+            store.acknowledge_workflow_event(&event.id).expect("runner ack");
+            store.workflow_notification_done(&id).expect("already notified");
+            store
+                .db
+                .execute_batch("DROP TABLE suggestions; ALTER TABLE workflow_deliveries DROP COLUMN actions_done;")
+                .expect("branch layout without suggestions");
+            if version == 15 {
+                store
+                    .db
+                    .execute_batch(
+                        "DROP INDEX workflow_notifications_pending;
+                    ALTER TABLE workflow_deliveries DROP COLUMN notification_done;",
+                    )
+                    .expect("v15");
+            }
+            store.db.execute_batch(&format!("PRAGMA user_version = {version};")).expect("old version");
+            drop(store);
+            let store = MailStore::open(&dirs, ACCOUNT).expect("branch history upgrade");
+            assert!(store.workflow_baseline_complete(&inbox, 7).expect("baseline preserved"));
+            assert!(store.workflow_events(None, 500).expect("ack preserved").is_empty());
+            let row: (String, bool, bool, bool) = store
+                .db
+                .query_row(
+                    "SELECT e.state, e.acknowledged, d.notification_done, d.actions_done FROM workflow_events e
+                    JOIN workflow_deliveries d ON d.message_id = e.message_id WHERE e.id = ?1",
+                    [&event.id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .expect("preserved event/receipts");
+            assert_eq!(row, ("ready".into(), true, true, true));
+            assert!(store.workflow_work_for_stage(day(1), 100, false).expect("no historical model replay").is_empty());
+            assert_eq!(store.detect_suggestions(&id, &["task".into()], day(21)).expect("new table usable"), ["task"]);
+        }
+    }
+
+    #[test]
+    fn workflow_merge_optional_action_receipt_survives_runner_ack_and_restart() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        baseline(&store, &inbox, 0);
+        let id = store
+            .import_workflow_message(&inbox, 7, &message(1, "New fixed-category arrival"), day(20))
+            .expect("arrival");
+        store
+            .set_body(
+                &id,
+                &Body { text: "Body".into(), from_html: false, html: None, attachments: vec![], invite: None },
+            )
+            .expect("body");
+        store.workflow_body_prepared(&id).expect("body ready");
+        store.workflow_category_prepared(&id).expect("category ready");
+        assert!(store.workflow_work_for_stage(day(1), 100, false).expect("notification first").is_empty());
+        store.workflow_notification_done(&id).expect("notification receipt");
+        let event = store.workflow_events(None, 500).expect("arrival").remove(0);
+        store.acknowledge_workflow_event(&event.id).expect("runner owns arrival");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("restart before suggestions");
+        assert_eq!(
+            store.workflow_work_for_stage(day(1), 100, false).expect("optional work independent of ack"),
+            std::slice::from_ref(&id)
+        );
+        assert!(!store.workflow_actions_pending(&id, day(21)).expect("age bound"));
+        assert!(store.workflow_work_for_stage(day(1), 100, true).expect("no repeat notification").is_empty());
+        store.workflow_actions_done(&id).expect("action receipt");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("restart after suggestions");
+        assert!(store.workflow_work_for_stage(day(1), 100, false).expect("no repeat detection").is_empty());
+    }
+
+    #[test]
+    fn workflow_prepush_notification_recovery_survives_failure_ack_crash_and_v15_upgrade() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        baseline(&store, &inbox, 0);
+        let ready = store.import_workflow_message(&inbox, 7, &message(1, "Already filed"), day(20)).expect("arrival");
+        store
+            .set_body(
+                &ready,
+                &Body { text: "Body".into(), from_html: false, html: None, attachments: vec![], invite: None },
+            )
+            .expect("body");
+        store.workflow_body_prepared(&ready).expect("body ready");
+        store.workflow_category_prepared(&ready).expect("classified");
+        let failed =
+            store.import_workflow_message(&inbox, 7, &message(2, "Needs notification"), day(20)).expect("arrival");
+        store.fail_workflow_preparation(&failed, WorkflowMailFailure::BodyUnavailable).expect("terminal body failure");
+        let event = store
+            .workflow_events(None, 500)
+            .expect("events")
+            .into_iter()
+            .find(|event| event.message == failed)
+            .expect("failed event");
+        store.acknowledge_workflow_event(&event.id).expect("runner already owns failure");
+        store
+            .db
+            .execute_batch(
+                "DROP INDEX workflow_notifications_pending;
+            ALTER TABLE workflow_deliveries DROP COLUMN actions_done;
+            ALTER TABLE workflow_deliveries DROP COLUMN notification_done; PRAGMA user_version = 15;",
+            )
+            .expect("v15 snapshot");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("upgrade/restart after failure before filing");
+        assert!(
+            !store.workflow_notification_pending(&ready, day(1)).expect("do not reapply filters to completed history")
+        );
+        assert_eq!(store.workflow_work_for_stage(day(1), 25, true).expect("notification queue"), vec![failed.clone()]);
+        assert!(store.workflow_work_for_stage(day(1), 25, false).expect("no workflow revival").is_empty());
+        let state: (String, bool) = store
+            .db
+            .query_row("SELECT state, acknowledged FROM workflow_events WHERE id = ?1", [&event.id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .expect("original state");
+        assert_eq!(state, ("failed".into(), true));
+        store.workflow_notification_done(&failed).expect("receipt after inbox persisted");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("second restart");
+        assert!(store.workflow_pending_work(day(1), 100).expect("both independent queues complete").is_empty());
+        assert_eq!(store.workflow_events(None, 500).expect("only original ready event remains").len(), 1);
     }
 
     /// Issue #460: the people of the mail are those written to from Sent, counted by age, and the

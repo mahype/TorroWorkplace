@@ -34,6 +34,7 @@ pub mod pim;
 pub mod server;
 pub mod tools;
 pub mod web;
+pub mod workflows;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -327,6 +328,103 @@ pub enum Door {
               request every caller builds"
 )]
 pub enum Request {
+    /// Public bundled workflow metadata; no mail, network or file access. Returns WorkflowTemplates.
+    #[serde(rename = "workflows.list_templates")]
+    ListWorkflowTemplates,
+    /// One bundled package. Unknown id is not-found; never runs it.
+    #[serde(rename = "workflows.get_template")]
+    GetWorkflowTemplate { id: String },
+    /// Copies a pinned template into an inactive, untested draft for a reachable mail and existing target.
+    /// Returns WorkflowDraft; not-found/conflict/forbidden/error/unsupported. Grants no execution rights.
+    #[serde(rename = "workflows.instantiate_template")]
+    InstantiateWorkflowTemplate {
+        template_id: String,
+        revision: u32,
+        digest: String,
+        mail: String,
+        save_target: String,
+    },
+    /// Reachable workflows only. Empty is normal; never authorizes or executes them.
+    #[serde(rename = "workflows.list_workflows")]
+    ListWorkflows,
+    /// Reads a reachable workflow; foreign and unknown ids are both not-found.
+    #[serde(rename = "workflows.get_workflow")]
+    GetWorkflow { id: String },
+    /// Asks the configured chat model for a bounded draft from mail, a target and an optional instruction.
+    /// Returns WorkflowDraft; not-connected without a model, forbidden under mail data rules.
+    #[serde(rename = "workflows.propose_workflow")]
+    ProposeWorkflow { mail: String, save_target: String, instruction: String },
+    /// Stores a validated, inactive draft. No test, grant or rule is created.
+    #[serde(rename = "workflows.create_draft")]
+    CreateWorkflowDraft { spec: workflows::DraftSpec },
+    /// Updates a pinned draft revision, invalidating its test and authorization. Never silently updates rules.
+    #[serde(rename = "workflows.update_draft")]
+    UpdateWorkflowDraft { id: String, revision: u32, spec: workflows::DraftSpec },
+    /// Saves a successfully tested revision for manual reuse; does not activate automation.
+    #[serde(rename = "workflows.save_workflow")]
+    SaveWorkflow { id: String, revision: u32 },
+    /// Makes an inactive, untested copy without grants or rules.
+    #[serde(rename = "workflows.duplicate_workflow")]
+    DuplicateWorkflow { id: String, revision: u32 },
+    /// Enables/disables a workflow; enabling never grants rights or activates rules.
+    #[serde(rename = "workflows.set_workflow_enabled")]
+    SetWorkflowEnabled { id: String, revision: u32, enabled: bool },
+    /// Removes a reachable workflow, not retrieved documents or its durable deduplication history.
+    #[serde(rename = "workflows.remove_workflow")]
+    RemoveWorkflow { id: String, revision: u32 },
+    /// Local access/domain/target preview only. No DNS, GET, conversion or file write. Returns WorkflowPreview.
+    #[serde(rename = "workflows.preview_run")]
+    PreviewWorkflowRun { id: String, revision: u32, mail: String },
+    /// Queues a pinned run (WorkflowRun), or Pending for a real human test approval. Busy at queue capacity.
+    /// Repeat explicitly requests a new generation; ordinary retries are deduplicated across versions/rules.
+    #[serde(rename = "workflows.run")]
+    RunWorkflow { id: String, revision: u32, mail: String, test: bool, repeat: bool },
+    /// Reachable runs, optionally for one workflow/mail. Content is untrusted and subject to mail data rules.
+    #[serde(rename = "workflows.list_runs")]
+    ListWorkflowRuns { workflow: Option<String>, mail: Option<String> },
+    /// One reachable run; unknown/foreign ids are not-found.
+    #[serde(rename = "workflows.get_run")]
+    GetWorkflowRun { id: String },
+    /// Cancels a run. A converter retains its global admission until its worker actually ends.
+    #[serde(rename = "workflows.cancel_run")]
+    CancelWorkflowRun { id: String },
+    /// A reachable verified document, in chunks of at most 256 KiB. No arbitrary paths.
+    #[serde(rename = "workflows.get_document")]
+    GetWorkflowDocument { id: String, offset: u64, limit: u32 },
+    /// Opens a reachable document after current rights/path/hash checks; missing/changed files are not reloaded.
+    #[serde(rename = "workflows.open_document")]
+    OpenWorkflowDocument { id: String },
+    /// Shows a reachable verified document in its folder; no arbitrary paths.
+    #[serde(rename = "workflows.show_document")]
+    ShowWorkflowDocument { id: String },
+    /// Reachable automation rules only. Listing changes nothing.
+    #[serde(rename = "workflows.list_rules")]
+    ListWorkflowRules,
+    /// Adds an inactive rule; admin approval does not grant execution or process existing mail.
+    #[serde(rename = "workflows.create_rule")]
+    CreateWorkflowRule { spec: workflows::RuleSpec },
+    /// Updates a pinned rule, leaving it inactive; conflict for a stale revision.
+    #[serde(rename = "workflows.update_rule")]
+    UpdateWorkflowRule { id: String, revision: u32, spec: workflows::RuleSpec },
+    /// Copies a rule without activation or grants.
+    #[serde(rename = "workflows.duplicate_rule")]
+    DuplicateWorkflowRule { id: String, revision: u32 },
+    /// Activates/deactivates a rule with the current human authorization; never processes first/reset inventories.
+    #[serde(rename = "workflows.set_rule_enabled")]
+    SetWorkflowRuleEnabled { id: String, revision: u32, enabled: bool },
+    /// Removes a rule, not its runs or documents.
+    #[serde(rename = "workflows.remove_rule")]
+    RemoveWorkflowRule { id: String, revision: u32 },
+    /// Locally previews matching mail; no existing message is executed by preview or activation.
+    #[serde(rename = "workflows.preview_rule")]
+    PreviewWorkflowRule { spec: workflows::RuleSpec },
+    /// Human-only authorization of a successfully tested exact revision, target, hosts and carrier.
+    /// Never an agent tool; changing executable bindings requires a new test and human authorization.
+    #[serde(rename = "workflows.authorize_workflow")]
+    AuthorizeWorkflow { id: String, revision: u32 },
+    /// Human-only revocation, checked again before every external or file-write step.
+    #[serde(rename = "workflows.revoke_workflow_authorization")]
+    RevokeWorkflowAuthorization { id: String },
     /// Version and health; also how a client finds out the core is up.
     #[serde(rename = "system.ping")]
     Ping,
@@ -4552,6 +4650,42 @@ pub enum Snooze {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "result")]
 pub enum Response {
+    WorkflowTemplates {
+        templates: Vec<workflows::WorkflowTemplate>,
+    },
+    WorkflowTemplate {
+        template: workflows::WorkflowTemplate,
+    },
+    Workflows {
+        workflows: Vec<workflows::Workflow>,
+    },
+    WorkflowDraft {
+        workflow: workflows::Workflow,
+    },
+    Workflow {
+        workflow: workflows::Workflow,
+    },
+    WorkflowRules {
+        rules: Vec<workflows::WorkflowRule>,
+    },
+    WorkflowRule {
+        rule: workflows::WorkflowRule,
+    },
+    WorkflowRuns {
+        runs: Vec<workflows::WorkflowRun>,
+    },
+    WorkflowRun {
+        run: workflows::WorkflowRun,
+    },
+    WorkflowPreview {
+        preview: workflows::WorkflowPreview,
+    },
+    WorkflowDocument {
+        document: workflows::RetrievedDocument,
+        offset: u64,
+        base64: String,
+        eof: bool,
+    },
     Pong {
         version: String,
         /// The API version the core speaks ([`API_VERSION`]); 0 from cores older than this

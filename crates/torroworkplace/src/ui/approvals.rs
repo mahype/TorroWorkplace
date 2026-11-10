@@ -130,7 +130,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 fn open_row<'a>(state: &State, approval: &'a ApprovalInfo, now: DateTime<Utc>) -> Element<'a, Message> {
     let detail = format!("{} · {}", approval.client_name, time_left(approval.expires, now));
     let lines = column![
-        typo::text(typo::body(), approval.summary.as_str()),
+        typo::text(typo::body(), approval.summary.as_str()).wrapping(Wrapping::WordOrGlyph),
         one_line(typo::text(typo::meta().tabular(), detail).style(theme::text_2)),
     ];
     let on =
@@ -165,8 +165,9 @@ fn details_block<'a>(state: &State, approval: &'a ApprovalInfo) -> Option<Elemen
     );
     let mut block = column![super::accounts::on_axis(toggle)].spacing(space::xs());
     if open {
-        let lines =
-            approval.details.iter().map(|line| typo::text(typo::meta(), line.as_str()).style(theme::text_2).into());
+        let lines = approval.details.iter().map(|line| {
+            typo::text(typo::meta(), line.as_str()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph).into()
+        });
         block = block.push(column(lines).spacing(space::xs()));
     }
     Some(block.into())
@@ -338,5 +339,101 @@ mod tests {
         drop(view(&state, &data(vec![open, plain])));
         toggle(&mut state, "a");
         assert!(state.expanded.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unbroken_approval_details_wrap_with_window_width_instead_of_clipping() {
+        use iced::Size;
+        use iced::advanced::{layout::Limits, renderer::Headless, widget::Tree};
+
+        let renderer =
+            iced::Renderer::new(theme::font(), typo::body().size, Some("tiny-skia")).await.expect("headless renderer");
+        let mut open = approval("long", ApprovalState::Pending, Duration::minutes(4));
+        open.details = vec!["W".repeat(crate::approvals::DETAIL_MAX)];
+        let mut state = State::default();
+        state.expanded.insert(open.id.clone());
+        let height = |width| {
+            let mut element = details_block(&state, &open).expect("expanded details");
+            let mut tree = Tree::new(&element);
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &Limits::new(Size::ZERO, Size::new(width, f32::INFINITY)),
+            );
+            assert!(node.size().width <= width, "detail block fits the available width");
+            node.size().height
+        };
+        let line = typo::meta().line_height.to_absolute(typo::meta().size).0;
+        assert!(
+            height(190.0) > height(800.0) + 3.0 * line,
+            "long values must gain lines in narrow windows, not disappear off the right edge"
+        );
+    }
+
+    /// Opt-in visual evidence of the real control-centre page, with synthetic service-built facts.
+    #[test]
+    #[ignore = "renders headless workflow approvals into TORRO_APPROVAL_SHOTS; run separately in EN and DE"]
+    fn render_long_workflow_approval_details() {
+        use super::super::{Launch, Ui};
+        use torro_gui::shots::Shots;
+
+        let root = std::env::var("TORRO_APPROVAL_SHOTS").expect("explicit scratch output directory");
+        for scene in ["domains", "conditions"] {
+            for design in ["torro", "comfort", "dense"] {
+                for mode in ["light", "dark"] {
+                    let args = vec![
+                        "--demo".into(),
+                        "--section=approvals".into(),
+                        format!("--design={design}"),
+                        format!("--appearance={mode}"),
+                        "--shots".into(),
+                        root.clone(),
+                    ];
+                    let launch = Launch::parse(&args).expect("isolated demo launch");
+                    torro_gui::design::start(None, &launch.forced());
+                    let shots = Shots::from_args(&format!("workflow-approval-{scene}"), &args)
+                        .expect("shot arguments")
+                        .expect("shots requested");
+                    let boot = move || {
+                        let (mut ui, _) = Ui::new(launch.clone());
+                        let request = torro_ipc::Request::RunWorkflow {
+                            id: "synthetic".into(),
+                            revision: 7,
+                            mail: "m:synthetic".into(),
+                            test: true,
+                            repeat: false,
+                        };
+                        let prefix = format!("{}.{}.{}.", "a".repeat(63), "b".repeat(63), "c".repeat(63));
+                        let workflow = crate::approvals::WorkflowFacts {
+                            name: Some("Synthetic invoice workflow".into()),
+                            revision: Some(7),
+                            hosts: if scene == "domains" {
+                                vec![format!("{prefix}billing.example.org")]
+                            } else {
+                                Vec::new()
+                            },
+                            rule_query: (scene == "conditions")
+                                .then(|| format!("subject:{} from:billing@example.org", "q".repeat(250))),
+                            ..Default::default()
+                        };
+                        let facts =
+                            crate::approvals::Facts { workflow: Some(Box::new(workflow)), ..Default::default() };
+                        let shown = ApprovalInfo {
+                            command: "workflows.run".into(),
+                            summary: crate::approvals::summary(&request, &facts),
+                            details: crate::approvals::details(&request, &facts),
+                            ..approval("synthetic-long", ApprovalState::Pending, Duration::minutes(4))
+                        };
+                        ui.approvals.expanded.insert(shown.id.clone());
+                        ui.data.approvals = vec![shown];
+                        (ui, iced::Task::none())
+                    };
+                    let program =
+                        iced::application(boot, Ui::update, Ui::view).settings(torro_gui::settings()).theme(Ui::theme);
+                    let paths = torro_gui::shots::write(&program, &shots).expect("real page rendered headlessly");
+                    assert_eq!(paths.len(), torro_gui::shots::SIZES.len());
+                }
+            }
+        }
     }
 }

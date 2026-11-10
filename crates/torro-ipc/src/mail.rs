@@ -1268,6 +1268,9 @@ impl Request {
     /// ([`Request::message_ids`]).
     pub fn mail_account(&self) -> Option<&str> {
         match self {
+            Request::CreateWorkflowRule { spec }
+            | Request::UpdateWorkflowRule { spec, .. }
+            | Request::PreviewWorkflowRule { spec } => Some(&spec.account),
             Request::PrepareMailImage { account, .. }
             | Request::UploadMailImage { account, .. }
             | Request::ReleaseMailImages { account, .. } => Some(account),
@@ -1306,6 +1309,12 @@ impl Request {
     /// before anything is read).
     pub fn message_ids(&self) -> Vec<&str> {
         match self {
+            Request::InstantiateWorkflowTemplate { mail, .. }
+            | Request::ProposeWorkflow { mail, .. }
+            | Request::PreviewWorkflowRun { mail, .. }
+            | Request::RunWorkflow { mail, .. } => vec![mail],
+            Request::CreateWorkflowDraft { spec } | Request::UpdateWorkflowDraft { spec, .. } => vec![&spec.mail],
+            Request::ListWorkflowRuns { mail, .. } => mail.iter().map(String::as_str).collect(),
             Request::PrepareMailImage { source: torro_mail::ImageSource::MailPart { message, .. }, .. } => {
                 vec![message]
             }

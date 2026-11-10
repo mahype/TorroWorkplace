@@ -1,0 +1,9 @@
+From: Example Billing <billing@example.org>
+To: Example Buyer <buyer@example.net>
+Date: Sun, 1 Nov 2026 09:00:00 +0000
+Message-ID: <synthetic-stripe-invoice@example.org>
+Subject: Synthetic invoice
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Your synthetic invoice is ready.</p><a href="https://invoice.stripe.com/i/acct_synthetic/token_synthetic">Invoice</a></body></html>
