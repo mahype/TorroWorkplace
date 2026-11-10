@@ -2592,10 +2592,11 @@ static SAVE_TODO: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Creates a task (without `href`) or changes one (with `href` and `etag` from list_todos) on the \
-                  server and returns it as stored. Marking a task done is a change. Changing `collection` moves \
+                  server and returns it as stored. Marking a task done is a change. A change that gives an open task due today or overdue a focus \
+                  while today's focus slots are all taken is refused with conflict (see set_focus). Changing `collection` moves \
                   it to another calendar of the same account; moving to another account fails with \
                   `unsupported`. Pass the task with every field as list_todos returned it: a missing `url`, \
-                  `categories`, `sort_order` or `link` clears it, and of the link only its `id` is stored. Setting \
+                  `categories`, `sort_order`, `link` or `focus` clears it, and of the link only its `id` is stored. Setting \
                   or changing a `link` needs read access to `github` (else `forbidden`) and, for a key limited to \
                   some repositories, the item's repository (else `not-found`); a mail link \
                   (`mail:<address>:<Message-ID>`) needs read access to mail and that account (else `not-found`). Marking a GitHub issue in a filter \
@@ -2636,8 +2637,9 @@ static SET_FOCUS: Command = Command {
     mcp: Mcp::Tool,
     description: "Sets how much focus a task (`href` and `etag` from list_todos) asks for: \"normal\", \"focus\" \
                   or \"strong\" (stored as X-TORRO-FOCUS, kept when other apps edit the task). Open tasks with a \
-                  focus that are due today or overdue take one of the focus slots (settings `focus_slots`, 3 \
-                  unless changed); when all are taken a further one is refused with conflict. Pass `release` \
+                  focus that are due today or overdue in the lists you may write take one of the focus slots \
+                  (settings `focus_slots`, 3 unless changed); when all are taken a further one is refused with \
+                  conflict. Pass `release` \
                   (another task's `href` and `etag`) to take that task's focus away first.",
 };
 

@@ -5343,8 +5343,11 @@ impl Core {
                     }
                 }
                 // The tasks the focus plan moves, only from the lists the client sees (issue #596).
+                // The plan is pinned: a run on another day or over other tasks is refused.
                 if let Request::PostponeFocusPlan = &request {
                     facts.tasks = self.pim.postpone_titles(Reach::Client(rights)).await;
+                    let pinned = self.pim.postpone_fingerprint(Reach::Client(rights)).await;
+                    fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
                 }
                 // What a target shows (task E8.7a): the subject or title the core holds, looked up
                 // as the client may see it – for a file of the tools (task WZ.8) the register's title.
@@ -5780,6 +5783,15 @@ impl Core {
         let reach = Reach::Client(rights);
         if let Some(outside) = self.out_of_reach(reach, &request).await {
             return not_reached(&request, &outside);
+        }
+        // Today's focus plan runs only as the person was shown it (issue #596).
+        if let Request::PostponeFocusPlan = request
+            && fingerprint != Some(self.pim.postpone_fingerprint(reach).await.as_str())
+        {
+            return Response::Error {
+                code: "conflict".into(),
+                message: "today's focus plan changed after the approval was asked for; nothing ran, ask again".into(),
+            };
         }
         // A save that removes events of a series still needs the right to delete (task TE.4).
         if let Some(delete) = delete_operation(&request)

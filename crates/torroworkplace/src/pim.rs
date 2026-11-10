@@ -2871,6 +2871,21 @@ impl PimService {
         postpone_plan(&todos, today, &Local).into_iter().filter(|t| t.focus.is_focus()).map(|t| t.summary).collect()
     }
 
+    /// What an approval of `tasks.postpone_focus_plan` for `reach` pins (issue #596): the day and
+    /// every task the plan would write with its version. A run whose plan differs from what the
+    /// person was shown (another day, focus tasks added, a task changed) is refused.
+    pub async fn postpone_fingerprint(&self, reach: Reach<'_>) -> String {
+        let todos = self.plannable_within(reach).await;
+        let today = Local::now().date_naive();
+        let plan = postpone_plan(&todos, today, &Local);
+        let version = |href: &Option<String>| todos.iter().find(|t| t.href == *href).and_then(|t| t.etag.clone());
+        let parts: Vec<String> = plan
+            .iter()
+            .map(|t| format!("{}@{}", t.href.as_deref().unwrap_or_default(), version(&t.href).unwrap_or_default()))
+            .collect();
+        format!("postpone:{today}:{}", parts.join(";"))
+    }
+
     /// Moves today's focus plan of the tasks `reach` may write to tomorrow
     /// (`Request::PostponeFocusPlan`, [`postpone_plan`]), written one after the other.
     async fn postpone_focus_plan(&self, reach: Reach<'_>, today: NaiveDate) -> Result<Vec<Todo>, WriteError> {

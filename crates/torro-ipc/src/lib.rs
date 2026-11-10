@@ -1268,11 +1268,12 @@ pub enum Request {
     /// Answered with [`Response::Todos`]: the tasks written, as stored (the released one first).
     ///
     /// Focus slots ([`SettingKey::FocusSlots`]) count the open tasks with a focus that are due today
-    /// or overdue in the lists the caller may see; a task that would add one while all are taken is
-    /// refused with `conflict` and nothing is written (focus to strong focus adds none). Codes:
-    /// `not-found` when `href` or `release.href` is no listed task; `conflict` when an etag is not
-    /// the task's current version or the slots are full (`message` says which); `unsupported` for a
-    /// GitHub filter list.
+    /// or overdue in the lists the caller may see and write; a task that would add one while all are
+    /// taken is refused with `conflict` and nothing is written (focus to strong focus adds none).
+    /// The released task is written first: when the second write fails, it has lost its focus
+    /// already. Codes: `not-found` when `href` or `release.href` is no listed task (also an item of a
+    /// GitHub filter list for a client); `conflict` when an etag is not the task's current version or
+    /// the slots are full (`message` says which); `unsupported` for a GitHub filter list.
     #[serde(rename = "tasks.set_focus")]
     SetFocus {
         /// `href` of the task, as `tasks.list_todos` returned it.

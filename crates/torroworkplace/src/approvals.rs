@@ -1722,10 +1722,14 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         },
         Request::PostponeFocusPlan => match facts.tasks.as_slice() {
             [] => tr("Move today's focus tasks to tomorrow (none right now)").to_string(),
+            // At most three titles in the summary; the details list them all.
             titles => {
-                let titles: Vec<String> = titles.iter().map(|t| format!("\"{}\"", quote(t))).collect();
+                let mut shown: Vec<String> = titles.iter().take(3).map(|t| format!("\"{}\"", quote(t))).collect();
+                if titles.len() > 3 {
+                    shown.push(trf("{n} more", &[("n", &(titles.len() - 3))]));
+                }
                 let n = titles.len().to_string();
-                trf("Move {n} focus tasks to tomorrow: {titles}", &[("n", &n), ("titles", &titles.join(", "))])
+                trf("Move {n} focus tasks to tomorrow: {titles}", &[("n", &n), ("titles", &shown.join(", "))])
             }
         },
         Request::MoveTodo { .. } => match (&facts.item, &facts.name) {
@@ -4067,6 +4071,10 @@ fn workflow_detail(value: &str) -> String {
 /// `name: value` (the value as compact JSON), whole ([`whole`]): the summary cuts them at
 /// [`ARGUMENTS_MAX`] characters, the person deciding sees all of them here.
 pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
+    // Every task the focus plan moves, as the core holds it (issue #596).
+    if let Request::PostponeFocusPlan = request {
+        return facts.tasks.iter().map(|title| format!("\"{}\"", quote(title))).collect();
+    }
     if let Some(workflow) = &facts.workflow {
         let mut lines = Vec::new();
         if let Some(revision) = workflow.revision {
