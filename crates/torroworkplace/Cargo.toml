@@ -85,6 +85,7 @@ base64.workspace = true
 # The tool web (WEB.2): DuckDuckGo's results page and the HTML in extracts of the search providers.
 dom_query.workspace = true
 html5ever.workspace = true
+cssparser.workspace = true
 url.workspace = true
 # The tool web (WEB.3): the main content of a page as Markdown.
 dom_smoothie.workspace = true

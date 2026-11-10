@@ -663,9 +663,11 @@ fn check_spec(spec: &wire::DraftSpec) -> Result<(), Error> {
         return Err(Error::Invalid);
     }
     spec.package.validate().map_err(|_| Error::Unsupported)?;
-    if spec.package.steps.iter().any(|step| matches!(step, wire::Step::RenderInvoiceCopy { .. }))
-        && spec.package.binding.fonts_digest != invoice::binding()
-    {
+    let profile = spec.package.steps.iter().find_map(|step| match step {
+        wire::Step::RenderInvoiceCopy { version, .. } => Some(*version),
+        _ => None,
+    });
+    if profile.is_some_and(|profile| spec.package.binding.fonts_digest != invoice::binding(profile)) {
         return Err(Error::Unsupported);
     }
     Ok(())

@@ -1,5 +1,6 @@
 //! Strict, offline invoice copies: bounded tokenization, a closed Paddle profile and measured PDF text.
-//! No provider markup, styles, resources, links, forms or actions enter the generated PDF.
+//! No provider markup, styles, resources, links, forms or actions enter the generated PDF. Profile 2 also reads
+//! the page's stylesheet as data and refuses it when it could generate or hide invoice content.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -12,6 +13,8 @@ use html5ever::tokenizer::{BufferQueue, Token, TokenSink, TokenSinkResult, Token
 use printpdf::{Mm, Op, ParsedFont, PdfDocument, PdfFontHandle, PdfPage, Point, Pt, TextItem};
 use sha2::{Digest, Sha256};
 
+use super::download::ResourceKind;
+
 const MAX_HTML: usize = 2 * 1024 * 1024;
 const MAX_TEXT: usize = 1024 * 1024;
 const MAX_TOKEN: usize = 16 * 1024;
@@ -19,7 +22,15 @@ const MAX_NODES: usize = 50_000;
 const MAX_DEPTH: usize = 64;
 const COPY_MARK: &str = "PDF copy generated from HTML · Not the supplier's original PDF";
 const TIME: Duration = Duration::from_secs(5);
+const MAX_CSS: usize = 512 * 1024;
+const MAX_CSS_RULES: usize = 20_000;
+const MAX_CSS_DEPTH: usize = 16;
+/// The only witnessed selectors whose hiding removes navigation and editing controls, never invoice facts.
+const HIDE_ALLOWED: &[&str] = &[".no-print", ".c-header"];
 static CONVERTERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+/// Tests that convert hold this turn, so the single global converter never reports `Busy` between parallel tests.
+#[cfg(test)]
+pub(super) static TEST_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -91,32 +102,86 @@ pub struct Copy {
 }
 
 /// This digest deliberately includes the exact embedded font bytes, parser/profile and typesetter versions.
-pub fn binding() -> String {
-    static BINDING: OnceLock<String> = OnceLock::new();
-    BINDING
-        .get_or_init(|| {
-            // These are immutable bytes embedded in this binary, not the person's configured font.
-            // Rehashing them before every download chunk would stall otherwise bounded retrievals.
-            let fonts = crate::tools::pdf::PdfFonts::standard();
-            let mut hash = Sha256::new();
-            hash.update(b"paddle_setapp/1;html5ever/0.39.0;bounded-token-profile/2;no-external-presentation;typesetter/1;A4/15mm/11pt");
-            hash.update(&fonts.text);
-            hash.update(&fonts.strong);
-            hash.update(&fonts.heading);
-            hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
-        })
-        .clone()
+/// Each profile has its own prefix, so a package bound to one profile never passes as the other.
+pub fn binding(profile: u16) -> String {
+    static FIRST: OnceLock<String> = OnceLock::new();
+    static SECOND: OnceLock<String> = OnceLock::new();
+    let (cell, prefix): (_, &[u8]) = match profile {
+        1 => (
+            &FIRST,
+            b"paddle_setapp/1;html5ever/0.39.0;bounded-token-profile/2;no-external-presentation;typesetter/1;A4/15mm/11pt",
+        ),
+        _ => (
+            &SECOND,
+            b"paddle_setapp/2;html5ever/0.39.0;bounded-token-profile/2;cssparser/0.37.0;css-rules/1;\
+              hide-only:.no-print,.c-header;pinned-scripts-never-executed;typesetter/1;A4/15mm/11pt",
+        ),
+    };
+    cell.get_or_init(|| {
+        // These are immutable bytes embedded in this binary, not the person's configured font.
+        // Rehashing them before every download chunk would stall otherwise bounded retrievals.
+        let fonts = crate::tools::pdf::PdfFonts::standard();
+        let mut hash = Sha256::new();
+        hash.update(prefix);
+        hash.update(&fonts.text);
+        hash.update(&fonts.strong);
+        hash.update(&fonts.heading);
+        hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+    })
+    .clone()
+}
+
+/// A stylesheet or script the page's head names. Only profile 2 accepts any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reference {
+    pub kind: ResourceKind,
+    pub href: String,
+}
+
+/// A loaded reference. Stylesheets carry their bytes for the rule check; scripts are only named, never run.
+pub struct Loaded {
+    pub reference: Reference,
+    pub stylesheet: Option<Vec<u8>>,
+}
+
+/// Lists the head resources of a profile-2 page after the same complete structural check as the conversion,
+/// so nothing is loaded for a page that would be refused anyway.
+pub async fn references(
+    bytes: Vec<u8>,
+    content_type: Option<String>,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<Vec<Reference>, Error> {
+    let budget = Budget::new(cancel);
+    run_worker(move || extract_with(&bytes, content_type.as_deref(), &budget, 2).map(|(_, references)| references))
+        .await
 }
 
 /// Admission moves into the actual blocking worker, not the cancelable async waiting future.
+/// `loaded` is `None` for profile 1 and the page's checked resources, in page order, for profile 2.
 pub async fn convert(
     bytes: Vec<u8>,
     content_type: Option<String>,
+    loaded: Option<Vec<Loaded>>,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<Copy, Error> {
     let budget = Budget::new(cancel);
     run_worker(move || {
-        let invoice = extract_with(&bytes, content_type.as_deref(), &budget)?;
+        let profile = if loaded.is_some() { 2 } else { 1 };
+        let (invoice, references) = extract_with(&bytes, content_type.as_deref(), &budget, profile)?;
+        let loaded = loaded.unwrap_or_default();
+        // The PDF may only follow the exact resources that were loaded and checked for this page.
+        if references.len() != loaded.len()
+            || references.iter().zip(&loaded).any(|(reference, loaded)| *reference != loaded.reference)
+        {
+            return Err(Error::Unsupported);
+        }
+        for loaded in &loaded {
+            match (loaded.reference.kind, &loaded.stylesheet) {
+                (ResourceKind::Stylesheet, Some(css)) => check_css(css, &budget)?,
+                (ResourceKind::Script, None) => {}
+                _ => return Err(Error::Unsupported),
+            }
+        }
         render(&invoice, &budget)
     })
     .await
@@ -155,7 +220,17 @@ pub(super) async fn verify_worker_admission_after_cancellation() {
 
 #[cfg(test)]
 pub fn extract(bytes: &[u8], content_type: Option<&str>) -> Result<Invoice, Error> {
-    extract_with(bytes, content_type, &Budget::new(None))
+    extract_with(bytes, content_type, &Budget::new(None), 1).map(|(invoice, _)| invoice)
+}
+
+#[cfg(test)]
+pub fn extract_profile_2(bytes: &[u8], content_type: Option<&str>) -> Result<(Invoice, Vec<Reference>), Error> {
+    extract_with(bytes, content_type, &Budget::new(None), 2)
+}
+
+#[cfg(test)]
+pub fn check_stylesheet(css: &[u8]) -> Result<(), Error> {
+    check_css(css, &Budget::new(None))
 }
 
 #[derive(Default)]
@@ -414,7 +489,12 @@ fn preflight(html: &str, budget: &Budget) -> Result<(), Error> {
     Ok(())
 }
 
-fn extract_with(bytes: &[u8], kind: Option<&str>, budget: &Budget) -> Result<Invoice, Error> {
+fn extract_with(
+    bytes: &[u8],
+    kind: Option<&str>,
+    budget: &Budget,
+    profile: u16,
+) -> Result<(Invoice, Vec<Reference>), Error> {
     let (html, encoding) = decode(bytes, kind)?;
     preflight(&html, budget)?;
     let sink = Sink(RefCell::new(Tree {
@@ -448,7 +528,7 @@ fn extract_with(bytes: &[u8], kind: Option<&str>, budget: &Budget) -> Result<Inv
     let roots: Vec<_> =
         tree.nodes.iter().enumerate().filter(|(_, node)| node.class("c-sheet")).map(|(index, _)| index).collect();
     let [root] = roots.as_slice() else { return Err(Error::Unsupported) };
-    presentation(&tree, *root)?;
+    let references = presentation(&tree, *root, profile)?;
     let mut invoice = Invoice { blocks: Vec::new() };
     collect(&tree, *root, &mut invoice.blocks, budget)?;
     let headings = tree
@@ -476,7 +556,7 @@ fn extract_with(bytes: &[u8], kind: Option<&str>, budget: &Budget) -> Result<Inv
             return Err(Error::Unsupported);
         }
     }
-    Ok(invoice)
+    Ok((invoice, references))
 }
 
 fn beneath(tree: &Tree, mut node: usize, root: usize) -> bool {
@@ -505,16 +585,63 @@ fn known_outside(tree: &Tree, mut node: usize) -> bool {
     false
 }
 
+/// A head `<link rel=stylesheet>` or `<script src>` of profile 2, without inline content or further attributes.
+/// Module scripts are refused: their imports would be further, unpinned code.
+fn head_reference(tree: &Tree, node: &Node) -> Result<Reference, Error> {
+    let typed = |allowed: &[&str]| node.attr("type").is_none_or(|kind| allowed.contains(&kind.trim()));
+    let (kind, href) = match node.tag.as_str() {
+        "link"
+            if node.attrs.iter().all(|(key, _)| matches!(key.as_str(), "rel" | "href" | "type"))
+                && node.attr("rel").is_some_and(|rel| rel.trim().eq_ignore_ascii_case("stylesheet"))
+                && typed(&["text/css"]) =>
+        {
+            (ResourceKind::Stylesheet, node.attr("href"))
+        }
+        "script"
+            if node.attrs.iter().all(|(key, _)| matches!(key.as_str(), "src" | "defer" | "async" | "type"))
+                && typed(&["text/javascript", "application/javascript"])
+                && node.children.iter().all(|child| {
+                    tree.nodes
+                        .get(*child)
+                        .is_some_and(|child| child.tag.is_empty() && normalize(&child.text).is_empty())
+                }) =>
+        {
+            (ResourceKind::Script, node.attr("src"))
+        }
+        _ => return Err(Error::Unsupported),
+    };
+    let href = href.filter(|href| !href.is_empty() && href.len() <= 2048).ok_or(Error::Unsupported)?;
+    Ok(Reference { kind, href: href.into() })
+}
+
 /// No external or executable presentation influences are proven by profile 1. A mutable stylesheet
 /// URL is not a version pin: even a familiar provider URL can add generated invoice facts tomorrow.
 /// Refuse rather than compare a PDF against an extraction that has already lost those facts.
-fn presentation(tree: &Tree, root: usize) -> Result<(), Error> {
+/// Profile 2 returns the head's stylesheets and scripts instead; the caller loads and checks each one.
+fn presentation(tree: &Tree, root: usize, profile: u16) -> Result<Vec<Reference>, Error> {
     let heads: Vec<_> =
         tree.nodes.iter().enumerate().filter(|(_, node)| node.tag == "head").map(|(index, _)| index).collect();
     if heads.len() > 1 {
         return Err(Error::Unsupported);
     }
+    let mut references = Vec::new();
     for (index, node) in tree.nodes.iter().enumerate() {
+        let in_head = heads.first().is_some_and(|head| beneath(tree, index, *head));
+        if profile == 2 && in_head && matches!(node.tag.as_str(), "link" | "script") {
+            if node.attrs.iter().any(|(key, _)| key.starts_with("on")) || references.len() >= 8 {
+                return Err(Error::Unsupported);
+            }
+            references.push(head_reference(tree, node)?);
+            continue;
+        }
+        if profile == 2
+            && in_head
+            && node.tag.is_empty()
+            && node.parent.and_then(|parent| tree.nodes.get(parent)).is_some_and(|parent| parent.tag == "script")
+        {
+            // Whitespace inside an external script element; head_reference has refused any other content.
+            continue;
+        }
         if matches!(node.tag.as_str(), "script" | "style" | "link" | "base" | "iframe" | "object" | "embed")
             || node.attrs.iter().any(|(key, _)| key.starts_with("on"))
         {
@@ -543,9 +670,7 @@ fn presentation(tree: &Tree, root: usize) -> Result<(), Error> {
             return Err(Error::Unsupported);
         }
         // The head is metadata only, not a blanket exception for arbitrary DOM or form values.
-        if heads.first().is_some_and(|head| beneath(tree, index, *head))
-            && !matches!(node.tag.as_str(), "head" | "title" | "meta" | "")
-        {
+        if in_head && !matches!(node.tag.as_str(), "head" | "title" | "meta" | "") {
             return Err(Error::Unsupported);
         }
         if !beneath(tree, index, root)
@@ -568,7 +693,7 @@ fn presentation(tree: &Tree, root: usize) -> Result<(), Error> {
             return Err(Error::Unsupported);
         }
     }
-    Ok(())
+    Ok(references)
 }
 
 fn normalize(text: &str) -> String {
@@ -769,6 +894,320 @@ fn collect(tree: &Tree, index: usize, blocks: &mut Vec<Block>, budget: &Budget) 
         collect(tree, *child, blocks, budget)?;
     }
     Ok(())
+}
+
+/// Reads a stylesheet as data under fixed rules. It refuses generated text (`content`), imports and any rule
+/// that could hide content, except on the witnessed navigation selectors. A colour or spacing change passes.
+fn check_css(bytes: &[u8], budget: &Budget) -> Result<(), Error> {
+    if bytes.len() > MAX_CSS {
+        return Err(Error::Unsupported);
+    }
+    let text =
+        std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).map_err(|_| Error::Unsupported)?;
+    let mut input = cssparser::ParserInput::new(text);
+    let mut parser = cssparser::Parser::new(&mut input);
+    let mut walk = CssWalk { budget, tokens: 0, rules: 0 };
+    rule_list(&mut parser, &mut walk, 0).map_err(|error| match error.kind {
+        cssparser::ParseErrorKind::Custom(error) => error,
+        cssparser::ParseErrorKind::Basic(_) => Error::Unsupported,
+    })
+}
+
+struct CssWalk<'b> {
+    budget: &'b Budget,
+    tokens: usize,
+    rules: usize,
+}
+
+type CssFail<'i> = cssparser::ParseError<'i, Error>;
+
+fn refuse<'i>() -> CssFail<'i> {
+    cssparser::ParseError {
+        kind: cssparser::ParseErrorKind::Custom(Error::Unsupported),
+        location: cssparser::SourceLocation { line: 0, column: 0 },
+    }
+}
+
+impl CssWalk<'_> {
+    fn tick<'i>(&mut self) -> Result<(), CssFail<'i>> {
+        self.tokens += 1;
+        if self.tokens.is_multiple_of(1000) {
+            self.budget.check().map_err(|error| cssparser::ParseError {
+                kind: cssparser::ParseErrorKind::Custom(error),
+                location: cssparser::SourceLocation { line: 0, column: 0 },
+            })?;
+        }
+        Ok(())
+    }
+
+    fn rule<'i>(&mut self) -> Result<(), CssFail<'i>> {
+        self.rules += 1;
+        if self.rules > MAX_CSS_RULES { Err(refuse()) } else { Ok(()) }
+    }
+}
+
+/// A simplified declaration value: enough to recognize hiding, never to apply styles.
+#[derive(Debug, Clone, PartialEq)]
+enum Value {
+    Word(String),
+    Text(String),
+    Number(f32),
+    Length(f32, String),
+    Function(String, Vec<Value>),
+    Other,
+}
+
+/// Rules at the top level or inside a grouping at-rule.
+fn rule_list<'i>(
+    parser: &mut cssparser::Parser<'i, '_>,
+    walk: &mut CssWalk<'_>,
+    depth: usize,
+) -> Result<(), CssFail<'i>> {
+    use cssparser::Token;
+    if depth > MAX_CSS_DEPTH {
+        return Err(refuse());
+    }
+    loop {
+        walk.tick()?;
+        let start = parser.position();
+        let token = match parser.next() {
+            Ok(token) => token.clone(),
+            Err(_) => return Ok(()),
+        };
+        match token {
+            Token::CDO | Token::CDC => {}
+            Token::AtKeyword(name) => at_rule(parser, walk, &name.to_ascii_lowercase(), depth)?,
+            Token::BadUrl(_) | Token::BadString(_) | Token::Semicolon => return Err(refuse()),
+            _ => {
+                walk.rule()?;
+                let mut opened = matches!(token, Token::CurlyBracketBlock);
+                while !opened {
+                    walk.tick()?;
+                    match parser.next().map_err(|_| refuse())? {
+                        Token::CurlyBracketBlock => opened = true,
+                        Token::Semicolon | Token::BadUrl(_) | Token::BadString(_) => return Err(refuse()),
+                        _ => {}
+                    }
+                }
+                let prelude = parser.slice_from(start);
+                let prelude = prelude.strip_suffix('{').unwrap_or(prelude);
+                let may_hide = hide_allowed(prelude);
+                parser.parse_nested_block(|block| declarations(block, walk, may_hide))?;
+            }
+        }
+    }
+}
+
+/// Every selector of the rule is one of the witnessed navigation selectors, ignoring comments and spacing.
+fn hide_allowed(prelude: &str) -> bool {
+    let mut plain = String::new();
+    let mut rest = prelude;
+    while let Some(at) = rest.find("/*") {
+        plain.push_str(&rest[..at]);
+        match rest[at + 2..].find("*/") {
+            Some(end) => rest = &rest[at + 2 + end + 2..],
+            None => return false,
+        }
+    }
+    plain.push_str(rest);
+    plain.split(',').all(|selector| HIDE_ALLOWED.contains(&normalize(selector).as_str()))
+}
+
+fn prelude_until_block<'i>(
+    parser: &mut cssparser::Parser<'i, '_>,
+    walk: &mut CssWalk<'_>,
+) -> Result<bool, CssFail<'i>> {
+    use cssparser::Token;
+    loop {
+        walk.tick()?;
+        match parser.next() {
+            Ok(Token::CurlyBracketBlock) => return Ok(true),
+            Ok(Token::Semicolon) | Err(_) => return Ok(false),
+            Ok(Token::BadUrl(_) | Token::BadString(_)) => return Err(refuse()),
+            Ok(_) => {}
+        }
+    }
+}
+
+fn at_rule<'i>(
+    parser: &mut cssparser::Parser<'i, '_>,
+    walk: &mut CssWalk<'_>,
+    name: &str,
+    depth: usize,
+) -> Result<(), CssFail<'i>> {
+    walk.rule()?;
+    let block = prelude_until_block(parser, walk)?;
+    match (name, block) {
+        ("charset", false) => Ok(()),
+        ("layer", false) => Ok(()),
+        ("media" | "supports" | "layer" | "container", true) => {
+            parser.parse_nested_block(|nested| rule_list(nested, walk, depth + 1))
+        }
+        // Font faces and page boxes hold descriptors, not selectors; they get the same declaration rules.
+        ("font-face" | "page", true) => parser.parse_nested_block(|nested| declarations(nested, walk, false)),
+        // Keyframe selectors (`from`, `50%`) are no allowed navigation selectors, so a hiding frame is refused.
+        ("keyframes" | "-webkit-keyframes" | "-moz-keyframes", true) => {
+            parser.parse_nested_block(|nested| rule_list(nested, walk, depth + 1))
+        }
+        // `@import` loads further, unchecked CSS; every other at-rule is unwitnessed.
+        _ => Err(refuse()),
+    }
+}
+
+fn declarations<'i>(
+    parser: &mut cssparser::Parser<'i, '_>,
+    walk: &mut CssWalk<'_>,
+    may_hide: bool,
+) -> Result<(), CssFail<'i>> {
+    use cssparser::Token;
+    let mut positioned = false;
+    let mut negative_offset = false;
+    let mut hides = false;
+    loop {
+        walk.tick()?;
+        let name = match parser.next() {
+            Err(_) => break,
+            Ok(Token::Semicolon) => continue,
+            Ok(Token::Ident(name)) => name.to_ascii_lowercase(),
+            // Nested rules and at-rules inside a declaration block are not part of the checked grammar.
+            Ok(_) => return Err(refuse()),
+        };
+        parser.expect_colon().map_err(|_| refuse())?;
+        let values = parser.parse_until_after(cssparser::Delimiter::Semicolon, |value| values(value, walk, 0))?;
+        let values: Vec<_> = values.into_iter().filter(|value| *value != Value::Word("important".into())).collect();
+        let word = |wanted: &[&str]| {
+            values.iter().any(|value| matches!(value, Value::Word(word) if wanted.contains(&word.as_str())))
+        };
+        let zero = values.iter().any(|value| matches!(value, Value::Number(n) | Value::Length(n, _) if *n == 0.0));
+        // `var()`, `calc()` and friends are resolved only by a browser; on a hiding property they count as hiding.
+        let dynamic = values.iter().any(|value| {
+            matches!(value, Value::Function(name, _) if !matches!(name.as_str(), "rgb" | "rgba" | "hsl" | "hsla"))
+        });
+        if dynamic
+            && matches!(
+                name.as_str(),
+                "display"
+                    | "visibility"
+                    | "opacity"
+                    | "font-size"
+                    | "font"
+                    | "color"
+                    | "-webkit-text-fill-color"
+                    | "text-indent"
+                    | "position"
+                    | "top"
+                    | "left"
+                    | "right"
+                    | "bottom"
+                    | "inset"
+                    | "unicode-bidi"
+            )
+        {
+            hides = true;
+        }
+        match name.as_str() {
+            "content" => {
+                let empty = matches!(values.as_slice(), [Value::Word(word)] if matches!(word.as_str(), "none" | "normal"))
+                    || matches!(values.as_slice(), [Value::Text(text)] if text.is_empty());
+                if !empty {
+                    return Err(refuse());
+                }
+            }
+            "display" => hides |= word(&["none"]),
+            "visibility" => hides |= word(&["hidden", "collapse"]),
+            "opacity" => {
+                hides |= values.iter().any(|value| matches!(value, Value::Number(n) if *n <= 0.05))
+                    || values.iter().any(|value| matches!(value, Value::Length(n, unit) if unit == "%" && *n <= 5.0));
+            }
+            "font-size" => hides |= zero,
+            "font" => {
+                hides |= values.iter().find_map(|value| match value {
+                    Value::Number(n) | Value::Length(n, _) => Some(*n == 0.0),
+                    _ => None,
+                }) == Some(true)
+            }
+            "color" | "-webkit-text-fill-color" => hides |= word(&["transparent"]) || transparent(&values),
+            "clip" => hides |= !matches!(values.as_slice(), [Value::Word(word)] if word == "auto"),
+            "clip-path" | "-webkit-clip-path" => {
+                hides |= !matches!(values.as_slice(), [Value::Word(word)] if word == "none")
+            }
+            "text-indent" => {
+                hides |= values.iter().any(|value| match value {
+                    Value::Length(n, unit) if unit == "px" => *n < -999.0,
+                    Value::Length(n, unit) if matches!(unit.as_str(), "em" | "rem") => *n < -60.0,
+                    _ => false,
+                })
+            }
+            "position" => positioned |= word(&["absolute", "fixed"]),
+            "top" | "left" | "right" | "bottom" | "inset" | "inset-inline" | "inset-block" | "inset-inline-start"
+            | "inset-inline-end" | "inset-block-start" | "inset-block-end" => {
+                negative_offset |=
+                    values.iter().any(|value| matches!(value, Value::Number(n) | Value::Length(n, _) if *n < 0.0))
+            }
+            // Visual reordering of characters would let the page show other digits than its text.
+            "unicode-bidi" => hides |= word(&["bidi-override", "isolate-override"]),
+            _ => {}
+        }
+    }
+    if (hides || (positioned && negative_offset)) && !may_hide {
+        return Err(refuse());
+    }
+    Ok(())
+}
+
+/// `rgba(…, 0)`, `hsla(…, 0)` and the slash forms with a zero alpha.
+fn transparent(values: &[Value]) -> bool {
+    values.iter().any(|value| match value {
+        Value::Function(name, arguments) if matches!(name.as_str(), "rgb" | "rgba" | "hsl" | "hsla") => {
+            let numbers: Vec<_> = arguments
+                .iter()
+                .filter_map(|value| match value {
+                    Value::Number(n) | Value::Length(n, _) => Some(*n),
+                    _ => None,
+                })
+                .collect();
+            numbers.len() == 4 && numbers.last().is_some_and(|alpha| *alpha == 0.0)
+        }
+        _ => false,
+    })
+}
+
+fn values<'i>(
+    parser: &mut cssparser::Parser<'i, '_>,
+    walk: &mut CssWalk<'_>,
+    depth: usize,
+) -> Result<Vec<Value>, CssFail<'i>> {
+    use cssparser::Token;
+    if depth > MAX_CSS_DEPTH {
+        return Err(refuse());
+    }
+    let mut out = Vec::new();
+    loop {
+        walk.tick()?;
+        let token = match parser.next() {
+            Ok(token) => token.clone(),
+            Err(_) => return Ok(out),
+        };
+        out.push(match token {
+            Token::Ident(word) => Value::Word(word.to_ascii_lowercase()),
+            Token::QuotedString(text) => Value::Text(text.to_string()),
+            Token::Number { value, .. } => Value::Number(value),
+            Token::Percentage { unit_value, .. } => Value::Length(unit_value * 100.0, "%".into()),
+            Token::Dimension { value, unit, .. } => Value::Length(value, unit.to_ascii_lowercase()),
+            Token::Function(name) => {
+                let name = name.to_ascii_lowercase();
+                let arguments = parser.parse_nested_block(|nested| values(nested, walk, depth + 1))?;
+                Value::Function(name, arguments)
+            }
+            Token::ParenthesisBlock | Token::SquareBracketBlock => {
+                Value::Function(String::new(), parser.parse_nested_block(|nested| values(nested, walk, depth + 1))?)
+            }
+            Token::CurlyBracketBlock | Token::BadUrl(_) | Token::BadString(_) => return Err(refuse()),
+            // `!important` changes no visible content; its marker is dropped with the keyword above.
+            Token::Delim('!') => continue,
+            _ => Value::Other,
+        });
+    }
 }
 
 fn width(font: &ParsedFont, text: &str) -> Result<f32, Error> {
