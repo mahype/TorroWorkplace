@@ -177,6 +177,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Preview · Mail", "Vorschau · Mail"),
     // Paddle invoice copies (#598).
     (
+        "Creates a marked PDF copy of a supported Paddle invoice page. Loads its stylesheet and script from my.paddle.com and static.paddle.com as data only: the stylesheet is checked on every run, the script is never executed and must match the tested version. No login.",
+        "Erstellt eine gekennzeichnete PDF-Kopie einer unterstützten Paddle-Rechnungsseite. Lädt deren Stylesheet und Skript von my.paddle.com und static.paddle.com nur als Daten: Das Stylesheet wird bei jedem Lauf geprüft, das Skript wird nie ausgeführt und muss der getesteten Fassung entsprechen. Keine Anmeldung.",
+    ),
+    (
         "The provider changed its invoice page. Run “Create workflow with AI…” at this mail and test it again.",
         "Der Anbieter hat seine Rechnungsseite geändert. Führe an dieser Mail „Ablauf mit KI erstellen…“ aus und teste den Ablauf erneut.",
     ),
@@ -205,10 +209,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{action}; revision {revision}", "{action}; Fassung {revision}"),
     ("{action}; mail “{subject}” [{id}]", "{action}; Mail „{subject}“ [{id}]"),
     ("{action}; category: {category}", "{action}; Kategorie: {category}"),
-    (
-        "Creates a marked PDF copy only of supported Paddle HTML without stylesheets or scripts. Current provider pages using external resources are unsupported; no resource loading or login.",
-        "Erstellt eine gekennzeichnete PDF-Kopie nur aus unterstütztem Paddle-HTML ohne Stylesheets oder Skripte. Aktuelle Anbieterseiten mit externen Ressourcen werden nicht unterstützt; keine Nachladung oder Anmeldung.",
-    ),
     ("Mail summary unavailable", "Mail-Zusammenfassung nicht verfügbar"),
     ("No subject", "Kein Betreff"),
     ("Select mail", "Mail auswählen"),
@@ -296,10 +296,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Retrieves an original invoice PDF through the bounded Stripe JSON resolver. No receipt, payment, login or browser actions; expired links need manual review.",
         "Ruft eine originale Rechnungs-PDF über den begrenzten Stripe-JSON-Resolver ab. Keine Belege, Zahlungen, Anmeldung oder Browseraktionen; abgelaufene Links erfordern manuelle Prüfung.",
     ),
-    (
-        "Creates a clearly marked local PDF copy of the complete supported Paddle invoice HTML. No supplier-layout imitation, resource loading or login; unproven variants are refused.",
-        "Erstellt eine klar gekennzeichnete lokale PDF-Kopie des vollständigen unterstützten Paddle-Rechnungs-HTML. Kein Nachbau des Anbieterlayouts, keine Nachladung oder Anmeldung; nicht belegte Varianten werden abgewiesen.",
-    ),
     ("AI draft", "KI-Entwurf"),
     (
         "Access: read this mail, HTTPS GET on these domains, write PDF to the selected save target. No login or payment actions.",
@@ -345,10 +341,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Erstelle Regeln aus einem gespeicherten Ablauf. Speichern oder Aktivieren eines Ablaufs aktiviert keine Regel.",
     ),
     ("Create workflow with AI…", "Ablauf mit KI erstellen…"),
-    (
-        "Creates a marked PDF copy of supported Paddle invoice HTML. No supplier-layout imitation, external resources or login.",
-        "Erstellt eine gekennzeichnete PDF-Kopie unterstützter Paddle-HTML-Rechnungen. Kein Nachbau des Anbieterlayouts, keine externen Ressourcen oder Anmeldung.",
-    ),
     (
         "Creating a draft performs no download and grants no execution rights. Login, browser actions, scripts and other tasks are not supported.",
         "Ein Entwurf lädt nichts herunter und erteilt keine Ausführungsrechte. Anmeldung, Browseraktionen, Skripte und andere Aufgaben werden nicht unterstützt.",

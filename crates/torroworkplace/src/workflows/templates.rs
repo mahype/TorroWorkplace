@@ -1,7 +1,7 @@
 //! Bundled, versioned provider packages. Reading or copying a template never executes it or grants access.
 
 use sha2::{Digest, Sha256};
-use torro_ipc::workflows::{InvoiceProfile, Package, Step, TemplateOrigin, WorkflowTemplate};
+use torro_ipc::workflows::{InvoiceProfile, Package, ResourcePin, Step, TemplateOrigin, WorkflowTemplate};
 
 use super::{Error, invoice};
 
@@ -18,7 +18,7 @@ pub(super) fn labels(id: &str) -> Result<(&'static str, &'static str), Error> {
         )),
         "paddle_setapp_invoice_copy" => Ok((
             "Paddle / Setapp invoice copy",
-            "Creates a marked PDF copy only of supported Paddle HTML without stylesheets or scripts. Current provider pages using external resources are unsupported; no resource loading or login.",
+            "Creates a marked PDF copy of a supported Paddle invoice page. Loads its stylesheet and script from my.paddle.com and static.paddle.com as data only: the stylesheet is checked on every run, the script is never executed and must match the tested version. No login.",
         )),
         _ => Err(Error::NotFound),
     }
@@ -41,18 +41,19 @@ pub fn list() -> Result<Vec<WorkflowTemplate>, Error> {
         ..direct.clone()
     };
     let mut paddle = Package {
-        hosts: vec!["my.paddle.com".into()],
+        hosts: vec!["my.paddle.com".into(), "static.paddle.com".into()],
         steps: vec![
             Step::MailLink { host: "my.paddle.com".into(), label: None },
             Step::Get,
-            Step::RenderInvoiceCopy { profile: InvoiceProfile::PaddleSetapp, version: 1 },
+            Step::RenderInvoiceCopy { profile: InvoiceProfile::PaddleSetapp, version: 2 },
             Step::VerifyPdf,
             Step::SaveToTarget,
         ],
         ..direct.clone()
     };
     paddle.binding.typesetter = 1;
-    paddle.binding.fonts_digest = invoice::binding();
+    paddle.binding.fonts_digest = invoice::binding(2);
+    paddle.binding.resources = paddle_scripts();
     [("direct_pdf", direct), ("stripe_invoice", stripe), ("paddle_setapp_invoice_copy", paddle)]
         .into_iter()
         .map(|(id, package)| {
@@ -70,6 +71,11 @@ pub fn list() -> Result<Vec<WorkflowTemplate>, Error> {
             })
         })
         .collect()
+}
+
+/// The provider script witnessed in the person's examples. A draft test adopts a newer one; a saved workflow stops.
+fn paddle_scripts() -> Vec<ResourcePin> {
+    Vec::new()
 }
 
 pub fn get(id: &str) -> Result<WorkflowTemplate, Error> {

@@ -1780,7 +1780,7 @@ fn template_description(t: &torro_ipc::workflows::WorkflowTemplate) -> String {
     match t.id.as_str() {
         "direct_pdf" => tr("Uses one unambiguous direct PDF link. The exact domain is taken from the example mail, without downloading.").into(),
         "stripe_invoice" => tr("Retrieves the original Stripe invoice PDF, not a receipt. No payment, login or browser actions.").into(),
-        "paddle_setapp_invoice_copy" => tr("Creates a marked PDF copy only of supported Paddle HTML without stylesheets or scripts. Current provider pages using external resources are unsupported; no resource loading or login.").into(),
+        "paddle_setapp_invoice_copy" => tr("Creates a marked PDF copy of a supported Paddle invoice page. Loads its stylesheet and script from my.paddle.com and static.paddle.com as data only: the stylesheet is checked on every run, the script is never executed and must match the tested version. No login.").into(),
         _ => t.description.clone(),
     }
 }
@@ -1872,11 +1872,11 @@ pub fn demo_templates() -> Vec<torro_ipc::workflows::WorkflowTemplate> {
         ..direct.clone()
     };
     let mut paddle = Package {
-        hosts: vec!["my.paddle.com".into()],
+        hosts: vec!["my.paddle.com".into(), "static.paddle.com".into()],
         steps: vec![
             Step::MailLink { host: "my.paddle.com".into(), label: None },
             Step::Get,
-            Step::RenderInvoiceCopy { profile: InvoiceProfile::PaddleSetapp, version: 1 },
+            Step::RenderInvoiceCopy { profile: InvoiceProfile::PaddleSetapp, version: 2 },
             Step::VerifyPdf,
             Step::SaveToTarget,
         ],
@@ -2618,7 +2618,7 @@ mod tests {
     }
 
     #[test]
-    fn paddle_template_discloses_the_actual_provider_resource_restriction() {
+    fn paddle_template_discloses_its_domains_and_resource_rules() {
         let data = Data { workflow_templates: demo_templates(), ..Data::default() };
         let paddle = data
             .workflow_templates
@@ -2628,12 +2628,19 @@ mod tests {
         assert_eq!(
             template_description(paddle),
             tr(
-                "Creates a marked PDF copy only of supported Paddle HTML without stylesheets or scripts. Current provider pages using external resources are unsupported; no resource loading or login."
+                "Creates a marked PDF copy of a supported Paddle invoice page. Loads its stylesheet and script from my.paddle.com and static.paddle.com as data only: the stylesheet is checked on every run, the script is never executed and must match the tested version. No login."
             )
         );
+        assert_eq!(paddle.package.hosts, ["my.paddle.com", "static.paddle.com"], "both domains show before a test");
         let mut state = State::default();
         stage(&mut state, "template", &data);
         assert_eq!(state.template.as_deref(), Some("paddle_setapp_invoice_copy"));
+        let mut run = DemoState::default().runs.remove(0);
+        run.state = RunState::Failed;
+        run.reason = Some(RunReason::ProviderChanged);
+        assert!(run_status(&run).ends_with(tr(
+            "The provider changed its invoice page. Run “Create workflow with AI…” at this mail and test it again."
+        )));
     }
 
     #[test]
