@@ -367,11 +367,18 @@ pub const fn mix(a: Color, b: Color, t: f32) -> Color {
 /// stay as they are.
 pub fn category_fill(colour: Color) -> Color {
     const STEPS: u16 = 50;
-    let white = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+    let on = on_category();
+    let white = Rgba { r: on.r, g: on.g, b: on.b, a: 1.0 };
     (0..=STEPS)
         .map(|step| mix(colour, Color::BLACK, f32::from(step) / f32::from(STEPS)))
         .find(|fill| white.contrast(Rgba { r: fill.r, g: fill.g, b: fill.b, a: 1.0 }) >= 4.5)
         .unwrap_or(Color::BLACK)
+}
+
+/// The colour of the icon and words on a [`category_fill`] (issue #613): white, in light and dark
+/// alike, since the fill is darkened for it.
+pub const fn on_category() -> Color {
+    Color::WHITE
 }
 
 /// The translucent `top` composited over the opaque `under`, as the renderer would draw it, as one
@@ -1018,7 +1025,7 @@ mod tests {
     #[test]
     fn white_words_read_on_every_category_fill() {
         // Issue #613: the pill is filled in its group's colour with white words on it.
-        let white = Color::WHITE;
+        let white = on_category();
         for (mode, p) in [("dark", Palette::dark()), ("light", Palette::light())] {
             for colour in p.category {
                 let fill = category_fill(colour);

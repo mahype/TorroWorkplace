@@ -7595,7 +7595,7 @@ mod tests {
     }
 
     /// Issues #485 and #613: a mail's category stands in the first line of a slim row, as a pill or
-    /// as a field as wide as the flag, with the category's icon on its main category's colour; the
+    /// as a square field as high as the pill, with the category's icon on its main category's colour; the
     /// field's tooltip names it and says when a model only suggested it. It is no longer a mark of
     /// the second line, and a row without a category gets none.
     #[test]
@@ -7606,7 +7606,7 @@ mod tests {
         assert_eq!(symbol, Icon::Newspaper);
         assert_eq!(group, group_mark(CategoryGroup::Info).1, "the colour of its main category");
         assert_eq!(tip, category_look(&[], Category::Newsletter).0);
-        assert_eq!(category_field(confirmed, &[]).1, list::flag_field().1, "as wide as the flag");
+        assert_eq!(category_field(confirmed, &[]).1, widgets::category_pill_height(), "as high as the pill");
         let guessed = MailCategory { source: torro_mail::CategorySource::Model, ..confirmed };
         let (_, _, tip) = category_field_look(guessed, &[]);
         assert_eq!(tip, category_words(guessed, &[]), "the tooltip says it is a suggestion");

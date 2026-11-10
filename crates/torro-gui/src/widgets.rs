@@ -5031,13 +5031,13 @@ pub fn category_pill<'a, M: 'a>(
     let at = category_index(group);
     let label = label.into_fragment();
     let tip = suggested.then(|| trf("{category} · suggested", &[("category", &label)]));
-    let mark = self::icon(icon, pill_icon()).style(|_, _| svg::Style { color: Some(Color::WHITE) });
-    let words = typo::text(typo::caption(), label).wrapping(Wrapping::None).color(Color::WHITE);
+    let mark = self::icon(icon, pill_icon()).style(|_, _| svg::Style { color: Some(theme::on_category()) });
+    let words = typo::text(typo::caption(), label).wrapping(Wrapping::None).color(theme::on_category());
     let pill = container(row![mark, words].spacing(ICON_GAP).align_y(Alignment::Center))
         .center_y(PILL_HEIGHT)
         .padding(Padding::new(0.0).left(ICON_GAP).right(ICON_GAP))
         .style(move |t| container::Style {
-            text_color: Some(Color::WHITE),
+            text_color: Some(theme::on_category()),
             background: Some(theme::category_fill(palette(t).category[at]).into()),
             border: border::rounded(radius::xs()),
             ..container::Style::default()
@@ -5046,6 +5046,11 @@ pub fn category_pill<'a, M: 'a>(
         Some(tip) => with_tooltip(pill, tip),
         None => pill.into(),
     }
+}
+
+/// The height of a [`category_pill`]; the field that stands in for it in a narrow row is as high.
+pub fn category_pill_height() -> f32 {
+    PILL_HEIGHT
 }
 
 /// The width of a [`category_pill`] with the words `label`: its padding, icon, gap and words.

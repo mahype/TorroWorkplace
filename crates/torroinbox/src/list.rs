@@ -1590,14 +1590,14 @@ pub(crate) fn flag_field<'a>() -> (Element<'a, Message>, f32) {
     (widgets::with_tooltip(field, tr("Flagged")), edge)
 }
 
-/// The field of a mail's category in the slim list (issue #485), with its width: as high and round as
-/// [`flag_field`], the category's `symbol` in white on the colour of its main category (`group`, the
+/// The field of a mail's category in the slim list (issue #485), with its width: a square as high as
+/// the pill it stands in for ([`widgets::category_pill_height`]), the category's `symbol` in white on the colour of its main category (`group`, the
 /// place in `Palette::category`), darkened like the pill's fill ([`theme::category_fill`], issue
 /// #613). It stands in for the pill where a row has no room for it ([`category_fits`]). `tip` names
 /// the category and says when a model only suggested it.
 pub(crate) fn category_field<'a>(symbol: Icon, group: usize, tip: String) -> (Element<'a, Message>, f32) {
-    let edge = typo::line_height(typo::body());
-    let mark = icon::icon(symbol, icon::SIZE_SM).style(|_: &Theme, _| svg::Style { color: Some(Color::WHITE) });
+    let edge = widgets::category_pill_height();
+    let mark = icon::icon(symbol, icon::SIZE_SM).style(|_: &Theme, _| svg::Style { color: Some(theme::on_category()) });
     let field = container(mark).center(edge).style(move |t: &Theme| {
         let p = palette(t);
         container::Style {
