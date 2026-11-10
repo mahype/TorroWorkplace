@@ -1465,6 +1465,30 @@ pub(crate) struct SlimLines<'a> {
     pub circle: Option<Element<'a, Message>>,
     /// The words a search matched (#136), stressed in the sender and the subject.
     pub hits: Option<Hits<'a>>,
+    /// What the mail is (issue #613), between the sender and the time; `None` without a category.
+    pub category: Option<SlimCategory<'a>>,
+}
+
+/// A mail's category in the first line of a slim row (issue #613): the whole pill where there is
+/// room, else only its field ([`category_field`]). [`slim_mail_content`] picks one with
+/// [`category_fits`].
+pub(crate) struct SlimCategory<'a> {
+    /// The filled pill with icon and words ([`torro_gui::widgets::category_pill`]).
+    pub pill: Element<'a, Message>,
+    /// Its width ([`torro_gui::widgets::category_pill_width`]).
+    pub pill_width: f32,
+    /// The field with only the icon ([`category_field`]).
+    pub field: Element<'a, Message>,
+    /// Its width.
+    pub field_width: f32,
+}
+
+/// Whether the whole category pill `pill_width` wide fits in the first line of a slim row with `free`
+/// room for sender and pill (issue #613): the sender keeps its whole name (`name_width`), or at least
+/// half of the room. Otherwise the row shows only the category's field, and the time and the
+/// subject never give way to it.
+pub(crate) fn category_fits(free: f32, name_width: f32, pill_width: f32) -> bool {
+    free - pill_width - cell_gap() >= name_width.min(free / 2.0)
 }
 
 /// The air above and below the two lines of a slim row (issue #458): [`space::m()`] and a hairline,
@@ -1498,17 +1522,29 @@ pub(crate) fn day_head<'a>(label: String) -> Element<'a, Message> {
 
 /// A mail of the mail window's slim list `width` wide (issue #458, the draft's list "A + Bild"): the
 /// unread slot, the circle, then two lines – the sender with the paperclip right after it and the time
-/// at the right; the subject with the marks at the right. No domain, no preview, no category pill.
+/// at the right; the subject with the marks at the right. No domain, no preview. The category stands
+/// between the sender and the time: as a pill where it fits ([`category_fits`]), else as its field.
 pub(crate) fn slim_mail_content<'a>(lines: SlimLines<'a>, width: f32, selected: bool) -> Element<'a, Message> {
     let parts = RowLook::of(layout::list(), selected);
-    let SlimLines { name, time, subject, new, attachment, marks, circle, hits } = lines;
+    let SlimLines { name, time, subject, new, attachment, marks, circle, hits, category } = lines;
     let words = hits.as_ref().map(Hits::words).unwrap_or_default();
     let hit_colour = hits.map(|hits| hits.text).filter(|_| !parts.fill);
     let lead = circle.as_ref().map_or(0.0, |_| layout::list().avatar + space::m());
     let room = (width - mail_row_left(parts.bar) - layout::row_padding().right - lead).max(0.0);
     let strong = |new: bool| if new { typo::body_strong() } else { typo::body() };
     let clip = if attachment { icon::SIZE_SM + space::xs() } else { 0.0 };
-    let name_room = (room - end_width(&time, typo::meta()) - clip).max(0.0);
+    let free = (room - end_width(&time, typo::meta()) - clip).max(0.0);
+    // Where not even the field fits, the category stays out, so the time is never pushed off.
+    let category = category
+        .map(|category| {
+            if category_fits(free, typo::text_width(&name, strong(true)), category.pill_width) {
+                (category.pill, category.pill_width)
+            } else {
+                (category.field, category.field_width)
+            }
+        })
+        .filter(|(_, width)| width + cell_gap() <= free);
+    let name_room = (free - category.as_ref().map_or(0.0, |(_, width)| width + cell_gap())).max(0.0);
     let name = typo::ellipsize(&name, strong(true), name_room);
     let mut who = row![marked(name, strong(new), theme::text, &words, hit_colour)]
         .spacing(space::xs())
@@ -1518,12 +1554,11 @@ pub(crate) fn slim_mail_content<'a>(lines: SlimLines<'a>, width: f32, selected: 
             .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) });
         who = who.push(widgets::with_tooltip(clip, tr("Has attachments")));
     }
-    let first = row![
-        container(who).width(Fill).clip(true),
-        typo::text(typo::meta().tabular(), time).style(theme::text_3).wrapping(Wrapping::None),
-    ]
-    .spacing(cell_gap())
-    .align_y(Alignment::Center);
+    let mut first = row![container(who).width(Fill).clip(true)].spacing(cell_gap()).align_y(Alignment::Center);
+    if let Some((category, _)) = category {
+        first = first.push(category);
+    }
+    let first = first.push(typo::text(typo::meta().tabular(), time).style(theme::text_3).wrapping(Wrapping::None));
     let marks_width: f32 = marks.iter().map(|(_, width)| width + cell_gap()).sum();
     let subject = typo::ellipsize(&subject, strong(true), (room - marks_width).max(0.0));
     let tone = if new { theme::text } else { theme::text_2 };
@@ -1555,35 +1590,21 @@ pub(crate) fn flag_field<'a>() -> (Element<'a, Message>, f32) {
     (widgets::with_tooltip(field, tr("Flagged")), edge)
 }
 
-/// The field of a mail's category beside the flag in the slim list (issue #485), with its width: as
-/// high and round as [`flag_field`], the category's `symbol` dark on the colour of its main category
-/// (`group`, the place in `Palette::category`) like the flag on `attention`, since white would read
-/// too weakly on the light group colours. A category a model only `suggested` gets no fill, a frame
-/// and the symbol in the group colour. `tip` names the category.
-pub(crate) fn category_field<'a>(
-    symbol: Icon,
-    group: usize,
-    suggested: bool,
-    tip: String,
-) -> (Element<'a, Message>, f32) {
-    let edge = typo::line_height(typo::body());
-    let colour = move |t: &Theme| {
+/// The field of a mail's category in the slim list (issue #485), with its width: a square as high as
+/// the pill it stands in for ([`widgets::category_pill_height`]), the category's `symbol` in white on the colour of its main category (`group`, the
+/// place in `Palette::category`), darkened like the pill's fill ([`theme::category_fill`], issue
+/// #613). It stands in for the pill where a row has no room for it ([`category_fits`]). `tip` names
+/// the category and says when a model only suggested it.
+pub(crate) fn category_field<'a>(symbol: Icon, group: usize, tip: String) -> (Element<'a, Message>, f32) {
+    let edge = widgets::category_pill_height();
+    let mark = icon::icon(symbol, icon::SIZE_SM).style(|_: &Theme, _| svg::Style { color: Some(theme::on_category()) });
+    let field = container(mark).center(edge).style(move |t: &Theme| {
         let p = palette(t);
-        p.category[group.min(p.category.len() - 1)]
-    };
-    let mark = icon::icon(symbol, icon::SIZE_SM).style(move |t: &Theme, _| svg::Style {
-        color: Some(if suggested { mark_colour(t, colour(t)) } else { theme::Palette::dark().bg }),
-    });
-    let field = container(mark).center(edge).style(move |t: &Theme| match suggested {
-        true => container::Style {
-            border: border::rounded(radius::xs()).color(mark_colour(t, colour(t))).width(size::HAIRLINE),
-            ..container::Style::default()
-        },
-        false => container::Style {
-            background: Some(Background::Color(colour(t))),
+        container::Style {
+            background: Some(Background::Color(theme::category_fill(p.category[group.min(p.category.len() - 1)]))),
             border: border::rounded(radius::xs()),
             ..container::Style::default()
-        },
+        }
     });
     (widgets::with_tooltip(field, tip), edge)
 }
@@ -2315,6 +2336,16 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("valid time")
+    }
+
+    /// Issue #613: the category pill stands in the first line where the sender keeps its whole name
+    /// or at least half of the room; else the row falls back to the field.
+    #[test]
+    fn the_category_pill_gives_way_to_the_sender() {
+        assert!(category_fits(300.0, 80.0, 90.0), "plenty of room");
+        assert!(category_fits(300.0, 250.0, 90.0), "a long name keeps half the room");
+        assert!(!category_fits(150.0, 60.0, 100.0), "a short name in little room");
+        assert!(!category_fits(0.0, 0.0, 90.0), "no room at all");
     }
 
     /// Task E8.14 (issue #115): a clock time instead of "17 h" for what came today, "Yesterday"

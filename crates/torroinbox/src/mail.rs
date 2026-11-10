@@ -2446,13 +2446,23 @@ fn slim_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) ->
     if message.flags.contains(&Flag::Flagged) {
         marks.push(list::flag_field());
     }
-    // What the mail is, beside the flag (issue #485); the circle keeps its mark too.
-    marks.extend(message.category.map(|held| category_field(held, data.categories)));
     if archived(data, message) {
         marks.push(archive_mark());
     }
     // What Torro suggests to make of it (issue #603).
     marks.extend(suggestion_mark(message));
+    // What the mail is, between the sender and the time (issue #613): the whole pill where it fits,
+    // else its field; the circle keeps its mark too.
+    let category = message.category.map(|held| {
+        let (label, _) = category_look(data.categories, held.category);
+        let (field, field_width) = category_field(held, data.categories);
+        list::SlimCategory {
+            pill: category_pill(held, data.categories),
+            pill_width: widgets::category_pill_width(&label),
+            field,
+            field_width,
+        }
+    });
     let lines = list::SlimLines {
         name,
         time: list::stamp(message.date, data.now),
@@ -2462,6 +2472,7 @@ fn slim_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) ->
         marks,
         circle,
         hits: data.hits(&message.id),
+        category,
     };
     let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
         || data.selected_ids.contains(&message.id);
@@ -2884,15 +2895,16 @@ pub(crate) fn category_mark<'a>(held: MailCategory, categories: &[CategoryInfo])
 }
 
 /// The field of a mail's category in the slim list (issue #485, [`list::category_field`]): the
-/// category's icon on the colour of its main category, the words in the tooltip.
+/// category's icon on the colour of its main category, the words in the tooltip. It stands in for the
+/// pill where a row has no room for it (issue #613).
 pub(crate) fn category_field<'a>(held: MailCategory, categories: &[CategoryInfo]) -> (Element<'a, Message>, f32) {
-    let (symbol, group, suggested, tip) = category_field_look(held, categories);
-    list::category_field(symbol, group, suggested, tip)
+    let (symbol, group, tip) = category_field_look(held, categories);
+    list::category_field(symbol, group, tip)
 }
 
 /// What the field of `held` shows ([`category_field`]): the category's icon, the place of its main
-/// category's colour in `Palette::category`, whether a model only suggested it, and the tooltip.
-fn category_field_look(held: MailCategory, categories: &[CategoryInfo]) -> (Icon, usize, bool, String) {
+/// category's colour in `Palette::category`, and the tooltip, which says when a model only suggested it.
+fn category_field_look(held: MailCategory, categories: &[CategoryInfo]) -> (Icon, usize, String) {
     let (_, group) = category_look(categories, held.category);
     let (_, group_at) = group_look(categories, group);
     let category_icon = categories
@@ -2900,7 +2912,7 @@ fn category_field_look(held: MailCategory, categories: &[CategoryInfo]) -> (Icon
         .find(|info| info.category == held.category)
         .map(|info| info.icon)
         .unwrap_or_else(|| held.category.default_icon());
-    (category_symbol(category_icon), group_at, held.is_suggestion(), category_words(held, categories))
+    (category_symbol(category_icon), group_at, category_words(held, categories))
 }
 
 /// The whole pill of a mail's category, for the reader and the card (task E12.8).
@@ -3964,11 +3976,11 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
     // A flagged mail says so at its sender: the name leaves room for the flag.
     let flagged = summary.flags.contains(&Flag::Flagged);
     let flag_room = if flagged { icon::SIZE_SM + space::s() } else { 0.0 };
-    // The pill takes what it needs – its word, its marks and its padding –, the name the rest; where
+    // The pill takes what it needs – its word, its icon and its padding –, the name the rest; where
     // both do not fit, the name goes first and the pill stays out.
     let pill_room = summary.category.map_or(0.0, |held| {
         let (label, _) = category_look(reading.categories, held.category);
-        typo::text_width(&label, typo::caption()) + 3.0 * icon::SIZE_SM + 2.0 * space::m()
+        widgets::category_pill_width(&label) + space::s()
     });
     let free = (words_room - date_room - flag_room).max(0.0);
     let fits = typo::text_width(&name, typo::body_strong()) + pill_room <= free;
@@ -7582,26 +7594,26 @@ mod tests {
         assert_eq!(face_of(&message(Some(Category::Receipt)), &[]), widgets::Face::Icon(Icon::Receipt));
     }
 
-    /// Issue #485: a mail's category stands beside the flag as a field as wide as it, with the
-    /// category's icon on its main category's colour, the words in the tooltip; one a model only
-    /// suggested says so. A row without a category gets no field.
+    /// Issues #485 and #613: a mail's category stands in the first line of a slim row, as a pill or
+    /// as a square field as high as the pill, with the category's icon on its main category's colour; the
+    /// field's tooltip names it and says when a model only suggested it. It is no longer a mark of
+    /// the second line, and a row without a category gets none.
     #[test]
-    fn the_category_field_stands_beside_the_flag() {
+    fn the_category_stands_in_the_first_line_of_a_slim_row() {
         use torro_mail::Category;
         let confirmed = MailCategory::by_rule(Category::Newsletter);
-        let (symbol, group, suggested, tip) = category_field_look(confirmed, &[]);
+        let (symbol, group, tip) = category_field_look(confirmed, &[]);
         assert_eq!(symbol, Icon::Newspaper);
         assert_eq!(group, group_mark(CategoryGroup::Info).1, "the colour of its main category");
-        assert!(!suggested);
         assert_eq!(tip, category_look(&[], Category::Newsletter).0);
-        assert_eq!(category_field(confirmed, &[]).1, list::flag_field().1, "as wide as the flag");
+        assert_eq!(category_field(confirmed, &[]).1, widgets::category_pill_height(), "as high as the pill");
         let guessed = MailCategory { source: torro_mail::CategorySource::Model, ..confirmed };
-        let (_, _, suggested, tip) = category_field_look(guessed, &[]);
-        assert!(suggested && tip == category_words(guessed, &[]), "{tip}");
+        let (_, _, tip) = category_field_look(guessed, &[]);
+        assert_eq!(tip, category_words(guessed, &[]), "the tooltip says it is a suggestion");
         let source = function_source(include_str!("mail.rs"), "slim_row");
-        let (flag, field) = (source.find("list::flag_field()"), source.find("category_field(held"));
-        assert!(matches!((flag, field), (Some(flag), Some(field)) if flag < field), "after the flag");
-        assert!(source.contains("message.category.map(|held| category_field("), "only with a category");
+        assert!(!source.contains("marks.extend(message.category"), "not a mark of the second line");
+        assert!(source.contains("let category = message.category.map("), "only with a category");
+        assert!(source.contains("        category,\n"), "handed to the first line");
     }
 
     /// Issue #453: a held logo stands in the circle, but unwanted mail keeps the skull and "Sent"

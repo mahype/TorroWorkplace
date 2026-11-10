@@ -332,9 +332,13 @@ eigenes kurzes Zeitformat gibt es bewusst nicht.
 **Kategorie-Pille (E12.7, `docs/kategorien.md`).** Was eine Mail ist, steht als `widgets::category_pill`
 in Zeile, Leser und Paneel. Regel: **Farbe und Icon je Gruppe, Wort je Kategorie** – vier Farben
 (`palette.category`, in der Reihenfolge von `CategoryGroup`) und vier Icons (`Inbox`, `Archive`, `Info`,
-`ShieldAlert`); 23 Farben wären nicht mehr auseinanderzuhalten. Eine Kategorie vom Modell bekommt die Sparkles
-in `accent` davor, eine aus einer Kopfzeile oder vom Menschen nicht (`docs/ki.md`, Grundsatz 5). Die Pille ist
-kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
+`ShieldAlert`); 23 Farben wären nicht mehr auseinanderzuhalten. Die Pille ist **gefüllt** (Issue #613): Fläche in
+der Gruppenfarbe, nur so weit abgedunkelt, dass weißer Text 4,5:1 erreicht (`theme::category_fill`), Icon und Wort
+weiß, ohne Rand. Eine Kategorie vom Modell sieht gleich aus und sagt es im Tooltip („Shipping · suggested“), eine aus
+einer Kopfzeile oder vom Menschen hat keinen Tooltip (`docs/ki.md`, Grundsatz 5); keine Sparkles an der Pille. Die
+schmale Liste des Mail-Fensters zeigt die Pille in der ersten Zeile zwischen Absender und Uhrzeit; behielte der
+Absender dann weniger als die Hälfte des Platzes, steht nur das Feld mit dem Icon (`list::category_fits`). Die Pille
+ist kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
 
 
 - **Jedes Bedienelement** hat fünf Zustände: normal; Hover = `HOVER`; gedrückt/ausgewählt =

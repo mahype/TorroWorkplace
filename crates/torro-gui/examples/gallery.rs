@@ -2663,7 +2663,7 @@ fn categories() -> Element<'static, Msg> {
         .align_y(Alignment::Center);
         rows = rows.push(line);
     }
-    // A row of the list as it reads with a pill beside the subject.
+    // A row of the list as it reads with a pill beside the subject (a model's guess: hover for the tooltip).
     let in_a_row = row![
         typo::text(typo::body_strong(), "Shop"),
         typo::text(typo::body(), "Your parcel is on its way"),
@@ -2673,7 +2673,7 @@ fn categories() -> Element<'static, Msg> {
     .align_y(Alignment::Center);
     column![
         typo::text(typo::title(), "Mail categories"),
-        typo::text(typo::meta(), "Group colour and category icon; sparkles mark a model's guess."),
+        typo::text(typo::meta(), "Filled in the group colour, words in white; a guess says so in its tooltip (right)."),
         rows,
         typo::text(typo::meta(), "In a row of the list:"),
         in_a_row,

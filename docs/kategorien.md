@@ -88,9 +88,13 @@ ein KI-Ergebnis als Vorschlag gekennzeichnet ist:
 
 | Herkunft | Bedeutung | In der Oberfläche |
 |---|---|---|
-| `rule` | Aus einer Kopfzeile, dem Ordner oder einer gemerkten Absenderregel | Pille ohne Zusatz |
-| `model` | Vom Entscheidermodell | Pille mit Vorschlags-Kennzeichen |
-| `person` | Der Mensch hat sie von Hand gesetzt | Pille ohne Zusatz |
+| `rule` | Aus einer Kopfzeile, dem Ordner oder einer gemerkten Absenderregel | Gefüllte Pille, kein Tooltip |
+| `model` | Vom Entscheidermodell | Gefüllte Pille, Tooltip „… · Vorschlag“ |
+| `person` | Der Mensch hat sie von Hand gesetzt | Gefüllte Pille, kein Tooltip |
+
+Die Pille ist seit Issue #613 in der Gruppenfarbe gefüllt, mit weißem Icon und Wort, und steht im Lesebereich, auf
+den Karten und in der ersten Zeile der Mail-Liste des Mail-Fensters (bei wenig Platz nur als Feld mit dem Icon). Ein
+Vorschlag ist nur noch im Tooltip erkennbar, damit die Pille auf jedem Grund lesbar bleibt.
 
 ## Die Reihenfolge beim Einordnen
 
