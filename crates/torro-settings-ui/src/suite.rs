@@ -649,6 +649,57 @@ fn page<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<'a,
     })
 }
 
+/// Appearance as the first-run setup shows it (issue #326, draft `docs/prototypes/onboarding/4-appearance.html`):
+/// the same building blocks as the page – "Colors" with the colour scheme and the colour mode, the spacing
+/// levels as a segment, "Font" – and beside them the small mail window of the level drawn, which follows
+/// every choice. Narrow, the preview stands under the choices. Every choice is the same
+/// [`Message`] as on the page, so the setup carries them out as the page does.
+pub fn setup_appearance<'a>(state: &'a State, settings: &'a Settings) -> Element<'a, Message> {
+    responsive(move |room: Size| setup_page(state, settings, room.width)).height(Length::Shrink).into()
+}
+
+/// The two columns of [`setup_appearance`] for a page `width` wide.
+fn setup_page<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<'a, Message> {
+    let width = widgets::page_column_width(width, 2);
+    widgets::page_columns(move || {
+        let choices =
+            column![colors_group(state, settings, width), spacing_levels(state, settings), font_group(state, settings)]
+                .spacing(layout::section_gap());
+        vec![choices.into(), setup_preview(state, settings, width)]
+    })
+}
+
+/// The group "Spacing" of the setup: the levels as a segment in a row of a card, without the
+/// preview, which stands beside the choices ([`setup_preview`]).
+fn spacing_levels<'a>(state: &'a State, settings: &'a Settings) -> Element<'a, Message> {
+    let control: Element<'a, Message> = match listed_or(&state.designs, tr("The spacing levels can't be listed.")) {
+        Ok(entries) => {
+            let drawn = drawn(entries, &settings.design);
+            let levels = level_order(entries);
+            let active = levels.iter().position(|entry| entry.info.id == drawn).unwrap_or_default();
+            let options = levels
+                .iter()
+                .map(|entry| (entry.info.name.as_str(), Message::Choose(Part::Design, entry.info.id.clone())));
+            setting_row(None, tr("Spacing"), None, widgets::segmented(options, active))
+        }
+        Err(placeholder) => placeholder,
+    };
+    column![widgets::group_heading(tr("Spacing"), Vec::new()), card(vec![control])].spacing(layout::item_gap()).into()
+}
+
+/// The small mail window of the level drawn, under the caption "Preview · Mail", as wide as the
+/// column `width` it stands in; nothing while the levels are not listed.
+fn setup_preview<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<'a, Message> {
+    let design = ok(&state.designs)
+        .and_then(|entries| entries.iter().find(|entry| entry.info.id == drawn(entries, &settings.design)))
+        .and_then(|entry| entry.part.clone());
+    let heading = widgets::group_heading(tr("Preview · Mail"), Vec::new());
+    match design {
+        Some(design) => column![heading, preview(design, width)].spacing(layout::item_gap()).into(),
+        None => column![heading].into(),
+    }
+}
+
 /// The three colour modes in the order of the segment, each with its symbol and word.
 fn modes() -> [(Icon, &'static str, Appearance); 3] {
     [

@@ -52,6 +52,9 @@ pub struct State {
     demo: bool,
     /// The dropdown of "Choose a provider" (issue #554: the suite's dropdown, not Iced's pick list).
     menus: Dropdown<()>,
+    /// The first-run setup shows this page and carries "Use suggestion" in its own footer (issue #326):
+    /// the page leaves its own button out.
+    hosted: bool,
 }
 
 impl Default for State {
@@ -82,6 +85,7 @@ impl Default for State {
             pull: None,
             demo: false,
             menus: Dropdown::default(),
+            hosted: false,
         }
     }
 }
@@ -494,6 +498,115 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
         }
         _ => Action::None,
     }
+}
+
+// ----- The suggestion as the first-run setup takes it (issue #326) ----------------------------------
+
+/// The first-run setup shows this page with "Use suggestion" in its own footer: the page leaves its
+/// own button out.
+pub fn hosted(state: &mut State) {
+    state.hosted = true;
+}
+
+/// The account whose suggestion "Use suggestion" of the first-run setup takes: the one chosen here,
+/// else the first the recommendation prepares a model for.
+pub fn suggested_account(state: &State) -> Option<&str> {
+    state
+        .selected
+        .as_deref()
+        .or_else(|| state.recommendation.as_ref()?.preparations.first().map(|p| p.account.as_str()))
+}
+
+/// The model suggested for `slot` on the [`suggested_account`], as the page shows it (the candidate
+/// chosen under "Other model", else the first): the account and the candidate.
+pub fn suggested_model(state: &State, slot: AiSlot) -> Option<(&str, &AiCandidate)> {
+    let account = suggested_account(state)?;
+    let preparation =
+        state.recommendation.as_ref()?.preparations.iter().find(|p| p.account == account && p.slot == slot)?;
+    let candidate = preparation.candidates.get(*state.choices.get(slot.key()).unwrap_or(&0))?;
+    Some((account, candidate))
+}
+
+/// What "Use suggestion" would prepare, slot by slot: the suggested model of each slot on the
+/// [`suggested_account`] that can be prepared here – Sorting only while the host allows it, a slot
+/// already chosen only with `replace`, and with `only` just that slot.
+fn suggestion(state: &State, data: &dyn Seen, replace: bool, only: Option<AiSlot>) -> Vec<(AiSlot, AiCandidate)> {
+    let Some(account) = suggested_account(state) else { return Vec::new() };
+    state
+        .recommendation
+        .iter()
+        .flat_map(|r| &r.preparations)
+        .filter(|p| {
+            p.account == account
+                && only.is_none_or(|slot| p.slot == slot)
+                && (state.sorting || p.slot != AiSlot::Decide)
+                && (replace || data.settings().ai_slots.get(p.slot).is_none())
+        })
+        .filter_map(|p| p.candidates.get(*state.choices.get(p.slot.key()).unwrap_or(&0)).cloned().map(|c| (p.slot, c)))
+        .filter(|(_, c)| c.preparation != AiPreparationKind::External)
+        .collect()
+}
+
+/// Whether "Use suggestion" has something to do now: no model is being prepared or connected, no
+/// question waits, and the suggestion has a slot to fill (with `replace` also one already chosen, with
+/// `only` that slot alone).
+pub fn can_use_suggestion(state: &State, data: &dyn Seen, replace: bool, only: Option<AiSlot>) -> bool {
+    !matches!(state.flight, Some(Work::Connect | Work::Enable | Work::Set | Work::Pull | Work::List | Work::Check))
+        && state.current.is_none()
+        && state.queue.is_empty()
+        && !state.consent
+        && state.form.is_none()
+        && !suggestion(state, data, replace, only).is_empty()
+}
+
+/// Whether the suggestion differs from a model already chosen (issue #326, "Run setup again"): a slot
+/// is chosen and the suggestion names another account or model for it. The page then keeps the choice
+/// and offers the suggestion only on a click.
+pub fn differs(state: &State, data: &dyn Seen) -> bool {
+    let Some(account) = suggested_account(state) else { return false };
+    suggestion(state, data, true, None).iter().any(|(slot, candidate)| {
+        data.settings().ai_slots.get(*slot).is_some_and(|held| {
+            held.engine != account
+                || held.model.as_deref().is_none_or(|model| !super::same_model(model, &candidate.model))
+        })
+    })
+}
+
+/// "Use suggestion" of the first-run setup (issue #326): takes the [`suggested_account`] and prepares
+/// its suggested models one after the other, as "Use suggestion" on the page does – downloads, turns
+/// on and puts each into its slot; a model for Sorting elsewhere asks first ([`awaiting_consent`]).
+/// With `replace` also slots already chosen, with `only` just that slot. Read-only work that runs is
+/// superseded.
+pub fn use_suggestion(state: &mut State, data: &dyn Seen, replace: bool, only: Option<AiSlot>) -> Action {
+    if matches!(state.flight, Some(Work::Search | Work::Recommend)) {
+        state.run = state.run.wrapping_add(1);
+        state.flight = None;
+    }
+    if !can_use_suggestion(state, data, replace, only) {
+        return Action::None;
+    }
+    if let Some(account) = suggested_account(state).map(str::to_string)
+        && state.selected.as_deref() != Some(account.as_str())
+    {
+        // The candidates chosen belong to the suggested account: keep them while selecting it.
+        let choices = std::mem::take(&mut state.choices);
+        select_account(state, account, data);
+        state.choices = choices;
+    }
+    state.active = true;
+    state.queue = suggestion(state, data, replace, only);
+    state.allowed_remote = None;
+    state.consent = state.queue.iter().any(|(slot, c)| *slot == AiSlot::Decide && !c.local);
+    if state.consent {
+        return Action::None;
+    }
+    next(state)
+}
+
+/// A model is being prepared (downloaded, turned on, put into its slot) or waits to be: the host keeps
+/// the page's work running when it shows another page meanwhile.
+pub fn preparing(state: &State) -> bool {
+    state.current.is_some() || state.pull.is_some() || !state.queue.is_empty()
 }
 
 fn next(state: &mut State) -> Action {
@@ -998,7 +1111,10 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
                 parts = parts.push(typo::text(typo::body_strong(), name.to_string()));
             }
         }
-        for preparation in recommendation.preparations.iter().filter(|p| Some(&p.account) == state.selected.as_ref()) {
+        // Hosted by the first-run setup, the suggestion shows before an account is chosen: its "Use
+        // suggestion" takes the suggested one (issue #326).
+        let shown = if state.hosted { suggested_account(state) } else { state.selected.as_deref() };
+        for preparation in recommendation.preparations.iter().filter(|p| Some(p.account.as_str()) == shown) {
             let index = *state.choices.get(preparation.slot.key()).unwrap_or(&0);
             if let Some(candidate) = preparation.candidates.get(index) {
                 let fit =
@@ -1071,7 +1187,7 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
             }
         }
         for suggestion in recommendation.slots.iter().filter(|s| {
-            s.engine.as_ref() == state.selected.as_ref()
+            s.engine.as_deref() == shown
                 && !recommendation
                     .preparations
                     .iter()
@@ -1094,12 +1210,15 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
         if !suggestions.is_empty() {
             let title = if cloud { tr("Suggested models") } else { tr("Our suggestion for this PC") };
             let hint = cloud.then(|| tr("Mail needs your explicit permission.").to_string());
-            parts = parts.push(widgets::group(title, suggestions, hint)).push(widgets::text_button(
-                None,
-                tr("Use suggestion"),
-                style::button::secondary,
-                can_use(state, data).then_some(Message::Use),
-            ));
+            parts = parts.push(widgets::group(title, suggestions, hint));
+            if !state.hosted {
+                parts = parts.push(widgets::text_button(
+                    None,
+                    tr("Use suggestion"),
+                    style::button::secondary,
+                    can_use(state, data).then_some(Message::Use),
+                ));
+            }
         }
     }
     if state.pull.is_some() {
@@ -1349,6 +1468,33 @@ pub fn demo(state: &mut State, scenario: &str, data: &dyn Seen) {
             }
         }
         "error" => state.error = Some(tr("The local AI search could not start.").into()),
+        // The first-run setup's suggestion (issue #326): Ollama found and connected, both models to download.
+        "suggestion" => {
+            let account = super::demo::DEMO_OLLAMA.to_string();
+            state.found.push(AiServer {
+                provider: AiProvider::Ollama,
+                program: None,
+                url: "http://localhost:11434/v1".into(),
+                models: 4,
+                account: Some(account.clone()),
+            });
+            recommendation.preparations =
+                [(AiSlot::Chat, "qwen3:14b", 9_276_198_565), (AiSlot::Decide, "clef:8b", 5_100_000_000)]
+                    .into_iter()
+                    .map(|(slot, model, size_bytes)| torro_ipc::AiPreparation {
+                        account: account.clone(),
+                        slot,
+                        candidates: vec![AiCandidate {
+                            model: model.into(),
+                            size_bytes,
+                            fits: true,
+                            local: true,
+                            preparation: AiPreparationKind::OllamaPull,
+                            by_chat: false,
+                        }],
+                    })
+                    .collect();
+        }
         _ => {}
     }
     state.recommendation = Some(recommendation);
