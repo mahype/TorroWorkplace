@@ -1133,9 +1133,11 @@ fn inset_window<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let body = container(body).width(Fill).height(Fill);
     let main: Element<'a, M> = match props {
-        // The body in the widgets of the divider without a column (a mouse area around a row), so it
+        // The body in the widgets of the divider without a column (a mouse area, a stack, a row), so it
         // keeps its state while the column comes and goes (the hub's "Coming back").
-        Props { column: None, side: Some(_) } => mouse_area(row![container(body).width(Fill).height(Fill)]).into(),
+        Props { column: None, side: Some(_) } => {
+            mouse_area(stack![row![container(body).width(Fill).height(Fill)]]).into()
+        }
         Props { column: Some(props), side } => {
             let column = scrollable(container(props).width(Fill).padding(Padding {
                 top: space::l(),
@@ -1995,7 +1997,7 @@ mod tests {
         assert_eq!(limits.clamp(10.0), 0.75 * size::props());
         assert_eq!(limits.clamp(5000.0), 2.0 * size::props());
         let tight = props_limits(800.0);
-        assert_eq!(tight.clamp(5000.0), 800.0 - split::handle_width() - split::min_pane(), "the body keeps its least");
+        assert_eq!(tight.clamp(5000.0), 800.0 - split::divider_width() - split::min_pane(), "the body keeps its least");
         for dragging in [false, true] {
             let props = Some(Element::from(blank()));
             let shell = shell(SizeClass::Wide, blank(), blank(), blank(), props);
@@ -2015,7 +2017,7 @@ mod tests {
         let tight = sidebar_limits(1024.0, rest);
         assert_eq!(
             tight.clamp(5000.0),
-            1024.0 - layout::inset() - split::handle_width() - rest,
+            1024.0 - layout::inset() - split::divider_width() - rest,
             "the content keeps its rest"
         );
         for id in torro_core::design::BUILT_IN_IDS {
