@@ -71,6 +71,10 @@
 //! if self.menu.is_some() || self.detail.is_some() { widgets::escape().map(|()| Message::Escape) } else { … }
 //! ```
 //!
+//! Beside the content the panel is a column of the window, so the person may drag its width (issue
+//! #604): [`Panel::resizable`] puts the divider of [`crate::split::split_end`] on its left edge, bounded
+//! by [`beside_limits`]. Over the content it keeps its width.
+//!
 //! The app's state does not depend on the mode: when the window is resized, the same panel moves
 //! from beside to over and back, with its fields, scroll position and open menu kept.
 
@@ -85,6 +89,7 @@ use torro_core::i18n::tr;
 
 use crate::icon::{self, Icon, icon};
 use crate::layout::SizeClass;
+use crate::split::{self, SplitEvent};
 use crate::style;
 use crate::theme::{self, palette, radius, size, space};
 use crate::typo;
@@ -147,7 +152,24 @@ pub struct Panel<'a, M> {
     side: Option<(Element<'a, M>, f32)>,
     /// A card floating over title and body at the right ([`Panel::floating`]), and the room kept for it.
     floating: Option<(Element<'a, M>, f32)>,
+    /// The width the person dragged the panel to beside the content ([`Panel::resizable`]).
+    resize: Option<Resize<M>>,
     on_close: M,
+}
+
+/// The dragged width of a panel beside the content ([`Panel::resizable`]).
+struct Resize<M> {
+    width: f32,
+    total: f32,
+    dragging: bool,
+    on: fn(SplitEvent) -> M,
+}
+
+/// What the divider of a panel beside the content ([`Panel::resizable`], issue #604) moves in, for
+/// a body `total` wide (content, divider and panel): [`size::panel()`] by default, three quarters to
+/// twice that ([`split::limits_around`]), and the content keeps at least [`split::min_pane()`].
+pub fn beside_limits(total: f32) -> split::Limits {
+    split::limits_around(size::panel(), total, split::min_pane())
 }
 
 /// A side panel with the details of one thing:
@@ -178,6 +200,7 @@ pub fn panel<'a, M: Clone + 'a>(
         bar: None,
         side: None,
         floating: None,
+        resize: None,
         on_close,
     }
 }
@@ -227,6 +250,27 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
         self
     }
 
+    /// Beside the content ([`PanelMode::Beside`]), title and body `width` wide instead of
+    /// [`size::panel()`], with the divider of [`split::split_end`] on the panel's left edge in place of
+    /// its line (issue #604): `total` is the width of content, divider and panel – the body [`place`]
+    /// gets –, as in the [`beside_limits`] the app clamps its [`split::Split`] to. A [`Panel::side`] or
+    /// [`Panel::floating`] still adds its room, which the dragged width leaves out. Over the content
+    /// the panel keeps its width.
+    pub fn resizable(mut self, width: f32, total: f32, dragging: bool, on: fn(SplitEvent) -> M) -> Self {
+        self.resize = Some(Resize { width, total, dragging, on });
+        self
+    }
+
+    /// The room a [`Panel::side`] or [`Panel::floating`] adds to title and body where the panel has a
+    /// width of its own.
+    fn extra(&self) -> f32 {
+        match (&self.side, &self.floating) {
+            (Some((_, side)), _) => space::xs() + side,
+            (None, Some((_, room))) => *room,
+            (None, None) => 0.0,
+        }
+    }
+
     /// How wide the panel is in `class` ([`width_for`]), grown by its [`Panel::side`] and the gap
     /// before it where it has a width of its own, so title and body keep theirs.
     fn width(&self, class: SizeClass) -> Length {
@@ -240,7 +284,14 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
     /// The panel as a column for `class`: the head, the scrolling title and body, the footer, on
     /// the `panel` surface; with the left line unless it fills the window (narrow).
     fn view(self, class: SizeClass) -> Element<'a, M> {
-        let Panel { path, actions, title, body, footer, bar, side, floating, on_close } = self;
+        let line = width_for(class) != Fill;
+        self.view_lined(line)
+    }
+
+    /// The panel as a column, with the line on its left when `line` (not where it fills the window,
+    /// nor beside a divider, which brings its own).
+    fn view_lined(self, line: bool) -> Element<'a, M> {
+        let Panel { path, actions, title, body, footer, bar, side, floating, resize: _, on_close } = self;
         let close = widgets::icon_button(Icon::X, tr("Close"), Some(on_close));
         // The head pads like the header bar (16 left, 12 right), so ✕ lines up with its buttons.
         let head = container(
@@ -277,11 +328,7 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
         let inner = container(inner).width(Fill).height(Fill);
         // The left edge is a rule on the panel's own surface, as in the drawer: Iced leaves a
         // translucent border see-through, and the content below would shine through it over.
-        if width_for(class) == Fill {
-            inner.into()
-        } else {
-            row![rule::vertical(LINE).style(style::rule), inner].into()
-        }
+        if !line { inner.into() } else { row![rule::vertical(LINE).style(style::rule), inner].into() }
     }
 }
 
@@ -384,17 +431,24 @@ pub fn place<'a, M: Clone + 'a>(
     layer: Option<Element<'a, M>>,
 ) -> Placed<'a, M> {
     let content = content.into();
-    let Some(panel) = panel else {
+    let Some(mut panel) = panel else {
         return Placed { body: content, overlay: layer };
     };
-    match mode_for(class) {
-        PanelMode::Beside => {
+    let resize = panel.resize.take();
+    match (mode_for(class), resize) {
+        (PanelMode::Beside, Some(Resize { width, total, dragging, on })) => {
+            let extra = panel.extra();
+            let side = container(panel.view_lined(false)).width(Fill).height(Fill).style(style::container::panel_flush);
+            let body = split::split_end_with(content, side, width, extra, total, dragging, on);
+            Placed { body, overlay: layer }
+        }
+        (PanelMode::Beside, None) => {
             let width = panel.width(class);
             let side = container(panel.view(class)).width(width).height(Fill).style(style::container::panel_flush);
             let body = row![container(content).width(Fill).height(Fill), side].into();
             Placed { body, overlay: layer }
         }
-        PanelMode::Over => {
+        (PanelMode::Over, _) => {
             let mut layers = vec![over(panel, class)];
             layers.extend(layer);
             Placed { body: content, overlay: Some(stack(layers).into()) }
@@ -543,6 +597,25 @@ mod tests {
             let placed = place(class, blank(), Some(sample()), None);
             assert!(placed.overlay.is_some(), "{class:?}: the panel lies over the window");
         }
+    }
+
+    /// Issue #604: beside the content the panel is dragged, with its rail's room on top of the chosen
+    /// width; over the content the width is ignored and the panel still lies over the window.
+    #[test]
+    fn a_resizable_panel_is_dragged_beside_and_kept_over() {
+        let rail = widgets::RailMode::Collapsed.width();
+        assert_eq!(sample().side(blank(), rail).extra(), space::xs() + rail);
+        assert_eq!(sample().extra(), 0.0);
+        let limits = beside_limits(1200.0);
+        assert_eq!((limits.default, limits.clamp(10.0), limits.clamp(5000.0)), (size::panel(), 300.0, 800.0));
+        for dragging in [false, true] {
+            let placed =
+                place(SizeClass::Wide, blank(), Some(sample().resizable(480.0, 1200.0, dragging, |_| Msg::Go)), None);
+            assert!(placed.overlay.is_none(), "beside the content");
+        }
+        let placed =
+            place(SizeClass::Medium, blank(), Some(sample().resizable(480.0, 900.0, false, |_| Msg::Go)), None);
+        assert!(placed.overlay.is_some(), "over the content, not dragged");
     }
 
     #[test]

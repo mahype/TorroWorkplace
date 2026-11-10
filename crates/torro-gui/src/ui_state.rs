@@ -25,6 +25,7 @@
 //! return ui_state::save_task(AppId::TASKS, UiState { sidebar: self.sidebar });
 //! ```
 
+use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -379,6 +380,34 @@ pub fn split_from(path: &Path, key: &str) -> Option<f32> {
     (width.is_finite() && width > 0.0).then_some(width as f32)
 }
 
+/// Every split width remembered in `path` ([`split_from`]), by key: what an app with several dividers
+/// reads once at start (issue #604). Only positive finite numbers; empty when there are none or the
+/// file cannot be read, so every divider starts at its default.
+pub fn splits_from(path: &Path) -> HashMap<String, f32> {
+    let Some(value) =
+        fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    else {
+        return HashMap::new();
+    };
+    let Some(widths) = value.get(SPLIT).and_then(serde_json::Value::as_object) else {
+        return HashMap::new();
+    };
+    widths
+        .iter()
+        .filter_map(|(key, width)| {
+            let width = width.as_f64()?;
+            (width.is_finite() && width > 0.0).then(|| (key.clone(), width as f32))
+        })
+        .collect()
+}
+
+/// [`splits_from`] for `app` in the background, for the start of an app with several dividers:
+/// `ui_state::load_splits_task(app).map(Message::StoredSplits)`. Like [`load_task`], tests that only
+/// build the app never run it.
+pub fn load_splits_task(app: AppId) -> Task<HashMap<String, f32>> {
+    Task::perform(async move { file(app).map(|path| splits_from(&path)).unwrap_or_default() }, |widths| widths)
+}
+
 /// Stores `width` for the window `key` in `path` – `None`, back to the default, removes it –,
 /// keeping the widths of the other windows and everything else in the file.
 pub fn save_split_to(path: &Path, key: &str, width: Option<f32>) -> Result<(), Error> {
@@ -712,6 +741,21 @@ mod tests {
         assert!(written.contains(r#""density""#), "the old key is kept, not migrated away");
         let value: serde_json::Value = serde_json::from_str(&written).expect("still json");
         assert_eq!(value.get("density").and_then(|d| d.get("mail")).and_then(|m| m.as_str()), Some("comfortable"));
+    }
+
+    /// Issue #604: all widths load at once, broken entries left out, a missing file gives none.
+    #[test]
+    fn all_split_widths_load_at_once() {
+        let dir = TempDir::new("splits");
+        let path = dir.0.join(FILE);
+        assert!(splits_from(&path).is_empty(), "no file: no widths");
+        fs::write(&path, r#"{"split":{"sidebar":300,"props":340.5,"list":"wide","panel":-2,"x":0}}"#)
+            .expect("write the file");
+        let widths = splits_from(&path);
+        assert_eq!(widths.len(), 2, "{widths:?}");
+        assert_eq!((widths.get("sidebar"), widths.get("props")), (Some(&300.0), Some(&340.5)));
+        fs::write(&path, r#"{"split":[1,2]}"#).expect("write the file");
+        assert!(splits_from(&path).is_empty());
     }
 
     /// Issue #130: every window keeps the width of its split beside the rest; going back to the
