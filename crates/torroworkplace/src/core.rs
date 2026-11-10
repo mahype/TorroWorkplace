@@ -5342,6 +5342,10 @@ impl Core {
                         facts.issue = None;
                     }
                 }
+                // The tasks the focus plan moves, only from the lists the client sees (issue #596).
+                if let Request::PostponeFocusPlan = &request {
+                    facts.tasks = self.pim.postpone_titles(Reach::Client(rights)).await;
+                }
                 // What a target shows (task E8.7a): the subject or title the core holds, looked up
                 // as the client may see it – for a file of the tools (task WZ.8) the register's title.
                 if let Request::OpenApp { app, target: Some(target) } = &request {
@@ -6372,8 +6376,14 @@ impl Core {
                 let api = self.filter_list_api(&todo.collection).await;
                 self.pim.save_filter_todo(todo, api.as_ref(), reach).await
             }
-            // A task of a writable list; ticking a link to an issue closes it too (task G.6).
+            // A task of a writable list; ticking a link to an issue closes it too (task G.6). A save
+            // that would take a focus slot while all are taken is refused first (issue #596).
             Request::SaveTodo { todo } => {
+                let slots = usize::from(self.settings.current().focus_slots.get());
+                let today = chrono::Local::now().date_naive();
+                if let Some(refused) = self.pim.focus_refusal(reach, &todo, slots, today).await {
+                    return refused;
+                }
                 let api = link_api(&self.github).await;
                 self.pim.save_link_todo(todo, api.as_ref(), reach).await
             }
@@ -6424,6 +6434,12 @@ impl Core {
             | Request::DeleteEvent { .. }
             | Request::DeleteTodo { .. }
             | Request::MoveTodo { .. }) => Box::pin(self.pim.handle_within(pim, reach)).await,
+            // A day's order and the focus slots (issue #596), counted for the local day.
+            plan @ (Request::SetFocus { .. } | Request::PlanTodo { .. } | Request::PostponeFocusPlan) => {
+                let slots = usize::from(self.settings.current().focus_slots.get());
+                let today = chrono::Local::now().date_naive();
+                Box::pin(self.pim.plan_request(plan, reach, slots, today)).await
+            }
             // Reminders (task ER1.3); a client's preview comes through `handle_client` with its name.
             request @ (Request::ListReminders { .. }
             | Request::SnoozeReminder { .. }

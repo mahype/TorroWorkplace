@@ -1232,6 +1232,9 @@ struct TodoInput {
     parent: Option<String>,
     /// Short form: notes.
     description: Option<String>,
+    /// Short form: `normal` (the default), `focus` or `strong`: how much concentration the task
+    /// asks for. A focus task due today takes one of today's focus slots.
+    focus: Option<torro_pim::Focus>,
 }
 
 /// Input of `inbox_list_items`. Every field has a default, so a call without arguments lists what
@@ -1579,10 +1582,11 @@ fn reminder_alarm(minutes: Option<u32>) -> Result<Vec<torro_pim::Alarm>, ToolErr
 }
 
 fn save_todo<Tz: TimeZone>(input: TodoInput, zone: &Tz) -> Result<Request, ToolError> {
-    let TodoInput { todo, collection, summary, due, priority, completed, parent, description } = input;
+    let TodoInput { todo, collection, summary, due, priority, completed, parent, description, focus } = input;
     let short = [&collection, &summary, &due, &parent, &description].iter().any(|field| field.is_some())
         || priority.is_some()
-        || completed.is_some();
+        || completed.is_some()
+        || focus.is_some();
     match (todo, short) {
         (Some(_), true) => Err(ToolError::Input("pass either `todo` or the short form, not both".into())),
         (Some(todo), false) => Ok(Request::SaveTodo { todo }),
@@ -1602,7 +1606,7 @@ fn save_todo<Tz: TimeZone>(input: TodoInput, zone: &Tz) -> Result<Request, ToolE
                 categories: Vec::new(),
                 sort_order: None,
                 link: None,
-                focus: Default::default(),
+                focus: focus.unwrap_or_default(),
             },
         }),
     }
@@ -2649,6 +2653,54 @@ mod tests {
         let hours = json!({"from": "07:30", "to": "16:00"});
         let request = request_for("settings_set_setting", args(json!({"key": "working_hours", "value": hours})), &Utc);
         assert_eq!(request, Ok(Request::SetSetting { key: torro_ipc::SettingKey::WorkingHours, value: hours }));
+    }
+
+    #[test]
+    fn focus_and_planning_tools_build_their_requests() {
+        let focus = request_for(
+            "tasks_set_focus",
+            args(json!({"href": "/l/t.ics", "etag": "\"3\"", "focus": "strong",
+                "release": {"href": "/l/u.ics", "etag": "\"4\""}})),
+            &Utc,
+        );
+        let release = torro_ipc::TodoRef { href: "/l/u.ics".into(), etag: "\"4\"".into() };
+        assert_eq!(
+            focus,
+            Ok(Request::SetFocus {
+                href: "/l/t.ics".into(),
+                etag: "\"3\"".into(),
+                focus: torro_pim::Focus::Strong,
+                release: Some(release),
+            })
+        );
+        let unknown =
+            request_for("tasks_set_focus", args(json!({"href": "/l/t.ics", "etag": "1", "focus": "huge"})), &Utc);
+        assert!(matches!(unknown, Err(ToolError::Input(_))));
+        let planned = request_for(
+            "tasks_plan_todo",
+            args(json!({"href": "/l/t.ics", "etag": "\"3\"", "day": "2026-11-11", "before": "/m/u.ics"})),
+            &Utc,
+        );
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 11).expect("a day");
+        assert_eq!(
+            planned,
+            Ok(Request::PlanTodo {
+                href: "/l/t.ics".into(),
+                etag: "\"3\"".into(),
+                day,
+                before: Some("/m/u.ics".into())
+            })
+        );
+        let bad_day =
+            request_for("tasks_plan_todo", args(json!({"href": "/l/t.ics", "etag": "1", "day": "tomorrow"})), &Utc);
+        assert!(matches!(bad_day, Err(ToolError::Input(_))));
+        assert_eq!(request_for("tasks_postpone_focus_plan", args(json!({})), &Utc), Ok(Request::PostponeFocusPlan));
+        let short = request_for(
+            "tasks_save_todo",
+            args(json!({"collection": "a/l", "summary": "Write the offer", "focus": "focus"})),
+            &Utc,
+        );
+        assert!(matches!(short, Ok(Request::SaveTodo { todo }) if todo.focus == torro_pim::Focus::Focus));
     }
 
     #[test]
