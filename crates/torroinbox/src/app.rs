@@ -248,6 +248,7 @@ use torro_settings_ui::{
     Backend as SettingsBackend, Host, Outcome, Page, Section, host, inbox as settings_inbox, mail as settings_mail,
 };
 
+use crate::ask;
 use crate::compose;
 use crate::glance::{self, GlanceData};
 use crate::hub::{self, HubSource, Origin};
@@ -1680,6 +1681,12 @@ pub enum Open {
     /// "All" with the mail of the most suggestions open (issue #603): their cards with Accept and
     /// Dismiss over its text.
     Suggestions,
+    /// That mail with the chat about it open (issue #605): a question, the mail read, an answer.
+    Ask,
+    /// The chat about it asked for an event: the event read out and its card.
+    AskCard,
+    /// The chat about it with the hint that the assistant may not read the mail.
+    AskHint,
     /// The notifications window arranged "By time" (task E8.4), where it has room for columns.
     ByTime,
     /// The hub's To sort alone (task E8.5), as its sidebar entry shows it.
@@ -1895,7 +1902,7 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 125] = [
+    const ALL: [(&'static str, Open); 128] = [
         ("workflow-setup", Open::WorkflowSetup),
         ("workflow-template", Open::WorkflowTemplate),
         ("workflow-test", Open::WorkflowTest),
@@ -1939,6 +1946,9 @@ impl Open {
         ("invitations", Open::Invitations),
         ("invitation", Open::Invitation),
         ("suggestions", Open::Suggestions),
+        ("ask", Open::Ask),
+        ("ask-card", Open::AskCard),
+        ("ask-hint", Open::AskHint),
         ("by-time", Open::ByTime),
         ("to-sort", Open::ToSort),
         ("tile", Open::Tile),
@@ -3305,6 +3315,9 @@ pub struct App<S> {
     accept_on_save: Option<AcceptOnSave>,
     /// Suggestions dismissed on their cards whose undo is not over yet (issue #603).
     dismissing: Vec<Dismissing>,
+    /// The mini chat about a mail (issue #605, "Ask AI…"), while it is open; it shows while its mail
+    /// is the one open ([`App::ask_shown`]).
+    ask: Option<ask::Ask>,
     /// The list a suggestion named while the dialog's lists were not in yet (issue #603).
     wanted_list: Option<String>,
     /// The mail of `--message` still to show ([`Launch::message`]); taken once the first entries are
@@ -3945,6 +3958,14 @@ pub enum Message {
     /// A kind of action in the rail's group "Torro" or its key (issue #603): the mail's entry, if it
     /// has one, the message and the kind. Opens the dialog of the kind's form, filled from the mail.
     AskAction(Option<String>, String, String),
+    /// "Ask AI…" in the rail's group "Torro" (issue #605): the mini chat about the message with this
+    /// id ([`App::open_ask`]).
+    AskAi(String),
+    /// What the mini chat about a mail reports (issue #605, [`ask::Event`]).
+    Ask(ask::Event),
+    /// The suggestions of the message fetched again for "Accept" on a card of the mini chat (issue
+    /// #605): message, kind, and `mail.list_suggestions`' answer. Then the filled dialog opens.
+    AskSuggestions(String, String, Result<Vec<MailSuggestion>, String>),
     /// The kinds of action (`mail.list_action_kinds`, issue #603), asked at start and on every tick.
     ActionKinds(Result<Vec<ActionKind>, String>),
     /// What Torro suggests to make of the message with this id (`mail.list_suggestions`).
@@ -4694,6 +4715,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     | Open::Invitations
                     | Open::Invitation
                     | Open::Suggestions
+                    | Open::Ask
+                    | Open::AskCard
+                    | Open::AskHint
                     | Open::Unsubscribe,
                 ) => View::All,
                 Some(
@@ -4819,6 +4843,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             #[cfg(test)]
             accept_on_save: None,
             dismissing: Vec::new(),
+            ask: None,
             wanted_list: None,
             start_mail: launch.message.clone(),
             pinned_mail: None,
@@ -5008,6 +5033,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         if self.hint.is_some() || !self.dismissing.is_empty() {
             subscriptions.push(iced::time::every(HINT_TICK).map(Message::HintTick));
+        }
+        // The chat about a mail follows a running answer (issue #605); at rest nothing ticks.
+        if self.ask_shown().is_some_and(ask::Ask::follows) {
+            subscriptions.push(iced::time::every(ask::FOLLOW).map(|_| Message::Ask(ask::Event::Poll)));
         }
         if self.holds_round() {
             subscriptions.push(iced::time::every(HINT_TICK).map(Message::SendTick));
@@ -5724,7 +5753,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let settings = self.settings.as_mut().map(|pane| pane.host.reload().map(Message::SettingsHost));
                 // A card still reading is asked again until it is read out (issue #603).
                 let suggestions = if self.reads_on_tick() { self.ask_suggestions() } else { Task::none() };
+                // A suggestion of the chat about the mail may have been accepted or dismissed (#605).
+                let ask_cards = self.ask_shown().map_or_else(Task::none, |ask| ask.refresh_cards().map(Message::Ask));
                 return Task::batch([
+                    ask_cards,
                     self.fetch_appearance(),
                     self.fetch_look(),
                     self.fetch_ai_ready(),
@@ -5889,6 +5921,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     // The overview's panel (medium) or page (narrow) goes back to the list, in narrow
                     // to where the list stood, as "‹ {view}" does (issue #409).
                     return self.update(Message::CloseMailOverview);
+                } else if self.ask_shown().is_some() {
+                    // The chat about the mail lies over or beside it (issue #605): it goes first.
+                    self.ask = None;
                 } else if self.panel_open() || self.view.search().is_none() {
                     self.close_panel();
                 } else {
@@ -6663,6 +6698,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::AskAction(entry, id, kind) => {
                 self.menu_at = MenuAt::Panel;
                 return self.ask_action(entry, &id, &kind);
+            }
+            Message::AskAi(id) => return self.open_ask(id),
+            Message::Ask(event) => return self.on_ask(event),
+            Message::AskSuggestions(id, kind, result) => {
+                let taken = self.take_suggestions(&id, result);
+                self.menu_at = MenuAt::Panel;
+                return Task::batch([taken, self.ask_action(None, &id, &kind)]);
             }
             Message::ActionKinds(result) => {
                 // A core that could not answer keeps the kinds known; the rail falls back without any.
@@ -7635,6 +7677,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     fn close_panel(&mut self) {
         self.detail = None;
         self.reading = false;
+        // The chat about the mail goes with it (issue #605).
+        self.ask = None;
     }
 
     /// Whether the mail window shows its overview (issue #409): wide whenever no mail is open (in the
@@ -11582,6 +11626,131 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         Task::none()
     }
 
+    /// "Ask AI…" (issue #605): the mini chat about the message `id` – the newest conversation about it
+    /// continued, or a new one ([`ask::Ask::open`]). Its own chat open already stays as it is.
+    fn open_ask(&mut self, id: String) -> Task<Message> {
+        self.close_menus();
+        self.rail_open = None;
+        if self.ask.as_ref().is_some_and(|ask| ask.about.id == id) {
+            return operation::focus(ask::FIELD);
+        }
+        let entry = self.entry_of(&id);
+        let Some(account) = self.account_of(&id, entry.as_deref()) else { return Task::none() };
+        let (ask, opening) = ask::Ask::open(ask::call_for(&self.suite), torro_ipc::assistant::MailRef { account, id });
+        self.ask = Some(ask);
+        opening.map(Message::Ask)
+    }
+
+    /// What the chat about a mail reported (issue #605): closing it, its buttons that lead out of it,
+    /// a link of an answer (opened as a link of the mail is), and "Accept" on a card – the suggestions
+    /// fetched again, then the filled dialog of #603 ([`Message::AskSuggestions`]). Where the chat lies
+    /// over the mail it closes first, so the dialog hangs at the rail as always. The rest is the chat's.
+    fn on_ask(&mut self, event: ask::Event) -> Task<Message> {
+        match event {
+            ask::Event::Close => self.ask = None,
+            ask::Event::OpenAssistant => {
+                return self.update(Message::OpenApp(AppId::ASSISTANT.binary.to_owned()));
+            }
+            ask::Event::OpenSettings => {
+                if !self.suite.is_demo() {
+                    connect::open_section("ai");
+                }
+            }
+            ask::Event::Link(url) if mail::opens_in_browser(&url) => return self.open_link(url),
+            ask::Event::Link(_) => {}
+            ask::Event::Accept { account, id, kind } => {
+                if !self.ask_beside(self.class()) {
+                    self.ask = None;
+                }
+                let inbox = self.inbox.clone();
+                let asked = id.clone();
+                return Task::perform(
+                    async move { inbox.list_suggestions(account, asked).await.map_err(|err| err.to_string()) },
+                    move |result| Message::AskSuggestions(id.clone(), kind.clone(), result),
+                );
+            }
+            other => {
+                if let Some(ask) = self.ask.as_mut() {
+                    return ask.update(other).map(Message::Ask);
+                }
+            }
+        }
+        Task::none()
+    }
+
+    /// The chat about a mail while its mail is the one open in the mail window (issue #605); `None`
+    /// while none is open, or another mail is.
+    fn ask_shown(&self) -> Option<&ask::Ask> {
+        let ask = self.ask.as_ref()?;
+        let held = self.letter.as_ref().is_some_and(|letter| letter.id == ask.about.id);
+        (self.launch.kind == Kind::Mail && self.panel_open() && held).then_some(ask)
+    }
+
+    /// Whether the chat about a mail stands beside it (issue #605): in the wide window while the
+    /// reader keeps at least `split::min_pane()` beside its [`size::panel()`]; else it lies over the
+    /// mail with "‹ Mail" back.
+    fn ask_beside(&self, class: SizeClass) -> bool {
+        if class != SizeClass::Wide {
+            return false;
+        }
+        let reader = self.content_width() - self.split.width(self.split_limits()) - split::handle_width();
+        reader - size::panel() >= split::min_pane()
+    }
+
+    /// The chat about a mail drawn for the window ([`ask::view`]); `covering` where it lies over the
+    /// mail.
+    fn ask_view<'a>(&'a self, ask: &'a ask::Ask, covering: bool) -> Element<'a, Message> {
+        let summary = self.reading().and_then(|reading| reading.summary());
+        ask::view(
+            ask,
+            ask::Look {
+                summary,
+                covering,
+                kinds: self.action_kinds.as_deref(),
+                dismissing: self.dismissing.iter().map(|held| (held.id.as_str(), held.kind.as_str())).collect(),
+                now: self.now,
+                palette: palette(&self.theme()),
+            },
+        )
+    }
+
+    /// The wide window's reader with the chat about its mail (issue #605): beside it with a line
+    /// between, or in its place where both would not fit ([`App::ask_beside`]); the reader alone
+    /// without a chat.
+    fn with_ask<'a>(&'a self, class: SizeClass, reader: Element<'a, Message>) -> Element<'a, Message> {
+        let Some(ask) = self.ask_shown().filter(|_| class == SizeClass::Wide) else { return reader };
+        if !self.ask_beside(class) {
+            return self.ask_view(ask, true);
+        }
+        row![
+            container(reader).width(Fill).height(Fill),
+            rule::vertical(size::HAIRLINE).style(style::rule),
+            container(self.ask_view(ask, false)).width(size::panel()).height(Fill),
+        ]
+        .into()
+    }
+
+    /// The chat about a mail over the mail window's panel in medium and narrow (issue #605): as wide
+    /// as that panel ([`App::panel_width`], the whole window in narrow), at the right edge over it,
+    /// with its line on the left; `layer` (a menu) above it.
+    fn ask_sheet<'a>(
+        &'a self,
+        class: SizeClass,
+        ask: &'a ask::Ask,
+        layer: Option<Element<'a, Message>>,
+    ) -> Element<'a, Message> {
+        let view = self.ask_view(ask, true);
+        let sheet: Element<'a, Message> = match class {
+            SizeClass::Medium => container(row![rule::vertical(size::HAIRLINE).style(style::rule), view])
+                .width(self.panel_width(class))
+                .height(Fill)
+                .into(),
+            _ => view,
+        };
+        let placed = container(iced::widget::opaque(sheet)).width(Fill).height(Fill).align_right(Fill);
+        stack([placed.into()].into_iter().chain(layer)).into()
+    }
+
     /// Sends the dismissals whose undo is over at `now` (issue #603): `mail.dismiss_suggestion` for each.
     fn send_dismissals(&mut self, now: Instant) -> Task<Message> {
         let (due, waiting): (Vec<Dismissing>, Vec<Dismissing>) = std::mem::take(&mut self.dismissing)
@@ -12560,6 +12729,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.rail_open.is_some() {
             return self.rail_open;
         }
+        // "Ask AI…" stands open while its chat does (issue #605).
+        if self.menu.is_none() && self.ask_shown().is_some() {
+            return groups.iter().position(|group| group.label == tr("Torro"));
+        }
         let label = match self.menu? {
             Menu::Snooze | Menu::Pick | Menu::Lane => tr("File"),
             Menu::SaveAll { rail: true } | Menu::SaveMail(_) => tr("Save"),
@@ -13151,6 +13324,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
         });
         if let Some(reader) = self.wide_reader(class, &anchors).or(overview) {
+            let reader = self.with_ask(class, reader);
             // The divider between them drags (issue #130).
             let width = self.split.width(self.split_limits());
             let body =
@@ -13217,6 +13391,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let detail = detail.map(|detail| {
             detail.resizable(self.panel_room(), self.panes(), self.panel_split.dragging, Message::PanelWidth)
         });
+        // The chat about the mail over the mail's panel (issue #605).
+        let layer = match self.ask_shown().filter(|_| class != SizeClass::Wide && detail.is_some()) {
+            Some(ask) => Some(self.ask_sheet(class, ask, layer)),
+            None => layer,
+        };
         let placed = panel::place(class, content, detail, layer);
         // "Coming back" beside the hub's "Act now" in the wide layout (task E8.5), in the shell's
         // column at the right.
@@ -15388,6 +15567,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.cursor = most.filter(|message| !message.suggested.is_empty()).map(|message| message.id.clone());
                 self.reading = self.cursor.is_some();
             }
+            // The same mail with the chat about it open (issue #605), staged without a core.
+            Some(open @ (Open::Ask | Open::AskCard | Open::AskHint)) => {
+                let scene = match open {
+                    Open::AskCard => ask::Scene::Card,
+                    Open::AskHint => ask::Scene::Hint,
+                    _ => ask::Scene::Answer,
+                };
+                let most = self.messages.iter().max_by_key(|message| message.suggested.len()).cloned();
+                if let Some(message) = most {
+                    self.cursor = Some(message.id.clone());
+                    self.reading = true;
+                    self.ask = Some(ask::Ask::staged(&self.suite, &message, scene, self.now));
+                }
+            }
             Some(Open::Search) => {
                 self.search = "budget".to_owned();
                 return self.run_search();
@@ -15735,6 +15928,7 @@ fn closes_rail(message: &Message) -> bool {
             | Message::AskTask(_)
             | Message::AskMailTask(_)
             | Message::AskAction(..)
+            | Message::AskAi(_)
             | Message::AskEvent(_)
             | Message::AskCategory(_)
             | Message::AskMailCategory(_)
@@ -24814,10 +25008,17 @@ mod tests {
         let labels: Vec<String> = torro.items.iter().map(|item| item.label.to_string()).collect();
         assert_eq!(
             labels,
-            [tr("Task"), tr("Event"), tr("Category…"), tr("Create workflow with AI…"), tr("Run workflow")],
-            "existing actions stay first; no Re-categorize without an entry"
+            [
+                tr("Task"),
+                tr("Event"),
+                tr("Ask AI…"),
+                tr("Category…"),
+                tr("Create workflow with AI…"),
+                tr("Run workflow")
+            ],
+            "existing actions stay first, then the chat about the mail (#605); no Re-categorize without an entry"
         );
-        let ask = torro.items[2].on_press.clone();
+        let ask = torro.items[3].on_press.clone();
         assert!(matches!(&ask, Some(Message::AskMailCategory(asked)) if *asked == id), "{ask:?}");
         drop(groups);
         draw_everywhere(&mut app);
@@ -27214,5 +27415,68 @@ mod tests {
         let _ = app.update(Message::ActionKinds(kinds));
         assert!(app.action_kinds.is_some());
         draw_everywhere(&mut app);
+    }
+
+    /// Issue #605: "Ask AI…" opens the chat about the mail – beside it in the wide window, over it in
+    /// medium and narrow –, and it closes with ✕, Escape (before the mail) or the mail's panel.
+    #[test]
+    fn the_chat_about_a_mail_opens_with_its_mail_and_closes_first() {
+        let mut app = mail_window(Density::Compact, &["--open", "suggestions"]);
+        deliver_letter(&mut app, "m:w2");
+        let _ = app.update(Message::AskAi("m:w2".into()));
+        let about = app.ask.as_ref().map(|ask| ask.about.clone()).expect("the chat opens");
+        assert_eq!((about.id.as_str(), about.account.is_empty()), ("m:w2", false), "the mail and its account");
+        assert!(app.ask_shown().is_some());
+        let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        assert!(app.ask_beside(SizeClass::Wide), "room for both");
+        let _ = app.update(Message::Resized(Size::new(1100.0, 800.0)));
+        assert!(!app.ask_beside(SizeClass::Wide), "a reader too narrow beside it: the chat over it");
+        assert!(!app.ask_beside(SizeClass::Medium));
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        let _ = app.update(Message::Escape);
+        assert!(app.ask.is_none() && app.panel_open(), "Escape closes the chat first, the mail stays");
+        let _ = app.update(Message::AskAi("m:w2".into()));
+        let _ = app.update(Message::Ask(ask::Event::Close));
+        assert!(app.ask.is_none() && app.panel_open());
+        let _ = app.update(Message::AskAi("m:w2".into()));
+        let _ = app.update(Message::CloseDetail);
+        assert!(app.ask.is_none(), "it goes with its mail");
+    }
+
+    /// Issue #605: "Accept" on a card of the chat fetches the suggestions again, then opens the filled
+    /// dialog of #603 – over the mail, the chat closes first so the dialog hangs at the rail.
+    #[test]
+    fn accept_in_the_chat_opens_the_filled_dialog() {
+        let mut app = mail_window(Density::Compact, &["--open", "suggestions"]);
+        deliver_letter(&mut app, "m:w2");
+        let account = app.account_of("m:w2", None).expect("its account");
+        let _ = app.update(Message::Resized(Size::new(800.0, 600.0)));
+        let _ = app.update(Message::AskAi("m:w2".into()));
+        let accept = ask::Event::Accept { account, id: "m:w2".into(), kind: "event".into() };
+        let _ = app.update(Message::Ask(accept));
+        assert!(app.ask.is_none(), "medium: the chat lies over the mail and closes");
+        let read = read_out(&app, "m:w2", "event");
+        let _ = app.update(Message::AskSuggestions("m:w2".into(), "event".into(), Ok(vec![read])));
+        assert_eq!(app.menu, Some(Menu::Event));
+        assert!(app.dialog_mail.as_ref().is_some_and(|mail| mail.accepting && mail.kind == "event"));
+    }
+
+    /// Issue #605: the demo states of the chat stage it on the mail with the most suggestions, without a
+    /// core, and draw in every size.
+    #[test]
+    fn the_chats_demo_states_show_the_chat() {
+        for (open, scene) in [("ask", "answer"), ("ask-card", "card"), ("ask-hint", "hint")] {
+            let mut app = mail_window(Density::Compact, &["--open", open]);
+            let id = app.wanted_letter().expect("a mail");
+            deliver_letter(&mut app, &id);
+            let ask = app.ask_shown().expect(open);
+            match scene {
+                "hint" => assert_eq!(ask.phase, ask::Phase::Hint(ask::Hint::NoRight)),
+                "card" => assert_eq!(ask.cards.len(), 1, "{open}"),
+                _ => assert!(ask.transcript.last_answer().is_some(), "{open}"),
+            }
+            draw_everywhere(&mut app);
+        }
     }
 }
