@@ -186,8 +186,9 @@ pub struct Palette {
     /// The grey of the series "Other" ([`ChartColor::Other`]).
     pub chart_other: Color,
     /// The colours of the five groups of mail categories (task E12.7), in the order of
-    /// `torro_mail::CategoryGroup`: waiting for me, paper trail, info, unwanted, unsorted. The dot and the
-    /// border of a category pill ([`crate::widgets::category_pill`]), never text.
+    /// `torro_mail::CategoryGroup`: waiting for me, paper trail, info, unwanted, unsorted. The icon or
+    /// dot of a category, and the fill of a category pill ([`crate::widgets::category_pill`]) through
+    /// [`category_fill`]; never a text colour.
     pub category: [Color; 5],
     /// The colours of the senders of mail (issue #458, `torro_core::design::Palette::sender`): the
     /// circle of a mail ([`crate::widgets::sender_circle`]) takes the one its address picks.
@@ -355,6 +356,22 @@ impl ChartColor {
 /// `mix(p.panel, p.bg, 0.5)`.
 pub const fn mix(a: Color, b: Color, t: f32) -> Color {
     Color::from_rgb(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t)
+}
+
+/// The fill of a category pill (issue #613) in a group's `colour`: the colour itself, or darkened
+/// just as far as white words on it need for 4.5:1 (the text rule of the design). Black when no
+/// step reaches it, which cannot happen in practice; so even a colour scheme with light category
+/// colours keeps the pill readable.
+///
+/// Darkening only as far as needed keeps the group recognisable: in the light standard most colours
+/// stay as they are.
+pub fn category_fill(colour: Color) -> Color {
+    const STEPS: u16 = 50;
+    let white = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+    (0..=STEPS)
+        .map(|step| mix(colour, Color::BLACK, f32::from(step) / f32::from(STEPS)))
+        .find(|fill| white.contrast(Rgba { r: fill.r, g: fill.g, b: fill.b, a: 1.0 }) >= 4.5)
+        .unwrap_or(Color::BLACK)
 }
 
 /// The translucent `top` composited over the opaque `under`, as the renderer would draw it, as one
@@ -996,6 +1013,26 @@ mod tests {
         assert_eq!([size::command(), size::pill(), size::control_xl(), size::row_message()], [46.0, 40.0, 48.0, 100.0]);
         // Issue #291: the rails and the reading column.
         assert_eq!([size::rail(), size::rail_wide(), size::reading_max()], [60.0, 248.0, 600.0]);
+    }
+
+    #[test]
+    fn white_words_read_on_every_category_fill() {
+        // Issue #613: the pill is filled in its group's colour with white words on it.
+        let white = Color::WHITE;
+        for (mode, p) in [("dark", Palette::dark()), ("light", Palette::light())] {
+            for colour in p.category {
+                let fill = category_fill(colour);
+                let words = white.relative_contrast(fill);
+                assert!(words >= 4.5, "{mode}: white on the fill of {colour:?} is {words:.2}:1");
+                let shape = fill.relative_contrast(p.panel);
+                assert!(shape >= 3.0, "{mode}: the fill of {colour:?} on panel is {shape:.2}:1");
+            }
+        }
+        let light = Palette::light();
+        assert_eq!(category_fill(light.category[3]), light.category[3], "dark enough already");
+        assert_eq!(category_fill(light.category[4]), light.category[4], "dark enough already");
+        let blank = category_fill(Color::WHITE);
+        assert!(white.relative_contrast(blank) >= 4.5, "even a white group colour gets a readable fill");
     }
 
     #[test]

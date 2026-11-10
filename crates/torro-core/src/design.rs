@@ -814,7 +814,8 @@ pub struct Palette {
     /// The colours of the five groups of mail categories (task E12.7, `docs/kategorien.md`), in
     /// the order of `torro_mail::CategoryGroup`: waiting for me, paper trail, info, unwanted,
     /// unsorted. A mark
-    /// only – the dot and the border of a category pill – never a text colour, and checked as a
+    /// only – the icon or dot of a category and the fill of a category pill, darkened there just as
+    /// far as white words need (issue #613) – never a text colour, and checked as a
     /// set for colour blindness like [`Palette::chart`]. One colour per **group**, not per
     /// category: 23 colours could not stay distinguishable.
     pub category: [Rgba; 5],
