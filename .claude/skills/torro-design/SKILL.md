@@ -88,7 +88,8 @@ aus einem Guss wirkt:
   **je App und Grenze**, nicht je Liste oder Filter, damit beim Wechsel nichts springt; die Demo speichert
   nichts. Gezogen wird, wo zwei Spalten nebeneinander stehen, auch im mittleren Fenster (Aufgaben: Liste|Detail
   mit eigener Breite); wann eine Spalte wegfällt, entscheiden weiter die festen Schwellen, nicht die gezogene
-  Breite. Wo die App ihren Inhalt misst, zählt die gezogene Breite. **Fest bleiben** Leiste, Schublade,
+  Breite einer Spalte. Gemessen wird dabei am Inhalt neben der Seitenleiste, wie breit sie gezogen ist: Eine breite
+  Seitenleiste kann so die Eigenschaften-Spalte ausblenden, statt drei Spalten in zu wenig Platz zu drängen. Wo die App ihren Inhalt misst, zählt die gezogene Breite. **Fest bleiben** Leiste, Schublade,
   Titelband (`size::sidebar()` bzw. `shell::rail()`), Paneele über dem Inhalt (mittel, schmal) und Kacheln.
 - **Ampel** (macOS, U.11): verschoben mit `torro_gui::place_traffic_lights()` beim Start, Mitte bei y = 20 (fest,
   kein Token) – die Mitte der oberen Zeile. Eingeklappt rückt der Inhalt nach links, nichts überlagert. Zeilen einmal
