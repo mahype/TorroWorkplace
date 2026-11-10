@@ -447,7 +447,8 @@ ArtCraft selbst nicht kennt.
   `folder_unusable`.
 - **Oberfläche:** Seite des Servers unter MCP servers, Gruppe „Folder“ vor „Tools“ mit „Choose…“ (Menü der
   freigegebenen Ordner und „None“); GridCraft sagt in Katalog, Dialog und Seite, dass es sich an keinen Ordner hält.
-  Die Einrichtung stellt die Apps im Schritt „Documents“ vor ([einrichtung.md](einrichtung.md)).
+  Die Einrichtung weist im Punkt „Documents“ auf ArtCraft hin, mit „Get ArtCraft“ und dem Verweis auf MCP servers
+  (seit #326 ohne Zustand je App; [einrichtung.md](einrichtung.md)).
 
 ### Abweichungen und offene Punkte (AC.1–AC.7)
 

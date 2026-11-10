@@ -497,17 +497,16 @@ Das gilt auch in jeder Schnittmenge (eingeschaltete Werkzeuge, Bot im Auftrag de
 wie bei „Send on my behalf“. Den Agenten-Antrieb (B) gibt
 es nicht mehr; ein geliehener Schlüssel bekommt die Websuche nicht.
 
-**Einrichtung:** neuer Schritt „Web search“ vor „Done“ ([einrichtung.md](einrichtung.md)), dieselbe Auswahl wie
-in Steuerzentrale › MCP servers › Built-in tools › Search providers (seit dem Merge mit #302 dort, vorher Assistent › Einstellungen › Tools). Wer dort einen Anbieter
-einschaltet, schaltet das Werkzeug ein; mit dem
-vorbelegten Haken „Let the assistant use it“ bekommt der Assistent Lesen in `tools` mit `web` in der Auswahl (in der
-Planung entschieden).
+**Einrichtung:** Seit #326 hat die Einrichtung keinen Schritt „Web search“ mehr ([einrichtung.md](einrichtung.md)): Die
+Websuche bleibt aus und wird in Steuerzentrale › MCP servers › Built-in tools › Search providers eingeschaltet (seit dem
+Merge mit #302 dort, vorher Assistent › Einstellungen › Tools). Wer dort einen Anbieter einschaltet, schaltet das
+Werkzeug ein; das Leserecht für `web` gibt ein Mensch dem Assistenten in dessen Rechten.
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
 | Im Web suchen | Chat: Werkzeugzeile | `tools.web_search` · Read, Freigabe einmal je Unterhaltung | `tools_web_search` |
 | Webseite lesen | Chat: Werkzeugzeile | `tools.fetch_page` · Read, Freigabe einmal je Unterhaltung | `tools_fetch_page` |
-| Anbieter anzeigen (wohin, Bedingungen, Schlüssel gespeichert/fehlt) | Einrichtung, Steuerzentrale › MCP servers › Built-in tools › Search providers | `tools.list_search_providers` · Read | `tools_list_search_providers` |
+| Anbieter anzeigen (wohin, Bedingungen, Schlüssel gespeichert/fehlt) | Steuerzentrale › MCP servers › Built-in tools › Search providers | `tools.list_search_providers` · Read | `tools_list_search_providers` |
 | Anbieter ein-/ausschalten, SearXNG-Adresse | ebenda | `settings.set_setting search_provider`, `searxng_address` · Admin | `settings_set_setting` nur fürs Ausschalten und Entfernen; einschalten und Adresse setzen nur Menschen (Punkt 6) |
 | Schlüssel eines Anbieters speichern oder entfernen | Steuerzentrale › MCP servers › Built-in tools › Search providers | `accounts.set_search_key` · Admin, nur App-Schlüssel | **Never** (Punkt 5) |
 | Werkzeug `web` an-/abschalten, Auswahl | wie beim PDF | `settings.set_setting tool_enabled`, `clients.update_client` | wie beim PDF |
@@ -731,8 +730,8 @@ Getroffen am 2026-10-24 (Abschnitt „Werkzeug Web“, Issue #305).
     Person. Eigener `robots.txt`-Leser statt `texting_robots` (alte Abhängigkeiten); Hauptinhalt und Markdown mit
     `dom_smoothie`, ohne `htmd` (bringt eine weitere `html5ever`-Fassung).
 24. **Brave ohne Zwischenspeicher;** alle anderen eine Stunde im Speicher, nie auf der Platte.
-25. **Einrichtungsschritt „Web search“** schaltet mit dem Anbieter das Werkzeug ein und gibt dem Assistenten mit
-    vorbelegtem Haken das Leserecht für `web`.
+25. **Einrichtungsschritt „Web search“** schaltete mit dem Anbieter das Werkzeug ein und gab dem Assistenten mit
+    vorbelegtem Haken das Leserecht für `web`; mit #326 entfallen, die Websuche bleibt bis zur Wahl unter MCP servers aus.
 26. **„Alle Werkzeuge“ deckt `web` nicht ab,** auch nicht in Schnittmengen; `web` braucht einen Haken eines Menschen
     in der Auswahl des Clients.
 Getroffen am 2026-10-24 (Abschnitt „Werkzeug Dateien“, Issue #304).
