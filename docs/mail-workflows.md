@@ -17,7 +17,8 @@ typisierte Schritte: Mail-Link, GET, HTML-Link, den geschlossenen Stripe-Resolve
 Paddle-Rechnungskopie, PDF-Prüfung und Ablageziel. Es gibt keine Ausdrücke, Programme, Browser,
 Anmeldungen, Zahlungsaktionen oder frei ausführbaren Skripte. Andere Fähigkeiten werden abgewiesen.
 Der vorbereitete Mail-Auftrag ist nur ein Anschluss für #260, keine allgemeine Übergabe-Funktion.
-Der Erweiterungsrahmen aus #79 wird hier nicht ausgebaut; es kommen keine neuen Abhängigkeiten hinzu.
+Der Erweiterungsrahmen aus #79 wird hier nicht ausgebaut. Einzige neue direkte Abhängigkeit ist
+`cssparser` 0.37 für die Stylesheet-Prüfung der Paddle-Kopie (#598); sie war schon im Build.
 
 ## Einrichten und bewusst ausführen
 
@@ -67,14 +68,12 @@ Automatismus. Dieselbe Einrichtung ist unter Workflows über „New from templat
 |---|---|---|
 | `direct_pdf` | Rechnungs-PDF eines direkten Links | Genau ein eindeutiger PDF-Link; dessen exakter Host wird lokal an den Entwurf gebunden. Der Beispielhost im öffentlichen Paket ist kein Abrufziel. |
 | `stripe_invoice` | Originale Rechnungs-PDF | Nur der begrenzte Stripe-JSON-Resolver und sein gelieferter PDF-Link; keine Beleg-, Zahlungs-, Dashboard- oder Browserwege. |
-| `paddle_setapp_invoice_copy` | Lokal erzeugte Rechnungskopie | Nur das eingeschränkte, ressourcenfreie Profil. Stylesheets und Skripte werden abgewiesen. Die echten Paddle-/Setapp-Beispiele sind noch nicht unterstützt; siehe #598. |
+| `paddle_setapp_invoice_copy` | Lokal erzeugte Rechnungskopie | Profil 2: Hosts `my.paddle.com` und `static.paddle.com`. Stylesheet und Skript der Rechnungsseite werden nur als Daten geladen; das Stylesheet wird bei jedem Lauf nach festen Regeln geprüft, das Skript nie ausgeführt und nur mit bekannter Prüfsumme angenommen. |
 
-**Bewusst zurückgestellt:** Die beiden echten Paddle-/Setapp-Beispiele referenzieren veränderliche externe
-CSS-/JavaScript-Dateien. Deren Darstellungseinfluss ist nicht nachgewiesen; bekannte URLs allein reichen
-nicht aus. Nach menschlicher Entscheidung in #556 werden diese Seiten daher sicher als `unsupported`
-abgewiesen, ohne Nachladen und ohne Erfolgs-PDF. Die vollständige reale Abnahme und ein sicherer
-Folgeansatz werden in [#598](https://github.com/mahype/TorroWorkplace/issues/598) nachgeholt. Synthetische
-ressourcenfreie Profiltests sind kein Nachweis für diese echten Anbieterfälle.
+Die Vorlage nennt beide Domains schon in der Auswahl und in der lokalen Vorschau, also vor dem
+bestätigten Test. Sie bringt keinen neuen Befehl und kein neues MCP-Werkzeug mit: Paddle läuft über
+denselben Dienstpfad wie die anderen Vorlagen (`workflows.instantiate_template`, `workflows.preview_run`,
+`workflows.run`).
 
 Jede Kopie behält `template_origin` mit Kennung, Revision und Prüfsumme. Spätere Änderungen an der
 mitgelieferten Vorlage verändern keine bestehenden Abläufe. Bearbeiten oder Duplizieren übernimmt
@@ -273,10 +272,59 @@ beziehungsweise das bekannte Bearbeitungssteuerelement werden weggelassen.
 Relevante Formwerte, Bilder, unbekannte Klassen oder Darstellungsweisen, versteckte Inhalte und
 nicht belegte Zeichen werden nicht stillschweigend entfernt. Stattdessen endet die Konvertierung
 mit `unsupported`. Weder HTML noch CSS, Bilder, SVG, Fonts, Skripte oder Linkziele des Anbieters
-werden ausgeführt oder nachgeladen.
-Das gilt auch für den Dokumentkopf und die Vorfahren des Rechnungsblocks: Stylesheets, Style-/Script-
-Elemente, Ereignishandler und ungeprüfte Darstellungseinflüsse werden nicht als harmlose Metadaten
-übersprungen. Die derzeitigen echten Paddle-Seiten fallen unter diese Sperre (Folge-Issue #598).
+werden ausgeführt. Nachgeladen werden nur in Profil 2 Stylesheet und Skript der Seite, als Daten.
+Das gilt auch für den Dokumentkopf und die Vorfahren des Rechnungsblocks: Style-/Script-Inhalte,
+Ereignishandler und ungeprüfte Darstellungseinflüsse werden nicht als harmlose Metadaten
+übersprungen. Profil 1 weist jede externe Ressource ab.
+
+### Profil 2: geprüfte Ressourcen der echten Seiten (#598)
+
+Die echten Paddle-/Setapp-Seiten binden ein Stylesheet und ein Skript ein. Profil 2 nimmt im
+Dokumentkopf genau `<link rel="stylesheet" href>` und `<script src>` an, mit höchstens den
+Zusatzattributen `type`, `defer` und `async`; Modul-Skripte, Inline-Style und Inline-Skript,
+Ereignishandler, `<base>` und Ressourcen außerhalb des Kopfs bleiben abgewiesen, ebenso mehr als
+acht Ressourcen. Nach der vollständigen Strukturprüfung der Seite lädt der Dienst jede Ressource
+einzeln: nur über HTTPS, nur von den beiden Hosts des Pakets (auch nach Weiterleitungen), höchstens
+512 KiB, mit passendem Typ (`text/css` bzw. `application/javascript`/`text/javascript`), im
+GET-Budget des Laufs und mit erneuter Rechteprüfung vor jedem Abruf. Relative Pfade ohne
+führenden Schrägstrich werden abgewiesen.
+
+**Stylesheet nach Regeln, nicht nach Prüfsumme.** Das Stylesheet wird bei jedem Lauf als Daten
+gelesen (`cssparser`, höchstens 512 KiB und 20.000 Regeln, im Zeitbudget des Konverters). Eine
+Prüfsumme würde schon bei jeder Farbänderung abbrechen. Abgewiesen wird:
+
+- erzeugter Text: `content` mit einem anderen Wert als `none`, `normal` oder `""`,
+- `@import` und alle nicht belegten At-Regeln (erlaubt sind `@charset`, `@media`, `@supports`,
+  `@layer`, `@container`, `@font-face`, `@page` und Keyframes),
+- Ausblenden: `display: none`, `visibility: hidden|collapse`, `opacity: 0`, `font-size: 0`,
+  `color: transparent` (auch mit Alpha 0), `clip`/`clip-path`, stark negatives `text-indent`,
+  `position: absolute|fixed` mit negativem Versatz und `unicode-bidi: bidi-override`; ebenso
+  `var()`, `calc()` und andere erst im Browser aufgelöste Werte bei diesen Eigenschaften,
+- verschachtelte Regeln in Deklarationsblöcken.
+
+Ausblenden ist nur für die Selektoren `.no-print` und `.c-header` erlaubt (auch in `@media print`):
+Das sind die belegte Navigation und das Bearbeitungssteuerelement, keine Rechnungsdaten. Farben,
+Abstände, Fonts und Layout ändern den Inhalt nicht und bleiben frei.
+
+**Skript nie ausgeführt, nur mit Prüfsumme.** Skripte werden nie ausgeführt. Ihr SHA-256 steht mit
+Host und Pfad als `binding.resources` im Paket (höchstens acht Einträge, nur auf den Paket-Hosts).
+Das Skript ist Teil der ausführbaren Bindung, weil es im Browser des Menschen die Seite verändern
+könnte.
+
+**Reparatur, wenn Paddle die Seite ändert.** Lädt ein gespeicherter Ablauf ein Skript mit
+unbekannter Prüfsumme, endet der Lauf mit `provider_changed`: „Der Anbieter hat seine
+Rechnungsseite geändert.“ Repariert wird an derselben Mail über „Ablauf mit KI erstellen…“: Die KI
+wählt die Paddle-Vorlage neu, der bestätigte Test eines noch nicht gespeicherten Entwurfs übernimmt
+die beobachteten Skripte in derselben Transaktion als neue Fassung (neue Revision und Prüfsumme) und
+markiert genau diese Fassung als getestet. Danach speichert der Mensch den Ablauf und autorisiert ihn
+neu; die alte Autorisierung passt nicht mehr zur Prüfsumme. Eine KI gibt bei keinem Lauf still neue
+Seiteninhalte frei, und Läufe laufen gleich ab. Verstößt das Stylesheet gegen die Regeln, endet der
+Lauf mit `unsupported`.
+
+**Grenzen.** Die Regeln erkennen belegte Wege, Inhalte zu erzeugen oder auszublenden, sie
+interpretieren kein CSS. Fonts, Bilder und andere im Stylesheet genannte Adressen werden nicht
+geladen. Ändert Paddle das Skript, scheitern auch automatische Läufe, bis der Mensch die Reparatur
+durchführt; das ist gewollt.
 
 Die Kopie wird mit den eingebetteten Standardfonts auf A4, mit 15 mm Rand und 11 pt gesetzt. Der
 Satz misst Umbrüche, Tabellenzellen und Seitengrenzen. Auf jeder Seite steht ausdrücklich, dass es
@@ -301,22 +349,31 @@ erwarteten vollständigen Texte stehen unabhängig neben den HTML-Fixtures. Die 
 anderem Vollständigkeit, PDF-Rücklesen, mehrseitigen Satz, unsichere Eingaben, Kodierung und die
 Konverterzulassung nach Abbruch.
 
+Für Profil 2 gibt es ein synthetisches Stylesheet und Skript (`paddle.css`, `paddle.js`). Die Tests
+prüfen die positive Kopie mit genau den geladenen Ressourcen, jede Regel des Stylesheets einzeln,
+fremde Hosts, falsche Typen, Größengrenzen, unbekannte Skripte (`provider_changed`), die Übernahme
+der Skripte im Entwurfstest und den Rechteentzug beim Ressourcenabruf.
+
 Für die ausdrücklich bereitgestellten echten Paddle-Beispiele gibt es einen separat ignorierten
-lokalen Abnahmetest. Er liest nur ein ausdrücklich gesetztes privates temporäres Verzeichnis mit
-`august.html` und `october.html`; in Ausgabe und Repository gelangen keine Rechnungsinhalte oder
-privaten Links. Die dort erzeugten PDFs brauchen zusätzlich einen unabhängigen vollständigen
-Inhaltsvergleich sowie eine Prüfung jeder Seite. Ein erfolgreicher HTML-Abruf allein ist keine
-Konvertierungsabnahme. Für die aktuelle sichere Ablehnung gibt es außerdem den lokalen Negativtest
-`local_paddle_unproven_resources_are_rejected`; dessen Erfolg ist ausdrücklich keine positive
-Paddle-Abnahme. Die positive Abnahme bleibt bis #598 offen.
+lokalen Abnahmetest:
+
+```bash
+TORRO_WORKFLOW_PADDLE_ACCEPTANCE=<ordner> cargo test -p torroworkplace local_paddle_acceptance -- --ignored
+```
+
+Er liest nur ein ausdrücklich gesetztes privates temporäres Verzeichnis mit `august.html` und
+`october.html` samt `<name>.css` und `<name>.js` der jeweiligen Seite und schreibt nur dorthin
+(`<name>.source.txt`, `<name>.pdf`). Ausgegeben werden nur Host, Pfad und Prüfsumme der
+Ressourcen, nie Rechnungsinhalte oder private Links. Die erzeugten PDFs brauchen zusätzlich einen
+vollständigen Inhaltsvergleich mit `<name>.source.txt` und der Seite im Browser sowie eine Prüfung
+jeder Seite. Ein erfolgreicher HTML-Abruf allein ist keine Konvertierungsabnahme.
 
 ## Aktueller Implementierungsstand
 
 Verträge, Vorlagen, Entwürfe, Vorschau, Trägerfilterung, KI-Vorschläge, Runner und Mail-Outbox sind
 mit der Einrichtungs- und Verwaltungsoberfläche verbunden. Die Implementierung ist weder ein
-Auslieferungsnachweis noch der Nachweis einer erfolgreichen Gesamtprüfung. Nicht nachgewiesene
-Anbietervarianten bleiben gesperrt; die reale Paddle-Unterstützung wird gemäß menschlicher
-Scope-Entscheidung aus #556 in #598 nachgeholt.
+Auslieferungsnachweis noch der Nachweis einer erfolgreichen Gesamtprüfung. Die echten Paddle-Seiten
+laufen über Profil 2 (#598); nicht belegte Anbietervarianten bleiben gesperrt.
 
 Die browserfreien Stripe-Voruntersuchungen aus der Ergänzung ersetzen keine Abnahme des fertigen
 Produktpfads mit zwei geeigneten Rechnungen einschließlich Rechnung statt Zahlungsbeleg und klarer
