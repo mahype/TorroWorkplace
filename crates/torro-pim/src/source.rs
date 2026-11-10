@@ -524,15 +524,16 @@ pub fn postpone_plan<Z: TimeZone>(todos: &[Todo], today: NaiveDate, tz: &Z) -> V
     order.filter_map(|href| now.iter().find(|t| t.href.as_ref() == Some(href)).cloned()).collect()
 }
 
-/// How many focus slots the tasks of `todos` take on `today`: open tasks with a focus
-/// ([`crate::Focus::is_focus`]), due on `today` or before (`focus_slots`, issue #596). Subtasks count.
+/// How many focus slots the tasks of `todos` take on `today`: open top-level tasks with a focus
+/// ([`crate::Focus::is_focus`]), due on `today` or before (`focus_slots`, issue #596).
 pub fn focus_taken<Z: TimeZone>(todos: &[Todo], today: NaiveDate, tz: &Z) -> usize {
     todos.iter().filter(|t| takes_slot(t, today, tz)).count()
 }
 
-/// `todo` takes one of today's focus slots (see [`focus_taken`]).
+/// `todo` takes one of today's focus slots (see [`focus_taken`]): an open top-level task – a subtask
+/// is part of its parent's work and is not planned on its own ([`plannable`], [`postpone_plan`]).
 pub fn takes_slot<Z: TimeZone>(todo: &Todo, today: NaiveDate, tz: &Z) -> bool {
-    !todo.completed && todo.focus.is_focus() && due_day(todo, tz).is_some_and(|d| d <= today)
+    plannable(todo) && todo.focus.is_focus() && due_day(todo, tz).is_some_and(|d| d <= today)
 }
 
 /// The number for a task placed behind one numbered `front` (`None`: at the top) and in front of
@@ -771,7 +772,7 @@ mod tests {
             done.clone(),
         ];
         assert!(!plannable(&child) && !plannable(&done));
-        assert_eq!(focus_taken(&todos, day(10), &Utc), 3, "today, overdue and the open subtask");
+        assert_eq!(focus_taken(&todos, day(10), &Utc), 2, "today and overdue; a subtask takes none");
     }
 
     #[test]

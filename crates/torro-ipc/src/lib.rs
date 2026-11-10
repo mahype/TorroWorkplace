@@ -1267,8 +1267,8 @@ pub enum Request {
     /// the task named there is set back to `"normal"` first, to free one of today's focus slots.
     /// Answered with [`Response::Todos`]: the tasks written, as stored (the released one first).
     ///
-    /// Focus slots ([`SettingKey::FocusSlots`]) count the open tasks with a focus that are due today
-    /// or overdue in the lists the caller may see and write; a task that would add one while all are
+    /// Focus slots ([`SettingKey::FocusSlots`]) count the open top-level tasks with a focus that are due
+    /// today or overdue in the lists the caller may see and write; a task that would add one while all are
     /// taken is refused with `conflict` and nothing is written (focus to strong focus adds none).
     /// The released task is written first: when the second write fails, it has lost its focus
     /// already. Codes: `not-found` when `href` or `release.href` is no listed task (also an item of a
