@@ -2867,18 +2867,16 @@ impl PimService {
         Ok(written)
     }
 
-    /// The titles of the tasks `tasks.postpone_focus_plan` would move for `reach`, for its approval
-    /// (issue #596): only from the lists it sees and may write, as the handler moves them.
-    pub async fn postpone_titles(&self, reach: Reach<'_>) -> Vec<String> {
-        let todos = self.plannable_within(reach).await;
-        let today = Local::now().date_naive();
-        postpone_plan(&todos, today, &Local).into_iter().filter(|t| t.focus.is_focus()).map(|t| t.summary).collect()
-    }
-
     /// What an approval of `tasks.postpone_focus_plan` for `reach` pins (issue #596): the day and
     /// every task the plan would write with its version. A run whose plan differs from what the
     /// person was shown (another day, focus tasks added, a task changed) is refused.
     pub async fn postpone_fingerprint(&self, reach: Reach<'_>) -> String {
+        self.postpone_approval(reach).await.1
+    }
+
+    /// The titles of the focus tasks the plan moves and its fingerprint, from one reading of the
+    /// cache, so the person sees what the approval pins ([`PimService::postpone_fingerprint`]).
+    pub async fn postpone_approval(&self, reach: Reach<'_>) -> (Vec<String>, String) {
         let todos = self.plannable_within(reach).await;
         let today = Local::now().date_naive();
         let plan = postpone_plan(&todos, today, &Local);
@@ -2887,7 +2885,8 @@ impl PimService {
             .iter()
             .map(|t| format!("{}@{}", t.href.as_deref().unwrap_or_default(), version(&t.href).unwrap_or_default()))
             .collect();
-        format!("postpone:{today}:{}", parts.join(";"))
+        let titles = plan.iter().filter(|t| t.focus.is_focus()).map(|t| t.summary.clone()).collect();
+        (titles, format!("postpone:{today}:{}", parts.join(";")))
     }
 
     /// Moves today's focus plan of the tasks `reach` may write to tomorrow
@@ -7001,7 +7000,7 @@ pub(crate) mod tests {
         // Postponing leaves the hidden focus tasks where they are: the client has none of its own.
         let response = service.plan_request(Request::PostponeFocusPlan, client, 3, today()).await;
         assert_eq!(response, Response::Todos { todos: vec![] });
-        assert!(service.postpone_titles(client).await.is_empty());
+        assert!(service.postpone_approval(client).await.0.is_empty());
         assert!(puts(&record).iter().all(|line| !line.contains(HOME)), "{:?}", puts(&record));
         // Naming a hidden task is out of reach.
         let named = set_focus(&w1, Focus::Normal, Some(&hidden[0]));

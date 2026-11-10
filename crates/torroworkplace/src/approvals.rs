@@ -4071,7 +4071,8 @@ fn workflow_detail(value: &str) -> String {
 /// `name: value` (the value as compact JSON), whole ([`whole`]): the summary cuts them at
 /// [`ARGUMENTS_MAX`] characters, the person deciding sees all of them here.
 pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
-    // Every task the focus plan moves, as the core holds it (issue #596).
+    // Every focus task the plan moves to tomorrow, as the core holds it (issue #596); tasks of tomorrow
+    // only renumbered behind them are not listed.
     if let Request::PostponeFocusPlan = request {
         return facts.tasks.iter().map(|title| format!("\"{}\"", quote(title))).collect();
     }

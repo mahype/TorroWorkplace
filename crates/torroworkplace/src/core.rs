@@ -5345,8 +5345,8 @@ impl Core {
                 // The tasks the focus plan moves, only from the lists the client sees (issue #596).
                 // The plan is pinned: a run on another day or over other tasks is refused.
                 if let Request::PostponeFocusPlan = &request {
-                    facts.tasks = self.pim.postpone_titles(Reach::Client(rights)).await;
-                    let pinned = self.pim.postpone_fingerprint(Reach::Client(rights)).await;
+                    let (titles, pinned) = self.pim.postpone_approval(Reach::Client(rights)).await;
+                    facts.tasks = titles;
                     fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
                 }
                 // What a target shows (task E8.7a): the subject or title the core holds, looked up
