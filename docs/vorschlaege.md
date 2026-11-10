@@ -122,7 +122,11 @@ Die Ausgabe nennt je Art Treffer, Fehlalarme und Verpasste und die Zeit je Mail.
 
 | Modell | Termin: Treffer / Fehlalarme / verpasst | Aufgabe: Treffer / Fehlalarme / verpasst | Zeit je Mail |
 |---|---|---|---|
-| noch nicht gemessen | – | – | – |
+| `clef:cloud` (Ollama, 10.11.2026) | 5 / 2 / 0 | 5 / 2 / 0 | 0,46 s |
 
-Die Messung braucht ein eingerichtetes Modell und läuft von Hand; die Werte werden hier
-nachgetragen.
+Die Messung braucht ein Entscheidermodell und läuft von Hand. Ein Chat-Modell wie `qwen3:14b`
+lehnt `/systemone` ab. Gemessen ist nur Stufe 1: Kein Termin und kein Auftrag ging verloren. Die
+Fehlalarme (Werbe-Webinar als Termin und Aufgabe, Zahnarzttermin als Aufgabe, Review-Bitte als
+Termin) kosten je einen Auslese-Aufruf und eine Karte, die man verwirft. Das spricht für die zwei
+Stufen: Auf 14 Mails kamen 14 Auslese-Aufrufe (7 je Art) statt 28 beim Auslesen jeder Mail je
+Art, und das Erkennen fuhr ohne eigenen Aufruf im Sortieren mit. Werte für `nimble` werden nachgetragen, sobald es eingerichtet ist.

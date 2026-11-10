@@ -294,7 +294,9 @@ mod tests {
                 .expect("the model answers");
             let bytes = answer.bytes().await.expect("an answer");
             took += started.elapsed();
-            let reply = torro_core::ai::systemone::read_decision(&bytes).expect("a decision");
+            let Ok(reply) = torro_core::ai::systemone::read_decision(&bytes) else {
+                panic!("no decision from {model} for {}: {}", fixture.name, String::from_utf8_lossy(&bytes))
+            };
             let found = crate::categorize::detected(&reply);
             for kind in KINDS.iter().map(|kind| kind.id) {
                 let (expected, said) = (fixture.expect.iter().any(|id| id == kind), found.iter().any(|id| id == kind));

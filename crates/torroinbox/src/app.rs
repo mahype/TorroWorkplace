@@ -11116,10 +11116,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// row's mark as they say. Each card still reading is read out now (`mail.extract_action`). Without
     /// an answer the cards stay as they were: suggestions are an extra, never in the way of the mail.
     fn take_suggestions(&mut self, id: &str, result: Result<Vec<MailSuggestion>, String>) -> Task<Message> {
-        let Ok(suggestions) = result else { return Task::none() };
+        let Ok(mut suggestions) = result else { return Task::none() };
         if self.letter.as_ref().is_none_or(|letter| letter.id != id) {
             return Task::none();
         }
+        // A card dismissed but still waiting out its undo stays away (review of #603).
+        suggestions.retain(|suggestion| {
+            !self.dismissing.iter().any(|waiting| waiting.id == id && waiting.kind == suggestion.kind)
+        });
         let kinds: Vec<String> = suggestions.iter().map(|suggestion| suggestion.kind.clone()).collect();
         for message in self.messages.iter_mut().filter(|message| message.id == id) {
             message.suggested = kinds.clone();
@@ -25988,6 +25992,9 @@ mod tests {
         assert_eq!(cards(&app).iter().map(|card| card.kind.clone()).collect::<Vec<_>>(), ["task"], "its card is gone");
         let _ = app.update(Message::DismissSuggestion(account.clone(), id.clone(), "task".into()));
         assert!(cards(&app).is_empty(), "gone at once");
+        let reloaded = read_out(&app, &id, "task");
+        let _ = app.update(Message::Suggestions(id.clone(), Ok(vec![reloaded])));
+        assert!(cards(&app).is_empty(), "a reload during its undo keeps it away");
         assert!(!app.sent.contains(&Sent::DismissSuggestion(id.clone(), "task".into())), "not sent during its undo");
         let _ = app.update(Message::Undo);
         assert_eq!(cards(&app).iter().map(|card| card.kind.clone()).collect::<Vec<_>>(), ["task"], "back");
