@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<!-- Entwurf der Einrichtung #326, eine Seite des Ablaufs. Übersicht: index.html -->
+<head>
+<meta charset="utf-8">
+<title>Setup · AI · Connect</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#B4B8BF}a:hover{color:#EDEEF0}
+.w{width:960px;height:640px;box-sizing:border-box;padding:8px;background:#08090A;color:#EDEEF0;font:400 13px/20px Inter,system-ui,sans-serif;display:flex;flex-direction:column}
+.p{flex:1;min-height:0;background:#0F1011;border:1px solid rgba(255,255,255,.06);border-radius:8px;display:flex;flex-direction:column;overflow:hidden}
+.hd{height:52px;flex:none;display:flex;align-items:center;gap:16px;padding:0 12px 0 16px;border-bottom:1px solid rgba(255,255,255,.06)}
+.brand{display:flex;align-items:center;gap:8px;font-weight:500;width:150px}
+.logo{width:20px;height:20px;border-radius:5px;background:#D50C0C;display:grid;place-items:center;color:#fff;font-weight:600;font-size:11px}
+.steps{flex:1;display:flex;align-items:center;justify-content:center;gap:8px}
+.st{display:flex;align-items:center;gap:6px;color:#8A8F98;font-size:12px;font-weight:500;white-space:nowrap;text-decoration:none}
+.st i{font-style:normal;width:18px;height:18px;border-radius:50%;border:1px solid rgba(255,255,255,.14);display:grid;place-items:center;font-size:11px}
+.st.done{color:#B4B8BF}.st.done i{background:#1C1E22;border-color:rgba(255,255,255,.14);color:#EDEEF0}
+.st.on{color:#EDEEF0}.st.on i{background:#EDEEF0;color:#08090A;border-color:#EDEEF0}
+.ln{width:20px;height:1px;background:rgba(255,255,255,.10)}
+.sub{display:inline-flex;gap:3px;margin-left:2px}.sub b{width:12px;height:3px;border-radius:2px;background:rgba(255,255,255,.14)}.sub b.f{background:#EDEEF0}
+.right{width:150px;display:flex;justify-content:flex-end}
+.bd{flex:1;min-height:0;overflow:hidden;padding:24px 40px}
+.col{max-width:680px;display:flex;flex-direction:column;gap:16px}
+h1{margin:0;font-size:20px;line-height:28px;font-weight:600}
+.lead{margin:4px 0 0;color:#B4B8BF}
+.gl{font-size:12px;font-weight:500;color:#8A8F98;margin:0 0 6px}
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.grp{border:1px solid rgba(255,255,255,.06);border-radius:8px;background:#0F1011}
+.row{display:flex;align-items:center;gap:10px;min-height:38px;padding:4px 12px;border-top:1px solid rgba(255,255,255,.06)}
+.row:first-child{border-top:0}
+.row .t{flex:1;min-width:0}
+.meta{display:block;font-size:12px;line-height:16px;color:#8A8F98}
+.ok{color:#3FB984;font-size:12px;font-weight:500;white-space:nowrap}
+.off{color:#8A8F98;font-size:12px;white-space:nowrap}
+.sug{border:1px solid rgba(255,255,255,.16);border-radius:8px;background:#141518;padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.sug h2{margin:0;font-size:14px;font-weight:600}
+.slot{display:grid;grid-template-columns:72px 1fr auto;gap:12px;align-items:baseline}
+.slot .k{color:#8A8F98;font-size:12px}
+.slot .m{font-weight:500}
+.btn{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:6px;border:1px solid rgba(255,255,255,.10);background:#141518;color:#EDEEF0;font:500 12px/1 Inter,sans-serif;white-space:nowrap;text-decoration:none;cursor:pointer}
+.btn.ghost{border-color:transparent;background:none;color:#B4B8BF}
+.btn.primary{background:#D50C0C;border-color:transparent;color:#fff}
+.ft{height:56px;flex:none;display:flex;align-items:center;gap:8px;padding:0 16px;border-top:1px solid rgba(255,255,255,.06)}
+.ft .grow{flex:1;color:#8A8F98}
+</style>
+<div class="w">
+<div class="p">
+<div class="hd">
+<div class="brand"><span class="logo">T</span>Setup</div>
+<div class="steps">
+<a class="st done" href="1-mail.html"><i>✓</i>Mail and calendar</a><span class="ln"></span>
+<a class="st done" href="2-cloud.html"><i>✓</i>Cloud</a><span class="ln"></span>
+<span class="st on"><i>3</i>AI<span class="sub" aria-label="Part 1 of 3"><b class="f"></b><b></b><b></b></span></span><span class="ln"></span>
+<span class="st"><i>4</i>Appearance</span><span class="ln"></span>
+<span class="st"><i>5</i>Documents</span>
+</div>
+<div class="right"><a class="btn ghost" href="6-done.html">Set up later</a></div>
+</div>
+<div class="bd">
+<div class="col">
+<div>
+<h1>AI</h1>
+<p class="lead">Torro uses one model to chat and one to sort your mail. Here is what fits this computer.</p>
+</div>
+<div class="two">
+<div>
+<p class="gl">On this computer</p>
+<div class="grp">
+<div class="row"><span class="t">This computer<span class="meta">32 GB memory · 12 GB graphics · Large</span></span></div>
+<div class="row"><span class="t">Ollama<span class="meta">localhost:11434 · 4 models</span></span><span class="ok">Connected</span></div>
+<div class="row"><span class="t">LM Studio</span><span class="off">Not running</span></div>
+<div class="row"><span class="t">Strata</span><span class="off">Not running</span></div>
+</div>
+</div>
+<div>
+<p class="gl">Cloud</p>
+<div class="grp">
+<div class="row"><span class="t">API key<span class="meta">Anthropic, OpenAI, Mistral, OpenRouter and more</span></span><button class="btn">Add key</button></div>
+</div>
+<p class="meta" style="margin: 6px 0 0">Cloud providers receive what you send them.</p>
+</div>
+</div>
+<div class="sug">
+<h2>Our suggestion for this PC</h2>
+<div class="slot"><span class="k">Chat</span><span><span class="m">qwen3:14b</span><span class="meta">Ollama · This computer · Answers well and can use tools</span></span><span class="off">Download 9.3 GB</span></div>
+<div class="slot"><span class="k">Sorting</span><span><span class="m">clef:8b</span><span class="meta">Ollama · This computer · Small decision model, made for sorting</span></span><span class="off">Download 5.1 GB</span></div>
+<p class="meta" style="margin: 0">Your mail stays on this computer.</p>
+</div>
+</div>
+</div>
+<div class="ft"><span class="grow"><a class="btn ghost" href="4-appearance.html">Skip AI</a></span><a class="btn ghost" href="2-cloud.html">Back</a><a class="btn" href="3-2-ai-chat.html">Choose myself</a><a class="btn primary" href="4-appearance.html">Use suggestion</a></div>
+</div>
+</div>
+</body>
+</html>

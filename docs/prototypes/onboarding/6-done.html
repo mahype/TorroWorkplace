@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<!-- Entwurf der Einrichtung #326, eine Seite des Ablaufs. Übersicht: index.html -->
+<head>
+<meta charset="utf-8">
+<title>Setup · Done</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#B4B8BF}a:hover{color:#EDEEF0}
+.w{width:960px;height:640px;box-sizing:border-box;padding:8px;background:#08090A;color:#EDEEF0;font:400 13px/20px Inter,system-ui,sans-serif;display:flex;flex-direction:column}
+.p{flex:1;min-height:0;background:#0F1011;border:1px solid rgba(255,255,255,.06);border-radius:8px;display:flex;flex-direction:column;overflow:hidden}
+.hd{height:52px;flex:none;display:flex;align-items:center;gap:16px;padding:0 12px 0 16px;border-bottom:1px solid rgba(255,255,255,.06)}
+.brand{display:flex;align-items:center;gap:8px;font-weight:500;width:150px}
+.logo{width:20px;height:20px;border-radius:5px;background:#D50C0C;display:grid;place-items:center;color:#fff;font-weight:600;font-size:11px}
+.steps{flex:1;display:flex;align-items:center;justify-content:center;gap:8px}
+.st{display:flex;align-items:center;gap:6px;color:#8A8F98;font-size:12px;font-weight:500;white-space:nowrap;text-decoration:none}
+.st i{font-style:normal;width:18px;height:18px;border-radius:50%;border:1px solid rgba(255,255,255,.14);display:grid;place-items:center;font-size:11px}
+.st.done{color:#B4B8BF}.st.done i{background:#1C1E22;border-color:rgba(255,255,255,.14);color:#EDEEF0}
+.ln{width:20px;height:1px;background:rgba(255,255,255,.10)}
+.right{width:150px}
+.bd{flex:1;min-height:0;overflow:hidden;padding:28px 40px}
+.col{max-width:640px;display:flex;flex-direction:column;gap:18px}
+h1{margin:0;font-size:20px;line-height:28px;font-weight:600}
+.lead{margin:4px 0 0;color:#B4B8BF}
+.grp{border:1px solid rgba(255,255,255,.06);border-radius:8px;background:#0F1011}
+.row{display:flex;align-items:center;gap:12px;min-height:48px;padding:4px 14px;border-top:1px solid rgba(255,255,255,.06)}
+.row:first-child{border-top:0}
+.row .t{flex:1;min-width:0}
+.meta{display:block;font-size:12px;line-height:16px;color:#8A8F98}
+.mark{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font-size:11px;flex:none;background:#1C1E22;color:#3FB984}
+.mark.skip{color:#8A8F98}
+.btn{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:6px;border:1px solid rgba(255,255,255,.10);background:#141518;color:#EDEEF0;font:500 12px/1 Inter,sans-serif;white-space:nowrap;text-decoration:none;cursor:pointer}
+.btn.ghost{border-color:transparent;background:none;color:#B4B8BF}
+.btn.primary{background:#D50C0C;border-color:transparent;color:#fff}
+.ft{height:56px;flex:none;display:flex;align-items:center;gap:8px;padding:0 16px;border-top:1px solid rgba(255,255,255,.06)}
+.ft .grow{flex:1;color:#8A8F98}
+</style>
+<div class="w">
+<div class="p">
+<div class="hd">
+<div class="brand"><span class="logo">T</span>Setup</div>
+<div class="steps">
+<a class="st done" href="1-mail.html"><i>✓</i>Mail and calendar</a><span class="ln"></span>
+<a class="st done" href="2-cloud.html"><i>✓</i>Cloud</a><span class="ln"></span>
+<a class="st done" href="3-1-ai-connect.html"><i>✓</i>AI</a><span class="ln"></span>
+<a class="st done" href="4-appearance.html"><i>✓</i>Appearance</a><span class="ln"></span>
+<a class="st done" href="5-documents.html"><i>✓</i>Documents</a>
+</div>
+<div class="right"></div>
+</div>
+<div class="bd">
+<div class="col">
+<div>
+<h1>You're all set</h1>
+<p class="lead">This is what Torro is connected to now. Change any of it later in Settings.</p>
+</div>
+<div class="grp">
+<div class="row"><span class="mark">✓</span><span class="t">Mail and calendar<span class="meta">anna@mailbox.org · 2 calendars · 1 task list</span></span><a class="btn" href="#">Open Mail</a></div>
+<div class="row"><span class="mark">✓</span><span class="t">Cloud<span class="meta">Nextcloud · cloud.example.org · 3 calendars · 2 lists</span></span><a class="btn" href="#">Open Calendar</a></div>
+<div class="row"><span class="mark">✓</span><span class="t">AI<span class="meta">qwen3:14b for chat · clef:8b sorts mail · on this computer</span></span><a class="btn" href="#">Open Assistant</a></div>
+<div class="row"><span class="mark">✓</span><span class="t">Appearance<span class="meta">Dark · Standard spacing · Torro colors · Inter</span></span><a class="btn" href="#">Open Settings</a></div>
+<div class="row"><span class="mark skip">–</span><span class="t">Documents<span class="meta">ArtCraft not installed yet</span></span><a class="btn" href="#">Get ArtCraft</a></div>
+</div>
+<a href="#" class="meta">Connect an agent…</a>
+</div>
+</div>
+<div class="ft"><span class="grow"></span><a class="btn ghost" href="5-documents.html">Back</a><a class="btn primary" href="0-welcome.html">Finish</a></div>
+</div>
+</div>
+</body>
+</html>

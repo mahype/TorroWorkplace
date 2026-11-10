@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<!-- Entwurf der Einrichtung #326, eine Seite des Ablaufs. Übersicht: index.html -->
+<head>
+<meta charset="utf-8">
+<title>Setup · AI · narrow</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#B4B8BF}a:hover{color:#EDEEF0}
+.w{width:360px;height:640px;box-sizing:border-box;padding:6px;background:#08090A;color:#EDEEF0;font:400 13px/20px Inter,system-ui,sans-serif;display:flex;flex-direction:column}
+.p{flex:1;min-height:0;background:#0F1011;border:1px solid rgba(255,255,255,.06);border-radius:8px;display:flex;flex-direction:column;overflow:hidden}
+.hd{height:44px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px;border-bottom:1px solid rgba(255,255,255,.06)}
+.hd .t{flex:1;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.hd .n{color:#8A8F98;font-size:12px}
+.bar{height:3px;background:rgba(255,255,255,.08);flex:none}
+.bar b{display:block;height:3px;width:50%;background:#EDEEF0}
+.bd{flex:1;min-height:0;overflow:hidden;padding:16px;display:flex;flex-direction:column;gap:14px}
+h1{margin:0;font-size:18px;line-height:24px;font-weight:600}
+.lead{margin:4px 0 0;color:#B4B8BF}
+.gl{font-size:12px;font-weight:500;color:#8A8F98;margin:0 0 6px}
+.grp{border:1px solid rgba(255,255,255,.06);border-radius:8px}
+.row{display:flex;align-items:center;gap:10px;min-height:40px;padding:4px 12px;border-top:1px solid rgba(255,255,255,.06)}
+.row:first-child{border-top:0}
+.row .t{flex:1;min-width:0}
+.meta{display:block;font-size:12px;line-height:16px;color:#8A8F98}
+.ok{color:#3FB984;font-size:12px;font-weight:500}
+.sug{border:1px solid rgba(255,255,255,.16);border-radius:8px;background:#141518;padding:12px;display:flex;flex-direction:column;gap:8px}
+.sug h2{margin:0;font-size:14px;font-weight:600}
+.btn{height:32px;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 10px;border-radius:6px;border:1px solid rgba(255,255,255,.10);background:#141518;color:#EDEEF0;font:500 12px/1 Inter,sans-serif;white-space:nowrap;text-decoration:none}
+.btn.ghost{border-color:transparent;background:none;color:#B4B8BF}
+.btn.primary{background:#D50C0C;border-color:transparent;color:#fff}
+.ft{flex:none;display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-top:1px solid rgba(255,255,255,.06)}
+.ic{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+</style>
+<div class="w">
+<div class="p">
+<div class="hd">
+<a class="btn ghost" href="2-cloud.html" aria-label="Back" style="width: 32px; padding: 0"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg></a>
+<span class="t"><span class="n">3/5</span><b style="font-weight: 500">AI</b><span class="n">· 1/3</span></span>
+<a class="btn ghost" href="6-done.html">Later</a>
+</div>
+<div class="bar" aria-label="Step 3 of 5"><b></b></div>
+<div class="bd">
+<div>
+<h1>AI</h1>
+<p class="lead">One model to chat, one to sort your mail.</p>
+</div>
+<div class="sug">
+<h2>Our suggestion for this PC</h2>
+<span>Chat · <b style="font-weight: 500">qwen3:14b</b><span class="meta">Ollama · This computer · 9.3 GB</span></span>
+<span>Sorting · <b style="font-weight: 500">clef:8b</b><span class="meta">Ollama · This computer · 5.1 GB</span></span>
+<span class="meta">Your mail stays on this computer.</span>
+</div>
+<div>
+<p class="gl">On this computer</p>
+<div class="grp">
+<div class="row"><span class="t">Ollama<span class="meta">4 models</span></span><span class="ok">Connected</span></div>
+<div class="row"><span class="t">LM Studio, Strata</span><span class="meta">Not running</span></div>
+</div>
+</div>
+</div>
+<div class="ft">
+<a class="btn primary" href="4-appearance.html">Use suggestion</a>
+<a class="btn" href="3-2-ai-chat.html">Choose myself</a>
+<a class="btn ghost" href="4-appearance.html">Skip AI</a>
+</div>
+</div>
+</div>
+</body>
+</html>
