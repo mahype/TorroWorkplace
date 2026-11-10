@@ -2666,6 +2666,10 @@ impl App {
         let mut host = host.with_accounts(AppId::TASKS, &ACCOUNT_PROVIDERS, false);
         // What keys and MCP clients may do in the tasks and on GitHub (issue #531).
         host = host.with_outside(AppId::TASKS);
+        // The section list as wide as it was dragged (issue #604); the demo keeps it fixed.
+        if !self.source.is_demo() {
+            host = host.with_widths(AppId::TASKS);
+        }
         if let Some(id) = section {
             host.open(id);
         }
@@ -2727,7 +2731,7 @@ impl App {
     /// The header bar and the content area of the open settings, as the host draws them.
     fn settings_frame<'a>(&'a self, pane: &'a SettingsPane, class: SizeClass) -> torro_settings_ui::Frame<'a, Message> {
         let body = collections::page(pane.host.data(), collections::Role::TaskList).map(Message::SettingsPage);
-        pane.host.view(class, Page::new(body), Message::SettingsHost)
+        pane.host.view_in(class, self.panes(), Page::new(body), Message::SettingsHost)
     }
 
     /// The icon of a filter in the header: the smart lists' ([`filter_icon`]), a filter list's

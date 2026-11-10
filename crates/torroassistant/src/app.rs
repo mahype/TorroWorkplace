@@ -837,6 +837,19 @@ impl App {
         }
     }
 
+    /// The width of the content beside the sidebar or rail ([`shell::content_width`]), less the
+    /// sidebar as wide as it was dragged: what the settings' section list measures against.
+    pub(crate) fn content_room(&self) -> f32 {
+        let class = self.class();
+        let content = shell::content_width(class, self.sidebar, self.size.width);
+        match shell::sidebar_mode(class, self.sidebar) {
+            Some(SidebarMode::Expanded) if !self.chat_only => {
+                (content + torro_gui::theme::size::sidebar() - self.sidebar_room()).max(0.0)
+            }
+            _ => content,
+        }
+    }
+
     pub(crate) fn class(&self) -> SizeClass {
         layout::of(self.size)
     }
@@ -1903,6 +1916,10 @@ impl App {
         let mut host = host.with_accounts(AppId::ASSISTANT, &[], true);
         // What keys and MCP clients may do with the assistant and its bots (issue #531).
         host = host.with_outside(AppId::ASSISTANT);
+        // The section list as wide as it was dragged (issue #604); the demo keeps it fixed.
+        if !self.launch.demo {
+            host = host.with_widths(MAIN);
+        }
         if let Some(id) = section {
             host.open(id);
         }

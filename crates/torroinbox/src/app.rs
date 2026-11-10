@@ -9784,6 +9784,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let mut host = host.with_accounts(kind.app(), providers, ai);
         // What keys and MCP clients may do in this window's area (issue #531).
         host = host.with_outside(kind.app());
+        // The section list as wide as it was dragged (issue #604), for every window of the app; the
+        // demo keeps it fixed.
+        if !self.launch.demo {
+            host = host.with_widths(INBOX);
+        }
         if let Some(id) = section {
             host.open(id);
         }
@@ -9889,7 +9894,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         } else {
             settings_page(&pane.sections, pane.host.data(), section).map(Message::SettingsPage)
         };
-        pane.host.view(class, page, Message::SettingsHost)
+        pane.host.view_in(class, self.content_width(), page, Message::SettingsHost)
     }
 
     /// Takes the source's answer for the view: entries, count and sources. The cursor stays on

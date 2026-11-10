@@ -2416,6 +2416,10 @@ impl App {
         let mut host = host.with_accounts(AppId::CALENDAR, &ACCOUNT_PROVIDERS, false);
         // What keys and MCP clients may do in the calendar (issue #531).
         host = host.with_outside(AppId::CALENDAR);
+        // The section list as wide as it was dragged (issue #604); the demo keeps it fixed.
+        if !self.source.is_demo() {
+            host = host.with_widths(AppId::CALENDAR);
+        }
         if let Some(id) = section {
             host.open(id);
         }
@@ -2477,7 +2481,7 @@ impl App {
     fn settings_frame<'a>(&'a self, pane: &'a SettingsPane, class: SizeClass) -> torro_settings_ui::Frame<'a, Message> {
         let page = settings_page(&pane.sections, pane.host.data(), pane.host.current().id);
         let page = page.map(Message::SettingsPage);
-        pane.host.view(class, page, Message::SettingsHost)
+        pane.host.view_in(class, self.panes(), page, Message::SettingsHost)
     }
 
     /// Day and week open at 07:00 instead of midnight; the timeline with now (or the time of now
