@@ -4888,8 +4888,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             split,
             // Every window has the sidebar (issue #376).
             ui_state::load_split_task(INBOX, SIDEBAR_SPLIT.to_owned()).map(Message::StoredSidebarWidth),
-            // The panel and the hub's column (issue #604).
-            ui_state::load_splits_task(INBOX).map(Message::StoredWidths),
+            // The panel and the hub's column (issue #604); the demo reads none of the user's.
+            if app.launch.demo { Task::none() } else { ui_state::load_splits_task(INBOX).map(Message::StoredWidths) },
             // The first load waits for a core that is still starting (issue #206).
             {
                 let suite = app.suite.clone();
@@ -5821,7 +5821,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::PanelWidth(event) => {
                 // The demo stores nothing.
-                if self.panel_split.update(event, panel::beside_limits(self.panes())) && !self.launch.demo {
+                if self.panel_split.update(event, self.panel_limits()) && !self.launch.demo {
                     return ui_state::save_split_task(INBOX, PANEL_SPLIT.to_owned(), self.panel_split.chosen);
                 }
             }
@@ -9934,7 +9934,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         } else {
             settings_page(&pane.sections, pane.host.data(), section).map(Message::SettingsPage)
         };
-        pane.host.view_in(class, self.content_width(), page, Message::SettingsHost)
+        pane.host.view_in(class, self.panes(), page, Message::SettingsHost)
     }
 
     /// Takes the source's answer for the view: entries, count and sources. The cursor stays on
@@ -12474,22 +12474,35 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// The width of the columns inside the content's border: what the dividers before the panel and
     /// the hub's column measure against (issue #604).
     fn panes(&self) -> f32 {
-        (self.content_width() - 2.0 * size::HAIRLINE).max(0.0)
+        // Flush (inset 0) the panel has only the line beside the sidebar, inset its border on both sides.
+        let lines = if layout::inset() <= 0.0 { 1.0 } else { 2.0 };
+        (self.content_width() - lines * size::HAIRLINE).max(0.0)
     }
 
     /// The width of the panel's title and body beside the content now: dragged or [`size::panel()`].
     fn panel_room(&self) -> f32 {
-        self.panel_split.width(panel::beside_limits(self.panes()))
+        self.panel_split.width(self.panel_limits())
+    }
+
+    /// The room the mail window's panel adds beside its title and body for the floating rail
+    /// (`Panel::floating`); none in the other windows.
+    fn panel_extra(&self) -> f32 {
+        match self.launch.kind == Kind::Mail {
+            true => widgets::floating_rail_room(),
+            false => 0.0,
+        }
+    }
+
+    /// What the divider before the panel beside the content moves in: the content keeps its least
+    /// beside the panel and the room of its rail.
+    fn panel_limits(&self) -> Limits {
+        panel::beside_limits(self.panes() - self.panel_extra())
     }
 
     /// What the panel beside the content takes of its width, with its divider: what the board and the
-    /// hub lay out without. The mail window's panel adds the room of its floating rail.
+    /// hub lay out without.
     fn panel_beside(&self) -> f32 {
-        let rail = match self.panel_open() && self.launch.kind == Kind::Mail {
-            true => widgets::floating_rail_room(),
-            false => 0.0,
-        };
-        self.panel_room() + rail + split::handle_width()
+        self.panel_room() + self.panel_extra() + split::handle_width()
     }
 
     /// The width of the hub's column "Coming back" now: dragged or [`size::props()`].
