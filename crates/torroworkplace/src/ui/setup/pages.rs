@@ -1,46 +1,45 @@
-//! The pages of the setup's steps (task W.4: Welcome, Components and Done; the steps of tasks
-//! W.5–W.8, WEB.7 and #303 follow here): each with a headline, one sentence in `text_2` and settings groups, plus
-//! what the footer says and what its primary button is called.
+//! The pages of the setup's steps (issue #326, drafts `docs/prototypes/onboarding/`): each with a headline,
+//! one sentence in `text_2`, a box "Why this matters." where the draft has one, and only what the point
+//! needs; plus what the footer says and which buttons it has.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, checkbox, column, container, row, toggler};
-use iced::{Alignment, Element, Fill, Theme};
+use iced::widget::{Space, column, container, row};
+use iced::{Element, Fill, Theme};
 use torro_core::AppId;
-#[cfg(test)]
-use torro_core::ai::AiProvider;
+use torro_core::ai::{AiProvider, AiSlot};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Component, Language};
-use torro_gui::icon::Icon;
-use torro_gui::layout::{self, SizeClass};
+use torro_gui::icon::{self, Icon};
+use torro_gui::layout;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::widgets::{self, Align, MenuItem, MenuSection, TileFace, TileSize};
 use torro_gui::{style, typo};
-
-use torro_core::account::Secret;
-use torro_inbox::{SourceKind, SourceRef};
+use torro_ipc::AccountInfo;
 use torro_ipc::extensions::CatalogEntry;
-use torro_ipc::{AccountInfo, ServerService};
-use torro_pim::{AccountState, Collection};
-use torro_settings_ui::assistant::web as web_view;
+use torro_pim::AccountState;
+use torro_settings_ui::accounts::{ai_provider, ai_setup};
+use torro_settings_ui::suite;
 
-use super::{Data, Message, SetupMenu, State, Step, app_of};
-use crate::ui::{chevron, connect, pressable, setting_row};
+use super::{AiPage, Data, Message, SetupMenu, State, Step, wizard};
+use crate::ui::{Section, chevron, connect, pressable, setting_row};
 
-/// The page of the current step, laid out for `class`.
-pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
+/// The page of the current step.
+pub fn view<'a>(state: &'a State, data: &'a Data, looks: &'a suite::State) -> Element<'a, Message> {
     match state.step {
         Step::Welcome => welcome(state),
-        Step::Nextcloud => nextcloud(state, data),
-        Step::Components => components(state, data),
+        Step::Mail => mail(state, data),
+        Step::Cloud => cloud(state, data),
+        Step::Ai if super::ai_form_open(state) || ai_setup::foreground(&state.ai_setup) => {
+            ai_setup::view(&state.ai_setup, data).map(Message::AiSetup)
+        }
+        Step::Ai => match state.ai_page {
+            AiPage::Connect => ai_connect(state, data),
+            AiPage::Chat => ai_chat(state, data),
+            AiPage::Sort => ai_sort(state, data),
+        },
+        Step::Appearance => appearance(data, looks),
+        Step::Documents => documents(data),
         Step::Done => done(state, data),
-        // Not listed until their tasks build them ([`Step::built`]).
-        Step::Calendar => collections(state, data, Kind::Calendars),
-        Step::Tasks => collections(state, data, Kind::Lists),
-        Step::Mail => mail(data),
-        Step::Inbox => inbox(state, data),
-        Step::Ai => ai(state, data),
-        Step::Web => web(state, data, class),
-        Step::Documents => documents(data, class),
     }
 }
 
@@ -48,94 +47,112 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
 pub fn status(state: &State, data: &Data) -> Option<String> {
     match state.step {
         // The page says it already ("Waiting for the browser …").
-        Step::Nextcloud if state.nextcloud.running() => None,
-        Step::Nextcloud => super::nextcloud_account(state, data)
+        Step::Cloud if state.nextcloud.running() => None,
+        Step::Cloud => super::nextcloud_account(state, data)
             .filter(|_| !state.asks_address(data))
             .map(|account| trf("Signed in as {account}", &[("account", &account.label)])),
-        Step::Calendar | Step::Tasks if state.github.checking() => Some(tr("Checking the connection…").to_string()),
-        Step::Calendar | Step::Tasks if state.caldav.as_ref().is_some_and(|form| form.connecting()) => {
-            Some(tr("Signing in…").to_string())
-        }
-        Step::Calendar | Step::Tasks if state.caldav.is_none() && state.connected.is_some() => {
-            state.connected.as_ref().map(|account| trf("{account} is connected", &[("account", account)]))
-        }
-        Step::Calendar => {
-            let n = shown_count(state, data, Kind::Calendars);
-            Some(trf("{n} calendars shown", &[("n", &n)]))
-        }
-        Step::Tasks => {
-            let n = shown_count(state, data, Kind::Lists);
-            Some(trf("{n} lists shown", &[("n", &n)]))
-        }
-        Step::Mail => {
-            let n = data.accounts.iter().filter(|account| account.kind == "mail").count();
-            Some(if n == 1 { tr("1 account").to_string() } else { trf("{n} accounts", &[("n", &n)]) })
-        }
-        Step::Inbox => {
-            let on = inbox_sources(data).iter().filter(|(source, ..)| !state.is_muted(data, source)).count();
-            Some(trf("{n} sources on", &[("n", &on)]))
-        }
-        Step::Ai => {
-            if let Some(status) = torro_settings_ui::accounts::ai_setup::status(&state.ai_setup) {
-                return Some(status.to_string());
-            }
-            let n = data.accounts.iter().filter(|account| account.kind == "ai").count();
-            Some(if n == 1 { tr("1 account").to_string() } else { trf("{n} accounts", &[("n", &n)]) })
-        }
-        Step::Web if super::web_waits(state, data) => Some(tr("Saving…").to_string()),
-        Step::Web => Some(match providers_on(state, data).len() {
-            0 => tr("Web search is off").to_string(),
-            1 => tr("1 provider on").to_string(),
-            n => trf("{n} providers on", &[("n", &n)]),
-        }),
-        Step::Components => {
-            let on = Component::ALL.len() - state.off.len();
-            Some(trf("{on} of {all} on", &[("on", &on), ("all", &Component::ALL.len())]))
-        }
+        Step::Mail => wizard::mail_error(&state.mail).map(str::to_string),
+        Step::Ai => ai_setup::status(&state.ai_setup).map(str::to_string),
         _ => None,
     }
 }
 
-/// The word of the primary button on the current step, and whether it can be pressed.
-pub fn primary(state: &State, data: &Data) -> (&'static str, bool) {
+/// The primary button on the current step: its word, whether it can be pressed, and whether it shows that
+/// something runs ([`widgets::busy_button`]).
+pub fn primary(state: &State, data: &Data) -> (&'static str, bool, bool) {
     match state.step {
-        Step::Welcome => (tr("Get started"), true),
-        Step::Nextcloud if state.nextcloud.running() => (tr("Connect"), false),
-        Step::Nextcloud if state.asks_address(data) => (tr("Connect"), state.nextcloud.can_start()),
-        Step::Calendar | Step::Tasks if state.in_form() => {
-            let ready = match &state.caldav {
-                Some(form) => form.can_connect(),
-                None => state.github_token && state.github.has_token() && !state.github.checking(),
-            };
-            (tr("Connect"), ready)
-        }
-        // A switch waits for the core, and "Continue" would give the assistant `web` by the core's list.
-        Step::Web if super::web_waits(state, data) => (tr("Continue"), false),
-        Step::Ai if super::ai_models_wait(data) => (tr("Continue"), false),
-        Step::Done => (tr("Finish"), true),
-        _ => (tr("Continue"), true),
+        Step::Welcome => (tr("Get started"), true, false),
+        Step::Mail if state.mail_running() => match wizard::mail_primary(&state.mail) {
+            Some((label, ready)) => (label, ready, label == tr("Signing in…")),
+            None => (tr("Find provider"), false, true),
+        },
+        Step::Cloud if state.nextcloud.running() => (tr("Connect"), false, false),
+        Step::Cloud if state.asks_address(data) => (tr("Connect"), state.nextcloud.can_start(), false),
+        Step::Ai if super::ai_form_open(state) => match ai_setup::primary_label(&state.ai_setup) {
+            Some((label, enabled)) => (label, enabled, !enabled),
+            None => (tr("Connect"), false, false),
+        },
+        Step::Ai => match state.ai_page {
+            AiPage::Connect if ai_setup::preparing(&state.ai_setup) => (tr("Continue"), true, false),
+            AiPage::Connect if super::keeps(data) => (tr("Keep my choice"), true, false),
+            AiPage::Connect => {
+                (tr("Use suggestion"), ai_setup::can_use_suggestion(&state.ai_setup, data, false, None), false)
+            }
+            AiPage::Chat => (tr("Continue"), true, false),
+            AiPage::Sort => (tr("Continue"), !super::ai_models_wait(data), false),
+        },
+        Step::Done => (tr("Finish"), true, false),
+        _ => (tr("Continue"), true, false),
     }
 }
 
-/// The secondary button left of the primary one, if the step has one: "Skip" where a step can be
-/// left out, "Cancel" while the Nextcloud step waits or adds another account. None on the welcome,
-/// the choice of components and the end, where there is nothing to skip.
+/// The step's way to skip it, left of the primary button: "Skip", "I don't use one", "Skip AI", "Keep the
+/// default"; "Cancel" while a sign-in waits or a mail path runs. None on the welcome, the pages Chat and
+/// Sorting, Documents and the summary.
 pub fn skip(state: &State, data: &Data) -> Option<(&'static str, Message)> {
     match state.step {
-        Step::Welcome | Step::Components | Step::Done => None,
-        Step::Nextcloud if state.nextcloud.running() || state.adding => Some((tr("Cancel"), Message::Cancel)),
-        Step::Nextcloud if state.asks_address(data) => Some((tr("I don't use Nextcloud"), Message::Skip)),
-        Step::Nextcloud => None,
-        Step::Calendar | Step::Tasks if state.in_form() => Some((tr("Cancel"), Message::Cancel)),
-        _ => Some((tr("Skip"), Message::Skip)),
+        Step::Welcome | Step::Documents | Step::Done => None,
+        Step::Mail if state.mail_running() => Some((tr("Cancel"), Message::AddAnotherMail)),
+        Step::Mail => Some((tr("Skip"), Message::Skip)),
+        Step::Cloud if state.nextcloud.running() || state.adding => Some((tr("Cancel"), Message::Cancel)),
+        Step::Cloud if state.asks_address(data) => Some((tr("I don't use one"), Message::Skip)),
+        Step::Cloud => None,
+        Step::Ai if super::ai_form_open(state) => None,
+        Step::Ai if state.ai_page == AiPage::Connect => Some((tr("Skip AI"), Message::Skip)),
+        Step::Ai => None,
+        Step::Appearance => Some((tr("Keep the default"), Message::Skip)),
     }
+}
+
+/// More ways on the current step, between "Skip" and the primary button: "Add another account" once a
+/// mail account is connected; on the page Connect "Choose myself", and "Use suggestion" beside "Keep" when
+/// the suggestion differs from the models chosen (issue #326, "Run setup again").
+pub fn second(state: &State, data: &Data) -> Vec<(&'static str, Option<Message>)> {
+    match state.step {
+        Step::Mail if wizard::mail_done(&state.mail) => {
+            vec![(tr("Add another account"), Some(Message::AddAnotherMail))]
+        }
+        Step::Ai if state.ai_page == AiPage::Connect && !super::ai_form_open(state) => {
+            let mut ways = vec![(tr("Choose myself"), Some(Message::ChooseMyself))];
+            if super::keeps(data) && !ai_setup::preparing(&state.ai_setup) && ai_setup::differs(&state.ai_setup, data) {
+                let can = ai_setup::can_use_suggestion(&state.ai_setup, data, true, None);
+                ways.push((tr("Use suggestion"), can.then_some(Message::UseSuggestion)));
+            }
+            ways
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// A quiet link at the footer's left: "Take over accounts from TorroMail" on the point Mail and calendar,
+/// "Connect an agent…" on the summary.
+pub fn link(state: &State) -> Option<Element<'_, Message>> {
+    let (label, message) = match state.step {
+        Step::Mail => (tr("Take over accounts from TorroMail"), Message::TakeOverTorroMail),
+        Step::Done => (tr("Connect an agent…"), Message::OpenSection(Section::Mcp)),
+        _ => return None,
+    };
+    Some(widgets::text_button(None, label, style::button::ghost, Some(message)))
 }
 
 /// The headline and the sentence under it.
 fn title<'a>(headline: &'a str, lead: &'a str) -> Element<'a, Message> {
-    column![typo::text(typo::headline(), headline), typo::text(typo::body(), lead).style(theme::text_2)]
-        .spacing(space::xs())
-        .into()
+    column![
+        typo::text(typo::headline(), headline),
+        typo::text(typo::body(), lead).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)
+    ]
+    .spacing(space::xs())
+    .into()
+}
+
+/// The box "Why this matters." with one or two sentences: why the point is worth a minute.
+fn why<'a>(heading: &'a str, text: &'a str) -> Element<'a, Message> {
+    let content = column![
+        typo::text(typo::body_strong(), heading),
+        typo::text(typo::body(), text).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)
+    ]
+    .spacing(space::xs());
+    container(content).width(Fill).padding(layout::panel_padding()).style(style::container::chip).into()
 }
 
 /// The parts of a page with the gap between groups.
@@ -143,451 +160,450 @@ fn page<'a>(parts: Vec<Element<'a, Message>>) -> Element<'a, Message> {
     column(parts).spacing(layout::section_gap()).width(Fill).into()
 }
 
+/// A sentence in `text_2` that wraps.
+fn sentence<'a>(text: &'a str) -> Element<'a, Message> {
+    typo::text(typo::body(), text).style(theme::text_2).wrapping(Wrapping::WordOrGlyph).into()
+}
+
+/// What each point is for, one sentence each, as the welcome lists them.
+fn point_sentence(step: Step) -> &'static str {
+    match step {
+        Step::Mail => tr("Your mail accounts, with the calendars and tasks your provider offers."),
+        Step::Cloud => tr("The server your files, calendars and contacts live on. Today that is Nextcloud. Optional."),
+        Step::Ai => tr("A model to chat with and one that sorts your mail, suggested for this computer."),
+        Step::Appearance => tr("Light or dark, layout, colors and font."),
+        Step::Documents => tr("Works hand in hand with ArtCraft for documents, slides, sheets and PDFs."),
+        Step::Welcome | Step::Done => "",
+    }
+}
+
+/// The tile with a point's number.
+fn number_tile<'a>(step: Step) -> Element<'a, Message> {
+    let number = step.number().unwrap_or_default().to_string();
+    widgets::source_tile(TileFace::letter(&number), TileSize::Medium, None)
+}
+
 fn welcome(state: &State) -> Element<'_, Message> {
+    let points = Step::POINTS
+        .into_iter()
+        .map(|step| {
+            setting_row(Some(number_tile(step)), step.label(), Some(point_sentence(step).to_string()), Space::new())
+        })
+        .collect();
     let languages = [Language::System, Language::English, Language::German];
     let language = widgets::segmented(
         [
             (tr("System"), Message::Language(Language::System)),
-            // In their own names on purpose: someone who cannot read the current language must
-            // still find theirs.
+            // In their own names on purpose: someone who cannot read the current language must still find
+            // theirs.
             ("English", Message::Language(Language::English)),
             ("Deutsch", Message::Language(Language::German)),
         ],
         languages.iter().position(|language| *language == state.language).unwrap_or_default(),
     );
-    let looks = [Appearance::System, Appearance::Light, Appearance::Dark];
-    let appearance = widgets::segmented(
-        [
-            (tr("System"), Message::Appearance(Appearance::System)),
-            (tr("Light"), Message::Appearance(Appearance::Light)),
-            (tr("Dark"), Message::Appearance(Appearance::Dark)),
-        ],
-        looks.iter().position(|look| *look == state.appearance).unwrap_or_default(),
-    );
-    let preferences = widgets::group(
-        tr("Preferences"),
-        vec![setting_row(None, tr("Language"), None, language), setting_row(None, tr("Appearance"), None, appearance)],
-        Some(tr("Applies to all apps of the suite. A new language shows when an app starts again.").to_string()),
+    let language = setting_row(
+        None,
+        tr("App language"),
+        Some(tr("Taken from your system. A new language shows when an app starts again.").to_string()),
+        language,
     );
     page(vec![
         title(
             tr("Set up Torro Workplace"),
+            tr("Five short steps. Each one can be skipped, and what you connect is saved right away."),
+        ),
+        widgets::group(tr("The five steps"), points, None),
+        widgets::group(tr("Language"), vec![language], None),
+    ])
+}
+
+// ----- Mail and calendar ------------------------------------------------------------------------------
+
+/// How many calendars and task lists `account` brings, in words: "Mail · 2 calendars · 1 task list".
+fn brings(account: &AccountInfo) -> String {
+    let calendars = account.collections.iter().filter(|c| c.kind.has_events()).count();
+    let lists = account.collections.iter().filter(|c| c.kind.has_todos()).count();
+    let calendars = match calendars {
+        1 => tr("1 calendar").to_string(),
+        n => trf("{n} calendars", &[("n", &n)]),
+    };
+    let lists = match lists {
+        1 => tr("1 task list").to_string(),
+        n => trf("{n} task lists", &[("n", &n)]),
+    };
+    format!("{} · {calendars} · {lists}", tr("Mail"))
+}
+
+/// The mail path inline under "Add an account" (the same path as Accounts › Add: address, password,
+/// services) and the accounts connected so far.
+fn mail<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let mut parts = vec![
+        title(
+            tr("Mail and calendar"),
+            tr("Connect your mail account. Torro finds the server settings for most providers."),
+        ),
+        why(
+            tr("Why this matters."),
             tr(
-                "Connect your accounts, choose what you need, and add calendars, mail and AI. Every step can be skipped and changed later in Settings.",
+                "Most providers bring their calendars and task lists with the account, so one sign-in fills Mail, Calendar and Tasks.",
             ),
         ),
-        preferences,
-    ])
-}
-
-// ----- Nextcloud (task W.5) -------------------------------------------------------------------------
-
-fn nextcloud<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    if state.nextcloud.running() {
-        return page(vec![
-            title(tr("Sign in to Nextcloud"), tr("Your browser opened Nextcloud's sign-in page.")),
-            connect::nextcloud::waiting(data, Message::OpenLoginPage, |_| Message::LoginLinkEdited),
-        ]);
-    }
-    match super::nextcloud_account(state, data).filter(|_| !state.adding) {
-        Some(account) => nextcloud_services(account),
-        None => nextcloud_address(state),
-    }
-}
-
-/// The address form: where the Nextcloud is; the browser does the rest.
-fn nextcloud_address(state: &State) -> Element<'_, Message> {
-    let field = column![
-        typo::text(typo::caption(), tr("Server address")).style(theme::text_2),
-        connect::nextcloud::address(&state.nextcloud, Message::ServerChanged, Message::Next),
-        typo::text(
-            typo::meta(),
-            tr("Your browser opens to sign in. Torro Workplace keeps an app password in the system keychain.")
-        )
-        .style(theme::text_2),
+    ];
+    let mut add = column![
+        typo::text(typo::caption(), tr("Add an account")).style(theme::text_3),
+        wizard::mail_page(&state.mail, data).map(Message::Mail),
     ]
-    .spacing(space::xs());
-    let lead = match state.adding {
-        true => tr("Connect one more Nextcloud, for example for work."),
-        false => tr(
-            "Calendars, tasks, notifications and Talk come from your Nextcloud. Without one, add other accounts in the next steps.",
-        ),
-    };
-    page(vec![title(tr("Connect your Nextcloud"), lead), field.into()])
-}
-
-/// The services of the server, as the account's last sync found them (task W.1), and the way to
-/// add another Nextcloud.
-fn nextcloud_services(account: &AccountInfo) -> Element<'_, Message> {
-    use torro_ipc::ServerService as S;
-    let rows: Vec<Element<'_, Message>> = match &account.services {
-        None => vec![setting_row(None, tr("Reading what your server offers…"), None, Space::new())],
-        Some(services) => [
-            (S::Calendars, Icon::Calendar, tr("Calendars"), tr("For the calendar")),
-            (S::Tasks, Icon::ListChecks, tr("Tasks"), tr("For the task lists")),
-            (S::Notifications, Icon::Bell, tr("Notifications"), tr("For the Notification Hub")),
-            (S::Talk, Icon::MessageCircle, "Talk", tr("Chats and mentions for the Notification Hub")),
-            (S::Push, Icon::RadioTower, tr("Push"), tr("News arrive at once, without asking")),
-            (S::Deck, Icon::LayoutGrid, "Deck", tr("Boards and cards, later in the suite")),
-            (S::Notes, Icon::AlignLeft, tr("Notes"), tr("Notes, later in the suite")),
-        ]
-        .into_iter()
-        .map(|(service, symbol, name, purpose)| {
-            let there = services.contains(&service);
-            let tile = widgets::source_tile(TileFace::Icon(symbol), TileSize::Medium, None);
-            let detail = if there { purpose } else { tr("Not on this server") };
-            let pill = match there {
-                true => widgets::state_pill(Icon::CircleCheck, tr("Available")),
-                false => widgets::state_pill(Icon::CircleDashed, tr("Missing")),
-            };
-            setting_row(Some(tile), name, Some(detail.to_string()), pill)
-        })
-        .collect(),
-    };
-    let host = match &account.state {
-        AccountState::Connected { server, .. } => server.split_once("://").map_or(server.as_str(), |(_, rest)| rest),
-        _ => account.label.as_str(),
-    };
-    let services = widgets::group(
-        host.trim_end_matches('/').to_string(),
-        rows,
-        Some(
-            tr("Calendars and tasks come over CalDAV, which every Nextcloud has; the Calendar and Tasks apps on the server are only their web pages.")
-                .to_string(),
-        ),
-    );
-    let plus = widgets::source_tile(TileFace::Icon(Icon::Plus), TileSize::Medium, None);
-    let another = pressable(
-        setting_row(Some(plus), tr("Add another Nextcloud"), Some(tr("For example for work").to_string()), chevron()),
-        Some(Message::AddNextcloud),
-    );
-    page(vec![
-        title(tr("Nextcloud is connected"), tr("This is what your server offers. The next steps use it.")),
-        services,
-        widgets::group(tr("More accounts"), vec![another], None),
-    ])
-}
-
-// ----- Calendar and tasks (task W.6) --------------------------------------------------------------
-
-/// Which collections a step shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    Calendars,
-    Lists,
-}
-
-impl Kind {
-    fn takes(self, collection: &Collection) -> bool {
-        match self {
-            Kind::Calendars => collection.kind.has_events(),
-            Kind::Lists => collection.kind.has_todos(),
-        }
-    }
-}
-
-/// The accounts whose calendars or task lists the step shows, with those collections: Nextcloud,
-/// CalDAV and mail accounts. GitHub's filter lists have their own group on the tasks step.
-fn sources(data: &Data, kind: Kind) -> Vec<(&AccountInfo, Vec<&Collection>)> {
-    data.accounts
-        .iter()
-        .filter(|account| matches!(account.kind.as_str(), "nextcloud" | "caldav" | "mail") && !account.id.is_empty())
-        .map(|account| (account, account.collections.iter().filter(|c| kind.takes(c)).collect::<Vec<_>>()))
-        .filter(|(_, collections)| !collections.is_empty())
-        .collect()
-}
-
-/// How many calendars or lists the apps will show.
-fn shown_count(state: &State, data: &Data, kind: Kind) -> usize {
-    sources(data, kind).iter().flat_map(|(_, collections)| collections).filter(|c| state.is_shown(data, &c.id)).count()
-}
-
-/// The calendar or the tasks step: per account its calendars or lists with a switch, a CalDAV
-/// account to add, and on the tasks step GitHub.
-fn collections<'a>(state: &'a State, data: &'a Data, kind: Kind) -> Element<'a, Message> {
-    let (headline, lead) = match kind {
-        Kind::Calendars => {
-            (tr("Calendar"), tr("Choose which calendars the suite shows, and add calendars from other providers."))
-        }
-        Kind::Lists => {
-            (tr("Tasks"), tr("Choose which task lists the suite shows; add CalDAV lists and issues from GitHub."))
-        }
-    };
-    let mut parts = vec![title(headline, lead)];
-    let sources = sources(data, kind);
-    if sources.is_empty() {
-        let none = match kind {
-            Kind::Calendars => tr("No calendars yet. Connect a Nextcloud or add a CalDAV account below."),
-            Kind::Lists => tr("No task lists yet. Connect a Nextcloud or add a CalDAV account below."),
-        };
-        parts.push(typo::text(typo::body(), none).style(theme::text_2).into());
-    }
-    let count = sources.len();
-    for (index, (account, collections)) in sources.into_iter().enumerate() {
-        let rows = collections.into_iter().map(|collection| collection_row(state, data, collection)).collect();
-        let name = match account.kind.as_str() {
-            "nextcloud" => trf("Nextcloud · {account}", &[("account", &account.label)]),
-            _ => account.label.clone(),
-        };
-        // Said once, under the last account.
-        let footer = (index + 1 == count)
-            .then(|| tr("Hidden ones stay on the server; the apps just don't show them.").to_string());
-        parts.push(widgets::group(name, rows, footer));
-    }
-    parts.push(caldav_part(state, kind));
-    if kind == Kind::Lists {
-        parts.push(github_part(state, data));
-    }
-    page(parts)
-}
-
-/// A calendar or task list: its colour, name, "Read-only" where it is, and the switch.
-fn collection_row<'a>(state: &'a State, data: &'a Data, collection: &'a Collection) -> Element<'a, Message> {
-    let id = collection.id.clone();
-    let switch = toggler(state.is_shown(data, &collection.id))
-        .size(style::CHECK_SIZE)
-        .style(style::toggler)
-        .on_toggle(move |shown| Message::Shown(id.clone(), shown));
-    let dot = widgets::color_dot(widgets::collection_color(collection.color.as_deref()), space::s());
-    let detail = (!collection.writable).then(|| tr("Read-only").to_string());
-    setting_row(Some(dot), collection.name.as_str(), detail, switch)
-}
-
-/// "Add a CalDAV account", or its form while it is open.
-fn caldav_part(state: &State, kind: Kind) -> Element<'_, Message> {
-    let title = match kind {
-        Kind::Calendars => tr("Other calendars"),
-        Kind::Lists => tr("Other task lists"),
-    };
-    match &state.caldav {
-        Some(form) => column![
-            typo::text(typo::caption(), tr("Add a CalDAV account")).style(theme::text_3),
-            form.view(Message::CalDav, Message::Next),
-        ]
-        .spacing(layout::item_gap())
-        .into(),
-        None => {
-            let plus = widgets::source_tile(TileFace::Icon(Icon::Plus), TileSize::Medium, None);
-            let add = pressable(
-                setting_row(
-                    Some(plus),
-                    tr("Add a CalDAV account"),
-                    Some(tr("mailbox.org, Posteo, Fastmail, iCloud or your own server").to_string()),
-                    chevron(),
-                ),
-                Some(Message::OpenCalDav),
-            );
-            widgets::group(title, vec![add], None)
-        }
-    }
-}
-
-/// GitHub on the tasks step: connected, or its two ways, or the token field.
-fn github_part<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let login = state
-        .github_login
-        .clone()
-        .or_else(|| data.accounts.iter().find(|account| account.kind == "github").map(|account| account.label.clone()));
-    if let Some(login) = login {
-        let tile = widgets::source_tile(TileFace::Icon(Icon::Github), TileSize::Medium, None);
-        let row = setting_row(
-            Some(tile),
-            trf("Signed in as {account}", &[("account", &login)]),
-            Some(tr("Issues and pull requests become filter lists").to_string()),
-            widgets::state_pill(Icon::CircleCheck, tr("Connected")),
+    .spacing(layout::item_gap());
+    if wizard::mail_untouched(&state.mail) {
+        add = add.push(
+            typo::text(
+                typo::meta(),
+                tr("Gmail, iCloud, Outlook and some others need an app password instead of your usual one."),
+            )
+            .style(theme::text_2)
+            .wrapping(Wrapping::WordOrGlyph),
         );
-        return widgets::group("GitHub", vec![row], None);
     }
-    if state.github_token {
-        return column![
-            typo::text(typo::caption(), "GitHub").style(theme::text_3),
-            connect::github::token_form(
-                &state.github,
-                |token| Message::TokenChanged(Secret::new(token)),
-                Message::Next,
-                Message::OpenTokenPage
-            ),
-        ]
-        .spacing(layout::item_gap())
-        .into();
-    }
-    connect::github::ways("GitHub", Message::UseGithubCli, Message::PasteToken)
-}
-
-// ----- Mail and the Notification Hub (task W.7) -------------------------------------------------------
-
-/// A row that opens something: symbol, name, one line under it and the chevron.
-fn opener<'a>(symbol: Icon, name: &'a str, detail: &'a str, message: Message) -> Element<'a, Message> {
-    let tile = widgets::source_tile(TileFace::Icon(symbol), TileSize::Medium, None);
-    pressable(setting_row(Some(tile), name, Some(detail.to_string()), chevron()), Some(message))
-}
-
-/// The mail accounts there are, and the two ways to add one; both open the add-account dialog.
-fn mail(data: &Data) -> Element<'_, Message> {
-    let accounts: Vec<Element<'_, Message>> = data
+    parts.push(add.into());
+    let accounts: Vec<Element<'a, Message>> = data
         .accounts
         .iter()
-        .filter(|account| account.kind == "mail")
+        .filter(|account| account.kind == "mail" && !account.id.is_empty())
         .map(|account| {
             let tile = widgets::source_tile(TileFace::Icon(Icon::Mail), TileSize::Medium, None);
             let (detail, pill) = match &account.state {
                 AccountState::Connected { problem: Some(problem), .. } => {
                     (problem.clone(), widgets::state_pill(Icon::CircleAlert, tr("Problem")))
                 }
-                _ => (
-                    tr("Mail, and calendars where the provider has them").to_string(),
-                    widgets::state_pill(Icon::CircleCheck, tr("Connected")),
-                ),
+                _ => (brings(account), widgets::state_pill(Icon::CircleCheck, tr("Connected"))),
             };
             setting_row(Some(tile), account.label.as_str(), Some(detail), pill)
         })
         .collect();
-    let mut parts =
-        vec![title(tr("Mail"), tr("Add your mail accounts. Calendars that come with them show up under Calendar."))];
-    if accounts.is_empty() {
-        parts.push(typo::text(typo::body(), tr("No mail account yet.")).style(theme::text_2).into());
-    } else {
-        parts.push(widgets::group(tr("Mail accounts"), accounts, None));
+    if !accounts.is_empty() {
+        let footer = tr("Passwords stay in the system keychain; agents never see them.");
+        parts.push(widgets::group(tr("Connected"), accounts, Some(footer.to_string())));
     }
-    let add = vec![
-        opener(Icon::Plus, tr("Add mail account"), tr("Finds the servers from your address"), Message::AddMail),
-        opener(
-            Icon::MailOpen,
-            tr("Take over from TorroMail"),
-            tr("Uses the accounts of the TorroMail app"),
-            Message::TakeOverTorroMail,
-        ),
-    ];
-    parts.push(widgets::group(
-        tr("Add"),
-        add,
-        Some(tr("Passwords stay in the system keychain; agents never see them.").to_string()),
-    ));
     page(parts)
 }
 
-/// The inbox sources the connected accounts bring: the source, its symbol, its name and the
-/// account it belongs to.
-fn inbox_sources(data: &Data) -> Vec<(SourceRef, Icon, &'static str, &str)> {
-    let mut sources = Vec::new();
-    for account in data.accounts.iter().filter(|account| !account.id.is_empty()) {
-        // The account's id is `<kind>:<name>`; the source of the account has that name.
-        let Some((_, name)) = account.id.split_once(':') else { continue };
-        let source = |kind| SourceRef { kind, name: name.to_string() };
-        let label = account.label.as_str();
-        match account.kind.as_str() {
-            "nextcloud" => {
-                sources.push((source(SourceKind::Nextcloud), Icon::Bell, tr("Nextcloud notifications"), label));
-                let talk = account.services.as_ref().is_none_or(|services| services.contains(&ServerService::Talk));
-                if talk {
-                    sources.push((source(SourceKind::Talk), Icon::MessageCircle, "Talk", label));
-                }
-            }
-            "github" => sources.push((source(SourceKind::Github), Icon::Github, "GitHub", label)),
-            "mail" => sources.push((source(SourceKind::Mail), Icon::Mail, tr("Mail"), label)),
-            "ntfy" => sources.push((source(SourceKind::Ntfy), Icon::RadioTower, "ntfy", label)),
-            _ => {}
+// ----- Cloud ------------------------------------------------------------------------------------------
+
+fn cloud<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let lead = tr(
+        "Torro builds on a server for your files, calendars and contacts. Today that is Nextcloud. This step is optional.",
+    );
+    if state.nextcloud.running() {
+        return page(vec![
+            title(tr("Cloud"), tr("Your browser opened Nextcloud's sign-in page.")),
+            connect::nextcloud::waiting(data, Message::OpenLoginPage, |_| Message::LoginLinkEdited),
+        ]);
+    }
+    let reason = why(
+        tr("Why this matters."),
+        tr("Your data stays on your own server, and Torro signs in through your browser. It never sees your password."),
+    );
+    match super::nextcloud_account(state, data).filter(|_| !state.adding) {
+        Some(account) => page(vec![title(tr("Cloud"), lead), reason, services(account), another_nextcloud()]),
+        None => page(vec![title(tr("Cloud"), lead), reason, address(state)]),
+    }
+}
+
+/// The address form: where the Nextcloud is; the browser does the rest.
+fn address(state: &State) -> Element<'_, Message> {
+    let field = column![
+        typo::text(typo::caption(), tr("Address")).style(theme::text_2),
+        connect::nextcloud::address(&state.nextcloud, Message::ServerChanged, Message::Next),
+        typo::text(
+            typo::meta(),
+            tr("Your browser opens to sign in. Torro Workplace keeps an app password in the system keychain.")
+        )
+        .style(theme::text_2)
+        .wrapping(Wrapping::WordOrGlyph),
+    ]
+    .spacing(space::xs());
+    column![typo::text(typo::body_strong(), "Nextcloud"), field].spacing(layout::item_gap()).into()
+}
+
+/// What the server offers, as the account's last sync found it.
+fn services(account: &AccountInfo) -> Element<'_, Message> {
+    use torro_ipc::ServerService as S;
+    let rows: Vec<Element<'_, Message>> = match &account.services {
+        None => vec![setting_row(None, tr("Reading what your server offers…"), None, Space::new())],
+        Some(services) => {
+            let calendars = account.collections.iter().filter(|c| c.kind.has_events()).count();
+            let lists = account.collections.iter().filter(|c| c.kind.has_todos()).count();
+            let calendars = trf("{n} calendars", &[("n", &calendars)]);
+            let lists = trf("{n} lists", &[("n", &lists)]);
+            let talk = services.contains(&S::Talk) || services.contains(&S::Notifications);
+            let more = services.contains(&S::Deck) || services.contains(&S::Notes);
+            [
+                (Icon::Calendar, tr("Calendars").to_string(), services.contains(&S::Calendars), calendars),
+                (Icon::ListChecks, tr("Tasks").to_string(), services.contains(&S::Tasks), lists),
+                (Icon::Bell, tr("Notifications and Talk").to_string(), talk, tr("To the Notification Hub").to_string()),
+                (Icon::LayoutGrid, "Deck, Notes".to_string(), more, tr("Later in the suite").to_string()),
+            ]
+            .into_iter()
+            .map(|(symbol, name, there, detail)| {
+                let tile = widgets::source_tile(TileFace::Icon(symbol), TileSize::Medium, None);
+                let detail = if there { detail } else { tr("Not on this server").to_string() };
+                let pill = match there {
+                    true => widgets::state_pill(Icon::CircleCheck, tr("Available")),
+                    false => widgets::state_pill(Icon::CircleDashed, tr("Missing")),
+                };
+                setting_row(Some(tile), name, Some(detail), pill)
+            })
+            .collect()
         }
-    }
-    sources
+    };
+    let host = match &account.state {
+        AccountState::Connected { server, .. } => server.split_once("://").map_or(server.as_str(), |(_, rest)| rest),
+        _ => account.label.as_str(),
+    };
+    let signed_in = setting_row(
+        Some(widgets::source_tile(TileFace::Icon(Icon::Cloud), TileSize::Medium, None)),
+        host.trim_end_matches('/').to_string(),
+        Some(tr("Signed in · Nextcloud").to_string()),
+        widgets::state_pill(Icon::CircleCheck, tr("Connected")),
+    );
+    column![
+        widgets::group("Nextcloud", vec![signed_in], None),
+        widgets::group(tr("What this server offers"), rows, None)
+    ]
+    .spacing(layout::section_gap())
+    .into()
 }
 
-/// The Notification Hub: a switch per source the accounts bring, ntfy's topics to subscribe, and
-/// quiet during busy events.
-fn inbox<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let rows: Vec<Element<'a, Message>> = inbox_sources(data)
-        .into_iter()
-        .map(|(source, symbol, name, account)| {
-            let on = !state.is_muted(data, &source);
-            let switch = toggler(on)
-                .size(style::CHECK_SIZE)
-                .style(style::toggler)
-                .on_toggle(move |on| Message::Source(source.clone(), on));
-            let tile = widgets::source_tile(TileFace::Icon(symbol), TileSize::Medium, None);
-            setting_row(Some(tile), name, Some(account.to_string()), switch)
-        })
-        .collect();
-    let mut parts = vec![title(tr("Notification Hub"), tr("One place for what needs you. Choose what comes in."))];
-    if rows.is_empty() {
-        let none = tr("No sources yet. They come with the accounts you connect.");
-        parts.push(typo::text(typo::body(), none).style(theme::text_2).into());
-    } else {
-        let footer = tr("A source turned off brings nothing new; what is there stays.");
-        parts.push(widgets::group(tr("Sources"), rows, Some(footer.to_string())));
+/// "Add another Nextcloud", for example for work.
+fn another_nextcloud<'a>() -> Element<'a, Message> {
+    let plus = widgets::source_tile(TileFace::Icon(Icon::Plus), TileSize::Medium, None);
+    let another = pressable(
+        setting_row(Some(plus), tr("Add another Nextcloud"), Some(tr("For example for work").to_string()), chevron()),
+        Some(Message::AddNextcloud),
+    );
+    widgets::group(tr("More accounts"), vec![another], None)
+}
+
+// ----- AI ---------------------------------------------------------------------------------------------
+
+/// The account's name for `engine`, else the provider's, else the id.
+fn account_name<'a>(data: &'a Data, engine: &'a str) -> &'a str {
+    data.accounts
+        .iter()
+        .find(|account| account.id == engine)
+        .map(|account| account.label.as_str())
+        .or_else(|| ai_provider(engine).map(AiProvider::name))
+        .unwrap_or(engine)
+}
+
+/// "qwen3:14b · Ollama" for a slot as stored, or "Not chosen".
+fn slot_line(data: &Data, slot: AiSlot) -> String {
+    match data.settings.ai_slots.get(slot) {
+        Some(held) => {
+            let model = held.model.as_deref().unwrap_or(tr("Automatic"));
+            format!("{model} · {}", account_name(data, &held.engine))
+        }
+        None => tr("Not chosen").to_string(),
     }
-    let ntfy = opener(
-        Icon::RadioTower,
-        tr("Subscribe to ntfy topics"),
-        tr("CI, uptime checks and your own scripts"),
-        Message::AddNtfy,
-    );
-    parts.push(widgets::group(tr("More sources"), vec![ntfy], None));
-    let quiet = toggler(state.quiet.unwrap_or(data.settings.quiet_when_busy))
-        .size(style::CHECK_SIZE)
-        .style(style::toggler)
-        .on_toggle(Message::Quiet);
-    let quiet = setting_row(
-        None,
-        tr("Quiet during busy events"),
-        Some(tr("Only urgent entries pop up while a busy event runs; a summary follows.").to_string()),
-        quiet,
-    );
-    parts.push(widgets::group(tr("Notifications"), vec![quiet], None));
+}
+
+/// The page Connect: the shared AI page (this computer, the programs found, the cloud ways, "Our
+/// suggestion for this PC"), and, when models are chosen already, what they are.
+fn ai_connect<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let mut parts = vec![title(
+        tr("AI"),
+        tr("Torro uses one model to chat and one to sort your mail. Here is what fits this computer."),
+    )];
+    if super::keeps(data) {
+        let rows = vec![
+            setting_row(None, tr("Chat"), Some(slot_line(data, AiSlot::Chat)), Space::new()),
+            setting_row(None, tr("Sorting"), Some(slot_line(data, AiSlot::Decide)), Space::new()),
+        ];
+        let footer = match ai_setup::differs(&state.ai_setup, data) {
+            true => tr("The suggestion differs from what you chose. “Use suggestion” takes it instead."),
+            false => tr("“Keep my choice” goes on with these models."),
+        };
+        parts.push(widgets::group(tr("Chosen"), rows, Some(footer.to_string())));
+    }
+    parts.push(ai_setup::view(&state.ai_setup, data).map(Message::AiSetup));
     page(parts)
 }
 
-// ----- AI (task W.8) ----------------------------------------------------------------------------------
-
-/// Open First: the servers on this computer, then the cloud providers by where they are, then what
-/// a new chat of the assistant starts with.
-fn ai<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let mut parts = vec![
-        title(tr("AI"), tr("Connect an AI program or an online service. Choose knowingly where your text goes.")),
-        mail_sorting_choice(state, data),
-        torro_settings_ui::accounts::ai_setup::view(&state.ai_setup, data).map(Message::AiSetup),
-    ];
-    if let Some(choice) = engine_choice(state, data) {
-        parts.push(choice);
-    }
-    page(parts)
+/// The size of a download in words, "9.3 GB"; nothing for a model already there.
+fn download(bytes: u64) -> Option<String> {
+    (bytes > 0).then(|| trf("Download {size}", &[("size", &torro_gui::units::format_bytes(bytes))]))
 }
 
-fn mail_sorting_choice<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+/// The suggested model of `slot` as a row with "Use", when it is not among the models there are yet (it is
+/// downloaded first): its name, "Suggested" and the download.
+fn suggested_row<'a>(state: &'a State, data: &'a Data, slot: AiSlot, there: bool) -> Option<Element<'a, Message>> {
+    let (account, candidate) = ai_setup::suggested_model(&state.ai_setup, slot)?;
+    if there {
+        return None;
+    }
+    let mut detail = vec![tr("Suggested").to_string(), account_name(data, account).to_string()];
+    detail.extend(download(candidate.size_bytes));
+    let can = ai_setup::can_use_suggestion(&state.ai_setup, data, true, Some(slot));
+    let use_it =
+        widgets::text_button(None, tr("Use"), style::button::secondary, can.then_some(Message::UseSuggested(slot)));
+    Some(setting_row(None, candidate.model.as_str(), Some(detail.join(" · ")), use_it))
+}
+
+/// The page Chat: the model the assistant answers with, from the models with tools, the suggestion marked.
+fn ai_chat<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let mut parts = vec![title(
+        tr("Model for chat"),
+        tr("The assistant answers with this model. Only models that can use tools are listed."),
+    )];
     if super::ai_models_wait(data) {
-        return widgets::group(
-            tr("Sort mail into categories"),
-            vec![setting_row(None, tr("Checking decision models…"), None, Space::new())],
+        parts.push(sentence(tr("Checking models…")));
+        return page(parts);
+    }
+    let models = super::chat_models(data);
+    let chosen = super::chat_choice(state, data);
+    let suggested = ai_setup::suggested_model(&state.ai_setup, AiSlot::Chat);
+    let there = suggested.is_some_and(|(account, candidate)| {
+        models.iter().any(|(engine, model)| {
+            *engine == account && torro_settings_ui::accounts::same_model(&model.id, &candidate.model)
+        })
+    });
+    let mut rows = Vec::new();
+    if !models.is_empty() {
+        let label = chosen
+            .as_ref()
+            .and_then(|(engine, id)| models.iter().find(|(e, m)| *e == engine && m.id == *id))
+            .map_or_else(|| tr("Choose").to_string(), |(_, model)| model.name.clone());
+        let detail = chosen.as_ref().map(|(engine, _)| account_name(data, engine).to_string());
+        rows.push(setting_row(
             None,
-        );
+            tr("Model for chat"),
+            detail,
+            state.menus.button(SetupMenu::Chat, label, Message::Menus),
+        ));
     }
+    rows.extend(suggested_row(state, data, AiSlot::Chat, there));
+    match rows.is_empty() {
+        true => {
+            parts.push(sentence(tr("No model that can use tools is connected yet. Connect one on the page before.")))
+        }
+        false => parts.push(widgets::group(
+            tr("Chat"),
+            rows,
+            Some(tr("Choose how hard it thinks later under Assistant.").to_string()),
+        )),
+    }
+    page(parts)
+}
+
+/// A mark for one of the ways on the page Sorting: a ring, filled with a check where it is chosen.
+fn radio<'a>(on: bool) -> Element<'a, Message> {
+    let which = if on { Icon::CircleCheck } else { Icon::Circle };
+    icon::icon(which, icon::SIZE)
+        .style(move |t: &Theme, _| iced::widget::svg::Style {
+            color: Some(if on { palette(t).text } else { palette(t).text_3 }),
+        })
+        .into()
+}
+
+/// The page Sorting: the four ways to sort mail – a decision model here (the suggestion), Jev, the chat
+/// model, rules only – one row each, the one chosen marked.
+fn ai_sort<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let mut parts = vec![
+        title(tr("Sorting mail"), tr("A model reads each new mail and sorts it into categories.")),
+        why(tr("Why this matters."), tr("Sorting sees every new mail. A model on this computer keeps your mail here.")),
+    ];
+    if super::ai_models_wait(data) {
+        parts.push(sentence(tr("Checking decision models…")));
+        return page(parts);
+    }
+    let on = super::mail_sorting_on(state, data);
+    let decider = super::selected_mail_decider(state, data);
+    let jev_chosen = decider.is_some_and(|(account, _)| ai_provider(account) == Some(AiProvider::Jev));
     let options = mail_model_choices(data);
-    if options.is_empty() {
-        return widgets::group(
-            tr("Sort mail into categories"),
-            vec![setting_row(None, tr("No suitable decision model connected"), None, Space::new())],
-            Some(tr("Connect a decision model here, or choose one later in Mail settings.").to_string()),
-        );
-    }
-    let enabled = super::mail_sorting_on(state, data);
-    let switch = toggler(enabled).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::SortMail);
-    let chosen = chosen_mail_model(state, data, &options);
-    let label = chosen.map_or_else(|| tr("Choose").to_string(), |choice| choice.label.clone());
-    let pick = state.menus.button(SetupMenu::SortModel, label, Message::Menus);
-    widgets::group(
-        tr("Sort mail into categories"),
-        vec![
-            setting_row(
-                None,
-                tr("Use model sorting"),
-                Some(tr("Recommended; you can turn this off later.").to_string()),
-                switch,
-            ),
-            setting_row(None, tr("Decision model"), None, pick),
-        ],
-        Some(
-            tr("Rules are checked first; the model uses category descriptions only when no rule matches.").to_string(),
+    let local: Vec<&MailModelChoice> =
+        options.iter().filter(|o| ai_provider(&o.account) != Some(AiProvider::Jev)).collect();
+    let jev = options.iter().find(|o| ai_provider(&o.account) == Some(AiProvider::Jev));
+
+    // A decision model on this computer or the network: the dropdown, or the suggestion to download.
+    let chosen_local = on && !state.sort_by_chat && decider.is_some() && !jev_chosen;
+    let control: Element<'a, Message> = match local.is_empty() {
+        false => {
+            let label = decider
+                .filter(|_| !jev_chosen)
+                .and_then(|(account, model)| local.iter().find(|o| o.account == *account && o.model == model.id))
+                .map_or_else(|| tr("Choose").to_string(), |choice| choice.label.clone());
+            state.menus.button(SetupMenu::SortModel, label, Message::Menus)
+        }
+        true => match ai_setup::suggested_model(&state.ai_setup, AiSlot::Decide) {
+            Some(_) => {
+                let can = ai_setup::can_use_suggestion(&state.ai_setup, data, true, Some(AiSlot::Decide));
+                widgets::text_button(
+                    None,
+                    tr("Use"),
+                    style::button::secondary,
+                    can.then_some(Message::UseSuggested(AiSlot::Decide)),
+                )
+            }
+            None => Space::new().into(),
+        },
+    };
+    let suggestion = ai_setup::suggested_model(&state.ai_setup, AiSlot::Decide).map(|(account, candidate)| {
+        let mut words =
+            vec![candidate.model.clone(), tr("Suggested").to_string(), account_name(data, account).to_string()];
+        words.extend(download(candidate.size_bytes));
+        words.join(" · ")
+    });
+    let detail = suggestion.unwrap_or_else(|| tr("A small model made for sorting").to_string());
+    let first_local = local.first().map(|o| Message::SortModel(o.account.clone(), o.model.clone()));
+    let mut rows = vec![way(chosen_local, tr("Decision model"), detail, control, first_local)];
+
+    // Jev (issue #323): a model elsewhere made for sorting; without an account its key first.
+    let seat = AiProvider::Jev.seat().label();
+    let jev_detail = trf("{seat} · Made for sorting", &[("seat", &seat)]);
+    let (jev_control, jev_press): (Element<'a, Message>, Option<Message>) = match jev {
+        Some(choice) => (Space::new().into(), Some(Message::SortModel(choice.account.clone(), choice.model.clone()))),
+        None => (widgets::text_button(None, tr("Add key"), style::button::secondary, Some(Message::ConnectJev)), None),
+    };
+    rows.push(way(on && !state.sort_by_chat && jev_chosen, "Jev", jev_detail, jev_control, jev_press));
+
+    // The chat model, answering in a fixed form.
+    let chat = super::chat_choice(state, data);
+    let chat_detail = match &chat {
+        Some((_, model)) => trf("{model} · Sorts by answering in a fixed form · Slower", &[("model", model)]),
+        None => tr("Choose a chat model first").to_string(),
+    };
+    let chat_press = chat.is_some().then_some(Message::SortByChat);
+    rows.push(way(on && state.sort_by_chat, tr("Use the chat model"), chat_detail, Space::new(), chat_press));
+    rows.push(way(
+        !on,
+        tr("Rules only"),
+        tr("No AI. Sorts by sender and your rules").to_string(),
+        Space::new(),
+        Some(Message::SortMail(false)),
+    ));
+    let footer = match on && !state.sort_by_chat && jev_chosen {
+        true => trf(
+            "New mail goes to {provider}, only to be sorted. It is not used for chat.",
+            &[("provider", &AiProvider::Jev.name())],
         ),
-    )
+        false => {
+            tr("Rules are checked first; the model uses category descriptions only when no rule matches.").to_string()
+        }
+    };
+    parts.push(widgets::group(tr("Sort mail with"), rows, Some(footer)));
+    page(parts)
+}
+
+/// One way on the page Sorting: the mark, its name, a line under it, a control at the end; the whole row
+/// chooses it.
+fn way<'a>(
+    on: bool,
+    name: impl iced::widget::text::IntoFragment<'a>,
+    detail: String,
+    control: impl Into<Element<'a, Message>>,
+    press: Option<Message>,
+) -> Element<'a, Message> {
+    pressable(setting_row(Some(radio(on)), name, Some(detail), control), press)
 }
 
 /// A decision model for mail in its dropdown: chosen by account and model, shown as "provider · model".
@@ -602,342 +618,261 @@ struct MailModelChoice {
 fn mail_model_choices(data: &Data) -> Vec<MailModelChoice> {
     super::mail_deciders(data)
         .into_iter()
-        .map(|(account, model)| {
-            let provider = data
-                .accounts
-                .iter()
-                .find(|known| known.id == *account)
-                .map_or(account.as_str(), |known| known.label.as_str());
-            MailModelChoice {
-                account: account.clone(),
-                model: model.id.clone(),
-                label: format!("{provider} · {}", model.name),
-            }
+        .map(|(account, model)| MailModelChoice {
+            account: account.clone(),
+            model: model.id.clone(),
+            label: format!("{} · {}", account_name(data, account), model.name),
         })
         .collect()
 }
 
-/// The decision model chosen among `options`, if one is.
-fn chosen_mail_model<'o>(state: &State, data: &Data, options: &'o [MailModelChoice]) -> Option<&'o MailModelChoice> {
-    super::selected_mail_decider(state, data).and_then(|(account, model)| {
-        options.iter().find(|option| option.account == *account && option.model == model.id)
-    })
-}
-
-/// The open dropdown of the setup (issue #554): the decision models for mail, or the AI accounts a
-/// new chat can start with, the chosen one marked. From twelve entries on it has a search field.
+/// The open dropdown of the setup (issue #554): the chat models by account, or the decision models here;
+/// the chosen one marked. From twelve entries on it has a search field.
 pub(super) fn menu<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
     let key = state.menus.open()?;
-    let items: Vec<MenuItem<'a, Message>> = match key {
+    let sections: Vec<MenuSection<'a, Message>> = match key {
         SetupMenu::SortModel => {
-            let options = mail_model_choices(data);
-            let chosen = chosen_mail_model(state, data, &options).cloned();
-            options
+            let chosen = super::selected_mail_decider(state, data).map(|(a, m)| (a.clone(), m.id.clone()));
+            let items = mail_model_choices(data)
                 .into_iter()
+                .filter(|option| ai_provider(&option.account) != Some(AiProvider::Jev))
                 .map(|option| {
-                    let current = chosen.as_ref() == Some(&option);
+                    let current = chosen.as_ref().is_some_and(|(a, m)| *a == option.account && *m == option.model);
                     MenuItem::plain(option.label, Message::SortModel(option.account, option.model)).current(current)
                 })
-                .collect()
+                .collect();
+            vec![MenuSection::new(items)]
         }
-        SetupMenu::Engine => {
-            let current = chosen_engine(state, data);
-            engine_choices(data)
+        SetupMenu::Chat => {
+            let chosen = super::chat_choice(state, data);
+            let suggested = ai_setup::suggested_model(&state.ai_setup, AiSlot::Chat);
+            let models = super::chat_models(data);
+            let mut accounts: Vec<&String> = models.iter().map(|(account, _)| *account).collect();
+            accounts.dedup();
+            accounts
                 .into_iter()
-                .map(|choice| {
-                    let on = current.as_deref() == Some(choice.id.as_str());
-                    MenuItem::plain(choice.name, Message::Engine(choice.id)).current(on)
+                .map(|account| {
+                    let items = models
+                        .iter()
+                        .filter(|(engine, _)| *engine == account)
+                        .map(|(engine, model)| {
+                            let current = chosen.as_ref().is_some_and(|(e, m)| e == *engine && *m == model.id);
+                            let marked = suggested.is_some_and(|(a, c)| {
+                                a == engine.as_str() && torro_settings_ui::accounts::same_model(&model.id, &c.model)
+                            });
+                            let name = match marked {
+                                true => trf("{model} · Suggested", &[("model", &model.name)]),
+                                false => model.name.clone(),
+                            };
+                            MenuItem::plain(name, Message::ChatModel((*engine).clone(), model.id.clone()))
+                                .current(current)
+                        })
+                        .collect();
+                    MenuSection::titled(account_name(data, account).to_string(), items)
                 })
                 .collect()
         }
     };
-    let sections = vec![MenuSection::new(items)];
     Some(state.menus.view(key, sections, size::props(), Align::End, Message::Menus))
 }
 
-/// The cloud providers in their groups, after the servers on this computer: first Jev, which only
-/// sorts mail (issue #323), then the open models, the providers and those in China.
-#[cfg(test)]
-fn cloud_groups() -> Vec<(&'static str, Vec<AiProvider>)> {
-    vec![
-        (tr("For sorting mail"), vec![AiProvider::Jev]),
-        (tr("Open models"), vec![AiProvider::OpenRouter]),
-        (
-            tr("Providers"),
-            vec![
-                AiProvider::OllamaCloud,
-                AiProvider::Anthropic,
-                AiProvider::OpenAi,
-                AiProvider::Gemini,
-                AiProvider::Mistral,
-            ],
-        ),
-        (
-            tr("Providers in China"),
-            vec![AiProvider::DeepSeek, AiProvider::Qwen, AiProvider::Kimi, AiProvider::Glm, AiProvider::MiniMax],
-        ),
-    ]
-}
+// ----- Appearance -------------------------------------------------------------------------------------
 
-/// What a cloud provider's row says under its name: where it is, and what sets it apart.
-#[cfg(test)]
-fn cloud_detail(provider: AiProvider) -> String {
-    let seat = provider.seat().label();
-    match provider {
-        AiProvider::OpenRouter => trf("{seat} · open models from many makers", &[("seat", &seat)]),
-        AiProvider::Jev => trf("{seat} · decides only", &[("seat", &seat)]),
-        _ if provider.open_weights() => trf("{seat} · open weights", &[("seat", &seat)]),
-        _ => seat.to_string(),
-    }
-}
-
-/// "Use for": the AI account a new chat of the assistant starts with, once there is one.
-fn engine_choice<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
-    let engines = engine_choices(data);
-    if engines.is_empty() {
-        return None;
-    }
-    let current = chosen_engine(state, data);
-    let selected = current.and_then(|id| engines.into_iter().find(|choice| choice.id == id));
-    let label = selected.map_or_else(|| tr("Choose").to_string(), |choice| choice.name);
-    let pick = state.menus.button(SetupMenu::Engine, label, Message::Menus);
-    let row = setting_row(None, tr("Assistant"), Some(tr("What a new chat starts with").to_string()), pick);
-    Some(widgets::group(
-        tr("Use for"),
-        vec![row],
-        Some(tr("Choose the model and how hard it thinks later under Assistant.").to_string()),
-    ))
-}
-
-/// An AI account in the "Use for" dropdown: shown by its name, chosen by its engine id.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Choice {
-    id: String,
-    name: String,
-}
-
-/// The AI accounts a new chat of the assistant can start with.
-fn engine_choices(data: &Data) -> Vec<Choice> {
-    data.engines
-        .iter()
-        .filter(|engine| engine.kind == torro_ipc::assistant::EngineKind::Ai)
-        .map(|engine| Choice { id: engine.id.clone(), name: engine.name.clone() })
-        .collect()
-}
-
-/// The engine chosen here, else the one stored as the start of a new chat.
-fn chosen_engine(state: &State, data: &Data) -> Option<String> {
-    state.engine.clone().or_else(|| data.settings.ai_slots.chat.as_ref().map(|default| default.engine.clone()))
-}
-
-// ----- Web search (task WEB.7) ------------------------------------------------------------------------
-
-/// The names of the providers switched on, in the order they are asked.
-pub(super) fn providers_on<'a>(state: &'a State, data: &'a Data) -> Vec<&'a str> {
-    super::providers(state, data).iter().filter(|info| info.enabled).map(|info| info.name.as_str()).collect()
-}
-
-/// "Let the assistant use it" with the order the providers are asked in and the approval once per conversation
-/// under it – the page's decision and its state, so before the details – then the providers as Assistant ›
-/// Settings › Tools shows them. While no provider can be asked (SearXNG only with an address) the box is drawn
-/// disabled, keeping its tick for when one is: "Continue" would give nothing then. Without the assistant's client
-/// (the assistant never started) there is nobody to give the right to: the sentence stands alone.
-fn web<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
-    let providers = super::providers(state, data);
-    let summary = web_view::summary(providers);
-    let usable = providers.iter().any(super::askable);
-    let allow = match super::assistant_client(data) {
-        Some(_) => {
-            let on = state.web_allowed;
-            let check = checkbox(on)
-                .size(style::CHECK_SIZE)
-                // `text_2`, not `text`: a black box would be the heaviest mark of the page.
-                .style(|t: &Theme, status| style::checkbox(palette(t).text_2)(t, status))
-                .on_toggle_maybe(usable.then_some(Message::AllowWeb));
-            let row = setting_row(
-                Some(check.into()),
-                tr("Let the assistant use it"),
-                Some(tr("Read access to web search, given when you continue").to_string()),
-                Space::new(),
-            );
-            let press = usable.then_some(Message::AllowWeb(!on));
-            widgets::group(tr("Assistant"), vec![pressable(row, press)], Some(summary))
-        }
-        None => typo::text(typo::body(), summary).style(theme::text_2).into(),
-    };
+/// The building blocks of Settings › Appearance with the preview of the mail window beside them.
+fn appearance<'a>(data: &'a Data, looks: &'a suite::State) -> Element<'a, Message> {
     page(vec![
-        title(
-            tr("Web search"),
-            tr(
-                "The assistant can search the web and read pages. Choose where your search words go; nothing is on until you switch it on.",
-            ),
-        ),
-        allow,
-        web_view::view(&state.web, providers, class).map(Message::Web),
+        title(tr("Appearance"), tr("Choose how Torro looks. The preview changes as you choose.")),
+        suite::setup_appearance(looks, &data.settings).map(Message::Suite),
+        sentence(tr("Change any of this later in Settings › Appearance.")),
     ])
 }
 
-// ----- Documents (issue #303) --------------------------------------------------------------------------
+// ----- Documents --------------------------------------------------------------------------------------
 
-/// The ArtCraft apps the step presents, by their catalog id, in this order, with their symbol and what each is for.
-pub(super) const APPS: [(&str, Icon, &str); 4] = [
-    (
-        "wordcraft",
-        Icon::FileText,
-        "Documents (.docx) · Summarize a contract, fix the wording of a letter, draft a reply from your notes",
-    ),
-    (
-        "deckcraft",
-        Icon::Presentation,
-        "Presentations (.pptx) · Turn an outline into slides, add a chart, tidy up every slide's text",
-    ),
-    (
-        "gridcraft",
-        Icon::Sheet,
-        "Spreadsheets (.xlsx, .csv) · Read out figures, fill in a table, sort and chart your data",
-    ),
-    ("pdfcraft", Icon::FileType, "PDF · Find a passage, fill in a form, comment, combine or split files"),
+/// The ArtCraft apps the point presents, by their catalog id, in this order, with their name and what each
+/// is for.
+pub(super) const APPS: [(&str, &str, &str); 4] = [
+    ("wordcraft", "WordCraft", "Letters, reports, contracts"),
+    ("deckcraft", "DeckCraft", "Slides and presentations"),
+    ("gridcraft", "GridCraft", "Sheets and tables"),
+    ("pdfcraft", "PdfCraft", "Fill in and combine PDFs"),
 ];
 
-/// How an ArtCraft app stands on this computer, for the step Documents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AppState {
-    /// Installed as an MCP server.
-    SetUp,
-    /// Its program is there (nothing of the entry is missing), not set up yet.
-    Installed,
-    /// Its program is missing: "Get <App>".
-    Missing,
+/// The catalog entries of the ArtCraft apps there are, in the order of [`APPS`].
+pub(super) fn artcraft(data: &Data) -> Vec<&CatalogEntry> {
+    let crate::ui::connections::Listing::Entries(entries) = &data.catalog else { return Vec::new() };
+    APPS.iter().filter_map(|(id, _, _)| entries.iter().find(|entry| entry.id == *id)).collect()
 }
 
-/// What the step Documents can show of the catalog.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Listed<'a> {
-    /// Nothing listed yet: the catalog has not answered.
-    Loading,
-    /// It could not be listed.
-    Failed,
-    /// Listed, without any ArtCraft app: a service of another version.
-    NotInCatalog,
-    /// The apps the catalog has, in the order of [`APPS`], with their symbol and what each is for.
-    Apps(Vec<(&'a CatalogEntry, Icon, &'static str)>),
+/// Whether an ArtCraft app is set up as an MCP server here.
+pub(super) fn artcraft_set_up(data: &Data) -> bool {
+    APPS.iter().any(|(id, _, _)| crate::ui::connections::installed(data, id).is_some())
 }
 
-/// What the catalog in `data` lets the step show.
-pub(super) fn listed(data: &Data) -> Listed<'_> {
-    let entries = match &data.catalog {
-        crate::ui::connections::Listing::Failed(_) => return Listed::Failed,
-        crate::ui::connections::Listing::Entries(entries) => entries,
-    };
-    let apps: Vec<(&CatalogEntry, Icon, &'static str)> = APPS
+/// "Get ArtCraft": the releases of the first ArtCraft app the catalog has; `None` without a catalog.
+pub(super) fn get_artcraft(data: &Data) -> Option<Message> {
+    artcraft(data).first().map(|entry| Message::GetApp(entry.url.clone()))
+}
+
+/// Only a note (issue #326): Torro works with ArtCraft – its four apps, that Torro itself never edits
+/// files, "Get ArtCraft", and where they are set up. It stores nothing.
+fn documents(data: &Data) -> Element<'_, Message> {
+    let rows = APPS
         .iter()
-        .filter_map(|(id, symbol, what)| Some((entries.iter().find(|entry| entry.id == *id)?, *symbol, *what)))
+        .map(|(_, name, what)| {
+            let tile = widgets::source_tile(TileFace::letter(name), TileSize::Medium, None);
+            setting_row(Some(tile), *name, Some(tr(what).to_string()), Space::new())
+        })
         .collect();
-    match (apps.is_empty(), entries.is_empty()) {
-        (true, true) => Listed::Loading,
-        (true, false) => Listed::NotInCatalog,
-        (false, _) => Listed::Apps(apps),
+    let mut parts = vec![
+        title(
+            tr("Documents"),
+            tr(
+                "Torro works hand in hand with ArtCraft: the assistant can write documents, slides, sheets and PDFs for you.",
+            ),
+        ),
+        widgets::group("ArtCraft", rows, None),
+        why(
+            tr("Torro itself never edits your files."),
+            tr("ArtCraft works only in folders you allow and saves changes as new files."),
+        ),
+    ];
+    if let Some(get) = get_artcraft(data) {
+        parts.push(
+            row![widgets::text_button(
+                Some(Icon::ArrowUpRight),
+                tr("Get ArtCraft"),
+                style::button::secondary,
+                Some(get)
+            )]
+            .into(),
+        );
+    }
+    parts.push(sentence(tr("Installed already? Torro finds it, and you set it up in Settings › MCP servers.")));
+    page(parts)
+}
+
+// ----- Done -------------------------------------------------------------------------------------------
+
+/// The words of a colour mode.
+fn mode_word(appearance: Appearance) -> &'static str {
+    match appearance {
+        Appearance::System => tr("System"),
+        Appearance::Light => tr("Light"),
+        Appearance::Dark => tr("Dark"),
     }
 }
 
-/// How the catalog entry `entry` stands: set up as a server, its program found, or missing.
-pub(super) fn app_state(data: &Data, entry: &CatalogEntry) -> AppState {
-    if crate::ui::connections::installed(data, &entry.id).is_some() {
-        AppState::SetUp
-    } else if entry.missing.is_empty() {
-        AppState::Installed
-    } else {
-        AppState::Missing
+/// The words of a spacing level.
+fn spacing_word(design: &str) -> &'static str {
+    match design {
+        "comfort" => tr("Comfort spacing"),
+        "dense" => tr("Dense spacing"),
+        _ => tr("Standard spacing"),
     }
 }
 
-/// "Work with your documents": what the ArtCraft apps let the assistant do, one row each with its state, and where
-/// they are set up. Only a presentation: it stores nothing. While the catalog has not answered, "Loading …"; when it
-/// cannot be listed, a sentence; "Continue" goes on either way.
-fn documents(data: &Data, class: SizeClass) -> Element<'_, Message> {
-    let lead = tr(
-        "Let the assistant open, read and edit your documents, presentations, spreadsheets and PDFs. The free ArtCraft \
-         apps do the work right here on your computer, and Torro keeps your originals safe: every change is saved as a \
-         new file.",
+/// One line per point with its state and a way on ("Open …", "Set up", "Get ArtCraft"), the quiet link
+/// "Connect an agent…" in the footer, and "Finish".
+fn done<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let installed = |app: AppId| {
+        data.apps.as_ref().is_some_and(|apps| apps.iter().any(|a| a.window_class == app.window_class && a.installed))
+    };
+    let open = |label: &'static str, app: AppId| -> Element<'a, Message> {
+        widgets::text_button(
+            Some(Icon::ArrowUpRight),
+            label,
+            style::button::ghost,
+            installed(app).then_some(Message::OpenApp(app.window_class)),
+        )
+    };
+    let set_up = |step: Step| -> Element<'a, Message> {
+        widgets::text_button(None, tr("Set up"), style::button::ghost, Some(Message::Go(step)))
+    };
+    let listed = || data.accounts.iter().filter(|account| !account.id.is_empty());
+
+    let mail = listed().find(|account| account.kind == "mail");
+    let mail_row = match mail {
+        Some(account) => line(
+            true,
+            Step::Mail,
+            format!("{} · {}", account.label, brings(account)),
+            open(tr("Open Mail"), AppId::INBOX_MAIL),
+        ),
+        None => line(false, Step::Mail, tr("Not set up").to_string(), set_up(Step::Mail)),
+    };
+    let cloud = super::nextcloud_account(state, data);
+    let cloud_row = match cloud {
+        Some(account) => {
+            let calendars = account.collections.iter().filter(|c| c.kind.has_events()).count();
+            let lists = account.collections.iter().filter(|c| c.kind.has_todos()).count();
+            let detail = trf(
+                "Nextcloud · {host} · {calendars} calendars · {lists} lists",
+                &[("host", &account.label), ("calendars", &calendars), ("lists", &lists)],
+            );
+            line(true, Step::Cloud, detail, open(tr("Open Calendar"), AppId::CALENDAR))
+        }
+        None => line(false, Step::Cloud, tr("Not set up").to_string(), set_up(Step::Cloud)),
+    };
+    let slots = &data.settings.ai_slots;
+    let ai_row = match (slots.chat.is_some() || slots.decide.is_some(), ai_setup::preparing(&state.ai_setup)) {
+        (_, true) => {
+            line(true, Step::Ai, tr("Preparing model…").to_string(), open(tr("Open Assistant"), AppId::ASSISTANT))
+        }
+        (true, false) => {
+            let model = |slot| data.settings.ai_slots.get(slot).and_then(|held| held.model.clone());
+            let mut words = Vec::new();
+            if let Some(chat) = model(AiSlot::Chat) {
+                words.push(trf("{model} for chat", &[("model", &chat)]));
+            }
+            if let Some(decide) = model(AiSlot::Decide) {
+                words.push(trf("{model} sorts mail", &[("model", &decide)]));
+            }
+            if words.is_empty() {
+                words.push(tr("Connected").to_string());
+            }
+            line(true, Step::Ai, words.join(" · "), open(tr("Open Assistant"), AppId::ASSISTANT))
+        }
+        (false, false) => line(false, Step::Ai, tr("Not set up").to_string(), set_up(Step::Ai)),
+    };
+    let settings = &data.settings;
+    let mut look = vec![mode_word(settings.appearance).to_string(), spacing_word(&settings.design).to_string()];
+    // The colour scheme and the font only where they are not the suite's own (`torro`): a name, not an id.
+    look.extend(
+        [settings.color_scheme.clone(), settings.font.clone()]
+            .into_iter()
+            .filter(|word| !word.is_empty() && word != torro_core::design::STANDARD_ID),
     );
-    let words = matches!(class, SizeClass::Wide | SizeClass::Medium);
-    let sentence =
-        |text: &'static str| -> Element<'_, Message> { typo::text(typo::body(), tr(text)).style(theme::text_2).into() };
-    let apps: Element<'_, Message> = match listed(data) {
-        Listed::Loading => widgets::loading(),
-        Listed::Failed => sentence("The apps can't be listed right now. You find them later under MCP servers."),
-        Listed::NotInCatalog => sentence("This version of Torro Workplace doesn't list the ArtCraft apps yet."),
-        Listed::Apps(apps) => {
-            let rows = apps.into_iter().map(|(entry, symbol, what)| app_row(data, entry, symbol, tr(what), words));
-            let footer =
-                tr("Open source (MIT or Apache 2.0) and still young: the apps call themselves experimental. Each one \
-                 works only in a folder you choose; changes are saved as new files, and anything that could replace a \
-                 file asks you first. What the assistant reads goes to the AI model you chose.");
-            widgets::group(tr("ArtCraft apps"), rows.collect(), Some(footer.to_string()))
+    let settings_button = widgets::text_button(
+        Some(Icon::ArrowUpRight),
+        tr("Open Settings"),
+        style::button::ghost,
+        Some(Message::OpenSection(Section::Appearance)),
+    );
+    let look_row = line(true, Step::Appearance, look.join(" · "), settings_button);
+    let documents_row = match artcraft_set_up(data) {
+        true => line(true, Step::Documents, tr("ArtCraft is set up").to_string(), Space::new()),
+        false => {
+            let get = widgets::text_button(
+                Some(Icon::ArrowUpRight),
+                tr("Get ArtCraft"),
+                style::button::ghost,
+                get_artcraft(data),
+            );
+            line(false, Step::Documents, tr("ArtCraft not installed yet").to_string(), get)
         }
     };
-    let later = typo::text(typo::body(), tr("Installed one? Set it up later in Settings › MCP servers › Catalog."))
-        .style(theme::text_2)
-        .wrapping(Wrapping::WordOrGlyph);
-    page(vec![title(tr("Work with your documents"), lead), apps, later.into()])
+    page(vec![
+        title(tr("You're all set"), tr("This is what Torro is connected to now. Change any of it later in Settings.")),
+        widgets::group(tr("Your setup"), vec![mail_row, cloud_row, ai_row, look_row, documents_row], None),
+    ])
 }
 
-/// One ArtCraft app: its tile, its name with "Experimental", what it is for below (wrapping), and at the end how it
-/// stands – "Set up" or "Installed" with a dot, or "Get <App>" to its releases.
-fn app_row<'a>(data: &Data, entry: &'a CatalogEntry, symbol: Icon, what: &'a str, words: bool) -> Element<'a, Message> {
-    let tile = widgets::source_tile(TileFace::Icon(symbol), TileSize::Medium, None);
-    let mut name = row![widgets::ellipsized(typo::body(), entry.name.as_str(), theme::text)]
-        .spacing(space::s())
-        .align_y(Alignment::Center);
-    if entry.experimental {
-        name = name.push(widgets::pill(None, tr("Experimental")));
-    }
-    let lines =
-        column![name, typo::text(typo::meta(), what).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)].width(Fill);
-    let get = Message::GetApp(entry.url.clone());
-    let label = trf("Get {app}", &[("app", &entry.name)]);
-    let control: Element<'a, Message> = match (app_state(data, entry), words) {
-        // Pills as the step Mail shows its accounts; only a set-up app has the check.
-        (AppState::SetUp, _) => widgets::state_pill(Icon::CircleCheck, tr("Set up")),
-        (AppState::Installed, _) => widgets::state_pill(Icon::Circle, tr("Installed")),
-        (AppState::Missing, true) => {
-            widgets::text_button(Some(Icon::ArrowUpRight), label, style::button::ghost, Some(get))
-        }
-        (AppState::Missing, false) => widgets::icon_button(Icon::ArrowUpRight, label, Some(get)),
-    };
-    // As high as a settings row with a detail while the text takes one line; it grows with more.
-    let strut = Space::new().height(size::header() - space::m());
-    let text = row![strut, tile, lines].spacing(space::m()).width(Fill).align_y(Alignment::Center);
-    let content = row![text, control].spacing(space::l()).align_y(Alignment::Center);
-    container(content).width(Fill).padding([space::m(), space::l()]).into()
-}
-
-/// What a component is for, one line on its card.
-fn purpose(component: Component, data: &Data) -> String {
-    match component {
-        Component::Calendar => tr("Calendars from Nextcloud and other CalDAV servers").into(),
-        Component::Tasks => tr("Task lists from CalDAV, issues from GitHub").into(),
-        Component::Mail => tr("Mail accounts, or the ones from TorroMail").into(),
-        Component::Inbox => tr("Notifications, mentions and reviews in one place").into(),
-        Component::Assistant => tr("Chat with a local or a cloud AI").into(),
-        Component::Workspaces => match window_manager(data) {
-            Some(name) => trf("Save and restore window layouts · {wm} found", &[("wm", &name)]),
-            None => tr("Save and restore window layouts · needs a tiling window manager").into(),
-        },
-    }
-}
-
-/// The tiling window manager the core works with, by its product name; `None` without one.
-fn window_manager(data: &Data) -> Option<String> {
-    let backend = data.status.as_ref()?.backend.as_str();
-    let name = match backend {
-        "" | "unsupported" => return None,
-        "hyprland" => "Hyprland",
-        "aerospace" => "AeroSpace",
-        "glazewm" => "GlazeWM",
-        other => other,
-    };
-    Some(name.to_string())
+/// A line of the summary: a check mark or a dashed ring, the point's name, its state under it, a way on.
+fn line<'a>(set: bool, step: Step, detail: String, control: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    let face = if set { TileFace::Icon(Icon::Check) } else { TileFace::Icon(Icon::CircleDashed) };
+    let tile = widgets::source_tile(face, TileSize::Medium, None);
+    setting_row(Some(tile), step.label(), Some(detail), control)
 }
 
 /// A component's name.
@@ -949,107 +884,5 @@ pub fn name(component: Component) -> &'static str {
         Component::Inbox => tr("Notification Hub"),
         Component::Assistant => tr("Assistant"),
         Component::Workspaces => tr("Workspaces"),
-    }
-}
-
-/// A component's symbol, as the suite shows its app.
-fn symbol(component: Component) -> Icon {
-    match component {
-        Component::Calendar => Icon::Calendar,
-        Component::Tasks => Icon::ListChecks,
-        Component::Mail => Icon::Mail,
-        Component::Inbox => Icon::Inbox,
-        Component::Assistant => Icon::User,
-        Component::Workspaces => Icon::Layers,
-    }
-}
-
-fn components<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let rows = Component::ALL
-        .into_iter()
-        .map(|component| {
-            let on = !state.off.contains(&component);
-            let switch = toggler(on)
-                .size(style::CHECK_SIZE)
-                .style(style::toggler)
-                .on_toggle(move |on| Message::Component(component, on));
-            let tile = widgets::source_tile(TileFace::Icon(symbol(component)), TileSize::Medium, None);
-            setting_row(Some(tile), name(component), Some(purpose(component, data)), switch)
-        })
-        .collect();
-    let components = widgets::group(
-        tr("Components"),
-        rows,
-        Some(
-            tr("Turned off, a part of the suite leaves the tray, and nothing runs for it in the background. Accounts and data stay.")
-                .to_string(),
-        ),
-    );
-    page(vec![
-        title(
-            tr("What do you want to use?"),
-            tr("Turn on what you need; the next steps set up each of them. You can change this later under Apps."),
-        ),
-        components,
-    ])
-}
-
-fn done<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let installed = |app: AppId| {
-        data.apps.as_ref().is_some_and(|apps| apps.iter().any(|a| a.window_class == app.window_class && a.installed))
-    };
-    let mut rows = Vec::new();
-    for component in Component::ALL {
-        let on = !state.off.contains(&component);
-        let detail = match (on, component) {
-            // The web search is the assistant's tool, so it is said in the assistant's line.
-            (true, Component::Assistant) => format!("{} · {}", tr("On"), web_detail(state, data)),
-            (true, _) => tr("On").to_string(),
-            (false, _) => tr("Off").to_string(),
-        };
-        let mark: Element<'a, Message> =
-            widgets::source_tile(TileFace::Icon(symbol(component)), TileSize::Medium, None);
-        let control: Element<'a, Message> = match app_of(component).filter(|_| on) {
-            Some(app) => widgets::text_button(
-                Some(Icon::ArrowUpRight),
-                tr("Open"),
-                style::button::ghost,
-                installed(app).then_some(Message::OpenApp(app.window_class)),
-            ),
-            None => Space::new().into(),
-        };
-        rows.push(setting_row(Some(mark), name(component), Some(detail), control));
-    }
-    let summary = widgets::group(tr("Components"), rows, Some(tr("Change any of this later in Settings.").to_string()));
-    page(vec![title(tr("You're set up"), tr("Torro Workplace is ready. Here is what you turned on.")), summary])
-}
-
-/// The web search in the assistant's line on the last step: "Web search · DuckDuckGo" with the providers switched
-/// on, or "Web search off".
-pub(super) fn web_detail(state: &State, data: &Data) -> String {
-    let names = providers_on(state, data);
-    match names.is_empty() {
-        true => tr("Web search off").to_string(),
-        false => trf("Web search · {providers}", &[("providers", &names.join(", "))]),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Issue #323: Jev has a group of its own right after the servers on this computer, says it only
-    /// decides, and every cloud provider is in exactly one group.
-    #[test]
-    fn jev_comes_first_among_the_cloud_providers_and_decides_only() {
-        let groups = cloud_groups();
-        assert_eq!(groups[0], (tr("For sorting mail"), vec![AiProvider::Jev]));
-        let listed: Vec<AiProvider> = groups.iter().flat_map(|(_, providers)| providers.clone()).collect();
-        for cloud in AiProvider::CLOUD {
-            assert_eq!(listed.iter().filter(|provider| **provider == cloud).count(), 1, "{cloud:?}");
-        }
-        let seat = AiProvider::Jev.seat().label();
-        assert_eq!(cloud_detail(AiProvider::Jev), trf("{seat} · decides only", &[("seat", &seat)]));
-        assert_eq!(cloud_detail(AiProvider::Anthropic), AiProvider::Anthropic.seat().label());
     }
 }

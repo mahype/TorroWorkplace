@@ -206,20 +206,17 @@ pub enum Open {
     DesignFonts,
     /// The font's dropdown with "mo" typed into its search field (issue #299).
     DesignFontsSearch,
-    /// The first-run setup at this step (task W.4), with the demo's sample data.
+    /// The first-run setup at this step (issue #326), with the demo's sample data.
     Setup(super::setup::Step),
-    /// The setup's Nextcloud step without a Nextcloud account: the address form (task W.5).
+    /// The point Mail and calendar with the mail path at its password (iCloud's app password).
+    SetupMailPassword,
+    /// The point Cloud without a Nextcloud account: the address form (task W.5).
     SetupNextcloudAddress,
-    /// The setup's Nextcloud step while the browser signs in, with the link to copy.
+    /// The point Cloud while the browser signs in, with the link to copy.
     SetupNextcloudWaiting,
-    /// The setup's calendar step with the CalDAV form open, an address typed (task W.6).
-    SetupCalDav,
-    /// The setup's tasks step without the demo's GitHub account: GitHub's two ways.
-    SetupGithub,
-    /// The setup's mail step with the add-account dialog over it, on its mail path (task W.7).
-    SetupMailAdd,
-    /// The setup's AI step after its search (task W.8): the demo finds Ollama, not LM Studio.
-    SetupAi,
+    /// The point AI on this page with the demo's suggestion and models; `true` keeps the models the demo
+    /// has chosen ("Keep"), `false` starts without any.
+    SetupAi(super::setup::AiPage, bool),
     /// The section Apps (issue #411) with the demo's catalog ([`super::apps::demo_catalog`]): two
     /// updates, a package manager's app, one missing.
     Apps,
@@ -259,7 +256,7 @@ impl Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 155] = [
+    pub const ALL: [(&'static str, Open); 154] = [
         ("setup-ai-form", Open::AiSetup("form")),
         ("setup-ai-consent", Open::AiSetup("consent")),
         ("setup-ai-download", Open::AiSetup("download")),
@@ -387,21 +384,22 @@ impl Open {
         ("design-fonts", Open::DesignFonts),
         ("design-fonts-search", Open::DesignFontsSearch),
         ("setup", Open::Setup(super::setup::Step::Welcome)),
-        ("setup-nextcloud", Open::Setup(super::setup::Step::Nextcloud)),
-        ("setup-nextcloud-address", Open::SetupNextcloudAddress),
-        ("setup-nextcloud-waiting", Open::SetupNextcloudWaiting),
-        ("setup-components", Open::Setup(super::setup::Step::Components)),
-        ("setup-calendar", Open::Setup(super::setup::Step::Calendar)),
-        ("setup-calendar-caldav", Open::SetupCalDav),
-        ("setup-tasks", Open::Setup(super::setup::Step::Tasks)),
-        ("setup-tasks-github", Open::SetupGithub),
+        ("setup-welcome", Open::Setup(super::setup::Step::Welcome)),
         ("setup-mail", Open::Setup(super::setup::Step::Mail)),
-        ("setup-mail-add", Open::SetupMailAdd),
-        ("setup-inbox", Open::Setup(super::setup::Step::Inbox)),
-        ("setup-ai", Open::SetupAi),
-        ("setup-web", Open::Setup(super::setup::Step::Web)),
+        ("setup-mail-password", Open::SetupMailPassword),
+        ("setup-cloud", Open::Setup(super::setup::Step::Cloud)),
+        ("setup-cloud-address", Open::SetupNextcloudAddress),
+        ("setup-cloud-waiting", Open::SetupNextcloudWaiting),
+        ("setup-ai", Open::SetupAi(super::setup::AiPage::Connect, false)),
+        ("setup-ai-chat", Open::SetupAi(super::setup::AiPage::Chat, false)),
+        ("setup-ai-sort", Open::SetupAi(super::setup::AiPage::Sort, false)),
+        ("setup-ai-keep", Open::SetupAi(super::setup::AiPage::Connect, true)),
+        ("setup-appearance", Open::Setup(super::setup::Step::Appearance)),
         ("setup-documents", Open::Setup(super::setup::Step::Documents)),
         ("setup-done", Open::Setup(super::setup::Step::Done)),
+        // The narrow drawing of the draft `3-1-ai-connect-narrow.html`: the page Connect (shots.sh draws
+        // every state in every size anyway).
+        ("setup-narrow", Open::SetupAi(super::setup::AiPage::Connect, false)),
         ("apps", Open::Apps),
         ("apps-menu", Open::AppsMenu),
         ("apps-installing", Open::AppsInstalling),
@@ -798,8 +796,8 @@ pub fn demo_data() -> Data {
         apps: Some(apps),
         approvals: demo_approvals(now),
         engines: demo_engines(),
-        ai_deciders: Vec::new(),
-        ai_deciders_from: vec!["ai:openrouter@openrouter.ai".into()],
+        ai_models: Vec::new(),
+        ai_models_from: vec!["ai:openrouter@openrouter.ai".into()],
         screens: demo_screens(),
         extensions: super::connections::Listing::Entries(demo_extensions()),
         catalog: super::connections::Listing::Entries(demo_catalog()),
@@ -1043,6 +1041,22 @@ pub fn demo_unusable(data: &mut Data) {
     if let super::connections::Listing::Entries(servers) = &mut data.extensions {
         servers.iter_mut().filter(|server| server.id == "wordcraft").for_each(|server| server.folder_unusable = true);
     }
+}
+
+/// The models of the demo's AI accounts for the setup's pages Chat and Sorting (issue #326): two with tools
+/// for chat and two decision models for sorting, on the demo's Ollama and OpenRouter.
+pub fn demo_ai_models() -> Vec<(String, torro_core::ai::AiModel)> {
+    use torro_core::ai::AiModel;
+    let ollama = super::accounts::demo::DEMO_OLLAMA.to_string();
+    let openrouter = "ai:openrouter@openrouter.ai".to_string();
+    let chat = |id: &str| AiModel { tools: Some(true), remote: Some(false), enabled: true, ..AiModel::named(id) };
+    let decide = |id: &str| AiModel { decision: Some(true), remote: Some(false), enabled: true, ..AiModel::named(id) };
+    vec![
+        (ollama.clone(), chat("llama3.1:8b")),
+        (ollama.clone(), decide("clef:8b")),
+        (openrouter.clone(), AiModel { remote: Some(true), ..chat("mistral-medium") }),
+        (openrouter, AiModel { remote: Some(true), ..decide("clef:27b") }),
+    ]
 }
 
 /// `--open setup-documents` (issue #303): the step Documents with one ArtCraft app of each state – WordCraft set
@@ -1754,17 +1768,27 @@ mod tests {
         use super::super::setup::Step;
         assert_eq!(Launch::parse(&args(&[])).map(|l| l.setup), Ok(None));
         assert_eq!(Launch::parse(&args(&["--setup"])).map(|l| l.setup), Ok(Some(Step::Welcome)), "no demo needed");
-        let launch = Launch::parse(&args(&["--setup", "--step=components"])).expect("a built step");
-        assert_eq!(launch.setup, Some(Step::Components));
+        let launch = Launch::parse(&args(&["--setup", "--step=appearance"])).expect("a step");
+        assert_eq!(launch.setup, Some(Step::Appearance));
+        // Issue #326: the words of the steps before it lead to the point that holds them now.
+        for (old, now) in [
+            ("nextcloud", Step::Cloud),
+            ("calendar", Step::Mail),
+            ("tasks", Step::Mail),
+            ("inbox", Step::Mail),
+            ("components", Step::Welcome),
+            ("web", Step::Ai),
+        ] {
+            let launch = Launch::parse(&args(&["--setup", "--step", old])).expect("an old word");
+            assert_eq!(launch.setup, Some(now), "{old}");
+        }
         assert_eq!(Launch::parse(&args(&["--step", "done"])), Err(LaunchError::NeedsSetup("--step")));
         let app = Launch::parse(&args(&["--section", "accounts", "--setup-if-open", "--step", "calendar"]))
             .expect("an app's");
-        assert_eq!((app.section, app.setup, app.setup_if_open), (Section::Accounts, Some(Step::Calendar), true));
+        assert_eq!((app.section, app.setup, app.setup_if_open), (Section::Accounts, Some(Step::Mail), true));
         let err = Launch::parse(&args(&["--setup", "--step", "later"])).expect_err("no such step");
         assert!(
-            err.to_string().ends_with(
-                "valid values: welcome, nextcloud, components, calendar, tasks, mail, inbox, ai, web, documents, done"
-            ),
+            err.to_string().ends_with("valid values: welcome, mail, cloud, ai, appearance, documents, done"),
             "{err}"
         );
     }
