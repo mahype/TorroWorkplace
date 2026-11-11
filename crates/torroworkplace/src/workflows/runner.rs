@@ -1212,8 +1212,8 @@ fn adopt_resources(record: &mut WorkflowRecord, job: &RunRecord) -> Result<(), E
 }
 
 /// Loads the head resources of a profile-2 page as data. Stylesheets go to the rule check of the conversion;
-/// scripts are hashed and never executed. An unwitnessed script is a provider change unless `adopt` allows
-/// a draft test to witness it.
+/// scripts, external and inline, are hashed and never executed. An unwitnessed script is a provider change unless
+/// `adopt` allows a draft test to witness it. Inline scripts are compared before anything is loaded.
 async fn load_resources(
     package: &wire::Package,
     page: &download::Body,
@@ -1223,13 +1223,26 @@ async fn load_resources(
     cancelled: &Arc<AtomicBool>,
     adopt: bool,
 ) -> Result<(Vec<invoice::Loaded>, Vec<wire::ResourcePin>), download::Failure> {
-    let references =
+    let presentation =
         invoice::references(page.bytes.clone(), Some(page.content_type.clone()), Some(Arc::clone(cancelled)))
             .await
             .map_err(|_| failure(RunReason::Unsupported))?;
     let mut loaded = Vec::new();
     let mut observed: Vec<wire::ResourcePin> = Vec::new();
-    for reference in references {
+    let mut witness = |pin: wire::ResourcePin| {
+        if !adopt && !package.binding.resources.contains(&pin) {
+            return Err(failure(RunReason::ProviderChanged));
+        }
+        if !observed.contains(&pin) {
+            observed.push(pin);
+        }
+        Ok(())
+    };
+    for sha256 in presentation.inline_scripts {
+        witness(wire::ResourcePin { host: page.source_host.clone(), path: "/".into(), sha256, inline: true })?;
+    }
+    budget.allow_resources(presentation.references.len());
+    for reference in presentation.references {
         allow()?;
         let link = download::resource_link(&page.source_host, &reference.href, &package.hosts)?;
         let (host, path) = (link.host().to_owned(), link.path_and_query());
@@ -1239,13 +1252,7 @@ async fn load_resources(
                 loaded.push(invoice::Loaded { reference, stylesheet: Some(body.bytes) });
             }
             download::ResourceKind::Script => {
-                let pin = wire::ResourcePin { host, path, sha256: digest(&body.bytes) };
-                if !adopt && !package.binding.resources.contains(&pin) {
-                    return Err(failure(RunReason::ProviderChanged));
-                }
-                if !observed.contains(&pin) {
-                    observed.push(pin);
-                }
+                witness(wire::ResourcePin { host, path, sha256: digest(&body.bytes), inline: false })?;
                 loaded.push(invoice::Loaded { reference, stylesheet: None });
             }
         }
@@ -2149,6 +2156,7 @@ mod tests {
             host: "static.paddle.com".into(),
             path: "/assets/js/customer/invoice.js".into(),
             sha256: digest(PADDLE_JS),
+            inline: false,
         }
     }
 

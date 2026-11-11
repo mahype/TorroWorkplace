@@ -149,11 +149,17 @@ pub struct Budget {
     start: Instant,
     gets: usize,
     redirects: usize,
+    max_gets: usize,
 }
 
 impl Budget {
     pub fn new() -> Self {
-        Self { start: Instant::now(), gets: 0, redirects: 0 }
+        Self { start: Instant::now(), gets: 0, redirects: 0, max_gets: 8 }
+    }
+
+    /// One more GET per head resource of a rendering profile, at most eight; time and redirects stay shared.
+    pub fn allow_resources(&mut self, count: usize) {
+        self.max_gets = 8 + count.min(8);
     }
     fn remaining(&self) -> Result<Duration, Failure> {
         DEADLINE
@@ -326,7 +332,7 @@ impl Downloader {
         loop {
             link = checked(link.0.as_str(), hosts)?;
             let remaining = budget.remaining()?;
-            if budget.gets >= 8 {
+            if budget.gets >= budget.max_gets {
                 return Err(unsupported());
             }
             allow()?;
