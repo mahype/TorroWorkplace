@@ -29,8 +29,10 @@
 mod capabilities;
 mod notifications;
 mod ocs;
+mod people;
 pub mod rich;
 mod talk;
+mod user_status;
 
 pub use capabilities::{
     Capabilities, DEFAULT_ATTACHMENTS_FOLDER, DEFAULT_MAX_LENGTH, NotificationsCapability, TalkCapability,
@@ -38,11 +40,13 @@ pub use capabilities::{
 };
 pub use notifications::{Listing, Notification, NotificationId, Person};
 pub use ocs::{MAX_WAIT, Nextcloud, OcsError, THROTTLE_WAIT, TalkError};
+pub use people::User;
 pub use talk::{
     ActorType, CONTEXT_MAX, ChatMessage, FoundMessage, LastMessage, MESSAGES_MAX, Mention, MentionKind,
     MentionSuggestion, MessageKind, Messages, NotificationLevel, Parent, Room, RoomKind, RoomToken, SendOptions,
     SharedFile, WAIT_MAX_SECS,
 };
+pub use user_status::{StatusKind, UserStatus};
 
 /// Whether `a` and `b` are web addresses with the same origin (scheme, host and port). Addresses
 /// that do not parse, or have no such origin (`mailto:`, `javascript:`), never match.
