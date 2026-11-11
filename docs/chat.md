@@ -273,10 +273,10 @@ dahinter rückten um eins.
     jeder Doppelklick auf einen Namen teilte den Bildschirm neu auf. Die Kontaktliste selbst ist eine normale
     Kachel (sie läuft dauerhaft, oft in einer Workspace-Vorlage), Chat-, Klingel-, Anruf- und Gerätefenster
     schweben. Regeln je Fenster-Manager unter [Fenster](#fenster).
-17. **Gruppenchats: drei Fassungen, offen bis zur Wahl** beim Durchsehen der Entwürfe: (A) ein Abschnitt
-    „Groups“ unter den Personen, (B) ein Umschalter „People | Groups“ oben in der Liste, (C) ein Knopf „Group
-    chats…“ unten, damit die Liste rein aus Personen besteht. Ein Gruppenchat öffnet sich in jeder Fassung im
-    selben Chatfenster wie einer zu zweit. Gruppenanrufe kommen später.
+17. **Gruppenchats über einen Umschalter „People | Groups“ oben in der Liste** (Fassung B, gewählt vom Menschen am
+    2026-11-11 beim Durchsehen der Entwürfe, Entscheidung 24). Verworfen: (A) ein Abschnitt „Groups“ unter den
+    Personen, (C) ein Knopf „Group chats…“ unten. Ein Gruppenchat öffnet sich im selben Chatfenster wie einer zu
+    zweit. Gruppenanrufe kommen später.
 18. **Stufen** (neu geschnitten mit #470, ersetzen CH1 bis CH4 aus #201):
     - **Stufe 1 · Text im Kern:** Bereich `chat`, API, MCP und schnell antworten im Notification Hub.
     - **Stufe 2 · Präsenz:** Bereich `presence`, Status anderer, eigener Status, Heartbeat, Tray-Menü.
@@ -321,6 +321,16 @@ dahinter rückten um eins.
     löst den ersten Link beim Anzeigen auf; dabei ruft der eigene Server die fremde URL ab, und wer eine eindeutige URL
     schickt, erfährt, wann gelesen wurde. Darum bekommen nur Links auf den eigenen Nextcloud-Server ihre Karte von
     selbst, alle anderen nach einem Klick auf „Show preview“ (`chat.show_card`, nur Menschen).
+24. **Fassungen der Entwürfe gewählt** (vom Menschen am 2026-11-11, beim Durchsehen der Entwürfe zu #636):
+    - **Gruppenchats:** Umschalter „People | Groups“ oben in der Kontaktliste (Entscheidung 17).
+    - **Klingeln:** kleines Fenster mittig (`torro-chat-ring`), keine Benachrichtigung.
+    - **Anruffenster:** zu zweit Bild in Bild (A); mit mehr als zwei Personen nebeneinander (B), sobald
+      Gruppenanrufe kommen.
+    - **Bild groß:** eigenes, schwebendes Fenster (`torro-chat-viewer`, B).
+    - **Hochladen:** Leiste über dem Eingabefeld.
+    - **Medien-Übersicht:** Seitenleiste im Chatfenster.
+
+    Die verworfenen Fassungen bleiben in den Entwürfen zum Vergleich stehen.
 
 ## Aufbau
 
@@ -472,7 +482,7 @@ roh darin: Sie sind fremder Text und kämen sonst ungeprüft zu einem Agenten.
 ## Fenster
 
 Entwürfe: [prototypes/chat/](prototypes/chat/index.html) (alle Fenster in hell und dunkel, Fassungen
-umschaltbar). Alle Fenster gehören zur App `torrochat` und folgen dem Torro-Design
+umschaltbar; gewählt ist, was Entscheidung 24 nennt). Alle Fenster gehören zur App `torrochat` und folgen dem Torro-Design
 ([`torro-design`](../.claude/skills/torro-design/SKILL.md)): Inter, Tokens des aktiven Designs, Status nie nur über
 Farbe, Rot nur für den einen Primärknopf.
 
@@ -484,7 +494,7 @@ Farbe, Rot nur für den einen Primärknopf.
   einklappbar; „Offline“ ab Werk zugeklappt, sobald mehr als 20 Menschen darin stehen. In jeder Gruppe nach Name.
   Jede Zeile: Avatar mit Status-Marke (jede Marke mit eigener Form: Punkt, Mond, halber Kreis, Minus, Ring), Name, darunter die
   Statusnachricht oder „Last seen yesterday“, rechts die Zahl ungelesener Nachrichten.
-- **Gruppenchats** je nach gewählter Fassung (Entscheidung 17).
+- **Gruppenchats** über den Umschalter „People | Groups“ oben in der Liste (Entscheidung 17).
 - **Fuß:** eigener Status mit Avatar und Nachricht, ein Klick öffnet ein Menü mit den Status, „Set status
   message…“ (mit Ablauf: 30 min, 1 h, heute, diese Woche) und „Show others when I am online“.
 - **Bedienung:** Pfeiltasten wandern, Enter oder Doppelklick öffnet das Chatfenster, `⌘F`/`Ctrl+F` springt in die
@@ -519,16 +529,14 @@ Unterhaltung gemerkt werden können, siehe „Schweben“):
   90 % der Höchstlänge. Im Menü „Send without notification“. Ab Stufe 4 links die Büroklammer („Attach file“, Dialog
   des Systems), Ziehen einer Datei auf das Fenster (die ganze Fläche wird zur Ablage, „Drop to send to Anna Berg“)
   und Einfügen eines Bildes aus der Zwischenablage. Der Text im Feld wird die Beschriftung. Vor dem Senden stehen
-  die Dateien je nach Fassung als **Leiste über dem Feld** oder in einem **kleinen Dialog** mit großer Vorschau
-  (Offen); nach dem Senden zeigt dieselbe Stelle den Fortschritt mit ✕ („Cancel upload“). Zu groß, kein Platz auf
+  die Dateien als **Leiste über dem Feld** (Entscheidung 24); nach dem Senden zeigt dieselbe Stelle den Fortschritt mit ✕ („Cancel upload“). Zu groß, kein Platz auf
   dem Server oder `attachments.allowed` aus: Meldung an der Datei, der Text bleibt im Feld.
-- **Bild groß** (Stufe 4): Fassung A legt sich über das Chatfenster, Fassung B ist ein eigenes, schwebendes Fenster
-  (Klasse `torro-chat-viewer`); Wahl offen. Bild eingepasst, oben Name, „Download“, „Open in Nextcloud“ und
+- **Bild groß** (Stufe 4): ein eigenes, schwebendes Fenster (Klasse `torro-chat-viewer`, Entscheidung 24). Bild eingepasst, oben Name, „Download“, „Open in Nextcloud“ und
   Schließen (`Esc`), `←`/`→` blättern durch die Bilder der Unterhaltung, unten „2 / 5 · Anna Berg · 10:02“. Das große
   Bild ist eine Vorschau in Fenstergröße, nicht das Original.
 - **Medien-Übersicht** (Stufe 4, Knopf „Shared media“ im Kopf): Reiter „Media“ (Raster der Bilder und Videos nach
   Monat, neueste oben), „Files“, „Voice“ und „Links“ (die Link-Karten aus dem Cache); jede Zeile mit „Show in chat“.
-  Fassung als Seitenleiste im Chatfenster oder als eigenes Fenster (Klasse `torro-chat-media`); Wahl offen. Ohne
+  Seitenleiste im Chatfenster (Entscheidung 24). Ohne
   `rich-object-list-media` fehlt der Knopf.
 - **Gelesen:** Ist das Fenster im Vordergrund und die neueste Nachricht sichtbar, setzt die App den Lesestand.
 - **Tasten:** `Esc` bricht eine Antwort ab bzw. schließt das Fenster. Anrufe starten bewusst nur über die Knöpfe,
@@ -537,13 +545,14 @@ Unterhaltung gemerkt werden können, siehe „Schweben“):
 - **Leer und Fehler:** Offline zeigt den Speicher mit „Offline“ im Kopf; eine verschwundene Unterhaltung „This
   conversation is no longer available“.
 
-**Eingehender Anruf:** zwei Fassungen zur Wahl, siehe Entwürfe: eine **Benachrichtigung** oben rechts (Decline,
-Audio only, Accept) oder ein **kleines Fenster** mittig (Klasse `torro-chat-ring`, schwebend, 340 × 360). „Accept“
+**Eingehender Anruf:** ein **kleines Fenster** mittig (Klasse `torro-chat-ring`, schwebend, 340 × 360) mit Decline,
+Audio only und Accept (Entscheidung 24; die Benachrichtigung oben rechts ist verworfen). „Accept“
 ist der Primärknopf. Bei „Do not disturb“ klingelt nichts; der Anruf steht danach als verpasst im Chat und im
 Notification Hub. Ein Klingeln endet nach 45 s oder wenn die Gegenseite auflegt.
 
-**Anruffenster** (Klasse `torro-chat-call`, schwebend, frei in der Größe, 760 × 500 gedacht): Fassung A Bild in
-Bild (die andere Person groß, das eigene Bild klein in einer Ecke, verschiebbar) oder B nebeneinander. Unten
+**Anruffenster** (Klasse `torro-chat-call`, schwebend, frei in der Größe, 760 × 500 gedacht): zu zweit Bild
+in Bild (die andere Person groß, das eigene Bild klein in einer Ecke, verschiebbar), mit mehr als zwei Personen
+nebeneinander, sobald Gruppenanrufe kommen (Entscheidung 24). Unten
 Mikrofon (`M`), Kamera (`V`), Geräte, Bildschirm teilen (ausgegraut, später) und „Leave call“ als Primärknopf.
 Oben Dauer und „Show chat“. Schließen beendet den Anruf.
 
@@ -741,8 +750,8 @@ Entscheidung 13: selbst gebaut. Was die Machbarkeit dazu ergab, steht in
    Unterhaltung mit einer eigenen Sitzung bei (`POST /room/{token}/participants/active`, Cookie im Speicher des
    Kerns), dann dem Anruf (`POST /call/{token}`, `flags` Ton und Bild); Talk lässt die Gegenseite klingeln. Das
    Anruffenster öffnet sich.
-2. **Klingeln:** Der Kern erkennt einen eingehenden Anruf (Entscheidung 9) und meldet ihn der App, die die
-   Benachrichtigung bzw. das kleine Fenster zeigt. Ist `torrochat` nicht offen, startet der Kern es (dafür die Abfrage alle 10 s aus Entscheidung 9).
+2. **Klingeln:** Der Kern erkennt einen eingehenden Anruf (Entscheidung 9) und meldet ihn der App, die das
+   kleine Fenster zeigt (Entscheidung 24). Ist `torrochat` nicht offen, startet der Kern es (dafür die Abfrage alle 10 s aus Entscheidung 9).
 3. **Annehmen:** `chat.answer_call` mit oder ohne Bild; der Kern vergibt die Kennung `call` und gibt sie nur dem
    Anruffenster. Ablehnen (`chat.decline_call`) beendet nur das eigene Klingeln (der Kern nimmt die Benachrichtigung `call`
    zurück; `notification-state` fragt nur ab, ob weiter geklingelt wird; den genauen Weg prüft der Versuch), nicht den
@@ -780,7 +789,7 @@ Entscheidung 13: selbst gebaut. Was die Machbarkeit dazu ergab, steht in
   Rust-Programm und Talk-Web im Browser auf dem eigenen Server, auf Linux und macOS, mit Ton in beide Richtungen ohne
   Echo und Bild. Misst Aufbauzeit, CPU-Last, Größe des Programms und prüft TURN. Ergebnis als Abschnitt in
   [research.md](research.md). Scheitert er, entscheidet der Mensch neu (Browser oder später).
-- **(b) Klingeln und Annehmen in der Suite:** Benachrichtigung bzw. kleines Fenster, `get_call`, `decline_call`;
+- **(b) Klingeln und Annehmen in der Suite:** kleines Fenster (Entscheidung 24), `get_call`, `decline_call`;
   „Accept“, „Audio call“ und „Video call“ öffnen das Gespräch zunächst im Browser (`<server>/call/<token>`). Der
   Kern tritt dann selbst keinem Anruf bei, sonst säße ein zweiter Teilnehmer ohne Bild und Ton darin; `start_call`
   und `answer_call` kommen erst mit (c).
@@ -947,8 +956,9 @@ Datei vom Rechner ginge mit nur einer Sende-Freigabe nach außen. Ebenso gibt es
 App-Schlüssel (`Mcp::Never`): Ob der Absender eines fremden Links erfährt, wann gelesen wurde, entscheidet der Mensch
 mit einem Klick, nicht ein Agent.
 
-**Fenster:** Verlauf, Eingabe, Bild groß und Medien-Übersicht unter [Fenster](#fenster). Neue Fenster (Bild groß in
-Fassung B, Medien-Übersicht als eigenes Fenster) schweben wie das Chatfenster (Entscheidung 16). Demo:
+**Fenster:** Verlauf, Eingabe, Bild groß und Medien-Übersicht unter [Fenster](#fenster). Das neue Fenster
+„Bild groß“ (Entscheidung 24) schwebt wie das Chatfenster (Entscheidung 16); die Medien-Übersicht ist eine
+Seitenleiste im Chatfenster. Demo:
 `torrochat --demo --open media | viewer | upload`.
 
 ## Teilen in einen Chat (Stufe 5)
@@ -985,13 +995,10 @@ Fassung B, Medien-Übersicht als eigenes Fenster) schweben wie das Chatfenster (
 
 ## Offen (in der jeweiligen Stufe klären)
 
-- **Gruppenchats in der Kontaktliste:** Fassung A, B oder C (Entscheidung 17), zu wählen beim Durchsehen der
-  Entwürfe, spätestens vor Stufe 3.
-- **Klingeln als Benachrichtigung oder Fenster:** zu wählen beim Durchsehen, spätestens vor Stufe 6.
 - **Antwort direkt in der Systembenachrichtigung:** macOS kann ein Textfeld in der Mitteilung
   (`UNTextInputNotificationAction`), das braucht AppKit-Code in `torro-appkit`. KDE kennt eine
-  Erweiterung für Antworten in der Benachrichtigung, GNOME nicht. Eigener kleiner Plan nach Rückfrage. Dasselbe
-  gilt für „Accept“ und „Decline“ in der Benachrichtigung eines Anrufs.
+  Erweiterung für Antworten in der Benachrichtigung, GNOME nicht. Eigener kleiner Plan nach Rückfrage. Anrufe
+  brauchen das nicht: Sie klingeln in einem kleinen Fenster (Entscheidung 24).
 - **Lesestand über den Eingang:** `inbox.set_item_done` setzt an Talk-Einträgen schon heute den Lesestand in Talk,
   ohne Recht in `chat`. Vorschlag für Stufe 1: An Talk-Einträgen braucht es künftig auch Write in `chat` mit dem
   Konto in `chat_accounts`, wie Mail-Einträge Write in `mail` brauchen.
@@ -1005,9 +1012,6 @@ Fassung B, Medien-Übersicht als eigenes Fenster) schweben wie das Chatfenster (
 - **„Do not disturb“ an einen Fokus-Modus oder eine Workspace-Vorlage koppeln:** später.
 - **Gruppen anlegen, Teilnehmer, Unterhaltungen verlassen oder archivieren:** nicht in diesem Konzept.
 - **Gruppenanrufe, Bildschirm teilen, Hintergrund weichzeichnen:** später, nach Stufe 6.
-- **Fassungen der Stufe 4** (Entwürfe, Abschnitt „Dateien, Bilder und Videos“): Bild groß im Chatfenster oder als
-  eigenes Fenster, Hochladen als Leiste über dem Feld oder als kleiner Dialog, Medien-Übersicht als Seitenleiste oder
-  eigenes Fenster; zu wählen beim Durchsehen, spätestens vor Stufe 4. Video ist entschieden (Entscheidung 22).
 - **Sprachnachrichten aufnehmen** (Entscheidung 19): schaltet das Mikrofon ein; eigener Plan mit derselben Regel wie
   das Mikrofon des Assistenten ([api.md](api.md), „Was nie nach außen geht“, Punkt 6), nur Menschen.
 - **Dauer von Videos:** Talk liefert keine. Ob der Kern sie aus dem Anfang der Datei lesen soll (eine Anfrage je

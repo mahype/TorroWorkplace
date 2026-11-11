@@ -7,14 +7,15 @@
 <!--
   Entwürfe für den Chat der Suite (Issue #470, Konzept docs/chat.md, Machbarkeit docs/chat-machbarkeit.md):
   Kontaktliste, Chatfenster, eingehender Anruf, laufender Videoanruf und Gerätewahl, wie bei ICQ als
-  getrennte Fenster. Dazu Dateien, Bilder und Videos im Chat (Issue #636, Abschnitt #medien). Fassungen zur Wahl:
-    Gruppen        A · Abschnitt unter den Personen   B · Umschalter oben   C · Knopf „Group chats…“
+  getrennte Fenster. Dazu Dateien, Bilder und Videos im Chat (Issue #636, Abschnitt #medien). Fassungen, gewählt vom Menschen am 2026-11-11 (chat.md Entscheidung 24); die
+  verworfenen bleiben zum Vergleich:
+    Gruppen        B · Umschalter oben (gewählt) · A · Abschnitt unter den Personen · C · Knopf „Group chats…“
     Video          extern öffnen (entschieden 2026-11-11, chat.md Entscheidung 22) · im Fenster (verworfen, zum Vergleich)
-    Bild groß      A · im Chatfenster                 B · eigenes Fenster
-    Hochladen      Leiste über dem Feld · kleiner Dialog
-    Medien         Seitenleiste · eigenes Fenster
-    Klingeln       Benachrichtigung · kleines Fenster
-    Anruf          A · Bild in Bild                   B · Nebeneinander
+    Bild groß      B · eigenes Fenster (gewählt) · A · im Chatfenster
+    Hochladen      Leiste über dem Feld (gewählt) · kleiner Dialog
+    Medien         Seitenleiste (gewählt) · eigenes Fenster
+    Klingeln       kleines Fenster (gewählt) · Benachrichtigung
+    Anruf          A · Bild in Bild zu zweit (gewählt) · B · Nebeneinander ab drei Personen (gewählt, mit Gruppenanrufen)
   Farben und Schrift aus ../linear/torro.css, Maße nach dem Standard-Design (torro-design), Icons aus Lucide
   0.469.0. Oberfläche englisch wie in der App, Beschriftung der Seite deutsch. Beispieldaten erfunden.
 -->
@@ -25,25 +26,25 @@
 <main class="page">
   <h1>Chat wie ICQ: Kontaktliste, Chatfenster, Anrufe</h1>
   <p class="lead">Entwürfe zu #470. Die Kontaktliste ist ein eigenes, schmales Fenster. Ein Doppelklick auf einen Namen öffnet ein eigenes Chatfenster, aus dem ein Anruf startet. Chat- und Anruffenster schweben über den Kacheln, damit ein Doppelklick den Bildschirm nicht neu aufteilt.</p>
-  <p>Oben die Fassungen umschalten. Die Wahl zu Gruppen, Klingeln, Bild groß, Hochladen und Medien-Übersicht trifft der Mensch beim Durchsehen; das Konzept übernimmt sie danach. Video ist entschieden (extern).</p>
+  <p>Oben die Fassungen umschalten. Alle sind entschieden (2026-11-11, Konzept Entscheidungen 22 und 24): Gruppen als Umschalter, Klingeln als kleines Fenster, Anruf zu zweit Bild in Bild und ab drei Personen nebeneinander, Video extern, Bild groß als eigenes Fenster, Hochladen als Leiste, Medien-Übersicht als Seitenleiste. Die verworfenen Fassungen bleiben zum Vergleich.</p>
 
   <div class="controls" role="group" aria-label="Fassungen">
     <div class="crow" data-ctl="theme"><span class="olbl">Darstellung</span>
       <button type="button" id="t-dark" data-v="dark">Dunkel</button><button type="button" id="t-light" data-v="light">Hell</button></div>
     <div class="crow" data-ctl="groups"><span class="olbl">Gruppen</span>
-      <button type="button" id="g-a" data-v="a">A · Abschnitt</button><button type="button" id="g-b" data-v="b">B · Umschalter</button><button type="button" id="g-c" data-v="c">C · Knopf</button></div>
+      <button type="button" id="g-a" data-v="a">A · Abschnitt (verworfen)</button><button type="button" id="g-b" data-v="b">B · Umschalter (gewählt)</button><button type="button" id="g-c" data-v="c">C · Knopf (verworfen)</button></div>
     <div class="crow" data-ctl="ring"><span class="olbl">Klingeln</span>
-      <button type="button" id="r-n" data-v="notif">Benachrichtigung</button><button type="button" id="r-w" data-v="window">Kleines Fenster</button></div>
+      <button type="button" id="r-n" data-v="notif">Benachrichtigung (verworfen)</button><button type="button" id="r-w" data-v="window">Kleines Fenster (gewählt)</button></div>
     <div class="crow" data-ctl="call"><span class="olbl">Anruf</span>
-      <button type="button" id="c-a" data-v="a">A · Bild in Bild</button><button type="button" id="c-b" data-v="b">B · Nebeneinander</button></div>
+      <button type="button" id="c-a" data-v="a">A · Bild in Bild (zu zweit)</button><button type="button" id="c-b" data-v="b">B · Nebeneinander (ab drei)</button></div>
     <div class="crow" data-ctl="video"><span class="olbl">Video</span>
         <button type="button" data-v="extern">Extern öffnen (entschieden)</button><button type="button" data-v="inline">Im Fenster (verworfen)</button></div>
     <div class="crow" data-ctl="viewer"><span class="olbl">Bild groß</span>
-        <button type="button" data-v="a">A · Im Chatfenster</button><button type="button" data-v="b">B · Eigenes Fenster</button></div>
+        <button type="button" data-v="a">A · Im Chatfenster (verworfen)</button><button type="button" data-v="b">B · Eigenes Fenster (gewählt)</button></div>
     <div class="crow" data-ctl="upload"><span class="olbl">Hochladen</span>
-        <button type="button" data-v="bar">Leiste über dem Feld</button><button type="button" data-v="dialog">Kleiner Dialog</button></div>
+        <button type="button" data-v="bar">Leiste über dem Feld (gewählt)</button><button type="button" data-v="dialog">Kleiner Dialog (verworfen)</button></div>
     <div class="crow" data-ctl="media"><span class="olbl">Medien</span>
-        <button type="button" data-v="side">Seitenleiste</button><button type="button" data-v="window">Eigenes Fenster</button></div>
+        <button type="button" data-v="side">Seitenleiste (gewählt)</button><button type="button" data-v="window">Eigenes Fenster (verworfen)</button></div>
   </div>
 
   <!-- 1 · Kontaktliste und Chatfenster -->
@@ -117,7 +118,7 @@
       </div>
 
       <div data-only="groups:c">
-        <p class="cap">Fassung C · Menü am Knopf „Group chats…“</p>
+        <p class="cap">Fassung C · Menü am Knopf „Group chats…“ (verworfen)</p>
         <div class="pop" style="position:relative;width:300px" aria-label="Group chats menu">
           <div class="mlabel">Group chats</div>
           <div>
@@ -129,7 +130,7 @@
       </div>
 
       <div data-only="groups:b">
-        <p class="cap">Fassung B · Reiter „Groups“</p>
+        <p class="cap">Fassung B · Reiter „Groups“ (gewählt)</p>
         <div class="win" style="width:300px;height:250px" aria-label="Groups tab">
           <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Contacts</b></div>
           <div style="padding:8px 8px 0"><div class="seg"><span>People</span><span class="on">Groups <span class="tab">3</span></span></div></div>
@@ -142,7 +143,7 @@
       </div>
     </div>
     <ul class="notes">
-      <li>A zeigt alles in einer Liste, wird aber bei vielen Gruppen lang. B trennt sauber, versteckt aber ungelesene Gruppen hinter dem Reiter (Zahl am Reiter). C hält die Liste rein bei Personen wie ICQ; Gruppen sind einen Klick weiter, der Knopf zeigt die ungelesenen.</li>
+      <li><b>Gewählt am 2026-11-11: B.</b> A zeigt alles in einer Liste, wird aber bei vielen Gruppen lang. B trennt sauber, versteckt aber ungelesene Gruppen hinter dem Reiter (Zahl am Reiter). C hält die Liste rein bei Personen wie ICQ; Gruppen sind einen Klick weiter, der Knopf zeigt die ungelesenen.</li>
       <li>Ein Gruppenchat öffnet sich in jeder Fassung im selben Chatfenster wie ein Chat zu zweit, mit der Zahl der Teilnehmer statt des Status im Kopf.</li>
       <li>Eine Tipp-Anzeige („Anna is typing…“) fehlt in der ersten Fassung: Ohne High-Performance-Backend (so auf dem eigenen Server) kostet sie eine eigene Verbindung je offenem Chat; sie kommt später.</li>
     </ul>
@@ -221,7 +222,7 @@
       </div>
 
       <div data-only="upload:bar">
-        <p class="cap">Fassung „Leiste“ · eingefügtes Bild vor dem Senden</p>
+        <p class="cap">Fassung „Leiste“ · eingefügtes Bild vor dem Senden (gewählt)</p>
         <div class="win" style="width:440px;height:auto" aria-label="Pasted image in the bar">
           <div class="upbar" style="border-top:0">
             <div class="uprow"><span class="ph"></span><span class="fwho"><b class="ell" style="font-weight:500">Pasted image.png</b><span class="tab">1440 × 900 · 412 KB</span></span><button class="ibtn" type="button" title="Remove"><svg data-i="x"></svg></button></div>
@@ -236,7 +237,7 @@
       </div>
 
       <div data-only="upload:dialog">
-        <p class="cap">Fassung „Dialog“ · eingefügtes Bild vor dem Senden · 380 breit</p>
+        <p class="cap">Fassung „Dialog“ · eingefügtes Bild vor dem Senden · 380 breit (verworfen)</p>
         <div class="dlg" style="width:380px" aria-label="Send file dialog">
           <div class="dh"><b class="grow ell">Send to Anna Berg</b><button class="ibtn" type="button" title="Close (Esc)"><svg data-i="x"></svg></button></div>
           <div class="db">
@@ -256,7 +257,7 @@
       </div>
 
       <div data-only="viewer:a">
-        <p class="cap">Fassung A · Bild groß im Chatfenster · 440 × 680</p>
+        <p class="cap">Fassung A · Bild groß im Chatfenster · 440 × 680 (verworfen)</p>
         <div class="win" style="width:440px;height:680px" aria-label="Image viewer inside the chat window">
           <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Anna Berg</b></div>
           <div class="viewer" style="top:40px">
@@ -268,7 +269,7 @@
       </div>
 
       <div data-only="viewer:b">
-        <p class="cap">Fassung B · Bild groß als eigenes Fenster · 900 × 620, schwebend</p>
+        <p class="cap">Fassung B · Bild groß als eigenes Fenster · 900 × 620, schwebend (gewählt)</p>
         <div class="win" style="width:900px;height:620px" aria-label="Image viewer window">
           <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">screenshot.png</b><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Open in Nextcloud"><svg data-i="cloud"></svg></button></div>
           <div class="viewer" style="top:40px;position:absolute">
@@ -290,7 +291,7 @@
       </div>
 
       <div data-only="media:side">
-        <p class="cap">Medien-Übersicht · Seitenleiste im Chatfenster · 760 × 680</p>
+        <p class="cap">Medien-Übersicht · Seitenleiste im Chatfenster · 760 × 680 (gewählt)</p>
         <div class="win" style="width:760px;height:680px" aria-label="Chat window with shared media">
           <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Anna Berg</b></div>
           <div style="flex:1;display:flex;min-height:0">
@@ -311,7 +312,7 @@
       </div>
 
       <div data-only="media:window">
-        <p class="cap">Medien-Übersicht · eigenes Fenster · 560 × 600, schwebend</p>
+        <p class="cap">Medien-Übersicht · eigenes Fenster · 560 × 600, schwebend (verworfen)</p>
         <div class="win" style="width:560px;height:600px" aria-label="Shared media window">
           <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Shared with Anna Berg</b></div>
           <div class="tabsrow"><span>Media</span><span class="on">Files <span class="tab" style="color:var(--text3);font-weight:400">3</span></span><span>Voice</span><span>Links</span></div>
@@ -344,10 +345,10 @@
     </div>
     <ul class="notes">
       <li><b>Video (entschieden am 2026-11-11: extern):</b> Ein Klick lädt die Datei und gibt sie dem Videoprogramm des Systems (Pfeil an der Dauer). „Im Fenster“ bleibt nur zum Vergleich stehen; dafür bräuchte es GStreamer. Die Dauer steht nur da, wenn der Kern sie kennt: Talk liefert sie nicht mit.</li>
-      <li><b>Bild groß:</b> A legt sich über das Chatfenster (Esc schließt, ← → blättern durch die Bilder der Unterhaltung). B öffnet ein eigenes, schwebendes Fenster, das größer sein kann als der Chat.</li>
-      <li><b>Hochladen:</b> Die Leiste hält das Antwortfeld frei und zeigt den Fortschritt dort, wo man schreibt. Der Dialog zeigt das Bild groß vor dem Senden und schützt vor einem versehentlich eingefügten Bildschirmfoto.</li>
+      <li><b>Bild groß (gewählt am 2026-11-11: B):</b> A legt sich über das Chatfenster (Esc schließt, ← → blättern durch die Bilder der Unterhaltung). B öffnet ein eigenes, schwebendes Fenster, das größer sein kann als der Chat.</li>
+      <li><b>Hochladen (gewählt am 2026-11-11: Leiste):</b> Die Leiste hält das Antwortfeld frei und zeigt den Fortschritt dort, wo man schreibt. Der Dialog zeigt das Bild groß vor dem Senden und schützt vor einem versehentlich eingefügten Bildschirmfoto.</li>
       <li><b>Link-Karten:</b> Links auf den eigenen Nextcloud-Server bekommen ihre Karte von selbst. Bei fremden Seiten erst nach „Show preview“, weil der Server die Seite dafür abruft und der Absender sonst sähe, wann gelesen wurde (Entscheidung 23). Die Karte im Chatfenster zeigt den Stand nach dem Klick.</li>
-      <li><b>Medien-Übersicht:</b> Die Seitenleiste macht das Chatfenster breiter, das eigene Fenster lässt den Chat, wie er ist. Reiter wie in Talk: Medien, Dateien, Sprachnachrichten, Links.</li>
+      <li><b>Medien-Übersicht (gewählt am 2026-11-11: Seitenleiste):</b> Die Seitenleiste macht das Chatfenster breiter, das eigene Fenster lässt den Chat, wie er ist. Reiter wie in Talk: Medien, Dateien, Sprachnachrichten, Links.</li>
       <li>Ohne Vorschau (der Server macht keine Vorschaubilder von Videos, SVG zeigt die Suite nie) steht eine Datei-Zeile mit Symbol und Art. Aktive und ausführbare Arten wie SVG haben kein „Open“, nur „Download“ und „Open in Nextcloud“. Die Freigabe nennt nur Fakten aus dem Kern, nie Text des Agenten außer der Beschriftung.</li>
     </ul>
   </section>
@@ -358,7 +359,7 @@
     <p>Klingelt es, kommt eine Meldung, auch wenn kein Chatfenster offen ist. „Accept“ ist der Primärknopf; „Decline“ lehnt ab, ohne die Gegenseite zu beenden, wie in Talk.</p>
     <div class="stage">
       <div data-only="ring:notif">
-        <p class="cap">Als Benachrichtigung oben rechts · 360 breit</p>
+        <p class="cap">Als Benachrichtigung oben rechts · 360 breit (verworfen)</p>
         <div class="desk" style="width:440px;height:200px">
           <div class="notif" style="position:absolute;top:16px;right:16px" aria-label="Incoming call notification">
             <div class="row"><span class="av lg pulse" style="--c:#5B8CFF">AB</span>
@@ -369,7 +370,7 @@
         </div>
       </div>
       <div data-only="ring:window">
-        <p class="cap">Als kleines Fenster in der Mitte · 340 × 360</p>
+        <p class="cap">Als kleines Fenster in der Mitte · 340 × 360 (gewählt)</p>
         <div class="win" style="width:340px;height:360px" aria-label="Incoming call window">
           <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Incoming call</b></div>
           <div class="ringing">
@@ -382,7 +383,7 @@
       </div>
     </div>
     <ul class="notes">
-      <li>Benachrichtigung: stört am wenigsten, braucht aber eigene Knöpfe in der Systembenachrichtigung (macOS kann das, Linux je nach Desktop). Wo das fehlt, öffnet ein Klick das Chatfenster mit dem Klingeln oben.</li>
+      <li><b>Gewählt am 2026-11-11: kleines Fenster.</b> Benachrichtigung: stört am wenigsten, braucht aber eigene Knöpfe in der Systembenachrichtigung (macOS kann das, Linux je nach Desktop). Wo das fehlt, öffnet ein Klick das Chatfenster mit dem Klingeln oben.</li>
       <li>Kleines Fenster: auf jedem System gleich und unübersehbar, schwebt mittig über den Kacheln, kommt aber in den Vordergrund.</li>
       <li>Bei „Do not disturb“ klingelt nichts; der Anruf steht danach als „Missed video call“ im Chat und im Notification Hub.</li>
     </ul>
@@ -394,8 +395,8 @@
     <p>Anrufe werden selbst gebaut (entschieden am 2026-11-06). Ein eigenes Fenster je Anruf, schwebend, frei in der Größe. Unten Mikrofon, Kamera, Geräte und Auflegen; die Tasten zeigen ihren Zustand mit Icon und Tooltip, nicht nur mit Farbe. Das Chatfenster bleibt daneben offen.</p>
     <div class="stage">
       <div>
-        <p class="cap" data-only="call:a">Fassung A · Bild in Bild · 760 × 500</p>
-        <p class="cap" data-only="call:b">Fassung B · Nebeneinander · 760 × 500</p>
+        <p class="cap" data-only="call:a">Fassung A · Bild in Bild · 760 × 500 (gewählt für Anrufe zu zweit)</p>
+        <p class="cap" data-only="call:b">Fassung B · Nebeneinander · 760 × 500 (gewählt ab drei Personen, mit Gruppenanrufen)</p>
         <div class="win" style="width:760px;height:500px" aria-label="Call window">
           <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="ell">Call with Anna Berg</b><span class="faint tab" style="font-size:13px">· 04:12</span><span class="grow"></span>
             <button class="ibtn" type="button" title="Show chat"><svg data-i="chat"></svg></button></div>
@@ -421,7 +422,7 @@
       </div>
     </div>
     <ul class="notes">
-      <li>A gibt der anderen Person den meisten Platz, das eigene Bild lässt sich in jede Ecke ziehen. B passt zu breiten, flachen Fenstern und zeigt beide gleich groß.</li>
+      <li><b>Gewählt am 2026-11-11:</b> A zu zweit, B ab drei Personen, sobald Gruppenanrufe kommen. A gibt der anderen Person den meisten Platz, das eigene Bild lässt sich in jede Ecke ziehen. B passt zu breiten, flachen Fenstern und zeigt beide gleich groß.</li>
       <li>Das Mikrofon ist hier stumm (gefüllte Taste, durchgestrichenes Icon, „You“ mit Symbol). Bildschirm teilen steht ausgegraut für später.</li>
       <li>Ein Gruppenanruf (später) setzt die Bilder als Raster; die Leiste bleibt gleich.</li>
     </ul>
@@ -495,7 +496,7 @@ const I = {
 document.querySelectorAll('svg[data-i]').forEach(s => { s.setAttribute('viewBox','0 0 24 24'); s.setAttribute('aria-hidden','true'); s.innerHTML = I[s.dataset.i] || ''; });
 
 /* Fassungen: data-only="schalter:wert" zeigt ein Teil nur bei dieser Wahl. */
-const state = { theme: null, groups: 'a', ring: 'notif', call: 'a', video: 'extern', viewer: 'a', upload: 'bar', media: 'side' };
+const state = { theme: null, groups: 'b', ring: 'window', call: 'a', video: 'extern', viewer: 'b', upload: 'bar', media: 'side' };
 function apply() {
   if (state.theme) document.documentElement.setAttribute('data-theme', state.theme);
   document.querySelectorAll('[data-only]').forEach(el => {
