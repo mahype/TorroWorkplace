@@ -255,13 +255,14 @@ fn leave_address(state: &mut State, maps: &Maps, which: Address) -> Option<Reque
     save_address(state, maps, which)
 }
 
-/// The page General: language, maps, startup.
+/// The page General: language, maps, startup, chat.
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     // Its groups side by side where the page is wide (issue #464).
     widgets::page_columns(move || {
         let settings = &data.settings;
         let language = suite::language(settings, Place::ControlCentre).map(Message::Suite);
-        vec![language, maps(state, &settings.maps), startup(settings)]
+        let chat = suite::chat(settings).map(Message::Suite);
+        vec![language, maps(state, &settings.maps), startup(settings), chat]
     })
 }
 

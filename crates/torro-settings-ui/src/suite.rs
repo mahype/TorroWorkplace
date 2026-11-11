@@ -280,6 +280,8 @@ pub enum Message {
     Language(Language),
     Appearance(Appearance),
     StartAtLogin(bool),
+    /// "Show others when I am online" (`docs/chat.md`, decision 10): the heartbeat of the presence.
+    PresenceHeartbeat(bool),
     /// −, + or "Reset" of the zoom.
     Zoom(Step),
     /// A segment of the spacing levels, a font or a colour scheme of a dropdown (`part`, its id): draw
@@ -352,6 +354,7 @@ pub fn update(state: &mut State, message: Message, settings: &Settings) -> Actio
             (SettingKey::Appearance, serde_json::to_value(appearance).unwrap_or_default())
         }
         Message::StartAtLogin(start) => (SettingKey::StartAtLogin, serde_json::Value::Bool(start)),
+        Message::PresenceHeartbeat(on) => (SettingKey::PresenceHeartbeat, serde_json::Value::Bool(on)),
         Message::Zoom(step) => return Action::Zoom(step),
         Message::Choose(part, id) => {
             state.problems = None;
@@ -488,6 +491,21 @@ pub fn startup<'a>(settings: &Settings, place: Place) -> Element<'a, Message> {
         tr("Startup"),
         vec![setting_row(None, tr("Start at login"), None, switch(settings.start_at_login, Message::StartAtLogin))],
         Some(footer.to_string()),
+    )
+}
+
+/// The group "Chat" (`docs/chat.md`, decision 10): "Show others when I am online". Off, the core
+/// never tells the server when the person is at the computer; on, it does every five minutes while
+/// the screen is not locked.
+pub fn chat<'a>(settings: &Settings) -> Element<'a, Message> {
+    let heartbeat = switch(settings.presence_heartbeat, Message::PresenceHeartbeat);
+    widgets::group(
+        tr("Chat"),
+        vec![setting_row(None, tr("Show others when I am online"), None, heartbeat)],
+        Some(
+            tr("Tells your Nextcloud every few minutes that you are at the computer, so colleagues see you online. Off, your status changes only when you set it.")
+                .to_string(),
+        ),
     )
 }
 
@@ -1953,6 +1971,8 @@ mod tests {
     fn start_at_login_sets_only_the_switch() {
         let on = update(&mut State::default(), Message::StartAtLogin(true), &Settings::default());
         assert_eq!(sent(on), (SettingKey::StartAtLogin, serde_json::json!(true)));
+        let beat = update(&mut State::default(), Message::PresenceHeartbeat(true), &Settings::default());
+        assert_eq!(sent(beat), (SettingKey::PresenceHeartbeat, serde_json::json!(true)));
         let off = update(&mut State::default(), Message::StartAtLogin(false), &Settings::default());
         assert_eq!(sent(off), (SettingKey::StartAtLogin, serde_json::json!(false)));
     }
