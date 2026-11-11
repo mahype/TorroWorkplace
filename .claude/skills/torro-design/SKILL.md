@@ -32,7 +32,7 @@ aus einem Guss wirkt:
 
 ```
 ┌ Seitenleiste 240 (Grund BG) ┐│ Inhalt: bündige Fläche PANEL, Linie zur Seitenleiste ──────────────┐
-│ ● ● ●  [▯]                   ││ obere Zeile 40: Titel · Navigation … Ansicht · Filter · [+ Neu]  [☰] │
+│ ● ● ●  Mail             [◧] ││ obere Zeile 40: Titel · Navigation … Ansicht · Filter · [+ Neu] [◨] [☰] │
 │                🔍  [✎]      │├───────────────────────────────────────────┬───────────────────────┤
 │ Navigation (Zeilen 32)      ││                                           │                       │
 │ Gruppe ▾ (CAPTION, TEXT_3)  ││ Inhalt (Liste, Raster, Detail)            │ Eigenschaften 300     │
@@ -43,9 +43,21 @@ aus einem Guss wirkt:
 ```
 
 - **Eine obere Zeile** (#459, `shell::TopRow` an `Shell::top_row`, Entwurf `docs/prototypes/mail-layout/`):
-  40 pt hoch (doppelte Höhe der Ampel-Mitte), auf allen Systemen. Links Platz für die Ampel (nur macOS), direkt
-  danach der Knopf `panel-left`, in jeder Form an derselben Stelle (ausgeklappt, Leiste, schmal); über der
-  ausgeklappten Seitenleiste ist dieser Teil so breit wie sie. **Kein App-Umschalter** (#530): Zwischen den Apps
+  40 pt hoch (doppelte Höhe der Ampel-Mitte), auf allen Systemen. **Links steht der Kurzname der App** (#601,
+  `TopRow::title`: „Mail“, „Calendar“, „Tasks“, „Assistant“, „Workplace“, übersetzt, `typo::body_strong()`, gekürzt mit
+  „…“): unter macOS nach der Ampel, unter Linux und Windows nach dem App-Zeichen (`shell::app_mark`), das dort steht,
+  wo sonst die Ampel ist – die Ecke ist nie leer. Der Knopf `panel-left` steht **ausgeklappt an der rechten Kante der
+  Seitenleiste** (`TopRow::sidebar_at_edge`, alle Apps), mit `space::s()` Abstand vor der Trennlinie, und folgt ihrer
+  gezogenen Breite; dieser Teil ist so breit wie sie. Mit Leiste und schmal steht er vor dem Titel: macOS Ampel,
+  `[◧]`, Titel; Linux/Windows mit Leiste das Zeichen mittig über der Leiste, dann ihre Linie, `[◧]`, Titel; schmal
+  `[◧]`, Zeichen, Titel. Der Titel hat dort einen festen Platz (halbe Seitenleiste), damit `shell::head_inset` ohne
+  App rechnen kann; die Schublade hat oben die schmale Form. Die Leiste selbst bekommt keine Knöpfe dazu.
+  **Rechte Spalte:** Wo das breite Fenster eine rechte Spalte hat (Mail: Leser bzw. Übersicht; Kalender: „Up next“
+  und die Tage des Radars; Hub: „Coming back“), steht vor den Einstellungen der Schalter `panel-right`
+  (`TopRow::right_column`, gleiche Kante wie die Einstellungen, markiert, solange die Spalte steht, Tooltip „Hide right
+  column“/„Show right column“). Er blendet die Spalte aus und ein, jede App merkt es sich je Fenster in `ui.json`
+  (`ui_state::save_right_column_task`); ohne rechte Spalte (mittel, schmal, Aufgaben, Assistent, Steuerzentrale) gibt
+  es ihn nicht. Öffnet man im Mail-Fenster eine Mail, kommt der Leser zurück. **Kein App-Umschalter** (#530): Zwischen den Apps
   wechselt man über das Tray-Menü, das Dock bzw. die Taskleiste und Steuerzentrale › Apps; im Fenster kommt dafür
   nichts dazu. Sprünge mit Bezug („Open in …“, „↗ andere App“) bleiben, ebenso der Kern-Befehl `OpenApp`. Daneben
   die **Kopfzeile der App** (`shell::header_bar`), ganz rechts die **Einstellungen** mit Schiebereglern
@@ -110,16 +122,17 @@ aus einem Guss wirkt:
 - **Mail-Ausnahme der oberen Zeile** (#564, angenommenes Zielbild): Die gesamte normale Kopffläche
   verwendet die aktive Seitenleistenfarbe samt Kontrastfarben (`TopRow::sidebar_surface`), auch in
   Mail-Einstellungen und Fokusansicht; keine fest dunkle Farbe. Die Suchfeld-Innenfläche bleibt als
-  Eingabe erkennbar, Menüs und Tooltips behalten das Fenster-Theme. Nur breit mit tatsächlich
-  ausgeklappter Seitenleiste steht `panel-left` oben rechts über ihr, mit `space::s()` Abstand vor
-  der Trennlinie (`TopRow::sidebar_at_edge`); er folgt ihrer gezogenen Breite. Mit Icon-Leiste,
-  schmal und im Drawer bleibt er neben der Ampel. Andere Apps behalten die oben beschriebene
-  geteilte Kopffläche und feste Knopfposition. Mini und Leiste bleiben Anzeigen ohne diesen Kopf.
+  Eingabe erkennbar, Menüs und Tooltips behalten das Fenster-Theme. Den Knopf `panel-left` an der Kante der
+  ausgeklappten Seitenleiste haben seit #601 alle Apps (oben). Andere Apps behalten die oben beschriebene
+  geteilte Kopffläche. Mini und Leiste bleiben Anzeigen ohne diesen Kopf.
   Über einer offenen Mail (Mittel, Schmal) und dem Paneel der Übersicht (Mittel) bleiben `panel-left` und die
   Einstellungen an ihrer Stelle (`TopRow::keep_buttons`, #545); ein Klick schließt erst die Mail bzw. das Paneel, dann
   öffnet er Schublade bzw. Einstellungen. Der Rest der Zeile bleibt gedimmt bzw. abgedeckt. Andere Apps behalten die
   ganz abgedeckte Zeile (der Termin-Editor des Kalenders).
-- **Mail-Fenster** (#451): über der Liste Suchfeld, Sortieren, Aktualisieren; über dem Leser Betreff, „6 von 9“, ⌃ ⌄
+- **Mail-Fenster** (#451): über der Liste Sortieren und Aktualisieren in der oberen Zeile; das **Suchfeld** steht in jeder
+  Größe in einer eigenen Zeile direkt über der Liste (#601, `search::mail_bar`): ohne Rahmen und ohne Pillenform, eine
+  leicht abgesetzte Fläche (`style::text_input_quiet`: `HOVER`, Hover `SELECTED`, Fokus mit `FOCUS_RING`), bündig mit
+  der Liste, ihr Text auf der Achse der Mail-Zeilen, Filter und „Clear search“ rechts im Feld; über dem Leser Betreff, „6 von 9“, ⌃ ⌄
   (kein Knopf „In neuem Fenster“, #600). Die **Aktionsleiste schwebt** als Karte (Menü-Stil, Radius `lg`) senkrecht mittig am rechten
   Rand über der Mail (`widgets::floating_rail`); Text und Kopf halten `widgets::floating_rail_room()` Abstand (#545:
   die Leiste verdeckte sonst die Zeit am Ende des Kopfes). Die **Mail-Zeile** hat zwei Zeilen (Absender · Büroklammer · Zeit, Betreff · Markierungen), Tagesköpfe
@@ -444,8 +457,8 @@ ist kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   gewählten Zeile (`widgets::row_strip`, `row_strip_words`), die Torro-Pillen (`widgets::pill_button`) und der versenkte
   Ansicht-Schalter (`widgets::view_switch`) gibt es nicht mehr; das Mail-Fenster hat dafür die Aktionsleiste der Mail
   (oben). Geblieben sind die Anhänge als `widgets::split_file_chip` (32 hoch, Büroklammer in `TEXT_3`, Größe in
-  `typo::meta()`) unten im Leser und das Suchfeld über der Liste `style::text_input_flat` (ohne Rand, Fokus bleibt
-  sichtbar). Die Stile `style::button::cell`, `style::button::pill` und `style::container::track` stehen noch in
+  `typo::meta()`) unten im Leser und das Suchfeld über der Liste, seit #601 `style::text_input_quiet` (ohne Rand, abgesetzte
+  Fläche, Fokus bleibt sichtbar). Die Stile `style::button::cell`, `style::button::pill` und `style::container::track` stehen noch in
   `style.rs`, nutzt aber kein Baustein mehr. Anschauen: `cargo run -p torro-gui --example gallery -- --mailbar`.
 - **Standard oben, Torro-Leiste unten** (E9.4, gilt nur noch für Zentrale und App Feed; das Mail-Fenster hat die
   Aktionsleiste der Mail, E14): Was jedes Programm dieser Art kann
@@ -912,7 +925,9 @@ Ansicht und jede Seite der Einstellungen einzeln, mit `shots.sh` in allen sechs 
   `search_menu`; keine langen Zeilenlisten für eine Einzelauswahl.
 - [ ] **Reiter** (Abschnitt 5, Einstellungsseiten): Seiten mit mehr als drei Gruppen haben `tabs`; die Abschnitte
   stehen links im Untermenü.
-- [ ] **Obere Zeile** (Abschnitt 0): kein App-Umschalter; Ampel, dann `panel-left`; der Einstellungs-Knopf mit
+- [ ] **Obere Zeile** (Abschnitt 0): kein App-Umschalter; App-Titel nach der Ampel (macOS) bzw. nach dem App-Zeichen
+  (Linux, Windows); `panel-left` ausgeklappt an der Kante der Seitenleiste, sonst vor dem Titel; `panel-right` vor den
+  Einstellungen nur, wo es eine rechte Spalte gibt; der Einstellungs-Knopf mit
   `SETTINGS_ICON` ganz rechts, in jedem Fenster mit Einstellungen gleich.
 - [ ] **Ort** (`docs/settings.md`, „Die Regel“): Was nur diese App betrifft, steht in der App; was die Suite teilt,
   in der Steuerzentrale (in der App nur ein Verweis, ohne Hauptanwendung die Seite selbst).
