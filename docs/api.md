@@ -155,6 +155,8 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `contacts` ²⁸ | `list_address_books`, `list_contacts`, `get_contact`, `get_photo`, `list_groups`, `upcoming_birthdays` | `create_contact`, `add_to_contact`, `set_favorite`, `add_to_group`, `mark_used`, `move_contact`, `resolve_conflict` mit `both` | `update_contact`, `remove_from_group`, `set_photo`, `delete_contact`, `resolve_conflict` mit `mine`/`theirs` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `set_mail_pile` ²⁶, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `mute_item` mit `conversation`, `hide` (nicht für Mail ¹⁰)/`info`, ohne `until` ¹¹ | | `mute_source`, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ², `move_category` ²⁹ |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `overview` ⁷, `sync_status`, `get_message`, `get_thread`, `get_attachment`, `get_draft`, `prepare_paste`, `list_filters` ²⁷, `preview_filter` ²⁷ | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `prepare_image`, `upload_image`, `respond_to_invitation` ⁷ ¹⁶, `unsubscribe` ⁷ | `delete_messages`, `release_images` | `create_filter`, `update_filter`, `remove_filter`, `apply_filter` ²⁷ |
+| `chat` ³⁰ | `list_conversations`, `get_messages`, `suggest_mentions`, `find_people`, `search_messages` | `send_message` (nach außen), `mark_read`, `mark_unread`, `create_conversation` (nach außen), `react` (nach außen), `set_favorite`, `set_notification_level` | `edit_message`, `delete_message` (beide nach außen) | |
+| `presence` ³⁰ | `list_people`, `find_people`, `get_own_status` | `add_person`, `remove_person`, `set_own_status` (nach außen) | | |
 | `workflows` (#556) | Vorlagen, Abläufe, Regeln, Läufe, Dokumentstücke und lokale Vorschau (siehe unten) | Entwürfe, getestete Abläufe, Start/Abbruch, Öffnen/Zeigen | Ablauf/Regel entfernen | Regeln verwalten; Dauergrant erteilen/widerrufen **nur App-Schlüssel** |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
 | `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
@@ -990,6 +992,21 @@ diesem Vorrang an; ein Filter setzt dabei nur seine Kategorie und nur für Mail 
 Gruppe `unsorted` sind für jede andere Kategorie als `other` ein `error`, bei `move_category` schon vor der Freigabe. Eine
 Kategorie, die vor dieser Regel dort lag, bleibt und lässt sich weiter ändern.
 
+³⁰ **Chat und Präsenz** (Issue #643, Konzept [chat.md](chat.md)): zwei Bereiche mit je eigener Kontoauswahl,
+`Rights.chat_accounts` und `Rights.presence_accounts` mit den Kennungen der Nextcloud-Konten
+(`nextcloud:<login>@<host>`); fehlen die Felder in alten Rechten, ist kein Konto frei. Die Vorlagen setzen nur die
+Stufe und öffnen kein Konto. Das Konto steht in jeder Kennung (Unterhaltung `<konto>/<token>`, Nachricht
+`<unterhaltung>/<nummer>`, Person `<konto>/<user-id>`), darum ist alles außerhalb `not-found`, bevor der Kern etwas
+fragt. Mit einem Konto sieht ein Client alle Unterhaltungen darin. **Nach außen** (Schalter „Send on my behalf“,
+ab Werk mit Freigabe) sind `send_message`, `create_conversation`, `edit_message`, `delete_message`, `react` und
+`presence.set_own_status`; die Freigabe zeigt den Namen der Unterhaltung aus dem Kern und den Text, der wirklich
+geht, und behält nach der Entscheidung keins von beidem. Dafür gilt je Client eine Drossel von 30 Befehlen je Stunde
+und 5 je Minute (`busy`). Lesen ändert nichts auf dem Server (kein Lesestand, keine Benachrichtigung, kein Status).
+Nachrichten, Namen und Statusnachrichten sind `untrusted`. Der Kern hält Nachrichten und Status nur im Speicher. Beide
+Bereiche gehen nie an einen Coding-Agenten als Antrieb des Assistenten und nie an ein Modell anderswo
+(`NEVER_TO_AGENTS`, Datenregel), auch nicht mit dem Schalter für Mail; ein geliehener Schlüssel ohne `chat` verliert
+auch die Eingangsquellen `talk:*`.
+
 ²⁸ **Kontakte** (Issue #351, Konzept [kontakte.md](kontakte.md)): Rechte gelten je Adressbuch,
 `Rights.address_books` mit Kennungen `<konto-id>/<name>`; fehlt das Feld in alten Rechten, ist kein Buch frei. Die
 Vorlagen setzen nur die Stufe und öffnen kein Buch; ein Mensch hakt die Bücher an. Ausgeblendete Bücher
@@ -1319,6 +1336,13 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
     und des unveränderten Ablageziels; ein Entwurf, eine Vorlage, eine Regel oder eine normale
     Client-Freigabe ersetzt sie nicht. Der Bereich `workflows` bleibt in allen Rechtevorlagen
     zunächst aus. Vertrags- und Entwicklungsstand: [mail-workflows.md](mail-workflows.md).
+
+13. **Den Heartbeat der Präsenz einschalten** (Issue #643, [chat.md](chat.md), Entscheidung 10):
+    `settings.set_setting` mit `presence_heartbeat: true` nur mit dem App-Schlüssel, also durch einen Menschen
+    in der Kontaktliste des Chats oder in der Steuerzentrale (`Request::kept_for_people`, wie beim Mikrofon
+    entscheidet der Wert). Der Heartbeat sagt dem Server alle fünf Minuten, dass der Mensch am Rechner sitzt,
+    und verrät das dauerhaft allen Kollegen. Ausschalten darf jeder Client mit Admin in `settings`. Anrufe,
+    Kamera und Mikrofon im Chat kommen mit dem Klingeln und dem Anruffenster dazu (Stufe 6 des Konzepts).
 
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.

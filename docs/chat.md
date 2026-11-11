@@ -1,6 +1,7 @@
 # Chat: Kontaktliste, Chatfenster und Anrufe auf Nextcloud Talk
 
-Stand: 2026-11-11. **Konzept (#470), löst den Text-Chat-Plan aus #201 ab; Dateien und Medien mit #636.** Machbarkeit:
+Stand: 2026-11-11. **Konzept (#470), löst den Text-Chat-Plan aus #201 ab; Dateien und Medien mit #636; Umsetzung
+mit #643 (Stand am Ende unter [Stand der Umsetzung](#stand-der-umsetzung)).** Machbarkeit:
 [chat-machbarkeit.md](chat-machbarkeit.md). Entwürfe: [prototypes/chat/](prototypes/chat/index.html). Recherche zu
 Status und Sichtbarkeit: [praesenz.md](praesenz.md). Aufgaben gibt es noch keine; die Umsetzung kommt als eigene
 Issues je Stufe. Beantwortet die Ideen „Chat (Nextcloud Talk)“ und „Präsenz“ aus dem
