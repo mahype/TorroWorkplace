@@ -3715,8 +3715,8 @@ fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, M
 }
 
 /// The head of a mail in the reader and the mail window's panel (task E11.3, issue #457), `room`
-/// wide: the sender in two quiet lines ([`sender_block`]: circle, name, category, date; address to
-/// recipients), for an entry why a rule put it in its lane (issue #128), the
+/// wide: the sender in two quiet lines ([`sender_block`]: circle, name, date; address to
+/// recipients, category), for an entry why a rule put it in its lane (issue #128), the
 /// phishing band, and under it the invitation's card (task E8.3b) and the task's (task E8.7b). The
 /// subject stands in the top row over the reader, or as the panel's title. No buttons – the
 /// actions stand in the rail (task E14.3), the attachments at the mail's bottom (issue #491).
