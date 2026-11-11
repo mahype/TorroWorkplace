@@ -5092,11 +5092,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let shape = self.rail_shape();
         let opened = self.panel_open();
         let task = self.handle(message);
-        // Opening a mail brings the reader back (issue #601): the person wants to read it.
+        // Opening a mail in the wide window brings the reader back (issue #601): the person wants to
+        // read it. Hiding the column closed the mail ([`App::toggle_right_column`]), so moving the
+        // cursor or a refresh opens nothing and the column stays hidden.
         let task = match self.launch.kind == Kind::Mail
+            && self.class() == SizeClass::Wide
             && !self.right_column
+            && !opened
             && self.panel_open()
-            && (!opened || self.wanted_letter() != shown)
         {
             true => Task::batch([task, self.set_right_column(true)]),
             false => task,
@@ -5804,7 +5807,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::Switcher(Switcher::New | Switcher::Search) => self.close_menus(),
             Message::ToggleNav => self.toggle_menu(Menu::Nav),
             Message::ToggleSidebar => return self.toggle_sidebar(),
-            Message::ToggleRightColumn => return self.set_right_column(!self.right_column),
+            Message::ToggleRightColumn => return self.toggle_right_column(),
             Message::StoredRightColumn(stored) => {
                 if let Some(shown) = stored {
                     self.right_column = shown;
@@ -12423,6 +12426,17 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         ui_state::save_right_column_task(INBOX, self.launch.window_key(), shown)
     }
 
+    /// The switch `panel-right` (issue #601): shows or hides the right column. Hiding it in the mail
+    /// window closes the open mail with it, so the list is browsed without a reader behind it and
+    /// opening a mail – the same one too – brings the reader back ([`App::update`]).
+    fn toggle_right_column(&mut self) -> Task<Message> {
+        let shown = !self.right_column;
+        if !shown && self.launch.kind == Kind::Mail {
+            self.close_panel();
+        }
+        self.set_right_column(shown)
+    }
+
     /// Whether the window has a right column it can show or hide now (issue #601), and so the switch
     /// `panel-right` in its top row: the wide mail window beside its list (reader or overview), the
     /// hub's "Coming back" where it would stand.
@@ -13437,10 +13451,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 // own padding is the gap.
                 let mut title =
                     row![widgets::menu_button(nav, Some(icon), name, Message::ToggleNav)].align_y(Alignment::Center);
-                if let Some(note) = note {
+                // The hub's summary is long: beside the top row's title in the medium window it would run
+                // under the settings, so it goes first, as the quiet note does in narrow ones (issue #601).
+                if let Some(note) = note.filter(|_| !(class == SizeClass::Medium && self.is_hub())) {
                     title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
                 }
-                // The top row has the panel button and the window's mark (issue #459).
+                // The top row has the panel button, the window's mark and its name (issues #459, #601).
                 shell::header_bar([], title, trailing)
             }
             // The overview in place of the list (issue #409): "‹ {view} › Overview", the way back.
@@ -13477,8 +13493,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     }
 
     /// The mail window's header in the top row (issue #459), as the draft
-    /// (`docs/prototypes/mail-layout/`) has it: over the list the search field with its filters, the
-    /// order, "Refresh" and – in "Reply later" – "Focus & reply"; a selection of mail puts its count,
+    /// (`docs/prototypes/mail-layout/`) has it: over the list the order, "Refresh" (the search field
+    /// has its own row over the list since issue #601, [`App::search_bar`]) and – in "Reply later" – "Focus & reply"; a selection of mail puts its count,
     /// Delete and Clear selection in place of order and Refresh. Where the sidebar is not expanded the
     /// navigation menu leads, and medium and narrow windows have "Show overview", the overview's
     /// way in now that no path stands over the list. Beside the reader of the wide window its own head
@@ -26873,10 +26889,14 @@ mod tests {
         assert!(app.has_right_column(SizeClass::Wide) && app.mail_beside(SizeClass::Wide));
         let _ = app.update(Message::ToggleRightColumn);
         assert!(!app.right_column && !app.mail_beside(SizeClass::Wide), "hidden");
+        assert!(!app.panel_open(), "hiding closes the mail, so nothing reads behind the list");
         assert!(app.has_right_column(SizeClass::Wide), "the switch stays to show it again");
         let _ = app.view();
-        let _ = app.update(Message::StepMail(true));
-        assert!(app.right_column, "the next mail brings the reader back");
+        let _ = app.update(Message::Key(Key::Down));
+        let _ = app.update(Message::Refresh);
+        assert!(!app.right_column, "the cursor and a refresh keep it hidden");
+        let _ = app.update(Message::SelectMail("m:w2".into()));
+        assert!(app.right_column && app.panel_open(), "the same mail clicked again brings the reader back");
         // From the list: hidden while no mail is open, a mail opened brings it back.
         let mut app = mail_window(Density::Compact, &[]);
         let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
@@ -26887,7 +26907,12 @@ mod tests {
         let _ = app.update(Message::SelectMail("m:w2".into()));
         assert!(app.panel_open() && app.right_column, "opening a mail shows the reader");
         let _ = app.update(Message::ToggleRightColumn);
-        assert!(!app.right_column && app.panel_open(), "hidden over an open mail");
+        assert!(!app.right_column && !app.panel_open(), "hidden, the mail closed");
+        // Medium, the mail lies over the list: opening one keeps the wide choice.
+        let _ = app.update(Message::Resized(Size::new(800.0, 600.0)));
+        let _ = app.update(Message::SelectMail("m:w2".into()));
+        assert!(app.panel_open() && !app.right_column, "medium keeps the wide window's choice");
+        let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
         let _ = app.update(Message::ToggleRightColumn);
         assert!(app.right_column, "the switch shows it again");
         for size in [Size::new(800.0, 600.0), Size::new(480.0, 900.0)] {
