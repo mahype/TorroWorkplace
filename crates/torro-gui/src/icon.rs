@@ -246,7 +246,7 @@ pub enum Icon {
     /// "Drafts" of the mail window and a drafts folder (issue #502): apart from `SquarePen`, which
     /// writes a new message.
     FilePenLine,
-    /// "Formatting" in the footer of the compose window (issue #627): shows or hides the format bar.
+    /// "Aa" in the tools row of the compose window (issue #627): shows or hides the formats.
     ALargeSmall,
 }
 

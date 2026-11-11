@@ -201,6 +201,20 @@ pub mod button {
         neutral(&p, status, rest, p.text)
     }
 
+    /// A button that reads as text in a row (issue #627, the account in the compose window's From
+    /// row): no surface and no frame in any state, so it sits on the axis of the text around it; the
+    /// text `text`, `text_2` while pressed, faded when disabled. The chevron beside it says it opens.
+    pub fn bare(theme: &Theme, status: Status) -> Style {
+        let p = palette(theme);
+        let rest =
+            Rest { background: Color::TRANSPARENT, text: p.text, border: Color::TRANSPARENT, radius: radius::sm() };
+        match status {
+            Status::Active | Status::Hovered => rest.style(),
+            Status::Pressed => Rest { text: p.text_2, ..rest }.style(),
+            Status::Disabled => disabled(rest),
+        }
+    }
+
     /// An icon-only button (‹ › refresh …): a [`ghost`] button, 28 × 28
     /// ([`crate::theme::size::control_sm()`] square, no padding), icon 14–16 in the text colour.
     /// Always give it a tooltip.
@@ -571,13 +585,6 @@ pub mod container {
     pub fn paper(theme: &Theme) -> Style {
         let p = palette(theme);
         Style { text_color: Some(p.text), ..surface(p.panel) }
-    }
-
-    /// The format bar of the compose window (issue #627): a quiet strip over the footer, `raised`
-    /// with radius [`radius::lg()`], no border.
-    pub fn format_bar(theme: &Theme) -> Style {
-        let p = palette(theme);
-        Style { border: iced::border::rounded(radius::lg()), ..surface(p.raised) }
     }
 
     /// A property chip ("Today", "Work"): `raised`, 1-px `line_strong` border, radius
@@ -1205,9 +1212,9 @@ mod tests {
             let paper = container::paper(&theme);
             assert_eq!(paper.background, Some(Background::Color(p.panel)), "{mode}: paper");
             assert_eq!(paper.border.width, 0.0, "{mode}: paper without a border");
-            let bar = container::format_bar(&theme);
-            assert_eq!(bar.background, Some(Background::Color(p.raised)), "{mode}: format bar");
-            assert_eq!((bar.border.width, bar.border.radius), (0.0, radius::lg().into()), "{mode}: format bar");
+            let bare = button::bare(&theme, Status::Hovered);
+            assert_eq!(bare.background, Some(Background::Color(Color::TRANSPARENT)), "{mode}: bare button");
+            assert_eq!(bare.border.color, Color::TRANSPARENT, "{mode}: bare button without a frame");
             for status in [
                 widget::text_input::Status::Active,
                 widget::text_input::Status::Hovered,

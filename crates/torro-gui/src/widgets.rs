@@ -4675,6 +4675,38 @@ fn chip_with<'a, M: Clone + 'a>(
     }
 }
 
+/// A [`chip`] that can be taken out again (issue #627, a recipient of the compose window): `lead`, the
+/// label in `META` and the ✕ inside the chip, at its right end – not as a button beside it. The chip is
+/// [`style::CHIP_HEIGHT`] high like every chip; the ✕ is 12 on a square as high as the chip, `ghost`,
+/// with `remove_tip` as its tooltip. `None` shows the ✕ off.
+///
+/// ```ignore
+/// widgets::chip_removable(icon::icon(Icon::User, icon::SIZE_SM), "Lena Brandt", tr("Remove"), Some(Msg::Remove(0)))
+/// ```
+pub fn chip_removable<'a, M: Clone + 'a>(
+    lead: impl Into<Element<'a, M>>,
+    label: impl IntoFragment<'a>,
+    remove_tip: impl IntoFragment<'a>,
+    on_remove: Option<M>,
+) -> Element<'a, M> {
+    let on = on_remove.is_some();
+    let remove = button(center(button_icon(Icon::X, icon::SIZE_SM, style::button::icon, on)))
+        .width(style::CHIP_HEIGHT)
+        .height(style::CHIP_HEIGHT)
+        .padding(0)
+        .style(style::button::icon)
+        .on_press_maybe(on_remove);
+    let content =
+        row![lead.into(), typo::text(typo::meta(), label).wrapping(Wrapping::None), with_tooltip(remove, remove_tip)]
+            .spacing(ICON_GAP)
+            .align_y(Alignment::Center);
+    container(content)
+        .center_y(style::CHIP_HEIGHT)
+        .padding(style::CHIP_PADDING.right(0.0))
+        .style(style::container::chip)
+        .into()
+}
+
 /// Chips side by side with 6 between them, wrapping onto more lines when they do not fit.
 ///
 /// Also the chips of a [`card`] (task E8.2): [`state_pill`]s for an attachment and a due date the
@@ -8965,6 +8997,14 @@ mod tests {
         assert!(!z("z", Code::KeyZ, command | keyboard::Modifiers::SHIFT), "redo");
         assert!(!z("z", Code::KeyZ, command | keyboard::Modifiers::ALT), "AltGr");
         assert!(!z("x", Code::KeyX, command));
+    }
+
+    /// Issue #627: a chip with its ✕ inside builds on and off.
+    #[test]
+    fn the_removable_chip_builds_on_and_off() {
+        let _: Element<'_, Msg> =
+            chip_removable(icon(Icon::User, icon::SIZE_SM), "Lena Brandt", "Remove", Some(Msg::Go));
+        let _: Element<'_, Msg> = chip_removable(icon(Icon::CircleAlert, icon::SIZE_SM), "jonas@", "Remove", None);
     }
 
     /// Issue #627: the attachment card builds with an icon or a letter, on and off, with a long name.
