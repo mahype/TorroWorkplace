@@ -1328,6 +1328,8 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
         github_repos: Selection::Only(Vec::new()),
         inbox_sources: Selection::Only(vec!["script:backup".into()]),
         mail_accounts: Selection::Only(Vec::new()),
+        chat_accounts: Selection::Only(Vec::new()),
+        presence_accounts: Selection::Only(Vec::new()),
         tools: Selection::Only(Vec::new()),
         outbound: Outbound::Never,
         confirm: Confirm::Never,

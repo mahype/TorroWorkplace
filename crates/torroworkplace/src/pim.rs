@@ -1478,6 +1478,28 @@ impl PimService {
             | Request::MoveContact { .. }
             | Request::DeleteContact { .. }
             | Request::ResolveContactConflict { .. } => return None,
+            // No collection: the chat and presence services check their accounts themselves
+            // (`docs/chat.md`, issue #643).
+            Request::ChatListConversations { .. }
+            | Request::ChatGetMessages { .. }
+            | Request::ChatSendMessage { .. }
+            | Request::ChatMarkRead { .. }
+            | Request::ChatMarkUnread { .. }
+            | Request::ChatSuggestMentions { .. }
+            | Request::ChatFindPeople { .. }
+            | Request::ChatCreateConversation { .. }
+            | Request::ChatEditMessage { .. }
+            | Request::ChatDeleteMessage { .. }
+            | Request::ChatReact { .. }
+            | Request::ChatSetFavorite { .. }
+            | Request::ChatSetNotificationLevel { .. }
+            | Request::ChatSearchMessages { .. }
+            | Request::PresenceListPeople { .. }
+            | Request::PresenceAddPerson { .. }
+            | Request::PresenceRemovePerson { .. }
+            | Request::PresenceFindPeople { .. }
+            | Request::PresenceGetOwnStatus { .. }
+            | Request::PresenceSetOwnStatus { .. } => return None,
             // No collection: MCP servers are the core's own (issue #302); their rights are per server.
             Request::ListExtensions
             | Request::GetExtension { .. }

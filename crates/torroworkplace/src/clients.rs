@@ -1003,7 +1003,13 @@ impl Clients {
                     }
                 }
                 rights.hidden_address_books.retain(|book| !belongs(book));
-                for selection in [&mut rights.mail_accounts, &mut rights.inbox_sources] {
+                // Chat and presence name the account itself (`docs/chat.md`, "Konto weg").
+                for selection in [
+                    &mut rights.mail_accounts,
+                    &mut rights.inbox_sources,
+                    &mut rights.chat_accounts,
+                    &mut rights.presence_accounts,
+                ] {
                     if let Selection::Only(ids) = selection {
                         ids.retain(|selected| selected != id && Some(selected.as_str()) != talk.as_deref());
                     }

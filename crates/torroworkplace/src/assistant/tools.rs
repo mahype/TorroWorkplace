@@ -431,6 +431,9 @@ pub fn untrusted(area: Area, value: &Value) -> bool {
     match area {
         Area::Workflows => !matches!(result, Some("error" | "ok" | "workflow-template" | "workflow-templates")),
         Area::Mail | Area::Github => !error,
+        // Names, messages and status messages of other people (decision 5 in `docs/chat.md`); only
+        // `ok` and the id of a sent message hold none.
+        Area::Chat | Area::Presence => !matches!(result, Some("error" | "ok" | "chat-sent")),
         // Contacts are text of other people (shared books, the system address book), every answer
         // (decision 4 in `docs/kontakte.md`).
         Area::Contacts => true,
@@ -483,10 +486,9 @@ pub fn may_have_read_outside(name: &str) -> bool {
     {
         return true;
     }
-    torro_ipc::api::CATALOGUE
-        .iter()
-        .find(|command| command.name == name)
-        .is_some_and(|command| matches!(command.area, Area::Mail | Area::Github | Area::Inbox | Area::Contacts))
+    torro_ipc::api::CATALOGUE.iter().find(|command| command.name == name).is_some_and(|command| {
+        matches!(command.area, Area::Mail | Area::Github | Area::Inbox | Area::Contacts | Area::Chat | Area::Presence)
+    })
 }
 
 /// `value` within [`RESULT_CHARS`]: texts over [`TEXT_CHARS`] and lists over [`LIST_ITEMS`] cut

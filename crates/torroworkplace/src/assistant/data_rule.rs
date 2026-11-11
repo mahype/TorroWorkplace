@@ -193,6 +193,12 @@ impl Reader {
 const MAIL_ANSWERS_ALLOWED: &[&str] =
     &["ok", "mail-draft", "mail-sent", "mail-folders", "mail-filter-applied", "error"];
 
+/// The answers of `chat.*` and `presence.*` commands that hold no text of other people (decision 6
+/// in `docs/chat.md`): `ok`, that a message went out (its id alone) and errors. A positive list, so
+/// every answer added later stays home by itself. No switch lets the rest out: chats and who is
+/// there when are about other people.
+const CHAT_ANSWERS_ALLOWED: &[&str] = &["ok", "chat-sent", "error"];
+
 /// A tool's answer as a model may read it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Screened {
@@ -223,6 +229,10 @@ pub fn for_model(request: &Request, response: &Response, reader: impl Into<Reade
             !mail && torro_ipc::workflows::reads_mail(request.operation().name()) && result != "error"
         }
         request if request.operation().area() == Area::Mail => !mail && !MAIL_ANSWERS_ALLOWED.contains(&result),
+        // Chats and presence stay home whatever the switch for mail says.
+        request if matches!(request.operation().area(), Area::Chat | Area::Presence) => {
+            !CHAT_ANSWERS_ALLOWED.contains(&result)
+        }
         // A task made of a mail in a folder (task E8.7a) holds that mail only.
         Request::CreateTodoFromMail { .. } => !mail && result != "error",
         // So does an event made of a mail (issue #603).
@@ -309,6 +319,10 @@ pub fn without_mail(response: Response) -> Response {
 pub fn reads_mail(name: &str) -> bool {
     name.starts_with("mail.")
         || torro_ipc::workflows::reads_mail(name)
+        // Chats and status messages are text of other people like mail (decision 6 in
+        // `docs/chat.md`), and no switch lets them out ([`kept_from`]).
+        || name.starts_with("chat.")
+        || name.starts_with("presence.")
         || name.starts_with("inbox.")
         || name == "bots.ask_bot"
         || name == "contacts.suggest_recipients"

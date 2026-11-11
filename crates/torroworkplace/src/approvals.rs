@@ -343,6 +343,10 @@ pub struct Facts {
     /// them, looked up by the contact's id, never by the client's text. `None` for other commands.
     /// Boxed: a contact is large, and the facts travel through the core's futures.
     pub contact: Option<Box<ContactFacts>>,
+    /// For the `chat.*` commands (`docs/chat.md`, "Freigaben"): the conversation's name and kind and
+    /// the message a command is about, as the chat service holds them, looked up by id, never from
+    /// the client's text. `None` for other commands.
+    pub chat: Option<Box<crate::chat::service::ChatFacts>>,
     /// For `mail.create_filter`, `mail.update_filter`, `mail.remove_filter` and `mail.apply_filter`
     /// (issue #339): the stored filter and how its account and folder read, from the core's file and
     /// stores (`crate::mail::filters::to_approve`). The account, folder and count of what the request
@@ -1085,12 +1089,16 @@ impl Approvals {
             },
             false => Decision::Denied { approval: entry.info.clone(), request, origin: entry.origin.clone() },
         };
+        // Denied, what must not be kept goes before the file is written: the text of a chat message
+        // never reaches the disk as a decided approval (`docs/chat.md`, "Wartende Freigaben").
+        let held = state.entries[index].request.clone();
+        if !allow {
+            forget(&mut state.entries[index]);
+        }
         if let Err(err) = self.write(&state).await {
             state.entries[index].info = before;
+            state.entries[index].request = held;
             return Err(err);
-        }
-        if !allow && crate::mail::images::is_request(&state.entries[index].request) {
-            state.entries[index].request = Request::Ping;
         }
         drop(state);
         self.changed.send_replace(());
@@ -1113,9 +1121,7 @@ impl Approvals {
             .find(|entry| entry.info.id == id)
             .ok_or_else(|| ApprovalsError::NotFound(id.to_string()))?;
         entry.info.state = ApprovalState::Done { response: Box::new(response) };
-        if crate::mail::images::is_request(&entry.request) {
-            entry.request = Request::Ping;
-        }
+        forget(entry);
         let info = entry.info.clone();
         if let Err(err) = self.write(&state).await {
             eprintln!("torroworkplace: cannot store the outcome of approval {id}: {err}");
@@ -1241,10 +1247,8 @@ fn tidy(entries: &mut Vec<Entry>, now: DateTime<Utc>) -> bool {
             entry.info.decided = Some(entry.info.expires);
             expired = true;
         }
-        if matches!(entry.info.state, ApprovalState::Denied | ApprovalState::Expired | ApprovalState::Done { .. })
-            && crate::mail::images::is_request(&entry.request)
-        {
-            entry.request = Request::Ping;
+        if matches!(entry.info.state, ApprovalState::Denied | ApprovalState::Expired | ApprovalState::Done { .. }) {
+            forget(entry);
         }
     }
     entries.retain(|entry| entry.info.decided.is_none_or(|decided| now - decided < KEPT));
@@ -2204,10 +2208,212 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         | Request::MoveContact { .. }
         | Request::DeleteContact { .. }
         | Request::ResolveContactConflict { .. }) => contact_summary(request, facts.contact.as_deref()),
+        request if matches!(request.operation().area(), Area::Chat | Area::Presence) => {
+            chat_summary(request, facts.chat.as_deref())
+        }
         // Reads and the commands only the app key may send never wait for approval; say at least
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
     }
+}
+
+/// Whether `request` holds text of a chat or a status message, which the core keeps on disk only
+/// while its approval waits (`docs/chat.md`, "Wartende Freigaben auf der Platte").
+fn holds_chat_text(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::ChatSendMessage { .. }
+            | Request::ChatEditMessage { .. }
+            | Request::ChatDeleteMessage { .. }
+            | Request::ChatReact { .. }
+            | Request::ChatCreateConversation { .. }
+            | Request::PresenceSetOwnStatus { .. }
+    )
+}
+
+/// Drops what a decided, done or expired approval must not keep: the request of a mail image (its
+/// bytes live in memory only) and, for chat and status, the request with its text together with
+/// the summary and details that quote it. What stays says only which kind of command it was.
+fn forget(entry: &mut Entry) {
+    if crate::mail::images::is_request(&entry.request) {
+        entry.request = Request::Ping;
+    } else if holds_chat_text(&entry.request) {
+        entry.info.summary = chat_kept_summary(&entry.request).to_string();
+        entry.info.details.clear();
+        entry.request = Request::Ping;
+    }
+}
+
+/// What a chat approval says once it is decided: the kind of command, no conversation, no text.
+fn chat_kept_summary(request: &Request) -> &'static str {
+    match request {
+        Request::ChatEditMessage { .. } => tr("Change a chat message"),
+        Request::ChatDeleteMessage { .. } => tr("Delete a chat message"),
+        Request::ChatReact { .. } => tr("React to a chat message"),
+        Request::ChatCreateConversation { .. } => tr("Start a chat"),
+        Request::PresenceSetOwnStatus { .. } => tr("Set your status"),
+        _ => tr("Send a chat message"),
+    }
+}
+
+/// The most characters of a chat message in a summary (`docs/chat.md`, "Freigaben"); the details
+/// show all of it.
+const CHAT_TEXT_MAX: usize = 1000;
+
+/// Where a chat command goes, in words: the conversation's name and kind from the chat service's
+/// list, "an unknown conversation" when it holds none (any more).
+fn chat_place(facts: &crate::chat::service::ChatFacts) -> String {
+    use torro_chat::ConversationKind;
+    let Some(name) = facts.conversation.as_deref().map(quote) else {
+        return tr("an unknown conversation").to_string();
+    };
+    let words = match facts.kind {
+        Some(ConversationKind::Direct) => "the direct chat with \"{name}\"",
+        Some(ConversationKind::Group) => "the group \"{name}\"",
+        Some(ConversationKind::Public) => "the public conversation \"{name}\"",
+        Some(ConversationKind::NoteToSelf) => return tr("your notes to yourself").to_string(),
+        Some(ConversationKind::Other) | None => "the conversation \"{name}\"",
+    };
+    trf(words, &[("name", &name)])
+}
+
+/// `text` for a chat summary: harmless, one line, at most [`CHAT_TEXT_MAX`] characters, and how
+/// many more there are.
+fn chat_text(text: &str) -> String {
+    let length = text.chars().count();
+    let shown = quote_up_to(text, CHAT_TEXT_MAX);
+    match length > CHAT_TEXT_MAX {
+        true => trf("{text} ({n} more characters)", &[("text", &shown), ("n", &(length - CHAT_TEXT_MAX))]),
+        false => shown,
+    }
+}
+
+/// The name of a status as the chat windows show it.
+fn status_word(status: torro_chat::Status) -> &'static str {
+    match status {
+        torro_chat::Status::Online => tr("Online"),
+        torro_chat::Status::Away => tr("Away"),
+        torro_chat::Status::Busy => tr("Busy"),
+        torro_chat::Status::Dnd => tr("Do not disturb"),
+        torro_chat::Status::Invisible => tr("Invisible"),
+        torro_chat::Status::Offline => tr("Offline"),
+    }
+}
+
+/// The summary of a `chat.*` or `presence.*` command that waits (`docs/chat.md`, "Freigaben"):
+/// where it goes by the name the chat service holds, and the text that really goes out, made
+/// harmless. What an edit or a deletion is about comes from the service, never from the client.
+fn chat_summary(request: &Request, facts: Option<&crate::chat::service::ChatFacts>) -> String {
+    let empty = crate::chat::service::ChatFacts::default();
+    let facts = facts.unwrap_or(&empty);
+    let place = chat_place(facts);
+    let old = match facts.old_text.as_deref().map(quote) {
+        Some(text) if !text.is_empty() => format!("\"{text}\""),
+        Some(_) => tr("a message without text").to_string(),
+        None => tr("an unknown message").to_string(),
+    };
+    match request {
+        Request::ChatSendMessage { text, reply_to: Some(_), .. } => {
+            let author = match facts.quoted.as_deref().map(quote) {
+                Some(author) if !author.is_empty() => author,
+                _ => tr("an unknown message").to_string(),
+            };
+            trf(
+                "Reply to {author} in {place}: \"{text}\"",
+                &[("author", &author), ("place", &place), ("text", &chat_text(text))],
+            )
+        }
+        Request::ChatSendMessage { text, .. } => {
+            trf("Send to {place}: \"{text}\"", &[("place", &place), ("text", &chat_text(text))])
+        }
+        Request::ChatEditMessage { text, .. } => trf(
+            "Change your message in {place}: {old} → \"{new}\"",
+            &[("place", &place), ("old", &old), ("new", &chat_text(text))],
+        ),
+        Request::ChatDeleteMessage { .. } => {
+            trf("Delete your message in {place}: {old}", &[("place", &place), ("old", &old)])
+        }
+        Request::ChatReact { emoji, remove: false, .. } => {
+            trf("React with {emoji} in {place} to {old}", &[("emoji", &quote(emoji)), ("place", &place), ("old", &old)])
+        }
+        Request::ChatReact { emoji, .. } => trf(
+            "Take back the reaction {emoji} in {place} to {old}",
+            &[("emoji", &quote(emoji)), ("place", &place), ("old", &old)],
+        ),
+        Request::ChatCreateConversation { with, .. } => {
+            let user = torro_chat::split_person(with).map_or(with.as_str(), |(_, user)| user);
+            trf("Start a direct chat with \"{user}\"", &[("user", &quote(user))])
+        }
+        Request::ChatMarkRead { .. } => trf("Mark {place} as read", &[("place", &place)]),
+        Request::ChatMarkUnread { .. } => trf("Mark {place} as unread", &[("place", &place)]),
+        Request::ChatSetFavorite { favorite: true, .. } => trf("Make {place} a favourite", &[("place", &place)]),
+        Request::ChatSetFavorite { .. } => trf("Take {place} off the favourites", &[("place", &place)]),
+        Request::ChatSetNotificationLevel { .. } => trf("Change the notifications of {place}", &[("place", &place)]),
+        Request::PresenceSetOwnStatus { account, status, message, .. } => {
+            let server = quote(crate::presence::server_of(account));
+            let mut shown: Vec<String> = status.iter().map(|status| status_word(*status).to_string()).collect();
+            match message.as_deref().map(quote) {
+                Some(message) if !message.is_empty() => shown.push(format!("\"{message}\"")),
+                Some(_) => shown.push(tr("no status message").to_string()),
+                None => {}
+            }
+            trf("Everyone on {server} sees: {status}", &[("server", &server), ("status", &shown.join(" · "))])
+        }
+        Request::PresenceAddPerson { person, .. } | Request::PresenceRemovePerson { person, .. } => {
+            let user = torro_chat::split_person(person).map_or(person.as_str(), |(_, user)| user);
+            match request {
+                Request::PresenceAddPerson { .. } => {
+                    trf("Add \"{user}\" to your list of people", &[("user", &quote(user))])
+                }
+                _ => trf("Take \"{user}\" off your list of people", &[("user", &quote(user))]),
+            }
+        }
+        other => trf("Run {command}", &[("command", &other.operation().name())]),
+    }
+}
+
+/// The lines under the summary of a chat approval: who else reads it, whom it notifies, and the
+/// whole text line by line, so nobody approves what they did not see.
+fn chat_details(request: &Request, facts: Option<&crate::chat::service::ChatFacts>) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(facts) = facts {
+        if facts.kind == Some(torro_chat::ConversationKind::Public) {
+            lines.push(tr("Public conversation – anyone with the link can read it").to_string());
+        }
+        if facts.federated {
+            lines.push(tr("Includes people on other servers").to_string());
+        }
+    }
+    match request {
+        Request::ChatSendMessage { text, silent, .. } => {
+            if mentions_everyone(text) {
+                lines.push(tr("Notifies everyone in the conversation").to_string());
+            }
+            if *silent {
+                lines.push(tr("Sent silently").to_string());
+            }
+            if text.chars().count() > QUOTE_MAX || text.contains('\n') {
+                lines.push(tr("The whole text:").to_string());
+                lines.extend(whole(text));
+            }
+        }
+        Request::ChatEditMessage { text, .. } if text.chars().count() > QUOTE_MAX || text.contains('\n') => {
+            lines.push(tr("The whole text:").to_string());
+            lines.extend(whole(text));
+        }
+        Request::PresenceSetOwnStatus { clear_at: Some(until), message: Some(_), .. } => {
+            let until = until.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string();
+            lines.push(trf("The status message ends at {time}", &[("time", &until)]));
+        }
+        _ => {}
+    }
+    lines
+}
+
+/// Whether `text` mentions everyone of a conversation: `@all` or `@"all"` as a word of its own.
+fn mentions_everyone(text: &str) -> bool {
+    text.split(|c: char| c.is_whitespace() || matches!(c, ',' | '.' | '!' | '?' | ':' | ';'))
+        .any(|word| matches!(word, "@all" | "@\"all\"" | "@here"))
 }
 
 /// The summary of a writing `contacts.*` command (issue #351): the contact by its name in the store
@@ -4188,6 +4394,9 @@ pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
         let mut lines = vec![tr("What the agent gives the tool:").to_string()];
         lines.extend(argument_lines(arguments).iter().flat_map(|line| whole(line)));
         return lines;
+    }
+    if matches!(request.operation().area(), Area::Chat | Area::Presence) {
+        return chat_details(request, facts.chat.as_deref());
     }
     let Request::SendDraft { .. } = request else { return Vec::new() };
     let Some(draft) = facts.mail.as_ref().and_then(|mail| mail.draft.as_ref()) else { return Vec::new() };

@@ -42,6 +42,7 @@ use crate::apps::Listener;
 use crate::assistant::{Assistant, Place};
 use crate::audit::Audit;
 use crate::categorize;
+use crate::chat::ChatService;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::contacts::ContactsService;
 use crate::inbox::{Inbox, Opening};
@@ -49,6 +50,7 @@ use crate::mail::backup::{ApplyRequest, BackupJobs, BackupRunError, BackupSelect
 use crate::mail::service::{MailService, Service, SignInError};
 use crate::mail::store::DraftAuthor;
 use crate::pim::{Definition, PimService, Reach};
+use crate::presence::PresenceService;
 use crate::reminders::Reminders;
 use crate::settings_service::SettingsStore;
 use crate::sources::Sources;
@@ -2897,6 +2899,12 @@ pub struct Core {
     /// The contacts of the Nextcloud and CalDAV accounts (issue #351): the user's store
     /// ([`ContactsService::system`]); tests hold none unless they bring one ([`Core::with_contacts`]).
     contacts: Arc<ContactsService>,
+    /// Chat on the Nextcloud accounts with Talk (`docs/chat.md`, issue #643), in memory only; tests
+    /// reach no server unless they bring one ([`Core::with_chat`]).
+    chat: Arc<ChatService>,
+    /// Who is there and the person's own status (`docs/chat.md`, decision 10), over the chat
+    /// service's connections.
+    presence: Arc<PresenceService>,
     /// The app catalog (issue #411): versions, installing, updating, uninstalling
     /// ([`crate::catalog::Catalog::system`]); tests ask no server and find no app unless they bring
     /// one ([`Core::with_catalog`]).
@@ -2944,6 +2952,8 @@ impl Core {
         let mail = if cfg!(test) { MailService::without_home() } else { MailService::system() };
         let mail = Arc::new(mail.with_calendars(Arc::clone(&pim)));
         let contacts = Arc::new(ContactsService::system(Arc::clone(&pim)));
+        let chat = Arc::new(ChatService::system(Arc::clone(&pim)));
+        let presence = Arc::new(presence_of(&chat, &contacts));
         let core = Core {
             backend,
             store,
@@ -3007,6 +3017,8 @@ impl Core {
             hardware: tokio::sync::Mutex::new(None),
             pulls: crate::account::pull::Pulls::default(),
             contacts,
+            chat,
+            presence,
             catalog: if cfg!(test) { crate::catalog::Catalog::none() } else { crate::catalog::Catalog::system() },
             announcements: crate::announcements::Announcements::system(),
             readings: crate::actions::Readings::default(),
@@ -3377,6 +3389,15 @@ impl Core {
         self
     }
 
+    /// The core with the chat `chat` instead of one without a server, and the presence over it
+    /// keeping its list in `dir`, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_chat(mut self, chat: ChatService, dir: &Path) -> Core {
+        self.chat = Arc::new(chat);
+        self.presence = Arc::new(PresenceService::in_dir(Arc::clone(&self.chat), dir));
+        self
+    }
+
     /// The core with the app catalog `catalog` instead of one that finds nothing, for tests.
     #[cfg(test)]
     pub(crate) fn with_catalog(mut self, catalog: crate::catalog::Catalog) -> Core {
@@ -3545,6 +3566,7 @@ impl Core {
         tokio::spawn(async move { core.keep_used_models_on().await });
         self.ntfy.start();
         self.start_contacts();
+        self.start_chat();
         let mail_off = !self.settings.current().component_on(torro_core::settings::Component::Mail);
         self.mail.pause_from_start(mail_off);
         // Register the durable classifier synchronously, before the feed or sync can dispatch
@@ -3853,6 +3875,36 @@ impl Core {
             loop {
                 core.sync_contacts().await;
                 tokio::time::sleep(crate::contacts::SYNC_EVERY).await;
+            }
+        });
+    }
+
+    /// An account removed or wiped takes its conversations, messages, people and status along
+    /// ([`PimService::on_forget`]); nothing of them is on disk but the list of people added by
+    /// hand. While "Show others when I am online" is on, the heartbeat goes out every five
+    /// minutes (decision 10 in `docs/chat.md`); off, nothing is ever sent. Part of [`Core::start`].
+    fn start_chat(self: &Arc<Self>) {
+        let mut forgotten = self.pim.on_forget();
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                match forgotten.recv().await {
+                    Ok(account) => {
+                        core.chat.forget_account(&account);
+                        core.presence.forget_account(&account);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => core.chat.forget_gone().await,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(crate::presence::BEAT_EVERY).await;
+                if core.settings.current().presence_heartbeat {
+                    core.presence.beat(torro_chat::Status::Online).await;
+                }
             }
         });
     }
@@ -5591,6 +5643,13 @@ impl Core {
             | Request::ResolveContactConflict { .. }) => {
                 Facts { contact: self.contacts.facts(request).map(Box::new), ..Facts::default() }
             }
+            // A conversation's name and kind and the message a command is about, from the chat
+            // service by id (`docs/chat.md`, "Freigaben").
+            request if request.operation().area() == torro_ipc::api::Area::Chat => {
+                // Boxed: the lookup may ask the server, and its future must not grow this frame.
+                let chat = Box::pin(self.chat.facts(request)).await;
+                Facts { chat: chat.map(Box::new), ..Facts::default() }
+            }
             request => self.pim.facts(request).await,
         }
     }
@@ -5957,6 +6016,12 @@ impl Core {
     async fn out_of_reach(&self, reach: Reach<'_>, request: &Request) -> Option<String> {
         // Address books outside the client's rights, and contacts in them (issue #351).
         if let Some(outside) = self.contacts.out_of_reach(reach, request) {
+            return Some(outside);
+        }
+        // Chat and presence accounts outside the client's rights (`docs/chat.md`, decision 3).
+        if let Some(outside) =
+            self.chat.out_of_reach(reach, request).or_else(|| self.presence.out_of_reach(reach, request))
+        {
             return Some(outside);
         }
         match (reach, request) {
@@ -6974,6 +7039,28 @@ impl Core {
             | Request::ResolveContactConflict { .. }
             // Recipient suggestions (issue #460): contacts and the mail of the accounts `reach` may read.
             | Request::SuggestRecipients { .. }) => self.contacts_request(request, reach).await,
+            // Chat and presence (`docs/chat.md`, issue #643); a client's reach was checked before
+            // (`Core::out_of_reach`).
+            request @ (Request::ChatListConversations { .. }
+            | Request::ChatGetMessages { .. }
+            | Request::ChatSendMessage { .. }
+            | Request::ChatMarkRead { .. }
+            | Request::ChatMarkUnread { .. }
+            | Request::ChatSuggestMentions { .. }
+            | Request::ChatFindPeople { .. }
+            | Request::ChatCreateConversation { .. }
+            | Request::ChatEditMessage { .. }
+            | Request::ChatDeleteMessage { .. }
+            | Request::ChatReact { .. }
+            | Request::ChatSetFavorite { .. }
+            | Request::ChatSetNotificationLevel { .. }
+            | Request::ChatSearchMessages { .. }
+            | Request::PresenceListPeople { .. }
+            | Request::PresenceAddPerson { .. }
+            | Request::PresenceRemovePerson { .. }
+            | Request::PresenceFindPeople { .. }
+            | Request::PresenceGetOwnStatus { .. }
+            | Request::PresenceSetOwnStatus { .. }) => self.chat_request(request, reach, caller).await,
             // The other commands (task MA.5). A client's rights were checked before (`handle_client`,
             // `run_approved`); what a server shows and offers depends on who asks, and a client never reaches
             // what only a person does (point 10), whatever came before.
@@ -9620,6 +9707,24 @@ impl Core {
                 Err(Box::new(refusal("error", "the inbox cannot be written".into())))
             }
         }
+    }
+
+    /// A `chat.*` or `presence.*` request, boxed like [`Core::contacts_request`] and in one arm of
+    /// the dispatcher for both areas, to keep its frame small.
+    fn chat_request<'a>(
+        &'a self,
+        request: Request,
+        reach: Reach<'a>,
+        caller: Option<&'a str>,
+    ) -> torro_core::ai::BoxFuture<'a, Response> {
+        Box::pin(async move {
+            if request.operation().area() == torro_ipc::api::Area::Presence {
+                let heartbeat = self.settings.current().presence_heartbeat;
+                return self.presence.handle(request, reach, caller, heartbeat).await;
+            }
+            let caller = crate::chat::service::Caller { reach, client: caller };
+            self.chat.handle(request, caller).await
+        })
     }
 
     /// A request of the area `contacts`: `contacts.suggest_recipients` here ([`Core::suggest_ranked`],
@@ -12293,6 +12398,8 @@ impl Core {
                 let now = self.settings.current();
                 let on = |new: bool, stored: bool| new && !stored;
                 on(settings.voice.enabled, now.voice.enabled)
+                    // The heartbeat of the presence (`docs/chat.md`, decision 10).
+                    || on(settings.presence_heartbeat, now.presence_heartbeat)
                     || on(settings.mail_to_cloud, now.mail_to_cloud)
                     // The permission of the slot Sorting (issue #325).
                     || on(
@@ -12994,6 +13101,13 @@ fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// The presence service over `chat`, naming people by the server's address book that `contacts`
+/// holds of an account (Nextcloud's system address book with every user of the instance).
+fn presence_of(chat: &Arc<ChatService>, contacts: &Arc<ContactsService>) -> PresenceService {
+    let contacts = Arc::clone(contacts);
+    PresenceService::system(Arc::clone(chat)).with_names(Arc::new(move |account| contacts.server_people(account)))
+}
+
 /// The answer for a collection a client may not reach: the same `not-found` as for one that
 /// does not exist.
 fn no_collection(collection: &str) -> Response {
@@ -13008,6 +13122,12 @@ fn not_reached(request: &Request, outside: &str) -> Response {
         // Never the id back: it may be a contact that exists in a book the client does not see.
         request if request.operation().area() == torro_ipc::api::Area::Contacts => {
             crate::contacts::service::error_response(&torro_contacts::ContactsError::NotFound)
+        }
+        // Never the id back either: it may be a conversation of an account the client does not see.
+        request
+            if matches!(request.operation().area(), torro_ipc::api::Area::Chat | torro_ipc::api::Area::Presence) =>
+        {
+            crate::chat::service::error_response(&torro_chat::ChatError::NotFound)
         }
         Request::DescribeGithubRepo { .. } => crate::pim::no_repo(outside),
         // A mail link to an account the client may not read (task E8.7a); account ids hold no `/`.
@@ -15131,6 +15251,18 @@ mod tests {
             .expect("saved");
     }
 
+    /// Runs `test` on a thread with an 8 MiB stack. A command that waits for approval runs through
+    /// the core twice; in a debug build, where no frame is shrunk, that nests deeper than the 2 MiB
+    /// of a test thread hold for the largest requests (on Linux it overflowed).
+    /// The future is made on that thread by `test`, so it need not be `Send`.
+    fn deep<F: std::future::Future<Output = ()>>(test: impl FnOnce() -> F + Send + 'static) {
+        let worker = std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+            runtime.block_on(test());
+        });
+        worker.expect("thread").join().expect("the test ran through");
+    }
+
     fn decide(id: &str, allow: bool) -> Request {
         Request::DecideApproval { id: id.into(), allow }
     }
@@ -16341,8 +16473,13 @@ mod tests {
     /// every account, or a category without admin access to the inbox, is `forbidden`, a search a
     /// filter may not have `error` – nothing to approve. Every change waits for a person, named by
     /// what the core stores, and a filter a person changed meanwhile ends the approval `conflict`.
-    #[tokio::test]
-    async fn clients_change_mail_filters_of_their_accounts_after_approval() {
+    #[test]
+    fn clients_change_mail_filters_of_their_accounts_after_approval() {
+        // Deeper in a debug build than a test thread's 2 MiB stack holds ([`deep`]).
+        deep(clients_change_mail_filters_of_their_accounts_after_approval_deep);
+    }
+
+    async fn clients_change_mail_filters_of_their_accounts_after_approval_deep() {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core_with_mail_data(dir.path());
         let app_key = crate::clients::tests::app_key(dir.path());
@@ -33746,6 +33883,162 @@ mod tests {
             assert!(!log.contains(secret_word), "{secret_word} in the log: {log}");
         }
         assert!(audit_lines(dir.path()).iter().any(|line| line.command == "contacts.get_contact"));
+    }
+
+    // ----- Chat and presence (`docs/chat.md`, issue #643) -------------------------------------
+
+    /// A core with one chat account on a server in memory, its audit log in `dir`.
+    fn chatting(dir: &std::path::Path) -> (Core, Arc<crate::chat::fake::Server>) {
+        let server = Arc::new(crate::chat::fake::Server::default());
+        let chat = crate::chat::ChatService::fixed(vec![(CHAT_ACCOUNT.into(), Arc::clone(&server))]);
+        (audited(dir).with_chat(chat, dir), server)
+    }
+
+    const CHAT_ACCOUNT: &str = "nextcloud:anna@cloud.example.org";
+    const CHAT_BEN: &str = "nextcloud:anna@cloud.example.org/ben4chat";
+
+    /// Decisions 3 to 5: a client sees only the chat accounts ticked for it, another account's
+    /// conversation does not exist for it; reading goes without asking and changes nothing on the
+    /// server; sending waits for the person with the conversation's name from the core and the text
+    /// that goes out; once decided the approval keeps neither; the log holds no name and no text.
+    #[test]
+    fn chat_stays_within_a_clients_accounts_and_sending_waits_for_the_person() {
+        // An approval runs its command through the core again: in a debug build that nests deeper
+        // than a test thread's 2 MiB stack holds, so it runs on a thread of its own with more.
+        let worker = std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+            runtime.block_on(chat_stays_within_a_clients_accounts());
+        });
+        worker.expect("thread").join().expect("the test ran through");
+    }
+
+    async fn chat_stays_within_a_clients_accounts() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server) = chatting(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let read =
+            || Request::ChatGetMessages { conversation: CHAT_BEN.into(), before: None, after: None, limit: None };
+        let send = |text: &str| Request::ChatSendMessage {
+            conversation: CHAT_BEN.into(),
+            text: text.into(),
+            reply_to: None,
+            silent: false,
+        };
+        // A template sets the level but opens no account: the conversation is not there.
+        let (_, closed) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        assert_eq!(code(&ask(&core, Some(&closed), read()).await), "not-found");
+        assert_eq!(code(&ask(&core, Some(&closed), send("hi")).await), "not-found", "before any approval");
+        let listed = ask(
+            &core,
+            Some(&closed),
+            Request::ChatListConversations { account: None, unread_only: false, query: None, limit: None },
+        )
+        .await;
+        assert_eq!(listed, Response::ChatConversations { conversations: Vec::new() });
+
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.chat_accounts = Selection::Only(vec![CHAT_ACCOUNT.into()]);
+        let (_, key) = client(&core, rights).await;
+        let Response::ChatMessages(page) = ask(&core, Some(&key), read()).await else { panic!("in reach") };
+        assert_eq!(page.messages.len(), 5);
+        assert_eq!(server.count("mark_read"), 0, "reading sets no read marker");
+        let other = Request::ChatGetMessages {
+            conversation: "nextcloud:anna@other.example.org/ben4chat".into(),
+            before: None,
+            after: None,
+            limit: None,
+        };
+        assert_eq!(code(&ask(&core, Some(&key), other).await), "not-found");
+
+        let pending = waits(ask(&core, Some(&key), send("Lunch at one? Bring the offer.")).await);
+        assert_eq!(pending.command, "chat.send_message");
+        assert!(pending.summary.contains("Ben Koch"), "the name the core holds: {}", pending.summary);
+        assert!(pending.summary.contains("Lunch at one?"), "the text that goes out: {}", pending.summary);
+        assert!(server.state().sent.is_empty(), "nothing went out yet");
+        let decided = ask(&core, Some(&app_key), decide(&pending.id, true)).await;
+        let done = approval(decided);
+        assert_eq!(server.state().sent.len(), 1);
+        assert_eq!(server.state().sent[0].1.text, "Lunch at one? Bring the offer.");
+        assert!(!done.summary.contains("Lunch") && !done.summary.contains("Ben"), "kept: {}", done.summary);
+        let kept = std::fs::read_to_string(dir.path().join("state").join("approvals.json")).unwrap_or_default();
+        assert!(!kept.contains("Lunch at one"), "the text is gone from the file once decided");
+
+        // Denied, the text goes as well, and nothing is sent.
+        let pending = waits(ask(&core, Some(&key), send("Never mind the secret plan.")).await);
+        ask(&core, Some(&app_key), decide(&pending.id, false)).await;
+        assert_eq!(server.state().sent.len(), 1);
+        let kept = std::fs::read_to_string(dir.path().join("state").join("approvals.json")).unwrap_or_default();
+        assert!(!kept.contains("secret plan"));
+
+        // With "Send on my behalf" off nothing of the chat goes out, not even with approval.
+        let mut mute = RightsTemplate::FullAccess.rights();
+        mute.chat_accounts = Selection::Only(vec![CHAT_ACCOUNT.into()]);
+        mute.outbound = torro_ipc::api::Outbound::Never;
+        let (_, quiet) = client(&core, mute).await;
+        assert_eq!(code(&ask(&core, Some(&quiet), send("hi")).await), "forbidden");
+
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log");
+        for secret_word in ["Ben", "Koch", "Lunch", "offer", "secret", "ben4chat"] {
+            assert!(!log.contains(secret_word), "{secret_word} in the log: {log}");
+        }
+        assert!(audit_lines(dir.path()).iter().any(|line| line.command == "chat.get_messages"));
+    }
+
+    /// Decision 10: presence has accounts of its own, the own status is sending on the person's
+    /// behalf, and only a person switches the heartbeat on.
+    #[test]
+    fn presence_is_granted_apart_from_chat_and_the_heartbeat_is_for_people() {
+        // As above: the approved status runs through the core again.
+        let worker = std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+            runtime.block_on(presence_is_granted_apart_from_chat());
+        });
+        worker.expect("thread").join().expect("the test ran through");
+    }
+
+    async fn presence_is_granted_apart_from_chat() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server) = chatting(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let people = || Request::PresenceListPeople { account: Some(CHAT_ACCOUNT.into()) };
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.chat_accounts = Selection::Only(vec![CHAT_ACCOUNT.into()]);
+        let (_, chat_only) = client(&core, rights.clone()).await;
+        assert_eq!(code(&ask(&core, Some(&chat_only), people()).await), "not-found", "chats do not open presence");
+        rights.presence_accounts = Selection::Only(vec![CHAT_ACCOUNT.into()]);
+        let (_, key) = client(&core, rights).await;
+        let Response::PresencePeople { people: listed } = ask(&core, Some(&key), people()).await else {
+            panic!("in reach")
+        };
+        assert_eq!(listed.iter().map(|person| person.name.as_str()).collect::<Vec<_>>(), ["Ben Koch"]);
+        let status = Request::PresenceSetOwnStatus {
+            account: CHAT_ACCOUNT.into(),
+            status: Some(torro_chat::Status::Dnd),
+            message: Some("In a meeting".into()),
+            icon: None,
+            clear_at: None,
+        };
+        let pending = waits(ask(&core, Some(&key), status).await);
+        assert!(pending.summary.contains("cloud.example.org"), "{}", pending.summary);
+        assert!(pending.summary.contains("In a meeting"), "{}", pending.summary);
+        assert_eq!(server.count("set_status"), 0);
+        ask(&core, Some(&app_key), decide(&pending.id, true)).await;
+        assert_eq!(server.state().own.status, torro_chat::Status::Dnd);
+
+        // The heartbeat: a client may switch it off, never on; a person may.
+        let beat = |on: bool| Request::SetSetting { key: SettingKey::PresenceHeartbeat, value: serde_json::json!(on) };
+        let mut admin = RightsTemplate::FullAccess.rights();
+        admin.areas.insert(Area::Settings, torro_ipc::api::AreaRights { level: Level::Full, admin: true });
+        let (_, agent) = client(&core, admin).await;
+        assert_eq!(code(&ask(&core, Some(&agent), beat(true)).await), "forbidden");
+        assert_eq!(ask(&core, Some(&app_key), beat(true)).await, Response::Ok);
+        assert!(core.settings.current().presence_heartbeat);
+        let Response::PresenceOwnStatus { status } =
+            ask(&core, Some(&app_key), Request::PresenceGetOwnStatus { account: CHAT_ACCOUNT.into() }).await
+        else {
+            panic!("the own status")
+        };
+        assert!(status.heartbeat);
     }
 
     // ----- Suggestions of mail (issue #603) ---------------------------------------------------

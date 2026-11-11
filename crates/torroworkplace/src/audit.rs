@@ -311,6 +311,36 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::MoveContact { id: contact, to_book, .. } => {
             vec![format!("item:{}", hashed(contact)), collection(to_book)]
         }
+        // Chat and presence (`docs/chat.md`, "Kein Inhalt im Protokoll"): the account as it is, a
+        // conversation's token, a message and a person hashed; never a name, a text, a status
+        // message or what was searched for.
+        Request::ChatListConversations { account: name, .. }
+        | Request::ChatSearchMessages { account: name, .. }
+        | Request::PresenceListPeople { account: name } => name.iter().map(|name| account(name)).collect(),
+        Request::ChatFindPeople { account: name, .. }
+        | Request::PresenceFindPeople { account: name, .. }
+        | Request::PresenceGetOwnStatus { account: name }
+        | Request::PresenceSetOwnStatus { account: name, .. } => vec![account(name)],
+        Request::ChatCreateConversation { account: name, with: person }
+        | Request::PresenceAddPerson { account: name, person }
+        | Request::PresenceRemovePerson { account: name, person } => {
+            vec![account(name), format!("item:{}", hashed(person))]
+        }
+        Request::ChatGetMessages { conversation, .. }
+        | Request::ChatSendMessage { conversation, .. }
+        | Request::ChatMarkRead { conversation, .. }
+        | Request::ChatMarkUnread { conversation }
+        | Request::ChatSuggestMentions { conversation, .. }
+        | Request::ChatSetFavorite { conversation, .. }
+        | Request::ChatSetNotificationLevel { conversation, .. } => vec![chat_conversation(conversation)],
+        Request::ChatEditMessage { id: message, .. }
+        | Request::ChatDeleteMessage { id: message }
+        | Request::ChatReact { id: message, .. } => {
+            let conversation = torro_chat::split_message(message).map(|(conversation, _)| conversation);
+            let mut ids: Vec<String> = conversation.map(chat_conversation).into_iter().collect();
+            ids.push(format!("item:{}", hashed(message)));
+            ids
+        }
         Request::SetSetting { key, .. } => {
             let key = serde_json::to_value(key).ok().and_then(|key| key.as_str().map(str::to_string));
             key.map(|key| vec![id("setting", &key)]).unwrap_or_default()
@@ -688,6 +718,15 @@ fn made_id(kind: &str, value: &str) -> String {
 /// `collection:hash:<hash>`. The account ends at the first `/`; for the rare account id with a `/`
 /// in it the rest of it is hashed with the URL, which still names the collection the same way
 /// every time.
+/// A conversation's id for the log: its account as it is and its token hashed, like a collection;
+/// hashed whole when it is no id of an account's conversation.
+fn chat_conversation(value: &str) -> String {
+    match torro_chat::split_conversation(value) {
+        Some((account, token)) if is_account_id(account) => format!("conversation:{account}/{}", hashed(token)),
+        _ => format!("conversation:hash:{}", hashed(value)),
+    }
+}
+
 fn collection(value: &str) -> String {
     match value.split_once('/') {
         Some((account, rest)) if is_account_id(account) => format!("collection:{account}/{}", hashed(rest)),

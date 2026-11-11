@@ -285,7 +285,11 @@ fn agents_that_are_not_offered_are_no_engines_even_when_installed() {
     assert!(agents.engines(true).is_empty(), "the product offers no agent (#219)");
     assert!(agents.find("claude-code").is_none(), "and no engine id finds one");
     assert_eq!(Agent::of("claude-code"), Some(Agent::ClaudeCode), "the agent itself stays, for never_given");
-    assert_eq!(never_given("claude-code"), [Area::Mail], "so an old conversation keeps its data rule");
+    assert_eq!(
+        never_given("claude-code"),
+        [Area::Mail, Area::Chat, Area::Presence],
+        "so an old conversation keeps its data rule"
+    );
 
     // The product's own constructor, so rebuilding `engines` on `Agent::ALL` cannot slip past this
     // test. The flag is read before anything is looked up, so no home directory is needed.
