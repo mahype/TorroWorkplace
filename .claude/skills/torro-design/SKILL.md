@@ -639,6 +639,24 @@ ist kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   „Retry“), **voll** (lange Titel, viele Einträge, Überschneidungen).
 - **Formulare:** Fehler erst nach dem ersten Speicherversuch oder beim Verlassen des Feldes,
   nie vor der ersten Eingabe. Speichern bleibt aktiv und springt zum ersten Fehler.
+- **Ruhige Zeilen** (#627, nach der Sichtprüfung des Schreibfensters entschieden; gilt für jedes Formular aus Zeilen
+  wie Von/An/Betreff): Ein Formular wirkt nur ruhig, wenn alles darin gleich gebaut ist.
+  - **Eine Höhe:** Jede Zeile ist `size::control()` hoch, Bezeichnung und Wert stehen senkrecht mittig auf derselben
+    Linie (Eingaben bekommen oben und unten so viel Innenrand, dass ihr Text mittig sitzt). Wächst eine Zeile (Chips
+    über mehrere Reihen), ist jede Reihe wieder so hoch.
+  - **Eine Achse:** Alle Werte beginnen an derselben Kante hinter der Bezeichnung (`label_width` + `space::s()`): Text
+    einer Eingabe ohne seitlichen Innenrand, Chips, Auswahl.
+  - **Keine Rahmen in der Zeile:** Zeilen haben eine Haarlinie, sonst keine Kästen. Eine Auswahl ist Text mit einem
+    Chevron 14 in `TEXT_3` (`style::button::bare`), kein gerahmter `select_button`; Knöpfe sind `ghost` oder Icon-Knöpfe.
+    `bare` hat bewusst keine Hover-Fläche (Ausnahme von „fünf Zustände“): Chevron und Zeiger zeigen, dass er öffnet.
+  - **Was zu einem Ding gehört, steht darin:** Das × eines Chips liegt in der Pille (`widgets::chip_removable`), nicht
+    daneben.
+  - **Werkzeuge an einer Stelle:** Was den Inhalt bearbeitet (Formate, Anhang, Bild), steht als eine Zeile direkt über
+    dem Inhalt; unten bleiben nur die Abschlüsse (Senden, Verwerfen). Ein Schalter, der eine Leiste ein- und
+    ausblendet, ist ein schlichter Icon-Knopf mit einem Tooltip, der sagt, was ein Klick tut – kein gewählter Rahmen.
+  - **Fokus im Schreibfenster:** Die Zeilen und der Text des Schreibfensters zeigen keinen Fokusrahmen; die
+    Bezeichnung der Zeile mit dem Cursor wird `TEXT`, sonst `TEXT_3`, und der Cursor zeigt, wo man schreibt
+    (Ausnahme von Abschnitt 4, entschieden in #627).
 - Destruktive Aktionen: rückgängig machen anbieten oder bestätigen lassen, nie beides nötig.
 
 ## 6. Responsiv für Kachel-Fenster – von winzig bis riesig

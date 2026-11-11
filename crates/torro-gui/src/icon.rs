@@ -246,6 +246,8 @@ pub enum Icon {
     /// "Drafts" of the mail window and a drafts folder (issue #502): apart from `SquarePen`, which
     /// writes a new message.
     FilePenLine,
+    /// "Aa" in the tools row of the compose window (issue #627): shows or hides the formats.
+    ALargeSmall,
 }
 
 impl Icon {
@@ -384,6 +386,7 @@ impl Icon {
         Icon::Landmark,
         Icon::TriangleAlert,
         Icon::FilePenLine,
+        Icon::ALargeSmall,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -532,6 +535,7 @@ impl Icon {
             Icon::Landmark => include_bytes!("../assets/icons/landmark.svg"),
             Icon::TriangleAlert => include_bytes!("../assets/icons/triangle-alert.svg"),
             Icon::FilePenLine => include_bytes!("../assets/icons/file-pen-line.svg"),
+            Icon::ALargeSmall => include_bytes!("../assets/icons/a-large-small.svg"),
         }
     }
 }

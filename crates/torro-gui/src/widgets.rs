@@ -1047,6 +1047,47 @@ pub fn split_file_chip<'a, M: Clone + 'a>(
     container(parts).height(size::control()).style(split_frame).into()
 }
 
+/// An attachment of the compose window as a card (issue #627): a [`source_tile`] with the kind of the
+/// file (`face`, neutral – colours belong to the person and the primary button), the name in `BODY`
+/// over the size in `META`/`text_3`, and at the right the ✕ that takes it out (`None` shows it off).
+/// `raised` without a border, radius [`radius::sm()`], padding [`space::s()`], [`size::props()`] wide; a
+/// name that does not fit ends in "…" and shows whole in the tooltip.
+///
+/// ```ignore
+/// widgets::file_card(TileFace::Icon(Icon::FileText), "invoice.pdf", "2.4 MB", Some(Msg::Remove(0)))
+/// ```
+pub fn file_card<'a, M: Clone + 'a>(
+    face: TileFace,
+    name: &str,
+    size_text: impl Into<String>,
+    on_remove: Option<M>,
+) -> Element<'a, M> {
+    let tile = source_tile(face, TileSize::Medium, None);
+    let room = size::props() - 2.0 * space::s() - TileSize::Medium.edge() - size::control_sm() - 2.0 * space::s();
+    let shown = typo::ellipsize(name, typo::body(), room);
+    let cut = shown != name;
+    let name_line: Element<'a, M> = typo::text(typo::body(), shown).wrapping(Wrapping::None).into();
+    let name_line = if cut { with_tooltip(name_line, name.to_owned()) } else { name_line };
+    let words =
+        column![name_line, typo::text(typo::meta(), size_text.into()).style(theme::text_3).wrapping(Wrapping::None),];
+    let remove = icon_button(Icon::X, tr("Remove"), on_remove);
+    let content =
+        row![tile, container(words).width(Fill).clip(true), remove].spacing(space::s()).align_y(Alignment::Center);
+    container(content)
+        .width(size::props())
+        .padding(space::s())
+        .style(|t: &Theme| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(p.raised)),
+                border: border::rounded(radius::sm()),
+                text_color: Some(p.text),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
 /// "Save all" and its menu as one ghost control (task M12.5): no surface and no frame, so it does
 /// not look like an attachment; the action with `which` (Download) and `label` in `text_2`, a quiet
 /// hairline and the triangle beside it as in [`split_file_chip`], with `menu_tip` as the triangle's
@@ -4632,6 +4673,45 @@ fn chip_with<'a, M: Clone + 'a>(
             .style(style::container::chip)
             .into(),
     }
+}
+
+/// A [`chip`] that can be taken out again (issue #627, a recipient of the compose window): `lead`, the
+/// label in `META` and the ✕ inside the chip, at its right end – not as a button beside it. The chip is
+/// [`style::CHIP_HEIGHT`] high like every chip; the ✕ is [`icon::SIZE_SM`] on a square as high as the
+/// chip, `ghost`, with `remove_tip` as its tooltip. `label_tip` (the whole address, why it is no address)
+/// sits on lead and label only, so the two tooltips never stand over each other. `None` shows the ✕ off.
+///
+/// ```ignore
+/// widgets::chip_removable(icon::icon(Icon::User, icon::SIZE_SM), "Lena Brandt", Some(address), tr("Remove"), Some(Msg::Remove(0)))
+/// ```
+pub fn chip_removable<'a, M: Clone + 'a>(
+    lead: impl Into<Element<'a, M>>,
+    label: impl IntoFragment<'a>,
+    label_tip: Option<String>,
+    remove_tip: impl IntoFragment<'a>,
+    on_remove: Option<M>,
+) -> Element<'a, M> {
+    let on = on_remove.is_some();
+    let remove = button(center(button_icon(Icon::X, icon::SIZE_SM, style::button::icon, on)))
+        .width(style::CHIP_HEIGHT)
+        .height(style::CHIP_HEIGHT)
+        .padding(0)
+        .style(style::button::icon)
+        .on_press_maybe(on_remove);
+    let named: Element<'a, M> = row![lead.into(), typo::text(typo::meta(), label).wrapping(Wrapping::None)]
+        .spacing(ICON_GAP)
+        .align_y(Alignment::Center)
+        .into();
+    let named = match label_tip {
+        Some(tip) => with_tooltip(named, tip),
+        None => named,
+    };
+    let content = row![named, with_tooltip(remove, remove_tip)].spacing(ICON_GAP).align_y(Alignment::Center);
+    container(content)
+        .center_y(style::CHIP_HEIGHT)
+        .padding(style::CHIP_PADDING.right(0.0))
+        .style(style::container::chip)
+        .into()
 }
 
 /// Chips side by side with 6 between them, wrapping onto more lines when they do not fit.
@@ -8924,6 +9004,28 @@ mod tests {
         assert!(!z("z", Code::KeyZ, command | keyboard::Modifiers::SHIFT), "redo");
         assert!(!z("z", Code::KeyZ, command | keyboard::Modifiers::ALT), "AltGr");
         assert!(!z("x", Code::KeyX, command));
+    }
+
+    /// Issue #627: a chip with its ✕ inside builds on and off.
+    #[test]
+    fn the_removable_chip_builds_on_and_off() {
+        let _: Element<'_, Msg> = chip_removable(
+            icon(Icon::User, icon::SIZE_SM),
+            "Lena Brandt",
+            Some("lena@example.org".into()),
+            "Remove",
+            Some(Msg::Go),
+        );
+        let _: Element<'_, Msg> =
+            chip_removable(icon(Icon::CircleAlert, icon::SIZE_SM), "jonas@", None, "Remove", None);
+    }
+
+    /// Issue #627: the attachment card builds with an icon or a letter, on and off, with a long name.
+    #[test]
+    fn the_file_card_builds_on_and_off() {
+        let _: Element<'_, Msg> = file_card(TileFace::Icon(Icon::FileText), "budget-q4.pdf", "3 KB", Some(Msg::Go));
+        let long = "a-name-far-too-long-for-the-card-of-an-attachment-in-the-compose-window.pdf";
+        let _: Element<'_, Msg> = file_card(TileFace::letter("zip"), long, "", None);
     }
 
     /// Task E11.1: the chips of attachments build on and off.

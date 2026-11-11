@@ -7,7 +7,8 @@
 //! [`split_from`]; the inbox keeps the width of its expanded sidebar there too, under the key
 //! `"sidebar"`, issue #376), the mail searches last made (issue #136, [`searches_from`]) and whether the
 //! action rail of a mail is expanded (task E14.1, [`actions_from`]), which mail accounts are
-//! selected ([`mail_accounts_from`]) and which folders are pinned ([`pinned_mail_folders_from`]). `ui.json` in
+//! selected ([`mail_accounts_from`]), which folders are pinned ([`pinned_mail_folders_from`]) and switches of
+//! a view such as the compose window's format bar (issue #627, [`flag_from`]). `ui.json` in
 //! the app's state directory
 //! ([`torro_core::paths`]), because it is view state that may be lost – like the scroll position it
 //! is no suite setting and goes through no API.
@@ -63,6 +64,10 @@ const PINNED_MAIL_FOLDERS: &str = "pinnedMailFolders";
 /// The key of the split widths chosen ([`split_from`]): an object from a window's key to the width
 /// of its first pane in layout units.
 const SPLIT: &str = "split";
+
+/// The key of the switches of a view ([`flag_from`], issue #627): an object from a name the app
+/// chooses (`compose.format_bar`) to `true` or `false`.
+const FLAGS: &str = "flags";
 
 /// The key of the searches last made ([`searches_from`]): a list of what was searched for, newest
 /// first.
@@ -444,6 +449,50 @@ pub fn save_split_task<T: Send + 'static>(app: AppId, key: String, width: Option
     .discard()
 }
 
+/// A switch of a view remembered under `key` in `path` (issue #627), as [`save_flag_to`] stored it:
+/// the compose window's format bar under `compose.format_bar`. `None` when there is none, the file
+/// cannot be read or the value is no boolean; the app keeps its default then. Not [`unfolded_from`]:
+/// the compose window shares the file with the mail window, whose list of unfolded parts it would
+/// overwrite.
+pub fn flag_from(path: &Path, key: &str) -> Option<bool> {
+    let text = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value.get(FLAGS)?.get(key)?.as_bool()
+}
+
+/// Stores `on` for the switch `key` in `path`, keeping the other switches and everything else in the
+/// file.
+pub fn save_flag_to(path: &Path, key: &str, on: bool) -> Result<(), Error> {
+    let mut flags = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value.get(FLAGS).and_then(serde_json::Value::as_object).cloned())
+        .unwrap_or_default();
+    flags.insert(key.to_string(), serde_json::Value::Bool(on));
+    let mut fields = serde_json::Map::new();
+    fields.insert(FLAGS.into(), serde_json::Value::Object(flags));
+    merge_into(path, fields)
+}
+
+/// [`flag_from`] for the switch `key` of `app` in the background, for the start of a window:
+/// `ui_state::load_flag_task(app, key).map(Message::FormatBarLoaded)`. Like [`load_task`], tests that
+/// only build the app never run it.
+pub fn load_flag_task(app: AppId, key: String) -> Task<Option<bool>> {
+    Task::perform(async move { file(app).and_then(|path| flag_from(&path, &key)) }, |on| on)
+}
+
+/// [`save_flag_to`] for the switch `key` of `app` in the background, after the person switched it. A
+/// failure is reported on stderr and otherwise ignored, as in [`save_task`].
+pub fn save_flag_task<T: Send + 'static>(app: AppId, key: String, on: bool) -> Task<T> {
+    Task::future(async move {
+        let saved = file(app).ok_or(Error::NoHome).and_then(|path| save_flag_to(&path, &key, on));
+        if let Err(err) = saved {
+            eprintln!("{}: {err}", app.binary);
+        }
+    })
+    .discard()
+}
+
 /// The searches last made, newest first, as [`save_searches_to`] stored them (issue #136): what the
 /// person searched for, kept on this device only, for the suggestions under the search field.
 /// Empty when nothing is stored, the file cannot be read or the value is no list (other entries
@@ -776,6 +825,27 @@ mod tests {
         for content in ["{ not json", r#"{"split":520}"#, r#"{"split":{"mail":"wide"}}"#, r#"{"split":{"mail":-3}}"#] {
             fs::write(&path, content).expect("write");
             assert_eq!(split_from(&path, "mail"), None, "{content}");
+        }
+    }
+
+    /// Issue #627: a switch of a view is kept beside the other switches and the rest of the file, and
+    /// a value that is no boolean counts as none.
+    #[test]
+    fn view_switches_are_kept_beside_the_rest() {
+        let dir = TempDir::new("flags");
+        let path = dir.0.join(FILE);
+        assert_eq!(flag_from(&path, "compose.format_bar"), None, "nothing chosen yet");
+        save_unfolded_to(&path, &["overview.mail.info".to_string()]).expect("save the unfolded parts");
+        save_flag_to(&path, "compose.format_bar", false).expect("fold the format bar");
+        save_flag_to(&path, "other", true).expect("another switch");
+        assert_eq!(flag_from(&path, "compose.format_bar"), Some(false));
+        assert_eq!(flag_from(&path, "other"), Some(true));
+        assert_eq!(unfolded_from(&path), vec!["overview.mail.info".to_string()], "the unfolded parts stay");
+        save_flag_to(&path, "compose.format_bar", true).expect("unfold it again");
+        assert_eq!(flag_from(&path, "compose.format_bar"), Some(true));
+        for content in ["{ not json", r#"{"flags":true}"#, r#"{"flags":{"compose.format_bar":"yes"}}"#] {
+            fs::write(&path, content).expect("write");
+            assert_eq!(flag_from(&path, "compose.format_bar"), None, "{content}");
         }
     }
 

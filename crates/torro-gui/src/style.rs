@@ -201,6 +201,21 @@ pub mod button {
         neutral(&p, status, rest, p.text)
     }
 
+    /// A button that reads as text in a row (issue #627, the account in the compose window's From
+    /// row): no surface and no frame in any state, so it sits on the axis of the text around it; the
+    /// text `text`, `text_2` while pressed, faded when disabled. No hover surface on purpose (a fill
+    /// would stand out of the row): the chevron beside it and the pointer cursor say that it opens.
+    pub fn bare(theme: &Theme, status: Status) -> Style {
+        let p = palette(theme);
+        let rest =
+            Rest { background: Color::TRANSPARENT, text: p.text, border: Color::TRANSPARENT, radius: radius::sm() };
+        match status {
+            Status::Active | Status::Hovered => rest.style(),
+            Status::Pressed => Rest { text: p.text_2, ..rest }.style(),
+            Status::Disabled => disabled(rest),
+        }
+    }
+
     /// An icon-only button (‹ › refresh …): a [`ghost`] button, 28 × 28
     /// ([`crate::theme::size::control_sm()`] square, no padding), icon 14–16 in the text colour.
     /// Always give it a tooltip.
@@ -564,12 +579,13 @@ pub mod container {
         Style { border: outline(palette(theme).line_strong, radius::sm()), ..Style::default() }
     }
 
-    /// The paper of the compose window (issue #460): `panel` with a 1-px `line_strong` border, radius
-    /// [`radius::md()`]. Drawn inside `themed::in_paper`, so `panel` is the light or the dark one the
-    /// person chose, whatever the window's mode; the text on it is a [`super::text_editor_paper`].
+    /// The paper of the compose window (issues #460, #627): only the surface `panel`, no border, no
+    /// radius – it reaches from edge to edge under the header rows. Drawn inside `themed::in_paper`, so
+    /// `panel` is the light or the dark one the person chose, whatever the window's mode; the text on it
+    /// is a [`super::text_editor_document`].
     pub fn paper(theme: &Theme) -> Style {
         let p = palette(theme);
-        Style { text_color: Some(p.text), border: outline(p.line_strong, radius::md()), ..surface(p.panel) }
+        Style { text_color: Some(p.text), ..surface(p.panel) }
     }
 
     /// A property chip ("Today", "Work"): `raised`, 1-px `line_strong` border, radius
@@ -663,6 +679,14 @@ pub fn text_input_flat(theme: &Theme, status: widget::text_input::Status) -> wid
     }
 }
 
+/// A text input as a row of the compose window (issue #627: From, To and Subject between hairlines):
+/// [`text_input_flat`] without the focus ring and without a hover surface – the row's label turns
+/// `text` in focus and the caret shows where one writes; disabled 40 %.
+pub fn text_input_bare(theme: &Theme, status: widget::text_input::Status) -> widget::text_input::Style {
+    let flat = text_input_flat(theme, status);
+    widget::text_input::Style { background: Background::Color(Color::TRANSPARENT), border: Border::default(), ..flat }
+}
+
 /// A multi-line text editor (notes, descriptions): the same look and states as [`text_input`].
 pub fn text_editor(theme: &Theme, status: widget::text_editor::Status) -> widget::text_editor::Style {
     let status = match status {
@@ -681,16 +705,16 @@ pub fn text_editor(theme: &Theme, status: widget::text_editor::Status) -> widget
     }
 }
 
-/// The text of the compose window on its paper (issue #460, [`container::paper`]): like
-/// [`text_editor`] without a surface and a frame of its own – the paper is both. The focus stays
-/// visible as the paper's: the editor fills it, so its `focus_ring` border lies on the paper's edge.
-pub fn text_editor_paper(theme: &Theme, status: widget::text_editor::Status) -> widget::text_editor::Style {
+/// The text of the compose window (issue #627): one document without a frame. Like [`text_editor`]
+/// without a surface and never a border, not even in focus – the text is made of several editors,
+/// and a ring around one paragraph would split the document; the caret shows where one writes.
+pub fn text_editor_document(theme: &Theme, status: widget::text_editor::Status) -> widget::text_editor::Style {
     let framed = text_editor(theme, status);
-    let border = match status {
-        widget::text_editor::Status::Focused { .. } => framed.border.rounded(radius::md()),
-        _ => Border::default(),
-    };
-    widget::text_editor::Style { background: Background::Color(Color::TRANSPARENT), border, ..framed }
+    widget::text_editor::Style {
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border::default(),
+        ..framed
+    }
 }
 
 /// The colour of the check mark on a filled check box or task circle: `panel` (white in light
@@ -1179,6 +1203,38 @@ mod tests {
             let off = flat(widget::text_input::Status::Disabled);
             assert!(same(off.value, faded(p.text)), "{mode}: flat input off");
             assert_eq!(off.background, Background::Color(Color::TRANSPARENT), "{mode}: no hover when off");
+        }
+    }
+
+    /// Issue #627: the compose window draws its rows and its text without frames or rings.
+    #[test]
+    fn the_compose_window_has_no_boxes_and_no_rings() {
+        for (mode, theme, p) in modes() {
+            let paper = container::paper(&theme);
+            assert_eq!(paper.background, Some(Background::Color(p.panel)), "{mode}: paper");
+            assert_eq!(paper.border.width, 0.0, "{mode}: paper without a border");
+            let bare = button::bare(&theme, Status::Hovered);
+            assert_eq!(bare.background, Some(Background::Color(Color::TRANSPARENT)), "{mode}: bare button");
+            assert_eq!(bare.border.color, Color::TRANSPARENT, "{mode}: bare button without a frame");
+            for status in [
+                widget::text_input::Status::Active,
+                widget::text_input::Status::Hovered,
+                widget::text_input::Status::Focused { is_hovered: false },
+            ] {
+                let bare = text_input_bare(&theme, status);
+                assert_eq!(bare.border.width, 0.0, "{mode}: bare input {status:?}");
+                assert_eq!(bare.background, Background::Color(Color::TRANSPARENT), "{mode}: bare {status:?}");
+                assert_eq!(bare.value, p.text, "{mode}: bare value");
+            }
+            for status in [
+                widget::text_editor::Status::Active,
+                widget::text_editor::Status::Hovered,
+                widget::text_editor::Status::Focused { is_hovered: true },
+            ] {
+                let document = text_editor_document(&theme, status);
+                assert_eq!(document.border.width, 0.0, "{mode}: document {status:?}");
+                assert_eq!(document.background, Background::Color(Color::TRANSPARENT), "{mode}: document");
+            }
         }
     }
 

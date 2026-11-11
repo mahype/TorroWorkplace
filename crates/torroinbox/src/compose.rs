@@ -8,12 +8,22 @@
 //!   on a file card of the assistant (`apps.open_app` with `file:<id>`), with the path its register
 //!   keeps. The person sees the mail with the file and sends it, or not.
 //!
-//! - **Layout** (issue #460, version A of the design in `docs/prototypes/mail-compose/`): a header
-//!   (title, state of the draft, attach, close | Send), From with its address in `text_3`, To with Cc
-//!   and Bcc (unfolded on demand, or at once when an answer fills them), Subject, a fixed toolbar,
-//!   the paper with the text and the signature, and the attachments as chips under it. The
-//!   account's signature is shown under the text but not put into it: the core adds it when the
-//!   message is built, so it would stand twice.
+//! - **Layout** (issue #627, the design in `docs/prototypes/mail-compose/`; version A of #460 is
+//!   `fassung-a.html` there): a header with the title, the state of the draft and Close; From, To
+//!   (Cc and Bcc as text buttons at its end, unfolded on demand, or at once when an answer fills them)
+//!   and Subject as rows between hairlines, without boxes; the paper from edge to edge with the text
+//!   as one document without a frame (no focus ring around a paragraph, the caret shows where one
+//!   writes; the label of the row with the focus turns `text`), the signature under "–" and the
+//!   attachments as cards. Every row is [`size::control()`] high with its content centred and its
+//!   values on one axis; no framed controls in a row (From is text with a chevron, a recipient's ✕
+//!   sits in its chip). Over the paper a row of tools: "Aa" folds the formats in and out (kept in
+//!   `ui.json`, `compose.format_bar`), then the formats, at the right attach, image and ◐; the footer
+//!   holds only Send with its keys and "Discard draft". The account's signature is shown under the text but not put
+//!   into it: the core adds it when the message is built, so it would stand twice.
+//! - **Answers** (issue #627): no From row – the account stands small in the header ("from …", a
+//!   button when there are several), the subject in the plain weight until it takes the focus, and the quoted
+//!   history folded under "Show history" ([`Document::fold_from`]); it is sent all the same. A forward
+//!   keeps its history open: there it is the content.
 //! - **Recipients as chips:** `,` `;`, Enter (with no suggestion open) and leaving the field turn what
 //!   was typed into chips ([`Recipients`]); words that are no address become chips marked with the
 //!   alert icon, and Send names them as before. Backspace in an empty field takes the last chip.
@@ -92,6 +102,7 @@ use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, Cover, Surface, TitleButtons};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
+use torro_gui::ui_state;
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, TileFace, TileSize};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, themed, typo};
@@ -139,6 +150,20 @@ const WINDOW: Size = Size::new(760.0, 700.0);
 /// The width of the label column of the fields: "Subject" fits at the text size.
 fn label_width() -> f32 {
     size::row() + space::l()
+}
+
+/// The padding of an input in a row of the form (issue #627): as high as [`size::control()`] with
+/// its text centred, and no side padding, so the typed text starts on the axis of the chips and the
+/// From button.
+fn row_input_padding(level: typo::Level) -> Padding {
+    let line = level.line_height.to_absolute(level.size).0;
+    Padding::new(((size::control() - line) / 2.0).max(0.0)).left(0.0).right(0.0)
+}
+
+/// The width of the input after a recipient's chips (issue #627): enough to start an address on the
+/// chips' line, small enough to stay there in a narrow window; it wraps under them once the line is full.
+fn next_input_width() -> f32 {
+    2.0 * size::control_lg()
 }
 
 /// The id of the To field, which takes the focus when a new message opens.
@@ -247,10 +272,18 @@ pub enum Open {
     ImageRemove,
     Paste,
     PasteDark,
+    /// An answer with its quoted history unfolded (issue #627).
+    History,
+    /// The format bar folded with "Aa" (issue #627).
+    FormatOff,
+    /// An answer with its subject unfolded for editing (issue #627).
+    Subject,
+    /// The question of "Discard draft" (issue #627).
+    DiscardDraft,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 16] = [
+    const ALL: [(&'static str, Open); 20] = [
         ("paste", Open::Paste),
         ("paste-dark", Open::PasteDark),
         ("image", Open::Image),
@@ -267,6 +300,10 @@ impl Open {
         ("format", Open::Format),
         ("suggest", Open::Suggest),
         ("paper-dark", Open::PaperDark),
+        ("history", Open::History),
+        ("format-off", Open::FormatOff),
+        ("subject", Open::Subject),
+        ("discard-draft", Open::DiscardDraft),
     ];
 }
 
@@ -445,6 +482,13 @@ impl From<InboxError> for ComposeError {
 /// core checks rights, the files a draft may attach and the send rule, the window never decides
 /// them. (Not part of [`crate::mail::MailSource`]: that is the list's and the panel's.)
 pub trait ComposeSource: Send + Sync {
+    /// Whether the window keeps its own view choices (the folded format bar, issue #627) in
+    /// `ui.json`: the core's client does, the demo and tests do not, so they never touch the
+    /// person's file.
+    fn remembers(&self) -> bool {
+        false
+    }
+
     /// One `mail.prepare_image` request. Originals and processing stay in the service.
     fn prepare_image(
         &self,
@@ -601,6 +645,10 @@ fn paste_answer(
 }
 
 impl ComposeSource for InboxClient {
+    fn remembers(&self) -> bool {
+        true
+    }
+
     async fn prepare_image(&self, account: String, source: ImageSource) -> Result<PreparedImage, ComposeError> {
         match ask(self, Request::PrepareMailImage { account, source }).await? {
             Response::MailImage { image } => Ok(image),
@@ -1510,6 +1558,16 @@ enum After {
     Close,
 }
 
+/// The question over the window (issue #627): on closing with unsaved changes, or on "Discard draft".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ask {
+    Close,
+    Discard,
+}
+
+/// The key in `ui.json` under which the format bar is folded or not (issue #627).
+const FORMAT_BAR: &str = "compose.format_bar";
+
 #[derive(Debug, Clone)]
 pub enum Message {
     EditorCommand(u64, Box<Message>),
@@ -1623,6 +1681,22 @@ pub enum Message {
     DismissNotice,
     /// Tab (`true`) or Shift+Tab: the next or previous field.
     Focus(bool),
+    /// The format bar as `ui.json` keeps it (issue #627); `None` leaves it open.
+    FormatBarLoaded(Option<bool>),
+    /// "Aa": the format bar folds or unfolds, and the choice is kept.
+    ToggleFormatBar,
+    /// "Show history": the quoted history of an answer unfolds.
+    ShowHistory,
+    /// "Discard draft" in the footer: asks first.
+    DiscardDraft,
+    /// "Discard draft" in its question: the saved draft goes to the trash and the window closes.
+    ConfirmDiscard,
+    /// The draft went to the trash, or not.
+    Discarded(Result<(), ComposeError>),
+    /// A click ended, Tab moved or a row took the focus: which row has the focus now, for its label.
+    FindFocus,
+    /// Whether the field of a row (its id) has the focus.
+    RowFocus(&'static str, bool),
 }
 
 /// The compose window: the fields, the draft they are saved as and what is going on with it.
@@ -1689,8 +1763,20 @@ pub struct Window<S> {
     notice: Option<Notice>,
     /// The From menu is open.
     menu: bool,
-    /// The question on closing with unsaved changes is open.
-    asking: bool,
+    /// The question over the window, while it is open: on closing, or on "Discard draft".
+    asking: Option<Ask>,
+    /// The format bar is unfolded ("Aa", issue #627).
+    format_bar: bool,
+    /// The subject of an answer is a field (issue #627); folded it is text that opens on a click.
+    subject_open: bool,
+    /// The row whose field has the focus (its id), for its label in `text` (issue #627).
+    focused: Option<&'static str>,
+    /// "Discard draft" waits for the running save to know which draft to discard.
+    discard_after_save: bool,
+    /// "Discard draft" was confirmed and runs: nothing is edited, saved or closed meanwhile.
+    discarding: bool,
+    /// The person switched the format bar before `ui.json` was read: the stored choice comes too late.
+    format_bar_chosen: bool,
     /// The suggestions under a recipient field, while they are open (issue #460).
     suggestions: Option<Suggestions>,
     /// Counts the letters typed into recipient fields: an answer to an older one is dropped.
@@ -1782,7 +1868,13 @@ impl<S: ComposeSource + 'static> Window<S> {
             unsure: false,
             notice: None,
             menu: false,
-            asking: false,
+            asking: None,
+            format_bar: true,
+            subject_open: true,
+            focused: None,
+            discard_after_save: false,
+            discarding: false,
+            format_bar_chosen: false,
             suggestions: None,
             asked: 0,
             photos: HashMap::new(),
@@ -1805,6 +1897,10 @@ impl<S: ComposeSource + 'static> Window<S> {
             iced::system::theme().map(Message::SystemMode),
             size,
         ];
+        // The format bar as the person left it; the demo and tests start with it open.
+        if window.source.remembers() {
+            tasks.push(ui_state::load_flag_task(COMPOSE, FORMAT_BAR.to_owned()).map(Message::FormatBarLoaded));
+        }
         // The states "loading" and "failed" stay as they are, for pictures.
         if !matches!(window.start.open, Some(Open::Loading | Open::Failed)) {
             // The first load waits for a core that is still starting (issue #206).
@@ -1834,11 +1930,21 @@ impl<S: ComposeSource + 'static> Window<S> {
     }
 
     fn editable(&self) -> bool {
-        self.ready() && !self.sending && !self.switching
+        self.ready() && !self.sending && !self.switching && !self.discarding
     }
 
     fn sender(&self) -> Option<&Sender> {
         self.senders.get(self.from)
+    }
+
+    /// The window answers a message (issue #627): a reply, or a draft of one. Its header names the
+    /// account, its subject and history start folded. A forward is no answer here.
+    fn is_answer(&self) -> bool {
+        match self.start.kind {
+            Kind::Reply(_) | Kind::ReplyAll(_) => true,
+            Kind::Draft(_) => self.in_reply_to.is_some(),
+            Kind::New | Kind::Forward(_) => false,
+        }
     }
 
     /// The account writes formatted mail: toolbar, keys and HTML.
@@ -2444,6 +2550,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             Message::Cc(text) => return self.typed(Field::Cc, text),
             Message::Bcc(text) => return self.typed(Field::Bcc, text),
             Message::Subject(text) => {
+                self.subject_open = true;
                 self.leave(None);
                 self.edited(|window| window.subject = text);
             }
@@ -2493,11 +2600,11 @@ impl<S: ComposeSource + 'static> Window<S> {
             }
             Message::ShowCc => {
                 self.show_cc = true;
-                return operation::focus(CC);
+                return operation::focus(CC).chain(Task::done(Message::FindFocus));
             }
             Message::ShowBcc => {
                 self.show_bcc = true;
-                return operation::focus(BCC);
+                return operation::focus(BCC).chain(Task::done(Message::FindFocus));
             }
             Message::ToolsMenu => self.tools = !self.tools && self.ready(),
             Message::TogglePaper => return self.toggle_paper(),
@@ -2568,11 +2675,68 @@ impl<S: ComposeSource + 'static> Window<S> {
             Message::Cleaned => {}
             Message::Escape => return self.escape(),
             Message::Close => return self.close(),
-            Message::KeepWriting => self.asking = false,
+            Message::KeepWriting => self.asking = None,
             Message::DiscardChanges => return self.exit(),
             Message::SaveAndClose => {
-                self.asking = false;
+                self.asking = None;
                 return self.save(After::Close);
+            }
+            Message::FormatBarLoaded(Some(on)) => {
+                if !self.format_bar_chosen {
+                    self.format_bar = on;
+                }
+            }
+            Message::FormatBarLoaded(None) => {}
+            Message::ToggleFormatBar => {
+                self.format_bar = !self.format_bar;
+                self.format_bar_chosen = true;
+                self.tools = false;
+                if self.source.remembers() {
+                    return ui_state::save_flag_task(COMPOSE, FORMAT_BAR.to_owned(), self.format_bar);
+                }
+            }
+            Message::ShowHistory => {
+                // Only what is shown changes: the draft held the history all along.
+                self.body.unfold();
+            }
+            Message::DiscardDraft => {
+                if self.ready() && !self.sending && !self.discarding && self.asking.is_none() {
+                    self.menu = false;
+                    self.tools = false;
+                    self.suggestions = None;
+                    self.asking = Some(Ask::Discard);
+                }
+            }
+            Message::ConfirmDiscard => return self.confirm_discard(),
+            Message::Discarded(Ok(())) => return self.exit(),
+            Message::Discarded(Err(err)) => {
+                // The window is the person's again; what is unsaved is saved by the clock as before.
+                self.discard_after_save = false;
+                self.discarding = false;
+                if self.unsaved() {
+                    self.changed = Some(Instant::now());
+                }
+                self.notice = Some(Notice::new(tr("The draft could not be discarded."), err));
+            }
+            Message::FindFocus => {
+                if self.ready() && !self.is_glance() {
+                    // Each row asks for itself: the answer is clear also when nothing has the focus.
+                    return Task::batch(
+                        [TO, CC, BCC, SUBJECT]
+                            .map(|row| operation::is_focused(row).map(move |on| Message::RowFocus(row, on))),
+                    );
+                }
+            }
+            Message::RowFocus(row, on) => {
+                if on {
+                    self.focused = Some(row);
+                    // A folded subject opens when it takes the focus, by Tab or by a click.
+                    if row == SUBJECT {
+                        self.subject_open = true;
+                    }
+                } else if self.focused == Some(row) {
+                    self.focused = None;
+                }
             }
             Message::DismissNotice => self.notice = None,
             Message::Focus(forward) => {
@@ -2580,12 +2744,15 @@ impl<S: ComposeSource + 'static> Window<S> {
                 if let Some(open) = self.current_suggestions().filter(|_| forward) {
                     return self.take(open.highlight);
                 }
-                if self.ready() && !self.asking && !self.is_glance() {
+                if self.ready() && self.asking.is_none() && !self.is_glance() {
                     self.leave(None);
                     let focus = if forward { operation::focus_next() } else { operation::focus_previous() };
                     // Clicking a toolbar button subsequently unfocuses the editor. Remember
                     // Tab's new body caret now, before that outside click can erase widget focus.
-                    return focus.chain(self.body.focused_text().map(Message::BodyFocused));
+                    return focus.chain(Task::batch([
+                        self.body.focused_text().map(Message::BodyFocused),
+                        Task::done(Message::FindFocus),
+                    ]));
                 }
             }
         }
@@ -2799,7 +2966,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             self.paste_hint = None;
         }
         let idle = self.changed.is_some_and(|changed| now.duration_since(changed) >= AUTOSAVE);
-        if idle && self.unsaved() && self.saving.is_none() && !self.sending {
+        if idle && self.unsaved() && self.saving.is_none() && !self.sending && !self.discarding {
             return self.save(After::Nothing);
         }
         Task::none()
@@ -2870,8 +3037,17 @@ impl<S: ComposeSource + 'static> Window<S> {
         if let Some(path) = self.start.attach.clone() {
             self.attach(&[path]);
         }
+        // An answer (issue #627): the subject folded as text, the quoted history folded away. A forward
+        // keeps its history open, there it is the content; a draft of an answer folds as an answer.
+        if self.is_answer() {
+            self.subject_open = self.subject.trim().is_empty();
+            if let Some(line) = self.history.clone() {
+                self.body.fold_from(&line);
+            }
+        }
         self.apply_open();
         let focus = if self.to.is_empty() { TO } else { BODY };
+        self.focused = (focus == TO).then_some(TO);
         Task::batch([operation::focus(focus), self.fetch_photos(), self.load_images()])
     }
 
@@ -2912,7 +3088,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             }
             Some(Open::Discard) => {
                 self.revision = 1;
-                self.asking = true;
+                self.asking = Some(Ask::Close);
             }
             Some(Open::Menu) => self.menu = self.senders.len() > 1,
             Some(Open::Format) => {
@@ -2980,6 +3156,20 @@ impl<S: ComposeSource + 'static> Window<S> {
                     );
                 }
             }
+            Some(Open::History) => {
+                self.body.unfold();
+            }
+            Some(Open::FormatOff) => self.format_bar = false,
+            Some(Open::Subject) => {
+                self.subject_open = true;
+                self.focused = Some(SUBJECT);
+            }
+            Some(Open::DiscardDraft) => {
+                self.to = Recipients::parsed("Jonas Weber <jonas.weber@work.example.org>");
+                self.subject = "Budget review for Q4".to_owned();
+                self.body = Content::with_text("Hi Jonas,\n\nthe numbers look fine to me.\n\nAnna").into();
+                self.asking = Some(Ask::Discard);
+            }
             Some(Open::Loading | Open::Failed) | None => {}
         }
     }
@@ -3035,7 +3225,7 @@ impl<S: ComposeSource + 'static> Window<S> {
         // A draft that lives in another account cannot be replaced by one in this one: the core
         // would not find it. A new one is saved and the old one goes to the trash afterwards.
         let id = self.draft.as_ref().filter(|(_, in_account)| *in_account == account).map(|(id, _)| id.clone());
-        let text = self.body.text().replace("\r\n", "\n");
+        let text = self.body.full_text().replace("\r\n", "\n");
         // Formatted mail: the marks as HTML, and the plain text the core would make of it.
         let html =
             self.formatted().then(|| self.body.html(self.history.as_deref())).filter(|markup| !markup.is_empty());
@@ -3072,6 +3262,10 @@ impl<S: ComposeSource + 'static> Window<S> {
     /// Saves the draft, then does `after`. A save that is running takes `after` along when it is
     /// done; the fields are saved once more if they changed meanwhile.
     fn save(&mut self, after: After) -> Task<Message> {
+        // A draft on its way to the trash is not saved again (issue #627): it would come back.
+        if self.discarding {
+            return Task::none();
+        }
         self.after = self.after.max(after);
         if self.saving.is_some() || !self.ready() || self.body.pending() {
             return Task::none();
@@ -3121,6 +3315,15 @@ impl<S: ComposeSource + 'static> Window<S> {
                 // Numbers that could not be read stay unsure until a later save reads them.
                 self.unsure_parts = unsure.then(|| draft.attachments.clone());
                 draft
+            }
+            Err(_) if self.discard_after_save => {
+                // The draft is to go anyway: the one saved before (if any) goes to the trash.
+                self.discard_after_save = false;
+                self.after = After::Nothing;
+                self.discard_after = None;
+                self.pending_from = None;
+                self.saving_parts.clear();
+                return self.discard_saved();
             }
             Err(err) => {
                 // Everything stays as it is; the clock tries again, and a send or a close that
@@ -3176,6 +3379,17 @@ impl<S: ComposeSource + 'static> Window<S> {
             Some(old) => self.discard(old),
             None => Task::none(),
         };
+        if self.discard_after_save {
+            // "Discard draft" waited for this save: the draft it filed goes to the trash, and the
+            // images of an account left meanwhile are released as after any save.
+            self.discard_after_save = false;
+            self.after = After::Nothing;
+            self.pending_from = None;
+            self.saved = self.saved.max(revision);
+            let retired = std::mem::take(&mut self.retired_images);
+            let release = Task::batch(retired.into_iter().map(|(account, id)| self.release(account, vec![id])));
+            return Task::batch([release, cleaned, self.discard_saved()]);
+        }
         self.saved = self.saved.max(revision);
         let settled = revision == self.revision;
         if settled {
@@ -3205,7 +3419,7 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     /// "Send" (or `Ctrl+Enter`): checks the recipients, saves what is not saved and sends.
     fn send(&mut self) -> Task<Message> {
-        if !self.editable() || self.unsure || self.asking {
+        if !self.editable() || self.unsure || self.asking.is_some() {
             return Task::none();
         }
         if let Some(problem) = self.problem() {
@@ -3267,8 +3481,8 @@ impl<S: ComposeSource + 'static> Window<S> {
             self.tools = false;
         } else if self.menu {
             self.menu = false;
-        } else if self.asking {
-            self.asking = false;
+        } else if self.asking.is_some() {
+            self.asking = None;
         } else {
             return self.close();
         }
@@ -3277,17 +3491,47 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     /// The window is asked to close: at once when everything is saved, else after a question.
     fn close(&mut self) -> Task<Message> {
-        if self.sending || self.asking {
+        // While a confirmed discard runs, the window closes when it is done (`Discarded`).
+        if self.sending || self.discarding || self.asking.is_some() {
             return Task::none();
         }
         if self.unsaved() {
             self.menu = false;
             self.tools = false;
             self.suggestions = None;
-            self.asking = true;
+            self.asking = Some(Ask::Close);
             return Task::none();
         }
         self.exit()
+    }
+
+    /// "Discard draft" in its question (issue #627): a draft never saved just closes; a saved one goes
+    /// to the trash first, and the window closes once the core took it. While a save runs, its answer
+    /// names the draft to discard ([`Window::saved`]). A failure keeps the window with a notice.
+    fn confirm_discard(&mut self) -> Task<Message> {
+        if self.asking != Some(Ask::Discard) {
+            return Task::none();
+        }
+        self.asking = None;
+        // From here on nothing is edited, saved, sent or closed until the draft is gone or not; a close
+        // that waited for a save is given up with it.
+        self.discarding = true;
+        self.after = After::Nothing;
+        if self.saving.is_some() {
+            self.discard_after_save = true;
+            return Task::none();
+        }
+        self.discard_saved()
+    }
+
+    /// Moves the saved draft to the trash and closes when that worked; closes at once without one.
+    fn discard_saved(&mut self) -> Task<Message> {
+        // Unsaved changes stay unsaved until the core took the draft: a failure leaves them to the clock.
+        let Some((id, _)) = self.draft.clone() else { return self.exit() };
+        #[cfg(test)]
+        self.calls.push(Call::Discard(id.clone()));
+        let source = self.source.clone();
+        Task::perform(async move { source.discard_draft(id).await }, Message::Discarded)
     }
 
     fn exit(&mut self) -> Task<Message> {
@@ -3331,6 +3575,10 @@ fn unsure_reason() -> &'static str {
 /// Keys, also while a field has the focus: Esc, the shortcut "send" ([`is_send`]), Tab and ↑↓ (for
 /// the suggestions). (Only plain Enter and the letters are the fields'.)
 fn key(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
+    // A click may have moved the focus to another row: its label follows (issue #627).
+    if matches!(event, iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left))) {
+        return Some(Message::FindFocus);
+    }
     let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. }) = event else {
         return None;
     };
@@ -3519,7 +3767,7 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     pub fn view(&self) -> Element<'_, Message> {
         let class = self.class();
-        let cover = Cover::dialog(self.asking && !self.is_glance());
+        let cover = Cover::dialog(self.asking.is_some() && !self.is_glance());
         let content: Element<'_, Message> = if self.is_glance() { self.glance(class) } else { self.window(class) };
         widgets::ctrl_guard(shell::titlebar(
             self.zoom.view(content),
@@ -3610,43 +3858,73 @@ impl<S: ComposeSource + 'static> Window<S> {
             self.suggestions.as_ref().map(|open| self.suggestion_list(open, &anchors, narrow))
         };
         let window: Element<'_, Message> =
-            shell::shell(frame, Space::new(), self.header(narrow), body, None).overlay(overlay).into();
-        if self.asking { widgets::modal(window, self.question(), size::panel(), Message::KeepWriting) } else { window }
+            shell::shell(frame, Space::new(), self.header(narrow, &anchors), body, None).overlay(overlay).into();
+        if self.asking.is_some() {
+            widgets::modal(window, self.question(), size::panel(), Message::KeepWriting)
+        } else {
+            window
+        }
     }
 
-    /// The header bar: what is written and how the draft stands, then attach, close, a line and the
-    /// one primary button, "Send". Narrow windows keep the icons and drop the status.
-    fn header(&self, narrow: bool) -> Element<'_, Message> {
+    /// The title in the header (issue #627): "Reply to Lena Brandt" for an answer (the first person in
+    /// To), else what is being written.
+    fn heading(&self) -> String {
+        let name = self.to.addresses().first().map(|who| mail::sender_name(Some(who))).filter(|n| !n.is_empty());
+        match name.filter(|_| self.is_answer() && self.ready()) {
+            Some(name) => trf("Reply to {name}", &[("name", &name)]),
+            None => self.start.kind.title().to_owned(),
+        }
+    }
+
+    /// The side margin of the rows, the text and the bars: [`space::l()`], narrow [`space::m()`].
+    fn side(narrow: bool) -> f32 {
+        if narrow { space::m() } else { space::l() }
+    }
+
+    /// The header bar (issue #627): what is written and how the draft stands, then Close; Send stands
+    /// in the footer, attach in the row of tools over the mail. An answer names the person ("Reply to Lena Brandt") and the
+    /// account it is written from ("from anna@…", a button with the accounts when there are several).
+    /// Narrow windows drop the state, which becomes the title's tooltip.
+    fn header(&self, narrow: bool, anchors: &Anchors) -> Element<'_, Message> {
         let kind = &self.start.kind;
         let note = if narrow { None } else { self.status().map(str::to_owned) };
-        let mut title = shell::header_title(Some(kind.icon()), kind.title(), note);
+        let mut title = shell::header_title(Some(kind.icon()), self.heading(), note);
         // Narrow has no room for the state of the draft beside the title: it is the title's tooltip.
         if let Some(status) = self.status().filter(|_| narrow) {
             title = widgets::with_tooltip(title, status);
         }
-        let editable = self.editable();
-        let attach = widgets::icon_button(Icon::Paperclip, tr("Attach files"), editable.then_some(Message::Attach));
+        let mut head = row![title].spacing(space::s()).align_y(Alignment::Center);
+        if self.is_answer()
+            && self.ready()
+            && let Some(sender) = self.sender()
+        {
+            let from = trf("from {address}", &[("address", &sender.address)]);
+            let from: Element<'_, Message> = if self.senders.len() > 1 {
+                widgets::path_menu_button(&anchors.from, None, from, Message::FromMenu)
+            } else {
+                typo::text(typo::meta(), from).style(theme::text_3).wrapping(Wrapping::None).into()
+            };
+            head = head.push(from);
+        }
         let close = widgets::icon_button(Icon::X, tr("Close"), (!self.sending).then_some(Message::Close));
-        let press = (editable && !self.unsure).then_some(Message::Send);
-        let send: Element<'_, Message> = if narrow {
-            widgets::compact_button(Icon::Send, tr("Send"), style::button::primary, press)
-        } else {
-            let label = if self.sending { tr("Sending…") } else { tr("Send") };
-            let button = widgets::text_button(Some(Icon::Send), label, style::button::primary, press);
-            widgets::with_tooltip(button, trf("Send ({keys})", &[("keys", &send_keys())]))
-        };
-        shell::header_bar([], title, [attach, close, divider(), send])
+        shell::header_bar([], container(head).clip(true), [close])
     }
 
-    /// The form of version A (issue #460): a notice if there is one, From, the recipients, Subject,
-    /// the toolbar, the paper with the text and the signature, the attachments under it.
+    /// The form (issue #627): a notice if there is one, the rows From (not for answers), To with Cc
+    /// and Bcc, Subject between hairlines, the paper from edge to edge with the text, the history, the
+    /// signature and the attachments, with the row of tools ("Aa", formats, attach, image, ◐) over
+    /// the paper and the footer under it.
     fn form(&self, narrow: bool, anchors: &Anchors) -> Element<'_, Message> {
         let editable = self.editable();
-        let mut fields = column![].spacing(space::s());
+        let side = Self::side(narrow);
+        let mut rows = column![];
         if let Some(notice) = &self.notice {
-            fields = fields.push(notice_line(notice, Some(Message::DismissNotice)));
+            rows = rows.push(container(notice_line(notice, Some(Message::DismissNotice))).padding([space::s(), side]));
+            rows = rows.push(hairline());
         }
-        fields = fields.push(field(tr("From"), self.sender_control(&anchors.from)));
+        if !self.is_answer() {
+            rows = rows.push(self.line(tr("From"), None, self.sender_control(&anchors.from), narrow));
+        }
         let mut folds = Vec::new();
         if !self.show_cc {
             let press = editable.then_some(Message::ShowCc);
@@ -3662,18 +3940,22 @@ impl<S: ComposeSource + 'static> Window<S> {
             .map(|(_, label)| widgets::text_button_width(false, label) + space::xs())
             .sum::<f32>();
         let to = self.recipients(Field::To, anchors, narrow, folds, folds_width);
-        fields = fields.push(field(Field::To.label(), to));
+        rows = rows.push(self.line(Field::To.label(), Some(TO), to, narrow));
         if self.show_cc {
-            fields =
-                fields.push(field(Field::Cc.label(), self.recipients(Field::Cc, anchors, narrow, Vec::new(), 0.0)));
+            let cc = self.recipients(Field::Cc, anchors, narrow, Vec::new(), 0.0);
+            rows = rows.push(self.line(Field::Cc.label(), Some(CC), cc, narrow));
         }
         if self.show_bcc {
-            fields =
-                fields.push(field(Field::Bcc.label(), self.recipients(Field::Bcc, anchors, narrow, Vec::new(), 0.0)));
+            let bcc = self.recipients(Field::Bcc, anchors, narrow, Vec::new(), 0.0);
+            rows = rows.push(self.line(Field::Bcc.label(), Some(BCC), bcc, narrow));
         }
-        fields = fields.push(field(tr("Subject"), self.input(SUBJECT, &self.subject, Message::Subject, None)));
+        // An answer's subject is folded: the same field in the plain weight; it opens (strong) as soon as
+        // it takes the focus, by a click or by Tab, so it stays reachable from the keyboard.
+        let level = if self.subject_open { typo::body_strong() } else { typo::body() };
+        let subject = self.input(SUBJECT, &self.subject, Message::Subject, None, level);
+        rows = rows.push(self.line(tr("Subject"), Some(SUBJECT), subject, narrow));
 
-        let mut page = column![].spacing(space::s());
+        let mut page = column![];
         for block in &self.body.blocks {
             match block {
                 Block::Text { id, content, .. } => {
@@ -3684,10 +3966,11 @@ impl<S: ComposeSource + 'static> Window<S> {
                         .size(typo::body().size)
                         .line_height(typo::body().line_height)
                         .font(typo::body().font)
+                        // The caret is found with this padding (`document::reveal_caret`).
                         .padding(space::m())
                         .height(iced::Shrink)
                         .wrapping(Wrapping::WordOrGlyph)
-                        .style(style::text_editor_paper)
+                        .style(style::text_editor_document)
                         .key_binding(move |press| {
                             editor_command(
                                 id,
@@ -3707,14 +3990,38 @@ impl<S: ComposeSource + 'static> Window<S> {
                 Block::Image(picture) => page = page.push(self.picture_block(picture, narrow)),
             }
         }
-        if let Some(signature) = self.sender().and_then(|sender| sender.signature.as_deref()) {
-            page = page.push(container(signature_block(signature)).padding(Padding::new(space::m()).top(0.0)));
+        if self.body.folded.is_some() {
+            let show = widgets::text_button(
+                Some(Icon::Ellipsis),
+                tr("Show history"),
+                style::button::ghost,
+                Some(Message::ShowHistory),
+            );
+            let show = match self.history.as_deref() {
+                Some(line) => widgets::with_tooltip(show, list::one_line(line)),
+                None => show,
+            };
+            // The button's own padding puts its icon on the text's edge.
+            page = page.push(show);
         }
+        if let Some(signature) = self.sender().and_then(|sender| sender.signature.as_deref()) {
+            page = page.push(container(signature_block(signature)).padding(Padding::new(space::m())));
+        }
+        if !self.attachments.is_empty() {
+            let cards = self.attachments.iter().enumerate().map(|(i, attached)| self.attachment_card(i, attached));
+            page = page.push(container(widgets::chip_row(cards.collect())).padding(Padding::new(space::m())));
+        }
+        // The text keeps the rows' side margin (the editor brings `space::m()` of it) and the reading
+        // width; the paper itself reaches from edge to edge.
+        let page = container(page)
+            .padding([space::s(), (side - space::m()).max(0.0)])
+            .max_width(size::reading_max() + 2.0 * side);
         // A fixed paper footer stays visible even after a long paste; it takes layout space,
         // never overlays the text, image controls or account signature.
         let mut paper_content = column![document::paper_scroll(
             iced::widget::scrollable(page)
                 .id("compose-paper")
+                .width(Fill)
                 .height(Fill)
                 .direction(iced::widget::scrollable::Direction::Vertical(style::scrollbar()))
                 .style(style::scrollable)
@@ -3735,22 +4042,60 @@ impl<S: ComposeSource + 'static> Window<S> {
                     ),
                     container(widgets::kbd(shortcut("Alt+V"))).center_y(size::control_sm()).into(),
                 ]))
-                .padding(space::m()),
+                .padding([space::s(), side]),
             );
         }
         let paper = container(paper_content).width(Fill).height(Fill).style(style::container::paper);
-        let mut form =
-            column![fields, self.toolbar(narrow, &anchors.tools), themed::in_paper(paper, self.dark_paper())]
-                .spacing(space::s())
-                .height(Fill);
-        if !self.attachments.is_empty() {
-            let chips = self.attachments.iter().enumerate().map(|(i, attached)| self.attachment_chip(i, attached));
-            form = form.push(widgets::chip_row(chips.collect()));
+        // The tools stand over the mail like one more row (issue #627, after the first look at the
+        // window): formatting with "Aa", attach, image and ◐; the footer keeps only Send and Discard.
+        let tools = container(self.toolbar(narrow, &anchors.tools)).width(Fill).padding([0.0, side]);
+        let rows = rows.push(container(tools).center_y(size::control())).push(hairline());
+        column![rows, themed::in_paper(paper, self.dark_paper()), self.footer(narrow)].height(Fill).into()
+    }
+
+    /// A row of the form (issue #627): the label in `META` – `text` while its field (`id`) has the
+    /// focus, else `text_3` – and the control beside it, the side margin around, a hairline below.
+    fn line<'a>(
+        &self,
+        label: &'static str,
+        id: Option<&'static str>,
+        control: Element<'a, Message>,
+        narrow: bool,
+    ) -> Element<'a, Message> {
+        let lit = id.is_some() && self.focused == id;
+        let label = typo::text(typo::meta(), label)
+            .style(if lit { theme::text } else { theme::text_3 })
+            .wrapping(Wrapping::None);
+        let label = container(label).width(label_width()).center_y(size::control());
+        // Top: a recipient field grows by lines of chips.
+        let line = row![label, control].spacing(space::s()).align_y(Alignment::Start);
+        column![container(line).width(Fill).padding([0.0, Self::side(narrow)]), hairline()].into()
+    }
+
+    /// The footer (issue #627), [`size::header()`] high: Send with its keys beside it (narrow only the
+    /// icon), and at the right "Discard draft". The tools stand in the row over the mail ([`Self::toolbar`]).
+    fn footer(&self, narrow: bool) -> Element<'_, Message> {
+        let editable = self.editable();
+        let press = (editable && !self.unsure).then_some(Message::Send);
+        let tip = trf("Send ({keys})", &[("keys", &send_keys())]);
+        let mut bar = row![].spacing(space::xs()).align_y(Alignment::Center);
+        if narrow {
+            bar = bar.push(widgets::compact_button(Icon::Send, tip, style::button::primary, press));
+        } else {
+            let label = if self.sending { tr("Sending…") } else { tr("Send") };
+            let send = widgets::text_button(Some(Icon::Send), label, style::button::primary, press);
+            bar = bar.push(widgets::with_tooltip(send, tip));
+            bar = bar.push(container(widgets::kbd(send_keys())).padding([0.0, space::xs()]));
         }
-        // The form takes the whole width of its window (issue #124): the compose window is a tile
-        // of its own, sized by the tiling manager, so a reading width would only leave a gap.
-        let padding = if narrow { Padding::new(space::m()) } else { Padding::new(space::l()) };
-        container(form).width(Fill).height(Fill).padding(padding).into()
+        let discard = (self.ready() && !self.sending).then_some(Message::DiscardDraft);
+        bar = bar.push(Space::new().width(Fill)).push(widgets::icon_button(Icon::Trash2, tr("Discard draft"), discard));
+        container(bar).width(Fill).center_y(size::header()).padding([0.0, Self::side(narrow)]).into()
+    }
+
+    /// ◐: the paper light or dark.
+    fn paper_toggle(&self) -> Element<'_, Message> {
+        let paper = if self.dark_paper() { tr("Switch to light paper") } else { tr("Switch to dark paper") };
+        widgets::icon_button(Icon::Contrast, paper, self.ready().then_some(Message::TogglePaper))
     }
 
     fn dark_paper(&self) -> bool {
@@ -3767,7 +4112,8 @@ impl<S: ComposeSource + 'static> Window<S> {
         } else if !picture.inline {
             widgets::chip(Some(Mark::Icon(Icon::Image)), tr("Image attachment"), None)
         } else if let Some(preview) = &picture.preview {
-            let available = (self.toolbar_room(narrow) - 2.0 * space::m()).max(size::control_sm());
+            let text = self.toolbar_room(narrow).min(size::reading_max() + 2.0 * space::m());
+            let available = (text - 2.0 * space::m()).max(size::control_sm());
             let natural = if picture.size == ImageSize::Original {
                 picture.prepared.as_ref().map_or(picture.width, |p| p.original_width)
             } else {
@@ -3838,21 +4184,34 @@ impl<S: ComposeSource + 'static> Window<S> {
         container(block).padding(space::m()).width(Fill).into()
     }
 
-    /// The width the toolbar has: the window's below the title band, less the form's padding.
+    /// The width of the rows: the window's below the title band, less the side margins.
     fn toolbar_room(&self, narrow: bool) -> f32 {
-        let padding = if narrow { space::m() } else { space::l() };
-        shell::below_titlebar(self.size, self.zoom.factor()).width - 2.0 * padding
+        shell::below_titlebar(self.size, self.zoom.factor()).width - 2.0 * Self::side(narrow)
     }
 
-    /// The fixed toolbar (issues #125, #460): bold, italic, underline | lists, quote | link, clear,
-    /// and at the end ◐ for the paper. What does not fit goes from the back into "…" ([`fits`]); ◐
-    /// and "…" always stay. An account that writes plain text has ◐ only. Each button does what its
-    /// key does; the tooltip names the key.
+    /// The width the formats have in the tools row: the row's less "Aa" with its line, attach and
+    /// image (◐ is kept by [`fits`] itself).
+    fn format_room(&self, narrow: bool) -> f32 {
+        let button = size::control_sm() + space::xs();
+        self.toolbar_room(narrow) - 3.0 * button - (size::HAIRLINE + space::xs())
+    }
+
+    /// The tools over the mail (issues #125, #460, #627): "Aa" folds the formats in and out (kept in
+    /// `ui.json`), then bold, italic, underline | lists, quote | link, clear; at the right attach,
+    /// image and ◐ for the paper. What does not fit goes from the back into "…" ([`fits`]); ◐ and "…"
+    /// always stay. Each button does what its key does; the tooltip names the key.
     fn toolbar(&self, narrow: bool, anchor: &Anchor) -> Element<'_, Message> {
         let editable = self.editable();
-        let mut bar = row![].spacing(space::xs()).align_y(Alignment::Center);
-        if self.formatted() {
-            let shown = fits(self.toolbar_room(narrow) - size::control_sm() - space::xs());
+        // A plain icon button, no chosen frame: whether the formats show is seen beside it, and the
+        // tooltip says what a click does.
+        let aa = if self.format_bar { tr("Hide formatting") } else { tr("Show formatting") };
+        let mut bar =
+            row![widgets::icon_button(Icon::ALargeSmall, aa, self.ready().then_some(Message::ToggleFormatBar))]
+                .spacing(space::xs())
+                .align_y(Alignment::Center);
+        if self.formatted() && self.format_bar {
+            bar = bar.push(divider());
+            let shown = fits(self.format_room(narrow));
             for (i, group) in Format::GROUPS.iter().enumerate() {
                 let buttons: Vec<Format> = group.iter().copied().filter(|format| shown.contains(format)).collect();
                 if buttons.is_empty() {
@@ -3876,15 +4235,16 @@ impl<S: ComposeSource + 'static> Window<S> {
                 bar = bar.push(widgets::anchored(anchor, more));
             }
         }
-        bar = bar.push(widgets::icon_button(Icon::Image, tr("Insert image"), editable.then_some(Message::InsertImage)));
-        let paper = if self.dark_paper() { tr("Switch to light paper") } else { tr("Switch to dark paper") };
-        let toggle = widgets::icon_button(Icon::Contrast, paper, self.ready().then_some(Message::TogglePaper));
-        bar.push(Space::new().width(Fill)).push(toggle).into()
+        bar.push(Space::new().width(Fill))
+            .push(widgets::icon_button(Icon::Paperclip, tr("Attach files"), editable.then_some(Message::Attach)))
+            .push(widgets::icon_button(Icon::Image, tr("Insert image"), editable.then_some(Message::InsertImage)))
+            .push(self.paper_toggle())
+            .into()
     }
 
     /// The menu "…" of the toolbar: the formats that did not fit, in their order.
     fn tools_menu(&self, anchor: &Anchor, narrow: bool) -> Element<'_, Message> {
-        let shown = fits(self.toolbar_room(narrow) - size::control_sm() - space::xs());
+        let shown = fits(self.format_room(narrow));
         let items = Format::ALL
             .into_iter()
             .filter(|format| !shown.contains(format))
@@ -3925,9 +4285,9 @@ impl<S: ComposeSource + 'static> Window<S> {
             .size(typo::body().size)
             .line_height(typo::body().line_height)
             .font(typo::body().font)
-            .padding(style::INPUT_PADDING)
+            .padding(row_input_padding(typo::body()))
             .width(Fill)
-            .style(style::text_input_flat)
+            .style(style::text_input_bare)
             .on_input_maybe(editable.then_some(on_input))
             .on_submit_maybe(editable.then_some(Message::Submit(which)))
             .into();
@@ -3936,35 +4296,48 @@ impl<S: ComposeSource + 'static> Window<S> {
             row![input, folds].align_y(Alignment::Center).into()
         } else {
             // A chip's name gives way before the field is full: the ✕ and the folds keep their room.
-            let room = (self.field_room(narrow) - folds_width - size::control_sm() - 4.0 * space::s())
-                .clamp(size::control_sm(), size::props());
-            let chips =
-                held.chips.iter().enumerate().map(|(i, chip)| self.recipient_chip(which, i, chip, room)).collect();
-            let top = row![container(widgets::chip_row(chips)).width(Fill), folds].align_y(Alignment::Start);
-            column![container(top).padding(Padding::new(space::xs()).bottom(0.0)), input].into()
+            // What a chip takes beside its name: padding, icon, the gaps and the ✕ – and the gap to the next.
+            let around = style::CHIP_PADDING.left + icon::SIZE_SM + style::CHIP_HEIGHT + 3.0 * space::s();
+            let room = (self.field_room(narrow) - folds_width - around).clamp(size::control_sm(), size::props());
+            // Each chip stands in a band as high as the row, so a line of chips alone is centred too.
+            let mut items: Vec<Element<'_, Message>> = held
+                .chips
+                .iter()
+                .enumerate()
+                .map(|(i, chip)| container(self.recipient_chip(which, i, chip, room)).center_y(size::control()).into())
+                .collect();
+            // The input for the next one after the chips, on their line while there is room.
+            items.push(container(input).width(next_input_width()).into());
+            let chips = row(items).spacing(space::xs()).align_y(Alignment::Center).wrap().vertical_spacing(0.0);
+            row![container(chips).width(Fill), container(folds).center_y(size::control())]
+                .align_y(Alignment::Start)
+                .into()
         };
-        widgets::anchored(anchors.of(which), container(body).width(Fill).style(style::container::field))
+        // No fixed height: a field with many chips grows by lines, each as high as the input.
+        widgets::anchored(anchors.of(which), container(body).width(Fill))
     }
 
     /// A recipient as a chip with its ✕: a person by name (the address in the tooltip), a word that is
     /// no address with the alert icon and a tooltip that says so.
     fn recipient_chip<'a>(&self, which: Field, index: usize, chip: &'a Chip, room: f32) -> Element<'a, Message> {
-        let (chip, tip): (Element<'a, Message>, String) = match chip {
+        let press = self.editable().then_some(Message::RemoveChip(which, index));
+        // The ✕ sits inside the chip (issue #627); the address or the problem is the tooltip of the name.
+        match chip {
             Chip::Person(who) => {
                 let name = who.name.as_deref().map(list::one_line).filter(|name| !name.is_empty());
                 let label = typo::ellipsize(name.as_deref().unwrap_or(&who.address), typo::meta(), room);
-                (widgets::chip(Some(Mark::Icon(Icon::User)), label, None), format_address(who))
+                let user = icon::icon(Icon::User, icon::SIZE_SM)
+                    .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) });
+                widgets::chip_removable(user, label, Some(format_address(who)), tr("Remove"), press)
             }
             Chip::Broken(word) => {
                 let alert = icon::icon(Icon::CircleAlert, icon::SIZE_SM)
                     .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
                 let label = typo::ellipsize(&list::one_line(word), typo::meta(), room);
-                (widgets::chip_led(alert, label, None), tr("This isn't a valid address.").to_owned())
+                let why = Some(tr("This isn't a valid address.").to_owned());
+                widgets::chip_removable(alert, label, why, tr("Remove"), press)
             }
-        };
-        let press = self.editable().then_some(Message::RemoveChip(which, index));
-        let remove = widgets::icon_button(Icon::X, tr("Remove"), press);
-        row![widgets::with_tooltip(chip, tip), remove].align_y(Alignment::Center).into()
+        }
     }
 
     /// The suggestions under their field (issue #460): contacts and groups, then apart the addresses
@@ -4111,16 +4484,17 @@ impl<S: ComposeSource + 'static> Window<S> {
         value: &'a str,
         on_input: fn(String) -> Message,
         which: Option<Field>,
+        level: typo::Level,
     ) -> Element<'a, Message> {
         let editable = self.editable();
         text_input("", value)
             .id(id)
-            .size(typo::body().size)
-            .line_height(typo::body().line_height)
-            .font(typo::body().font)
-            .padding(style::INPUT_PADDING)
+            .size(level.size)
+            .line_height(level.line_height)
+            .font(level.font)
+            .padding(row_input_padding(level))
             .width(Fill)
-            .style(style::text_input)
+            .style(style::text_input_bare)
             .on_input_maybe(editable.then_some(on_input))
             .on_submit_maybe(which.filter(|_| editable).map(Message::Submit))
             .into()
@@ -4133,17 +4507,28 @@ impl<S: ComposeSource + 'static> Window<S> {
         let Some(sender) = self.sender() else { return Space::new().into() };
         let name = list::one_line(&sender.name);
         let address = typo::text(typo::meta(), sender.address.as_str()).style(theme::text_3).wrapping(Wrapping::None);
-        let picked: Element<'_, Message> = match self.senders.len() {
-            1 if name.is_empty() => address.into(),
-            1 => row![typo::text(typo::body(), name).wrapping(Wrapping::None), address]
+        // Quiet like the other rows (issue #627): the name as text, with several accounts a chevron
+        // after it and the whole a frameless button – no framed select box in a row of text.
+        let words: Element<'_, Message> = if name.is_empty() {
+            typo::text(typo::body(), sender.address.as_str()).wrapping(Wrapping::None).into()
+        } else {
+            row![typo::text(typo::body(), name).wrapping(Wrapping::None), address]
                 .spacing(space::s())
                 .align_y(Alignment::Center)
-                .into(),
-            _ if name.is_empty() => widgets::select_button(anchor, sender.address.clone(), Message::FromMenu),
-            _ => row![widgets::select_button(anchor, name, Message::FromMenu), address]
-                .spacing(space::s())
-                .align_y(Alignment::Center)
-                .into(),
+                .into()
+        };
+        let picked: Element<'_, Message> = if self.senders.len() > 1 {
+            let chevron = icon::icon(Icon::ChevronDown, icon::SIZE_SM)
+                .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) });
+            let content = row![words, chevron].spacing(space::xs()).align_y(Alignment::Center);
+            let open = button(container(content).center_y(Fill))
+                .height(size::control())
+                .padding(0)
+                .style(style::button::bare)
+                .on_press_maybe(self.editable().then_some(Message::FromMenu));
+            widgets::anchored(anchor, open)
+        } else {
+            words
         };
         container(picked).center_y(size::control()).into()
     }
@@ -4172,35 +4557,55 @@ impl<S: ComposeSource + 'static> Window<S> {
         )
     }
 
-    /// An attachment as a chip: its name and size, and a button that takes it out again.
-    fn attachment_chip<'a>(&self, index: usize, attached: &'a Attached) -> Element<'a, Message> {
-        let name = typo::ellipsize(&list::one_line(attached.name()), typo::meta(), size::props());
-        let label = format!("{name} · {}", mail::size_text(attached.size()));
+    /// An attachment as a card (issue #627): the kind of the file, its name and size, and the ✕ that
+    /// takes it out again.
+    fn attachment_card<'a>(&self, index: usize, attached: &'a Attached) -> Element<'a, Message> {
+        let name = list::one_line(attached.name());
+        let size = if attached.size() > 0 { mail::size_text(attached.size()) } else { String::new() };
         let press = self.editable().then_some(Message::RemoveAttachment(index));
-        let remove = widgets::icon_button(Icon::X, tr("Remove"), press);
-        row![widgets::chip(Some(Mark::Icon(Icon::Paperclip)), label, None), remove].align_y(Alignment::Center).into()
+        widgets::file_card(TileFace::Icon(file_face(&name)), &name, size, press)
     }
 
-    /// The question on closing with unsaved changes, in a dialog over the window.
+    /// The question over the window: on closing with unsaved changes, or on "Discard draft" (issue
+    /// #627).
     fn question(&self) -> Element<'_, Message> {
-        let actions = row![
-            widgets::text_button(None, tr("Keep writing"), style::button::ghost, Some(Message::KeepWriting)),
-            widgets::text_button(None, tr("Discard changes"), style::button::danger, Some(Message::DiscardChanges)),
-            widgets::text_button(
-                Some(Icon::Check),
-                tr("Save draft"),
-                style::button::primary,
-                Some(Message::SaveAndClose)
+        let (title, why, actions) = match self.asking {
+            Some(Ask::Discard) => (
+                tr("Discard this draft?"),
+                tr("It moves to the trash."),
+                row![
+                    widgets::text_button(None, tr("Keep writing"), style::button::ghost, Some(Message::KeepWriting)),
+                    widgets::text_button(
+                        Some(Icon::Trash2),
+                        tr("Discard draft"),
+                        style::button::danger,
+                        Some(Message::ConfirmDiscard)
+                    ),
+                ],
             ),
-        ]
-        .spacing(space::s())
-        .wrap()
-        .vertical_spacing(space::s());
-        let text = column![
-            typo::text(typo::title(), tr("Save this draft?")),
-            typo::text(typo::body(), tr("Your latest changes aren't saved yet.")).style(theme::text_2),
-        ]
-        .spacing(space::xs());
+            _ => (
+                tr("Save this draft?"),
+                tr("Your latest changes aren't saved yet."),
+                row![
+                    widgets::text_button(None, tr("Keep writing"), style::button::ghost, Some(Message::KeepWriting)),
+                    widgets::text_button(
+                        None,
+                        tr("Discard changes"),
+                        style::button::danger,
+                        Some(Message::DiscardChanges)
+                    ),
+                    widgets::text_button(
+                        Some(Icon::Check),
+                        tr("Save draft"),
+                        style::button::primary,
+                        Some(Message::SaveAndClose)
+                    ),
+                ],
+            ),
+        };
+        let actions = actions.spacing(space::s()).wrap().vertical_spacing(space::s());
+        let text = column![typo::text(typo::title(), title), typo::text(typo::body(), why).style(theme::text_2)]
+            .spacing(space::xs());
         container(column![text, actions].spacing(space::l()))
             .padding(space::l())
             .style(style::container::popover)
@@ -4690,8 +5095,9 @@ fn divider<'a>() -> Element<'a, Message> {
     container(iced::widget::rule::vertical(size::HAIRLINE).style(style::rule)).height(space::l()).into()
 }
 
-/// The formats of the toolbar that fit into `room` (issue #460), from the front: ◐ always stands at
-/// the end, and when not all fit "…" stands before it with the rest.
+/// The formats of the toolbar that fit into `room` (issues #460, #627), from the front: the room keeps
+/// space for "…" (the rest, when not all fit) and ◐; attach and image are taken off by the caller
+/// ([`Window::format_room`]).
 fn fits(room: f32) -> Vec<Format> {
     let button = size::control_sm() + space::xs();
     let line = size::HAIRLINE + space::xs();
@@ -4736,22 +5142,33 @@ fn face<'a>(name: &str, photo: Option<&image::Handle>, edge: f32) -> Element<'a,
         .into()
 }
 
-/// A labelled row of the form: the label in `META` on the left, the control beside it.
-fn field<'a>(label: &'static str, control: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    let label = container(typo::text(typo::meta(), label).style(theme::text_3).wrapping(Wrapping::None))
-        .width(label_width())
-        .center_y(size::control());
-    // Top: a recipient field grows by a line of chips above its input.
-    row![label, control.into()].spacing(space::s()).align_y(Alignment::Start).into()
+/// The hairline under a row of the form (issue #627): the rows have no boxes.
+fn hairline<'a>() -> Element<'a, Message> {
+    iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule).into()
 }
 
-/// The account's signature under the text: read-only, because the core adds it to the message. Its
-/// label sets it apart; no line, which would double the focus ring of the text above it (#460).
+/// The icon of an attachment card by the ending of its file name (issue #627): documents, images,
+/// sheets, archives, anything else.
+fn file_face(name: &str) -> Icon {
+    let ending = name.rsplit_once('.').map(|(_, ending)| ending.to_ascii_lowercase()).unwrap_or_default();
+    match ending.as_str() {
+        "pdf" | "doc" | "docx" | "odt" | "txt" | "md" => Icon::FileText,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "heic" | "svg" => Icon::Image,
+        "xls" | "xlsx" | "ods" | "csv" => Icon::Sheet,
+        "zip" | "gz" | "tar" | "7z" => Icon::Archive,
+        _ => Icon::FileType,
+    }
+}
+
+/// The account's signature under the text: read-only, because the core adds it to the message. A
+/// quiet "–" above it sets it apart (issue #627), no label and no line.
 fn signature_block(signature: &str) -> Element<'_, Message> {
-    let label = container(typo::text(typo::meta(), tr("Signature")).style(theme::text_3).wrapping(Wrapping::None));
-    row![label.width(label_width()), typo::text(typo::meta(), list::plain(signature)).style(theme::text_2)]
-        .spacing(space::s())
-        .into()
+    column![
+        typo::text(typo::meta(), "–").style(theme::text_3),
+        typo::text(typo::meta(), list::plain(signature)).style(theme::text_3),
+    ]
+    .spacing(space::xs())
+    .into()
 }
 
 /// A sentence that something did not work, in a line of the form: the alert icon (the colour only
@@ -5436,13 +5853,13 @@ mod tests {
         let mut window = ready(&[]);
         type_in(&mut window, "bob@example.org", "Lunch", "Shall we?");
         let _ = window.update(Message::Escape);
-        assert!(window.asking && !exited(&window), "unsaved: asked first");
+        assert!(window.asking == Some(Ask::Close) && !exited(&window), "unsaved: asked first");
         let _ = window.update(Message::Escape);
-        assert!(!window.asking, "Esc in the question keeps writing");
+        assert!(window.asking.is_none(), "Esc in the question keeps writing");
         let _ = window.update(Message::Close);
-        assert!(window.asking, "the close button asks too");
+        assert!(window.asking == Some(Ask::Close), "the close button asks too");
         let _ = window.update(Message::KeepWriting);
-        assert!(!window.asking && !exited(&window));
+        assert!(window.asking.is_none() && !exited(&window));
 
         let _ = window.update(Message::Close);
         let _ = window.update(Message::DiscardChanges);
@@ -5455,7 +5872,7 @@ mod tests {
         type_in(&mut window, "bob@example.org", "Lunch", "Shall we?");
         let _ = window.update(Message::Escape);
         let _ = window.update(Message::SaveAndClose);
-        assert!(!window.asking && !exited(&window), "closes after the save, not before");
+        assert!(window.asking.is_none() && !exited(&window), "closes after the save, not before");
         let _ = deliver_save(&mut window);
         assert!(exited(&window));
         assert_eq!(window.source.drafts().len(), 1);
@@ -5466,7 +5883,7 @@ mod tests {
         let _ = window.update(Message::Tick(later()));
         let _ = deliver_save(&mut window);
         let _ = window.update(Message::Escape);
-        assert!(exited(&window) && !window.asking);
+        assert!(exited(&window) && window.asking.is_none());
     }
 
     #[test]
@@ -6687,6 +7104,10 @@ mod tests {
             &["--open", "format"],
             &["--open", "image"],
             &["--open", "image-dark"],
+            &["--reply", "m:w1", "--open", "history"],
+            &["--reply", "m:w1", "--open", "subject"],
+            &["--open", "format-off"],
+            &["--open", "discard-draft"],
         ];
         for words in states {
             let mut window = ready(words);
@@ -6808,7 +7229,7 @@ mod tests {
         let found = block_on(ComposeSource::suggest(window.source.as_ref(), "emma".into()));
         let _ = window.update(Message::Suggested(window.asked, Field::To, found.clone()));
         let _ = window.update(Message::Escape);
-        assert!(window.suggestions.is_none() && !window.asking && !exited(&window));
+        assert!(window.suggestions.is_none() && window.asking.is_none() && !exited(&window));
         assert_eq!(window.to.typed, "emma");
         let _ = window.update(Message::To("emma ".into()));
         let _ = window.update(Message::Suggested(window.asked, Field::To, found));
@@ -6953,5 +7374,150 @@ mod tests {
         async fn discard_draft(&self, id: String) -> Result<(), ComposeError> {
             ComposeSource::discard_draft(&self.inner, id).await
         }
+    }
+
+    // ----- issue #627: rows, format bar, answers, discard -----
+
+    #[test]
+    fn the_format_bar_folds_and_unfolds_and_the_demo_keeps_nothing() {
+        let mut window = ready(&[]);
+        assert!(window.format_bar, "open at first");
+        assert!(!window.source.remembers(), "the demo never writes ui.json");
+        let _ = window.update(Message::ToggleFormatBar);
+        assert!(!window.format_bar);
+        let _ = window.view();
+        let _ = window.update(Message::ToggleFormatBar);
+        assert!(window.format_bar);
+        let mut stored = ready(&[]);
+        let _ = stored.update(Message::FormatBarLoaded(Some(false)));
+        assert!(!stored.format_bar, "what ui.json keeps");
+        let _ = stored.update(Message::FormatBarLoaded(None));
+        assert!(!stored.format_bar, "nothing kept changes nothing");
+        let mut late = ready(&[]);
+        let _ = late.update(Message::ToggleFormatBar);
+        let _ = late.update(Message::FormatBarLoaded(Some(true)));
+        assert!(!late.format_bar, "a choice made before ui.json was read wins");
+        assert!(!ready(&["--open", "format-off"]).format_bar);
+    }
+
+    #[test]
+    fn an_answer_names_the_person_and_folds_subject_and_history() {
+        let mut window = ready(&["--reply", "m:w1"]);
+        assert!(window.is_answer());
+        let first = window.to.addresses().first().map(|who| mail::sender_name(Some(who))).expect("a recipient");
+        assert_eq!(window.heading(), trf("Reply to {name}", &[("name", &first)]));
+        assert!(!window.subject_open, "the subject is folded");
+        assert!(window.body.folded.is_some(), "the history is folded");
+        let _ = window.update(Message::RowFocus(SUBJECT, true));
+        assert!(window.subject_open && window.focused == Some(SUBJECT), "Tab or a click opens it");
+
+        let forward = ready(&["--forward", "m:w1"]);
+        assert!(!forward.is_answer());
+        assert!(forward.subject_open && forward.body.folded.is_none(), "a forward keeps its history open");
+        assert_eq!(forward.heading(), tr("Forward"));
+        assert_eq!(ready(&[]).heading(), tr("New message"));
+    }
+
+    #[test]
+    fn the_folded_history_is_sent_the_same_and_unfolds() {
+        let mut window = ready(&["--reply", "m:w1"]);
+        let line = window.history.clone().expect("a reply has a history");
+        let folded = window.draft();
+        assert!(folded.html.as_deref().is_some_and(|html| html.contains("blockquote")), "{:?}", folded.html);
+        assert!(folded.body.contains(&line), "the plain text keeps the history too");
+        let _ = window.update(Message::ShowHistory);
+        assert!(window.body.folded.is_none());
+        assert_eq!(window.draft(), folded, "unfolding changes nothing in the draft");
+        assert!(!window.unsaved(), "nor is anything unsaved");
+        assert!(ready(&["--reply", "m:w1", "--open", "history"]).body.folded.is_none());
+    }
+
+    #[test]
+    fn discarding_asks_and_a_draft_never_saved_just_closes() {
+        let mut window = ready(&[]);
+        type_in(&mut window, "bob@example.org", "Lunch", "Shall we?");
+        let _ = window.update(Message::DiscardDraft);
+        assert_eq!(window.asking, Some(Ask::Discard));
+        let _ = window.update(Message::KeepWriting);
+        assert!(window.asking.is_none() && !exited(&window), "keep writing");
+        let _ = window.update(Message::DiscardDraft);
+        let _ = window.update(Message::ConfirmDiscard);
+        assert!(exited(&window), "nothing saved, nothing to move");
+        assert!(!window.calls.iter().any(|call| matches!(call, Call::Discard(_))));
+    }
+
+    #[test]
+    fn discarding_a_saved_draft_moves_it_to_the_trash_then_closes() {
+        let mut window = ready(&[]);
+        type_in(&mut window, "bob@example.org", "Lunch", "Shall we?");
+        let _ = window.update(Message::Tick(later()));
+        let _ = deliver_save(&mut window);
+        let (id, _) = window.draft.clone().expect("saved");
+        let _ = window.update(Message::DiscardDraft);
+        let _ = window.update(Message::ConfirmDiscard);
+        assert!(window.calls.contains(&Call::Discard(id)), "{:?}", window.calls);
+        assert!(!exited(&window), "closes once the core took it");
+        assert!(!window.editable(), "nothing is written meanwhile");
+        let _ = window.update(Message::Close);
+        assert!(!exited(&window) && window.asking.is_none(), "nor closed");
+        let _ = window.update(Message::Discarded(Err(ComposeError::NotFound)));
+        assert!(!exited(&window) && window.editable(), "a failure gives the window back");
+        assert_eq!(window.notice.as_ref().map(|n| n.what.as_str()), Some(tr("The draft could not be discarded.")));
+        let _ = window.update(Message::Discarded(Ok(())));
+        assert!(exited(&window));
+    }
+
+    #[test]
+    fn discarding_drops_a_waiting_close_and_saves_nothing_more() {
+        let mut window = ready(&[]);
+        type_in(&mut window, "bob@example.org", "Lunch", "Shall we?");
+        let _ = window.update(Message::Tick(later()));
+        let _ = deliver_save(&mut window);
+        window.after = After::Close;
+        let _ = window.update(Message::Subject("Lunch?".into()));
+        let saves = window.calls.iter().filter(|call| matches!(call, Call::Save(_))).count();
+        let _ = window.update(Message::DiscardDraft);
+        let _ = window.update(Message::ConfirmDiscard);
+        assert_eq!(window.after, After::Nothing);
+        let _ = window.save(After::Nothing);
+        let _ = window.update(Message::Tick(later()));
+        let now = window.calls.iter().filter(|call| matches!(call, Call::Save(_))).count();
+        assert_eq!(now, saves, "the draft on its way to the trash is not saved again");
+    }
+
+    #[test]
+    fn discarding_while_a_save_runs_waits_for_its_draft() {
+        let mut window = ready(&[]);
+        type_in(&mut window, "bob@example.org", "Lunch", "Shall we?");
+        let _ = window.update(Message::Tick(later()));
+        assert!(window.saving.is_some());
+        let _ = window.update(Message::DiscardDraft);
+        let _ = window.update(Message::ConfirmDiscard);
+        assert!(!window.calls.iter().any(|call| matches!(call, Call::Discard(_))), "waits for the save");
+        let _ = deliver_save(&mut window);
+        let (id, _) = window.draft.clone().expect("the save filed it");
+        assert!(window.calls.contains(&Call::Discard(id)), "{:?}", window.calls);
+        assert!(ready(&["--open", "discard-draft"]).asking == Some(Ask::Discard));
+    }
+
+    #[test]
+    fn the_label_of_the_row_with_the_focus_follows_it() {
+        let mut window = ready(&[]);
+        assert_eq!(window.focused, Some(TO), "a new message starts in To");
+        let _ = window.update(Message::RowFocus(SUBJECT, true));
+        let _ = window.update(Message::RowFocus(TO, false));
+        assert_eq!(window.focused, Some(SUBJECT), "another row losing it changes nothing");
+        let _ = window.update(Message::RowFocus(SUBJECT, false));
+        assert_eq!(window.focused, None, "the text has it, no row");
+    }
+
+    #[test]
+    fn attachment_cards_show_the_kind_of_file() {
+        assert_eq!(file_face("Belege-Oktober.PDF"), Icon::FileText);
+        assert_eq!(file_face("Kassenbon.jpg"), Icon::Image);
+        assert_eq!(file_face("budget-q4.csv"), Icon::Sheet);
+        assert_eq!(file_face("backup.tar"), Icon::Archive);
+        assert_eq!(file_face("no-ending"), Icon::FileType);
+        assert_eq!(file_face("song.mp3"), Icon::FileType);
     }
 }
