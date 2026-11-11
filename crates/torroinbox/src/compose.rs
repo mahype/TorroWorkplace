@@ -3881,8 +3881,8 @@ impl<S: ComposeSource + 'static> Window<S> {
         if narrow { space::m() } else { space::l() }
     }
 
-    /// The header bar (issue #627): what is written and how the draft stands, then Close; Send and
-    /// attach stand in the footer. An answer names the person ("Reply to Lena Brandt") and the
+    /// The header bar (issue #627): what is written and how the draft stands, then Close; Send stands
+    /// in the footer, attach in the row of tools over the mail. An answer names the person ("Reply to Lena Brandt") and the
     /// account it is written from ("from anna@…", a button with the accounts when there are several).
     /// Narrow windows drop the state, which becomes the title's tooltip.
     fn header(&self, narrow: bool, anchors: &Anchors) -> Element<'_, Message> {
@@ -4296,8 +4296,9 @@ impl<S: ComposeSource + 'static> Window<S> {
             row![input, folds].align_y(Alignment::Center).into()
         } else {
             // A chip's name gives way before the field is full: the ✕ and the folds keep their room.
-            let room = (self.field_room(narrow) - folds_width - style::CHIP_HEIGHT - 4.0 * space::s())
-                .clamp(size::control_sm(), size::props());
+            // What a chip takes beside its name: padding, icon, the gaps and the ✕ – and the gap to the next.
+            let around = style::CHIP_PADDING.left + icon::SIZE_SM + style::CHIP_HEIGHT + 3.0 * space::s();
+            let room = (self.field_room(narrow) - folds_width - around).clamp(size::control_sm(), size::props());
             // Each chip stands in a band as high as the row, so a line of chips alone is centred too.
             let mut items: Vec<Element<'_, Message>> = held
                 .chips
@@ -4320,26 +4321,23 @@ impl<S: ComposeSource + 'static> Window<S> {
     /// no address with the alert icon and a tooltip that says so.
     fn recipient_chip<'a>(&self, which: Field, index: usize, chip: &'a Chip, room: f32) -> Element<'a, Message> {
         let press = self.editable().then_some(Message::RemoveChip(which, index));
-        // The ✕ sits inside the chip (issue #627), the address or the problem is the chip's tooltip.
-        let (chip, tip): (Element<'a, Message>, String) = match chip {
+        // The ✕ sits inside the chip (issue #627); the address or the problem is the tooltip of the name.
+        match chip {
             Chip::Person(who) => {
                 let name = who.name.as_deref().map(list::one_line).filter(|name| !name.is_empty());
                 let label = typo::ellipsize(name.as_deref().unwrap_or(&who.address), typo::meta(), room);
                 let user = icon::icon(Icon::User, icon::SIZE_SM)
                     .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) });
-                (widgets::chip_removable(user, label, tr("Remove"), press), format_address(who))
+                widgets::chip_removable(user, label, Some(format_address(who)), tr("Remove"), press)
             }
             Chip::Broken(word) => {
                 let alert = icon::icon(Icon::CircleAlert, icon::SIZE_SM)
                     .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
                 let label = typo::ellipsize(&list::one_line(word), typo::meta(), room);
-                (
-                    widgets::chip_removable(alert, label, tr("Remove"), press),
-                    tr("This isn't a valid address.").to_owned(),
-                )
+                let why = Some(tr("This isn't a valid address.").to_owned());
+                widgets::chip_removable(alert, label, why, tr("Remove"), press)
             }
-        };
-        widgets::with_tooltip(chip, tip)
+        }
     }
 
     /// The suggestions under their field (issue #460): contacts and groups, then apart the addresses
@@ -5097,8 +5095,9 @@ fn divider<'a>() -> Element<'a, Message> {
     container(iced::widget::rule::vertical(size::HAIRLINE).style(style::rule)).height(space::l()).into()
 }
 
-/// The formats of the toolbar that fit into `room` (issue #460), from the front: ◐ always stands at
-/// the end, and when not all fit "…" stands before it with the rest.
+/// The formats of the toolbar that fit into `room` (issues #460, #627), from the front: the room keeps
+/// space for "…" (the rest, when not all fit) and ◐; attach and image are taken off by the caller
+/// ([`Window::format_room`]).
 fn fits(room: f32) -> Vec<Format> {
     let button = size::control_sm() + space::xs();
     let line = size::HAIRLINE + space::xs();

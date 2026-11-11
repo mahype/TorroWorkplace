@@ -203,7 +203,8 @@ pub mod button {
 
     /// A button that reads as text in a row (issue #627, the account in the compose window's From
     /// row): no surface and no frame in any state, so it sits on the axis of the text around it; the
-    /// text `text`, `text_2` while pressed, faded when disabled. The chevron beside it says it opens.
+    /// text `text`, `text_2` while pressed, faded when disabled. No hover surface on purpose (a fill
+    /// would stand out of the row): the chevron beside it and the pointer cursor say that it opens.
     pub fn bare(theme: &Theme, status: Status) -> Style {
         let p = palette(theme);
         let rest =

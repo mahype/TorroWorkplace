@@ -648,6 +648,7 @@ ist kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
     einer Eingabe ohne seitlichen Innenrand, Chips, Auswahl.
   - **Keine Rahmen in der Zeile:** Zeilen haben eine Haarlinie, sonst keine Kästen. Eine Auswahl ist Text mit einem
     Chevron 14 in `TEXT_3` (`style::button::bare`), kein gerahmter `select_button`; Knöpfe sind `ghost` oder Icon-Knöpfe.
+    `bare` hat bewusst keine Hover-Fläche (Ausnahme von „fünf Zustände“): Chevron und Zeiger zeigen, dass er öffnet.
   - **Was zu einem Ding gehört, steht darin:** Das × eines Chips liegt in der Pille (`widgets::chip_removable`), nicht
     daneben.
   - **Werkzeuge an einer Stelle:** Was den Inhalt bearbeitet (Formate, Anhang, Bild), steht als eine Zeile direkt über

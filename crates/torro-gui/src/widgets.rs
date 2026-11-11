@@ -4677,15 +4677,17 @@ fn chip_with<'a, M: Clone + 'a>(
 
 /// A [`chip`] that can be taken out again (issue #627, a recipient of the compose window): `lead`, the
 /// label in `META` and the ✕ inside the chip, at its right end – not as a button beside it. The chip is
-/// [`style::CHIP_HEIGHT`] high like every chip; the ✕ is 12 on a square as high as the chip, `ghost`,
-/// with `remove_tip` as its tooltip. `None` shows the ✕ off.
+/// [`style::CHIP_HEIGHT`] high like every chip; the ✕ is [`icon::SIZE_SM`] on a square as high as the
+/// chip, `ghost`, with `remove_tip` as its tooltip. `label_tip` (the whole address, why it is no address)
+/// sits on lead and label only, so the two tooltips never stand over each other. `None` shows the ✕ off.
 ///
 /// ```ignore
-/// widgets::chip_removable(icon::icon(Icon::User, icon::SIZE_SM), "Lena Brandt", tr("Remove"), Some(Msg::Remove(0)))
+/// widgets::chip_removable(icon::icon(Icon::User, icon::SIZE_SM), "Lena Brandt", Some(address), tr("Remove"), Some(Msg::Remove(0)))
 /// ```
 pub fn chip_removable<'a, M: Clone + 'a>(
     lead: impl Into<Element<'a, M>>,
     label: impl IntoFragment<'a>,
+    label_tip: Option<String>,
     remove_tip: impl IntoFragment<'a>,
     on_remove: Option<M>,
 ) -> Element<'a, M> {
@@ -4696,10 +4698,15 @@ pub fn chip_removable<'a, M: Clone + 'a>(
         .padding(0)
         .style(style::button::icon)
         .on_press_maybe(on_remove);
-    let content =
-        row![lead.into(), typo::text(typo::meta(), label).wrapping(Wrapping::None), with_tooltip(remove, remove_tip)]
-            .spacing(ICON_GAP)
-            .align_y(Alignment::Center);
+    let named: Element<'a, M> = row![lead.into(), typo::text(typo::meta(), label).wrapping(Wrapping::None)]
+        .spacing(ICON_GAP)
+        .align_y(Alignment::Center)
+        .into();
+    let named = match label_tip {
+        Some(tip) => with_tooltip(named, tip),
+        None => named,
+    };
+    let content = row![named, with_tooltip(remove, remove_tip)].spacing(ICON_GAP).align_y(Alignment::Center);
     container(content)
         .center_y(style::CHIP_HEIGHT)
         .padding(style::CHIP_PADDING.right(0.0))
@@ -9002,9 +9009,15 @@ mod tests {
     /// Issue #627: a chip with its ✕ inside builds on and off.
     #[test]
     fn the_removable_chip_builds_on_and_off() {
+        let _: Element<'_, Msg> = chip_removable(
+            icon(Icon::User, icon::SIZE_SM),
+            "Lena Brandt",
+            Some("lena@example.org".into()),
+            "Remove",
+            Some(Msg::Go),
+        );
         let _: Element<'_, Msg> =
-            chip_removable(icon(Icon::User, icon::SIZE_SM), "Lena Brandt", "Remove", Some(Msg::Go));
-        let _: Element<'_, Msg> = chip_removable(icon(Icon::CircleAlert, icon::SIZE_SM), "jonas@", "Remove", None);
+            chip_removable(icon(Icon::CircleAlert, icon::SIZE_SM), "jonas@", None, "Remove", None);
     }
 
     /// Issue #627: the attachment card builds with an icon or a letter, on and off, with a long name.
