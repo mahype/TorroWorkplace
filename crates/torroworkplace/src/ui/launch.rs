@@ -678,7 +678,7 @@ fn is_bot_id(id: &str) -> bool {
 }
 
 /// The entry the core lists while a Nextcloud sign-in runs (empty id, the login link), for the
-/// setup's waiting state (`--open setup-nextcloud-waiting`).
+/// setup's waiting state (`--open setup-cloud-waiting`).
 pub fn demo_signing_in() -> AccountInfo {
     AccountInfo {
         id: String::new(),

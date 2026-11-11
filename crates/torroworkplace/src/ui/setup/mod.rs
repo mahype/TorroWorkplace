@@ -763,11 +763,13 @@ fn components(data: &Data) -> Vec<ComponentSwitch> {
     let listed = || data.accounts.iter().filter(|account| !account.id.is_empty());
     let collections = || listed().flat_map(|account| account.collections.iter());
     // A server that brings calendars or task lists counts before its first sync has listed them: a Nextcloud
-    // whose services are not read yet or that has them, and every CalDAV account.
+    // whose services are not read yet or that has them, a CalDAV account, and a mail account whose sign-in
+    // has a CalDAV address.
     let brings = |service: torro_ipc::ServerService| {
         listed().any(|account| match account.kind.as_str() {
             // A CalDAV account counts until its collections are listed; then they say what it has.
             "caldav" => account.collections.is_empty(),
+            "mail" => account.collections.is_empty() && account.mail.as_ref().is_some_and(|mail| mail.caldav.is_some()),
             "nextcloud" => account.services.as_ref().is_none_or(|services| services.contains(&service)),
             _ => false,
         })
@@ -1618,6 +1620,28 @@ mod tests {
             let switches = components(&fresh);
             assert!(!switches.contains(&ComponentSwitch { component: Component::Calendar, enabled: false }));
             assert!(!switches.contains(&ComponentSwitch { component: Component::Tasks, enabled: false }));
+        }
+        // A mail account with a CalDAV address brings calendars and lists before its first sync lists them; one
+        // without it brings none.
+        let mut only_mail = data.clone();
+        only_mail.accounts =
+            super::super::launch::demo_data().accounts.into_iter().filter(|account| account.kind == "mail").collect();
+        only_mail.settings.components_off.clear();
+        let calendar_off = ComponentSwitch { component: Component::Calendar, enabled: false };
+        let tasks_off = ComponentSwitch { component: Component::Tasks, enabled: false };
+        if let Some(account) = only_mail.accounts.iter_mut().find(|account| account.mail.is_some()) {
+            account.collections.clear();
+            if let Some(mail) = account.mail.as_mut() {
+                mail.caldav = Some("https://dav.mailbox.org/".into());
+            }
+            let switches = components(&only_mail);
+            assert!(!switches.contains(&calendar_off) && !switches.contains(&tasks_off), "{switches:?}");
+            only_mail.accounts.iter_mut().filter_map(|a| a.mail.as_mut()).for_each(|mail| mail.caldav = None);
+            only_mail.accounts.iter_mut().for_each(|a| a.collections.clear());
+            let switches = components(&only_mail);
+            assert!(switches.contains(&calendar_off) && switches.contains(&tasks_off), "{switches:?}");
+        } else {
+            panic!("the demo has a mail account");
         }
         let finished = finish(&data, Some(Section::Mcp));
         assert!(matches!(finished, Outcome::CloseTo(_, Section::Mcp)), "Connect an agent… finishes too");

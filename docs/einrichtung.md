@@ -103,8 +103,8 @@ aus den Verbindungen ab: Mail ⇔ Mail-Konto, Calendar ⇔ eine Sammlung mit Ter
 GitHub, Assistant ⇔ ein KI-Konto; Notification Hub und Workspaces bleiben, wie sie sind. Beim ersten Durchlauf
 (Stand `pending`, `setup.version` 0) blendet „Finish“ Apps ohne Verbindung aus und mit Verbindung ein; sonst (nach
 „Run setup again“ oder nach „Set up later“, das die Version schon festhält) blendet es nur ein, nie aus, weil sonst
-eine bewusste Wahl unter Apps verloren ginge. Ein Nextcloud-Konto, dessen Dienste noch gelesen werden, und ein
-CalDAV-Konto vor dem ersten Abgleich zählen schon für Kalender und Aufgaben. Kalender, Listen und Eingangsquellen sind
+eine bewusste Wahl unter Apps verloren ginge. Ein Nextcloud-Konto, dessen Dienste noch gelesen werden, ein
+CalDAV-Konto und ein Mail-Konto mit CalDAV-Adresse zählen vor dem ersten Abgleich schon für Kalender und Aufgaben. Kalender, Listen und Eingangsquellen sind
 standardmäßig an; die Websuche bleibt aus und wird nur noch unter MCP servers › Built-in tools eingeschaltet. Alles
 bleibt in den Einstellungen änderbar.
 
