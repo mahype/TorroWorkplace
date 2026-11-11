@@ -2317,6 +2317,40 @@ mod tests {
         resources.assert_calls_async(0).await;
     }
 
+    /// Opt-in live check of the real retrieval path against the person's own Paddle mails: guarded DNS, redirects,
+    /// content types, resource loads and pins, without a browser. The directory holds `<name>.mail.html` (the
+    /// mail's HTML part); only the result shape is printed and the copy is written only there.
+    #[tokio::test]
+    #[ignore = "requires network and the person's private Paddle mails in a local temporary directory"]
+    async fn local_paddle_live() {
+        let _turn = invoice::TEST_TURN.lock().await;
+        let dir = std::env::var_os("TORRO_WORKFLOW_PADDLE_ACCEPTANCE").expect("explicit private temporary directory");
+        let dir = std::path::PathBuf::from(dir);
+        let package = super::super::templates::get("paddle_setapp_invoice_copy").expect("bundled template").package;
+        let downloader = download::Downloader::system().expect("system downloader");
+        let names = std::env::var("TORRO_WORKFLOW_PADDLE_NAMES").unwrap_or_else(|_| "august october".into());
+        for name in names.split_whitespace() {
+            let html = std::fs::read_to_string(dir.join(format!("{name}.mail.html"))).expect("local mail HTML");
+            let output = retrieve(&package, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), false)
+                .await
+                .unwrap_or_else(|failure| panic!("{name}: {:?}", failure.reason));
+            let mut witnessed = output.observed.clone().expect("a page was read");
+            let mut pinned = package.binding.resources.clone();
+            witnessed.sort();
+            pinned.sort();
+            eprintln!(
+                "{name}: {:?} profile {:?}, {} bytes, scripts match the template: {}",
+                output.provenance,
+                output.profile_version,
+                output.bytes.len(),
+                witnessed == pinned
+            );
+            assert_eq!((output.provenance, output.profile_version), (wire::Provenance::HtmlCopy, Some(2)));
+            assert_eq!(witnessed, pinned);
+            std::fs::write(dir.join(format!("{name}.live.pdf")), output.bytes).expect("local live copy");
+        }
+    }
+
     #[test]
     fn classic_pdf_containers_are_checked_without_expanding_any_stream() {
         let pdf = supplier_pdf();
