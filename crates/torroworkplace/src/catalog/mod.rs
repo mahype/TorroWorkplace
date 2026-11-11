@@ -1059,7 +1059,7 @@ pub(crate) mod tests {
         assert_eq!(mail.requires, ["torro-inbox"]);
         assert_eq!(checked.main.window_class, "torro-workplace");
         assert_eq!((checked.main.installed.as_deref(), checked.main.state), (Some("0.2.0"), CatalogState::Installed));
-        assert_eq!(checked.apps.len(), 6, "every app but the main application");
+        assert_eq!(checked.apps.len(), 7, "every app but the main application");
         assert_eq!(checked.job, None);
     }
 

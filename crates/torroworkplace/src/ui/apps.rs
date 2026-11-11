@@ -355,6 +355,10 @@ pub fn words(app: &str) -> (&'static str, &'static str) {
             tr("Can you do that for me?"),
             tr("Chat with a local or cloud model that may use your mail, calendar and tasks as you allow."),
         ),
+        "torro-chat" => (
+            tr("Who is there to talk to?"),
+            tr("Your colleagues on Nextcloud Talk: who is online, a window per chat, files and quick replies."),
+        ),
         _ => ("", ""),
     }
 }
