@@ -5094,12 +5094,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let task = self.handle(message);
         // Opening a mail in the wide window brings the reader back (issue #601): the person wants to
         // read it. Hiding the column closed the mail ([`App::toggle_right_column`]), so moving the
-        // cursor or a refresh opens nothing and the column stays hidden.
+        // cursor or a refresh opens nothing and the column stays hidden. A mail open behind the hidden
+        // column (opened in a medium window, then widened) brings it back once another one opens,
+        // so no mail is read – and marked read – unseen.
         let task = match self.launch.kind == Kind::Mail
             && self.class() == SizeClass::Wide
             && !self.right_column
-            && !opened
             && self.panel_open()
+            && (!opened || self.wanted_letter() != shown)
         {
             true => Task::batch([task, self.set_right_column(true)]),
             false => task,
@@ -13453,7 +13455,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     row![widgets::menu_button(nav, Some(icon), name, Message::ToggleNav)].align_y(Alignment::Center);
                 // The hub's summary is long: beside the top row's title in the medium window it would run
                 // under the settings, so it goes first, as the quiet note does in narrow ones (issue #601).
-                if let Some(note) = note.filter(|_| !(class == SizeClass::Medium && self.is_hub())) {
+                if let Some(note) = note.filter(|_| !(class == SizeClass::Medium && self.is_hub() && !self.sorting)) {
                     title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
                 }
                 // The top row has the panel button, the window's mark and its name (issues #459, #601).
@@ -26913,6 +26915,9 @@ mod tests {
         let _ = app.update(Message::SelectMail("m:w2".into()));
         assert!(app.panel_open() && !app.right_column, "medium keeps the wide window's choice");
         let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        let _ = app.update(Message::StepMail(true));
+        assert!(app.right_column, "widened with a mail open behind it, the next mail brings the reader back");
+        let _ = app.update(Message::ToggleRightColumn);
         let _ = app.update(Message::ToggleRightColumn);
         assert!(app.right_column, "the switch shows it again");
         for size in [Size::new(800.0, 600.0), Size::new(480.0, 900.0)] {
