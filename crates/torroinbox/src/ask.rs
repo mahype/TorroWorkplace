@@ -344,6 +344,9 @@ impl Ask {
             }
             // The cards stay as they were; the next answer or tick asks again.
             Event::Cards(_, _, Err(_)) => {}
+            // While the panel opens there is nothing to start anew; a new round would drop the answer
+            // of the opening and leave it loading for good (review of #605).
+            Event::New if self.phase == Phase::Loading => {}
             Event::New => {
                 // Answers still on their way belong to the conversation before.
                 self.round = Round::next();
@@ -507,15 +510,17 @@ pub async fn open(call: Call, about: MailRef) -> Result<Opened, Refusal> {
         Response::Engines { engines } => chat::ordered(engines),
         other => return Err(Refusal::unexpected(&other)),
     };
-    let default = match call(Request::Settings).await {
-        Ok(Response::Settings { settings }) => settings.ai_slots.chat,
-        _ => None,
+    let (default, mail_to_cloud) = match call(Request::Settings).await {
+        Ok(Response::Settings { settings }) => (settings.ai_slots.chat, settings.mail_to_cloud),
+        // An old core or none: the default data rule, mail stays on this computer.
+        _ => (None, false),
     };
     let conversations = match call(Request::ListConversations).await? {
         Response::Conversations { conversations } => conversations,
         other => return Err(Refusal::unexpected(&other)),
     };
     let preferred = chat::preferred_choice(default.as_ref(), &conversations, &engines, |_| None);
+    let preferred = mail_choice(preferred, &engines, mail_to_cloud)?;
     let Some(newest) = newest_about(&conversations, &about).cloned() else {
         return Ok(Opened { choice: preferred, conversation: None, cards: Vec::new() });
     };
@@ -527,9 +532,51 @@ pub async fn open(call: Call, about: MailRef) -> Result<Opened, Refusal> {
     };
     let own = engines
         .iter()
-        .any(|engine| engine.id == summary.engine)
-        .then(|| (Choice { engine: summary.engine.clone(), model: summary.model.clone() }, summary.effort));
+        .find(|engine| engine.id == summary.engine)
+        .filter(|engine| reads_mail(engine, summary.model.as_deref(), mail_to_cloud))
+        .map(|_| (Choice { engine: summary.engine.clone(), model: summary.model.clone() }, summary.effort));
     Ok(Opened { choice: own.or(preferred), conversation: Some((summary, entries)), cards })
+}
+
+/// Whether `engine` with `model` may chat about a mail (review of #605): an AI account – no coding
+/// agent, no test engine, which the core refuses with `unsupported` –, and with mail kept on this
+/// computer (`mail_to_cloud` off, the default data rule) one on this computer whose model is no cloud
+/// model of Ollama, which the core would refuse with `not-connected`. `None` lets the account pick.
+pub fn reads_mail(engine: &Engine, model: Option<&str>, mail_to_cloud: bool) -> bool {
+    if engine.kind != EngineKind::Ai {
+        return false;
+    }
+    mail_to_cloud || (chat::is_local(engine) && !model.is_some_and(torro_core::ai::openai::ollama_cloud_name))
+}
+
+/// What answers the chat about a mail (review of #605): the assistant's own choice (`preferred`)
+/// while it may read the mail ([`reads_mail`]), else the first engine of `engines` (in the order of
+/// `chat::ordered`, this computer first) that may, letting it pick its model. `Ok(None)` without any
+/// AI account (the hint "Set up an AI…"); `not-connected` when there are AI accounts but the data rule
+/// keeps mail from all of them (the hint "This AI may not read mail…").
+pub fn mail_choice(
+    preferred: Option<(Choice, Option<Effort>)>,
+    engines: &[Engine],
+    mail_to_cloud: bool,
+) -> Result<Option<(Choice, Option<Effort>)>, Refusal> {
+    let fits = |choice: &(Choice, Option<Effort>)| {
+        engines
+            .iter()
+            .find(|engine| engine.id == choice.0.engine)
+            .is_some_and(|engine| reads_mail(engine, choice.0.model.as_deref(), mail_to_cloud))
+    };
+    if let Some(preferred) = preferred.filter(fits) {
+        return Ok(Some(preferred));
+    }
+    let ordered = chat::ordered(engines.to_vec());
+    if let Some(engine) = ordered.iter().find(|engine| reads_mail(engine, None, mail_to_cloud)) {
+        return Ok(Some((Choice { engine: engine.id.clone(), model: None }, None)));
+    }
+    if engines.iter().any(|engine| engine.kind == EngineKind::Ai) {
+        let message = "The data rule keeps mail from every AI account set up.";
+        return Err(Refusal { code: "not-connected".to_owned(), message: message.to_owned() });
+    }
+    Ok(None)
 }
 
 /// A request answered with a conversation (`assistant.send_message`, `assistant.get_conversation`).
@@ -583,7 +630,7 @@ pub fn view<'a>(ask: &'a Ask, look: Look<'a>) -> Element<'a, Message> {
         }
     };
     let content = column![
-        head(look.covering),
+        head(look.covering, ask.phase != Phase::Loading),
         rule::horizontal(size::HAIRLINE).style(style::rule),
         about_row(look.summary, look.now),
         rule::horizontal(size::HAIRLINE).style(style::rule),
@@ -609,10 +656,10 @@ fn tinted<'a>(which: Icon, edge: f32, colour: fn(&Palette) -> iced::Color) -> El
 }
 
 /// The head: "‹ Mail" while the panel covers the mail, the sparkles and "Ask AI", then "+" ("New
-/// chat") and ✕ ("Close"); padded like a panel's head, so ✕ lines up with the window's buttons. The
+/// chat", off while the panel opens) and ✕ ("Close"); padded like a panel's head, so ✕ lines up with the window's buttons. The
 /// chevron of "‹ Mail" stands on the panel's left edge like the content below (the ghost button's own
 /// padding is taken off the head's).
-fn head<'a>(covering: bool) -> Element<'a, Message> {
+fn head<'a>(covering: bool, can_start_anew: bool) -> Element<'a, Message> {
     let left = match covering {
         true => (space::l() - style::button_padding().left).max(0.0),
         false => space::l(),
@@ -630,7 +677,7 @@ fn head<'a>(covering: bool) -> Element<'a, Message> {
         .push(sparkles(icon::SIZE))
         .push(typo::text(typo::body_strong(), tr("Ask AI")).wrapping(Wrapping::None))
         .push(Space::new().width(Fill))
-        .push(widgets::icon_button(Icon::Plus, tr("New chat"), Some(Message::Ask(Event::New))))
+        .push(widgets::icon_button(Icon::Plus, tr("New chat"), can_start_anew.then_some(Message::Ask(Event::New))))
         .push(widgets::icon_button(Icon::X, tr("Close"), Some(Message::Ask(Event::Close))));
     container(line).width(Fill).center_y(size::header()).padding(Padding::new(0.0).left(left).right(space::m())).into()
 }
@@ -1047,8 +1094,12 @@ fn demo_answer_to(held: &Mutex<Vec<Entry>>, request: Request) -> Result<Response
         Request::ListEngines => Ok(Response::Engines { engines: vec![demo_engine()] }),
         Request::ListConversations => Ok(Response::Conversations { conversations: Vec::new() }),
         Request::GetCards { .. } => Ok(Response::Cards { cards: Vec::new() }),
-        Request::SendMessage { text, about, .. } => {
+        Request::SendMessage { conversation, text, about, .. } => {
             let mut entries = held.lock().map_err(|_| refused())?;
+            // A message without a conversation starts a new one ("+"): the one before is left.
+            if conversation.is_none() {
+                entries.clear();
+            }
             let first = entries.is_empty();
             let mut add = |content| {
                 let seq = entries.len() as u64 + 1;
@@ -1243,6 +1294,65 @@ mod tests {
         let round = a.round;
         let _ = a.update(Event::Sent(round, answer("c-new")));
         assert_eq!(a.transcript.summary.as_ref().map(|summary| summary.id.as_str()), Some("c-new"));
+    }
+
+    /// Review of #605: "+" while the panel opens changes nothing, so the opening's answer still comes.
+    #[test]
+    fn a_new_chat_waits_until_the_panel_is_open() {
+        let (mut ask, _) = Ask::open(demo_call(), mail_ref("m:1"));
+        let round = ask.round;
+        let _ = ask.update(Event::New);
+        assert_eq!((ask.round, &ask.phase), (round, &Phase::Loading), "nothing to start anew yet");
+        let choice = (Choice { engine: demo_engine().id, model: None }, None);
+        let opened = Opened { choice: Some(choice), conversation: None, cards: Vec::new() };
+        let _ = ask.update(Event::Opened(round, Ok(opened)));
+        assert_eq!(ask.phase, Phase::Ready);
+    }
+
+    /// Review of #605: the chat about a mail answers with an AI account that may read it – the
+    /// assistant's own choice where it may, else the first such account, this computer first.
+    #[test]
+    fn the_chat_answers_with_an_ai_that_may_read_the_mail() {
+        let engine =
+            |id: &str, kind| Engine { id: id.to_owned(), kind, name: id.to_owned(), problem: None, models: Vec::new() };
+        let local = engine("ai:ollama@localhost:11434", EngineKind::Ai);
+        let cloud = engine("ai:openrouter@openrouter.ai", EngineKind::Ai);
+        let agent = engine("claude-code", EngineKind::Agent);
+        let pick =
+            |id: &str, model: Option<&str>| (Choice { engine: id.to_owned(), model: model.map(str::to_owned) }, None);
+        let engines = vec![agent.clone(), cloud.clone(), local.clone()];
+        let chosen = |preferred, rule| mail_choice(preferred, &engines, rule).expect("a choice").map(|(c, _)| c);
+        // A coding agent never; mail kept on this computer: the local account.
+        assert_eq!(chosen(Some(pick("claude-code", None)), false), Some(pick(&local.id, None).0));
+        assert_eq!(chosen(Some(pick(&cloud.id, Some("qwen/qwen3"))), false), Some(pick(&local.id, None).0));
+        // The assistant's own local choice stays, with its model; not an Ollama cloud model.
+        assert_eq!(chosen(Some(pick(&local.id, Some("qwen3:8b"))), false), Some(pick(&local.id, Some("qwen3:8b")).0));
+        assert_eq!(chosen(Some(pick(&local.id, Some("gpt-oss:120b-cloud"))), false), Some(pick(&local.id, None).0));
+        // Mail let out: the cloud account the person chose stays.
+        assert_eq!(
+            chosen(Some(pick(&cloud.id, Some("qwen/qwen3"))), true),
+            Some(pick(&cloud.id, Some("qwen/qwen3")).0)
+        );
+        // Only accounts elsewhere under the default rule: the hint that this AI may not read mail.
+        let refused = mail_choice(None, &[cloud.clone(), agent.clone()], false).expect_err("kept from them");
+        assert_eq!(hint_for(&refused), Hint::NotLocal);
+        // No AI account at all: "Set up an AI…".
+        assert_eq!(mail_choice(Some(pick("claude-code", None)), &[agent], false), Ok(None));
+    }
+
+    /// Review of #605: in the demo, a message after "+" starts its own conversation.
+    #[test]
+    fn the_demo_starts_anew_after_new_chat() {
+        let call = demo_call();
+        let about = mail_ref("m:1");
+        let choice = (Choice { engine: demo_engine().id, model: None }, None);
+        let first = send_request(None, Some(&choice), "Hi", &about).expect("a request");
+        let (_, entries) = block_on(ask_conversation(call.clone(), first)).expect("an answer");
+        assert_eq!(entries.len(), 3);
+        let again = send_request(None, Some(&choice), "Anew", &about).expect("a request");
+        let (_, entries) = block_on(ask_conversation(call, again)).expect("an answer");
+        assert!(matches!(&entries[0].content, EntryContent::Message { text, .. } if text == "Anew"), "{entries:?}");
+        assert_eq!(entries.len(), 3, "the mail read again, nothing of the one before");
     }
 
     /// Review of #605: a suggestion's card shows only in the chat about its own mail.

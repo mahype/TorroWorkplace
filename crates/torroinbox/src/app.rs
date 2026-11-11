@@ -6731,7 +6731,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::AskAi(id) => return self.open_ask(id),
             Message::Ask(event) => return self.on_ask(event),
             Message::AskSuggestions(id, kind, result) => {
+                // Only for the mail still open and suggestions that came (review of #605): a failed
+                // fetch, or another mail opened meanwhile, opens no dialog.
+                let held = self.letter.as_ref().is_some_and(|letter| letter.id == id);
+                let fetched = result.is_ok();
                 let taken = self.take_suggestions(&id, result);
+                if !(held && fetched) {
+                    return taken;
+                }
                 self.menu_at = MenuAt::Panel;
                 return Task::batch([taken, self.ask_action(None, &id, &kind)]);
             }
@@ -27505,6 +27512,21 @@ mod tests {
         let _ = app.update(Message::AskAi("m:w2".into()));
         let _ = app.update(Message::CloseDetail);
         assert!(app.ask.is_none(), "it goes with its mail");
+    }
+
+    /// Review of #605: "Accept" in the chat opens no dialog when the suggestions could not be fetched
+    /// or another mail is open by the time they come.
+    #[test]
+    fn accept_in_the_chat_opens_nothing_for_a_failed_fetch_or_another_mail() {
+        let mut app = mail_window(Density::Compact, &["--open", "suggestions"]);
+        deliver_letter(&mut app, "m:w2");
+        let _ = app.update(Message::AskSuggestions("m:w2".into(), "event".into(), Err("offline".into())));
+        assert_eq!(app.menu, None, "the fetch failed");
+        let read = read_out(&app, "m:w2", "event");
+        let _ = app.update(Message::AskSuggestions("m:w1".into(), "event".into(), Ok(vec![read.clone()])));
+        assert_eq!(app.menu, None, "another mail is open now");
+        let _ = app.update(Message::AskSuggestions("m:w2".into(), "event".into(), Ok(vec![read])));
+        assert_eq!(app.menu, Some(Menu::Event), "the mail open, the suggestions in");
     }
 
     /// Design review of #605: the chat beside the wide reader drags like a panel beside the content
