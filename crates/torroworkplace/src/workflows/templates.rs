@@ -18,7 +18,7 @@ pub(super) fn labels(id: &str) -> Result<(&'static str, &'static str), Error> {
         )),
         "paddle_setapp_invoice_copy" => Ok((
             "Paddle / Setapp invoice copy",
-            "Creates a marked PDF copy of a supported Paddle invoice page. Loads its stylesheets and scripts from my.paddle.com, static.paddle.com and cdn.paddle.com as data only: stylesheets are checked on every run, scripts are never executed and must match the tested version. No login.",
+            "Creates a marked PDF copy of a supported Paddle invoice page. Loads its stylesheets and scripts from my.paddle.com, static.paddle.com and cdn.paddle.com as data only: stylesheets are checked on every run and their layout, like the scripts, must match the tested version; scripts are never executed. No login.",
         )),
         _ => Err(Error::NotFound),
     }
@@ -54,6 +54,7 @@ pub fn list() -> Result<Vec<WorkflowTemplate>, Error> {
     paddle.binding.typesetter = 1;
     paddle.binding.fonts_digest = invoice::binding(2);
     paddle.binding.resources = paddle_scripts();
+    paddle.binding.layout = Some(PADDLE_LAYOUT.into());
     [("direct_pdf", direct), ("stripe_invoice", stripe), ("paddle_setapp_invoice_copy", paddle)]
         .into_iter()
         .map(|(id, package)| {
@@ -72,6 +73,10 @@ pub fn list() -> Result<Vec<WorkflowTemplate>, Error> {
         })
         .collect()
 }
+
+/// The layout fingerprint of the real Paddle/Setapp invoice pages (August to November 2026), identical on all of
+/// them. A draft test adopts a newer one; a saved workflow stops with `provider_changed`.
+const PADDLE_LAYOUT: &str = "38052a3603ee25885b3682c25fe7a5eb40a62fe49c04cc0a77dc9ecd58c9a882";
 
 /// The provider scripts witnessed on the real Paddle/Setapp invoice pages (August to November 2026): jQuery and
 /// jQuery UI from the CDN, select2 and the invoice script, and the inline address-form handler. A draft test
