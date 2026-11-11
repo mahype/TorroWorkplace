@@ -482,9 +482,11 @@ mod tests {
     /// Every app but the control centre has the section, with its own areas only.
     #[test]
     fn every_app_but_the_control_centre_has_the_section() {
+        // The chat (issue #643) has no settings of its own yet, so no section here either.
         for app in AppId::ALL {
-            assert_eq!(sections(*app).is_empty(), *app == AppId::WORKPLACE, "{}", app.window_class);
-            if *app != AppId::WORKPLACE {
+            let without = *app == AppId::WORKPLACE || *app == AppId::CHAT;
+            assert_eq!(sections(*app).is_empty(), without, "{}", app.window_class);
+            if !without {
                 assert_eq!(sections(*app)[0].id, "api-mcp");
                 assert!(wanted(*app).contains(&Request::ListClients));
             }
