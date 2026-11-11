@@ -7241,6 +7241,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "torro-chat"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "torro-contacts"
 version = "0.1.0"
 dependencies = [
