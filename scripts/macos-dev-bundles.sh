@@ -52,7 +52,11 @@ for program in torroworkplace torroinbox torro-inbox-mail torro-inbox-notificati
     [ -x "$programs/$program" ] || missing="$missing $program"
 done
 if [ -n "$missing" ]; then
-    echo "macos-dev-bundles.sh: missing in $programs:$missing (run cargo build --workspace)" >&2
+    case "$programs" in
+        */release) build="cargo build --release" ;;
+        *) build="cargo build --workspace" ;;
+    esac
+    echo "macos-dev-bundles.sh: missing in $programs:$missing (run $build)" >&2
     exit 1
 fi
 
