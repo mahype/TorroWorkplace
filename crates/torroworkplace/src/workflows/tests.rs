@@ -151,6 +151,40 @@ async fn profile_two_copies_a_page_whose_checked_resources_match_its_head_exactl
     assert!(invoice::extract_profile_2(AUGUST.as_bytes(), Some(HTML)).expect("plain page").1.references.is_empty());
 }
 
+/// The layout fingerprint is the same for every invoice of one layout and changes with every layout change.
+#[tokio::test]
+async fn the_layout_fingerprint_is_stable_across_invoices_and_binds_every_layout_change() {
+    let _turn = invoice::TEST_TURN.lock().await;
+    async fn layout(page: &str, css: &str) -> Option<String> {
+        invoice::convert(page.as_bytes().to_vec(), Some(HTML.into()), Some(loaded(css)), None)
+            .await
+            .expect("copy")
+            .layout
+    }
+    let august = with_resources(AUGUST);
+    let base = layout(&august, CSS).await;
+    assert!(base.is_some());
+    assert_eq!(layout(&with_resources(OCTOBER), CSS).await, base, "another invoice of the same layout");
+    assert_eq!(layout(&august, &CSS.replace("color: #1f2430", "color: #000000")).await, base, "colours are free");
+    for changed in [
+        format!("{CSS}\n.receipt-table-total {{ margin-left: calc(8px + 4px); }}"),
+        format!("{CSS}\n.receipt-table-total {{ margin-left: calc(8px - 4px); }}"),
+        format!("{CSS}\n.receipt-table-total {{ margin-left: 8px !important; }}"),
+        format!("{CSS}\n.receipt-table-tax {{ box-shadow: 0 8px 0 8px #fff; }}"),
+        format!("{CSS}\n.receipt-table-tax {{ opacity: 0.99; }}"),
+        format!("{CSS}\n.ui-dialog {{ position: fixed; top: 0; width: 100%; height: 100%; }}"),
+        format!("{CSS}\n@layer a, b;"),
+        format!("{CSS}\n@keyframes x {{ to {{ top: 0; }} }}"),
+    ] {
+        assert_ne!(layout(&august, &changed).await, base, "{changed}");
+    }
+    let calc = |sign: &str| format!("{CSS}\n.receipt-table-total {{ margin-left: calc(8px {sign} 4px); }}");
+    assert_ne!(layout(&august, &calc("+")).await, layout(&august, &calc("-")).await);
+    let moved = august.replacen("<main class=\"c-main\">", "<main>", 1);
+    assert_ne!(moved, august);
+    assert_ne!(layout(&moved, CSS).await, base, "the HTML frame around the invoice is bound too");
+}
+
 #[tokio::test]
 async fn generated_or_hidden_invoice_content_in_the_stylesheet_is_refused() {
     let _turn = invoice::TEST_TURN.lock().await;

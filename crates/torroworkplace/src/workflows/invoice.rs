@@ -150,6 +150,9 @@ pub struct Presentation {
     pub inline_scripts: Vec<String>,
     inline_styles: Vec<InlineStyle>,
     facts: PageFacts,
+    /// The page's layout frame for the fingerprint: the order of the head's styles, scripts and links, and the
+    /// paths of the invoice and of every element outside it.
+    frame: String,
 }
 
 /// An inline `<style>` (no owner) or a `style` attribute, which applies only to its own element.
@@ -165,6 +168,8 @@ struct InlineStyle {
 impl Presentation {
     /// Inline `<style>` elements and the `style` attributes outside the invoice, through the same allow list.
     fn check_inline(&self, budget: &Budget, sheet: &mut Sheet) -> Result<(), Error> {
+        sheet.layout.update(self.frame.as_bytes());
+        sheet.layout.update(b"\0");
         for style in &self.inline_styles {
             sheet.layout.update(style.path.as_bytes());
             sheet.layout.update(b"\0");
@@ -749,6 +754,13 @@ fn profile_two(
             .ok_or(Error::Unsupported)
     };
     let scripts = ["text/javascript", "application/javascript"];
+    // The cascade follows the order of styles and stylesheets, so the order is part of the layout.
+    found.frame.push_str(match node.tag.as_str() {
+        "link" => "L",
+        "style" => "S",
+        "script" => "J",
+        _ => "",
+    });
     match node.tag.as_str() {
         "link"
             if in_head
@@ -899,6 +911,23 @@ fn presentation(tree: &Tree, root: usize, profile: u16) -> Result<Presentation, 
             )
         {
             return Err(Error::Unsupported);
+        }
+    }
+    if profile == 2 {
+        // HTML moves the invoice as much as CSS: a missing wrapper class or a new element before it is a change.
+        // Elements after the invoice cannot push it in the flow, and what could cover it from there (style
+        // attributes, positioned rules) is bound on its own; so a form message in the edit dialog is no change.
+        found.frame.push('\n');
+        found.frame.push_str(&element_path(tree, root));
+        let head = heads.first().copied();
+        for (index, node) in tree.nodes.iter().enumerate().take(root) {
+            if !node.tag.is_empty()
+                && !beneath(tree, root, index)
+                && head.is_none_or(|head| !beneath(tree, index, head))
+            {
+                found.frame.push('\n');
+                found.frame.push_str(&element_path(tree, index));
+            }
         }
     }
     Ok(found)
@@ -1328,6 +1357,9 @@ enum Value {
     Hex(String),
     Url(String),
     Slash,
+    /// `+`, `-`, `*` and other single characters, kept so that `calc(a + b)` and `calc(a - b)` differ.
+    Delim(char),
+    Comma,
     Other,
 }
 
@@ -1365,9 +1397,27 @@ fn rule_list<'i>(
                 }
                 let prelude = parser.slice_from(start);
                 let selectors = selector_list(prelude.strip_suffix('{').unwrap_or(prelude));
-                // An unmatchable rule is skipped as a whole; the parser steps over its block.
+                // An unmatchable rule is not checked, but its whole text is bound: rules for elements that scripts
+                // add at run time, or that another invoice of the same layout has, may not change unnoticed.
+                // It goes in with the same layout declarations as a checked rule, so that the fingerprint does not
+                // depend on which classes one invoice happens to have; only an unreadable block goes in raw.
                 if !selectors.iter().any(|selector| can_match(selector, walk.facts)) {
-                    skip_block(parser, walk)?;
+                    let layout = parser.parse_nested_block(|block| {
+                        let start = block.position();
+                        match block.try_parse(|block| layout_only(block, walk)) {
+                            Ok(layout) => Ok(layout),
+                            Err(_) => {
+                                while block.next_including_whitespace_and_comments().is_ok() {
+                                    walk.tick()?;
+                                }
+                                Ok(format!("raw:{}", normalize(&without_comments(block.slice_from(start)))))
+                            }
+                        }
+                    })?;
+                    if !layout.is_empty() {
+                        let entry = format!("{}\0{}\0{layout}\n", walk.context.join("\0"), selectors.join(","));
+                        walk.sheet.layout.update(entry.as_bytes());
+                    }
                 } else {
                     let may_hide = selectors.iter().all(|selector| beneath_navigation(selector));
                     // Only the header itself may be taken out of the flow; `.no-print` also marks a control
@@ -1516,14 +1566,50 @@ fn beneath_navigation(selector: &str) -> bool {
     })
 }
 
-/// Consumes a block that is not checked. Without this, the next rule's prelude would start inside the block.
-fn skip_block<'i>(parser: &mut cssparser::Parser<'i, '_>, walk: &mut CssWalk<'_>) -> Result<(), CssFail<'i>> {
+/// Consumes a block that is not checked and returns its text without comments and with collapsed spaces, for
+/// the layout fingerprint. Without consuming it, the next rule's prelude would start inside the block.
+fn raw_block<'i>(parser: &mut cssparser::Parser<'i, '_>, walk: &mut CssWalk<'_>) -> Result<String, CssFail<'i>> {
     parser.parse_nested_block(|block| {
+        let start = block.position();
         while block.next_including_whitespace_and_comments().is_ok() {
             walk.tick()?;
         }
-        Ok(())
+        Ok(normalize(&without_comments(block.slice_from(start))))
     })
+}
+
+/// Comments removed outside strings, for a stable fingerprint of raw text.
+fn without_comments(text: &str) -> String {
+    let mut plain = String::new();
+    let (mut quote, mut chars) = (None::<char>, text.chars().peekable());
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(_), '\\') => {
+                plain.push(c);
+                if let Some(next) = chars.next() {
+                    plain.push(next);
+                }
+                continue;
+            }
+            (Some(open), _) if c == open => quote = None,
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '/') if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut last = ' ';
+                for next in chars.by_ref() {
+                    if last == '*' && next == '/' {
+                        break;
+                    }
+                    last = next;
+                }
+                plain.push(' ');
+                continue;
+            }
+            _ => {}
+        }
+        plain.push(c);
+    }
+    plain
 }
 
 fn prelude_until_block<'i>(
@@ -1552,19 +1638,48 @@ fn at_rule<'i>(
     let start = parser.position();
     let block = prelude_until_block(parser, walk)?;
     let prelude = normalize(parser.slice_from(start).trim_end_matches(['{', ';']));
+    let context = walk.context.join("\0");
+    // A `@layer` order or a font, keyframe or page block changes the cascade or the drawing; all are bound.
+    let bind = |walk: &mut CssWalk<'_>, body: &str| {
+        walk.sheet.layout.update(format!("{context}\0@{name} {prelude}\0{body}\n").as_bytes());
+    };
     match (name, block) {
-        ("charset", false) | ("layer", false) => Ok(()),
+        ("charset", false) => Ok(()),
+        ("layer", false) => {
+            bind(walk, "");
+            Ok(())
+        }
         ("media" | "supports" | "layer" | "container", true) => {
             walk.context.push(format!("@{name} {prelude}"));
             let nested = parser.parse_nested_block(|nested| rule_list(nested, walk, depth + 1));
             walk.context.pop();
             nested
         }
-        ("font-face", true) => parser.parse_nested_block(|nested| font_face(nested, walk)),
+        ("font-face", true) => {
+            let body = parser.parse_nested_block(|nested| {
+                let start = nested.position();
+                font_face(nested, walk)?;
+                Ok(normalize(&without_comments(nested.slice_from(start))))
+            })?;
+            bind(walk, &body);
+            Ok(())
+        }
         // Keyframes act only through `animation`, which no checked rule may use.
-        ("keyframes" | "-webkit-keyframes" | "-moz-keyframes", true) => skip_block(parser, walk),
+        ("keyframes" | "-webkit-keyframes" | "-moz-keyframes", true) => {
+            let body = raw_block(parser, walk)?;
+            bind(walk, &body);
+            Ok(())
+        }
         // Page boxes: size and margins only; margin boxes such as `@bottom-center` could print generated text.
-        ("page", true) => parser.parse_nested_block(|nested| page_box(nested, walk)),
+        ("page", true) => {
+            let body = parser.parse_nested_block(|nested| {
+                let start = nested.position();
+                page_box(nested, walk)?;
+                Ok(normalize(&without_comments(nested.slice_from(start))))
+            })?;
+            bind(walk, &body);
+            Ok(())
+        }
         // `@import` loads further, unchecked CSS; every other at-rule is unwitnessed.
         _ => Err(refuse()),
     }
@@ -1625,8 +1740,9 @@ struct Rule {
     layout: String,
 }
 
-/// Properties that change neither position nor size. Everything else the allow list admits is layout and goes
-/// into the fingerprint.
+/// Properties that change neither position, size, stacking nor what covers the text: colours, font families
+/// and the like. Everything else the allow list admits is layout and goes into the fingerprint, including
+/// opacity (a stacking context), shadows, border and outline styles and text decoration lines.
 const FREE: &[&str] = &[
     "color",
     "-webkit-text-fill-color",
@@ -1637,26 +1753,14 @@ const FREE: &[&str] = &[
     "border-right-color",
     "border-bottom-color",
     "border-left-color",
-    "border-style",
-    "border-top-style",
-    "border-right-style",
-    "border-bottom-style",
-    "border-left-style",
     "border-radius",
     "border-top-left-radius",
     "border-top-right-radius",
     "border-bottom-left-radius",
     "border-bottom-right-radius",
-    "box-shadow",
     "outline-color",
-    "outline-style",
-    "text-decoration",
-    "text-decoration-line",
     "text-decoration-color",
     "text-decoration-style",
-    "-webkit-text-decoration-line",
-    "-webkit-text-decoration-skip",
-    "text-decoration-skip-ink",
     "font-family",
     "font-weight",
     "font-style",
@@ -1686,7 +1790,6 @@ const FREE: &[&str] = &[
     "-ms-overflow-style",
     "quotes",
     "text-transform",
-    "opacity",
     "content",
     "list-style",
     "list-style-type",
@@ -1711,13 +1814,15 @@ fn declarations<'i>(
         };
         parser.expect_colon().map_err(|_| refuse())?;
         let values = parser.parse_until_after(cssparser::Delimiter::Semicolon, |value| values(value, walk, 0))?;
+        let important = values.contains(&Value::Word("important".into()));
         let values: Vec<_> = values.into_iter().filter(|value| *value != Value::Word("important".into())).collect();
         let positions = matches!(name.as_str(), "position") && !words_in(&values, &["static", "relative", "inherit"]);
         if !allowed(&name, &values, may_hide) || (positions && !header) {
             return Err(refuse());
         }
         if !FREE.contains(&name.as_str()) {
-            rule.layout.push_str(&format!("{name}:{values:?};"));
+            // `!important` decides the cascade, so it is part of the layout.
+            rule.layout.push_str(&format!("{name}:{values:?}{};", if important { "!" } else { "" }));
         }
         // Every move counts, added up: a margin, a relative offset and an indent of one element act together.
         let moves = signed(&values);
@@ -1739,6 +1844,28 @@ fn declarations<'i>(
                 rule.up += back + forward;
             }
             _ => {}
+        }
+    }
+}
+
+/// The layout declarations of a rule that is not checked, in the same form as `declarations` writes them.
+fn layout_only<'i>(parser: &mut cssparser::Parser<'i, '_>, walk: &mut CssWalk<'_>) -> Result<String, CssFail<'i>> {
+    use cssparser::Token;
+    let mut layout = String::new();
+    loop {
+        walk.tick()?;
+        let name = match parser.next() {
+            Err(_) => return Ok(layout),
+            Ok(Token::Semicolon) => continue,
+            Ok(Token::Ident(name)) => name.to_ascii_lowercase(),
+            Ok(_) => return Err(refuse()),
+        };
+        parser.expect_colon().map_err(|_| refuse())?;
+        let values = parser.parse_until_after(cssparser::Delimiter::Semicolon, |value| values(value, walk, 0))?;
+        let important = values.contains(&Value::Word("important".into()));
+        let values: Vec<_> = values.into_iter().filter(|value| *value != Value::Word("important".into())).collect();
+        if !FREE.contains(&name.as_str()) {
+            layout.push_str(&format!("{name}:{values:?}{};", if important { "!" } else { "" }));
         }
     }
 }
@@ -2108,7 +2235,7 @@ fn bounded(values: &[Value], limit: f32) -> bool {
                     .product();
                 lengths.sum::<Option<f32>>().map(|sum| sum * factors)
             }
-            Value::Other => Some(0.0),
+            Value::Other | Value::Delim(_) | Value::Comma => Some(0.0),
             _ => None,
         }
     }
@@ -2199,6 +2326,8 @@ fn values<'i>(
             // `!important` changes no visible content; its keyword is dropped by the caller.
             Token::Delim('!') => continue,
             Token::Delim('/') => Value::Slash,
+            Token::Delim(c) => Value::Delim(c),
+            Token::Comma => Value::Comma,
             _ => Value::Other,
         });
     }
