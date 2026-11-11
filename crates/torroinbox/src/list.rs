@@ -1465,12 +1465,12 @@ pub(crate) struct SlimLines<'a> {
     pub circle: Option<Element<'a, Message>>,
     /// The words a search matched (#136), stressed in the sender and the subject.
     pub hits: Option<Hits<'a>>,
-    /// What the mail is (issue #613), between the sender and the time; `None` without a category.
+    /// What the mail is (issues #613, #635), at the right end of the subject line; `None` without a category.
     pub category: Option<SlimCategory<'a>>,
 }
 
-/// A mail's category in the first line of a slim row (issue #613): the whole pill where there is
-/// room, else only its field ([`category_field`]). [`slim_mail_content`] picks one with
+/// A mail's category at the right end of a slim row's second line (issues #613, #635): the whole pill
+/// where there is room, else only its field ([`category_field`]). [`slim_mail_content`] picks one with
 /// [`category_fits`].
 pub(crate) struct SlimCategory<'a> {
     /// The filled pill with icon and words ([`torro_gui::widgets::category_pill`]).
@@ -1483,12 +1483,12 @@ pub(crate) struct SlimCategory<'a> {
     pub field_width: f32,
 }
 
-/// Whether the whole category pill `pill_width` wide fits in the first line of a slim row with `free`
-/// room for sender and pill (issue #613): the sender keeps its whole name (`name_width`), or at least
-/// half of the room. Otherwise the row shows only the category's field, and the time and the
-/// subject never give way to it.
-pub(crate) fn category_fits(free: f32, name_width: f32, pill_width: f32) -> bool {
-    free - pill_width - cell_gap() >= name_width.min(free / 2.0)
+/// Whether the whole category pill `pill_width` wide fits in a line with `free` room for the text
+/// (`text_width` wide) and the pill (issues #613, #635): the text – the subject of a slim row, the
+/// address line of a mail's head – keeps its whole width, or at least half of the room. Otherwise only
+/// the category's field is shown, and what sits beside it never gives way to more than that.
+pub(crate) fn category_fits(free: f32, text_width: f32, pill_width: f32) -> bool {
+    free - pill_width - cell_gap() >= text_width.min(free / 2.0)
 }
 
 /// The air above and below the two lines of a slim row (issue #458): [`space::m()`] and a hairline,
@@ -1522,8 +1522,9 @@ pub(crate) fn day_head<'a>(label: String) -> Element<'a, Message> {
 
 /// A mail of the mail window's slim list `width` wide (issue #458, the draft's list "A + Bild"): the
 /// unread slot, the circle, then two lines – the sender with the paperclip right after it and the time
-/// at the right; the subject with the marks at the right. No domain, no preview. The category stands
-/// between the sender and the time: as a pill where it fits ([`category_fits`]), else as its field.
+/// at the right; the subject with the marks and, last, the category at the right. No domain, no
+/// preview. The category stands at the right end of the subject line (issue #635), so it sits at the
+/// same place in every row: as a pill where it fits ([`category_fits`]), else as its field.
 pub(crate) fn slim_mail_content<'a>(lines: SlimLines<'a>, width: f32, selected: bool) -> Element<'a, Message> {
     let parts = RowLook::of(layout::list(), selected);
     let SlimLines { name, time, subject, new, attachment, marks, circle, hits, category } = lines;
@@ -1534,18 +1535,7 @@ pub(crate) fn slim_mail_content<'a>(lines: SlimLines<'a>, width: f32, selected: 
     let strong = |new: bool| if new { typo::body_strong() } else { typo::body() };
     let clip = if attachment { icon::SIZE_SM + space::xs() } else { 0.0 };
     let free = (room - end_width(&time, typo::meta()) - clip).max(0.0);
-    // Where not even the field fits, the category stays out, so the time is never pushed off.
-    let category = category
-        .map(|category| {
-            if category_fits(free, typo::text_width(&name, strong(true)), category.pill_width) {
-                (category.pill, category.pill_width)
-            } else {
-                (category.field, category.field_width)
-            }
-        })
-        .filter(|(_, width)| width + cell_gap() <= free);
-    let name_room = (free - category.as_ref().map_or(0.0, |(_, width)| width + cell_gap())).max(0.0);
-    let name = typo::ellipsize(&name, strong(true), name_room);
+    let name = typo::ellipsize(&name, strong(true), free);
     let mut who = row![marked(name, strong(new), theme::text, &words, hit_colour)]
         .spacing(space::xs())
         .align_y(Alignment::Center);
@@ -1554,18 +1544,32 @@ pub(crate) fn slim_mail_content<'a>(lines: SlimLines<'a>, width: f32, selected: 
             .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) });
         who = who.push(widgets::with_tooltip(clip, tr("Has attachments")));
     }
-    let mut first = row![container(who).width(Fill).clip(true)].spacing(cell_gap()).align_y(Alignment::Center);
-    if let Some((category, _)) = category {
-        first = first.push(category);
-    }
-    let first = first.push(typo::text(typo::meta().tabular(), time).style(theme::text_3).wrapping(Wrapping::None));
+    let first = row![container(who).width(Fill).clip(true)]
+        .spacing(cell_gap())
+        .align_y(Alignment::Center)
+        .push(typo::text(typo::meta().tabular(), time).style(theme::text_3).wrapping(Wrapping::None));
     let marks_width: f32 = marks.iter().map(|(_, width)| width + cell_gap()).sum();
-    let subject = typo::ellipsize(&subject, strong(true), (room - marks_width).max(0.0));
+    let subject_free = (room - marks_width).max(0.0);
+    // Where not even the field fits, the category stays out, so the marks are never pushed off.
+    let category = category
+        .map(|category| {
+            if category_fits(subject_free, typo::text_width(&subject, strong(true)), category.pill_width) {
+                (category.pill, category.pill_width)
+            } else {
+                (category.field, category.field_width)
+            }
+        })
+        .filter(|(_, width)| width + cell_gap() <= subject_free);
+    let subject_room = (subject_free - category.as_ref().map_or(0.0, |(_, width)| width + cell_gap())).max(0.0);
+    let subject = typo::ellipsize(&subject, strong(true), subject_room);
     let tone = if new { theme::text } else { theme::text_2 };
     let subject = marked(subject, strong(new), tone, &words, hit_colour);
     let mut second = row![container(subject).width(Fill).clip(true)].spacing(cell_gap()).align_y(Alignment::Center);
     for (mark, _) in marks {
         second = second.push(mark);
+    }
+    if let Some((category, _)) = category {
+        second = second.push(category);
     }
     let lines = column![first, second].width(Fill);
     let height = slim_message_height() - size::HAIRLINE;
@@ -2338,10 +2342,10 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("valid time")
     }
 
-    /// Issue #613: the category pill stands in the first line where the sender keeps its whole name
-    /// or at least half of the room; else the row falls back to the field.
+    /// Issues #613, #635: the category pill stands at the end of the subject line where the subject
+    /// keeps its whole width or at least half of the room; else the row falls back to the field.
     #[test]
-    fn the_category_pill_gives_way_to_the_sender() {
+    fn the_category_pill_gives_way_to_the_subject() {
         assert!(category_fits(300.0, 80.0, 90.0), "plenty of room");
         assert!(category_fits(300.0, 250.0, 90.0), "a long name keeps half the room");
         assert!(!category_fits(150.0, 60.0, 100.0), "a short name in little room");

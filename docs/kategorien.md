@@ -93,7 +93,8 @@ ein KI-Ergebnis als Vorschlag gekennzeichnet ist:
 | `person` | Der Mensch hat sie von Hand gesetzt | Gefüllte Pille, kein Tooltip |
 
 Die Pille ist seit Issue #613 in der Gruppenfarbe gefüllt, mit weißem Icon und Wort, und steht im Lesebereich, auf
-den Karten und in der ersten Zeile der Mail-Liste des Mail-Fensters (bei wenig Platz nur als Feld mit dem Icon). Ein
+den Karten und in der Mail-Liste des Mail-Fensters rechtsbündig am Ende der Betreffzeile (Issue #635; behielte der
+Betreff weniger als die Hälfte des Platzes, nur als Feld mit dem Icon). Im Lesebereich steht sie unter dem Eingangszeitpunkt. Ein
 Vorschlag ist nur noch im Tooltip erkennbar, damit die Pille auf jedem Grund lesbar bleibt.
 
 ## Die Reihenfolge beim Einordnen

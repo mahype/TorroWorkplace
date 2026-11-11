@@ -348,8 +348,10 @@ in Zeile, Leser und Paneel. Regel: **Farbe und Icon je Gruppe, Wort je Kategorie
 der Gruppenfarbe, nur so weit abgedunkelt, dass weißer Text 4,5:1 erreicht (`theme::category_fill`), Icon und Wort
 weiß, ohne Rand. Eine Kategorie vom Modell sieht gleich aus und sagt es im Tooltip („Shipping · suggested“), eine aus
 einer Kopfzeile oder vom Menschen hat keinen Tooltip (`docs/ki.md`, Grundsatz 5); keine Sparkles an der Pille. Die
-schmale Liste des Mail-Fensters zeigt die Pille in der ersten Zeile zwischen Absender und Uhrzeit; behielte der
-Absender dann weniger als die Hälfte des Platzes, steht nur das Feld mit dem Icon (`list::category_fits`). Die Pille
+schmale Liste des Mail-Fensters zeigt die Pille rechtsbündig am Ende der Betreffzeile, hinter den Markierungen (Issue
+#635: so steht sie in jeder Zeile an derselben Stelle); behielte der Betreff dann weniger als die Hälfte des Platzes,
+steht nur das Feld mit dem Icon (`list::category_fits`). Im Mail-Kopf steht sie rechtsbündig unter dem Eingangszeitpunkt,
+am Ende der Adresszeile, mit derselben Regel. Die Pille
 ist kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
 
 

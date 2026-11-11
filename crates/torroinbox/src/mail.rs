@@ -2461,8 +2461,8 @@ fn slim_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) ->
     }
     // What Torro suggests to make of it (issue #603).
     marks.extend(suggestion_mark(message));
-    // What the mail is, between the sender and the time (issue #613): the whole pill where it fits,
-    // else its field; the circle keeps its mark too.
+    // What the mail is, at the right end of the subject line (issues #613, #635): the whole pill where it
+    // fits, else its field; the circle keeps its mark too.
     let category = message.category.map(|held| {
         let (label, _) = category_look(data.categories, held.category);
         let (field, field_width) = category_field(held, data.categories);
@@ -3715,8 +3715,8 @@ fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, M
 }
 
 /// The head of a mail in the reader and the mail window's panel (task E11.3, issue #457), `room`
-/// wide: the sender in two quiet lines ([`sender_block`]: circle, name, category, date; address to
-/// recipients), for an entry why a rule put it in its lane (issue #128), the
+/// wide: the sender in two quiet lines ([`sender_block`]: circle, name, date; address to
+/// recipients, category), for an entry why a rule put it in its lane (issue #128), the
 /// phishing band, and under it the invitation's card (task E8.3b) and the task's (task E8.7b). The
 /// subject stands in the top row over the reader, or as the panel's title. No buttons – the
 /// actions stand in the rail (task E14.3), the attachments at the mail's bottom (issue #491).
@@ -3876,10 +3876,13 @@ pub fn released(mail: &mut Mail) {
 /// lines beside the circle of the sender (`list::avatar`; none in a design without avatars, `[list]
 /// avatar = 0`, issue #291):
 ///
-/// 1. the name in `BODY_STRONG` – with the flag of a flagged mail –, what the mail is (its category's
-///    pill, task E12.8, with the mark of a guess) and at the right the date (`format_moment`);
+/// 1. the name in `BODY_STRONG` – with the flag of a flagged mail – and at the right the date
+///    (`format_moment`);
 /// 2. in `META`, `text_3`, the address to the recipients ("anna@… → Anna Berg, Paul") and the copies
-///    once loaded. The attachments stand at the mail's bottom ([`attachment_line`], issue #491).
+///    once loaded, and at the right, under the date, what the mail is (its category's pill, task E12.8,
+///    with the mark of a guess; issue #635): the whole pill where the line keeps its text
+///    ([`list::category_fits`]), else the category's field. The attachments stand at the mail's
+///    bottom ([`attachment_line`], issue #491).
 ///
 /// What does not fit ends in "…".
 fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f32) -> Element<'a, Message> {
@@ -3954,13 +3957,13 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
         if summary.flags.contains(&Flag::Flagged) {
             names = names.push(widgets::with_tooltip(small_icon(Icon::Flag, Some(reading.attention)), tr("Flagged")));
         }
+        let mut dated = column![typo::text(typo::meta().tabular(), date).style(theme::text_3)]
+            .spacing(space::xs())
+            .align_x(Alignment::End);
         if let Some(held) = summary.category {
-            names = names.push(category_pill(held, reading.categories));
+            dated = dated.push(category_pill(held, reading.categories));
         }
-        let first = row![names, typo::text(typo::meta().tabular(), date).style(theme::text_3)]
-            .width(Fill)
-            .spacing(space::m())
-            .align_y(Alignment::Start);
+        let first = row![names, dated].width(Fill).spacing(space::m()).align_y(Alignment::Start);
         let mut to = list::one_line(address);
         if !summary.to.is_empty() {
             to = format!("{to} → {}", self::names(&summary.to));
@@ -3986,25 +3989,13 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
     // A flagged mail says so at its sender: the name leaves room for the flag.
     let flagged = summary.flags.contains(&Flag::Flagged);
     let flag_room = if flagged { icon::SIZE_SM + space::s() } else { 0.0 };
-    // The pill takes what it needs – its word, its icon and its padding –, the name the rest; where
-    // both do not fit, the name goes first and the pill stays out.
-    let pill_room = summary.category.map_or(0.0, |held| {
-        let (label, _) = category_look(reading.categories, held.category);
-        widgets::category_pill_width(&label) + space::s()
-    });
     let free = (words_room - date_room - flag_room).max(0.0);
-    let fits = typo::text_width(&name, typo::body_strong()) + pill_room <= free;
-    let pill = summary.category.filter(|_| fits).map(|held| category_pill(held, reading.categories));
-    let name_room = if fits { free - pill_room } else { free };
-    let name = typo::ellipsize(&name, typo::body_strong(), name_room);
+    let name = typo::ellipsize(&name, typo::body_strong(), free);
     let mut first = row![typo::text(typo::body_strong(), name).style(theme::text).wrapping(Wrapping::None)]
         .spacing(space::s())
         .align_y(Alignment::Center);
     if flagged {
         first = first.push(widgets::with_tooltip(small_icon(Icon::Flag, Some(reading.attention)), tr("Flagged")));
-    }
-    if let Some(pill) = pill {
-        first = first.push(pill);
     }
     let first = row![
         container(first).width(Fill).clip(true),
@@ -4023,6 +4014,7 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
         to = format!("{to} · {}", trf("cc {names}", &[("names", &names(&mail.cc))]));
     }
     // Cut with "…" to the room the line really has, whole in the tooltip.
+    let line_width = typo::text_width(&to, typo::meta());
     let line = to.clone();
     let fitted = responsive(move |size| {
         let shown = typo::ellipsize(&line, typo::meta(), size.width);
@@ -4030,6 +4022,21 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
     });
     let fitted = container(fitted).width(Fill).height(typo::line_height(typo::meta()));
     let second = widgets::with_tooltip(fitted, to);
+    // What the mail is (issue #635): at the right end of the second line, under the date, the whole
+    // pill where the line keeps its text, else the field, and nothing where not even that fits.
+    let category = summary.category.and_then(|held| {
+        let (label, _) = category_look(reading.categories, held.category);
+        let pill_width = widgets::category_pill_width(&label);
+        if list::category_fits(words_room, line_width, pill_width) {
+            return Some(category_pill(held, reading.categories));
+        }
+        let (field, field_width) = category_field(held, reading.categories);
+        (field_width + space::m() <= words_room).then_some(field)
+    });
+    let mut second = row![second].spacing(space::m()).align_y(Alignment::Center);
+    if let Some(category) = category {
+        second = second.push(category);
+    }
     let words = column![first, second].spacing(space::xs()).width(Fill);
     row(face).push(words).spacing(space::m()).align_y(Alignment::Center).into()
 }
@@ -7604,12 +7611,12 @@ mod tests {
         assert_eq!(face_of(&message(Some(Category::Receipt)), &[]), widgets::Face::Icon(Icon::Receipt));
     }
 
-    /// Issues #485 and #613: a mail's category stands in the first line of a slim row, as a pill or
-    /// as a square field as high as the pill, with the category's icon on its main category's colour; the
-    /// field's tooltip names it and says when a model only suggested it. It is no longer a mark of
-    /// the second line, and a row without a category gets none.
+    /// Issues #485, #613 and #635: a mail's category stands at the right end of a slim row's second
+    /// line, after the marks, as a pill or as a square field as high as the pill, with the category's
+    /// icon on its main category's colour; the field's tooltip names it and says when a model only
+    /// suggested it. A row without a category gets none; the reader's head puts it under the date.
     #[test]
-    fn the_category_stands_in_the_first_line_of_a_slim_row() {
+    fn the_category_stands_at_the_end_of_a_slim_rows_second_line() {
         use torro_mail::Category;
         let confirmed = MailCategory::by_rule(Category::Newsletter);
         let (symbol, group, tip) = category_field_look(confirmed, &[]);
@@ -7623,7 +7630,58 @@ mod tests {
         let source = function_source(include_str!("mail.rs"), "slim_row");
         assert!(!source.contains("marks.extend(message.category"), "not a mark of the second line");
         assert!(source.contains("let category = message.category.map("), "only with a category");
-        assert!(source.contains("        category,\n"), "handed to the first line");
+        assert!(source.contains("        category,\n"), "handed to the slim row");
+        let rows = function_source(include_str!("list.rs"), "slim_mail_content");
+        assert!(!rows.contains("first.push(category"), "not in the first line");
+        let marks = rows.find("for (mark, _) in marks").expect("the marks");
+        assert!(rows[marks..].contains("second.push(category)"), "after the marks of the second line");
+        let head = function_source(include_str!("mail.rs"), "sender_block");
+        assert!(!head.contains("first.push(pill)"), "not at the sender's name in the head");
+    }
+
+    /// Issue #635: in the reader's head the category ends on the date's right edge, under it – the
+    /// whole pill where the address line keeps its text, else only the field.
+    #[test]
+    fn the_head_puts_the_category_under_the_date() {
+        use iced_test::selector::Candidate;
+        use torro_mail::Category;
+        reading_of("m:p3", MailFormat::Text, true, |reading| {
+            let mut summary = reading.summary.expect("a summary").clone();
+            summary.category = Some(MailCategory::by_rule(Category::Newsletter));
+            let reading = Reading { summary: Some(&summary), ..*reading };
+            let label = category_look(&[], Category::Newsletter).0;
+            let pill = widgets::category_pill_width(&label);
+            let field = widgets::category_pill_height();
+            let date = torro_gui::datetime::format_moment(summary.date, reading.now);
+            // (room, expected width of the category's box)
+            for (room, expected) in [(900.0, pill), (190.0, field)] {
+                let mut ui = iced_test::Simulator::with_size(
+                    iced::Settings::default(),
+                    iced::Size::new(room, 400.0),
+                    sender_block(&reading, &summary, room),
+                );
+                let date_box = ui
+                    .find(|candidate: Candidate<'_>| match candidate {
+                        Candidate::Text { content, bounds, .. } if content == date => Some(bounds),
+                        _ => None,
+                    })
+                    .expect("the date");
+                let category = ui
+                    .find(|candidate: Candidate<'_>| match candidate {
+                        Candidate::Container { bounds, .. }
+                            if (bounds.width - expected).abs() < 3.0 && bounds.y > date_box.y =>
+                        {
+                            Some(bounds)
+                        }
+                        _ => None,
+                    })
+                    .expect("the category under the date");
+                assert!(
+                    (category.x + category.width - (date_box.x + date_box.width)).abs() < 0.5,
+                    "at {room}: category {category:?}, date {date_box:?}"
+                );
+            }
+        });
     }
 
     /// Issue #453: a held logo stands in the circle, but unwanted mail keeps the skull and "Sent"
