@@ -169,10 +169,53 @@ pub fn build(snapshot: &Snapshot) -> Vec<Item> {
     if let Some(line) = status_line(snapshot) {
         menu.push(info(line));
     }
+    if let Some(status) = own_status_section(snapshot) {
+        menu.push(Item::Separator);
+        menu.push(status);
+    }
     menu.push(Item::Separator);
     menu.push(entry(tr("Settings…"), Request::OpenApp { app: AppId::WORKPLACE.binary.to_string(), target: None }));
     menu.push(entry(tr("Quit"), Request::Quit));
     menu
+}
+
+/// "Status: Online" (`docs/chat.md`, stage 2) with the statuses to set on the account the core
+/// last read one of; `None` before it read any (no chat account, or not yet). "Online" only while
+/// "Show others when I am online" is on: the server drops it within minutes otherwise, and the core
+/// refuses it ([`crate::presence`]).
+fn own_status_section(snapshot: &Snapshot) -> Option<Item> {
+    use torro_chat::Status;
+    let (account, now) = snapshot.own_status.clone()?;
+    let set = |status: Status| Request::PresenceSetOwnStatus {
+        account: account.clone(),
+        status: Some(status),
+        message: None,
+        icon: None,
+        clear_at: None,
+    };
+    let items = [Status::Online, Status::Away, Status::Busy, Status::Dnd, Status::Invisible]
+        .into_iter()
+        .filter(|status| *status != Status::Online || snapshot.presence_heartbeat)
+        .map(|status| {
+            let label = status_name(status).to_string();
+            let label = if status == now { trf("{status} ✓", &[("status", &label)]) } else { label };
+            entry(&label, set(status))
+        })
+        .collect();
+    Some(submenu(&trf("Status: {status}", &[("status", &status_name(now))]), items))
+}
+
+/// The name of a status as the chat windows show it.
+fn status_name(status: torro_chat::Status) -> &'static str {
+    use torro_chat::Status;
+    match status {
+        Status::Online => tr("Online"),
+        Status::Away => tr("Away"),
+        Status::Busy => tr("Busy"),
+        Status::Dnd => tr("Do not disturb"),
+        Status::Invisible => tr("Invisible"),
+        Status::Offline => tr("Offline"),
+    }
 }
 
 /// The workspace templates (task WS.7): "Workspaces · Hyprland", one submenu per template in the
@@ -461,6 +504,35 @@ mod tests {
                 tr("Quit").to_string(),
             ]
         );
+    }
+
+    /// Stage 2 of `docs/chat.md`: "Status: Away" before "Settings…" once a status was read, its
+    /// entries set it on that account, "Online" only with the heartbeat on.
+    #[test]
+    fn the_own_status_stands_before_the_settings_and_online_needs_the_heartbeat() {
+        use torro_chat::Status;
+        assert!(!labels(&build(&snapshot())).iter().any(|label| label.ends_with('▸') && label.contains(':')));
+        let account = "nextcloud:anna@cloud.example.org".to_string();
+        let away = Snapshot { own_status: Some((account.clone(), Status::Away)), ..snapshot() };
+        let label = trf("Status: {status}", &[("status", &tr("Away"))]);
+        let menu = build(&away);
+        let items = submenu_of(&menu, &label);
+        let checked = trf("{status} ✓", &[("status", &tr("Away"))]);
+        assert_eq!(
+            labels(items),
+            [tr("Away").to_string(), tr("Busy").into(), tr("Do not disturb").into(), tr("Invisible").into()]
+                .map(|l| if l == tr("Away") { checked.clone() } else { l })
+        );
+        let set = Request::PresenceSetOwnStatus {
+            account,
+            status: Some(Status::Dnd),
+            message: None,
+            icon: None,
+            clear_at: None,
+        };
+        assert!(all_actions(items).contains(&Action::Run(Box::new(set))));
+        let beating = Snapshot { presence_heartbeat: true, ..away };
+        assert_eq!(labels(submenu_of(&build(&beating), &label))[0], tr("Online"));
     }
 
     /// Task WS.7: the templates stand in the first level in the order of their keys (1 … 9, 0, then

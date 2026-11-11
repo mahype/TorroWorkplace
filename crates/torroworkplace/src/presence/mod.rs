@@ -82,6 +82,9 @@ pub struct PresenceService {
     names: Names,
     held: Mutex<BTreeMap<String, Held>>,
     added: Mutex<Added>,
+    /// The person's own status per account as last read or set, for the tray menu, which must not
+    /// ask the server each time it is drawn ([`PresenceService::own_status_seen`]).
+    own_seen: Mutex<BTreeMap<String, Status>>,
     /// `None`: nothing is kept across restarts (tests, no home directory).
     file: Option<PathBuf>,
 }
@@ -127,6 +130,7 @@ impl PresenceService {
             names: Arc::new(|_| Vec::new()),
             held: Mutex::new(BTreeMap::new()),
             added: Mutex::new(added),
+            own_seen: Mutex::new(BTreeMap::new()),
             file,
         }
     }
@@ -143,6 +147,24 @@ impl PresenceService {
 
     fn added(&self) -> MutexGuard<'_, Added> {
         self.added.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn seen(&self) -> MutexGuard<'_, BTreeMap<String, Status>> {
+        self.own_seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The first account with a status and the person's own status there, as last read or set;
+    /// `None` before any was. For the tray menu: nothing here asks the server.
+    pub fn own_status_seen(&self) -> Option<(String, Status)> {
+        self.seen().iter().next().map(|(account, status)| (account.clone(), *status))
+    }
+
+    /// Reads the person's own status on every account anew for [`PresenceService::own_status_seen`];
+    /// an account whose server tells none or cannot be reached keeps what was seen.
+    pub async fn refresh_own(&self) {
+        for account in self.chat.accounts().await {
+            let _ = self.own(&account, false).await;
+        }
     }
 
     /// For a client: the account in `request` it may not reach, or an id that names none, answered
@@ -387,6 +409,7 @@ impl PresenceService {
             return Err(no_status());
         }
         let status = self.chat.asked(account, remote.own_status().await).await?;
+        self.seen().insert(account.to_string(), status.status);
         Ok(OwnStatus {
             account: account.to_string(),
             name: self.chat.own_name(account).unwrap_or_default(),
@@ -427,6 +450,7 @@ impl PresenceService {
         }
         if let Some(status) = status {
             self.chat.asked(account, remote.set_status(status).await).await?;
+            self.seen().insert(account.to_string(), status);
         }
         if let Some(message) = message {
             let message = message.trim();
@@ -457,6 +481,7 @@ impl PresenceService {
     /// or wiped).
     pub fn forget_account(&self, account: &str) {
         self.held().remove(account);
+        self.seen().remove(account);
         let mut added = self.added();
         if added.accounts.remove(account).is_some() {
             // Nowhere to report a failed write to; the entry is harmless without its account.

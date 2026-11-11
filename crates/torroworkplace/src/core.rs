@@ -2706,6 +2706,11 @@ pub struct Snapshot {
     pub next_reminder: Option<(chrono::DateTime<Utc>, String)>,
     /// Until when all reminders are paused (task ER2.5).
     pub reminders_paused: Option<chrono::DateTime<Utc>>,
+    /// The person's own chat status and its account as last read or set (`docs/chat.md`, stage 2),
+    /// for the tray's "Status"; `None` while no account with a status was read yet.
+    pub own_status: Option<(String, torro_chat::Status)>,
+    /// "Show others when I am online": only then does the tray offer "Online".
+    pub presence_heartbeat: bool,
 }
 
 /// How many of the newest inbox entries the tray lists.
@@ -3928,10 +3933,12 @@ impl Core {
         let core = Arc::clone(self);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(crate::presence::BEAT_EVERY).await;
                 if core.settings.current().presence_heartbeat {
                     core.presence.beat(torro_chat::Status::Online).await;
                 }
+                // The tray's "Status" shows what the server says, read here and not when it is drawn.
+                core.presence.refresh_own().await;
+                tokio::time::sleep(crate::presence::BEAT_EVERY).await;
             }
         });
     }
@@ -12087,6 +12094,8 @@ impl Core {
             .filter(|(start, _)| *start >= now - crate::reminders::grace())
             .min_by_key(|(start, _)| *start);
         snapshot.reminders_paused = paused;
+        snapshot.own_status = self.presence.own_status_seen();
+        snapshot.presence_heartbeat = settings.presence_heartbeat;
         snapshot
     }
 
