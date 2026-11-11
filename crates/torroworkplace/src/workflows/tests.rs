@@ -256,6 +256,10 @@ async fn generated_or_hidden_invoice_content_in_the_stylesheet_is_refused() {
         "@page { margin: 5000px; }",
         "@page { size: 10px 10px; }",
         ".receipt-table-total { color: #aa\u{e4}; }",
+        // Offsets that stay within the bound per element but add up through nesting.
+        ".c-sheet div { position: relative; top: -64px; }",
+        ".c-sheet div, .c-sheet section { margin-left: -100px; }",
+        ".g-container { margin-top: -100px; } .g-row { margin-top: -100px; }",
     ] {
         let css = format!("{CSS}\n{rule}\n");
         assert!(invoice::check_stylesheet(css.as_bytes(), page.as_bytes()).is_err(), "{rule}");
@@ -288,6 +292,7 @@ async fn generated_or_hidden_invoice_content_in_the_stylesheet_is_refused() {
         ".zzz[x=\"a, .receipt-table-total\"] { display: none; }",
         ".receipt-table-total { font: 700 14px/20px sans-serif; letter-spacing: 0.5px; z-index: 9; }",
         ".c-sheet { box-shadow: 2px 2px 8px 0 rgba(210, 212, 222, 0.8); border-bottom: 1px solid #d2d4de; }",
+        ".c-badge { position: relative; top: -.5rem; } .g-row { margin-left: calc(2rem * 0.5 * -1); }",
         ".receipt-table-total { margin-left: calc(2rem * 0.5 * -1); color: rgba(54, 71, 108, 0.9); }",
     ] {
         let css = format!("{CSS}\n{rule}\n");
@@ -328,6 +333,14 @@ async fn profile_two_accepts_only_witnessed_page_code() {
     assert!(invoice::convert(cover.into_bytes(), Some(HTML.into()), Some(Vec::new()), None).await.is_err());
     let spacing = AUGUST.replace("</main>", "</main><div style=\"margin-top: 3rem\"></div>");
     assert!(invoice::references(spacing.into_bytes(), Some(HTML.into()), None).await.is_ok());
+    // Inside the witnessed navigation a `style` attribute may hide, as the navigation's own rules may.
+    let navigation = AUGUST.replace(
+        "<header class=\"c-header no-print\">",
+        "<header class=\"c-header no-print\"><span style=\"display:none\"></span>",
+    );
+    assert!(invoice::references(navigation.into_bytes(), Some(HTML.into()), None).await.is_ok());
+    let hidden = AUGUST.replace("</main>", "</main><div style=\"display:none\"></div>");
+    assert!(invoice::references(hidden.into_bytes(), Some(HTML.into()), None).await.is_err());
     let inside = AUGUST.replace("<h4>Payment details</h4>", "<script>void 0;</script><h4>Payment details</h4>");
     assert!(invoice::extract_profile_2(inside.as_bytes(), Some(HTML)).is_err(), "no script inside the invoice");
     for inserted in [
