@@ -1988,7 +1988,9 @@ impl App {
     fn top_row(&self, class: SizeClass) -> TopRow<Message> {
         let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
         TopRow::new(self.zoom.factor(), Message::DragWindow)
+            .title(AppId::TASKS)
             .sidebar(label, Message::ToggleSidebar)
+            .sidebar_at_edge(true)
             .settings(Message::ToggleSettings)
             .settings_open(self.settings.is_some())
             .cover(self.cover())
@@ -2165,7 +2167,10 @@ impl App {
         let name = self.filter_name(&self.filter);
         let icon = self.filter_mark(&self.filter);
         let new_task = Message::Switcher(Switcher::New);
-        let show_display = if width >= HEAD_LABELS_FROM {
+        let narrow = !matches!(class, SizeClass::Wide | SizeClass::Medium);
+        // Narrow, the top row's lead holds the panel button, the mark and the title (issue #601): Display
+        // keeps only its icon, so the navigation menu and "+" keep their room.
+        let show_display = if width >= HEAD_LABELS_FROM && !narrow {
             widgets::text_button(
                 Some(Icon::ListFilter),
                 tr("Display"),
@@ -2175,7 +2180,6 @@ impl App {
         } else {
             widgets::icon_button(Icon::ListFilter, tr("Display"), Some(Message::ToggleDisplay))
         };
-        let narrow = !matches!(class, SizeClass::Wide | SizeClass::Medium);
         let open = trf("{n} open", &[("n", &list::open_count(&self.todos, &self.filter, self.today))]);
         let words = self.new_task_words_fit(class, width, &name, &open);
         let new_button = if narrow || !words {
@@ -2205,7 +2209,8 @@ impl App {
     /// drawn; the head stands where `header` puts it, after the top row's lead, 16 and 12 from its
     /// edges.
     fn new_task_words_fit(&self, class: SizeClass, width: f32, name: &str, open: &str) -> bool {
-        let display_width = match width >= HEAD_LABELS_FROM {
+        let narrow = !matches!(class, SizeClass::Wide | SizeClass::Medium);
+        let display_width = match width >= HEAD_LABELS_FROM && !narrow {
             true => widgets::text_button_width(true, tr("Display")),
             false => size::control_sm(),
         };

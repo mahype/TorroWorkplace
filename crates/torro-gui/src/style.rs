@@ -679,6 +679,22 @@ pub fn text_input_flat(theme: &Theme, status: widget::text_input::Status) -> wid
     }
 }
 
+/// A quiet text input (issue #601: the mail window's search over its list): a surface set slightly off
+/// the panel (`hover`) instead of a frame, no radius, flush with the list below; value `text`,
+/// placeholder and icon `text_3` (≥ 4.5:1 on the surface); hover a little stronger (`selected`);
+/// focused the 2-px `focus_ring` around it, square, so the focus stays visible (skill, section 4) –
+/// Iced draws a border on all four sides or none, so it cannot be a line below alone; disabled 40 %
+/// without hover.
+pub fn text_input_quiet(theme: &Theme, status: widget::text_input::Status) -> widget::text_input::Style {
+    let p = palette(theme);
+    let flat = text_input_flat(theme, status);
+    let surface = match status {
+        widget::text_input::Status::Hovered => p.selected,
+        _ => p.hover,
+    };
+    widget::text_input::Style { background: Background::Color(surface), ..flat }
+}
+
 /// A text input as a row of the compose window (issue #627: From, To and Subject between hairlines):
 /// [`text_input_flat`] without the focus ring and without a hover surface – the row's label turns
 /// `text` in focus and the caret shows where one writes; disabled 40 %.
@@ -1203,6 +1219,28 @@ mod tests {
             let off = flat(widget::text_input::Status::Disabled);
             assert!(same(off.value, faded(p.text)), "{mode}: flat input off");
             assert_eq!(off.background, Background::Color(Color::TRANSPARENT), "{mode}: no hover when off");
+        }
+    }
+
+    /// Issue #601: the quiet search field is a surface without a frame, its placeholder reads on it,
+    /// and the focus stays visible.
+    #[test]
+    fn the_quiet_input_is_a_readable_surface_without_a_frame() {
+        for (mode, theme, p) in modes() {
+            let quiet = |status| text_input_quiet(&theme, status);
+            let rest = quiet(widget::text_input::Status::Active);
+            assert_eq!(rest.background, Background::Color(p.hover), "{mode}: set off the panel");
+            assert_eq!((rest.border.width, rest.border.radius), (0.0, border::Radius::default()), "{mode}: no frame");
+            assert_eq!((rest.value, rest.placeholder), (p.text, p.text_3), "{mode}");
+            assert!(p.text_3.relative_contrast(p.hover) >= 4.5, "{mode}: placeholder on the surface");
+            let hovered = quiet(widget::text_input::Status::Hovered);
+            assert_eq!(hovered.background, Background::Color(p.selected), "{mode}: hover a little stronger");
+            assert!(p.text_3.relative_contrast(p.selected) >= 4.5, "{mode}: placeholder on the hover");
+            let focused = quiet(widget::text_input::Status::Focused { is_hovered: false });
+            assert_eq!((focused.border.color, focused.border.width), (p.focus_ring, FOCUS_RING_WIDTH), "{mode}");
+            let off = quiet(widget::text_input::Status::Disabled);
+            assert!(same(off.value, faded(p.text)), "{mode}: quiet input off");
+            assert_eq!(off.background, Background::Color(p.hover), "{mode}: no hover when off");
         }
     }
 

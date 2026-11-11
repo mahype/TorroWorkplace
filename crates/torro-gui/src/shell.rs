@@ -61,9 +61,10 @@
 //! # Top row (issue #459)
 //!
 //! The main windows of the suite draw no header bar and no band of [`titlebar`] above it any more, but
-//! one top row ([`TopRow`], [`Shell::top_row`]) on every system: beside the traffic lights the panel
-//! button, then the app's header, at the right the settings ([`SETTINGS_ICON`]). The sidebar begins
-//! with its tools ([`sidebar_tools`]). Windows without a shell (signing in, a glance, a compose window)
+//! one top row ([`TopRow`], [`Shell::top_row`]) on every system: the app's name after the traffic lights
+//! (after the app's mark off macOS, issue #601) and the panel button, then the app's header, at the
+//! right the switch of the right column where there is one and the settings ([`SETTINGS_ICON`]). The
+//! sidebar begins with its tools ([`sidebar_tools`]). Windows without a shell (signing in, a glance, a compose window)
 //! keep [`titlebar`].
 //!
 //! There is no app switcher in the window any more (issue #530): the person changes apps from the tray
@@ -714,22 +715,30 @@ pub const SETTINGS_ICON: Icon = Icon::SlidersHorizontal;
 /// draft (`docs/prototypes/mail-layout/`):
 ///
 /// ```text
-/// Wide    ● ● ●  [▯]                    │ the app's header …                      [☰]
-///         └──────── sidebar ───────────┘└──────────── content ───────────────────────┘
-/// Rail    ● ● ●  [▯]  the app's header …                                           [☰]
-/// Narrow  ● ● ●  [▯]  the app's header …                                           [☰]
+/// Wide      ● ● ●  Mail          [◧] │ the app's header …                     [◨] [☰]
+/// (Linux)   [✉] Mail             [◧] │ the app's header …                     [◨] [☰]
+///           └──────── sidebar ──────┘└──────────── content ─────────────────────────┘
+/// Rail      ● ● ●  [◧] Mail  the app's header …                               [◨] [☰]
+/// (Linux)    [✉]  │ [◧] Mail  the app's header …                              [◨] [☰]
+/// Narrow    ● ● ●  [◧] Mail  the app's header …                                   [☰]
+/// (Linux)   [◧] [✉] Mail  the app's header …                                      [☰]
 /// ```
 ///
-/// - Over the expanded sidebar (wide): room for the traffic lights (macOS only) and right after them
-///   the panel button, on the sidebar's surface, as wide as the sidebar; then the line beside it.
-/// - With the rail (wide by choice, medium) and in narrow windows the same lights' room and panel
-///   button stand before the header; narrow, the button opens the drawer. There is no app switcher
-///   (issue #530): the panel button stands at the same place in every form.
-/// - Then the app's header ([`header_bar`]), padded as in the header bar, with a line below, and the
-///   settings ([`SETTINGS_ICON`]) at the right end, marked while they are open.
-/// - Mail opts into [`TopRow::sidebar_surface`] for one sidebar-coloured head and
-///   [`TopRow::sidebar_at_edge`] for the expanded sidebar's button at its right edge (issue #564),
-///   and into [`TopRow::keep_buttons`] for the panel button and the settings over an open mail (#545).
+/// - The app's short name ([`TopRow::title`], issue #601) says which app this is: on macOS after the
+///   traffic lights, elsewhere after the app's mark ([`app_mark`]), which stands where the lights
+///   would, so the corner is never empty.
+/// - Over the expanded sidebar (wide): room for the traffic lights (macOS only), the title and, at the
+///   sidebar's right edge ([`TopRow::sidebar_at_edge`]), the panel button, on the sidebar's surface, as
+///   wide as the sidebar; then the line beside it.
+/// - With the rail (wide by choice, medium) and in narrow windows the lights' room, the panel button
+///   and the title (in a fixed room, [`head_inset`]) stand before the header; off macOS the mark stands
+///   over the rail, on its axis, or right after the panel button in narrow windows. Narrow, the button
+///   opens the drawer, whose own top is the narrow lead. There is no app switcher (issue #530).
+/// - Then the app's header ([`header_bar`]), padded as in the header bar, with a line below, and at
+///   the right end the switch `panel-right` of the right column ([`TopRow::right_column`], only where
+///   the window has one) and the settings ([`SETTINGS_ICON`]), each marked while its part shows.
+/// - Mail opts into [`TopRow::sidebar_surface`] for one sidebar-coloured head (issue #564), and into
+///   [`TopRow::keep_buttons`] for the panel button and the settings over an open mail (#545).
 ///
 /// The free row drags the window. What an overlay lays over the top of the window ([`Cover`]) dims
 /// or covers the row as it did the band. The sizes of the lights' room are points (divided by
@@ -737,7 +746,10 @@ pub const SETTINGS_ICON: Icon = Icon::SlidersHorizontal;
 ///
 /// ```ignore
 /// let top = TopRow::new(self.zoom.factor(), Message::DragWindow)
+///     .title(AppId::CALENDAR)
 ///     .sidebar(shell::sidebar_button_label(class, self.sidebar, self.drawer), Message::ToggleSidebar)
+///     .sidebar_at_edge(true)
+///     .right_column(self.right_column, Message::ToggleRightColumn)
 ///     .settings(Message::ToggleSettings)
 ///     .settings_open(self.settings.is_some())
 ///     .cover(self.cover());
@@ -746,6 +758,8 @@ pub const SETTINGS_ICON: Icon = Icon::SlidersHorizontal;
 #[derive(Debug, Clone)]
 pub struct TopRow<M> {
     sidebar: Option<(&'static str, M)>,
+    title: Option<AppId>,
+    right_column: Option<(bool, M)>,
     sidebar_surface: bool,
     sidebar_at_edge: bool,
     keep_buttons: bool,
@@ -763,6 +777,8 @@ impl<M> TopRow<M> {
     pub fn new(zoom: f32, on_drag: M) -> Self {
         TopRow {
             sidebar: None,
+            title: None,
+            right_column: None,
             sidebar_surface: false,
             sidebar_at_edge: false,
             keep_buttons: false,
@@ -789,6 +805,24 @@ impl<M> TopRow<M> {
         self
     }
 
+    /// The app's short name ([`app_name`]) in the lead (issue #601), so the corner says which app this
+    /// is: on macOS after the traffic lights, elsewhere after the app's mark ([`app_mark`]), which there
+    /// stands where the lights would. Without it the lead holds only the lights' room and the panel
+    /// button. [`head_inset`] counts the title, so every window that splits its header sets it.
+    pub fn title(mut self, app: AppId) -> Self {
+        self.title = Some(app);
+        self
+    }
+
+    /// The switch `panel-right` before the settings (issue #601), which shows or hides the right
+    /// column (the mail's reader, the calendar's "Up next", the hub's "Coming back") and sends
+    /// `on_press`; marked while the column is `shown`. Only for a window that has a right column in
+    /// its present layout (wide); the others leave it out.
+    pub fn right_column(mut self, shown: bool, on_press: M) -> Self {
+        self.right_column = Some((shown, on_press));
+        self
+    }
+
     /// Draws the entire normal head in the sidebar's palette (mail, issue #564), including its
     /// text and controls. Menus and tooltips keep the window's theme. Off for existing callers.
     pub fn sidebar_surface(mut self, enabled: bool) -> Self {
@@ -796,8 +830,9 @@ impl<M> TopRow<M> {
         self
     }
 
-    /// Places the panel button at the expanded sidebar's right edge (mail, issue #564). The compact
-    /// lead and the drawer keep their usual position beside the lights. Off for existing callers.
+    /// Places the panel button at the expanded sidebar's right edge (mail, issue #564; every app with
+    /// the title since issue #601), after the title. The compact lead and the drawer keep their usual
+    /// position beside the lights. Off for callers that do not opt in.
     pub fn sidebar_at_edge(mut self, enabled: bool) -> Self {
         self.sidebar_at_edge = enabled;
         self
@@ -843,11 +878,14 @@ impl<M> TopRow<M> {
 /// where the row's lead is as wide as the sidebar; else what the lights' room and the panel button take
 /// beyond the rail (or the whole of it in narrow windows). Apps that split their header
 /// by the columns below (the list's head over the list) take it off the first part.
+///
+/// The widths assume a row with the app's title ([`TopRow::title`]), which every window that splits
+/// its header sets (issue #601).
 pub fn head_inset(class: SizeClass, choice: SidebarMode, zoom: f32) -> f32 {
     match sidebar_mode(class, choice) {
         Some(SidebarMode::Expanded) => 0.0,
-        Some(SidebarMode::Rail) => (compact_lead_width(zoom) - rail() - LINE).max(0.0),
-        None => compact_lead_width(zoom),
+        Some(SidebarMode::Rail) => (compact_lead_width(zoom, true) - rail() - LINE).max(0.0),
+        None => compact_lead_width(zoom, false),
     }
 }
 
@@ -865,11 +903,55 @@ fn lights_room(zoom: f32) -> f32 {
     }
 }
 
-/// The width of the top row's lead where it does not stand over the expanded sidebar: the lights'
-/// room and the panel button, [`SIDEBAR_GAP`] apart, and the gap before the header.
-fn compact_lead_width(zoom: f32) -> f32 {
+/// The width of the top row's lead with the title ([`TopRow::title`]) where it does not stand over the
+/// expanded sidebar: the lights' room, the panel button and the title in its [`title_room`] (with the
+/// mark before it in narrow windows off macOS), [`SIDEBAR_GAP`] apart, and the gap before the header.
+/// Off macOS with a rail beside the content (`rail_beside`) the mark stands over the rail instead, and
+/// the width includes the rail and its line.
+fn compact_lead_width(zoom: f32, rail_beside: bool) -> f32 {
     // The pieces of `compact_lead` and the gap of its row between each two of them.
-    lights_room(zoom) + SIDEBAR_GAP + size::control_sm() + SIDEBAR_GAP + space::s()
+    let pieces = size::control_sm() + SIDEBAR_GAP + title_room() + SIDEBAR_GAP + space::s();
+    match over_rail_mark() && rail_beside {
+        true => rail() + LINE + space::s() + SIDEBAR_GAP + pieces,
+        false => lights_room(zoom) + SIDEBAR_GAP + mark_room() + pieces,
+    }
+}
+
+/// The room of the app's title in the compact lead (issue #601): half the sidebar's width, the name
+/// cut with "…" in it. Fixed, so [`head_inset`] needs no app and the columns below stay where they are.
+fn title_room() -> f32 {
+    size::sidebar() / 2.0
+}
+
+/// Whether the lead shows the app's mark (issue #601): off macOS, where no traffic lights fill the
+/// corner; with a rail beside the content it stands over the rail's icons.
+fn over_rail_mark() -> bool {
+    cfg!(not(target_os = "macos"))
+}
+
+/// What the app's mark takes before the title ([`lead_named`]): the mark and a gap off macOS, nothing
+/// on macOS.
+fn mark_room() -> f32 {
+    if over_rail_mark() { LOGO + space::s() } else { 0.0 }
+}
+
+/// The app's short name in the lead, `room` wide (issue #601): [`typo::body_strong()`], one line,
+/// cut with "…" and then whole in its tooltip.
+fn lead_title<'a, M: 'a>(app: AppId, room: f32) -> Element<'a, M> {
+    let name = app_name(app);
+    let cut = typo::ellipsize(name, typo::body_strong(), room);
+    let shortened = cut != name;
+    let text = container(typo::text(typo::body_strong(), cut).wrapping(Wrapping::None)).width(room.max(0.0));
+    if shortened { widgets::with_tooltip(text, name) } else { text.into() }
+}
+
+/// The app's title with its mark before it off macOS ([`mark_room`]), the title `room` wide.
+fn lead_named<'a, M: 'a>(app: AppId, room: f32) -> Element<'a, M> {
+    let title = lead_title(app, room);
+    if !over_rail_mark() {
+        return title;
+    }
+    row![app_mark(app), title].spacing(space::s()).align_y(Alignment::Center).into()
 }
 
 /// The window `window` under its top row ([`Shell::top_row`]): `header` in the row, the row as wide as
@@ -910,20 +992,18 @@ fn top_row_band<'a, M: Clone + 'a>(
     if !keeps_buttons(top.cover, top.keep_buttons) {
         return covered_row(top, header, class, lead);
     }
-    let buttons = kept_buttons(&top);
+    let buttons = kept_buttons(&top, class);
     stack![covered_row(top, header, class, lead), buttons].into()
 }
 
 /// The panel button at the left and the settings at the right, where the row without a cover has
 /// them; the room between takes no press, so the window still drags there. The lead lies on the
 /// dimmed head, in the sidebar's palette where the head has it; the settings lie on the panel.
-fn kept_buttons<'a, M: Clone + 'a>(top: &TopRow<M>) -> Element<'a, M> {
-    let lead = container(compact_lead(top)).height(Fill).center_y(Fill);
+fn kept_buttons<'a, M: Clone + 'a>(top: &TopRow<M>, class: SizeClass) -> Element<'a, M> {
+    let lead = container(compact_lead(top, rail_beside(class))).height(Fill).center_y(Fill);
     let lead = if top.sidebar_surface && top.cover == Cover::Panel { in_sidebar(lead) } else { lead.into() };
     let mut pieces = row![lead, blank::horizontal()];
-    if let Some(on_press) = top.settings.clone() {
-        pieces = pieces.push(settings_button(on_press, top.settings_open)).push(blank().width(settings_gap(top.zoom)));
-    }
+    pieces = pieces.extend(end_buttons(top));
     // Over the line the uncovered row draws below its buttons, so they stay at the same height.
     column![pieces.height(Fill).align_y(Alignment::Center), blank().height(LINE)].into()
 }
@@ -970,27 +1050,39 @@ fn plain_row<'a, M: Clone + 'a>(
     match lead {
         Some(width) => row![expanded_lead(top, width), head_part(top, header, class)].into(),
         None => {
-            let lead = compact_lead(top);
+            let (side, lead) = compact_parts(top, rail_beside(class));
             // The compact lead lies on the panel, as the header does, and the line runs under both.
             let row = row![container(lead).height(Fill).center_y(Fill), head_row(top, header_padded(header, class))];
             let part = column![row.height(Fill), rule::horizontal(LINE).style(style::rule)];
-            head_background(top, part.into())
+            let head = head_background(top, part.into());
+            // Off macOS the mark stands over the rail, on the rail's surface and without the line below.
+            match side {
+                Some(side) => row![side, head].into(),
+                None => head,
+            }
         }
     }
 }
 
-/// The lead over the expanded sidebar, `width` wide. Mail may put the button at its right edge;
-/// the drawer always keeps the compact lead beside the lights.
+/// The lead over the expanded sidebar, `width` wide: the title and the button at its right edge where
+/// the caller asks ([`TopRow::sidebar_at_edge`]); the drawer always keeps the narrow compact lead.
 fn expanded_lead<'a, M: Clone + 'a>(top: &TopRow<M>, width: f32) -> Element<'a, M> {
     let at_edge = top.sidebar_at_edge && top.cover != Cover::Drawer;
     let lead = if at_edge {
-        let mut pieces = row![blank().width(lights_room(top.zoom)), blank::horizontal()];
+        let mut pieces = row![blank().width(lights_room(top.zoom))];
+        if let Some(app) = top.title {
+            // The title takes what the lights, the button and a gap before and after it leave.
+            let room = width - lights_room(top.zoom) - mark_room() - size::control_sm() - 2.0 * space::s();
+            pieces = pieces.push(lead_named(app, room.max(0.0)));
+        }
+        pieces = pieces.push(blank::horizontal());
         if let Some((label, on_press)) = top.sidebar.clone() {
             pieces = pieces.push(widgets::icon_button(Icon::PanelLeft, label, Some(on_press)));
         }
         pieces.push(blank().width(space::s())).align_y(Alignment::Center).into()
     } else {
-        compact_lead(top)
+        // The drawer has no rail beside it: its lead is the narrow one.
+        compact_lead(top, false)
     };
     // The body's expanded sidebar is `width` plus its separator. The drawer instead includes
     // its line in `size::sidebar()`. Keep existing callers' geometry, opt mail into the exact axis.
@@ -1002,14 +1094,47 @@ fn expanded_lead<'a, M: Clone + 'a>(top: &TopRow<M>, width: f32) -> Element<'a, 
     row![in_sidebar(side), rule::vertical(LINE).style(style::rule)].into()
 }
 
-/// The lead's pieces: the lights' room and the panel button, then the gap before the header. The same
-/// over the expanded sidebar by default, beside the rail and in narrow windows.
-fn compact_lead<'a, M: Clone + 'a>(top: &TopRow<M>) -> Element<'a, M> {
-    let mut pieces = row![blank().width(lights_room(top.zoom))];
-    if let Some((label, on_press)) = top.sidebar.clone() {
-        pieces = pieces.push(widgets::icon_button(Icon::PanelLeft, label, Some(on_press)));
+/// Whether a window of `class` shows the rail beside its content where the lead is the compact one:
+/// wide (the rail by choice) and medium.
+fn rail_beside(class: SizeClass) -> bool {
+    matches!(class, SizeClass::Wide | SizeClass::Medium)
+}
+
+/// The compact lead ([`compact_parts`]) in one piece.
+fn compact_lead<'a, M: Clone + 'a>(top: &TopRow<M>, rail_beside: bool) -> Element<'a, M> {
+    match compact_parts(top, rail_beside) {
+        (Some(side), lead) => row![side, container(lead).height(Fill).center_y(Fill)].into(),
+        (None, lead) => lead,
     }
-    pieces.push(blank().width(space::s())).spacing(SIDEBAR_GAP).align_y(Alignment::Center).into()
+}
+
+/// The lead's pieces beside the rail and in narrow windows (and in the drawer): the lights' room and
+/// the panel button, then the title ([`TopRow::title`], issue #601) in its [`title_room`] and the gap
+/// before the header. Off macOS the app's mark stands where the lights would: over the rail, centred
+/// on its icons and with its line, where a rail stands beside (`rail_beside`, the first piece), else
+/// right after the panel button. Without a title the lead is the lights' room and the button.
+fn compact_parts<'a, M: Clone + 'a>(top: &TopRow<M>, rail_beside: bool) -> (Option<Element<'a, M>>, Element<'a, M>) {
+    let button =
+        top.sidebar.clone().map(|(label, on_press)| widgets::icon_button(Icon::PanelLeft, label, Some(on_press)));
+    let Some(app) = top.title else {
+        let pieces = row![blank().width(lights_room(top.zoom))].extend(button).push(blank().width(space::s()));
+        return (None, pieces.spacing(SIDEBAR_GAP).align_y(Alignment::Center).into());
+    };
+    if over_rail_mark() && rail_beside {
+        let mark =
+            container(app_mark(app)).center_x(rail()).height(Fill).center_y(Fill).style(style::container::sidebar);
+        let side = row![in_sidebar(mark), rule::vertical(LINE).style(style::rule)].into();
+        let pieces = row![blank().width(space::s())]
+            .extend(button)
+            .push(lead_title(app, title_room()))
+            .push(blank().width(space::s()));
+        return (Some(side), pieces.spacing(SIDEBAR_GAP).align_y(Alignment::Center).into());
+    }
+    let pieces = row![blank().width(lights_room(top.zoom))]
+        .extend(button)
+        .push(lead_named(app, title_room()))
+        .push(blank().width(space::s()));
+    (None, pieces.spacing(SIDEBAR_GAP).align_y(Alignment::Center).into())
 }
 
 /// The header part of the row: the header padded as in the header bar, the settings, the line below.
@@ -1036,11 +1161,26 @@ fn header_padded<'a, M: 'a>(header: Element<'a, M>, class: SizeClass) -> Element
 
 /// `header`, then the settings button and the gap to the window's edge ([`settings_gap`]).
 fn head_row<'a, M: Clone + 'a>(top: &TopRow<M>, header: Element<'a, M>) -> iced::widget::Row<'a, M> {
-    let mut row = row![header];
-    if let Some(on_press) = top.settings.clone() {
-        row = row.push(settings_button(on_press, top.settings_open)).push(blank().width(settings_gap(top.zoom)));
+    row![header].extend(end_buttons(top)).align_y(Alignment::Center)
+}
+
+/// The buttons at the row's right end: the switch of the right column ([`TopRow::right_column`],
+/// issue #601), the settings and the gap to the window's edge ([`settings_gap`]). Both buttons have the
+/// settings' edge, so they stand on one line; the gap between them is the row's own.
+fn end_buttons<'a, M: Clone + 'a>(top: &TopRow<M>) -> Vec<Element<'a, M>> {
+    let mut buttons = Vec::new();
+    if let Some((shown, on_press)) = top.right_column.clone() {
+        let label = if shown { tr("Hide right column") } else { tr("Show right column") };
+        buttons.push(edge_button(Icon::PanelRight, label, on_press, shown));
+        buttons.push(blank().width(SIDEBAR_GAP).into());
     }
-    row.align_y(Alignment::Center)
+    if let Some(on_press) = top.settings.clone() {
+        buttons.push(settings_button(on_press, top.settings_open));
+    }
+    if !buttons.is_empty() {
+        buttons.push(blank().width(settings_gap(top.zoom)).into());
+    }
+    buttons
 }
 
 /// The edge of the settings button in the top row (issue #474): one [`space::s()`] smaller than the
@@ -1063,9 +1203,16 @@ fn settings_gap(zoom: f32) -> f32 {
 /// The settings button of the top row: [`SETTINGS_ICON`], "Settings", marked while `open` like a
 /// chosen sidebar row (neutral, never red).
 fn settings_button<'a, M: Clone + 'a>(on_press: M, open: bool) -> Element<'a, M> {
-    // Closed it looks like an icon button (`text_2`, `hover` on hover), only [`settings_edge`] square.
+    edge_button(SETTINGS_ICON, tr("Settings"), on_press, open)
+}
+
+/// A button at the row's right end ([`end_buttons`]): `which`, [`settings_edge`] square, `label` as
+/// its tooltip, marked while `marked` like a chosen sidebar row (neutral, never red).
+fn edge_button<'a, M: Clone + 'a>(which: Icon, label: &'static str, on_press: M, marked: bool) -> Element<'a, M> {
+    let open = marked;
+    // Unmarked it looks like an icon button (`text_2`, `hover` on hover), only [`settings_edge`] square.
     let tone = if open { Tone::Text } else { Tone::Text2 };
-    let pressable = button(container(widgets::toned(SETTINGS_ICON, icon::SIZE, tone)).center(Fill))
+    let pressable = button(container(widgets::toned(which, icon::SIZE, tone)).center(Fill))
         .width(settings_edge())
         .height(settings_edge())
         .padding(0)
@@ -1074,7 +1221,7 @@ fn settings_button<'a, M: Clone + 'a>(on_press: M, open: bool) -> Element<'a, M>
         true => pressable.style(style::button::sidebar_item(true)),
         false => pressable.style(style::button::icon),
     };
-    widgets::with_tooltip(pressable, tr("Settings"))
+    widgets::with_tooltip(pressable, label)
 }
 
 /// The container style of `surface`.
@@ -1426,8 +1573,8 @@ fn app_hue(app: AppId) -> Option<usize> {
 /// ([`app_icon`], 14) in its own hue on a tile tinted with it ([`theme::Palette::tinted`], radius
 /// [`radius::xs()`]), so the windows differ at a glance; for every other app the suite's logo.
 ///
-/// A window without sidebar or rail (narrow) puts it first in its header ([`header_bar`]'s
-/// `leading`), so the window still says which one it is; the setup shows it as the suite's logo.
+/// The top row shows it before the app's name off macOS ([`TopRow::title`], issue #601), so the window
+/// says which one it is in every form; the setup shows it as the suite's logo.
 pub fn app_mark<'a, M: 'a>(app: AppId) -> Element<'a, M> {
     let Some(hue) = app_hue(app) else { return logo() };
     let glyph: Element<'a, M> = icon::icon(app_icon(app), icon::SIZE_SM)
@@ -1553,6 +1700,14 @@ mod tests {
         Close,
     }
 
+    /// One `iced_test::Simulator` at a time: several in parallel threads crash the test process
+    /// (SIGSEGV, already before issue #601), so every test that builds one holds this lock first.
+    fn one_simulator() -> std::sync::MutexGuard<'static, ()> {
+        static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        // A test that failed while holding it leaves it poisoned; the next one may still run.
+        ONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Issue #564: mail opts in; every existing caller keeps the split surfaces and fixed button.
     #[test]
     fn the_mail_top_row_options_are_independent_and_off_by_default() {
@@ -1569,6 +1724,7 @@ mod tests {
     /// Issue #564: the moved button follows the real sidebar width, not its default or the zoom.
     #[test]
     fn the_expanded_button_moves_only_when_requested_and_never_in_the_drawer() {
+        let _one = one_simulator();
         #[derive(Debug, Clone, PartialEq)]
         enum Press {
             Sidebar,
@@ -1623,6 +1779,7 @@ mod tests {
     /// they have without it; a dialog and the drawer stay as they were, and the free row drags.
     #[test]
     fn kept_buttons_stay_in_reach_over_a_side_panel_only() {
+        let _one = one_simulator();
         #[derive(Debug, Clone, PartialEq)]
         enum Press {
             Sidebar,
@@ -1671,6 +1828,7 @@ mod tests {
     /// Issue #564: drawing the header must supply the whole sidebar palette, not just its background.
     #[test]
     fn the_mail_head_draws_in_the_sidebar_palette_in_both_modes() {
+        let _one = one_simulator();
         use std::sync::{Arc, Mutex};
         // Palette readers in the other tests do not all take SWITCHING. Keep a real scheme switch
         // in a child process so this rendering test cannot change their colours mid-assertion.
@@ -2085,8 +2243,115 @@ mod tests {
         assert_eq!(head_inset(SizeClass::Wide, SidebarMode::Expanded, 1.0), 0.0);
         let rail = head_inset(SizeClass::Wide, SidebarMode::Rail, 1.0);
         assert_eq!(head_inset(SizeClass::Medium, SidebarMode::Expanded, 1.0), rail, "medium always has the rail");
-        assert_eq!(rail, (compact_lead_width(1.0) - self::rail() - LINE).max(0.0));
-        assert_eq!(head_inset(SizeClass::Narrow, SidebarMode::Expanded, 1.0), compact_lead_width(1.0));
+        assert_eq!(rail, (compact_lead_width(1.0, true) - self::rail() - LINE).max(0.0));
+        assert_eq!(head_inset(SizeClass::Narrow, SidebarMode::Expanded, 1.0), compact_lead_width(1.0, false));
+        // Issue #601: the inset holds the title's room, so the header never runs into the name.
+        assert!(rail >= title_room() && head_inset(SizeClass::Narrow, SidebarMode::Expanded, 1.0) >= title_room());
+    }
+
+    /// Issue #601: with the title the row builds in every class, under every cover and zoom, with and
+    /// without the switch of the right column, shown or hidden.
+    #[test]
+    fn the_titled_top_row_builds_in_every_class_and_under_every_cover() {
+        let part = || -> Element<'static, Msg> { blank().into() };
+        let filled = Cover::Filled(Surface::Panel);
+        for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+            for cover in [Cover::Nothing, Cover::Dialog, Cover::Drawer, Cover::Panel, filled] {
+                for zoom in [1.0, 1.5] {
+                    for app in [
+                        AppId::INBOX,
+                        AppId::INBOX_MAIL,
+                        AppId::CALENDAR,
+                        AppId::TASKS,
+                        AppId::ASSISTANT,
+                        AppId::WORKPLACE,
+                    ] {
+                        let top = TopRow::new(zoom, Msg::Close)
+                            .title(app)
+                            .sidebar("Collapse sidebar", Msg::Close)
+                            .sidebar_at_edge(true)
+                            .keep_buttons(true)
+                            .settings(Msg::Close)
+                            .cover(cover);
+                        for (top, rail) in [
+                            (top.clone(), false),
+                            (top.clone().right_column(true, Msg::Close), true),
+                            (top.right_column(false, Msg::Close), false),
+                        ] {
+                            let shell = shell(class, part(), part(), part(), None).rail(rail.then(part));
+                            let _: Element<'_, Msg> =
+                                shell.sidebar_width(280.0, false, |_| Msg::Close).top_row(top).into();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Issue #601: with the title the panel button stays in reach in every form – after the lights
+    /// (or the mark over the rail off macOS) beside the rail and in narrow windows, at the sidebar's
+    /// edge over the expanded sidebar.
+    #[test]
+    fn the_panel_button_stays_in_reach_with_the_title() {
+        let _one = one_simulator();
+        #[derive(Debug, Clone, PartialEq)]
+        enum Press {
+            Sidebar,
+            Drag,
+        }
+        let compact = |rail_beside: bool| match over_rail_mark() && rail_beside {
+            true => self::rail() + LINE + space::s() + SIDEBAR_GAP + size::control_sm() / 2.0,
+            false => lights_room(1.0) + SIDEBAR_GAP + size::control_sm() / 2.0,
+        };
+        let cases = [
+            (SizeClass::Wide, Some(size::sidebar()), size::sidebar() - space::s() - size::control_sm() / 2.0),
+            (SizeClass::Wide, None, compact(true)),
+            (SizeClass::Medium, None, compact(true)),
+            (SizeClass::Narrow, None, compact(false)),
+        ];
+        for (class, lead, x) in cases {
+            let top = TopRow::new(1.0, Press::Drag)
+                .title(AppId::INBOX_MAIL)
+                .sidebar(tr("Collapse sidebar"), Press::Sidebar)
+                .sidebar_at_edge(true);
+            let mut ui = iced_test::Simulator::with_size(
+                iced::Settings::default(),
+                Size::new(1000.0, TOP_ROW),
+                top_row_band(top, blank().into(), class, lead),
+            );
+            ui.point_at(iced::Point::new(x, TOP_ROW / 2.0));
+            ui.simulate(iced_test::simulator::click());
+            assert!(ui.into_messages().any(|m| m == Press::Sidebar), "{class:?}, {lead:?}");
+        }
+    }
+
+    /// Issue #601: the switch of the right column stands right before the settings, on their line,
+    /// and only where the caller sets it.
+    #[test]
+    fn the_right_column_switch_stands_before_the_settings_only_when_set() {
+        let _one = one_simulator();
+        #[derive(Debug, Clone, PartialEq)]
+        enum Press {
+            Right,
+            Settings,
+            Drag,
+        }
+        let width = 1000.0;
+        let x = width - settings_gap(1.0) - settings_edge() - SIDEBAR_GAP - settings_edge() / 2.0;
+        for (switch, shown) in [(false, true), (true, true), (true, false)] {
+            let top = TopRow::new(1.0, Press::Drag).title(AppId::CALENDAR).settings(Press::Settings);
+            let top = if switch { top.right_column(shown, Press::Right) } else { top };
+            let mut ui = iced_test::Simulator::with_size(
+                iced::Settings::default(),
+                Size::new(width, TOP_ROW),
+                top_row_band(top, blank().into(), SizeClass::Wide, Some(size::sidebar())),
+            );
+            ui.point_at(iced::Point::new(x, TOP_ROW / 2.0));
+            ui.simulate(iced_test::simulator::click());
+            let messages: Vec<Press> = ui.into_messages().collect();
+            assert_eq!(messages.contains(&Press::Right), switch, "{switch}, {shown}: {messages:?}");
+            assert!(!messages.contains(&Press::Settings), "the settings keep their own place");
+        }
     }
 
     #[test]
