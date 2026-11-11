@@ -15251,18 +15251,6 @@ mod tests {
             .expect("saved");
     }
 
-    /// Runs `test` on a thread with an 8 MiB stack. A command that waits for approval runs through
-    /// the core twice; in a debug build, where no frame is shrunk, that nests deeper than the 2 MiB
-    /// of a test thread hold for the largest requests (on Linux it overflowed).
-    /// The future is made on that thread by `test`, so it need not be `Send`.
-    fn deep<F: std::future::Future<Output = ()>>(test: impl FnOnce() -> F + Send + 'static) {
-        let worker = std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
-            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
-            runtime.block_on(test());
-        });
-        worker.expect("thread").join().expect("the test ran through");
-    }
-
     fn decide(id: &str, allow: bool) -> Request {
         Request::DecideApproval { id: id.into(), allow }
     }
@@ -16473,13 +16461,8 @@ mod tests {
     /// every account, or a category without admin access to the inbox, is `forbidden`, a search a
     /// filter may not have `error` – nothing to approve. Every change waits for a person, named by
     /// what the core stores, and a filter a person changed meanwhile ends the approval `conflict`.
-    #[test]
-    fn clients_change_mail_filters_of_their_accounts_after_approval() {
-        // Deeper in a debug build than a test thread's 2 MiB stack holds ([`deep`]).
-        deep(clients_change_mail_filters_of_their_accounts_after_approval_deep);
-    }
-
-    async fn clients_change_mail_filters_of_their_accounts_after_approval_deep() {
+    #[tokio::test]
+    async fn clients_change_mail_filters_of_their_accounts_after_approval() {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core_with_mail_data(dir.path());
         let app_key = crate::clients::tests::app_key(dir.path());
@@ -34522,4 +34505,5 @@ mod tests {
         core.seen_lists_only(&mut shown, Reach::Client(&rights)).await;
         assert_eq!(shown[0].task.as_ref().and_then(|task| task.list.clone()), None);
     }
+
 }
