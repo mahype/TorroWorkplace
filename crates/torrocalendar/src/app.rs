@@ -614,6 +614,9 @@ pub struct App {
     drawer: bool,
     /// The sidebar the user chose for the wide layout, kept in `ui.json`.
     sidebar: SidebarMode,
+    /// Whether the properties column of the wide layout ("Up next" beside the day, the radar's days)
+    /// shows (issue #601), kept in `ui.json`.
+    right_column: bool,
     /// The widths the person dragged (issue #604), kept in `ui.json` for the whole app.
     widths: Widths,
     /// The first of the month the small month in the sidebar shows. Follows the anchor, but its
@@ -665,6 +668,8 @@ const SIDE_KEY: &str = "sidebar";
 const PROPS_KEY: &str = "props";
 /// The key of the width of the event's panel beside the view.
 const PANEL_KEY: &str = "panel";
+/// The window's key for the right column shown or hidden (issue #601, [`ui_state::right_column_from`]).
+const RIGHT_COLUMN_KEY: &str = "calendar";
 
 /// The widths the person dragged (issue #604), one [`Split`] for each divider, for the whole app.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -719,6 +724,12 @@ pub enum Message {
     /// The panel button at the top of the sidebar, or `[`: collapses or expands the sidebar (wide),
     /// opens or closes the drawer (medium, narrow).
     ToggleSidebar,
+    /// The switch `panel-right` of the top row (issue #601): shows or hides the properties column and
+    /// remembers it.
+    ToggleRightColumn,
+    /// Whether the properties column shows, remembered in `ui.json`, loaded at start (none: not
+    /// chosen yet, shown).
+    StoredRightColumn(Option<bool>),
     /// The view state stored in `ui.json`, loaded at start.
     UiState(UiState),
     /// The handle at the edge of the expanded sidebar (issue #604).
@@ -893,6 +904,7 @@ impl App {
             },
             drawer: matches!(open, Some(Open::Drawer)),
             sidebar: SidebarMode::default(),
+            right_column: true,
             widths: Widths::default(),
             mini_month: mini_month::shift(now.date(), 0),
             size: torro_gui::window(AppId::CALENDAR).size,
@@ -928,7 +940,11 @@ impl App {
         let widths = if app.source.is_demo() {
             Task::none()
         } else {
-            ui_state::load_splits_task(AppId::CALENDAR).map(Message::StoredWidths)
+            Task::batch([
+                ui_state::load_splits_task(AppId::CALENDAR).map(Message::StoredWidths),
+                ui_state::load_right_column_task(AppId::CALENDAR, RIGHT_COLUMN_KEY.to_owned())
+                    .map(Message::StoredRightColumn),
+            ])
         };
         let mut tasks = vec![
             ui_state::load_task(AppId::CALENDAR).map(Message::UiState),
@@ -1205,6 +1221,19 @@ impl App {
                 }
             }
             Message::UiState(state) => self.sidebar = state.sidebar,
+            Message::ToggleRightColumn => {
+                self.right_column = !self.right_column;
+                // The demo stores nothing.
+                if !self.source.is_demo() {
+                    let key = RIGHT_COLUMN_KEY.to_owned();
+                    return ui_state::save_right_column_task(AppId::CALENDAR, key, self.right_column);
+                }
+            }
+            Message::StoredRightColumn(stored) => {
+                if let Some(shown) = stored {
+                    self.right_column = shown;
+                }
+            }
             Message::SidebarWidth(event) => {
                 let limits = self.sidebar_limits();
                 return self.drag(SIDE_KEY, |widths| &mut widths.side, event, limits);
@@ -1550,11 +1579,28 @@ impl App {
     /// of the window.
     fn top_row(&self, class: SizeClass) -> TopRow<Message> {
         let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
-        TopRow::new(self.zoom.factor(), Message::DragWindow)
+        let top = TopRow::new(self.zoom.factor(), Message::DragWindow)
+            .title(AppId::CALENDAR)
             .sidebar(label, Message::ToggleSidebar)
+            .sidebar_at_edge(true)
             .settings(Message::ToggleSettings)
             .settings_open(self.settings.is_some())
-            .cover(self.cover())
+            .cover(self.cover());
+        match self.has_right_column(class) {
+            true => top.right_column(self.right_column, Message::ToggleRightColumn),
+            false => top,
+        }
+    }
+
+    /// Whether the current view has a properties column the person can show or hide (issue #601),
+    /// and so the switch `panel-right`: the day and the radar in the wide layout, while no event's
+    /// panel takes the column's place and the settings are closed.
+    fn has_right_column(&self, class: SizeClass) -> bool {
+        shell::has_props(class)
+            && self.loaded
+            && self.settings.is_none()
+            && !self.panel_beside(class)
+            && matches!(self.shown(), CalView::Day | CalView::Radar)
     }
 
     /// What lies over the top of the window, which the top row repeats: the editor's panel over
@@ -2013,8 +2059,9 @@ impl App {
     /// The properties column of the wide layout: what is left of the day beside the day view
     /// (`views::week::day_props`), the radar's mini radars of the coming days beside the radar. The
     /// other views fill the width and have none.
+    /// Hidden with the switch `panel-right` (issue #601), the view takes the column's room.
     fn props(&self, class: SizeClass) -> Option<Element<'_, Message>> {
-        if !shell::has_props(class) || !self.loaded {
+        if !shell::has_props(class) || !self.loaded || !self.right_column {
             return None;
         }
         match self.shown() {
@@ -2700,6 +2747,29 @@ mod tests {
             assert!(!app.drawer, "{size:?}: and closes it");
             assert_eq!(app.sidebar, SidebarMode::Expanded, "{size:?}: the wide choice stays");
         }
+    }
+
+    /// Issue #601: `panel-right` hides "Up next" beside the day (and the radar's days); the switch is
+    /// there only where the view has the column, and a stored choice applies at start.
+    #[test]
+    fn the_right_column_hides_the_properties_where_the_view_has_them() {
+        let mut app = demo_app();
+        let _ = app.update(Message::AccountLoaded(Ok(one_account())));
+        let (collections, events, _) = torro_pim::demo::sample(app.now.date());
+        let _ = app.update(Message::Loaded(Ok((collections, events))));
+        let _ = app.update(Message::Resized(Size::new(1600.0, 900.0)));
+        let _ = app.update(Message::SetView(CalView::Week));
+        assert!(app.props(SizeClass::Wide).is_none() && !app.has_right_column(SizeClass::Wide), "week: none");
+        let _ = app.update(Message::SetView(CalView::Day));
+        assert!(app.props(SizeClass::Wide).is_some() && app.has_right_column(SizeClass::Wide));
+        let _ = app.update(Message::ToggleRightColumn);
+        assert!(app.props(SizeClass::Wide).is_none(), "hidden");
+        assert!(app.has_right_column(SizeClass::Wide), "the switch stays to show it again");
+        let _ = app.view();
+        let _ = app.update(Message::StoredRightColumn(Some(true)));
+        assert!(app.props(SizeClass::Wide).is_some(), "a stored choice applies");
+        let _ = app.update(Message::Resized(Size::new(800.0, 600.0)));
+        assert!(!app.has_right_column(SizeClass::Medium), "medium has no column, no switch");
     }
 
     /// Issue #604: sidebar, properties column and the event's panel are dragged inside their limits,
