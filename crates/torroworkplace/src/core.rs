@@ -1074,6 +1074,33 @@ fn reads_mail(reach: Reach<'_>, account: &str) -> bool {
     }
 }
 
+/// Sets the chat conversation of each Talk entry in `items` for a caller that may read chat with
+/// the entry's account (`docs/chat.md`, `inbox.get_item` in stage 1), `None` on every other. The
+/// token comes from the entry's link, which the Talk source sets to `<server>/call/<token>`: a
+/// client sees no `thread_key` of the core's entries.
+fn with_conversations(items: &mut [torro_inbox::Item], reach: Reach<'_>) {
+    for item in items.iter_mut() {
+        item.conversation = None;
+        if item.source.kind != torro_inbox::SourceKind::Talk {
+            continue;
+        }
+        let account = torro_inbox::SourceRef::nextcloud(item.source.name.as_str()).key();
+        let reads = match reach {
+            Reach::Suite => true,
+            Reach::Client(rights) => {
+                rights.area(Area::Chat).allows(Access::Read) && rights.chat_accounts.contains(&account)
+            }
+        };
+        let token = match &item.link {
+            Some(torro_inbox::Link::Url { url }) => url.rsplit_once("/call/").map(|(_, token)| token),
+            _ => None,
+        };
+        if let (true, Some(token)) = (reads, token.filter(|token| torro_nextcloud::RoomToken::parse(token).is_some())) {
+            item.conversation = Some(torro_chat::conversation_id(&account, token));
+        }
+    }
+}
+
 /// A caller that may read tasks: the suite, or a client with read access to `tasks`. Which lists
 /// it sees, [`PimService::todos_within`] decides.
 fn reads_tasks(reach: Reach<'_>) -> bool {
@@ -4005,6 +4032,7 @@ impl Core {
             pim: Arc::clone(&self.pim),
             ntfy: Arc::clone(&self.ntfy),
             settings: self.settings.clone(),
+            chat: Arc::clone(&self.chat),
         }
     }
 
@@ -4289,6 +4317,11 @@ impl Core {
                 return Err(Refused::Forbidden { command: request.operation().name() });
             }
             None => {}
+        }
+        // Lent without chat, the key loses Talk's entries too: they hold the start of a chat
+        // message (decision 6 in `docs/chat.md`).
+        if !rights.areas.contains_key(&torro_ipc::api::Area::Chat) {
+            self.inbox.without_talk(&mut rights.inbox_sources);
         }
         let answer = self.handle_client(id, rights, request, &via).await;
         if let Ok(Response::Pending { approval }) = &answer {
@@ -9194,10 +9227,12 @@ impl Core {
                     (Response::Items { items }, true) => {
                         self.with_tasks(items, reach).await;
                         self.with_invites(items, reach).await;
+                        with_conversations(items, reach);
                     }
                     (Response::Item { item }, true) => {
                         self.with_tasks(std::slice::from_mut(item), reach).await;
                         self.with_invites(std::slice::from_mut(item), reach).await;
+                        with_conversations(std::slice::from_mut(item), reach);
                     }
                     _ => {}
                 }
@@ -21061,6 +21096,7 @@ mod tests {
     fn a_task_takes_title_text_web_page_and_the_way_back_from_its_entry() {
         let at = Utc::now();
         let item = torro_inbox::Item {
+            conversation: None,
             id: "e1".into(),
             source: torro_inbox::SourceRef::script("ci"),
             thread_key: "deploy".into(),
@@ -21195,6 +21231,35 @@ mod tests {
         let made = ask(&core, Some(&app_key), make_event(&event, &fake.work, None)).await;
         assert!(matches!(made, Response::Event { .. }), "{made:?}");
         assert_eq!(settled(&event), 1, "an event");
+    }
+
+    /// Stage 1 of `docs/chat.md`: `inbox.get_item` names the chat conversation of a Talk entry for
+    /// the app key and for a client that may read chat with its account, for no other.
+    #[tokio::test]
+    async fn a_talk_entry_names_its_conversation_to_who_may_read_the_chat() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let source = torro_inbox::SourceRef::talk("anna@cloud.example.org");
+        let report = crate::inbox::Remote {
+            url: Some("https://cloud.example.org/call/a1b2c3d4".into()),
+            ..crate::inbox::tests::remote(source, "a1b2c3d4", &["a1b2c3d4/5"], Utc::now())
+        };
+        let id = crate::inbox::tests::filed_remote(&core.inbox, &report, Utc::now());
+        let get = || Request::GetItem { id: id.clone() };
+        let conversation = |response: Response| match response {
+            Response::Item { item } => item.conversation,
+            other => panic!("expected the entry, got {other:?}"),
+        };
+        let expected = Some("nextcloud:anna@cloud.example.org/a1b2c3d4".to_string());
+        assert_eq!(conversation(core.handle(get()).await), expected, "the app key");
+        let mut reader = RightsTemplate::FullAccess.rights();
+        reader.chat_accounts = Selection::Only(vec!["nextcloud:anna@cloud.example.org".into()]);
+        let (_, reader) = client(&core, reader).await;
+        assert_eq!(conversation(ask(&core, Some(&reader), get()).await), expected, "a client with the account");
+        let mut elsewhere = RightsTemplate::FullAccess.rights();
+        elsewhere.chat_accounts = Selection::Only(vec![]);
+        let (_, elsewhere) = client(&core, elsewhere).await;
+        assert_eq!(conversation(ask(&core, Some(&elsewhere), get()).await), None, "without the account");
     }
 
     /// Task E5.2: a client without write access to GitHub is refused before anyone is asked, and the
@@ -21498,6 +21563,7 @@ mod tests {
     fn an_event_takes_title_times_text_and_the_way_back_from_its_entry() {
         let at = Utc::now();
         let item = torro_inbox::Item {
+            conversation: None,
             id: "e1".into(),
             source: torro_inbox::SourceRef::script("ci"),
             thread_key: "deploy".into(),
@@ -34505,5 +34571,4 @@ mod tests {
         core.seen_lists_only(&mut shown, Reach::Client(&rights)).await;
         assert_eq!(shown[0].task.as_ref().and_then(|task| task.list.clone()), None);
     }
-
 }

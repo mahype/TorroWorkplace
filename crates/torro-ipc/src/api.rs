@@ -8390,6 +8390,7 @@ mod tests {
         let (lane, urgent) = rules::placement(kind, None);
         let at = Utc.with_ymd_and_hms(2026, 10, 12, 9, 0, 0).single().expect("a valid time");
         Item {
+            conversation: None,
             id: "i1".into(),
             source,
             thread_key: "t".into(),

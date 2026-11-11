@@ -441,6 +441,7 @@ mod tests {
     fn item(id: &str, source: SourceRef, title: &str) -> Item {
         let time = Utc.with_ymd_and_hms(2026, 10, 13, 9, 0, 0).single().expect("valid time");
         Item {
+            conversation: None,
             id: id.into(),
             source,
             thread_key: "t".into(),

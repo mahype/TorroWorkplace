@@ -3755,6 +3755,7 @@ mod tests {
     fn inbox_answers_carry_untrusted_per_entry() {
         let at = utc("2026-10-12T08:00:00Z");
         let entry = |id: &str, untrusted: bool| torro_inbox::Item {
+            conversation: None,
             id: id.into(),
             source: SourceRef::script("ci"),
             thread_key: id.into(),

@@ -6854,6 +6854,7 @@ pub(crate) mod tests {
     fn inbox_entry(title: &str) -> Item {
         let at = Utc.with_ymd_and_hms(2026, 10, 12, 8, 0, 0).single().expect("time");
         Item {
+            conversation: None,
             id: "e1".into(),
             source: SourceRef::script("backup"),
             thread_key: "t".into(),

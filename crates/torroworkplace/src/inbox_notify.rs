@@ -915,6 +915,7 @@ mod tests {
     /// A new, open entry "for me" from the script `backup`, updated at `updated`.
     fn item(id: &str, updated: DateTime<Utc>) -> Item {
         Item {
+            conversation: None,
             id: id.into(),
             source: SourceRef::script("backup"),
             thread_key: format!("t-{id}"),

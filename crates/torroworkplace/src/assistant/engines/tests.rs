@@ -441,7 +441,11 @@ async fn the_stream_becomes_answers_and_tool_lines_and_the_key_stays_in_the_envi
     assert!(setup.host.clients.admit(Some(&key), &Request::CalendarCollections).is_err(), "taken back");
     let config = after("--mcp-config").expect("the configuration");
     assert!(!Path::new(&config).exists(), "the run's folder is removed");
-    assert_eq!(*setup.host.lent.lock().expect("lock"), [vec![Area::Tasks, Area::Mail, Area::Chat, Area::Presence]], "mail and chat never go to an agent");
+    assert_eq!(
+        *setup.host.lent.lock().expect("lock"),
+        [vec![Area::Tasks, Area::Mail, Area::Chat, Area::Presence]],
+        "mail and chat never go to an agent"
+    );
 
     // The next message carries the conversation so far: the agent keeps no session.
     let _ = ask(&setup, Some(&id), "And tomorrow?", Vec::new()).await;
