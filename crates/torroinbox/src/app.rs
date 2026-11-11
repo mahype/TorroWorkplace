@@ -5811,7 +5811,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::ToggleSidebar => return self.toggle_sidebar(),
             Message::ToggleRightColumn => return self.toggle_right_column(),
             Message::StoredRightColumn(stored) => {
-                if let Some(shown) = stored {
+                // A mail the window started on (`--message`) counts as opened (issue #601): a stored
+                // "hidden" that arrives after it leaves the reader shown, so no mail is read unseen.
+                let opened_mail = self.launch.kind == Kind::Mail && self.panel_open();
+                if let Some(shown) = stored.filter(|&shown| shown || !opened_mail) {
                     self.right_column = shown;
                 }
             }
@@ -26925,6 +26928,20 @@ mod tests {
             assert!(!app.has_right_column(app.class()), "{size:?}: no right column, no switch");
             let _ = app.view();
         }
+    }
+
+    /// Issue #601 (review of PR #641): a stored "hidden" that arrives after the window opened its start
+    /// mail leaves the reader shown; without an open mail it applies.
+    #[test]
+    fn a_stored_hidden_column_does_not_hide_the_start_mail() {
+        let mut app = mail_window_on("m:w2");
+        let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        assert!(app.panel_open());
+        let _ = app.update(Message::StoredRightColumn(Some(false)));
+        assert!(app.right_column, "the start mail stays readable");
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::StoredRightColumn(Some(false)));
+        assert!(!app.right_column, "without an open mail the stored choice applies");
     }
 
     /// Issue #601: the hub hides "Coming back" with `panel-right` and lays "Act now" out without it.
