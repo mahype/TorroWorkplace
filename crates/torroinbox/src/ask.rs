@@ -35,7 +35,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Datelike, Days, NaiveTime, Utc, Weekday};
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, row, rule, scrollable, svg, text_input};
+use iced::widget::{Space, button, column, container, row, rule, scrollable, svg, text_input};
 use iced::{Alignment, Element, Fill, Padding, Task, Theme};
 use torro_core::ai::Effort;
 use torro_core::i18n::{tr, trf};
@@ -585,7 +585,7 @@ pub fn view<'a>(ask: &'a Ask, look: Look<'a>) -> Element<'a, Message> {
     let content = column![
         head(look.covering),
         rule::horizontal(size::HAIRLINE).style(style::rule),
-        about_row(look.summary),
+        about_row(look.summary, look.now),
         rule::horizontal(size::HAIRLINE).style(style::rule),
         container(body).width(Fill).height(Fill),
         composer(ask),
@@ -609,8 +609,14 @@ fn tinted<'a>(which: Icon, edge: f32, colour: fn(&Palette) -> iced::Color) -> El
 }
 
 /// The head: "‹ Mail" while the panel covers the mail, the sparkles and "Ask AI", then "+" ("New
-/// chat") and ✕ ("Close"); padded like a panel's head, so ✕ lines up with the window's buttons.
+/// chat") and ✕ ("Close"); padded like a panel's head, so ✕ lines up with the window's buttons. The
+/// chevron of "‹ Mail" stands on the panel's left edge like the content below (the ghost button's own
+/// padding is taken off the head's).
 fn head<'a>(covering: bool) -> Element<'a, Message> {
+    let left = match covering {
+        true => (space::l() - style::button_padding().left).max(0.0),
+        false => space::l(),
+    };
     let mut line = row![].spacing(space::s()).align_y(Alignment::Center);
     if covering {
         line = line.push(widgets::text_button(
@@ -626,24 +632,16 @@ fn head<'a>(covering: bool) -> Element<'a, Message> {
         .push(Space::new().width(Fill))
         .push(widgets::icon_button(Icon::Plus, tr("New chat"), Some(Message::Ask(Event::New))))
         .push(widgets::icon_button(Icon::X, tr("Close"), Some(Message::Ask(Event::Close))));
-    container(line)
-        .width(Fill)
-        .center_y(size::header())
-        .padding(Padding::new(0.0).left(space::l()).right(space::m()))
-        .into()
+    container(line).width(Fill).center_y(size::header()).padding(Padding::new(0.0).left(left).right(space::m())).into()
 }
 
 /// What the chat is about: the mail's mark, "About: {subject}" and its sender and time, each on one
 /// line with "…".
-fn about_row<'a>(summary: Option<&MessageSummary>) -> Element<'a, Message> {
+fn about_row<'a>(summary: Option<&MessageSummary>, now: DateTime<Utc>) -> Element<'a, Message> {
     let (title, meta) = match summary {
         Some(summary) => (
             trf("About: {subject}", &[("subject", &mail::subject(summary))]),
-            format!(
-                "{} · {}",
-                mail::sender_name(summary.from.as_ref()),
-                datetime::format_moment(summary.date, Utc::now())
-            ),
+            format!("{} · {}", mail::sender_name(summary.from.as_ref()), datetime::format_moment(summary.date, now)),
         ),
         None => (tr("About this mail").to_owned(), String::new()),
     };
@@ -657,16 +655,19 @@ fn about_row<'a>(summary: Option<&MessageSummary>) -> Element<'a, Message> {
     container(line).width(Fill).padding([space::m(), space::l()]).into()
 }
 
-/// Before the first message: what the chat is for, and three questions to start from.
+/// Before the first message: what the chat is for, and three questions to start from, one under the
+/// other, all as wide as the column and their words at the left (mock-up).
 fn welcome<'a>() -> Element<'a, Message> {
     let starters = STARTERS.iter().map(|&question| {
         let words = tr(question);
-        widgets::text_button(
-            None,
-            words,
-            style::button::secondary,
-            Some(Message::Ask(Event::Starter(words.to_owned()))),
-        )
+        let label = typo::text(typo::caption(), words).wrapping(Wrapping::None);
+        button(container(label).center_y(Fill))
+            .width(Fill)
+            .height(size::control_sm())
+            .padding(style::button_padding())
+            .style(style::button::secondary)
+            .on_press(Message::Ask(Event::Starter(words.to_owned())))
+            .into()
     });
     let content = column![
         tinted(Icon::Sparkles, icon::SIZE, |p| p.text_3),
@@ -674,7 +675,7 @@ fn welcome<'a>() -> Element<'a, Message> {
             .style(theme::text_2)
             .align_x(Alignment::Center)
             .wrapping(Wrapping::WordOrGlyph),
-        column(starters).spacing(space::s()).align_x(Alignment::Center),
+        column(starters).spacing(space::s()).width(Fill),
     ]
     .spacing(space::m())
     .align_x(Alignment::Center)
@@ -812,7 +813,7 @@ fn quiet_line<'a>(mark: Icon, words: String) -> Element<'a, Message> {
 }
 
 /// The field at the bottom, "Ask about this mail…", and "Send" (the paper plane, as in the assistant's
-/// window) beside it – red while there is
+/// window) beside it – framed, on while there is
 /// something to send, framed and off otherwise; off with the field under a hint. The core's words of
 /// a message that did not go stand over it.
 fn composer<'a>(ask: &'a Ask) -> Element<'a, Message> {
@@ -829,13 +830,9 @@ fn composer<'a>(ask: &'a Ask) -> Element<'a, Message> {
     if open && !ask.sending {
         field = field.on_input(|text| Message::Ask(Event::Input(text))).on_submit(Message::Ask(Event::Send));
     }
+    // Framed and neutral, never red: the window's one primary button is "New email" (#476).
     let ready = open && !ask.follows() && !ask.input.trim().is_empty();
-    let send = match ready {
-        true => {
-            widgets::compact_button(Icon::Send, tr("Send"), style::button::primary, Some(Message::Ask(Event::Send)))
-        }
-        false => widgets::boxed_button(Icon::Send, tr("Send"), None),
-    };
+    let send = widgets::boxed_button(Icon::Send, tr("Send"), ready.then_some(Message::Ask(Event::Send)));
     let mut parts = column![].spacing(space::s());
     if let Some(failed) = &ask.failed {
         parts = parts.push(
@@ -848,14 +845,25 @@ fn composer<'a>(ask: &'a Ask) -> Element<'a, Message> {
         );
     }
     parts = parts.push(row![field, send].spacing(space::s()).align_y(Alignment::Center));
-    container(parts).width(Fill).padding(Padding::new(space::m()).top(0.0)).into()
+    // The same left edge as the chat above it.
+    container(parts)
+        .width(Fill)
+        .padding(Padding { top: 0.0, right: space::l(), bottom: space::m(), left: space::l() })
+        .into()
 }
 
 // -- Demo ---------------------------------------------------------------------------------------------
 
-/// The scenes of the demo (`--open ask`, `ask-card`, `ask-hint`).
+/// The scenes of the demo (`--open ask`, `ask-card`, `ask-hint`, `ask-empty`, `ask-working`,
+/// `ask-failed`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scene {
+    /// Nothing asked yet: what to ask, and the three questions to start from.
+    Empty,
+    /// A question sent, the mail read, the answer still being worked on ("Working …").
+    Working,
+    /// An answer, then a message that did not go: the core's words over the field, the text kept.
+    Failed,
     /// A question, the mail read and an answer.
     Answer,
     /// Asked for an event: the mail read, the event read out and its card.
@@ -963,6 +971,17 @@ impl Ask {
                 ask.phase = Phase::Hint(Hint::NoRight);
                 return ask;
             }
+            Scene::Empty => return ask,
+            Scene::Working => vec![demo_message("Is there a deadline?"), demo_tool("mail.get_message", "")],
+            Scene::Failed => {
+                ask.input = "And what about the figures?".to_owned();
+                ask.failed = Some("The AI's server did not answer. Try again in a moment.".to_owned());
+                vec![
+                    demo_message("Is there a deadline?"),
+                    demo_tool("mail.get_message", ""),
+                    demo_answer("Yes: Anna needs your feedback on the draft by Friday."),
+                ]
+            }
             Scene::Answer => vec![
                 demo_message("What does the sender want from me?"),
                 demo_tool("mail.get_message", ""),
@@ -1000,7 +1019,10 @@ impl Ask {
             };
             ask.cards.insert(last, card);
         }
-        ask.transcript = Transcript::new(demo_summary(&about, &mail::subject(summary), last, now), entries);
+        let mut head = demo_summary(&about, &mail::subject(summary), last, now);
+        // Staged still: the demo's stand-in is never asked for the answer that runs.
+        head.running = scene == Scene::Working;
+        ask.transcript = Transcript::new(head, entries);
         ask.parse();
         ask
     }

@@ -278,6 +278,8 @@ const SIDEBAR_SPLIT: &str = "sidebar";
 const PANEL_SPLIT: &str = "panel";
 /// The key of the width of the hub's column "Coming back" (issue #604).
 const PROPS_SPLIT: &str = "props";
+/// The key of the width of the chat about a mail beside the wide reader (issue #605).
+const ASK_SPLIT: &str = "ask";
 
 /// The name `ui.json` keeps for the sidebar's "Sources" while it is unfolded (issue #121).
 const SOURCES_KEY: &str = "sidebar.sources";
@@ -1687,6 +1689,12 @@ pub enum Open {
     AskCard,
     /// The chat about it with the hint that the assistant may not read the mail.
     AskHint,
+    /// The chat about it before the first question: the three questions to start from.
+    AskEmpty,
+    /// The chat about it while an answer is worked on ("Working …").
+    AskWorking,
+    /// The chat about it after a message that did not go: the core's words over the field.
+    AskFailed,
     /// The notifications window arranged "By time" (task E8.4), where it has room for columns.
     ByTime,
     /// The hub's To sort alone (task E8.5), as its sidebar entry shows it.
@@ -1902,7 +1910,7 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 128] = [
+    const ALL: [(&'static str, Open); 131] = [
         ("workflow-setup", Open::WorkflowSetup),
         ("workflow-template", Open::WorkflowTemplate),
         ("workflow-test", Open::WorkflowTest),
@@ -1949,6 +1957,9 @@ impl Open {
         ("ask", Open::Ask),
         ("ask-card", Open::AskCard),
         ("ask-hint", Open::AskHint),
+        ("ask-empty", Open::AskEmpty),
+        ("ask-working", Open::AskWorking),
+        ("ask-failed", Open::AskFailed),
         ("by-time", Open::ByTime),
         ("to-sort", Open::ToSort),
         ("tile", Open::Tile),
@@ -3396,6 +3407,8 @@ pub struct App<S> {
     panel_split: Split,
     /// The hub's column "Coming back" at the right (issue #604, [`PROPS_SPLIT`]).
     props_split: Split,
+    /// The chat about a mail beside the wide reader (issue #605, [`ASK_SPLIT`]).
+    ask_split: Split,
     /// The group of the collapsed rail whose card is open beside its icon (hover, an index into
     /// [`App::rail_groups`]); closed by every item clicked, a menu opening, another mail and Escape.
     rail_open: Option<usize>,
@@ -3676,6 +3689,8 @@ pub enum Message {
     PanelWidth(SplitEvent),
     /// The divider before the hub's column "Coming back" (issue #604).
     PropsWidth(SplitEvent),
+    /// The divider before the chat about a mail beside the wide reader (issue #605).
+    AskWidth(SplitEvent),
     /// The widths of panel and column remembered in `ui.json`, loaded at start.
     StoredWidths(HashMap<String, f32>),
     /// The pointer on the icons of the collapsed rail and its open card, or a click on an icon
@@ -4718,6 +4733,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     | Open::Ask
                     | Open::AskCard
                     | Open::AskHint
+                    | Open::AskEmpty
+                    | Open::AskWorking
+                    | Open::AskFailed
                     | Open::Unsubscribe,
                 ) => View::All,
                 Some(
@@ -4887,6 +4905,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             side: Split::default(),
             panel_split: Split::default(),
             props_split: Split::default(),
+            ask_split: Split::default(),
             rail_open: None,
             rail_pending: None,
             rail_left: None,
@@ -5034,8 +5053,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.hint.is_some() || !self.dismissing.is_empty() {
             subscriptions.push(iced::time::every(HINT_TICK).map(Message::HintTick));
         }
-        // The chat about a mail follows a running answer (issue #605); at rest nothing ticks.
-        if self.ask_shown().is_some_and(ask::Ask::follows) {
+        // The chat about a mail follows a running answer (issue #605); at rest nothing ticks. The
+        // demo's stand-in answers at once, and a staged running answer stands still.
+        if !self.launch.demo && self.ask_shown().is_some_and(ask::Ask::follows) {
             subscriptions.push(iced::time::every(ask::FOLLOW).map(|_| Message::Ask(ask::Event::Poll)));
         }
         if self.holds_round() {
@@ -5061,6 +5081,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         // The same for the sidebar's edge (issue #376).
         if self.side.dragging {
             subscriptions.push(split::release().map(|()| Message::SidebarWidth(SplitEvent::Release)));
+        }
+        if self.ask_split.dragging {
+            subscriptions.push(split::release().map(|()| Message::AskWidth(SplitEvent::Release)));
         }
         if self.panel_split.dragging {
             subscriptions.push(split::release().map(|()| Message::PanelWidth(SplitEvent::Release)));
@@ -5862,9 +5885,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     return ui_state::save_split_task(INBOX, PROPS_SPLIT.to_owned(), self.props_split.chosen);
                 }
             }
+            Message::AskWidth(event) => {
+                if self.ask_split.update(event, self.ask_limits()) && !self.launch.demo {
+                    return ui_state::save_split_task(INBOX, ASK_SPLIT.to_owned(), self.ask_split.chosen);
+                }
+            }
             Message::StoredWidths(stored) => {
                 self.panel_split.restore(stored.get(PANEL_SPLIT).copied());
                 self.props_split.restore(stored.get(PROPS_SPLIT).copied());
+                self.ask_split.restore(stored.get(ASK_SPLIT).copied());
             }
             Message::StoredSidebarWidth(stored) => {
                 // A width dragged before the file answered wins.
@@ -11687,14 +11716,29 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     }
 
     /// Whether the chat about a mail stands beside it (issue #605): in the wide window while the
-    /// reader keeps at least `split::min_pane()` beside its [`size::panel()`]; else it lies over the
-    /// mail with "‹ Mail" back.
+    /// reader keeps at least `split::min_pane()` beside the chat's width now ([`App::ask_room`]); else
+    /// it lies over the mail with "‹ Mail" back.
     fn ask_beside(&self, class: SizeClass) -> bool {
         if class != SizeClass::Wide {
             return false;
         }
-        let reader = self.content_width() - self.split.width(self.split_limits()) - split::handle_width();
-        reader - size::panel() >= split::min_pane()
+        self.ask_total() - split::divider_width() - self.ask_room() >= split::min_pane()
+    }
+
+    /// The width of the wide reader's column, which the chat about its mail shares (issue #605): the
+    /// columns less the list beside it and their divider.
+    fn ask_total(&self) -> f32 {
+        (self.panes() - self.split.width(self.split_limits()) - split::divider_width()).max(0.0)
+    }
+
+    /// What the divider before the chat moves in: as a panel beside the content (issue #604).
+    fn ask_limits(&self) -> Limits {
+        panel::beside_limits(self.ask_total())
+    }
+
+    /// The width of the chat beside the wide reader now: dragged or [`size::panel()`].
+    fn ask_room(&self) -> f32 {
+        self.ask_split.width(self.ask_limits())
     }
 
     /// The chat about a mail drawn for the window ([`ask::view`]); `covering` where it lies over the
@@ -11714,20 +11758,22 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         )
     }
 
-    /// The wide window's reader with the chat about its mail (issue #605): beside it with a line
-    /// between, or in its place where both would not fit ([`App::ask_beside`]); the reader alone
-    /// without a chat.
+    /// The wide window's reader with the chat about its mail (issue #605): beside it behind a divider
+    /// that drags like the panel's (issue #604, [`ASK_SPLIT`]), or in its place where both would not
+    /// fit ([`App::ask_beside`]); the reader alone without a chat.
     fn with_ask<'a>(&'a self, class: SizeClass, reader: Element<'a, Message>) -> Element<'a, Message> {
         let Some(ask) = self.ask_shown().filter(|_| class == SizeClass::Wide) else { return reader };
         if !self.ask_beside(class) {
             return self.ask_view(ask, true);
         }
-        row![
-            container(reader).width(Fill).height(Fill),
-            rule::vertical(size::HAIRLINE).style(style::rule),
-            container(self.ask_view(ask, false)).width(size::panel()).height(Fill),
-        ]
-        .into()
+        split::split_end(
+            reader,
+            self.ask_view(ask, false),
+            self.ask_room(),
+            self.ask_total(),
+            self.ask_split.dragging,
+            Message::AskWidth,
+        )
     }
 
     /// The chat about a mail over the mail window's panel in medium and narrow (issue #605): as wide
@@ -13647,14 +13693,25 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         // Over the split of the wide window: the list's part ends at the split's line.
         let inset = shell::head_inset(class, self.sidebar, self.zoom.factor());
         let width = self.split.width(self.split_limits()) + split::divider_width() / 2.0 - space::l() - inset;
-        row![
+        let mut head = row![
             container(list.padding(Padding::new(0.0).right(space::s()))).width(width.max(0.0)),
             rule::vertical(size::HAIRLINE).style(style::rule),
-            container(self.reader_head()).width(Fill).padding(Padding::new(0.0).left(space::l())),
-        ]
-        .height(Fill)
-        .align_y(Alignment::Center)
-        .into()
+        ];
+        // The chat about the mail beside the reader (issue #605): the reader's head ends at its line.
+        if self.ask_shown().is_some() && self.ask_beside(class) {
+            let reader = self.ask_total() - self.ask_room() - split::divider_width() / 2.0;
+            head = head
+                .push(
+                    container(self.reader_head())
+                        .width(reader.max(0.0))
+                        .padding(Padding::new(0.0).left(space::l()).right(space::s())),
+                )
+                .push(rule::vertical(size::HAIRLINE).style(style::rule))
+                .push(Space::new().width(Fill));
+        } else {
+            head = head.push(container(self.reader_head()).width(Fill).padding(Padding::new(0.0).left(space::l())));
+        }
+        head.height(Fill).align_y(Alignment::Center).into()
     }
 
     /// The head over the reader of the wide mail window (issue #457), in the top row beside the list's:
@@ -15568,10 +15625,16 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.reading = self.cursor.is_some();
             }
             // The same mail with the chat about it open (issue #605), staged without a core.
-            Some(open @ (Open::Ask | Open::AskCard | Open::AskHint)) => {
+            Some(
+                open
+                @ (Open::Ask | Open::AskCard | Open::AskHint | Open::AskEmpty | Open::AskWorking | Open::AskFailed),
+            ) => {
                 let scene = match open {
                     Open::AskCard => ask::Scene::Card,
                     Open::AskHint => ask::Scene::Hint,
+                    Open::AskEmpty => ask::Scene::Empty,
+                    Open::AskWorking => ask::Scene::Working,
+                    Open::AskFailed => ask::Scene::Failed,
                     _ => ask::Scene::Answer,
                 };
                 let most = self.messages.iter().max_by_key(|message| message.suggested.len()).cloned();
@@ -27444,6 +27507,32 @@ mod tests {
         assert!(app.ask.is_none(), "it goes with its mail");
     }
 
+    /// Design review of #605: the chat beside the wide reader drags like a panel beside the content
+    /// (issue #604), within its limits, a double click goes back to its width; the demo stores nothing.
+    #[test]
+    fn the_chat_beside_the_reader_drags_within_its_limits() {
+        let mut app = mail_window(Density::Compact, &["--open", "ask"]);
+        let id = app.wanted_letter().expect("a mail");
+        deliver_letter(&mut app, &id);
+        let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        assert!(app.ask_beside(SizeClass::Wide));
+        assert_eq!(app.ask_room(), size::panel());
+        let _ = app.update(Message::AskWidth(SplitEvent::Grab));
+        assert!(app.ask_split.dragging);
+        let _ = app.update(Message::AskWidth(SplitEvent::Drag(size::panel() + 40.0)));
+        let _ = app.update(Message::AskWidth(SplitEvent::Release));
+        assert_eq!(app.ask_room(), size::panel() + 40.0, "dragged wider");
+        assert!(app.ask_beside(SizeClass::Wide), "the reader keeps its least width");
+        let _ = app.update(Message::AskWidth(SplitEvent::Grab));
+        let _ = app.update(Message::AskWidth(SplitEvent::Drag(app.ask_total())));
+        let _ = app.update(Message::AskWidth(SplitEvent::Release));
+        let reader = app.ask_total() - split::divider_width() - app.ask_room();
+        assert!(reader >= split::min_pane() - 0.01, "never over the reader's least width: {reader}");
+        let _ = app.update(Message::AskWidth(SplitEvent::Reset));
+        assert_eq!(app.ask_room(), size::panel(), "a double click goes back");
+        draw_everywhere(&mut app);
+    }
+
     /// Issue #605: "Accept" on a card of the chat fetches the suggestions again, then opens the filled
     /// dialog of #603 – over the mail, the chat closes first so the dialog hangs at the rail.
     #[test]
@@ -27466,7 +27555,15 @@ mod tests {
     /// core, and draw in every size.
     #[test]
     fn the_chats_demo_states_show_the_chat() {
-        for (open, scene) in [("ask", "answer"), ("ask-card", "card"), ("ask-hint", "hint")] {
+        let states = [
+            ("ask", "answer"),
+            ("ask-card", "card"),
+            ("ask-hint", "hint"),
+            ("ask-empty", "empty"),
+            ("ask-working", "working"),
+            ("ask-failed", "failed"),
+        ];
+        for (open, scene) in states {
             let mut app = mail_window(Density::Compact, &["--open", open]);
             let id = app.wanted_letter().expect("a mail");
             deliver_letter(&mut app, &id);
@@ -27474,6 +27571,9 @@ mod tests {
             match scene {
                 "hint" => assert_eq!(ask.phase, ask::Phase::Hint(ask::Hint::NoRight)),
                 "card" => assert_eq!(ask.cards.len(), 1, "{open}"),
+                "empty" => assert!(ask.transcript.entries.is_empty() && ask.phase == ask::Phase::Ready),
+                "working" => assert!(ask.transcript.running() && ask.follows(), "{open}"),
+                "failed" => assert!(ask.failed.is_some() && !ask.input.is_empty(), "{open}"),
                 _ => assert!(ask.transcript.last_answer().is_some(), "{open}"),
             }
             draw_everywhere(&mut app);
