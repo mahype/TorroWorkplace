@@ -21,10 +21,13 @@ als *vermutet* markiert.
   Distributionen praktisch nicht, und unter Wayland ließe sie sich ohnehin nur als eigenes Fenster zeigen.
 - **Den Anruf im Browser öffnen kostet fast nichts** (etwa eine halbe Personenwoche) und geht auf jedem System.
   Talk Desktop hat dafür keinen Link.
-- **Empfehlung:** Stufe 5 öffnet Anrufe im Browser; Text, Status und Klingeln laufen in der Suite. Ein nativer
+- **Empfehlung:** Stufe 6 öffnet Anrufe im Browser; Text, Status und Klingeln laufen in der Suite. Ein nativer
   Anruf wird ein eigener Versuch, wenn Text und Status stehen (Abschnitt [Empfehlung](#empfehlung)).
-- **Entschieden (2026-11-06): Anrufe werden selbst gebaut**, gegen die Empfehlung; Stufe 5 beginnt mit einem Versuch
+- **Entschieden (2026-11-06): Anrufe werden selbst gebaut**, gegen die Empfehlung; Stufe 6 beginnt mit einem Versuch
   (Abschnitt [Entscheidung](#entscheidung)).
+- **Dateien, Bilder, Link-Karten und Sprachnachrichten sind machbar** (#636) über die Freigaben, die Vorschauen und
+  die Referenz-API von Nextcloud, ohne dass das Fenster fremde Server anfragt. Videos öffnet am billigsten das
+  Programm des Systems; ein Player im Fenster bräuchte GStreamer (Abschnitt [Dateien und Medien](#dateien-und-medien-636)).
 
 ## Der eigene Server
 
@@ -97,7 +100,7 @@ den Datenkanal `status` für Ton an/aus, Bild an/aus und „spricht“, `nick` i
 ## Aufwand je Weg
 
 Grob in Personenwochen, für Anrufe zu zweit auf Linux, macOS und Windows, mit Oberfläche, API, MCP, Tests und
-Paketierung. Text-Chat und Status (Stufen 1 bis 4 in [chat.md](chat.md)) sind in keinem Weg enthalten und
+Paketierung. Text-Chat und Status (Stufen 1 bis 5 in [chat.md](chat.md)) sind in keinem Weg enthalten und
 kommen in jedem.
 
 | Weg | Aufwand | Was der Mensch bekommt | Risiken |
@@ -121,13 +124,70 @@ kommen in jedem.
 - Die Webansicht scheidet aus: Unter Linux, dem Hauptsystem der Suite, geht WebRTC dort nicht.
 - Die Entwürfe für Anruffenster und Gerätewahl bleiben das Ziel für den nativen Weg.
 
+## Dateien und Medien (#636)
+
+Stand: 2026-11-11. Prüft, wie der Chat Dateien schickt und Bilder, Videos, Sprachnachrichten und Link-Karten zeigt,
+ohne dass das Fenster fremde Server anfragt. Wie oben nur gelesen: Talk im Tag `v25.0.6`, Nextcloud im Zweig
+`stable35`, die Doku von Nextcloud und die Rust-Crates über crates.io (Stand dieses Tages). Was daraus in das Konzept
+geht, steht in [chat.md](chat.md), Abschnitt [Dateien und Medien](chat.md#dateien-und-medien-stufe-4).
+
+### Was Talk und Nextcloud bieten
+
+| Funktion | Urteil | Begründung | Quelle |
+|---|---|---|---|
+| Datei in eine Unterhaltung teilen | **machbar** | Wie bei Stufe 5 (Teilen): Datei per WebDAV in den Anhangsordner, dann Freigabe Art 10 (`shareType=10`, `shareWith=<token>`, `path`, `talkMetaData`). In `talkMetaData` stehen `caption` (Capability `media-caption`), `silent` (hängt an `media-caption`, nicht an `silent-send`), `replyTo` und `messageType: voice-message` für Sprachnachrichten (`voice-message-sharing`); eine `referenceId` geht mit `chat-reference-id`. | [chat.md von Talk](https://github.com/nextcloud/spreed/blob/v25.0.6/docs/chat.md#share-a-file-to-the-chat), [Capabilities](https://github.com/nextcloud/spreed/blob/v25.0.6/docs/capabilities.md) |
+| Anhangsordner | **machbar** | `config.attachments.allowed` und `…folder` je Nutzer (für Gäste `allowed: false`). Neu seit dem Konzept: Ist `attachments.conversation-subfolders` wahr, gehört die Datei zuerst nach `<ordner>/<Name der Unterhaltung>-<token>/<Anzeigename>-<user-id>/`. Der Kern baut den Pfad darum aus der Capability, nie fest. | [Capabilities](https://github.com/nextcloud/spreed/blob/v25.0.6/docs/capabilities.md) |
+| Große Dateien in Stücken | **machbar** | Chunking v2: `MKCOL /remote.php/dav/uploads/<user-id>/<upload-id>`, `PUT` der Stücke `1` bis `10000`, `MOVE` von `.file` ans Ziel; der Kopf `Destination` bei jedem dieser Schritte, `OC-Total-Length` für die Quote. Stücke 5 MB bis 5 GB, nur das letzte kleiner. Abbrechen ist `DELETE` des Upload-Ordners; ohne Abbruch räumt der Server nach 24 h ohne Aktivität. Capability `files.chunked_upload.max_size` (ab Werk 100 MiB) und `max_parallel_count` (ab Werk 5). Eine feste Obergrenze je Datei gibt es nicht, nur die Quote des Nutzers. | [chunking.rst](https://github.com/nextcloud/documentation/blob/master/developer_manual/client_apis/WebDAV/chunking.rst), [ChunkedUploadConfig](https://github.com/nextcloud/server/blob/stable35/apps/files/lib/Service/ChunkedUploadConfig.php) |
+| Datei in der Nachricht | **machbar** | Platzhalter `{file}` mit dem Objekt `file`: `id`, `name`, `size`, `path`, `link`, `etag`, `permissions`, `mimetype`, `preview-available`, `hide-download`; nur bei Bildern mit Vorschau dazu `width`, `height`, `blurhash`. **Keine Dauer** bei Video und Ton, bei Videos auch keine Maße. | [SystemMessage.php](https://github.com/nextcloud/spreed/blob/v25.0.6/lib/Chat/Parser/SystemMessage.php#L1097-L1124) |
+| Vorschaubilder | **machbar** | `GET /index.php/core/preview?fileId=…&x=…&y=…&a=1` (angemeldet; `a=1` behält das Seitenverhältnis). Antwort PNG, JPEG, GIF oder WebP, nie SVG. Ausnahme: Mit `mimeFallback=true` leitet eine fehlende Vorschau auf ein SVG-Symbol um; der Kern schickt den Schalter darum nicht. | [PreviewController](https://github.com/nextcloud/server/blob/stable35/core/Controller/PreviewController.php), [Image.php](https://github.com/nextcloud/server/blob/stable35/lib/private/Image.php) |
+| Vorschaubilder von Videos | **machbar mit Aufwand** (beim Admin) | `OC\Preview\Movie` ist ab Werk aus und braucht `ffmpeg` auf dem Server (`preview_ffmpeg_path`). Ohne das gibt es kein Bild, `preview-available` ist dann `no`. Die Suite kann daran nichts ändern; sie zeigt eine Datei-Zeile. | [PreviewManager.php](https://github.com/nextcloud/server/blob/stable35/lib/private/PreviewManager.php#L355-L364) |
+| Dauer eines Videos | **machbar mit Aufwand** | Talk liefert keine. Der Kern müsste den Anfang der Datei laden und den Container lesen (bei MP4 kann das Inhaltsverzeichnis `moov` auch am Ende stehen). Das kostet je Video eine Anfrage und Bytes, die der Mensch nicht angefordert hat. Darum nur, wenn das Video ohnehin geladen wird. | aus dem Feld oben geschlossen |
+| Geteilte Inhalte einer Unterhaltung | **machbar** | `GET /api/v1/chat/{token}/share?objectType=…&lastKnownMessageId=…&limit=…` (weiter mit dem Kopf `X-Chat-Last-Given`) und `…/share/overview?limit=…`, Capability `rich-object-list-media`. Arten: `audio`, `deckcard`, `file`, `location`, `media` (Bild und Video), `other`, `voice`, `recording`. Links sind **keine** eigene Art. | [Konstanten](https://github.com/nextcloud/spreed/blob/v25.0.6/docs/constants.md#shared-item-types) |
+| Link-Karten | **machbar** | Referenz-API von Nextcloud (seit Nextcloud 25): `GET /ocs/v2.php/references/resolve?reference=<url>` bzw. `POST /references/extract`. Das Ergebnis (`openGraphObject` mit `name`, `description`, `thumb`, `link`) holt der Server; das Bild liegt auf dem eigenen Server unter `/index.php/core/references/preview/<id>`. Talk hat dafür keine Capability und markiert nichts: Talk-Web löst im Client nur den ersten Link einer Nachricht auf. `thumb` kann auf einen fremden Server zeigen und wird darum nie benutzt. | [ReferenceApiController](https://github.com/nextcloud/server/blob/stable35/core/Controller/ReferenceApiController.php), [MessageBody.vue](https://github.com/nextcloud/spreed/blob/v25.0.6/src/components/MessagesList/MessagesGroup/Message/MessagePart/MessageBody.vue#L80) |
+| Sprachnachrichten abspielen | **machbar** | Talk-Web nimmt WAV auf (`audio/wav`). `rodio` 0.23 mit `symphonia` (MPL-2.0) spielt WAV, MP3, FLAC, Vorbis und AAC-LC; **kein Opus**. Was andere Clients aufnehmen, ist nicht geprüft; ein Format ohne Decoder fällt auf die Datei-Zeile zurück. Die Wellenform rechnet der Kern aus den Samples, Talk liefert keine. | [NewMessageAudioRecorder.vue](https://github.com/nextcloud/spreed/blob/v25.0.6/src/components/NewMessage/NewMessageAudioRecorder.vue#L278-L282), [Symphonia](https://github.com/pdeljanov/Symphonia/blob/v0.6.1/README.md), [rodio](https://crates.io/crates/rodio/0.23.0) |
+| Sprachnachrichten aufnehmen | **machbar mit Aufwand** | Geht technisch wie das Senden mit `messageType: voice-message`, schaltet aber das Mikrofon ein und braucht damit die Regel aus [api.md](api.md), „Was nie nach außen geht“, Punkt 6. Nicht in Stufe 4 ([chat.md](chat.md), Entscheidung 19). | – |
+
+### Video in Iced
+
+| Weg | Urteil | Bau auf drei Systemen | Lizenz, Größe | Aufwand |
+|---|---|---|---|---|
+| **Programm des Systems** (Kern lädt die Datei in den Anhangsordner, öffnen wie `mail.get_attachment` und `apps.open_app` mit `file:`) | **machbar** | nichts Neues | – | etwa 0,5 Personenwochen |
+| **In Nextcloud öffnen** (`<server>/f/<id>`, Viewer von Nextcloud im Browser) | **machbar** | nichts Neues | – | im Knopf „Open in Nextcloud“ schon enthalten |
+| **GStreamer** über [`iced_video_player`](https://crates.io/crates/iced_video_player/0.6.0) 0.6 (Iced 0.14 wie im Workspace, `playbin`, Bild über wgpu) | **machbar mit Aufwand** | Linux über Systempakete; macOS und Windows brauchen die Laufzeit von GStreamer im Paket (die README nennt Windows „annoying“); der Crate hängt an `gstreamer` 0.23, aktuell ist 0.25 | Crate MIT/Apache-2.0, GStreamer LGPL-2.1; 50–200 MB Laufzeit (*vermutet*, wie oben) | 3–5 Personenwochen mit Leiste zum Abspielen (der Crate hat keine), Ton, Paketen und Tests (*vermutet*) |
+| **FFmpeg** über [`ffmpeg-next`](https://github.com/zmwangx/rust-ffmpeg/blob/master/README.md) 9 | **machbar mit Aufwand** | System-FFmpeg auf jedem Rechner oder mitgeliefert; Crate im Wartungsmodus | FFmpeg LGPL oder GPL je nach Bau ([ffmpeg.org/legal](https://ffmpeg.org/legal.html)) | 5–8 Personenwochen (*vermutet*): Bild und Ton im Takt halten fehlt ganz |
+| **Webansicht** | **nicht machbar** | Gründe wie oben (Webansicht) | – | – |
+
+**Was von Stufe 6 passt:** libwebrtc dekodiert nur Ströme aus einer Verbindung, keine Dateien; ein Container wie MP4
+liest es nicht. Gemeinsam ist nur das Zeigen: Das `shader`-Widget mit YUV-Texturen, das Stufe 6 für das Bild im Anruf
+plant, könnte auch Bilder aus GStreamer zeigen (*prüfen*, wenn beides gebaut wird). Die schwere Arbeit (Dekoder, Ton,
+Takt) teilen die beiden nicht.
+
+### Empfehlung zu Medien
+
+- **Bilder, Dateien, Link-Karten, Medien-Übersicht und Senden sind machbar** mit dokumentierten Wegen von Talk und
+  Nextcloud. Sie bilden eine eigene Stufe 4 nach dem Fenster.
+- **Videos extern öffnen:** Das Programm des Systems spielt jedes Format, kostet fast nichts und bringt keine
+  Laufzeit von 50 bis 200 MB in die Pakete für macOS und Windows. Ein Player im Fenster lohnt sich erst, wenn
+  Videos im Alltag häufig sind; dann über GStreamer als eigenes Issue.
+- **Sprachnachrichten abspielen ja, aufnehmen später:** Abspielen braucht nur `rodio`, Aufnehmen das Mikrofon.
+- **Vorschauen ohne Dauer und ohne Bild bei Videos** sind der Normalfall auf Servern ohne `ffmpeg`. Die Oberfläche
+  muss ohne beides gut aussehen (Datei-Zeile mit Symbol).
+
 ## Entscheidung
 
 **Entschieden am 2026-11-06 vom Menschen: Anrufe werden selbst gebaut** (Weg „Selbst gebaut“, gegen die
-Empfehlung oben). Folgen, aufgenommen in [chat.md](chat.md) (Entscheidung 13, Abschnitt [Anrufe](chat.md#anrufe-stufe-5)):
+Empfehlung oben). Folgen, aufgenommen in [chat.md](chat.md) (Entscheidung 13, Abschnitt [Anrufe](chat.md#anrufe-stufe-6)):
 
 - Der Weg ist Googles libwebrtc über die Crates `libwebrtc`/`webrtc-sys` von LiveKit, ohne LiveKit-Server, mit
   eigenem Talk-Signaling (zuerst intern, HPB später) und dem Bild in Iced über ein `shader`-Widget.
-- Stufe 5 beginnt mit einem Versuch als eigenem Issue, der die Risiken oben gegen den eigenen Server prüft, bevor
+- Stufe 6 beginnt mit einem Versuch als eigenem Issue, der die Risiken oben gegen den eigenen Server prüft, bevor
   das Anruffenster gebaut wird.
 - Bis das Anruffenster auf einem System läuft, öffnet „Accept“ den Anruf im Browser; „Open in Talk“ bleibt auch danach im Menü.
+
+**Entschieden am 2026-11-11 vom Menschen: Videos öffnet das Programm des Systems** (#636, wie empfohlen im Abschnitt
+[Dateien und Medien](#dateien-und-medien-636)). Folgen, aufgenommen in [chat.md](chat.md) (Entscheidung 22):
+
+- Der Verlauf zeigt ein Video als Vorschaubild mit Abspielknopf (oder als Datei-Zeile ohne Vorschau). Ein Klick lädt
+  die Datei über den Kern in den Anhangsordner und öffnet sie im Programm des Systems; „Open in Nextcloud“ bleibt.
+- Kein GStreamer und kein FFmpeg in den Paketen. Ein Player im Fenster wird ein eigenes Issue, wenn Videos im Alltag
+  häufig sind.
