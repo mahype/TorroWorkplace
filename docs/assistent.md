@@ -192,7 +192,9 @@ deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf: `docs/prototypes/
 - **Nur lesen und vorschlagen.** Auch wenn der Assistent sonst mehr darf, stehen in einer solchen
   Unterhaltung nur Werkzeuge mit Zugriff Read und `mail.extract_action` bereit, ohne Werkzeuge der
   MCP-Server und ohne Bots; der Kern lehnt andere Aufrufe auch beim Ausführen ab. Entwürfe schreibt
-  der Chat nicht.
+  der Chat nicht. `mail.extract_action` für genau diese Mail (Konto und Kennung) gilt hier als Lesen:
+  Das Mail-Leserecht des Assistenten auf dem Konto reicht; für eine andere Mail, in anderen Chats und
+  über API und MCP braucht es weiter Schreibrecht.
 - **Die Mail liest der Kern vorab.** Vor der ersten Antwort ruft er `mail.get_message` wie ein Werkzeug
   auf (Rechte, Datenregel, Werkzeugzeile). Frühere Mails holt das Modell nur auf Abruf über
   `mail.get_thread` und `mail.search_messages`; das hält den Kontext lokaler Modelle klein.

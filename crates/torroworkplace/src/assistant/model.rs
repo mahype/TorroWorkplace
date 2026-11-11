@@ -261,6 +261,26 @@ pub trait Host: Send + Sync {
         Box::pin(async move { forbidden(request.operation().name()) })
     }
 
+    /// [`Host::run_in`] for a tool call of a chat about the mail `about` (issue #605, decided with the person):
+    /// `mail.extract_action` for exactly that mail – its account **and** its id – is checked as reading, so the
+    /// client's read access to that mail account is enough, a read-only mode does not refuse it and no approval
+    /// for a change is asked. Every other request, and `mail.extract_action` for another mail or account, runs
+    /// exactly as [`Host::run_in`] runs it (writing still needed). Only for the assistant's own answers: the loop
+    /// calls it for [`Actor::Assistant`] only. The default is [`Host::run_in`], so a host that cannot tell
+    /// still asks for writing.
+    fn run_about<'a>(
+        &'a self,
+        actor: &'a Actor,
+        request: Request,
+        engine: &'a str,
+        untrusted: bool,
+        mode: Mode,
+        about: &'a MailRef,
+    ) -> BoxFuture<'a, Response> {
+        let _ = about;
+        self.run_in(actor, request, engine, untrusted, mode)
+    }
+
     /// A command of the tool `web` (`tools.web_search`, `tools.fetch_page`; issue #305, task WEB.5,
     /// decision 22) from an answer of `actor` in the permission mode `mode`: [`Host::run_in`] with the
     /// conversation known, as the loop sends these two and nothing else. In this order:
@@ -1130,8 +1150,8 @@ impl Answering {
     fn allowed(&self, rights: Option<&Rights>) -> Vec<Arc<tools::Tool>> {
         let servers = rights.map(|rights| self.host.extension_tools(rights)).unwrap_or_default();
         let allowed = tools::allowed_with(self.job.actor.kind(), rights, &self.job.without, self.job.mode, &servers);
-        match self.job.about {
-            Some(_) => tools::about_mail(allowed),
+        match &self.job.about {
+            Some(about) => tools::about_mail(allowed, rights, &self.job.without, &about.account),
             None => allowed,
         }
     }
@@ -1174,15 +1194,20 @@ impl Answering {
         // be asked after mail, never after entries of Nextcloud or Talk.
         let (main, without, read_mail) = (self.job.conversation.clone(), self.job.without.clone(), self.read_kept);
         let web = self.web_consent(&request);
+        let about = self.job.about.clone();
         // Asking a bot (task B.2) needs the conversation: the person must have asked for the bot here;
-        // and so does the web (task WEB.5): the person says yes once per conversation.
+        // and so does the web (task WEB.5): the person says yes once per conversation. A chat about a mail
+        // (issue #605) names it, so its suggestion counts as reading.
         let ran = tokio::spawn(async move {
-            match (&actor, &request, web) {
-                (Actor::Assistant, Request::AskBot { .. }, _) => {
+            match (&actor, &request, web, about) {
+                (Actor::Assistant, Request::AskBot { .. }, ..) => {
                     let from = AskedIn { main: &main, read_mail, without: &without, mode };
                     host.ask_bot_in(from, request, &engine, untrusted).await
                 }
-                (_, _, Some(web)) => host.run_web(&actor, request, &engine, mode, web).await,
+                (_, _, Some(web), _) => host.run_web(&actor, request, &engine, mode, web).await,
+                (Actor::Assistant, _, None, Some(about)) => {
+                    host.run_about(&actor, request, &engine, untrusted, mode, &about).await
+                }
                 _ => host.run_in(&actor, request, &engine, untrusted, mode).await,
             }
         })
@@ -1575,6 +1600,8 @@ pub(crate) mod tests {
         servers: Mutex<Vec<ExtensionTool>>,
         /// The web's commands with what came with them (issue #305, task WEB.5).
         webs: Mutex<Vec<(Request, crate::approvals::WebConsent)>>,
+        /// The commands of a chat about a mail with the mail (issue #605).
+        abouts: Mutex<Vec<(Request, MailRef)>>,
     }
 
     impl Host for FakeHost {
@@ -1650,6 +1677,22 @@ pub(crate) mod tests {
             Box::pin(async move {
                 self.actors.lock().expect("lock").push(actor.clone());
                 self.run(request, engine, untrusted).await
+            })
+        }
+
+        /// Kept with the mail it came about, then answered as every other request.
+        fn run_about<'a>(
+            &'a self,
+            actor: &'a Actor,
+            request: Request,
+            engine: &'a str,
+            untrusted: bool,
+            _mode: Mode,
+            about: &'a MailRef,
+        ) -> BoxFuture<'a, Response> {
+            Box::pin(async move {
+                self.abouts.lock().expect("lock").push((request.clone(), about.clone()));
+                self.run_as(actor, request, engine, untrusted).await
             })
         }
 
@@ -1775,6 +1818,7 @@ pub(crate) mod tests {
             rule: Mutex::new(DataRule::default()),
             servers: Mutex::new(Vec::new()),
             webs: Mutex::new(Vec::new()),
+            abouts: Mutex::new(Vec::new()),
         });
         let weak = Arc::downgrade(&host);
         let weak: std::sync::Weak<dyn Host> = weak;
@@ -3332,8 +3376,17 @@ pub(crate) mod tests {
         assert_eq!(refused_with(assistant.about_for(&later, Some(mail_ref("m:4")), EngineKind::Ai).await), "error");
     }
 
-    /// Issue #605: a chat about a mail is offered only reading tools and `mail.extract_action`, refuses a write
-    /// the model makes up without asking the core, and a suggestion it reads out becomes a card.
+    /// The assistant only reads mail of [`ACCOUNT`] (issue #605: enough for the suggestion of its chat's mail).
+    fn reading_anna() -> Rights {
+        let mut rights = reading_mail();
+        rights.mail_accounts = torro_ipc::api::Selection::Only(vec![ACCOUNT.into()]);
+        rights
+    }
+
+    /// Issue #605: a chat about a mail is offered only reading tools and `mail.extract_action` – the latter with
+    /// read access alone, decided with the person – refuses a write the model makes up without asking the core,
+    /// sends every call with the chat's mail (the core checks the suggestion of that mail as reading), and a
+    /// suggestion it reads out becomes a card.
     #[tokio::test]
     async fn a_chat_about_a_mail_only_reads_and_suggests() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -3344,7 +3397,7 @@ pub(crate) mod tests {
             says("Here is the event to check."),
         ]);
         let (assistant, host) =
-            set_up_with(dir.path(), Some(mail_of_anna()), Place::Local, Arc::clone(&script), about_answers);
+            set_up_with(dir.path(), Some(reading_anna()), Place::Local, Arc::clone(&script), about_answers);
         let id = ask_about(&assistant, None, "Make an event of it", mail_ref("m:4")).await;
         let entries = finished(&assistant, &id).await;
         let offered: Vec<String> = script.asked()[0].tools.iter().map(|tool| tool.name.clone()).collect();
@@ -3379,5 +3432,26 @@ pub(crate) mod tests {
             |entry| matches!(&entry.content, EntryContent::Tool { name, .. } if name == "mail.extract_action"),
         );
         assert_eq!(at, tool.map(|tool| tool + 1), "the card right after its tool line: {entries:?}");
+        let abouts = host.abouts.lock().expect("lock").clone();
+        assert_eq!(abouts.len(), 2, "the mail read first and the suggestion: {abouts:?}");
+        assert!(abouts.iter().all(|(_, about)| *about == mail_ref("m:4")));
+        assert!(matches!(abouts[1].0, Request::ExtractAction { .. }), "{abouts:?}");
+    }
+
+    /// Issue #605: outside a chat about a mail the suggestion is offered only with writing, and a call goes to the
+    /// core without a mail, so it is checked as writing there.
+    #[tokio::test]
+    async fn a_suggestion_elsewhere_still_needs_writing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let extract = json!({"account": ACCOUNT, "id": "m:4", "kind": "event"});
+        let script = Script::new(vec![calls("mail_extract_action", extract), says("Done.")]);
+        let (assistant, host) =
+            set_up_with(dir.path(), Some(reading_anna()), Place::Local, Arc::clone(&script), about_answers);
+        let id = ask(&assistant, None, "Make an event of the mail m:4", Vec::new()).await;
+        finished(&assistant, &id).await;
+        let offered: Vec<String> = script.asked()[0].tools.iter().map(|tool| tool.name.clone()).collect();
+        assert!(!offered.iter().any(|name| name == "mail_extract_action"), "{offered:?}");
+        assert!(host.abouts.lock().expect("lock").is_empty(), "no mail named");
+        assert_eq!(host.ran.lock().expect("lock").len(), 1, "the core decides by its rights");
     }
 }

@@ -575,10 +575,25 @@ pub fn fits_about_mail(tool: &Tool) -> bool {
     !tool.is_server() && !tool.is_bots() && (tool.reads() || tool.command.name == EXTRACT_ACTION)
 }
 
-/// The tools of `tools` a chat about a mail may use ([`fits_about_mail`]), in their order. Applied after
-/// [`allowed_with`], so it only ever narrows what the rights, the mode and the conversation allow.
-pub fn about_mail(tools: Vec<Arc<Tool>>) -> Vec<Arc<Tool>> {
-    tools.into_iter().filter(|tool| fits_about_mail(tool)).collect()
+/// The tools of `tools` a chat about a mail of `account` may use ([`fits_about_mail`]), in their order. Applied
+/// after [`allowed_with`], so it narrows what the rights, the mode and the conversation allow, with one
+/// exception (issue #605, decided with the person): [`EXTRACT_ACTION`] counts as reading for the mail of the
+/// chat, so it is offered with read access to mail and to `account` alone (`rights`, as [`allowed_with`] got
+/// them, narrowed by the mode), unless mail is switched off here (`without`) or the command is turned off for
+/// the client (`Rights::denied`). The core checks it the same way, for that mail only
+/// ([`super::Host::run_about`]).
+pub fn about_mail(tools: Vec<Arc<Tool>>, rights: Option<&Rights>, without: &[Area], account: &str) -> Vec<Arc<Tool>> {
+    let mut kept: Vec<Arc<Tool>> = tools.into_iter().filter(|tool| fits_about_mail(tool)).collect();
+    let reads = rights.is_some_and(|rights| {
+        let extract = CATALOGUE.iter().find(|command| command.name == EXTRACT_ACTION);
+        let read = extract.map(|command| Operation { command, access: Access::Read });
+        read.is_some_and(|read| rights.allows(read)) && rights.reaches_mail_account(account)
+    });
+    let offered = kept.iter().any(|tool| tool.command.name == EXTRACT_ACTION);
+    if reads && !offered && !without.contains(&Area::Mail) {
+        kept.extend(catalogue().iter().find(|tool| tool.command.name == EXTRACT_ACTION).cloned());
+    }
+    kept
 }
 
 /// [`allowed_with`] without server tools: what the prompt of an agent (engine B) names, whose server tools
@@ -710,7 +725,7 @@ mod tests {
         let servers = time_tools();
         let all = allowed_with(ASSISTANT_CLIENT, Some(&rights), &[], Mode::Default, &servers);
         assert!(all.iter().any(|tool| tool.is_server()), "the servers' tools are allowed otherwise");
-        let kept = about_mail(all.clone());
+        let kept = about_mail(all.clone(), Some(&rights), &[], "mail:anna@example.org");
         let names: Vec<&str> = kept.iter().map(|tool| tool.command.name).collect();
         for wanted in ["mail.get_message", "mail.get_thread", "mail.search_messages", EXTRACT_ACTION] {
             assert!(names.contains(&wanted), "{wanted}: {names:?}");
@@ -736,6 +751,25 @@ mod tests {
         assert!(fits_about_mail(&callable("mail_extract_action").expect("a real command")));
         let server = callable("ext_time_get_current_time").expect("a server's tool name");
         assert!(!fits_about_mail(&server), "a server's tool never");
+
+        // Decided with the person: reading the account is enough for the suggestion of the chat's mail.
+        let mut reading = Rights::assistant();
+        reading.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        reading.mail_accounts = Selection::Only(vec!["mail:anna@example.org".into()]);
+        let read_only = allowed_with(ASSISTANT_CLIENT, Some(&reading), &[], Mode::Default, &[]);
+        assert!(!read_only.iter().any(|tool| tool.command.name == EXTRACT_ACTION), "elsewhere it needs writing");
+        let with = |rights: &Rights, without: &[Area], account: &str| {
+            about_mail(read_only.clone(), Some(rights), without, account)
+                .iter()
+                .any(|tool| tool.command.name == EXTRACT_ACTION)
+        };
+        assert!(with(&reading, &[], "mail:anna@example.org"));
+        assert!(!with(&reading, &[], "mail:bob@example.org"), "another account");
+        assert!(!with(&reading, &[Area::Mail], "mail:anna@example.org"), "mail switched off");
+        let mut denied = reading.clone();
+        denied.denied = [EXTRACT_ACTION.to_string()].into();
+        assert!(!with(&denied, &[], "mail:anna@example.org"), "turned off for the client");
+        assert!(!with(&Rights::assistant(), &[], "mail:anna@example.org"), "no mail at all");
     }
 
     #[test]
