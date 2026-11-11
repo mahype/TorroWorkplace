@@ -4327,7 +4327,7 @@ impl Core {
         }
         // Lent without chat, the key loses Talk's entries too: they hold the start of a chat
         // message (decision 6 in `docs/chat.md`).
-        if !rights.areas.contains_key(&torro_ipc::api::Area::Chat) {
+        if rights.area(torro_ipc::api::Area::Chat).level == torro_ipc::api::Level::NoAccess {
             self.inbox.without_talk(&mut rights.inbox_sources);
         }
         let answer = self.handle_client(id, rights, request, &via).await;
@@ -10536,9 +10536,14 @@ impl Core {
             // A chat window (`docs/chat.md`, stage 3): a conversation of an account the caller may
             // read chat with; for a client another account's is not there. What goes on the command
             // line is the account as the core knows it and a checked token, never the target's text.
-            crate::apps::Target::Chat { conversation: "contacts" } => {
-                Ok((crate::apps::Opened::Chat { conversation: None }, tr("Contacts").to_string()))
-            }
+            // The contact list shows who is there: for a client, as for a conversation, only with
+            // read access to chat (`docs/api.md`, `apps.open_app`).
+            crate::apps::Target::Chat { conversation: "contacts" } => match reach {
+                Reach::Client(rights) if !rights.area(Area::Chat).allows(Access::Read) => {
+                    Err(Box::new(refusal("not-found", "no chat for this key".into())))
+                }
+                _ => Ok((crate::apps::Opened::Chat { conversation: None }, tr("Contacts").to_string())),
+            },
             crate::apps::Target::Chat { conversation } => {
                 let gone = || Box::new(refusal("not-found", "no such conversation".into()));
                 let (account, token) = torro_chat::split_conversation(conversation).ok_or_else(gone)?;
@@ -10552,7 +10557,14 @@ impl Core {
                 let token = torro_nextcloud::RoomToken::parse(token).ok_or_else(gone)?;
                 let account = known.filter(|_| reads).ok_or_else(gone)?;
                 let conversation = torro_chat::conversation_id(&account, token.as_str());
-                let name = Box::pin(self.chat.conversation_name(&account, &token)).await.map_err(|_| gone())?;
+                // Reach is checked above, so the server's own trouble (`offline`, `auth`) may show.
+                let name = match Box::pin(self.chat.conversation_name(&account, &token)).await {
+                    Ok(name) => name,
+                    Err(err @ (torro_chat::ChatError::Offline | torro_chat::ChatError::Auth)) => {
+                        return Err(Box::new(crate::chat::service::error_response(&err)));
+                    }
+                    Err(_) => return Err(gone()),
+                };
                 Ok((crate::apps::Opened::Chat { conversation: Some(conversation) }, name))
             }
         }
@@ -31586,6 +31598,22 @@ mod tests {
         let logged: Vec<_> =
             audit_lines(dir.path()).into_iter().map(|line| (line.command, line.ids, line.result)).collect();
         assert!(logged.contains(&("assistant.my_access".into(), vec![engine_id], "ok".into())), "{logged:?}");
+    }
+
+    /// Decision 6 of `docs/chat.md`: a key lent with chat at "no access" (an entry `Rights::set_level`
+    /// keeps) loses Talk's sources like one lent without the area.
+    #[tokio::test]
+    async fn a_key_lent_with_no_access_to_chat_loses_the_talk_sources() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = audited(dir.path());
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Chat, AreaRights { level: Level::NoAccess, admin: false });
+        rights.inbox_sources = Selection::Only(vec!["talk:anna@cloud.example.org".into(), "suite".into()]);
+        let (assistant, _) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights).await.expect("the client");
+        let lent = core.clients.lend(&assistant.id, "ollama", &[]).expect("lent");
+        let access = my_access_of(&ask(&core, Some(lent.key()), Request::MyAccess).await);
+        assert_eq!(access.rights.inbox_sources, Selection::Only(vec!["suite".into()]));
     }
 
     /// Issue #134 for an agent (engine B): with the lent key the access is the assistant's rights

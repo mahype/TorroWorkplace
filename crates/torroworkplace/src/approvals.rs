@@ -1089,10 +1089,11 @@ impl Approvals {
             },
             false => Decision::Denied { approval: entry.info.clone(), request, origin: entry.origin.clone() },
         };
-        // Denied, what must not be kept goes before the file is written: the text of a chat message
-        // never reaches the disk as a decided approval (`docs/chat.md`, "Wartende Freigaben").
+        // What must not be kept goes before the file is written: the text of a chat message never
+        // reaches the disk as a decided approval, also not while it runs (`docs/chat.md`, "Wartende
+        // Freigaben"); the decision carries its own copy of the request.
         let held = state.entries[index].request.clone();
-        if !allow {
+        if !allow || holds_chat_text(&state.entries[index].request) {
             forget(&mut state.entries[index]);
         }
         if let Err(err) = self.write(&state).await {
@@ -2349,11 +2350,16 @@ fn chat_summary(request: &Request, facts: Option<&crate::chat::service::ChatFact
         Request::ChatSetFavorite { favorite: true, .. } => trf("Make {place} a favourite", &[("place", &place)]),
         Request::ChatSetFavorite { .. } => trf("Take {place} off the favourites", &[("place", &place)]),
         Request::ChatSetNotificationLevel { .. } => trf("Change the notifications of {place}", &[("place", &place)]),
-        Request::PresenceSetOwnStatus { account, status, message, .. } => {
+        Request::PresenceSetOwnStatus { account, status, message, icon, .. } => {
             let server = quote(crate::presence::server_of(account));
             let mut shown: Vec<String> = status.iter().map(|status| status_word(*status).to_string()).collect();
+            // The icon goes out with the message, so it shows in front of it, as others see it.
+            let icon = icon.as_deref().map(quote).filter(|icon| !icon.is_empty());
             match message.as_deref().map(quote) {
-                Some(message) if !message.is_empty() => shown.push(format!("\"{message}\"")),
+                Some(message) if !message.is_empty() => match icon {
+                    Some(icon) => shown.push(format!("{icon} \"{message}\"")),
+                    None => shown.push(format!("\"{message}\"")),
+                },
                 Some(_) => shown.push(tr("no status message").to_string()),
                 None => {}
             }

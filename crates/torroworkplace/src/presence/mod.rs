@@ -444,6 +444,12 @@ impl PresenceService {
         if message.is_some_and(|message| message.chars().any(char::is_control)) {
             return Err(ChatError::Other(tr("A status message is one line.").to_string()));
         }
+        // One emoji, possibly of several code points, as for a reaction; never a text.
+        if icon.map(str::trim).is_some_and(|icon| {
+            icon.is_empty() || icon.chars().count() > 16 || icon.chars().any(|c| c.is_alphanumeric() || c.is_control())
+        }) {
+            return Err(ChatError::Other(tr("A status icon is one emoji.").to_string()));
+        }
         let (remote, caps, _) = self.chat.known(account).await?;
         if !caps.status {
             return Err(no_status());

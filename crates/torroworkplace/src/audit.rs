@@ -711,13 +711,6 @@ fn made_id(kind: &str, value: &str) -> String {
     }
 }
 
-/// A collection id (`<account id>/<the provider's id>`) for the log: the account as it is and the
-/// rest hashed, `collection:nextcloud:anna@cloud.example.org/<hash>`. The rest is the calendar's
-/// URL with server, user and the calendar's name in it. An id whose front is no account id (a bare
-/// URL from before several accounts, or any text a client sent) is hashed whole:
-/// `collection:hash:<hash>`. The account ends at the first `/`; for the rare account id with a `/`
-/// in it the rest of it is hashed with the URL, which still names the collection the same way
-/// every time.
 /// A conversation's id for the log: its account as it is and its token hashed, like a collection;
 /// hashed whole when it is no id of an account's conversation.
 fn chat_conversation(value: &str) -> String {
@@ -727,6 +720,13 @@ fn chat_conversation(value: &str) -> String {
     }
 }
 
+/// A collection id (`<account id>/<the provider's id>`) for the log: the account as it is and the
+/// rest hashed, `collection:nextcloud:anna@cloud.example.org/<hash>`. The rest is the calendar's
+/// URL with server, user and the calendar's name in it. An id whose front is no account id (a bare
+/// URL from before several accounts, or any text a client sent) is hashed whole:
+/// `collection:hash:<hash>`. The account ends at the first `/`; for the rare account id with a `/`
+/// in it the rest of it is hashed with the URL, which still names the collection the same way
+/// every time.
 fn collection(value: &str) -> String {
     match value.split_once('/') {
         Some((account, rest)) if is_account_id(account) => format!("collection:{account}/{}", hashed(rest)),
