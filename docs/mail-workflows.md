@@ -289,8 +289,9 @@ Adressformular ein. Profil 2 nimmt genau diese Formen an:
   `async`), `<style>` (ohne oder mit `type="text/css"`), `<link rel="icon">` und
   `<meta name="robots">`; Icon und Robots-Angabe werden nie geladen,
 - außerhalb der Rechnung ein Inline-`<script>` ohne `src`; in der Rechnung selbst kein Skript,
-- `style`-Attribute außerhalb der Rechnung; sie laufen als Regel für jedes Element durch dieselbe
-  Erlaubnisliste wie die Stylesheets.
+- `style`-Attribute außerhalb der Rechnung; sie laufen durch dieselbe Erlaubnisliste wie die
+  Stylesheets und wirken nur auf ihr eigenes Element. In der Navigation (`.no-print`, `.c-header`)
+  dürfen sie ausblenden wie deren eigene Regeln.
 
 Modul-Skripte, Ereignishandler, `<base>`, externe Skripte außerhalb des Kopfs und mehr als acht
 Ressourcen, vier Inline-Skripte oder 32 Inline-Styles samt `style`-Attributen bleiben abgewiesen. Das Paddle-Logo unter der
@@ -342,6 +343,12 @@ Die Prüfung hat zwei Stufen:
    `@page` nur Größe (ab 300 px) und Ränder (bis 128 px), keine Randboxen mit Text. `@keyframes` wirken nur über
    `animation` und werden übersprungen.
 
+**Versätze über die ganze Seite.** Ränder, Versätze und Einzug addieren sich über verschachtelte
+Elemente. Deshalb rechnet die Prüfung nach allen Stylesheets und `style`-Attributen für jedes Element
+der Seite zusammen, wie weit es samt seinen Vorfahren höchstens nach links oder oben rücken kann: Jede
+Regel, deren Zielelement (Tag, Klassen, ID) passt, zählt mit ihrem größten Versatz. Mehr als 128 px
+in Summe brechen ab.
+
 Ausblenden (`display: none`, `visibility: hidden`, Deckkraft und Farbe ohne Grenze) und
 `position: absolute|fixed|sticky` sind nur für Selektoren erlaubt, die mit `.no-print` oder `.c-header` beginnen und nur Nachfahren davon meinen,
 nie Geschwister: Das sind die belegte Navigation und das Bearbeitungssteuerelement, keine
@@ -365,10 +372,12 @@ endet der Lauf mit `unsupported`.
 
 **Grenzen.** Die Prüfung rendert kein CSS. Nicht erkannt werden: eigene Fonts (`@font-face`), die
 Zeichen im Browser anders darstellen, gleiche Text- und Hintergrundfarbe, Umordnen über
-Flexbox-Richtung, eine Überdeckung durch die erlaubte Kopfzeile auf dem Bildschirm, soweit Größen,
-Versätze und `z-index` innerhalb der Grenzen bleiben, und Versätze oder negative Ränder, die sich über
-verschachtelte Elemente addieren: Die Grenzen gelten je Element, nicht je Text. Klassen, die erst ein
-Skript zur Laufzeit setzt, kennt die Treffer-Prüfung nicht. Die Kopie selbst hängt davon nicht ab: Sie setzt
+Flexbox-Richtung und eine Überdeckung durch die erlaubte Kopfzeile auf dem Bildschirm, soweit Größen,
+Versätze und `z-index` innerhalb der Grenzen bleiben. Klassen, die erst ein Skript zur Laufzeit
+setzt, kennt die Treffer-Prüfung nicht. Bei den gebundenen Skripten betrifft das nur das
+Bearbeiten-Modal außerhalb der Rechnung: `invoice.js` öffnet es als jQuery-UI-Dialog und richtet die
+Länderauswahl mit select2 ein; die Rechnung und ihre Vorfahren bekommen keine Klassen. Ein anderes
+Skript bricht als `provider_changed` ab. Die Kopie selbst hängt davon nicht ab: Sie setzt
 den Text der Seite mit den eingebetteten Fonts. Fonts, Bilder und andere im Stylesheet genannte
 Adressen werden nicht geladen. Ändert Paddle ein Skript, scheitern auch automatische Läufe, bis der
 Mensch die Reparatur durchführt; das ist gewollt.
@@ -417,12 +426,24 @@ Prüfsummen der Vorlage, nie Rechnungsinhalte oder private Links. Die erzeugten 
 zusätzlich einen vollständigen Inhaltsvergleich mit der Seite und eine Prüfung jeder Seite. Ein
 erfolgreicher HTML-Abruf allein ist keine Konvertierungsabnahme.
 
+Ein zweiter, ebenso ausdrücklich ignorierter Test prüft den echten Abrufweg ohne Browser:
+
+```bash
+TORRO_WORKFLOW_PADDLE_ACCEPTANCE=<ordner> cargo test -p torroworkplace local_paddle_live -- --ignored
+```
+
+Er liest `<name>.mail.html` (den HTML-Teil der Rechnungsmail) und führt den Ablauf der Vorlage mit
+Torros Downloader aus: Link aus der Mail, geprüftes DNS, Weiterleitungen, Content-Types, alle
+Ressourcen, Prüfsummen und Stylesheet-Prüfung. Er braucht Netz und schreibt die Kopie nur in den
+Ordner (`<name>.live.pdf`).
+
 **Abnahme am 11.11.2026:** Die Rechnungen vom 10.08., 10.10. und 10.11.2026 wurden ohne Browser per
 GET geladen und lokal konvertiert. Alle fünf Skripte passten zu den Prüfsummen der Vorlage, alle
 Stylesheets bestanden die Prüfung. Jede Kopie hat eine Seite mit Kopiehinweis; ihr Text stimmt Wort
 für Wort und in Reihenfolge mit einer unabhängigen Textextraktion der Rechnung aus dem HTML überein
-(`pdftotext` gegen Pythons HTML-Parser), ebenso `<name>.source.txt`. Rechnungsinhalte und Links
-liegen nicht im Repository.
+(`pdftotext` gegen Pythons HTML-Parser), ebenso `<name>.source.txt`. Der Live-Test lief für alle drei
+Rechnungen grün: Alle Skripte passten zu den Prüfsummen der Vorlage, und auch diese Kopien stimmen
+Wort für Wort mit der Rechnung überein. Rechnungsinhalte und Links liegen nicht im Repository.
 
 ## Aktueller Implementierungsstand
 
