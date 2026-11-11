@@ -273,6 +273,11 @@ pub struct ExecutionBinding {
     /// every run instead. Defaulted so packages stored before resource pins existed stay valid.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<ResourcePin>,
+    /// SHA-256 of the witnessed layout: every stylesheet rule and `style` attribute that can reach the page, with
+    /// its context, selector and layout declarations. Colours and fonts stay free; a moved or resized layout is
+    /// a provider change like a changed script.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
 }
 
 /// A script a profile has witnessed. Any other script or changed bytes stop the run as a provider change.
@@ -366,6 +371,7 @@ impl Package {
                 typesetter: 0,
                 fonts_digest: String::new(),
                 resources: Vec::new(),
+                layout: None,
             },
             steps: vec![
                 Step::MailLink { host: host.into(), label: None },
@@ -383,7 +389,10 @@ impl Package {
         let renders = self.steps.iter().any(|step| matches!(step, Step::RenderInvoiceCopy { .. }));
         // Only profile 2 loads provider resources; every other package must stay resource-free.
         let loads = self.steps.iter().any(|step| matches!(step, Step::RenderInvoiceCopy { version: 2, .. }));
-        if (!loads && !self.binding.resources.is_empty())
+        let hex =
+            |text: &str| text.len() == 64 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if (!loads && (!self.binding.resources.is_empty() || self.binding.layout.is_some()))
+            || self.binding.layout.as_deref().is_some_and(|layout| !hex(layout))
             || self.binding.resources.len() > 8
             || self.binding.resources.iter().any(|pin| !pin.valid(&self.hosts))
             || self.binding.resources.iter().enumerate().any(|(at, pin)| self.binding.resources[..at].contains(pin))
@@ -777,6 +786,16 @@ mod tests {
         assert!(serde_json::to_string(&with_inline).expect("wire").contains("\"inline\":true"));
         with_inline.binding.resources[1].path = "/inline.js".into();
         assert!(with_inline.validate().is_err(), "an inline pin has no path of its own");
+        let mut layout = package.clone();
+        layout.binding.layout = Some("2".repeat(64));
+        assert!(layout.validate().is_ok());
+        assert!(serde_json::to_string(&layout).expect("wire").contains("\"layout\""));
+        layout.binding.layout = Some("2".repeat(63));
+        assert!(layout.validate().is_err());
+        let mut direct = Package::direct_pdf("files.example.org");
+        direct.binding.layout = Some("2".repeat(64));
+        assert!(direct.validate().is_err(), "only profile 2 binds a layout");
+        assert!(!serde_json::to_string(&paddle(2)).expect("wire").contains("layout"));
         let mut duplicate = package.clone();
         duplicate.binding.resources = vec![pin.clone(), pin.clone()];
         assert!(duplicate.validate().is_err());
