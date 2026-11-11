@@ -700,7 +700,13 @@ pub enum Target<'a> {
     /// `template:<id>`: a workspace template (issue #243) by its id, a slug, to edit in the core's
     /// dialog. Always the dialog's mode "Edit", never "Save" (its Cancel deletes the template).
     Template { id: &'a str },
+    /// `chat:<conversation>`: a chat conversation (`<account>/<token>`, `docs/chat.md`) in a window
+    /// of its own; `chat:contacts` the contact list.
+    Chat { conversation: &'a str },
 }
+
+/// The start of a chat target; `chat:contacts` is the contact list.
+const CHAT_TARGET: &str = "chat:";
 
 /// The start of a task target.
 const TASK_TARGET: &str = "task:";
@@ -719,7 +725,12 @@ impl<'a> Target<'a> {
     /// is empty or holds control characters, for a file id that is not 8 hex digits, and for a
     /// template id with other characters than `a`–`z`, `0`–`9` and `-` (the form of a template's id).
     pub fn parse(text: &'a str) -> Result<Target<'a>, &'static str> {
-        const FORMS: &str = "a target is mail:<address>:<Message-ID>, task:<uid>, file:<id> or template:<id>";
+        const FORMS: &str =
+            "a target is mail:<address>:<Message-ID>, task:<uid>, file:<id>, template:<id> or chat:<conversation>";
+        if let Some(conversation) = text.strip_prefix(CHAT_TARGET) {
+            let named = conversation == "contacts" || torro_chat::split_conversation(conversation).is_some();
+            return if named { Ok(Target::Chat { conversation }) } else { Err(FORMS) };
+        }
         if let Some(id) = text.strip_prefix(TEMPLATE_TARGET) {
             let slug = !id.is_empty()
                 && id.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
@@ -749,6 +760,7 @@ impl<'a> Target<'a> {
             Target::Mail { .. } | Target::File { .. } => AppId::INBOX_MAIL,
             Target::Task { .. } => AppId::TASKS,
             Target::Template { .. } => AppId::WORKPLACE,
+            Target::Chat { .. } => AppId::CHAT,
         }
     }
 
@@ -777,6 +789,11 @@ pub enum Opened {
     Template {
         id: String,
     },
+    /// A chat conversation by the id the core built from an account it knows and a checked token
+    /// (`docs/chat.md`); `None` for the contact list.
+    Chat {
+        conversation: Option<String>,
+    },
 }
 
 impl Opened {
@@ -786,6 +803,7 @@ impl Opened {
             Opened::Mail { .. } | Opened::File { .. } => AppId::INBOX_MAIL,
             Opened::Task { .. } => AppId::TASKS,
             Opened::Template { .. } => AppId::WORKPLACE,
+            Opened::Chat { .. } => AppId::CHAT,
         }
     }
 }
@@ -801,6 +819,11 @@ pub fn target_command(program: String, opened: &Opened) -> Vec<String> {
         Opened::Mail { message } => (opened.app().command(program), format!("--message={message}")),
         Opened::Task { uid } => (opened.app().command(program), format!("--task={uid}")),
         Opened::Template { id } => (opened.app().command(program), format!("--template={id}")),
+        // The contact list is the app's own window: it comes forward when it runs (`torro_gui::instance`).
+        Opened::Chat { conversation: None } => return opened.app().command(program),
+        Opened::Chat { conversation: Some(conversation) } => {
+            (opened.app().command(program), format!("--conversation={conversation}"))
+        }
         // A file opens the compose window, not the mail window the inbox's mail entry names.
         Opened::File { path } => (vec![program, "--compose".to_string()], format!("--attach={path}")),
     };
@@ -996,6 +1019,25 @@ pub mod tests {
         assert_eq!(target_command("torrotasks".into(), &opened), ["torrotasks", "--task=--version"]);
     }
 
+    /// Stage 3 of `docs/chat.md`: `chat:<conversation>` opens a chat window with the conversation,
+    /// `chat:contacts` the contact list; both in `torrochat`.
+    #[test]
+    fn a_chat_target_opens_a_conversation_or_the_contact_list() {
+        let chat = Target::parse("chat:nextcloud:anna@cloud.example.org/ben4chat").expect("chat");
+        assert_eq!(chat, Target::Chat { conversation: "nextcloud:anna@cloud.example.org/ben4chat" });
+        assert!(chat.opens_in(AppId::CHAT) && !chat.opens_in(AppId::INBOX));
+        assert_eq!(Target::parse("chat:contacts"), Ok(Target::Chat { conversation: "contacts" }));
+        for bad in ["chat:", "chat:ben4chat", "chat:nextcloud:anna@cloud.example.org/"] {
+            assert!(Target::parse(bad).is_err(), "{bad:?}");
+        }
+        let opened = Opened::Chat { conversation: Some("nextcloud:anna@cloud.example.org/ben4chat".into()) };
+        assert_eq!(
+            target_command("/bin/torrochat".into(), &opened),
+            ["/bin/torrochat", "--conversation=nextcloud:anna@cloud.example.org/ben4chat"]
+        );
+        assert_eq!(target_command("/bin/torrochat".into(), &Opened::Chat { conversation: None }), ["/bin/torrochat"]);
+    }
+
     /// Task WZ.8: `file:<id>` names a file of the register by its 8 hex digits and opens in the
     /// inbox's binary, as a new mail in the compose window with the path the register keeps.
     #[test]
@@ -1132,6 +1174,7 @@ pub mod tests {
                 ("torro-tasks", "torrotasks", false),
                 ("torro-calendar", "torrocalendar", false),
                 ("torro-assistant", "torroassistant", false),
+                ("torro-chat", "torrochat", false),
             ]
         );
     }

@@ -667,7 +667,10 @@ Datei hat er selbst erzeugt), sonst `not-found`. Die Freigabe nennt den Titel au
 `template:<id>` (Issue #243) öffnet den kleinen Dialog des Kerns zum Bearbeiten einer Vorlage (`torroworkplace ui
 --template=<id>`), immer im Modus „Edit“, nie im Modus „Save“: dessen „Cancel“ löscht die Vorlage, und das darf
 kein Ziel von außen auslösen. Ein Client braucht Leserecht in `workspaces` (sonst `not-found`); die Freigabe nennt den
-Namen der Vorlage aus dem Speicher.
+Namen der Vorlage aus dem Speicher. `chat:<unterhaltung>` (Issue #643, [chat.md](chat.md)) öffnet ein Chatfenster mit
+der Unterhaltung (`torrochat --conversation=<id>`), `chat:contacts` die Kontaktliste; ein Client braucht Leserecht
+in `chat` mit dem Konto (sonst `not-found`). Auf die Befehlszeile kommen nur das Konto, wie der Kern es kennt, und ein
+geprüftes Token; die Freigabe nennt den Namen der Unterhaltung vom Server.
 
 ¹⁴ Statistik des Eingangs (E8.8a, Konzept [eingang.md](eingang.md#insights)). `get_stats { range: week
 | month | quarter, until? }` (`Read`) zählt über die letzten 7, 30 bzw. 90 Tage bis `until` (ein lokaler

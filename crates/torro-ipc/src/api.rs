@@ -3941,9 +3941,11 @@ static OPEN_APP: Command = Command {
                   `link.id`) a mail in the inbox's Mail window, `task:<uid>` a task in the tasks app, `file:<id>` \
                   (the `id` of tools_create_pdf) a new mail with that file attached in the inbox's compose window, \
                   for the person to address and send, `template:<id>` (an id from workspaces_list_templates) the \
-                  dialog to edit that workspace template's name, key and startup; `app` must be that app \
-                  (`torroinbox` or an inbox window class for mail and files, `torroworkplace` for a template). A \
-                  mail, task or template this key may not read is `not-found`, and so is a \
+                  dialog to edit that workspace template's name, key and startup, `chat:<conversation>` (an id \
+                  from chat_list_conversations) a chat window with that conversation and `chat:contacts` the \
+                  chat's contact list; `app` must be that app (`torroinbox` or an inbox window class for mail \
+                  and files, `torroworkplace` for a template, `torrochat` for a chat). A mail, task, template \
+                  or conversation this key may not read is `not-found`, and so is a \
                   file this key did not make or cannot reach (the PDF tool switched off, no read access to \
                   `tools`, `pdf` not selected).",
 };

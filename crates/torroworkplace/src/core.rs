@@ -10533,6 +10533,28 @@ impl Core {
                 let template = template.ok_or_else(|| Box::new(refusal("not-found", "no such template".into())))?;
                 Ok((crate::apps::Opened::Template { id: template.id }, template.name))
             }
+            // A chat window (`docs/chat.md`, stage 3): a conversation of an account the caller may
+            // read chat with; for a client another account's is not there. What goes on the command
+            // line is the account as the core knows it and a checked token, never the target's text.
+            crate::apps::Target::Chat { conversation: "contacts" } => {
+                Ok((crate::apps::Opened::Chat { conversation: None }, tr("Contacts").to_string()))
+            }
+            crate::apps::Target::Chat { conversation } => {
+                let gone = || Box::new(refusal("not-found", "no such conversation".into()));
+                let (account, token) = torro_chat::split_conversation(conversation).ok_or_else(gone)?;
+                let reads = match reach {
+                    Reach::Suite => true,
+                    Reach::Client(rights) => {
+                        rights.area(Area::Chat).allows(Access::Read) && rights.chat_accounts.contains(account)
+                    }
+                };
+                let known = self.chat.accounts().await.into_iter().find(|known| known == account);
+                let token = torro_nextcloud::RoomToken::parse(token).ok_or_else(gone)?;
+                let account = known.filter(|_| reads).ok_or_else(gone)?;
+                let conversation = torro_chat::conversation_id(&account, token.as_str());
+                let name = Box::pin(self.chat.conversation_name(&account, &token)).await.map_err(|_| gone())?;
+                Ok((crate::apps::Opened::Chat { conversation: Some(conversation) }, name))
+            }
         }
     }
 
@@ -10550,6 +10572,11 @@ impl Core {
                 Ok((opened, _)) => {
                     if matches!(opened, crate::apps::Opened::Template { .. }) {
                         self.float_dialog().await;
+                    }
+                    // Chat windows float under Hyprland (decision 3 in `docs/chat.md`): set before each
+                    // start, so a reloaded configuration does not undo it.
+                    if matches!(opened, crate::apps::Opened::Chat { conversation: Some(_) }) {
+                        self.float_chat_windows().await;
                     }
                     // On macOS through the entry's bundle; a mail opens in the mail window's own
                     // program when it is there (issue #279).
@@ -12611,6 +12638,17 @@ impl Core {
     /// [`WindowManager::float_dialogs`]): at the core's start and again before each dialog opens,
     /// because a reload of Hyprland's configuration drops the rule. A failure is only logged; the
     /// dialog then opens tiled.
+    /// Lets the chat's conversation, ring and viewer windows float (decision 3 in `docs/chat.md`);
+    /// only Hyprland does something, the other window managers are left as they are.
+    async fn float_chat_windows(&self) {
+        use torro_core::app::{CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS};
+        for class in [CHAT_CONVERSATION_CLASS, CHAT_RING_CLASS, CHAT_VIEWER_CLASS] {
+            if let Err(err) = self.backend.float_dialogs(class).await {
+                eprintln!("torroworkplace: the chat windows will not float: {err}");
+            }
+        }
+    }
+
     async fn float_dialog(&self) {
         if let Err(err) = self.backend.float_dialogs(torro_core::app::WORKPLACE_DIALOG_CLASS).await {
             eprintln!("torroworkplace: the template dialog will not float: {err}");
@@ -18844,7 +18882,8 @@ mod tests {
                 "torro-inbox-notifications",
                 "torro-tasks",
                 "torro-calendar",
-                "torro-assistant"
+                "torro-assistant",
+                "torro-chat"
             ]
         );
         assert!(apps[..3].iter().all(|app| app.binary == "torroinbox"));
@@ -33954,6 +33993,31 @@ mod tests {
 
     const CHAT_ACCOUNT: &str = "nextcloud:anna@cloud.example.org";
     const CHAT_BEN: &str = "nextcloud:anna@cloud.example.org/ben4chat";
+
+    /// Stage 3: `apps.open_app` with `chat:<conversation>` finds the conversation by the account the
+    /// core knows and its name on the server; for a client without the account, and for a token the
+    /// server lists none of, it is not there.
+    #[tokio::test]
+    async fn a_chat_window_opens_a_conversation_the_caller_may_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, _server) = chatting(dir.path());
+        let target = format!("chat:{CHAT_BEN}");
+        let open = |reach| core.open_target("torrochat", &target, reach, Maker::App);
+        let (opened, name) = open(Reach::Suite).await.expect("opens");
+        assert_eq!(
+            (opened, name.as_str()),
+            (crate::apps::Opened::Chat { conversation: Some(CHAT_BEN.into()) }, "Ben Koch")
+        );
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.chat_accounts = Selection::Only(vec![]);
+        let refused = open(Reach::Client(&rights)).await.expect_err("not there");
+        assert_eq!(code(&refused), "not-found");
+        let gone = format!("chat:{CHAT_ACCOUNT}/nobody4here");
+        let refused = core.open_target("torrochat", &gone, Reach::Suite, Maker::App).await.expect_err("not there");
+        assert_eq!(code(&refused), "not-found");
+        let wrong = core.open_target("torrotasks", &format!("chat:{CHAT_BEN}"), Reach::Suite, Maker::App).await;
+        assert_eq!(code(&wrong.expect_err("not in tasks")), "error");
+    }
 
     /// Decisions 3 to 5: a client sees only the chat accounts ticked for it, another account's
     /// conversation does not exist for it; reading goes without asking and changes nothing on the

@@ -1975,7 +1975,10 @@ pub enum Request {
     /// of the assistant's tools attached (issue #225, the id of `tools.create_pdf`; `torroinbox
     /// --compose --attach=<path>`), `template:<id>` the core's dialog to edit a workspace template
     /// (issue #243, `torroworkplace ui --template=<id>`; always to edit, never the dialog after
-    /// "Save workspace…", whose Cancel deletes the template). `app` must be the app the target
+    /// "Save workspace…", whose Cancel deletes the template), `chat:<conversation>` a chat window
+    /// with that conversation (`docs/chat.md`, `torrochat --conversation=<id>`; a client needs read
+    /// access to `chat` and the account, else `not-found`) and `chat:contacts` the contact list.
+    /// `app` must be the app the target
     /// opens in (any inbox window for a mail, the inbox for a file, `torroworkplace` for a
     /// template), else `error`. The core checks the target and builds the arguments; nothing of it
     /// reaches a shell. A window open already cannot be told to show something else yet, so a
@@ -1990,8 +1993,9 @@ pub enum Request {
         /// Binary name or window class, from `apps.list_apps`.
         app: String,
         /// What the app shows: `mail:<address>:<Message-ID>`, `task:<uid>`, `file:<id>` (a new
-        /// mail with that file of the assistant's tools attached) or `template:<id>` (the dialog
-        /// to edit a workspace template); left out: the app as it starts.
+        /// mail with that file of the assistant's tools attached), `template:<id>` (the dialog
+        /// to edit a workspace template) or `chat:<conversation>`/`chat:contacts` (a chat window,
+        /// the contact list); left out: the app as it starts.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
     },

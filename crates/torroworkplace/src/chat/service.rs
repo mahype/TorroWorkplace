@@ -315,6 +315,13 @@ impl ChatService {
         Ok(self.cache().account(account).rooms.clone())
     }
 
+    /// The name of the conversation `token` of `account`, from the list in memory or fetched when it
+    /// holds none (`apps.open_app` with `chat:<conversation>`); `not-found` when the server lists
+    /// none of that token.
+    pub async fn conversation_name(self: &Arc<Self>, account: &str, token: &RoomToken) -> Result<String, ChatError> {
+        Ok(self.room(account, token).await?.name)
+    }
+
     /// The conversation `token` of `account` as the list holds it, fetching the list once when it
     /// does not name it (a conversation made a moment ago). `not-found` when the server lists none.
     async fn room(self: &Arc<Self>, account: &str, token: &RoomToken) -> Result<RemoteRoom, ChatError> {
