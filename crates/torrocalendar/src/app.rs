@@ -3404,7 +3404,8 @@ mod tests {
 
     /// Issue #484: the medium header keeps "New event" with its word while the window holds the title,
     /// the buttons and the word, and shrinks it to "+" below that; the timeline's "Nights" asks for
-    /// more room than the week. The standard's 800 holds the week, as the pictures showed.
+    /// more room than the week. Since issue #601 the top row's title takes room too: the standard's
+    /// 800 shrinks the button of the week.
     #[test]
     fn the_medium_header_shrinks_new_event_only_when_it_lacks_room() {
         let mut app = launched(&["--demo"]);

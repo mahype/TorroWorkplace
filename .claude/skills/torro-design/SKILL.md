@@ -57,7 +57,8 @@ aus einem Guss wirkt:
   (`TopRow::right_column`, gleiche Kante wie die Einstellungen, markiert, solange die Spalte steht, Tooltip „Hide right
   column“/„Show right column“). Er blendet die Spalte aus und ein, jede App merkt es sich je Fenster in `ui.json`
   (`ui_state::save_right_column_task`); ohne rechte Spalte (mittel, schmal, Aufgaben, Assistent, Steuerzentrale) gibt
-  es ihn nicht. Öffnet man im Mail-Fenster eine Mail, kommt der Leser zurück. **Kein App-Umschalter** (#530): Zwischen den Apps
+  es ihn nicht. Im Mail-Fenster schließt das Ausblenden die offene Mail; öffnet man im breiten Fenster eine Mail,
+  kommt der Leser zurück (Cursor und Aktualisieren lassen die Spalte aus). **Kein App-Umschalter** (#530): Zwischen den Apps
   wechselt man über das Tray-Menü, das Dock bzw. die Taskleiste und Steuerzentrale › Apps; im Fenster kommt dafür
   nichts dazu. Sprünge mit Bezug („Open in …“, „↗ andere App“) bleiben, ebenso der Kern-Befehl `OpenApp`. Daneben
   die **Kopfzeile der App** (`shell::header_bar`), ganz rechts die **Einstellungen** mit Schiebereglern
