@@ -3376,6 +3376,11 @@ fn opening(item: &Item) -> Result<Opening, Failure> {
     if !rules::may_open(item, is_app_of_the_suite) {
         return refused("nothing on it may be opened");
     }
+    // A Talk entry opens the hub at the entry, with its conversation and the reply field, as mail
+    // does (`docs/chat.md`, stage 1); the panel's "Open in Talk" leads to the page.
+    if item.source.kind == SourceKind::Talk {
+        return Ok(Opening::App(AppId::INBOX));
+    }
     match &item.link {
         Some(Link::Url { url }) => Ok(Opening::Url(url.clone())),
         // A binary or a window class (task E8.1b): `torro-inbox-mail` opens the inbox's mail window.
