@@ -149,7 +149,7 @@ pub struct State {
     step: Step,
     /// The page of the point AI.
     ai_page: AiPage,
-    /// The steps shown in this setup; a point left forward counts as passed unless it was skipped.
+    /// The steps shown in this setup; a point shown and left counts as passed unless it was skipped.
     visited: BTreeSet<Step>,
     /// Steps left with their way to skip; going on from one of them with the primary button takes it out.
     skipped: BTreeSet<Step>,
@@ -312,6 +312,11 @@ impl State {
         self.adding || nextcloud_account(self, data).is_none()
     }
 
+    /// A request of the mail path or a Nextcloud sign-in waits for the core or the browser.
+    fn waiting(&self) -> bool {
+        wizard::mail_waiting(&self.mail) || self.nextcloud.running()
+    }
+
     /// The mail path is under way on the point Mail and calendar: something is typed and it has not ended.
     fn mail_running(&self) -> bool {
         !wizard::mail_untouched(&self.mail) && !wizard::mail_done(&self.mail)
@@ -443,6 +448,9 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             }
             stay(action)
         }
+        // While a request of the mail path or a Nextcloud sign-in waits, the point stays: answers do not say
+        // which request they are for, so only the one that waits may send.
+        Message::Go(_) if state.waiting() => stay(Action::None),
         Message::Go(step) => {
             state.go(step);
             stay(Action::None)
@@ -523,6 +531,7 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             state.mail = wizard::mail();
             stay(Action::None)
         }
+        Message::TakeOverTorroMail if state.waiting() => stay(Action::None),
         Message::TakeOverTorroMail => {
             let (dialog, action) = wizard::State::torromail();
             state.dialog = Some(dialog);
@@ -757,7 +766,8 @@ fn components(data: &Data) -> Vec<ComponentSwitch> {
     // whose services are not read yet or that has them, and every CalDAV account.
     let brings = |service: torro_ipc::ServerService| {
         listed().any(|account| match account.kind.as_str() {
-            "caldav" => true,
+            // A CalDAV account counts until its collections are listed; then they say what it has.
+            "caldav" => account.collections.is_empty(),
             "nextcloud" => account.services.as_ref().is_none_or(|services| services.contains(&service)),
             _ => false,
         })
@@ -788,15 +798,12 @@ fn components(data: &Data) -> Vec<ComponentSwitch> {
     .collect()
 }
 
-/// Whether this is the first run of the setup: it was never finished. Finishing records the version and the
-/// state `done`; "Run setup again" keeps the version with the state `pending`. A setup put off ("Set up later",
-/// state `skipped`) before it was ever finished still counts as the first run.
+/// Whether this is surely the first run of the setup: it is pending and no run was ever finished or put off
+/// (version 0). Putting it off records this build's version as finishing does, so a setup put off cannot tell
+/// whether it ran before; then it only shows apps and never hides one – hiding is the step a person could
+/// lose a choice by.
 fn first_run(setup: &torro_core::settings::Setup) -> bool {
-    match setup.state {
-        SetupState::Done => false,
-        SetupState::Skipped => true,
-        SetupState::Pending => setup.version == 0,
-    }
+    setup.state == SetupState::Pending && setup.version == 0
 }
 
 /// Follows a Nextcloud sign-in through a reload of `data` (the shell calls it on every reload while the
@@ -827,17 +834,19 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
     if let Some(dialog) = state.dialog.as_mut() {
         return wizard::answered(dialog, result);
     }
-    // The one that asked takes the answer, whichever point is shown: a Nextcloud sign-in that starts, else
-    // the mail path under way.
+    // The one that waits takes the answer: the mail path's search or sign-in, else a Nextcloud sign-in. While
+    // either waits the point stays ([`State::waiting`]), so no other request of the setup is out.
+    if wizard::mail_waiting(&state.mail) {
+        return wizard::answered(&mut state.mail, result);
+    }
     match state.nextcloud.answered(result) {
         Some(Err(message)) => {
             state.error = Some(message);
-            return true;
+            true
         }
-        Some(Ok(())) => return true,
-        None => {}
+        Some(Ok(())) => true,
+        None => state.mail_running() && wizard::answered(&mut state.mail, result),
     }
-    state.mail_running() && wizard::answered(&mut state.mail, result)
 }
 
 /// The request that changes one setting.
@@ -1125,8 +1134,12 @@ pub fn escape(state: &State) -> Option<Message> {
     if state.step == Step::Cloud && (state.nextcloud.running() || state.adding) {
         return Some(Message::Cancel);
     }
-    // The mail path under way at its first step is given up, as its "Cancel" does.
-    if state.step == Step::Mail && state.mail_running() && !wizard::mail_back(&state.mail) {
+    // The mail path under way at its first step is given up, as its "Cancel" does; not while it waits.
+    if state.step == Step::Mail
+        && state.mail_running()
+        && !wizard::mail_back(&state.mail)
+        && !wizard::mail_waiting(&state.mail)
+    {
         return Some(Message::AddAnotherMail);
     }
     let walks_back = (state.step == Step::Mail && wizard::mail_back(&state.mail))
@@ -1590,9 +1603,10 @@ mod tests {
         assert!(switches.iter().all(|switch| !matches!(switch.component, Component::Inbox | Component::Workspaces)));
         data.settings.setup = torro_core::settings::Setup { state: SetupState::Pending, version: 3 };
         assert!(components(&data).iter().all(|switch| switch.enabled), "run again: only shown");
-        // Put off before it was ever finished, it is still the first run.
+        // Put off, it cannot tell whether it ran before: it only shows.
         data.settings.setup = torro_core::settings::Setup { state: SetupState::Skipped, version: 4 };
-        assert!(components(&data).contains(&ComponentSwitch { component: Component::Mail, enabled: false }));
+        assert!(components(&data).iter().all(|switch| switch.enabled));
+        data.settings.setup = torro_core::settings::Setup::default();
         // A Nextcloud whose services are not read yet brings its calendars and lists already.
         let mut fresh = data.clone();
         fresh.accounts.retain(|account| account.kind != "nextcloud");
@@ -1635,6 +1649,7 @@ mod tests {
         update(&mut setup, Message::Mail(wizard::Message::AddressChanged("anna@mailbox.org".into())), &data);
         update(&mut setup, Message::Next, &data);
         update(&mut setup, Message::Go(Step::Cloud), &data);
+        assert_eq!(setup.step, Step::Mail, "the point stays while the search waits");
         let refused: Result<Response, String> = Err("offline".into());
         assert!(answered(&mut setup, &refused), "the mail path shows its refusal itself");
     }

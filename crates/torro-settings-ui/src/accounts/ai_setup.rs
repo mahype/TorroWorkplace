@@ -774,7 +774,11 @@ pub fn answered(state: &mut State, owner: u64, run: u64, result: &Result<Respons
             state.current = None;
             Action::None
         }
+        // An answer the chain cannot go on from ends it, so nothing waits for a model that never comes.
         _ => {
+            state.current = None;
+            state.queue.clear();
+            state.pull = None;
             state.error = Some(tr("Torro Workplace did not answer as expected. Try again.").into());
             Action::None
         }

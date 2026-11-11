@@ -1484,7 +1484,8 @@ impl Ui {
                     let step = self.launch.setup.unwrap_or(setup::Step::Welcome);
                     if self.data.settings.setup.state != SetupState::Done {
                         self.setup = Some(setup::State::new(step, &self.data.settings));
-                        // Loaded without the models of the AI accounts, which the setup's point AI offers.
+                        // Loaded before the setup was open, without what only the setup loads (the models of
+                        // the AI accounts on its point AI): once more now.
                         providers = self.reload();
                     }
                 }
@@ -1603,15 +1604,19 @@ impl Ui {
             }
             // Only the group "Models" gets these: it shows a refusal under its slot itself.
             Message::AiAnswered(asked, result) => {
+                // A model turned on or put into a slot by the setup: its lists of models load afresh, so the
+                // cache is dropped before the reload takes it.
+                if let accounts::Asked::Setup { owner, .. } = asked
+                    && asked.changes()
+                    && self.setup.as_ref().is_some_and(|setup| accounts::ai_setup::owns(&setup.ai_setup, owner))
+                {
+                    self.data.ai_models_from.clear();
+                }
                 let reload = if asked.changes() { self.reload() } else { Task::none() };
                 if let accounts::Asked::Setup { owner, run, .. } = asked
                     && let Some(setup) = self.setup.as_mut()
                     && accounts::ai_setup::owns(&setup.ai_setup, owner)
                 {
-                    // A model turned on or put into a slot: the setup's lists of models load afresh.
-                    if asked.changes() {
-                        self.data.ai_models_from.clear();
-                    }
                     let action = accounts::ai_setup::answered(&mut setup.ai_setup, owner, run, &result);
                     return Task::batch([self.perform(accounts::act(action)), reload]);
                 }
@@ -1762,6 +1767,7 @@ impl Ui {
                     // Finished or put off: the window goes on as the control centre.
                     setup::Outcome::Close(action) => {
                         self.setup = None;
+                        suite::leave(&mut self.general.suite);
                         self.select(Section::Overview);
                         action
                     }

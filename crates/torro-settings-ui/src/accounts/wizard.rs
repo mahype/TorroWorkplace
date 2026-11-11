@@ -1566,6 +1566,11 @@ pub fn mail_done(state: &State) -> bool {
     state.step == Step::Done
 }
 
+/// Whether the mail path waits for the core: the provider is looked for or the account is signed in to.
+pub fn mail_waiting(state: &State) -> bool {
+    matches!(state.step, Step::MailSearching | Step::MailConnecting)
+}
+
 /// Whether the mail path stands at its start with nothing typed: the page may go on without it.
 pub fn mail_untouched(state: &State) -> bool {
     state.step == MAIL_STEPS[0] && state.mail.address.trim().is_empty()
