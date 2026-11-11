@@ -47,7 +47,7 @@ struct RunRecord {
     mail_header_hash: Option<String>,
     /// Scripts a test of an unsaved draft witnessed. Journaled with the reservation, so recovery adopts them too.
     #[serde(default)]
-    observed_resources: Vec<wire::ResourcePin>,
+    observed_resources: Option<Vec<wire::ResourcePin>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -398,7 +398,7 @@ impl Service {
                 target_fingerprint: fingerprint, raw_hash: hash, dedup: dedup.clone(), due: Utc::now(), reservation: None,
                 execution_epoch: workflow.execution_epoch,
                 rule_binding: event.map(|(_, rule)| (rule.rule.id.clone(), rule.rule.revision, rule.state_revision)),
-                event: event.map(|(id, _)| id.to_string()), one_time, verified_sender, mail_header_hash: Some(source_hash), observed_resources: Vec::new() };
+                event: event.map(|(id, _)| id.to_string()), one_time, verified_sender, mail_header_hash: Some(source_hash), observed_resources: None };
             put_run(tx, &record, "queued")?;
             store::put(tx, "dedup", &dedup, record.scope.owner(), &account, "", &Dedup { run: run.id.clone(), generation })?;
             Ok(run)
@@ -660,7 +660,7 @@ impl Service {
                         one_time: false,
                         verified_sender: None,
                         mail_header_hash: None,
-                        observed_resources: Vec::new(),
+                        observed_resources: None,
                     };
                     let too_old =
                         event.received_at.is_some_and(|received| received < Utc::now() - chrono::Duration::days(7));
@@ -1189,7 +1189,8 @@ struct Output {
     provenance: wire::Provenance,
     source_host: String,
     profile_version: Option<u16>,
-    observed: Vec<wire::ResourcePin>,
+    /// The scripts witnessed on a profile-2 page; `None` when no page was read, e.g. a link that served a PDF.
+    observed: Option<Vec<wire::ResourcePin>>,
 }
 
 /// A successful test of an unsaved draft takes over exactly the scripts it witnessed, as a new revision with a new
@@ -1199,11 +1200,19 @@ fn adopt_resources(record: &mut WorkflowRecord, job: &RunRecord) -> Result<(), E
     if record.workflow.saved
         || !job.run.test
         || !package.steps.iter().any(|step| matches!(step, wire::Step::RenderInvoiceCopy { version: 2, .. }))
-        || package.binding.resources == job.observed_resources
     {
         return Ok(());
     }
-    package.binding.resources = job.observed_resources.clone();
+    let Some(observed) = &job.observed_resources else { return Ok(()) };
+    // The same scripts in another page order are no change and keep the revision and its authorization.
+    let mut known = package.binding.resources.clone();
+    let mut seen = observed.clone();
+    known.sort();
+    seen.sort();
+    if known == seen {
+        return Ok(());
+    }
+    package.binding.resources = observed.clone();
     package.validate().map_err(|_| Error::Unsupported)?;
     let encoded = serde_json::to_vec(&record.workflow.spec).map_err(|_| Error::Blocked)?;
     record.workflow.digest = digest(&encoded);
@@ -1275,7 +1284,7 @@ async fn retrieve(
 ) -> Result<Output, download::Failure> {
     package.validate().map_err(|_| failure(RunReason::Unsupported))?;
     let mut budget = download::Budget::new();
-    let mut observed = Vec::new();
+    let mut observed = None;
     let mut link = None;
     let mut body: Option<download::Body> = None;
     let mut provenance = wire::Provenance::SupplierPdf;
@@ -1333,7 +1342,7 @@ async fn retrieve(
                     let loaded = if *version == 2 {
                         let (loaded, witnessed) =
                             load_resources(package, &source, downloader, &mut budget, allow, &cancelled, adopt).await?;
-                        observed = witnessed;
+                        observed = Some(witnessed);
                         Some(loaded)
                     } else {
                         None
@@ -2239,8 +2248,8 @@ mod tests {
         let witnessed = retrieve(&pinned, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), true)
             .await
             .expect("a draft test witnesses the new script");
-        assert_eq!(witnessed.observed.len(), 1);
-        assert_ne!(witnessed.observed, vec![witnessed_script()]);
+        assert_eq!(witnessed.observed.as_ref().map(Vec::len), Some(1));
+        assert_ne!(witnessed.observed, Some(vec![witnessed_script()]));
 
         // A witnessed script the package could not hold stops before any file is written.
         let odd = httpmock::MockServer::start_async().await;
@@ -2274,7 +2283,7 @@ mod tests {
         let copy = retrieve(&pinned, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), false)
             .await
             .expect("the pinned script passes unchanged");
-        assert_eq!(copy.observed, vec![witnessed_script()]);
+        assert_eq!(copy.observed, Some(vec![witnessed_script()]));
         // Revoked between the page and its resources: nothing more is loaded and the run reports the revocation.
         let page = download::Body {
             bytes: super::super::tests::with_resources(include_str!(
