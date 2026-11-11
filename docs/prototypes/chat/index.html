@@ -9,7 +9,7 @@
   Kontaktliste, Chatfenster, eingehender Anruf, laufender Videoanruf und Gerätewahl, wie bei ICQ als
   getrennte Fenster. Dazu Dateien, Bilder und Videos im Chat (Issue #636, Abschnitt #medien). Fassungen zur Wahl:
     Gruppen        A · Abschnitt unter den Personen   B · Umschalter oben   C · Knopf „Group chats…“
-    Video          extern öffnen · im Fenster abspielen
+    Video          extern öffnen (entschieden 2026-11-11, chat.md Entscheidung 22) · im Fenster (verworfen, zum Vergleich)
     Bild groß      A · im Chatfenster                 B · eigenes Fenster
     Hochladen      Leiste über dem Feld · kleiner Dialog
     Medien         Seitenleiste · eigenes Fenster
@@ -25,7 +25,7 @@
 <main class="page">
   <h1>Chat wie ICQ: Kontaktliste, Chatfenster, Anrufe</h1>
   <p class="lead">Entwürfe zu #470. Die Kontaktliste ist ein eigenes, schmales Fenster. Ein Doppelklick auf einen Namen öffnet ein eigenes Chatfenster, aus dem ein Anruf startet. Chat- und Anruffenster schweben über den Kacheln, damit ein Doppelklick den Bildschirm nicht neu aufteilt.</p>
-  <p>Oben die Fassungen umschalten. Die Wahl zu Gruppen und Klingeln trifft der Mensch beim Durchsehen; das Konzept übernimmt sie danach.</p>
+  <p>Oben die Fassungen umschalten. Die Wahl zu Gruppen, Klingeln, Bild groß, Hochladen und Medien-Übersicht trifft der Mensch beim Durchsehen; das Konzept übernimmt sie danach. Video ist entschieden (extern).</p>
 
   <div class="controls" role="group" aria-label="Fassungen">
     <div class="crow" data-ctl="theme"><span class="olbl">Darstellung</span>
@@ -36,6 +36,14 @@
       <button type="button" id="r-n" data-v="notif">Benachrichtigung</button><button type="button" id="r-w" data-v="window">Kleines Fenster</button></div>
     <div class="crow" data-ctl="call"><span class="olbl">Anruf</span>
       <button type="button" id="c-a" data-v="a">A · Bild in Bild</button><button type="button" id="c-b" data-v="b">B · Nebeneinander</button></div>
+    <div class="crow" data-ctl="video"><span class="olbl">Video</span>
+        <button type="button" data-v="extern">Extern öffnen (entschieden)</button><button type="button" data-v="inline">Im Fenster (verworfen)</button></div>
+    <div class="crow" data-ctl="viewer"><span class="olbl">Bild groß</span>
+        <button type="button" data-v="a">A · Im Chatfenster</button><button type="button" data-v="b">B · Eigenes Fenster</button></div>
+    <div class="crow" data-ctl="upload"><span class="olbl">Hochladen</span>
+        <button type="button" data-v="bar">Leiste über dem Feld</button><button type="button" data-v="dialog">Kleiner Dialog</button></div>
+    <div class="crow" data-ctl="media"><span class="olbl">Medien</span>
+        <button type="button" data-v="side">Seitenleiste</button><button type="button" data-v="window">Eigenes Fenster</button></div>
   </div>
 
   <!-- 1 · Kontaktliste und Chatfenster -->
@@ -144,24 +152,14 @@
   <section id="medien">
     <h2>Dateien, Bilder und Videos</h2>
     <p>Stufe 4 des Chats (#636). Bilder zeigt der Verlauf als Vorschau vom eigenen Nextcloud-Server, Videos mit Abspielknopf, Sprachnachrichten mit Wellenform, andere Dateien als Zeile mit „Open“, „Download“ und „Open in Nextcloud“. Links bekommen eine Karte, deren Bild ebenfalls vom eigenen Server kommt; fremde Server fragt das Fenster nie an. Senden geht über die Büroklammer, durch Ziehen ins Fenster und durch Einfügen aus der Zwischenablage.</p>
-    <div class="controls" role="group" aria-label="Fassungen zu Medien" style="position:static;margin-top:12px">
-      <div class="crow" data-ctl="video"><span class="olbl">Video</span>
-        <button type="button" data-v="extern">Extern öffnen</button><button type="button" data-v="inline">Im Fenster abspielen</button></div>
-      <div class="crow" data-ctl="viewer"><span class="olbl">Bild groß</span>
-        <button type="button" data-v="a">A · Im Chatfenster</button><button type="button" data-v="b">B · Eigenes Fenster</button></div>
-      <div class="crow" data-ctl="upload"><span class="olbl">Hochladen</span>
-        <button type="button" data-v="bar">Leiste über dem Feld</button><button type="button" data-v="dialog">Kleiner Dialog</button></div>
-      <div class="crow" data-ctl="media"><span class="olbl">Medien-Übersicht</span>
-        <button type="button" data-v="side">Seitenleiste</button><button type="button" data-v="window">Eigenes Fenster</button></div>
-    </div>
     <div class="stage">
       <div>
-        <p class="cap">Chatfenster mit Medien · 440 × 680</p>
-        <div class="win" style="width:440px;height:680px" aria-label="Chat window with media">
+        <p class="cap">Chatfenster mit Medien · 440 breit, hier höher als üblich, damit jede Art zu sehen ist</p>
+        <div class="win" style="width:440px;height:960px" aria-label="Chat window with media">
           <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Anna Berg</b></div>
           <div class="chead">
             <span class="av" style="--c:#5B8CFF">AB<span class="st"></span></span>
-            <span class="who grow"><b class="ell">Anna Berg</b><span><span class="st inl"></span>Online · Working on the relaunch</span></span>
+            <span class="who grow"><b class="ell">Anna Berg</b><span><span class="st inl"></span>Online</span></span>
             <button class="ibtn" type="button" title="Audio call"><svg data-i="phone"></svg></button>
             <button class="ibtn" type="button" title="Video call"><svg data-i="video"></svg></button>
             <button class="ibtn" type="button" title="Shared media"><svg data-i="grid"></svg></button>
@@ -206,9 +204,9 @@
         <p class="cap">Ohne Vorschau · Rückfall</p>
         <div class="win" style="width:360px;height:auto;padding:12px 16px;gap:8px" aria-label="Fallbacks without preview">
           <div class="filerow"><span class="ftile"><svg data-i="video"></svg></span><span class="fwho"><b class="ell">site-tour.mov</b><span class="tab">86 MB · Video · no preview</span></span>
-            <button class="ibtn" type="button" title="Play" data-only="video:inline"><svg data-i="play"></svg></button><button class="ibtn" type="button" title="Open in your video player" data-only="video:extern"><svg data-i="external"></svg></button><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button></div>
-          <div class="filerow"><span class="ftile"><svg data-i="image"></svg></span><span class="fwho"><b class="ell">logo.svg</b><span class="tab">12 KB · Image</span></span>
-            <button class="ibtn" type="button" title="Open"><svg data-i="external"></svg></button><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button></div>
+            <button class="ibtn" type="button" title="Play" data-only="video:inline"><svg data-i="play"></svg></button><button class="ibtn" type="button" title="Open in your video player" data-only="video:extern"><svg data-i="external"></svg></button><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Open in Nextcloud"><svg data-i="cloud"></svg></button></div>
+          <div class="filerow"><span class="ftile"><svg data-i="image"></svg></span><span class="fwho"><b class="ell">logo.svg</b><span class="tab">12 KB · Image · no preview</span></span>
+            <button class="ibtn" type="button" title="Open"><svg data-i="external"></svg></button><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Open in Nextcloud"><svg data-i="cloud"></svg></button></div>
           <div class="filerow"><span class="ftile"><svg data-i="link"></svg></span><span class="fwho"><b class="ell">example.org/article</b><span>Link · no card</span></span></div>
         </div>
       </div>
@@ -281,7 +279,7 @@
       </div>
 
       <div data-only="video:inline">
-        <p class="cap">Video im Fenster · wie „Bild groß“, mit Leiste zum Abspielen</p>
+        <p class="cap">Verworfen · Video im Fenster, wie „Bild groß“ mit Leiste zum Abspielen</p>
         <div class="win" style="width:440px;height:340px" aria-label="Video player">
           <div class="viewer" style="position:absolute">
             <div class="vh"><b class="grow ell">demo.mp4</b><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Close (Esc)"><svg data-i="x"></svg></button></div>
@@ -303,7 +301,7 @@
             <div class="side">
               <div class="chead" style="height:48px"><b class="grow">Shared</b><button class="ibtn" type="button" title="Close"><svg data-i="x"></svg></button></div>
               <div class="tabsrow"><span class="on">Media</span><span>Files</span><span>Voice</span><span>Links</span></div>
-              <div class="mgroup">This week</div>
+              <div class="mgroup">November</div>
               <div class="grid"><div class="ph"></div><div class="ph p2"></div><div class="ph p3"></div><div class="ph p4"></div><div class="ph p2"></div><div class="ph"></div></div>
               <div class="mgroup">October</div>
               <div class="grid"><div class="ph p3"></div><div class="ph"></div><div class="ph p4"></div></div>
@@ -316,7 +314,7 @@
         <p class="cap">Medien-Übersicht · eigenes Fenster · 560 × 600, schwebend</p>
         <div class="win" style="width:560px;height:600px" aria-label="Shared media window">
           <div class="top"><span class="lights"><i></i><i></i><i></i></span><b class="grow ell">Shared with Anna Berg</b></div>
-          <div class="tabsrow"><span>Media</span><span class="on">Files <span class="tab" style="color:var(--text3);font-weight:400">4</span></span><span>Voice</span><span>Links</span></div>
+          <div class="tabsrow"><span>Media</span><span class="on">Files <span class="tab" style="color:var(--text3);font-weight:400">3</span></span><span>Voice</span><span>Links</span></div>
           <div style="padding:12px 16px;display:flex;flex-direction:column;gap:6px">
             <div class="filerow"><span class="ftile"><svg data-i="file"></svg></span><span class="fwho"><b class="ell">Offer.pdf</b><span class="tab">1.2 MB · Anna Berg · Today</span></span><button class="ibtn" type="button" title="Open"><svg data-i="external"></svg></button><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Show in chat"><svg data-i="chat"></svg></button></div>
             <div class="filerow"><span class="ftile"><svg data-i="file"></svg></span><span class="fwho"><b class="ell">Sitemap.xlsx</b><span class="tab">84 KB · You · Yesterday</span></span><button class="ibtn" type="button" title="Open"><svg data-i="external"></svg></button><button class="ibtn" type="button" title="Download"><svg data-i="download"></svg></button><button class="ibtn" type="button" title="Show in chat"><svg data-i="chat"></svg></button></div>
@@ -345,7 +343,7 @@
       </div>
     </div>
     <ul class="notes">
-      <li><b>Video:</b> „Extern öffnen“ lädt die Datei und gibt sie dem Videoprogramm des Systems (Pfeil an der Dauer). „Im Fenster abspielen“ zeigt Video wie „Bild groß“ mit einer Leiste zum Abspielen. Die Dauer steht nur da, wenn der Kern sie kennt: Talk liefert sie nicht mit.</li>
+      <li><b>Video (entschieden am 2026-11-11: extern):</b> Ein Klick lädt die Datei und gibt sie dem Videoprogramm des Systems (Pfeil an der Dauer). „Im Fenster“ bleibt nur zum Vergleich stehen; dafür bräuchte es GStreamer. Die Dauer steht nur da, wenn der Kern sie kennt: Talk liefert sie nicht mit.</li>
       <li><b>Bild groß:</b> A legt sich über das Chatfenster (Esc schließt, ← → blättern durch die Bilder der Unterhaltung). B öffnet ein eigenes, schwebendes Fenster, das größer sein kann als der Chat.</li>
       <li><b>Hochladen:</b> Die Leiste hält das Antwortfeld frei und zeigt den Fortschritt dort, wo man schreibt. Der Dialog zeigt das Bild groß vor dem Senden und schützt vor einem versehentlich eingefügten Bildschirmfoto.</li>
       <li><b>Medien-Übersicht:</b> Die Seitenleiste macht das Chatfenster breiter, das eigene Fenster lässt den Chat, wie er ist. Reiter wie in Talk: Medien, Dateien, Sprachnachrichten, Links.</li>

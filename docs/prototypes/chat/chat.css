@@ -116,7 +116,7 @@ kbd.k{font:500 11px/1 Inter,sans-serif;color:var(--text3);border:1px solid var(-
 .day{align-self:center;font-size:12px;line-height:16px;font-weight:500;color:var(--text3);margin:8px 0}
 .msg{max-width:78%;display:flex;flex-direction:column;gap:2px}
 .msg .bub{padding:8px 12px;border-radius:8px;background:var(--raised);border:1px solid var(--line)}
-.msg .meta{font:400 11px/14px "Inter Tabular",Inter,sans-serif;color:var(--text3);padding:0 4px;display:flex;gap:4px;align-items:center}
+.msg .meta,.media .meta{font:400 11px/14px "Inter Tabular",Inter,sans-serif;color:var(--text3);padding:0 4px;display:flex;gap:4px;align-items:center}
 .msg.mine{align-self:flex-end;align-items:flex-end}
 .msg.mine .bub{background:var(--selected);border-color:var(--line-strong)}
 .msg + .msg.mine,.msg.mine + .msg:not(.mine){margin-top:8px}
@@ -181,7 +181,7 @@ kbd.k{font:500 11px/1 Inter,sans-serif;color:var(--text3);border:1px solid var(-
 .media{display:flex;flex-direction:column;gap:6px;max-width:78%}
 .msg.mine .media,.media.mine{align-self:flex-end;align-items:flex-end}
 .media .cap2{padding:0 4px;color:var(--text)}
-.thumb{width:220px;height:140px;cursor:zoom-in}
+.thumb{width:200px;height:120px;cursor:zoom-in}
 .thumb.v{cursor:pointer}
 /* Abspielknopf: Kreis mit Dreieck, Kontrast über einem dunklen Kreis, nicht über der Farbe des Bildes. */
 .playdot{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:rgba(0,0,0,.55);color:#fff}
@@ -239,7 +239,7 @@ kbd.k{font:500 11px/1 Inter,sans-serif;color:var(--text3);border:1px solid var(-
 .viewer .ibtn{color:rgba(255,255,255,.8)}
 .viewer .ibtn:hover{background:rgba(255,255,255,.1);color:#fff}
 .viewer .vbody{flex:1;display:grid;grid-template-columns:44px 1fr 44px;align-items:center;gap:8px;padding:0 8px;min-height:0}
-.viewer .vbody .ph{height:100%;max-height:100%;border-radius:4px}
+.viewer .vbody .ph{width:100%;height:auto;aspect-ratio:16/10;max-height:100%;border-radius:4px}
 .viewer .vf{height:40px;flex:none;display:flex;align-items:center;justify-content:center;font:400 13px/18px "Inter Tabular",Inter,sans-serif;color:rgba(255,255,255,.7)}
 .vctl{height:48px;flex:none;display:flex;align-items:center;gap:10px;padding:0 12px;font:400 12px/16px "Inter Tabular",Inter,sans-serif;color:rgba(255,255,255,.8)}
 .vctl .bar{flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,.25);overflow:hidden}
