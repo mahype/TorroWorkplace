@@ -1,327 +1,151 @@
 # Einrichtung beim ersten Start
 
-## KI-Verbindung (#527)
+Stand: 2026-11-10, Issue #326. Entwürfe: [prototypes/onboarding/](prototypes/onboarding/index.html), eine Seite je
+Fenster; sie gelten als Zielbild. Älterer Entwurf zur KI-Verbindung: [ai-connect.html](prototypes/onboarding/ai-connect.html).
 
-Die heutige KI-Seite und Accounts › Add › AI zeigen denselben Verbindungs- und Vorbereitungsweg
-([Entwurf](prototypes/onboarding/ai-connect.html), [Programme und Datenregel](ki.md)). Die Suche läuft
-beim Öffnen und alle fünf Sekunden nur auf der sichtbaren Seite. Formulare und Verbindungen pausieren
-sie; Verlassen beendet sie. Eine neu gestartete Laufzeit erscheint ohne „Neu suchen“. Genau ein Fund
-nach einer Installationswahl führt zur Vorbereitung, verbindet und lädt aber nichts ungefragt.
-
-Ohne Fund bleiben Online-Dienst (Anbieter und maskierter Schlüssel) und ein selbst installiertes lokales
-Programm gleichwertig. `small` oder unbekannt: online zuerst; ab `medium`: lokal zuerst. Der Online-Weg
-sagt, dass Text den Rechner verlässt und Mail ohne Zustimmung hier bleibt. Jan auf Loopback ist kein
-Datenschutzversprechen: Er kann Cloud-Anfragen weiterleiten.
-
-Nach dem Verbinden kommen kontobezogene Modellvorschläge mit Größe, Passung und höchstens drei
-Alternativen. Nur Ollama lädt auf bestätigten Klick; bei anderen Programmen wird das extern zu ladende
-Modell genannt und sein Erscheinen automatisch geprüft. Navigation und Abbrechen bleiben erreichbar,
-der Inhalt scrollt. Der neue Fünf-Schritte-Rahmen bleibt #326, der Lauf gegen echtes Strata #335.
-#359 ist übernommen; #334 wird hier nicht erneut umgesetzt.
-
-### Direkte Ollama Cloud (#587)
-
-In beiden Wegen steht zusätzlich „Ollama Cloud“ im Online-Anbietermenü nach OpenRouter. Zwölf
-Anbieter: Das Menü bietet Suche mit Tastaturfokus. Bei lokalen Funden bleibt der Online-Weg über
-„Other provider“ erreichbar. Das Cloud-Formular zeigt „Cloud · US“, den Datenhinweis, ein
-maskiertes Schlüsselfeld und „Create an API key“, kein bearbeitbares Adressfeld. Enter/Verbinden
-meldet einen leeren Schlüssel lokal; nach einem Fehler bleibt das Formular zur erneuten Eingabe.
-Zurück oder Verlassen verwirft Schlüssel und Fehler. Ein verbundener Account bleibt bei späteren
-Vorbereitungsfehlern verbunden; ohne Vorschläge wird das ausdrücklich angezeigt.
-
-Nur gelistete passende Modelle werden vorgeschlagen: `gpt-oss:20b` für Chat, `clef:27b` für
-Sortieren. Es gibt keinen lokalen Download. Übernehmen ist eine bewusste Aktion; vor Cloud-Sortieren
-nennt die Zustimmung Konto und Modell. Abbrechen erhält das bisherige Ziel und die Erlaubnis.
-Formular und Zustimmung lassen sich nicht durch das Weiter/Enter des Erststarts umgehen.
-Der vorhandene Einrichtungsrahmen bleibt unverändert; kein Vorgriff auf #326.
-Technik und offizielle Quellen: [KI-Konten](ki.md#anbieter).
-
----
-
-Stand: 2026-10-14. **Freigegeben** (Entscheidungen am Ende). Klickbarer Entwurf:
-[prototypes/setup/wizard.html](prototypes/setup/wizard.html). Aufgaben: [tasks/einrichtung.md](tasks/einrichtung.md).
-
-Wer Torro Workplace zum ersten Mal startet, sieht bisher die Steuerzentrale mit leeren Seiten und muss
-selbst wissen, wo er anfängt. Die Einrichtung führt einmal durch alles, was die Suite braucht:
-**zuerst Nextcloud, dann die Wahl der Komponenten, dann jede gewählte Komponente einzeln, am Ende die KI.**
+Wer Torro Workplace zum ersten Mal startet, wird durch **fünf Punkte** geführt, die oben als Schrittzeiger
+stehen: **Mail und Kalender, Cloud, KI, Aussehen, Dokumente**. Davor eine Begrüßung, danach eine Übersicht.
+Jeder Punkt sagt in einem Satz, wozu er da ist, in einem Kasten „Why this matters.“, warum er wichtig ist,
+und fragt nur das Nötigste ab.
 
 ## Grundsätze
 
-1. **Nichts ist Pflicht.** Jeder Schritt lässt sich überspringen. Ohne Nextcloud geht alles, nur
-   ohne die Vorbelegung: Kalender kommen dann über CalDAV, Aufgaben über CalDAV oder GitHub.
-2. **Was verbunden ist, ist gespeichert.** Die Einrichtung ist ein geführter Weg durch dieselben
-   Requests wie die Steuerzentrale, kein eigener Speicher. Wer mittendrin schließt, verliert nichts
-   und landet beim nächsten Öffnen beim ersten offenen Schritt.
-3. **Eine Komponente nach der anderen.** Feste Reihenfolge: Kalender, Aufgaben, Mail, Eingang, KI.
-   Abgewählte Komponenten verschwinden aus der Schrittliste.
-4. **Keine zweite Umsetzung.** Die Verbindungswege gibt es im Dialog „Add account“ (`ui/wizard.rs`).
-   Nextcloud und GitHub sind Bausteine in `ui/connect/`, die beide benutzen; CalDAV hat dort einen kurzen
-   Weg nur für Kalender und Aufgaben. Für Mail, TorroMail und ntfy öffnet die Einrichtung den Dialog selbst
-   über sich, auf dem passenden Weg (W.7).
-5. **Open First.** Lokale KI steht oben und wird von selbst gesucht. Cloud-Anbieter folgen, mit dem
-   Sitz des Anbieters in jeder Zeile, damit die Wahl bewusst fällt ([ki.md](ki.md), Grundsatz 4).
-6. **Geheimnisse nur in der Oberfläche.** Passwörter und Schlüssel werden nur in Felder der
-   Einrichtung getippt. Ein Agent kann die Einrichtung nicht stellvertretend durchlaufen (die
-   `connect_*`-Befehle mit Geheimnis bleiben `Never`).
+1. **Nichts ist Pflicht.** Jeder Punkt lässt sich überspringen. Ohne Nextcloud geht alles; Kalender und
+   Aufgaben kommen dann mit dem Mail-Konto.
+2. **Was verbunden ist, ist gespeichert.** Die Einrichtung ist ein geführter Weg durch dieselben Requests wie
+   die Steuerzentrale, kein eigener Speicher. Wer mittendrin schließt, verliert nichts.
+3. **Keine zweite Umsetzung.** Der Mail-Weg ist derselbe wie unter Accounts › Add (`wizard.rs`), nur auf der
+   Seite statt im Dialog; die KI-Seite ist dieselbe wie unter Accounts › Add › AI (`ai_setup.rs`); das Aussehen
+   nimmt die Bausteine von Settings › Appearance (`suite.rs`). Nextcloud ist ein Baustein in `ui/connect/`.
+4. **Open First.** Lokale KI steht oben und wird von selbst gesucht; der Vorschlag für diesen Rechner ist
+   lokal, wo es geht ([ki.md](ki.md), Grundsatz 4).
+5. **Geheimnisse nur in der Oberfläche.** Passwörter und Schlüssel werden nur in Felder der Einrichtung
+   getippt. Ein Agent kann die Einrichtung nicht stellvertretend durchlaufen (die `connect_*`-Befehle mit
+   Geheimnis bleiben `Never`).
 
 ## Wann sie erscheint
 
 | Anlass | Was passiert |
 |---|---|
-| Dienst startet, **kein Konto** und Einrichtung nie abgeschlossen | Der Dienst öffnet `torroworkplace ui --setup` (eine offene Steuerzentrale kommt nach vorn). Das wiederholt sich bei jedem Start, bis die Einrichtung abgeschlossen oder verschoben ist |
+| Dienst startet, **kein Konto** und Einrichtung nie abgeschlossen | Der Dienst öffnet `torroworkplace ui --setup` (eine offene Steuerzentrale kommt nach vorn), bei jedem Start, bis sie abgeschlossen oder verschoben ist |
 | „Set up later“ in der Einrichtung | Stand `skipped`; Overview zeigt oben die Karte „Finish setup“ mit „Continue setup“ |
-| App ohne Konto (`torro-gui/src/connect.rs`) | Seit #410 je Anbieter ein Knopf („Connect Nextcloud“, „Add mail account“ …), der „Add account“ in der App öffnet; die Einrichtung der Steuerzentrale startet nicht. `--setup-if-open` bleibt für Aufrufer von außen |
-| General › „Run setup again“ | Startet bei Schritt 1; Verbundenes steht schon als erledigt da |
-| Neue Version bringt einen neuen Schritt (z. B. KI) | Overview: „New in setup: AI“, nicht ungefragt öffnen |
+| App ohne Konto (`torro-gui/src/connect.rs`) | Seit #410 je Anbieter ein Knopf, der „Add account“ in der App öffnet; die Einrichtung startet nicht. `--setup-if-open` bleibt für Aufrufer von außen |
+| General › „Run setup again“ | Startet bei der Begrüßung; Verbundenes steht schon da, gewählte Modelle werden gezeigt |
+| Neue Version bringt neue Schritte | `Setup::VERSION` steigt; Overview: „New in setup“, nicht ungefragt öffnen |
 
-Gespeichert wird nur der Stand in `settings.json`: `setup: { state: pending | skipped | done, version }`, dazu
-`componentsOff` mit den abgeschalteten Komponenten.
-Mit `version` erkennt die Suite, dass es seit dem letzten Durchlauf neue Schritte gibt. Welcher Schritt
-erledigt ist, leitet die Oberfläche aus den Daten ab (Konto da, Komponente gewählt …), nicht aus einem
-eigenen Merker.
+Gespeichert wird nur der Stand in `settings.json`: `setup: { state: pending | skipped | done, version }`. Mit
+`version` erkennt die Suite, dass es seit dem letzten Durchlauf Neues gibt (4: die fünf Punkte, #326; 3: Documents,
+#303; 2: Web search). `--step` nimmt `welcome`, `mail`, `cloud`, `ai`, `appearance`, `documents`, `done`; die Wörter
+von früher führen zum Punkt, der sie jetzt enthält (`nextcloud` → Cloud, `calendar`, `tasks`, `inbox` → Mail,
+`components` → Welcome, `web` → AI).
 
 ## Fenster
 
-Die Einrichtung ist ein **eigener Modus der Steuerzentrale** (`torroworkplace ui --setup`), kein Dialog:
-acht Schritte mit Listen brauchen den Platz, und die Schrittliste zeigt jederzeit, wo man steht.
+Ein **eigener Modus der Steuerzentrale** (`torroworkplace ui --setup`), kein Dialog und ohne Seitenleiste:
 
 ```
-┌ Schritte 232 (BG) ──────┐┌ Inhalt (PANEL, eingesetzt) ─────────────────────────────────────────┐
-│ [T] Set up Torro        ││ Step 4 of 8 · Calendar                        Set up later           │
-│                         │├──────────────────────────────────────────────────────────────────────┤
-│ ✓ Welcome               ││   Calendar                                   (headline, max 640)     │
-│ ✓ Nextcloud             ││   Choose which calendars the suite shows.    (TEXT_2)                │
-│ ✓ Components            ││                                                                      │
-│ ● Calendar              ││   Nextcloud · anna@cloud.example.org         (Gruppe)                │
-│ ○ Tasks                 ││   ● Work                         [on]                                │
-│ ○ Mail                  ││   ● Family                       [on]                                │
-│ ○ Inbox                 ││   ● Birthdays  Read-only         [off]                               │
-│ ○ AI                    ││   Other calendars                                                     │
-│ ○ Done                  ││   + Add a CalDAV calendar   mailbox.org, iCloud, Fastmail …          │
-│                         ││                                                                      │
-│                         │├──────────────────────────────────────────────────────────────────────┤
-│ Torro Workplace · 0.4   ││ (Fehler / Status)                     Back   Skip   [Continue]        │
-└─────────────────────────┘└──────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────────┐
+│ [T] Setup   ✓ Mail and calendar ─ ✓ Cloud ─ (3) AI ▬▭▭ ─ 4 Appearance ─ 5 Documents   Set up later │
+├──────────────────────────────────────────────────────────────────────────────────────────┤
+│  Titel, ein Satz, Kasten „Why this matters.“, Gruppen der Seite (höchstens 640 breit)    │
+├──────────────────────────────────────────────────────────────────────────────────────────┤
+│ (Status / Fehler / leiser Link)                          Back   Skip   [Continue]        │
+└──────────────────────────────────────────────────────────────────────────────────────────┘
+schmal (< 600):  ‹  3/5 AI · 1/3  ▬▬▬▭▭                                    Later
+                 Knöpfe untereinander, der Primärknopf oben
 ```
 
-- **Schrittliste** links auf dem Fenstergrund, Zeilen 28 wie die Seitenleiste: Icon des Schritts,
-  Name, rechts der Zustand als Icon (Häkchen erledigt, leise „Skipped“). Der aktuelle Schritt ist
-  `SELECTED`, nie rot. Jeder Schritt ist anklickbar, auch zurück.
-- **Kopfleiste** 44: „Step 4 of 8 · Calendar“, rechts „Set up later“ (ghost).
-- **Inhalt** höchstens `size::form_max()` 640 breit, links bündig: Titel `typo::headline()`, ein Satz
-  in `TEXT_2`, dann Gruppen (`widgets::group`) mit Zeilen 44/56 und einem erklärenden Satz darunter.
-- **Fuß** mit Linie: links Status oder Fehler (Symbol + Wort), rechts „Back“ (ghost), „Skip“
-  (secondary) und **genau ein** Primärknopf („Continue“, in Unterschritten „Connect“, am Ende
-  „Finish“). Enter = Primärknopf, Escape = Unterschritt schließen bzw. „Back“.
-- **Mittel** (< 1024): Schrittliste als Leiste 52 (Icons, Name als Tooltip).
-- **Schmal** (< 600): keine Schrittliste. Kopf „‹ Back · 4/8 · Calendar“, darunter ein Fortschritt
-  `progress_bar`. Fuß wie oben, Knöpfe auf ganzer Breite wenn nötig.
-- **Mindestgröße** 360×320 wie die Steuerzentrale. Mini und Leiste zeigen keine Einrichtung, sondern
-  in der Overview-Kachel „Setup isn't finished“.
+- **Schrittzeiger** im Kopf (`size::header()`): Logo, „Setup“, die fünf Punkte mit Nummer und Namen, durch eine
+  Linie verbunden; erledigte mit Haken, der aktuelle in `TEXT` und mittlerem Gewicht, nie rot. Jeder Punkt ist
+  anklickbar. Auf dem Punkt KI zeigt ein kleiner Balken, auf welcher der bis zu drei Unterseiten man steht.
+  Rechts „Set up later“ (auf der Übersicht nicht: dort ist „Finish“ der Ausweg).
+- **Mittel** (< 1024): nur die Nummern, die Namen als Tooltip.
+- **Schmal** (< 600): „‹“, „3/5 · AI“ (auf KI mit „· 1/3“), ein Fortschritt `progress_bar`, „Later“; im Fuß stehen
+  die Knöpfe untereinander.
+- **Inhalt** höchstens `size::form_max()` breit (Aussehen so breit wie das Fenster, die Vorschau steht neben der
+  Wahl): Titel `typo::headline()`, ein Satz in `TEXT_2`, der Kasten, dann Gruppen.
+- **Fuß** mit Linie: links Status, Fehler oder ein leiser Link, rechts „Back“, der Weg zum Überspringen,
+  weitere Wege des Punkts und **genau ein** Primärknopf. Enter = Primärknopf, Escape = Dropdown, Dialog oder
+  Formular schließen, im Mail-Weg und auf den KI-Unterseiten zurück, sonst „Back“.
 
-## Die Schritte
+## Die Seiten
 
-### 1 Welcome
-
-„Set up Torro Workplace“, ein Satz, was gleich passiert („Connect your Nextcloud, choose what you
-need, and add more calendars, mail and AI. Every step can be skipped.“). Darunter **Language** und
-**Appearance** als Segmente, weil sie alles Folgende betreffen. Primär „Get started“.
-
-### 2 Nextcloud
-
-Der vorhandene Weg (Adresse → Anmeldung im Browser → Prüfen), eingebettet statt als Dialog. Nach dem
-Prüfen zeigt der Schritt, **was der Server hat**, als Liste mit Zustand:
-
-| Dienst | Woran erkannt | Wofür in der Suite |
+| Seite | Inhalt | Fuß |
 |---|---|---|
-| Calendars | CalDAV antwortet, mindestens ein Kalender mit `VEVENT` | Kalender |
-| Tasks | Kalender mit `VTODO` (die Tasks-App ist nur die Weboberfläche) | Aufgaben |
-| Contacts | CardDAV antwortet (noch nicht abgefragt) | später |
-| Notifications | Capabilities `notifications` | Eingang |
-| Talk | Capabilities `spreed` | Eingang |
-| Push | Capabilities `notify_push` | Eingang ohne Abfragen |
-| Deck, Notes | Capabilities `deck`, `notes` | später |
+| **Willkommen** | „Set up Torro Workplace“, die fünf Punkte mit je einem Satz, nur die Sprache (vom System, änderbar) | „Get started“ |
+| **1 Mail und Kalender** | Kasten: ein Konto bringt Kalender und Aufgaben des Anbieters mit. „Add an account“: der Mail-Weg auf der Seite (Adresse → Anbieter erkannt → Passwort mit Hinweis auf App-Passwörter → Dienste). Gruppe „Connected“ mit jedem Konto und „Mail · 2 calendars · 1 task list“ | links „Take over accounts from TorroMail“ (Dialog); „Skip“, „Continue“ bzw. der Knopf des Mail-Wegs; danach „Add another account“ |
+| **2 Cloud** | Der Server für Dateien, Kalender und Kontakte, heute Nextcloud. Adresse, Anmeldung im Browser, danach „What this server offers“ (Kalender, Aufgaben, Benachrichtigungen und Talk, Deck und Notes) und „Add another Nextcloud“ | „I don't use one“, „Connect“ bzw. „Continue“ |
+| **3.1 KI · Connect** | Der gemessene Rechner, gefundene lokale KI (Ollama, LM Studio, Strata), Cloud über API-Schlüssel (ChatGPT erst mit #324), „Our suggestion for this PC“ mit Modell für Chat und für Sortieren. Sind schon Modelle gewählt, die Gruppe „Chosen“ | „Skip AI“, „Choose myself“, primär **„Use suggestion“** (springt direkt zu Aussehen, der Download läuft weiter); mit gewählten Modellen primär „Keep my choice“, „Use suggestion“ nur, wenn der Vorschlag abweicht |
+| **3.2 KI · Chat** | „Model for chat“: Dropdown der Modelle mit Werkzeugen, nach Konto gruppiert, der Vorschlag markiert; ein noch nicht geladener Vorschlag als Zeile mit „Use“. Die Wahl geht sofort in den Platz Chat | „Back“, „Continue“ |
+| **3.3 KI · Sortieren** | Kasten: Sortieren sieht jede neue Mail. Vier Wege: Entscheidermodell hier (Vorschlag, Dropdown), Jev (ohne Konto „Add key“), „Use the chat model“, „Rules only“. Ein Modell woanders fragt vorher (Zustimmung nur fürs Sortieren, #424) | „Back“, „Continue“ |
+| **4 Aussehen** | Dieselben Bausteine wie Settings › Appearance: Farbschema als Dropdown mit Farbmodus (System, Light, Dark), Abstände als Segment (Comfort, Standard, Dense; #484), Schrift als Dropdown; daneben die Vorschau des Mail-Fensters | „Keep the default“, „Continue“ |
+| **5 Dokumente** | Nur ein Hinweis: Torro arbeitet mit ArtCraft (WordCraft, DeckCraft, GridCraft, PdfCraft); Torro selbst bearbeitet nie Dateien; „Get ArtCraft“; eingerichtet wird unter Settings › MCP servers. Speichert nichts | „Continue“ |
+| **Fertig** | Eine Zeile je Punkt mit Zustand und „Open …“ (Mail, Calendar, Assistant, Settings) bzw. „Set up“ oder „Get ArtCraft“ | links „Connect an agent…“ (MCP servers), „Finish“ |
 
-Wichtig: CalDAV gehört in Nextcloud zum Kern (App `dav`), die Kalender-App ist nur die Weboberfläche.
-„Kalender auf Nextcloud aktiviert“ heißt darum für die Suite: CalDAV antwortet und hat Kalender. Fehlt
-ein Dienst, steht er grau da mit „Not on this server“, ohne Vorwurf.
+„Choose myself“ führt über Chat und Sortieren; „Use suggestion“ lässt beide aus. Bei „Run setup again“ zeigt die
+KI-Seite die bisherige Wahl; ein abweichender Vorschlag wird nur auf Klick übernommen.
 
-Zweiter Weg: „I don't use Nextcloud“ (ghost) überspringt.
+### KI-Verbindung (#527, #587)
 
-### 3 Components
+Die KI-Seite und Accounts › Add › AI zeigen denselben Verbindungs- und Vorbereitungsweg ([Programme und
+Datenregel](ki.md)). Die Suche läuft beim Öffnen und alle fünf Sekunden nur auf der sichtbaren Seite; Formulare
+und Verbindungen pausieren sie. Ohne Fund bleiben Online-Dienst und lokales Programm gleichwertig (`small` oder
+unbekannt: online zuerst; ab `medium`: lokal zuerst). Nur Ollama lädt auf bestätigten Klick; bei anderen Programmen
+wird das Modell genannt und sein Erscheinen geprüft. „Ollama Cloud“ steht im Anbietermenü nach OpenRouter, mit
+„Cloud · US“, maskiertem Schlüssel und „Create an API key“; es schlägt `gpt-oss:20b` für Chat und `clef:27b` fürs
+Sortieren vor. Formular und Zustimmung lassen sich nicht mit Enter oder dem Primärknopf übergehen. Läuft nach „Use
+suggestion“ noch ein Download, geht die Einrichtung weiter; die Übersicht zeigt „Preparing model…“.
 
-Eine Gruppe mit einer Zeile je Komponente: Symbol, Name, darunter woher die Daten kommen, rechts der
-Schalter (keine Karten: Einstellungsseiten bestehen aus Gruppen, Design-Skill Abschnitt 5):
+## Was weggefallen ist
 
-| Komponente | Vorbelegung | Untertitel (Beispiel) |
-|---|---|---|
-| Calendar | an, wenn Nextcloud Kalender hat | „From Nextcloud and other CalDAV calendars“ |
-| Tasks | an, wenn Nextcloud Aufgabenlisten hat | „From Nextcloud, CalDAV and GitHub issues“ |
-| Mail | aus | „IMAP accounts, or take them over from TorroMail“ |
-| Inbox | an | „Notifications, mentions and reviews in one place“ |
-| Assistant | aus | „Chat with a local or cloud AI“ |
-| Workspaces | an mit Tiling-Manager, sonst aus | „Save and restore window layouts (Hyprland found)“ |
-
-Was „aus“ bedeutet, siehe [Komponenten an und aus](#komponenten-an-und-aus).
-
-### 4 Calendar
-
-- **Gruppe „Nextcloud · anna@…“** (nur mit Nextcloud-Konto, das Kalender hat): je Kalender Punkt in
-  seiner Farbe, Name, „Read-only“ wo zutreffend, Schalter. Fußsatz: „Hidden calendars stay on the
-  server. Change this later under Accounts.“
-- **Gruppe „Other calendars“:** schon verbundene CalDAV-Konten mit ihren Kalendern, darunter
-  „Add a CalDAV calendar“. Das öffnet im Schritt den CalDAV-Weg: Anbieter wählen (mailbox.org, Posteo,
-  Fastmail, iCloud, „Other CalDAV server“), Adresse bzw. E-Mail, Passwort (App-Passwort-Hinweis, wo der
-  Anbieter es verlangt), „Connect“. Danach erscheinen seine Kalender in derselben Liste.
-- Ohne Nextcloud und ohne Konto: leere Gruppe mit einem Satz und „Add a CalDAV calendar“ als Zeile.
-- Später als weitere Zeilen, kein Umbau: Kalender abonnieren (ICS-Link), Google, Microsoft 365.
-
-### 5 Tasks
-
-Wie Kalender: Nextcloud-Listen mit Schalter, weitere CalDAV-Listen (oft dasselbe Konto wie in Schritt 4,
-dann schon da), dazu **GitHub** („Show issues and pull requests as lists“) mit den zwei bekannten Wegen
-(GitHub CLI übernehmen oder Token einfügen).
-
-### 6 Mail
-
-Oben „Use accounts from TorroMail?“, falls es welche gibt (vorhanden, M7.4). Darunter
-„Add mail account“ mit dem vorhandenen Weg (Adresse → Anbieter finden → Passwort → Dienste). Bietet der
-Anbieter auch Kalender an, sagt der Schritt es und hängt sie an Schritt 4 („2 calendars added“).
-
-### 7 Inbox
-
-Die Quellen als Liste mit Schalter, vorbelegt nach dem, was schon verbunden ist: Nextcloud
-Notifications, Nextcloud Talk, GitHub (Reviews, Erwähnungen), Mail. Dazu „Subscribe to ntfy topics“
-(vorhandener Weg). Ein Satz zur Ruhe: „Quiet during busy events“ als Schalter.
-
-### 8 AI
-
-Zwei Gruppen, dann die Verwendung:
-
-- **On this computer:** beim Öffnen sucht der Kern Ollama, LM Studio und Strata. Gefundene mit Zahl der
-  Modelle und „Connect“ (ohne Schlüssel), andere grau „Not running“. Dazu „Other local server“
-  (vLLM, llama.cpp, LocalAI: Adresse).
-- **Cloud:** eine Zeile je Anbieter mit Name, Sitz und „Add key“. Ein Klick klappt in der Zeile ein
-  maskiertes Feld mit Link zur Schlüsselseite des Anbieters auf; „Connect“ prüft den Schlüssel, indem es
-  die Modelle holt. Reihenfolge nach Open First: offene Modelle, dann Anbieter.
-- **Use for:** sobald ein Konto da ist: „Assistant“ mit Konto und Modell (Auswahl aus der Modellliste),
-  später die vorgeschlagene Zuordnung je Funktion aus [ki.md](ki.md) mit einem Klick.
-
-Ein Satz unter der Cloud-Gruppe: „Cloud providers receive what you send them. Mail goes to local
-models only unless you change it.“
-
-#### Anbieter-Katalog
-
-| Gruppe | Anbieter | Protokoll | Sitz | Hinweis |
-|---|---|---|---|---|
-| Lokal | Ollama, LM Studio | OpenAI-kompatibel | dieser Rechner | gibt es (KI.1a) |
-| Lokal | [Strata](https://github.com/Niko1221/Strata) (`http://127.0.0.1:8080/v1`) | OpenAI-kompatibel | dieser Rechner | offene Gewichte; erkannt an `/health` (#322) |
-| Lokal | Other local server (vLLM, llama.cpp, LocalAI) | OpenAI-kompatibel | dieser Rechner/Netz | gibt es als `openai_compatible` |
-| Zum Sortieren von Mail | Jev (TypeSafe, `https://api.typesafe.ai/v1`) | SystemOne | USA | nur Entscheiden, kein Chat; ein festes Modell, Schlüssel (#323) |
-| Selbst gehostet | Nextcloud Assistant | Nextcloud TaskProcessing | eigener Server | später, ohne neuen Schlüssel ([ki.md](ki.md), offen 3) |
-| Offene Modelle | OpenRouter | OpenAI-kompatibel | USA | gibt es |
-| Anbieter | Anthropic (Claude) | **Anthropic** | USA | gibt es (KI.1b–KI.1d) |
-| Anbieter | OpenAI | OpenAI | USA | |
-| Anbieter | Google Gemini | OpenAI-kompatibel | USA | |
-| Anbieter | Mistral | OpenAI-kompatibel | EU | |
-| Anbieter | xAI (Grok), Groq | OpenAI-kompatibel | USA | optional |
-| Anbieter China | DeepSeek | OpenAI-kompatibel | China | offene Gewichte |
-| Anbieter China | Qwen (Alibaba Cloud Model Studio) | OpenAI-kompatibel | China/Singapur | offene Gewichte, internationaler Endpunkt |
-| Anbieter China | Kimi (Moonshot AI) | OpenAI-kompatibel | China | offene Gewichte |
-| Anbieter China | GLM (Z.ai / Zhipu) | OpenAI-kompatibel | China | offene Gewichte |
-| Anbieter China | MiniMax | OpenAI-kompatibel | China | |
-| Sonstige | Other OpenAI-compatible server | OpenAI-kompatibel | – | gibt es |
-
-- Je Anbieter stehen im Katalog des Kerns: Name, Standard-Adresse, Protokoll, Link zur Schlüsselseite,
-  Sitz, ob offene Gewichte. Die Adressen werden bei der Umsetzung geprüft; bei den chinesischen
-  Anbietern ist der **internationale** Endpunkt Standard, der chinesische eine Option unter „Advanced“.
-- Der Sitz steht neutral in der Zeile („Cloud · EU“, „Cloud · China“), kein Warnbanner. Die Datenregel
-  je Quelle ([ki.md](ki.md)) gilt für alle Cloud-Anbieter gleich.
-- Bis auf Anthropic sprechen alle das OpenAI-Protokoll; ein neuer Anbieter ist ein Eintrag im Katalog,
-  kein neuer Code.
-
-### 9 Web search
-
-Seit Issue #305 (Konzept: „Werkzeug Web“ in [assistent.md](assistent.md)). Nur, wenn die Komponente Assistent an
-ist. Dieselbe Liste wie in Steuerzentrale › MCP servers › Built-in tools › Search providers: je Anbieter ein Schalter, darunter wohin die
-Suchwörter gehen („Search words go to duckduckgo.com · USA“), ein Link „Terms“ und bei DuckDuckGo und Brave der
-Hinweis; bei Brave, Tavily, Exa und Mojeek ein maskiertes Feld für den Schlüssel, bei SearXNG das Feld für die
-Adresse. Vorbelegt ist nichts (Aus). Wer einen Anbieter einschaltet, schaltet das Werkzeug `web` ein; der Haken
-„Let the assistant use it“ (vorbelegt an) gibt dem Assistenten das Leserecht für `web`. Ein Satz darunter: „The
-assistant asks once in each conversation before it searches.“ Überspringen lässt die Websuche aus.
-
-Mit dem Schritt steigt `Setup::VERSION` auf 2; wer die Einrichtung schon abgeschlossen hat, sieht in der Overview
-„New in setup“.
-
-### 10 Documents
-
-Seit Issue #303 (Konzept: „Dokumente mit ArtCraft“ in [erweiterungen.md](erweiterungen.md)). Nur, wenn die Komponente
-Assistent an ist. Titel „Work with your documents“, eine Einleitung, dann die Gruppe „ArtCraft apps“ mit je einer
-Zeile für WordCraft, DeckCraft, GridCraft und PdfCraft aus dem Katalog: Kachel mit Symbol, Name mit „Experimental“,
-darunter Art und Beispiele, rechts der Zustand – „Set up“ (als MCP-Server installiert), „Installed“ (Programm
-gefunden) oder „Get <App>“, das die Releases der App öffnet. Fußzeile: quelloffen und jung, je ein gewählter Ordner,
-Änderungen als neue Dateien, was eine Datei ersetzen könnte, fragt vorher, und was der Assistent liest, geht an das
-gewählte KI-Modell. Darunter: „Installed one? Set it up later in Settings › MCP servers › Catalog.“ Der Schritt stellt
-nur vor und speichert nichts; eingerichtet wird unter MCP servers (Ordner wählen geht nur mit freigegebenen Ordnern).
-Lädt der Katalog nicht, steht ein Satz da; „Continue“ geht immer.
-
-Mit dem Schritt steigt `Setup::VERSION` auf 3; wer die Einrichtung schon abgeschlossen hat, sieht „New in setup“.
-
-### 11 Done
-
-Eine Zeile je gewählter Komponente mit Zustand und Kurzinfo („Calendar · 3 calendars“,
-„Mail · Skipped“, „AI · Ollama, qwen3:8b“), daneben „Open“ für die App. Primär „Finish“ setzt den Stand
-auf `done` und öffnet die Overview. Ein Satz: „Change any of this later in Settings.“
-API und MCP gehören nicht in die Einrichtung; die Fertig-Seite verlinkt MCP leise („Connect an agent…“).
+Die Schritte Components, Calendar, Tasks, Inbox und Web search (#326). Welche Apps sichtbar sind, leitet „Finish“
+aus den Verbindungen ab: Mail ⇔ Mail-Konto, Calendar ⇔ eine Sammlung mit Terminen, Tasks ⇔ eine Aufgabenliste oder
+GitHub, Assistant ⇔ ein KI-Konto; Notification Hub und Workspaces bleiben, wie sie sind. Beim ersten Durchlauf
+(Stand `pending`, `setup.version` 0) blendet „Finish“ Apps ohne Verbindung aus und mit Verbindung ein; sonst (nach
+„Run setup again“ oder nach „Set up later“, das die Version schon festhält) blendet es nur ein, nie aus, weil sonst
+eine bewusste Wahl unter Apps verloren ginge. Ein Nextcloud-Konto, dessen Dienste noch gelesen werden, ein
+CalDAV-Konto und ein Mail-Konto mit CalDAV-Adresse zählen vor dem ersten Abgleich schon für Kalender und Aufgaben. Kalender, Listen und Eingangsquellen sind
+standardmäßig an; die Websuche bleibt aus und wird nur noch unter MCP servers › Built-in tools eingeschaltet. Alles
+bleibt in den Einstellungen änderbar.
 
 ## Komponenten an und aus
 
-Neu: eine Einstellung je Komponente (`calendar`, `tasks`, `mail`, `inbox`, `assistant`, `workspaces`),
-Standard **an**, damit bestehende Installationen nichts merken.
-
-Eine abgeschaltete Komponente
-- erscheint nicht im Tray-Menü und in der Overview (einen App-Umschalter im Fenster gibt es seit #530 nicht mehr); der Abschnitt Apps zeigt sie mit
-  der Pille „Turned off“ (im Menü „…“ der Karte schaltet man sie mit „Turn on“ wieder ein; Workspaces unter
-  General › Startup),
-- verursacht keine Hintergrundarbeit, die nur ihr dient (Mail-Abruf, Abfragen von Eingangsquellen,
-  Spracherkennung des Assistenten),
-- behält ihre Konten und Daten. Kalender und Aufgaben teilen sich Konten; ein Konto wird erst entfernt,
-  wenn der Nutzer es unter Accounts entfernt.
-
-Die Requests einer abgeschalteten Komponente antworten weiter (Entscheidung 1).
+Eine Einstellung je Komponente (`calendar`, `tasks`, `mail`, `inbox`, `assistant`, `workspaces`), Standard **an**.
+Eine abgeschaltete Komponente erscheint nicht im Tray-Menü und in der Overview (Apps zeigt sie mit „Turned off“,
+„Turn on“ im Menü „…“; Workspaces unter General › Startup), verursacht keine Hintergrundarbeit, die nur ihr dient,
+und behält ihre Konten und Daten. Ihre Requests antworten weiter.
 
 ## API und MCP
 
-Die Einrichtung selbst bekommt **keinen** eigenen Befehl: Sie ist eine Oberfläche über vorhandene
-Befehle. Neu sind nur zwei Einstellungen und ein Feld.
+Die Einrichtung bekommt **keinen** eigenen Befehl: Sie ist eine Oberfläche über vorhandene Requests.
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
-| Stand der Einrichtung lesen | Start der Steuerzentrale, Overview | neues Feld `Settings::setup` über `settings.get_settings` · Read | `settings_get_settings` (gibt es) |
-| Einrichtung abschließen / verschieben / neu starten | „Finish“, „Set up later“, General › „Run setup again“ | `Request::SetSetting { key: Setup }` · `settings.set_setting` · Admin | `settings_set_setting` (gibt es, Admin → Freigabe) |
-| Komponente an/aus | Schritt 3, Apps › Menü „…“ (Workspaces: General › Startup) | `Request::SetSetting { key: Component, value: {"component": "mail", "enabled": false} }` (Form wie `ListOrder`) · Admin | `settings_set_setting` |
-| Dienste eines Nextcloud-Kontos | Schritt 2, 4, 5, 7; Kontoseite | neues optionales Feld `AccountInfo::services` über `accounts.list_accounts` · Read | `accounts_list_accounts` (gibt es) |
-| Nextcloud verbinden | Schritt 2 | `ConnectNextcloud` · Admin | `accounts_connect_nextcloud` (gibt es; Anmeldung im Browser macht der Mensch) |
-| CalDAV, Mail, GitHub-Token, ntfy, KI verbinden | Schritte 4–8 | vorhandene `Connect*` · Admin, nur App-Schlüssel | **Never** (Punkt 5: Geheimnisse nur über die Oberfläche) |
-| GitHub per CLI | Schritt 5 | `ConnectGithub` · Admin | `accounts_connect_github` (gibt es) |
-| Kalender/Listen zeigen | Schritte 4, 5 | `SetCollectionShown` · Admin | `settings_set_collection_shown` (gibt es) |
-| Eingangsquellen | Schritt 7 | `inbox.list_sources`, `inbox.mute_source` | `inbox_list_sources`, `inbox_mute_source` (gibt es) |
-| Lokale KI finden, Modelle | Schritt 8 | `FindAiServers`, `AiModels` · Read | `ai_find_local_servers`, `ai_list_models` (gibt es) |
-| Modell des Assistenten | Schritt 8 | `SetSetting { key: AssistantDefault }` · Admin | `settings_set_setting` |
-| Websuche: Anbieter, Adresse, Schlüssel, Recht des Assistenten | Schritt 9 | `tools.list_search_providers` · Read; `SetSetting { key: SearchProvider \| SearxngAddress \| ToolEnabled }` · Admin, einschalten nur Menschen; `accounts.set_search_key` · Admin, nur App-Schlüssel; `clients.update_client` | `tools_list_search_providers`; `settings_set_setting` nur fürs Ausschalten; Schlüssel und Rechte **Never** (Punkte 2, 5) |
-| ArtCraft-Apps vorstellen | Schritt 10 | `extensions.list_catalog` · Read (gibt es); nichts Neues, der Schritt speichert nichts | `extensions_list_catalog` (gibt es) |
-| KI-Anbieter-Katalog | Schritt 8, Accounts › Add › AI | statisch in `torro_core::ai` (keine Daten, nur Beschreibung); Agenten brauchen ihn nicht, weil sie keine KI-Konten verbinden | – |
+| Stand der Einrichtung | Start, Overview | `settings.get_settings` (`setup`) · Read | `settings_get_settings` |
+| Abschließen, verschieben, neu starten | „Finish“, „Set up later“, „Run setup again“ | `settings.set_setting` (`setup`) · Admin | `settings_set_setting` |
+| Apps aus den Verbindungen | „Finish“ | `settings.set_setting` (`component`, ein und aus) · Admin | `settings_set_setting` |
+| Sprache | Willkommen | `settings.set_setting` (`language`) · Admin | `settings_set_setting` |
+| Mail-Anbieter finden | Punkt 1 | `accounts.discover_services` · Read | `accounts_discover_services` |
+| Mail verbinden, aus TorroMail übernehmen | Punkt 1, Dialog | `accounts.connect_mail`, `accounts.import_torromail_account` · Admin, nur App-Schlüssel; `accounts.list_torromail_accounts` · Read | **Never** (Passwort nur in der Oberfläche) |
+| Nextcloud verbinden | Punkt 2 | `accounts.connect_nextcloud` · Admin | `accounts_connect_nextcloud` (Anmeldung im Browser macht der Mensch) |
+| KI verbinden | Punkt 3 (Jev auf 3.3) | `accounts.connect_ai`, `accounts.connect_local_ai` · Admin, nur App-Schlüssel | **Never** (Datenziel und Schlüssel nur durch einen Menschen, auch lokal) |
+| Vorschlag, Modelle, Plätze | Punkt 3 | `ai.recommend`, `ai.find_local_servers`, `ai.list_models`, `ai.list_pulls`, `ai.list_assignments` · Read; `ai.pull_model`, `ai.cancel_pull` · Write; `ai.set_model_enabled`, `ai.set_slot`, `ai.set_assignment` · Admin | gleichnamig (`ai_recommend`, `ai_set_slot` …) |
+| Aussehen | Punkt 4 | `settings.list_designs`, `settings.list_fonts`, `settings.list_color_schemes` · Read; `settings.set_setting` (`appearance`, `design`, `color_scheme`, `font`) · Admin | `settings_list_designs` …, `settings_set_setting` |
+| ArtCraft vorstellen | Punkt 5, Fertig | `extensions.list_catalog`, `extensions.list_extensions` · Read; speichert nichts | `extensions_list_catalog`, `extensions_list_extensions` |
+| Apps öffnen | Fertig („Open …“) | `apps.open_app` · Write | `apps_open_app` |
 
 ## Entscheidungen
 
-Entschieden am 2026-10-14 (Vorschläge übernommen):
+Bestätigt mit der Annahme des Plans zu #326 (2026-11-10):
 
-1. **Komponente aus** betrifft Sichtbarkeit und Hintergrundarbeit. Die Requests der Komponente
-   antworten weiter, weil die Daten noch da sind.
-2. **`AiProvider` bekommt je Anbieter eine Variante** (OpenAI, Gemini, Mistral, DeepSeek, Qwen, Kimi,
-   GLM, MiniMax; Anthropic mit KI.1b). Neue Enum-Werte sind freigegeben (W.3).
-3. **Chinesische Anbieter:** internationale Endpunkte als Standard, China-Endpunkte unter „Advanced“.
-4. **Workspaces:** die Einrichtung zeigt nur, ob ein Tiling-Manager gefunden wurde. Die Wahl zwischen
-   Tiling- und Fenster-Modus kommt mit [modes.md](modes.md).
-5. **Kalender-Abos (ICS), Google und Microsoft** kommen später als weitere Zeilen, nicht in die erste
-   Version.
+1. ChatGPT-Anmeldung (#324) und Claude Code/Codex (#609) kommen mit eigenen Plänen; bis dahin nur der API-Schlüssel.
+2. Punkt 2 heißt „Cloud“, Aussehen kommt vor Dokumente.
+3. Dokumente richtet nichts ein, sondern verweist auf Settings › MCP servers.
+4. Aussehen nutzt die Bausteine von Settings › Appearance mit der Vorschau des Mail-Fensters.
+5. Die Fertig-Seite bleibt; „Finish“ schließt dort ab.
+6. „Run setup again“ zeigt die bisherige Wahl der Modelle; ein abweichender Vorschlag nur auf Klick.
+7. Mail wird auf der Seite verbunden, derselbe Weg wie Accounts › Add; die Übernahme aus TorroMail bleibt ein Dialog.
+8. „Finish“ leitet die sichtbaren Apps aus den Verbindungen ab, beim ersten Durchlauf auch ausblendend.
+
+Ältere Entscheidungen (2026-10-14) gelten weiter: Komponente aus betrifft Sichtbarkeit und Hintergrundarbeit;
+`AiProvider` hat je Anbieter eine Variante; chinesische Anbieter mit internationalen Endpunkten als Standard.

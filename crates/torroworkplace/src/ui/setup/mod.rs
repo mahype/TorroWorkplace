@@ -1,366 +1,265 @@
-//! The first-run setup (task W.4, concept `docs/einrichtung.md`): a mode of the control centre
-//! that leads once through what the suite needs – Nextcloud first, then the components a person
-//! wants, then each chosen component on its own, AI and the web search last – and ends on a summary.
+//! The first-run setup (issue #326, concept `docs/einrichtung.md`, drafts `docs/prototypes/onboarding/`): a mode
+//! of the control centre that leads once through five points – Mail and calendar, Cloud, AI, Appearance,
+//! Documents – between a welcome and a summary.
 //!
-//! `torroworkplace ui --setup [--step <step>]` opens it; `--demo --open setup-<step>` shows a step
-//! with sample data. The setup is a guided way through the requests the control centre sends
-//! anyway: nothing is stored here, and what a step connects or switches is saved at once, so
-//! closing the window halfway loses nothing.
+//! `torroworkplace ui --setup [--step <step>]` opens it; `--demo --open setup-<step>` shows a step with sample
+//! data. The setup is a guided way through the requests the control centre sends anyway: nothing is stored
+//! here, and what a step connects or switches is saved at once, so closing the window halfway loses nothing.
 //!
-//! The window is the suite's Linear frame (design skill, section 0), with the steps where the
-//! sections are:
+//! The window has no sidebar: a header with the suite's logo, "Setup", the stepper of the five points and
+//! "Set up later" (design skill, section 0; [`header`]):
 //!
-//! - **wide:** the steps in the sidebar, each with its state at the right (a check mark when
-//!   passed, "Skipped"); the current one `selected`, never red. Every step can be clicked.
-//! - **medium:** the steps as the rail of icons, the names as tooltips.
-//! - **narrow:** no list; the header has "Back", the step's name and how far it is ("4 of 8" with a
-//!   progress bar).
+//! - **wide:** the points with number and name, passed ones with a check mark, the current one in `text` and
+//!   never red; on the AI point three small bars show which of its pages is open. Every point can be clicked.
+//! - **medium:** the numbers alone, the names as tooltips.
+//! - **narrow:** "‹" back, "3/5 · AI" (on the AI point with "· 1/3") with a progress bar, and "Later".
 //!
-//! Under the header the step's page, at most [`size::form_max()`] wide, and at the bottom a fixed
-//! footer: a status or problem at the left, "Back", "Skip" and the one primary button at the
-//! right. Enter is the primary button, Escape goes back.
+//! Under the header the step's page, at most [`size::form_max()`] wide (Appearance as wide as the window, it
+//! has its preview beside the choices), and at the bottom a fixed footer: a status, a problem or a link at
+//! the left, "Back", the step's way to skip it and the one primary button at the right; narrow the buttons
+//! stand one under the other. Enter is the primary button, Escape goes back.
 //!
-//! Which steps there are follows the components that are on (`Settings::components_off`): the
-//! step of a component turned off leaves the list. Steps whose pages come with later tasks
-//! (W.5–W.8) are not listed yet ([`Step::built`]).
+//! The AI point has up to three pages ([`AiPage`]): Connect with "Our suggestion for this PC", whose "Use
+//! suggestion" prepares both models and goes on to Appearance at once (the download goes on meanwhile);
+//! "Choose myself" leads through Chat and Sorting.
 //!
-//! The step "Web search" (task WEB.7, `docs/einrichtung.md` step 9) shows the view of Assistant › Settings › Tools
-//! (`torro_settings_ui::assistant::web`): a provider's switch is saved at once, the first one switched on also
-//! switches the tool `web` on; "Let the assistant use it" gives the assistant's client read access to `web` with
-//! "Continue" ([`with_web`]). Only a person does this – the control centre holds the app key.
-//!
-//! The step "Documents" (issue #303, `docs/einrichtung.md` step 10) only presents the ArtCraft apps of the catalog
-//! (`extensions.list_catalog`, which the shell loads while the step shows): each with what it is for and how it stands
-//! here – set up as an MCP server, installed on this computer, or "Get <App>" with the link to its releases. It stores
-//! nothing; the apps are set up under MCP servers.
+//! "Finish" derives which apps are shown from what is connected ([`components`]): on the first run it hides
+//! Mail, Calendar, Tasks and the assistant without a connection; run again it only shows, never hides, so a
+//! choice made under Apps is kept.
 
 mod pages;
 
 pub(super) use pages::name as component_name;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, row, rule, scrollable, svg};
+use iced::widget::{button, column, container, row, rule, scrollable};
 use iced::{Alignment, Element, Fill, Theme};
 use torro_core::AppId;
-use torro_core::account::Secret;
-#[cfg(test)]
-use torro_core::ai::AiProvider;
-use torro_core::ai::{AiAssignment, AiFunction, AiModel, AiSlot};
-use torro_core::i18n::{tr, trf};
-use torro_core::settings::{Component, ComponentSwitch, Language, Settings, SetupState, ToolId};
+use torro_core::ai::{AiAssignment, AiFunction, AiModel, AiProvider, AiSlot};
+use torro_core::i18n::tr;
+use torro_core::settings::{Component, ComponentSwitch, Language, Settings, SetupState};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, SidebarMode};
-use torro_gui::theme::{self, Appearance, palette, size, space};
-use torro_gui::widgets::{self, DROPDOWN_SEARCH, Dropdown, DropdownEvent, Trail};
+use torro_gui::shell;
+use torro_gui::theme::{self, palette, size, space};
+use torro_gui::widgets::{self, DROPDOWN_SEARCH, Dropdown, DropdownEvent, TileFace, TileSize};
 use torro_gui::{style, typo};
-use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, Level, Rights, Selection};
-use torro_ipc::web::{SearchProviderId, SearchProviderInfo};
-use torro_ipc::{ClientInfo, Request, Response, SettingKey};
-use torro_settings_ui::assistant::web;
+use torro_ipc::{Request, Response, SettingKey};
+use torro_settings_ui::accounts::ai_setup;
+use torro_settings_ui::suite;
 
 use super::accounts::act;
-use super::connect::caldav::{self, CalDavSignIn};
-use super::connect::github::{self, GithubSignIn};
 use super::connect::nextcloud::{self, Ended, NextcloudSignIn};
-use super::{Action, Data, page_margin, wizard};
-use torro_inbox::SourceRef;
-use torro_mail::Notify;
+use super::{Action, Data, Section, page_margin, wizard};
 
-/// A step of the setup, in the order it is walked.
+/// A step of the setup, in the order it is walked: the welcome, the five points, the summary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Step {
     Welcome,
-    Nextcloud,
-    Components,
-    Calendar,
-    Tasks,
     Mail,
-    Inbox,
+    Cloud,
     Ai,
-    Web,
+    Appearance,
     Documents,
     Done,
 }
 
+/// The pages of the point AI (issue #326): Connect always, Chat and Sorting only through "Choose myself".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AiPage {
+    #[default]
+    Connect,
+    Chat,
+    Sort,
+}
+
+impl AiPage {
+    /// Where the page stands among the three, from 1.
+    fn at(self) -> usize {
+        match self {
+            AiPage::Connect => 1,
+            AiPage::Chat => 2,
+            AiPage::Sort => 3,
+        }
+    }
+}
+
 impl Step {
-    pub const ALL: [Step; 11] = [
-        Step::Welcome,
-        Step::Nextcloud,
-        Step::Components,
-        Step::Calendar,
-        Step::Tasks,
-        Step::Mail,
-        Step::Inbox,
-        Step::Ai,
-        Step::Web,
-        Step::Documents,
-        Step::Done,
-    ];
+    pub const ALL: [Step; 7] =
+        [Step::Welcome, Step::Mail, Step::Cloud, Step::Ai, Step::Appearance, Step::Documents, Step::Done];
+
+    /// The five points of the stepper, numbered from 1.
+    pub const POINTS: [Step; 5] = [Step::Mail, Step::Cloud, Step::Ai, Step::Appearance, Step::Documents];
 
     /// The word for `--step` and `--open setup-<step>`.
     pub fn arg(self) -> &'static str {
         match self {
             Step::Welcome => "welcome",
-            Step::Nextcloud => "nextcloud",
-            Step::Components => "components",
-            Step::Calendar => "calendar",
-            Step::Tasks => "tasks",
             Step::Mail => "mail",
-            Step::Inbox => "inbox",
+            Step::Cloud => "cloud",
             Step::Ai => "ai",
-            Step::Web => "web",
+            Step::Appearance => "appearance",
             Step::Documents => "documents",
             Step::Done => "done",
         }
     }
 
-    /// The step named `arg`, if there is one and its page is built.
+    /// The step named `arg`, if there is one. The words of the steps before issue #326 lead to the point
+    /// that holds them now, so an older caller (`--step calendar`) still opens the setup.
     pub fn from_arg(arg: &str) -> Option<Step> {
-        Step::ALL.into_iter().filter(|step| step.built()).find(|step| step.arg() == arg)
+        let step = match arg {
+            "nextcloud" => Step::Cloud,
+            "calendar" | "tasks" | "inbox" => Step::Mail,
+            "components" => Step::Welcome,
+            "web" => Step::Ai,
+            word => return Step::ALL.into_iter().find(|step| step.arg() == word),
+        };
+        Some(step)
     }
 
-    /// The words `--step` takes: the steps whose pages are built.
+    /// The words `--step` takes.
     pub fn args() -> Vec<&'static str> {
-        Step::ALL.into_iter().filter(|step| step.built()).map(Step::arg).collect()
+        Step::ALL.into_iter().map(Step::arg).collect()
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Step::Welcome => tr("Welcome"),
-            Step::Nextcloud => "Nextcloud",
-            Step::Components => tr("Components"),
-            Step::Calendar => tr("Calendar"),
-            Step::Tasks => tr("Tasks"),
-            Step::Mail => tr("Mail"),
-            Step::Inbox => tr("Notification Hub"),
+            Step::Mail => tr("Mail and calendar"),
+            Step::Cloud => tr("Cloud"),
             Step::Ai => tr("AI"),
-            Step::Web => tr("Web search"),
+            Step::Appearance => tr("Appearance"),
             Step::Documents => tr("Documents"),
             Step::Done => tr("All set"),
         }
     }
 
-    fn icon(self) -> Icon {
-        match self {
-            // Where the walk starts.
-            Step::Welcome => Icon::Flag,
-            Step::Nextcloud => Icon::Cloud,
-            Step::Components => Icon::LayoutGrid,
-            Step::Calendar => Icon::Calendar,
-            Step::Tasks => Icon::ListChecks,
-            Step::Mail => Icon::Mail,
-            Step::Inbox => Icon::Inbox,
-            Step::Ai => Icon::Sparkles,
-            Step::Web => Icon::Globe,
-            Step::Documents => Icon::FileText,
-            Step::Done => Icon::CircleCheck,
-        }
+    /// The point's number in the stepper (from 1); `None` for the welcome and the summary.
+    fn number(self) -> Option<usize> {
+        Step::POINTS.iter().position(|point| *point == self).map(|index| index + 1)
     }
-
-    /// The component whose step this is; its step is only walked while it is on.
-    fn component(self) -> Option<Component> {
-        match self {
-            Step::Calendar => Some(Component::Calendar),
-            Step::Tasks => Some(Component::Tasks),
-            Step::Mail => Some(Component::Mail),
-            Step::Inbox => Some(Component::Inbox),
-            // The web search is a tool of the assistant; so are the documents' apps, for it and its agents.
-            Step::Web | Step::Documents => Some(Component::Assistant),
-            _ => None,
-        }
-    }
-
-    /// Whether the step's page exists yet: W.4 built Welcome, Components and Done, W.5 Nextcloud,
-    /// W.6 Calendar and Tasks, W.7 Mail and Inbox, W.8 the AI, WEB.7 the web search: all of them now. A step that is not
-    /// built is not listed, so the setup never shows an empty page.
-    fn built(self) -> bool {
-        true
-    }
-}
-
-/// The steps that are walked with the components in `off` turned off, in order.
-pub fn steps(off: &BTreeSet<Component>) -> Vec<Step> {
-    Step::ALL
-        .into_iter()
-        .filter(|step| step.built() && step.component().is_none_or(|component| !off.contains(&component)))
-        .collect()
 }
 
 /// The setup while it is open.
 #[derive(Debug)]
 pub struct State {
-    pub(super) ai_setup: torro_settings_ui::accounts::ai_setup::State,
+    pub(super) ai_setup: ai_setup::State,
     step: Step,
-    /// The furthest step reached; those before it count as passed.
-    reached: Step,
-    /// Steps left with "Skip"; going on from one of them with the primary button takes it out.
+    /// The page of the point AI.
+    ai_page: AiPage,
+    /// The steps shown in this setup; a point shown and left counts as passed unless it was skipped.
+    visited: BTreeSet<Step>,
+    /// Steps left with their way to skip; going on from one of them with the primary button takes it out.
     skipped: BTreeSet<Step>,
-    /// The choices of this setup, shown at once. The settings are only reloaded after the request,
-    /// and the demo stores nothing, so the page keeps what was chosen itself.
+    /// The language chosen here, shown at once. The settings are only reloaded after the request, and the
+    /// demo stores nothing, so the page keeps what was chosen itself.
     language: Language,
-    appearance: Appearance,
-    off: BTreeSet<Component>,
-    /// A choice was made here: from then on the page's choices count, not the reloaded settings.
+    /// A choice was made here: from then on the page's choice counts, not the reloaded settings.
     touched: bool,
-    /// The Nextcloud step (task W.5): the address and the sign-in while it runs.
+    /// The point Cloud: the address and the Nextcloud sign-in while it runs.
     nextcloud: NextcloudSignIn,
-    /// The Nextcloud step shows the address form although an account exists ("Add another
-    /// Nextcloud").
+    /// The point Cloud shows the address form although an account exists ("Add another Nextcloud").
     adding: bool,
     /// The Nextcloud account signed in to in this setup; its services are shown.
     signed_in: Option<String>,
     /// What went wrong on the current step, for the footer: the core's answer or the shell's error.
     error: Option<String>,
-    /// Calendars and task lists switched in this setup, by id (task W.6): shown at once, while the
-    /// settings follow with the next reload (and never in the demo).
-    shown: BTreeMap<String, bool>,
-    /// The CalDAV form of the calendar and tasks steps, while it is open.
-    caldav: Option<CalDavSignIn>,
-    /// The account the CalDAV form connected last, for the footer.
-    connected: Option<String>,
-    /// GitHub's sign-in on the tasks step: the token and the check.
-    github: GithubSignIn,
-    /// The token field is open.
-    github_token: bool,
-    /// The GitHub login signed in to in this setup.
-    github_login: Option<String>,
-    /// The add-account dialog over the setup (task W.7): the mail path, TorroMail's accounts or
-    /// ntfy, exactly as the groups of Accounts open it (task S.30).
+    /// What the primary button waits for, said once it was pressed too early; gone with the next message.
+    missing: Option<&'static str>,
+    /// The mail path on the point Mail and calendar (issue #326): the same path as Accounts › Add, shown
+    /// on the page itself – address, password, services.
+    mail: wizard::State,
+    /// The dialog over the setup that takes accounts over from TorroMail.
     dialog: Option<wizard::State>,
-    /// Inbox sources switched in this setup, by their key: shown at once, the core follows.
-    muted: BTreeMap<String, bool>,
-    /// "Quiet during busy events" as switched here.
-    quiet: Option<bool>,
+    /// The chat model chosen on the page Chat, by account and model; sent at once.
+    chat: Option<(String, String)>,
     /// Mail sorting is recommended on; an explicit choice here overrides the stored assignment.
     sort_mail: Option<bool>,
     sort_model: Option<(String, String)>,
-    /// The question before the switch turns on what sorted last in the cloud (issue #424), while it is
-    /// open: the model's and the provider's names.
+    /// "Use the chat model" on the page Sorting: the chat model sorts, answering in a fixed form.
+    sort_by_chat: bool,
+    /// The question before sorting turns on a model elsewhere (issue #424), while it is open: the model's
+    /// and the provider's names.
     asking_cloud: Option<(String, String)>,
     /// Account/model behind the question; nothing is selected until Use.
     pending_sort: Option<(String, Option<String>, bool)>,
+    /// The question is about the chat model ("Use the chat model").
+    pending_by_chat: bool,
     confirmed_sort: Option<(String, Option<String>)>,
-    /// The engine chosen here for the assistant's new chats, by id.
-    engine: Option<String>,
-    /// The web search step (task WEB.7): a key or SearXNG's address being typed, and the address check.
-    web: web::State,
-    /// Search providers switched in this setup and not yet in the core's list: shown at once, until the core's list
-    /// shows them (never in the demo) or a refusal comes back.
-    switched: BTreeMap<SearchProviderId, bool>,
-    /// The providers as the web step shows them: the core's list with [`State::switched`] laid over it, renewed with
-    /// every reload ([`observe`]) and switch. `None` before the first switch: the core's list as it is.
-    providers: Option<Vec<SearchProviderInfo>>,
-    /// "Let the assistant use it" (ticked at first): "Continue" gives the assistant read access to `web`.
-    web_allowed: bool,
-    /// The assistant's rights for `web` were sent in this setup: at most once.
-    web_granted: bool,
-    /// The dropdown that is open: the decision model for mail or the assistant's account (issue #554).
+    /// The dropdown that is open: the chat model or the decision model for mail (issue #554).
     menus: Dropdown<SetupMenu>,
 }
 
 /// A dropdown of the setup (issue #554).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SetupMenu {
-    /// "Decision model" under "Sort mail into categories".
+    /// "Model for chat" on the page Chat.
+    Chat,
+    /// "Decision model" on the page Sorting.
     SortModel,
-    /// "Assistant" under "Use for".
-    Engine,
 }
 
 impl State {
     /// The setup on `step`, with the choices as `settings` has them.
     pub fn new(step: Step, settings: &Settings) -> State {
+        let mut ai = ai_setup::State::default();
+        ai_setup::hosted(&mut ai);
         State {
+            ai_setup: ai,
             step,
-            reached: step,
+            ai_page: AiPage::Connect,
+            visited: BTreeSet::from([step]),
             skipped: BTreeSet::new(),
             language: settings.language,
-            appearance: settings.appearance,
-            off: settings.components_off.clone(),
             touched: false,
             nextcloud: NextcloudSignIn::default(),
             adding: false,
             signed_in: None,
             error: None,
-            shown: BTreeMap::new(),
-            caldav: None,
-            connected: None,
-            github: GithubSignIn::default(),
-            github_token: false,
-            github_login: None,
+            missing: None,
+            mail: wizard::mail(),
             dialog: None,
-            muted: BTreeMap::new(),
-            quiet: None,
-            ai_setup: torro_settings_ui::accounts::ai_setup::State::default(),
+            chat: None,
             sort_mail: None,
             sort_model: None,
+            sort_by_chat: false,
             asking_cloud: None,
             pending_sort: None,
+            pending_by_chat: false,
             confirmed_sort: None,
-            engine: None,
-            web: web::State::default(),
-            switched: BTreeMap::new(),
-            providers: None,
-            web_allowed: true,
-            web_granted: false,
             menus: Dropdown::default(),
         }
     }
 
-    /// Takes the choices from freshly loaded `settings` while none was made here yet: the setup
-    /// can open before the core answered the first time.
+    /// The setup on the page `page` of the point AI (the demo's `setup-ai-chat`, `setup-ai-sort`).
+    pub fn on_ai_page(mut self, page: AiPage) -> State {
+        self.step = Step::Ai;
+        self.ai_page = page;
+        self.visited.insert(Step::Ai);
+        self
+    }
+
+    /// Takes the choices from freshly loaded `settings` while none was made here yet: the setup can open
+    /// before the core answered the first time.
     pub fn loaded(&mut self, settings: &Settings) {
         if !self.touched {
             self.language = settings.language;
-            self.appearance = settings.appearance;
-            self.off = settings.components_off.clone();
         }
     }
 
-    /// A sign-in runs, or a provider's switch waits for the core's list; the shell reloads more often, so the end
-    /// is seen soon.
+    /// A sign-in runs or a model is prepared; the shell reloads more often, so the end is seen soon.
     pub fn busy(&self) -> bool {
         self.nextcloud.running()
-            || self.github.checking()
-            || self.caldav.as_ref().is_some_and(CalDavSignIn::connecting)
+            || self.mail.busy()
             || self.dialog.as_ref().is_some_and(wizard::State::busy)
-            || web::checking(&self.web)
-            || !self.switched.is_empty()
+            || ai_working(self)
     }
 
-    /// The add-account dialog lies over the setup; keys and the footer belong to it.
+    /// The dialog lies over the setup; keys and the footer belong to it.
     pub fn dialog_open(&self) -> bool {
         self.dialog.is_some()
-    }
-
-    /// Whether the inbox source `source` is muted: as switched here, else as it is stored. A mail
-    /// account keeps that in its own `notify` (task S.21, `docs/settings.md` › Was wohin gehört),
-    /// so its switch reads from there; every other source from `inbox.list_sources`. An old
-    /// `inbox.mute_source` rule still wins over `notify` – it would keep the source quiet whatever
-    /// `notify` says –, so the switch is off while either of them is.
-    fn is_muted(&self, data: &Data, source: &SourceRef) -> bool {
-        if let Some(switched) = self.muted.get(&source_key(source)) {
-            return *switched;
-        }
-        let muted = data.sources.iter().any(|info| info.source == *source && info.muted);
-        if source.kind != torro_inbox::SourceKind::Mail {
-            return muted;
-        }
-        muted || mail_notify(data, source) == Notify::Off
-    }
-
-    /// Whether the apps show the calendar or task list `id`: as switched here, else as stored.
-    fn is_shown(&self, data: &Data, id: &str) -> bool {
-        self.shown.get(id).copied().unwrap_or_else(|| super::accounts::is_shown(&data.settings, id))
-    }
-
-    /// A form of the calendar or tasks step is open, or its check runs: the footer's buttons belong
-    /// to it.
-    fn in_form(&self) -> bool {
-        self.caldav.is_some() || self.github_token || self.github.checking()
     }
 
     /// The step shown.
@@ -368,99 +267,90 @@ impl State {
         self.step
     }
 
-    /// The steps walked now.
-    fn steps(&self) -> Vec<Step> {
-        steps(&self.off)
-    }
-
-    /// The position of the current step (from 1) and the number of steps.
-    fn position(&self) -> (usize, usize) {
-        let steps = self.steps();
-        let at = steps.iter().position(|step| *step == self.step).map_or(1, |index| index + 1);
-        (at, steps.len())
+    /// Whether the shared AI page must keep running: its point is shown, or a model it prepares is still on
+    /// its way (after "Use suggestion" the setup goes on while the download runs).
+    pub fn ai_running(&self) -> bool {
+        self.step == Step::Ai || ai_working(self)
     }
 
     /// The step after (`forward`) or before the current one, if any.
     fn neighbour(&self, forward: bool) -> Option<Step> {
-        let steps = self.steps();
-        let index = steps.iter().position(|step| *step == self.step)?;
+        let index = Step::ALL.iter().position(|step| *step == self.step)?;
         match forward {
-            true => steps.get(index + 1).copied(),
-            false => index.checked_sub(1).and_then(|before| steps.get(before).copied()),
+            true => Step::ALL.get(index + 1).copied(),
+            false => index.checked_sub(1).and_then(|before| Step::ALL.get(before).copied()),
         }
     }
 
-    /// How a step stands in the list.
-    fn mark(&self, step: Step) -> Mark {
-        if self.skipped.contains(&step) {
-            Mark::Skipped
-        } else if step < self.reached {
-            Mark::Passed
-        } else {
-            Mark::Open
-        }
+    /// Whether the point `step` is passed: shown in this setup, not skipped, and not the one shown now.
+    fn passed(&self, step: Step) -> bool {
+        self.visited.contains(&step) && !self.skipped.contains(&step) && step != self.step
     }
 
     fn go(&mut self, step: Step) {
-        if self.step == Step::Ai && step != Step::Ai {
-            torro_settings_ui::accounts::ai_setup::leave(&mut self.ai_setup);
+        // A model on its way keeps the AI page's work running ([`State::ai_running`]).
+        if self.step == Step::Ai && step != Step::Ai && !ai_working(self) {
+            ai_setup::leave(&mut self.ai_setup);
+        }
+        if step != Step::Ai {
+            self.ai_page = AiPage::Connect;
         }
         self.step = step;
-        self.reached = self.reached.max(step);
+        self.visited.insert(step);
         self.error = None;
-        self.close_forms();
-        // A key typed and not saved goes with the step; it is never kept longer than its field shows it.
-        self.web = web::State::default();
+        self.menus.close();
     }
 
-    /// Closes the forms of the calendar and tasks steps; a check that runs is no longer waited for.
-    fn close_forms(&mut self) {
-        self.caldav = None;
-        self.github_token = false;
-        self.github.stop();
+    /// On to the next step, the current one no longer counted as skipped.
+    fn forward(&mut self) {
+        self.skipped.remove(&self.step);
+        if let Some(next) = self.neighbour(true) {
+            self.go(next);
+        }
     }
 
-    /// The Nextcloud step shows the address form: there is no Nextcloud account yet, or another one
-    /// is being added.
+    /// The point Cloud shows the address form: there is no Nextcloud account yet, or another one is being
+    /// added.
     fn asks_address(&self, data: &Data) -> bool {
         self.adding || nextcloud_account(self, data).is_none()
     }
+
+    /// A request of the mail path or a Nextcloud sign-in waits for the core or the browser.
+    fn waiting(&self) -> bool {
+        wizard::mail_waiting(&self.mail) || self.nextcloud.running()
+    }
+
+    /// The mail path is under way on the point Mail and calendar: something is typed and it has not ended.
+    fn mail_running(&self) -> bool {
+        !wizard::mail_untouched(&self.mail) && !wizard::mail_done(&self.mail)
+    }
 }
 
-/// The Nextcloud account the Nextcloud step shows: the one signed in to in this setup, else the
-/// first one there is.
+/// The Nextcloud account the point Cloud shows: the one signed in to in this setup, else the first one there
+/// is.
 fn nextcloud_account<'a>(state: &State, data: &'a Data) -> Option<&'a torro_ipc::AccountInfo> {
     let listed = || data.accounts.iter().filter(|account| account.kind == "nextcloud" && !account.id.is_empty());
     state.signed_in.as_deref().and_then(|id| listed().find(|account| account.id == id)).or_else(|| listed().next())
 }
 
-/// How a step stands in the list of steps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mark {
-    Open,
-    Passed,
-    Skipped,
-}
-
 #[derive(Debug, Clone)]
 pub enum Message {
-    AiSetup(torro_settings_ui::accounts::ai_setup::Message),
-    /// A step in the list was clicked.
+    AiSetup(ai_setup::Message),
+    /// A point of the stepper was clicked.
     Go(Step),
     /// The primary button or Enter: on to the next step, on the last one finish.
     Next,
     /// "Back" or Escape.
     Back,
-    /// "Skip": on to the next step, the current one marked as skipped.
+    /// The step's way to skip it ("Skip", "I don't use one", "Skip AI", "Keep the default").
     Skip,
     /// "Set up later": put the setup off and close it.
     Later,
     Language(Language),
-    Appearance(Appearance),
-    /// A component's switch or card.
-    Component(Component, bool),
-    /// "Open" of a component's app on the last step (its window class).
+    /// "Open …" of an app on the summary (its window class).
     OpenApp(&'static str),
+    /// "Open Settings" or "Connect an agent…" on the summary: finish and show that section.
+    OpenSection(Section),
     /// The Nextcloud address changed.
     ServerChanged(String),
     /// "Open the page again" while the browser signs in.
@@ -469,52 +359,41 @@ pub enum Message {
     LoginLinkEdited,
     /// "Add another Nextcloud".
     AddNextcloud,
-    /// "Cancel": stop waiting for the browser or adding another Nextcloud, or close the form of the
-    /// calendar or tasks step.
+    /// "Cancel": stop waiting for the browser or adding another Nextcloud.
     Cancel,
-    /// A calendar's or task list's switch.
-    Shown(String, bool),
-    /// "Add a CalDAV account".
-    OpenCalDav,
-    /// The CalDAV form.
-    CalDav(caldav::Message),
-    /// "Use GitHub CLI sign-in".
-    UseGithubCli,
-    /// "Paste a token".
-    PasteToken,
-    /// The token field changed. A [`Secret`], so the derived `Debug` shows no token.
-    TokenChanged(Secret),
-    /// "Create a token on GitHub".
-    OpenTokenPage,
-    /// "Add mail account": the add-account dialog on its mail path.
-    AddMail,
-    /// "Take over from TorroMail": the add-account dialog at its step TorroMail (task S.30).
+    /// The mail path on the point Mail and calendar.
+    Mail(wizard::Message),
+    /// "Add another account" once the mail path has connected one.
+    AddAnotherMail,
+    /// "Take over accounts from TorroMail": the dialog at TorroMail's accounts.
     TakeOverTorroMail,
-    /// "Subscribe to ntfy topics": the add-account dialog on its ntfy path.
-    AddNtfy,
-    /// The add-account dialog over the setup.
+    /// The dialog over the setup.
     Dialog(wizard::Message),
-    /// An inbox source's switch: `true` lets it in, `false` mutes it.
-    Source(SourceRef, bool),
-    /// "Quiet during busy events".
-    Quiet(bool),
-    /// The AI account a new chat of the assistant starts with, by engine id. Closes its dropdown.
-    Engine(String),
-    /// Enable or disable model sorting of mail in the recommended AI setup.
+    /// "Use suggestion" beside "Keep" when the suggestion differs from the models chosen.
+    UseSuggestion,
+    /// "Use" of the suggested model of one slot on the pages Chat and Sorting (it is downloaded first).
+    UseSuggested(AiSlot),
+    /// "Choose myself": the pages Chat and Sorting.
+    ChooseMyself,
+    /// A chat model on the page Chat, by account and model. Closes its dropdown.
+    ChatModel(String, String),
+    /// Enable ("on") or disable ("Rules only") model sorting of mail.
     SortMail(bool),
-    /// "Use" in the question before the switch turns on a model in the cloud (issue #424).
+    /// "Use the chat model" on the page Sorting.
+    SortByChat,
+    /// "Add key" of Jev on the page Sorting: the key form of the AI page.
+    ConnectJev,
+    /// "Use" in the question before sorting turns on a model elsewhere (issue #424).
     UseCloud,
-    /// "Cancel" in that question, a click next to it, or Escape: the switch stays off.
+    /// "Cancel" in that question, a click next to it, or Escape: the choice stays as it was.
     CancelCloud,
     /// Choose a decision model for mail from the connected AI accounts. Closes its dropdown.
     SortModel(String, String),
     /// The trigger or the menu of a dropdown of the setup (issue #554).
     Menus(DropdownEvent<SetupMenu>),
-    /// The search providers of the web step (task WEB.7): the view of Assistant › Settings › Tools.
-    Web(web::Message),
-    /// "Let the assistant use it" on the web step.
-    AllowWeb(bool),
-    /// "Get <App>" on the step Documents: the app's releases (the catalog entry's address) in the browser.
+    /// A choice on the point Appearance: the same as on Settings › Appearance, carried out by the shell.
+    Suite(suite::Message),
+    /// "Get ArtCraft" on the point Documents or the summary: its releases in the browser.
     GetApp(String),
 }
 
@@ -525,135 +404,111 @@ pub enum Outcome {
     Stay(Action),
     /// Close the setup (it was finished or put off), carry out the action and show the overview.
     Close(Action),
+    /// Close the setup, carry out the action and show the section.
+    CloseTo(Action, Section),
 }
 
 pub fn update(state: &mut State, message: Message, data: &Data) -> Outcome {
     let sorting = mail_sorting_on(state, data);
-    torro_settings_ui::accounts::ai_setup::allow_sorting(&mut state.ai_setup, sorting);
+    ai_setup::allow_sorting(&mut state.ai_setup, sorting);
     let outcome = handle(state, message, data);
     let sorting = mail_sorting_on(state, data);
-    torro_settings_ui::accounts::ai_setup::allow_sorting(&mut state.ai_setup, sorting);
-    // The AI step looks for servers on this computer the first time it is shown.
+    ai_setup::allow_sorting(&mut state.ai_setup, sorting);
+    // The AI point looks for servers on this computer the first time it is shown.
     match outcome {
-        Outcome::Stay(Action::None)
-            if state.step == Step::Ai && !torro_settings_ui::accounts::ai_setup::active(&state.ai_setup) =>
-        {
-            Outcome::Stay(super::accounts::act(torro_settings_ui::accounts::ai_setup::open(&mut state.ai_setup)))
+        Outcome::Stay(Action::None) if state.step == Step::Ai && !ai_setup::active(&state.ai_setup) => {
+            Outcome::Stay(act(ai_setup::open(&mut state.ai_setup)))
         }
         outcome => outcome,
     }
 }
 
+/// A model is on its way after "Use suggestion": downloaded, turned on or put into its slot. A question
+/// about mail that waits is not work; it stays on the page AI.
+pub(super) fn ai_working(state: &State) -> bool {
+    ai_setup::preparing(&state.ai_setup) && !ai_setup::awaiting_consent(&state.ai_setup)
+}
+
+/// Whether Enter on the page Connect belongs to the shared AI page: its connection form is open or a
+/// connection runs. A question about mail or a model on its way does not take it.
+fn ai_form_open(state: &State) -> bool {
+    ai_setup::primary(&state.ai_setup).is_some()
+        && !ai_setup::awaiting_consent(&state.ai_setup)
+        && !ai_setup::preparing(&state.ai_setup)
+}
+
 fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
     let stay = Outcome::Stay;
+    // The note of what is missing lasts until the person does something else: typing, choosing, connecting.
+    if !matches!(message, Message::Next) {
+        state.missing = None;
+    }
     // A finished sign-in is noticed before the message counts.
     observe(state, data);
     match message {
-        Message::AiSetup(message) => stay(super::accounts::act(torro_settings_ui::accounts::ai_setup::update(
-            &mut state.ai_setup,
-            message,
-            data,
-        ))),
-        Message::Go(step) => {
-            if state.steps().contains(&step) {
-                state.go(step);
+        Message::AiSetup(message) => {
+            let confirm = message == ai_setup::Message::Confirm;
+            let action = act(ai_setup::update(&mut state.ai_setup, message, data));
+            // "Use" in the question after "Use suggestion": on to Appearance as without the question.
+            if confirm && state.step == Step::Ai && state.ai_page == AiPage::Connect && ai_working(state) {
+                state.forward();
             }
+            stay(action)
+        }
+        // While a request of the mail path or a Nextcloud sign-in waits, the point stays: answers do not say
+        // which request they are for, so only the one that waits may send.
+        Message::Go(_) if state.waiting() => stay(Action::None),
+        Message::Go(step) => {
+            state.go(step);
             stay(Action::None)
         }
-        // On the Nextcloud step the primary button signs in while it asks for an address.
-        Message::Next if state.step == Step::Nextcloud && state.asks_address(data) => {
-            if !state.nextcloud.can_start() {
-                return stay(Action::None);
-            }
-            state.error = None;
-            stay(act(state.nextcloud.start(data)))
-        }
-        Message::Next if state.step == Step::Nextcloud && state.nextcloud.running() => stay(Action::None),
-        Message::Next
-            if state.step == Step::Ai && torro_settings_ui::accounts::ai_setup::primary(&state.ai_setup).is_some() =>
-        {
-            stay(super::accounts::act(torro_settings_ui::accounts::ai_setup::update(
-                &mut state.ai_setup,
-                torro_settings_ui::accounts::ai_setup::Message::Submit,
-                data,
-            )))
-        }
-        // On the calendar and tasks steps the primary button sends the open form.
-        Message::Next if state.in_form() => stay(submit_form(state)),
-        // Leaving the web step forward gives the assistant its rights for `web`, if ticked; "Skip" does not. While
-        // that hangs on a switch the core has not confirmed, the click waits ([`web_waits`]).
-        Message::Next if state.step == Step::Web && web_waits(state, data) => stay(Action::None),
-        Message::Next if state.step == Step::Ai && ai_models_wait(data) => stay(Action::None),
-        Message::Next if state.step == Step::Web => {
-            let grant = grant_web(state, data);
-            state.skipped.remove(&Step::Web);
-            if let Some(next) = state.neighbour(true) {
-                state.go(next);
-            }
-            stay(grant)
-        }
-        Message::Next if state.step == Step::Ai => {
-            if state.asking_cloud.is_some() {
-                return stay(Action::None);
-            }
-            let assignment = mail_sorting_request(state, data);
-            if let Some(request) = &assignment
-                && let Some((engine, model)) = sorting_target(request, data)
-                && needs_sort_consent(state, data, engine, model)
-            {
-                let enabled = !matches!(request, Request::SetAiAssignment { enabled: false, .. });
-                ask_sort_consent(state, data, engine.to_string(), model.map(str::to_string), enabled);
-                return stay(Action::None);
-            }
-            state.skipped.remove(&Step::Ai);
-            if let Some(next) = state.neighbour(true) {
-                state.go(next);
-            }
-            stay(assignment.map_or(Action::None, Action::Send))
-        }
-        Message::Next => match state.neighbour(true) {
-            Some(next) => {
-                state.skipped.remove(&state.step);
-                state.go(next);
-                stay(Action::None)
-            }
-            None => Outcome::Close(set_setup(SetupState::Done)),
-        },
+        Message::Next => next(state, data),
         Message::Skip => {
             state.skipped.insert(state.step);
+            if state.step == Step::Mail {
+                state.mail = wizard::mail();
+            }
             match state.neighbour(true) {
                 Some(next) => state.go(next),
-                None => return Outcome::Close(set_setup(SetupState::Done)),
+                None => return finish(data, None),
             }
             stay(Action::None)
         }
         Message::Back => {
-            if let Some(before) = state.neighbour(false) {
-                state.go(before);
+            match state.step {
+                Step::Mail if wizard::mail_back(&state.mail) => {
+                    return stay(act(wizard::update(&mut state.mail, wizard::Message::Back, data)));
+                }
+                // "Back" in the AI page's form closes the form, not the page.
+                Step::Ai if ai_form_open(state) => {
+                    return stay(act(ai_setup::update(&mut state.ai_setup, ai_setup::Message::Back, data)));
+                }
+                Step::Ai if state.ai_page == AiPage::Sort => {
+                    state.menus.close();
+                    state.ai_page = AiPage::Chat;
+                }
+                Step::Ai if state.ai_page == AiPage::Chat => {
+                    state.menus.close();
+                    state.ai_page = AiPage::Connect;
+                }
+                _ => {
+                    if let Some(before) = state.neighbour(false) {
+                        state.go(before);
+                    }
+                }
             }
             stay(Action::None)
         }
+        // Closing the setup would end a model's preparation before it is in its slot: it waits.
+        Message::Later | Message::OpenSection(_) if ai_working(state) => stay(Action::None),
         Message::Later => Outcome::Close(set_setup(SetupState::Skipped)),
         Message::Language(language) => {
             state.touched = true;
             state.language = language;
             stay(set(SettingKey::Language, serde_json::to_value(language).unwrap_or_default()))
         }
-        Message::Appearance(appearance) => {
-            state.touched = true;
-            state.appearance = appearance;
-            stay(set(SettingKey::Appearance, serde_json::to_value(appearance).unwrap_or_default()))
-        }
-        Message::Component(component, enabled) => {
-            state.touched = true;
-            match enabled {
-                true => state.off.remove(&component),
-                false => state.off.insert(component),
-            };
-            let switch = ComponentSwitch { component, enabled };
-            stay(set(SettingKey::Component, serde_json::to_value(switch).unwrap_or_default()))
-        }
         Message::OpenApp(app) => stay(Action::Send(Request::OpenApp { app: app.into(), target: None })),
+        Message::OpenSection(section) => finish(data, Some(section)),
         Message::ServerChanged(server) => {
             state.nextcloud.server = server;
             stay(Action::None)
@@ -672,50 +527,24 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
         Message::Cancel => {
             if state.nextcloud.running() {
                 state.nextcloud.stop();
-            } else if state.in_form() {
-                state.close_forms();
             } else {
                 state.adding = false;
             }
             state.error = None;
             stay(Action::None)
         }
-        Message::Shown(collection, shown) => {
-            state.shown.insert(collection.clone(), shown);
-            stay(Action::Send(Request::SetCollectionShown { collection, shown }))
+        Message::Mail(message) => stay(act(wizard::update(&mut state.mail, message, data))),
+        Message::AddAnotherMail => {
+            state.mail = wizard::mail();
+            stay(Action::None)
         }
-        Message::OpenCalDav => {
-            state.close_forms();
-            state.caldav = Some(CalDavSignIn::default());
+        Message::TakeOverTorroMail if state.waiting() => stay(Action::None),
+        Message::TakeOverTorroMail => {
+            let (dialog, action) = wizard::State::torromail();
+            state.dialog = Some(dialog);
             state.error = None;
-            stay(Action::None)
+            stay(act(action))
         }
-        Message::CalDav(message) => {
-            if let Some(form) = state.caldav.as_mut() {
-                form.update(message);
-            }
-            stay(Action::None)
-        }
-        Message::UseGithubCli if !state.github.checking() => {
-            state.close_forms();
-            state.error = None;
-            stay(act(state.github.use_cli()))
-        }
-        Message::PasteToken => {
-            state.close_forms();
-            state.github_token = true;
-            state.error = None;
-            stay(Action::None)
-        }
-        Message::TokenChanged(token) => {
-            state.github.token = token;
-            stay(Action::None)
-        }
-        Message::OpenTokenPage => stay(Action::OpenUrl(github::NEW_TOKEN_URL.to_string())),
-        Message::UseGithubCli => stay(Action::None),
-        Message::AddMail => stay(open_dialog(state, Some(wizard::Provider::Mail), data)),
-        Message::TakeOverTorroMail => stay(open_dialog(state, None, data)),
-        Message::AddNtfy => stay(open_dialog(state, Some(wizard::Provider::Ntfy), data)),
         Message::Dialog(wizard::Message::Close) => {
             state.dialog = None;
             stay(Action::None)
@@ -724,29 +553,36 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             Some(dialog) => stay(act(wizard::update(dialog, message, data))),
             None => stay(Action::None),
         },
-        Message::Source(source, on) => {
-            state.muted.insert(source_key(&source), !on);
-            stay(source_requests(&source, on, data))
+        Message::UseSuggestion => use_suggestion(state, data, true),
+        Message::UseSuggested(slot) => {
+            let replace = data.settings.ai_slots.get(slot).is_some();
+            stay(act(ai_setup::use_suggestion(&mut state.ai_setup, data, replace, Some(slot))))
         }
-        Message::Quiet(quiet) => {
-            state.quiet = Some(quiet);
-            stay(set(SettingKey::QuietWhenBusy, serde_json::Value::Bool(quiet)))
+        Message::ChooseMyself => {
+            state.menus.close();
+            state.ai_page = AiPage::Chat;
+            stay(Action::None)
+        }
+        Message::ChatModel(engine, model) => {
+            state.menus.close();
+            state.chat = Some((engine.clone(), model.clone()));
+            stay(Action::Send(Request::SetAiSlot {
+                slot: AiSlot::Chat,
+                engine: Some(engine),
+                model: Some(model),
+                effort: None,
+            }))
         }
         Message::Menus(event) => match state.menus.update(event) {
             true => stay(Action::Focus(DROPDOWN_SEARCH.into())),
             false => stay(Action::None),
         },
-        Message::Engine(engine) => {
-            state.menus.close();
-            state.engine = Some(engine.clone());
-            let default = torro_core::settings::AssistantDefault { engine, model: None, effort: None };
-            stay(set(SettingKey::AssistantDefault, torro_core::settings::AssistantDefault::to_value(Some(&default))))
-        }
         // Turning on what sorted last in the cloud asks first, as the mail settings do (issue #424).
         Message::SortMail(true) if !mail_sorting_on(state, data) && cloud_to_turn_on(state, data).is_some() => {
             state.asking_cloud = cloud_to_turn_on(state, data);
             let held = mail_sorting_in_effect(data);
             state.pending_sort = held.engine.map(|engine| (engine, held.model, true));
+            state.pending_by_chat = false;
             stay(Action::None)
         }
         Message::SortMail(on) => {
@@ -754,15 +590,38 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
             state.pending_sort = None;
             if !on {
                 state.confirmed_sort = None;
+                state.sort_by_chat = false;
             }
             state.sort_mail = Some(on);
             stay(Action::None)
+        }
+        Message::SortByChat => {
+            let Some((engine, model)) = chat_choice(state, data) else { return stay(Action::None) };
+            state.asking_cloud = None;
+            state.pending_sort = None;
+            if needs_sort_consent(state, data, &engine, Some(&model)) {
+                ask_sort_consent(state, data, engine, Some(model), true);
+                state.pending_by_chat = true;
+                return stay(Action::None);
+            }
+            state.sort_by_chat = true;
+            state.sort_mail = Some(true);
+            stay(Action::None)
+        }
+        Message::ConnectJev => {
+            stay(act(ai_setup::update(&mut state.ai_setup, ai_setup::Message::Online(AiProvider::Jev), data)))
         }
         Message::UseCloud => {
             if state.asking_cloud.take().is_some()
                 && let Some((engine, model, enabled)) = state.pending_sort.take()
             {
-                state.sort_model = model.clone().map(|model| (engine.clone(), model));
+                match std::mem::take(&mut state.pending_by_chat) {
+                    true => state.sort_by_chat = true,
+                    false => {
+                        state.sort_by_chat = false;
+                        state.sort_model = model.clone().map(|model| (engine.clone(), model));
+                    }
+                }
                 state.confirmed_sort = Some((engine, model));
                 state.sort_mail = Some(enabled);
             }
@@ -771,270 +630,214 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
         Message::CancelCloud => {
             state.asking_cloud = None;
             state.pending_sort = None;
+            state.pending_by_chat = false;
             stay(Action::None)
         }
         Message::SortModel(engine, model) => {
             state.menus.close();
             state.asking_cloud = None;
             state.pending_sort = None;
+            state.pending_by_chat = false;
             state.confirmed_sort = None;
             if needs_sort_consent(state, data, &engine, Some(&model)) {
                 ask_sort_consent(state, data, engine, Some(model), true);
                 return stay(Action::None);
             }
+            state.sort_by_chat = false;
             state.sort_model = Some((engine, model));
             state.sort_mail = Some(true);
             stay(Action::None)
         }
-        Message::Web(web::Message::Switch(id, on)) => stay(switch_provider(state, data, id, on)),
-        // The check's answer comes back to the setup alone ([`checked`]).
-        Message::Web(web::Message::CheckAddress) => {
-            let shown = state.providers.as_deref().unwrap_or(&data.search_providers);
-            stay(match web::update(&mut state.web, web::Message::CheckAddress, shown) {
-                torro_settings_ui::Action::Send(mut requests) if requests.len() == 1 => {
-                    requests.pop().map_or(Action::None, Action::CheckAddress)
-                }
-                other => from_view(other),
-            })
-        }
-        Message::Web(message) => {
-            let shown = state.providers.as_deref().unwrap_or(&data.search_providers);
-            stay(from_view(web::update(&mut state.web, message, shown)))
-        }
-        Message::AllowWeb(allowed) => {
-            state.web_allowed = allowed;
-            stay(Action::None)
-        }
+        // The shell carries these out as Settings › Appearance does.
+        Message::Suite(_) => stay(Action::None),
         Message::GetApp(url) => stay(Action::OpenUrl(url)),
     }
 }
 
-// ----- Web search (task WEB.7) ----------------------------------------------------------------------
-
-/// The search providers as the web step shows them: the core's list with the switches of this setup laid over it.
-pub(super) fn providers<'a>(state: &'a State, data: &'a Data) -> &'a [SearchProviderInfo] {
-    state.providers.as_deref().unwrap_or(&data.search_providers)
-}
-
-/// Lays the switches of this setup over the core's list of providers, so a switch shows at once – also in the
-/// demo, which stores nothing. Only until the core's list shows it: a switch the core lists as switched is
-/// dropped from [`State::switched`], and without any left the core's list is shown as it is.
-fn show_switched(state: &mut State, data: &Data) {
-    state.switched.retain(|id, on| {
-        data.search_providers.iter().find(|info| info.id == *id).is_none_or(|info| info.enabled != *on)
-    });
-    if state.switched.is_empty() {
-        state.providers = None;
-        return;
+/// The primary button or Enter on the current step.
+fn next(state: &mut State, data: &Data) -> Outcome {
+    let stay = Outcome::Stay;
+    // The primary button is never switched off: pressed while something is missing, it says what.
+    let (_, ready, busy) = pages::primary(state, data);
+    if !ready && !busy {
+        state.missing = Some(missing(state));
+        return stay(Action::None);
     }
-    let mut shown = data.search_providers.clone();
-    for info in &mut shown {
-        if let Some(on) = state.switched.get(&info.id) {
-            info.enabled = *on;
-        }
-    }
-    state.providers = Some(shown);
-}
-
-/// Whether a search can ask the provider `info`: switched on, SearXNG only with an address – the rule of
-/// `WebSearch::askable` in the core. Its `enabled` alone is the switch as shown.
-pub(super) fn askable(info: &SearchProviderInfo) -> bool {
-    info.enabled && (info.id != SearchProviderId::Searxng || info.address.is_some())
-}
-
-/// A provider's switch: `settings.set_setting search_provider` at once. The first provider switched on also
-/// switches the tool `web` on (`tool_enabled`) – the first a search can ask ([`askable`]) –, unless the settings
-/// have it on already: whoever picks a provider wants the web search (`docs/einrichtung.md`, step 9). Never
-/// anything of `clients.*`.
-fn switch_provider(state: &mut State, data: &Data, id: SearchProviderId, on: bool) -> Action {
-    let first = on && !providers(state, data).iter().any(askable);
-    state.switched.insert(id, on);
-    show_switched(state, data);
-    let switch = web::switch_request(id, on);
-    match first && !data.settings.tools.is_on(ToolId::Web) {
-        true => Action::SendAll(vec![switch, crate::ui::connections::switch_request(ToolId::Web, true)]),
-        false => Action::Send(switch),
-    }
-}
-
-/// The client of the assistant ([`ASSISTANT_CLIENT`]); `None` before the assistant first started.
-pub(super) fn assistant_client(data: &Data) -> Option<&ClientInfo> {
-    data.clients.iter().find(|client| client.kind == ASSISTANT_CLIENT)
-}
-
-/// What "Continue" on the web step sends: with "Let the assistant use it" ticked, a provider a search can ask as
-/// the core lists it ([`askable`]; not a switch on its way, which the core may refuse) and the assistant's client
-/// there, one `clients.update_client` with its rights and read access to `web` ([`with_web`]) – once in a setup,
-/// and only when that changes its rights. Otherwise nothing.
-fn grant_web(state: &mut State, data: &Data) -> Action {
-    let any_on = data.search_providers.iter().any(askable);
-    if !state.web_allowed || state.web_granted || !any_on {
-        return Action::None;
-    }
-    let Some(client) = assistant_client(data) else { return Action::None };
-    let rights = with_web(&client.rights);
-    if rights == client.rights {
-        return Action::None;
-    }
-    state.web_granted = true;
-    Action::Send(Request::UpdateClient { id: client.id.clone(), rights })
-}
-
-/// Whether "Continue" on the web step waits for the core: a switch of this setup is not in the core's list yet
-/// ([`State::switched`]) and "Continue" would give the assistant `web` – ticked, not given yet, and the assistant's
-/// client there without it. "Continue" goes by the core's list ([`grant_web`]), so a click before the reload would
-/// pass the step without the right; the button waits instead, and the shell reloads sooner ([`State::busy`]). A
-/// refusal ends the wait too ([`answered`]).
-pub(super) fn web_waits(state: &State, data: &Data) -> bool {
-    let grants = state.web_allowed
-        && !state.web_granted
-        && assistant_client(data).is_some_and(|client| with_web(&client.rights) != client.rights);
-    grants && !state.switched.is_empty()
-}
-
-/// `rights` with at least read access in the area `tools` and the tool `web` in its selection; everything else
-/// stays as it is (the level, the admin switch, every other tool and right). "All tools" does not include `web` –
-/// a person ticks it by name (`ToolId::needs_naming`) – so it becomes every tool by name, `web` among them, and PDF
-/// stays reachable: what the rights editor does when `web` is ticked under "All" (task WEB.6).
-pub(super) fn with_web(rights: &Rights) -> Rights {
-    let mut rights = rights.clone();
-    let held = rights.area(Area::Tools);
-    if held.level < Level::Read {
-        rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: held.admin });
-    }
-    let web = ToolId::Web.name().to_string();
-    rights.tools = match std::mem::replace(&mut rights.tools, Selection::All) {
-        Selection::All => Selection::Only(ToolId::ALL.into_iter().map(|tool| tool.name().to_string()).collect()),
-        Selection::Only(mut ids) => {
-            if !ids.contains(&web) {
-                ids.push(web);
+    match state.step {
+        // On the point Cloud the primary button signs in while it asks for an address.
+        Step::Cloud if state.nextcloud.running() => stay(Action::None),
+        Step::Cloud if state.asks_address(data) => {
+            if !state.nextcloud.can_start() {
+                return stay(Action::None);
             }
-            Selection::Only(ids)
+            state.error = None;
+            stay(act(state.nextcloud.start(data)))
         }
-    };
-    rights
-}
-
-/// The view's action as the shell's: one request, several sent side by side, a page to open, or nothing.
-fn from_view(action: torro_settings_ui::Action<()>) -> Action {
-    match action {
-        torro_settings_ui::Action::Send(mut requests) if requests.len() == 1 => {
-            requests.pop().map_or(Action::None, Action::Send)
+        // A mail path under way takes the primary button: find the provider, the password, connect.
+        Step::Mail if state.mail_running() => {
+            stay(act(wizard::update(&mut state.mail, wizard::Message::Continue, data)))
         }
-        torro_settings_ui::Action::Send(requests) if !requests.is_empty() => Action::SendAll(requests),
-        torro_settings_ui::Action::OpenUrl(url) => Action::OpenUrl(url),
-        _ => Action::None,
-    }
-}
-
-/// Opens the add-account dialog over the setup the way Accounts does (task S.30): at the first step
-/// of `provider` ([`wizard::State::at`]), or at TorroMail's accounts ([`wizard::State::torromail`],
-/// which asks for them as it opens).
-fn open_dialog(state: &mut State, provider: Option<wizard::Provider>, data: &Data) -> Action {
-    state.close_forms();
-    state.error = None;
-    let (dialog, action) = match provider {
-        Some(provider) => wizard::State::at(provider, data),
-        None => wizard::State::torromail(),
-    };
-    state.dialog = Some(dialog);
-    act(action)
-}
-
-/// A source's key for the switches kept here: kind and name.
-fn source_key(source: &SourceRef) -> String {
-    format!("{:?}:{}", source.kind, source.name)
-}
-
-/// What a source's switch sends. Every source but mail is `inbox.mute_source`. A mail account keeps
-/// whether its new mail shows up in its own `notify` (task S.21), so its switch sends
-/// `accounts.update_mail_account`; switched on it also lifts an older `inbox.mute_source` rule in
-/// the same step, which would otherwise keep the source quiet whatever `notify` says – exactly as
-/// Notification Hub › Sources does it.
-///
-/// Switched on it writes back what the account has stored ([`switched_on`]): an account at "Only
-/// ‚For me‘" keeps that step, because the reading side counts it as on ([`State::is_muted`]) – it
-/// would otherwise lose the choice and let every newsletter into the inbox again. Only an account
-/// stored as `Off` (or one the setup cannot see) starts at `All`. The three steps themselves are
-/// set in the Notification Hub, under its gear. Without an account for the source nothing is sent;
-/// the core would only answer `not-found`.
-fn source_requests(source: &SourceRef, on: bool, data: &Data) -> Action {
-    if source.kind != torro_inbox::SourceKind::Mail {
-        return Action::Send(Request::MuteSource { source: source.clone(), muted: !on });
-    }
-    let Some(account) = mail_account(data, source) else { return Action::None };
-    let update = Request::UpdateMailAccount {
-        id: account.id.clone(),
-        sender_name: None,
-        signature: None,
-        signature_format: None,
-        notify: Some(if on { switched_on(mail_notify(data, source)) } else { Notify::Off }),
-        services: None,
-        folder_roles: None,
-        format: None,
-    };
-    let muted = data.sources.iter().any(|info| info.source == *source && info.muted);
-    match on && muted {
-        true => Action::SendAll(vec![update, Request::MuteSource { source: source.clone(), muted: false }]),
-        false => Action::Send(update),
-    }
-}
-
-/// The mail account the source `source` stands for; `None` for a source without one.
-fn mail_account<'a>(data: &'a Data, source: &SourceRef) -> Option<&'a torro_ipc::AccountInfo> {
-    let id = format!("mail:{}", source.name);
-    data.accounts.iter().find(|account| account.id == id)
-}
-
-/// What a mail source's switch writes when it is turned on: the step the account has, so "Only
-/// ‚For me‘" survives being switched off and on again; `All` for one that stands at `Off` and has
-/// no step to keep.
-fn switched_on(stored: Notify) -> Notify {
-    match stored {
-        Notify::Off => Notify::All,
-        kept => kept,
-    }
-}
-
-/// What the mail account of `source` stores under `notify`; [`Notify::default`] for a source
-/// without such an account (none of the setup's rows, but the switch must read something).
-fn mail_notify(data: &Data, source: &SourceRef) -> Notify {
-    mail_account(data, source)
-        .and_then(|account| account.mail.as_ref())
-        .map_or_else(Notify::default, |mail| mail.settings.notify)
-}
-
-/// Sends the open form of the calendar or tasks step: the CalDAV account, showing what the
-/// components that are on need, or the GitHub token. Nothing while it cannot be sent.
-fn submit_form(state: &mut State) -> Action {
-    let calendars = !state.off.contains(&Component::Calendar);
-    let tasks = !state.off.contains(&Component::Tasks);
-    if let Some(form) = state.caldav.as_mut() {
-        if !form.can_connect() {
-            return Action::None;
+        // The shared AI page's connection form (also Jev's key on the page Sorting) takes the primary button.
+        Step::Ai if ai_form_open(state) => {
+            stay(act(ai_setup::update(&mut state.ai_setup, ai_setup::Message::Submit, data)))
         }
-        state.error = None;
-        return act(form.connect(calendars, tasks));
+        Step::Ai => match state.ai_page {
+            AiPage::Connect if ai_setup::awaiting_consent(&state.ai_setup) => stay(Action::None),
+            // A slot chosen ("Keep") or a model already on its way: on without changing anything.
+            AiPage::Connect if keeps(data) || ai_working(state) => {
+                state.forward();
+                stay(Action::None)
+            }
+            AiPage::Connect => use_suggestion(state, data, false),
+            AiPage::Chat => {
+                state.menus.close();
+                state.ai_page = AiPage::Sort;
+                stay(Action::None)
+            }
+            AiPage::Sort => sort_and_go_on(state, data),
+        },
+        Step::Done if ai_working(state) => stay(Action::None),
+        Step::Done => finish(data, None),
+        _ => {
+            state.forward();
+            stay(Action::None)
+        }
     }
-    if state.github_token && state.github.has_token() && !state.github.checking() {
-        state.error = None;
-        return act(state.github.send_token());
-    }
-    Action::None
 }
 
-/// Follows a Nextcloud sign-in through a reload of `data` (the shell calls it on every reload while
-/// the setup is open): signed in, the step shows the account's services; failed, it asks for the
-/// address again and says so. While waiting the footer shows the shell's error, if any.
+/// What the primary button waits for where it cannot go on yet.
+fn missing(state: &State) -> &'static str {
+    match state.step {
+        Step::Cloud => tr("Enter the address of your server first."),
+        Step::Ai => tr("Connect an AI first, or skip this step."),
+        _ => tr("Fill in what is missing above first."),
+    }
+}
+
+/// Whether the page Connect keeps the models chosen ("Keep"): a slot is chosen already.
+fn keeps(data: &Data) -> bool {
+    data.settings.ai_slots.chat.is_some() || data.settings.ai_slots.decide.is_some()
+}
+
+/// "Use suggestion": prepares the suggested models (with `replace` also over the models chosen) and goes on
+/// to Appearance at once – the download goes on meanwhile. A model for Sorting elsewhere asks first; the
+/// question stays on the page.
+fn use_suggestion(state: &mut State, data: &Data, replace: bool) -> Outcome {
+    if !ai_setup::can_use_suggestion(&state.ai_setup, data, replace, None) {
+        return Outcome::Stay(Action::None);
+    }
+    let action = act(ai_setup::use_suggestion(&mut state.ai_setup, data, replace, None));
+    if !ai_setup::awaiting_consent(&state.ai_setup) {
+        state.forward();
+    }
+    Outcome::Stay(action)
+}
+
+/// "Continue" on the page Sorting: what it chose for sorting mail ([`mail_sorting_request`]), after the
+/// question where a model elsewhere would read the mail; then on to Appearance.
+fn sort_and_go_on(state: &mut State, data: &Data) -> Outcome {
+    if state.asking_cloud.is_some() || ai_models_wait(data) {
+        return Outcome::Stay(Action::None);
+    }
+    let assignment = mail_sorting_request(state, data);
+    if let Some(request) = &assignment
+        && let Some((engine, model)) = sorting_target(request, data)
+        && needs_sort_consent(state, data, engine, model)
+    {
+        let enabled = !matches!(request, Request::SetAiAssignment { enabled: false, .. });
+        let by_chat = state.sort_by_chat;
+        ask_sort_consent(state, data, engine.to_string(), model.map(str::to_string), enabled);
+        state.pending_by_chat = by_chat;
+        return Outcome::Stay(Action::None);
+    }
+    state.forward();
+    Outcome::Stay(assignment.map_or(Action::None, Action::Send))
+}
+
+/// "Finish" (or a way out of the summary into `section`): which apps are shown follows what is connected
+/// ([`components`]), then the setup is recorded as done.
+fn finish(data: &Data, section: Option<Section>) -> Outcome {
+    let mut requests: Vec<Request> = components(data)
+        .into_iter()
+        .map(|switch| Request::SetSetting {
+            key: SettingKey::Component,
+            value: serde_json::to_value(switch).unwrap_or_default(),
+        })
+        .collect();
+    requests.push(setup_request(SetupState::Done));
+    let action = match requests.len() {
+        1 => requests.pop().map_or(Action::None, Action::Send),
+        _ => Action::SendAll(requests),
+    };
+    match section {
+        Some(section) => Outcome::CloseTo(action, section),
+        None => Outcome::Close(action),
+    }
+}
+
+/// The switches "Finish" sends (issue #326): Mail with a mail account, Calendar with a collection that has
+/// events, Tasks with a task list or GitHub, the assistant with an AI account; the Notification Hub and
+/// Workspaces stay as they are. On the first run (`setup.version` 0) an app without its connection is
+/// hidden; run again, an app is only shown, never hidden – it may have been hidden on purpose. Only what
+/// changes is sent.
+fn components(data: &Data) -> Vec<ComponentSwitch> {
+    let first = first_run(&data.settings.setup);
+    let listed = || data.accounts.iter().filter(|account| !account.id.is_empty());
+    let collections = || listed().flat_map(|account| account.collections.iter());
+    // A server that brings calendars or task lists counts before its first sync has listed them: a Nextcloud
+    // whose services are not read yet or that has them, a CalDAV account, and a mail account whose sign-in
+    // has a CalDAV address.
+    let brings = |service: torro_ipc::ServerService| {
+        listed().any(|account| match account.kind.as_str() {
+            // A CalDAV account counts until its collections are listed; then they say what it has.
+            "caldav" => account.collections.is_empty(),
+            "mail" => account.collections.is_empty() && account.mail.as_ref().is_some_and(|mail| mail.caldav.is_some()),
+            "nextcloud" => account.services.as_ref().is_none_or(|services| services.contains(&service)),
+            _ => false,
+        })
+    };
+    [
+        (Component::Mail, listed().any(|account| account.kind == "mail")),
+        (
+            Component::Calendar,
+            collections().any(|collection| collection.kind.has_events()) || brings(torro_ipc::ServerService::Calendars),
+        ),
+        (
+            Component::Tasks,
+            collections().any(|collection| collection.kind.has_todos())
+                || brings(torro_ipc::ServerService::Tasks)
+                || listed().any(|a| a.kind == "github"),
+        ),
+        (Component::Assistant, listed().any(|account| account.kind == "ai")),
+    ]
+    .into_iter()
+    .filter_map(|(component, connected)| {
+        let on = !data.settings.components_off.contains(&component);
+        match (connected, on) {
+            (true, false) => Some(ComponentSwitch { component, enabled: true }),
+            (false, true) if first => Some(ComponentSwitch { component, enabled: false }),
+            _ => None,
+        }
+    })
+    .collect()
+}
+
+/// Whether this is surely the first run of the setup: it is pending and no run was ever finished or put off
+/// (version 0). Putting it off records this build's version as finishing does, so a setup put off cannot tell
+/// whether it ran before; then it only shows apps and never hides one – hiding is the step a person could
+/// lose a choice by.
+fn first_run(setup: &torro_core::settings::Setup) -> bool {
+    setup.state == SetupState::Pending && setup.version == 0
+}
+
+/// Follows a Nextcloud sign-in through a reload of `data` (the shell calls it on every reload while the
+/// setup is open): signed in, the point shows the account's services; failed, it asks for the address again
+/// and says so. While waiting the footer shows the shell's error, if any.
 pub fn observe(state: &mut State, data: &Data) {
     // The dialog follows its own Nextcloud sign-in the same way.
     if let Some(dialog) = state.dialog.as_mut() {
         wizard::observe(dialog, data);
     }
-    // The web step's switches stay shown over the reloaded list until it shows them; SearXNG's check ends once its
-    // address is stored.
-    show_switched(state, data);
-    web::sent(&mut state.web, Ok(web::stored_address(&data.search_providers)));
     if !state.nextcloud.running() {
         return;
     }
@@ -1049,39 +852,16 @@ pub fn observe(state: &mut State, data: &Data) {
     }
 }
 
-/// The answer to a request the setup sent; `true` when the setup shows it itself (then the shell
-/// shows no notice): a sign-in that could not start shows its reason in the footer.
+/// The answer to a request the setup sent; `true` when the setup shows it itself (then the shell shows no
+/// notice): the dialog's and the mail path's own, and a sign-in that could not start, in the footer.
 pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
     if let Some(dialog) = state.dialog.as_mut() {
         return wizard::answered(dialog, result);
     }
-    if let Some(answer) = state.caldav.as_mut().and_then(|form| form.answered(result)) {
-        match answer {
-            Ok(account) => {
-                state.caldav = None;
-                state.connected = Some(account);
-                state.error = None;
-            }
-            Err(message) => state.error = Some(message),
-        }
-        return true;
-    }
-    if let Some(answer) = state.github.answered(result) {
-        match answer {
-            Ok(login) => {
-                state.github_login = Some(login);
-                state.github_token = false;
-                state.error = None;
-            }
-            Err(message) => state.error = Some(message),
-        }
-        return true;
-    }
-    // A refusal may be a provider's switch (answers do not say which request they are for): the switches
-    // shown go back to what the core holds, and the next reload shows what it stored.
-    if result.is_err() {
-        state.switched.clear();
-        state.providers = None;
+    // The one that waits takes the answer: the mail path's search or sign-in, else a Nextcloud sign-in. While
+    // either waits the point stays ([`State::waiting`]), so no other request of the setup is out.
+    if wizard::mail_waiting(&state.mail) {
+        return wizard::answered(&mut state.mail, result);
     }
     match state.nextcloud.answered(result) {
         Some(Err(message)) => {
@@ -1089,22 +869,8 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
             true
         }
         Some(Ok(())) => true,
-        None => false,
+        None => state.mail_running() && wizard::answered(&mut state.mail, result),
     }
-}
-
-/// The answer to the check of a SearXNG address on the web step ([`Action::CheckAddress`]), which comes here
-/// alone: a refusal shows its reason under the field; a success ends the check with the next reload, once the
-/// address is stored. `true` when the setup shows it (the shell then shows no notice); `false` once no check waits
-/// (the step was left), so the shell says why.
-pub fn checked(state: &mut State, result: &Result<Response, String>) -> bool {
-    if !web::checking(&state.web) {
-        return false;
-    }
-    if let Err(problem) = result {
-        web::sent(&mut state.web, Err(problem));
-    }
-    true
 }
 
 /// The request that changes one setting.
@@ -1113,26 +879,58 @@ fn set(key: SettingKey, value: serde_json::Value) -> Action {
 }
 
 /// The request that records where the setup stands.
+fn setup_request(state: SetupState) -> Request {
+    Request::SetSetting { key: SettingKey::Setup, value: serde_json::to_value(state).unwrap_or_default() }
+}
+
 fn set_setup(state: SetupState) -> Action {
-    set(SettingKey::Setup, serde_json::to_value(state).unwrap_or_default())
+    Action::Send(setup_request(state))
+}
+
+/// The chat model: as chosen on the page Chat, else the slot Chat as stored, if it names a model.
+fn chat_choice(state: &State, data: &Data) -> Option<(String, String)> {
+    state.chat.clone().or_else(|| {
+        let held = data.settings.ai_slots.chat.as_ref()?;
+        Some((held.engine.clone(), held.model.clone()?))
+    })
+}
+
+/// The models with tools the connected AI accounts offer for chat, enabled ones only.
+fn chat_models(data: &Data) -> Vec<(&String, &AiModel)> {
+    data.ai_models
+        .iter()
+        .filter(|(_, model)| model.enabled && model.tools == Some(true))
+        .map(|(account, model)| (account, model))
+        .collect()
+}
+
+/// What sorts mail as the page Sorting chose it: the chat model with "Use the chat model", else the decision
+/// model chosen or recommended.
+fn sort_choice(state: &State, data: &Data) -> Option<(String, String)> {
+    if state.sort_by_chat {
+        return chat_choice(state, data);
+    }
+    selected_mail_decider(state, data).map(|(account, model)| (account.clone(), model.id.clone()))
 }
 
 /// Every enabled decision model the menu offers, including those that need consent. Defaults
 /// are restricted separately in [`selected_mail_decider`], never by hiding a remote option.
 fn mail_deciders(data: &Data) -> Vec<(&String, &AiModel)> {
-    data.ai_deciders
+    data.ai_models
         .iter()
         .filter(|(_, model)| model.enabled && model.decision == Some(true))
         .map(|(account, model)| (account, model))
         .collect()
 }
 
+/// The models of the AI accounts are not loaded yet for the accounts there are now: the pages Chat and
+/// Sorting wait for them.
 fn ai_models_wait(data: &Data) -> bool {
     data.accounts
         .iter()
         .filter(|account| account.kind == "ai")
         .map(|account| &account.id)
-        .ne(data.ai_deciders_from.iter())
+        .ne(data.ai_models_from.iter())
 }
 
 /// The exception stored for sorting mail (`ai.set_assignment inbox.categorize`), on or off; `None`
@@ -1171,7 +969,7 @@ fn mail_sorting_on(state: &State, data: &Data) -> bool {
 fn selected_mail_decider<'a>(state: &State, data: &'a Data) -> Option<(&'a String, &'a AiModel)> {
     if let Some((engine, model)) = &state.sort_model {
         return data
-            .ai_deciders
+            .ai_models
             .iter()
             .find(|(account, candidate)| {
                 account == engine && candidate.id == *model && candidate.enabled && candidate.decision == Some(true)
@@ -1201,7 +999,7 @@ fn selected_mail_decider<'a>(state: &State, data: &'a Data) -> Option<(&'a Strin
 /// the account's seat. Its model's and provider's names for the question; `None` when nothing needs
 /// asking, as for a model here the step does not offer (a chat model, one turned off).
 fn cloud_to_turn_on(state: &State, data: &Data) -> Option<(String, String)> {
-    if data.settings.mail_to_cloud_in(AiSlot::Decide) || selected_mail_decider(state, data).is_some() {
+    if data.settings.mail_to_cloud_in(AiSlot::Decide) || sort_choice(state, data).is_some() {
         return None;
     }
     let held = stored_mail_exception(data).filter(|held| !held.enabled)?;
@@ -1209,7 +1007,7 @@ fn cloud_to_turn_on(state: &State, data: &Data) -> Option<(String, String)> {
     let listed = held
         .model
         .as_deref()
-        .and_then(|id| data.ai_deciders.iter().find(|(account, model)| *account == engine && model.id == id));
+        .and_then(|id| data.ai_models.iter().find(|(account, model)| *account == engine && model.id == id));
     let elsewhere = sorting_place(data, &engine, held.model.as_deref()) != crate::assistant::Place::Local;
     if !elsewhere {
         return None;
@@ -1241,7 +1039,7 @@ fn sorting_place(data: &Data, engine: &str, model: Option<&str>) -> crate::assis
     match model {
         None => automatic_place_of(provider, server),
         Some(id) => {
-            let listed = data.ai_deciders.iter().find(|(account, model)| account == engine && model.id == id);
+            let listed = data.ai_models.iter().find(|(account, model)| account == engine && model.id == id);
             let unknown = AiModel::named(id);
             place_of(provider, server, listed.map_or(&unknown, |(_, model)| model))
         }
@@ -1282,7 +1080,7 @@ fn ask_sort_consent(state: &mut State, data: &Data, engine: String, model: Optio
     let account = data.accounts.iter().find(|account| account.id == engine);
     let name = model
         .as_deref()
-        .and_then(|id| data.ai_deciders.iter().find(|(account, model)| *account == engine && model.id == id))
+        .and_then(|id| data.ai_models.iter().find(|(account, model)| *account == engine && model.id == id))
         .map(|(_, model)| model.name.clone())
         .or_else(|| model.clone())
         .unwrap_or_else(|| tr("Automatic").to_string());
@@ -1291,7 +1089,7 @@ fn ask_sort_consent(state: &mut State, data: &Data, engine: String, model: Optio
     state.pending_sort = Some((engine, model, enabled));
 }
 
-/// What "Continue" on the AI step sends for sorting mail, as main's mail settings weigh it (issue
+/// What "Continue" on the page Sorting sends for sorting mail, as main's mail settings weigh it (issue
 /// #325): one request, so none can go through while another is refused.
 ///
 /// - On, with the model chosen or recommended: into the slot Sorting – or, while an exception is
@@ -1302,7 +1100,7 @@ fn ask_sort_consent(state: &mut State, data: &Data, engine: String, model: Optio
 fn mail_sorting_request(state: &State, data: &Data) -> Option<Request> {
     let enabled = mail_sorting_on(state, data);
     let held = mail_sorting_in_effect(data);
-    let chosen = selected_mail_decider(state, data).map(|(account, model)| (account.clone(), model.id.clone()));
+    let chosen = sort_choice(state, data);
     let exception = |engine: String, model: Option<String>, enabled: bool| {
         let effort = if held.engine.as_deref() == Some(engine.as_str()) { held.effort } else { None };
         Request::SetAiAssignment { function: AiFunction::InboxCategorize, engine: Some(engine), model, effort, enabled }
@@ -1339,165 +1137,167 @@ fn mail_sorting_request(state: &State, data: &Data) -> Option<Request> {
     Some(Request::SetAiSlot { slot: AiSlot::Decide, engine: Some(engine), model: Some(model), effort })
 }
 
-/// Escape: close the open dropdown, stop waiting for the browser or adding another Nextcloud, else one step back; nothing
-/// on the first step.
+/// Escape: close the open dropdown or dialog, the question about mail, the AI page's form, stop waiting for
+/// the browser or adding another Nextcloud, walk back on the mail path or the AI pages, else one step back;
+/// nothing on the welcome.
 pub fn escape(state: &State) -> Option<Message> {
     if state.menus.open().is_some() {
         return Some(Message::Menus(DropdownEvent::Close));
     }
-    // The dropdown of "Choose a provider", in the dialog or on the AI step (issue #554).
-    if let Some(dialog) = &state.dialog
-        && let Some(close) = wizard::escape(dialog)
-    {
-        return Some(Message::Dialog(close));
-    }
-    if state.dialog.is_none()
-        && state.step == Step::Ai
-        && let Some(close) = torro_settings_ui::accounts::ai_setup::escape(&state.ai_setup)
-    {
-        return Some(Message::AiSetup(close));
+    if let Some(dialog) = &state.dialog {
+        return Some(Message::Dialog(wizard::escape(dialog).unwrap_or(wizard::Message::Close)));
     }
     if state.asking_cloud.is_some() {
         return Some(Message::CancelCloud);
     }
-    if state.dialog.is_some() {
-        return Some(Message::Dialog(wizard::Message::Close));
+    if state.step == Step::Ai
+        && let Some(close) = ai_setup::escape(&state.ai_setup)
+    {
+        return Some(Message::AiSetup(close));
     }
-    if (state.step == Step::Nextcloud && (state.nextcloud.running() || state.adding)) || state.in_form() {
+    if state.step == Step::Cloud && (state.nextcloud.running() || state.adding) {
         return Some(Message::Cancel);
     }
-    if let Some(message) = web::escape(&state.web).filter(|_| state.step == Step::Web) {
-        return Some(Message::Web(message));
+    // The mail path under way at its first step is given up, as its "Cancel" does; not while it waits.
+    if state.step == Step::Mail
+        && state.mail_running()
+        && !wizard::mail_back(&state.mail)
+        && !wizard::mail_waiting(&state.mail)
+    {
+        return Some(Message::AddAnotherMail);
     }
-    state.neighbour(false).map(|_| Message::Back)
-}
-
-/// The app a component opens on the last step, if it has one.
-fn app_of(component: Component) -> Option<AppId> {
-    match component {
-        Component::Calendar => Some(AppId::CALENDAR),
-        Component::Tasks => Some(AppId::TASKS),
-        Component::Mail => Some(AppId::INBOX_MAIL),
-        Component::Inbox => Some(AppId::INBOX),
-        Component::Assistant => Some(AppId::ASSISTANT),
-        Component::Workspaces => None,
-    }
+    let walks_back = (state.step == Step::Mail && wizard::mail_back(&state.mail))
+        || (state.step == Step::Ai && state.ai_page != AiPage::Connect);
+    (walks_back || state.neighbour(false).is_some()).then_some(Message::Back)
 }
 
 // ----- The frame ------------------------------------------------------------------------------
 
-/// The list of steps for the sidebar (`mode` expanded) or the rail: the suite's logo and "Setup"
-/// on top, the steps, and the version at the foot of the expanded list.
-pub fn sidebar(state: &State, mode: SidebarMode) -> Element<'_, Message> {
-    let items = state
-        .steps()
-        .into_iter()
-        .map(|step| {
-            let trail = match state.mark(step) {
-                Mark::Passed => Trail::Icon(Icon::Check),
-                Mark::Open | Mark::Skipped => Trail::None,
-            };
-            let label = match state.mark(step) {
-                // Said in the row itself: the sidebar's trail has no word.
-                Mark::Skipped => trf("{step} · Skipped", &[("step", &step.label())]),
-                _ => step.label().to_string(),
-            };
-            widgets::sidebar_item_in(mode, step.icon(), label, trail, step == state.step, Message::Go(step))
-        })
-        .collect();
-    let mut footer = Vec::new();
-    if mode == SidebarMode::Expanded {
-        let version = format!("Torro Workplace · {} {}", tr("Version"), env!("CARGO_PKG_VERSION"));
-        let version = container(typo::text(typo::meta(), version).style(theme::text_3).wrapping(Wrapping::None))
-            .center_y(size::row_sidebar())
-            .padding(style::ITEM_PADDING)
-            .clip(true);
-        footer.push(version.into());
-    }
-    shell::sidebar(head(mode), items, footer)
-}
-
-/// The top of the list of steps: the logo with "Setup" (expanded), the logo alone (rail).
-fn head<'a>(mode: SidebarMode) -> Element<'a, Message> {
-    let logo = shell::app_mark(AppId::WORKPLACE);
-    let content: Element<'a, Message> = match mode {
-        SidebarMode::Expanded => row![logo, typo::text(typo::body_strong(), tr("Setup")).wrapping(Wrapping::None)]
-            .spacing(space::s())
-            .align_y(Alignment::Center)
-            .into(),
-        SidebarMode::Rail => container(logo).center_x(Fill).into(),
-    };
-    container(content).width(Fill).center_y(size::control()).padding(style::ITEM_PADDING).into()
-}
-
-/// The header bar: where the walk stands and "Set up later"; in the narrow layout with "Back" in
-/// front and a progress bar.
+/// The header: the logo with "Setup", the stepper of the five points and "Set up later"; narrow "‹", where
+/// the walk stands with a progress bar, and "Later".
 pub fn header(state: &State, class: SizeClass) -> Element<'_, Message> {
-    let (at, of) = state.position();
-    let label = state.step.label();
-    // On the last step "Finish" is the way out; putting it off there would only confuse.
-    let later = (state.step != Step::Done)
-        .then(|| widgets::text_button(None, tr("Set up later"), style::button::ghost, Some(Message::Later)));
+    // On the summary "Finish" is the way out; putting it off there would only confuse.
+    let later_word = if class == SizeClass::Narrow { tr("Later") } else { tr("Set up later") };
+    let later = (state.step != Step::Done && !ai_working(state))
+        .then(|| widgets::text_button(None, later_word, style::button::ghost, Some(Message::Later)));
     if class == SizeClass::Narrow {
         let back =
             state.neighbour(false).map(|_| widgets::icon_button(Icon::ChevronLeft, tr("Back"), Some(Message::Back)));
-        let count = typo::text(typo::meta().tabular(), format!("{at}/{of}")).style(theme::text_3);
-        let title =
-            row![typo::text(typo::body_strong(), label).wrapping(Wrapping::None), widgets::progress_bar(at, of), count]
-                .spacing(space::s())
-                .align_y(Alignment::Center);
-        return shell::header_bar(back, title, later);
+        let at = state.step.number();
+        let mut title = row![].spacing(space::s()).align_y(Alignment::Center);
+        let count = match at {
+            Some(at) => format!("{at}/{}", Step::POINTS.len()),
+            None => String::new(),
+        };
+        if !count.is_empty() {
+            title = title.push(typo::text(typo::meta().tabular(), count).style(theme::text_3));
+        }
+        title = title.push(typo::text(typo::body_strong(), state.step.label()).wrapping(Wrapping::None));
+        if state.step == Step::Ai {
+            let page = format!("· {}/3", state.ai_page.at());
+            title = title.push(typo::text(typo::meta().tabular(), page).style(theme::text_3));
+        }
+        return shell::header_bar(back, container(title).width(Fill).clip(true), later);
     }
-    let chevron = icon::icon(Icon::ChevronRight, icon::SIZE_SM)
-        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
-    let step = trf("Step {at} of {of}", &[("at", &at), ("of", &of)]);
-    let title = row![
-        typo::text(typo::body().tabular(), step).style(theme::text_3).wrapping(Wrapping::None),
-        chevron,
-        typo::text(typo::body_strong(), label).wrapping(Wrapping::None),
-    ]
-    .spacing(space::xs())
-    .align_y(Alignment::Center);
-    shell::header_bar([], title, later)
+    let logo = shell::app_mark(AppId::WORKPLACE);
+    let lead: Element<'_, Message> = match class {
+        SizeClass::Wide => row![logo, typo::text(typo::body_strong(), tr("Setup")).wrapping(Wrapping::None)]
+            .spacing(space::s())
+            .align_y(Alignment::Center)
+            .into(),
+        _ => logo,
+    };
+    // The stepper takes the room between the logo and "Set up later", from the left, so its points stand in
+    // the same place on every page.
+    let stepper = container(stepper(state, class == SizeClass::Wide)).width(Fill).clip(true);
+    row![lead, stepper].push(later).spacing(space::l()).align_y(Alignment::Center).into()
 }
 
-/// The add-account dialog over the whole window, while it is open; else the question before sorting
-/// mail in the cloud (issue #424); else the open dropdown (issue #554).
-pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
-    if state.dialog.is_none()
-        && let Some((model, provider)) = &state.asking_cloud
-    {
+/// How far the walk stands, for the progress line under the narrow header: the points done of five (the
+/// welcome none, the summary all).
+pub fn progress(state: &State) -> (u64, u64) {
+    let done = match state.step {
+        Step::Welcome => 0,
+        Step::Done => Step::POINTS.len(),
+        step => step.number().unwrap_or_default(),
+    };
+    (done as u64, Step::POINTS.len() as u64)
+}
+
+/// The five points side by side, joined by a line: each a button with its number (a check mark once
+/// passed) and, with `names`, its name; without them the name is the tooltip. The current point in `text`
+/// and medium weight, the others in `text_2`; never red. On the point AI three small bars after its name
+/// say which of its pages is open.
+fn stepper(state: &State, names: bool) -> Element<'_, Message> {
+    let mut points = row![].spacing(space::s()).align_y(Alignment::Center);
+    for (index, point) in Step::POINTS.into_iter().enumerate() {
+        if index > 0 {
+            let line = container(rule::horizontal(1).style(style::rule)).width(space::l()).center_y(size::control_sm());
+            points = points.push(line);
+        }
+        let current = point == state.step;
+        let face = match state.passed(point) {
+            true => TileFace::Icon(Icon::Check),
+            false => TileFace::letter(&(index + 1).to_string()),
+        };
+        let mut content =
+            row![widgets::source_tile(face, TileSize::Small, None)].spacing(space::s()).align_y(Alignment::Center);
+        if names {
+            let name = match current {
+                true => typo::text(typo::body_strong(), point.label()).style(theme::text),
+                false => typo::text(typo::body(), point.label()).style(theme::text_2),
+            };
+            content = content.push(name.wrapping(Wrapping::None));
+        }
+        if current && point == Step::Ai {
+            content = content.push(widgets::progress_bar(state.ai_page.at(), 3));
+        }
+        // The content centred in a control's height, so number, name and the joining lines share one axis.
+        let press = button(container(content).center_y(size::control_sm()))
+            .padding(style::button_padding())
+            .style(style::button::ghost)
+            .on_press(Message::Go(point));
+        points = points.push(match names {
+            true => Element::from(press),
+            false => widgets::with_tooltip(press, point.label()),
+        });
+    }
+    points.into()
+}
+
+/// The dialog over the whole window, while it is open; else the question before sorting mail elsewhere
+/// (issue #424); else the open dropdown (issue #554), of the setup, of the AI page or of Appearance.
+pub fn overlay<'a>(state: &'a State, data: &'a Data, looks: &'a suite::State) -> Option<Element<'a, Message>> {
+    if let Some(dialog) = state.dialog.as_ref() {
+        let content = wizard::view(dialog, data).map(Message::Dialog);
+        let layer = super::dialog(content, size::form_max(), Message::Dialog(wizard::Message::Close));
+        return Some(match wizard::overlay(dialog) {
+            Some(menu) => iced::widget::stack![layer, menu.map(Message::Dialog)].into(),
+            None => layer,
+        });
+    }
+    if let Some((model, provider)) = &state.asking_cloud {
         return Some(torro_settings_ui::parts::cloud_consent(model, provider, Message::UseCloud, Message::CancelCloud));
     }
-    if state.dialog.is_none()
-        && let Some(menu) = pages::menu(state, data)
-    {
+    if let Some(menu) = pages::menu(state, data) {
         return Some(menu);
     }
-    if state.dialog.is_none()
-        && state.step == Step::Ai
-        && let Some(menu) = torro_settings_ui::accounts::ai_setup::overlay(&state.ai_setup)
-    {
-        return Some(menu.map(Message::AiSetup));
+    match state.step {
+        Step::Ai => ai_setup::overlay(&state.ai_setup).map(|menu| menu.map(Message::AiSetup)),
+        Step::Mail => wizard::overlay(&state.mail).map(|menu| menu.map(Message::Mail)),
+        Step::Appearance => suite::overlay(looks, &data.settings).map(|layer| layer.map(Message::Suite)),
+        _ => None,
     }
-    let dialog = state.dialog.as_ref()?;
-    let content = wizard::view(dialog, data).map(Message::Dialog);
-    let layer = super::dialog(content, size::form_max(), Message::Dialog(wizard::Message::Close));
-    // The open dropdown of the dialog over it (issue #554).
-    Some(match wizard::overlay(dialog) {
-        Some(menu) => iced::widget::stack![layer, menu.map(Message::Dialog)].into(),
-        None => layer,
-    })
 }
 
-/// The page of the current step over the fixed footer.
-pub fn body<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
-    let page = if state.step == Step::Ai && torro_settings_ui::accounts::ai_setup::foreground(&state.ai_setup) {
-        torro_settings_ui::accounts::ai_setup::view(&state.ai_setup, data).map(Message::AiSetup)
-    } else {
-        pages::view(state, data, class)
-    };
-    let page = container(container(page).width(Fill).max_width(size::form_max())).padding(page_margin(class));
+/// The page of the current step over the fixed footer. `looks` are the designs, fonts and colour schemes
+/// the point Appearance offers (the control centre's, listed for Settings › Appearance).
+pub fn body<'a>(state: &'a State, data: &'a Data, looks: &'a suite::State, class: SizeClass) -> Element<'a, Message> {
+    let page = pages::view(state, data, looks);
+    let wide = state.step == Step::Appearance;
+    let inner = container(page).width(Fill);
+    let inner = if wide { inner } else { inner.max_width(size::form_max()) };
+    let page = container(inner).width(Fill).padding(page_margin(class));
     let page = scrollable(page)
         .direction(scrollable::Direction::Vertical(style::scrollbar()))
         .style(style::scrollable)
@@ -1505,64 +1305,74 @@ pub fn body<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
     column![page, rule::horizontal(1).style(style::rule), footer(state, data, class)].into()
 }
 
-/// The footer: the step's status at the left; "Back" (not in narrow, where the header has it),
-/// "Skip" where the step can be skipped, and the primary button.
+/// The footer: the step's status, a problem or a link at the left; "Back", the way to skip the step, a
+/// second way where the step has one, and the primary button. Narrow they stand one under the other, the
+/// primary button first.
 fn footer<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
-    if state.step == Step::Ai && torro_settings_ui::accounts::ai_setup::awaiting_consent(&state.ai_setup) {
+    if state.step == Step::Ai && ai_setup::awaiting_consent(&state.ai_setup) {
         return container(typo::text(typo::meta(), tr("Mail needs your explicit permission.")).style(theme::text_2))
             .padding(layout::row_padding())
             .into();
     }
-    let status: Option<Element<'a, Message>> = match &state.error {
-        Some(error) => Some(problem(error.clone())),
-        None => pages::status(state, data).map(|text| typo::text(typo::body(), text).style(theme::text_2).into()),
+    let status: Option<Element<'a, Message>> = match (&state.error, state.missing) {
+        (Some(error), _) => Some(problem(error.clone())),
+        (None, Some(missing)) => Some(problem(missing.to_string())),
+        (None, None) => {
+            pages::status(state, data).map(|text| typo::text(typo::body(), text).style(theme::text_2).into())
+        }
     };
-    let mut buttons = row![].spacing(space::s()).align_y(Alignment::Center);
-    let cloud_actions = (state.step == Step::Ai)
-        .then(|| torro_settings_ui::accounts::ai_setup::cloud_form_actions(&state.ai_setup))
-        .flatten();
-    if cloud_actions.is_none() && class != SizeClass::Narrow && state.neighbour(false).is_some() {
-        buttons = buttons.push(widgets::text_button(None, tr("Back"), style::button::ghost, Some(Message::Back)));
-    }
-    if let Some((label, message)) = pages::skip(state, data) {
-        buttons = buttons.push(widgets::text_button(None, label, style::button::secondary, Some(message)));
-    }
+    let mut buttons: Vec<Element<'a, Message>> = Vec::new();
+    let cloud_actions = match state.step == Step::Ai && state.ai_page == AiPage::Connect {
+        true => ai_setup::cloud_form_actions(&state.ai_setup),
+        false => None,
+    };
+    let narrow = class == SizeClass::Narrow;
     if let Some(actions) = cloud_actions {
-        buttons = buttons.push(actions.map(Message::AiSetup));
+        buttons.push(actions.map(Message::AiSetup));
     } else {
-        let (label, enabled) = primary(state, data);
-        let busy = state.step == Step::Ai
-            && !enabled
-            && torro_settings_ui::accounts::ai_setup::primary_label(&state.ai_setup).is_some();
-        buttons = buttons.push(if busy {
-            widgets::busy_button(label, style::button::primary)
-        } else {
-            widgets::text_button(None, label, style::button::primary, enabled.then_some(Message::Next))
+        let walks_back = (state.step == Step::Mail && wizard::mail_back(&state.mail))
+            || (state.step == Step::Ai && state.ai_page != AiPage::Connect);
+        // Narrow, the header's "‹" is the same "Back".
+        if !narrow && (walks_back || state.neighbour(false).is_some()) && state.step != Step::Welcome {
+            buttons.push(widgets::text_button(None, tr("Back"), style::button::ghost, Some(Message::Back)));
+        }
+        if let Some((label, message)) = pages::skip(state, data) {
+            buttons.push(widgets::text_button(None, label, style::button::secondary, Some(message)));
+        }
+        for (label, message) in pages::second(state, data) {
+            buttons.push(widgets::text_button(None, label, style::button::secondary, message));
+        }
+        let (label, _, busy) = pages::primary(state, data);
+        buttons.push(match busy {
+            true => widgets::busy_button(label, style::button::primary),
+            // Never drawn switched off (a pale red is hard to read in light mode): pressed while something is
+            // missing, it says what ([`next`]).
+            false => widgets::text_button(None, label, style::button::primary, Some(Message::Next)),
         });
     }
-    let left = container(row![].push(status)).width(Fill).clip(true);
-    container(row![left, buttons].spacing(space::l()).align_y(Alignment::Center))
+    let link = pages::link(state);
+    let left = container(column![].push(status).push(link).spacing(space::xs())).width(Fill).clip(true);
+    if narrow {
+        buttons.reverse();
+        let stacked = column(buttons.into_iter().map(|button| container(button).width(Fill).center_x(Fill).into()))
+            .spacing(space::s());
+        return container(column![left, stacked].spacing(space::s()))
+            .width(Fill)
+            .padding(layout::panel_padding())
+            .into();
+    }
+    container(row![left, row(buttons).spacing(space::s()).align_y(Alignment::Center)].spacing(space::l()))
         .width(Fill)
-        .center_y(size::header() + space::m())
+        .center_y(size::header())
         .padding(layout::row_padding())
         .into()
 }
 
-/// Shared connection/preparation state overrides the host's ordinary Continue action.
-fn primary(state: &State, data: &Data) -> (&'static str, bool) {
-    if state.step == Step::Ai
-        && let Some(primary) = torro_settings_ui::accounts::ai_setup::primary_label(&state.ai_setup)
-    {
-        return primary;
-    }
-    pages::primary(state, data)
-}
-
-/// A problem in the footer: an alert icon in the error colour, the text in `text` – the colour is
-/// only in the icon.
+/// A problem in the footer: an alert icon in the error colour, the text in `text` – the colour is only in
+/// the icon.
 fn problem<'a>(text: String) -> Element<'a, Message> {
     let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
-        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
+        .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
     row![alert, typo::text(typo::body(), text).wrapping(Wrapping::None)]
         .spacing(space::s())
         .align_y(Alignment::Center)
@@ -1577,11 +1387,24 @@ mod tests {
         State::new(step, &Settings::default())
     }
 
-    /// The demo's data: a connected Nextcloud among other accounts.
+    /// The setup on the page Sorting of the point AI.
+    fn sort_state() -> State {
+        state(Step::Ai).on_ai_page(AiPage::Sort)
+    }
+
+    /// The demo's data: a connected Nextcloud among other accounts, the models of its AI accounts loaded.
     fn data() -> Data {
         let mut data = super::super::launch::demo_data();
-        data.ai_deciders_from =
+        data.ai_models_from =
             data.accounts.iter().filter(|account| account.kind == "ai").map(|account| account.id.clone()).collect();
+        data
+    }
+
+    /// The demo's data without models chosen for the slots.
+    fn unchosen() -> Data {
+        let mut data = data();
+        data.settings.ai_slots = Default::default();
+        data.settings.ai_assignments.clear();
         data
     }
 
@@ -1593,56 +1416,61 @@ mod tests {
         }
     }
 
-    /// Issue #554: the setup's choices are dropdowns: opening one asks for the search field's focus
-    /// and shows it over the page, Escape closes it before it goes a step back, a choice closes it.
-    #[test]
-    fn the_dropdowns_of_the_setup_open_and_close() {
-        let data = data();
-        let mut setup = state(Step::Ai);
-        let opened = update(&mut setup, Message::Menus(DropdownEvent::Toggle(SetupMenu::Engine)), &data);
-        assert!(matches!(opened, Outcome::Stay(Action::Focus(_))), "{opened:?}");
-        assert!(pages::menu(&setup, &data).is_some() && overlay(&setup, &data).is_some());
-        assert!(matches!(escape(&setup), Some(Message::Menus(DropdownEvent::Close))), "Escape closes the menu first");
-        let _ = update(&mut setup, Message::Engine("ai:openrouter@openrouter.ai".into()), &data);
-        assert_eq!(setup.menus.open(), None, "a choice closes it");
-        let _ = update(&mut setup, Message::Menus(DropdownEvent::Toggle(SetupMenu::SortModel)), &data);
-        assert_eq!(setup.menus.open(), Some(&SetupMenu::SortModel));
-        let _ = update(&mut setup, Message::Menus(DropdownEvent::Close), &data);
-        assert!(pages::menu(&setup, &data).is_none());
-    }
-
-    #[test]
-    fn the_walk_goes_through_the_built_steps_and_ends_done() {
-        let mut setup = state(Step::Welcome);
-        let walk = [
-            Step::Welcome,
-            Step::Nextcloud,
-            Step::Components,
-            Step::Calendar,
-            Step::Tasks,
-            Step::Mail,
-            Step::Inbox,
-            Step::Ai,
-            Step::Web,
-            Step::Documents,
-            Step::Done,
-        ];
-        assert_eq!(setup.steps(), walk);
-        assert!(matches!(update(&mut setup, Message::Next, &data()), Outcome::Stay(Action::None)));
-        assert_eq!((setup.step, setup.position()), (Step::Nextcloud, (2, 11)));
-        update(&mut setup, Message::Next, &data());
-        assert_eq!(setup.step, Step::Components, "a Nextcloud is connected: the step goes on");
-        for _ in 0..8 {
-            update(&mut setup, Message::Next, &data());
+    /// The requests of an outcome that stays, one or several.
+    fn requests(outcome: Outcome) -> Vec<Request> {
+        match outcome {
+            Outcome::Stay(Action::Send(request)) => vec![request],
+            Outcome::Stay(Action::SendAll(requests)) => requests,
+            Outcome::Stay(Action::None) => Vec::new(),
+            other => panic!("expected requests, got {other:?}"),
         }
-        assert_eq!(setup.step, Step::Done);
-        let finished = update(&mut setup, Message::Next, &data());
-        assert!(matches!(finished, Outcome::Close(_)));
-        assert_eq!(sent(&finished), Some((SettingKey::Setup, serde_json::json!("done"))));
+    }
+
+    /// The requests of a closing outcome.
+    fn closing(outcome: &Outcome) -> Vec<Request> {
+        match outcome {
+            Outcome::Close(Action::Send(request)) | Outcome::CloseTo(Action::Send(request), _) => vec![request.clone()],
+            Outcome::Close(Action::SendAll(all)) | Outcome::CloseTo(Action::SendAll(all), _) => all.clone(),
+            other => panic!("expected a closing outcome, got {other:?}"),
+        }
     }
 
     #[test]
-    fn later_puts_it_off_and_back_stops_at_the_first_step() {
+    fn the_old_words_of_the_steps_lead_to_their_point() {
+        for step in Step::ALL {
+            assert_eq!(Step::from_arg(step.arg()), Some(step));
+        }
+        assert_eq!(Step::from_arg("nextcloud"), Some(Step::Cloud));
+        for word in ["calendar", "tasks", "inbox"] {
+            assert_eq!(Step::from_arg(word), Some(Step::Mail), "{word}");
+        }
+        assert_eq!(Step::from_arg("components"), Some(Step::Welcome));
+        assert_eq!(Step::from_arg("web"), Some(Step::Ai));
+        assert_eq!(Step::from_arg("later"), None);
+        assert_eq!(Step::POINTS.map(|step| step.number()), [Some(1), Some(2), Some(3), Some(4), Some(5)]);
+        assert_eq!((Step::Welcome.number(), Step::Done.number()), (None, None));
+    }
+
+    /// The walk: the welcome, the five points and the summary; "Keep" on the point AI goes on with the
+    /// models the demo has chosen, "Finish" records the setup as done.
+    #[test]
+    fn the_walk_goes_through_the_five_points_and_ends_done() {
+        let data = data();
+        let mut setup = state(Step::Welcome);
+        let walk = [Step::Mail, Step::Cloud, Step::Ai, Step::Appearance, Step::Documents, Step::Done];
+        for step in walk {
+            update(&mut setup, Message::Next, &data);
+            assert_eq!(setup.step, step);
+        }
+        assert!(setup.passed(Step::Mail) && setup.passed(Step::Ai) && !setup.passed(Step::Done));
+        let finished = update(&mut setup, Message::Next, &data);
+        let sent = closing(&finished);
+        let done = setup_request(SetupState::Done);
+        assert_eq!(sent.last(), Some(&done), "{sent:?}");
+    }
+
+    #[test]
+    fn later_puts_it_off_and_back_stops_at_the_welcome() {
         let mut setup = state(Step::Welcome);
         assert!(escape(&setup).is_none(), "nothing before the welcome");
         update(&mut setup, Message::Back, &data());
@@ -1653,63 +1481,262 @@ mod tests {
     }
 
     #[test]
-    fn passed_steps_are_checked_and_clicked_ones_can_be_gone_back_to() {
-        let mut setup = state(Step::Welcome);
-        for _ in 0..10 {
-            update(&mut setup, Message::Next, &data());
-        }
-        assert_eq!(setup.step, Step::Done);
-        assert_eq!(setup.mark(Step::Welcome), Mark::Passed);
-        update(&mut setup, Message::Go(Step::Welcome), &data());
-        assert_eq!(setup.step, Step::Welcome);
-        assert_eq!(setup.mark(Step::Components), Mark::Passed, "reached before, still passed");
-        update(&mut setup, Message::Component(Component::Mail, false), &data());
-        update(&mut setup, Message::Go(Step::Mail), &data());
-        assert_eq!(setup.step, Step::Welcome, "a step that is not walked cannot be gone to");
+    fn a_point_is_clicked_and_a_skipped_one_is_not_passed() {
+        let data = data();
+        let mut setup = state(Step::Mail);
+        update(&mut setup, Message::Skip, &data);
+        assert_eq!(setup.step, Step::Cloud);
+        update(&mut setup, Message::Go(Step::Documents), &data);
+        assert_eq!(setup.step, Step::Documents);
+        assert!(!setup.passed(Step::Mail), "skipped");
+        assert!(setup.passed(Step::Cloud), "reached beyond it");
+        update(&mut setup, Message::Go(Step::Mail), &data);
+        assert_eq!(setup.step, Step::Mail);
     }
 
     #[test]
-    fn components_switch_at_once_and_are_sent_one_by_one() {
-        let mut setup = state(Step::Components);
-        let off = update(&mut setup, Message::Component(Component::Mail, false), &data());
-        assert_eq!(
-            sent(&off),
-            Some((SettingKey::Component, serde_json::json!({"component": "mail", "enabled": false})))
-        );
-        assert!(setup.off.contains(&Component::Mail));
-        update(&mut setup, Message::Component(Component::Mail, true), &data());
-        assert!(setup.off.is_empty());
-    }
-
-    #[test]
-    fn a_component_turned_off_takes_its_step_out_of_the_walk() {
-        let all = steps(&BTreeSet::new());
-        assert!(all.iter().all(|step| step.built()));
-        for step in Step::ALL.into_iter().filter(|step| step.component().is_some()) {
-            let off = BTreeSet::from([step.component().expect("a component")]);
-            assert!(!steps(&off).contains(&step), "{step:?}");
-        }
-    }
-
-    #[test]
-    fn language_and_appearance_are_sent_as_the_settings_take_them() {
+    fn the_language_is_sent_as_the_settings_take_it() {
         let mut setup = state(Step::Welcome);
         let german = update(&mut setup, Message::Language(Language::German), &data());
         assert_eq!(sent(&german), Some((SettingKey::Language, serde_json::json!("german"))));
-        let dark = update(&mut setup, Message::Appearance(Appearance::Dark), &data());
-        assert_eq!(sent(&dark), Some((SettingKey::Appearance, serde_json::json!("dark"))));
-        assert_eq!((setup.language, setup.appearance), (Language::German, Appearance::Dark));
+        setup.loaded(&Settings::default());
+        assert_eq!(setup.language, Language::German, "a reload before the save keeps the choice");
     }
 
+    /// Issue #326: the mail path stands on the page itself. Typed, the primary button searches the provider
+    /// – the same request as Accounts › Add – and the setup stays; untouched, it goes on.
     #[test]
-    fn the_loaded_settings_count_until_a_choice_is_made_here() {
-        let mut setup = state(Step::Components);
-        let stored = Settings { components_off: BTreeSet::from([Component::Assistant]), ..Settings::default() };
-        setup.loaded(&stored);
-        assert_eq!((setup.step, setup.off.clone()), (Step::Components, BTreeSet::from([Component::Assistant])));
-        update(&mut setup, Message::Component(Component::Mail, false), &data());
-        setup.loaded(&Settings::default());
-        assert_eq!(setup.off, BTreeSet::from([Component::Assistant, Component::Mail]), "a reload before the save");
+    fn the_mail_path_runs_inline_and_continue_goes_on_without_it() {
+        let data = data();
+        let mut setup = state(Step::Mail);
+        assert_eq!(pages::primary(&setup, &data).0, tr("Continue"));
+        let _ = update(&mut setup, Message::Mail(wizard::Message::AddressChanged("anna@mailbox.org".into())), &data);
+        assert!(setup.mail_running());
+        assert_eq!(pages::primary(&setup, &data), (tr("Find provider"), true, false));
+        let search = update(&mut setup, Message::Next, &data);
+        assert!(!matches!(search, Outcome::Stay(Action::None)), "{search:?}");
+        assert_eq!(setup.step, Step::Mail);
+        let _ = update(&mut setup, Message::AddAnotherMail, &data);
+        assert!(!setup.mail_running(), "Cancel starts the path afresh");
+        update(&mut setup, Message::Next, &data);
+        assert_eq!(setup.step, Step::Cloud);
+        assert!(pages::link(&state(Step::Mail)).is_some(), "TorroMail's accounts in the footer");
+    }
+
+    /// Issue #326: "Use suggestion" prepares the suggested models for both slots and goes on to Appearance at
+    /// once; the work goes on meanwhile.
+    #[test]
+    fn use_suggestion_prepares_both_slots_and_goes_on_to_appearance() {
+        let data = unchosen();
+        let mut setup = state(Step::Ai);
+        ai_setup::demo(&mut setup.ai_setup, "suggestion", &data);
+        assert_eq!(pages::primary(&setup, &data).0, tr("Use suggestion"));
+        assert!(ai_setup::can_use_suggestion(&setup.ai_setup, &data, false, None), "the demo suggests models");
+        let used = update(&mut setup, Message::Next, &data);
+        assert!(matches!(used, Outcome::Stay(Action::AskAi(_))), "{used:?}");
+        assert_eq!(setup.step, Step::Appearance, "straight on to Appearance");
+        assert!(ai_setup::preparing(&setup.ai_setup) && setup.ai_running(), "the models are on their way");
+    }
+
+    /// Chosen models are kept: "Keep" goes on and sends nothing; "Choose myself" leads through Chat and
+    /// Sorting, "Back" walks back through them.
+    #[test]
+    fn keep_goes_on_and_choose_myself_walks_the_pages() {
+        let data = data();
+        assert!(data.settings.ai_slots.chat.is_some() || data.settings.ai_slots.decide.is_some(), "the demo chose");
+        let mut setup = state(Step::Ai);
+        assert_eq!(pages::primary(&setup, &data).0, tr("Keep my choice"));
+        let kept = update(&mut setup, Message::Next, &data);
+        assert!(matches!(kept, Outcome::Stay(Action::None)), "{kept:?}");
+        assert_eq!(setup.step, Step::Appearance);
+        let mut setup = state(Step::Ai);
+        update(&mut setup, Message::ChooseMyself, &data);
+        assert_eq!(setup.ai_page, AiPage::Chat);
+        update(&mut setup, Message::Next, &data);
+        assert_eq!(setup.ai_page, AiPage::Sort);
+        assert!(matches!(escape(&setup), Some(Message::Back)));
+        update(&mut setup, Message::Back, &data);
+        assert_eq!((setup.step, setup.ai_page), (Step::Ai, AiPage::Chat));
+    }
+
+    /// The page Chat puts the model chosen into the slot Chat at once.
+    #[test]
+    fn a_chat_model_goes_into_the_slot_chat() {
+        let mut data = data();
+        data.ai_models = super::super::launch::demo_ai_models();
+        let mut setup = state(Step::Ai).on_ai_page(AiPage::Chat);
+        let opened = update(&mut setup, Message::Menus(DropdownEvent::Toggle(SetupMenu::Chat)), &data);
+        assert!(matches!(opened, Outcome::Stay(Action::Focus(_))), "{opened:?}");
+        assert!(pages::menu(&setup, &data).is_some());
+        let engine = torro_settings_ui::accounts::demo::DEMO_OLLAMA.to_string();
+        let sent = requests(update(&mut setup, Message::ChatModel(engine.clone(), "llama3.1:8b".into()), &data));
+        assert!(
+            matches!(&sent[..], [Request::SetAiSlot { slot: AiSlot::Chat, engine: Some(e), model: Some(m), .. }] if *e == engine && m == "llama3.1:8b"),
+            "{sent:?}"
+        );
+        assert_eq!(setup.menus.open(), None, "a choice closes the dropdown");
+    }
+
+    /// "Use the chat model" sorts with the chat model; "Rules only" switches sorting off.
+    #[test]
+    fn sorting_can_use_the_chat_model_or_rules_only() {
+        let mut data = unchosen();
+        data.ai_models = super::super::launch::demo_ai_models();
+        let engine = torro_settings_ui::accounts::demo::DEMO_OLLAMA.to_string();
+        let mut setup = sort_state();
+        update(&mut setup, Message::ChatModel(engine.clone(), "llama3.1:8b".into()), &data);
+        update(&mut setup, Message::SortByChat, &data);
+        // The demo's Ollama is not among its accounts, so it counts as elsewhere: the question first.
+        assert!(setup.asking_cloud.is_some() && !setup.sort_by_chat);
+        update(&mut setup, Message::UseCloud, &data);
+        assert!(setup.sort_by_chat);
+        let sent = requests(update(&mut setup, Message::Next, &data));
+        assert!(
+            matches!(&sent[..], [Request::SetAiSlot { slot: AiSlot::Decide, model: Some(m), .. }] if m == "llama3.1:8b"),
+            "{sent:?}"
+        );
+        assert_eq!(setup.step, Step::Appearance);
+        let mut rules = sort_state();
+        update(&mut rules, Message::SortMail(false), &data);
+        assert!(!mail_sorting_on(&rules, &data));
+    }
+
+    /// Jev's key form on the page Sorting takes the primary button and "Back" like the page Connect does.
+    #[test]
+    fn the_key_form_of_jev_takes_enter_and_back_on_the_page_sorting() {
+        let data = unchosen();
+        let mut setup = sort_state();
+        update(&mut setup, Message::ConnectJev, &data);
+        assert!(ai_form_open(&setup), "the key form is open");
+        assert_eq!(pages::primary(&setup, &data).0, tr("Connect"));
+        update(&mut setup, Message::Back, &data);
+        assert!(!ai_form_open(&setup) && setup.ai_page == AiPage::Sort, "Back closes the form, the page stays");
+        update(&mut setup, Message::ConnectJev, &data);
+        let submitted = update(&mut setup, Message::Next, &data);
+        assert!(matches!(submitted, Outcome::Stay(Action::AskAi(_))), "Enter connects: {submitted:?}");
+        assert_eq!((setup.step, setup.ai_page), (Step::Ai, AiPage::Sort));
+    }
+
+    /// Issue #326: on the first run "Finish" hides the apps without their connection and shows those with
+    /// one; run again it only shows, never hides.
+    #[test]
+    fn finish_derives_the_apps_from_the_connections() {
+        let mut data = data();
+        data.accounts.retain(|account| account.kind != "mail" && account.kind != "ai");
+        data.settings.components_off = BTreeSet::from([Component::Calendar]);
+        data.settings.setup.version = 0;
+        let switches = components(&data);
+        let has_events = data.accounts.iter().flat_map(|a| &a.collections).any(|c| c.kind.has_events())
+            || data.accounts.iter().any(|a| matches!(a.kind.as_str(), "nextcloud" | "caldav"));
+        assert!(switches.contains(&ComponentSwitch { component: Component::Mail, enabled: false }), "{switches:?}");
+        assert!(switches.contains(&ComponentSwitch { component: Component::Assistant, enabled: false }));
+        assert_eq!(
+            switches.contains(&ComponentSwitch { component: Component::Calendar, enabled: true }),
+            has_events,
+            "a calendar shows the app Calendar"
+        );
+        assert!(switches.iter().all(|switch| !matches!(switch.component, Component::Inbox | Component::Workspaces)));
+        data.settings.setup = torro_core::settings::Setup { state: SetupState::Pending, version: 3 };
+        assert!(components(&data).iter().all(|switch| switch.enabled), "run again: only shown");
+        // Put off, it cannot tell whether it ran before: it only shows.
+        data.settings.setup = torro_core::settings::Setup { state: SetupState::Skipped, version: 4 };
+        assert!(components(&data).iter().all(|switch| switch.enabled));
+        data.settings.setup = torro_core::settings::Setup::default();
+        // A Nextcloud whose services are not read yet brings its calendars and lists already.
+        let mut fresh = data.clone();
+        fresh.accounts.retain(|account| account.kind != "nextcloud");
+        if let Some(mut cloud) = super::super::launch::demo_data().accounts.into_iter().find(|a| a.kind == "nextcloud")
+        {
+            cloud.collections.clear();
+            cloud.services = None;
+            fresh.accounts.push(cloud);
+            let switches = components(&fresh);
+            assert!(!switches.contains(&ComponentSwitch { component: Component::Calendar, enabled: false }));
+            assert!(!switches.contains(&ComponentSwitch { component: Component::Tasks, enabled: false }));
+        }
+        // A mail account with a CalDAV address brings calendars and lists before its first sync lists them; one
+        // without it brings none.
+        let mut only_mail = data.clone();
+        only_mail.accounts =
+            super::super::launch::demo_data().accounts.into_iter().filter(|account| account.kind == "mail").collect();
+        only_mail.settings.components_off.clear();
+        let calendar_off = ComponentSwitch { component: Component::Calendar, enabled: false };
+        let tasks_off = ComponentSwitch { component: Component::Tasks, enabled: false };
+        if let Some(account) = only_mail.accounts.iter_mut().find(|account| account.mail.is_some()) {
+            account.collections.clear();
+            if let Some(mail) = account.mail.as_mut() {
+                mail.caldav = Some("https://dav.mailbox.org/".into());
+            }
+            let switches = components(&only_mail);
+            assert!(!switches.contains(&calendar_off) && !switches.contains(&tasks_off), "{switches:?}");
+            only_mail.accounts.iter_mut().filter_map(|a| a.mail.as_mut()).for_each(|mail| mail.caldav = None);
+            only_mail.accounts.iter_mut().for_each(|a| a.collections.clear());
+            let switches = components(&only_mail);
+            assert!(switches.contains(&calendar_off) && switches.contains(&tasks_off), "{switches:?}");
+        } else {
+            panic!("the demo has a mail account");
+        }
+        let finished = finish(&data, Some(Section::Mcp));
+        assert!(matches!(finished, Outcome::CloseTo(_, Section::Mcp)), "Connect an agent… finishes too");
+    }
+
+    /// While a model is on its way after "Use suggestion", the setup waits before it closes: finishing would end
+    /// the preparation before the model is in its slot. A question about mail is no work: nothing waits for it.
+    #[test]
+    fn finishing_waits_while_a_model_is_prepared() {
+        let data = unchosen();
+        let mut setup = state(Step::Ai);
+        ai_setup::demo(&mut setup.ai_setup, "suggestion", &data);
+        update(&mut setup, Message::Next, &data);
+        assert!(ai_working(&setup));
+        update(&mut setup, Message::Go(Step::Done), &data);
+        assert_eq!(pages::primary(&setup, &data), (tr("Preparing model…"), false, true));
+        assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
+        assert!(matches!(update(&mut setup, Message::Later, &data), Outcome::Stay(Action::None)));
+        let mut asking = state(Step::Ai);
+        ai_setup::demo(&mut asking.ai_setup, "cloud-consent", &data);
+        assert!(!ai_working(&asking), "a question is no work");
+    }
+
+    /// The primary button says what is missing when pressed too early, and the note goes with the next step
+    /// the person takes.
+    #[test]
+    fn the_note_of_what_is_missing_goes_with_the_next_input() {
+        let data = without_nextcloud();
+        let mut setup = state(Step::Cloud);
+        update(&mut setup, Message::Next, &data);
+        assert_eq!(setup.missing, Some(tr("Enter the address of your server first.")));
+        assert_eq!(setup.step, Step::Cloud);
+        update(&mut setup, Message::ServerChanged("c".into()), &data);
+        assert_eq!(setup.missing, None, "typing takes the note away");
+    }
+
+    /// The mail path takes the answer to its own request also while another point is shown.
+    #[test]
+    fn the_mail_path_takes_its_answer_on_another_point() {
+        let data = data();
+        let mut setup = state(Step::Mail);
+        update(&mut setup, Message::Mail(wizard::Message::AddressChanged("anna@mailbox.org".into())), &data);
+        update(&mut setup, Message::Next, &data);
+        update(&mut setup, Message::Go(Step::Cloud), &data);
+        assert_eq!(setup.step, Step::Mail, "the point stays while the search waits");
+        let refused: Result<Response, String> = Err("offline".into());
+        assert!(answered(&mut setup, &refused), "the mail path shows its refusal itself");
+    }
+
+    /// Issue #554: the setup's choices are dropdowns: opening one asks for the search field's focus and shows
+    /// it over the page, Escape closes it before it goes back, a choice closes it.
+    #[test]
+    fn the_dropdowns_of_the_setup_open_and_close() {
+        let mut data = data();
+        data.ai_models = super::super::launch::demo_ai_models();
+        let mut setup = sort_state();
+        let _ = update(&mut setup, Message::Menus(DropdownEvent::Toggle(SetupMenu::SortModel)), &data);
+        assert_eq!(setup.menus.open(), Some(&SetupMenu::SortModel));
+        assert!(pages::menu(&setup, &data).is_some());
+        assert!(matches!(escape(&setup), Some(Message::Menus(DropdownEvent::Close))), "Escape closes the menu first");
+        let _ = update(&mut setup, Message::Menus(DropdownEvent::Close), &data);
+        assert!(pages::menu(&setup, &data).is_none());
     }
 
     /// The demo's data without its Nextcloud accounts.
@@ -1719,283 +1746,37 @@ mod tests {
         data
     }
 
+    /// The point Cloud asks for the address without a Nextcloud; "I don't use one" skips it.
     #[test]
-    fn without_a_nextcloud_the_step_asks_for_the_address_and_signs_in() {
-        let mut setup = state(Step::Nextcloud);
-        let empty = without_nextcloud();
-        assert!(setup.asks_address(&empty));
-        assert_eq!(pages::primary(&setup, &empty), (tr("Connect"), false), "no address yet");
-        assert!(matches!(update(&mut setup, Message::Next, &empty), Outcome::Stay(Action::None)));
-        assert_eq!(setup.step, Step::Nextcloud, "nothing to connect: the step stays");
-        assert!(matches!(pages::skip(&setup, &empty), Some((_, Message::Skip))), "I don't use Nextcloud");
-
-        update(&mut setup, Message::ServerChanged("cloud.example.org".into()), &empty);
-        let started = update(&mut setup, Message::Next, &empty);
-        assert!(matches!(started, Outcome::Stay(Action::Send(Request::ConnectNextcloud { .. }))));
-        assert!(setup.busy());
-        assert!(!pages::primary(&setup, &empty).1, "one sign-in at a time");
-        assert_eq!(escape(&setup).map(|m| format!("{m:?}")), Some("Cancel".into()));
-
-        // The core lists the sign-in, then the new account: the step shows its services.
-        let mut waiting = empty.clone();
-        waiting.accounts.push(super::super::launch::demo_signing_in());
-        observe(&mut setup, &waiting);
-        assert!(setup.busy());
-        observe(&mut setup, &data());
-        assert!(!setup.busy());
-        assert_eq!(setup.signed_in.as_deref(), Some("nextcloud:anna@cloud.example.org"));
-        assert!(!setup.asks_address(&data()));
-        assert_eq!(pages::primary(&setup, &data()), (tr("Continue"), true));
-    }
-
-    #[test]
-    fn a_sign_in_that_cannot_start_says_why_and_cancel_stops_waiting() {
-        let empty = without_nextcloud();
-        let mut setup = state(Step::Nextcloud);
-        update(&mut setup, Message::ServerChanged("nowhere.example".into()), &empty);
-        update(&mut setup, Message::Next, &empty);
-        assert!(answered(&mut setup, &Err("no Nextcloud at nowhere.example".into())));
-        assert_eq!((setup.busy(), setup.error.as_deref()), (false, Some("no Nextcloud at nowhere.example")));
-        assert!(!answered(&mut setup, &Err("something else".into())), "not the setup's answer");
-
-        update(&mut setup, Message::Next, &empty);
-        update(&mut setup, Message::Cancel, &empty);
-        assert!(!setup.busy() && setup.asks_address(&empty), "back to the address");
-    }
-
-    #[test]
-    fn another_nextcloud_can_be_added_and_given_up() {
-        let mut setup = state(Step::Nextcloud);
-        assert!(!setup.asks_address(&data()), "the demo has a Nextcloud");
-        assert!(pages::skip(&setup, &data()).is_none(), "connected: nothing to skip");
-        update(&mut setup, Message::AddNextcloud, &data());
-        assert!(setup.asks_address(&data()));
-        assert!(matches!(pages::skip(&setup, &data()), Some((_, Message::Cancel))));
-        update(&mut setup, Message::Cancel, &data());
-        assert!(!setup.asks_address(&data()));
-    }
-
-    #[test]
-    fn a_calendar_switch_shows_at_once_and_is_sent() {
-        let data = data();
-        let mut setup = state(Step::Calendar);
-        let id = data.accounts.iter().flat_map(|a| &a.collections).find(|c| c.kind.has_events()).map(|c| c.id.clone());
-        let id = id.expect("the demo has a calendar");
-        let hide = update(&mut setup, Message::Shown(id.clone(), false), &data);
-        assert!(
-            matches!(hide, Outcome::Stay(Action::Send(Request::SetCollectionShown { ref collection, shown: false })) if *collection == id)
-        );
-        assert!(!setup.is_shown(&data, &id), "before the settings are reloaded");
-    }
-
-    #[test]
-    fn the_caldav_form_connects_what_the_components_need() {
-        let mut setup = state(Step::Calendar);
-        update(&mut setup, Message::Component(Component::Tasks, false), &data());
-        update(&mut setup, Message::OpenCalDav, &data());
-        assert!(setup.in_form());
-        assert_eq!(pages::primary(&setup, &data()), (tr("Connect"), false), "nothing typed yet");
-        assert!(matches!(update(&mut setup, Message::Next, &data()), Outcome::Stay(Action::None)));
-        assert_eq!(setup.step, Step::Calendar, "the form stays");
-
-        update(&mut setup, Message::CalDav(caldav::Message::Address("anna@mailbox.org".into())), &data());
-        update(&mut setup, Message::CalDav(caldav::Message::Password(Secret::new("secret"))), &data());
-        match update(&mut setup, Message::Next, &data()) {
-            Outcome::Stay(Action::Send(Request::ConnectCalDav { calendars, tasks, .. })) => {
-                assert_eq!((calendars, tasks), (true, false), "tasks are off");
-            }
-            other => panic!("{other:?}"),
-        }
-        assert!(setup.busy());
-        assert!(answered(&mut setup, &Err("Password was refused".into())));
-        assert_eq!(setup.error.as_deref(), Some("Password was refused"));
-        assert!(setup.caldav.is_some(), "the form stays for another try");
-
-        update(&mut setup, Message::CalDav(caldav::Message::Password(Secret::new("right"))), &data());
-        update(&mut setup, Message::Next, &data());
-        let connected = super::super::launch::demo_answer(
-            &Request::ConnectCalDav {
-                address: "anna@mailbox.org".into(),
-                server: None,
-                login_name: "anna@mailbox.org".into(),
-                password: Secret::new("right"),
-                calendars: true,
-                tasks: false,
-            },
-            &data(),
-        );
-        assert!(answered(&mut setup, &connected.ok_or("the demo answers").map_err(String::from)));
-        assert!(setup.caldav.is_none() && setup.connected.is_some() && setup.error.is_none());
-    }
-
-    #[test]
-    fn github_signs_in_on_the_tasks_step_and_a_form_is_cancelled() {
-        let mut setup = state(Step::Tasks);
-        let cli = update(&mut setup, Message::UseGithubCli, &data());
-        assert!(matches!(cli, Outcome::Stay(Action::Send(Request::ConnectGithub))));
-        assert!(setup.busy() && setup.in_form());
-        assert_eq!(escape(&setup).map(|m| format!("{m:?}")), Some("Cancel".into()));
-        update(&mut setup, Message::Cancel, &data());
-        assert!(!setup.busy(), "no longer waited for");
-
-        update(&mut setup, Message::PasteToken, &data());
-        update(&mut setup, Message::TokenChanged(Secret::new("ghp_x")), &data());
-        assert!(matches!(
-            update(&mut setup, Message::Next, &data()),
-            Outcome::Stay(Action::Send(Request::SetGithubToken { .. }))
-        ));
-        let account = data().accounts.into_iter().find(|account| account.kind == "github").expect("the demo's");
-        assert!(answered(&mut setup, &Ok(Response::Account { account })));
-        assert!(setup.github_login.is_some() && !setup.in_form());
-        assert_eq!(setup.step, Step::Tasks, "signing in does not leave the step");
-    }
-
-    #[test]
-    fn mail_is_added_in_the_dialog_over_the_setup() {
-        let mut setup = state(Step::Mail);
-        update(&mut setup, Message::AddMail, &data());
-        assert!(setup.dialog_open());
-        assert_eq!(escape(&setup).map(|m| format!("{m:?}")), Some("Dialog(Close)".into()));
-        // The dialog's search runs and its answer goes to the dialog, not to the setup's footer.
-        let address = wizard::Message::AddressChanged("anna@mailbox.org".into());
-        update(&mut setup, Message::Dialog(address), &data());
-        let search = update(&mut setup, Message::Dialog(wizard::Message::Continue), &data());
-        assert!(matches!(search, Outcome::Stay(Action::Send(Request::DiscoverServices { .. }))));
-        assert!(answered(&mut setup, &Err("offline".into())));
-        assert!(setup.error.is_none());
-        update(&mut setup, Message::Dialog(wizard::Message::Close), &data());
-        assert!(!setup.dialog_open());
-
-        let torromail = update(&mut setup, Message::TakeOverTorroMail, &data());
-        assert!(matches!(torromail, Outcome::Stay(Action::Send(Request::TorroMailAccounts))));
-    }
-
-    #[test]
-    fn inbox_sources_are_muted_by_their_switch() {
-        let data = data();
-        let mut setup = state(Step::Inbox);
-        let github = data.accounts.iter().find(|a| a.kind == "github").expect("the demo's GitHub");
-        let login = github.id.split_once(':').map(|(_, name)| name.to_string()).expect("an id with a kind");
-        let source = SourceRef { kind: torro_inbox::SourceKind::Github, name: login };
-        assert!(!setup.is_muted(&data, &source));
-        let off = update(&mut setup, Message::Source(source.clone(), false), &data);
-        assert!(matches!(off, Outcome::Stay(Action::Send(Request::MuteSource { muted: true, .. }))));
-        assert!(setup.is_muted(&data, &source), "at once");
-        let quiet = update(&mut setup, Message::Quiet(false), &data);
-        assert_eq!(sent(&quiet), Some((SettingKey::QuietWhenBusy, serde_json::json!(false))));
-    }
-
-    /// Task S.21: the source "Mail" reads its state from the account's `notify`, not from the
-    /// muted sources. Switching it on sends `accounts.update_mail_account` and lifts an older
-    /// `inbox.mute_source` rule in the same step; switching it off sends only the account's setting
-    /// – the one place it is stored from now on.
-    #[test]
-    fn the_mail_source_reads_and_writes_notify() {
-        let mut data = data();
-        let mut setup = state(Step::Inbox);
-        let account = data.accounts.iter().find(|a| a.kind == "mail").expect("the demo's mail").clone();
-        let name = account.id.split_once(':').map(|(_, name)| name.to_string()).expect("an id with a kind");
-        let source = SourceRef { kind: torro_inbox::SourceKind::Mail, name };
-        assert!(!setup.is_muted(&data, &source), "the demo's account shows new mail");
-
-        // Off is stored at the account, not as a muted source.
-        let off = update(&mut setup, Message::Source(source.clone(), false), &data);
-        let Outcome::Stay(Action::Send(Request::UpdateMailAccount { id, notify, services, .. })) = off else {
-            panic!("expected accounts.update_mail_account, got {off:?}");
-        };
-        assert_eq!((id.as_str(), notify, services), (account.id.as_str(), Some(Notify::Off), None));
-        assert!(setup.is_muted(&data, &source), "at once");
-
-        // `notify: off` alone keeps the row off, without any muted source.
-        let mut quiet = state(Step::Inbox);
-        if let Some(mail) = data.accounts.iter_mut().find(|a| a.id == account.id).and_then(|a| a.mail.as_mut()) {
-            mail.settings.notify = Notify::Off;
-        }
-        assert!(quiet.is_muted(&data, &source), "read from notify");
-
-        // An older mute rule is lifted together with the account's setting.
-        data.sources.push(torro_inbox::SourceInfo { source: source.clone(), open: 0, muted: true, health: None });
-        let on = update(&mut quiet, Message::Source(source.clone(), true), &data);
-        let Outcome::Stay(Action::SendAll(requests)) = on else { panic!("expected two requests, got {on:?}") };
-        assert!(
-            matches!(&requests[0], Request::UpdateMailAccount { notify: Some(Notify::All), .. }),
-            "{:?}",
-            requests[0]
-        );
-        assert!(
-            matches!(&requests[1], Request::MuteSource { source: sent, muted: false } if *sent == source),
-            "{:?}",
-            requests[1]
-        );
-        assert_eq!(requests.len(), 2);
-
-        // A mail source whose account the core does not list sends nothing.
-        let without = Data { accounts: Vec::new(), ..data.clone() };
-        let none = update(&mut state(Step::Inbox), Message::Source(source, true), &without);
-        assert!(matches!(none, Outcome::Stay(Action::None)), "{none:?}");
-    }
-
-    /// Found in the review of task S.22: switching a mail source on writes back the step the
-    /// account has. "Only ‚For me‘" counts as on ([`State::is_muted`]), so writing `All` would
-    /// quietly undo that choice and let every newsletter into the inbox again.
-    #[test]
-    fn switching_a_mail_source_on_keeps_only_for_me() {
-        assert_eq!(switched_on(Notify::ForMeOnly), Notify::ForMeOnly, "the choice stays");
-        assert_eq!(switched_on(Notify::All), Notify::All);
-        assert_eq!(switched_on(Notify::Off), Notify::All, "an account that was off has no step to keep");
-
-        let mut data = data();
-        let account = data.accounts.iter().find(|a| a.kind == "mail").expect("the demo's mail").clone();
-        let name = account.id.split_once(':').map(|(_, name)| name.to_string()).expect("an id with a kind");
-        let source = SourceRef { kind: torro_inbox::SourceKind::Mail, name };
-        if let Some(mail) = data.accounts.iter_mut().find(|a| a.id == account.id).and_then(|a| a.mail.as_mut()) {
-            mail.settings.notify = Notify::ForMeOnly;
-        }
-        let on = update(&mut state(Step::Inbox), Message::Source(source, true), &data);
-        let Outcome::Stay(Action::Send(Request::UpdateMailAccount { notify, .. })) = on else {
-            panic!("expected accounts.update_mail_account, got {on:?}");
-        };
-        assert_eq!(notify, Some(Notify::ForMeOnly), "the newsletters stay out");
-    }
-
-    #[test]
-    fn the_ai_step_starts_the_shared_owned_search_and_reopens_it_after_leaving() {
-        let mut setup = state(Step::Inbox);
-        let entered = update(&mut setup, Message::Next, &data());
+    fn without_a_nextcloud_the_cloud_asks_for_the_address() {
+        let data = without_nextcloud();
+        let mut setup = state(Step::Cloud);
+        assert!(setup.asks_address(&data));
+        assert_eq!(pages::primary(&setup, &data), (tr("Connect"), false, false), "no address yet");
+        assert!(matches!(pages::skip(&setup, &data), Some((_, Message::Skip))));
+        update(&mut setup, Message::ServerChanged("cloud.example.org".into()), &data);
+        assert!(pages::primary(&setup, &data).1);
+        update(&mut setup, Message::Skip, &data);
         assert_eq!(setup.step, Step::Ai);
-        assert!(matches!(entered, Outcome::Stay(Action::AskAi(_))), "{entered:?}");
-        assert!(matches!(update(&mut setup, Message::Back, &data()), Outcome::Stay(Action::None)));
-        assert!(matches!(update(&mut setup, Message::Next, &data()), Outcome::Stay(Action::AskAi(_))));
-        let engine = update(&mut setup, Message::Engine("ai:openrouter@openrouter.ai".into()), &data());
-        assert!(matches!(sent(&engine), Some((SettingKey::AssistantDefault, _))));
     }
 
+    /// The shared AI page's connection form takes Enter and the primary button; a question about mail does
+    /// not let Enter pass it.
     #[test]
     fn ollama_cloud_forms_and_shared_consent_cannot_be_skipped_with_enter() {
-        use torro_settings_ui::accounts::ai_setup;
-        let mut data = data();
-        data.settings.ai_slots = Default::default();
-        data.settings.ai_assignments.clear();
+        let data = unchosen();
         let mut setup = state(Step::Ai);
         ai_setup::demo(&mut setup.ai_setup, "cloud-form", &data);
-        assert_eq!(primary(&setup, &data), (tr("Connect"), true));
+        assert_eq!(pages::primary(&setup, &data), (tr("Connect"), true, false));
         assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::Focus(_))));
         assert_eq!(setup.step, Step::Ai);
         ai_setup::demo(&mut setup.ai_setup, "cloud-running", &data);
-        assert_eq!(primary(&setup, &data), (tr("Connecting…"), false));
+        assert_eq!(pages::primary(&setup, &data), (tr("Connecting…"), false, true));
         assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
         assert_eq!(setup.step, Step::Ai);
         ai_setup::demo(&mut setup.ai_setup, "cloud-consent", &data);
-        assert_eq!(primary(&setup, &data), (tr("Send mail outside this computer?"), false));
         assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
         assert_eq!(setup.step, Step::Ai);
-        let before = data.settings.clone();
-        assert!(matches!(
-            update(&mut setup, Message::AiSetup(ai_setup::Message::Cancel), &data),
-            Outcome::Stay(Action::None)
-        ));
-        assert_eq!(data.settings, before, "cancel sends no assignment or permission");
-        assert!(ai_setup::primary(&setup.ai_setup).is_none());
     }
 
     #[test]
@@ -2004,7 +1785,7 @@ mod tests {
         let mut data = data();
         data.settings.ai_slots.decide = None;
         data.settings.ai_assignments.remove(&AiFunction::InboxCategorize);
-        let mut setup = state(Step::Ai);
+        let mut setup = sort_state();
         ai_setup::demo(&mut setup.ai_setup, "consent", &data);
         update(&mut setup, Message::AiSetup(ai_setup::Message::Cancel), &data);
         update(&mut setup, Message::SortMail(false), &data);
@@ -2052,31 +1833,31 @@ mod tests {
             problem: None,
         };
         data.accounts.push(local_account);
-        data.ai_deciders_from =
+        data.ai_models_from =
             data.accounts.iter().filter(|account| account.kind == "ai").map(|account| account.id.clone()).collect();
-        data.ai_deciders = vec![
+        data.ai_models = vec![
             (cloud.clone(), model("cloud", true, true)),
             (local.clone(), model("off", false, false)),
             (local.clone(), model("nimble", false, true)),
             (local.clone(), model("another", false, true)),
         ];
         let mut waiting = data.clone();
-        waiting.ai_deciders_from.clear();
-        let mut not_ready = state(Step::Ai);
+        waiting.ai_models_from.clear();
+        let mut not_ready = sort_state();
         assert!(!pages::primary(&not_ready, &waiting).1, "continue waits until model choices are loaded");
         assert!(matches!(update(&mut not_ready, Message::Next, &waiting), Outcome::Stay(Action::AskAi(_))));
         assert_eq!(not_ready.step, Step::Ai);
         assert_eq!(mail_deciders(&data).len(), 3, "remote models are selectable; disabled models are not");
-        let mut setup = state(Step::Ai);
+        let mut setup = sort_state();
         let Outcome::Stay(Action::Send(Request::SetAiSlot { slot, engine, model, .. })) =
             update(&mut setup, Message::Next, &data)
         else {
             panic!("the recommended model goes into the slot Sorting when continuing");
         };
         assert_eq!((slot, engine.as_deref(), model.as_deref()), (AiSlot::Decide, Some(local.as_str()), Some("nimble")));
-        assert_eq!(setup.step, Step::Web);
+        assert_eq!(setup.step, Step::Appearance);
 
-        let mut chosen = state(Step::Ai);
+        let mut chosen = sort_state();
         update(&mut chosen, Message::SortModel(local.clone(), "another".into()), &data);
         update(&mut chosen, Message::SortMail(false), &data);
         let Outcome::Stay(Action::Send(Request::SetAiAssignment { engine, model, enabled, .. })) =
@@ -2090,7 +1871,7 @@ mod tests {
         let mut slotted = data.clone();
         slotted.settings.ai_slots.decide =
             Some(torro_core::ai::SlotModel { engine: local.clone(), model: Some("another".into()), effort: None });
-        let mut again = state(Step::Ai);
+        let mut again = sort_state();
         assert!(matches!(update(&mut again, Message::Next, &slotted), Outcome::Stay(Action::None)));
 
         let off = AiAssignment {
@@ -2101,13 +1882,13 @@ mod tests {
             enabled: false,
         };
         data.settings.ai_assignments.insert(AiFunction::InboxCategorize, off);
-        let mut reopened = state(Step::Ai);
+        let mut reopened = sort_state();
         assert!(!mail_sorting_on(&reopened, &data), "the switch shows the stored off");
         assert!(matches!(update(&mut reopened, Message::Next, &data), Outcome::Stay(Action::None)));
-        assert_eq!(reopened.step, Step::Web, "repeating setup preserves the stored off choice");
+        assert_eq!(reopened.step, Step::Appearance, "repeating setup preserves the stored off choice");
 
         // On again with that exception stored: one request, the exception switched on with the model.
-        let mut on_again = state(Step::Ai);
+        let mut on_again = sort_state();
         update(&mut on_again, Message::SortMail(true), &data);
         let sent = requests(update(&mut on_again, Message::Next, &data));
         assert!(
@@ -2120,7 +1901,7 @@ mod tests {
         elsewhere.settings.ai_assignments.remove(&AiFunction::InboxCategorize);
         elsewhere.settings.ai_slots.decide =
             Some(torro_core::ai::SlotModel { engine: cloud.clone(), model: Some("cloud".into()), effort: None });
-        let mut off = state(Step::Ai);
+        let mut off = sort_state();
         update(&mut off, Message::SortMail(false), &elsewhere);
         let sent = requests(update(&mut off, Message::Next, &elsewhere));
         assert!(
@@ -2141,11 +1922,14 @@ mod tests {
             },
         );
         // Issue #424: without Sorting's permission it asks first; "Cancel" leaves it off.
-        let mut on = state(Step::Ai);
+        let mut on = sort_state();
         update(&mut on, Message::SortMail(true), &cloud_off);
-        assert!(overlay(&on, &cloud_off).is_some() && matches!(escape(&on), Some(Message::CancelCloud)));
+        assert!(
+            overlay(&on, &cloud_off, &suite::State::default()).is_some()
+                && matches!(escape(&on), Some(Message::CancelCloud))
+        );
         update(&mut on, Message::CancelCloud, &cloud_off);
-        assert!(!mail_sorting_on(&on, &cloud_off) && overlay(&on, &cloud_off).is_none());
+        assert!(!mail_sorting_on(&on, &cloud_off) && overlay(&on, &cloud_off, &suite::State::default()).is_none());
         update(&mut on, Message::SortMail(true), &cloud_off);
         update(&mut on, Message::UseCloud, &cloud_off);
         let sent = requests(update(&mut on, Message::Next, &cloud_off));
@@ -2159,22 +1943,22 @@ mod tests {
             held.engine = Some(local.clone());
             held.model = Some("off".into());
         }
-        let mut on = state(Step::Ai);
+        let mut on = sort_state();
         update(&mut on, Message::SortMail(true), &here_off);
         assert!(on.asking_cloud.is_none() && mail_sorting_on(&on, &here_off));
         // With the permission on, it was said yes to already: on without a question.
         let mut allowed = cloud_off.clone();
         allowed.settings.decide_mail_to_cloud = Some(true);
-        let mut on = state(Step::Ai);
+        let mut on = sort_state();
         update(&mut on, Message::SortMail(true), &allowed);
         assert!(on.asking_cloud.is_none() && mail_sorting_on(&on, &allowed));
 
         data.settings.decide_mail_to_cloud = Some(true);
         assert_eq!(mail_deciders(&data).len(), 3, "the cloud model needs Sorting's mail permission");
-        data.ai_deciders.clear();
-        let mut empty = state(Step::Ai);
+        data.ai_models.clear();
+        let mut empty = sort_state();
         assert!(matches!(update(&mut empty, Message::Next, &data), Outcome::Stay(Action::None)));
-        assert_eq!(empty.step, Step::Web, "no model is not silently assigned");
+        assert_eq!(empty.step, Step::Appearance, "no model is not silently assigned");
     }
 
     #[test]
@@ -2192,9 +1976,9 @@ mod tests {
                 problem: None,
             };
             data.accounts.push(account);
-            data.ai_deciders_from =
+            data.ai_models_from =
                 data.accounts.iter().filter(|account| account.kind == "ai").map(|account| account.id.clone()).collect();
-            data.ai_deciders = ["first", "second"]
+            data.ai_models = ["first", "second"]
                 .into_iter()
                 .map(|id| {
                     (
@@ -2211,12 +1995,12 @@ mod tests {
                 assert_eq!(mail_deciders(&data).len(), 2, "the actual menu offers LAN models before consent too");
                 if !permission {
                     assert!(
-                        selected_mail_decider(&state(Step::Ai), &data).is_none(),
+                        selected_mail_decider(&sort_state(), &data).is_none(),
                         "remote is never a new default without permission"
                     );
                 }
                 if !permission {
-                    let mut waiting = state(Step::Ai);
+                    let mut waiting = sort_state();
                     torro_settings_ui::accounts::ai_setup::demo(&mut waiting.ai_setup, "medium", &data);
                     update(&mut waiting, Message::SortModel(engine.clone(), "first".into()), &data);
                     assert!(waiting.asking_cloud.is_some());
@@ -2227,7 +2011,7 @@ mod tests {
                         "Use must also grant the missing permission for the unchanged model"
                     );
                 }
-                let mut setup = state(Step::Ai);
+                let mut setup = sort_state();
                 torro_settings_ui::accounts::ai_setup::demo(&mut setup.ai_setup, "medium", &data);
                 assert!(matches!(
                     update(&mut setup, Message::SortModel(engine.clone(), "second".into()), &data),
@@ -2267,7 +2051,7 @@ mod tests {
                     enabled: false,
                 },
             );
-            let mut setup = state(Step::Ai);
+            let mut setup = sort_state();
             torro_settings_ui::accounts::ai_setup::demo(&mut setup.ai_setup, "medium", &data);
             update(&mut setup, Message::SortMail(true), &data);
             assert!(setup.asking_cloud.is_some(), "LAN Automatic asks too");
@@ -2285,11 +2069,11 @@ mod tests {
         data.settings.ai_slots.decide = None;
         data.settings.ai_assignments.clear();
         data.settings.decide_mail_to_cloud = Some(true);
-        data.ai_deciders = vec![(
+        data.ai_models = vec![(
             engine.clone(),
             AiModel { decision: Some(true), remote: Some(false), enabled: true, ..AiModel::named("nimble") },
         )];
-        let mut setup = state(Step::Ai);
+        let mut setup = sort_state();
         torro_settings_ui::accounts::ai_setup::demo(&mut setup.ai_setup, "medium", &data);
         update(&mut setup, Message::SortMail(false), &data);
         assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)));
@@ -2308,372 +2092,11 @@ mod tests {
         data.settings.ai_slots.decide =
             Some(torro_core::ai::SlotModel { engine, model: Some("nimble".into()), effort: None });
         data.settings.decide_mail_to_cloud = Some(false);
-        let mut setup = state(Step::Ai);
+        let mut setup = sort_state();
         torro_settings_ui::accounts::ai_setup::demo(&mut setup.ai_setup, "medium", &data);
         update(&mut setup, Message::SortMail(false), &data);
         let sent = requests(update(&mut setup, Message::Next, &data));
         assert!(matches!(&sent[..], [Request::SetAiAssignment { enabled: false, .. }]));
         assert!(setup.asking_cloud.is_none(), "turning the current target off is always safe");
-    }
-
-    /// The requests of an outcome that stays, one or several.
-    fn requests(outcome: Outcome) -> Vec<Request> {
-        match outcome {
-            Outcome::Stay(Action::Send(request)) => vec![request],
-            Outcome::Stay(Action::SendAll(requests)) => requests,
-            Outcome::Stay(Action::None) => Vec::new(),
-            other => panic!("expected requests, got {other:?}"),
-        }
-    }
-
-    fn duckduckgo_on() -> Message {
-        Message::Web(web::Message::Switch(SearchProviderId::Duckduckgo, true))
-    }
-
-    /// The assistant's client of the demo: PDF with write access.
-    fn assistant(data: &Data) -> ClientInfo {
-        assistant_client(data).expect("the demo's assistant").clone()
-    }
-
-    /// Task WEB.7: the first provider switched on sends its switch and switches the tool `web` on; a second one only
-    /// its switch. Both show at once, also on the last step.
-    #[test]
-    fn the_first_provider_on_switches_the_tool_on_too() {
-        let data = data();
-        let mut setup = state(Step::Web);
-        let first = requests(update(&mut setup, duckduckgo_on(), &data));
-        assert_eq!(
-            first,
-            vec![
-                web::switch_request(SearchProviderId::Duckduckgo, true),
-                crate::ui::connections::switch_request(ToolId::Web, true)
-            ]
-        );
-        assert!(first.iter().all(|request| request.operation().area() == Area::Settings), "nothing of clients.*");
-        let second =
-            requests(update(&mut setup, Message::Web(web::Message::Switch(SearchProviderId::Wikipedia, true)), &data));
-        assert_eq!(second, vec![web::switch_request(SearchProviderId::Wikipedia, true)]);
-        assert_eq!(pages::providers_on(&setup, &data), ["DuckDuckGo", "Wikipedia"], "shown at once");
-        assert_eq!(pages::status(&setup, &data).as_deref(), Some(tr("Saving…")), "until the core lists them");
-        let both = with_both(&data);
-        observe(&mut setup, &both);
-        assert_eq!(pages::status(&setup, &both), Some(trf("{n} providers on", &[("n", &2)])));
-        let mut on = data.clone();
-        on.settings.tools.set_on(ToolId::Web, true);
-        let mut again = state(Step::Web);
-        assert_eq!(requests(update(&mut again, duckduckgo_on(), &on)).len(), 1, "the tool is on already");
-    }
-
-    /// `data` as the core lists it once DuckDuckGo's and Wikipedia's switches are stored.
-    fn with_both(data: &Data) -> Data {
-        let mut stored = with_duckduckgo(data);
-        for info in &mut stored.search_providers {
-            info.enabled |= info.id == SearchProviderId::Wikipedia;
-        }
-        stored
-    }
-
-    /// `data` as the core lists it once DuckDuckGo's switch is stored.
-    fn with_duckduckgo(data: &Data) -> Data {
-        let mut stored = data.clone();
-        for info in &mut stored.search_providers {
-            info.enabled |= info.id == SearchProviderId::Duckduckgo;
-        }
-        stored
-    }
-
-    /// With "Let the assistant use it" ticked, "Continue" sends one `clients.update_client` that keeps the
-    /// assistant's tools and rights and adds read access to `web`; once, however often the step is passed.
-    #[test]
-    fn continue_gives_the_assistant_web_and_keeps_its_tools() {
-        let data = with_duckduckgo(&data());
-        let before = assistant(&data);
-        assert_eq!(before.rights.tools, Selection::Only(vec!["pdf".into()]));
-        let mut setup = state(Step::Web);
-        update(&mut setup, duckduckgo_on(), &data);
-        let sent = requests(update(&mut setup, Message::Next, &data));
-        let [Request::UpdateClient { id, rights }] = sent.as_slice() else { panic!("one update_client, got {sent:?}") };
-        assert_eq!(*id, before.id);
-        assert_eq!(rights.tools, Selection::Only(vec!["pdf".into(), "web".into()]), "PDF stays");
-        assert_eq!(rights.area(Area::Tools), before.rights.area(Area::Tools), "write access stays write");
-        assert_eq!(Rights { tools: before.rights.tools.clone(), ..rights.clone() }, before.rights, "nothing else");
-        assert!(rights.reaches_tool(ToolId::Web) && rights.reaches_tool(ToolId::Pdf));
-        assert_eq!(setup.step, Step::Documents);
-        update(&mut setup, Message::Back, &data);
-        assert!(requests(update(&mut setup, Message::Next, &data)).is_empty(), "at most once");
-    }
-
-    /// Unticked, or without the assistant's client, "Continue" sends nothing; without a provider on neither.
-    #[test]
-    fn without_the_tick_or_the_client_continue_sends_nothing() {
-        let mut none_on = state(Step::Web);
-        assert!(requests(update(&mut none_on, Message::Next, &data())).is_empty(), "no provider: nothing to use");
-
-        let data = with_duckduckgo(&data());
-        let mut setup = state(Step::Web);
-        update(&mut setup, duckduckgo_on(), &data);
-        update(&mut setup, Message::AllowWeb(false), &data);
-        assert!(requests(update(&mut setup, Message::Next, &data)).is_empty());
-
-        let mut without = data.clone();
-        without.clients.retain(|client| client.kind != ASSISTANT_CLIENT);
-        let mut setup = state(Step::Web);
-        update(&mut setup, duckduckgo_on(), &without);
-        assert!(requests(update(&mut setup, Message::Next, &without)).is_empty());
-        let _ = pages::view(&setup, &without, SizeClass::Wide);
-    }
-
-    /// Found in the review of #305: a switch shows at once, but only until the core answers. Refused, it goes
-    /// back to what the core holds; stored, the core's list shows it. "Continue" goes by the core's list, so it
-    /// never gives the assistant `web` while no provider is on.
-    #[test]
-    fn a_refused_switch_goes_back_and_continue_goes_by_the_core() {
-        let data = data();
-        let duckduckgo = |setup: &State, data: &Data| {
-            providers(setup, data).iter().any(|info| info.id == SearchProviderId::Duckduckgo && info.enabled)
-        };
-        let mut setup = state(Step::Web);
-        update(&mut setup, duckduckgo_on(), &data);
-        assert!(duckduckgo(&setup, &data), "shown at once");
-        assert!(!answered(&mut setup, &Err("refused".into())), "the shell says why");
-        assert!(!duckduckgo(&setup, &data), "back to what the core holds");
-        observe(&mut setup, &data);
-        assert!(!duckduckgo(&setup, &data), "and the next reload does not bring it back");
-        assert!(requests(update(&mut setup, Message::Next, &data)).is_empty(), "no provider on: nothing given");
-
-        // Shown but not yet stored: "Continue" waits for the core's word ([`continue_waits_for_the_cores_word`]).
-        let mut early = state(Step::Web);
-        update(&mut early, duckduckgo_on(), &data);
-        assert!(requests(update(&mut early, Message::Next, &data)).is_empty());
-        assert_eq!(early.step, Step::Web, "the click waits, it does not pass the step");
-
-        // Stored: the core's list carries it, the overlay is done.
-        let stored = with_duckduckgo(&data);
-        let mut setup = state(Step::Web);
-        update(&mut setup, duckduckgo_on(), &data);
-        observe(&mut setup, &stored);
-        assert!(setup.switched.is_empty() && setup.providers.is_none(), "confirmed");
-        assert!(duckduckgo(&setup, &stored));
-    }
-
-    /// Found in the second review of #305: a click on "Continue" before the core confirmed a switch is not lost.
-    /// While a switch waits and "Continue" would give the assistant `web`, the button waits (pressed, it stays on
-    /// the step and sends nothing); once the core lists the switch, "Continue" gives `web` and goes on. Unticked
-    /// nothing hangs on the core's word, so the button goes on at once.
-    #[test]
-    fn continue_waits_for_the_cores_word() {
-        let data = data();
-        let mut setup = state(Step::Web);
-        update(&mut setup, duckduckgo_on(), &data);
-        assert_eq!(pages::primary(&setup, &data), (tr("Continue"), false), "waits for the core");
-        assert_eq!(pages::status(&setup, &data).as_deref(), Some(tr("Saving…")));
-        assert!(setup.busy(), "the shell reloads sooner");
-        assert!(requests(update(&mut setup, Message::Next, &data)).is_empty());
-        assert_eq!(setup.step, Step::Web, "Enter does not pass the waiting button by");
-
-        let stored = with_duckduckgo(&data);
-        observe(&mut setup, &stored);
-        assert_eq!(pages::primary(&setup, &stored), (tr("Continue"), true), "confirmed");
-        assert!(!setup.busy());
-        let sent = requests(update(&mut setup, Message::Next, &stored));
-        assert!(matches!(sent.as_slice(), [Request::UpdateClient { .. }]), "{sent:?}");
-        assert_eq!(setup.step, Step::Documents);
-
-        let mut unticked = state(Step::Web);
-        update(&mut unticked, duckduckgo_on(), &data);
-        update(&mut unticked, Message::AllowWeb(false), &data);
-        assert_eq!(pages::primary(&unticked, &data), (tr("Continue"), true), "nothing to wait for");
-        update(&mut unticked, Message::Next, &data);
-        assert_eq!(unticked.step, Step::Documents);
-    }
-
-    /// Found in the second review of #305: SearXNG without an address is switched on but cannot be asked
-    /// (`WebSearch::askable`), so it counts for neither "Continue" nor the first provider: alone it gives the
-    /// assistant nothing, and the next provider switched on still switches the tool on.
-    #[test]
-    fn searxng_without_an_address_counts_for_nothing() {
-        let mut data = data();
-        for info in &mut data.search_providers {
-            if info.id == SearchProviderId::Searxng {
-                (info.enabled, info.address) = (true, None);
-            }
-        }
-        let mut setup = state(Step::Web);
-        assert!(requests(update(&mut setup, Message::Next, &data)).is_empty(), "nothing can be asked");
-
-        let mut setup = state(Step::Web);
-        let sent = requests(update(&mut setup, duckduckgo_on(), &data));
-        assert!(
-            sent.contains(&crate::ui::connections::switch_request(ToolId::Web, true)),
-            "the first askable: {sent:?}"
-        );
-
-        // With its address it counts.
-        for info in &mut data.search_providers {
-            if info.id == SearchProviderId::Searxng {
-                info.address = Some("https://search.example.org".into());
-            }
-        }
-        let mut setup = state(Step::Web);
-        let sent = requests(update(&mut setup, Message::Next, &data));
-        assert!(matches!(sent.as_slice(), [Request::UpdateClient { .. }]), "{sent:?}");
-        let mut setup = state(Step::Web);
-        assert_eq!(requests(update(&mut setup, duckduckgo_on(), &data)).len(), 1, "not the first");
-    }
-
-    /// Found in the review of #305: while SearXNG's address is checked, the refusal of another request is not
-    /// taken for the check's; only the check's own answer ends it ([`checked`]).
-    #[test]
-    fn only_the_checks_own_answer_ends_it() {
-        let data = data();
-        let mut setup = state(Step::Web);
-        update(&mut setup, Message::Web(web::Message::TypeAddress("https://search.example.org".into())), &data);
-        let check = update(&mut setup, Message::Web(web::Message::CheckAddress), &data);
-        let Outcome::Stay(Action::CheckAddress(request)) = check else { panic!("the check apart, got {check:?}") };
-        assert_eq!(request, web::address_request(Some("https://search.example.org")));
-        update(&mut setup, duckduckgo_on(), &data);
-        assert!(!answered(&mut setup, &Err("the switch was refused".into())), "the shell says it");
-        assert!(setup.busy(), "the check still waits");
-        assert!(checked(&mut setup, &Err("This SearXNG instance does not answer in JSON.".into())));
-        assert!(!setup.busy());
-        assert!(!checked(&mut setup, &Err("late".into())), "no check waits: the shell says it");
-    }
-
-    /// "Skip" leaves the web search off and sends nothing; Escape drops a key being typed first.
-    #[test]
-    fn skipping_the_web_step_sends_nothing() {
-        let data = data();
-        let mut setup = state(Step::Web);
-        assert_eq!(pages::status(&setup, &data).as_deref(), Some(tr("Web search is off")));
-        let key = web::Message::TypeKey(SearchProviderId::Brave, Secret::new("BSA-1"));
-        assert!(requests(update(&mut setup, Message::Web(key), &data)).is_empty());
-        assert_eq!(escape(&setup).map(|m| format!("{m:?}")), Some("Web(Discard)".into()));
-        assert!(requests(update(&mut setup, Message::Skip, &data)).is_empty());
-        assert_eq!((setup.step, setup.mark(Step::Web)), (Step::Documents, Mark::Skipped));
-        assert!(escape(&setup).is_some_and(|m| matches!(m, Message::Back)), "the typed key went with the step");
-    }
-
-    /// "All tools" does not include `web`: given it, the assistant gets every tool by name, PDF stays reachable.
-    /// An area without access gets read access; one with more keeps it.
-    #[test]
-    fn web_is_added_by_name_and_all_tools_stays_reachable() {
-        let mut all = Rights::assistant();
-        all.tools = Selection::All;
-        all.areas.insert(Area::Tools, AreaRights { level: Level::Full, admin: true });
-        let given = with_web(&all);
-        assert_eq!(given.tools, Selection::Only(ToolId::ALL.into_iter().map(|t| t.name().to_string()).collect()));
-        assert_eq!(given.area(Area::Tools), AreaRights { level: Level::Full, admin: true });
-        assert!(given.reaches_tool(ToolId::Pdf) && given.reaches_tool(ToolId::Web));
-
-        let mut closed = Rights::assistant();
-        closed.areas.remove(&Area::Tools);
-        closed.tools = Selection::Only(Vec::new());
-        let given = with_web(&closed);
-        assert_eq!(
-            (given.area(Area::Tools).level, given.tools.clone()),
-            (Level::Read, Selection::Only(vec!["web".into()]))
-        );
-        assert_eq!(with_web(&given), given, "already there: unchanged");
-    }
-
-    /// A refused SearXNG address shows under its field, not as the shell's notice; the last step names the
-    /// providers that are on.
-    #[test]
-    fn a_refused_address_stays_on_the_page() {
-        let data = data();
-        let mut setup = state(Step::Web);
-        update(&mut setup, Message::Web(web::Message::TypeAddress("https://search.example.org".into())), &data);
-        let check = update(&mut setup, Message::Web(web::Message::CheckAddress), &data);
-        assert!(matches!(check, Outcome::Stay(Action::CheckAddress(_))), "{check:?}");
-        assert!(setup.busy());
-        assert!(checked(&mut setup, &Err("This SearXNG instance does not answer in JSON.".into())));
-        assert!(!setup.busy());
-        assert!(!answered(&mut setup, &Err("another refusal".into())), "no check waits: the shell says it");
-
-        update(&mut setup, duckduckgo_on(), &data);
-        setup.go(Step::Done);
-        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
-            let _ = pages::view(&setup, &data, class);
-        }
-        assert_eq!(pages::providers_on(&setup, &data), ["DuckDuckGo"]);
-        assert_eq!(pages::web_detail(&setup, &data), trf("Web search · {providers}", &[("providers", &"DuckDuckGo")]));
-        assert_eq!(pages::web_detail(&state(Step::Done), &data), tr("Web search off"));
-    }
-
-    #[test]
-    fn steps_are_named_by_their_word() {
-        for step in Step::ALL.into_iter().filter(|step| step.built()) {
-            assert_eq!(Step::from_arg(step.arg()), Some(step));
-        }
-        assert_eq!(Step::from_arg("later"), None, "no such step");
-        assert_eq!(
-            Step::args(),
-            [
-                "welcome",
-                "nextcloud",
-                "components",
-                "calendar",
-                "tasks",
-                "mail",
-                "inbox",
-                "ai",
-                "web",
-                "documents",
-                "done"
-            ]
-        );
-    }
-
-    /// Issue #303: the step Documents is the assistant's, so it is walked only while the assistant is on, right
-    /// before the end.
-    #[test]
-    fn documents_come_after_the_web_search_with_the_assistant() {
-        let all = steps(&BTreeSet::new());
-        let at = all.iter().position(|step| *step == Step::Documents).expect("walked");
-        assert_eq!((all[at - 1], all[at + 1]), (Step::Web, Step::Done));
-        let without = steps(&BTreeSet::from([Component::Assistant]));
-        assert!(!without.contains(&Step::Documents) && !without.contains(&Step::Web));
-    }
-
-    /// Issue #303: each ArtCraft app shows how it stands – set up as a server, its program found, or missing –, and
-    /// "Get <App>" opens the releases the catalog entry names; nothing is stored.
-    #[test]
-    fn documents_show_each_app_as_it_stands() {
-        let mut data = data();
-        super::super::launch::demo_documents(&mut data);
-        let entry = |id: &str| data.catalog.entries().iter().find(|entry| entry.id == id).cloned().expect("listed");
-        let states: Vec<pages::AppState> =
-            pages::APPS.iter().map(|(id, ..)| pages::app_state(&data, &entry(id))).collect();
-        use pages::AppState::{Installed, Missing, SetUp};
-        assert_eq!(states, [SetUp, Missing, Installed, Missing]);
-        let deckcraft = entry("deckcraft");
-        let mut setup = state(Step::Documents);
-        match update(&mut setup, Message::GetApp(deckcraft.url.clone()), &data) {
-            Outcome::Stay(Action::OpenUrl(url)) => assert_eq!(url, "https://github.com/storytold/deckcraft/releases"),
-            other => panic!("expected the releases in the browser, got {other:?}"),
-        }
-        assert_eq!(pages::primary(&setup, &data), (tr("Continue"), true));
-        assert!(pages::skip(&setup, &data).is_some(), "it can be skipped like any step");
-        assert!(matches!(update(&mut setup, Message::Next, &data), Outcome::Stay(Action::None)), "stores nothing");
-        assert_eq!(setup.step, Step::Done);
-    }
-
-    /// Review of PR #316: before the catalog answers the step shows "Loading …", a failed list a sentence, and a
-    /// catalog without the ArtCraft apps (a service of another version) another; otherwise the four apps in order.
-    #[test]
-    fn documents_say_how_the_catalog_answered() {
-        use super::super::connections::Listing;
-        use pages::Listed;
-        let mut data = data();
-        let Listed::Apps(apps) = pages::listed(&data) else { panic!("the demo lists the apps") };
-        let ids: Vec<&str> = apps.iter().map(|(entry, ..)| entry.id.as_str()).collect();
-        assert_eq!(ids, ["wordcraft", "deckcraft", "gridcraft", "pdfcraft"]);
-        let catalog = data.catalog.entries().to_vec();
-        data.catalog = Listing::Entries(Vec::new());
-        assert_eq!(pages::listed(&data), Listed::Loading);
-        data.catalog = Listing::Failed("unsupported".into());
-        assert_eq!(pages::listed(&data), Listed::Failed);
-        data.catalog = Listing::Entries(catalog.into_iter().filter(|entry| !entry.id.ends_with("craft")).collect());
-        assert_eq!(pages::listed(&data), Listed::NotInCatalog);
     }
 }

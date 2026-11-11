@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<!-- Entwurf der Einrichtung #326, eine Seite des Ablaufs. Übersicht: index.html -->
+<head>
+<meta charset="utf-8">
+<title>Setup · Mail and calendar</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#B4B8BF}a:hover{color:#EDEEF0}
+.w{width:960px;height:640px;box-sizing:border-box;padding:8px;background:#08090A;color:#EDEEF0;font:400 13px/20px Inter,system-ui,sans-serif;display:flex;flex-direction:column}
+.p{flex:1;min-height:0;background:#0F1011;border:1px solid rgba(255,255,255,.06);border-radius:8px;display:flex;flex-direction:column;overflow:hidden}
+.hd{height:52px;flex:none;display:flex;align-items:center;gap:16px;padding:0 12px 0 16px;border-bottom:1px solid rgba(255,255,255,.06)}
+.brand{display:flex;align-items:center;gap:8px;font-weight:500;width:150px}
+.logo{width:20px;height:20px;border-radius:5px;background:#D50C0C;display:grid;place-items:center;color:#fff;font-weight:600;font-size:11px}
+.steps{flex:1;display:flex;align-items:center;justify-content:center;gap:8px}
+.st{display:flex;align-items:center;gap:6px;color:#8A8F98;font-size:12px;font-weight:500;white-space:nowrap;text-decoration:none}
+.st i{font-style:normal;width:18px;height:18px;border-radius:50%;border:1px solid rgba(255,255,255,.14);display:grid;place-items:center;font-size:11px}
+.st.done{color:#B4B8BF}.st.done i{background:#1C1E22;border-color:rgba(255,255,255,.14);color:#EDEEF0}
+.st.on{color:#EDEEF0}.st.on i{background:#EDEEF0;color:#08090A;border-color:#EDEEF0}
+.ln{width:20px;height:1px;background:rgba(255,255,255,.10)}
+.right{width:150px;display:flex;justify-content:flex-end}
+.bd{flex:1;min-height:0;overflow:hidden;padding:28px 40px}
+.col{max-width:640px;display:flex;flex-direction:column;gap:20px}
+h1{margin:0;font-size:20px;line-height:28px;font-weight:600}
+.lead{margin:4px 0 0;color:#B4B8BF}
+.why{display:flex;gap:10px;padding:12px 14px;border-radius:8px;background:#141518;border:1px solid rgba(255,255,255,.06);color:#B4B8BF}
+.why b{color:#EDEEF0;font-weight:500}
+.gl{font-size:12px;font-weight:500;color:#8A8F98;margin:0 0 6px}
+.grp{border:1px solid rgba(255,255,255,.06);border-radius:8px;background:#0F1011}
+.row{display:flex;align-items:center;gap:12px;min-height:44px;padding:6px 14px;border-top:1px solid rgba(255,255,255,.06)}
+.row:first-child{border-top:0}
+.row .t{flex:1;min-width:0}
+.lab{width:120px;flex:none;color:#B4B8BF}
+.meta{display:block;font-size:12px;line-height:16px;color:#8A8F98}
+.ok{color:#3FB984;font-size:12px;font-weight:500;white-space:nowrap}
+.chip{font-size:12px;color:#B4B8BF;background:#1C1E22;border-radius:4px;padding:2px 8px;white-space:nowrap}
+.btn{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:6px;border:1px solid rgba(255,255,255,.10);background:#141518;color:#EDEEF0;font:500 12px/1 Inter,sans-serif;white-space:nowrap;text-decoration:none;cursor:pointer}
+.btn.ghost{border-color:transparent;background:none;color:#B4B8BF}
+.btn.primary{background:#D50C0C;border-color:transparent;color:#fff}
+.field{height:30px;box-sizing:border-box;flex:1;min-width:0;border-radius:6px;border:1px solid rgba(255,255,255,.10);background:#08090A;color:#EDEEF0;padding:0 10px;font:400 13px Inter,sans-serif}
+.ft{height:56px;flex:none;display:flex;align-items:center;gap:8px;padding:0 16px;border-top:1px solid rgba(255,255,255,.06)}
+.ft .grow{flex:1;color:#8A8F98}
+.ic{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+</style>
+<div class="w">
+<div class="p">
+<div class="hd">
+<div class="brand"><span class="logo">T</span>Setup</div>
+<div class="steps">
+<span class="st on"><i>1</i>Mail and calendar</span><span class="ln"></span>
+<span class="st"><i>2</i>Cloud</span><span class="ln"></span>
+<span class="st"><i>3</i>AI</span><span class="ln"></span>
+<span class="st"><i>4</i>Appearance</span><span class="ln"></span>
+<span class="st"><i>5</i>Documents</span>
+</div>
+<div class="right"><a class="btn ghost" href="6-done.html">Set up later</a></div>
+</div>
+<div class="bd">
+<div class="col">
+<div>
+<h1>Mail and calendar</h1>
+<p class="lead">Connect your mail account. Torro finds the server settings for most providers.</p>
+</div>
+<div class="why"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 16v-4M12 8h.01"></path></svg><span><b>Why this matters.</b> Most providers bring their calendars and task lists with the account, so one sign-in fills Mail, Calendar and Tasks.</span></div>
+<div>
+<p class="gl">Add an account</p>
+<div class="grp">
+<div class="row"><label class="lab" for="m-addr">Email address</label><input id="m-addr" class="field" value="anna@posteo.de"><span class="chip">Posteo · Mail, calendar, tasks</span></div>
+<div class="row"><label class="lab" for="m-pw">Password</label><input id="m-pw" class="field" type="password" value="secretsecret"><button class="btn">Connect</button></div>
+</div>
+<p class="meta" style="margin: 6px 0 0">Gmail, iCloud, Outlook and some others need an app password instead of your usual one. <a href="#">How to create one</a></p>
+</div>
+<div>
+<p class="gl">Connected</p>
+<div class="grp">
+<div class="row"><span class="t">anna@mailbox.org<span class="meta">Mail · 2 calendars · 1 task list</span></span><span class="ok">Connected</span></div>
+<div class="row"><span class="t" style="color: #B4B8BF">Add another account</span><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></div>
+</div>
+</div>
+</div>
+</div>
+<div class="ft"><span class="grow"><a href="#">Take over accounts from TorroMail</a></span><a class="btn ghost" href="0-welcome.html">Back</a><a class="btn" href="2-cloud.html">Skip</a><a class="btn primary" href="2-cloud.html">Continue</a></div>
+</div>
+</div>
+</body>
+</html>

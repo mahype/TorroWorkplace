@@ -266,9 +266,9 @@ pub struct Data {
     /// the setup is set in the assistant's own window (task S.17).
     pub engines: Vec<torro_ipc::assistant::Engine>,
     /// Decision models available during the first-run AI step, paired with their AI account.
-    pub ai_deciders: Vec<(String, torro_core::ai::AiModel)>,
+    pub ai_models: Vec<(String, torro_core::ai::AiModel)>,
     /// AI accounts whose models were checked, including accounts with no suitable model.
-    pub ai_deciders_from: Vec<String>,
+    pub ai_models_from: Vec<String>,
     /// The screens the window manager has (`workspaces.list_screens`, task WS.6), for Workspaces and
     /// where a template loads at login; empty without a window manager.
     pub screens: Vec<torro_ipc::ScreenInfo>,
@@ -278,8 +278,8 @@ pub struct Data {
     /// The core's built-in catalog of MCP servers (`extensions.list_catalog`), with what each needs
     /// that is missing on this computer, or why it could not be listed.
     pub catalog: connections::Listing<torro_ipc::extensions::CatalogEntry>,
-    /// The web search providers (`tools.list_search_providers`, task WEB.7) for the setup's step "Web search", in
-    /// the order the core asks them; only loaded while the setup is open, since listing them asks the system
+    /// The web search providers (`tools.list_search_providers`, task WEB.7) for MCP servers' built-in tools, in
+    /// the order the core asks them; only loaded while that section is open, since listing them asks the system
     /// keychain whether their keys are stored.
     pub search_providers: Vec<torro_ipc::web::SearchProviderInfo>,
     /// The app catalog (`apps.list_catalog`, issue #411) and the job that runs, loaded apart from
@@ -303,8 +303,8 @@ pub enum Action {
     /// `Response::Error` with its code, so the template dialog can tell `busy` from `not-found`
     /// ([`template_form::refusal`]). Then reload, as for [`Action::Send`].
     Ask(workspaces::Asked, Request),
-    /// Send this request for the setup's step "Web search" or MCP servers' search providers and hand the answer
-    /// to the one that asked only ([`setup::checked`], [`connections::checked`]): the check of a new SearXNG
+    /// Send this request for MCP servers' search providers and hand the answer
+    /// to the one that asked only ([`connections::checked`]): the check of a new SearXNG
     /// address (task WEB.7), so the refusal of another request that runs beside it is never shown as the check's
     /// reason. Then reload, as for [`Action::Send`].
     CheckAddress(Request),
@@ -694,7 +694,10 @@ impl Ui {
         // once the core answers (task S.35); the demo starts nothing.
         ui.target = ui.launch.client.clone().filter(|_| !demo);
         // A start on the Appearance page lists the parts, as opening it does.
-        let designs = match ui.section == Section::Appearance && suite::unlisted(&ui.general.suite) {
+        // So does a start on the setup's point Appearance (issue #326).
+        let on_looks = ui.section == Section::Appearance
+            || ui.setup.as_ref().is_some_and(|setup| setup.step() == setup::Step::Appearance);
+        let designs = match on_looks && suite::unlisted(&ui.general.suite) {
             true => ui.perform(Action::ListLooks),
             false => Task::none(),
         };
@@ -1137,7 +1140,7 @@ impl Ui {
             Open::AiSetup(scenario) => {
                 self.data.settings.ai_slots = Default::default();
                 self.data.settings.ai_assignments.clear();
-                self.data.ai_deciders_from =
+                self.data.ai_models_from =
                     self.data.accounts.iter().filter(|a| a.kind == "ai").map(|a| a.id.clone()).collect();
                 let mut state = setup::State::new(setup::Step::Ai, &self.data.settings);
                 accounts::ai_setup::demo(&mut state.ai_setup, scenario, &self.data);
@@ -1145,43 +1148,41 @@ impl Ui {
                 vec![]
             }
             Open::Setup(step) => {
-                // The step Documents (issue #303) shows one app of each state: GridCraft only installed.
-                if step == setup::Step::Documents {
+                // The summary shows an ArtCraft app set up (issue #303).
+                if matches!(step, setup::Step::Documents | setup::Step::Done) {
                     launch::demo_documents(&mut self.data);
                 }
                 self.setup = Some(setup::State::new(step, &self.data.settings));
                 vec![]
             }
-            // Without the demo's Nextcloud accounts the step asks for an address; waiting, the core
-            // reports a sign-in with its link (nothing is sent, the demo drops the request).
-            Open::SetupCalDav => {
-                self.setup = Some(setup::State::new(setup::Step::Calendar, &self.data.settings));
-                let address = setup::Message::CalDav(connect::caldav::Message::Address("anna@mailbox.org".into()));
-                vec![Message::Setup(setup::Message::OpenCalDav), Message::Setup(address)]
-            }
-            // Entering the step sends the search, which the demo answers itself.
-            Open::SetupAi => {
-                self.setup = Some(setup::State::new(setup::Step::Inbox, &self.data.settings));
-                vec![
-                    Message::Setup(setup::Message::Next),
-                    Message::Setup(setup::Message::SortModel(
-                        accounts::demo::DEMO_NETWORK.into(),
-                        "nimble:latest".into(),
-                    )),
-                ]
-            }
-            Open::SetupMailAdd => {
+            // The mail path at its password, as the dialog's demo leads there (issue #326).
+            Open::SetupMailPassword => {
                 self.setup = Some(setup::State::new(setup::Step::Mail, &self.data.settings));
-                vec![Message::Setup(setup::Message::AddMail)]
+                wizard::demo_messages(wizard::Demo::Password)
+                    .into_iter()
+                    .map(|message| Message::Setup(setup::Message::Mail(message)))
+                    .collect()
             }
-            Open::SetupGithub => {
-                self.data.accounts.retain(|account| account.kind != "github");
-                self.setup = Some(setup::State::new(setup::Step::Tasks, &self.data.settings));
+            // The point AI with the demo's suggestion (issue #326): nothing chosen yet, or (`ai-keep`) the
+            // models chosen before, which the page keeps; the pages Chat and Sorting with the demo's models.
+            Open::SetupAi(page, keep) => {
+                if !keep {
+                    self.data.settings.ai_slots = Default::default();
+                    self.data.settings.ai_assignments.clear();
+                }
+                self.data.ai_models = launch::demo_ai_models();
+                self.data.ai_models_from =
+                    self.data.accounts.iter().filter(|a| a.kind == "ai").map(|a| a.id.clone()).collect();
+                let mut state = setup::State::new(setup::Step::Ai, &self.data.settings).on_ai_page(page);
+                accounts::ai_setup::demo(&mut state.ai_setup, "suggestion", &self.data);
+                self.setup = Some(state);
                 vec![]
             }
+            // Without the demo's Nextcloud accounts the point asks for an address; waiting, the core
+            // reports a sign-in with its link (nothing is sent, the demo drops the request).
             Open::SetupNextcloudAddress | Open::SetupNextcloudWaiting => {
                 self.data.accounts.retain(|account| account.kind != "nextcloud");
-                self.setup = Some(setup::State::new(setup::Step::Nextcloud, &self.data.settings));
+                self.setup = Some(setup::State::new(setup::Step::Cloud, &self.data.settings));
                 let mut messages = vec![];
                 if open == Open::SetupNextcloudWaiting {
                     self.data.accounts.push(launch::demo_signing_in());
@@ -1287,13 +1288,13 @@ impl Ui {
             .setup
             .as_ref()
             .filter(|setup| setup.step() == setup::Step::Ai)
-            .map(|_| (self.data.ai_deciders_from.clone(), self.data.ai_deciders.clone()));
+            .map(|_| (self.data.ai_models_from.clone(), self.data.ai_models.clone()));
         let rest = match (self.launch.demo, self.section) {
             (true, _) => Task::none(),
             (false, _) if self.on_documents() => Task::batch([load(true, None), load_catalog()]),
             // MCP servers shows the web search providers among the built-in tools (task MA.7 with WEB.6).
             (false, Section::Connections) => Task::batch([load(true, ai_cache), load_catalog()]),
-            (false, _) => load(self.setup.is_some(), ai_cache),
+            (false, _) => load(false, ai_cache),
         };
         Task::batch([rest, self.reload_app_catalog()])
     }
@@ -1352,7 +1353,7 @@ impl Ui {
             // A second start of the control centre brings this window to the front (issue #279).
             torro_gui::instance::subscription().map(|()| Message::Raise),
         ];
-        if let Some(setup) = self.setup.as_ref().filter(|s| s.step() == setup::Step::Ai) {
+        if let Some(setup) = self.setup.as_ref().filter(|s| s.ai_running()) {
             all.push(
                 accounts::ai_setup::subscription(&setup.ai_setup)
                     .map(|message| Message::Setup(setup::Message::AiSetup(message))),
@@ -1483,7 +1484,8 @@ impl Ui {
                     let step = self.launch.setup.unwrap_or(setup::Step::Welcome);
                     if self.data.settings.setup.state != SetupState::Done {
                         self.setup = Some(setup::State::new(step, &self.data.settings));
-                        // Loaded without the setup's search providers (task WEB.7): once more with them.
+                        // Loaded before the setup was open, without what only the setup loads (the models of
+                        // the AI accounts on its point AI): once more now.
                         providers = self.reload();
                     }
                 }
@@ -1576,11 +1578,10 @@ impl Ui {
                 tasks.push(self.reload());
                 return Task::batch(tasks);
             }
-            // Only the address check of the setup or of MCP servers' search providers gets this answer; a refusal
-            // shows under its field.
+            // Only the address check of MCP servers' search providers gets this answer; a refusal shows under
+            // its field.
             Message::Checked(result) => {
-                let shown = self.setup.as_mut().is_some_and(|setup| setup::checked(setup, &result))
-                    || connections::checked(&mut self.connections, &result);
+                let shown = connections::checked(&mut self.connections, &result);
                 self.notice = if shown { None } else { result.err() };
                 return self.reload();
             }
@@ -1603,6 +1604,14 @@ impl Ui {
             }
             // Only the group "Models" gets these: it shows a refusal under its slot itself.
             Message::AiAnswered(asked, result) => {
+                // A model turned on or put into a slot by the setup: its lists of models load afresh, so the
+                // cache is dropped before the reload takes it.
+                if let accounts::Asked::Setup { owner, .. } = asked
+                    && asked.changes()
+                    && self.setup.as_ref().is_some_and(|setup| accounts::ai_setup::owns(&setup.ai_setup, owner))
+                {
+                    self.data.ai_models_from.clear();
+                }
                 let reload = if asked.changes() { self.reload() } else { Task::none() };
                 if let accounts::Asked::Setup { owner, run, .. } = asked
                     && let Some(setup) = self.setup.as_mut()
@@ -1673,6 +1682,12 @@ impl Ui {
                     return Task::none();
                 }
                 if let Some(setup) = &self.setup {
+                    // The dropdowns of the point Appearance are Settings › Appearance's.
+                    if setup.step() == setup::Step::Appearance
+                        && let Some(close) = suite::escape(&self.general.suite)
+                    {
+                        return self.update(Message::General(general::Message::Suite(close)));
+                    }
                     return match setup::escape(setup) {
                         Some(message) => self.update(Message::Setup(message)),
                         None => Task::none(),
@@ -1711,29 +1726,61 @@ impl Ui {
                 {
                     return self.update(Message::WizardNavigate(agent_wizard::Navigation::Activate));
                 }
-                match self.setup.as_ref().is_some_and(|setup| !setup.dialog_open()) && self.menu.is_none() {
+                let looks_open = self.setup.as_ref().is_some_and(|setup| setup.step() == setup::Step::Appearance)
+                    && suite::escape(&self.general.suite).is_some();
+                match self.setup.as_ref().is_some_and(|setup| !setup.dialog_open())
+                    && self.menu.is_none()
+                    && !looks_open
+                {
                     true => return self.update(Message::Setup(setup::Message::Next)),
                     false => Action::None,
                 }
             }
+            // A choice on the point Appearance is the same as on Settings › Appearance (issue #326).
+            Message::Setup(setup::Message::Suite(m)) => {
+                return self.update(Message::General(general::Message::Suite(m)));
+            }
             Message::Setup(m) => {
                 let Some(state) = self.setup.as_mut() else { return Task::none() };
                 let before = state.step();
-                match setup::update(state, m, &self.data) {
+                let outcome = setup::update(state, m, &self.data);
+                let after = state.step();
+                // Leaving the point Appearance closes its dropdowns, which belong to Settings › Appearance too.
+                if before == setup::Step::Appearance && after != before {
+                    suite::leave(&mut self.general.suite);
+                }
+                // Entering the point Appearance lists the designs, fonts and colour schemes, as opening
+                // Settings › Appearance does.
+                let looks =
+                    match before != after && after == setup::Step::Appearance && suite::unlisted(&self.general.suite) {
+                        true => self.perform(Action::ListLooks),
+                        false => Task::none(),
+                    };
+                let action = match outcome {
                     // Entering the step Documents asks for the catalog at once (issue #303).
                     setup::Outcome::Stay(action)
                         if before != setup::Step::Documents && self.on_documents() && !self.launch.demo =>
                     {
-                        return Task::batch([self.perform(action), load_catalog()]);
+                        return Task::batch([self.perform(action), load_catalog(), looks]);
                     }
                     setup::Outcome::Stay(action) => action,
                     // Finished or put off: the window goes on as the control centre.
                     setup::Outcome::Close(action) => {
                         self.setup = None;
+                        suite::leave(&mut self.general.suite);
                         self.select(Section::Overview);
                         action
                     }
-                }
+                    // Finished on the way into a section ("Open Settings", "Connect an agent…").
+                    // The section opens as a click on it does (Appearance lists its parts, MCP servers reads the
+                    // hooks' notes).
+                    setup::Outcome::CloseTo(action, section) => {
+                        self.setup = None;
+                        let sent = self.perform(action);
+                        return Task::batch([sent, self.update(Message::Select(section)), looks]);
+                    }
+                };
+                return Task::batch([self.perform(action), looks]);
             }
             // Open an attention row in its account's section.
             Message::Overview(overview::Message::OpenAccounts(id)) => {
@@ -2129,25 +2176,31 @@ impl Ui {
             .into()
     }
 
-    /// The first-run setup in the window's frame: the steps where the sections are (wide: the
-    /// sidebar, medium: the rail, narrow: none), its header, and its page over the footer.
+    /// The first-run setup in the window's frame (issue #326): no sidebar, the header with the stepper over
+    /// a line, and the step's page over its footer; its dialog, question or dropdown over all of it.
     fn setup_window<'a>(&'a self, setup: &'a setup::State, class: SizeClass) -> Element<'a, Message> {
         let wrap = |element: Element<'a, setup::Message>| element.map(Message::Setup);
         let body = match self.loaded {
-            true => wrap(setup::body(setup, &self.data, class)),
+            true => wrap(setup::body(setup, &self.data, &self.general.suite, class)),
             false => widgets::loading(),
         };
-        let rail = (class == SizeClass::Medium).then(|| wrap(setup::sidebar(setup, SidebarMode::Rail)));
-        shell::shell(
-            class,
-            wrap(setup::sidebar(setup, SidebarMode::Expanded)),
-            wrap(setup::header(setup, class)),
-            body,
-            None,
-        )
-        .rail(rail)
-        .overlay(setup::overlay(setup, &self.data).map(wrap))
-        .into()
+        let head = container(wrap(setup::header(setup, class)))
+            .width(Fill)
+            .center_y(size::header())
+            .padding(page_margin(class).top(0).bottom(0));
+        // Narrow, how far the walk stands is a line across the window under the header (issue #326).
+        let line: Element<'a, Message> = match class {
+            SizeClass::Narrow => {
+                let (done, all) = setup::progress(setup);
+                widgets::progress_line(done, all)
+            }
+            _ => rule::horizontal(1).style(style::rule).into(),
+        };
+        let frame = container(column![head, line, body]).width(Fill).height(Fill).style(style::container::panel_flush);
+        match setup::overlay(setup, &self.data, &self.general.suite) {
+            Some(layer) => stack![frame, wrap(layer)].into(),
+            None => frame.into(),
+        }
     }
 
     /// The count after a section in the sidebar and the menu: accounts, templates and the
@@ -2548,7 +2601,7 @@ fn keys(event: iced::Event, status: iced::event::Status, _window: iced::window::
 /// The account ids behind a cached list of models suitable for mail categorization.
 type MailDeciderCache = (Vec<String>, Vec<(String, torro_core::ai::AiModel)>);
 
-/// Loads everything the pages show; the search providers only `with_providers` (the setup is open).
+/// Loads everything the pages show; the search providers only `with_providers` (MCP servers is open).
 fn load(with_providers: bool, ai_cache: Option<MailDeciderCache>) -> Task<Message> {
     // How long the core took to answer, with `TORRO_TIMING` (issue #206).
     let started = Instant::now();
@@ -2614,22 +2667,25 @@ fn load(with_providers: bool, ai_cache: Option<MailDeciderCache>) -> Task<Messag
                     .map(|account| account.id.clone())
                     .collect();
                 if from == accounts {
-                    data.ai_deciders = cached;
+                    data.ai_models = cached;
                 } else {
                     for account in &accounts {
                         if let Ok(Response::AiModels { models, .. }) =
                             client::call(&socket, &Request::AiModels { account: account.clone(), all: true }).await
                         {
-                            data.ai_deciders.extend(
+                            data.ai_models.extend(
                                 models
                                     .into_iter()
-                                    .filter(|model| model.enabled && model.decision == Some(true))
+                                    // Decision models for Sorting, models with tools for Chat (issue #326).
+                                    .filter(|model| {
+                                        model.enabled && (model.decision == Some(true) || model.tools == Some(true))
+                                    })
                                     .map(|model| (account.clone(), model)),
                             );
                         }
                     }
                 }
-                data.ai_deciders_from = accounts;
+                data.ai_models_from = accounts;
             }
             // MCP servers (task MA.7): a failure is shown in its group, not over the page.
             let servers = listing(&socket, Request::ListExtensions, |answer| match answer {
@@ -2637,7 +2693,7 @@ fn load(with_providers: bool, ai_cache: Option<MailDeciderCache>) -> Task<Messag
                 other => Err(other),
             });
             data.extensions = connections::Listing::from_result(servers.await);
-            // The setup's step "Web search" (task WEB.7).
+            // MCP servers' built-in tools (task WEB.6).
             if with_providers
                 && let Ok(Response::SearchProviders { providers }) =
                     client::call(&socket, &Request::ListSearchProviders).await
@@ -2932,19 +2988,20 @@ mod tests {
         }
     }
 
-    /// Issue #305: the demo keeps a web search provider switched in the setup in its own list, so "Continue" on the
-    /// web step does not wait for a reload that never comes.
+    /// Issue #326: every demo state of the setup opens it, the pages of the point AI on their point.
     #[test]
-    fn the_demo_keeps_a_web_switch_of_the_setup() {
-        use torro_core::settings::SearchProviderId;
-        let mut ui = started(&["--demo", "--open", "setup-web"]);
-        let switch =
-            setup::Message::Web(torro_settings_ui::assistant::web::Message::Switch(SearchProviderId::Duckduckgo, true));
-        let _ = ui.update(Message::Setup(switch));
-        let duckduckgo = ui.data.search_providers.iter().find(|info| info.id == SearchProviderId::Duckduckgo);
-        assert!(duckduckgo.is_some_and(|info| info.enabled), "the demo's list carries the switch");
-        let setup = ui.setup.as_ref().expect("the setup is open");
-        assert!(!setup::web_waits(setup, &ui.data), "Continue goes on");
+    fn every_demo_state_of_the_setup_opens_it() {
+        for (name, _) in Open::ALL.iter().filter(|(name, _)| name.starts_with("setup")) {
+            let mut ui = started(&["--demo", "--open", name]);
+            assert!(ui.setup.is_some(), "{name}");
+            // Each draws in every size class, from the narrow window to the wide one.
+            for size in [Size::new(1600.0, 1000.0), Size::new(800.0, 600.0), Size::new(480.0, 900.0)] {
+                let _ = ui.update(Message::Resized(size));
+                let _ = ui.view();
+            }
+        }
+        let ui = started(&["--demo", "--open", "setup-ai-chat"]);
+        assert_eq!(ui.setup.as_ref().map(setup::State::step), Some(setup::Step::Ai));
     }
 
     /// Issue #459: the window shows the shell with its top row – panel button and "General" in one
@@ -2960,7 +3017,7 @@ mod tests {
         let _ = ui.update(Message::Resized(Size::new(240.0, 160.0)));
         assert!(!ui.has_top_row(), "a glance has no top row");
         let _ = ui.view();
-        let mut setup = started(&["--demo", "--open", "setup-web"]);
+        let mut setup = started(&["--demo", "--open", "setup-ai"]);
         for size in [Size::new(1600.0, 1000.0), Size::new(420.0, 780.0)] {
             let _ = setup.update(Message::Resized(size));
             assert!(!setup.has_top_row(), "{size:?}: the setup keeps its band");

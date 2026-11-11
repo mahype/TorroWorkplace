@@ -1480,7 +1480,14 @@ pub fn view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
     let header =
         column![typo::text(typo::title(), title), typo::text(typo::body(), subtitle(state)).style(theme::text_2)]
             .spacing(space::xs());
-    let body = match state.step {
+    // Head and foot stay in the window; the steps scroll between them when it is low (D.12).
+    dialog::frame(header, body(state, data), footer(state), space::xl())
+}
+
+/// The current step's content, without the dialog's head and foot: what [`view`] frames and what the
+/// first-run setup shows of the mail path on its own page ([`mail_page`]).
+fn body<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
+    match state.step {
         Step::Provider => provider_step(state),
         Step::TorroMail => torromail_step(state),
         Step::Server => server_step(state),
@@ -1510,9 +1517,63 @@ pub fn view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
         Step::NtfyLogin => ntfy_login_step(state),
         Step::Done if state.provider == Provider::Mail => mail_done_step(state),
         Step::Done => typo::text(typo::body(), done_text(state)).into(),
-    };
-    // Head and foot stay in the window; the steps scroll between them when it is low (D.12).
-    dialog::frame(header, body, footer(state), space::xl())
+    }
+}
+
+// ----- The mail path as a page of the first-run setup (issue #326) ---------------------------------
+
+/// A mail path that starts at the e-mail address, for a page that shows it inline (issue #326): the
+/// same as [`State::at`] with [`Provider::Mail`], so every rule of the path holds, but without the
+/// data the other providers' first steps need.
+pub fn mail() -> State {
+    State { step: MAIL_STEPS[0], origin: MAIL_STEPS[0], provider: Provider::Mail, ..State::new() }
+}
+
+/// The mail path's current step without the dialog's frame (issue #326): the first-run setup shows
+/// it on its own page, with its own footer ([`mail_primary`], [`mail_back`], [`mail_error`]).
+pub fn mail_page<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
+    body(state, data)
+}
+
+/// The mail path's primary button on a page of its own: its word and whether it can be pressed, the
+/// same as the dialog's foot; `None` where the dialog has none (searching, signing in, done).
+/// Pressed, the page sends [`Message::Continue`].
+pub fn mail_primary(state: &State) -> Option<(&'static str, bool)> {
+    let ready = mail_can_continue(state, state.step);
+    match state.step {
+        Step::MailAddress if state.mail.found.is_none() => Some((tr("Find provider"), ready)),
+        Step::MailAddress | Step::MailPassword => Some((tr("Continue"), ready)),
+        Step::MailServices => Some((tr("Connect"), ready)),
+        Step::MailCertificate => Some((tr("Trust certificate"), ready)),
+        Step::MailConnecting => Some((tr("Signing in…"), false)),
+        _ => None,
+    }
+}
+
+/// Whether "Back" on a page of its own walks back within the mail path ([`Message::Back`]): on its
+/// steps after the address.
+pub fn mail_back(state: &State) -> bool {
+    has_back(state)
+}
+
+/// What went wrong on the mail path, for a page's footer.
+pub fn mail_error(state: &State) -> Option<&str> {
+    state.error.as_deref()
+}
+
+/// Whether the mail path has ended with a connected account (its step Done).
+pub fn mail_done(state: &State) -> bool {
+    state.step == Step::Done
+}
+
+/// Whether the mail path waits for the core: the provider is looked for or the account is signed in to.
+pub fn mail_waiting(state: &State) -> bool {
+    matches!(state.step, Step::MailSearching | Step::MailConnecting)
+}
+
+/// Whether the mail path stands at its start with nothing typed: the page may go on without it.
+pub fn mail_untouched(state: &State) -> bool {
+    state.step == MAIL_STEPS[0] && state.mail.address.trim().is_empty()
 }
 
 /// The line under the title; it names what the current step asks for.

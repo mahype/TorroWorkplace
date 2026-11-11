@@ -52,6 +52,9 @@ pub struct State {
     demo: bool,
     /// The dropdown of "Choose a provider" (issue #554: the suite's dropdown, not Iced's pick list).
     menus: Dropdown<()>,
+    /// The first-run setup shows this page and carries "Use suggestion" in its own footer (issue #326):
+    /// the page leaves its own button out.
+    hosted: bool,
 }
 
 impl Default for State {
@@ -82,6 +85,7 @@ impl Default for State {
             pull: None,
             demo: false,
             menus: Dropdown::default(),
+            hosted: false,
         }
     }
 }
@@ -496,6 +500,115 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
     }
 }
 
+// ----- The suggestion as the first-run setup takes it (issue #326) ----------------------------------
+
+/// The first-run setup shows this page with "Use suggestion" in its own footer: the page leaves its
+/// own button out.
+pub fn hosted(state: &mut State) {
+    state.hosted = true;
+}
+
+/// The account whose suggestion "Use suggestion" of the first-run setup takes: the one chosen here,
+/// else the first the recommendation prepares a model for.
+pub fn suggested_account(state: &State) -> Option<&str> {
+    state
+        .selected
+        .as_deref()
+        .or_else(|| state.recommendation.as_ref()?.preparations.first().map(|p| p.account.as_str()))
+}
+
+/// The model suggested for `slot` on the [`suggested_account`], as the page shows it (the candidate
+/// chosen under "Other model", else the first): the account and the candidate.
+pub fn suggested_model(state: &State, slot: AiSlot) -> Option<(&str, &AiCandidate)> {
+    let account = suggested_account(state)?;
+    let preparation =
+        state.recommendation.as_ref()?.preparations.iter().find(|p| p.account == account && p.slot == slot)?;
+    let candidate = preparation.candidates.get(*state.choices.get(slot.key()).unwrap_or(&0))?;
+    Some((account, candidate))
+}
+
+/// What "Use suggestion" would prepare, slot by slot: the suggested model of each slot on the
+/// [`suggested_account`] that can be prepared here – Sorting only while the host allows it, a slot
+/// already chosen only with `replace`, and with `only` just that slot.
+fn suggestion(state: &State, data: &dyn Seen, replace: bool, only: Option<AiSlot>) -> Vec<(AiSlot, AiCandidate)> {
+    let Some(account) = suggested_account(state) else { return Vec::new() };
+    state
+        .recommendation
+        .iter()
+        .flat_map(|r| &r.preparations)
+        .filter(|p| {
+            p.account == account
+                && only.is_none_or(|slot| p.slot == slot)
+                && (state.sorting || p.slot != AiSlot::Decide)
+                && (replace || data.settings().ai_slots.get(p.slot).is_none())
+        })
+        .filter_map(|p| p.candidates.get(*state.choices.get(p.slot.key()).unwrap_or(&0)).cloned().map(|c| (p.slot, c)))
+        .filter(|(_, c)| c.preparation != AiPreparationKind::External)
+        .collect()
+}
+
+/// Whether "Use suggestion" has something to do now: no model is being prepared or connected, no
+/// question waits, and the suggestion has a slot to fill (with `replace` also one already chosen, with
+/// `only` that slot alone).
+pub fn can_use_suggestion(state: &State, data: &dyn Seen, replace: bool, only: Option<AiSlot>) -> bool {
+    !matches!(state.flight, Some(Work::Connect | Work::Enable | Work::Set | Work::Pull | Work::List | Work::Check))
+        && state.current.is_none()
+        && state.queue.is_empty()
+        && !state.consent
+        && state.form.is_none()
+        && !suggestion(state, data, replace, only).is_empty()
+}
+
+/// Whether the suggestion differs from a model already chosen (issue #326, "Run setup again"): a slot
+/// is chosen and the suggestion names another account or model for it. The page then keeps the choice
+/// and offers the suggestion only on a click.
+pub fn differs(state: &State, data: &dyn Seen) -> bool {
+    let Some(account) = suggested_account(state) else { return false };
+    suggestion(state, data, true, None).iter().any(|(slot, candidate)| {
+        data.settings().ai_slots.get(*slot).is_some_and(|held| {
+            held.engine != account
+                || held.model.as_deref().is_none_or(|model| !super::same_model(model, &candidate.model))
+        })
+    })
+}
+
+/// "Use suggestion" of the first-run setup (issue #326): takes the [`suggested_account`] and prepares
+/// its suggested models one after the other, as "Use suggestion" on the page does – downloads, turns
+/// on and puts each into its slot; a model for Sorting elsewhere asks first ([`awaiting_consent`]).
+/// With `replace` also slots already chosen, with `only` just that slot. Read-only work that runs is
+/// superseded.
+pub fn use_suggestion(state: &mut State, data: &dyn Seen, replace: bool, only: Option<AiSlot>) -> Action {
+    if matches!(state.flight, Some(Work::Search | Work::Recommend)) {
+        state.run = state.run.wrapping_add(1);
+        state.flight = None;
+    }
+    if !can_use_suggestion(state, data, replace, only) {
+        return Action::None;
+    }
+    if let Some(account) = suggested_account(state).map(str::to_string)
+        && state.selected.as_deref() != Some(account.as_str())
+    {
+        // The candidates chosen belong to the suggested account: keep them while selecting it.
+        let choices = std::mem::take(&mut state.choices);
+        select_account(state, account, data);
+        state.choices = choices;
+    }
+    state.active = true;
+    state.queue = suggestion(state, data, replace, only);
+    state.allowed_remote = None;
+    state.consent = state.queue.iter().any(|(slot, c)| *slot == AiSlot::Decide && !c.local);
+    if state.consent {
+        return Action::None;
+    }
+    next(state)
+}
+
+/// A model is being prepared (downloaded, turned on, put into its slot) or waits to be: the host keeps
+/// the page's work running when it shows another page meanwhile.
+pub fn preparing(state: &State) -> bool {
+    state.current.is_some() || state.pull.is_some() || !state.queue.is_empty()
+}
+
 fn next(state: &mut State) -> Action {
     if !state.sorting {
         state.queue.retain(|(slot, _)| *slot != AiSlot::Decide);
@@ -661,7 +774,11 @@ pub fn answered(state: &mut State, owner: u64, run: u64, result: &Result<Respons
             state.current = None;
             Action::None
         }
+        // An answer the chain cannot go on from ends it, so nothing waits for a model that never comes.
         _ => {
+            state.current = None;
+            state.queue.clear();
+            state.pull = None;
             state.error = Some(tr("Torro Workplace did not answer as expected. Try again.").into());
             Action::None
         }
@@ -753,6 +870,9 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
     }
     if state.form.as_ref().is_some_and(|(provider, _, _)| *provider == AiProvider::OllamaCloud) {
         return cloud_form(state);
+    }
+    if state.hosted && state.form.is_none() {
+        return hosted_view(state, data);
     }
     let cloud = state.selected.as_deref().and_then(super::ai_provider) == Some(AiProvider::OllamaCloud);
     let mut parts = column![].spacing(layout::section_gap());
@@ -998,7 +1118,10 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
                 parts = parts.push(typo::text(typo::body_strong(), name.to_string()));
             }
         }
-        for preparation in recommendation.preparations.iter().filter(|p| Some(&p.account) == state.selected.as_ref()) {
+        // Hosted by the first-run setup, the suggestion shows before an account is chosen: its "Use
+        // suggestion" takes the suggested one (issue #326).
+        let shown = if state.hosted { suggested_account(state) } else { state.selected.as_deref() };
+        for preparation in recommendation.preparations.iter().filter(|p| Some(p.account.as_str()) == shown) {
             let index = *state.choices.get(preparation.slot.key()).unwrap_or(&0);
             if let Some(candidate) = preparation.candidates.get(index) {
                 let fit =
@@ -1071,7 +1194,7 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
             }
         }
         for suggestion in recommendation.slots.iter().filter(|s| {
-            s.engine.as_ref() == state.selected.as_ref()
+            s.engine.as_deref() == shown
                 && !recommendation
                     .preparations
                     .iter()
@@ -1094,14 +1217,253 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
         if !suggestions.is_empty() {
             let title = if cloud { tr("Suggested models") } else { tr("Our suggestion for this PC") };
             let hint = cloud.then(|| tr("Mail needs your explicit permission.").to_string());
-            parts = parts.push(widgets::group(title, suggestions, hint)).push(widgets::text_button(
+            parts = parts.push(widgets::group(title, suggestions, hint));
+            if !state.hosted {
+                parts = parts.push(widgets::text_button(
+                    None,
+                    tr("Use suggestion"),
+                    style::button::secondary,
+                    can_use(state, data).then_some(Message::Use),
+                ));
+            }
+        }
+    }
+    if state.pull.is_some() {
+        parts = parts.push(widgets::text_button(
+            None,
+            tr("Cancel download"),
+            style::button::secondary,
+            Some(Message::Cancel),
+        ));
+    }
+    parts.into()
+}
+
+/// The page as the first-run setup shows it (issue #326, draft `docs/prototypes/onboarding/3-1-ai-connect.html`):
+/// "Our suggestion for this PC" first – the setup's primary button takes it –, then this computer with the
+/// programs found and their state, the AI accounts there are, and the cloud's way with an API key. Sizes in
+/// [`format_bytes`](torro_gui::units::format_bytes), as the setup's other pages show them.
+fn hosted_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
+    let mut parts = column![].spacing(layout::section_gap());
+    let working = state.flight.is_some() || state.pull.is_some() || state.current.is_some();
+    if let Some(status) = status(state).filter(|_| working) {
+        parts = parts.push(typo::text(typo::meta(), status).style(theme::text_2));
+    }
+    if let Some(error) = &state.error {
+        parts = parts.push(
+            iced::widget::row![
+                crate::parts::notice(error.clone()),
+                widgets::text_button(
+                    None,
+                    tr("Retry"),
+                    style::button::secondary,
+                    state.flight.is_none().then_some(Message::Retry)
+                ),
+            ]
+            .spacing(space::m())
+            .align_y(iced::Alignment::Center),
+        );
+    }
+    // The suggestion, slot by slot, on the account it is for.
+    let shown = suggested_account(state);
+    let account_name = |id: &str| -> String {
+        data.accounts().iter().find(|a| a.id == id).map(|a| a.label.clone()).unwrap_or_else(|| {
+            super::ai_provider(id).map_or_else(|| id.to_string(), |provider| provider.name().to_string())
+        })
+    };
+    let preparations: Vec<&torro_ipc::AiPreparation> = state
+        .recommendation
+        .iter()
+        .flat_map(|r| &r.preparations)
+        .filter(|p| Some(p.account.as_str()) == shown)
+        .collect();
+    let mut rows: Vec<Element<'a, Message>> = Vec::new();
+    let mut decide_local = true;
+    for preparation in &preparations {
+        let index = *state.choices.get(preparation.slot.key()).unwrap_or(&0);
+        let Some(candidate) = preparation.candidates.get(index) else { continue };
+        if preparation.slot == AiSlot::Decide {
+            decide_local = candidate.local;
+        }
+        let mut words = vec![account_name(&preparation.account)];
+        words.push(if candidate.local { tr("This computer") } else { tr("Elsewhere") }.to_string());
+        if candidate.size_bytes > 0 && candidate.preparation == AiPreparationKind::OllamaPull {
+            words.push(trf("Download {size}", &[("size", &torro_gui::units::format_bytes(candidate.size_bytes))]));
+        }
+        if candidate.by_chat {
+            words.push(tr("Slower chat fallback").to_string());
+        }
+        // More than one candidate: "Other model" opens them as chips, as on Accounts › Add › AI.
+        let other: Element<'a, Message> = match preparation.candidates.len() > 1 {
+            true => widgets::text_button(
                 None,
-                tr("Use suggestion"),
-                style::button::secondary,
-                can_use(state, data).then_some(Message::Use),
+                tr("Other model"),
+                style::button::ghost,
+                state.current.is_none().then_some(Message::OtherModel(preparation.slot)),
+            ),
+            false => iced::widget::Space::new().into(),
+        };
+        let label = if preparation.slot == AiSlot::Chat { tr("Chat") } else { tr("Sorting") };
+        rows.push(setting_row(None, label, Some(format!("{} · {}", candidate.model, words.join(" · "))), other));
+        if state.expanded.contains(preparation.slot.key()) && preparation.candidates.len() > 1 {
+            let chips = preparation
+                .candidates
+                .iter()
+                .enumerate()
+                .map(|(at, c)| {
+                    widgets::choice_chip(
+                        c.model.clone(),
+                        None,
+                        at == index,
+                        state.current.is_none().then_some(Message::ChooseModel(preparation.slot, at)),
+                    )
+                })
+                .collect();
+            rows.push(container(widgets::chip_row(chips)).padding([space::s(), space::l()]).into());
+        }
+        // A model another program loads itself: "Use suggestion" leaves it out, so the page says where.
+        if candidate.preparation == AiPreparationKind::External {
+            let program = account_name(&preparation.account);
+            rows.push(setting_row(
+                None,
+                trf("Load in {program}", &[("program", &program)]),
+                Some(candidate.model.clone()),
+                typo::text(typo::meta(), tr("Checks automatically")).style(theme::text_2),
             ));
         }
     }
+    // A suggestion the recommendation has no preparation for (an older core): what it names and why.
+    for suggestion in state
+        .recommendation
+        .iter()
+        .flat_map(|r| &r.slots)
+        .filter(|s| s.engine.as_deref() == shown && !preparations.iter().any(|p| p.slot == s.slot))
+    {
+        let model = suggestion.model.as_deref().unwrap_or(tr("Automatic"));
+        let label = if suggestion.slot == AiSlot::Chat { tr("Chat") } else { tr("Sorting") };
+        rows.push(setting_row(
+            None,
+            label,
+            Some(format!("{model} · {}", suggestion.reason)),
+            iced::widget::Space::new(),
+        ));
+    }
+    if !rows.is_empty() {
+        let footer = match decide_local {
+            true => tr("Your mail stays on this computer."),
+            false => tr("Mail needs your explicit permission."),
+        };
+        parts = parts.push(widgets::group(tr("Our suggestion for this PC"), rows, Some(footer.to_string())));
+    }
+    // This computer, then the programs found on it, the ones that answer with a question, and those to get.
+    let mut local = Vec::new();
+    if let Some(recommendation) = &state.recommendation {
+        let memory = recommendation
+            .hardware
+            .memory_bytes
+            .map(torro_gui::units::format_bytes)
+            .unwrap_or_else(|| tr("Not measured").into());
+        let gpu = recommendation
+            .hardware
+            .gpu
+            .as_ref()
+            .and_then(|gpu| gpu.vram_bytes)
+            .map(|bytes| trf("{size} graphics", &[("size", &torro_gui::units::format_bytes(bytes))]));
+        let mut words = vec![trf("{size} memory", &[("size", &memory)])];
+        words.extend(gpu);
+        words.push(recommendation.tier_label.clone());
+        let tile = widgets::source_tile(widgets::TileFace::Icon(Icon::Monitor), widgets::TileSize::Medium, None);
+        local.push(setting_row(Some(tile), tr("This computer"), Some(words.join(" · ")), iced::widget::Space::new()));
+    }
+    let program_name = |provider: AiProvider, program: &Option<String>| {
+        program.as_deref().and_then(LocalProgram::from_id).map_or(provider.name(), LocalProgram::name)
+    };
+    for server in &state.found {
+        let count =
+            if server.models == 1 { tr("1 model").to_string() } else { trf("{n} models", &[("n", &server.models)]) };
+        let address = server.url.split_once("://").map_or(server.url.as_str(), |(_, rest)| rest);
+        let address = address.trim_end_matches("/v1");
+        let control: Element<'a, Message> = match &server.account {
+            Some(_) => widgets::state_pill(Icon::CircleCheck, tr("Connected")),
+            None => widgets::text_button(
+                None,
+                tr("Connect"),
+                style::button::secondary,
+                may_change_account(state).then(|| Message::Connect(server.url.clone())),
+            ),
+        };
+        let name = program_name(server.provider, &server.program);
+        local.push(setting_row(None, name, Some(format!("{address} · {count}")), control));
+    }
+    for observation in &state.observations {
+        let status = match observation.status {
+            AiObservationStatus::AuthRequired => tr("API key required"),
+            AiObservationStatus::ModelsUnavailable => tr("Model list unavailable"),
+        };
+        let connect = widgets::text_button(
+            None,
+            tr("Connect"),
+            style::button::secondary,
+            may_change_account(state).then(|| Message::Connect(observation.url.clone())),
+        );
+        let name = program_name(observation.provider, &observation.program);
+        local.push(setting_row(None, name, Some(status.to_string()), connect));
+    }
+    for (name, url) in [
+        ("Ollama", "https://ollama.com/download"),
+        ("LM Studio", "https://lmstudio.ai/download"),
+        ("Strata", "https://github.com/Niko1221/Strata"),
+    ] {
+        let there = state.found.iter().any(|s| program_name(s.provider, &s.program) == name)
+            || state.observations.iter().any(|s| program_name(s.provider, &s.program) == name);
+        if !there {
+            let get = widgets::text_button(
+                Some(Icon::ArrowUpRight),
+                tr("Get program"),
+                style::button::ghost,
+                Some(Message::Install(url.into())),
+            );
+            local.push(setting_row(None, name, Some(tr("Not running").to_string()), get));
+        }
+    }
+    parts = parts.push(widgets::group(
+        tr("On this computer"),
+        local,
+        Some(tr("Torro checks automatically while this page is open.").to_string()),
+    ));
+    // The AI accounts there are: the one chosen is the one the suggestion is for.
+    let accounts: Vec<Element<'a, Message>> = data
+        .accounts()
+        .iter()
+        .filter(|a| a.kind == "ai")
+        .filter(|a| !state.found.iter().any(|server| server.account.as_deref() == Some(a.id.as_str())))
+        .map(|account| {
+            let chosen = shown == Some(account.id.as_str());
+            let control: Element<'a, Message> = match chosen {
+                true => widgets::state_pill(Icon::CircleCheck, tr("Suggested")),
+                false => widgets::text_button(
+                    None,
+                    tr("Use"),
+                    style::button::secondary,
+                    may_change_account(state).then(|| Message::Select(account.id.clone())),
+                ),
+            };
+            let seat = super::ai_provider(&account.id).map(|provider| provider.seat().label().to_string());
+            setting_row(None, account.label.as_str(), seat, control)
+        })
+        .collect();
+    if !accounts.is_empty() {
+        parts = parts.push(widgets::group(tr("Your AI accounts"), accounts, None));
+    }
+    // The cloud: an API key with a provider of the menu.
+    let add = state.menus.button((), tr("Add key"), Message::Menus);
+    let key =
+        setting_row(None, tr("API key"), Some(tr("Anthropic, OpenAI, Mistral, OpenRouter and more").to_string()), add);
+    parts = parts.push(widgets::group(
+        tr("Cloud"),
+        vec![key],
+        Some(tr("Cloud providers receive what you send them.").to_string()),
+    ));
     if state.pull.is_some() {
         parts = parts.push(widgets::text_button(
             None,
@@ -1349,6 +1711,33 @@ pub fn demo(state: &mut State, scenario: &str, data: &dyn Seen) {
             }
         }
         "error" => state.error = Some(tr("The local AI search could not start.").into()),
+        // The first-run setup's suggestion (issue #326): Ollama found and connected, both models to download.
+        "suggestion" => {
+            let account = super::demo::DEMO_OLLAMA.to_string();
+            state.found.push(AiServer {
+                provider: AiProvider::Ollama,
+                program: None,
+                url: "http://localhost:11434/v1".into(),
+                models: 4,
+                account: Some(account.clone()),
+            });
+            recommendation.preparations =
+                [(AiSlot::Chat, "qwen3:14b", 9_276_198_565), (AiSlot::Decide, "clef:8b", 5_100_000_000)]
+                    .into_iter()
+                    .map(|(slot, model, size_bytes)| torro_ipc::AiPreparation {
+                        account: account.clone(),
+                        slot,
+                        candidates: vec![AiCandidate {
+                            model: model.into(),
+                            size_bytes,
+                            fits: true,
+                            local: true,
+                            preparation: AiPreparationKind::OllamaPull,
+                            by_chat: false,
+                        }],
+                    })
+                    .collect();
+        }
         _ => {}
     }
     state.recommendation = Some(recommendation);

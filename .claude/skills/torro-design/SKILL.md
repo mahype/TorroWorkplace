@@ -822,7 +822,9 @@ mcp-detail mcp-hooks mcp-new-key mcp-disconnect mcp-bots mcp-orphans connect-cli
 connect-client-rights connect-client-done connect-client-other connections connections-builtin connections-own
 connections-empty search-providers catalog-install
 catalog-install-tools extension-detail extension-review extension-crashed extension-folder extension-unbounded
-extension-unusable custom-server custom-server-paste custom-server-choose setup-documents` (`sorting-menu`: Settings › AI mit offenem Menü von „Sorting“, „Decision models (fast)“ vor „Other models“ (#421),
+extension-unusable custom-server custom-server-paste custom-server-choose setup-welcome setup-mail setup-mail-password
+setup-cloud setup-cloud-address setup-cloud-waiting setup-ai setup-ai-chat setup-ai-sort setup-ai-keep setup-appearance
+setup-documents setup-done setup-narrow` (`sorting-menu`: Settings › AI mit offenem Menü von „Sorting“, „Decision models (fast)“ vor „Other models“ (#421),
 `connections`: MCP servers mit eigenen Werkzeugen, Katalog und eigenen Servern (#302), seit #548 auf dem Reiter
 „Catalog“ (der Demo-Server GitHub ist abgestürzt), `connections-builtin` und `connections-own`: dieselbe auf den
 Reitern „Built-in“ und „Your servers“,
@@ -832,7 +834,10 @@ Reitern „Built-in“ und „Your servers“,
 nach einem Absturz, `extension-folder`: Seite von WordCraft mit der Gruppe „Folder“ und gesperrten Werkzeugen (#303),
 `extension-unbounded`: Seite von GridCraft ohne gewählten Ordner, mit dem Hinweis, dass es sich an keinen Ordner hält,
 `extension-unusable`: Seite von WordCraft, deren Ordner freigegeben, aber gerade nicht nutzbar ist,
-`setup-documents`: Einrichtungsschritt „Documents“ mit je einer ArtCraft-App eingerichtet, installiert und fehlend, `custom-server-paste`: eigener Server mit eingefügtem `mcpServers`-Block,
+`setup-*`: die Einrichtung (#326, Entwürfe `docs/prototypes/onboarding/`) auf ihren Seiten – `mail-password`: der Mail-Weg beim
+Passwort, `cloud-address`/`cloud-waiting`: ohne Nextcloud bzw. während der Anmeldung im Browser, `ai`: Connect mit dem
+Vorschlag, `ai-chat`/`ai-sort`: die Unterseiten, `ai-keep`: mit schon gewählten Modellen, `narrow`: wie `ai` (die schmale
+Zeichnung des Entwurfs), `done`: mit einer ArtCraft-App eingerichtet –, `custom-server-paste`: eigener Server mit eingefügtem `mcpServers`-Block,
 `custom-server-choose`: Auswahl, wenn der Block mehrere Server nennt; `wizard-mail-certificate`: Frage „Trust this certificate?“ zu einem Server im lokalen Netz,
 `wizard-mail-certificate-public`: dieselbe Frage mit Warnung für einen öffentlichen Host; `design`: Appearance mit den
 drei Abstandsstufen und Beispiel-Schriften und -Farbschemata, je eins davon ungültig mit seinen Gründen (gezeichnet in

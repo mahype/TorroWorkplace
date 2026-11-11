@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<!-- Entwurf der Einrichtung #326, eine Seite des Ablaufs. Übersicht: index.html -->
+<head>
+<meta charset="utf-8">
+<title>Setup · Welcome</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#B4B8BF}a:hover{color:#EDEEF0}
+.w{width:960px;height:640px;box-sizing:border-box;padding:8px;background:#08090A;color:#EDEEF0;font:400 13px/20px Inter,system-ui,sans-serif;display:flex;flex-direction:column}
+.p{flex:1;min-height:0;background:#0F1011;border:1px solid rgba(255,255,255,.06);border-radius:8px;display:flex;flex-direction:column;overflow:hidden}
+.hd{height:52px;flex:none;display:flex;align-items:center;gap:16px;padding:0 12px 0 16px;border-bottom:1px solid rgba(255,255,255,.06)}
+.brand{display:flex;align-items:center;gap:8px;font-weight:500;width:150px}
+.logo{width:20px;height:20px;border-radius:5px;background:#D50C0C;display:grid;place-items:center;color:#fff;font-weight:600;font-size:11px}
+.steps{flex:1;display:flex;align-items:center;justify-content:center;gap:8px}
+.st{display:flex;align-items:center;gap:6px;color:#8A8F98;font-size:12px;font-weight:500;white-space:nowrap;text-decoration:none}
+.st i{font-style:normal;width:18px;height:18px;border-radius:50%;border:1px solid rgba(255,255,255,.14);display:grid;place-items:center;font-size:11px}
+.st.done{color:#B4B8BF}.st.done i{background:#1C1E22;border-color:rgba(255,255,255,.14);color:#EDEEF0}
+.st.on{color:#EDEEF0}.st.on i{background:#EDEEF0;color:#08090A;border-color:#EDEEF0}
+.ln{width:20px;height:1px;background:rgba(255,255,255,.10)}
+.right{width:150px;display:flex;justify-content:flex-end}
+.sub{display:flex;gap:3px;margin-left:4px}.sub b{width:14px;height:3px;border-radius:2px;background:rgba(255,255,255,.12)}.sub b.f{background:#EDEEF0}
+.bd{flex:1;min-height:0;overflow:hidden;padding:28px 40px}
+.col{max-width:640px;display:flex;flex-direction:column;gap:20px}
+h1{margin:0;font-size:20px;line-height:28px;font-weight:600}
+.lead{margin:4px 0 0;color:#B4B8BF}
+.why{display:flex;gap:10px;padding:12px 14px;border-radius:8px;background:#141518;border:1px solid rgba(255,255,255,.06);color:#B4B8BF}
+.why b{color:#EDEEF0;font-weight:500}
+.gl{font-size:12px;font-weight:500;color:#8A8F98;margin:0 0 6px}
+.grp{border:1px solid rgba(255,255,255,.06);border-radius:8px;background:#0F1011}
+.row{display:flex;align-items:center;gap:12px;min-height:44px;padding:6px 14px;border-top:1px solid rgba(255,255,255,.06)}
+.row:first-child{border-top:0}
+.row .t{flex:1;min-width:0}
+.meta{display:block;font-size:12px;line-height:16px;color:#8A8F98}
+.ok{color:#3FB984;font-size:12px;font-weight:500;white-space:nowrap}
+.off{color:#8A8F98;font-size:12px;white-space:nowrap}
+.btn{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:6px;border:1px solid rgba(255,255,255,.10);background:#141518;color:#EDEEF0;font:500 12px/1 Inter,sans-serif;white-space:nowrap;text-decoration:none;cursor:pointer}
+.btn.ghost{border-color:transparent;background:none;color:#B4B8BF}
+.btn.primary{background:#D50C0C;border-color:transparent;color:#fff}
+.field{height:30px;box-sizing:border-box;flex:1;border-radius:6px;border:1px solid rgba(255,255,255,.10);background:#08090A;color:#EDEEF0;padding:0 10px;font:400 13px Inter,sans-serif}
+.seg{display:inline-flex;height:28px;padding:2px;border-radius:6px;background:#08090A;border:1px solid rgba(255,255,255,.06)}
+.seg span{display:grid;place-items:center;padding:0 10px;border-radius:4px;font-size:12px;font-weight:500;color:#8A8F98}
+.seg span.on{background:#1C1E22;color:#EDEEF0;box-shadow:0 0 0 1px rgba(255,255,255,.10)}
+.ft{height:56px;flex:none;display:flex;align-items:center;gap:8px;padding:0 16px;border-top:1px solid rgba(255,255,255,.06)}
+.ft .grow{flex:1;color:#8A8F98}
+.ic{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+.tile{width:32px;height:32px;border-radius:8px;background:#1C1E22;display:grid;place-items:center;color:#EDEEF0;flex:none}
+</style>
+<div class="w">
+<div class="p">
+<div class="hd">
+<div class="brand"><span class="logo">T</span>Setup</div>
+<div class="steps">
+<span class="st"><i>1</i>Mail and calendar</span><span class="ln"></span>
+<span class="st"><i>2</i>Cloud</span><span class="ln"></span>
+<span class="st"><i>3</i>AI</span><span class="ln"></span>
+<span class="st"><i>4</i>Appearance</span><span class="ln"></span>
+<span class="st"><i>5</i>Documents</span>
+</div>
+<div class="right"><a class="btn ghost" href="6-done.html">Set up later</a></div>
+</div>
+<div class="bd">
+<div class="col">
+<div>
+<h1>Set up Torro Workplace</h1>
+<p class="lead">Five short steps. Each one can be skipped, and what you connect is saved right away.</p>
+</div>
+<div class="grp">
+<div class="row"><span class="tile"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"></rect><path d="m22 7-10 6L2 7"></path></svg></span><span class="t">Mail and calendar<span class="meta">Your mail accounts, with the calendars and tasks your provider offers.</span></span></div>
+<div class="row"><span class="tile"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"></path></svg></span><span class="t">Cloud<span class="meta">The server your files, calendars and contacts live on. Today that is Nextcloud. Optional.</span></span></div>
+<div class="row"><span class="tile"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path></svg></span><span class="t">AI<span class="meta">A model to chat with and one that sorts your mail, suggested for this computer.</span></span></div>
+<div class="row"><span class="tile"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"></path></svg></span><span class="t">Appearance<span class="meta">Light or dark, layout, colors and font.</span></span></div>
+<div class="row"><span class="tile"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path></svg></span><span class="t">Documents<span class="meta">Works hand in hand with ArtCraft for documents, slides, sheets and PDFs.</span></span></div>
+</div>
+<div>
+<p class="gl">Language</p>
+<div class="grp"><div class="row"><span class="t">App language<span class="meta">Taken from your system. A new language shows when an app starts again.</span></span><span class="seg"><span class="on">System</span><span>English</span><span>Deutsch</span></span></div></div>
+</div>
+</div>
+</div>
+<div class="ft"><span class="grow"></span><a class="btn primary" href="1-mail.html">Get started</a></div>
+</div>
+</div>
+</body>
+</html>
