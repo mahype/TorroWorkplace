@@ -607,6 +607,10 @@ pub struct WorkflowRun {
     pub created: DateTime<Utc>,
     pub document: Option<RetrievedDocument>,
     pub untrusted: bool,
+    /// A test that found the provider's page different from the draft's witnessed scripts or layout and took the
+    /// new ones over as a new revision. Check the copy before saving.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adopted_provider_change: bool,
 }
 
 /// Strictly local: no DNS, GET, conversion, reservation or write is performed for a preview.

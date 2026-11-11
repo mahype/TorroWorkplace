@@ -393,6 +393,7 @@ impl Service {
                 id: match event { Some((event, rule)) => event_job(event, &rule.rule.id), None => crate::mail::random_hex(16).map_err(|_| Error::Blocked)? }, workflow: id.into(), revision,
                 account: account.clone(), mail: message.into(), save_target: workflow.workflow.spec.save_target.clone(),
                 test, generation, state: RunState::Queued, reason: None, attempts: 0, created: Utc::now(), document: None, untrusted: true,
+                adopted_provider_change: false,
             };
             let record = RunRecord { run: run.clone(), scope: carrier, execution_scope: scope.clone(), workflow_digest: workflow.workflow.digest,
                 target_fingerprint: fingerprint, raw_hash: hash, dedup: dedup.clone(), due: Utc::now(), reservation: None,
@@ -645,6 +646,7 @@ impl Service {
                             created: event.occurred_at,
                             document: None,
                             untrusted: true,
+                            adopted_provider_change: false,
                         },
                         scope: workflow.scope.clone(),
                         execution_scope: rule.scope.clone(),
@@ -914,7 +916,9 @@ impl Service {
                         let mut record: WorkflowRecord = store::get(tx, "workflow", &job.run.workflow, |_, _| true)?;
                         if record.workflow.digest == job.workflow_digest && record.workflow.revision == job.run.revision
                         {
+                            let before = record.workflow.revision;
                             record.workflow.tested = adopt_resources(&mut record, &job)? || record.workflow.tested;
+                            job.run.adopted_provider_change = record.workflow.revision != before;
                             record.state_revision = record.state_revision.checked_add(1).ok_or(Error::Conflict)?;
                             store::put(
                                 tx,
@@ -1084,7 +1088,9 @@ impl Service {
                     let mut record: WorkflowRecord = store::get(tx, "workflow", &job.run.workflow, |_, _| true)?;
                     pinned(&record, job.run.revision)?;
                     if record.workflow.digest == job.workflow_digest && record.execution_epoch == job.execution_epoch {
+                        let before = record.workflow.revision;
                         record.workflow.tested = adopt_resources(&mut record, &job)? || record.workflow.tested;
+                        job.run.adopted_provider_change = record.workflow.revision != before;
                         record.state_revision = record.state_revision.checked_add(1).ok_or(Error::Conflict)?;
                         store::put(
                             tx,
@@ -2230,6 +2236,7 @@ mod tests {
             panic!("run");
         };
         assert_eq!(run.state, RunState::Succeeded, "{:?}", run.reason);
+        assert!(run.adopted_provider_change, "the run tells the person that the page differed from the template");
         let document = run.document.expect("copy");
         assert_eq!((document.provenance, document.profile_version), (wire::Provenance::HtmlCopy, Some(2)));
         let adopted = env.service.workflow(&Scope::suite(), None, &env.workflow.id).expect("workflow").workflow;
