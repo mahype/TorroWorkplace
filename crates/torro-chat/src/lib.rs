@@ -17,7 +17,7 @@ pub mod source;
 
 pub use model::{
     Author, Conversation, ConversationKind, FileRef, Mention, Message, MessageKind, MessagePage, NotifyLevel,
-    OwnStatus, Person, Preview, Quote, Status, conversation_id, message_id, person_id, split_conversation,
+    OwnStatus, Person, Preview, Quote, SearchHit, Status, conversation_id, message_id, person_id, split_conversation,
     split_message, split_person,
 };
 pub use source::{ChatError, ChatSource, Outgoing, StatusChange};

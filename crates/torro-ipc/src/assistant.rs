@@ -482,6 +482,17 @@ fn close(rights: &mut Rights, area: Area) {
                 keys.retain(|key| !key.starts_with("mail:"));
             }
         }
+        // Without the chat no Talk entry of the inbox either (decision 6 in `docs/chat.md`): they
+        // hold the names of conversations and the start of messages.
+        Area::Chat => {
+            rights.chat_accounts = nothing();
+            match &mut rights.inbox_sources {
+                Selection::Only(keys) => keys.retain(|key| !key.starts_with("talk:")),
+                // "All sources" would still reach them: nothing but what is named stays reachable.
+                all @ Selection::All => *all = nothing(),
+            }
+        }
+        Area::Presence => rights.presence_accounts = nothing(),
         _ => {}
     }
 }

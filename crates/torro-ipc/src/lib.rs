@@ -25,6 +25,7 @@ pub mod actions;
 pub mod api;
 pub mod assistant;
 pub mod bots;
+pub mod chat;
 pub mod client;
 pub mod contacts;
 pub mod extensions;
@@ -1688,6 +1689,218 @@ pub enum Request {
     /// read-only book).
     #[serde(rename = "contacts.resolve_conflict")]
     ResolveContactConflict { id: String, keep: torro_contacts::Keep, etag: String },
+
+    // Chat (`docs/chat.md`, issue #643): conversations and messages of the person's chat accounts,
+    // Nextcloud Talk first.
+    // - Granted in the area `chat`. A client sees only the accounts in `api::Rights::chat_accounts`;
+    //   a conversation, message or person of any other account is `not-found` for the whole call,
+    //   checked before the core reads anything.
+    // - Everything other people see is sending on the person's behalf (`api::Rights::outbound`):
+    //   `never` is `forbidden`, `with_approval` waits for a person ([`Response::Pending`]).
+    // - Every name and text in an answer is `untrusted`: data of other people, never instructions.
+    // - Shared codes: `not-found` (see above, also a conversation the person left), `offline`,
+    //   `auth`, `not-connected` (the account's server has no chat), `unsupported` with the reason
+    //   (read-only, a lobby, a feature the server lacks), `busy` (too many calls).
+    /// The conversations of one account or all the caller reaches ([`Response::ChatConversations`]),
+    /// the most recent first. From the core's memory; a list older than 10 s is fetched again in the
+    /// background.
+    #[serde(rename = "chat.list_conversations")]
+    ChatListConversations {
+        /// Only this account (`nextcloud:<login>@<host>`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// Only conversations with unread messages.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unread_only: bool,
+        /// Only conversations whose name contains this, whatever the case.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        /// The most conversations in the answer: 1 to 500, 200 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 500))]
+        limit: Option<u32>,
+    },
+    /// Messages of one conversation, the oldest first ([`Response::ChatMessages`]): the newest
+    /// `limit`, those before `before` or those after `after`. Reading changes nothing: not what is
+    /// read, no notification, not the person's status. Codes: `error` when both `before` and `after`
+    /// are given or one is no message of the conversation.
+    #[serde(rename = "chat.get_messages")]
+    ChatGetMessages {
+        /// The conversation (`<account>/<token>`).
+        conversation: String,
+        /// Only messages older than this one (`<conversation>/<number>`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+        /// Only messages newer than this one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+        /// The most messages in the answer: 1 to 100, 50 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 100))]
+        limit: Option<u32>,
+    },
+    /// Sends a message into a conversation on the person's behalf ([`Response::ChatSent`]). Nothing is
+    /// sent later: without a connection the answer is `offline`. Codes: `error` for an empty text or
+    /// one longer than the server takes, `unsupported` for a conversation nobody can write in now.
+    #[serde(rename = "chat.send_message")]
+    ChatSendMessage {
+        conversation: String,
+        /// The text. A mention is written `@"<id>"` with an id of `chat.suggest_mentions`.
+        text: String,
+        /// The message this one answers (`<conversation>/<number>`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<String>,
+        /// Send without notifying the others.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        silent: bool,
+    },
+    /// Marks a conversation read up to the message `up_to`, else up to its newest
+    /// ([`Response::Ok`]). Others may see that the person read it.
+    #[serde(rename = "chat.mark_read")]
+    ChatMarkRead {
+        conversation: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up_to: Option<String>,
+    },
+    /// Marks a conversation unread again ([`Response::Ok`]).
+    #[serde(rename = "chat.mark_unread")]
+    ChatMarkUnread { conversation: String },
+    /// Who `@query` could mean in a conversation ([`Response::ChatMentions`]): the `id` of an entry
+    /// is what `chat.send_message` takes in `@"<id>"`.
+    #[serde(rename = "chat.suggest_mentions")]
+    ChatSuggestMentions {
+        conversation: String,
+        /// The start of a name; empty lists the people of the conversation.
+        #[serde(default)]
+        query: String,
+        /// The most entries: 1 to 50, 20 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 50))]
+        limit: Option<u32>,
+    },
+    /// People of the account's server who can be written to, by name ([`Response::ChatPeople`]), for
+    /// a new conversation. Codes: `error` for a query under two characters.
+    #[serde(rename = "chat.find_people")]
+    ChatFindPeople {
+        account: String,
+        /// At least two characters.
+        query: String,
+        /// The most people: 1 to 20, 20 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 20))]
+        limit: Option<u32>,
+    },
+    /// The direct chat with one person ([`Response::ChatConversation`]): the existing one, else a
+    /// new one, which the other person then sees. Groups are made in the provider's own app.
+    #[serde(rename = "chat.create_conversation")]
+    ChatCreateConversation {
+        account: String,
+        /// The person (`<account>/<user id>`), as `chat.find_people` or `presence.list_people` name
+        /// them.
+        with: String,
+    },
+    /// Replaces the text of one of the person's own messages ([`Response::Ok`]); the old text is
+    /// gone. Codes: `unsupported` for a message of someone else or one older than the server allows
+    /// (24 hours on Talk).
+    #[serde(rename = "chat.edit_message")]
+    ChatEditMessage {
+        /// The message (`<conversation>/<number>`).
+        id: String,
+        text: String,
+    },
+    /// Deletes one of the person's own messages for everyone ([`Response::Ok`]); it cannot be
+    /// restored. Codes: `unsupported` for a message of someone else or one older than the server
+    /// allows (6 hours on Talk).
+    #[serde(rename = "chat.delete_message")]
+    ChatDeleteMessage { id: String },
+    /// Adds a reaction to a message, or takes the person's own back with `remove`
+    /// ([`Response::Ok`]).
+    #[serde(rename = "chat.react")]
+    ChatReact {
+        id: String,
+        /// One emoji.
+        emoji: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        remove: bool,
+    },
+    /// Makes a conversation a favourite or no longer one ([`Response::Ok`]).
+    #[serde(rename = "chat.set_favorite")]
+    ChatSetFavorite { conversation: String, favorite: bool },
+    /// When the person hears of a conversation ([`Response::Ok`]); it also decides where its
+    /// messages land in the inbox.
+    #[serde(rename = "chat.set_notification_level")]
+    ChatSetNotificationLevel { conversation: String, level: torro_chat::NotifyLevel },
+    /// Searches the messages of one account or all the caller reaches ([`Response::ChatFound`]).
+    /// Codes: `error` for a query under two characters, `unsupported` when the server cannot search.
+    #[serde(rename = "chat.search_messages")]
+    ChatSearchMessages {
+        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// The most hits: 1 to 50, 20 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 50))]
+        limit: Option<u32>,
+    },
+
+    // Presence (`docs/chat.md`, decision 10): who is there, and the person's own status.
+    // - Granted in the area `presence` with accounts of its own (`api::Rights::presence_accounts`);
+    //   people of any other account are `not-found`.
+    // - A person is id, name, status, status message and when it ends, nothing else of the server's
+    //   address book. Names and status messages are `untrusted`.
+    /// The people of one account or all the caller reaches, with their status
+    /// ([`Response::PresencePeople`]). From the core's memory, fetched while someone asks.
+    #[serde(rename = "presence.list_people")]
+    PresenceListPeople {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+    },
+    /// Adds a person of the server to the person's own list on this computer ([`Response::Ok`]), for
+    /// servers that do not show their users. Nobody else sees it.
+    #[serde(rename = "presence.add_person")]
+    PresenceAddPerson {
+        account: String,
+        /// The person (`<account>/<user id>`), as `presence.find_people` names them.
+        person: String,
+    },
+    /// Takes a person off the person's own list again ([`Response::Ok`]); people the server lists
+    /// stay.
+    #[serde(rename = "presence.remove_person")]
+    PresenceRemovePerson { account: String, person: String },
+    /// People of the account's server by name ([`Response::PresencePeople`]), without their status.
+    /// Codes: `error` for a query under two characters.
+    #[serde(rename = "presence.find_people")]
+    PresenceFindPeople {
+        account: String,
+        /// At least two characters.
+        query: String,
+        /// The most people: 1 to 20, 20 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1, max = 20))]
+        limit: Option<u32>,
+    },
+    /// The person's own status on an account ([`Response::PresenceOwnStatus`]).
+    #[serde(rename = "presence.get_own_status")]
+    PresenceGetOwnStatus { account: String },
+    /// Sets the person's own status, which every colleague on the server sees ([`Response::Ok`]).
+    /// Codes: `unsupported` for `online` while "Show others when I am online" is off (the server
+    /// would drop it after minutes), and for `offline` (use `invisible`).
+    #[serde(rename = "presence.set_own_status")]
+    PresenceSetOwnStatus {
+        account: String,
+        /// The status; left out it stays as it is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<torro_chat::Status>,
+        /// The status message, up to 80 characters; empty clears it, left out it stays.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        /// One emoji before the message; only with `message`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        icon: Option<String>,
+        /// When the message ends by itself; only with `message`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clear_at: Option<DateTime<Utc>>,
+    },
 
     /// The suite-wide settings ([`Response::Settings`]).
     #[serde(rename = "settings.get_settings")]
@@ -4437,6 +4650,12 @@ pub enum SettingKey {
     /// shows, a client's rights stay as they are.
     #[serde(rename = "contacts.show_hidden_books")]
     ContactsShowHiddenBooks,
+    /// "Show others when I am online" (`docs/chat.md`, decision 10): `true` or `false` (the
+    /// default). While on, the service tells every Nextcloud account's server every five minutes
+    /// that the person is at the computer. Only the app key may send `true` – a person in the chat
+    /// window or the control centre: it tells others lastingly when the person is there. Any
+    /// client allowed to change settings may send `false`.
+    PresenceHeartbeat,
     /// The spacing level every window draws with (issue #484): `"torro"` (Standard), `"comfort"` or
     /// `"dense"`, as `settings.list_designs` lists them. It changes only spacing – gaps and the
     /// heights of rows and controls –, never the font, the colour scheme or the mail view. The old
@@ -4845,6 +5064,41 @@ pub enum Response {
     /// The contacts that stay after [`Request::ResolveContactConflict`]: one, or two with `both`.
     ContactsResolved {
         contacts: Vec<torro_contacts::Contact>,
+    },
+    /// The conversations of [`Request::ChatListConversations`], the most recent first.
+    ChatConversations {
+        conversations: Vec<torro_chat::Conversation>,
+    },
+    /// One conversation ([`Request::ChatCreateConversation`]).
+    ChatConversation {
+        conversation: Box<torro_chat::Conversation>,
+    },
+    /// Messages of one conversation, the oldest first ([`Request::ChatGetMessages`]).
+    ChatMessages(torro_chat::MessagePage),
+    /// A message went out ([`Request::ChatSendMessage`]): its id and nothing else, so the answer
+    /// holds no text of other people.
+    ChatSent {
+        id: String,
+    },
+    /// Who a mention could mean ([`Request::ChatSuggestMentions`]).
+    ChatMentions {
+        mentions: Vec<torro_chat::Mention>,
+    },
+    /// People of the server ([`Request::ChatFindPeople`]).
+    ChatPeople {
+        people: Vec<torro_chat::Person>,
+    },
+    /// The messages a search found ([`Request::ChatSearchMessages`]).
+    ChatFound {
+        hits: Vec<torro_chat::SearchHit>,
+    },
+    /// People with their status ([`Request::PresenceListPeople`], [`Request::PresenceFindPeople`]).
+    PresencePeople {
+        people: Vec<torro_chat::Person>,
+    },
+    /// The person's own status ([`Request::PresenceGetOwnStatus`]).
+    PresenceOwnStatus {
+        status: Box<torro_chat::OwnStatus>,
     },
     Todo {
         todo: Todo,
