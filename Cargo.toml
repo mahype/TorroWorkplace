@@ -104,6 +104,9 @@ ammonia = "4.2.3"
 dom_query = { version = "0.28.0", default-features = false }
 # Incremental sender-logo head tokenization (#526), reusing dom_query's parser version. MIT/Apache-2.0.
 html5ever = "=0.39.0"
+# Rule checks of Paddle's invoice stylesheet (#598): tokenizes CSS as data, never applies it. The 0.37 already in the
+# build through dom_query's selectors, so no further cssparser enters the lock. MPL-2.0.
+cssparser = "=0.37.0"
 # The hosts of the links of a mail, for its warning signs of fraud (torroworkplace, issue #506): IP addresses, Punycode
 # and the domain a link really goes to. Already in the build through reqwest. MIT OR Apache-2.0.
 url = "2.5"

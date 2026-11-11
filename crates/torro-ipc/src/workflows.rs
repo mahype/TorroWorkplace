@@ -269,6 +269,42 @@ pub struct ExecutionBinding {
     pub parser: u16,
     pub typesetter: u16,
     pub fonts_digest: String,
+    /// Exact provider scripts a rendering profile may load, but never execute. Stylesheets are checked by rules on
+    /// every run instead. Defaulted so packages stored before resource pins existed stay valid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<ResourcePin>,
+    /// SHA-256 of the witnessed layout: every stylesheet rule and `style` attribute that can reach the page, with
+    /// its context, selector and layout declarations. Colours and fonts stay free; a moved or resized layout is
+    /// a provider change like a changed script.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
+}
+
+/// A script a profile has witnessed. Any other script or changed bytes stop the run as a provider change.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResourcePin {
+    pub host: String,
+    /// Absolute path, optionally with its query, without scheme or host. An inline script has the path `/`.
+    pub path: String,
+    pub sha256: String,
+    /// A script written into the page itself, pinned by the hash of its text; `host` is the page's host.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inline: bool,
+}
+
+impl ResourcePin {
+    fn valid(&self, hosts: &[String]) -> bool {
+        hosts.contains(&self.host)
+            && (!self.inline || self.path == "/")
+            && self.path.starts_with('/')
+            && !self.path.starts_with("//")
+            && self.path.len() <= 1024
+            && self.path.bytes().all(|b| b.is_ascii_graphic() && b != b'#')
+            && safe_text(&self.path, 1024)
+            && self.sha256.len() == 64
+            && self.sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
 }
 
 /// The target is a typed external parameter, never a path embedded into a step.
@@ -329,7 +365,14 @@ impl Package {
             input: InputKind::Mail,
             output: OutputKind::InvoicePdf,
             hosts: vec![host.into()],
-            binding: ExecutionBinding { adapter: 1, parser: 1, typesetter: 0, fonts_digest: String::new() },
+            binding: ExecutionBinding {
+                adapter: 1,
+                parser: 1,
+                typesetter: 0,
+                fonts_digest: String::new(),
+                resources: Vec::new(),
+                layout: None,
+            },
             steps: vec![
                 Step::MailLink { host: host.into(), label: None },
                 Step::Get,
@@ -344,6 +387,18 @@ impl Package {
             return Err(PackageError::Unsupported);
         }
         let renders = self.steps.iter().any(|step| matches!(step, Step::RenderInvoiceCopy { .. }));
+        // Only profile 2 loads provider resources; every other package must stay resource-free.
+        let loads = self.steps.iter().any(|step| matches!(step, Step::RenderInvoiceCopy { version: 2, .. }));
+        let hex =
+            |text: &str| text.len() == 64 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if (!loads && (!self.binding.resources.is_empty() || self.binding.layout.is_some()))
+            || self.binding.layout.as_deref().is_some_and(|layout| !hex(layout))
+            || self.binding.resources.len() > 8
+            || self.binding.resources.iter().any(|pin| !pin.valid(&self.hosts))
+            || self.binding.resources.iter().enumerate().any(|(at, pin)| self.binding.resources[..at].contains(pin))
+        {
+            return Err(PackageError::Invalid);
+        }
         if self.binding.typesetter > 1 {
             return Err(PackageError::Unsupported);
         }
@@ -385,8 +440,10 @@ impl Package {
                 {
                     3
                 }
-                (2, Step::RenderInvoiceCopy { profile: InvoiceProfile::PaddleSetapp, version: 1 })
-                    if self.hosts == ["my.paddle.com"]
+                (2, Step::RenderInvoiceCopy { profile: InvoiceProfile::PaddleSetapp, version })
+                    if ((*version == 1 && self.hosts == ["my.paddle.com"])
+                        || (*version == 2
+                            && self.hosts == ["my.paddle.com", "static.paddle.com", "cdn.paddle.com"]))
                         && self.binding.typesetter == 1
                         && self.binding.fonts_digest.len() == 64
                         && self.binding.fonts_digest.bytes().all(|b| b.is_ascii_hexdigit()) =>
@@ -395,9 +452,10 @@ impl Package {
                 }
                 (2 | 3, Step::VerifyPdf) => 3,
                 (3, Step::SaveToTarget) => 4,
-                (_, Step::ResolveStripeInvoicePdf { version, .. } | Step::RenderInvoiceCopy { version, .. })
-                    if *version != 1 =>
-                {
+                (_, Step::ResolveStripeInvoicePdf { version }) if *version != 1 => {
+                    return Err(PackageError::Unsupported);
+                }
+                (_, Step::RenderInvoiceCopy { version, .. }) if !matches!(version, 1 | 2) => {
                     return Err(PackageError::Unsupported);
                 }
                 _ => return Err(PackageError::Invalid),
@@ -507,6 +565,9 @@ pub enum RunReason {
     TooOld,
     SenderUnverified,
     RecoveryUncertain,
+    /// The provider's page now loads a script or has a layout that the workflow has not witnessed; a person
+    /// repairs the draft.
+    ProviderChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -546,6 +607,10 @@ pub struct WorkflowRun {
     pub created: DateTime<Utc>,
     pub document: Option<RetrievedDocument>,
     pub untrusted: bool,
+    /// A test that found the provider's page different from the draft's witnessed scripts or layout and took the
+    /// new ones over as a new revision. Check the copy before saving.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adopted_provider_change: bool,
 }
 
 /// Strictly local: no DNS, GET, conversion, reservation or write is performed for a preview.
@@ -668,7 +733,89 @@ mod tests {
         let mut package = Package::direct_pdf("files.example.org");
         package.steps.insert(1, Step::ResolveStripeInvoicePdf { version: 2 });
         assert!(package.validate().is_err());
-        package.steps[1] = Step::RenderInvoiceCopy { profile: InvoiceProfile::PaddleSetapp, version: 2 };
+        package.steps[1] = Step::RenderInvoiceCopy { profile: InvoiceProfile::PaddleSetapp, version: 3 };
         assert!(package.validate().is_err());
+    }
+
+    fn paddle(version: u16) -> Package {
+        let mut package = Package::direct_pdf("my.paddle.com");
+        package.hosts = vec!["my.paddle.com".into(), "static.paddle.com".into(), "cdn.paddle.com".into()];
+        package.binding.typesetter = 1;
+        package.binding.fonts_digest = "a".repeat(64);
+        package.steps = vec![
+            Step::MailLink { host: "my.paddle.com".into(), label: None },
+            Step::Get,
+            Step::RenderInvoiceCopy { profile: InvoiceProfile::PaddleSetapp, version },
+            Step::VerifyPdf,
+            Step::SaveToTarget,
+        ];
+        package
+    }
+
+    #[test]
+    fn only_profile_two_loads_pinned_scripts_from_its_three_paddle_hosts() {
+        let pin = ResourcePin {
+            host: "static.paddle.com".into(),
+            path: "/assets/js/customer/invoice.js?v=1".into(),
+            sha256: "0".repeat(64),
+            inline: false,
+        };
+        let mut package = paddle(2);
+        assert!(package.validate().is_ok(), "no pins yet: a draft test adopts the witnessed scripts");
+        package.binding.resources = vec![pin.clone()];
+        assert!(package.validate().is_ok());
+        let wire = serde_json::to_string(&package).expect("wire");
+        assert!(!wire.contains("://"));
+        assert_eq!(serde_json::from_str::<Package>(&wire).expect("read back"), package);
+        // Stored packages from before resource pins stay readable and unchanged on the wire.
+        let old = serde_json::to_string(&paddle(1)).expect("profile 1");
+        assert!(!old.contains("resources"));
+        assert!(serde_json::from_str::<Package>(&old).expect("old package").binding.resources.is_empty());
+        for broken in [
+            ResourcePin { host: "evil.example".into(), ..pin.clone() },
+            ResourcePin { path: "assets/invoice.js".into(), ..pin.clone() },
+            ResourcePin { path: "//evil.example/invoice.js".into(), ..pin.clone() },
+            ResourcePin { path: "/a.js#x".into(), ..pin.clone() },
+            ResourcePin { sha256: "0".repeat(63), ..pin.clone() },
+            ResourcePin { sha256: "G".repeat(64), ..pin.clone() },
+        ] {
+            let mut invalid = package.clone();
+            invalid.binding.resources = vec![broken];
+            assert!(invalid.validate().is_err());
+        }
+        let inline =
+            ResourcePin { host: "my.paddle.com".into(), path: "/".into(), sha256: "1".repeat(64), inline: true };
+        let mut with_inline = package.clone();
+        with_inline.binding.resources.push(inline.clone());
+        assert!(with_inline.validate().is_ok());
+        assert!(serde_json::to_string(&with_inline).expect("wire").contains("\"inline\":true"));
+        with_inline.binding.resources[1].path = "/inline.js".into();
+        assert!(with_inline.validate().is_err(), "an inline pin has no path of its own");
+        let mut layout = package.clone();
+        layout.binding.layout = Some("2".repeat(64));
+        assert!(layout.validate().is_ok());
+        assert!(serde_json::to_string(&layout).expect("wire").contains("\"layout\""));
+        layout.binding.layout = Some("2".repeat(63));
+        assert!(layout.validate().is_err());
+        let mut direct = Package::direct_pdf("files.example.org");
+        direct.binding.layout = Some("2".repeat(64));
+        assert!(direct.validate().is_err(), "only profile 2 binds a layout");
+        assert!(!serde_json::to_string(&paddle(2)).expect("wire").contains("layout"));
+        let mut duplicate = package.clone();
+        duplicate.binding.resources = vec![pin.clone(), pin.clone()];
+        assert!(duplicate.validate().is_err());
+        let mut many = package.clone();
+        many.binding.resources = (0..9).map(|n| ResourcePin { path: format!("/{n}.js"), ..pin.clone() }).collect();
+        assert!(many.validate().is_err());
+        let mut one_host = package.clone();
+        one_host.hosts = vec!["my.paddle.com".into(), "static.paddle.com".into()];
+        one_host.binding.resources.clear();
+        assert!(one_host.validate().is_err(), "profile 2 binds exactly the three Paddle hosts");
+        let mut first = paddle(1);
+        assert!(first.validate().is_err(), "profile 1 never loads from the static host");
+        first.hosts = vec!["my.paddle.com".into()];
+        assert!(first.validate().is_ok());
+        first.binding.resources = vec![ResourcePin { host: "my.paddle.com".into(), ..pin }];
+        assert!(first.validate().is_err(), "profile 1 stays resource-free");
     }
 }

@@ -45,6 +45,9 @@ struct RunRecord {
     /// Exact source metadata approved at enqueue. Older queued records fail closed.
     #[serde(default)]
     mail_header_hash: Option<String>,
+    /// Scripts a test of an unsaved draft witnessed. Journaled with the reservation, so recovery adopts them too.
+    #[serde(default)]
+    observed: Option<Witnessed>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -390,12 +393,13 @@ impl Service {
                 id: match event { Some((event, rule)) => event_job(event, &rule.rule.id), None => crate::mail::random_hex(16).map_err(|_| Error::Blocked)? }, workflow: id.into(), revision,
                 account: account.clone(), mail: message.into(), save_target: workflow.workflow.spec.save_target.clone(),
                 test, generation, state: RunState::Queued, reason: None, attempts: 0, created: Utc::now(), document: None, untrusted: true,
+                adopted_provider_change: false,
             };
             let record = RunRecord { run: run.clone(), scope: carrier, execution_scope: scope.clone(), workflow_digest: workflow.workflow.digest,
                 target_fingerprint: fingerprint, raw_hash: hash, dedup: dedup.clone(), due: Utc::now(), reservation: None,
                 execution_epoch: workflow.execution_epoch,
                 rule_binding: event.map(|(_, rule)| (rule.rule.id.clone(), rule.rule.revision, rule.state_revision)),
-                event: event.map(|(id, _)| id.to_string()), one_time, verified_sender, mail_header_hash: Some(source_hash) };
+                event: event.map(|(id, _)| id.to_string()), one_time, verified_sender, mail_header_hash: Some(source_hash), observed: None };
             put_run(tx, &record, "queued")?;
             store::put(tx, "dedup", &dedup, record.scope.owner(), &account, "", &Dedup { run: run.id.clone(), generation })?;
             Ok(run)
@@ -642,6 +646,7 @@ impl Service {
                             created: event.occurred_at,
                             document: None,
                             untrusted: true,
+                            adopted_provider_change: false,
                         },
                         scope: workflow.scope.clone(),
                         execution_scope: rule.scope.clone(),
@@ -657,6 +662,7 @@ impl Service {
                         one_time: false,
                         verified_sender: None,
                         mail_header_hash: None,
+                        observed: None,
                     };
                     let too_old =
                         event.received_at.is_some_and(|received| received < Utc::now() - chrono::Duration::days(7));
@@ -910,7 +916,9 @@ impl Service {
                         let mut record: WorkflowRecord = store::get(tx, "workflow", &job.run.workflow, |_, _| true)?;
                         if record.workflow.digest == job.workflow_digest && record.workflow.revision == job.run.revision
                         {
-                            record.workflow.tested = true;
+                            let before = record.workflow.revision;
+                            record.workflow.tested = adopt_resources(&mut record, &job)? || record.workflow.tested;
+                            job.run.adopted_provider_change = record.workflow.revision != before;
                             record.state_revision = record.state_revision.checked_add(1).ok_or(Error::Conflict)?;
                             store::put(
                                 tx,
@@ -979,7 +987,9 @@ impl Service {
         let html = parsed.html.ok_or_else(|| failure(RunReason::Unsupported))?;
         let rights = job.scope.current(clients).map_err(failed_permission)?;
         let workflow = self.workflow(&job.scope, rights.as_ref(), &job.run.workflow).map_err(failed_permission)?;
-        let output = retrieve(&workflow.workflow.spec.package, &html, downloader, &allow, cancelled).await?;
+        // Only a test of an unsaved draft may witness new provider scripts; a saved workflow stops instead.
+        let adopt = job.run.test && !workflow.workflow.saved;
+        let output = retrieve(&workflow.workflow.spec.package, &html, downloader, &allow, cancelled, adopt).await?;
         allow()?;
         let stores = mail.stores(rights.as_ref().map_or(Reach::Suite, Reach::Client)).await;
         let located = read::locate(&stores, &job.run.mail).await.map_err(|_| failure(RunReason::NotFound))?;
@@ -1035,6 +1045,7 @@ impl Service {
                     changed: false,
                 });
                 job.reservation = Some(reservation.clone());
+                job.observed = output.observed.clone();
                 put_run(tx, job, "committing")?;
                 Ok(reservation)
             })
@@ -1077,7 +1088,9 @@ impl Service {
                     let mut record: WorkflowRecord = store::get(tx, "workflow", &job.run.workflow, |_, _| true)?;
                     pinned(&record, job.run.revision)?;
                     if record.workflow.digest == job.workflow_digest && record.execution_epoch == job.execution_epoch {
-                        record.workflow.tested = true;
+                        let before = record.workflow.revision;
+                        record.workflow.tested = adopt_resources(&mut record, &job)? || record.workflow.tested;
+                        job.run.adopted_provider_change = record.workflow.revision != before;
                         record.state_revision = record.state_revision.checked_add(1).ok_or(Error::Conflict)?;
                         store::put(
                             tx,
@@ -1180,6 +1193,99 @@ struct Output {
     provenance: wire::Provenance,
     source_host: String,
     profile_version: Option<u16>,
+    /// The scripts witnessed on a profile-2 page; `None` when no page was read, e.g. a link that served a PDF.
+    observed: Option<Witnessed>,
+}
+
+/// What a profile-2 run saw on the provider's page: its scripts and its layout fingerprint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Witnessed {
+    resources: Vec<wire::ResourcePin>,
+    layout: Option<String>,
+}
+
+/// A successful test of an unsaved draft takes over exactly the scripts and layout it witnessed, as a new revision
+/// with a new digest. Saving and any authorization then bind that revision; the stored test stays bound to it.
+/// Returns whether the tested revision holds what the test saw; if the draft was saved meanwhile, it does not.
+fn adopt_resources(record: &mut WorkflowRecord, job: &RunRecord) -> Result<bool, Error> {
+    let package = &mut record.workflow.spec.package;
+    let Some(observed) = &job.observed else { return Ok(true) };
+    if !package.steps.iter().any(|step| matches!(step, wire::Step::RenderInvoiceCopy { version: 2, .. })) {
+        return Ok(true);
+    }
+    // The same scripts in another page order are no change and keep the revision and its authorization.
+    let mut known = package.binding.resources.clone();
+    let mut seen = observed.resources.clone();
+    known.sort();
+    seen.sort();
+    if known == seen && package.binding.layout == observed.layout {
+        return Ok(true);
+    }
+    // Saved while the test ran: the saved revision does not hold what the test saw, so it is not marked tested.
+    if record.workflow.saved || !job.run.test {
+        return Ok(false);
+    }
+    package.binding.resources = observed.resources.clone();
+    package.binding.layout = observed.layout.clone();
+    package.validate().map_err(|_| Error::Unsupported)?;
+    let encoded = serde_json::to_vec(&record.workflow.spec).map_err(|_| Error::Blocked)?;
+    record.workflow.digest = digest(&encoded);
+    record.workflow.revision = record.workflow.revision.checked_add(1).ok_or(Error::Conflict)?;
+    Ok(true)
+}
+
+/// Loads the head resources of a profile-2 page as data. Stylesheets go to the rule check of the conversion;
+/// scripts, external and inline, are hashed and never executed. An unwitnessed script is a provider change unless
+/// `adopt` allows a draft test to witness it. Inline scripts are compared before anything is loaded.
+async fn load_resources(
+    package: &wire::Package,
+    page: &download::Body,
+    downloader: &download::Downloader,
+    budget: &mut download::Budget,
+    allow: &(dyn Fn() -> Result<(), download::Failure> + Sync),
+    cancelled: &Arc<AtomicBool>,
+    adopt: bool,
+) -> Result<(Vec<invoice::Loaded>, Vec<wire::ResourcePin>), download::Failure> {
+    let presentation =
+        invoice::references(page.bytes.clone(), Some(page.content_type.clone()), Some(Arc::clone(cancelled)))
+            .await
+            .map_err(|_| failure(RunReason::Unsupported))?;
+    let mut loaded = Vec::new();
+    let mut observed: Vec<wire::ResourcePin> = Vec::new();
+    let mut witness = |pin: wire::ResourcePin| {
+        if !adopt && !package.binding.resources.contains(&pin) {
+            return Err(failure(RunReason::ProviderChanged));
+        }
+        if !observed.contains(&pin) {
+            observed.push(pin);
+        }
+        Ok(())
+    };
+    for sha256 in presentation.inline_scripts {
+        witness(wire::ResourcePin { host: page.source_host.clone(), path: "/".into(), sha256, inline: true })?;
+    }
+    budget.allow_resources(presentation.references.len());
+    for reference in presentation.references {
+        allow()?;
+        let link = download::resource_link(&page.source_host, &reference.href, &package.hosts)?;
+        let (host, path) = (link.host().to_owned(), link.path_and_query());
+        let body = downloader.fetch_resource(link, &package.hosts, budget, allow, reference.kind).await?;
+        match reference.kind {
+            download::ResourceKind::Stylesheet => {
+                loaded.push(invoice::Loaded { reference, stylesheet: Some(body.bytes) });
+            }
+            download::ResourceKind::Script => {
+                witness(wire::ResourcePin { host, path, sha256: digest(&body.bytes), inline: false })?;
+                loaded.push(invoice::Loaded { reference, stylesheet: None });
+            }
+        }
+    }
+    // Check the witnessed pins before any file is written: a pin the package cannot hold would otherwise fail the
+    // test's closing transaction after the document is already committed.
+    let mut probe = package.clone();
+    probe.binding.resources = observed.clone();
+    probe.validate().map_err(|_| failure(RunReason::Unsupported))?;
+    Ok((loaded, observed))
 }
 
 async fn retrieve(
@@ -1188,9 +1294,11 @@ async fn retrieve(
     downloader: &download::Downloader,
     allow: &(dyn Fn() -> Result<(), download::Failure> + Sync),
     cancelled: Arc<AtomicBool>,
+    adopt: bool,
 ) -> Result<Output, download::Failure> {
     package.validate().map_err(|_| failure(RunReason::Unsupported))?;
     let mut budget = download::Budget::new();
+    let mut observed = None;
     let mut link = None;
     let mut body: Option<download::Body> = None;
     let mut provenance = wire::Provenance::SupplierPdf;
@@ -1235,7 +1343,7 @@ async fn retrieve(
                         .await?,
                 );
             }
-            wire::Step::RenderInvoiceCopy { version: 1, .. } => {
+            wire::Step::RenderInvoiceCopy { version: version @ (1 | 2), .. } => {
                 let source = body.take().ok_or_else(|| failure(RunReason::Unsupported))?;
                 if source
                     .content_type
@@ -1245,11 +1353,30 @@ async fn retrieve(
                 {
                     body = Some(source);
                 } else {
-                    let copy = invoice::convert(source.bytes, Some(source.content_type), Some(Arc::clone(&cancelled)))
-                        .await
-                        .map_err(|_| failure(RunReason::Unsupported))?;
+                    let loaded = if *version == 2 {
+                        let (loaded, witnessed) =
+                            load_resources(package, &source, downloader, &mut budget, allow, &cancelled, adopt).await?;
+                        observed = Some(Witnessed { resources: witnessed, layout: None });
+                        Some(loaded)
+                    } else {
+                        None
+                    };
+                    allow()?;
+                    let copy =
+                        invoice::convert(source.bytes, Some(source.content_type), loaded, Some(Arc::clone(&cancelled)))
+                            .await
+                            .map_err(|_| failure(RunReason::Unsupported))?;
                     if copy.pages == 0 || copy.pages > 50 {
                         return Err(failure(RunReason::Unsupported));
+                    }
+                    // A changed layout is a provider change like a changed script, found before anything is saved.
+                    if *version == 2 {
+                        if !adopt && copy.layout != package.binding.layout {
+                            return Err(failure(RunReason::ProviderChanged));
+                        }
+                        if let Some(witnessed) = observed.as_mut() {
+                            witnessed.layout = copy.layout.clone();
+                        }
                     }
                     body = Some(download::Body {
                         bytes: copy.bytes,
@@ -1257,7 +1384,7 @@ async fn retrieve(
                         source_host: source.source_host,
                     });
                     provenance = wire::Provenance::HtmlCopy;
-                    profile_version = Some(1);
+                    profile_version = Some(*version);
                 }
             }
             wire::Step::VerifyPdf => {
@@ -1283,7 +1410,7 @@ async fn retrieve(
     allow()?;
     let mut source = body.ok_or_else(|| failure(RunReason::UnexpectedType))?;
     source.bytes = verify_pdf(source.bytes)?;
-    Ok(Output { bytes: source.bytes, provenance, source_host: source.source_host, profile_version })
+    Ok(Output { bytes: source.bytes, provenance, source_host: source.source_host, profile_version, observed })
 }
 
 fn verify_pdf(bytes: Vec<u8>) -> Result<Vec<u8>, download::Failure> {
@@ -1771,6 +1898,14 @@ mod tests {
     }
 
     async fn environment() -> Environment {
+        environment_with(
+            "https://documents.example.org/invoice.pdf",
+            wire::Package::direct_pdf("documents.example.org"),
+        )
+        .await
+    }
+
+    async fn environment_with(link: &'static str, package: wire::Package) -> Environment {
         use crate::mail::service::tests::{mail_account, service_in, store_accounts};
         use crate::mail::store::{Body, NewMessage};
         let dir = tempfile::tempdir().expect("isolated home");
@@ -1787,7 +1922,7 @@ mod tests {
         let mail = service_in(dir.path(), &secrets).with_sender_logos(logos, check);
         mail.reload().await;
         let store = mail.store(&account.id).await.expect("local store");
-        let message = store.run(|store| {
+        let message = store.run(move |store| {
             let folder = store.upsert_folder("INBOX", "Inbox", Some(torro_mail::Role::Inbox))?;
             store.note_uidvalidity(&folder, 1)?;
             let id = store.upsert_message(&folder, 1, &NewMessage {
@@ -1796,10 +1931,10 @@ mod tests {
                 subject: "Synthetic invoice".into(), date: Utc::now(), snippet: String::new(), flags: Vec::new(),
                 has_attachments: false, traits: Default::default(), invitation: false,
             })?;
-            let raw = b"From: billing@example.org\r\nSubject: Synthetic invoice\r\nMessage-ID: <workflow-synthetic@example.org>\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<a href='https://documents.example.org/invoice.pdf'>Invoice</a>";
-            store.save_original("INBOX", 1, 1, Utc::now().fixed_offset(), &[], raw)?;
+            let raw = format!("From: billing@example.org\r\nSubject: Synthetic invoice\r\nMessage-ID: <workflow-synthetic@example.org>\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<a href='{link}'>Invoice</a>");
+            store.save_original("INBOX", 1, 1, Utc::now().fixed_offset(), &[], raw.as_bytes())?;
             store.set_body(&id, &Body { text: "Invoice".into(), from_html: true,
-                html: Some("<a href='https://documents.example.org/invoice.pdf'>Invoice</a>".into()), attachments: Vec::new(), invite: None })?;
+                html: Some(format!("<a href='{link}'>Invoice</a>")), attachments: Vec::new(), invite: None })?;
             Ok(id)
         }).await.expect("synthetic mail");
         let folder = dir.path().join("invoices");
@@ -1815,7 +1950,7 @@ mod tests {
             description: "Synthetic".into(),
             mail: message,
             save_target: target.id,
-            package: wire::Package::direct_pdf("documents.example.org"),
+            package,
         };
         let Response::WorkflowDraft { workflow } =
             service.answer(Request::CreateWorkflowDraft { spec }, Scope::suite(), &clients, &mail).await
@@ -1997,7 +2132,7 @@ mod tests {
         let downloader = download::Downloader::for_test(&server.base_url());
         let package = super::super::templates::get("stripe_invoice").expect("built-in").package;
         let html = "<a href='https://invoice.stripe.com/i/acct_synthetic/token_synthetic'>Invoice</a>";
-        let result = retrieve(&package, html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)))
+        let result = retrieve(&package, html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), false)
             .await
             .expect("product path");
         assert_eq!(result.bytes, pdf);
@@ -2020,7 +2155,9 @@ mod tests {
         package.steps.retain(|step| !matches!(step, wire::Step::VerifyPdf));
         assert!(package.validate().is_ok(), "legacy packages still enter the unconditional container check");
         let html = "<a href='https://my.paddle.com/synthetic'>Invoice</a>";
-        assert!(retrieve(&package, html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false))).await.is_err());
+        assert!(
+            retrieve(&package, html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), false).await.is_err()
+        );
         broken.assert_calls_async(1).await;
         assert!(
             retrieve(
@@ -2028,12 +2165,252 @@ mod tests {
                 html,
                 &downloader,
                 &|| Err(failure(RunReason::PermissionRevoked)),
-                Arc::new(AtomicBool::new(false))
+                Arc::new(AtomicBool::new(false)),
+                false
             )
             .await
             .is_err()
         );
         broken.assert_calls_async(1).await;
+    }
+
+    const PADDLE_PAGE: &str = "https://my.paddle.com/invoice/synthetic";
+    const PADDLE_JS: &[u8] = include_bytes!("../../tests/fixtures/workflows/paddle.js");
+
+    fn paddle_package(resources: Vec<wire::ResourcePin>) -> wire::Package {
+        let mut package = super::super::templates::get("paddle_setapp_invoice_copy").expect("built-in").package;
+        package.binding.resources = resources;
+        package
+    }
+
+    fn witnessed_script() -> wire::ResourcePin {
+        wire::ResourcePin {
+            host: "static.paddle.com".into(),
+            path: "/assets/js/customer/invoice.js".into(),
+            sha256: digest(PADDLE_JS),
+            inline: false,
+        }
+    }
+
+    /// A synthetic Paddle server: the page with its head resources, the checked stylesheet and the script.
+    async fn paddle_server(script: &'static [u8]) -> httpmock::MockServer {
+        paddle_server_with(script, include_str!("../../tests/fixtures/workflows/paddle.css").into()).await
+    }
+
+    async fn paddle_server_with(script: &'static [u8], css: String) -> httpmock::MockServer {
+        let server = httpmock::MockServer::start_async().await;
+        let page =
+            super::super::tests::with_resources(include_str!("../../tests/fixtures/workflows/paddle_august.html"));
+        server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/my.paddle.com/invoice/synthetic");
+                then.status(200).header("content-type", "text/html; charset=utf-8").body(page);
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/static.paddle.com/assets/css/customer/invoice.css");
+                then.status(200).header("content-type", "text/css").body(css);
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/static.paddle.com/assets/js/customer/invoice.js");
+                then.status(200).header("content-type", "application/javascript").body(script);
+            })
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn a_draft_test_adopts_the_witnessed_paddle_script_as_a_new_tested_revision() {
+        let _turn = invoice::TEST_TURN.lock().await;
+        let env = environment_with(PADDLE_PAGE, paddle_package(Vec::new())).await;
+        let queued = queue(&env).await;
+        let server = paddle_server(PADDLE_JS).await;
+        let downloader = download::Downloader::for_test(&server.base_url());
+        assert!(env.service.work_using(&env.clients, &env.mail, &|_| true, &downloader).await.expect("worker"));
+        let Response::WorkflowRun { run } =
+            env.service.get_run(&Scope::suite(), None, &queued.id, &env.mail).expect("run")
+        else {
+            panic!("run");
+        };
+        assert_eq!(run.state, RunState::Succeeded, "{:?}", run.reason);
+        assert!(run.adopted_provider_change, "the run tells the person that the page differed from the template");
+        let document = run.document.expect("copy");
+        assert_eq!((document.provenance, document.profile_version), (wire::Provenance::HtmlCopy, Some(2)));
+        let adopted = env.service.workflow(&Scope::suite(), None, &env.workflow.id).expect("workflow").workflow;
+        assert_eq!(adopted.spec.package.binding.resources, vec![witnessed_script()]);
+        assert_eq!(adopted.revision, env.workflow.revision + 1);
+        assert_ne!(adopted.digest, env.workflow.digest);
+        assert!(adopted.tested, "the test belongs to the new revision with the adopted script");
+        let template = super::super::templates::get("paddle_setapp_invoice_copy").expect("template").package;
+        assert!(adopted.spec.package.binding.layout.is_some());
+        assert_ne!(adopted.spec.package.binding.layout, template.binding.layout, "the synthetic page's own layout");
+        let Response::Workflow { workflow } = env
+            .service
+            .answer(
+                Request::SaveWorkflow { id: adopted.id.clone(), revision: adopted.revision },
+                Scope::suite(),
+                &env.clients,
+                &env.mail,
+            )
+            .await
+        else {
+            panic!("the person saves the adopted revision");
+        };
+        assert!(workflow.saved);
+    }
+
+    #[tokio::test]
+    async fn saved_workflows_stop_on_a_changed_script_and_resource_loads_recheck_permission() {
+        let _turn = invoice::TEST_TURN.lock().await;
+        let html = format!("<a href='{PADDLE_PAGE}'>Invoice</a>");
+        let pinned = paddle_package(vec![witnessed_script()]);
+        let changed = paddle_server(b"document.body.append('Additional VAT');").await;
+        let downloader = download::Downloader::for_test(&changed.base_url());
+        let refused = retrieve(&pinned, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), false)
+            .await
+            .err()
+            .expect("an unwitnessed script stops a saved workflow");
+        assert_eq!(refused.reason, RunReason::ProviderChanged);
+        let witnessed = retrieve(&pinned, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), true)
+            .await
+            .expect("a draft test witnesses the new script");
+        let seen = witnessed.observed.as_ref().map(|seen| seen.resources.clone());
+        assert_eq!(seen.as_ref().map(Vec::len), Some(1));
+        assert_ne!(seen, Some(vec![witnessed_script()]));
+
+        // A witnessed script the package could not hold stops before any file is written.
+        let odd = httpmock::MockServer::start_async().await;
+        let page =
+            super::super::tests::with_resources(include_str!("../../tests/fixtures/workflows/paddle_august.html"))
+                .replace("invoice.js", "invoice.js?origin=www.example.org");
+        odd.mock_async(|when, then| {
+            when.path("/my.paddle.com/invoice/synthetic");
+            then.status(200).header("content-type", "text/html; charset=utf-8").body(page);
+        })
+        .await;
+        odd.mock_async(|when, then| {
+            when.path("/static.paddle.com/assets/css/customer/invoice.css");
+            then.status(200).header("content-type", "text/css").body("");
+        })
+        .await;
+        odd.mock_async(|when, then| {
+            when.path("/static.paddle.com/assets/js/customer/invoice.js");
+            then.status(200).header("content-type", "text/javascript").body(PADDLE_JS);
+        })
+        .await;
+        let downloader = download::Downloader::for_test(&odd.base_url());
+        let unpinnable = retrieve(&pinned, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), true)
+            .await
+            .err()
+            .expect("an unpinnable script is refused during the run");
+        assert_eq!(unpinnable.reason, RunReason::Unsupported);
+
+        let server = paddle_server(PADDLE_JS).await;
+        let downloader = download::Downloader::for_test(&server.base_url());
+        let refused = retrieve(&pinned, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), false)
+            .await
+            .err()
+            .expect("the bundled template pins the real pages' layout, not this synthetic one");
+        assert_eq!(refused.reason, RunReason::ProviderChanged);
+        let mut pinned = pinned;
+        pinned.binding.layout =
+            retrieve(&pinned, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), true)
+                .await
+                .expect("a draft test witnesses the layout")
+                .observed
+                .and_then(|seen| seen.layout);
+        let copy = retrieve(&pinned, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), false)
+            .await
+            .expect("the pinned script and layout pass unchanged");
+        assert_eq!(copy.observed.map(|seen| seen.resources), Some(vec![witnessed_script()]));
+        // A new colour keeps the layout; a moved box is a provider change, found before anything is saved.
+        let css = include_str!("../../tests/fixtures/workflows/paddle.css");
+        for (changed, kept) in [
+            (css.replace("color: #1f2430", "color: #000000"), true),
+            (css.replace(".c-main { padding-top: 80px; }", ".c-main { padding-top: 96px; }"), false),
+            (format!("{css}\n.receipt-table-total {{ margin-top: 4px; }}\n"), false),
+        ] {
+            assert_ne!(changed, css);
+            let server = paddle_server_with(PADDLE_JS, changed).await;
+            let downloader = download::Downloader::for_test(&server.base_url());
+            let result =
+                retrieve(&pinned, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), false).await;
+            match kept {
+                true => assert!(result.is_ok(), "colours stay free"),
+                false => assert_eq!(result.err().map(|failure| failure.reason), Some(RunReason::ProviderChanged)),
+            }
+        }
+        // Revoked between the page and its resources: nothing more is loaded and the run reports the revocation.
+        let page = download::Body {
+            bytes: super::super::tests::with_resources(include_str!(
+                "../../tests/fixtures/workflows/paddle_august.html"
+            ))
+            .into_bytes(),
+            content_type: "text/html; charset=utf-8".into(),
+            source_host: "my.paddle.com".into(),
+        };
+        let quiet = httpmock::MockServer::start_async().await;
+        let resources = quiet
+            .mock_async(|when, then| {
+                when.path_includes("/static.paddle.com/");
+                then.status(200).header("content-type", "text/css").body("");
+            })
+            .await;
+        let downloader = download::Downloader::for_test(&quiet.base_url());
+        let revoked = load_resources(
+            &pinned,
+            &page,
+            &downloader,
+            &mut download::Budget::new(),
+            &|| Err(failure(RunReason::PermissionRevoked)),
+            &Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .await
+        .err()
+        .expect("revoked while loading resources");
+        assert_eq!(revoked.reason, RunReason::PermissionRevoked);
+        resources.assert_calls_async(0).await;
+    }
+
+    /// Opt-in live check of the real retrieval path against the person's own Paddle mails: guarded DNS, redirects,
+    /// content types, resource loads and pins, without a browser. The directory holds `<name>.mail.html` (the
+    /// mail's HTML part); only the result shape is printed and the copy is written only there.
+    #[tokio::test]
+    #[ignore = "requires network and the person's private Paddle mails in a local temporary directory"]
+    async fn local_paddle_live() {
+        let _turn = invoice::TEST_TURN.lock().await;
+        let dir = std::env::var_os("TORRO_WORKFLOW_PADDLE_ACCEPTANCE").expect("explicit private temporary directory");
+        let dir = std::path::PathBuf::from(dir);
+        let package = super::super::templates::get("paddle_setapp_invoice_copy").expect("bundled template").package;
+        let downloader = download::Downloader::system().expect("system downloader");
+        let names = std::env::var("TORRO_WORKFLOW_PADDLE_NAMES").unwrap_or_else(|_| "august october".into());
+        for name in names.split_whitespace() {
+            let html = std::fs::read_to_string(dir.join(format!("{name}.mail.html"))).expect("local mail HTML");
+            let output = retrieve(&package, &html, &downloader, &|| Ok(()), Arc::new(AtomicBool::new(false)), false)
+                .await
+                .unwrap_or_else(|failure| panic!("{name}: {:?}", failure.reason));
+            let seen = output.observed.clone().expect("a page was read");
+            let layout_matches = seen.layout == package.binding.layout;
+            let mut witnessed = seen.resources;
+            let mut pinned = package.binding.resources.clone();
+            witnessed.sort();
+            pinned.sort();
+            eprintln!(
+                "{name}: {:?} profile {:?}, {} bytes, scripts match the template: {}, layout matches: {layout_matches}",
+                output.provenance,
+                output.profile_version,
+                output.bytes.len(),
+                witnessed == pinned
+            );
+            assert_eq!((output.provenance, output.profile_version), (wire::Provenance::HtmlCopy, Some(2)));
+            assert_eq!(witnessed, pinned);
+            assert!(layout_matches);
+            std::fs::write(dir.join(format!("{name}.live.pdf")), output.bytes).expect("local live copy");
+        }
     }
 
     #[test]
