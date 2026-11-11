@@ -3513,9 +3513,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // The compose window without boxes (#627).
     ("Discard draft", "Entwurf verwerfen"),
     ("Discard this draft?", "Diesen Entwurf verwerfen?"),
-    ("Formatting", "Formatierung"),
+    ("Hide formatting", "Formatierung ausblenden"),
     ("It moves to the trash.", "Er wandert in den Papierkorb."),
     ("Reply to {name}", "Antwort an {name}"),
+    ("Show formatting", "Formatierung einblenden"),
     ("Show history", "Verlauf anzeigen"),
     ("The draft could not be discarded.", "Der Entwurf konnte nicht verworfen werden."),
     ("from {address}", "von {address}"),

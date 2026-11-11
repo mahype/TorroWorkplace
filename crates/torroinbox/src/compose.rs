@@ -14,12 +14,14 @@
 //!   and Subject as rows between hairlines, without boxes; the paper from edge to edge with the text
 //!   as one document without a frame (no focus ring around a paragraph, the caret shows where one
 //!   writes; the label of the row with the focus turns `text`), the signature under "–" and the
-//!   attachments as cards; the format bar over the footer, folded with "Aa" (kept in `ui.json`,
-//!   `compose.format_bar`); the footer with Send and its keys, Aa, attach, image (◐ there when the
-//!   bar is folded) and "Discard draft". The account's signature is shown under the text but not put
+//!   attachments as cards. Every row is [`size::control()`] high with its content centred and its
+//!   values on one axis; no framed controls in a row (From is text with a chevron, a recipient's ✕
+//!   sits in its chip). Over the paper a row of tools: "Aa" folds the formats in and out (kept in
+//!   `ui.json`, `compose.format_bar`), then the formats, at the right attach, image and ◐; the footer
+//!   holds only Send with its keys and "Discard draft". The account's signature is shown under the text but not put
 //!   into it: the core adds it when the message is built, so it would stand twice.
 //! - **Answers** (issue #627): no From row – the account stands small in the header ("from …", a
-//!   button when there are several), the subject folded as text until clicked, and the quoted
+//!   button when there are several), the subject in the plain weight until it takes the focus, and the quoted
 //!   history folded under "Show history" ([`Document::fold_from`]); it is sent all the same. A forward
 //!   keeps its history open: there it is the content.
 //! - **Recipients as chips:** `,` `;`, Enter (with no suggestion open) and leaving the field turn what
@@ -150,10 +152,18 @@ fn label_width() -> f32 {
     size::row() + space::l()
 }
 
-/// The width of the input after a recipient's chips (issue #627): room for an address to type,
-/// half the property column.
+/// The padding of an input in a row of the form (issue #627): as high as [`size::control()`] with
+/// its text centred, and no side padding, so the typed text starts on the axis of the chips and the
+/// From button.
+fn row_input_padding(level: typo::Level) -> Padding {
+    let line = level.line_height.to_absolute(level.size).0;
+    Padding::new(((size::control() - line) / 2.0).max(0.0)).left(0.0).right(0.0)
+}
+
+/// The width of the input after a recipient's chips (issue #627): enough to start an address on the
+/// chips' line, small enough to stay there in a narrow window; it wraps under them once the line is full.
 fn next_input_width() -> f32 {
-    size::props() / 2.0
+    2.0 * size::control_lg()
 }
 
 /// The id of the To field, which takes the focus when a new message opens.
@@ -3902,7 +3912,8 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     /// The form (issue #627): a notice if there is one, the rows From (not for answers), To with Cc
     /// and Bcc, Subject between hairlines, the paper from edge to edge with the text, the history, the
-    /// signature and the attachments, then the format bar ("Aa") and the footer.
+    /// signature and the attachments, with the row of tools ("Aa", formats, attach, image, ◐) over
+    /// the paper and the footer under it.
     fn form(&self, narrow: bool, anchors: &Anchors) -> Element<'_, Message> {
         let editable = self.editable();
         let side = Self::side(narrow);
@@ -4035,15 +4046,11 @@ impl<S: ComposeSource + 'static> Window<S> {
             );
         }
         let paper = container(paper_content).width(Fill).height(Fill).style(style::container::paper);
-        let mut form = column![rows, themed::in_paper(paper, self.dark_paper())].height(Fill);
-        if self.format_bar {
-            let bar = container(self.toolbar(narrow, &anchors.tools))
-                .width(Fill)
-                .padding(space::xs())
-                .style(style::container::format_bar);
-            form = form.push(container(bar).padding(Padding::new(side).bottom(0.0).top(space::s())));
-        }
-        form.push(self.footer(narrow)).into()
+        // The tools stand over the mail like one more row (issue #627, after the first look at the
+        // window): formatting with "Aa", attach, image and ◐; the footer keeps only Send and Discard.
+        let tools = container(self.toolbar(narrow, &anchors.tools)).width(Fill).padding([0.0, side]);
+        let rows = rows.push(container(tools).center_y(size::control())).push(hairline());
+        column![rows, themed::in_paper(paper, self.dark_paper()), self.footer(narrow)].height(Fill).into()
     }
 
     /// A row of the form (issue #627): the label in `META` – `text` while its field (`id`) has the
@@ -4066,8 +4073,7 @@ impl<S: ComposeSource + 'static> Window<S> {
     }
 
     /// The footer (issue #627), [`size::header()`] high: Send with its keys beside it (narrow only the
-    /// icon), "Aa" for the format bar, attach, image, ◐ while the bar is folded, and at the right
-    /// "Discard draft".
+    /// icon), and at the right "Discard draft". The tools stand in the row over the mail ([`Self::toolbar`]).
     fn footer(&self, narrow: bool) -> Element<'_, Message> {
         let editable = self.editable();
         let press = (editable && !self.unsure).then_some(Message::Send);
@@ -4080,17 +4086,6 @@ impl<S: ComposeSource + 'static> Window<S> {
             let send = widgets::text_button(Some(Icon::Send), label, style::button::primary, press);
             bar = bar.push(widgets::with_tooltip(send, tip));
             bar = bar.push(container(widgets::kbd(send_keys())).padding([0.0, space::xs()]));
-        }
-        bar = bar.push(widgets::icon_toggle(
-            Icon::ALargeSmall,
-            tr("Formatting"),
-            self.format_bar,
-            self.ready().then_some(Message::ToggleFormatBar),
-        ));
-        bar = bar.push(widgets::icon_button(Icon::Paperclip, tr("Attach files"), editable.then_some(Message::Attach)));
-        bar = bar.push(widgets::icon_button(Icon::Image, tr("Insert image"), editable.then_some(Message::InsertImage)));
-        if !self.format_bar {
-            bar = bar.push(self.paper_toggle());
         }
         let discard = (self.ready() && !self.sending).then_some(Message::DiscardDraft);
         bar = bar.push(Space::new().width(Fill)).push(widgets::icon_button(Icon::Trash2, tr("Discard draft"), discard));
@@ -4194,19 +4189,28 @@ impl<S: ComposeSource + 'static> Window<S> {
         shell::below_titlebar(self.size, self.zoom.factor()).width - 2.0 * Self::side(narrow)
     }
 
-    /// The width the buttons of the format bar have: the rows' less the bar's own padding.
+    /// The width the formats have in the tools row: the row's less "Aa" with its line, attach and
+    /// image (◐ is kept by [`fits`] itself).
     fn format_room(&self, narrow: bool) -> f32 {
-        self.toolbar_room(narrow) - 2.0 * space::xs()
+        let button = size::control_sm() + space::xs();
+        self.toolbar_room(narrow) - 3.0 * button - (size::HAIRLINE + space::xs())
     }
 
-    /// The format bar (issues #125, #460, #627): bold, italic, underline | lists, quote | link, clear,
-    /// and at the end ◐ for the paper. What does not fit goes from the back into "…" ([`fits`]); ◐
-    /// and "…" always stay. Each button does what its key does; the tooltip names the key. "Insert
-    /// image" stands in the footer.
+    /// The tools over the mail (issues #125, #460, #627): "Aa" folds the formats in and out (kept in
+    /// `ui.json`), then bold, italic, underline | lists, quote | link, clear; at the right attach,
+    /// image and ◐ for the paper. What does not fit goes from the back into "…" ([`fits`]); ◐ and "…"
+    /// always stay. Each button does what its key does; the tooltip names the key.
     fn toolbar(&self, narrow: bool, anchor: &Anchor) -> Element<'_, Message> {
         let editable = self.editable();
-        let mut bar = row![].spacing(space::xs()).align_y(Alignment::Center);
-        if self.formatted() {
+        // A plain icon button, no chosen frame: whether the formats show is seen beside it, and the
+        // tooltip says what a click does.
+        let aa = if self.format_bar { tr("Hide formatting") } else { tr("Show formatting") };
+        let mut bar =
+            row![widgets::icon_button(Icon::ALargeSmall, aa, self.ready().then_some(Message::ToggleFormatBar))]
+                .spacing(space::xs())
+                .align_y(Alignment::Center);
+        if self.formatted() && self.format_bar {
+            bar = bar.push(divider());
             let shown = fits(self.format_room(narrow));
             for (i, group) in Format::GROUPS.iter().enumerate() {
                 let buttons: Vec<Format> = group.iter().copied().filter(|format| shown.contains(format)).collect();
@@ -4231,7 +4235,11 @@ impl<S: ComposeSource + 'static> Window<S> {
                 bar = bar.push(widgets::anchored(anchor, more));
             }
         }
-        bar.push(Space::new().width(Fill)).push(self.paper_toggle()).into()
+        bar.push(Space::new().width(Fill))
+            .push(widgets::icon_button(Icon::Paperclip, tr("Attach files"), editable.then_some(Message::Attach)))
+            .push(widgets::icon_button(Icon::Image, tr("Insert image"), editable.then_some(Message::InsertImage)))
+            .push(self.paper_toggle())
+            .into()
     }
 
     /// The menu "…" of the toolbar: the formats that did not fit, in their order.
@@ -4277,7 +4285,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             .size(typo::body().size)
             .line_height(typo::body().line_height)
             .font(typo::body().font)
-            .padding(style::INPUT_PADDING)
+            .padding(row_input_padding(typo::body()))
             .width(Fill)
             .style(style::text_input_bare)
             .on_input_maybe(editable.then_some(on_input))
@@ -4288,37 +4296,50 @@ impl<S: ComposeSource + 'static> Window<S> {
             row![input, folds].align_y(Alignment::Center).into()
         } else {
             // A chip's name gives way before the field is full: the ✕ and the folds keep their room.
-            let room = (self.field_room(narrow) - folds_width - size::control_sm() - 4.0 * space::s())
+            let room = (self.field_room(narrow) - folds_width - style::CHIP_HEIGHT - 4.0 * space::s())
                 .clamp(size::control_sm(), size::props());
-            let mut items: Vec<Element<'_, Message>> =
-                held.chips.iter().enumerate().map(|(i, chip)| self.recipient_chip(which, i, chip, room)).collect();
+            // Each chip stands in a band as high as the row, so a line of chips alone is centred too.
+            let mut items: Vec<Element<'_, Message>> = held
+                .chips
+                .iter()
+                .enumerate()
+                .map(|(i, chip)| container(self.recipient_chip(which, i, chip, room)).center_y(size::control()).into())
+                .collect();
             // The input for the next one after the chips, on their line while there is room.
             items.push(container(input).width(next_input_width()).into());
             let chips = row(items).spacing(space::xs()).align_y(Alignment::Center).wrap().vertical_spacing(0.0);
-            row![container(chips).width(Fill), folds].align_y(Alignment::Start).into()
+            row![container(chips).width(Fill), container(folds).center_y(size::control())]
+                .align_y(Alignment::Start)
+                .into()
         };
-        widgets::anchored(anchors.of(which), container(body).width(Fill).center_y(size::control()))
+        // No fixed height: a field with many chips grows by lines, each as high as the input.
+        widgets::anchored(anchors.of(which), container(body).width(Fill))
     }
 
     /// A recipient as a chip with its ✕: a person by name (the address in the tooltip), a word that is
     /// no address with the alert icon and a tooltip that says so.
     fn recipient_chip<'a>(&self, which: Field, index: usize, chip: &'a Chip, room: f32) -> Element<'a, Message> {
+        let press = self.editable().then_some(Message::RemoveChip(which, index));
+        // The ✕ sits inside the chip (issue #627), the address or the problem is the chip's tooltip.
         let (chip, tip): (Element<'a, Message>, String) = match chip {
             Chip::Person(who) => {
                 let name = who.name.as_deref().map(list::one_line).filter(|name| !name.is_empty());
                 let label = typo::ellipsize(name.as_deref().unwrap_or(&who.address), typo::meta(), room);
-                (widgets::chip(Some(Mark::Icon(Icon::User)), label, None), format_address(who))
+                let user = icon::icon(Icon::User, icon::SIZE_SM)
+                    .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) });
+                (widgets::chip_removable(user, label, tr("Remove"), press), format_address(who))
             }
             Chip::Broken(word) => {
                 let alert = icon::icon(Icon::CircleAlert, icon::SIZE_SM)
                     .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
                 let label = typo::ellipsize(&list::one_line(word), typo::meta(), room);
-                (widgets::chip_led(alert, label, None), tr("This isn't a valid address.").to_owned())
+                (
+                    widgets::chip_removable(alert, label, tr("Remove"), press),
+                    tr("This isn't a valid address.").to_owned(),
+                )
             }
         };
-        let press = self.editable().then_some(Message::RemoveChip(which, index));
-        let remove = widgets::icon_button(Icon::X, tr("Remove"), press);
-        row![widgets::with_tooltip(chip, tip), remove].align_y(Alignment::Center).into()
+        widgets::with_tooltip(chip, tip)
     }
 
     /// The suggestions under their field (issue #460): contacts and groups, then apart the addresses
@@ -4473,7 +4494,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             .size(level.size)
             .line_height(level.line_height)
             .font(level.font)
-            .padding(style::INPUT_PADDING)
+            .padding(row_input_padding(level))
             .width(Fill)
             .style(style::text_input_bare)
             .on_input_maybe(editable.then_some(on_input))
@@ -4488,17 +4509,28 @@ impl<S: ComposeSource + 'static> Window<S> {
         let Some(sender) = self.sender() else { return Space::new().into() };
         let name = list::one_line(&sender.name);
         let address = typo::text(typo::meta(), sender.address.as_str()).style(theme::text_3).wrapping(Wrapping::None);
-        let picked: Element<'_, Message> = match self.senders.len() {
-            1 if name.is_empty() => address.into(),
-            1 => row![typo::text(typo::body(), name).wrapping(Wrapping::None), address]
+        // Quiet like the other rows (issue #627): the name as text, with several accounts a chevron
+        // after it and the whole a frameless button – no framed select box in a row of text.
+        let words: Element<'_, Message> = if name.is_empty() {
+            typo::text(typo::body(), sender.address.as_str()).wrapping(Wrapping::None).into()
+        } else {
+            row![typo::text(typo::body(), name).wrapping(Wrapping::None), address]
                 .spacing(space::s())
                 .align_y(Alignment::Center)
-                .into(),
-            _ if name.is_empty() => widgets::select_button(anchor, sender.address.clone(), Message::FromMenu),
-            _ => row![widgets::select_button(anchor, name, Message::FromMenu), address]
-                .spacing(space::s())
-                .align_y(Alignment::Center)
-                .into(),
+                .into()
+        };
+        let picked: Element<'_, Message> = if self.senders.len() > 1 {
+            let chevron = icon::icon(Icon::ChevronDown, icon::SIZE_SM)
+                .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) });
+            let content = row![words, chevron].spacing(space::xs()).align_y(Alignment::Center);
+            let open = button(container(content).center_y(Fill))
+                .height(size::control())
+                .padding(0)
+                .style(style::button::bare)
+                .on_press_maybe(self.editable().then_some(Message::FromMenu));
+            widgets::anchored(anchor, open)
+        } else {
+            words
         };
         container(picked).center_y(size::control()).into()
     }
