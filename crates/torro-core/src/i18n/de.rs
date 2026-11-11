@@ -182,6 +182,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Ask AI", "KI fragen"),
     ("Ask AI…", "KI fragen…"),
     ("Ask about this mail…", "Frag etwas zu dieser Mail…"),
+    ("Is there a deadline?", "Gibt es eine Frist?"),
+    ("What does the sender want from me?", "Was will der Absender von mir?"),
+    ("What was said about this before?", "Was wurde dazu vorher gesagt?"),
     (
         "Ask about this mail. Torro reads it first; it only reads and suggests.",
         "Frag etwas zu dieser Mail. Torro liest sie zuerst; es liest nur und schlägt vor.",
