@@ -587,8 +587,9 @@ für Tests und bestätigte Wiederholungs-Generationen verhindern unbemerkte Mehr
 „Retrieved documents“ bleibt getrennt von Originalanhängen. Herkunft unterscheidet Anbieter-PDF
 und auf jeder Seite gekennzeichnete HTML-Rechnungskopie; Paddle wird vollständig, nicht im
 Anbieterlayout nachgebaut. Stylesheets und Skripte der Paddle-Seite lädt der Dienst nur als Daten:
-Stylesheets werden bei jedem Lauf gegen eine Erlaubnisliste geprüft, Skripte nie ausgeführt und nur
-mit bekannter Prüfsumme angenommen. Ändert Paddle ein Skript, meldet der Lauf eine geänderte Anbieterseite, und
+Stylesheets werden bei jedem Lauf gegen eine Erlaubnisliste geprüft, ihr Layout und die Skripte nur
+mit bekannter Prüfsumme angenommen; Skripte werden nie ausgeführt. Ändert Paddle ein Skript oder das
+Layout, meldet der Lauf eine geänderte Anbieterseite, und
 „Ablauf mit KI erstellen…“ an derselben Mail repariert den Ablauf (#598). Der begrenzte PDF-Containerparser unterstützt klassische Xref-Tabellen,
 keine komprimierten Xref-/ObjStm-Varianten, und dekomprimiert keine Streams, Fonts oder Bilder.
 Fehlende/geänderte Dateien werden sichtbar statt automatisch neu geladen; Entfernen eines Ablaufs

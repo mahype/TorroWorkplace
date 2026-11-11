@@ -290,13 +290,15 @@ Adressformular ein. Profil 2 nimmt genau diese Formen an:
   `<meta name="robots">`; Icon und Robots-Angabe werden nie geladen,
 - außerhalb der Rechnung ein Inline-`<script>` ohne `src`; in der Rechnung selbst kein Skript,
 - `style`-Attribute außerhalb der Rechnung; sie laufen durch dieselbe Erlaubnisliste wie die
-  Stylesheets und wirken nur auf ihr eigenes Element. In der Navigation (`.no-print`, `.c-header`)
-  dürfen sie ausblenden wie deren eigene Regeln.
+  Stylesheets und wirken nur auf ihr eigenes Element. Innerhalb der belegten Kopfzeile
+  (`header.c-header.no-print`) dürfen sie ausblenden wie deren eigene Regeln.
 
 Modul-Skripte, Ereignishandler, `<base>`, externe Skripte außerhalb des Kopfs und mehr als acht
-Ressourcen, vier Inline-Skripte oder 32 Inline-Styles samt `style`-Attributen bleiben abgewiesen. Das Paddle-Logo unter der
-Rechnung (`a.logo` mit Bild, ohne Text) gehört wie Kopfzeile und Bearbeiten-Dialog zur belegten
-Umgebung.
+Ressourcen, vier Inline-Skripte oder 32 Inline-Styles samt `style`-Attributen bleiben abgewiesen. Das
+Paddle-Logo unter der Rechnung (`a.logo` mit Bild, ohne Text) gehört wie Kopfzeile und
+Bearbeiten-Dialog zur belegten Umgebung. Das Bearbeiten-Element in der Rechnung
+(`p#add-edit-address-container`) wird als Inhalt übersprungen, darf aber nur Text und einfache Links
+ohne `style` enthalten.
 
 Nach der vollständigen Strukturprüfung der Seite prüft der Dienst zuerst die Inline-Styles und die
 Prüfsummen der Inline-Skripte, dann lädt er jede Ressource einzeln: nur über HTTPS, nur von den drei
@@ -305,10 +307,11 @@ Hosts des Pakets (auch nach Weiterleitungen), höchstens 512 KiB, mit passendem 
 GET-Budget des Laufs wächst um die Zahl der Ressourcen, höchstens um acht; Zeit und Weiterleitungen
 bleiben gemeinsam begrenzt. Relative Pfade ohne führenden Schrägstrich werden abgewiesen.
 
-**Stylesheets gegen eine Erlaubnisliste, nicht nach Prüfsumme.** Jedes Stylesheet und jedes
+**Stylesheets gegen eine Erlaubnisliste, das Layout per Prüfsumme.** Jedes Stylesheet und jedes
 Inline-`<style>` wird bei jedem Lauf als Daten gelesen (`cssparser`, höchstens 512 KiB und 20.000
-Regeln, im Zeitbudget des Konverters). Eine Prüfsumme würde schon bei jeder Farbänderung abbrechen.
-Die Prüfung hat zwei Stufen:
+Regeln, im Zeitbudget des Konverters). Eine Prüfsumme über die ganze Datei würde schon bei jeder
+Farbänderung abbrechen; gebunden wird deshalb nur das Layout (siehe unten). Die Prüfung hat drei
+Stufen:
 
 1. **Kann die Regel die Seite treffen?** Nennt jeder Selektor einer Regel eine Klasse, eine ID oder
    ein Tag, das auf der Seite nicht vorkommt, kann die Regel nichts verändern und wird übersprungen.
@@ -325,8 +328,10 @@ Die Prüfung hat zwei Stufen:
    2600 px); Einheiten der Zeilenhöhe (`lh`, `rlh`) und `cap`/`ic` werden nicht gelesen:
    - Layout: Flexbox (auch umgekehrte Richtung), `display` ohne `none`, `list-item` und
      Tabellenspalten, `position: static|relative`,
-   - Größen bis 2000 px, Innenabstände bis 320 px, Ränder, Versätze und Einzug bis 128 px,
-     Lücken bis 64 px; `calc()` nur bei diesen, ohne Division und ohne Konstanten wie `infinity`,
+   - Größen bis 2000 px und höchstens 100 % des Containers, Innenabstände bis 320 px, Ränder,
+     Versätze und Einzug bis 128 px, Lücken bis 64 px, `vertical-align` bis 32 px; `calc()` nur bei
+     diesen, ohne Division und ohne Konstanten wie `infinity`; kein `inherit` und keine Zahlen ohne
+     Einheit,
    - Rahmen- und Umrissbreiten bis 8 px, Schatten bis 32 px, Textdekoration ohne Längen über 4 px,
      `z-index` von 0 bis 100,
    - Hintergrundfarben ohne Bilder, Textausrichtung, Schriftfamilie und -stärke,
@@ -343,16 +348,30 @@ Die Prüfung hat zwei Stufen:
    `@page` nur Größe (ab 300 px) und Ränder (bis 128 px), keine Randboxen mit Text. `@keyframes` wirken nur über
    `animation` und werden übersprungen.
 
-**Versätze über die ganze Seite.** Ränder, Versätze und Einzug addieren sich über verschachtelte
-Elemente. Deshalb rechnet die Prüfung nach allen Stylesheets und `style`-Attributen für jedes Element
-der Seite zusammen, wie weit es samt seinen Vorfahren höchstens nach links oder oben rücken kann: Jede
-Regel, deren Zielelement (Tag, Klassen, ID) passt, zählt mit ihrem größten Versatz. Mehr als 128 px
-in Summe brechen ab.
+3. **Layout-Prüfsumme.** Für jede Regel, die die Seite treffen kann, und für jedes `style`-Attribut
+   außerhalb der Rechnung gehen Kontext (`@media` usw.), Selektor und alle Layout-Angaben in eine
+   SHA-256-Prüfsumme (`binding.layout` im Paket): Position, Versätze, Ränder, Abstände, Größen,
+   `display`, Flexbox, `z-index`, Schrift- und Zeilengröße, Ausrichtung. Frei bleiben Farben,
+   Schriftfamilie und -stärke, Rahmenfarben und -stile, Rundungen, Schatten, Deckkraft und Übergänge.
+   Ein `style`-Attribut zählt mit seinem Platz in der Seite (Tags, Klassen und IDs bis zur Wurzel),
+   damit die Zahl der Rechnungszeilen die Prüfsumme nicht ändert. Weicht die Prüfsumme von der
+   gebundenen ab, gilt das wie ein geändertes Skript. Bei den echten Seiten ist sie für alle drei
+   Rechnungen gleich; die Vorlage bringt sie mit.
 
-Ausblenden (`display: none`, `visibility: hidden`, Deckkraft und Farbe ohne Grenze) und
-`position: absolute|fixed|sticky` sind nur für Selektoren erlaubt, die mit `.no-print` oder `.c-header` beginnen und nur Nachfahren davon meinen,
-nie Geschwister: Das sind die belegte Navigation und das Bearbeitungssteuerelement, keine
-Rechnungsdaten.
+Dadurch kann ein Stylesheet die Rechnung nicht verschieben oder überdecken, ohne dass der Lauf
+abbricht: Es gilt nur das Layout, das ein Mensch mit einem Test übernommen hat.
+
+**Versätze als Plausibilitätsprüfung.** Die übernommene Fassung prüft der Dienst zusätzlich: Ränder,
+Versätze und Einzug addieren sich über verschachtelte Elemente und über Geschwister nach einem
+negativen Rand. Für jedes Element der Seite zählen alle Regeln, deren Zielelement (Tag, Klassen, ID)
+passt, mit der Summe ihrer Versätze; ein Einzug zählt bei jedem Nachfahren erneut, weil er vererbt
+wird. Mehr als 128 px nach links oder oben für ein Element samt Vorfahren oder 512 px für die ganze
+Seite brechen ab.
+
+Ausblenden (`display: none`, `visibility: hidden`, Deckkraft und Farbe ohne Grenze) ist nur für
+Selektoren erlaubt, die mit `.no-print` oder `.c-header` beginnen und nur Nachfahren davon meinen, nie
+Geschwister. `position: absolute|fixed|sticky` ist nur für Selektoren erlaubt, die mit `.c-header`
+beginnen: `.no-print` markiert auch das Bearbeiten-Element in der Rechnung.
 
 **Skripte nie ausgeführt, nur mit Prüfsumme.** Skripte werden nie ausgeführt. Ihr SHA-256 steht mit
 Host und Pfad als `binding.resources` im Paket (höchstens acht Einträge, nur auf den Paket-Hosts).
@@ -361,26 +380,26 @@ bringt die Prüfsummen der fünf Skripte der echten Seiten mit. Skripte sind Tei
 Bindung, weil sie im Browser des Menschen die Seite verändern könnten.
 
 **Reparatur, wenn Paddle die Seite ändert.** Lädt ein gespeicherter Ablauf ein Skript mit
-unbekannter Prüfsumme, endet der Lauf mit `provider_changed`: „Der Anbieter hat seine
+unbekannter Prüfsumme oder weicht das Layout ab, endet der Lauf vor jeder Ablage mit
+`provider_changed`: „Der Anbieter hat seine
 Rechnungsseite geändert.“ Repariert wird an derselben Mail über „Ablauf mit KI erstellen…“: Die KI
 wählt die Paddle-Vorlage neu, der bestätigte Test eines noch nicht gespeicherten Entwurfs übernimmt
-die beobachteten Skripte in derselben Transaktion als neue Fassung (neue Revision und Prüfsumme) und
+die beobachteten Skripte und das Layout in derselben Transaktion als neue Fassung (neue Revision und Prüfsumme) und
 markiert genau diese Fassung als getestet. Danach speichert der Mensch den Ablauf und autorisiert ihn
 neu; die alte Autorisierung passt nicht mehr zur Prüfsumme. Eine KI gibt bei keinem Lauf still neue
 Seiteninhalte frei, und Läufe laufen gleich ab. Verstößt ein Stylesheet gegen die Erlaubnisliste,
 endet der Lauf mit `unsupported`.
 
-**Grenzen.** Die Prüfung rendert kein CSS. Nicht erkannt werden: eigene Fonts (`@font-face`), die
-Zeichen im Browser anders darstellen, gleiche Text- und Hintergrundfarbe, Umordnen über
-Flexbox-Richtung und eine Überdeckung durch die erlaubte Kopfzeile auf dem Bildschirm, soweit Größen,
-Versätze und `z-index` innerhalb der Grenzen bleiben. Klassen, die erst ein Skript zur Laufzeit
+**Grenzen.** Die Prüfung rendert kein CSS. Was sie dadurch nicht sieht, deckt die Bindung: Ein
+geändertes Layout bricht ab. Frei und damit nicht erkannt bleiben eigene Fonts (`@font-face`), die
+Zeichen im Browser anders darstellen, und gleiche Text- und Hintergrundfarbe. Klassen, die erst ein Skript zur Laufzeit
 setzt, kennt die Treffer-Prüfung nicht. Bei den gebundenen Skripten betrifft das nur das
 Bearbeiten-Modal außerhalb der Rechnung: `invoice.js` öffnet es als jQuery-UI-Dialog und richtet die
 Länderauswahl mit select2 ein; die Rechnung und ihre Vorfahren bekommen keine Klassen. Ein anderes
 Skript bricht als `provider_changed` ab. Die Kopie selbst hängt davon nicht ab: Sie setzt
 den Text der Seite mit den eingebetteten Fonts. Fonts, Bilder und andere im Stylesheet genannte
 Adressen werden nicht geladen. Ändert Paddle ein Skript, scheitern auch automatische Läufe, bis der
-Mensch die Reparatur durchführt; das ist gewollt.
+Mensch die Reparatur durchführt; das gilt ebenso für ein geändertes Layout und ist gewollt.
 
 Die Kopie wird mit den eingebetteten Standardfonts auf A4, mit 15 mm Rand und 11 pt gesetzt. Der
 Satz misst Umbrüche, Tabellenzellen und Seitengrenzen. Auf jeder Seite steht ausdrücklich, dass es
@@ -442,7 +461,7 @@ GET geladen und lokal konvertiert. Alle fünf Skripte passten zu den Prüfsummen
 Stylesheets bestanden die Prüfung. Jede Kopie hat eine Seite mit Kopiehinweis; ihr Text stimmt Wort
 für Wort und in Reihenfolge mit einer unabhängigen Textextraktion der Rechnung aus dem HTML überein
 (`pdftotext` gegen Pythons HTML-Parser), ebenso `<name>.source.txt`. Der Live-Test lief für alle drei
-Rechnungen grün: Alle Skripte passten zu den Prüfsummen der Vorlage, und auch diese Kopien stimmen
+Rechnungen grün: Alle Skripte und das Layout passten zu den Prüfsummen der Vorlage, und auch diese Kopien stimmen
 Wort für Wort mit der Rechnung überein. Rechnungsinhalte und Links liegen nicht im Repository.
 
 ## Aktueller Implementierungsstand
