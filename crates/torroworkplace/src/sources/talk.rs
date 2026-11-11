@@ -484,6 +484,15 @@ mod tests {
             last_message: None,
             last_activity: now(),
             last_read: None,
+            has_call: false,
+            call_flag: 0,
+            favorite: false,
+            read_only: false,
+            lobby: false,
+            other_user: None,
+            federated: false,
+            description: String::new(),
+            can_start_call: true,
         };
         let (me, info) = (Some(Lane::ForMe), Some(Lane::Info));
         for (kind, level, mention, lane) in [
@@ -803,6 +812,15 @@ mod tests {
             last_message: None,
             last_activity: now(),
             last_read: None,
+            has_call: false,
+            call_flag: 0,
+            favorite: false,
+            read_only: false,
+            lobby: false,
+            other_user: None,
+            federated: false,
+            description: String::new(),
+            can_start_call: true,
         };
         let stand_in = ids(&room, 2);
         assert_eq!(stand_in, [format!("abcd/@{}", now().timestamp()), format!("abcd/@{}~1", now().timestamp())]);

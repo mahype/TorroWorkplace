@@ -3,17 +3,25 @@
 //! [`Nextcloud::delete_notification`]) and its Talk conversations ([`Nextcloud::rooms`],
 //! [`Nextcloud::mark_read`]). Task E5.7 in `docs/tasks/eingang.md`; the core files them into the
 //! inbox as the sources `nextcloud:<login>@<host>` (E5.8) and `talk:<login>@<host>` (E5.9).
+//! For the chat app (#643, `docs/chat.md`, `docs/praesenz.md`) also the chat of a conversation
+//! ([`Nextcloud::messages`], [`Nextcloud::wait_messages`], [`Nextcloud::send_message`] …), the
+//! status of people ([`Nextcloud::statuses`], [`Nextcloud::heartbeat`] …), the person behind the
+//! account ([`Nextcloud::user`]) and the search for other users ([`Nextcloud::find_sharees`]).
 //!
 //! Calendars and tasks are CalDAV and live in `torro-pim-caldav`; this crate speaks only OCS.
 //!
-//! - `ocs`: the client, the OCS envelope and the errors every call shares ([`OcsError`]).
-//! - `capabilities`: which apps the server has.
+//! - `ocs`: the client, the OCS envelope and the errors every call shares ([`OcsError`]), and
+//!   the error of Talk's chat calls ([`TalkError`]).
+//! - `capabilities`: which apps the server has, and Talk's and the status app's settings.
 //! - `notifications`: the notifications app (`apps/notifications`).
-//! - `talk`: conversations of Talk (`apps/spreed`).
+//! - `talk`: conversations and chat of Talk (`apps/spreed`).
+//! - `user_status`: the user status app (`apps/user_status`).
+//! - `people`: the current user and the search for others (`cloud/user`, sharees, autocomplete).
 //! - `rich`: Nextcloud's rich object strings (`{user} shared {file}`) as plain text.
 //!
 //! Everything in an answer comes from outside. Ids and tokens are checked before they name
-//! anything in an address, texts are made plain ([`rich::plain`]), and a link is kept only when it
+//! anything in an address (a user id goes in as one percent-encoded path segment), texts are made
+//! plain ([`rich::plain`]), and a link is kept only when it
 //! points to the account's own server ([`same_origin`], rule 15 of the E5 plan). The app password
 //! travels only in the `Authorization` header and only to the account's origin: a redirect to any
 //! other origin is not followed, and neither `Debug` nor an error ever shows the password.
@@ -24,10 +32,17 @@ mod ocs;
 pub mod rich;
 mod talk;
 
-pub use capabilities::{Capabilities, NotificationsCapability, TalkCapability};
+pub use capabilities::{
+    Capabilities, DEFAULT_ATTACHMENTS_FOLDER, DEFAULT_MAX_LENGTH, NotificationsCapability, TalkCapability,
+    UserStatusCapability,
+};
 pub use notifications::{Listing, Notification, NotificationId, Person};
-pub use ocs::{MAX_WAIT, Nextcloud, OcsError, THROTTLE_WAIT};
-pub use talk::{LastMessage, NotificationLevel, Room, RoomKind, RoomToken};
+pub use ocs::{MAX_WAIT, Nextcloud, OcsError, THROTTLE_WAIT, TalkError};
+pub use talk::{
+    ActorType, CONTEXT_MAX, ChatMessage, FoundMessage, LastMessage, MESSAGES_MAX, Mention, MentionKind,
+    MentionSuggestion, MessageKind, Messages, NotificationLevel, Parent, Room, RoomKind, RoomToken, SendOptions,
+    SharedFile, WAIT_MAX_SECS,
+};
 
 /// Whether `a` and `b` are web addresses with the same origin (scheme, host and port). Addresses
 /// that do not parse, or have no such origin (`mailto:`, `javascript:`), never match.

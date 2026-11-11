@@ -5,6 +5,13 @@
 //! errors apart; v1 would always say 200. `OCS-APIRequest: true` is required, without it Nextcloud
 //! treats the call as a possible CSRF and refuses it.
 //! <https://docs.nextcloud.com/server/latest/developer_manual/client_apis/OCS/ocs-api-overview.html>
+//!
+//! Two ways to call: [`Nextcloud::get`]/[`Nextcloud::call`] turn every refusal into an [`OcsError`];
+//! [`Nextcloud::exchange`] (#643) hands refusals that mean something different per app (Talk's
+//! 403 read-only, 412 lobby, 413 too long …) back with their status, carries the response headers
+//! (`X-Chat-Last-Given`) and can wait longer than the client's 60 s (a long poll). Addresses for it
+//! come from [`Nextcloud::endpoint`], which percent-encodes foreign text into one path segment or
+//! the query. [`TalkError`] is the error of Talk's chat calls.
 
 use std::fmt;
 use std::time::Duration;
@@ -152,11 +159,86 @@ impl Nextcloud {
         self.send(request).await
     }
 
+    /// The address `<server><path>`, then each of `segments` as one more path segment of its own
+    /// (percent-encoded, so a `/`, `?` or `#` in a user id stays inside its segment), then `query`
+    /// form-encoded. `path` is this crate's own, made only of fixed parts and checked ids;
+    /// `segments` and `query` may hold foreign text. [`OcsError::Other`] for a segment that is
+    /// empty, `.` or `..` (it would name another address).
+    pub(crate) fn endpoint<V: AsRef<str>>(
+        &self,
+        path: &str,
+        segments: &[&str],
+        query: &[(&str, V)],
+    ) -> Result<Url, OcsError> {
+        let mut url = Url::parse(&format!("{}{path}", self.base))
+            .map_err(|_| OcsError::Other("the address of the request could not be built".into()))?;
+        if !segments.is_empty() {
+            if segments.iter().any(|segment| matches!(*segment, "" | "." | "..")) {
+                return Err(OcsError::Other("the request names no valid item".into()));
+            }
+            url.path_segments_mut()
+                .map_err(|_| OcsError::Other("the address of the request could not be built".into()))?
+                .extend(segments);
+        }
+        if !query.is_empty() {
+            url.query_pairs_mut().extend_pairs(query);
+        }
+        Ok(url)
+    }
+
+    /// `method url` (an address from [`Nextcloud::endpoint`]), with `body` as JSON when given and
+    /// `wait` as the time limit of this request instead of the client's 60 s (a long poll that
+    /// waits on the server needs more). Unlike [`Nextcloud::call`], a refusal that the caller
+    /// tells apart itself (400, 403, 404, 405, 412, 413 …) comes back as an [`Answer`] with its
+    /// status; only what means the same for every call is an error here: no connection
+    /// ([`OcsError::Offline`]), 401, 429, 503 and a redirect to another origin.
+    pub(crate) async fn exchange(
+        &self,
+        method: Method,
+        url: Url,
+        body: Option<&Value>,
+        wait: Option<Duration>,
+    ) -> Result<Answer, OcsError> {
+        let mut request = self.request_to(method, url);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        if let Some(wait) = wait {
+            request = request.timeout(wait);
+        }
+        let response = request.send().await.map_err(unreachable)?;
+        let status = response.status().as_u16();
+        if matches!(status, 300..=303 | 305..=399 | 401 | 429 | 503) {
+            return Err(refusal(status, response.headers()));
+        }
+        let headers = response.headers().clone();
+        let bytes = response.bytes().await.map_err(unreachable)?;
+        let data = match status {
+            204 | 304 => None,
+            _ if bytes.iter().all(u8::is_ascii_whitespace) => None,
+            200..=299 => {
+                let answer: Value = serde_json::from_slice(&bytes)
+                    .map_err(|_| OcsError::Other("Nextcloud sent an answer that is not JSON".into()))?;
+                Some(envelope(answer)?)
+            }
+            // A refusal's body is only looked at for Talk's short error words (`{"error": "age"}`);
+            // one that is no envelope is no refusal of its own.
+            _ => serde_json::from_slice(&bytes).ok().and_then(|answer| envelope(answer).ok()),
+        };
+        Ok(Answer { status, data, headers })
+    }
+
     /// A request to `path` on the server with the app password and the headers OCS asks for.
     /// `path` is this crate's own, made only of fixed parts and checked ids.
     fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
+        self.request_to(method, format!("{}{path}", self.base))
+    }
+
+    /// A request to `url` (always on the server: built from [`Nextcloud::server`]) with the app
+    /// password and the headers OCS asks for.
+    fn request_to(&self, method: Method, url: impl reqwest::IntoUrl) -> reqwest::RequestBuilder {
         self.http
-            .request(method, format!("{}{path}", self.base))
+            .request(method, url)
             .basic_auth(&self.login, Some(self.password.expose()))
             .header("OCS-APIRequest", "true")
             .header(header::ACCEPT, "application/json")
@@ -178,6 +260,88 @@ impl Nextcloud {
             }
             status => Err(refusal(status, response.headers())),
         }
+    }
+}
+
+/// What [`Nextcloud::exchange`] got back: the status, the envelope's `data` and the headers.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Answer {
+    pub status: u16,
+    /// The envelope's `data`; `None` for 204 and 304, for an empty body and for a refusal whose
+    /// body is no envelope.
+    pub data: Option<Value>,
+    pub headers: HeaderMap,
+}
+
+impl Answer {
+    /// Whether the server did what was asked (2xx, also 304).
+    pub fn is_success(&self) -> bool {
+        matches!(self.status, 200..=299 | 304)
+    }
+
+    /// The `data` of a success; anything else is the error every OCS call gives for its status
+    /// (404 [`OcsError::MissingApp`], 403 [`OcsError::Forbidden`] …).
+    pub fn success(self) -> Result<Option<Value>, OcsError> {
+        if self.is_success() { Ok(self.data) } else { Err(refusal(self.status, &self.headers)) }
+    }
+
+    /// The header `name` as a positive number (`X-Chat-Last-Given`, `X-Chat-Last-Common-Read`).
+    pub fn number(&self, name: &str) -> Option<u64> {
+        let value = self.headers.get(name)?.to_str().ok()?.trim();
+        value.parse().ok().filter(|n| *n > 0)
+    }
+
+    /// The short error word Talk puts into a refusal (`{"error": "age"}`), for telling refusals
+    /// apart only; it never goes into an error's text.
+    pub fn error_word(&self) -> Option<&str> {
+        self.data.as_ref()?.get("error")?.as_str()
+    }
+}
+
+/// Why a Talk call failed: the errors of every OCS call, and the refusals Talk gives with a
+/// status of their own. As [`OcsError`], no message holds the server's words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TalkError {
+    /// What every OCS call can say: 401 ([`OcsError::Refused`]), 429 ([`OcsError::Throttled`]),
+    /// maintenance, offline, an unreadable answer, and 403 for something only others may do
+    /// ([`OcsError::Forbidden`]: someone else's message).
+    Ocs(OcsError),
+    /// 404: the conversation or the message is gone, the person is no longer a participant, or
+    /// Talk itself is not there (the capabilities tell that apart).
+    NotFound,
+    /// 403: the conversation is read-only (or the person may not write or react in it).
+    ReadOnly,
+    /// 412: the lobby is on and the person is no moderator.
+    Lobby,
+    /// 413: the text is longer than the server allows (`spreed.config.chat.max-length`).
+    TooLong,
+    /// 400 on editing or deleting: the message is older than Talk allows (24 h to edit, 6 h to
+    /// delete on servers without `delete-messages-unlimited`).
+    TooLate,
+    /// Another 400 or a 405: the server does not take this request (an empty text, a system
+    /// message, an unknown notification level …).
+    Invalid,
+}
+
+impl fmt::Display for TalkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TalkError::Ocs(error) => error.fmt(f),
+            TalkError::NotFound => f.write_str("the conversation or message is not there"),
+            TalkError::ReadOnly => f.write_str("the conversation is read-only"),
+            TalkError::Lobby => f.write_str("the conversation's lobby is on"),
+            TalkError::TooLong => f.write_str("the message is too long"),
+            TalkError::TooLate => f.write_str("the message is too old to change"),
+            TalkError::Invalid => f.write_str("Talk does not accept this request"),
+        }
+    }
+}
+
+impl std::error::Error for TalkError {}
+
+impl From<OcsError> for TalkError {
+    fn from(error: OcsError) -> TalkError {
+        TalkError::Ocs(error)
     }
 }
 
@@ -407,6 +571,96 @@ pub(crate) mod tests {
         assert_eq!(own("http://cloud.example.org/apps/files"), None);
         assert_eq!(own("javascript:alert(1)"), None);
         assert_eq!(own(""), None);
+    }
+
+    #[test]
+    fn endpoints_keep_foreign_text_in_its_segment_and_query() {
+        let account =
+            Nextcloud::new("https://example.org/nextcloud", "anna", Secret::new(PASSWORD)).expect("an account");
+        let url = account.endpoint(PATH, &["a/b?c#d"], &[("search", "x&y=z #"), ("ids[]", "0")]).expect("an address");
+        assert_eq!(
+            url.as_str(),
+            "https://example.org/nextcloud/ocs/v2.php/apps/example/api/v1/thing/a%2Fb%3Fc%23d?search=x%26y%3Dz+%23&ids%5B%5D=0"
+        );
+        let bare = account.endpoint::<&str>(PATH, &[], &[]).expect("an address");
+        assert_eq!(bare.as_str(), format!("https://example.org/nextcloud{PATH}"));
+        for segment in ["", ".", ".."] {
+            assert!(account.endpoint::<&str>(PATH, &[segment], &[]).is_err(), "{segment:?}");
+        }
+    }
+
+    /// What [`Nextcloud::exchange`] makes of an answer with `status` and `body`.
+    async fn exchanged(status: u16, body: &'static str) -> Result<Answer, OcsError> {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path(PATH).header("authorization", AUTHORIZATION).header("ocs-apirequest", "true");
+                then.status(status).header("X-Chat-Last-Given", "42").body(body);
+            })
+            .await;
+        let account = account(&server);
+        let url = account.endpoint::<&str>(PATH, &[], &[]).expect("an address");
+        account.exchange(Method::GET, url, None, None).await
+    }
+
+    #[tokio::test]
+    async fn an_exchange_gives_refusals_back_with_their_status() {
+        let refused = r#"{"ocs":{"meta":{"status":"failure","message":"Words"},"data":{"error":"age"}}}"#;
+        let answer = exchanged(400, refused).await.expect("an answer");
+        assert_eq!((answer.status, answer.error_word()), (400, Some("age")));
+        assert!(!answer.is_success());
+        assert_eq!(answer.clone().success(), Err(OcsError::Other("Nextcloud answered with HTTP 400".into())));
+        let lobby = exchanged(412, "<html>no envelope</html>").await.expect("an answer");
+        assert_eq!((lobby.status, lobby.data), (412, None));
+        assert_eq!(exchanged(404, "").await.expect("an answer").success(), Err(OcsError::MissingApp));
+        assert_eq!(exchanged(401, "").await, Err(OcsError::Refused));
+        assert_eq!(exchanged(503, "").await, Err(OcsError::Maintenance));
+        assert!(matches!(exchanged(429, "").await, Err(OcsError::Throttled { .. })));
+    }
+
+    #[tokio::test]
+    async fn an_exchange_reads_data_headers_and_empty_answers() {
+        let answer = exchanged(201, r#"{"ocs":{"meta":{},"data":[1]}}"#).await.expect("an answer");
+        assert_eq!((answer.status, answer.data.clone()), (201, Some(serde_json::json!([1]))));
+        assert_eq!((answer.number("X-Chat-Last-Given"), answer.number("X-Chat-Last-Common-Read")), (Some(42), None));
+        assert_eq!(answer.success(), Ok(Some(serde_json::json!([1]))));
+        let none = exchanged(304, "").await.expect("an answer");
+        assert_eq!((none.is_success(), none.data), (true, None));
+        assert!(matches!(exchanged(200, "not json").await, Err(OcsError::Other(_))));
+    }
+
+    #[tokio::test]
+    async fn an_exchange_waits_as_long_as_asked() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path(PATH);
+                then.status(200).delay(Duration::from_millis(600)).body(r#"{"ocs":{"data":[]}}"#);
+            })
+            .await;
+        let account = account(&server);
+        let url = || account.endpoint::<&str>(PATH, &[], &[]).expect("an address");
+        let short = account.exchange(Method::GET, url(), None, Some(Duration::from_millis(100))).await;
+        assert_eq!(short, Err(OcsError::Offline), "a request that waits too long counts as lost");
+        let long = account.exchange(Method::GET, url(), None, Some(Duration::from_secs(5))).await;
+        assert_eq!(long.map(|answer| answer.status), Ok(200));
+    }
+
+    #[test]
+    fn talk_errors_say_nothing_of_the_server() {
+        for error in [
+            TalkError::NotFound,
+            TalkError::ReadOnly,
+            TalkError::Lobby,
+            TalkError::TooLong,
+            TalkError::TooLate,
+            TalkError::Invalid,
+            TalkError::from(OcsError::Refused),
+        ] {
+            assert!(!error.to_string().is_empty());
+            assert!(!format!("{error:?}").contains(PASSWORD));
+        }
+        assert_eq!(TalkError::from(OcsError::Offline).to_string(), OcsError::Offline.to_string());
     }
 
     #[test]
