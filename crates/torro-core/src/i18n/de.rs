@@ -1257,6 +1257,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Collapse sidebar", "Seitenleiste einklappen"),
     ("Expand sidebar", "Seitenleiste ausklappen"),
+    ("Hide right column", "Rechte Spalte ausblenden"),
+    ("Show right column", "Rechte Spalte einblenden"),
     ("Back", "Zurück"),
     ("Could not open the app: {error}", "App konnte nicht geöffnet werden: {error}"),
     ("Refresh", "Aktualisieren"),
