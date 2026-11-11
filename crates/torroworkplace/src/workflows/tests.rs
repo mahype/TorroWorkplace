@@ -112,7 +112,8 @@ async fn local_paddle_acceptance() {
         let copy = invoice::convert(bytes, Some(HTML.into()), Some(resources), None).await.expect("complete PDF copy");
         std::fs::write(dir.join(format!("{name}.source.txt")), source.text()).expect("local comparison source");
         std::fs::write(dir.join(format!("{name}.pdf")), copy.bytes).expect("local PDF for all-page inspection");
-        eprintln!("{name}: {} page(s)", copy.pages);
+        let layout_matches = copy.layout == template.binding.layout;
+        eprintln!("{name}: {} page(s), layout {:?} matches the template: {layout_matches}", copy.pages, copy.layout);
         assert!(copy.pages > 0 && copy.pages <= 50);
     }
 }
@@ -261,6 +262,16 @@ async fn generated_or_hidden_invoice_content_in_the_stylesheet_is_refused() {
         ".c-sheet div, .c-sheet section { margin-left: -100px; }",
         ".g-container { margin-top: -100px; } .g-row { margin-top: -100px; }",
         ".g-container, .g-row { margin-left: calc(0px - 100px); }",
+        // Review of the summed offsets: moves add up within a rule, through inheritance and across the page.
+        ".receipt-table-total { position: relative; top: -100px; margin-top: -100px; }",
+        ".g-container { margin-left: -100px; } .g-container div { margin-left: inherit; }",
+        ".no-print { position: fixed; top: 0; left: 0; width: 100%; height: 100%; }",
+        ".c-sheet div { width: 200%; }",
+        "tbody { position: relative; top: -100px; } .c-sheet { position: relative; top: -100px; }",
+        ".c-sheet { text-indent: -100px; } .c-sheet div { text-indent: -40px; }",
+        ".receipt-table-total { vertical-align: 5000px; }",
+        ".c-sheet div { margin-bottom: -60px; }",
+        ".receipt-table-total { margin-left: -100; }",
     ] {
         let css = format!("{CSS}\n{rule}\n");
         assert!(invoice::check_stylesheet(css.as_bytes(), page.as_bytes()).is_err(), "{rule}");
@@ -294,6 +305,7 @@ async fn generated_or_hidden_invoice_content_in_the_stylesheet_is_refused() {
         ".receipt-table-total { font: 700 14px/20px sans-serif; letter-spacing: 0.5px; z-index: 9; }",
         ".c-sheet { box-shadow: 2px 2px 8px 0 rgba(210, 212, 222, 0.8); border-bottom: 1px solid #d2d4de; }",
         ".c-badge { position: relative; top: -.5rem; } .g-row { margin-left: calc(2rem * 0.5 * -1); }",
+        ".g-row { margin-left: calc(2rem * 0.5 * -1); margin-right: calc(2rem * 0.5 * -1); }",
         ".receipt-table-total { margin-left: calc(2rem * 0.5 * -1); color: rgba(54, 71, 108, 0.9); }",
     ] {
         let css = format!("{CSS}\n{rule}\n");
@@ -342,6 +354,22 @@ async fn profile_two_accepts_only_witnessed_page_code() {
     assert!(invoice::references(navigation.into_bytes(), Some(HTML.into()), None).await.is_ok());
     let hidden = AUGUST.replace("</main>", "</main><div style=\"display:none\"></div>");
     assert!(invoice::references(hidden.into_bytes(), Some(HTML.into()), None).await.is_err());
+    // Only the witnessed header counts as navigation; any other element could give itself its classes.
+    let overlay = AUGUST.replace(
+        "</main>",
+        "</main><div class=\"no-print\" style=\"position:fixed;top:0;left:0;width:100%;height:100%\"></div>",
+    );
+    assert!(invoice::references(overlay.into_bytes(), Some(HTML.into()), None).await.is_err());
+    // The edit control inside the invoice is skipped as content, but nothing in it may carry a style.
+    let control = AUGUST.replace(
+        "<p id=\"add-edit-address-container\" class=\"no-print\">",
+        "<p id=\"add-edit-address-container\" class=\"no-print\" style=\"position:fixed;inset:0\">",
+    );
+    assert_ne!(control, AUGUST);
+    assert!(invoice::extract_profile_2(control.as_bytes(), Some(HTML)).is_err());
+    let link = AUGUST.replace("<a id=\"add-edit-address\">", "<a id=\"add-edit-address\" style=\"position:fixed\">");
+    assert_ne!(link, AUGUST);
+    assert!(invoice::extract_profile_2(link.as_bytes(), Some(HTML)).is_err());
     let inside = AUGUST.replace("<h4>Payment details</h4>", "<script>void 0;</script><h4>Payment details</h4>");
     assert!(invoice::extract_profile_2(inside.as_bytes(), Some(HTML)).is_err(), "no script inside the invoice");
     for inserted in [

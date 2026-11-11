@@ -100,6 +100,8 @@ impl Invoice {
 pub struct Copy {
     pub bytes: Vec<u8>,
     pub pages: usize,
+    /// Profile 2: SHA-256 of the page's layout, compared with the package's `binding.layout`.
+    pub layout: Option<String>,
 }
 
 /// This digest deliberately includes the exact embedded font bytes, parser/profile and typesetter versions.
@@ -115,7 +117,7 @@ pub fn binding(profile: u16) -> String {
         _ => (
             &SECOND,
             b"paddle_setapp/2;html5ever/0.39.0;bounded-token-profile/2;cssparser/0.37.0;css-rules/1;\
-              hide-only:.no-print,.c-header;pinned-scripts-never-executed;typesetter/1;A4/15mm/11pt",
+              hide-only:.no-print,.c-header;pinned-scripts-never-executed;pinned-layout/1;typesetter/1;A4/15mm/11pt",
         ),
     };
     cell.get_or_init(|| {
@@ -155,34 +157,84 @@ pub struct Presentation {
 struct InlineStyle {
     css: String,
     owner: Option<usize>,
+    /// Where a `style` attribute sits, for the layout fingerprint: tags, classes and ids up to the root. Unlike
+    /// an element index, it does not change with the number of invoice lines.
+    path: String,
 }
 
 impl Presentation {
     /// Inline `<style>` elements and the `style` attributes outside the invoice, through the same allow list.
-    fn check_inline(&self, budget: &Budget, shifts: &mut Vec<Shift>) -> Result<(), Error> {
+    fn check_inline(&self, budget: &Budget, sheet: &mut Sheet) -> Result<(), Error> {
         for style in &self.inline_styles {
-            check_css(style.css.as_bytes(), budget, &self.facts, shifts, style.owner)?;
+            sheet.layout.update(style.path.as_bytes());
+            sheet.layout.update(b"\0");
+            check_css(style.css.as_bytes(), budget, &self.facts, sheet, style.owner)?;
         }
         Ok(())
     }
 
-    /// Offsets add up through nested elements. However each rule stays within its own bound, no element may end
-    /// up moved more than 128px left or up in total, counting every rule that could match it and its ancestors.
-    fn check_shifts(&self, shifts: &[Shift]) -> Result<(), Error> {
-        let mut total: Vec<(f32, f32)> = Vec::with_capacity(self.facts.elements.len());
-        for (index, element) in self.facts.elements.iter().enumerate() {
+    /// Offsets add up, through nested elements and through siblings that follow a negative margin. However each
+    /// rule stays within its own bound, no element may end up moved more than 128px left or up together with its
+    /// ancestors, and all moves of the page together stay within 512px per direction. Every rule that could
+    /// match an element counts with all its moves; a text indent counts again on every descendant, which
+    /// inherits it.
+    fn check_shifts(&self, shifts: &[Shift], budget: &Budget) -> Result<(), Error> {
+        if shifts.len() > 10_000 {
+            return Err(Error::Unsupported);
+        }
+        let elements = &self.facts.elements;
+        let present: BTreeSet<&str> = elements.iter().map(|element| element.tag.as_str()).collect();
+        // A tag the browser adds but the markup lacks has no element here; its rules are taken for everyone.
+        let applies = |shift: &Shift, index: usize, element: &Element| match shift.owner {
+            Some(owner) => owner == index,
+            None => {
+                shift.subject.tag.as_deref().is_some_and(|tag| IMPLIED.contains(&tag) && !present.contains(tag))
+                    || shift.subject.matches(element)
+            }
+        };
+        // (left, up, inherited indent) per element.
+        let mut total: Vec<(f32, f32, f32)> = Vec::with_capacity(elements.len());
+        let (mut page_left, mut page_up) = (0.0f32, 0.0f32);
+        for (index, element) in elements.iter().enumerate() {
+            budget.check()?;
             let own = shifts
                 .iter()
-                .filter(|shift| shift.owner.map_or_else(|| shift.subject.matches(element), |owner| owner == index))
-                .fold((0.0f32, 0.0f32), |(left, up), shift| (left.max(shift.left), up.max(shift.up)));
-            let inherited = element.parent.and_then(|parent| total.get(parent).copied()).unwrap_or((0.0, 0.0));
-            let sum = (inherited.0 + own.0, inherited.1 + own.1);
-            if sum.0 > 128.0 || sum.1 > 128.0 {
+                .filter(|shift| applies(shift, index, element))
+                .fold((0.0f32, 0.0f32, 0.0f32), |(left, up, indent), shift| {
+                    (left + shift.left, up + shift.up, indent + shift.indent)
+                });
+            let (left, up, indent) =
+                element.parent.and_then(|parent| total.get(parent).copied()).unwrap_or((0.0, 0.0, 0.0));
+            let indent = indent + own.2;
+            let sum = (left + own.0 + indent, up + own.1, indent);
+            page_left += own.0 + own.2;
+            page_up += own.1;
+            if sum.0 > 128.0 || sum.1 > 128.0 || page_left > 512.0 || page_up > 512.0 {
                 return Err(Error::Unsupported);
             }
             total.push(sum);
         }
         Ok(())
+    }
+}
+
+/// Tags a browser adds even when the markup omits them.
+const IMPLIED: &[&str] = &["html", "head", "body", "tbody"];
+
+/// What the stylesheet check collects across all stylesheets of a page: the moves of each rule and the layout
+/// fingerprint.
+struct Sheet {
+    shifts: Vec<Shift>,
+    layout: Sha256,
+}
+
+impl Sheet {
+    fn new() -> Self {
+        Self { shifts: Vec::new(), layout: Sha256::new() }
+    }
+
+    fn layout(self) -> String {
+        self.layout.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
     }
 }
 
@@ -203,9 +255,9 @@ pub async fn references(
     run_worker(move || {
         let (_, presentation) = extract_with(&bytes, content_type.as_deref(), &budget, 2)?;
         // Inline styles are checked before anything is loaded; a refused page needs no resources.
-        let mut shifts = Vec::new();
-        presentation.check_inline(&budget, &mut shifts)?;
-        presentation.check_shifts(&shifts)?;
+        let mut sheet = Sheet::new();
+        presentation.check_inline(&budget, &mut sheet)?;
+        presentation.check_shifts(&sheet.shifts, &budget)?;
         Ok(presentation)
     })
     .await
@@ -231,19 +283,23 @@ pub async fn convert(
         {
             return Err(Error::Unsupported);
         }
-        let mut shifts = Vec::new();
-        presentation.check_inline(&budget, &mut shifts)?;
+        let mut sheet = Sheet::new();
+        presentation.check_inline(&budget, &mut sheet)?;
         for loaded in &loaded {
             match (loaded.reference.kind, &loaded.stylesheet) {
                 (ResourceKind::Stylesheet, Some(css)) => {
-                    check_css(css, &budget, &presentation.facts, &mut shifts, None)?;
+                    check_css(css, &budget, &presentation.facts, &mut sheet, None)?;
                 }
                 (ResourceKind::Script, None) => {}
                 _ => return Err(Error::Unsupported),
             }
         }
-        presentation.check_shifts(&shifts)?;
-        render(&invoice, &budget)
+        presentation.check_shifts(&sheet.shifts, &budget)?;
+        let mut copy = render(&invoice, &budget)?;
+        if profile == 2 {
+            copy.layout = Some(sheet.layout());
+        }
+        Ok(copy)
     })
     .await
 }
@@ -293,9 +349,9 @@ pub fn extract_profile_2(bytes: &[u8], content_type: Option<&str>) -> Result<(In
 #[cfg(test)]
 pub fn check_stylesheet(css: &[u8], page: &[u8]) -> Result<(), Error> {
     let (_, presentation) = extract_with(page, Some("text/html; charset=utf-8"), &Budget::new(None), 2)?;
-    let mut shifts = Vec::new();
-    check_css(css, &Budget::new(None), &presentation.facts, &mut shifts, None)?;
-    presentation.check_shifts(&shifts)
+    let mut sheet = Sheet::new();
+    check_css(css, &Budget::new(None), &presentation.facts, &mut sheet, None)?;
+    presentation.check_shifts(&sheet.shifts, &Budget::new(None))
 }
 
 #[derive(Default)]
@@ -716,7 +772,7 @@ fn profile_two(
                 && node.attr("name") == Some("robots")
                 && node.attr("content").is_some_and(|content| content.len() <= 256) => {}
         "style" if in_head && only(&["type"]) && typed(&["text/css"]) => {
-            found.inline_styles.push(InlineStyle { css: element_text(tree, node)?, owner: None });
+            found.inline_styles.push(InlineStyle { css: element_text(tree, node)?, owner: None, path: String::new() });
         }
         "script"
             if node.attr("src").is_some() && in_head && only(&["src", "defer", "async", "type"]) && typed(&scripts) =>
@@ -783,6 +839,7 @@ fn presentation(tree: &Tree, root: usize, profile: u16) -> Result<Presentation, 
                 found.inline_styles.push(InlineStyle {
                     css: format!("{selector} {{{style}}}"),
                     owner: found.facts.element_of.get(index).copied().flatten(),
+                    path: element_path(tree, index),
                 });
             }
             if profile_two(tree, node, in_head, !beneath(tree, index, root), &mut found)? {
@@ -847,11 +904,36 @@ fn presentation(tree: &Tree, root: usize, profile: u16) -> Result<Presentation, 
     Ok(found)
 }
 
-/// The node is the witnessed navigation header or a `.no-print` element, or lies beneath one.
+/// Tags, classes and ids from the root down to the node, e.g. `html>body>main.c-main>div`.
+fn element_path(tree: &Tree, mut node: usize) -> String {
+    let mut parts = Vec::new();
+    for _ in 0..=MAX_DEPTH {
+        let Some(held) = tree.nodes.get(node) else { break };
+        if !held.tag.is_empty() {
+            let mut part = held.tag.clone();
+            if let Some(id) = held.attr("id") {
+                part.push('#');
+                part.push_str(id);
+            }
+            for class in held.attr("class").unwrap_or("").split_ascii_whitespace() {
+                part.push('.');
+                part.push_str(class);
+            }
+            parts.push(part);
+        }
+        let Some(parent) = held.parent else { break };
+        node = parent;
+    }
+    parts.reverse();
+    parts.join(">")
+}
+
+/// The node is the witnessed navigation header (`header.c-header.no-print`) or lies beneath it. Any other
+/// element could give itself these classes.
 fn in_navigation(tree: &Tree, mut node: usize) -> bool {
     for _ in 0..=MAX_DEPTH {
         let Some(held) = tree.nodes.get(node) else { return false };
-        if held.class("no-print") || held.class("c-header") {
+        if held.tag == "header" && held.class("no-print") && held.class("c-header") {
             return true;
         }
         let Some(parent) = held.parent else { return false };
@@ -1003,11 +1085,18 @@ fn collect(tree: &Tree, index: usize, blocks: &mut Vec<Block>, budget: &Budget) 
     budget.check()?;
     let node = tree.nodes.get(index).ok_or(Error::Unsupported)?;
     // This one witnessed control contains no invoice facts; arbitrary no-print blocks are refused.
+    // Only the paragraph's own attributes, text and plain links with text; no style may reach the invoice.
     if node.tag == "p" && node.attr("id") == Some("add-edit-address-container") && node.class("no-print") {
-        if node
-            .children
-            .iter()
-            .all(|child| tree.nodes.get(*child).is_some_and(|child| child.tag.is_empty() || child.tag == "a"))
+        let plain_link = |child: &Node| {
+            child.tag == "a"
+                && child.attrs.iter().all(|(key, _)| matches!(key.as_str(), "id" | "href" | "class" | "target"))
+                && child.children.iter().all(|text| tree.nodes.get(*text).is_some_and(|text| text.tag.is_empty()))
+        };
+        if node.attrs.iter().all(|(key, _)| matches!(key.as_str(), "id" | "class"))
+            && node
+                .children
+                .iter()
+                .all(|child| tree.nodes.get(*child).is_some_and(|child| child.tag.is_empty() || plain_link(child)))
         {
             return Ok(());
         }
@@ -1161,6 +1250,8 @@ struct Shift {
     owner: Option<usize>,
     left: f32,
     up: f32,
+    /// A negative text indent, inherited by every descendant.
+    indent: f32,
 }
 
 /// Reads a stylesheet as data under a fixed allow list. A rule whose selectors name a class, id or tag the page
@@ -1171,7 +1262,7 @@ fn check_css(
     bytes: &[u8],
     budget: &Budget,
     facts: &PageFacts,
-    shifts: &mut Vec<Shift>,
+    sheet: &mut Sheet,
     owner: Option<usize>,
 ) -> Result<(), Error> {
     if bytes.len() > MAX_CSS {
@@ -1181,7 +1272,7 @@ fn check_css(
         std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).map_err(|_| Error::Unsupported)?;
     let mut input = cssparser::ParserInput::new(text);
     let mut parser = cssparser::Parser::new(&mut input);
-    let mut walk = CssWalk { budget, facts, tokens: 0, rules: 0, shifts, owner };
+    let mut walk = CssWalk { budget, facts, tokens: 0, rules: 0, sheet, owner, context: Vec::new() };
     rule_list(&mut parser, &mut walk, 0).map_err(|error| match error.kind {
         cssparser::ParseErrorKind::Custom(error) => error,
         cssparser::ParseErrorKind::Basic(_) => Error::Unsupported,
@@ -1193,8 +1284,10 @@ struct CssWalk<'b> {
     facts: &'b PageFacts,
     tokens: usize,
     rules: usize,
-    shifts: &'b mut Vec<Shift>,
+    sheet: &'b mut Sheet,
     owner: Option<usize>,
+    /// Preludes of the grouping at-rules around the current rule, e.g. `@media print`.
+    context: Vec<String>,
 }
 
 type CssFail<'i> = cssparser::ParseError<'i, Error>;
@@ -1277,12 +1370,24 @@ fn rule_list<'i>(
                     skip_block(parser, walk)?;
                 } else {
                     let may_hide = selectors.iter().all(|selector| beneath_navigation(selector));
-                    let (left, up) = parser.parse_nested_block(|block| declarations(block, walk, may_hide))?;
-                    // The navigation's own moves stay in the navigation, which is not part of the invoice.
-                    if !may_hide && (left > 0.0 || up > 0.0) {
+                    // Only the header itself may be taken out of the flow; `.no-print` also marks a control
+                    // inside the invoice.
+                    let header = selectors.iter().all(|selector| selector.starts_with(".c-header"));
+                    let rule = parser.parse_nested_block(|block| declarations(block, walk, may_hide, header))?;
+                    if !rule.layout.is_empty() {
+                        let entry = format!("{}\0{}\0{}\n", walk.context.join("\0"), selectors.join(","), rule.layout);
+                        walk.sheet.layout.update(entry.as_bytes());
+                    }
+                    if rule.left > 0.0 || rule.up > 0.0 || rule.indent > 0.0 {
                         for selector in selectors.iter().filter(|selector| can_match(selector, walk.facts)) {
                             let owner = walk.owner;
-                            walk.shifts.push(Shift { subject: Subject::of(selector), owner, left, up });
+                            walk.sheet.shifts.push(Shift {
+                                subject: Subject::of(selector),
+                                owner,
+                                left: rule.left,
+                                up: rule.up,
+                                indent: rule.indent,
+                            });
                         }
                     }
                 }
@@ -1444,11 +1549,16 @@ fn at_rule<'i>(
     depth: usize,
 ) -> Result<(), CssFail<'i>> {
     walk.rule()?;
+    let start = parser.position();
     let block = prelude_until_block(parser, walk)?;
+    let prelude = normalize(parser.slice_from(start).trim_end_matches(['{', ';']));
     match (name, block) {
         ("charset", false) | ("layer", false) => Ok(()),
         ("media" | "supports" | "layer" | "container", true) => {
-            parser.parse_nested_block(|nested| rule_list(nested, walk, depth + 1))
+            walk.context.push(format!("@{name} {prelude}"));
+            let nested = parser.parse_nested_block(|nested| rule_list(nested, walk, depth + 1));
+            walk.context.pop();
+            nested
         }
         ("font-face", true) => parser.parse_nested_block(|nested| font_face(nested, walk)),
         // Keyframes act only through `animation`, which no checked rule may use.
@@ -1506,17 +1616,94 @@ fn page_box<'i>(parser: &mut cssparser::Parser<'i, '_>, walk: &mut CssWalk<'_>) 
 }
 
 /// The checked declarations of a rule that can match the page.
+/// What one checked rule does to the page: its moves and its layout declarations for the fingerprint.
+#[derive(Default)]
+struct Rule {
+    left: f32,
+    up: f32,
+    indent: f32,
+    layout: String,
+}
+
+/// Properties that change neither position nor size. Everything else the allow list admits is layout and goes
+/// into the fingerprint.
+const FREE: &[&str] = &[
+    "color",
+    "-webkit-text-fill-color",
+    "background",
+    "background-color",
+    "border-color",
+    "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
+    "border-style",
+    "border-top-style",
+    "border-right-style",
+    "border-bottom-style",
+    "border-left-style",
+    "border-radius",
+    "border-top-left-radius",
+    "border-top-right-radius",
+    "border-bottom-left-radius",
+    "border-bottom-right-radius",
+    "box-shadow",
+    "outline-color",
+    "outline-style",
+    "text-decoration",
+    "text-decoration-line",
+    "text-decoration-color",
+    "text-decoration-style",
+    "-webkit-text-decoration-line",
+    "-webkit-text-decoration-skip",
+    "text-decoration-skip-ink",
+    "font-family",
+    "font-weight",
+    "font-style",
+    "font-variant",
+    "font-kerning",
+    "-webkit-font-smoothing",
+    "-moz-osx-font-smoothing",
+    "text-rendering",
+    "cursor",
+    "transition",
+    "transition-property",
+    "transition-duration",
+    "transition-timing-function",
+    "transition-delay",
+    "user-select",
+    "-webkit-user-select",
+    "-moz-user-select",
+    "-ms-user-select",
+    "pointer-events",
+    "appearance",
+    "-webkit-appearance",
+    "-moz-appearance",
+    "caret-color",
+    "accent-color",
+    "-webkit-tap-highlight-color",
+    "touch-action",
+    "-ms-overflow-style",
+    "quotes",
+    "text-transform",
+    "opacity",
+    "content",
+    "list-style",
+    "list-style-type",
+];
+
 fn declarations<'i>(
     parser: &mut cssparser::Parser<'i, '_>,
     walk: &mut CssWalk<'_>,
     may_hide: bool,
-) -> Result<(f32, f32), CssFail<'i>> {
+    header: bool,
+) -> Result<Rule, CssFail<'i>> {
     use cssparser::Token;
-    let (mut left, mut up) = (0.0f32, 0.0f32);
+    let mut rule = Rule::default();
     loop {
         walk.tick()?;
         let name = match parser.next() {
-            Err(_) => return Ok((left, up)),
+            Err(_) => return Ok(rule),
             Ok(Token::Semicolon) => continue,
             Ok(Token::Ident(name)) => name.to_ascii_lowercase(),
             // Nested rules and at-rules inside a declaration block are not part of the checked grammar.
@@ -1525,30 +1712,39 @@ fn declarations<'i>(
         parser.expect_colon().map_err(|_| refuse())?;
         let values = parser.parse_until_after(cssparser::Delimiter::Semicolon, |value| values(value, walk, 0))?;
         let values: Vec<_> = values.into_iter().filter(|value| *value != Value::Word("important".into())).collect();
-        if !allowed(&name, &values, may_hide) {
+        let positions = matches!(name.as_str(), "position") && !words_in(&values, &["static", "relative", "inherit"]);
+        if !allowed(&name, &values, may_hide) || (positions && !header) {
             return Err(refuse());
         }
+        if !FREE.contains(&name.as_str()) {
+            rule.layout.push_str(&format!("{name}:{values:?};"));
+        }
+        // Every move counts, added up: a margin, a relative offset and an indent of one element act together.
         let moves = signed(&values);
-        let back = moves.iter().fold(0.0f32, |most, n| most.max(-n));
-        let forward = moves.iter().fold(0.0f32, |most, n| most.max(*n));
+        let back: f32 = moves.iter().filter(|n| **n < 0.0).map(|n| -n).sum();
+        let forward: f32 = moves.iter().filter(|n| **n > 0.0).sum();
         match name.as_str() {
-            "left" | "margin-left" | "margin-inline-start" | "inset-inline-start" | "text-indent" => {
-                left = left.max(back);
-            }
-            "right" | "inset-inline-end" => left = left.max(forward),
-            "top" | "margin-top" | "margin-block-start" | "inset-block-start" => up = up.max(back),
-            "bottom" | "inset-block-end" => up = up.max(forward),
+            "text-indent" => rule.indent += back,
+            // A negative right or bottom margin pulls the following content left or up.
+            "left" | "margin-left" | "margin-right" | "margin-inline-start" | "margin-inline-end" => rule.left += back,
+            "right" => rule.left += forward,
+            "top" | "margin-top" | "margin-bottom" | "margin-block-start" | "margin-block-end" => rule.up += back,
+            "bottom" => rule.up += forward,
             "margin" | "margin-inline" | "margin-block" => {
-                left = left.max(back);
-                up = up.max(back);
+                rule.left += back;
+                rule.up += back;
             }
             "inset" => {
-                left = left.max(back.max(forward));
-                up = up.max(back.max(forward));
+                rule.left += back + forward;
+                rule.up += back + forward;
             }
             _ => {}
         }
     }
+}
+
+fn words_in(values: &[Value], wanted: &[&str]) -> bool {
+    values.iter().all(|value| matches!(value, Value::Word(word) if wanted.contains(&word.as_str())))
 }
 
 /// Signed estimates of the lengths in a value, in CSS pixels. A `calc()` counts in both directions with the
@@ -1563,7 +1759,7 @@ fn signed(values: &[Value]) -> Vec<f32> {
                 let product: f32 = arguments
                     .iter()
                     .filter_map(|argument| match argument {
-                        Value::Number(n) => Some(n.abs().max(1.0)),
+                        Value::Number(n) => Some(n.abs()),
                         _ => None,
                     })
                     .product();
@@ -1698,7 +1894,13 @@ fn allowed(name: &str, values: &[Value], may_hide: bool) -> bool {
         | "max-width"
         | "max-height"
         | "flex-basis"
-        | "-ms-flex-preferred-size" => functions(&["calc"]) && bounded(values, 2000.0),
+        // Percentages compound through nesting, so a box may not be wider or taller than its container.
+        | "-ms-flex-preferred-size" => {
+            functions(&["calc"])
+                && bounded(values, 2000.0)
+                && !values.iter().any(|value| matches!(value, Value::Length(n, unit) if unit == "%" && *n > 100.0))
+        }
+        "vertical-align" => small_lengths(values, 32.0) && functions(&[]),
         "gap" | "row-gap" | "column-gap" | "border-spacing" => functions(&["calc"]) && bounded(values, 64.0),
         // Lines and shadows may not grow into an overlay: widths, offsets and spreads stay small.
         "border"
@@ -1772,7 +1974,6 @@ fn allowed(name: &str, values: &[Value], may_hide: bool) -> bool {
         | "outline-style"
         | "outline-color"
         | "background-color"
-        | "vertical-align"
         | "text-align"
         | "text-decoration-color"
         | "text-decoration-style"
@@ -1886,8 +2087,10 @@ fn readable_size(value: &Value) -> bool {
 fn bounded(values: &[Value], limit: f32) -> bool {
     fn size(value: &Value) -> Option<f32> {
         match value {
-            Value::Word(word) => matches!(word.as_str(), "auto" | "inherit" | "initial" | "unset").then_some(0.0),
-            Value::Number(n) => Some(n.abs()),
+            // `inherit` would copy the parent's offset again on every level; a unitless number is a length only
+            // in quirks mode.
+            Value::Word(word) => matches!(word.as_str(), "auto" | "initial").then_some(0.0),
+            Value::Number(n) => (*n == 0.0).then_some(0.0),
             Value::Length(..) => px(value).map(f32::abs),
             // A division could grow a length without bound; only sums and products are counted.
             // Constants such as `infinity` are words; they and a division could grow a length without bound.
@@ -1899,7 +2102,7 @@ fn bounded(values: &[Value], limit: f32) -> bool {
                 let factors: f32 = arguments
                     .iter()
                     .filter_map(|argument| match argument {
-                        Value::Number(n) => Some(n.abs().max(1.0)),
+                        Value::Number(n) => Some(n.abs()),
                         _ => None,
                     })
                     .product();
@@ -2119,5 +2322,5 @@ fn render(invoice: &Invoice, budget: &Budget) -> Result<Copy, Error> {
     if normalize(&actual.join("\n")) != normalize(&expected) {
         return Err(Error::Unsupported);
     }
-    Ok(Copy { bytes, pages: count })
+    Ok(Copy { bytes, pages: count, layout: None })
 }
