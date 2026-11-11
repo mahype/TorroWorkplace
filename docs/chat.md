@@ -174,7 +174,9 @@ dahinter rückten um eins.
      `presence.*`-Befehle für Modelle anderswo zurück, wie `mail.*`. Gebaut als Positivliste (Vorbild
      `MAIL_ANSWERS_ALLOWED`): Durch gehen nur Antworten ohne fremden Text (`ok`, die eigene Antwortart
      `chat-sent` mit nur der Kennung der gesendeten Nachricht, ab Stufe 4 `chat-sending` mit nur der Kennung des
-     Sendens, Fehler); jeder spätere Befehl ist damit von selbst
+     Sendens und die Antworten von `prepare_file`, `upload_file`, `release_files` und `get_upload`, die nur
+     Kennungen und die eigenen Angaben des Aufrufers tragen, sonst schickte ein Assistent mit einem Modell anderswo nie
+     eine Datei; Fehler); jeder spätere Befehl ist damit von selbst
      zurückgehalten.
    - Wer `chat.*` oder `presence.*` aufgerufen hat, hat fremden Text gelesen, wie bei Mail: `reads_mail` und
      `may_have_read_untrusted` kennen `chat.`, `presence.` bzw. `Area::Chat`, `Area::Presence`. So geht auch der
@@ -427,8 +429,13 @@ roh darin: Sie sind fremder Text und kämen sonst ungeprüft zu einem Agenten.
     von `upload_file` bekommt wie bei der Mail einen Typ mit geschwärztem `Debug`).
   - **Föderierte Unterhaltungen:** Dort kommen die Parameter `file` vom fremden Server und könnten auf eine Datei im
     eigenen Speicher zeigen. Der Kern nimmt Dateien einer Nachricht nur an, wenn sie zu den Freigaben der Unterhaltung
-    gehören (`…/share`); bis Stufe 4 das gegen einen föderierten Server geprüft hat, zeigen föderierte Unterhaltungen
-    Dateien nur als Zeile mit „Open in Nextcloud“.
+    gehören (`…/share`). Weil auch diese Liste in föderierten Unterhaltungen vom fremden Server kommen kann (*vermutet*),
+    gilt bis zu einer Prüfung in Stufe 4: Dort zeigt die Oberfläche Dateien nur als Zeile mit „Open in Nextcloud“,
+    und `get_preview`, `get_attachment` und `save_attachment` antworten `unsupported`, für jeden Schlüssel.
+  - **Fremde Dateien nie ungeprüft starten.** „Open“ gibt es nicht für ausführbare und aktive Arten (Programme,
+    Skripte, `.app`, `.command`, `.desktop`, `.jar`, Installationspakete, HTML, SVG; erkannt an Endung **und** Bytes):
+    Sie bekommen nur „Download“ und „Open in Nextcloud“. Auf macOS setzt der Kern an jeder geholten Datei das Attribut
+    `com.apple.quarantine`, damit Gatekeeper fragt, wie bei einem Download im Browser.
 - **Konto weg oder Remote Wipe:** Cache und Status des Kontos werden geleert, laufende Long-Polling-Anfragen
   und Anrufe werden beendet, das Konto fällt aus allen `chat_accounts` und `presence_accounts`. Ebenso werden
   Vorschauen, vorbereitete Dateien und laufende Uploads des Kontos verworfen (halbe Uploads auf dem Server gelöscht,
@@ -801,11 +808,13 @@ auf dem Server), steht in [chat-machbarkeit.md](chat-machbarkeit.md#dateien-und-
 **Senden in zwei Schritten.** Vorbereiten und Senden sind getrennt, damit eine Freigabe genau die Bytes zeigt, die
 später gehen:
 1. **Vorbereiten:** `chat.prepare_file` bzw. `chat.upload_file` legen die Datei nur im Kern ab, als vorbereitete
-   Datei mit Kennung (Lease), Name, Größe, Art, Prüfsumme (SHA-256) und kleiner Vorschau. Noch geht nichts zum Server.
+   Datei mit Kennung (Lease), Name, Größe, Art, Prüfsumme (SHA-256; bei `path` stattdessen Größe und Änderungszeit)
+   und kleiner Vorschau. Noch geht nichts zum Server.
    - `source: registered` nimmt nur eigene Dateien aus dem Register des Kerns, mit derselben Regel wie Anhänge in
      `mail.save_draft` ([api.md](api.md), Fußnote 22, „Eigene Werkzeuge“): ein Client nur solche, die er selbst
      erzeugt hat (sonst `not-found`), nur solange das Werkzeug eingeschaltet ist (`Lack::ToolOff`), er es in
-     `Rights::tools` hat (`Lack::Tool`, beides `forbidden`) und die Datei unverändert ist (sonst `conflict`); geprüft
+     `Rights::tools` hat (`Lack::Tool`, beides `forbidden`) und die Datei unverändert ist (sonst `not-found`, wie
+     `tools.open_file` bei einer geänderten Datei); geprüft
      vor der Freigabe und bei „Allow“ noch einmal.
    - `source: path` gibt es nur für den App-Schlüssel (Büroklammer, Ziehen), für Clients `forbidden`
      (Entscheidung 20). Der Kern liest die Datei erst beim Senden vom Pfad und kopiert sie vorher nicht; er merkt sich
@@ -819,7 +828,8 @@ später gehen:
      unfertige Uploads je Aufrufer, dieselben gemeinsamen Budgets im Speicher (Mangel ist `busy`); unfertige laufen
      nach 10 Minuten ab, fertige nach einer Stunde ohne Nutzung.
    - **Grenze je Datei:** für Clients 25 MiB; für den App-Schlüssel die kleinere aus dem freien Platz des Kontos
-     (`quota` aus `GET /ocs/v2.php/cloud/user`) und 512 MiB. Darüber antwortet `prepare_file` mit `error`, bevor etwas
+     (`quota.free` aus `GET /ocs/v2.php/cloud/user`; ein negativer Wert heißt unbegrenzt oder unbekannt, etwa bei
+     Object Storage, und setzt keine Grenze) und 512 MiB. Darüber antwortet `prepare_file` mit `error`, bevor etwas
      hochgeladen wird, mit dem Grund, der greift: „This file is larger than {limit}.“ bzw. „There is not enough space
      in your Nextcloud.“ (Größen mit `format_bytes`).
    - **Die Art bestimmt der Kern** aus den ersten Bytes der Datei, nicht aus Name oder Angabe des Clients; nach ihr
@@ -834,8 +844,10 @@ später gehen:
    2. Bis `files.chunked_upload.max_size` als ein `PUT` mit `If-None-Match: *`, darüber in Stücken (Chunking v2,
       nacheinander, je Stück `max_size`, aber mindestens 5 MiB und höchstens 5 GB, weil der Server kleinere Stücke
       außer dem letzten ablehnt). `max_size` ≤ 0 heißt: kein Chunking, immer ein `PUT`. Das abschließende `MOVE`
-      trägt `Overwrite: F`, damit es eine vorhandene Datei nie ersetzt. Belegter Name (412): „ (2)“, „ (3)“ … wie
-      beim Teilen.
+      trägt `Overwrite: F`, damit es eine vorhandene Datei nie ersetzt. Einen freien Namen („ (2)“, „ (3)“ … wie beim
+      Teilen) wählt der Kern vorher per `PROPFIND`, weil `Destination` beim Chunking schon mit `MKCOL` feststeht;
+      antwortet das `MOVE` trotzdem 412, prüft die erste Aufgabe der Stufe 4, ob ein neues Ziel geht oder der Upload
+      neu beginnt.
    3. Freigabe Art 10 mit `talkMetaData`: `caption` = Text an genau einer Datei (an welcher, wie Talk-Web; prüft die
       erste Aufgabe der Stufe 4 gegen spreed), `silent`, `replyTo`, und je Datei eine `referenceId`, damit eine
       Wiederholung nach einem Abbruch der Verbindung nicht doppelt postet (ob Talk sie beim Teilen annimmt, prüft
@@ -849,7 +861,9 @@ später gehen:
      der entstandenen Nachrichten (je Datei eine). Ohne Dateien bleibt die Antwort `chat-sent` wie bisher.
    - **Abbrechen** (`chat.cancel_upload`, ✕ in der Oberfläche) bricht den Upload ab und löscht nur die eigene halbe
      Datei: den Upload-Ordner des Chunkings bzw. die Zieldatei mit `If-Match` auf den ETag, den der Kern selbst
-     bekommen hat. Was schon geteilt ist, bleibt; das ist dann Löschen einer Nachricht (Stufe 7).
+     bekommen hat. Im Stand `sharing` antwortet er `conflict`, weil das Teilen auf dem Server schon unterwegs ist
+     und sonst eine Nachricht mit gelöschter Datei entstünde. Was geteilt ist, bleibt; das ist dann Löschen einer
+     Nachricht (Stufe 7).
    - Stufe 5 (Teilen) nimmt genau diesen Ablauf: Die Karte wird zu einer vorbereiteten Datei. Ebenso liefert
      Send to ([#260](https://github.com/mahype/TorroWorkplace/issues/260)) Dateien nur über `prepare_file`, keine
      eigene Tür in den Chat.
@@ -873,6 +887,8 @@ Nach der Entscheidung leert der Kern Dateinamen und Bytes wie den Text (Datensch
   `small` 256 und `large` 1600 Pixel an der längeren Kante, `a=1`; mit `card: true` das Bild der Link-Karte über die
   Referenz-ID aus dem Cache der Nachricht, nie aus der Eingabe. Ohne `preview-available`, ohne Bild oder bei SVG
   `not-found`. Das MCP-Tool gibt das Bild als Bildinhalt zurück.
+- **`hide-download`** gilt für jeden Weg: Bei so geteilten Dateien antworten `get_attachment` und `save_attachment`
+  `forbidden`, für Clients wie für den App-Schlüssel; die Vorschau bleibt, „Open in Nextcloud“ auch.
 - `chat.get_attachment` wie `mail.get_attachment`: Datei in den Anhangsordner des Chats (oben, Datenschutz), nach
   einem Tag gelöscht, Name bereinigt, Name und Inhalt `untrusted`; für Clients höchstens 50 MiB, für den
   App-Schlüssel 512 MiB, damit auch große Videos öffnen. Die Oberfläche öffnet den Pfad danach selbst mit dem
@@ -881,7 +897,8 @@ Nach der Entscheidung leert der Kern Dateinamen und Bytes wie den Text (Datensch
 - `chat.save_attachment` wie `mail.save_attachments`: `downloads` (Einstellung `mail_downloads_folder`, ein Ordner
   für Mail und Chat) oder ein Ablageziel; `to: file` und `to: folder` („Save as…“) nur mit dem App-Schlüssel,
   Clients `forbidden` (`kept_for_people`). Ein belegter Name wird nie überschrieben. Ablageziele kommen aus
-  `mail.list_save_targets` und brauchen damit Read in `mail`; ein Client nur mit `chat` sichert nach `downloads`. Die
+  `mail.list_save_targets`; `save_attachment` mit `target` prüft im Dienst selbst Read in `mail` (sonst `forbidden`),
+  nicht erst beim Nachschlagen der Kennung. Ein Client nur mit `chat` sichert nach `downloads`. Die
   Beschreibung des Tools sagt das.
 - `chat.list_shared` liest `…/share` bzw. `…/share/overview` (Capability `rich-object-list-media`, sonst
   `unsupported`), `kind: link` aus den Karten im Cache, weil Talk Links nicht als Art führt. Einträge tragen Kennung
@@ -890,7 +907,7 @@ Nach der Entscheidung leert der Kern Dateinamen und Bytes wie den Text (Datensch
   `untrusted`. Der Kern löst den ersten Link einer Nachricht über `references/resolve` auf, wenn er Nachrichten für
   ein offenes Chatfenster lädt (App-Schlüssel), und hält das Ergebnis im Cache. Ein Read eines Clients löst kein
   neues `resolve` aus, sonst könnte ein Agent den Server Links nachschlagen lassen. Das Bild der Karte kommt über
-  `chat.get_preview` mit der Kennung der Karte.
+  `chat.get_preview` mit der Kennung der Nachricht und `card: true`.
 
 **Rechte.**
 - Alles gilt nur für Unterhaltungen in `chat_accounts`; fremde Kennungen (Nachricht, Datei, Upload, vorbereitete
@@ -899,8 +916,11 @@ Nach der Entscheidung leert der Kern Dateinamen und Bytes wie den Text (Datensch
 - **Bildinhalte:** Für Clients brauchen `get_preview`, Bilder von Karten, `get_attachment` und `save_attachment` bei
   `image/*` und `video/*` zusätzlich `Rights.image_content` (aus dem Konzept der Fotos, [fotos.md](fotos.md),
   Entscheidung 4, noch nicht gebaut; kommt mit der ersten Aufgabe der Stufe 4, falls Fotos es bis dahin nicht
-  gebracht haben), sonst `forbidden`. Sonst läse ein Agent ohne dieses Recht die Bilder einfach als Datei. Die Art
-  bestimmt dabei der Kern aus den Bytes, nicht `mimetype` vom Server, der der Endung folgt. Ohne das Recht fehlt auch
+  gebracht haben), sonst `forbidden`. Sonst läse ein Agent ohne dieses Recht die Bilder einfach als Datei. Verlangt wird
+  das Recht, sobald `mimetype` vom Server **oder** die Bytes auf Bild bzw. Video deuten **oder** die Art unbekannt ist
+  (HEIC, RAW, ein fremder Container): Ein unbekanntes Format ist kein Weg am Recht vorbei. Geprüft wird im Dienst vor
+  dem Herausgeben, nicht in `Rights::allows_request`, weil die Art am Request nicht steht: nach den Angaben im Cache vor
+  dem Laden, nach den Bytes vor der Antwort. Ohne das Recht fehlt auch
   `blurhash` (ein winziges Abbild) in `get_messages` und `list_shared`. Der App-Schlüssel hat es immer.
 - **Drossel:** Zu den 30 Nach-außen-Befehlen je Stunde (Datenschutz) kommen für Clients höchstens 20 Dateien und
   100 MiB je Stunde, sonst `busy`.
