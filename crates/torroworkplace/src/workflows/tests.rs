@@ -215,6 +215,28 @@ async fn generated_or_hidden_invoice_content_in_the_stylesheet_is_refused() {
         ".no-print ~ .receipt-table-total { display: none; }",
         ":root { --z: 0; }",
         "@font-face { font-family: x; src: url(data:font/woff2;base64,AAAA); }",
+        // Selector forms a browser reads differently from a naive split (review of the allow list).
+        "*|p, *|h1, *|*.receipt-table-total { display: none; }",
+        ":not([x=\"]) .zzz\"]) p { display: none; }",
+        ".zzz[x=\"/*\"], .receipt-table-total, [y=\"*/\"] { display: none; }",
+        ".no-print [x=\"/*\"], .receipt-table-total, [y=\"*/\"] { display: none; }",
+        "tbody .receipt-table-total, body .receipt-table-total { display: none; }",
+        ".RECEIPT-TABLE-TOTAL { display: none; }",
+        // Values that hide, cover or move text.
+        ".receipt-table-total { display: table-column; }",
+        ".c-badge { outline: 3000px solid #fff; }",
+        ".c-badge { position: relative; box-shadow: 0 0 0 3000px #fff; }",
+        ".c-sheet { position: relative; z-index: -1; }",
+        ".receipt-table-head { position: relative; top: 400px; }",
+        ".receipt-table-total-right { text-decoration: line-through 2em #fff; }",
+        ".receipt-table-total-right { text-indent: calc(-200px / 0.001); }",
+        ".c-sheet div { font-size: 50%; }",
+        ".c-sheet div { font-size: smaller; }",
+        ".receipt-table-total-right { padding-left: 50000px; }",
+        ".receipt-table-total { font: 12px/1px a; }",
+        ".receipt-table-total { letter-spacing: -8px; }",
+        "@page { @bottom-center { content: 'Additional VAT'; } }",
+        ".c-header { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: #fff; z-index: 999; }",
     ] {
         let css = format!("{CSS}\n{rule}\n");
         assert!(invoice::check_stylesheet(css.as_bytes(), page.as_bytes()).is_err(), "{rule}");
@@ -244,6 +266,9 @@ async fn generated_or_hidden_invoice_content_in_the_stylesheet_is_refused() {
         // A skipped block is consumed: the next selector must not start inside it (seen on Paddle's stylesheet).
         ".not-on-the-page { padding-top: 0 }.no-print, .no-print * { display: none }",
         "@page { margin: 1cm }.c-header { display: none }",
+        ".zzz[x=\"/*\"] { display: none; } .zzz[y=\"*/\"] { display: none; }",
+        ".receipt-table-total { font: 700 14px/20px sans-serif; letter-spacing: 0.5px; z-index: 9; }",
+        ".c-sheet { box-shadow: 2px 2px 8px 0 rgba(210, 212, 222, 0.8); border-bottom: 1px solid #d2d4de; }",
         ".receipt-table-total { margin-left: calc(2rem * 0.5 * -1); color: rgba(54, 71, 108, 0.9); }",
     ] {
         let css = format!("{CSS}\n{rule}\n");
@@ -277,6 +302,13 @@ async fn profile_two_accepts_only_witnessed_page_code() {
     assert!(invoice::convert(hiding.into_bytes(), Some(HTML.into()), Some(Vec::new()), None).await.is_err());
     let script = AUGUST.replace("</main>", "</main><script type=\"text/javascript\">void 0;</script>");
     assert_eq!(invoice::extract_profile_2(script.as_bytes(), Some(HTML)).expect("outside").1.inline_scripts.len(), 1);
+    // A `style` attribute outside the invoice gets the stylesheet rules: no overlay without a stylesheet.
+    let cover =
+        AUGUST.replace("</main>", "</main><div style=\"position:fixed;inset:0;background:#fff;z-index:9\"></div>");
+    assert!(invoice::references(cover.clone().into_bytes(), Some(HTML.into()), None).await.is_err());
+    assert!(invoice::convert(cover.into_bytes(), Some(HTML.into()), Some(Vec::new()), None).await.is_err());
+    let spacing = AUGUST.replace("</main>", "</main><div style=\"margin-top: 3rem\"></div>");
+    assert!(invoice::references(spacing.into_bytes(), Some(HTML.into()), None).await.is_ok());
     let inside = AUGUST.replace("<h4>Payment details</h4>", "<script>void 0;</script><h4>Payment details</h4>");
     assert!(invoice::extract_profile_2(inside.as_bytes(), Some(HTML)).is_err(), "no script inside the invoice");
     for inserted in [

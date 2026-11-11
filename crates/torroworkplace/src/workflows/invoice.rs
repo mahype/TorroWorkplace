@@ -150,6 +150,16 @@ pub struct Presentation {
     facts: PageFacts,
 }
 
+impl Presentation {
+    /// Inline `<style>` elements and the `style` attributes outside the invoice, through the same allow list.
+    fn check_inline(&self, budget: &Budget) -> Result<(), Error> {
+        for style in &self.inline_styles {
+            check_css(style.as_bytes(), budget, &self.facts)?;
+        }
+        Ok(())
+    }
+}
+
 /// A loaded reference. Stylesheets carry their bytes for the rule check; scripts are only named, never run.
 pub struct Loaded {
     pub reference: Reference,
@@ -167,9 +177,7 @@ pub async fn references(
     run_worker(move || {
         let (_, presentation) = extract_with(&bytes, content_type.as_deref(), &budget, 2)?;
         // Inline styles are checked before anything is loaded; a refused page needs no resources.
-        for style in &presentation.inline_styles {
-            check_css(style.as_bytes(), &budget, &presentation.facts)?;
-        }
+        presentation.check_inline(&budget)?;
         Ok(presentation)
     })
     .await
@@ -195,9 +203,7 @@ pub async fn convert(
         {
             return Err(Error::Unsupported);
         }
-        for style in &presentation.inline_styles {
-            check_css(style.as_bytes(), &budget, &presentation.facts)?;
-        }
+        presentation.check_inline(&budget)?;
         for loaded in &loaded {
             match (loaded.reference.kind, &loaded.stylesheet) {
                 (ResourceKind::Stylesheet, Some(css)) => check_css(css, &budget, &presentation.facts)?,
@@ -701,7 +707,7 @@ fn profile_two(
         }
         _ => return Ok(false),
     }
-    if found.references.len() > 8 || found.inline_scripts.len() > 4 || found.inline_styles.len() > 4 {
+    if found.references.len() > 8 || found.inline_scripts.len() > 4 || found.inline_styles.len() > 32 {
         return Err(Error::Unsupported);
     }
     Ok(true)
@@ -724,6 +730,18 @@ fn presentation(tree: &Tree, root: usize, profile: u16) -> Result<Presentation, 
         if profile == 2 {
             if node.attrs.iter().any(|(key, _)| key.starts_with("on")) {
                 return Err(Error::Unsupported);
+            }
+            // Elsewhere outside the invoice, a `style` attribute could cover it; it gets the stylesheet rules as a
+            // rule for every element. Inside, safe_node and the ancestor check already hold it.
+            if !in_head
+                && !beneath(tree, index, root)
+                && !beneath(tree, root, index)
+                && let Some(style) = node.attr("style")
+            {
+                if style.contains(['{', '}', '<', '\\']) || style.contains("/*") || found.inline_styles.len() >= 32 {
+                    return Err(Error::Unsupported);
+                }
+                found.inline_styles.push(format!("* {{{style}}}"));
             }
             if profile_two(tree, node, in_head, !beneath(tree, index, root), &mut found)? {
                 continue;
@@ -1001,13 +1019,15 @@ pub struct PageFacts {
 impl PageFacts {
     fn of(tree: &Tree) -> Self {
         let mut facts = Self::default();
+        // A browser adds these even when the markup omits them. Names compare without case, as in quirks mode.
+        facts.tags.extend(["html", "head", "body", "tbody"].map(String::from));
         for node in tree.nodes.iter().filter(|node| !node.tag.is_empty()) {
             facts.tags.insert(node.tag.to_ascii_lowercase());
             if let Some(id) = node.attr("id") {
-                facts.ids.insert(id.into());
+                facts.ids.insert(id.to_ascii_lowercase());
             }
             for class in node.attr("class").unwrap_or("").split_ascii_whitespace() {
-                facts.classes.insert(class.into());
+                facts.classes.insert(class.to_ascii_lowercase());
             }
         }
         facts
@@ -1077,6 +1097,7 @@ enum Value {
     Function(String, Vec<Value>),
     Hex(String),
     Url(String),
+    Slash,
     Other,
 }
 
@@ -1113,8 +1134,7 @@ fn rule_list<'i>(
                     }
                 }
                 let prelude = parser.slice_from(start);
-                let prelude = without_comments(prelude.strip_suffix('{').unwrap_or(prelude));
-                let selectors = split_top_level(&prelude);
+                let selectors = selector_list(prelude.strip_suffix('{').unwrap_or(prelude));
                 // An unmatchable rule is skipped as a whole; the parser steps over its block.
                 if !selectors.iter().any(|selector| can_match(selector, walk.facts)) {
                     skip_block(parser, walk)?;
@@ -1127,29 +1147,39 @@ fn rule_list<'i>(
     }
 }
 
-fn without_comments(text: &str) -> String {
-    let mut plain = String::new();
-    let mut rest = text;
-    while let Some(at) = rest.find("/*") {
-        plain.push_str(&rest[..at]);
-        match rest[at + 2..].find("*/") {
-            Some(end) => rest = &rest[at + 2 + end + 2..],
-            None => return plain,
-        }
-    }
-    plain.push_str(rest);
-    plain
-}
-
-/// Splits at commas outside parentheses and brackets.
-fn split_top_level(text: &str) -> Vec<String> {
+/// Splits a selector list at top-level commas. Comments are removed and brackets counted only outside strings,
+/// so a quoted `/*`, `,` or `]` cannot hide a selector from the check.
+fn selector_list(prelude: &str) -> Vec<String> {
     let mut parts = Vec::new();
-    let (mut depth, mut current) = (0usize, String::new());
-    for c in text.chars() {
-        match c {
-            '(' | '[' => depth += 1,
-            ')' | ']' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
+    let mut current = String::new();
+    let (mut depth, mut quote, mut chars) = (0usize, None::<char>, prelude.chars().peekable());
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(_), '\\') => {
+                current.push(c);
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+                continue;
+            }
+            (Some(open), _) if c == open => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '/') if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut last = ' ';
+                for next in chars.by_ref() {
+                    if last == '*' && next == '/' {
+                        break;
+                    }
+                    last = next;
+                }
+                current.push(' ');
+                continue;
+            }
+            (None, '(' | '[') => depth += 1,
+            (None, ')' | ']') => depth = depth.saturating_sub(1),
+            (None, ',') if depth == 0 => {
                 parts.push(normalize(&std::mem::take(&mut current)));
                 continue;
             }
@@ -1161,23 +1191,31 @@ fn split_top_level(text: &str) -> Vec<String> {
     parts
 }
 
-/// Conservative: false only when a compound outside functional pseudo-classes names a class, id or tag the page
-/// lacks. Escapes and anything not understood count as a possible match.
-fn can_match(selector: &str, facts: &PageFacts) -> bool {
-    if selector.contains('\\') {
-        return true;
-    }
-    // Drop `(…)` and `[…]` contents: :not(), :is(), :has() and attribute tests only narrow or are unknown.
+/// The selector without the contents of `(…)`, `[…]` and strings in them, or `None` when it uses a form the
+/// check does not read: escapes, namespaces (`*|p`) or a string outside brackets.
+fn plain_selector(selector: &str) -> Option<String> {
     let mut plain = String::new();
-    let mut depth = 0usize;
+    let (mut depth, mut quote) = (0usize, None::<char>);
     for c in selector.chars() {
-        match c {
-            '(' | '[' => depth += 1,
-            ')' | ']' => depth = depth.saturating_sub(1),
-            _ if depth == 0 => plain.push(c),
+        match (quote, c) {
+            (_, '\\') => return None,
+            (Some(open), _) if c == open => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') if depth > 0 => quote = Some(c),
+            (None, '"' | '\'' | '|') if depth == 0 => return None,
+            (None, '(' | '[') => depth += 1,
+            (None, ')' | ']') => depth = depth.saturating_sub(1),
+            (None, _) if depth == 0 => plain.push(c),
             _ => {}
         }
     }
+    Some(plain)
+}
+
+/// Conservative: false only when a compound outside functional pseudo-classes names a class, id or tag the page
+/// lacks. Anything the check does not read counts as a possible match.
+fn can_match(selector: &str, facts: &PageFacts) -> bool {
+    let Some(plain) = plain_selector(selector) else { return true };
     let plain = plain.replace(['>', '+', '~'], " ");
     for compound in plain.split_ascii_whitespace() {
         let mut rest = compound;
@@ -1190,10 +1228,10 @@ fn can_match(selector: &str, facts: &PageFacts) -> bool {
         while let Some(marker) = rest.chars().next() {
             let tail = &rest[1..];
             let end = tail.find(['.', '#', ':']).unwrap_or(tail.len());
-            let name = &tail[..end];
+            let name = tail[..end].to_ascii_lowercase();
             let known = match marker {
-                '.' => facts.classes.contains(name),
-                '#' => facts.ids.contains(name),
+                '.' => facts.classes.contains(&name),
+                '#' => facts.ids.contains(&name),
                 _ => true,
             };
             if !known {
@@ -1208,8 +1246,10 @@ fn can_match(selector: &str, facts: &PageFacts) -> bool {
 
 /// The selector targets a witnessed navigation element or something beneath it, never a sibling.
 fn beneath_navigation(selector: &str) -> bool {
+    let Some(plain) = plain_selector(selector) else { return false };
+    let plain = normalize(&plain);
     HIDE_ALLOWED.iter().any(|allowed| {
-        selector.strip_prefix(allowed).is_some_and(|rest| {
+        plain.strip_prefix(allowed).is_some_and(|rest| {
             (rest.is_empty() || rest.starts_with(' ') || rest.starts_with('>'))
                 && !rest.contains(['+', '~', ',', '(', ':'])
         })
@@ -1256,8 +1296,10 @@ fn at_rule<'i>(
             parser.parse_nested_block(|nested| rule_list(nested, walk, depth + 1))
         }
         ("font-face", true) => parser.parse_nested_block(|nested| font_face(nested, walk)),
-        // Keyframes act only through `animation`, which no checked rule may use; page boxes hold no text.
-        ("keyframes" | "-webkit-keyframes" | "-moz-keyframes" | "page", true) => skip_block(parser, walk),
+        // Keyframes act only through `animation`, which no checked rule may use.
+        ("keyframes" | "-webkit-keyframes" | "-moz-keyframes", true) => skip_block(parser, walk),
+        // Page boxes: size and margins only; margin boxes such as `@bottom-center` could print generated text.
+        ("page", true) => parser.parse_nested_block(|nested| page_box(nested, walk)),
         // `@import` loads further, unchecked CSS; every other at-rule is unwitnessed.
         _ => Err(refuse()),
     }
@@ -1280,6 +1322,26 @@ fn font_face<'i>(parser: &mut cssparser::Parser<'i, '_>, walk: &mut CssWalk<'_>)
             name.as_str(),
             "font-family" | "src" | "font-weight" | "font-style" | "font-display" | "font-stretch" | "unicode-range"
         ) || inline_data(&values)
+        {
+            return Err(refuse());
+        }
+    }
+}
+
+fn page_box<'i>(parser: &mut cssparser::Parser<'i, '_>, walk: &mut CssWalk<'_>) -> Result<(), CssFail<'i>> {
+    use cssparser::Token;
+    loop {
+        walk.tick()?;
+        let name = match parser.next() {
+            Err(_) => return Ok(()),
+            Ok(Token::Semicolon) => continue,
+            Ok(Token::Ident(name)) => name.to_ascii_lowercase(),
+            Ok(_) => return Err(refuse()),
+        };
+        parser.expect_colon().map_err(|_| refuse())?;
+        let values = parser.parse_until_after(cssparser::Delimiter::Semicolon, |value| values(value, walk, 0))?;
+        if !(matches!(name.as_str(), "size" | "page-orientation" | "marks" | "bleed") || name.starts_with("margin"))
+            || values.iter().any(|value| matches!(value, Value::Function(..) | Value::Url(_) | Value::Text(_)))
         {
             return Err(refuse());
         }
@@ -1352,8 +1414,6 @@ fn allowed(name: &str, values: &[Value], may_hide: bool) -> bool {
                 "table-row-group",
                 "table-header-group",
                 "table-footer-group",
-                "table-column",
-                "table-column-group",
                 "table-caption",
                 "flow-root",
                 "contents",
@@ -1364,8 +1424,8 @@ fn allowed(name: &str, values: &[Value], may_hide: bool) -> bool {
         }
         "visibility" => words(&["visible", "inherit"]) || (may_hide && words(&["hidden", "collapse"])),
         "position" => {
-            words(&["static", "relative", "sticky", "-webkit-sticky", "inherit"])
-                || (may_hide && words(&["absolute", "fixed"]))
+            words(&["static", "relative", "inherit"])
+                || (may_hide && words(&["absolute", "fixed", "sticky", "-webkit-sticky"]))
         }
         "opacity" => {
             may_hide
@@ -1378,10 +1438,14 @@ fn allowed(name: &str, values: &[Value], may_hide: bool) -> bool {
         }
         "color" | "-webkit-text-fill-color" => (may_hide || visible_colour(values)) && functions(colours),
         "font-size" => values.len() == 1 && readable_size(&values[0]),
+        // The first length is the size; a length or number after `/` is the line height.
         "font" => {
+            let slash = values.iter().position(|value| *value == Value::Slash);
+            let (size, line) = values.split_at(slash.unwrap_or(values.len()));
             functions(&[])
-                && !values.iter().any(|value| matches!(value, Value::Number(n) if *n == 0.0))
-                && values.iter().filter(|value| matches!(value, Value::Length(..))).take(1).all(readable_size)
+                && !size.iter().any(|value| matches!(value, Value::Number(n) if *n == 0.0))
+                && size.iter().filter(|value| matches!(value, Value::Length(..))).take(1).all(readable_size)
+                && line.get(1).is_none_or(|value| allowed("line-height", std::slice::from_ref(value), false))
         }
         "line-height" => {
             values.len() == 1
@@ -1398,7 +1462,7 @@ fn allowed(name: &str, values: &[Value], may_hide: bool) -> bool {
                 && match &values[0] {
                     Value::Word(word) => word == "normal" || global.contains(&word.as_str()),
                     Value::Number(n) => *n == 0.0,
-                    value => px(value).is_some_and(|n| n.abs() <= 8.0),
+                    value => px(value).is_some_and(|n| (-1.0..=8.0).contains(&n)),
                 }
         }
         "text-indent"
@@ -1417,32 +1481,41 @@ fn allowed(name: &str, values: &[Value], may_hide: bool) -> bool {
         | "right"
         | "bottom"
         | "left"
-        | "inset" => {
-            may_hide
-                && !matches!(
-                    name,
-                    "text-indent" | "margin" | "margin-top" | "margin-right" | "margin-bottom" | "margin-left"
-                )
-                || (functions(&["calc"]) && bounded(values, 200.0))
-        }
-        "padding"
-        | "padding-top"
-        | "padding-right"
-        | "padding-bottom"
-        | "padding-left"
-        | "padding-inline"
-        | "padding-block"
-        | "width"
+        | "inset" => functions(&["calc"]) && bounded(values, 64.0),
+        "padding" | "padding-top" | "padding-right" | "padding-bottom" | "padding-left" | "padding-inline"
+        | "padding-block" => functions(&["calc"]) && bounded(values, 200.0),
+        "width"
         | "height"
         | "min-width"
         | "min-height"
         | "max-width"
         | "max-height"
         | "flex-basis"
-        | "-ms-flex-preferred-size"
-        | "gap"
-        | "row-gap"
-        | "column-gap" => functions(&["calc"]),
+        | "-ms-flex-preferred-size" => functions(&["calc"]) && bounded(values, 2000.0),
+        "gap" | "row-gap" | "column-gap" | "border-spacing" => functions(&["calc"]) && bounded(values, 64.0),
+        // Lines and shadows may not grow into an overlay: widths, offsets and spreads stay small.
+        "border"
+        | "border-top"
+        | "border-right"
+        | "border-bottom"
+        | "border-left"
+        | "border-width"
+        | "border-top-width"
+        | "border-right-width"
+        | "border-bottom-width"
+        | "border-left-width"
+        | "outline"
+        | "outline-width"
+        | "outline-offset" => functions(colours) && small_lengths(values, 8.0),
+        "box-shadow" => functions(colours) && small_lengths(values, 32.0),
+        "text-decoration" | "text-decoration-line" | "-webkit-text-decoration-line" | "text-underline-offset" => {
+            functions(colours) && small_lengths(values, 4.0)
+        }
+        "z-index" => values.iter().all(|value| match value {
+            Value::Number(n) => (0.0..=100.0).contains(n),
+            Value::Word(word) => word == "auto" || global.contains(&word.as_str()),
+            _ => false,
+        }),
         "text-transform" => words(&["none", "uppercase", "lowercase", "capitalize", "inherit"]),
         "unicode-bidi" => words(&["normal", "embed", "isolate", "inherit"]),
         "direction" => words(&["ltr", "inherit"]),
@@ -1473,22 +1546,12 @@ fn allowed(name: &str, values: &[Value], may_hide: bool) -> bool {
         | "align-self"
         | "justify-items"
         | "justify-self"
-        | "border"
-        | "border-top"
-        | "border-right"
-        | "border-bottom"
-        | "border-left"
-        | "border-width"
         | "border-style"
         | "border-color"
         | "border-top-color"
         | "border-right-color"
         | "border-bottom-color"
         | "border-left-color"
-        | "border-top-width"
-        | "border-right-width"
-        | "border-bottom-width"
-        | "border-left-width"
         | "border-top-style"
         | "border-right-style"
         | "border-bottom-style"
@@ -1499,26 +1562,16 @@ fn allowed(name: &str, values: &[Value], may_hide: bool) -> bool {
         | "border-bottom-left-radius"
         | "border-bottom-right-radius"
         | "border-collapse"
-        | "border-spacing"
-        | "box-shadow"
-        | "outline"
-        | "outline-width"
         | "outline-style"
         | "outline-color"
-        | "outline-offset"
         | "background-color"
         | "vertical-align"
         | "text-align"
-        | "text-decoration"
-        | "text-decoration-line"
         | "text-decoration-color"
         | "text-decoration-style"
-        | "-webkit-text-decoration-line"
         | "-webkit-text-decoration-skip"
         | "text-decoration-skip-ink"
-        | "text-underline-offset"
         | "cursor"
-        | "z-index"
         | "font-weight"
         | "font-style"
         | "font-family"
@@ -1605,15 +1658,16 @@ fn readable_size(value: &Value) -> bool {
                 | "x-large"
                 | "xx-large"
                 | "xxx-large"
-                | "smaller"
                 | "larger"
                 | "inherit"
                 | "initial"
                 | "unset"
         ),
+        // `%` and `em` compound through nested elements, so they may not shrink; `rem` is fixed to the root.
         Value::Length(n, unit) => match unit.as_str() {
-            "%" => *n >= 50.0,
-            "em" | "rem" => *n >= 0.5,
+            "%" => *n >= 100.0,
+            "em" => *n >= 1.0,
+            "rem" => *n >= 0.5,
             _ => px(value).is_some_and(|n| n >= 8.0),
         },
         _ => false,
@@ -1627,7 +1681,8 @@ fn bounded(values: &[Value], limit: f32) -> bool {
             Value::Word(word) => matches!(word.as_str(), "auto" | "inherit" | "initial" | "unset").then_some(0.0),
             Value::Number(n) => Some(n.abs()),
             Value::Length(..) => px(value).map(f32::abs),
-            Value::Function(name, arguments) if name == "calc" => {
+            // A division could grow a length without bound; only sums and products are counted.
+            Value::Function(name, arguments) if name == "calc" && !arguments.contains(&Value::Slash) => {
                 let lengths = arguments.iter().filter(|argument| matches!(argument, Value::Length(..))).map(size);
                 let factors: f32 = arguments
                     .iter()
@@ -1643,6 +1698,14 @@ fn bounded(values: &[Value], limit: f32) -> bool {
         }
     }
     values.iter().all(|value| size(value).is_some_and(|n| n <= limit))
+}
+
+/// Every length within `limit` CSS pixels; numbers and words pass.
+fn small_lengths(values: &[Value], limit: f32) -> bool {
+    values.iter().all(|value| match value {
+        Value::Length(..) => px(value).is_some_and(|n| n.abs() <= limit),
+        _ => true,
+    })
 }
 
 /// An approximate length in CSS pixels, with font-relative units at 16px and viewport units at 1000px.
@@ -1715,6 +1778,7 @@ fn values<'i>(
             Token::CurlyBracketBlock | Token::BadUrl(_) | Token::BadString(_) => return Err(refuse()),
             // `!important` changes no visible content; its keyword is dropped by the caller.
             Token::Delim('!') => continue,
+            Token::Delim('/') => Value::Slash,
             _ => Value::Other,
         });
     }
