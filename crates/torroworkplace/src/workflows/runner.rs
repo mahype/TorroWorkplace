@@ -914,8 +914,7 @@ impl Service {
                         let mut record: WorkflowRecord = store::get(tx, "workflow", &job.run.workflow, |_, _| true)?;
                         if record.workflow.digest == job.workflow_digest && record.workflow.revision == job.run.revision
                         {
-                            record.workflow.tested = true;
-                            adopt_resources(&mut record, &job)?;
+                            record.workflow.tested = adopt_resources(&mut record, &job)? || record.workflow.tested;
                             record.state_revision = record.state_revision.checked_add(1).ok_or(Error::Conflict)?;
                             store::put(
                                 tx,
@@ -1085,8 +1084,7 @@ impl Service {
                     let mut record: WorkflowRecord = store::get(tx, "workflow", &job.run.workflow, |_, _| true)?;
                     pinned(&record, job.run.revision)?;
                     if record.workflow.digest == job.workflow_digest && record.execution_epoch == job.execution_epoch {
-                        record.workflow.tested = true;
-                        adopt_resources(&mut record, &job)?;
+                        record.workflow.tested = adopt_resources(&mut record, &job)? || record.workflow.tested;
                         record.state_revision = record.state_revision.checked_add(1).ok_or(Error::Conflict)?;
                         store::put(
                             tx,
@@ -1200,24 +1198,26 @@ struct Witnessed {
     layout: Option<String>,
 }
 
-/// A successful test of an unsaved draft takes over exactly the scripts it witnessed, as a new revision with a new
-/// digest. Saving and any authorization then bind that revision; the stored test stays bound to it.
-fn adopt_resources(record: &mut WorkflowRecord, job: &RunRecord) -> Result<(), Error> {
+/// A successful test of an unsaved draft takes over exactly the scripts and layout it witnessed, as a new revision
+/// with a new digest. Saving and any authorization then bind that revision; the stored test stays bound to it.
+/// Returns whether the tested revision holds what the test saw; if the draft was saved meanwhile, it does not.
+fn adopt_resources(record: &mut WorkflowRecord, job: &RunRecord) -> Result<bool, Error> {
     let package = &mut record.workflow.spec.package;
-    if record.workflow.saved
-        || !job.run.test
-        || !package.steps.iter().any(|step| matches!(step, wire::Step::RenderInvoiceCopy { version: 2, .. }))
-    {
-        return Ok(());
+    let Some(observed) = &job.observed else { return Ok(true) };
+    if !package.steps.iter().any(|step| matches!(step, wire::Step::RenderInvoiceCopy { version: 2, .. })) {
+        return Ok(true);
     }
-    let Some(observed) = &job.observed else { return Ok(()) };
     // The same scripts in another page order are no change and keep the revision and its authorization.
     let mut known = package.binding.resources.clone();
     let mut seen = observed.resources.clone();
     known.sort();
     seen.sort();
     if known == seen && package.binding.layout == observed.layout {
-        return Ok(());
+        return Ok(true);
+    }
+    // Saved while the test ran: the saved revision does not hold what the test saw, so it is not marked tested.
+    if record.workflow.saved || !job.run.test {
+        return Ok(false);
     }
     package.binding.resources = observed.resources.clone();
     package.binding.layout = observed.layout.clone();
@@ -1225,7 +1225,7 @@ fn adopt_resources(record: &mut WorkflowRecord, job: &RunRecord) -> Result<(), E
     let encoded = serde_json::to_vec(&record.workflow.spec).map_err(|_| Error::Blocked)?;
     record.workflow.digest = digest(&encoded);
     record.workflow.revision = record.workflow.revision.checked_add(1).ok_or(Error::Conflict)?;
-    Ok(())
+    Ok(true)
 }
 
 /// Loads the head resources of a profile-2 page as data. Stylesheets go to the rule check of the conversion;
