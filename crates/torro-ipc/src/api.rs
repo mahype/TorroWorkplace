@@ -5167,9 +5167,13 @@ static SEND_MESSAGE: Command = Command {
                   60 seconds for the answer and returns the new entries; the API answers at once. While `running` \
                   is true, follow the answer with get_conversation and `after` set to the conversation's `last`. \
                   `busy` while the conversation still answers. `about` (`account`, `id`) starts a chat about one \
-                  mail: the assistant reads it first and may then only read and suggest (mail_extract_action), \
-                  never change or send anything; it needs the assistant's read access to that mail account \
-                  (`forbidden` otherwise) and a model the data rule lets read mail (`not-connected`).",
+                  mail: the assistant reads it first and may then only read and suggest (mail_extract_action, \
+                  which for that mail needs only its read access), never change, send or search the web. A \
+                  suggestion it reads out is kept as a suggestion of the mail and shows in Mail until accepted or \
+                  dismissed. It needs the assistant's read access to that mail account (`forbidden` otherwise) and \
+                  a model the data rule lets read mail (`not-connected`); `not-found` for a mail or account the \
+                  caller may not see (a chat about it is not there for that caller at all), `error` for another \
+                  `about` than the conversation's or a chat about a mail with mail switched off in `without`.",
 };
 
 static CANCEL: Command = Command {

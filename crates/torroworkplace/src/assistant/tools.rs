@@ -566,13 +566,19 @@ pub fn error_summary(code: &str) -> String {
     .into()
 }
 
+/// The commands that reach out of the computer by reading: the web's search and page (issue #305). In a chat about a
+/// mail the mail's text is data from outside, and must not steer a request out (search words, an address).
+const REACHES_OUT: [&str; 2] = ["tools.web_search", "tools.fetch_page"];
+
 /// Whether a chat about a mail (issue #605, `assistant.send_message` with `about`, decision 4 of the plan) may
 /// offer and run `tool`: a command of the catalogue that only reads ([`Access::Read`], by its own access, also in
 /// the area `tools`), or [`EXTRACT_ACTION`], which only suggests. Never a tool of an MCP server (its access is the
-/// server's word), never asking or listing a bot. Whatever the assistant's rights allow beyond that stays out, so
-/// the chat writes no draft, creates no task and sends nothing; the core still checks the rights of every call.
+/// server's word), never asking or listing a bot, never a command that sends or reaches out ([`REACHES_OUT`],
+/// `Command::is_outbound`): the mail's text could steer it. Whatever the assistant's rights allow beyond that stays
+/// out, so the chat writes no draft, creates no task and sends nothing; the core still checks every call's rights.
 pub fn fits_about_mail(tool: &Tool) -> bool {
-    !tool.is_server() && !tool.is_bots() && (tool.reads() || tool.command.name == EXTRACT_ACTION)
+    let out = tool.command.is_outbound() || REACHES_OUT.contains(&tool.command.name);
+    !tool.is_server() && !tool.is_bots() && !out && (tool.reads() || tool.command.name == EXTRACT_ACTION)
 }
 
 /// The tools of `tools` a chat about a mail of `account` may use ([`fits_about_mail`]), in their order. Applied
@@ -713,10 +719,8 @@ mod tests {
         assert!(usable_tools(&reading, &[Area::Tools]).is_empty(), "no access");
     }
 
-    /// Issue #305, decision 26: "all tools" cut to the switched-on ones never reaches `web`; reading in
-    /// `tools` with `web` named is enough for it, and then `pdf`, which needs writing, is not usable.
     /// Issue #605: a chat about a mail keeps the reading tools and `mail.extract_action`, never a write, a
-    /// server's tool, a bot or the memory's writing, whatever the rights allow.
+    /// server's tool, a bot, the memory's writing or anything that reaches out (the web), whatever the rights allow.
     #[test]
     fn a_chat_about_a_mail_only_reads_and_suggests() {
         let mut rights = RightsTemplate::FullAccess.rights();
@@ -751,6 +755,11 @@ mod tests {
         assert!(fits_about_mail(&callable("mail_extract_action").expect("a real command")));
         let server = callable("ext_time_get_current_time").expect("a server's tool name");
         assert!(!fits_about_mail(&server), "a server's tool never");
+        for out in ["tools_web_search", "tools_fetch_page", "mail_send_draft"] {
+            let tool = callable(out).expect("a real command");
+            assert!(!fits_about_mail(&tool), "{out}: the mail's text must not steer a request out");
+        }
+        assert!(!names.contains(&"tools.web_search") && !names.contains(&"tools.fetch_page"), "{names:?}");
 
         // Decided with the person: reading the account is enough for the suggestion of the chat's mail.
         let mut reading = Rights::assistant();
@@ -772,6 +781,8 @@ mod tests {
         assert!(!with(&Rights::assistant(), &[], "mail:anna@example.org"), "no mail at all");
     }
 
+    /// Issue #305, decision 26: "all tools" cut to the switched-on ones never reaches `web`; reading in
+    /// `tools` with `web` named is enough for it, and then `pdf`, which needs writing, is not usable.
     #[test]
     fn web_is_offered_only_when_named_and_reading_is_enough() {
         let both = BTreeSet::from([ToolId::Pdf, ToolId::Web]);

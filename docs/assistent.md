@@ -191,8 +191,8 @@ deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf: `docs/prototypes/
 - **Verlauf je Mail.** „Ask AI…“ setzt die neueste Unterhaltung zur selben Mail fort, „+“ beginnt neu.
 - **Nur lesen und vorschlagen.** Auch wenn der Assistent sonst mehr darf, stehen in einer solchen
   Unterhaltung nur Werkzeuge mit Zugriff Read und `mail.extract_action` bereit, ohne Werkzeuge der
-  MCP-Server und ohne Bots; der Kern lehnt andere Aufrufe auch beim Ausführen ab. Entwürfe schreibt
-  der Chat nicht. `mail.extract_action` für genau diese Mail (Konto und Kennung) gilt hier als Lesen:
+  MCP-Server, ohne Bots und ohne Websuche und Seitenabruf (der Text der Mail darf keine Anfrage nach
+  außen lenken); der Kern lehnt andere Aufrufe auch beim Ausführen ab. Entwürfe schreibt der Chat nicht. `mail.extract_action` für genau diese Mail (Konto und Kennung) gilt hier als Lesen:
   Das Mail-Leserecht des Assistenten auf dem Konto reicht; für eine andere Mail, in anderen Chats und
   über API und MCP braucht es weiter Schreibrecht.
 - **Die Mail liest der Kern vorab.** Vor der ersten Antwort ruft er `mail.get_message` wie ein Werkzeug
@@ -203,8 +203,9 @@ deckt es die Mail ab („‹ Mail“ führt zurück). Entwurf: `docs/prototypes/
   im Chat. „Accept“ öffnet den vorausgefüllten Dialog; erst „Create“ legt an.
 - **Rechte.** Der Assistent braucht Mail-Leserecht und das Konto in seiner Reichweite, sonst
   `forbidden` und das Paneel zeigt einen Hinweis mit „Open assistant“. Hält die Datenregel Mail vom
-  gewählten Modell fern: `not-connected`. Mit Bot oder fremdem Antrieb: `unsupported`. Ein Client, der
-  das Konto selbst nicht sieht, bekommt `not-found` und sieht `about` in Listen nicht.
+  gewählten Modell fern: `not-connected`. Mit Bot oder fremdem Antrieb: `unsupported`. Für einen
+  Client, der das Konto selbst nicht sieht, gibt es die Unterhaltung nicht: Sie fehlt in der Liste, und
+  jeder Befehl, der sie nennt, antwortet `not-found`, denn ihre Einträge erzählen, was in der Mail steht.
 
 ## Bots (Stufe 2)
 

@@ -211,7 +211,9 @@ pub struct ConversationSummary {
     pub bot_deleted: bool,
     /// The mail this conversation is about (issue #605, "Chat zu einer Mail" in `docs/assistent.md`):
     /// set when it starts with `about`, never changed. Such a conversation may only read and suggest.
-    /// Left out for every other conversation, and for a client that may not read that mail account.
+    /// Left out for every other conversation. For a client that may not read that mail account the whole
+    /// conversation is not there: left out of `assistant.list_conversations`, `not-found` for every command
+    /// that names it, since its entries tell what the mail says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub about: Option<MailRef>,
 }
@@ -322,7 +324,8 @@ pub enum CardRef {
         /// The file's id in the register ([`crate::tools::FileInfo::id`]).
         id: String,
     },
-    /// A suggestion of a mail (issue #605: `mail.extract_action` in a chat about a mail):
+    /// A suggestion of a mail (issue #605): added after every `mail.extract_action` that read one out, in any
+    /// conversation of the assistant's model, most often a chat about a mail:
     /// `{"kind": "suggestion", "account": "mail:anna@example.org", "id": "m:…", "action": "event"}`.
     Suggestion {
         /// The mail account: `mail:<address>`.
@@ -350,6 +353,8 @@ pub enum Card {
         account: String,
         /// The mail's id (`m:…`).
         id: String,
+        /// The open suggestion of that kind as the mail keeps it now (`ready`, its event or task and the
+        /// reason); the card shows it and "Accept" opens the dialog filled with it.
         suggestion: Box<crate::actions::Suggestion>,
     },
     /// Gone or out of reach: deleted, changed, moved, made by another client, or no longer within

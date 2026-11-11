@@ -751,7 +751,6 @@ mod tests {
         assert!(full.contains("make folders, copy, move and put in the trash"), "{full}");
     }
 
-    /// The line of the generated part that starts with `label`.
     /// Issue #605: the part about the mail names it as JSON, says the suite read it and that the chat only reads
     /// and suggests through `mail_extract_action` with the person's words as `focus`.
     #[test]
@@ -774,6 +773,7 @@ mod tests {
         }
     }
 
+    /// The line of the generated part that starts with `label`.
     fn line<'a>(prompt: &'a str, label: &str) -> Option<&'a str> {
         prompt.lines().find(|line| line.starts_with(label))
     }

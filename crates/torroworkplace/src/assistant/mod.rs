@@ -535,6 +535,9 @@ impl Assistant {
                 "the assistant may not read this mail account; a person can allow it in the assistant's access",
             ));
         }
+        // A model that cannot be had now is left to the answer, which fails with its error; should it get one
+        // after all, the data rule still holds: the mail is read through the tools and screened for the model's
+        // place ([`data_rule::for_model`] with its `Reader`), so a model elsewhere reads "withheld" only.
         if let (EngineKind::Ai, Some(host)) = (kind, host)
             && let Ok(access) = host.model(&message.engine, message.model.as_deref()).await
             && access.place != Place::Local
