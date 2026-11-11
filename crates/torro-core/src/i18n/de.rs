@@ -177,6 +177,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Preview · Mail", "Vorschau · Mail"),
     // Paddle invoice copies (#598).
     (
+        "The provider's page differs from the verified version. Check the copy before saving.",
+        "Die Seite des Anbieters weicht von der geprüften Fassung ab. Prüfe die Kopie, bevor du speicherst.",
+    ),
+    (
         "Creates a marked PDF copy of a supported Paddle invoice page. Loads its stylesheets and scripts from my.paddle.com, static.paddle.com and cdn.paddle.com as data only: stylesheets are checked on every run and their layout, like the scripts, must match the tested version; scripts are never executed. No login.",
         "Erstellt eine gekennzeichnete PDF-Kopie einer unterstützten Paddle-Rechnungsseite. Lädt deren Stylesheets und Skripte von my.paddle.com, static.paddle.com und cdn.paddle.com nur als Daten: Stylesheets werden bei jedem Lauf geprüft, und ihr Layout muss wie die Skripte der getesteten Fassung entsprechen; Skripte werden nie ausgeführt. Keine Anmeldung.",
     ),

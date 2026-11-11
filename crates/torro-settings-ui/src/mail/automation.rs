@@ -1595,9 +1595,17 @@ pub fn run_status(run: &WorkflowRun) -> String {
             tr("The provider changed its invoice page. Run “Create workflow with AI…” at this mail and test it again.")
         }
     });
-    match reason {
+    let status = match reason {
         Some(reason) => format!("{status} · {reason}"),
         None => status.into(),
+    };
+    if run.adopted_provider_change {
+        format!(
+            "{status} · {}",
+            tr("The provider's page differs from the verified version. Check the copy before saving.")
+        )
+    } else {
+        status
     }
 }
 fn workflow_status(w: &Workflow) -> String {
@@ -1851,6 +1859,7 @@ fn demo_run(w: &Workflow, mail: &str, test: bool, index: usize) -> WorkflowRun {
             changed: false,
         }),
         untrusted: true,
+        adopted_provider_change: false,
     }
 }
 
@@ -2645,6 +2654,13 @@ mod tests {
         assert!(run_status(&run).ends_with(tr(
             "The provider changed its invoice page. Run “Create workflow with AI…” at this mail and test it again."
         )));
+        run.state = RunState::Succeeded;
+        run.reason = None;
+        run.adopted_provider_change = true;
+        assert!(
+            run_status(&run)
+                .ends_with(tr("The provider's page differs from the verified version. Check the copy before saving."))
+        );
     }
 
     #[test]

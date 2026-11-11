@@ -394,7 +394,10 @@ unbekannter Prüfsumme oder weicht das Layout ab, endet der Lauf vor jeder Ablag
 Rechnungsseite geändert.“ Repariert wird an derselben Mail über „Ablauf mit KI erstellen…“: Die KI
 wählt die Paddle-Vorlage neu, der bestätigte Test eines noch nicht gespeicherten Entwurfs übernimmt
 die beobachteten Skripte und das Layout in derselben Transaktion als neue Fassung (neue Revision und Prüfsumme) und
-markiert genau diese Fassung als getestet. Danach speichert der Mensch den Ablauf und autorisiert ihn
+markiert genau diese Fassung als getestet. Der Lauf meldet die Übernahme sichtbar: „Die Seite des
+Anbieters weicht von der geprüften Fassung ab. Prüfe die Kopie, bevor du speicherst.“ (Feld
+`adopted_provider_change` am Lauf). Das gilt auch für den ersten Test eines Entwurfs aus der Vorlage,
+wenn die Seite nicht der Fassung der Vorlage entspricht. Danach speichert der Mensch den Ablauf und autorisiert ihn
 neu; die alte Autorisierung passt nicht mehr zur Prüfsumme. Wird der Entwurf gespeichert, während
 sein Test noch läuft, gilt die gespeicherte Fassung nicht als getestet, wenn der Test anderes gesehen
 hat. Eine KI gibt bei keinem Lauf still neue
