@@ -182,6 +182,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Ask AI", "KI fragen"),
     ("Ask AI…", "KI fragen…"),
     ("Ask about this mail…", "Frag etwas zu dieser Mail…"),
+    ("Design review on Thursday", "Designreview am Donnerstag"),
+    (
+        "Here it is. Check it and accept it to open the event editor.",
+        "Hier ist er. Prüf ihn und nimm ihn an, um den Termin-Editor zu öffnen.",
+    ),
+    (
+        "There is a meeting on Thursday, make an event of it please.",
+        "Am Donnerstag ist ein Treffen, mach bitte einen Termin daraus.",
+    ),
     ("Is there a deadline?", "Gibt es eine Frist?"),
     ("What does the sender want from me?", "Was will der Absender von mir?"),
     ("What was said about this before?", "Was wurde dazu vorher gesagt?"),
