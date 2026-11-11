@@ -7639,6 +7639,51 @@ mod tests {
         assert!(!head.contains("first.push(pill)"), "not at the sender's name in the head");
     }
 
+    /// Issue #635: in the reader's head the category ends on the date's right edge, under it – the
+    /// whole pill where the address line keeps its text, else only the field.
+    #[test]
+    fn the_head_puts_the_category_under_the_date() {
+        use iced_test::selector::Candidate;
+        use torro_mail::Category;
+        reading_of("m:p3", MailFormat::Text, true, |reading| {
+            let mut summary = reading.summary.expect("a summary").clone();
+            summary.category = Some(MailCategory::by_rule(Category::Newsletter));
+            let reading = Reading { summary: Some(&summary), ..*reading };
+            let label = category_look(&[], Category::Newsletter).0;
+            let pill = widgets::category_pill_width(&label);
+            let field = widgets::category_pill_height();
+            let date = torro_gui::datetime::format_moment(summary.date, reading.now);
+            // (room, expected width of the category's box)
+            for (room, expected) in [(900.0, pill), (190.0, field)] {
+                let mut ui = iced_test::Simulator::with_size(
+                    iced::Settings::default(),
+                    iced::Size::new(room, 400.0),
+                    sender_block(&reading, &summary, room),
+                );
+                let date_box = ui
+                    .find(|candidate: Candidate<'_>| match candidate {
+                        Candidate::Text { content, bounds, .. } if content == date => Some(bounds),
+                        _ => None,
+                    })
+                    .expect("the date");
+                let category = ui
+                    .find(|candidate: Candidate<'_>| match candidate {
+                        Candidate::Container { bounds, .. }
+                            if (bounds.width - expected).abs() < 3.0 && bounds.y > date_box.y =>
+                        {
+                            Some(bounds)
+                        }
+                        _ => None,
+                    })
+                    .expect("the category under the date");
+                assert!(
+                    (category.x + category.width - (date_box.x + date_box.width)).abs() < 0.5,
+                    "at {room}: category {category:?}, date {date_box:?}"
+                );
+            }
+        });
+    }
+
     /// Issue #453: a held logo stands in the circle, but unwanted mail keeps the skull and "Sent"
     /// the recipient's mark; a logo asked for or missing leaves the mark.
     #[test]
