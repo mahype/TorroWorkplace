@@ -68,9 +68,9 @@ Automatismus. Dieselbe Einrichtung ist unter Workflows über „New from templat
 |---|---|---|
 | `direct_pdf` | Rechnungs-PDF eines direkten Links | Genau ein eindeutiger PDF-Link; dessen exakter Host wird lokal an den Entwurf gebunden. Der Beispielhost im öffentlichen Paket ist kein Abrufziel. |
 | `stripe_invoice` | Originale Rechnungs-PDF | Nur der begrenzte Stripe-JSON-Resolver und sein gelieferter PDF-Link; keine Beleg-, Zahlungs-, Dashboard- oder Browserwege. |
-| `paddle_setapp_invoice_copy` | Lokal erzeugte Rechnungskopie | Profil 2: Hosts `my.paddle.com`, `static.paddle.com` und `cdn.paddle.com`. Stylesheets und Skripte der Rechnungsseite werden nur als Daten geladen; Stylesheets werden bei jedem Lauf gegen eine Erlaubnisliste geprüft, Skripte nie ausgeführt und nur mit bekannter Prüfsumme angenommen. |
+| `paddle_setapp_invoice_copy` | Lokal erzeugte Rechnungskopie | Profil 2: Hosts `my.paddle.com`, `static.paddle.com` und `cdn.paddle.com`. Stylesheets und Skripte der Rechnungsseite werden nur als Daten geladen; Stylesheets werden bei jedem Lauf gegen eine Erlaubnisliste geprüft, ihr Layout und die Skripte nur mit bekannter Prüfsumme angenommen; Skripte werden nie ausgeführt. |
 
-Die Vorlage nennt beide Domains schon in der Auswahl und in der lokalen Vorschau, also vor dem
+Die Vorlage nennt alle drei Domains schon in der Auswahl und in der lokalen Vorschau, also vor dem
 bestätigten Test. Sie bringt keinen neuen Befehl und kein neues MCP-Werkzeug mit: Paddle läuft über
 denselben Dienstpfad wie die anderen Vorlagen (`workflows.instantiate_template`, `workflows.preview_run`,
 `workflows.run`).
