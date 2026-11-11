@@ -781,10 +781,13 @@ Nachrichten: jede neue ist eine Meldung mit eigener Kennung (`<token>/<id der le
 n-te davor; höchstens 99 je Runde), wie viele neu sind, sagt der Lesestand `room:<token>` (Lesemarke und gezählte
 Ungelesene). Ungelesen = 0, nicht mehr gewünscht oder nicht mehr in der Liste → erledigt. Erledigen markiert die
 Unterhaltung bis zur neuesten Nachricht der Kennungen als gelesen und löscht ihre Chat-Benachrichtigungen bis zur
-letzten Meldung; Neueres bleibt ungelesen und öffnet den Eintrag wieder. Solange der Server Talk hat, legt Nextcloud die
+letzten Meldung (für Clients nur mit Write in `chat` und dem Konto in `chat_accounts`, sonst `forbidden`, Issue #643); Neueres bleibt ungelesen und öffnet den Eintrag wieder. Solange der Server Talk hat, legt Nextcloud die
 Chat-Benachrichtigungen (`spreed`, `chat`) nicht ab, Anrufe und Einladungen schon; vorher abgelegte bleiben, bis Talk
 sie auf dem Server löscht. Nach dem Stummschalten zählt erst, was danach kam (nur im Speicher: nach einem Neustart wird
-das Liegengebliebene doch abgelegt). Antworten gibt es noch nicht.
+das Liegengebliebene doch abgelegt). Geantwortet wird über `chat.send_message` ([chat.md](chat.md), Issue #643): Wer Chat
+mit dem Konto lesen darf, bekommt in `inbox.get_item` die Unterhaltung im Feld `conversation`; `inbox.open_item`
+öffnet einen Talk-Eintrag im Notification Hub mit Verlauf und Antwortfeld. Ein Schlüssel, den der Kern ohne `chat`
+verleiht, sieht keine Quelle `talk:*` (Entscheidung 6 in [chat.md](chat.md)).
 **GitHub** (E5.4, `sources/github.rs`): ein Eintrag je Thread der
 Benachrichtigungen (`GET /notifications`, höchstens im Takt von `X-Poll-Interval`, mindestens 60 s, mit
 `If-Modified-Since`; jede Abfrage reicht nur bis 3 Tage vor der ersten des Kontos); Titel des Themas, kein Text,
@@ -1342,7 +1345,7 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
 
 13. **Den Heartbeat der Präsenz einschalten** (Issue #643, [chat.md](chat.md), Entscheidung 10):
     `settings.set_setting` mit `presence_heartbeat: true` nur mit dem App-Schlüssel, also durch einen Menschen
-    in der Kontaktliste des Chats oder in der Steuerzentrale (`Request::kept_for_people`, wie beim Mikrofon
+    in der Steuerzentrale unter General (`Request::kept_for_people`, wie beim Mikrofon
     entscheidet der Wert). Der Heartbeat sagt dem Server alle fünf Minuten, dass der Mensch am Rechner sitzt,
     und verrät das dauerhaft allen Kollegen. Ausschalten darf jeder Client mit Admin in `settings`. Anrufe,
     Kamera und Mikrofon im Chat kommen mit dem Klingeln und dem Anruffenster dazu (Stufe 6 des Konzepts).
