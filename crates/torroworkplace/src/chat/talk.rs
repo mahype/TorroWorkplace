@@ -93,7 +93,7 @@ fn status(status: UserStatus) -> RemoteStatus {
 
 /// `room` in the service's terms. A direct chat whose other person was deleted stays a direct
 /// chat nobody can write in; a lobby the person waits in is read-only too.
-fn room(room: Room) -> RemoteRoom {
+pub(crate) fn room(room: Room) -> RemoteRoom {
     let kind = match room.kind {
         RoomKind::OneToOne | RoomKind::FormerOneToOne => ConversationKind::Direct,
         RoomKind::Group => ConversationKind::Group,

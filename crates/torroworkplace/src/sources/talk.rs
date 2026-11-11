@@ -121,6 +121,8 @@ impl Talk {
         if !sources.pim.nextcloud_accounts().await.contains(&account) {
             return Ok(());
         }
+        // The chat keeps the list too, so its windows need no request of their own (decision 9).
+        sources.chat.take_rooms(&account, rooms.iter().cloned().map(crate::chat::talk::room).collect());
         let quiet_round = std::mem::take(&mut self.muted);
         let mut unread = BTreeSet::new();
         for room in &rooms {
@@ -545,6 +547,9 @@ mod tests {
         let ids = fixture.sources.inbox.remote_ids(&entry.id).expect("ids");
         assert_eq!(ids, ["a1b2c3d4/5122~1", "a1b2c3d4/5122"]);
         assert_eq!(fixture.talk_health(), None);
+        // The chat got the list of the same request (decision 9 in `docs/chat.md`).
+        let account = SourceRef::nextcloud(fixture.source.name.as_str()).key();
+        assert_eq!(fixture.sources.chat.cached_rooms(&account), ["a1b2c3d4"]);
     }
 
     #[tokio::test]

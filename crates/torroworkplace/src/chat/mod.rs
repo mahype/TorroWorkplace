@@ -138,6 +138,12 @@ impl ChatService {
         }
     }
 
+    /// The tokens of the conversations of `account` held in memory, for tests.
+    #[cfg(test)]
+    pub fn cached_rooms(&self, account: &str) -> Vec<String> {
+        self.cache().account(account).rooms.iter().map(|room| room.token.clone()).collect()
+    }
+
     /// Drops everything held of `account` (account removed or wiped); live requests for it end at
     /// their next turn.
     pub fn forget_account(&self, account: &str) {

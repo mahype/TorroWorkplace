@@ -60,6 +60,9 @@ pub struct Sources {
     pub ntfy: Arc<NtfyAccounts>,
     /// The suite settings: while the inbox is turned off (task W.2) no source asks its server.
     pub settings: SettingsStore,
+    /// The chat service: a Talk round hands it the list of conversations it fetched, so one request
+    /// serves the inbox and the chat (decision 9 in `docs/chat.md`).
+    pub chat: Arc<crate::chat::ChatService>,
 }
 
 /// How long a source waits before it looks again whether the inbox was turned on (task W.2).

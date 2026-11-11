@@ -627,11 +627,13 @@ pub(super) mod tests {
     fn sources_in(dir: &Path) -> Sources {
         let settings = SettingsStore::at(dir.join("config").join("settings.json"));
         let github = service(dir, &MemoryTokens::default(), "http://127.0.0.1:9/graphql", NO_CLI);
+        let pim = Arc::new(PimService::with_settings(settings.clone()));
         Sources {
             inbox: Arc::new(crate::inbox::tests::inbox_in(dir)),
             github: Arc::new(github),
-            pim: Arc::new(PimService::with_settings(settings.clone())),
+            pim: Arc::clone(&pim),
             settings,
+            chat: Arc::new(crate::chat::ChatService::system(pim)),
             ntfy: Arc::new(crate::account::ntfy::NtfyAccounts::new(None, Arc::new(MemoryTokens::default()))),
         }
     }
