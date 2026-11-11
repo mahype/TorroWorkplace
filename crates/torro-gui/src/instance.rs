@@ -19,6 +19,10 @@
 //! Anything that goes wrong (no state directory, a path too long for a socket, a name held by a
 //! program that does not answer) starts the app without a channel ([`Claim::Without`]), as before.
 //!
+//! A window that is one of several of its kind (a chat window per conversation, issue #643) claims
+//! its name instead ([`claim_named`]): the channel is that of `<window class>-<hash of the name>`,
+//! so each name has its own and the name itself never shows.
+//!
 //! The channel runs on a thread of its own with a small tokio runtime, so it answers a second start
 //! at once, also while the window is still opening; its `show` waits in [`subscription`] until the
 //! window takes it.
@@ -75,18 +79,59 @@ pub fn claim(app: AppId) -> Claim {
     }
 }
 
+/// [`claim`] for one window of `app` among several of its kind, told apart by `name` (issue #643,
+/// decision 2 in `docs/chat.md`): `torrochat --conversation=<id>` claims the conversation's id, so a
+/// second start on the same conversation brings its window to the front and ends, while a start on
+/// another conversation opens a window of its own. Each name has its own channel
+/// ([`named_channel_path`]); [`claim`] of `app` and every other name never meet it.
+///
+/// Answers as [`claim`] does and is called at the same place (in `main`, before the first window and
+/// before the core is started); a `show` reaches [`subscription`] of this process. The name never
+/// goes over the channel and never stands in a file or pipe name: only its hash does.
+pub fn claim_named(app: AppId, name: &str) -> Claim {
+    match named_channel_path(app, name) {
+        Some(path) => claim_at(&path, || SHOWN.notify_one()),
+        None => Claim::Without,
+    }
+}
+
 /// The channel of `app`'s kind of window: on Unix `<window class>.instance` in the state directory
 /// of `app` ([`torro_core::paths::AppPaths::for_app`]), on Windows the named pipe
 /// `\\.\pipe\torro-<window class>-<user SID>`. `None` without a home directory or a SID.
 pub fn channel_path(app: AppId) -> Option<PathBuf> {
+    channel_of(app, app.window_class)
+}
+
+/// The channel of the window of `app` named `name` ([`claim_named`]): as [`channel_path`] with the
+/// kind `<window class>-<hash>` ([`named_kind`]), e.g. `torro-chat-3f2a9c0d81b4e7a6.instance`.
+pub fn named_channel_path(app: AppId, name: &str) -> Option<PathBuf> {
+    channel_of(app, &named_kind(app, name))
+}
+
+/// `<window class>-<the first 16 hex digits of SHA-256 of name>`: a name of any length and with any
+/// characters (a conversation id holds `:`, `/` and `@`) gives a short, safe part of a file or pipe
+/// name that does not show the name itself. 64 bits keep two names apart in practice; a clash would
+/// only bring the other window to the front.
+fn named_kind(app: AppId, name: &str) -> String {
+    use sha2::Digest;
+
+    let digest = sha2::Sha256::digest(name.as_bytes());
+    let hex: String = digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect();
+    format!("{}-{hex}", app.window_class)
+}
+
+/// The channel of the window kind `kind` of `app`: `<kind>.instance` in the state directory of
+/// `app` on Unix, the named pipe `\\.\pipe\torro-<kind>-<user SID>` on Windows.
+fn channel_of(app: AppId, kind: &str) -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        torro_ipc::pipe::user_sid().map(|sid| PathBuf::from(format!(r"\\.\pipe\torro-{}-{sid}", app.window_class)))
+        let _ = app;
+        torro_ipc::pipe::user_sid().map(|sid| PathBuf::from(format!(r"\\.\pipe\torro-{kind}-{sid}")))
     }
     #[cfg(not(windows))]
     {
         let paths = torro_core::paths::AppPaths::for_app(app)?;
-        Some(paths.state.join(format!("{}.instance", app.window_class)))
+        Some(paths.state.join(format!("{kind}.instance")))
     }
 }
 
@@ -582,6 +627,44 @@ mod tests {
         SHOWN.notify_one();
         let mut shows = Box::pin(shows());
         assert_eq!(iced::futures::executor::block_on(shows.next()), Some(()));
+    }
+
+    /// Issue #643: a named window's channel is its class with a short hash of the name, the same for
+    /// the same name, another for another name, and never the name itself.
+    #[test]
+    fn a_named_window_has_a_channel_of_its_own() {
+        let ben = named_kind(AppId::CHAT, "nextcloud:anna@cloud.example.org/ben4chat");
+        let hash = ben.strip_prefix("torro-chat-").expect("the class first");
+        assert_eq!(hash.len(), 16);
+        assert!(hash.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "{hash}");
+        assert_eq!(ben, named_kind(AppId::CHAT, "nextcloud:anna@cloud.example.org/ben4chat"), "stable");
+        assert_ne!(ben, named_kind(AppId::CHAT, "nextcloud:anna@cloud.example.org/team4alpha"));
+        assert!(!ben.contains("ben4chat") && !ben.contains('/'), "{ben}");
+        // The known value, so the hash cannot change by accident: windows of two versions meet.
+        assert_eq!(named_kind(AppId::CHAT, "a"), "torro-chat-ca978112ca1bbdca");
+
+        if let (Some(path), Some(paths)) =
+            (named_channel_path(AppId::CHAT, "x/y"), torro_core::paths::AppPaths::for_app(AppId::CHAT))
+        {
+            assert_eq!(path, paths.state.join(format!("{}.instance", named_kind(AppId::CHAT, "x/y"))));
+            assert_ne!(Some(path), channel_path(AppId::CHAT), "the contact list has its own");
+        }
+    }
+
+    /// Issue #643: two starts on one conversation meet, starts on two conversations do not.
+    #[test]
+    fn named_windows_meet_by_their_name_only() {
+        let dir = TempDir::new("named");
+        let at = |name: &str| dir.0.join(format!("{}.instance", named_kind(AppId::CHAT, name)));
+        let (ben, ben_shows) = claim_with_inbox(&at("ben"));
+        let (team, team_shows) = claim_with_inbox(&at("team"));
+        let (list, list_shows) = claim_with_inbox(&dir.0.join("torro-chat.instance"));
+        assert_eq!((ben, team, list), (Claim::First, Claim::First, Claim::First));
+
+        assert_eq!(claim_with_inbox(&at("ben")).0, Claim::Shown, "the same conversation again");
+        ben_shows.recv_timeout(Duration::from_secs(3)).expect("Ben's window got show");
+        assert!(team_shows.try_recv().is_err(), "the other conversation did not");
+        assert!(list_shows.try_recv().is_err(), "nor the contact list");
     }
 
     #[test]
