@@ -260,7 +260,8 @@ weder Mail noch Slack).
 | Später | Taste `s` | `inbox.snooze_item` · Write | `inbox_snooze_item` |
 | Spur ändern, Absender einordnen | Menü, Screener | `inbox.set_item_lane` · Write (mit „merken“ Admin) | `inbox_set_item_lane` |
 | Zu Aufgabe machen | Taste `t` | `inbox.create_task_from_item` · Write (braucht auch Tasks-Rechte) | `inbox_create_task_from_item` |
-| Antworten (Mail, Slack, Talk) | Paneel | `inbox.reply` · Write + Schalter „Nach außen“ | `inbox_reply` (ggf. `pending`) |
+| Antworten auf Talk (#643) | Paneel des Talk-Eintrags: Verlauf, Antwortfeld, „Reply“ an der Benachrichtigung | `chat.send_message` · Write + „Nach außen“ (Bereich `chat`, [chat.md](chat.md)); die Unterhaltung steht in `inbox.get_item` im Feld `conversation` | `chat_send_message` (ggf. `pending`) |
+| Antworten (Mail, Slack) | Paneel | `inbox.reply` · Write + Schalter „Nach außen“; ob Mail und Slack es gemeinsam brauchen, entscheiden deren Pläne | `inbox_reply` (ggf. `pending`) |
 | Quelle stummschalten | Menü „Hide from Notification Hub“ (`m`) | `inbox.mute_source` · Admin | `inbox_mute_source` |
 | Mail eines Absenders aus dem Weg räumen (statt Ausblenden, #339) | „Create filter…“ an der Mail, Mail-Fenster › Einstellungen › Categorization (Seite der Kategorie oder „Other filters“, #481) | `mail.create_filter` · Admin (weitere Befehle in [mail.md](mail.md#filter)) | `mail_create_filter` |
 | Rückgängig nach Done, Later, Stummschalten (E3.11) | Hinweis unten mit „Undo“, `u`, `Ctrl+Z` | vorhandene: `set_item_done`, `snooze_item`, `remove_rule` | dieselben Tools |
