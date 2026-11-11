@@ -324,8 +324,9 @@ pub struct SharedFile {
     pub height: Option<u32>,
     /// A small blurred stand-in for the image (BlurHash), only for images.
     pub blurhash: Option<String>,
-    /// The path in the person's files (`Talk/Plan.pdf`), one line; foreign text, only for
-    /// showing, never for addressing a file.
+    /// The path in the person's files (`Talk/Plan.pdf`), one line; foreign text. It names a file
+    /// only as the core read it from the account's own server, checked into segments
+    /// ([`crate::DavPath`]), never from a client and never in a federated conversation.
     pub path: Option<String>,
 }
 

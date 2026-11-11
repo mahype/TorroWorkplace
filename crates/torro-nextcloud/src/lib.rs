@@ -16,6 +16,8 @@
 //! - `notifications`: the notifications app (`apps/notifications`).
 //! - `talk`: conversations and chat of Talk (`apps/spreed`).
 //! - `user_status`: the user status app (`apps/user_status`).
+//! - `files`: WebDAV upload (also in pieces), sharing into a conversation, downloads, previews,
+//!   link cards and what a conversation shared (#643, stage 4).
 //! - `people`: the current user and the search for others (`cloud/user`, sharees, autocomplete).
 //! - `rich`: Nextcloud's rich object strings (`{user} shared {file}`) as plain text.
 //!
@@ -27,6 +29,7 @@
 //! other origin is not followed, and neither `Debug` nor an error ever shows the password.
 
 mod capabilities;
+mod files;
 mod notifications;
 mod ocs;
 mod people;
@@ -37,6 +40,10 @@ mod user_status;
 pub use capabilities::{
     Capabilities, DEFAULT_ATTACHMENTS_FOLDER, DEFAULT_MAX_LENGTH, NotificationsCapability, TalkCapability,
     UserStatusCapability,
+};
+pub use files::{
+    CHUNK_MAX, CHUNK_MIN, CHUNKS_MAX, DavPath, FilesError, PREVIEW_MAX_BYTES, Picture, Reference, ShareMeta, Uploaded,
+    numbered,
 };
 pub use notifications::{Listing, Notification, NotificationId, Person};
 pub use ocs::{MAX_WAIT, Nextcloud, OcsError, THROTTLE_WAIT, TalkError};

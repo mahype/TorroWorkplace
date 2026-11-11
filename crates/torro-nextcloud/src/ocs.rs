@@ -234,6 +234,16 @@ impl Nextcloud {
         self.request_to(method, format!("{}{path}", self.base))
     }
 
+    /// A request to `url` (an address from [`Nextcloud::endpoint`]) with the app password and
+    /// `OCS-APIRequest`, but without asking for JSON: for WebDAV and pictures (`files`, #643), whose
+    /// answers are no OCS envelope.
+    pub(crate) fn plain(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
+        self.http
+            .request(method, url)
+            .basic_auth(&self.login, Some(self.password.expose()))
+            .header("OCS-APIRequest", "true")
+    }
+
     /// A request to `url` (always on the server: built from [`Nextcloud::server`]) with the app
     /// password and the headers OCS asks for.
     fn request_to(&self, method: Method, url: impl reqwest::IntoUrl) -> reqwest::RequestBuilder {
@@ -359,7 +369,7 @@ pub(crate) fn envelope(answer: Value) -> Result<Value, OcsError> {
 }
 
 /// The error for a refused request with `status`.
-fn refusal(status: u16, headers: &HeaderMap) -> OcsError {
+pub(crate) fn refusal(status: u16, headers: &HeaderMap) -> OcsError {
     match status {
         401 => OcsError::Refused,
         403 => OcsError::Forbidden,
@@ -397,7 +407,7 @@ pub(crate) fn same_origin_only() -> redirect::Policy {
     })
 }
 
-fn unreachable(err: reqwest::Error) -> OcsError {
+pub(crate) fn unreachable(err: reqwest::Error) -> OcsError {
     if err.is_connect() || err.is_timeout() {
         OcsError::Offline
     } else {
