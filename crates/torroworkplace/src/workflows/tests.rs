@@ -237,6 +237,25 @@ async fn generated_or_hidden_invoice_content_in_the_stylesheet_is_refused() {
         ".receipt-table-total { letter-spacing: -8px; }",
         "@page { @bottom-center { content: 'Additional VAT'; } }",
         ".c-header { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: #fff; z-index: 999; }",
+        // Final review: brackets a browser closes differently, url() tokens, constants and relative units.
+        ".receipt-table-total:not(:is(x]].zzz)) { display: none; }",
+        ".zzz:is(url(a[)), .receipt-table-total { display: none; }",
+        ".zzz:is(url(/*)), .receipt-table-total, :is(url(*/)) { display: none; }",
+        ".receipt-table-head { position: relative; top: calc(infinity * 1px); }",
+        ".receipt-table-head { position: relative; left: calc(-infinity * 1px); }",
+        ".c-badge { outline: 0.5rem solid #fff; }",
+        ".receipt-table-total-right { text-decoration: line-through 0.25rem #fff; }",
+        ".receipt-table-total { letter-spacing: -0.0625rem; }",
+        ".receipt-table-total { outline: 0.5lh solid #fff; }",
+        ".c-sheet div { font-size: 0.5ex; }",
+        ".c-sheet div { font-size: 0.5rem; }",
+        ".c-sheet div { font: smaller sans-serif; }",
+        ".c-sheet div { font-size: larger; }",
+        "html { font-size: 1000px; }",
+        ".receipt-table-total { line-height: 10000px; }",
+        "@page { margin: 5000px; }",
+        "@page { size: 10px 10px; }",
+        ".receipt-table-total { color: #aa\u{e4}; }",
     ] {
         let css = format!("{CSS}\n{rule}\n");
         assert!(invoice::check_stylesheet(css.as_bytes(), page.as_bytes()).is_err(), "{rule}");
@@ -266,7 +285,7 @@ async fn generated_or_hidden_invoice_content_in_the_stylesheet_is_refused() {
         // A skipped block is consumed: the next selector must not start inside it (seen on Paddle's stylesheet).
         ".not-on-the-page { padding-top: 0 }.no-print, .no-print * { display: none }",
         "@page { margin: 1cm }.c-header { display: none }",
-        ".zzz[x=\"/*\"] { display: none; } .zzz[y=\"*/\"] { display: none; }",
+        ".zzz[x=\"a, .receipt-table-total\"] { display: none; }",
         ".receipt-table-total { font: 700 14px/20px sans-serif; letter-spacing: 0.5px; z-index: 9; }",
         ".c-sheet { box-shadow: 2px 2px 8px 0 rgba(210, 212, 222, 0.8); border-bottom: 1px solid #d2d4de; }",
         ".receipt-table-total { margin-left: calc(2rem * 0.5 * -1); color: rgba(54, 71, 108, 0.9); }",

@@ -1188,28 +1188,39 @@ fn selector_list(prelude: &str) -> Vec<String> {
         current.push(c);
     }
     parts.push(normalize(&current));
+    // A list the split cannot read safely stays one selector, which plain_selector then treats as unreadable.
+    if prelude.to_ascii_lowercase().contains("url(") || depth != 0 || quote.is_some() {
+        return vec![normalize(prelude)];
+    }
     parts
 }
 
 /// The selector without the contents of `(…)`, `[…]` and strings in them, or `None` when it uses a form the
 /// check does not read: escapes, namespaces (`*|p`) or a string outside brackets.
 fn plain_selector(selector: &str) -> Option<String> {
+    // `url(…)` tokens and comments read differently inside selectors; neither belongs in a witnessed one.
+    if selector.to_ascii_lowercase().contains("url(") || selector.contains("/*") {
+        return None;
+    }
     let mut plain = String::new();
-    let (mut depth, mut quote) = (0usize, None::<char>);
+    let (mut open, mut quote) = (Vec::new(), None::<char>);
     for c in selector.chars() {
         match (quote, c) {
             (_, '\\') => return None,
-            (Some(open), _) if c == open => quote = None,
+            (Some(start), _) if c == start => quote = None,
             (Some(_), _) => {}
-            (None, '"' | '\'') if depth > 0 => quote = Some(c),
-            (None, '"' | '\'' | '|') if depth == 0 => return None,
-            (None, '(' | '[') => depth += 1,
-            (None, ')' | ']') => depth = depth.saturating_sub(1),
-            (None, _) if depth == 0 => plain.push(c),
+            (None, '"' | '\'') if !open.is_empty() => quote = Some(c),
+            (None, '"' | '\'' | '|') if open.is_empty() => return None,
+            (None, '(' | '[') => open.push(c),
+            // A browser closes `(` only with `)` and `[` only with `]`; any other closer is unreadable here.
+            (None, ')') if open.pop() != Some('(') => return None,
+            (None, ']') if open.pop() != Some('[') => return None,
+            (None, ')' | ']') => {}
+            (None, _) if open.is_empty() => plain.push(c),
             _ => {}
         }
     }
-    Some(plain)
+    open.is_empty().then_some(plain)
 }
 
 /// Conservative: false only when a compound outside functional pseudo-classes names a class, id or tag the page
@@ -1342,6 +1353,8 @@ fn page_box<'i>(parser: &mut cssparser::Parser<'i, '_>, walk: &mut CssWalk<'_>) 
         let values = parser.parse_until_after(cssparser::Delimiter::Semicolon, |value| values(value, walk, 0))?;
         if !(matches!(name.as_str(), "size" | "page-orientation" | "marks" | "bleed") || name.starts_with("margin"))
             || values.iter().any(|value| matches!(value, Value::Function(..) | Value::Url(_) | Value::Text(_)))
+            || !small_lengths(&values, 128.0)
+            || (name == "size" && values.iter().filter_map(px).any(|n| n < 300.0))
         {
             return Err(refuse());
         }
@@ -1444,15 +1457,21 @@ fn allowed(name: &str, values: &[Value], may_hide: bool) -> bool {
             let (size, line) = values.split_at(slash.unwrap_or(values.len()));
             functions(&[])
                 && !size.iter().any(|value| matches!(value, Value::Number(n) if *n == 0.0))
+                && !size.iter().any(|value| matches!(value, Value::Word(word) if matches!(word.as_str(), "smaller" | "larger" | "xxx-large")))
                 && size.iter().filter(|value| matches!(value, Value::Length(..))).take(1).all(readable_size)
                 && line.get(1).is_none_or(|value| allowed("line-height", std::slice::from_ref(value), false))
         }
         "line-height" => {
             values.len() == 1
                 && match &values[0] {
-                    Value::Number(n) => *n >= 0.8,
-                    Value::Length(n, unit) if unit == "%" => *n >= 80.0,
-                    value @ Value::Length(..) => px(value).is_some_and(|n| n >= 8.0),
+                    Value::Number(n) => (0.8..=3.0).contains(n),
+                    Value::Length(n, unit) if unit == "%" => (80.0..=300.0).contains(n),
+                    Value::Length(n, unit) if matches!(unit.as_str(), "em" | "rem") => (0.8..=3.0).contains(n),
+                    value @ Value::Length(n, unit)
+                        if matches!(unit.as_str(), "px" | "pt" | "pc" | "in" | "cm" | "mm" | "q") =>
+                    {
+                        px(value).is_some_and(|n| (8.0..=96.0).contains(&n)) && *n > 0.0
+                    }
                     Value::Word(word) => word == "normal" || global.contains(&word.as_str()),
                     _ => false,
                 }
@@ -1481,9 +1500,9 @@ fn allowed(name: &str, values: &[Value], may_hide: bool) -> bool {
         | "right"
         | "bottom"
         | "left"
-        | "inset" => functions(&["calc"]) && bounded(values, 64.0),
+        | "inset" => functions(&["calc"]) && bounded(values, 128.0),
         "padding" | "padding-top" | "padding-right" | "padding-bottom" | "padding-left" | "padding-inline"
-        | "padding-block" => functions(&["calc"]) && bounded(values, 200.0),
+        | "padding-block" => functions(&["calc"]) && bounded(values, 320.0),
         "width"
         | "height"
         | "min-width"
@@ -1623,6 +1642,7 @@ fn allowed(name: &str, values: &[Value], may_hide: bool) -> bool {
 fn visible_colour(values: &[Value]) -> bool {
     values.iter().all(|value| match value {
         Value::Word(word) => word != "transparent",
+        Value::Hex(hex) if !hex.is_ascii() => false,
         Value::Hex(hex) => match hex.len() {
             4 => u8::from_str_radix(&hex[3..4], 16).is_ok_and(|alpha| alpha >= 8),
             8 => u8::from_str_radix(&hex[6..8], 16).is_ok_and(|alpha| alpha >= 0x80),
@@ -1657,18 +1677,18 @@ fn readable_size(value: &Value) -> bool {
                 | "large"
                 | "x-large"
                 | "xx-large"
-                | "xxx-large"
-                | "larger"
                 | "inherit"
                 | "initial"
                 | "unset"
         ),
-        // `%` and `em` compound through nested elements, so they may not shrink; `rem` is fixed to the root.
+        // `%` and `em` compound through nested elements, so they may neither shrink nor grow; `rem` is fixed to
+        // the root, which absolute sizes keep at 8 to 32px. Other relative units are not read.
         Value::Length(n, unit) => match unit.as_str() {
-            "%" => *n >= 100.0,
-            "em" => *n >= 1.0,
-            "rem" => *n >= 0.5,
-            _ => px(value).is_some_and(|n| n >= 8.0),
+            "%" => *n == 100.0,
+            "em" => *n == 1.0,
+            "rem" => (0.75..=3.0).contains(n),
+            "px" | "pt" | "pc" | "in" | "cm" | "mm" | "q" => px(value).is_some_and(|n| (8.0..=32.0).contains(&n)),
+            _ => false,
         },
         _ => false,
     }
@@ -1682,7 +1702,11 @@ fn bounded(values: &[Value], limit: f32) -> bool {
             Value::Number(n) => Some(n.abs()),
             Value::Length(..) => px(value).map(f32::abs),
             // A division could grow a length without bound; only sums and products are counted.
-            Value::Function(name, arguments) if name == "calc" && !arguments.contains(&Value::Slash) => {
+            // Constants such as `infinity` are words; they and a division could grow a length without bound.
+            Value::Function(name, arguments)
+                if name == "calc"
+                    && !arguments.iter().any(|argument| matches!(argument, Value::Slash | Value::Word(_))) =>
+            {
                 let lengths = arguments.iter().filter(|argument| matches!(argument, Value::Length(..))).map(size);
                 let factors: f32 = arguments
                     .iter()
@@ -1708,7 +1732,8 @@ fn small_lengths(values: &[Value], limit: f32) -> bool {
     })
 }
 
-/// An approximate length in CSS pixels, with font-relative units at 16px and viewport units at 1000px.
+/// An upper estimate of a length in CSS pixels: font-relative units at the largest admitted font size, `%` of a
+/// 1000px container and viewport units of a 2600px screen.
 fn px(value: &Value) -> Option<f32> {
     let Value::Length(n, unit) = value else { return None };
     let factor = match unit.as_str() {
@@ -1719,8 +1744,12 @@ fn px(value: &Value) -> Option<f32> {
         "cm" => 37.8,
         "mm" => 3.78,
         "q" => 0.945,
-        "em" | "rem" | "ch" | "ex" | "lh" | "rlh" | "cap" | "ic" => 16.0,
-        "%" | "vw" | "vh" | "vmin" | "vmax" | "svw" | "svh" | "lvw" | "lvh" | "dvw" | "dvh" | "vi" | "vb" => 10.0,
+        // Upper bounds for the font sizes the allow list admits: the root at most 32px, any element at most 96px.
+        // Units relative to the line height are not read.
+        "rem" => 32.0,
+        "em" | "ch" | "ex" => 96.0,
+        "%" => 10.0,
+        "vw" | "vh" | "vmin" | "vmax" | "svw" | "svh" | "lvw" | "lvh" | "dvw" | "dvh" | "vi" | "vb" => 26.0,
         _ => return None,
     };
     Some(n * factor)
