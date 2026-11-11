@@ -312,31 +312,34 @@ Die Prüfung hat zwei Stufen:
 1. **Kann die Regel die Seite treffen?** Nennt jeder Selektor einer Regel eine Klasse, eine ID oder
    ein Tag, das auf der Seite nicht vorkommt, kann die Regel nichts verändern und wird übersprungen.
    Inhalte von `:not()`, `:is()`, `:has()` und Attributtests zählen dabei nicht. Kommentare, Kommas und
-   Klammern zählen nur außerhalb von Strings. Escapes, Namensräume (`*|p`) und Strings außerhalb von
-   Klammern gelten als möglicher Treffer. Klassen und IDs werden ohne Groß-/Kleinschreibung
+   Klammern zählen nur außerhalb von Strings. Escapes, Namensräume (`*|p`), Strings außerhalb von
+   Klammern, Kommentare oder `url(` im Selektor und Klammern, die ein Browser anders schließt, gelten als
+   möglicher Treffer. Klassen und IDs werden ohne Groß-/Kleinschreibung
    verglichen, und `html`, `head`, `body` und `tbody` gelten immer als vorhanden, weil der Browser sie
    ergänzt. So bleiben die Bibliotheksregeln für Datumswähler und Auswahllisten
    (`Aristo.css`, `select2.min.css`) außen vor; keine ihrer Ausblende-Regeln trifft die Rechnung.
 2. **Erlaubnisliste für jede Regel, die treffen kann.** Erlaubt sind nur belegte Eigenschaften mit
-   geprüften Werten, in CSS-Pixeln gerechnet (`em`/`rem` mit 16 px, `%` und Viewport-Einheiten mit
-   1000 px Bezugsgröße):
+   geprüften Werten. Obergrenzen werden in CSS-Pixeln mit der größten zugelassenen Schrift gerechnet
+   (`rem` mit 32 px, `em`, `ex` und `ch` mit 96 px, `%` mit 1000 px, Viewport-Einheiten mit
+   2600 px); Einheiten der Zeilenhöhe (`lh`, `rlh`) und `cap`/`ic` werden nicht gelesen:
    - Layout: Flexbox (auch umgekehrte Richtung), `display` ohne `none`, `list-item` und
      Tabellenspalten, `position: static|relative`,
-   - Größen bis 2000 px, Innenabstände bis 200 px, Ränder, Versätze und Einzug bis 64 px,
-     Lücken bis 64 px; `calc()` nur bei diesen und ohne Division,
+   - Größen bis 2000 px, Innenabstände bis 320 px, Ränder, Versätze und Einzug bis 128 px,
+     Lücken bis 64 px; `calc()` nur bei diesen, ohne Division und ohne Konstanten wie `infinity`,
    - Rahmen- und Umrissbreiten bis 8 px, Schatten bis 32 px, Textdekoration ohne Längen über 4 px,
      `z-index` von 0 bis 100,
    - Hintergrundfarben ohne Bilder, Textausrichtung, Schriftfamilie und -stärke,
-   - Schriftgröße mindestens 8 px, `rem` ab 0,5, `%` und `em` nicht kleiner als die Elternschrift
-     (sie würden sich über verschachtelte Elemente verkleinern); Zeilenhöhe mindestens 0,8 bzw.
-     8 px, auch im `font`-Kurzschrieb; Zeichenabstand von −1 bis 8 px,
+   - Schriftgröße absolut 8 bis 32 px, `rem` 0,75 bis 3, `%` und `em` nur gleich der Elternschrift
+     (sie würden sich über verschachtelte Elemente verkleinern oder vergrößern), keine
+     `smaller`/`larger`; Zeilenhöhe 0,8 bis 3 bzw. 8 bis 96 px, auch im `font`-Kurzschrieb;
+     Zeichenabstand von −1 bis 8 px,
    - Textfarben mit mindestens 50 % Deckkraft, Deckkraft ab 50 %,
    - `content` nur als `none`, `normal` oder `""`.
 
    Alles andere bricht ab, etwa `overflow`, `transform`, `clip`, `mask`, `filter`, `animation`,
    `var()`, eigene Eigenschaften, Bild-Adressen, Text in `list-style`, verschachtelte Regeln,
    `@import` und nicht belegte At-Regeln. `@font-face` darf nur Font-Angaben ohne `data:` enthalten,
-   `@page` nur Größe und Ränder (keine Randboxen mit Text). `@keyframes` wirken nur über
+   `@page` nur Größe (ab 300 px) und Ränder (bis 128 px), keine Randboxen mit Text. `@keyframes` wirken nur über
    `animation` und werden übersprungen.
 
 Ausblenden (`display: none`, `visibility: hidden`, Deckkraft und Farbe ohne Grenze) und
@@ -362,8 +365,10 @@ endet der Lauf mit `unsupported`.
 
 **Grenzen.** Die Prüfung rendert kein CSS. Nicht erkannt werden: eigene Fonts (`@font-face`), die
 Zeichen im Browser anders darstellen, gleiche Text- und Hintergrundfarbe, Umordnen über
-Flexbox-Richtung und eine Überdeckung durch die erlaubte Kopfzeile auf dem Bildschirm, soweit Größen,
-Versätze und `z-index` innerhalb der Grenzen bleiben. Die Kopie selbst hängt davon nicht ab: Sie setzt
+Flexbox-Richtung, eine Überdeckung durch die erlaubte Kopfzeile auf dem Bildschirm, soweit Größen,
+Versätze und `z-index` innerhalb der Grenzen bleiben, und Versätze oder negative Ränder, die sich über
+verschachtelte Elemente addieren: Die Grenzen gelten je Element, nicht je Text. Klassen, die erst ein
+Skript zur Laufzeit setzt, kennt die Treffer-Prüfung nicht. Die Kopie selbst hängt davon nicht ab: Sie setzt
 den Text der Seite mit den eingebetteten Fonts. Fonts, Bilder und andere im Stylesheet genannte
 Adressen werden nicht geladen. Ändert Paddle ein Skript, scheitern auch automatische Läufe, bis der
 Mensch die Reparatur durchführt; das ist gewollt.
