@@ -262,6 +262,7 @@ use crate::notifications::{self, Arrange, Board, Shown};
 use crate::overview::{self, Column, Sections};
 use crate::search::{self, Found, QuickFilter, Scope, ScopeChoice, SearchView, Sort, Suggestion};
 use crate::suggest::{self as ai, SuggestSource};
+use crate::talk;
 use crate::{detail, list};
 use crate::{mail_overview, mail_statistics};
 
@@ -1175,6 +1176,8 @@ pub enum Sent {
     Link(String),
     /// `inbox.open_item` for the entry with this id.
     Open(String),
+    /// A request of the panel of a Talk entry (`chat.get_messages`, `chat.send_message`).
+    Chat(talk::Ask),
     /// `mail.sync_status` for this account, after this version (issue #422).
     SyncStatus(String, Option<u64>),
     /// `approvals.decide_approval`: the approval, allowed or not.
@@ -1599,6 +1602,14 @@ enum MenuAt {
 pub enum Open {
     /// The panel with the first entry of "For me" (a waiting agent in the demo).
     Detail,
+    /// The panel of the demo's Talk entry with its conversation and the reply field (issue #643).
+    Talk,
+    /// That panel with every call of `chat.*` failing as `offline`: the quiet error line.
+    TalkOffline,
+    /// That panel without the right to chat: the entry's last line and "Open in Talk" only.
+    TalkNoChat,
+    /// That panel with its newest message quoted over the field, as after "Reply" on it.
+    TalkReply,
     /// The panel with the first approval.
     Approval,
     /// The view "Info".
@@ -1895,7 +1906,7 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 125] = [
+    const ALL: [(&'static str, Open); 129] = [
         ("workflow-setup", Open::WorkflowSetup),
         ("workflow-template", Open::WorkflowTemplate),
         ("workflow-test", Open::WorkflowTest),
@@ -1906,6 +1917,10 @@ impl Open {
         ("workflow-documents", Open::WorkflowDocuments),
         ("automation", Open::Automation),
         ("detail", Open::Detail),
+        ("talk", Open::Talk),
+        ("talk-offline", Open::TalkOffline),
+        ("talk-no-chat", Open::TalkNoChat),
+        ("talk-reply", Open::TalkReply),
         ("approval", Open::Approval),
         ("info", Open::Info),
         ("snoozed", Open::Snoozed),
@@ -2572,6 +2587,18 @@ impl Launch {
     }
 }
 
+/// The way to `chat.*` for the panel of a Talk entry (issue #643): the core's; with `--demo` the
+/// demo's conversations ([`torro_chat::demo::DemoSource::for_hub`]), every call failing as `offline`
+/// for `--open talk-offline`, and without the right to chat for `--open talk-no-chat`.
+fn talk_way(launch: &Launch) -> talk::Chat {
+    match (launch.demo, launch.open) {
+        (false, _) => talk::Chat::Core(torro_ipc::chat::ChatClient::default()),
+        (true, Some(Open::TalkOffline)) => talk::Chat::Failing(torro_chat::ChatError::Offline),
+        (true, Some(Open::TalkNoChat)) => talk::Chat::Without,
+        (true, _) => talk::Chat::Demo(Arc::new(torro_chat::demo::DemoSource::for_hub(launch.start()))),
+    }
+}
+
 /// The view chosen by `--lane for-me|info` or `--source <key>`; `None` when neither is given.
 /// Both at once are refused: no view shows one lane of one source.
 ///
@@ -3233,6 +3260,10 @@ pub struct App<S> {
     /// The text of the mail or the entry the panel or reader shows, to select and copy (issue #119):
     /// follows them after every message ([`App::follow_text`]).
     text: Selectable,
+    /// The way to `chat.*` (issue #643): the core, or the demo's conversations.
+    chat: talk::Chat,
+    /// The conversation of the Talk entry in the panel, while one is there ([`App::follow_talk`]).
+    talk: Option<talk::Talk>,
     /// The folder whose messages `messages` holds; another folder's view shows loading until its
     /// messages are in.
     listed: Option<String>,
@@ -3564,6 +3595,9 @@ pub enum Message {
     /// From the panel: open what the entry with this id links to – its page, its app, the agent's
     /// window – as far as [`detail::openable`] offers it.
     OpenItem(String),
+    /// The panel of a Talk entry (issue #643, [`crate::talk`]): typing, sending, quoting, polling
+    /// and the answers of `chat.*`.
+    Talk(talk::Event),
     /// The source's answer to `inbox.open_item`.
     ItemOpened(Result<(), String>),
     /// From the panel of an approval: "Allow" (`allow: true`) or "Deny" for the approval with this
@@ -4784,6 +4818,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             reading: false,
             letter: None,
             text: Selectable::default(),
+            chat: talk_way(&launch),
+            talk: None,
             listed: None,
             folder_cache: Vec::new(),
             search: String::new(),
@@ -5025,6 +5061,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if self.hint.is_some() || !self.dismissing.is_empty() {
             subscriptions.push(iced::time::every(HINT_TICK).map(Message::HintTick));
         }
+        // The open conversation of a Talk entry asks for new messages (issue #643); nothing polls
+        // once the panel is closed.
+        if self.talk.is_some() {
+            subscriptions.push(iced::time::every(talk::POLL).map(|_| Message::Talk(talk::Event::Poll)));
+        }
         if self.holds_round() {
             subscriptions.push(iced::time::every(HINT_TICK).map(Message::SendTick));
         }
@@ -5127,7 +5168,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let overview = self.follow_mail_overview();
         // The logos of the senders the list or the open mail name (issue #453).
         let logos = self.follow_logos();
-        Task::batch([task, more, letter, overview, logos])
+        // The conversation of a Talk entry in the panel (issue #643).
+        let talk = self.follow_talk();
+        Task::batch([task, more, letter, overview, logos, talk])
     }
 
     /// Asks once for the logo of each domain the listed mail and the open mail name
@@ -5639,6 +5682,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.error = Some(Failure::new(tr("Couldn't change the entry."), err));
             }
             Message::OpenItem(id) => return self.open_item(&id),
+            Message::Talk(event) => return self.talk_event(event),
             Message::AskTask(id) => {
                 self.menu_at = MenuAt::Panel;
                 return self.ask_task(&id);
@@ -9595,6 +9639,78 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         })
     }
 
+    // -- The panel of a Talk entry (issue #643) ----------------------------------------------------
+
+    /// Keeps [`App::talk`] on the entry in the panel: a Talk entry with a conversation
+    /// ([`talk::Chat::conversation_of`]) gets its state and the first page is asked for; another
+    /// entry, or none, drops it – and with it the polling.
+    fn follow_talk(&mut self) -> Task<Message> {
+        let wanted = self.detail.as_ref().and_then(|item| Some((item.id.clone(), self.chat.conversation_of(item)?)));
+        match (&self.talk, wanted) {
+            (Some(talk), Some((entry, conversation))) if talk.entry == entry && talk.conversation == conversation => {
+                Task::none()
+            }
+            (_, Some((entry, conversation))) => {
+                self.talk = Some(talk::Talk::new(entry, conversation));
+                self.ask_talk(talk::Ask::Latest)
+            }
+            (_, None) => {
+                self.talk = None;
+                Task::none()
+            }
+        }
+    }
+
+    /// Hands `event` to the open conversation and does what it asks for ([`talk::Effect`]).
+    fn talk_event(&mut self, event: talk::Event) -> Task<Message> {
+        let Some(talk) = self.talk.as_mut() else { return Task::none() };
+        let mut effects = talk.update(event);
+        // `--open talk-reply`: the newest message quoted once the first page is in.
+        if self.launch.open == Some(Open::TalkReply)
+            && talk.quote().is_none()
+            && let Some(newest) = talk.newest()
+        {
+            effects.extend(talk.update(talk::Event::Reply(newest)));
+        }
+        let tasks: Vec<Task<Message>> = effects.into_iter().map(|effect| self.talk_effect(effect)).collect();
+        Task::batch(tasks)
+    }
+
+    fn talk_effect(&mut self, effect: talk::Effect) -> Task<Message> {
+        match effect {
+            talk::Effect::Ask(ask) => self.ask_talk(ask),
+            // The answer went out: the entry is done (`inbox.set_item_done`), as "Done" would do it.
+            talk::Effect::Done => {
+                let entry = self.talk.as_ref().map(|talk| talk.entry.clone());
+                match entry.filter(|id| self.find(id).is_some_and(|item| item.state.is_open())) {
+                    Some(id) => self.edit(Edit::Done { id, done: true }),
+                    None => Task::none(),
+                }
+            }
+            // "Open in Talk": the entry's own page, as the panel checked it may open
+            // (`detail::openable`); never through `inbox.open_item`, which brings a Talk entry here.
+            talk::Effect::Open => {
+                let link = self.detail.as_ref().and_then(detail::openable);
+                match link {
+                    Some(Link::Url { url }) => self.open_url(url),
+                    _ => Task::none(),
+                }
+            }
+            talk::Effect::Focus => operation::focus(talk::FIELD),
+            talk::Effect::ScrollEnd => talk::scroll_to_end(),
+        }
+    }
+
+    /// Runs `ask` for the open conversation; its answer comes back as [`Message::Talk`].
+    fn ask_talk(&mut self, ask: talk::Ask) -> Task<Message> {
+        let Some(conversation) = self.talk.as_ref().map(|talk| talk.conversation.clone()) else {
+            return Task::none();
+        };
+        #[cfg(test)]
+        self.sent.push(Sent::Chat(ask.clone()));
+        Task::perform(self.chat.clone().run(conversation, ask), Message::Talk)
+    }
+
     /// Opens the entry `id` if it is the one in the panel: a message can outlive the entry it came
     /// from.
     fn open_item(&mut self, id: &str) -> Task<Message> {
@@ -13291,6 +13407,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     // A mail's switches and "Copy text" in the footer (task E9.4).
                     view: self.reading().map(|reading| reading.view_tools()),
                 };
+                // A Talk entry shows its conversation and the reply field (issue #643), or – without the
+                // right to chat – its last line.
+                if item.source.kind == SourceKind::Talk {
+                    let talk = self.talk.as_ref().filter(|talk| talk.entry == item.id);
+                    return talk::panel(item, talk, self.view_label(), self.now, detail::buttons(item, &footer));
+                }
                 // A mail entry shows its whole mail in place of the entry's short text.
                 let letter = self.reading().map(|reading| mail::body(&reading, mail::Bars::Split, &anchors));
                 detail::panel(item, self.view_label(), self.now, footer, letter, &self.text)
@@ -15392,6 +15514,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         let script = self.items.iter().find(|item| rules_allowed(&item.source)).cloned();
         match self.launch.open {
             Some(Open::Detail) => self.detail = self.items.first().cloned(),
+            Some(Open::Talk | Open::TalkOffline | Open::TalkNoChat | Open::TalkReply) => {
+                let talk = self.items.iter().find(|item| item.source.kind == SourceKind::Talk).cloned();
+                self.cursor = talk.as_ref().map(|item| item.id.clone());
+                self.detail = talk;
+            }
             Some(Open::Approval) => self.detail = self.items.iter().find(|item| detail::is_approval(item)).cloned(),
             Some(Open::Snooze | Open::Pick) => {
                 self.cursor = first.clone();
@@ -27374,6 +27501,106 @@ mod tests {
         let kinds = block_on(MailSource::list_action_kinds(app.inbox.as_ref())).map_err(|err| err.to_string());
         let _ = app.update(Message::ActionKinds(kinds));
         assert!(app.action_kinds.is_some());
+        draw_everywhere(&mut app);
+    }
+
+    // ----- The panel of a Talk entry (issue #643) --------------------------------------------
+
+    /// Runs the window's requests of `chat.*` against its demo chat and hands back the answers, as the
+    /// tasks would, until none is left.
+    fn deliver_chat(app: &mut App<DemoSource>) {
+        while let Some(at) = app.sent.iter().rposition(|sent| matches!(sent, Sent::Chat(_))) {
+            let Sent::Chat(ask) = app.sent.remove(at) else { panic!("a request of chat") };
+            let conversation = app.talk.as_ref().expect("an open conversation").conversation.clone();
+            let event = block_on(app.chat.clone().run(conversation, ask));
+            let _ = app.update(Message::Talk(event));
+        }
+    }
+
+    /// Whether the wide window shows `text` somewhere.
+    fn shows(app: &App<DemoSource>, text: &str) -> bool {
+        let mut ui = iced_test::Simulator::with_size(iced::Settings::default(), WIDE, app.view());
+        ui.find(text.to_owned()).is_ok()
+    }
+
+    #[test]
+    fn a_talk_entry_shows_its_conversation_with_new_before_the_unread() {
+        let mut app = loaded(&["--open", "talk"]);
+        let _ = app.update(Message::Resized(WIDE));
+        let entry = app.detail.clone().expect("the Talk entry in the panel");
+        assert_eq!(entry.source.kind, SourceKind::Talk);
+        let talk = app.talk.as_ref().expect("its conversation");
+        assert_eq!((talk.entry.as_str(), talk.conversation.as_str()), (entry.id.as_str(), torro_chat::demo::LENA));
+        assert!(matches!(app.sent.last(), Some(Sent::Chat(talk::Ask::Latest))), "{:?}", app.sent);
+        assert!(shows(&app, tr("Loading the conversation…")));
+        deliver_chat(&mut app);
+        assert!(shows(&app, tr("New")));
+        assert!(shows(&app, tr("Show earlier")));
+        assert!(shows(&app, "Can we go through the sidebar drafts before 3?"));
+        draw_everywhere(&mut app);
+        // Another entry in the panel ends the conversation, and with it the polling.
+        let _ = app.update(Message::CloseDetail);
+        assert!(app.talk.is_none());
+    }
+
+    #[test]
+    fn an_answer_from_the_panel_goes_out_and_marks_the_entry_done() {
+        let mut app = loaded(&["--open", "talk"]);
+        deliver_chat(&mut app);
+        let id = app.detail.as_ref().expect("the Talk entry").id.clone();
+        let last = app.talk.as_ref().and_then(|talk| talk.divider()).is_some();
+        assert!(last, "unread before answering");
+        let paste = text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new("Yes, at two.".to_string())));
+        let _ = app.update(Message::Talk(talk::Event::Edit(paste)));
+        let _ = app.update(Message::Talk(talk::Event::Send));
+        assert!(
+            matches!(app.sent.last(), Some(Sent::Chat(talk::Ask::Send(outgoing))) if outgoing.text == "Yes, at two."),
+            "{:?}",
+            app.sent
+        );
+        deliver_chat(&mut app);
+        assert!(
+            app.sent
+                .iter()
+                .any(|sent| matches!(sent, Sent::Edit(Edit::Done { id: done, done: true }, _) if *done == id)),
+            "{:?}",
+            app.sent
+        );
+        let talk = app.talk.as_ref().expect("still open");
+        assert_eq!(talk.divider(), None, "read up to the answer");
+    }
+
+    #[test]
+    fn open_in_talk_opens_the_entrys_page() {
+        let mut app = loaded(&["--open", "talk"]);
+        let _ = app.update(Message::Talk(talk::Event::OpenInTalk));
+        assert!(
+            matches!(app.sent.last(), Some(Sent::Link(url)) if url == "https://cloud.example.org/call/k7pq2xd9"),
+            "{:?}",
+            app.sent
+        );
+    }
+
+    #[test]
+    fn without_a_right_to_chat_the_panel_shows_the_last_line_only() {
+        let mut app = loaded(&["--open", "talk-no-chat"]);
+        let _ = app.update(Message::Resized(WIDE));
+        assert!(app.detail.as_ref().is_some_and(|item| item.source.kind == SourceKind::Talk));
+        assert!(app.talk.is_none());
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Chat(_))), "nothing asked of chat");
+        assert!(shows(&app, "Lena: Can we go through the sidebar drafts before 3?"));
+        assert!(shows(&app, tr("Open in Talk")));
+        assert!(!shows(&app, tr("Show earlier")));
+        draw_everywhere(&mut app);
+    }
+
+    #[test]
+    fn a_failed_load_is_a_quiet_line_in_the_panel() {
+        let mut app = loaded(&["--open", "talk-offline"]);
+        let _ = app.update(Message::Resized(WIDE));
+        deliver_chat(&mut app);
+        assert!(shows(&app, tr("Couldn't load the conversation.")));
+        assert!(shows(&app, talk::problem_text(&torro_chat::ChatError::Offline)));
         draw_everywhere(&mut app);
     }
 }

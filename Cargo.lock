@@ -7617,6 +7617,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "torro-chat",
  "torro-contacts",
  "torro-core",
  "torro-gui",
