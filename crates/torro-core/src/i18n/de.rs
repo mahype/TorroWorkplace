@@ -177,8 +177,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Preview · Mail", "Vorschau · Mail"),
     // Paddle invoice copies (#598).
     (
-        "Creates a marked PDF copy of a supported Paddle invoice page. Loads its stylesheet and script from my.paddle.com and static.paddle.com as data only: the stylesheet is checked on every run, the script is never executed and must match the tested version. No login.",
-        "Erstellt eine gekennzeichnete PDF-Kopie einer unterstützten Paddle-Rechnungsseite. Lädt deren Stylesheet und Skript von my.paddle.com und static.paddle.com nur als Daten: Das Stylesheet wird bei jedem Lauf geprüft, das Skript wird nie ausgeführt und muss der getesteten Fassung entsprechen. Keine Anmeldung.",
+        "Creates a marked PDF copy of a supported Paddle invoice page. Loads its stylesheets and scripts from my.paddle.com, static.paddle.com and cdn.paddle.com as data only: stylesheets are checked on every run, scripts are never executed and must match the tested version. No login.",
+        "Erstellt eine gekennzeichnete PDF-Kopie einer unterstützten Paddle-Rechnungsseite. Lädt deren Stylesheets und Skripte von my.paddle.com, static.paddle.com und cdn.paddle.com nur als Daten: Stylesheets werden bei jedem Lauf geprüft, Skripte werden nie ausgeführt und müssen der getesteten Fassung entsprechen. Keine Anmeldung.",
     ),
     (
         "The provider changed its invoice page. Run “Create workflow with AI…” at this mail and test it again.",

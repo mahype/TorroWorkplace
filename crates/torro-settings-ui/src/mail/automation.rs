@@ -1780,7 +1780,7 @@ fn template_description(t: &torro_ipc::workflows::WorkflowTemplate) -> String {
     match t.id.as_str() {
         "direct_pdf" => tr("Uses one unambiguous direct PDF link. The exact domain is taken from the example mail, without downloading.").into(),
         "stripe_invoice" => tr("Retrieves the original Stripe invoice PDF, not a receipt. No payment, login or browser actions.").into(),
-        "paddle_setapp_invoice_copy" => tr("Creates a marked PDF copy of a supported Paddle invoice page. Loads its stylesheet and script from my.paddle.com and static.paddle.com as data only: the stylesheet is checked on every run, the script is never executed and must match the tested version. No login.").into(),
+        "paddle_setapp_invoice_copy" => tr("Creates a marked PDF copy of a supported Paddle invoice page. Loads its stylesheets and scripts from my.paddle.com, static.paddle.com and cdn.paddle.com as data only: stylesheets are checked on every run, scripts are never executed and must match the tested version. No login.").into(),
         _ => t.description.clone(),
     }
 }
@@ -1872,7 +1872,7 @@ pub fn demo_templates() -> Vec<torro_ipc::workflows::WorkflowTemplate> {
         ..direct.clone()
     };
     let mut paddle = Package {
-        hosts: vec!["my.paddle.com".into(), "static.paddle.com".into()],
+        hosts: vec!["my.paddle.com".into(), "static.paddle.com".into(), "cdn.paddle.com".into()],
         steps: vec![
             Step::MailLink { host: "my.paddle.com".into(), label: None },
             Step::Get,
@@ -2628,10 +2628,14 @@ mod tests {
         assert_eq!(
             template_description(paddle),
             tr(
-                "Creates a marked PDF copy of a supported Paddle invoice page. Loads its stylesheet and script from my.paddle.com and static.paddle.com as data only: the stylesheet is checked on every run, the script is never executed and must match the tested version. No login."
+                "Creates a marked PDF copy of a supported Paddle invoice page. Loads its stylesheets and scripts from my.paddle.com, static.paddle.com and cdn.paddle.com as data only: stylesheets are checked on every run, scripts are never executed and must match the tested version. No login."
             )
         );
-        assert_eq!(paddle.package.hosts, ["my.paddle.com", "static.paddle.com"], "both domains show before a test");
+        assert_eq!(
+            paddle.package.hosts,
+            ["my.paddle.com", "static.paddle.com", "cdn.paddle.com"],
+            "every domain shows before a test"
+        );
         let mut state = State::default();
         stage(&mut state, "template", &data);
         assert_eq!(state.template.as_deref(), Some("paddle_setapp_invoice_copy"));
