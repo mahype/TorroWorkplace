@@ -272,7 +272,7 @@ beziehungsweise das bekannte Bearbeitungssteuerelement werden weggelassen.
 Relevante Formwerte, Bilder, unbekannte Klassen oder Darstellungsweisen, versteckte Inhalte und
 nicht belegte Zeichen werden nicht stillschweigend entfernt. Stattdessen endet die Konvertierung
 mit `unsupported`. Weder HTML noch CSS, Bilder, SVG, Fonts, Skripte oder Linkziele des Anbieters
-werden ausgeführt. Nachgeladen werden nur in Profil 2 Stylesheet und Skript der Seite, als Daten.
+werden ausgeführt. Nachgeladen werden nur in Profil 2 die Stylesheets und Skripte der Seite, als Daten.
 Das gilt auch für den Dokumentkopf und die Vorfahren des Rechnungsblocks: Style-/Script-Inhalte,
 Ereignishandler und ungeprüfte Darstellungseinflüsse werden nicht als harmlose Metadaten
 übersprungen. Profil 1 weist jede externe Ressource ab.
@@ -286,12 +286,14 @@ Die echten Paddle-/Setapp-Rechnungsseiten (geprüft an den Rechnungen vom 10.08.
 Adressformular ein. Profil 2 nimmt genau diese Formen an:
 
 - im Kopf `<link rel="stylesheet" href>` und `<script src>` (Zusatzattribute nur `type`, `defer`,
-  `async`), `<style>` (nur `type="text/css"`), `<link rel="icon">` und `<meta name="robots">`; Icon und
-  Robots-Angabe werden nie geladen,
-- außerhalb der Rechnung ein Inline-`<script>` ohne `src`; in der Rechnung selbst kein Skript.
+  `async`), `<style>` (ohne oder mit `type="text/css"`), `<link rel="icon">` und
+  `<meta name="robots">`; Icon und Robots-Angabe werden nie geladen,
+- außerhalb der Rechnung ein Inline-`<script>` ohne `src`; in der Rechnung selbst kein Skript,
+- `style`-Attribute außerhalb der Rechnung; sie laufen als Regel für jedes Element durch dieselbe
+  Erlaubnisliste wie die Stylesheets.
 
 Modul-Skripte, Ereignishandler, `<base>`, externe Skripte außerhalb des Kopfs und mehr als acht
-Ressourcen, vier Inline-Skripte oder vier Inline-Styles bleiben abgewiesen. Das Paddle-Logo unter der
+Ressourcen, vier Inline-Skripte oder 32 Inline-Styles samt `style`-Attributen bleiben abgewiesen. Das Paddle-Logo unter der
 Rechnung (`a.logo` mit Bild, ohne Text) gehört wie Kopfzeile und Bearbeiten-Dialog zur belegten
 Umgebung.
 
@@ -309,22 +311,36 @@ Die Prüfung hat zwei Stufen:
 
 1. **Kann die Regel die Seite treffen?** Nennt jeder Selektor einer Regel eine Klasse, eine ID oder
    ein Tag, das auf der Seite nicht vorkommt, kann die Regel nichts verändern und wird übersprungen.
-   Inhalte von `:not()`, `:is()`, `:has()` und Attributtests zählen dabei nicht, Escapes gelten als
-   möglicher Treffer. So bleiben die Bibliotheksregeln für Datumswähler und Auswahllisten
+   Inhalte von `:not()`, `:is()`, `:has()` und Attributtests zählen dabei nicht. Kommentare, Kommas und
+   Klammern zählen nur außerhalb von Strings. Escapes, Namensräume (`*|p`) und Strings außerhalb von
+   Klammern gelten als möglicher Treffer. Klassen und IDs werden ohne Groß-/Kleinschreibung
+   verglichen, und `html`, `head`, `body` und `tbody` gelten immer als vorhanden, weil der Browser sie
+   ergänzt. So bleiben die Bibliotheksregeln für Datumswähler und Auswahllisten
    (`Aristo.css`, `select2.min.css`) außen vor; keine ihrer Ausblende-Regeln trifft die Rechnung.
 2. **Erlaubnisliste für jede Regel, die treffen kann.** Erlaubt sind nur belegte Eigenschaften mit
-   geprüften Werten: Layout (Flexbox, Größen, `display` ohne `none` und `list-item`), Abstände (Ränder
-   und Versätze höchstens 200 px, `calc()` nur hier und bei Größen), Rahmen, Schatten,
-   Hintergrundfarben ohne Bilder, Textausrichtung und -dekoration, Schrift (Größe mindestens 8 px bzw.
-   50 %, Zeilenhöhe mindestens 0,8), Textfarben mit mindestens 50 % Deckkraft, Deckkraft ab 50 %,
-   `position: static|relative|sticky` und `content` nur als `none`, `normal` oder `""`. Alles
-   andere bricht ab, etwa `overflow`, `transform`, `clip`, `mask`, `filter`, `animation`, `var()`,
-   eigene Eigenschaften, Bild-Adressen, Text in `list-style`, verschachtelte Regeln, `@import` und
-   nicht belegte At-Regeln. `@font-face` darf nur Font-Angaben ohne `data:` enthalten;
-   `@keyframes` und `@page` wirken nicht auf die Rechnung und werden übersprungen.
+   geprüften Werten, in CSS-Pixeln gerechnet (`em`/`rem` mit 16 px, `%` und Viewport-Einheiten mit
+   1000 px Bezugsgröße):
+   - Layout: Flexbox (auch umgekehrte Richtung), `display` ohne `none`, `list-item` und
+     Tabellenspalten, `position: static|relative`,
+   - Größen bis 2000 px, Innenabstände bis 200 px, Ränder, Versätze und Einzug bis 64 px,
+     Lücken bis 64 px; `calc()` nur bei diesen und ohne Division,
+   - Rahmen- und Umrissbreiten bis 8 px, Schatten bis 32 px, Textdekoration ohne Längen über 4 px,
+     `z-index` von 0 bis 100,
+   - Hintergrundfarben ohne Bilder, Textausrichtung, Schriftfamilie und -stärke,
+   - Schriftgröße mindestens 8 px, `rem` ab 0,5, `%` und `em` nicht kleiner als die Elternschrift
+     (sie würden sich über verschachtelte Elemente verkleinern); Zeilenhöhe mindestens 0,8 bzw.
+     8 px, auch im `font`-Kurzschrieb; Zeichenabstand von −1 bis 8 px,
+   - Textfarben mit mindestens 50 % Deckkraft, Deckkraft ab 50 %,
+   - `content` nur als `none`, `normal` oder `""`.
 
-Ausblenden (`display: none`, `visibility: hidden`, `position: absolute|fixed`, Versätze) ist nur für
-Selektoren erlaubt, die mit `.no-print` oder `.c-header` beginnen und nur Nachfahren davon meinen,
+   Alles andere bricht ab, etwa `overflow`, `transform`, `clip`, `mask`, `filter`, `animation`,
+   `var()`, eigene Eigenschaften, Bild-Adressen, Text in `list-style`, verschachtelte Regeln,
+   `@import` und nicht belegte At-Regeln. `@font-face` darf nur Font-Angaben ohne `data:` enthalten,
+   `@page` nur Größe und Ränder (keine Randboxen mit Text). `@keyframes` wirken nur über
+   `animation` und werden übersprungen.
+
+Ausblenden (`display: none`, `visibility: hidden`, Deckkraft und Farbe ohne Grenze) und
+`position: absolute|fixed|sticky` sind nur für Selektoren erlaubt, die mit `.no-print` oder `.c-header` beginnen und nur Nachfahren davon meinen,
 nie Geschwister: Das sind die belegte Navigation und das Bearbeitungssteuerelement, keine
 Rechnungsdaten.
 
@@ -344,9 +360,10 @@ neu; die alte Autorisierung passt nicht mehr zur Prüfsumme. Eine KI gibt bei ke
 Seiteninhalte frei, und Läufe laufen gleich ab. Verstößt ein Stylesheet gegen die Erlaubnisliste,
 endet der Lauf mit `unsupported`.
 
-**Grenzen.** Die Prüfung interpretiert kein CSS. Nicht erkannt werden: eigene Fonts (`@font-face`),
-die Zeichen im Browser anders darstellen, gleiche Text- und Hintergrundfarbe und eine Überdeckung
-durch die erlaubte Kopfzeile auf dem Bildschirm. Die Kopie selbst hängt davon nicht ab: Sie setzt
+**Grenzen.** Die Prüfung rendert kein CSS. Nicht erkannt werden: eigene Fonts (`@font-face`), die
+Zeichen im Browser anders darstellen, gleiche Text- und Hintergrundfarbe, Umordnen über
+Flexbox-Richtung und eine Überdeckung durch die erlaubte Kopfzeile auf dem Bildschirm, soweit Größen,
+Versätze und `z-index` innerhalb der Grenzen bleiben. Die Kopie selbst hängt davon nicht ab: Sie setzt
 den Text der Seite mit den eingebetteten Fonts. Fonts, Bilder und andere im Stylesheet genannte
 Adressen werden nicht geladen. Ändert Paddle ein Skript, scheitern auch automatische Läufe, bis der
 Mensch die Reparatur durchführt; das ist gewollt.
