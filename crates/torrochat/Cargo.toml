@@ -1,0 +1,25 @@
+[package]
+name = "torrochat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The chat of the tiled desktop: a contact list with presence and a window per conversation, on the torroworkplace core (Nextcloud Talk first)."
+
+[lints]
+workspace = true
+
+# The Homebrew formula dist generates for this app brings the background service along (issue #411). `run` only:
+# a dependency without a stage would be installed on the build runners instead of going into the formula.
+[package.metadata.dist.dependencies.homebrew]
+"mahype/torro/torroworkplace" = { stage = ["run"] }
+
+[dependencies]
+torro-core.workspace = true
+torro-chat.workspace = true
+torro-gui.workspace = true
+torro-ipc.workspace = true
+chrono.workspace = true
+iced.workspace = true

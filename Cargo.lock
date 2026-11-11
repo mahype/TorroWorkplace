@@ -7291,6 +7291,7 @@ dependencies = [
  "roxmltree 0.21.1",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tokio",
  "torro-appkit",
  "torro-core",
@@ -7588,6 +7589,18 @@ dependencies = [
  "torro-settings-ui",
  "webbrowser",
  "winresource",
+]
+
+[[package]]
+name = "torrochat"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "iced",
+ "torro-chat",
+ "torro-core",
+ "torro-gui",
+ "torro-ipc",
 ]
 
 [[package]]
