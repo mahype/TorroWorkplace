@@ -1271,36 +1271,84 @@ fn hosted_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message>
             super::ai_provider(id).map_or_else(|| id.to_string(), |provider| provider.name().to_string())
         })
     };
-    let suggestions: Vec<(AiSlot, &AiCandidate)> = state
+    let preparations: Vec<&torro_ipc::AiPreparation> = state
         .recommendation
         .iter()
         .flat_map(|r| &r.preparations)
         .filter(|p| Some(p.account.as_str()) == shown)
-        .filter_map(|p| p.candidates.get(*state.choices.get(p.slot.key()).unwrap_or(&0)).map(|c| (p.slot, c)))
         .collect();
-    if let Some(account) = shown.filter(|_| !suggestions.is_empty()) {
-        let rows = suggestions
-            .iter()
-            .map(|(slot, candidate)| {
-                let mut words = vec![account_name(account)];
-                words.push(if candidate.local { tr("This computer") } else { tr("Elsewhere") }.to_string());
-                if candidate.size_bytes > 0 && candidate.preparation == AiPreparationKind::OllamaPull {
-                    words.push(trf(
-                        "Download {size}",
-                        &[("size", &torro_gui::units::format_bytes(candidate.size_bytes))],
-                    ));
-                }
-                let label = if *slot == AiSlot::Chat { tr("Chat") } else { tr("Sorting") };
-                setting_row(
-                    None,
-                    label,
-                    Some(format!("{} · {}", candidate.model, words.join(" · "))),
-                    iced::widget::Space::new(),
-                )
-            })
-            .collect();
-        let decide_local =
-            suggestions.iter().find(|(slot, _)| *slot == AiSlot::Decide).is_none_or(|(_, candidate)| candidate.local);
+    let mut rows: Vec<Element<'a, Message>> = Vec::new();
+    let mut decide_local = true;
+    for preparation in &preparations {
+        let index = *state.choices.get(preparation.slot.key()).unwrap_or(&0);
+        let Some(candidate) = preparation.candidates.get(index) else { continue };
+        if preparation.slot == AiSlot::Decide {
+            decide_local = candidate.local;
+        }
+        let mut words = vec![account_name(&preparation.account)];
+        words.push(if candidate.local { tr("This computer") } else { tr("Elsewhere") }.to_string());
+        if candidate.size_bytes > 0 && candidate.preparation == AiPreparationKind::OllamaPull {
+            words.push(trf("Download {size}", &[("size", &torro_gui::units::format_bytes(candidate.size_bytes))]));
+        }
+        if candidate.by_chat {
+            words.push(tr("Slower chat fallback").to_string());
+        }
+        // More than one candidate: "Other model" opens them as chips, as on Accounts › Add › AI.
+        let other: Element<'a, Message> = match preparation.candidates.len() > 1 {
+            true => widgets::text_button(
+                None,
+                tr("Other model"),
+                style::button::ghost,
+                state.current.is_none().then_some(Message::OtherModel(preparation.slot)),
+            ),
+            false => iced::widget::Space::new().into(),
+        };
+        let label = if preparation.slot == AiSlot::Chat { tr("Chat") } else { tr("Sorting") };
+        rows.push(setting_row(None, label, Some(format!("{} · {}", candidate.model, words.join(" · "))), other));
+        if state.expanded.contains(preparation.slot.key()) && preparation.candidates.len() > 1 {
+            let chips = preparation
+                .candidates
+                .iter()
+                .enumerate()
+                .map(|(at, c)| {
+                    widgets::choice_chip(
+                        c.model.clone(),
+                        None,
+                        at == index,
+                        state.current.is_none().then_some(Message::ChooseModel(preparation.slot, at)),
+                    )
+                })
+                .collect();
+            rows.push(container(widgets::chip_row(chips)).padding([space::s(), space::l()]).into());
+        }
+        // A model another program loads itself: "Use suggestion" leaves it out, so the page says where.
+        if candidate.preparation == AiPreparationKind::External {
+            let program = account_name(&preparation.account);
+            rows.push(setting_row(
+                None,
+                trf("Load in {program}", &[("program", &program)]),
+                Some(candidate.model.clone()),
+                typo::text(typo::meta(), tr("Checks automatically")).style(theme::text_2),
+            ));
+        }
+    }
+    // A suggestion the recommendation has no preparation for (an older core): what it names and why.
+    for suggestion in state
+        .recommendation
+        .iter()
+        .flat_map(|r| &r.slots)
+        .filter(|s| s.engine.as_deref() == shown && !preparations.iter().any(|p| p.slot == s.slot))
+    {
+        let model = suggestion.model.as_deref().unwrap_or(tr("Automatic"));
+        let label = if suggestion.slot == AiSlot::Chat { tr("Chat") } else { tr("Sorting") };
+        rows.push(setting_row(
+            None,
+            label,
+            Some(format!("{model} · {}", suggestion.reason)),
+            iced::widget::Space::new(),
+        ));
+    }
+    if !rows.is_empty() {
         let footer = match decide_local {
             true => tr("Your mail stays on this computer."),
             false => tr("Mail needs your explicit permission."),

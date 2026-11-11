@@ -166,6 +166,8 @@ pub struct State {
     signed_in: Option<String>,
     /// What went wrong on the current step, for the footer: the core's answer or the shell's error.
     error: Option<String>,
+    /// What the primary button waits for, said once it was pressed too early; gone with the next message.
+    missing: Option<&'static str>,
     /// The mail path on the point Mail and calendar (issue #326): the same path as Accounts › Add, shown
     /// on the page itself – address, password, services.
     mail: wizard::State,
@@ -216,6 +218,7 @@ impl State {
             adding: false,
             signed_in: None,
             error: None,
+            missing: None,
             mail: wizard::mail(),
             dialog: None,
             chat: None,
@@ -436,6 +439,10 @@ fn ai_form_open(state: &State) -> bool {
 
 fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
     let stay = Outcome::Stay;
+    // The note of what is missing lasts until the person does something else: typing, choosing, connecting.
+    if !matches!(message, Message::Next) {
+        state.missing = None;
+    }
     // A finished sign-in is noticed before the message counts.
     observe(state, data);
     match message {
@@ -653,7 +660,7 @@ fn next(state: &mut State, data: &Data) -> Outcome {
     // The primary button is never switched off: pressed while something is missing, it says what.
     let (_, ready, busy) = pages::primary(state, data);
     if !ready && !busy {
-        state.error = Some(missing(state).to_string());
+        state.missing = Some(missing(state));
         return stay(Action::None);
     }
     match state.step {
@@ -1307,9 +1314,12 @@ fn footer<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a,
             .padding(layout::row_padding())
             .into();
     }
-    let status: Option<Element<'a, Message>> = match &state.error {
-        Some(error) => Some(problem(error.clone())),
-        None => pages::status(state, data).map(|text| typo::text(typo::body(), text).style(theme::text_2).into()),
+    let status: Option<Element<'a, Message>> = match (&state.error, state.missing) {
+        (Some(error), _) => Some(problem(error.clone())),
+        (None, Some(missing)) => Some(problem(missing.to_string())),
+        (None, None) => {
+            pages::status(state, data).map(|text| typo::text(typo::body(), text).style(theme::text_2).into())
+        }
     };
     let mut buttons: Vec<Element<'a, Message>> = Vec::new();
     let cloud_actions = match state.step == Step::Ai && state.ai_page == AiPage::Connect {
@@ -1320,7 +1330,6 @@ fn footer<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a,
     if let Some(actions) = cloud_actions {
         buttons.push(actions.map(Message::AiSetup));
     } else {
-        // Narrow, the header has "Back"; within the mail path and the AI pages it stays here.
         let walks_back = (state.step == Step::Mail && wizard::mail_back(&state.mail))
             || (state.step == Step::Ai && state.ai_page != AiPage::Connect);
         // Narrow, the header's "‹" is the same "Back".
@@ -1333,15 +1342,12 @@ fn footer<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a,
         for (label, message) in pages::second(state, data) {
             buttons.push(widgets::text_button(None, label, style::button::secondary, message));
         }
-        let (label, enabled, busy) = pages::primary(state, data);
+        let (label, _, busy) = pages::primary(state, data);
         buttons.push(match busy {
             true => widgets::busy_button(label, style::button::primary),
             // Never drawn switched off (a pale red is hard to read in light mode): pressed while something is
             // missing, it says what ([`next`]).
-            false => {
-                let _ = enabled;
-                widgets::text_button(None, label, style::button::primary, Some(Message::Next))
-            }
+            false => widgets::text_button(None, label, style::button::primary, Some(Message::Next)),
         });
     }
     let link = pages::link(state);
@@ -1690,6 +1696,19 @@ mod tests {
         let mut asking = state(Step::Ai);
         ai_setup::demo(&mut asking.ai_setup, "cloud-consent", &data);
         assert!(!ai_working(&asking), "a question is no work");
+    }
+
+    /// The primary button says what is missing when pressed too early, and the note goes with the next step
+    /// the person takes.
+    #[test]
+    fn the_note_of_what_is_missing_goes_with_the_next_input() {
+        let data = without_nextcloud();
+        let mut setup = state(Step::Cloud);
+        update(&mut setup, Message::Next, &data);
+        assert_eq!(setup.missing, Some(tr("Enter the address of your server first.")));
+        assert_eq!(setup.step, Step::Cloud);
+        update(&mut setup, Message::ServerChanged("c".into()), &data);
+        assert_eq!(setup.missing, None, "typing takes the note away");
     }
 
     /// The mail path takes the answer to its own request also while another point is shown.
