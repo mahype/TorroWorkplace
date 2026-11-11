@@ -28,7 +28,7 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::ui_state::SEARCHES_MAX;
 use torro_gui::widgets::{self, Anchor, Mark};
-use torro_gui::{style, typo};
+use torro_gui::{layout, style, typo};
 use torro_inbox::InboxError;
 use torro_inbox::demo::DemoSource;
 use torro_ipc::inbox::{MailFind, MailFound};
@@ -677,7 +677,10 @@ pub fn mail_bar<'a>(bar: Bar<'a>, text_left: f32) -> Element<'a, Message> {
         tools_width += theme::size::control_sm() + space::xs();
     }
     tools = tools.push(filter_toggle(&bar));
-    let padding = Padding { left: text_left, right: tools_width + space::s(), ..style::INPUT_PADDING };
+    // The filter icon's glyph ends on the axis of the rows' times and pills: the rows' right padding
+    // less the room the icon button leaves around its glyph.
+    let edge = (layout::row_padding().right - (theme::size::control_sm() - icon::SIZE) / 2.0).max(0.0);
+    let padding = Padding { left: text_left, right: tools_width + edge, ..style::INPUT_PADDING };
     let input = text_input(&placeholder(bar.search, bar.scopes.as_ref()), bar.input)
         .id(FIELD)
         .size(typo::body().size)
@@ -693,7 +696,7 @@ pub fn mail_bar<'a>(bar: Bar<'a>, text_left: f32) -> Element<'a, Message> {
         .width(Fill)
         .height(Fill)
         .center_y(Fill)
-        .padding(Padding::new(0.0).right(space::s()));
+        .padding(Padding::new(0.0).right(edge));
     let field: Element<'a, Message> = stack![input, tools].width(Fill).into();
     let rest = rest(bar);
     if rest.is_empty() {
