@@ -2188,10 +2188,15 @@ impl Ui {
             .width(Fill)
             .center_y(size::header())
             .padding(page_margin(class).top(0).bottom(0));
-        let frame = container(column![head, rule::horizontal(1).style(style::rule), body])
-            .width(Fill)
-            .height(Fill)
-            .style(style::container::panel_flush);
+        // Narrow, how far the walk stands is a line across the window under the header (issue #326).
+        let line: Element<'a, Message> = match class {
+            SizeClass::Narrow => {
+                let (done, all) = setup::progress(setup);
+                widgets::progress_line(done, all)
+            }
+            _ => rule::horizontal(1).style(style::rule).into(),
+        };
+        let frame = container(column![head, line, body]).width(Fill).height(Fill).style(style::container::panel_flush);
         match setup::overlay(setup, &self.data, &self.general.suite) {
             Some(layer) => stack![frame, wrap(layer)].into(),
             None => frame.into(),

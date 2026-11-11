@@ -3,6 +3,17 @@
 
 pub(super) static TABLE: &[(&str, &str)] = &[
     // First-run setup with five points (#326).
+    ("Enter the address of your server first.", "Gib zuerst die Adresse deines Servers ein."),
+    ("Connect an AI first, or skip this step.", "Verbinde zuerst eine KI oder überspring diesen Schritt."),
+    ("Fill in what is missing above first.", "Ergänze zuerst, was oben noch fehlt."),
+    ("Waiting for the browser…", "Warte auf den Browser…"),
+    ("Layout", "Layout"),
+    ("Your mail stays on this computer.", "Deine Mail bleibt auf diesem Rechner."),
+    ("{size} graphics", "{size} Grafik"),
+    ("Torro checks automatically while this page is open.", "Torro sucht automatisch, solange diese Seite offen ist."),
+    ("Your AI accounts", "Deine KI-Konten"),
+    ("Anthropic, OpenAI, Mistral, OpenRouter and more", "Anthropic, OpenAI, Mistral, OpenRouter und mehr"),
+    ("Cloud providers receive what you send them.", "Cloud-Anbieter erhalten, was du ihnen schickst."),
     ("Mail and calendar", "Mail und Kalender"),
     ("I don't use one", "Ich nutze keinen"),
     ("Skip AI", "KI überspringen"),

@@ -871,6 +871,9 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
     if state.form.as_ref().is_some_and(|(provider, _, _)| *provider == AiProvider::OllamaCloud) {
         return cloud_form(state);
     }
+    if state.hosted && state.form.is_none() {
+        return hosted_view(state, data);
+    }
     let cloud = state.selected.as_deref().and_then(super::ai_provider) == Some(AiProvider::OllamaCloud);
     let mut parts = column![].spacing(layout::section_gap());
     if state.flight.is_some() || state.pull.is_some() {
@@ -1225,6 +1228,194 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
             }
         }
     }
+    if state.pull.is_some() {
+        parts = parts.push(widgets::text_button(
+            None,
+            tr("Cancel download"),
+            style::button::secondary,
+            Some(Message::Cancel),
+        ));
+    }
+    parts.into()
+}
+
+/// The page as the first-run setup shows it (issue #326, draft `docs/prototypes/onboarding/3-1-ai-connect.html`):
+/// "Our suggestion for this PC" first – the setup's primary button takes it –, then this computer with the
+/// programs found and their state, the AI accounts there are, and the cloud's way with an API key. Sizes in
+/// [`format_bytes`](torro_gui::units::format_bytes), as the setup's other pages show them.
+fn hosted_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message> {
+    let mut parts = column![].spacing(layout::section_gap());
+    let working = state.flight.is_some() || state.pull.is_some() || state.current.is_some();
+    if let Some(status) = status(state).filter(|_| working) {
+        parts = parts.push(typo::text(typo::meta(), status).style(theme::text_2));
+    }
+    if let Some(error) = &state.error {
+        parts = parts.push(
+            iced::widget::row![
+                crate::parts::notice(error.clone()),
+                widgets::text_button(
+                    None,
+                    tr("Retry"),
+                    style::button::secondary,
+                    state.flight.is_none().then_some(Message::Retry)
+                ),
+            ]
+            .spacing(space::m())
+            .align_y(iced::Alignment::Center),
+        );
+    }
+    // The suggestion, slot by slot, on the account it is for.
+    let shown = suggested_account(state);
+    let account_name = |id: &str| -> String {
+        data.accounts().iter().find(|a| a.id == id).map(|a| a.label.clone()).unwrap_or_else(|| {
+            super::ai_provider(id).map_or_else(|| id.to_string(), |provider| provider.name().to_string())
+        })
+    };
+    let suggestions: Vec<(AiSlot, &AiCandidate)> = state
+        .recommendation
+        .iter()
+        .flat_map(|r| &r.preparations)
+        .filter(|p| Some(p.account.as_str()) == shown)
+        .filter_map(|p| p.candidates.get(*state.choices.get(p.slot.key()).unwrap_or(&0)).map(|c| (p.slot, c)))
+        .collect();
+    if let Some(account) = shown.filter(|_| !suggestions.is_empty()) {
+        let rows = suggestions
+            .iter()
+            .map(|(slot, candidate)| {
+                let mut words = vec![account_name(account)];
+                words.push(if candidate.local { tr("This computer") } else { tr("Elsewhere") }.to_string());
+                if candidate.size_bytes > 0 && candidate.preparation == AiPreparationKind::OllamaPull {
+                    words.push(trf(
+                        "Download {size}",
+                        &[("size", &torro_gui::units::format_bytes(candidate.size_bytes))],
+                    ));
+                }
+                let label = if *slot == AiSlot::Chat { tr("Chat") } else { tr("Sorting") };
+                setting_row(
+                    None,
+                    label,
+                    Some(format!("{} · {}", candidate.model, words.join(" · "))),
+                    iced::widget::Space::new(),
+                )
+            })
+            .collect();
+        let decide_local =
+            suggestions.iter().find(|(slot, _)| *slot == AiSlot::Decide).is_none_or(|(_, candidate)| candidate.local);
+        let footer = match decide_local {
+            true => tr("Your mail stays on this computer."),
+            false => tr("Mail needs your explicit permission."),
+        };
+        parts = parts.push(widgets::group(tr("Our suggestion for this PC"), rows, Some(footer.to_string())));
+    }
+    // This computer, then the programs found on it, the ones that answer with a question, and those to get.
+    let mut local = Vec::new();
+    if let Some(recommendation) = &state.recommendation {
+        let memory = recommendation
+            .hardware
+            .memory_bytes
+            .map(torro_gui::units::format_bytes)
+            .unwrap_or_else(|| tr("Not measured").into());
+        let gpu = recommendation
+            .hardware
+            .gpu
+            .as_ref()
+            .and_then(|gpu| gpu.vram_bytes)
+            .map(|bytes| trf("{size} graphics", &[("size", &torro_gui::units::format_bytes(bytes))]));
+        let mut words = vec![trf("{size} memory", &[("size", &memory)])];
+        words.extend(gpu);
+        words.push(recommendation.tier_label.clone());
+        let tile = widgets::source_tile(widgets::TileFace::Icon(Icon::Monitor), widgets::TileSize::Medium, None);
+        local.push(setting_row(Some(tile), tr("This computer"), Some(words.join(" · ")), iced::widget::Space::new()));
+    }
+    let program_name = |provider: AiProvider, program: &Option<String>| {
+        program.as_deref().and_then(LocalProgram::from_id).map_or(provider.name(), LocalProgram::name)
+    };
+    for server in &state.found {
+        let count =
+            if server.models == 1 { tr("1 model").to_string() } else { trf("{n} models", &[("n", &server.models)]) };
+        let address = server.url.split_once("://").map_or(server.url.as_str(), |(_, rest)| rest);
+        let address = address.trim_end_matches("/v1");
+        let control: Element<'a, Message> = match &server.account {
+            Some(_) => widgets::state_pill(Icon::CircleCheck, tr("Connected")),
+            None => widgets::text_button(
+                None,
+                tr("Connect"),
+                style::button::secondary,
+                may_change_account(state).then(|| Message::Connect(server.url.clone())),
+            ),
+        };
+        let name = program_name(server.provider, &server.program);
+        local.push(setting_row(None, name, Some(format!("{address} · {count}")), control));
+    }
+    for observation in &state.observations {
+        let status = match observation.status {
+            AiObservationStatus::AuthRequired => tr("API key required"),
+            AiObservationStatus::ModelsUnavailable => tr("Model list unavailable"),
+        };
+        let connect = widgets::text_button(
+            None,
+            tr("Connect"),
+            style::button::secondary,
+            may_change_account(state).then(|| Message::Connect(observation.url.clone())),
+        );
+        let name = program_name(observation.provider, &observation.program);
+        local.push(setting_row(None, name, Some(status.to_string()), connect));
+    }
+    for (name, url) in [
+        ("Ollama", "https://ollama.com/download"),
+        ("LM Studio", "https://lmstudio.ai/download"),
+        ("Strata", "https://github.com/Niko1221/Strata"),
+    ] {
+        let there = state.found.iter().any(|s| program_name(s.provider, &s.program) == name)
+            || state.observations.iter().any(|s| program_name(s.provider, &s.program) == name);
+        if !there {
+            let get = widgets::text_button(
+                Some(Icon::ArrowUpRight),
+                tr("Get program"),
+                style::button::ghost,
+                Some(Message::Install(url.into())),
+            );
+            local.push(setting_row(None, name, Some(tr("Not running").to_string()), get));
+        }
+    }
+    parts = parts.push(widgets::group(
+        tr("On this computer"),
+        local,
+        Some(tr("Torro checks automatically while this page is open.").to_string()),
+    ));
+    // The AI accounts there are: the one chosen is the one the suggestion is for.
+    let accounts: Vec<Element<'a, Message>> = data
+        .accounts()
+        .iter()
+        .filter(|a| a.kind == "ai")
+        .filter(|a| !state.found.iter().any(|server| server.account.as_deref() == Some(a.id.as_str())))
+        .map(|account| {
+            let chosen = shown == Some(account.id.as_str());
+            let control: Element<'a, Message> = match chosen {
+                true => widgets::state_pill(Icon::CircleCheck, tr("Suggested")),
+                false => widgets::text_button(
+                    None,
+                    tr("Use"),
+                    style::button::secondary,
+                    may_change_account(state).then(|| Message::Select(account.id.clone())),
+                ),
+            };
+            let seat = super::ai_provider(&account.id).map(|provider| provider.seat().label().to_string());
+            setting_row(None, account.label.as_str(), seat, control)
+        })
+        .collect();
+    if !accounts.is_empty() {
+        parts = parts.push(widgets::group(tr("Your AI accounts"), accounts, None));
+    }
+    // The cloud: an API key with a provider of the menu.
+    let add = state.menus.button((), tr("Add key"), Message::Menus);
+    let key =
+        setting_row(None, tr("API key"), Some(tr("Anthropic, OpenAI, Mistral, OpenRouter and more").to_string()), add);
+    parts = parts.push(widgets::group(
+        tr("Cloud"),
+        vec![key],
+        Some(tr("Cloud providers receive what you send them.").to_string()),
+    ));
     if state.pull.is_some() {
         parts = parts.push(widgets::text_button(
             None,

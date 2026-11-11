@@ -650,6 +650,12 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
 /// The primary button or Enter on the current step.
 fn next(state: &mut State, data: &Data) -> Outcome {
     let stay = Outcome::Stay;
+    // The primary button is never switched off: pressed while something is missing, it says what.
+    let (_, ready, busy) = pages::primary(state, data);
+    if !ready && !busy {
+        state.error = Some(missing(state).to_string());
+        return stay(Action::None);
+    }
     match state.step {
         // On the point Cloud the primary button signs in while it asks for an address.
         Step::Cloud if state.nextcloud.running() => stay(Action::None),
@@ -689,6 +695,15 @@ fn next(state: &mut State, data: &Data) -> Outcome {
             state.forward();
             stay(Action::None)
         }
+    }
+}
+
+/// What the primary button waits for where it cannot go on yet.
+fn missing(state: &State) -> &'static str {
+    match state.step {
+        Step::Cloud => tr("Enter the address of your server first."),
+        Step::Ai => tr("Connect an AI first, or skip this step."),
+        _ => tr("Fill in what is missing above first."),
     }
 }
 
@@ -1175,12 +1190,6 @@ pub fn header(state: &State, class: SizeClass) -> Element<'_, Message> {
             let page = format!("· {}/3", state.ai_page.at());
             title = title.push(typo::text(typo::meta().tabular(), page).style(theme::text_3));
         }
-        let done = match state.step {
-            Step::Welcome => 0,
-            Step::Done => Step::POINTS.len(),
-            step => step.number().unwrap_or_default(),
-        };
-        title = title.push(widgets::progress_bar(done, Step::POINTS.len()));
         return shell::header_bar(back, container(title).width(Fill).clip(true), later);
     }
     let logo = shell::app_mark(AppId::WORKPLACE);
@@ -1191,9 +1200,21 @@ pub fn header(state: &State, class: SizeClass) -> Element<'_, Message> {
             .into(),
         _ => logo,
     };
-    // The stepper takes the room between the logo and "Set up later", centred in it.
-    let stepper = container(stepper(state, class == SizeClass::Wide)).width(Fill).center_x(Fill).clip(true);
+    // The stepper takes the room between the logo and "Set up later", from the left, so its points stand in
+    // the same place on every page.
+    let stepper = container(stepper(state, class == SizeClass::Wide)).width(Fill).clip(true);
     row![lead, stepper].push(later).spacing(space::l()).align_y(Alignment::Center).into()
+}
+
+/// How far the walk stands, for the progress line under the narrow header: the points done of five (the
+/// welcome none, the summary all).
+pub fn progress(state: &State) -> (u64, u64) {
+    let done = match state.step {
+        Step::Welcome => 0,
+        Step::Done => Step::POINTS.len(),
+        step => step.number().unwrap_or_default(),
+    };
+    (done as u64, Step::POINTS.len() as u64)
 }
 
 /// The five points side by side, joined by a line: each a button with its number (a check mark once
@@ -1302,7 +1323,8 @@ fn footer<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a,
         // Narrow, the header has "Back"; within the mail path and the AI pages it stays here.
         let walks_back = (state.step == Step::Mail && wizard::mail_back(&state.mail))
             || (state.step == Step::Ai && state.ai_page != AiPage::Connect);
-        if (walks_back || (!narrow && state.neighbour(false).is_some())) && state.step != Step::Welcome {
+        // Narrow, the header's "‹" is the same "Back".
+        if !narrow && (walks_back || state.neighbour(false).is_some()) && state.step != Step::Welcome {
             buttons.push(widgets::text_button(None, tr("Back"), style::button::ghost, Some(Message::Back)));
         }
         if let Some((label, message)) = pages::skip(state, data) {
@@ -1314,7 +1336,12 @@ fn footer<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a,
         let (label, enabled, busy) = pages::primary(state, data);
         buttons.push(match busy {
             true => widgets::busy_button(label, style::button::primary),
-            false => widgets::text_button(None, label, style::button::primary, enabled.then_some(Message::Next)),
+            // Never drawn switched off (a pale red is hard to read in light mode): pressed while something is
+            // missing, it says what ([`next`]).
+            false => {
+                let _ = enabled;
+                widgets::text_button(None, label, style::button::primary, Some(Message::Next))
+            }
         });
     }
     let link = pages::link(state);
@@ -1330,7 +1357,7 @@ fn footer<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a,
     }
     container(row![left, row(buttons).spacing(space::s()).align_y(Alignment::Center)].spacing(space::l()))
         .width(Fill)
-        .center_y(size::header() + space::m())
+        .center_y(size::header())
         .padding(layout::row_padding())
         .into()
 }

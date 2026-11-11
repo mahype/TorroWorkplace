@@ -63,10 +63,10 @@ pub fn primary(state: &State, data: &Data) -> (&'static str, bool, bool) {
     match state.step {
         Step::Welcome => (tr("Get started"), true, false),
         Step::Mail if state.mail_running() => match wizard::mail_primary(&state.mail) {
-            Some((label, ready)) => (label, ready, label == tr("Signing in…")),
+            Some((label, ready)) => (label, ready, wizard::mail_waiting(&state.mail)),
             None => (tr("Find provider"), false, true),
         },
-        Step::Cloud if state.nextcloud.running() => (tr("Connect"), false, false),
+        Step::Cloud if state.nextcloud.running() => (tr("Waiting for the browser…"), false, true),
         Step::Cloud if state.asks_address(data) => (tr("Connect"), state.nextcloud.can_start(), false),
         Step::Ai if super::ai_form_open(state) => match ai_setup::primary_label(&state.ai_setup) {
             Some((label, enabled)) => (label, enabled, !enabled),
@@ -79,7 +79,7 @@ pub fn primary(state: &State, data: &Data) -> (&'static str, bool, bool) {
                 (tr("Use suggestion"), ai_setup::can_use_suggestion(&state.ai_setup, data, false, None), false)
             }
             AiPage::Chat => (tr("Continue"), true, false),
-            AiPage::Sort => (tr("Continue"), !super::ai_models_wait(data), false),
+            AiPage::Sort => (tr("Continue"), !super::ai_models_wait(data), super::ai_models_wait(data)),
         },
         // Finishing would end a model's preparation before it is in its slot.
         Step::Done if super::ai_working(state) => (tr("Preparing model…"), false, true),
@@ -134,7 +134,7 @@ pub fn link(state: &State) -> Option<Element<'_, Message>> {
         Step::Done => (tr("Connect an agent…"), Message::OpenSection(Section::Mcp)),
         _ => return None,
     };
-    Some(widgets::text_button(None, label, style::button::ghost, Some(message)))
+    Some(widgets::text_button(Some(Icon::ChevronRight), label, style::button::ghost, Some(message)))
 }
 
 /// The headline and the sentence under it.
@@ -179,35 +179,38 @@ fn point_sentence(step: Step) -> &'static str {
     }
 }
 
-/// The tile with a point's number.
-fn number_tile<'a>(step: Step) -> Element<'a, Message> {
-    let number = step.number().unwrap_or_default().to_string();
-    widgets::source_tile(TileFace::letter(&number), TileSize::Medium, None)
+/// The tile with a point's symbol, as the draft's welcome shows them.
+fn point_tile<'a>(step: Step) -> Element<'a, Message> {
+    let symbol = match step {
+        Step::Mail => Icon::Mail,
+        Step::Cloud => Icon::Cloud,
+        Step::Ai => Icon::Sparkles,
+        Step::Appearance => Icon::Contrast,
+        _ => Icon::FileText,
+    };
+    widgets::source_tile(TileFace::Icon(symbol), TileSize::Medium, None)
 }
 
 fn welcome(state: &State) -> Element<'_, Message> {
     let points = Step::POINTS
         .into_iter()
         .map(|step| {
-            setting_row(Some(number_tile(step)), step.label(), Some(point_sentence(step).to_string()), Space::new())
+            setting_row(Some(point_tile(step)), step.label(), Some(point_sentence(step).to_string()), Space::new())
         })
         .collect();
     let languages = [Language::System, Language::English, Language::German];
-    let language = widgets::segmented(
-        [
-            (tr("System"), Message::Language(Language::System)),
-            // In their own names on purpose: someone who cannot read the current language must still find
-            // theirs.
-            ("English", Message::Language(Language::English)),
-            ("Deutsch", Message::Language(Language::German)),
-        ],
-        languages.iter().position(|language| *language == state.language).unwrap_or_default(),
-    );
-    let language = setting_row(
-        None,
+    // The segment stands under the words where both do not fit side by side.
+    let language = torro_settings_ui::parts::segmented_row(
         tr("App language"),
         Some(tr("Taken from your system. A new language shows when an app starts again.").to_string()),
-        language,
+        vec![
+            (tr("System").to_string(), Message::Language(Language::System)),
+            // In their own names on purpose: someone who cannot read the current language must still find
+            // theirs.
+            ("English".to_string(), Message::Language(Language::English)),
+            ("Deutsch".to_string(), Message::Language(Language::German)),
+        ],
+        languages.iter().position(|language| *language == state.language).unwrap_or_default(),
     );
     page(vec![
         title(
@@ -225,15 +228,19 @@ fn welcome(state: &State) -> Element<'_, Message> {
 fn brings(account: &AccountInfo) -> String {
     let calendars = account.collections.iter().filter(|c| c.kind.has_events()).count();
     let lists = account.collections.iter().filter(|c| c.kind.has_todos()).count();
-    let calendars = match calendars {
-        1 => tr("1 calendar").to_string(),
-        n => trf("{n} calendars", &[("n", &n)]),
-    };
-    let lists = match lists {
-        1 => tr("1 task list").to_string(),
-        n => trf("{n} task lists", &[("n", &n)]),
-    };
-    format!("{} · {calendars} · {lists}", tr("Mail"))
+    let mut words = vec![tr("Mail").to_string()];
+    // What is not there is left out, rather than said as a zero.
+    match calendars {
+        0 => {}
+        1 => words.push(tr("1 calendar").to_string()),
+        n => words.push(trf("{n} calendars", &[("n", &n)])),
+    }
+    match lists {
+        0 => {}
+        1 => words.push(tr("1 task list").to_string()),
+        n => words.push(trf("{n} task lists", &[("n", &n)])),
+    }
+    words.join(" · ")
 }
 
 /// The mail path inline under "Add an account" (the same path as Accounts › Add: address, password,
@@ -476,12 +483,7 @@ fn ai_chat<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             .and_then(|(engine, id)| models.iter().find(|(e, m)| *e == engine && m.id == *id))
             .map_or_else(|| tr("Choose").to_string(), |(_, model)| model.name.clone());
         let detail = chosen.as_ref().map(|(engine, _)| account_name(data, engine).to_string());
-        rows.push(setting_row(
-            None,
-            tr("Model for chat"),
-            detail,
-            state.menus.button(SetupMenu::Chat, label, Message::Menus),
-        ));
+        rows.push(setting_row(None, tr("Model"), detail, state.menus.button(SetupMenu::Chat, label, Message::Menus)));
     }
     rows.extend(suggested_row(state, data, AiSlot::Chat, there));
     match rows.is_empty() {
