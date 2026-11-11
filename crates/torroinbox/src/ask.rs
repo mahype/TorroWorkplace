@@ -14,6 +14,9 @@
 //!   runs the window asks `assistant.get_conversation` with `after` every [`FOLLOW`], and the cards
 //!   come from `assistant.get_cards`. The window reads and writes nothing itself; with `--demo` a
 //!   small stand-in answers ([`demo_call`]).
+//! - **Answers belong to one chat** ([`Round`]): every answer of the core carries the round it was
+//!   asked in – a number new for each panel and each "+" –, and an answer of another round (another
+//!   mail's panel, the conversation before "+") is dropped, never merged into the chat open now.
 //! - **Hints instead of a chat** ([`Hint`], [`hint_for`]): no AI set up, the assistant may not read
 //!   the mail (`forbidden`, with "Open assistant"), the data rule keeps mail from the chosen model
 //!   (`not-connected`), or a model that cannot chat about a mail (`unsupported`).
@@ -26,6 +29,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -60,6 +64,20 @@ pub const FOLLOW: Duration = Duration::from_millis(300);
 
 /// The id of the field, so opening the panel puts the cursor there.
 pub const FIELD: &str = "ask-ai";
+
+/// The round an answer of the core belongs to: new for every panel ([`Ask::open`]) and every "+"
+/// ([`Event::New`]), unique in the process, so an answer that comes late – after the panel moved to
+/// another mail or started anew – is told apart from the answers of the chat open now and dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Round(u64);
+
+impl Round {
+    /// A round no panel had before.
+    fn next() -> Round {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Round(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
 
 /// The questions an empty chat offers, in English; [`view`] translates them.
 pub const STARTERS: [&str; 3] =
@@ -192,22 +210,22 @@ pub struct Opened {
 /// [`Ask::update`].
 #[derive(Debug, Clone)]
 pub enum Event {
-    /// The answer of [`open`].
-    Opened(Result<Opened, Refusal>),
+    /// The answer of [`open`], for the round it was asked in.
+    Opened(Round, Result<Opened, Refusal>),
     /// The field changed.
     Input(String),
     /// "Send" or Enter in the field.
     Send,
     /// A question the empty chat offers, sent at once.
     Starter(String),
-    /// The core's answer to "Send" (`assistant.send_message`).
-    Sent(Result<(ConversationSummary, Vec<Entry>), Refusal>),
+    /// The core's answer to "Send" (`assistant.send_message`), for the round it was sent in.
+    Sent(Round, Result<(ConversationSummary, Vec<Entry>), Refusal>),
     /// Every [`FOLLOW`] while an answer runs.
     Poll,
-    /// The core's answer to a poll (`assistant.get_conversation` with `after`).
-    Polled(Result<(ConversationSummary, Vec<Entry>), Refusal>),
-    /// The cards of the conversation with this id (`assistant.get_cards`).
-    Cards(String, Result<Vec<CardEntry>, Refusal>),
+    /// The core's answer to a poll (`assistant.get_conversation` with `after`), for its round.
+    Polled(Round, Result<(ConversationSummary, Vec<Entry>), Refusal>),
+    /// The cards of the conversation with this id (`assistant.get_cards`), for its round.
+    Cards(Round, String, Result<Vec<CardEntry>, Refusal>),
     /// "+": a new conversation about the same mail.
     New,
     /// ✕ or "‹ Mail": the panel closes, the mail shows.
@@ -240,6 +258,8 @@ pub struct Ask {
     pub failed: Option<String>,
     /// A poll is on its way: the next tick waits for it.
     following: bool,
+    /// The round the answers of the chat open now belong to ([`Round`]).
+    round: Round,
     /// The answers as Markdown, parsed once per text, by entry number.
     parsed: HashMap<u64, (String, Vec<markdown::Item>)>,
     call: Call,
@@ -259,10 +279,12 @@ impl Ask {
             sending: false,
             failed: None,
             following: false,
+            round: Round::next(),
             parsed: HashMap::new(),
             call: call.clone(),
         };
-        let opening = Task::perform(open(call, about), Event::Opened);
+        let round = ask.round;
+        let opening = Task::perform(open(call, about), move |result| Event::Opened(round, result));
         (ask, Task::batch([opening, iced::widget::operation::focus(FIELD)]))
     }
 
@@ -272,18 +294,28 @@ impl Ask {
         self.sending || self.transcript.running()
     }
 
-    /// The panel's part of an [`Event`]; the events the app handles change nothing here.
+    /// The panel's part of an [`Event`]; the events the app handles change nothing here. An answer of
+    /// another round ([`Round`]) is dropped.
     pub fn update(&mut self, event: Event) -> Task<Event> {
+        let asked = match &event {
+            Event::Opened(round, _) | Event::Sent(round, _) | Event::Polled(round, _) | Event::Cards(round, ..) => {
+                Some(*round)
+            }
+            _ => None,
+        };
+        if asked.is_some_and(|round| round != self.round) {
+            return Task::none();
+        }
         match event {
-            Event::Opened(Ok(opened)) => return self.opened(opened),
-            Event::Opened(Err(refusal)) => self.phase = Phase::Hint(hint_for(&refusal)),
+            Event::Opened(_, Ok(opened)) => return self.opened(opened),
+            Event::Opened(_, Err(refusal)) => self.phase = Phase::Hint(hint_for(&refusal)),
             Event::Input(text) => self.input = text,
             Event::Send => return self.send(),
             Event::Starter(text) => {
                 self.input = text;
                 return self.send();
             }
-            Event::Sent(result) => {
+            Event::Sent(_, result) => {
                 self.sending = false;
                 match result {
                     Ok((summary, entries)) => {
@@ -298,21 +330,25 @@ impl Ask {
                 }
             }
             Event::Poll => return self.poll(),
-            Event::Polled(result) => {
+            Event::Polled(_, result) => {
                 self.following = false;
                 // A poll that failed is asked again on the next tick.
                 if let Ok((summary, entries)) = result {
                     return self.take(summary, entries);
                 }
             }
-            Event::Cards(conversation, Ok(cards)) => {
+            Event::Cards(_, conversation, Ok(cards)) => {
                 if self.transcript.summary.as_ref().is_some_and(|summary| summary.id == conversation) {
                     self.cards = cards.into_iter().map(|card| (card.seq, card.card)).collect();
                 }
             }
             // The cards stay as they were; the next answer or tick asks again.
-            Event::Cards(_, Err(_)) => {}
+            Event::Cards(_, _, Err(_)) => {}
             Event::New => {
+                // Answers still on their way belong to the conversation before.
+                self.round = Round::next();
+                self.sending = false;
+                self.following = false;
                 self.transcript = Transcript::default();
                 self.cards.clear();
                 self.parsed.clear();
@@ -362,7 +398,8 @@ impl Ask {
         };
         self.sending = true;
         self.failed = None;
-        Task::perform(ask_conversation(self.call.clone(), request), Event::Sent)
+        let round = self.round;
+        Task::perform(ask_conversation(self.call.clone(), request), move |result| Event::Sent(round, result))
     }
 
     /// Every [`FOLLOW`] while an answer runs: the entries after the newest one held.
@@ -375,7 +412,8 @@ impl Ask {
         }
         self.following = true;
         let request = Request::GetConversation { id, after: Some(self.transcript.last()) };
-        Task::perform(ask_conversation(self.call.clone(), request), Event::Polled)
+        let round = self.round;
+        Task::perform(ask_conversation(self.call.clone(), request), move |result| Event::Polled(round, result))
     }
 
     /// An answer of the core merged into the transcript; its cards asked for where one is not
@@ -395,7 +433,7 @@ impl Ask {
     }
 
     fn fetch_cards(&self, conversation: String) -> Task<Event> {
-        let call = self.call.clone();
+        let (call, round) = (self.call.clone(), self.round);
         let asked = conversation.clone();
         Task::perform(
             async move {
@@ -404,7 +442,7 @@ impl Ask {
                     other => Err(Refusal::unexpected(&other)),
                 }
             },
-            move |result| Event::Cards(conversation.clone(), result),
+            move |result| Event::Cards(round, conversation.clone(), result),
         )
     }
 
@@ -713,7 +751,7 @@ fn entry_view<'a>(ask: &'a Ask, entry: &'a Entry, look: &Look<'a>, colours: Pale
         .spacing(space::s())
         .align_y(Alignment::Center)
         .into(),
-        EntryContent::Card { card } => return card_view(ask.cards.get(&entry.seq)?, card, look),
+        EntryContent::Card { .. } => return card_view(ask.cards.get(&entry.seq)?, &ask.about, look),
         EntryContent::Approval { .. } => return None,
     })
 }
@@ -731,20 +769,29 @@ fn tool_line<'a>(name: &str, summary: &str, error: Option<&str>) -> Element<'a, 
         .into()
 }
 
-/// A card as the core resolved it: a suggestion as the card over the mail shows it
-/// (`mail::suggestion_card`), its "Accept" the panel's own (the suggestion is fetched again first); a
-/// suggestion dismissed with its undo still running is left out; anything gone a quiet line.
-fn card_view<'a>(card: &'a Card, pointed: &CardRef, look: &Look<'a>) -> Option<Element<'a, Message>> {
+/// Whether a suggestion's card belongs to the mail the chat is about (review of #605): only those
+/// show. Its "Accept" and "Dismiss" act on the open mail, so a card of another mail – which a model
+/// could read out with a wider right – must never stand here as if it were this mail's.
+pub fn of_this_mail(card: &Card, about: &MailRef) -> bool {
+    matches!(card, Card::Suggestion { account, id, .. } if *account == about.account && *id == about.id)
+}
+
+/// A card as the core resolved it: a suggestion of the chat's own mail ([`of_this_mail`]) as the card
+/// over the mail shows it (`mail::suggestion_card`), its "Accept" the panel's own (the suggestion is
+/// fetched again first); a suggestion of another mail, or one dismissed with its undo still running,
+/// is left out; anything gone a quiet line.
+fn card_view<'a>(card: &'a Card, about: &MailRef, look: &Look<'a>) -> Option<Element<'a, Message>> {
     match card {
         Card::Suggestion { suggestion, .. } => {
-            let dismissed = look.dismissing.iter().any(|(id, kind)| {
-                matches!(pointed, CardRef::Suggestion { id: card_id, .. } if card_id.as_str() == *id)
-                    && *kind == suggestion.kind.as_str()
-            });
+            let summary = look.summary.filter(|summary| summary.account == about.account && summary.id == about.id)?;
+            if !of_this_mail(card, about) {
+                return None;
+            }
+            let dismissed =
+                look.dismissing.iter().any(|(id, kind)| *id == about.id && *kind == suggestion.kind.as_str());
             if dismissed {
                 return None;
             }
-            let summary = look.summary?;
             let card = mail::suggestion_card(suggestion, summary, look.kinds, look.now, false);
             Some(card.map(|message| match message {
                 Message::AcceptSuggestion(account, id, kind) => Message::Ask(Event::Accept { account, id, kind }),
@@ -1117,20 +1164,84 @@ mod tests {
     #[test]
     fn no_engine_and_a_refused_send_show_their_hints() {
         let (mut ask, _) = Ask::open(demo_call(), mail_ref("m:1"));
-        let _ = ask.update(Event::Opened(Ok(Opened { choice: None, conversation: None, cards: Vec::new() })));
+        let round = ask.round;
+        let _ = ask.update(Event::Opened(round, Ok(Opened { choice: None, conversation: None, cards: Vec::new() })));
         assert_eq!(ask.phase, Phase::Hint(Hint::NoAi));
 
         let (mut ask, _) = Ask::open(demo_call(), mail_ref("m:1"));
         let choice = (Choice { engine: demo_engine().id, model: None }, None);
-        let _ = ask.update(Event::Opened(Ok(Opened { choice: Some(choice), conversation: None, cards: Vec::new() })));
+        let round = ask.round;
+        let opened = Opened { choice: Some(choice), conversation: None, cards: Vec::new() };
+        let _ = ask.update(Event::Opened(round, Ok(opened)));
         assert_eq!(ask.phase, Phase::Ready);
         let _ = ask.update(Event::Input("Is there a deadline?".to_owned()));
         let _ = ask.update(Event::Send);
         assert!(ask.sending && ask.follows());
         let refused = Refusal { code: "forbidden".to_owned(), message: "no".to_owned() };
-        let _ = ask.update(Event::Sent(Err(refused)));
+        let _ = ask.update(Event::Sent(round, Err(refused)));
         assert_eq!(ask.phase, Phase::Hint(Hint::NoRight));
         assert_eq!(ask.input, "Is there a deadline?", "the words stay");
+    }
+
+    /// Review of #605: an answer comes back to the round it was asked in – a late answer after "+" or
+    /// to another mail's panel is dropped, never merged into the chat open now.
+    #[test]
+    fn a_late_answer_of_another_round_is_dropped() {
+        let ready = |ask: &mut Ask| {
+            let choice = (Choice { engine: demo_engine().id, model: None }, None);
+            let opened = Opened { choice: Some(choice), conversation: None, cards: Vec::new() };
+            let round = ask.round;
+            let _ = ask.update(Event::Opened(round, Ok(opened)));
+        };
+        let answer = |id: &str| {
+            let summary = ConversationSummary { last: 1, ..conversation(id, Some(mail_ref("m:1")), 1) };
+            Ok((summary, vec![demo_entry(1, demo_message("Hi"), at(1))]))
+        };
+        // Sent in the panel of mail A, then the panel of mail B opened: A's answer stays out of B.
+        let (mut a, _) = Ask::open(demo_call(), mail_ref("m:1"));
+        ready(&mut a);
+        let _ = a.update(Event::Input("Hi".to_owned()));
+        let _ = a.update(Event::Send);
+        let sent_in_a = a.round;
+        let (mut b, _) = Ask::open(demo_call(), mail_ref("m:2"));
+        ready(&mut b);
+        assert_ne!(b.round, sent_in_a);
+        let _ = b.update(Event::Sent(sent_in_a, answer("c-a")));
+        assert!(b.transcript.summary.is_none() && b.transcript.entries.is_empty(), "nothing of A in B");
+        let _ = b.update(Event::Opened(sent_in_a, Ok(Opened { choice: None, conversation: None, cards: Vec::new() })));
+        assert_eq!(b.phase, Phase::Ready, "a late opening of A changes nothing");
+        // "+" while the message is on its way: its answer no longer fills the new chat.
+        let _ = a.update(Event::New);
+        assert!(!a.sending && !a.follows(), "the new chat takes a message at once");
+        let _ = a.update(Event::Sent(sent_in_a, answer("c-a")));
+        assert!(a.transcript.entries.is_empty());
+        let _ = a.update(Event::Polled(sent_in_a, answer("c-a")));
+        assert!(a.transcript.entries.is_empty());
+        // The answer of the round open now is taken.
+        let round = a.round;
+        let _ = a.update(Event::Sent(round, answer("c-new")));
+        assert_eq!(a.transcript.summary.as_ref().map(|summary| summary.id.as_str()), Some("c-new"));
+    }
+
+    /// Review of #605: a suggestion's card shows only in the chat about its own mail.
+    #[test]
+    fn only_cards_of_the_chats_mail_show() {
+        let about = mail_ref("m:1");
+        let card = |account: &str, id: &str| Card::Suggestion {
+            account: account.to_owned(),
+            id: id.to_owned(),
+            suggestion: Box::new(Suggestion {
+                kind: "event".to_owned(),
+                state: SuggestionState::Ready,
+                task: None,
+                event: None,
+                reason: None,
+            }),
+        };
+        assert!(of_this_mail(&card("mail:anna@example.org", "m:1"), &about));
+        assert!(!of_this_mail(&card("mail:anna@example.org", "m:2"), &about), "another mail");
+        assert!(!of_this_mail(&card("mail:kim@example.org", "m:1"), &about), "another account");
+        assert!(!of_this_mail(&Card::Unavailable, &about));
     }
 
     /// The demo answers a message with the mail read first, and a second message follows the first.
@@ -1138,17 +1249,18 @@ mod tests {
     fn the_demo_answers_and_keeps_the_conversation() {
         let (mut ask, _) = Ask::open(demo_call(), mail_ref("m:1"));
         let opened = block_on(open(ask.call.clone(), mail_ref("m:1")));
-        let _ = ask.update(Event::Opened(opened));
+        let round = ask.round;
+        let _ = ask.update(Event::Opened(round, opened));
         assert_eq!(ask.phase, Phase::Ready);
         let request = send_request(None, ask.choice.as_ref(), "Hi", &ask.about).expect("a request");
         let sent = block_on(ask_conversation(ask.call.clone(), request));
-        let _ = ask.update(Event::Sent(sent));
+        let _ = ask.update(Event::Sent(round, sent));
         assert_eq!(ask.transcript.entries.len(), 3, "message, mail read, answer");
         assert!(ask.input.is_empty());
         let id = ask.transcript.summary.as_ref().map(|summary| summary.id.clone());
         let again = send_request(id.as_deref(), ask.choice.as_ref(), "And?", &ask.about).expect("a request");
         let sent = block_on(ask_conversation(ask.call.clone(), again));
-        let _ = ask.update(Event::Sent(sent));
+        let _ = ask.update(Event::Sent(round, sent));
         assert_eq!(ask.transcript.entries.len(), 5);
         assert!(ask.transcript.last_answer_text().is_some());
     }
