@@ -26,6 +26,9 @@ pub const ME: &str = "anna";
 pub const BEN: &str = "nextcloud:anna@cloud.example.org/ben4chat";
 /// The group "Team Alpha".
 pub const TEAM: &str = "nextcloud:anna@cloud.example.org/team4alpha";
+/// The direct chat with Lena Hoffmann of [`DemoSource::for_hub`]: the conversation of the Talk entry
+/// of the inbox's demo (`torro_inbox::demo`, thread `k7pq2xd9`). Not part of [`DemoSource::new`].
+pub const LENA: &str = "nextcloud:anna@cloud.example.org/k7pq2xd9";
 
 /// The most messages one page holds.
 const PAGE_MAX: usize = 100;
@@ -55,6 +58,21 @@ impl DemoSource {
     /// The sample as it looks at `now`: messages lie in the hours before it.
     pub fn new(now: DateTime<Utc>) -> DemoSource {
         DemoSource { data: Mutex::new(sample(now)) }
+    }
+
+    /// The sample of [`DemoSource::new`] and the direct chat [`LENA`], for the Notification Hub's demo
+    /// (issue #643): 24 messages – more than the panel's first page of 20, so "Show earlier" has
+    /// something to load –, a system message, an answer with its quote, the person's own messages,
+    /// and the last two unread, so the divider "New" stands before them. Lena is not on the list of
+    /// people, as someone met only in a chat.
+    pub fn for_hub(now: DateTime<Utc>) -> DemoSource {
+        let mut data = sample(now);
+        let messages = lena(now);
+        let mut chat = conversation(LENA, "Lena Hoffmann", ConversationKind::Direct, &messages, 2);
+        chat.person = Some(person_id(ACCOUNT, "lena"));
+        data.conversations.push(chat);
+        data.messages.insert(LENA.to_string(), messages);
+        DemoSource { data: Mutex::new(data) }
     }
 
     /// The data; a lock a panicking thread left is taken over, the sample cannot break by that.
@@ -229,6 +247,55 @@ fn sample(now: DateTime<Utc>) -> Data {
         heartbeat: true,
     };
     Data { conversations, messages, people, own, next: 100 }
+}
+
+/// The messages of [`LENA`], the oldest first, the last at `now` less six minutes (the Talk entry of
+/// the inbox's demo arrived then).
+fn lena(now: DateTime<Utc>) -> Vec<Message> {
+    let ago = |minutes: i64| now - Duration::minutes(minutes);
+    let lines: [(&str, &str, i64); 24] = [
+        ("lena", "Morning! Are the sidebar drafts still on for today?", 27 * 60),
+        (ME, "Yes, I am finishing the second one.", 27 * 60 - 4),
+        ("lena", "Great. Which widths did you try?", 27 * 60 - 6),
+        (ME, "240 for the sidebar and 400 for the panel.", 27 * 60 - 9),
+        ("lena", "And the rail when it is collapsed?", 27 * 60 - 11),
+        (ME, "60, only icons with the names as tooltips.", 27 * 60 - 14),
+        ("lena", "Sounds right. Do the groups keep their titles?", 27 * 60 - 20),
+        (ME, "In the rail they become a line.", 27 * 60 - 22),
+        ("lena", "Nice. I will look at it over lunch.", 27 * 60 - 25),
+        ("lena", "Looked at it. The spacing between the groups feels a bit tight.", 24 * 60),
+        (ME, "Agreed, I will try 24 instead of 16.", 24 * 60 - 7),
+        ("lena", "And the counts could be lighter.", 24 * 60 - 9),
+        (ME, "Text 3 then, like the rest of the metadata.", 24 * 60 - 12),
+        ("lena", "Perfect.", 24 * 60 - 13),
+        ("", "Lena Hoffmann started a call", 8 * 60),
+        ("", "Call ended after 14 minutes", 8 * 60 - 14),
+        ("lena", "Thanks for the call. I wrote the points into the ticket.", 8 * 60 - 16),
+        (ME, "Got them. The new drafts are in the shared folder.", 3 * 60),
+        ("lena", "Opening them now.", 3 * 60 - 5),
+        ("lena", "The dark one works really well.", 2 * 60),
+        (ME, "Good to hear! The light one still needs the hover colours.", 2 * 60 - 3),
+        ("lena", "No hurry.", 2 * 60 - 4),
+        ("lena", "One more thing about the rail: does the badge fit at 60?", 9),
+        ("lena", "Can we go through the sidebar drafts before 3?", 6),
+    ];
+    let mut messages: Vec<Message> = lines
+        .iter()
+        .zip(1..)
+        .map(|((user, line, minutes), number)| match *user {
+            "" => system(LENA, number, ago(*minutes), MessageKind::System, line),
+            user if user == ME => text(LENA, number, ME, "Anna Berg", ago(*minutes), line),
+            user => text(LENA, number, user, "Lena Hoffmann", ago(*minutes), line),
+        })
+        .collect();
+    if let Some(answer) = messages.get_mut(20) {
+        answer.reply_to = Some(Quote {
+            id: message_id(LENA, 20),
+            author: "Lena Hoffmann".into(),
+            text: "The dark one works really well.".into(),
+        });
+    }
+    messages
 }
 
 impl ChatSource for DemoSource {
@@ -532,6 +599,23 @@ mod tests {
         assert_eq!(cem.kind, ConversationKind::Direct);
         let again = demo.create_conversation(ACCOUNT.into(), person_id(ACCOUNT, "cem")).await.expect("Cem");
         assert_eq!(again.id, cem.id);
+    }
+
+    #[tokio::test]
+    async fn the_hub_sample_adds_lena_with_two_unread() {
+        let plain = demo().conversations(None).await.expect("conversations");
+        assert!(!plain.iter().any(|c| c.id == LENA), "not part of the plain sample");
+        let hub = DemoSource::for_hub(DateTime::from_timestamp(1_800_000_000, 0).expect("a time"));
+        let page = hub.messages(LENA.into(), None, None, Some(20)).await.expect("messages");
+        assert_eq!(page.messages.len(), 20);
+        assert!(page.more, "older messages wait behind the first page");
+        assert_eq!(page.last_read, Some(message_id(LENA, 22)), "the last two are unread");
+        let all = hub.messages(LENA.into(), None, None, Some(100)).await.expect("messages").messages;
+        assert_eq!(all.len(), 24);
+        assert!(all.iter().any(|message| message.kind == MessageKind::System));
+        assert!(all.iter().any(|message| message.author.own));
+        assert!(all.iter().any(|message| message.reply_to.is_some()));
+        assert_eq!(hub.people(None).await.expect("people").len(), 6, "the people stay as they are");
     }
 
     #[tokio::test]
