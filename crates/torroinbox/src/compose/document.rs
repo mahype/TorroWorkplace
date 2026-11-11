@@ -300,6 +300,10 @@ pub(super) struct Document {
     pub selected: Option<u64>,
     next: u64,
     fallback: Content,
+    /// The quoted history of an answer while it is folded away (issue #627): the end of the last
+    /// text block from the line where the history starts. Not shown, yet part of every draft
+    /// ([`Document::html`], [`Document::full_text`]) until [`Document::unfold`] puts it back.
+    pub folded: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -317,6 +321,7 @@ impl From<Content> for Document {
             selected: None,
             next: 1,
             fallback: Content::new(),
+            folded: None,
         }
     }
 }
@@ -523,13 +528,83 @@ impl Document {
     }
 
     pub fn text_bytes(&self) -> usize {
-        self.blocks
+        let shown: usize = self
+            .blocks
             .iter()
             .map(|block| match block {
                 Block::Text { content, .. } => content.text().len(),
                 _ => 0,
             })
-            .sum()
+            .sum();
+        shown + self.folded.as_ref().map_or(0, String::len)
+    }
+
+    /// Folds the quoted history away (issue #627): cuts the last block, when it is text, from the
+    /// line equal to `line` (the attribution "On … wrote:") to its end, with the line break before
+    /// it, and keeps that part in [`Document::folded`]. Nothing happens when the line is missing, the
+    /// last block is an image or something is folded already. The cursor stays where it was, or at
+    /// the end of what is left.
+    pub fn fold_from(&mut self, line: &str) -> bool {
+        if self.folded.is_some() || line.trim().is_empty() {
+            return false;
+        }
+        let Some(Block::Text { content, .. }) = self.blocks.last_mut() else { return false };
+        let text = content.text();
+        let mut start = 0;
+        let mut at = None;
+        for piece in text.split_inclusive('\n') {
+            if piece.trim_end_matches(['\n', '\r']) == line {
+                at = Some(start);
+                break;
+            }
+            start += piece.len();
+        }
+        let Some(at) = at else { return false };
+        // The line break before the history goes with it, so the text left ends where one writes.
+        let cut = if at > 0 && text[..at].ends_with('\n') { at - 1 } else { at };
+        let (kept, folded) = text.split_at(cut);
+        let cursor = content.cursor();
+        let mut shorter = Content::with_text(kept);
+        let end = position(kept, kept.len());
+        let keep = |p: Position| if offset(&text, p) <= cut { p } else { end };
+        shorter.move_to(iced::widget::text_editor::Cursor {
+            position: keep(cursor.position),
+            selection: cursor.selection.map(keep),
+        });
+        *content = shorter;
+        self.folded = Some(folded.to_owned());
+        true
+    }
+
+    /// Puts the folded history back at the end of the last text block (issue #627, "Show history"),
+    /// keeping the cursor. The draft is the same before and after.
+    pub fn unfold(&mut self) -> bool {
+        let Some(folded) = self.folded.take() else { return false };
+        let Some(Block::Text { content, .. }) = self.blocks.iter_mut().rev().find(|b| matches!(b, Block::Text { .. }))
+        else {
+            self.folded = Some(folded);
+            return false;
+        };
+        let cursor = content.cursor();
+        let mut whole = Content::with_text(&format!("{}{folded}", content.text()));
+        whole.move_to(cursor);
+        *content = whole;
+        true
+    }
+
+    /// The text of the active block as the editor holds it, and the folded history after it when
+    /// that block is the last one: the plain text of the draft (issue #627). Not a `text()` of its
+    /// own, because the editor's [`Content::text`] (through `Deref`) must stay what is shown.
+    pub fn full_text(&self) -> String {
+        let mut text = self.text();
+        let last = self.blocks.iter().rev().find_map(|b| match b {
+            Block::Text { id, .. } => Some(*id),
+            Block::Image(_) => None,
+        });
+        if let Some(folded) = self.folded.as_deref().filter(|_| last == Some(self.active)) {
+            text.push_str(folded);
+        }
+        text
     }
 
     pub fn within_limits(&self) -> bool {
@@ -591,10 +666,15 @@ impl Document {
     pub fn html(&self, history: Option<&str>) -> String {
         let mut out = String::new();
         let mut quoted = false;
-        for block in &self.blocks {
+        let last = self.blocks.iter().rposition(|b| matches!(b, Block::Text { .. }));
+        for (index, block) in self.blocks.iter().enumerate() {
             match block {
                 Block::Text { content, history: local, .. } => {
-                    let text = content.text();
+                    let mut text = content.text();
+                    // The folded history is part of the draft, shown or not (issue #627).
+                    if let Some(folded) = self.folded.as_deref().filter(|_| Some(index) == last) {
+                        text.push_str(folded);
+                    }
                     // Once the history boundary was crossed, the suffix remains someone else's
                     // literal text even when an image split away its original attribution line.
                     let boundary = if quoted {
@@ -773,6 +853,27 @@ fn uuid_token() -> String {
 mod tests {
     use super::*;
     use iced::widget::text_editor::Cursor;
+
+    /// Issue #627: the history folds away from its line and comes back; the draft is the same either way.
+    #[test]
+    fn folded_history_stays_in_the_draft_and_comes_back_unchanged() {
+        let line = "On Monday, Bernd wrote:";
+        let text = format!("\n\n{line}\n> Hi\n> there");
+        let mut doc = Document::from(Content::with_text(&text));
+        let html = doc.html(Some(line));
+        let bytes = doc.text_bytes();
+        assert!(!doc.fold_from("On Tuesday, nobody wrote:"), "a missing line folds nothing");
+        assert!(doc.fold_from(line));
+        assert!(!doc.fold_from(line), "folded once");
+        assert_eq!(doc.text(), "\n", "the editor keeps what is above the history");
+        assert_eq!(doc.full_text(), text);
+        assert_eq!(doc.html(Some(line)), html, "the draft keeps the history");
+        assert_eq!(doc.text_bytes(), bytes);
+        doc.perform(iced::widget::text_editor::Action::Edit(iced::widget::text_editor::Edit::Insert('X')));
+        assert!(doc.unfold());
+        assert_eq!(doc.text(), format!("X{text}"), "the history comes back after what was written");
+        assert!(!doc.unfold());
+    }
 
     #[test]
     fn inserted_range_is_utf8_exact_even_without_focus_and_replacement_checks_original_bytes() {
