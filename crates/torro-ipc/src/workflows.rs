@@ -565,7 +565,8 @@ pub enum RunReason {
     TooOld,
     SenderUnverified,
     RecoveryUncertain,
-    /// The provider's page now loads a script that the workflow has not witnessed; a person repairs the draft.
+    /// The provider's page now loads a script or has a layout that the workflow has not witnessed; a person
+    /// repairs the draft.
     ProviderChanged,
 }
 
@@ -748,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn only_profile_two_loads_pinned_scripts_from_its_two_paddle_hosts() {
+    fn only_profile_two_loads_pinned_scripts_from_its_three_paddle_hosts() {
         let pin = ResourcePin {
             host: "static.paddle.com".into(),
             path: "/assets/js/customer/invoice.js?v=1".into(),
